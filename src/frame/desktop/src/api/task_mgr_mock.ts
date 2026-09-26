@@ -187,7 +187,7 @@ const seedTasks: Task[] = [
           task_type: 'workflow.run',
           name_template: 'workflow/run: weekly-full-backup [${fire.fire_id}]',
           data_template: {
-            workflow_run: {
+            request: {
               workflow_id: 'wf_weekly_backup',
               input: { volume: '/data' },
             },
@@ -273,7 +273,7 @@ const seedTasks: Task[] = [
           task_type: 'workflow.run',
           name_template: 'workflow/run: scan-new-images [${fire.fire_id}]',
           data_template: {
-            workflow_run: {
+            request: {
               workflow_id: 'wf_scan_images',
               input: { album: 'camera-roll' },
             },
@@ -333,8 +333,9 @@ const seedTasks: Task[] = [
           task_type: 'agent.delegate',
           name_template: 'agent/delegate: monthly-agent-report [${fire.fire_id}]',
           data_template: {
-            agent_task: {
-              prompt: 'Summarize the previous month and notify the owner.',
+            request: {
+              title: 'Monthly agent report',
+              purpose: 'Summarize the previous month and notify the owner.',
             },
           },
         },
@@ -389,7 +390,7 @@ const seedTasks: Task[] = [
         target: {
           task_type: 'service.rpc',
           name_template: 'service/rpc: cleanup-temp-files [${fire.fire_id}]',
-          data_template: { service: 'storage.cleaner', method: 'cleanup_temp' },
+          data_template: { request: { service: 'storage.cleaner', method: 'cleanup_temp' } },
         },
       },
       result: {

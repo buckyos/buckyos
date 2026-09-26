@@ -113,12 +113,6 @@ async fn unregister_reader_closes_update_path_and_drops_queue() {
         service.pull_event("r1", Some(0)).await,
         Err(KEventError::ReaderClosed(_))
     ));
-    assert!(matches!(
-        service
-            .update_reader("r1", vec!["/lifecycle/**".to_string()], vec![])
-            .await,
-        Err(KEventError::ReaderClosed(_))
-    ));
 
     service.unregister_reader("r1").await;
     service

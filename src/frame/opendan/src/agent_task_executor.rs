@@ -123,7 +123,7 @@ impl AIAgent {
         runner: &str,
     ) -> Result<()> {
         if !task_runs_on_app(&task, self.own_task_app_id().as_str())
-            || !task_targets_agent(&task, runner, self.dispatch_target_id().as_str())
+            || !task_targets_agent(&task, self.dispatch_target_id().as_str())
         {
             if let Some(pump) = self.task_event_pump() {
                 pump.unwatch(&task.task_id).await;
@@ -182,7 +182,7 @@ impl AIAgent {
                 if !task_runs_on_app(&task, own_app_id.as_str()) {
                     continue;
                 }
-                if !task_targets_agent(&task, runner, target_agent_id.as_str()) {
+                if !task_targets_agent(&task, target_agent_id.as_str()) {
                     continue;
                 }
                 if let Err(err) = self.clone().process_agent_delegate_task(task, runner).await {
@@ -218,17 +218,12 @@ impl AIAgent {
         match pending_control_action(&task) {
             Some(TaskControlAction::Cancel) => {
                 return self
-                    .reflect_task_control_to_session(
-                        task,
-                        runner,
-                        "canceled",
-                        InterruptMode::Discard,
-                    )
+                    .reflect_task_control_to_session(task, "canceled", InterruptMode::Discard)
                     .await;
             }
             Some(TaskControlAction::Pause) => {
                 return self
-                    .reflect_task_control_to_session(task, runner, "paused", InterruptMode::Discard)
+                    .reflect_task_control_to_session(task, "paused", InterruptMode::Discard)
                     .await;
             }
             Some(TaskControlAction::Resume) => {
@@ -537,11 +532,10 @@ impl AIAgent {
     async fn reflect_task_control_to_session(
         self: Arc<Self>,
         task: Task,
-        runner: &str,
         status: &'static str,
         mode: InterruptMode,
     ) -> Result<()> {
-        if !task_targets_agent(&task, runner, self.dispatch_target_id().as_str()) {
+        if !task_targets_agent(&task, self.dispatch_target_id().as_str()) {
             return Ok(());
         }
         let delegate_data = agent_delegate_task_data(&task)?;
@@ -868,17 +862,6 @@ fn execution_session_id(data: &AgentDelegateTaskData) -> Option<String> {
         .map(str::to_string)
 }
 
-fn delegate_execution_runner(data: &AgentDelegateTaskData) -> Option<String> {
-    data.progress
-        .as_ref()
-        .and_then(|progress| progress.execution.as_ref())
-        .and_then(|execution| execution.get("runner"))
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
 /// Is this OpenDAN app the bound App runner of the task? Direct-created
 /// tasks bind our own app at create time; dispatched tasks are bound by the
 /// dispatcher.
@@ -890,27 +873,20 @@ fn task_runs_on_app(task: &Task, own_app_id: &str) -> bool {
 }
 
 /// Per-agent ownership check within OpenDAN's own tasks (the sweep is
-/// already runner-app scoped). The canonical target identity is
-/// `request.target_agent_id` (stamped by the Dispatch Runner Adapter and new
-/// internal producers); `progress.execution.runner` remains accepted for
-/// tasks created by older internal paths / schedule templates. A task with
-/// neither belongs to no executor.
-fn task_targets_agent(task: &Task, runner: &str, target_agent_id: &str) -> bool {
+/// already runner-app scoped). The only target identity is
+/// `request.target_agent_id`, stamped by every producer (dispatch adapter,
+/// worksession task creation, schedule templates). A task without it belongs
+/// to no executor.
+fn task_targets_agent(task: &Task, target_agent_id: &str) -> bool {
     let Ok(data) = agent_delegate_task_data(task) else {
         return false;
     };
-    if let Some(target) = data
-        .request
+    data.request
         .target_agent_id
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-    {
-        return target == target_agent_id;
-    }
-    delegate_execution_runner(&data)
-        .map(|target| target == runner)
-        .unwrap_or(false)
+        .is_some_and(|target| target == target_agent_id)
 }
 
 fn route_session_id(data: &AgentDelegateTaskData) -> Option<String> {
@@ -1123,7 +1099,7 @@ mod tests {
     #[test]
     fn direct_schema_uses_single_workspace_hint() {
         let task = task(json!({
-            "agent_delegate": {
+            "request": {
                 "purpose": "Do the task",
                 "workspace_hints": [{"workspace_id": "buckyos"}]
             }
@@ -1136,7 +1112,7 @@ mod tests {
     #[test]
     fn ambiguous_workspace_hints_are_not_direct() {
         let task = task(json!({
-            "agent_delegate": {
+            "request": {
                 "purpose": "Do the task",
                 "workspace_hints": ["a", "b"]
             }
@@ -1175,9 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn delegate_ownership_prefers_target_agent_id_with_runner_fallback() {
-        // Canonical: request.target_agent_id (dispatch adapter + new
-        // internal producers).
+    fn delegate_ownership_uses_target_agent_id() {
         let dispatched = task(json!({
             "request": {
                 "version": 1,
@@ -1186,34 +1160,30 @@ mod tests {
                 "target_agent_id": "did:agent:jarvis"
             }
         }));
-        assert!(task_targets_agent(&dispatched, "agent", "did:agent:jarvis"));
-        assert!(!task_targets_agent(&dispatched, "agent", "did:agent:other"));
+        assert!(task_targets_agent(&dispatched, "did:agent:jarvis"));
+        assert!(!task_targets_agent(&dispatched, "did:agent:other"));
 
-        // Legacy internal tasks still ride on progress.execution.runner.
-        let legacy = task(json!({
+        // progress.execution.runner is runner bookkeeping, not identity.
+        let runner_only = task(json!({
+            "request": {
+                "purpose": "Do the task"
+            },
+            "progress": {
+                "execution": {"runner": "agent"}
+            }
+        }));
+        assert!(!task_targets_agent(&runner_only, "agent"));
+        assert!(!task_targets_agent(&runner_only, "did:agent:jarvis"));
+
+        // The pre-typed `{agent_delegate: ...}` shape is no longer accepted.
+        let old_shape = task(json!({
             "agent_delegate": {
                 "purpose": "Do the task",
                 "execution": {"runner": "agent"}
             }
         }));
-        assert!(task_targets_agent(&legacy, "agent", "did:agent:jarvis"));
-        assert!(!task_targets_agent(
-            &legacy,
-            "other-agent",
-            "did:agent:jarvis"
-        ));
-
-        // Neither identity: belongs to no executor.
-        let unassigned = task(json!({
-            "agent_delegate": {
-                "purpose": "Do the task"
-            }
-        }));
-        assert!(!task_targets_agent(
-            &unassigned,
-            "agent",
-            "did:agent:jarvis"
-        ));
+        assert!(agent_delegate_task_data(&old_shape).is_err());
+        assert!(!task_targets_agent(&old_shape, "agent"));
 
         // Runner-app scoping.
         assert!(task_runs_on_app(&dispatched, "opendan"));

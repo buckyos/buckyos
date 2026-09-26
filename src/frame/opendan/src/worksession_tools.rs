@@ -514,9 +514,7 @@ fn build_forwarded_message(origin: Option<AiMessage>, override_text: &str) -> Ai
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 pub struct UpdateSessionTopicArgs {
     /// One-line Topic Title for the current session. Write for the future self,
-    /// not for the user; this is not a session summary. The old `topic`
-    /// parameter name is accepted as a compatibility alias.
-    #[serde(alias = "topic")]
+    /// not for the user; this is not a session summary.
     pub title: String,
     /// Optional short tags used as coarse recall keys. Each reason should be a
     /// compact explanation of why the tag matters now.

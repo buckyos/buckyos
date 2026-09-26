@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 
 function placeUsersAgentsOnFirstPage() {
   window.localStorage.setItem(
-    'buckyos.layout.desktop.v1',
+    'buckyos.layout.desktop.v2',
     JSON.stringify({
       version: 1,
       formFactor: 'desktop',
@@ -29,7 +29,7 @@ function placeUsersAgentsOnFirstPage() {
 
 function placeMyNetworkOnFirstPage() {
   window.localStorage.setItem(
-    'buckyos.layout.desktop.v1',
+    'buckyos.layout.desktop.v2',
     JSON.stringify({
       version: 1,
       formFactor: 'desktop',

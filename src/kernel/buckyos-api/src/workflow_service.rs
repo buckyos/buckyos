@@ -148,7 +148,6 @@ pub struct WorkflowScheduledTask {
 #[serde(rename_all = "snake_case")]
 pub enum WorkflowScheduledTaskFireStatus {
     Created,
-    #[serde(alias = "run_created")]
     TaskCreated,
     Skipped,
     Failed,

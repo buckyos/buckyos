@@ -446,16 +446,6 @@ impl VerifyHubClient {
             }
         }
     }
-
-    // Backward-compatible convenience: exchange JWT for a single session token.
-    // pub async fn login_by_jwt_session_token(
-    //     &self,
-    //     jwt: String,
-    //     login_params: Option<Value>,
-    // ) -> Result<RPCSessionToken> {
-    //     let token_pair = self.login_by_jwt(jwt, login_params).await?;
-    //     RPCSessionToken::from_string(token_pair.session_token.as_str())
-    // }
 }
 
 #[async_trait]

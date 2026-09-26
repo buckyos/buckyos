@@ -65,7 +65,7 @@ fn llm_response_preserves_success_and_failure_payloads() {
 }
 
 #[test]
-fn aicc_errors_round_trip_through_krpc_and_task_data() {
+fn aicc_errors_round_trip_through_krpc() {
     for code in [
         AiccErrorCode::InvalidRequest,
         AiccErrorCode::InvalidMethod,
@@ -89,10 +89,6 @@ fn aicc_errors_round_trip_through_krpc_and_task_data() {
 
         assert_eq!(
             AiccError::from_krpc_error(&expected.to_krpc_error()),
-            Some(expected.clone())
-        );
-        assert_eq!(
-            AiccError::from_task_data(&expected.to_task_data()),
             Some(expected)
         );
     }

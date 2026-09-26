@@ -208,13 +208,6 @@ pub enum KEventDaemonRequest {
     UnregisterReader {
         reader_id: String,
     },
-    UpdateReader {
-        reader_id: String,
-        #[serde(default)]
-        add: Vec<String>,
-        #[serde(default)]
-        remove: Vec<String>,
-    },
     PublishGlobal {
         event: Event,
     },

@@ -698,13 +698,6 @@ impl AgentSession {
             existing.owner = b.owner.clone();
             existing.status = SessionStatus::Idle;
             existing.one_line_status.clear();
-            // Backfill: older session.json files predate `process_entry`. An
-            // empty value here means "top-level process whose entry == the
-            // current behavior" — restore that interpretation so the
-            // independent-mode persistence path doesn't reject the session.
-            if existing.process_entry.is_empty() {
-                existing.process_entry = existing.current_behavior.clone();
-            }
             existing
         } else {
             SessionMeta::new(
@@ -719,13 +712,6 @@ impl AgentSession {
                 unit: ImprovementBudgetUnit::Token,
                 remaining: 32_000,
             });
-        }
-        if meta.ensure_default_event_subscriptions(now_ms()) {
-            info!(
-                "opendan.session[{}]: install default ui clock subscription event_id={} mode=background_only",
-                b.session_id,
-                crate::session_model::UI_CLOCK_TIMER_EVENT_ID
-            );
         }
         let history = Arc::new(SessionHistoryRecorder::new(
             b.session_id.clone(),
@@ -981,21 +967,6 @@ impl AgentSession {
                 "opendan.session[{}]: flush after restoring internal continuation failed: {err:#}",
                 self.session_id
             );
-        }
-    }
-
-    async fn prune_legacy_internal_pending_inputs(&self) {
-        let removed = {
-            let mut meta = self.meta.lock().await;
-            prune_legacy_internal_pending_inputs(&mut meta.pending_inputs)
-        };
-        if removed > 0 {
-            if let Err(err) = self.flush_meta().await {
-                warn!(
-                    "opendan.session[{}]: flush after pruning legacy internal pending inputs failed: {err:#}",
-                    self.session_id
-                );
-            }
         }
     }
 
@@ -1285,7 +1256,6 @@ impl AgentSession {
             // `meta.pending_inputs` here — that happens only after the turn
             // succeeds, so a crash mid-round leaves the
             // inputs durable and they'll be replayed next boot.
-            self.prune_legacy_internal_pending_inputs().await;
             let mut pending = self.meta.lock().await.pending_inputs.clone();
             if pending.is_empty() {
                 // Work session bootstrap: if a freshly-created Work session
@@ -1547,7 +1517,7 @@ impl AgentSession {
             // Latest peer info wins — the most recent Msg in this batch
             // dictates where outbound replies will be routed.
             let mut turn_messages: Vec<TurnMessage> = Vec::new();
-            let mut history_inputs: Vec<HistoryInputRecord> = Vec::new();
+            let history_inputs: Vec<HistoryInputRecord> = Vec::new();
             let mut turn_events = Vec::new();
             let mut consumed_keys = Vec::new();
             let mut task_completions: Vec<(String, Observation, String, String)> = Vec::new();
@@ -1567,8 +1537,6 @@ impl AgentSession {
             for input in &pending {
                 match input {
                     PendingInput::Msg {
-                        record_id,
-                        from,
                         text,
                         from_did,
                         tunnel_did,
@@ -1578,24 +1546,16 @@ impl AgentSession {
                         let message = pending_msg_ai_message(ai_message);
                         if ai_message_has_payload(&message) {
                             let preview_text = pending_msg_preview(text, &message);
-                            if is_history_input_pending(record_id) {
-                                history_inputs.push(HistoryInputRecord {
-                                    source: from.clone(),
-                                    text: message.text_content().trim().to_string(),
-                                    at_ms: now_ms(),
-                                });
-                            } else if !preview_text.trim().is_empty() {
-                                if !is_runtime_auto_user_pending(from) {
-                                    if first_msg_preview.is_none() {
-                                        first_msg_preview = Some(trigger_preview(&preview_text));
-                                    }
-                                    latest_origin_msg = Some(message.clone());
-                                    hist_user_messages.push(message.clone());
-                                    msg_count += 1;
+                            if !preview_text.trim().is_empty() {
+                                if first_msg_preview.is_none() {
+                                    first_msg_preview = Some(trigger_preview(&preview_text));
                                 }
+                                latest_origin_msg = Some(message.clone());
+                                hist_user_messages.push(message.clone());
+                                msg_count += 1;
                                 turn_messages.push(TurnMessage {
                                     message: message.clone(),
-                                    runtime_auto: is_runtime_auto_user_pending(from),
+                                    runtime_auto: false,
                                 });
                             }
                         }
@@ -4189,28 +4149,14 @@ impl AgentSession {
     }
 
     async fn render_system_messages(&self, behavior: &BehaviorCfg) -> Result<Vec<AiMessage>> {
-        // Read once: file-system anchors `role.md` / `self.md`, current
-        // session env. role.md / self.md are pre-read and injected as
-        // `{{ role_md }}` / `{{ self_md }}` template extras for the four
-        // shipped behaviors that reference them by name. A future phase
-        // migrates the templates to `__INCLUDE(/role.md)__` and drops these
-        // pre-reads entirely.
-        let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
-            .unwrap_or_default();
-        let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))
-            .unwrap_or_default();
         let env = self.build_prompt_env(behavior).await;
 
         // `[prompt].on_init` template — render through `PromptRenderEngine`
-        // (Phase-1 vars + include_roots) with `role_md` / `self_md` overlaid
-        // as render-time extras.
+        // (Phase-1 vars + include_roots). Templates pull `role.md` /
+        // `self.md` in via `__INCLUDE(/role.md)__`.
         let template = behavior.prompt.on_init.trim();
         if !template.is_empty() {
-            let extras: Vec<(&str, serde_json::Value)> = vec![
-                ("role_md", serde_json::Value::String(role_md.clone())),
-                ("self_md", serde_json::Value::String(self_md.clone())),
-            ];
-            match prompt_env::render_template(template, &env, &extras).await {
+            match prompt_env::render_template(template, &env, &[]).await {
                 Ok(rendered) => return Ok(vec![AiMessage::text(AiRole::System, rendered)]),
                 Err(err) => {
                     let detail = render_template_failure_detail(
@@ -4233,6 +4179,10 @@ impl AgentSession {
         // (matches pre-config-rewrite behavior). Worksession objective
         // surfaces as a dedicated block ahead of the session readme so the
         // LLM sees its task statement first.
+        let role_md = std::fs::read_to_string(self.agent_config.layout.root.join("role.md"))
+            .unwrap_or_default();
+        let self_md = std::fs::read_to_string(self.agent_config.layout.root.join("self.md"))
+            .unwrap_or_default();
         let mut chunks = Vec::new();
         if !role_md.trim().is_empty() {
             chunks.push(role_md);
@@ -4685,17 +4635,17 @@ impl AgentSession {
         };
         let report = final_snapshot.state.last_report.clone().unwrap_or_default();
         let patch = json!({
-            "agent_delegate": {
+            "progress": {
                 "execution": {
                     "session_id": self.session_id,
                     "workspace_id": self.workspace_id().await,
                     "status": "completed",
                 },
-                "result": {
-                    "status": "completed",
-                    "report": report,
-                    "next_behavior": next_behavior,
-                }
+            },
+            "result": {
+                "status": "completed",
+                "report": report,
+                "next_behavior": next_behavior,
             }
         });
         let Ok(task) = client.get_task(&binding.task_id).await else {
@@ -4782,14 +4732,14 @@ impl AgentSession {
         crate::task_util::merge_json(
             &mut detail,
             &json!({
-                "agent_delegate": {
+                "progress": {
                     "execution": {
                         "session_id": self.session_id,
                         "status": "failed",
                     },
-                    "error": {
-                        "message": message,
-                    }
+                },
+                "error": {
+                    "message": message,
                 }
             }),
         );
@@ -4827,7 +4777,7 @@ impl AgentSession {
             return;
         }
         let progress_patch = json!({
-            "agent_delegate": {
+            "progress": {
                 "execution": {
                     "session_id": self.session_id,
                     "status": "canceled",
@@ -5747,16 +5697,19 @@ impl AgentSession {
         }
         let message = task_message_for_session_status(status, &one_line_status);
         let status_text = session_status_text(status);
+        let updated_at_ms = now_ms();
         let patch = json!({
-            "agent_delegate": {
+            "progress": {
                 "execution": {
                     "session_id": self.session_id,
                     "workspace_id": self.workspace_id().await,
                     "session_status": status_text,
                     "status": status_text,
                     "one_line_status": one_line_status,
-                    "updated_at_ms": now_ms(),
-                }
+                    "updated_at_ms": updated_at_ms,
+                },
+                "one_line_status": one_line_status,
+                "updated_at_ms": updated_at_ms,
             }
         });
         let mut merged = crate::task_util::task_payload(&task);
@@ -7160,29 +7113,6 @@ fn append_turn_message_to_snapshot(
     snapshot
 }
 
-fn is_runtime_auto_user_pending(from: &str) -> bool {
-    from == "opendan:on_behavior_switch"
-}
-
-fn prune_legacy_internal_pending_inputs(pending: &mut Vec<PendingInput>) -> usize {
-    let before = pending.len();
-    pending.retain(|input| {
-        let is_legacy_internal = matches!(
-            input,
-            PendingInput::Msg { from, .. } if is_runtime_auto_user_pending(from)
-        ) || matches!(
-            input,
-            PendingInput::Msg { record_id, .. } if is_history_input_pending(record_id)
-        );
-        !is_legacy_internal
-    });
-    before.saturating_sub(pending.len())
-}
-
-fn is_history_input_pending(record_id: &str) -> bool {
-    record_id.starts_with("process-end:")
-}
-
 fn fork_child_end_marker(child_entry: &str, child_report: &str) -> String {
     let report = child_report.trim();
     if report.is_empty() {
@@ -8015,7 +7945,6 @@ fn is_llm_message_compress_marker(msg: &AiMessage) -> bool {
     let text = msg.text_content();
     text.contains("[LLM_MESSAGE_COMPRESS_META_V1]")
         || text.contains("[LLM_MESSAGE_COMPRESS_SUMMARY_V1]")
-        || text.contains("[Conversation summary]")
 }
 
 fn context_window_tokens_from_model_directory(

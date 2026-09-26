@@ -1935,13 +1935,11 @@ impl ControlPanelServer {
         principal: Option<&RpcAuthPrincipal>,
     ) -> Result<RPCResponse, RPCErrors> {
         let _principal = Self::require_rpc_principal(principal)?;
-        let local_dir = Self::require_param_str(&req, "local_dir")
-            .or_else(|_| Self::require_param_str(&req, "path"))?;
+        let local_dir = Self::require_param_str(&req, "local_dir")?;
         let app_doc_value = req
             .params
             .get("app_doc")
             .cloned()
-            .or_else(|| req.params.get("app_doc_template").cloned())
             .ok_or_else(|| RPCErrors::ReasonError("missing app_doc payload".to_string()))?;
         let app_doc: AppDoc = serde_json::from_value(app_doc_value).map_err(|error| {
             RPCErrors::ParseRequestError(format!("Invalid app_doc payload: {}", error))
@@ -1970,8 +1968,6 @@ impl ControlPanelServer {
         Ok(RPCResponse::new(
             RPCResult::Success(serde_json::json!({
                 "ok": true,
-                // 兼容字段：即 app_doc_id。
-                "obj_id": output.app_doc_object_id.to_string(),
                 "app_did": output.app_did.to_string(),
                 "app_doc_id": output.app_doc_object_id.to_string(),
                 "pikg_handle": output.pikg_handle,

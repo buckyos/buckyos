@@ -34,7 +34,7 @@
 //! app (`app_index * 16 + BASE_APP_PORT`, e.g. 10016 for the default
 //! Jarvis at index 1 — the AppDoc's inner 4060 is only a declaration the
 //! allocator overrides) and reaches this process through the
-//! `$OPENDAN_SERVICE_PORT` env node_daemon injects alongside the matching
+//! `$BUCKYOS_SERVICE_PORT` env node_daemon injects alongside the matching
 //! `-p {port}:{port}` publish rule, so multiple agent containers never
 //! collide on the host. The 4060 fallback exists solely for the
 //! transitional native frame-service form (no env, no mapping, same
@@ -74,8 +74,8 @@ const DISPATCH_CAPACITY: u32 = 4;
 const REGISTER_RETRY_SECS: u64 = 30;
 const RUNNER_KAPI_PATH: &str = "/kapi/opendan-task-runner";
 /// node_daemon injects the published agent service port into the container
-/// env under this (legacy) name; the native deployment may leave it unset.
-const SERVICE_PORT_ENV: &str = "OPENDAN_SERVICE_PORT";
+/// env under this name; the native deployment may leave it unset.
+const SERVICE_PORT_ENV: &str = "BUCKYOS_SERVICE_PORT";
 /// Journal retention for activated (terminal for this adapter) deliveries.
 const ACTIVATED_RETENTION_MS: i64 = 24 * 60 * 60 * 1000;
 /// A reservation the dispatcher never activated is considered abandoned

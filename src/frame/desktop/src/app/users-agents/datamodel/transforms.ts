@@ -59,7 +59,6 @@ function firstString(...values: unknown[]): string | undefined {
 }
 
 function systemContactFromDetail(detail: UserDetail): UserContactSettings | undefined {
-  if (detail.contact) return detail.contact
   const localProfile = asRecord(detail.local_profile)
   const privateExtra = asRecord(localProfile.private_extra)
   const systemContact = asRecord(privateExtra.system_contact)

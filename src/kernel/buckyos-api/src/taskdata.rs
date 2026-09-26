@@ -459,65 +459,43 @@ pub enum TypedTaskData {
 impl TypedTaskData {
     pub fn parse(task_data_type: TaskDataType, data: Value) -> Result<Self, TaskDataParseError> {
         match task_data_type {
-            TaskDataType::Download => parse_data::<DownloadTaskData>(task_data_type, data.clone())
-                .map(Self::Download)
-                .or_else(|_| parse_download_legacy(data).map(Self::Download)),
-            TaskDataType::SchedulerDispatchThunk => parse_data(task_data_type, data.clone())
-                .map(Self::SchedulerDispatchThunk)
-                .or_else(|_| parse_thunk_legacy(data).map(Self::SchedulerDispatchThunk)),
-            TaskDataType::WorkflowRun => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowRun)
-                .or_else(|_| parse_workflow_run_legacy(data).map(Self::WorkflowRun)),
-            TaskDataType::WorkflowStep => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowStep)
-                .or_else(|_| parse_workflow_step_legacy(data).map(Self::WorkflowStep)),
-            TaskDataType::WorkflowMapShard => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowMapShard)
-                .or_else(|_| parse_workflow_map_shard_legacy(data).map(Self::WorkflowMapShard)),
-            TaskDataType::WorkflowThunk => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowThunk)
-                .or_else(|_| parse_thunk_legacy(data).map(Self::WorkflowThunk)),
-            TaskDataType::WorkflowSchedule => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowSchedule)
-                .or_else(|_| parse_workflow_schedule_legacy(data).map(Self::WorkflowSchedule)),
-            TaskDataType::WorkflowSendMessage => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowSendMessage)
-                .or_else(|_| parse_send_message_legacy(data).map(Self::WorkflowSendMessage)),
-            TaskDataType::AgentDelegate => parse_data(task_data_type, data.clone())
-                .map(Self::AgentDelegate)
-                .or_else(|_| parse_agent_delegate_legacy(data).map(Self::AgentDelegate)),
-            TaskDataType::HumanInput => parse_data(task_data_type, data.clone())
-                .map(Self::HumanInput)
-                .or_else(|_| parse_human_input_legacy(data).map(Self::HumanInput)),
+            TaskDataType::Download => parse_data(task_data_type, data).map(Self::Download),
+            TaskDataType::SchedulerDispatchThunk => {
+                parse_data(task_data_type, data).map(Self::SchedulerDispatchThunk)
+            }
+            TaskDataType::WorkflowRun => parse_data(task_data_type, data).map(Self::WorkflowRun),
+            TaskDataType::WorkflowStep => parse_data(task_data_type, data).map(Self::WorkflowStep),
+            TaskDataType::WorkflowMapShard => {
+                parse_data(task_data_type, data).map(Self::WorkflowMapShard)
+            }
+            TaskDataType::WorkflowThunk => {
+                parse_data(task_data_type, data).map(Self::WorkflowThunk)
+            }
+            TaskDataType::WorkflowSchedule => {
+                parse_data(task_data_type, data).map(Self::WorkflowSchedule)
+            }
+            TaskDataType::WorkflowSendMessage => {
+                parse_data(task_data_type, data).map(Self::WorkflowSendMessage)
+            }
+            TaskDataType::AgentDelegate => {
+                parse_data(task_data_type, data).map(Self::AgentDelegate)
+            }
+            TaskDataType::HumanInput => parse_data(task_data_type, data).map(Self::HumanInput),
             TaskDataType::OpenDanAsyncTool => {
-                parse_data::<OpenDanAsyncToolTaskData>(task_data_type, data.clone())
-                    .map(Self::OpenDanAsyncTool)
-                    .or_else(|_| {
-                        Ok(Self::OpenDanAsyncTool(OpenDanAsyncToolTaskData {
-                            request: data,
-                            result: None,
-                        }))
-                    })
+                parse_data(task_data_type, data).map(Self::OpenDanAsyncTool)
             }
-            TaskDataType::AiccCompute => parse_data(task_data_type, data.clone())
-                .map(Self::AiccCompute)
-                .or_else(|_| parse_aicc_compute_legacy(data).map(Self::AiccCompute)),
-            // beta 2.2 schema v3：app.install/app.update 不做旧 schema legacy parser。
+            TaskDataType::AiccCompute => parse_data(task_data_type, data).map(Self::AiccCompute),
             TaskDataType::AppInstall => parse_data(task_data_type, data).map(Self::AppInstall),
-            TaskDataType::AppUninstall => {
-                parse_data(task_data_type, data.clone()).map(Self::AppUninstall)
-            }
-            TaskDataType::AppStart => parse_data(task_data_type, data.clone()).map(Self::AppStart),
+            TaskDataType::AppUninstall => parse_data(task_data_type, data).map(Self::AppUninstall),
+            TaskDataType::AppStart => parse_data(task_data_type, data).map(Self::AppStart),
             TaskDataType::AppUpdate => parse_data(task_data_type, data).map(Self::AppUpdate),
             TaskDataType::AppUpdateBatch => {
                 parse_data(task_data_type, data).map(Self::AppUpdateBatch)
             }
-            TaskDataType::ServiceRpc => parse_data(task_data_type, data.clone())
-                .map(Self::ServiceRpc)
-                .or_else(|_| parse_service_rpc_legacy(data).map(Self::ServiceRpc)),
-            TaskDataType::WorkflowRunTarget => parse_data(task_data_type, data.clone())
-                .map(Self::WorkflowRunTarget)
-                .or_else(|_| parse_workflow_run_target_legacy(data).map(Self::WorkflowRunTarget)),
+            TaskDataType::ServiceRpc => parse_data(task_data_type, data).map(Self::ServiceRpc),
+            TaskDataType::WorkflowRunTarget => {
+                parse_data(task_data_type, data).map(Self::WorkflowRunTarget)
+            }
             TaskDataType::ToolExecBash => parse_data(task_data_type, data).map(Self::ToolExecBash),
         }
     }
@@ -996,7 +974,11 @@ pub struct ScheduleTriggerContext {
     pub manual: bool,
 }
 
+/// Unknown top-level keys are rejected so a patch merged under a stray key
+/// (e.g. the removed `{agent_delegate: {...}}` shape) fails loudly instead of
+/// being silently dropped.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AgentDelegateTaskData {
     pub request: AgentDelegateTaskRequest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1023,8 +1005,8 @@ pub struct AgentDelegateTaskRequest {
     /// handoff: the immutable cross-owner link back to the DispatchRecord.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_id: Option<String>,
-    /// The logical agent this delegate task targets. Replaces the legacy
-    /// `progress.execution.runner` as the target-identity carrier.
+    /// The logical agent this delegate task targets: the only target-identity
+    /// carrier (`progress.execution` is runner bookkeeping, not identity).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_agent_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1549,578 +1531,6 @@ pub struct ToolExecBashTaskData {
     pub extra: BTreeMap<String, Value>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyDownloadTaskData {
-    #[serde(default)]
-    download_url: Option<String>,
-    #[serde(default)]
-    urls: Vec<String>,
-    #[serde(default)]
-    objid: Option<String>,
-    #[serde(default)]
-    resolved_objid: Option<String>,
-    #[serde(default)]
-    download_options: Option<DownloadTaskOptions>,
-    #[serde(default)]
-    download: Option<LegacyDownloadState>,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyDownloadState {
-    #[serde(default)]
-    state: Option<String>,
-    #[serde(default)]
-    mode: Option<String>,
-    #[serde(default)]
-    downloaded_bytes: Option<u64>,
-    #[serde(default)]
-    total_bytes: Option<u64>,
-    #[serde(default)]
-    local_path: Option<String>,
-    #[serde(default)]
-    result: Option<Value>,
-}
-
-fn parse_download_legacy(data: Value) -> Result<DownloadTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyDownloadTaskData>(TaskDataType::Download, data)?;
-    let progress = legacy
-        .download
-        .as_ref()
-        .and_then(|download| {
-            download
-                .downloaded_bytes
-                .map(|done| (done, download.total_bytes))
-        })
-        .map(|(done, total)| TaskDataProgress::with_bytes(done, total));
-    let result = legacy.download.map(|download| DownloadTaskResult {
-        state: download.state,
-        mode: download.mode,
-        local_path: download.local_path,
-        downloaded_bytes: download.downloaded_bytes,
-        total_bytes: download.total_bytes,
-        chunk_count: None,
-        stored_objects: Vec::new(),
-        completed_at: None,
-        sub_pkg_total: None,
-        sub_pkg_completed: None,
-        current_sub_pkg: None,
-        output: download.result,
-    });
-    Ok(DownloadTaskData {
-        request: DownloadTaskRequest {
-            download_url: legacy.download_url,
-            urls: legacy.urls,
-            objid: legacy.objid,
-            resolved_objid: legacy.resolved_objid,
-            options: legacy.download_options,
-        },
-        progress,
-        result,
-        extra: legacy.extra,
-    })
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyThunkTaskData {
-    #[serde(default)]
-    runner: Option<String>,
-    #[serde(default)]
-    thunk_obj_id: Option<String>,
-    #[serde(default)]
-    thunk: Option<ThunkObject>,
-    #[serde(default)]
-    function_object: Option<FunctionObject>,
-    #[serde(default)]
-    dispatch: Option<ThunkDispatch>,
-    #[serde(default)]
-    node_id: Option<String>,
-    #[serde(default)]
-    executor: Option<NodeExecutorTaskState>,
-    #[serde(default)]
-    executor_result: Option<ThunkExecutionResult>,
-    #[serde(default)]
-    workflow: Option<LegacyWorkflowThunk>,
-    #[serde(flatten)]
-    extra: BTreeMap<String, Value>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyWorkflowThunk {
-    #[serde(default)]
-    run_id: Option<String>,
-    #[serde(default)]
-    node_id: Option<String>,
-    #[serde(default)]
-    thunk_obj_id: Option<String>,
-    #[serde(default)]
-    attempt: Option<u32>,
-    #[serde(default)]
-    shard_index: Option<u32>,
-}
-
-fn parse_thunk_legacy(data: Value) -> Result<ThunkTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyThunkTaskData>(TaskDataType::SchedulerDispatchThunk, data)?;
-    let mut extra = legacy.extra;
-    if let Some(workflow) = legacy.workflow {
-        if let Some(value) = workflow.run_id {
-            extra.insert("workflow_run_id".to_string(), Value::String(value));
-        }
-        if let Some(value) = workflow.attempt {
-            extra.insert("workflow_attempt".to_string(), Value::from(value));
-        }
-        if let Some(value) = workflow.shard_index {
-            extra.insert("workflow_shard_index".to_string(), Value::from(value));
-        }
-        let workflow_node_id = workflow.node_id;
-        let workflow_thunk_obj_id = workflow.thunk_obj_id;
-        Ok(ThunkTaskData {
-            request: ThunkTaskRequest {
-                runner: legacy.runner,
-                node_id: legacy.node_id.or(workflow_node_id),
-                thunk_obj_id: legacy.thunk_obj_id.or(workflow_thunk_obj_id),
-                thunk: legacy.thunk,
-                function_object: legacy.function_object,
-                dispatch: legacy.dispatch,
-                extra: BTreeMap::new(),
-            },
-            progress: None,
-            result: legacy.executor_result,
-            executor: legacy.executor,
-            extra,
-        })
-    } else {
-        Ok(ThunkTaskData {
-            request: ThunkTaskRequest {
-                runner: legacy.runner,
-                node_id: legacy.node_id,
-                thunk_obj_id: legacy.thunk_obj_id,
-                thunk: legacy.thunk,
-                function_object: legacy.function_object,
-                dispatch: legacy.dispatch,
-                extra: BTreeMap::new(),
-            },
-            progress: None,
-            result: legacy.executor_result,
-            executor: legacy.executor,
-            extra,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyWorkflowRunTaskData {
-    workflow: LegacyWorkflowRunFields,
-    #[serde(default)]
-    human_action: Option<TaskHumanAction>,
-    #[serde(default)]
-    last_error: Option<TaskDataErrorInfo>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyWorkflowRunFields {
-    #[serde(default)]
-    run_id: String,
-    #[serde(default)]
-    workflow_id: String,
-    #[serde(default)]
-    workflow_name: String,
-    #[serde(default)]
-    plan_version: u32,
-    #[serde(default)]
-    status: String,
-    #[serde(default)]
-    summary: BTreeMap<String, u64>,
-    #[serde(default)]
-    updated_at: Option<i64>,
-}
-
-fn parse_workflow_run_legacy(data: Value) -> Result<WorkflowRunTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyWorkflowRunTaskData>(TaskDataType::WorkflowRun, data)?;
-    let total = legacy.workflow.summary.values().sum::<u64>();
-    let completed = legacy
-        .workflow
-        .summary
-        .get("Completed")
-        .copied()
-        .unwrap_or_default();
-    Ok(WorkflowRunTaskData {
-        request: WorkflowRunTaskRequest {
-            run_id: legacy.workflow.run_id,
-            workflow_id: legacy.workflow.workflow_id,
-            workflow_name: legacy.workflow.workflow_name,
-            plan_version: legacy.workflow.plan_version,
-        },
-        progress: (total > 0).then(|| TaskDataProgress::with_items(completed, Some(total))),
-        result: Some(WorkflowRunTaskResult {
-            status: legacy.workflow.status,
-            summary: legacy.workflow.summary,
-            updated_at: legacy.workflow.updated_at,
-        }),
-        human_action: legacy.human_action,
-        last_error: legacy.last_error,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyWorkflowStepTaskData {
-    workflow: WorkflowStepTaskRequest,
-    #[serde(default)]
-    output: Option<Value>,
-    #[serde(default)]
-    human_action: Option<TaskHumanAction>,
-    #[serde(default)]
-    last_error: Option<TaskDataErrorInfo>,
-}
-
-fn parse_workflow_step_legacy(data: Value) -> Result<WorkflowStepTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyWorkflowStepTaskData>(TaskDataType::WorkflowStep, data)?;
-    Ok(WorkflowStepTaskData {
-        request: legacy.workflow,
-        progress: None,
-        result: legacy.output,
-        human_action: legacy.human_action,
-        last_error: legacy.last_error,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyWorkflowMapShardTaskData {
-    workflow: WorkflowMapShardTaskRequest,
-    #[serde(default)]
-    output: Option<Value>,
-    #[serde(default)]
-    last_error: Option<TaskDataErrorInfo>,
-}
-
-fn parse_workflow_map_shard_legacy(
-    data: Value,
-) -> Result<WorkflowMapShardTaskData, TaskDataParseError> {
-    let legacy =
-        parse_data::<LegacyWorkflowMapShardTaskData>(TaskDataType::WorkflowMapShard, data)?;
-    Ok(WorkflowMapShardTaskData {
-        request: legacy.workflow,
-        progress: None,
-        result: legacy.output,
-        last_error: legacy.last_error,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyWorkflowScheduleTaskData {
-    schedule: LegacyWorkflowScheduleFields,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyWorkflowScheduleFields {
-    #[serde(default)]
-    schedule_id: String,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    schedule: Option<Value>,
-    #[serde(default)]
-    target: Option<Value>,
-    #[serde(default)]
-    next_fire_at: Option<i64>,
-    #[serde(default)]
-    last_fire_at: Option<i64>,
-    #[serde(default)]
-    last_task_id: Option<String>,
-    #[serde(default)]
-    last_run_id: Option<String>,
-    #[serde(default)]
-    consecutive_failures: u64,
-    #[serde(default)]
-    last_error: Option<Value>,
-}
-
-fn parse_workflow_schedule_legacy(
-    data: Value,
-) -> Result<WorkflowScheduleTaskData, TaskDataParseError> {
-    let legacy =
-        parse_data::<LegacyWorkflowScheduleTaskData>(TaskDataType::WorkflowSchedule, data)?;
-    Ok(WorkflowScheduleTaskData {
-        request: WorkflowScheduleTaskRequest {
-            schedule_id: legacy.schedule.schedule_id,
-            name: legacy.schedule.name,
-            status: legacy.schedule.status,
-            schedule: legacy.schedule.schedule,
-            target: legacy.schedule.target,
-            // 旧格式不带 owner/policy/description；留默认，由后续 update 回填。
-            ..Default::default()
-        },
-        progress: None,
-        result: Some(WorkflowScheduleTaskResult {
-            next_fire_at: legacy.schedule.next_fire_at,
-            last_fire_at: legacy.schedule.last_fire_at,
-            last_task_id: legacy.schedule.last_task_id,
-            last_run_id: legacy.schedule.last_run_id,
-            consecutive_failures: legacy.schedule.consecutive_failures,
-            last_error: legacy.schedule.last_error,
-        }),
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacySendMessageTaskData {
-    send_message: SendMessageTaskRequest,
-}
-
-fn parse_send_message_legacy(data: Value) -> Result<SendMessageTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacySendMessageTaskData>(TaskDataType::WorkflowSendMessage, data)?;
-    Ok(SendMessageTaskData {
-        request: legacy.send_message,
-        result: None,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyAgentDelegateTaskData {
-    agent_delegate: LegacyAgentDelegateFields,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyAgentDelegateFields {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    source: Option<String>,
-    #[serde(default)]
-    title: Option<String>,
-    #[serde(default)]
-    purpose: Option<String>,
-    #[serde(default)]
-    requester_agent_id: Option<String>,
-    #[serde(default)]
-    owner_session_id: Option<String>,
-    #[serde(default)]
-    input: Option<Value>,
-    #[serde(default)]
-    workspace_hints: Vec<Value>,
-    #[serde(default)]
-    reason_messages: Vec<Value>,
-    #[serde(default)]
-    trigger: Option<ScheduleTriggerContext>,
-    #[serde(default)]
-    route: Option<Value>,
-    #[serde(default)]
-    execution: Option<Value>,
-    #[serde(default)]
-    blocker: Option<Value>,
-    #[serde(default)]
-    human_input: Option<Value>,
-    #[serde(default)]
-    result: Option<AgentDelegateTaskResult>,
-    #[serde(default)]
-    error: Option<TaskDataErrorInfo>,
-}
-
-fn parse_agent_delegate_legacy(data: Value) -> Result<AgentDelegateTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyAgentDelegateTaskData>(TaskDataType::AgentDelegate, data)?;
-    let one_line_status = legacy
-        .agent_delegate
-        .execution
-        .as_ref()
-        .and_then(|value| value.get("one_line_status"))
-        .and_then(Value::as_str)
-        .map(ToString::to_string);
-    let updated_at_ms = legacy
-        .agent_delegate
-        .execution
-        .as_ref()
-        .and_then(|value| value.get("updated_at_ms"))
-        .and_then(Value::as_i64);
-    Ok(AgentDelegateTaskData {
-        request: AgentDelegateTaskRequest {
-            version: legacy.agent_delegate.version,
-            source: legacy.agent_delegate.source,
-            dispatch_id: None,
-            target_agent_id: None,
-            title: legacy.agent_delegate.title,
-            purpose: legacy.agent_delegate.purpose,
-            requester_agent_id: legacy.agent_delegate.requester_agent_id,
-            owner_session_id: legacy.agent_delegate.owner_session_id,
-            input: legacy.agent_delegate.input,
-            context_refs: Vec::new(),
-            workspace_hints: legacy.agent_delegate.workspace_hints,
-            constraints: None,
-            reason_messages: legacy.agent_delegate.reason_messages,
-            trigger: legacy.agent_delegate.trigger,
-        },
-        progress: legacy
-            .agent_delegate
-            .execution
-            .as_ref()
-            .map(|_| AgentDelegateProgress {
-                execution: legacy.agent_delegate.execution.clone(),
-                one_line_status,
-                updated_at_ms,
-            }),
-        result: legacy.agent_delegate.result,
-        route: legacy.agent_delegate.route,
-        blocker: legacy.agent_delegate.blocker,
-        human_input: legacy.agent_delegate.human_input,
-        error: legacy.agent_delegate.error,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyHumanInputTaskData {
-    human_input: LegacyHumanInputFields,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyHumanInputFields {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    question: Option<String>,
-    #[serde(default)]
-    required_by: Option<Value>,
-    #[serde(default)]
-    candidates: Vec<Value>,
-    #[serde(default)]
-    response_schema: Option<Value>,
-    #[serde(default)]
-    response: Option<Value>,
-    #[serde(default)]
-    answered_by: Option<String>,
-    #[serde(default)]
-    answered_at: Option<i64>,
-}
-
-fn parse_human_input_legacy(data: Value) -> Result<HumanInputTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyHumanInputTaskData>(TaskDataType::HumanInput, data)?;
-    let result = legacy
-        .human_input
-        .response
-        .as_ref()
-        .filter(|value| !value.is_null())
-        .map(|_| HumanInputTaskResult {
-            response: legacy.human_input.response.clone(),
-            answered_by: legacy.human_input.answered_by.clone(),
-            answered_at: legacy.human_input.answered_at,
-        });
-    Ok(HumanInputTaskData {
-        request: HumanInputTaskRequest {
-            version: legacy.human_input.version,
-            kind: legacy.human_input.kind,
-            question: legacy.human_input.question,
-            required_by: legacy.human_input.required_by,
-            candidates: legacy.human_input.candidates,
-            response_schema: legacy.human_input.response_schema,
-        },
-        result,
-    })
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyAiccComputeTaskData {
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    owner_session_id: Option<String>,
-    aicc: LegacyAiccComputeFields,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct LegacyAiccComputeFields {
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    external_task_id: Option<String>,
-    #[serde(default)]
-    status: Option<String>,
-    #[serde(default)]
-    created_at_ms: Option<i64>,
-    #[serde(default)]
-    updated_at_ms: Option<i64>,
-    #[serde(default)]
-    tenant_id: Option<String>,
-    #[serde(default)]
-    event_ref: Option<String>,
-    #[serde(default)]
-    session_id: Option<String>,
-    #[serde(default)]
-    request: Option<Value>,
-    #[serde(default)]
-    provider_input: Option<Value>,
-    #[serde(default)]
-    route: Option<Value>,
-    #[serde(default)]
-    output: Option<Value>,
-    #[serde(default)]
-    provider_output: Option<Value>,
-    #[serde(default)]
-    error: Option<Value>,
-    #[serde(default)]
-    events: Vec<Value>,
-}
-
-fn parse_aicc_compute_legacy(data: Value) -> Result<AiccComputeTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyAiccComputeTaskData>(TaskDataType::AiccCompute, data)?;
-    Ok(AiccComputeTaskData {
-        request: AiccComputeTaskRequest {
-            version: legacy.aicc.version,
-            external_task_id: legacy.aicc.external_task_id,
-            tenant_id: legacy.aicc.tenant_id,
-            trace_id: None,
-            event_ref: legacy.aicc.event_ref,
-            session_id: legacy.aicc.session_id.or(legacy.session_id),
-            owner_session_id: legacy.owner_session_id,
-            request: legacy.aicc.request,
-            provider_input: legacy.aicc.provider_input,
-            route: legacy.aicc.route,
-            created_at_ms: legacy.aicc.created_at_ms,
-        },
-        progress: Some(AiccComputeProgress {
-            status: legacy.aicc.status,
-            updated_at_ms: legacy.aicc.updated_at_ms,
-            events: legacy.aicc.events,
-        }),
-        result: Some(AiccComputeTaskResult {
-            output: legacy.aicc.output,
-            provider_output: legacy.aicc.provider_output,
-        }),
-        error: legacy.aicc.error,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyServiceRpcTaskData {
-    service_rpc: ServiceRpcTaskRequest,
-}
-
-fn parse_service_rpc_legacy(data: Value) -> Result<ServiceRpcTaskData, TaskDataParseError> {
-    let legacy = parse_data::<LegacyServiceRpcTaskData>(TaskDataType::ServiceRpc, data)?;
-    Ok(ServiceRpcTaskData {
-        request: legacy.service_rpc,
-        result: None,
-    })
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct LegacyWorkflowRunTargetTaskData {
-    workflow_run: WorkflowRunTargetTaskRequest,
-}
-
-fn parse_workflow_run_target_legacy(
-    data: Value,
-) -> Result<WorkflowRunTargetTaskData, TaskDataParseError> {
-    let legacy =
-        parse_data::<LegacyWorkflowRunTargetTaskData>(TaskDataType::WorkflowRunTarget, data)?;
-    Ok(WorkflowRunTargetTaskData {
-        request: legacy.workflow_run,
-        result: None,
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2182,80 +1592,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_download_legacy_schema_into_semantic_task_data() {
-        let typed = parse_typed_task_data(
-            TASK_DATA_TYPE_DOWNLOAD,
-            json!({
-                "download_url": "https://example.test/file.pkg",
-                "urls": ["https://example.test/file.pkg"],
-                "download_options": {
-                    "filename": "file.pkg"
-                },
-                "download": {
-                    "state": "running",
-                    "mode": "local_file",
-                    "downloaded_bytes": 512,
-                    "total_bytes": 1024,
-                    "local_path": "/tmp/file.pkg"
-                }
-            }),
-        )
-        .unwrap();
-
-        let TypedTaskData::Download(data) = typed else {
-            panic!("expected download task data");
-        };
-
-        assert_eq!(
-            data.request.download_url.as_deref(),
-            Some("https://example.test/file.pkg")
-        );
-        assert_eq!(
-            data.progress
-                .as_ref()
-                .and_then(TaskDataProgress::primary_percent),
-            Some(50.0)
-        );
-        assert_eq!(
-            data.result
-                .as_ref()
-                .and_then(|result| result.state.as_deref()),
-            Some("running")
-        );
-    }
-
-    #[test]
-    fn parses_human_input_legacy_schema_into_request_and_result() {
-        let typed = parse_typed_task_data(
-            TASK_DATA_TYPE_HUMAN_INPUT,
-            json!({
-                "human_input": {
-                    "version": 1,
-                    "kind": "agent_wait_user_msg",
-                    "question": "Continue?",
-                    "candidates": [],
-                    "response_schema": { "type": "object" },
-                    "response": { "answer": "yes" },
-                    "answered_by": "user-a",
-                    "answered_at": 1730000000
-                }
-            }),
-        )
-        .unwrap();
-
-        let TypedTaskData::HumanInput(data) = typed else {
-            panic!("expected human input task data");
-        };
-
-        assert_eq!(data.request.kind, "agent_wait_user_msg");
-        assert_eq!(data.request.question.as_deref(), Some("Continue?"));
-        assert_eq!(
-            data.result.as_ref().unwrap().response,
-            Some(json!({"answer": "yes"}))
-        );
-    }
-
-    #[test]
     fn app_install_task_data_roundtrip_requires_schema_version() {
         // 当前 schema：request 保存原始 source/policy，事务中间态 flatten 在同级。
         let typed = parse_typed_task_data(
@@ -2306,6 +1642,62 @@ mod tests {
             }),
         );
         assert!(legacy.is_err());
+    }
+
+    #[test]
+    fn rejects_removed_legacy_wrapper_shapes() {
+        for (task_data_type, data) in [
+            (
+                TASK_DATA_TYPE_AGENT_DELEGATE,
+                json!({"agent_delegate": {"purpose": "p", "execution": {"runner": "a"}}}),
+            ),
+            (
+                TASK_DATA_TYPE_WORKFLOW_SEND_MESSAGE,
+                json!({"send_message": {"to": "self", "text": "t"}}),
+            ),
+            (
+                TASK_DATA_TYPE_SERVICE_RPC,
+                json!({"service_rpc": {"service": "s", "method": "m"}}),
+            ),
+            (
+                TASK_DATA_TYPE_WORKFLOW_RUN_TARGET,
+                json!({"workflow_run": {"workflow_id": "wf"}}),
+            ),
+            (
+                TASK_DATA_TYPE_AICC_COMPUTE,
+                json!({"aicc": {"progress": {"kind": "running"}}}),
+            ),
+            (
+                TASK_DATA_TYPE_HUMAN_INPUT,
+                json!({"human_input": {"kind": "k"}}),
+            ),
+            (TASK_DATA_TYPE_OPENDAN_ASYNC_TOOL, json!({"tool": "x"})),
+        ] {
+            assert!(
+                parse_typed_task_data(task_data_type, data).is_err(),
+                "{task_data_type} must reject the removed legacy shape"
+            );
+        }
+
+        // A patch merged under a stray top-level key must not be dropped.
+        let err = parse_typed_task_data(
+            TASK_DATA_TYPE_AGENT_DELEGATE,
+            json!({"request": {"purpose": "p"}, "agent_delegate": {"result": {}}}),
+        );
+        assert!(err.is_err());
+
+        let typed = parse_typed_task_data(
+            TASK_DATA_TYPE_AGENT_DELEGATE,
+            json!({
+                "request": {"purpose": "p", "target_agent_id": "jarvis"},
+                "progress": {"execution": {"status": "pending"}}
+            }),
+        )
+        .unwrap();
+        let TypedTaskData::AgentDelegate(data) = typed else {
+            panic!("expected agent.delegate task data");
+        };
+        assert_eq!(data.request.target_agent_id.as_deref(), Some("jarvis"));
     }
 
     #[test]

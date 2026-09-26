@@ -503,7 +503,6 @@ pub_event 跨节点流程:
 
 - `register_reader` 的 `patterns` 不能为空，且必须全部为全局 pattern
 - `register_reader` 是**幂等的全量覆盖**：reader 已存在时只换 pattern 集合，保留队列。client 永远发全量，不发 add/remove 历史，因此同一个调用既是首次注册也是重连恢复
-- `update_reader` 仅保留协议兼容，SDK 不再使用
 - `publish_global` 的 `event.eventid` 必须为全局 eventid
 - `pull_event` 超时时返回 `{ "status": "ok" }`，即 `event` 字段缺失
 - `pull_event` 遇到 daemon 侧不存在的 reader 时返回 `READER_CLOSED`，与"超时无事件"明确区分——否则丢了注册的 client 会一直空转长轮询

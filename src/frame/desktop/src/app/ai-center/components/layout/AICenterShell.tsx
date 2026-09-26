@@ -22,7 +22,7 @@ export function AICenterShell({ children }: AICenterShellProps) {
           <Sidebar currentPage={currentPage} onNavigate={setCurrentPage} />
         )}
         <main
-          className="flex-1 overflow-y-auto"
+          className="flex-1 min-w-0 overflow-y-auto"
           style={{ background: 'var(--cp-bg)' }}
         >
           <div

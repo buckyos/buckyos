@@ -108,7 +108,7 @@ function localSystemContactFromDetail(
 function visibleSystemContactFromDetail(
   detail: UserDetail,
 ): UserContactSettings | null {
-  return detail.contact ?? localSystemContactFromDetail(detail);
+  return localSystemContactFromDetail(detail);
 }
 
 // Derived from the DV zone config (src/kernel/scheduler/src/system_config_builder.rs)

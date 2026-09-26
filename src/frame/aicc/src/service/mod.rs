@@ -433,12 +433,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
     let client_version = api_runtime
         .device_config
         .as_ref()
-        .and_then(|document| {
-            document
-                .extra_info
-                .get("runtime_version")
-                .or_else(|| document.extra_info.get("buckyos_version"))
-        })
+        .and_then(|document| document.extra_info.get("runtime_version"))
         .and_then(Value::as_str)
         .map(str::to_string)
         .or_else(|| std::env::var("BUCKYOS_VERSION").ok())

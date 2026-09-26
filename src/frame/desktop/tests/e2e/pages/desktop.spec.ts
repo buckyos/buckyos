@@ -281,7 +281,7 @@ test('desktop layout restores AI Center launcher entry and opens panel content',
 
   await page.addInitScript(() => {
     window.localStorage.setItem(
-      'buckyos.layout.desktop.v1',
+      'buckyos.layout.desktop.v2',
       JSON.stringify({
         version: 1,
         formFactor: 'desktop',

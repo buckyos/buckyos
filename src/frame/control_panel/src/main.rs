@@ -1,4 +1,3 @@
-mod aicc_settings;
 mod app_install_deployer;
 mod app_install_driver;
 mod app_install_engine;
@@ -54,8 +53,7 @@ use std::{net::IpAddr, time::Instant};
 use sysinfo::{Disks, Networks};
 use tokio::sync::{Mutex, RwLock};
 
-// RPC docs live under doc/dashboard. UI endpoints use "ui.*" as canonical names;
-// "main/dashboard" are kept as legacy aliases.
+// RPC docs live under doc/dashboard. UI endpoints use "ui.*" names.
 
 pub(crate) fn bytes_to_gb(bytes: u64) -> f64 {
     (bytes as f64) / 1024.0 / 1024.0 / 1024.0
@@ -426,15 +424,6 @@ impl ControlPanelServer {
                 })
             })
             .collect()
-    }
-
-    async fn handle_main(&self, req: RPCRequest) -> Result<RPCResponse, RPCErrors> {
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "test":"test",
-            })),
-            req.seq,
-        ))
     }
 
     fn param_str(req: &RPCRequest, key: &str) -> Option<String> {
@@ -844,9 +833,7 @@ impl RPCHandler for ControlPanelServer {
         }
 
         let result = match req.method.as_str() {
-            // Core / UI bootstrap
-            "main" | "ui.main" => self.handle_main(req).await,
-
+            // UI bootstrap
             "ui.locale.get" => self.handle_ui_locale_get(req).await,
             "ui.locale.set" => self.handle_ui_locale_set(req).await,
             // Auth
@@ -905,14 +892,14 @@ impl RPCHandler for ControlPanelServer {
                     .await
             }
             // System dashboard
-            "dashboard" | "ui.dashboard" => self.handle_dashboard(req).await,
+            "ui.dashboard" => self.handle_dashboard(req).await,
             "system.overview" => self.handle_system_overview(req).await,
             "system.buckyos_info.get" => self.handle_buckyos_info_get(req).await,
             "system.dev_mode.get" => self.handle_dev_mode_get(req).await,
             "system.dev_mode.set" => self.handle_dev_mode_set(req, principal.as_ref()).await,
             "system.status" => self.handle_system_status(req).await,
             "system.metrics" => self.handle_system_metrics(req).await,
-            "network.overview" | "system.network" => self.handle_network_overview(req).await,
+            "network.overview" => self.handle_network_overview(req).await,
 
             //SystemLogs
             "system.logs.list" => {
@@ -940,30 +927,10 @@ impl RPCHandler for ControlPanelServer {
             "system.update.check" => self.handle_unimplemented(req, "Check updates").await,
             "system.update.apply" => self.handle_unimplemented(req, "Apply update").await,
 
-            // AICC
-            "ai.overview" => self.handle_ai_overview(req).await,
-            "ai.provider.list" => self.handle_ai_provider_list(req).await,
-            "ai.provider.set" => self.handle_ai_provider_set(req).await,
-            "ai.provider.weight.list" => self.handle_ai_provider_weight_list(req).await,
-            "ai.provider.weight.set" => self.handle_ai_provider_weight_set(req).await,
-            "ai.provider.test" => self.handle_ai_provider_test(req).await,
-            "ai.message_hub.thread_summary" => {
-                self.handle_ai_message_hub_thread_summary(req, principal.as_ref())
-                    .await
-            }
-            "ai.reload" => self.handle_ai_reload(req).await,
-            "ai.model.list" => self.handle_ai_model_list(req).await,
-            "ai.model.set" => self.handle_ai_model_set(req).await,
-            "ai.policy.list" => self.handle_ai_policy_list(req).await,
-            "ai.policy.set" => self.handle_ai_policy_set(req).await,
-            "ai.diagnostics.list" => self.handle_ai_diagnostics_list(req).await,
-
             //AppMgr
             "apps.list" => self.handle_apps_list(req, principal.as_ref()).await,
-            "apps.details" | "app.details" => {
-                self.handle_app_detials(req, principal.as_ref()).await
-            }
-            "apps.status" | "app.status" => self.handle_apps_status(req, principal.as_ref()).await,
+            "apps.details" => self.handle_app_detials(req, principal.as_ref()).await,
+            "apps.status" => self.handle_apps_status(req, principal.as_ref()).await,
             "apps.availability.get" => {
                 self.handle_app_availability_get(req, principal.as_ref())
                     .await
@@ -995,9 +962,7 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_apps_plan_recompute(req, principal.as_ref())
                     .await
             }
-            "apps.submit" | "apps.install" => {
-                self.handle_apps_submit(req, principal.as_ref()).await
-            }
+            "apps.submit" => self.handle_apps_submit(req, principal.as_ref()).await,
             "apps.install.confirm" => {
                 self.handle_apps_install_confirm(req, principal.as_ref())
                     .await
@@ -1014,7 +979,7 @@ impl RPCHandler for ControlPanelServer {
                 self.handle_apps_install_status(req, principal.as_ref())
                     .await
             }
-            "apps.update.check" | "apps.upgrade.check" => {
+            "apps.upgrade.check" => {
                 self.handle_apps_update_availability(req, principal.as_ref())
                     .await
             }
@@ -1029,15 +994,11 @@ impl RPCHandler for ControlPanelServer {
             "app.publish" => self.handle_app_publish(req, principal.as_ref()).await,
 
             //ZoneMgr
-            "zone.overview" | "zone.config" => self.handle_zone_overview(req).await,
-            "gateway.overview" | "gateway.config" => self.handle_gateway_overview(req).await,
+            "zone.overview" => self.handle_zone_overview(req).await,
+            "gateway.overview" => self.handle_gateway_overview(req).await,
             "gateway.file.get" => self.handle_gateway_file_get(req).await,
-            "container.overview" | "containers.overview" | "docker.overview" => {
-                self.handle_container_overview(req).await
-            }
-            "container.action" | "containers.action" | "docker.action" => {
-                self.handle_container_action(req).await
-            }
+            "container.overview" => self.handle_container_overview(req).await,
+            "container.action" => self.handle_container_action(req).await,
 
             _ => Err(RPCErrors::UnknownMethod(req.method)),
         };

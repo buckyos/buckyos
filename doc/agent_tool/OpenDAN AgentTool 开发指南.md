@@ -475,8 +475,6 @@ CLI exit code 常量在 `agent_tool` crate：
 - `user_approval`
 - `wait_for_install`
 
-反序列化兼容历史值 `external_callback`，但新输出不要再使用。
-
 当前 `exec` 长任务会通过 task manager 创建任务，并返回 `pending`。CLI 里的 `check_task <task_id>` / `cancel_task <task_id>` / `finish_task <task_id> [failed]` 通过 `TaskManagerClient` 查询、取消、完成或失败结束任务。
 
 ### 5.4 纯文本例外

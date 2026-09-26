@@ -705,14 +705,9 @@ pub(crate) fn read_topic_doc(path: &Path) -> Result<TopicDoc, SessionTopicError>
 
 fn parse_topic_doc(text: &str) -> Result<TopicDoc, SessionTopicError> {
     if !text.starts_with("---\n") {
-        return Ok(TopicDoc {
-            schema: None,
-            version: None,
-            session_id: String::new(),
-            tags: Vec::new(),
-            tag_reasons: BTreeMap::new(),
-            topic: text.trim().to_string(),
-        });
+        return Err(SessionTopicError::InvalidInput(
+            "topic.md is missing frontmatter".to_string(),
+        ));
     }
     let Some(end) = text[4..].find("\n---\n") else {
         return Err(SessionTopicError::InvalidInput(

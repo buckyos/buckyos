@@ -76,9 +76,6 @@ use llm_context::error::LLMComputeError;
 use crate::local_llm_context::{Compressor, XllmError};
 use crate::{AgentHistoryShowLevel, AgentToolResult, AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION};
 
-/// 兼容旧调用方的尾部消息数常量；当前实现按 pair 使用
-/// [`DEFAULT_HOT_TAIL_PAIRS`]。
-pub const DEFAULT_KEEP_RECENT_MESSAGES: usize = 8;
 pub const DEFAULT_HEAD_KEEP_PAIRS: usize = 1;
 pub const DEFAULT_HOT_TAIL_PAIRS: usize = 2;
 
@@ -94,7 +91,6 @@ const MECHANICAL_TOOL_RESULT_MIN_AFTER_PAIRS: usize = DEFAULT_HOT_TAIL_PAIRS + 2
 const COMPRESS_META_MARKER: &str = "[LLM_MESSAGE_COMPRESS_META_V1]";
 const COMPRESS_SUMMARY_MARKER: &str = "[LLM_MESSAGE_COMPRESS_SUMMARY_V1]";
 const MECHANICAL_COMPRESS_META_MARKER: &str = "[LLM_MECHANICAL_COMPRESS_META_V1]";
-const LEGACY_SUMMARY_MARKER: &str = "[Conversation summary]";
 const PROMPT_VERSION: &str = "llm_message_compress_v1";
 
 #[derive(Clone, Debug)]
@@ -457,7 +453,6 @@ fn is_compress_summary_message(msg: &AiMessage) -> bool {
 
 fn is_stable_boundary_message(msg: &AiMessage) -> bool {
     matches!(msg.role, AiRole::System | AiRole::Developer)
-        || msg.text_content().contains(LEGACY_SUMMARY_MARKER)
         || is_compress_meta_message(msg)
         || is_compress_summary_message(msg)
 }

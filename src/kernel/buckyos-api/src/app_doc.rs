@@ -1092,12 +1092,6 @@ impl AppDocBuilder {
         self
     }
 
-    pub fn description_detail(self, detail: impl Into<String>) -> Self {
-        let detail = detail.into();
-        // Backward-compatible helper: write a single-language "en" description.
-        self.description("en", detail)
-    }
-
     pub fn selector_type(mut self, selector_type: SelectorType) -> Self {
         self.selector_type = Some(selector_type);
         self

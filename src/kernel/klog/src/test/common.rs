@@ -274,13 +274,7 @@ pub(crate) fn sample_membership(node_id: KNodeId) -> Membership<KNodeId, KNode> 
 }
 
 pub(crate) fn decode_entry_ids(snapshot: &KLogStateSnapshot) -> anyhow::Result<Vec<u64>> {
-    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
-        bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy());
-    if let Ok((snapshot_data, _)) = decoded_new {
-        return Ok(snapshot_data.entries.into_iter().map(|e| e.id).collect());
-    }
-
-    let (decoded, _): (Vec<KLogEntry>, usize) =
+    let (snapshot_data, _): (KLogStateSnapshotData, usize) =
         bincode::serde::decode_from_slice(&snapshot.data, bincode::config::legacy())?;
-    Ok(decoded.into_iter().map(|e| e.id).collect())
+    Ok(snapshot_data.entries.into_iter().map(|e| e.id).collect())
 }

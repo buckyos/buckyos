@@ -18,9 +18,9 @@
 //!   stored verbatim; verification is delegated to the proof signer.
 
 use buckyos_api::{
-    group_action, parse_group_request, DIDEntityKind, DIDMemberKind, ExpandedDID,
-    GroupAccessDecision, GroupApproveMemberReq, GroupCheckAccessReq, GroupCollectionPolicy,
-    GroupCreateReq, GroupCreateSubgroupReq, GroupDoc, GroupEndpoints, GroupEvent, GroupEventType,
+    group_action, DIDEntityKind, DIDMemberKind, ExpandedDID, GroupAccessDecision,
+    GroupApproveMemberReq, GroupCheckAccessReq, GroupCollectionPolicy, GroupCreateReq,
+    GroupCreateSubgroupReq, GroupDoc, GroupEndpoints, GroupEvent, GroupEventType,
     GroupExpandMembersReq, GroupExpansionPolicy, GroupExpansionPurpose, GroupExpansionSnapshot,
     GroupGetDocReq, GroupInviteMemberReq, GroupListByMemberReq, GroupListMembersReq,
     GroupListParentsReq, GroupListSubgroupsReq, GroupMemberProof, GroupMemberProofScope,
@@ -2256,19 +2256,6 @@ fn policy_digest_string(policy: &GroupCollectionPolicy) -> String {
         policy.reject_cycles,
     );
     format!("policy:{}", simple_hash40(&key))
-}
-
-// ---------------------------------------------------------------------------
-// Compatibility shim — accept JSON values directly so MessageCenter can hand
-// off raw RPC params without re-encoding.
-// ---------------------------------------------------------------------------
-
-#[allow(dead_code)]
-pub fn parse_request<T: serde::de::DeserializeOwned>(
-    value: serde_json::Value,
-    type_name: &str,
-) -> std::result::Result<T, RPCErrors> {
-    parse_group_request(value, type_name)
 }
 
 #[cfg(test)]

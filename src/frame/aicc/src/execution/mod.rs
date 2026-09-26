@@ -9,7 +9,10 @@ use crate::protocol::{
 };
 use crate::resource::ResourceAccessContext;
 use async_trait::async_trait;
-use buckyos_api::{AiArtifact, AiCost, AiUsage, AiccError, AiccErrorCode, ApiType, Capability};
+use buckyos_api::{
+    AiArtifact, AiCost, AiUsage, AiccComputeProgress, AiccComputeTaskData, AiccComputeTaskRequest,
+    AiccError, AiccErrorCode, ApiType, Capability,
+};
 use futures_util::{future::join_all, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1700,17 +1703,30 @@ impl ExecutionEngine {
     }
 }
 
+/// Task progress projection in the typed `aicc.compute` shape
+/// (`AiccComputeTaskData`): `request` carries the trace id, `progress.status`
+/// the state kind and `progress.events` the reported event.
 fn json_state(kind: &str, value: Option<Value>, trace_id: Option<&str>) -> Value {
-    let mut progress = Map::new();
-    progress.insert("kind".into(), Value::String(kind.into()));
+    let mut event = Map::new();
+    event.insert("kind".into(), Value::String(kind.into()));
     if let Some(value) = value {
-        progress.insert("value".into(), value);
+        event.insert("value".into(), value);
     }
-    let mut aicc = Map::from_iter([("progress".into(), Value::Object(progress))]);
-    if let Some(trace_id) = trace_id {
-        aicc.insert("trace_id".into(), Value::String(trace_id.into()));
-    }
-    Value::Object(Map::from_iter([("aicc".into(), Value::Object(aicc))]))
+    let data = AiccComputeTaskData {
+        request: AiccComputeTaskRequest {
+            version: 1,
+            trace_id: trace_id.map(str::to_string),
+            ..Default::default()
+        },
+        progress: Some(AiccComputeProgress {
+            status: Some(kind.to_string()),
+            updated_at_ms: current_time_ms().ok(),
+            events: vec![Value::Object(event)],
+        }),
+        result: None,
+        error: None,
+    };
+    serde_json::to_value(data).unwrap_or(Value::Null)
 }
 
 fn aicc_error(code: AiccErrorCode, message: &str, retriable: bool) -> AiccError {
@@ -2853,7 +2869,7 @@ mod tests {
         let events = tasks.events.lock().unwrap();
         assert!(!events.is_empty());
         assert!(events.iter().all(|(_, _, data)| {
-            data.pointer("/aicc/trace_id").and_then(Value::as_str) == Some("trace-1")
+            data.pointer("/request/trace_id").and_then(Value::as_str) == Some("trace-1")
         }));
         assert_eq!(tasks.completed.lock().unwrap().len(), 1);
     }
@@ -3067,7 +3083,7 @@ mod tests {
             .lock()
             .unwrap()
             .iter()
-            .filter_map(|(_, _, data)| data.pointer("/aicc/progress/kind")?.as_str())
+            .filter_map(|(_, _, data)| data.pointer("/progress/status")?.as_str())
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(event_kinds, ["submitted", "running", "delta", "progress"]);
@@ -3309,7 +3325,7 @@ mod tests {
         assert!(completion.completed_at_ms > 0);
         drop(writes);
         assert!(tasks.events.lock().unwrap().iter().all(|(_, _, data)| {
-            data.pointer("/aicc/trace_id").and_then(Value::as_str) == Some("trace-1")
+            data.pointer("/request/trace_id").and_then(Value::as_str) == Some("trace-1")
         }));
         assert_eq!(
             tasks.completed.lock().unwrap().as_slice(),

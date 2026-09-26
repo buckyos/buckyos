@@ -15,13 +15,13 @@ test('AI Center exposes the complete catalog and expands multi-currency totals',
 
   await page.getByRole('button', { name: 'Providers', exact: true }).click()
   await page.getByRole('button', { name: 'Add Provider' }).click()
-  for (const provider of ['OpenAI', 'Claude', 'Gemini', 'fal', 'OpenRouter', 'MiniMax', 'Kimi', 'GLM', 'DeepSeek', 'Doubao', 'Qwen']) {
-    await expect(page.getByRole('button', { name: new RegExp(provider, 'i') })).toBeVisible()
+  for (const provider of ['OpenAI', 'Anthropic Claude', 'Google Gemini', 'fal', 'OpenRouter', 'MiniMax', 'Moonshot Kimi', 'Z.ai GLM', 'DeepSeek', '豆包（火山方舟）', 'Qwen（阿里云百炼）']) {
+    await expect(page.getByRole('button').filter({ has: page.getByText(provider, { exact: true }) })).toBeVisible()
   }
   await expect(page.getByRole('button', { name: /Custom Provider/ })).toBeVisible()
 
   await page.getByRole('button', { name: /Qwen/i }).click()
   await page.getByRole('button', { name: 'Next' }).click()
   await expect(page.getByText('Region', { exact: true })).toBeVisible()
-  await expect(page.getByText('Workspace', { exact: true })).toBeVisible()
+  await expect(page.getByText(/^Workspace\s*\*?$/)).toBeVisible()
 })

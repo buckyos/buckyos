@@ -946,41 +946,6 @@ fn append_on_switch_message_after_step_history_as_user_tail() {
         Some("Continue TASK_ANCHOR.".to_string())
     );
     assert!(out.state.last_step.is_none());
-    assert!(is_runtime_auto_user_pending("opendan:on_behavior_switch"));
-    assert!(!is_history_input_pending("on-behavior-switch-s-1-do-0"));
-}
-
-#[test]
-fn prune_legacy_internal_pending_inputs_keeps_external_inputs() {
-    let mut pending = vec![
-        PendingInput::Msg {
-            record_id: "on-behavior-switch-s-1-plan-1".to_string(),
-            from: "opendan:on_behavior_switch".to_string(),
-            from_did: None,
-            from_name: Some("on_behavior_switch".to_string()),
-            tunnel_did: None,
-            text: "old handoff".to_string(),
-            ai_message: AiMessage::text(AiRole::User, "old handoff"),
-        },
-        PendingInput::Msg {
-            record_id: "process-end:do:abc".to_string(),
-            from: "system".to_string(),
-            from_did: None,
-            from_name: Some("system".to_string()),
-            tunnel_did: None,
-            text: "[fork process `do` ended]".to_string(),
-            ai_message: AiMessage::text(AiRole::User, "[fork process `do` ended]"),
-        },
-        pending_msg("m1", "hello"),
-        pending_event("timer.reminder_check"),
-    ];
-
-    assert_eq!(prune_legacy_internal_pending_inputs(&mut pending), 2);
-    let keys = pending
-        .iter()
-        .map(PendingInput::dedup_key)
-        .collect::<Vec<_>>();
-    assert_eq!(keys, vec!["msg:m1", "event:timer.reminder_check"]);
 }
 
 #[test]
@@ -1604,27 +1569,6 @@ fn model_policy_carries_session_profile_to_aicc_options() {
 }
 
 #[test]
-fn session_meta_backfills_process_entry_for_legacy_json() {
-    // Older `.meta/session.json` files predate the
-    // `process_entry` / `process_stack` fields. They must still
-    // deserialize (serde defaults) and `AgentSession::new`'s restore
-    // path backfills `process_entry` from `current_behavior` so the
-    // independent-mode snapshot path is well-formed.
-    let legacy = serde_json::json!({
-        "session_id": "s2",
-        "kind": "ui",
-        "current_behavior": "ui_default",
-        "status": "idle",
-    });
-    let restored: SessionMeta = serde_json::from_value(legacy).unwrap();
-    assert_eq!(restored.process_entry, "");
-    assert!(restored.process_stack.is_empty());
-    // (The backfill itself lives in AgentSession::new and is exercised
-    // by the restore-path integration tests; here we only assert that
-    // the legacy JSON does NOT fail to deserialize.)
-}
-
-#[test]
 fn observation_from_task_event_translates_completed() {
     let payload = serde_json::json!({
         "to_status": "Completed",
@@ -1945,21 +1889,4 @@ fn changed_background_hints_suppresses_seen_fingerprint_until_changed() {
     let second = background_hint_from_recall_item(&item);
     let (changed, _) = changed_background_hints(&old, vec![second]);
     assert_eq!(changed.len(), 1);
-}
-
-#[test]
-fn session_meta_tolerates_missing_pending_inputs_field() {
-    // Older session.json files were written before pending_inputs
-    // existed; restoring them must default the field to an empty
-    // vec rather than erroring out.
-    let legacy = r#"{
-        "session_id": "old",
-        "kind": "ui",
-        "current_behavior": "ui_default",
-        "status": "idle",
-        "owner": "alice"
-    }"#;
-    let meta: SessionMeta = serde_json::from_str(legacy).unwrap();
-    assert!(meta.pending_inputs.is_empty());
-    assert_eq!(meta.owner, "alice");
 }

@@ -1,4 +1,4 @@
-//! `xllm` 命令行入口（`agent_tool xllm ...`；`run_local_llm` 为兼容别名）。
+//! `xllm` 命令行入口（`agent_tool xllm ...`）。
 //!
 //! 这是 `product/xllm/PRD.md` 命令面的 Rust 参考实现：所有任务语义都由
 //! [`crate::local_llm_context`] 提供，这里只做 argv / stdin → SDK 请求，

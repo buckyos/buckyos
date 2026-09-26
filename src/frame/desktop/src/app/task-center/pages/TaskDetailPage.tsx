@@ -1,6 +1,6 @@
 /* ── TaskCenter Task Detail Page ── */
 
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ArrowLeft,
   Play,
@@ -120,6 +120,7 @@ interface TaskDetailPageProps {
 export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskDetailPageProps) {
   const store = useTaskCenterStore()
   const { t } = useI18n()
+  const [copyState, setCopyState] = useState('')
   // Lists carry metadata only; the payload/progress of a finished task is
   // fetched when its detail page opens.
   useEffect(() => {
@@ -280,6 +281,21 @@ export function TaskDetailPage({ taskId, backPage = 'tasks', onNavigate }: TaskD
           </div>
         </section>
       )}
+
+      {task.aiccRequest && Object.keys(task.aiccRequest.params).length > 0 && <section
+        className="rounded-2xl p-4 min-w-0"
+        style={{ background: 'var(--cp-surface)', border: '1px solid var(--cp-border)' }}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+          <h2 className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('aiCenter.playground.taskRequest')}</h2>
+          <button type="button" className="text-sm" style={{ color: 'var(--cp-accent)' }} onClick={async () => {
+            try { await navigator.clipboard.writeText(JSON.stringify(task.aiccRequest, null, 2)); setCopyState('common.copied') }
+            catch { setCopyState('aiCenter.playground.copyFailed') }
+          }}>{t(copyState || 'aiCenter.playground.copyRequest')}</button>
+        </div>
+        <p className="text-xs mb-3" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.taskRequestHint')}</p>
+        <pre className="text-xs overflow-auto max-h-96 whitespace-pre-wrap break-all" style={{ color: 'var(--cp-text)' }}>{JSON.stringify(task.aiccRequest, null, 2)}</pre>
+      </section>}
 
       {/* Raw payload */}
       {Object.keys(task.payload).length > 0 && (

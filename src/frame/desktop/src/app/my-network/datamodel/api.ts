@@ -146,7 +146,6 @@ function ownerDidFromDetail(detail: UserDetail | null, fallbackUserId?: string):
   return firstString(
     profile.did,
     localProfile.did,
-    detail?.contact?.did,
     systemContact.did,
     didDocument.id,
     detailRecord.did,

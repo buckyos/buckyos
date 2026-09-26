@@ -175,29 +175,19 @@ impl MsgBoxDbMgr {
     }
 
     async fn apply_schema(&self, override_ddl: Option<&str>) -> std::result::Result<(), RPCErrors> {
-        let compiled: &str = match self.backend() {
-            RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
-            RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
-        };
-        let override_ddl = override_ddl.filter(|s| !s.trim().is_empty());
-        // The service spec may still carry the DDL of an older schema version
-        // (it is written at install time). Every statement is idempotent
-        // (`CREATE ... IF NOT EXISTS`), so after the spec DDL we always apply
-        // the compiled-in DDL as well; new tables therefore appear on upgrade
-        // without a spec rewrite.
-        let mut ddls: Vec<&str> = Vec::new();
-        if let Some(ddl) = override_ddl {
-            ddls.push(ddl);
-        }
-        if !ddls.contains(&compiled) {
-            ddls.push(compiled);
-        }
-        for ddl in ddls {
-            for statement in split_sql_statements(ddl) {
-                self.pool().execute(statement.as_str()).await.map_err(|e| {
-                    RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
-                })?;
-            }
+        // The service spec's DDL wins; the compiled-in DDL is the fallback
+        // when the spec carries none for this backend.
+        let ddl: &str =
+            override_ddl
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(match self.backend() {
+                    RdbBackend::Sqlite => MSG_CENTER_RDB_SCHEMA_SQLITE,
+                    RdbBackend::Postgres => MSG_CENTER_RDB_SCHEMA_POSTGRES,
+                });
+        for statement in split_sql_statements(ddl) {
+            self.pool().execute(statement.as_str()).await.map_err(|e| {
+                RPCErrors::ReasonError(format!("apply msg-center schema failed: {}", e))
+            })?;
         }
         Ok(())
     }

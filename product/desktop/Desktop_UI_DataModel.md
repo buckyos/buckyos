@@ -53,7 +53,7 @@ export interface DesktopPayload {
 - `buckyos.prototype.locale.v1`：语言
 - `buckyos.prototype.theme.v1`：主题
 - `buckyos.prototype.runtime.v1`：运行容器（`browser | desktop-app | mobile-app`）
-- `buckyos.layout.desktop.v1` / `buckyos.layout.mobile.v1`：按 form factor 分开的布局状态
+- `buckyos.layout.desktop.v2` / `buckyos.layout.mobile.v2`：按 form factor 分开的布局状态
 - `buckyos.window-appearance.v1`：窗口标题栏/背景透明度
 - `buckyos.window-geometry.desktop.v1`：按 `appId` 记录的桌面窗口几何信息
 

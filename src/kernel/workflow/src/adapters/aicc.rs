@@ -41,7 +41,8 @@ pub struct AiccMethodSchema {
     pub method: &'static str,
     /// 粗粒度能力分类；控制方法返回 `None`。
     pub capability: Option<Capability>,
-    /// workflow 视角推荐的默认 model alias（仅 AI 方法使用）。可被 input.model 覆盖。
+    /// workflow 视角推荐的 logical model（仅 helper AI 方法使用），仅供 registry 展示参考，
+    /// 不会自动注入；实际路由以 input.logical_model 为准。
     pub default_alias: Option<&'static str>,
     /// workflow 视角的输入 JSON Schema（draft-07 子集）。
     pub input_schema: Value,

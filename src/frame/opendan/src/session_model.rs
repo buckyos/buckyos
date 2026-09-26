@@ -124,16 +124,16 @@ impl<'de> Deserialize<'de> for SessionKind {
         D: Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        Ok(match raw.trim() {
-            "ui" => SessionKind::Ui,
-            "work" => SessionKind::Work,
-            "self_check" => SessionKind::SelfCheck,
-            "self_improve" => SessionKind::SelfImprove,
-            // Migration guard: old or experimental data must not fail a
-            // restore just because the kind string drifted. Unknown
-            // non-UI sessions get the Work body semantics.
-            _ => SessionKind::Work,
-        })
+        match raw.trim() {
+            "ui" => Ok(SessionKind::Ui),
+            "work" => Ok(SessionKind::Work),
+            "self_check" => Ok(SessionKind::SelfCheck),
+            "self_improve" => Ok(SessionKind::SelfImprove),
+            other => Err(de::Error::unknown_variant(
+                other,
+                &["ui", "work", "self_check", "self_improve"],
+            )),
+        }
     }
 }
 
@@ -657,9 +657,12 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn session_kind_unknown_deserializes_to_work() {
-        let kind: SessionKind = serde_json::from_str("\"old_experiment\"").unwrap();
-        assert_eq!(kind, SessionKind::Work);
+    fn session_kind_rejects_unknown_kind() {
+        assert!(serde_json::from_str::<SessionKind>("\"old_experiment\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<SessionKind>("\"self_improve\"").unwrap(),
+            SessionKind::SelfImprove
+        );
         assert_eq!(
             serde_json::to_string(&SessionKind::SelfCheck).unwrap(),
             "\"self_check\""

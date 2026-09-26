@@ -958,33 +958,8 @@ impl AIAgent {
                 );
                 continue;
             };
-            let mut meta = meta;
             if matches!(meta.status, SessionStatus::Ended) {
                 continue;
-            }
-            if meta.ensure_default_event_subscriptions(current_unix_ms()) {
-                info!(
-                    "opendan.agent[{}]: backfill default ui clock subscription session_id={} event_id={} mode=background_only",
-                    self.agent_name, meta.session_id, UI_CLOCK_TIMER_EVENT_ID
-                );
-                match serde_json::to_vec_pretty(&meta) {
-                    Ok(bytes) => {
-                        if let Err(err) = std::fs::write(&meta_path, bytes) {
-                            warn!(
-                                "opendan.agent[{}]: backfill default subscriptions for {} failed: {err}",
-                                self.agent_name,
-                                meta_path.display()
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        warn!(
-                            "opendan.agent[{}]: encode default subscriptions for {} failed: {err}",
-                            self.agent_name,
-                            meta_path.display()
-                        );
-                    }
-                }
             }
             if matches!(meta.kind, SessionKind::Ui) && !meta.owner.is_empty() {
                 self.tunnel_to_ui_session
@@ -2244,6 +2219,7 @@ impl AIAgent {
         let task_data = AgentDelegateTaskData {
             request: AgentDelegateTaskRequest {
                 version: 1,
+                target_agent_id: Some(self.dispatch_target_id()),
                 purpose: Some(objective.to_string()),
                 title: Some(title.to_string()),
                 requester_agent_id: Some(self.agent_id()),
@@ -4054,41 +4030,6 @@ runner_id = "agent"
     }
 
     #[tokio::test]
-    async fn restore_session_routes_backfills_ui_clock_subscription() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let agent = test_agent(dir.path().to_path_buf());
-        let mut meta = SessionMeta::new(
-            "ui-did_dev_alice".to_string(),
-            SessionKind::Ui,
-            "chat_route".to_string(),
-            "did:dev:alice".to_string(),
-        );
-        meta.event_subscriptions.clear();
-        write_session_meta(&agent, meta);
-
-        agent.clone().restore_session_routes().await;
-
-        let meta_path = agent
-            .config
-            .layout
-            .session_dir("ui-did_dev_alice")
-            .join(".meta")
-            .join("session.json");
-        let restored: SessionMeta =
-            serde_json::from_slice(&std::fs::read(meta_path).expect("read restored session meta"))
-                .expect("decode restored session meta");
-        let clock_sub = restored
-            .event_subscriptions
-            .iter()
-            .find(|sub| sub.pattern == UI_CLOCK_TIMER_EVENT_ID)
-            .expect("default ui clock subscription");
-        assert_eq!(
-            clock_sub.mode,
-            crate::session_model::EventSubscriptionMode::BackgroundOnly
-        );
-    }
-
-    #[tokio::test]
     async fn work_session_still_binds_workspace() {
         let dir = tempfile::tempdir().expect("tempdir");
         let agent = test_agent(dir.path().to_path_buf());
@@ -4333,9 +4274,11 @@ runner_id = "agent"
         let task = task_mgr.insert(delegate_task(
             "t-mem-41",
             serde_json::json!({
-                "agent_delegate": {
+                "request": {
                     "title": "Task title",
-                    "purpose": "Complete the task objective",
+                    "purpose": "Complete the task objective"
+                },
+                "progress": {
                     "execution": {
                         "workspace_id": "existing-workspace"
                     }

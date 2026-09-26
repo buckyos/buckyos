@@ -24,10 +24,8 @@ WINDOWS_TASK_NAME = "BuckyOSNodeDaemonKeepAlive"
 WINDOWS_RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 WINDOWS_APP_KEY = r"Software\BuckyOS"
 WINDOWS_UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\BuckyOS"
-WINDOWS_LEGACY_SERVICE = "buckyos"
 
 MACOS_DAEMON_PLIST = Path("/Library/LaunchDaemons/buckyos.service.plist")
-MACOS_AGENT_PLIST = Path("/Library/LaunchAgents/buckyos.service.plist")
 MACOS_SERVICE_LABEL = "buckyos.service"
 
 LINUX_SYSTEMD_UNIT = "buckyos.service"
@@ -262,54 +260,6 @@ def _delete_windows_task(task_name: str, results: list[ActionResult]) -> None:
         _append_result(results, "task", task_name, "failed", output or f"exit code {result.returncode}")
 
 
-def _windows_service_exists(name: str) -> bool:
-    result = _run_command(["sc", "query", name])
-    text = _safe_command_output(result).lower()
-    if "does not exist" in text or "failed 1060" in text:
-        return False
-    return result.returncode == 0 or bool(text)
-
-
-def _stop_delete_windows_service(name: str, results: list[ActionResult]) -> None:
-    if not _windows_service_exists(name):
-        _append_result(results, "service", name, "skipped", "not found")
-        return
-
-    stop_result = _run_command(["sc", "stop", name])
-    stop_output = _safe_command_output(stop_result)
-    if stop_result.returncode == 0:
-        _append_result(results, "service", f"{name} (stop)", "ok", stop_output or "stopped")
-    else:
-        lowered = stop_output.lower()
-        if "not started" in lowered or "service has not been started" in lowered:
-            _append_result(results, "service", f"{name} (stop)", "skipped", stop_output or "not running")
-        else:
-            _append_result(
-                results,
-                "service",
-                f"{name} (stop)",
-                "failed",
-                stop_output or f"exit code {stop_result.returncode}",
-            )
-
-    delete_result = _run_command(["sc", "delete", name])
-    delete_output = _safe_command_output(delete_result)
-    if delete_result.returncode == 0:
-        _append_result(results, "service", f"{name} (delete)", "ok", delete_output or "deleted")
-    else:
-        lowered = delete_output.lower()
-        if "does not exist" in lowered or "failed 1060" in lowered:
-            _append_result(results, "service", f"{name} (delete)", "skipped", delete_output or "not found")
-        else:
-            _append_result(
-                results,
-                "service",
-                f"{name} (delete)",
-                "failed",
-                delete_output or f"exit code {delete_result.returncode}",
-            )
-
-
 def _delete_windows_reg_value(
     root_key: str,
     subkey: str,
@@ -417,7 +367,6 @@ def _cleanup_windows_platform(root: Path, results: list[ActionResult]) -> None:
     _delete_windows_task(WINDOWS_TASK_NAME, results)
     _delete_windows_reg_value("HKEY_CURRENT_USER", WINDOWS_RUN_KEY, "BuckyOSDaemon", results)
     _kill_process_windows(results)
-    _stop_delete_windows_service(WINDOWS_LEGACY_SERVICE, results)
 
     root_text = str(root)
     _delete_windows_reg_value("HKEY_CURRENT_USER", "Environment", "BUCKYOS_ROOT", results)
@@ -450,35 +399,18 @@ def _cleanup_macos_platform(root: Path, results: list[ActionResult]) -> None:
             disable_output or "not enabled",
         )
 
-    for plist_path, scope in ((MACOS_DAEMON_PLIST, "system"), (MACOS_AGENT_PLIST, "gui")):
-        if plist_path.exists():
-            if scope == "system":
-                bootout = _run_command(["launchctl", "bootout", "system", str(plist_path)])
-            else:
-                console_user = _run_command(["stat", "-f%Su", "/dev/console"])
-                user_name = (console_user.stdout or "").strip()
-                if user_name and user_name not in {"root", "loginwindow"}:
-                    uid_result = _run_command(["id", "-u", user_name])
-                    uid = (uid_result.stdout or "").strip()
-                    if uid:
-                        bootout = _run_command(["launchctl", "bootout", f"gui/{uid}", str(plist_path)])
-                    else:
-                        bootout = None
-                else:
-                    bootout = None
-
-            if bootout is None:
-                _append_result(results, "service", str(plist_path), "skipped", "no console user launch agent")
-            else:
-                output = _safe_command_output(bootout)
-                if bootout.returncode == 0:
-                    _append_result(results, "service", str(plist_path), "ok", output or "booted out")
-                else:
-                    _append_result(results, "service", str(plist_path), "skipped", output or "not loaded")
+    plist_path = MACOS_DAEMON_PLIST
+    if plist_path.exists():
+        bootout = _run_command(["launchctl", "bootout", "system", str(plist_path)])
+        output = _safe_command_output(bootout)
+        if bootout.returncode == 0:
+            _append_result(results, "service", str(plist_path), "ok", output or "booted out")
         else:
-            _append_result(results, "service", str(plist_path), "skipped", "not found")
+            _append_result(results, "service", str(plist_path), "skipped", output or "not loaded")
+    else:
+        _append_result(results, "service", str(plist_path), "skipped", "not found")
 
-        _remove_fs_path(plist_path, results, kind="service-file")
+    _remove_fs_path(plist_path, results, kind="service-file")
 
 
 def _cleanup_linux_platform(root: Path, results: list[ActionResult]) -> None:
@@ -560,15 +492,10 @@ def _run_installed_stop_script(root: Path, results: list[ActionResult]) -> None:
         ])
     elif system_name == "darwin":
         script_path = root / "bin" / "stop_osx.sh"
-        if script_path.exists():
-            result = _run_command(["/bin/sh", str(script_path)])
-        else:
-            legacy_script_path = root / "bin" / "stop.py"
-            if not legacy_script_path.exists():
-                _append_result(results, "stop-script", str(script_path), "skipped", "not found")
-                return
-            script_path = legacy_script_path
-            result = _run_command(["python3", str(script_path)])
+        if not script_path.exists():
+            _append_result(results, "stop-script", str(script_path), "skipped", "not found")
+            return
+        result = _run_command(["/bin/sh", str(script_path)])
     else:
         script_path = root / "bin" / "stop.py"
         if not script_path.exists():

@@ -78,7 +78,6 @@ import {
   clamp,
   invalidatePositions,
   layoutStorageKey,
-  migrateDeadZone,
   migrateToSlotModel,
   readJson,
   readWindowAppearancePreferences,
@@ -596,9 +595,7 @@ export class DesktopUIStore {
 
       if (scenario === 'normal') {
         const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
-        layoutState = stored
-          ? migrateDeadZone(stored, formFactor)
-          : payload.layout
+        layoutState = stored ?? payload.layout
       } else {
         layoutState = payload.layout
       }
@@ -610,7 +607,7 @@ export class DesktopUIStore {
         formFactor,
       )
 
-      // Migrate legacy layouts to slot-based model
+      // Fill slotIndex / seq for items that only carry x/y
       const { gridCols, gridRows } = this.snapshot.runtime
       layoutState = migrateToSlotModel(layoutState, gridCols, gridRows)
 
@@ -677,9 +674,7 @@ export class DesktopUIStore {
       this.defaultPayload = authorizedPayload
       const apps = resolveDesktopApps(authorizedDefinitions, formFactor)
       const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
-      let layoutState = stored
-        ? migrateDeadZone(stored, formFactor)
-        : defaultLayout
+      let layoutState = stored ?? defaultLayout
       layoutState = reconcileLayoutWithDefaultApps(
         layoutState,
         defaultLayout,

@@ -448,7 +448,7 @@ mod canonical_contract_tests {
     }
 
     #[test]
-    fn stable_error_round_trips_across_task_boundary() {
+    fn stable_error_round_trips_through_krpc() {
         let error = AiccError {
             code: AiccErrorCode::ProviderError,
             message: "rate limited".to_string(),
@@ -456,10 +456,6 @@ mod canonical_contract_tests {
             retriable: true,
             details: Some(json!({"request_id": "req-1"})),
         };
-        assert_eq!(
-            AiccError::from_task_data(&error.to_task_data()),
-            Some(error.clone())
-        );
         assert_eq!(error.to_task_event_data()["code"], "provider_error");
         let krpc_error = error.to_krpc_error();
         assert_eq!(AiccError::from_krpc_error(&krpc_error), Some(error));
@@ -625,8 +621,13 @@ mod canonical_contract_tests {
         }))
         .is_err());
         assert!(QueryRouteTraceRequest::from_json(json!({"unknown": true})).is_err());
-        let trace_query = QueryRouteTraceRequest::from_json(json!({
+        assert!(QueryRouteTraceRequest::from_json(json!({
             "api_type": "llm",
+            "limit": 5
+        }))
+        .is_err());
+        let trace_query = QueryRouteTraceRequest::from_json(json!({
+            "api_types": ["llm"],
             "limit": 5
         }))
         .unwrap();
@@ -1493,10 +1494,6 @@ impl AiccError {
         }
     }
 
-    pub fn to_task_data(&self) -> Value {
-        json!({ "aicc": { "error": self } })
-    }
-
     pub fn to_task_event_data(&self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| {
             json!({
@@ -1505,10 +1502,6 @@ impl AiccError {
                 "retriable": false
             })
         })
-    }
-
-    pub fn from_task_data(data: &Value) -> Option<Self> {
-        serde_json::from_value(data.pointer("/aicc/error")?.clone()).ok()
     }
 
     pub fn from_krpc_error(error: &RPCErrors) -> Option<Self> {
@@ -4688,36 +4681,7 @@ pub struct ProviderRefreshModelsResponse {
 
 impl_request_json!(QueryUsageRequest);
 
-impl QueryRouteTraceRequest {
-    pub fn from_json(mut value: Value) -> std::result::Result<Self, RPCErrors> {
-        if let Value::Object(object) = &mut value {
-            if let Some(api_type) = object.remove("api_type") {
-                let api_types = object
-                    .entry("api_types")
-                    .or_insert_with(|| Value::Array(Vec::new()));
-                match (api_types, api_type) {
-                    (Value::Array(api_types), Value::String(api_type)) => {
-                        api_types.push(Value::String(api_type));
-                    }
-                    (Value::Array(api_types), Value::Array(values)) => {
-                        api_types.extend(values);
-                    }
-                    _ => {
-                        return Err(RPCErrors::ParseRequestError(
-                            "Failed to parse QueryRouteTraceRequest: api_type must be a string or array when used as legacy alias".to_string(),
-                        ));
-                    }
-                }
-            }
-        }
-        serde_json::from_value(value).map_err(|error| {
-            RPCErrors::ParseRequestError(format!(
-                "Failed to parse QueryRouteTraceRequest: {}",
-                error
-            ))
-        })
-    }
-}
+impl_request_json!(QueryRouteTraceRequest);
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

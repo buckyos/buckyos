@@ -19,7 +19,6 @@
  *   use different rule sets (handled in the store layer).
  */
 import type {
-  DeadZone,
   DesktopPageState,
   FormFactor,
   LayoutItem,
@@ -34,7 +33,6 @@ import {
   windowAppearancePreferencesSchema,
 } from './ui'
 import type { DesktopAppItem } from '../app/types'
-import { defaultDeadZone } from '../mock/data'
 
 // ---------------------------------------------------------------------------
 // Storage keys
@@ -45,7 +43,7 @@ export const windowGeometryStorageKey = 'buckyos.window-geometry.desktop.v1'
 export const windowAppearanceStorageKey = 'buckyos.window-appearance.v1'
 
 export function layoutStorageKey(formFactor: FormFactor) {
-  return `buckyos.layout.${formFactor}.v1`
+  return `buckyos.layout.${formFactor}.v2`
 }
 
 // ---------------------------------------------------------------------------
@@ -123,38 +121,6 @@ export function readWindowAppearancePreferences(): WindowAppearancePreferences {
     readJson(windowAppearanceStorageKey),
   )
   return parsed.success ? parsed.data : { ...defaultWindowAppearancePreferences }
-}
-
-// ---------------------------------------------------------------------------
-// Dead-zone migration
-// ---------------------------------------------------------------------------
-
-function legacyDeadZone(formFactor: FormFactor): DeadZone {
-  return formFactor === 'desktop'
-    ? { top: 64, bottom: 24, left: 20, right: 20 }
-    : { top: 52, bottom: 20, left: 12, right: 12 }
-}
-
-function matchesDeadZone(
-  target: DeadZone | undefined,
-  expected: DeadZone,
-) {
-  return (
-    target?.top === expected.top &&
-    target?.bottom === expected.bottom &&
-    target?.left === expected.left &&
-    target?.right === expected.right
-  )
-}
-
-export function migrateDeadZone(
-  layout: LayoutState,
-  formFactor: FormFactor,
-): LayoutState {
-  if (!matchesDeadZone(layout.deadZone, legacyDeadZone(formFactor))) {
-    return layout
-  }
-  return { ...layout, deadZone: { ...defaultDeadZone } }
 }
 
 // ---------------------------------------------------------------------------
@@ -964,12 +930,12 @@ export function normalizeViewportProgress(
 export const desktopMinCanvasSize = { width: 960, height: 720 }
 
 // ---------------------------------------------------------------------------
-// Slot sync: ensure slotIndex is populated from x/y (migration helper)
+// Slot sync: ensure slotIndex is populated from x/y
 // ---------------------------------------------------------------------------
 
 /**
- * Migrate a layout so that every positioned item has a slotIndex and seq.
- * Used when loading layouts that predate the slot-based model.
+ * Normalize a layout so that every positioned item has a slotIndex and seq.
+ * Default layouts only carry x/y, so this fills in the slot fields.
  */
 export function migrateToSlotModel(
   layout: LayoutState,

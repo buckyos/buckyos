@@ -151,18 +151,6 @@ pub enum ServiceSpecType {
     App,     // 无状态的app服务，有owner_user_id
 }
 
-impl From<String> for ServiceSpecType {
-    fn from(s: String) -> Self {
-        match s.as_str() {
-            "kernel" => ServiceSpecType::Kernel,
-            "service" => ServiceSpecType::Service,
-            "frame" => ServiceSpecType::Service,
-            "app" => ServiceSpecType::App,
-            _ => ServiceSpecType::App,
-        }
-    }
-}
-
 impl ServiceSpecType {
     pub fn is_app_like(&self) -> bool {
         matches!(self, ServiceSpecType::App)

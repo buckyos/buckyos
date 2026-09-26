@@ -59,11 +59,8 @@ fn normalize_ui_session_id_part(raw: &str) -> String {
 /// Sqlite DDL for the msg-center database. Covers mailbox records, the
 /// delivery queue, the per-owner message-id index, and contact-manager tables.
 /// All mailbox rows carry an `owner` column so a single db file can serve
-/// every zone user. beta2.2 split the legacy `msg_records` table into
-/// `mailbox_records` + `delivery_records` (breaking change, no migration).
+/// every zone user.
 pub const MSG_CENTER_RDB_SCHEMA_SQLITE: &str = r#"
-DROP TABLE IF EXISTS msg_records;
-
 CREATE TABLE IF NOT EXISTS mailbox_records (
     owner            TEXT NOT NULL,
     record_id        TEXT NOT NULL,
@@ -278,8 +275,6 @@ CREATE TABLE IF NOT EXISTS owner_ui_session_states (
 
 /// Postgres DDL mirroring the sqlite schema above.
 pub const MSG_CENTER_RDB_SCHEMA_POSTGRES: &str = r#"
-DROP TABLE IF EXISTS msg_records;
-
 CREATE TABLE IF NOT EXISTS mailbox_records (
     owner            TEXT NOT NULL,
     record_id        TEXT NOT NULL,
@@ -4302,7 +4297,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
         let ctx = RPCContext::from_request(&req, ip_from);
 
         let result = match req.method.as_str() {
-            METHOD_MSG_DISPATCH | "dispatch" => {
+            METHOD_MSG_DISPATCH => {
                 let dispatch_req = MsgCenterDispatchReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4315,7 +4310,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_POST_SEND | "post_send" => {
+            METHOD_MSG_POST_SEND => {
                 let post_send_req = MsgCenterPostSendReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4323,7 +4318,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_GET_NEXT | "get_next" => {
+            METHOD_MSG_GET_NEXT => {
                 let next_req = MsgCenterGetNextReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4338,7 +4333,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_GET_NEXT_DELIVERY | "get_next_delivery" => {
+            METHOD_MSG_GET_NEXT_DELIVERY => {
                 let next_req = MsgCenterGetNextDeliveryReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4351,7 +4346,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_PEEK_BOX | "peek_box" => {
+            METHOD_MSG_PEEK_BOX => {
                 let peek_req = MsgCenterPeekBoxReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4366,7 +4361,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_LIST_BOX_BY_TIME | "list_box_by_time" => {
+            METHOD_MSG_LIST_BOX_BY_TIME => {
                 let list_req = MsgCenterListBoxByTimeReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4384,7 +4379,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_LIST_SESSIONS | "list_sessions" => {
+            METHOD_MSG_LIST_SESSIONS => {
                 let list_req = MsgCenterListSessionsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4401,12 +4396,12 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_CREATE_SESSION | "create_session" => {
+            METHOD_MSG_CREATE_SESSION => {
                 let create_req = MsgCenterCreateSessionReq::from_json(req.params)?;
                 let result = self.0.handle_create_session(create_req, ctx).await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_ARCHIVE_SESSION | "archive_session" => {
+            METHOD_MSG_ARCHIVE_SESSION => {
                 let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4414,7 +4409,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_RESTORE_SESSION | "restore_session" => {
+            METHOD_MSG_RESTORE_SESSION => {
                 let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4422,7 +4417,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_DELETE_SESSION | "delete_session" => {
+            METHOD_MSG_DELETE_SESSION => {
                 let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4430,7 +4425,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_GET_SESSION_STATE | "get_session_state" => {
+            METHOD_MSG_GET_SESSION_STATE => {
                 let ref_req = MsgCenterSessionRefReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4438,7 +4433,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_LIST_SESSION | "list_session" => {
+            METHOD_MSG_LIST_SESSION => {
                 let list_req = MsgCenterListSessionReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4455,7 +4450,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_UPDATE_RECORD_SESSION | "update_record_session" => {
+            METHOD_MSG_UPDATE_RECORD_SESSION => {
                 let update_req = MsgCenterUpdateRecordSessionReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4463,7 +4458,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_UPDATE_RECORD_STATE | "update_record_state" => {
+            METHOD_MSG_UPDATE_RECORD_STATE => {
                 let update_req = MsgCenterUpdateRecordStateReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4471,7 +4466,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_REPORT_DELIVERY | "report_delivery" => {
+            METHOD_MSG_REPORT_DELIVERY => {
                 let report_req = MsgCenterReportDeliveryReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4479,7 +4474,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_SET_READ_STATE | "set_read_state" => {
+            METHOD_MSG_SET_READ_STATE => {
                 let read_req = MsgCenterSetReadStateReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4495,7 +4490,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_LIST_READ_RECEIPTS | "list_read_receipts" => {
+            METHOD_MSG_LIST_READ_RECEIPTS => {
                 let list_req = MsgCenterListReadReceiptsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4510,7 +4505,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_GET_RECORD | "get_record" => {
+            METHOD_MSG_GET_RECORD => {
                 let get_req = MsgCenterGetRecordReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4518,7 +4513,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_MSG_GET_MESSAGE | "get_message" => {
+            METHOD_MSG_GET_MESSAGE => {
                 let get_req = MsgCenterGetMessageReq::from_json(req.params)?;
                 let result = self.0.handle_get_message(get_req.msg_id, ctx).await?;
                 RPCResult::Success(json!(result))
@@ -4587,7 +4582,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 };
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_RESOLVE_DID | "resolve_did" => {
+            METHOD_CONTACT_RESOLVE_DID => {
                 let resolve_req = MsgCenterResolveDidReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4601,7 +4596,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_RESOLVE_ENDPOINT_DID | "resolve_endpoint_did" => {
+            METHOD_CONTACT_RESOLVE_ENDPOINT_DID => {
                 let endpoint_req = MsgCenterResolveEndpointDidReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4616,7 +4611,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_RESOLVE_TARGET | "resolve_target" => {
+            METHOD_CONTACT_RESOLVE_TARGET => {
                 let target_req = MsgCenterResolveTargetReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4629,7 +4624,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_RESOLVE_CONTACT_FOR_ENDPOINT | "resolve_contact_for_endpoint" => {
+            METHOD_CONTACT_RESOLVE_CONTACT_FOR_ENDPOINT => {
                 let endpoint_req = MsgCenterResolveContactForEndpointReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4641,7 +4636,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_RESOLVE_CANONICAL_DID | "resolve_canonical_did" => {
+            METHOD_CONTACT_RESOLVE_CANONICAL_DID => {
                 let canonical_req = MsgCenterResolveCanonicalDidReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4653,7 +4648,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_LIST_ALIAS_DIDS | "list_alias_dids" => {
+            METHOD_CONTACT_LIST_ALIAS_DIDS => {
                 let alias_req = MsgCenterListAliasDidsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4665,7 +4660,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_GET_PREFERRED_BINDING | "get_preferred_binding" => {
+            METHOD_CONTACT_GET_PREFERRED_BINDING => {
                 let binding_req = MsgCenterGetPreferredBindingReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4677,7 +4672,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_CHECK_ACCESS_PERMISSION | "check_access_permission" => {
+            METHOD_CONTACT_CHECK_ACCESS_PERMISSION => {
                 let access_req = MsgCenterCheckAccessPermissionReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4690,7 +4685,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_GRANT_TEMPORARY_ACCESS | "grant_temporary_access" => {
+            METHOD_CONTACT_GRANT_TEMPORARY_ACCESS => {
                 let grant_req = MsgCenterGrantTemporaryAccessReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4704,7 +4699,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_BLOCK_CONTACT | "block_contact" => {
+            METHOD_CONTACT_BLOCK_CONTACT => {
                 let block_req = MsgCenterBlockContactReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4717,7 +4712,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_IMPORT_CONTACTS | "import_contacts" => {
+            METHOD_CONTACT_IMPORT_CONTACTS => {
                 let import_req = MsgCenterImportContactsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4730,7 +4725,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_MERGE_CONTACTS | "merge_contacts" => {
+            METHOD_CONTACT_MERGE_CONTACTS => {
                 let merge_req = MsgCenterMergeContactsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4743,7 +4738,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_UPDATE_CONTACT | "update_contact" => {
+            METHOD_CONTACT_UPDATE_CONTACT => {
                 let update_req = MsgCenterUpdateContactReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4756,7 +4751,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_GET_CONTACT | "get_contact" => {
+            METHOD_CONTACT_GET_CONTACT => {
                 let get_req = MsgCenterGetContactReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4764,7 +4759,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_LIST_CONTACTS | "list_contacts" => {
+            METHOD_CONTACT_LIST_CONTACTS => {
                 let list_req = MsgCenterListContactsReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4772,7 +4767,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_GET_GROUP_SUBSCRIBERS | "get_group_subscribers" => {
+            METHOD_CONTACT_GET_GROUP_SUBSCRIBERS => {
                 let req = MsgCenterGetGroupSubscribersReq::from_json(req.params)?;
                 let result = self
                     .0
@@ -4786,7 +4781,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
-            METHOD_CONTACT_SET_GROUP_SUBSCRIBERS | "set_group_subscribers" => {
+            METHOD_CONTACT_SET_GROUP_SUBSCRIBERS => {
                 let req = MsgCenterSetGroupSubscribersReq::from_json(req.params)?;
                 let result = self
                     .0

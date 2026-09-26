@@ -105,8 +105,6 @@ export interface UserDetail {
   profile?: UserProfile | Record<string, unknown> | null
   local_profile?: UserPrivateProfile | null
   allow_password_change?: boolean
-  /** Compatibility field; source of truth is `local_profile.private_extra.system_contact`. */
-  contact?: UserContactSettings
   /** Optional DID document loaded from `users/{uid}/doc`. */
   did_document?: Record<string, unknown>
 }

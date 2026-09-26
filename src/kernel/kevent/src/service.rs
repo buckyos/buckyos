@@ -228,66 +228,6 @@ impl KEventService {
             .remove(&ReaderKey::new(session, reader_id));
     }
 
-    /// Incremental pattern edit. Kept for protocol compatibility only —
-    /// clients recover by resending the full set via `register_reader`.
-    pub async fn update_reader(
-        &self,
-        reader_id: &str,
-        add: Vec<String>,
-        remove: Vec<String>,
-    ) -> KEventResult<()> {
-        self.update_reader_in(KEventSessionId::SHARED, reader_id, add, remove)
-            .await
-    }
-
-    pub async fn update_reader_in(
-        &self,
-        session: KEventSessionId,
-        reader_id: &str,
-        add: Vec<String>,
-        remove: Vec<String>,
-    ) -> KEventResult<()> {
-        if reader_id.is_empty() {
-            return Err(KEventError::InvalidPattern(
-                "reader_id must not be empty".to_string(),
-            ));
-        }
-        for pattern in add.iter().chain(remove.iter()) {
-            validate_pattern(pattern)?;
-            if !is_global_pattern(pattern) {
-                return Err(KEventError::InvalidPattern(
-                    "daemon only supports global patterns".to_string(),
-                ));
-            }
-        }
-
-        let reader = {
-            let readers = self.readers.read().await;
-            readers.get(&ReaderKey::new(session, reader_id)).cloned()
-        };
-        let Some(reader) = reader else {
-            return Err(KEventError::ReaderClosed(reader_id.to_string()));
-        };
-
-        let mut patterns = reader.patterns.write().expect("patterns lock poisoned");
-        let mut next: Vec<String> = patterns
-            .iter()
-            .filter(|p| !remove.iter().any(|r| r == *p))
-            .cloned()
-            .collect();
-        if !add.is_empty() {
-            next.extend(add);
-            next = normalize_patterns(next);
-        }
-        if next.is_empty() {
-            return Err(KEventError::InvalidPattern(
-                "reader must keep at least one pattern".to_string(),
-            ));
-        }
-        *patterns = next;
-        Ok(())
-    }
-
     pub async fn publish_local_global(&self, eventid: &str, data: Value) -> KEventResult<()> {
         if !is_global_eventid(eventid) {
             return Err(KEventError::InvalidEventId(
@@ -464,17 +404,6 @@ impl KEventService {
                 self.unregister_reader_in(session, &reader_id).await;
                 KEventDaemonResponse::Ok { event: None }
             }
-            KEventDaemonRequest::UpdateReader {
-                reader_id,
-                add,
-                remove,
-            } => match self
-                .update_reader_in(session, &reader_id, add, remove)
-                .await
-            {
-                Ok(_) => KEventDaemonResponse::Ok { event: None },
-                Err(err) => err_to_response(err),
-            },
             KEventDaemonRequest::PublishGlobal { event } => {
                 match self.accept_external_global(event).await {
                     Ok(_) => KEventDaemonResponse::Ok { event: None },
@@ -594,65 +523,6 @@ mod tests {
             })
             .await;
         assert!(matches!(resp, KEventDaemonResponse::Ok { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_update_reader_preserves_queue_and_changes_routing() {
-        let service = KEventService::new("node_a");
-        service
-            .register_reader("r1", vec!["/sys/node/online".to_string()])
-            .await
-            .unwrap();
-
-        // Publish an event matched by the original pattern; do NOT pull.
-        service
-            .publish_local_global("/sys/node/online", json!({"a": 1}))
-            .await
-            .unwrap();
-
-        // Add a broader pattern; the finer one should be swallowed by the
-        // daemon's normalize_patterns step.
-        service
-            .update_reader("r1", vec!["/sys/**".to_string()], vec![])
-            .await
-            .unwrap();
-
-        // Queued event must survive the patterns swap.
-        let ev = service.pull_event("r1", Some(20)).await.unwrap().unwrap();
-        assert_eq!(ev.eventid, "/sys/node/online");
-
-        // New events covered by the broader pattern now flow through.
-        service
-            .publish_local_global("/sys/foo/bar", json!({"a": 2}))
-            .await
-            .unwrap();
-        let ev = service.pull_event("r1", Some(50)).await.unwrap().unwrap();
-        assert_eq!(ev.eventid, "/sys/foo/bar");
-
-        // Remove the only remaining pattern → must error and not corrupt state.
-        let err = service
-            .update_reader("r1", vec![], vec!["/sys/**".to_string()])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, KEventError::InvalidPattern(_)));
-
-        // Reader should still route /sys/** events.
-        service
-            .publish_local_global("/sys/baz", json!({"a": 3}))
-            .await
-            .unwrap();
-        let ev = service.pull_event("r1", Some(50)).await.unwrap().unwrap();
-        assert_eq!(ev.eventid, "/sys/baz");
-    }
-
-    #[tokio::test]
-    async fn test_update_reader_unknown_id() {
-        let service = KEventService::new("node_a");
-        let err = service
-            .update_reader("ghost", vec!["/sys/**".to_string()], vec![])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, KEventError::ReaderClosed(_)));
     }
 
     #[tokio::test]

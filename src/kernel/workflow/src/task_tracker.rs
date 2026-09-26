@@ -812,11 +812,7 @@ pub const WORKFLOW_THUNK_SCHEMA_ID: &str = "workflow.thunk/v1";
 fn run_task_parent(run: &WorkflowRun) -> Option<String> {
     run.metrics
         .get("schedule_task")
-        .and_then(|schedule_task| {
-            schedule_task
-                .get("task_id")
-                .or_else(|| schedule_task.get("root_task_id"))
-        })
+        .and_then(|schedule_task| schedule_task.get("root_task_id"))
         .and_then(Value::as_str)
         .map(str::to_string)
         .filter(|value| !value.is_empty())

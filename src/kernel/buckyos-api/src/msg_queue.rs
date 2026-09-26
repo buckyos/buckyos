@@ -218,9 +218,9 @@ impl MsgQueuePostMessageReq {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgQueueSubscribeReq {
     pub queue_urn: QueueUrn,
-    #[serde(rename = "userid", alias = "user_id")]
+    #[serde(rename = "userid")]
     pub user_id: String,
-    #[serde(rename = "appid", alias = "app_id")]
+    #[serde(rename = "appid")]
     pub app_id: String,
     pub sub_id: Option<String>,
     pub position: SubPosition,

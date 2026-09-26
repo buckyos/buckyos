@@ -103,6 +103,7 @@ export interface Task {
   progress: number | null
   schemaType: string | null
   payload: Record<string, unknown>
+  aiccRequest?: { method: string; params: Record<string, unknown> }
   children: Task[]
   /**
    * 2.0 composite state kept alongside the coarse `status`, so the UI can
@@ -450,6 +451,10 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot): Task {
     progress: toProgressPercent(detail?.progress),
     schemaType: summary.schema_id,
     payload: isSchedule ? normalizeSchedulePayload(summary, data, status) : data,
+    ...(summary.schema_id === 'aicc.compute/v1' && detail ? { aiccRequest: {
+      method: summary.name.replace(/^AICC /, ''),
+      params: asRecord(asRecord(asRecord(detail.input).request).request),
+    } } : {}),
     children: [],
     phase: summary.phase,
     outcome: summary.outcome ?? null,

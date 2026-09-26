@@ -1236,7 +1236,6 @@ async fn load_privileged_user_doc(user_name: &str) -> Result<OwnerDocument> {
         })?;
         let user_type = user_settings_json
             .get("type")
-            .or_else(|| user_settings_json.get("user_type"))
             .and_then(|value| value.as_str());
         if let Some(user_type) = user_type {
             is_privileged = is_privileged_user_type(user_type);

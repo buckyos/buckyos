@@ -407,11 +407,7 @@ function normalizeOwnerDocument(
   const ownerPath = path.join(userDir, "user_config.json");
   const ownerDocument = structuredClone(readJsonObject(ownerPath));
   const ownerDid = requireString(ownerDocument, "id", ownerPath);
-  const displayName = typeof ownerDocument.display_name === "string"
-    ? ownerDocument.display_name
-    : requireString(ownerDocument, "full_name", ownerPath);
-  ownerDocument.display_name = displayName;
-  delete ownerDocument.full_name;
+  requireString(ownerDocument, "display_name", ownerPath);
 
   if (ownerDid !== zoneDid) {
     const boundZones = Array.isArray(ownerDocument.binded_zone_list)
@@ -528,8 +524,6 @@ function writeLocalDeviceIdentityFiles(
     );
   }
   bootDocument.id = zoneDid;
-  delete bootDocument.owner;
-  delete bootDocument.owner_key;
   delete bootDocument.iat;
   if (usesSnRelay) {
     bootDocument.sn = `sn.${params.sn_base_host.trim()}`;
@@ -542,7 +536,6 @@ function writeLocalDeviceIdentityFiles(
   deviceConfig.zone_did = zoneDid;
   deviceConfig.net_id = params.netid === "lan" ? "nat" : params.netid;
   deviceConfig.rtcp_port = params.rtcp_port;
-  delete deviceConfig.support_container;
   delete deviceConfig.device_mini_document_jwt;
   deviceConfig.iat = documentIat;
   deviceConfig.exp = documentExp;
@@ -700,8 +693,6 @@ export function copyIdentityOutputs(
     ),
     localIdentity.bootDocument,
   );
-  removeIfExists(path.join(etcDir, "node_private_key.pem"));
-  removeIfExists(path.join(etcDir, "node_device_config.json"));
 
   const buckycliDir = ensureDir(path.join(etcDir, ".buckycli"));
   writeJson(
@@ -712,7 +703,6 @@ export function copyIdentityOutputs(
     path.join(buckycliDir, "zone_config.json"),
     localIdentity.zoneDocument,
   );
-  removeIfExists(path.join(buckycliDir, "user_private_key.pem"));
   console.log(
     `device identity ${localIdentity.deviceDid} copied to local identity roots`,
   );
@@ -724,8 +714,6 @@ function makeUnactivatedIdentityConfig(targetDir: string): void {
   removeIfExists(path.join(etcDir, "node_identity.json"));
   removeIfExists(path.join(etcDir, "start_config.json"));
   removeIfExists(path.join(etcDir, ZONE_DOCUMENT_JWT_FILE_NAME));
-  removeIfExists(path.join(etcDir, "node_private_key.pem"));
-  removeIfExists(path.join(etcDir, "node_device_config.json"));
   removeTreeIfExists(path.join(etcDir, ".buckycli"));
   writeJson(path.join(etcDir, "node_gateway_params.json"), {
     params: {

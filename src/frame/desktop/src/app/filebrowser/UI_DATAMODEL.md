@@ -128,8 +128,7 @@ Every tab and pane stores a canonical URL:
 | <code>view://</code> | View | <code>view://recent</code>, <code>view://topic/topic-kyoto</code> |
 | <code>collection://</code> | Collection/group | <code>collection://reading-list/papers</code> |
 
-Bare paths normalize to <code>dfs://</code>. Legacy <code>topic://id</code> input normalizes to
-<code>view://topic/id</code>. DFS locations are displayed as bare paths; other locations retain
+Bare paths normalize to <code>dfs://</code>. DFS locations are displayed as bare paths; other locations retain
 their scheme. Trailing slashes are removed except for the root.
 
 ~~~ts

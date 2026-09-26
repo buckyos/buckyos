@@ -521,14 +521,11 @@ enum AgentMemoryVerb {
 pub async fn run_process() -> CliRunOutput {
     let args = env::args_os().collect::<Vec<_>>();
 
-    // `agent_tool xllm ...`（别名 run_local_llm）/ `agent_tool llm_explore ...` 走独立的
+    // `agent_tool xllm ...` / `agent_tool llm_explore ...` 走独立的
     // dev/test 子命令，不经过 tool dispatcher（它们不是 AgentTool）。这里
     // 短路掉，让它们自己负责 stdout / stderr / exit code（直接 println /
     // eprintln，避免 buffer 大段 JSON）。
-    if matches!(
-        args.get(1).and_then(|v| v.to_str()),
-        Some("xllm") | Some("run_local_llm")
-    ) {
+    if args.get(1).and_then(|v| v.to_str()) == Some("xllm") {
         let sub_args: Vec<String> = args
             .iter()
             .skip(2)
@@ -7156,9 +7153,7 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
         .as_deref()
         .and_then(|value| match value {
             "user_approval" => Some(AgentToolPendingReason::UserApproval),
-            "wait_for_install" | "external_callback" => {
-                Some(AgentToolPendingReason::WaitForInstall)
-            }
+            "wait_for_install" => Some(AgentToolPendingReason::WaitForInstall),
             "long_running" => Some(AgentToolPendingReason::LongRunning),
             _ => None,
         })

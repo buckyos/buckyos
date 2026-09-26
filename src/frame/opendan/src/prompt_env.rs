@@ -3,7 +3,7 @@
 //! contract.
 //!
 //! Surfaces the minimal Phase-1 variable set (session / behavior / workspace
-//! / paths / input / runtime / result_protocol) as both static `RenderVars.vars` (for upon
+//! / paths / input / runtime / xml_behavior_result_protocol) as both static `RenderVars.vars` (for upon
 //! `{{ session.id }}` placeholders) and a `ValueLoader` (for explicit
 //! `__VAR(name, $session)__` / `__ENV($session.id)__` lookups). Aggregate
 //! objects carry sibling `has_*` booleans so templates can branch on
@@ -182,29 +182,6 @@ pub fn build_render_vars(env: &AgentSessionEnv) -> RenderVars {
         .with_var("runtime", runtime_object(env))
         .with_var("notebook", notebook_object(env))
         .with_var("llm_context", llm_context_object(env))
-        .with_var("msgs", msgs_array(env))
-        .with_var("events", events_array(env))
-        .with_var("bg_events", bg_events_array(env))
-        .with_var(
-            "last_step",
-            env.llm_context.last_step.clone().unwrap_or(Json::Null),
-        )
-        .with_var(
-            "behavior_history",
-            Json::Array(env.llm_context.behavior_history.clone()),
-        )
-        .with_var(
-            "step_history",
-            Json::Array(env.llm_context.behavior_history.clone()),
-        )
-        .with_var(
-            "agent_global_state",
-            env.llm_context.agent_global_state.clone(),
-        )
-        .with_var(
-            "result_protocol",
-            Json::String(XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()),
-        )
         .with_var(
             "xml_behavior_result_protocol",
             Json::String(XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()),
@@ -232,7 +209,7 @@ pub fn build_engine_config(env: &AgentSessionEnv) -> EngineConfig {
 }
 
 /// Loader that resolves Phase-1 `$session.*` / `$behavior.*` / `$workspace.*`
-/// / `$paths.*` / `$input.*` / `$runtime.*` / `$result_protocol` expressions. Aggregate names
+/// / `$paths.*` / `$input.*` / `$runtime.*` / `$xml_behavior_result_protocol` expressions. Aggregate names
 /// without a trailing path return the matching JSON object so
 /// `__VAR(session, $session)__` works.
 pub struct AgentSessionValueLoader {
@@ -299,10 +276,10 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
         "input" => Some(input_object(env)),
         "input.text" => Some(Json::String(input_text(env))),
         "input.msg" => Some(first_or_null(&env.llm_context.msgs)),
-        "input.msgs" | "msgs" => Some(msgs_array(env)),
+        "input.msgs" => Some(msgs_array(env)),
         "input.event" => first_event_or_null(&env.llm_context.events),
-        "input.events" | "llm_context.events" | "events" => Some(events_array(env)),
-        "input.bg_events" | "llm_context.bg_events" | "bg_events" => Some(bg_events_array(env)),
+        "input.events" | "llm_context.events" => Some(events_array(env)),
+        "input.bg_events" | "llm_context.bg_events" => Some(bg_events_array(env)),
         "input.timer_events" => Some(filtered_events_array(env, is_timer_event)),
         "input.reminder_events" => Some(filtered_events_array(env, |event| {
             event.event_id == "timer.reminder_check"
@@ -362,17 +339,16 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
 
         "current_context" => Some(current_context_object(env)),
         "current_context.behavior_name" => Some(Json::String(env.behavior_name.clone())),
-        "current_context.last_step" | "last_step" => {
+        "current_context.last_step" => {
             Some(env.llm_context.last_step.clone().unwrap_or(Json::Null))
         }
         "current_context.last_report" => Some(match &env.llm_context.last_report {
             Some(report) => Json::String(report.clone()),
             None => Json::Null,
         }),
-        "current_context.step_history"
-        | "step_history"
-        | "llm_context.behavior_history"
-        | "behavior_history" => Some(Json::Array(env.llm_context.behavior_history.clone())),
+        "current_context.step_history" | "llm_context.behavior_history" => {
+            Some(Json::Array(env.llm_context.behavior_history.clone()))
+        }
         _ if key.starts_with("current_context.") => {
             let path = key.trim_start_matches("current_context.");
             resolve_json_path(&current_context_object(env), path)
@@ -384,11 +360,9 @@ fn resolve_phase1(env: &AgentSessionEnv, expr: &str) -> Option<Json> {
             Some(report) => Json::String(report.clone()),
             None => Json::Null,
         }),
-        "llm_context.agent_global_state" | "agent_global_state" => {
-            Some(env.llm_context.agent_global_state.clone())
-        }
+        "llm_context.agent_global_state" => Some(env.llm_context.agent_global_state.clone()),
 
-        "result_protocol" | "xml_behavior_result_protocol" => Some(Json::String(
+        "xml_behavior_result_protocol" => Some(Json::String(
             XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string(),
         )),
 
@@ -564,7 +538,6 @@ fn llm_context_object(env: &AgentSessionEnv) -> Json {
         "last_step": env.llm_context.last_step.clone().unwrap_or(Json::Null),
         "last_report": env.llm_context.last_report.clone(),
         "behavior_history": env.llm_context.behavior_history.clone(),
-        "step_history": env.llm_context.behavior_history.clone(),
         "current_context": current_context_object(env),
         "agent_global_state": env.llm_context.agent_global_state.clone(),
     })
@@ -1118,10 +1091,9 @@ fn attachment_ref(kind: &str, source: &ResourceRef, title: Option<&str>) -> Json
 ///
 /// `extra_vars` are seeded into `RenderVars.vars` on top of the Phase-1 set,
 /// overriding any name collision. Use for call-site-specific values that
-/// don't belong in the stable variable contract — e.g. the `render_system_
-/// messages` injection of pre-read `role_md` / `self_md` markdown content
-/// (which will move to `__INCLUDE__` directives once behavior templates
-/// migrate). Pass an empty slice when no overlay is needed.
+/// don't belong in the stable variable contract — e.g. the
+/// `on_behavior_switch` `from_context` / `to_context` overlays. Pass an
+/// empty slice when no overlay is needed.
 pub async fn render_template(
     template: &str,
     env: &AgentSessionEnv,
@@ -1344,7 +1316,7 @@ mod tests {
             Some(Json::String(env.notebook_last_items_text.clone()))
         );
         assert_eq!(
-            loader.load("$result_protocol").await.unwrap(),
+            loader.load("$xml_behavior_result_protocol").await.unwrap(),
             Some(Json::String(
                 XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT.to_string()
             ))
@@ -1368,7 +1340,10 @@ mod tests {
             Some(Json::String("latest report".into()))
         );
         assert_eq!(
-            loader.load("$agent_global_state").await.unwrap(),
+            loader
+                .load("$llm_context.agent_global_state")
+                .await
+                .unwrap(),
             Some(json!({"mood": "steady"}))
         );
         assert_eq!(loader.load("$unknown.path").await.unwrap(), None);
@@ -1400,15 +1375,10 @@ mod tests {
     #[tokio::test]
     async fn engine_substitutes_xml_behavior_result_protocol() {
         let env = sample_env();
-        let out = render_template("{{ result_protocol }}", &env, &[])
+        let out = render_template("{{ xml_behavior_result_protocol }}", &env, &[])
             .await
             .unwrap();
         assert_eq!(out, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT);
-
-        let alias = render_template("{{ xml_behavior_result_protocol }}", &env, &[])
-            .await
-            .unwrap();
-        assert_eq!(alias, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT);
     }
 
     #[tokio::test]
@@ -1428,10 +1398,10 @@ mod tests {
     async fn extra_vars_seed_overlay() {
         let env = sample_env();
         let extras = vec![
-            ("role_md", Json::String("ROLE".into())),
-            ("self_md", Json::String("SELF".into())),
+            ("extra_a", Json::String("ROLE".into())),
+            ("extra_b", Json::String("SELF".into())),
         ];
-        let template = "{{ role_md }}\n\n{{ self_md }}";
+        let template = "{{ extra_a }}\n\n{{ extra_b }}";
         let out = render_template(template, &env, &extras).await.unwrap();
         assert_eq!(out, "ROLE\n\nSELF");
     }
@@ -1454,8 +1424,8 @@ mod tests {
     #[tokio::test]
     async fn extras_and_phase1_vars_compose() {
         let env = sample_env();
-        let extras = vec![("role_md", Json::String("ROLE".into()))];
-        let template = "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{{ role_md }}";
+        let extras = vec![("extra_a", Json::String("ROLE".into()))];
+        let template = "agent={{ behavior.name }}\nsession={{ session.id }}\n---\n{{ extra_a }}";
         let out = render_template(template, &env, &extras).await.unwrap();
         assert_eq!(out, "agent=chat_route\nsession=s-1\n---\nROLE");
     }
@@ -1664,17 +1634,10 @@ input_event={{ input.event.event_id }}|{{ input.event.reason }}|{{ input.event.o
 current={{ current_context.behavior_name }}|{{ current_context.last_step.step_index }}|{{ current_context.last_step.report }}|{{ current_context.last_report }}
 {% for step in current_context.step_history %}step={{ step.step_index }}|{{ step.behavior_name }}|{{ step.report }}|{{ step.next_behavior }}
 {% endfor %}
-legacy={{ last_step.step_index }}|{{ llm_context.last_step.step_index }}|{{ llm_context.last_report }}|{{ llm_context.agent_global_state.mood }}|{{ agent_global_state.mood }}
-{% for step in behavior_history %}legacy_step={{ step.step_index }}|{{ step.behavior_name }}
-{% endfor %}
-{% for step in step_history %}alias_step={{ step.step_index }}|{{ step.behavior_name }}
-{% endfor %}
-{% for event in events %}legacy_event={{ event.event_id }}
-{% endfor %}
-{% for event in bg_events %}legacy_bg={{ event.event_id }}
+llm_ctx={{ llm_context.last_step.step_index }}|{{ llm_context.last_report }}|{{ llm_context.agent_global_state.mood }}
+{% for step in llm_context.behavior_history %}llm_step={{ step.step_index }}|{{ step.behavior_name }}
 {% endfor %}
 switch={{ switch.from }}|{{ switch.to }}|{{ from_behavior }}|{{ switch.from_context.last_report }}|{{ switch.to_context.behavior_name }}|{{ from_context.last_report }}|{{ to_context.last_report }}
-{% if result_protocol %}result_protocol=yes{% endif %}
 {% if xml_behavior_result_protocol %}xml_protocol=yes{% endif %}
 "#;
         let out = render_template(template, &env, &extras).await.unwrap();
@@ -1713,13 +1676,9 @@ switch={{ switch.from }}|{{ switch.to }}|{{ from_behavior }}|{{ switch.from_cont
             "current=chat_route|8|step report|latest report",
             "step=6|plan|plan report|do",
             "step=7|do|do report|",
-            "legacy=8|8|latest report|steady|steady",
-            "legacy_step=6|plan",
-            "alias_step=7|do",
-            "legacy_event=worksession_report",
-            "legacy_bg=presence.changed",
+            "llm_ctx=8|latest report|steady",
+            "llm_step=6|plan",
             "switch=plan|do|plan|parent report|do|parent report|child report",
-            "result_protocol=yes",
             "xml_protocol=yes",
         ] {
             assert!(

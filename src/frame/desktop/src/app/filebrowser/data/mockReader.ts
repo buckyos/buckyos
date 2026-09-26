@@ -165,7 +165,7 @@ class MockRecentViewReader implements FolderReader {
   dispose() {}
 }
 
-/** `view://topic/<id>` — the old topic:// aggregation, now a regular view reader. */
+/** `view://topic/<id>` — AI topic aggregation view reader. */
 class MockTopicViewReader implements FolderReader {
   readonly capabilities = VIEW_CAPABILITIES
   readonly meta: { title: string; description?: string }

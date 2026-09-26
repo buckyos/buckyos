@@ -6,8 +6,7 @@ use crate::{KLogEntry, KLogError, KLogLevel, KLogMetaEntry, KResult};
 use rocksdb::backup::{BackupEngine, BackupEngineOptions, RestoreOptions};
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{
-    ColumnFamilyDescriptor, DB, DEFAULT_COLUMN_FAMILY_NAME, Direction, Env, IteratorMode, Options,
-    WriteBatch, WriteOptions,
+    ColumnFamilyDescriptor, DB, Direction, Env, IteratorMode, Options, WriteBatch, WriteOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -35,14 +34,6 @@ static TEMP_DIR_SEQ: AtomicU64 = AtomicU64::new(1);
 struct RequestDedupMeta {
     log_id: u64,
     seen_at_ms: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct LegacyKLogMetaEntryV0 {
-    key: String,
-    value: String,
-    updated_at: u64,
-    updated_by: u64,
 }
 
 fn entry_key(id: u64) -> [u8; 9] {
@@ -219,23 +210,11 @@ fn entry_matches_query(entry: &KLogEntry, query: &KLogQuery) -> bool {
     true
 }
 
-fn decode_meta_entry_with_legacy(raw: &[u8]) -> KResult<KLogMetaEntry> {
-    let decoded_v1: Result<(KLogMetaEntry, usize), _> =
-        bincode::serde::decode_from_slice(raw, bincode::config::legacy());
-    if let Ok((item, _)) = decoded_v1 {
-        return Ok(item);
-    }
-
-    let (legacy, _): (LegacyKLogMetaEntryV0, usize) =
+fn decode_meta_entry(raw: &[u8]) -> KResult<KLogMetaEntry> {
+    let (item, _): (KLogMetaEntry, usize) =
         bincode::serde::decode_from_slice(raw, bincode::config::legacy())
             .map_err(|e| klog_err_with_context("Failed to decode rocksdb data meta entry", e))?;
-    Ok(KLogMetaEntry {
-        key: legacy.key,
-        value: legacy.value,
-        updated_at: legacy.updated_at,
-        updated_by: legacy.updated_by,
-        revision: 1,
-    })
+    Ok(item)
 }
 
 fn now_millis() -> u64 {
@@ -310,64 +289,6 @@ fn build_write_options(sync_write: bool) -> WriteOptions {
     let mut opts = WriteOptions::default();
     opts.set_sync(sync_write);
     opts
-}
-
-fn migrate_legacy_default_cf_data(db: &DB) -> Result<(), String> {
-    let default_cf = db.cf_handle(DEFAULT_COLUMN_FAMILY_NAME).ok_or_else(|| {
-        let msg = "Missing default column family".to_string();
-        error!("{}", msg);
-        msg
-    })?;
-    let logs_cf = db.cf_handle(CF_LOGS).ok_or_else(|| {
-        let msg = format!("Missing column family '{}'", CF_LOGS);
-        error!("{}", msg);
-        msg
-    })?;
-    let meta_cf = db.cf_handle(CF_META).ok_or_else(|| {
-        let msg = format!("Missing column family '{}'", CF_META);
-        error!("{}", msg);
-        msg
-    })?;
-
-    let mut batch = WriteBatch::default();
-    let mut migrated_logs = 0usize;
-    let mut migrated_meta = 0usize;
-
-    for item in db.iterator_cf(&default_cf, IteratorMode::Start) {
-        let (k, v) = item.map_err(|e| {
-            let msg = format!("Failed to iterate default CF for migration: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-
-        if decode_entry_key(&k).is_some() {
-            batch.put_cf(&logs_cf, k.as_ref(), v.as_ref());
-            batch.delete_cf(&default_cf, k.as_ref());
-            migrated_logs += 1;
-            continue;
-        }
-
-        if k.as_ref() == KEY_NEXT_LOG_ID_META || k.as_ref() == KEY_STATE_MACHINE_META {
-            batch.put_cf(&meta_cf, k.as_ref(), v.as_ref());
-            batch.delete_cf(&default_cf, k.as_ref());
-            migrated_meta += 1;
-        }
-    }
-
-    if migrated_logs > 0 || migrated_meta > 0 {
-        let write_opts = build_write_options(true);
-        db.write_opt(batch, &write_opts).map_err(|e| {
-            let msg = format!("Failed to write legacy default-CF migration batch: {}", e);
-            error!("{}", msg);
-            msg
-        })?;
-        info!(
-            "RocksDbStateStore migrated legacy default CF data: logs={}, meta={}",
-            migrated_logs, migrated_meta
-        );
-    }
-
-    Ok(())
 }
 
 fn rebuild_log_indexes_if_needed(db: &DB) -> Result<(), String> {
@@ -447,7 +368,6 @@ fn rebuild_log_indexes_if_needed(db: &DB) -> Result<(), String> {
 
 fn create_rocksdb(path: &Path) -> Result<DB, String> {
     let db = open_rocksdb_with_cfs(path, true)?;
-    migrate_legacy_default_cf_data(&db)?;
     rebuild_log_indexes_if_needed(&db)?;
     Ok(db)
 }
@@ -744,7 +664,7 @@ impl RocksDbStateStore {
             let Some(key) = decode_data_meta_key(k.as_ref()) else {
                 continue;
             };
-            let entry = decode_meta_entry_with_legacy(v.as_ref())?;
+            let entry = decode_meta_entry(v.as_ref())?;
             if entry.key != key {
                 warn!(
                     "RocksDbStateStore meta key mismatch, key_from_index='{}', key_in_value='{}'",
@@ -1120,9 +1040,6 @@ impl RocksDbStateStore {
 
             let checkpoint_db = open_rocksdb_with_cfs(&checkpoint_dir, false)
                 .map_err(|e| klog_err_with_context("Failed to open restored checkpoint db", e))?;
-            migrate_legacy_default_cf_data(&checkpoint_db).map_err(|e| {
-                klog_err_with_context("Failed to migrate legacy data in checkpoint db", e)
-            })?;
 
             self.replace_with_db(&checkpoint_db)?;
             info!(
@@ -1262,9 +1179,6 @@ impl RocksDbStateStore {
 
             let restored_db = open_rocksdb_with_cfs(&restored_db_dir, false)
                 .map_err(|e| klog_err_with_context("Failed to open restored backup db", e))?;
-            migrate_legacy_default_cf_data(&restored_db).map_err(|e| {
-                klog_err_with_context("Failed to migrate legacy data in restored backup db", e)
-            })?;
             self.replace_with_db(&restored_db)?;
             info!(
                 "RocksDbStateStore apply_backup_engine_archive completed: restore_root={}",
@@ -1518,21 +1432,11 @@ fn try_decode_backup_engine_archive(data: &[u8]) -> KResult<Option<BackupEngineS
 }
 
 fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
-    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
-        bincode::serde::decode_from_slice(data, bincode::config::legacy());
-    if let Ok((snapshot_data, _)) = decoded_new {
-        return Ok(snapshot_data);
-    }
-
-    // Temporary fallback for snapshots built before meta support.
-    let (entries, _): (Vec<KLogEntry>, usize) =
+    let (snapshot_data, _): (KLogStateSnapshotData, usize) =
         bincode::serde::decode_from_slice(data, bincode::config::legacy()).map_err(|e| {
             klog_err_with_context("Failed to decode rocksdb enumerate snapshot payload", e)
         })?;
-    Ok(KLogStateSnapshotData {
-        entries,
-        meta_entries: Vec::new(),
-    })
+    Ok(snapshot_data)
 }
 
 impl RocksDbSnapshotStrategy for EnumerateSnapshotStrategy {
@@ -2108,9 +2012,7 @@ impl KLogStateStore for RocksDbStateStore {
             .get_cf(&meta_cf, meta_key.as_slice())
             .map_err(|e| klog_err_with_context("Failed to read rocksdb data meta entry", e))?;
         let next_revision = match prev {
-            Some(raw) => decode_meta_entry_with_legacy(raw.as_ref())?
-                .revision
-                .saturating_add(1),
+            Some(raw) => decode_meta_entry(raw.as_ref())?.revision.saturating_add(1),
             None => 1,
         };
 
@@ -2145,7 +2047,7 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let prev_meta = decode_meta_entry_with_legacy(raw.as_ref())?;
+        let prev_meta = decode_meta_entry(raw.as_ref())?;
         let write_opts = self.write_options();
         self.db
             .delete_cf_opt(&meta_cf, meta_key.as_slice(), &write_opts)
@@ -2172,7 +2074,7 @@ impl KLogStateStore for RocksDbStateStore {
         else {
             return Ok(None);
         };
-        let item = decode_meta_entry_with_legacy(raw.as_ref())?;
+        let item = decode_meta_entry(raw.as_ref())?;
         Ok(Some(item))
     }
 
@@ -2210,7 +2112,7 @@ impl KLogStateStore for RocksDbStateStore {
             {
                 continue;
             }
-            let item = decode_meta_entry_with_legacy(v.as_ref())?;
+            let item = decode_meta_entry(v.as_ref())?;
             out.push(item);
             if out.len() >= limit {
                 break;

@@ -1612,7 +1612,6 @@ async fn default_node_target() -> Result<InstallTarget, String> {
             .device_doc
             .extra_info
             .get("runtime_version")
-            .or_else(|| info.device_doc.extra_info.get("buckyos_version"))
             .and_then(Value::as_str)
             .map(str::to_string);
         let kernel_version = info

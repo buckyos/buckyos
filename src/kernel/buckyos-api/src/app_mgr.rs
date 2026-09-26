@@ -69,19 +69,12 @@ pub struct StaticWebDeploymentEvidence {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ServiceState {
-    #[serde(alias = "New")]
     New,
-    #[serde(alias = "Running", alias = "Deployed", alias = "deployed")]
     Running,
-    #[serde(alias = "Stopped", alias = "Disable")]
     Stopped,
-    #[serde(alias = "Stopping")]
     Stopping,
-    #[serde(alias = "Restarting")]
     Restarting,
-    #[serde(alias = "Updating")]
     Updating,
-    #[serde(alias = "Deleted")]
     Deleted,
 }
 

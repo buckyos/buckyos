@@ -631,8 +631,6 @@ impl ControlPanelServer {
         require_self_or_admin(principal, &target)?;
 
         // Build response – hide password; profile fields live in users/{user}/profile.
-        let include_contact =
-            is_admin_or_root(&principal.user_type) || principal.username == target;
         let mut result = json!({
             "user_id": settings.user_id,
             "user_type": settings.user_type.clone(),
@@ -647,11 +645,6 @@ impl ControlPanelServer {
             result["local_profile"] = serde_json::to_value(profile).unwrap_or(json!(null));
             result["profile"] =
                 serde_json::to_value(profile.to_public_profile()).unwrap_or(json!(null));
-            if include_contact {
-                if let Some(contact) = profile_system_contact(profile) {
-                    result["contact"] = serde_json::to_value(contact).unwrap_or(json!(null));
-                }
-            }
         } else {
             result["profile"] = json!({});
         }

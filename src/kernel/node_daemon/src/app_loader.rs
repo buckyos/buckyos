@@ -2211,8 +2211,6 @@ impl AppLoader {
         );
         if let Some(port) = service_port {
             env_vars.insert("BUCKYOS_SERVICE_PORT".to_string(), port.to_string());
-            // Legacy name kept for OpenDAN which still reads OPENDAN_SERVICE_PORT.
-            env_vars.insert("OPENDAN_SERVICE_PORT".to_string(), port.to_string());
         }
         // The app sees itself at BUCKYOS_PKG_DIR, not at the host media path.
         if let Some(media_info) = env_vars.get("app_media_info").cloned() {
@@ -2720,10 +2718,6 @@ impl AppLoader {
         if let Some(port) = service_port {
             docker_run_args.push("-e".to_string());
             docker_run_args.push(format!("BUCKYOS_SERVICE_PORT={port}"));
-            if app_type_label == "agent" {
-                docker_run_args.push("-e".to_string());
-                docker_run_args.push(format!("OPENDAN_SERVICE_PORT={port}"));
-            }
         }
         if let Some(desc) = desc {
             for (key, value) in self.docker_runtime_labels(desc) {

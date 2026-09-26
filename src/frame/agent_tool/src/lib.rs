@@ -114,7 +114,7 @@ pub fn now_ms() -> u64 {
         .unwrap_or_default()
         .as_millis() as u64
 }
-pub use llm_compress::{compress, LlmSummarizeCompressor, DEFAULT_KEEP_RECENT_MESSAGES};
+pub use llm_compress::{compress, LlmSummarizeCompressor};
 pub use llm_understand_media::{LlmUnderstandMediaTool, TOOL_LLM_UNDERSTAND_MEDIA};
 pub use local_llm_context::{
     AiccLlmClient, Attachment, DefaultLlmClientFactory, EffectiveConfig, EffectiveTools,
@@ -404,7 +404,6 @@ pub enum AgentToolStatus {
 pub enum AgentToolPendingReason {
     LongRunning,
     UserApproval,
-    #[serde(alias = "external_callback")]
     WaitForInstall,
 }
 

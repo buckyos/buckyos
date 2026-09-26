@@ -9,6 +9,7 @@ import { ProvidersPage } from './ProvidersPage'
 import { AddProviderPage } from './AddProviderPage'
 import { ModelsPage } from './ModelsPage'
 import { RoutingPage } from './RoutingPage'
+import { PlaygroundPage } from './PlaygroundPage'
 
 function PageRouter({ page, navigate }: { page: AICenterPage; navigate: (p: AICenterPage) => void }) {
   switch (page) {
@@ -22,6 +23,8 @@ function PageRouter({ page, navigate }: { page: AICenterPage; navigate: (p: AICe
       return <AddProviderPage navigate={navigate} />
     case 'models':
       return <ModelsPage />
+    case 'playground':
+      return null
     case 'routing':
       return <RoutingPage />
     default:
@@ -39,7 +42,10 @@ export function AICenterAppPanel() {
   return (
     <AICCStoreContext.Provider value={store}>
       <AICenterShell>
-        {(page, navigate) => <PageRouter page={page} navigate={navigate} />}
+        {(page, navigate) => <>
+          <PageRouter page={page} navigate={navigate} />
+          <div hidden={page !== 'playground'}><PlaygroundPage active={page === 'playground'} /></div>
+        </>}
       </AICenterShell>
     </AICCStoreContext.Provider>
   )

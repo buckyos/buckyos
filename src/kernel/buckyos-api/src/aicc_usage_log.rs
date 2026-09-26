@@ -1,13 +1,13 @@
 /*!
- * AICC usage-log schema, data types, and query DSL.
+ * AICC usage-log rdb instance declaration, data types, and query DSL.
  *
- * The actual sqlx-backed store lives inside the aicc service itself (see
- * `src/frame/aicc/src/aicc_usage_log_db.rs`) and mirrors the layout used by
- * other service rdb instances (msg-center, task-manager). This module only
+ * The actual sqlx-backed store and its schema migrations live inside the aicc
+ * service itself (see `src/frame/aicc/src/storage/mod.rs`). This module only
  * carries:
  *
- * - the instance id + schema DDL that the scheduler drops into
- *   `services/aicc/spec.spec_config.rdb_instances`
+ * - the rdb instance id + partitions that the scheduler drops into
+ *   `services/aicc/spec.spec_config.rdb_instances` (no DDL: AICC creates and
+ *   migrates its own tables)
  * - the row struct (`AiccUsageEvent`) shared between the writer and reader
  * - the query DSL (`QueryUsageRequest` / `QueryUsageResponse`) so callers do
  *   not have to hand-roll SQL to read the log.
@@ -26,188 +26,18 @@ use crate::rdb_mgr::{RdbBackend, RdbInstanceConfig, RdbPartition};
 /// `get_rdb_instance`.
 pub const AICC_USAGE_LOG_RDB_INSTANCE_ID: &str = "aicc-usage-log";
 
-/// Version of the usage-log schema. Bump whenever the DDL changes.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_VERSION: u64 = 6;
-
-/// Sqlite DDL for the usage-log database. The only required table in v1 is
-/// `aicc_usage_event`; summary tables can be added later when SQL aggregation
-/// becomes necessary.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_SQLITE: &str = r#"
-CREATE TABLE IF NOT EXISTS aicc_usage_event (
-    event_id              TEXT PRIMARY KEY,
-    tenant_id             TEXT NOT NULL,
-    user_id               TEXT NOT NULL,
-    caller_app_id         TEXT,
-    task_id               TEXT NOT NULL,
-    trace_id              TEXT,
-    idempotency_key       TEXT,
-    method                TEXT NOT NULL,
-    capability            TEXT NOT NULL,
-    request_model         TEXT NOT NULL,
-    provider_instance_name TEXT NOT NULL,
-    provider_model        TEXT NOT NULL,
-    input_tokens          INTEGER,
-    output_tokens         INTEGER,
-    total_tokens          INTEGER,
-    request_units         INTEGER,
-    usage_json            TEXT NOT NULL,
-    finance_snapshot_json TEXT,
-    created_at_ms         INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
-    ON aicc_usage_event(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
-    ON aicc_usage_event(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time
-    ON aicc_usage_event(trace_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
-    ON aicc_usage_event(user_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
-    ON aicc_usage_event(method, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time
-    ON aicc_usage_event(provider_instance_name, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time
-    ON aicc_usage_event(provider_model, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time
-    ON aicc_usage_event(request_model, created_at_ms);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task
-    ON aicc_usage_event(tenant_id, task_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem
-    ON aicc_usage_event(tenant_id, idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
-CREATE TABLE IF NOT EXISTS aicc_route_trace (
-    trace_id                 TEXT PRIMARY KEY,
-    tenant_id                TEXT NOT NULL,
-    caller_app_id            TEXT,
-    task_id                  TEXT NOT NULL,
-    request_model            TEXT NOT NULL,
-    selected_exact_model     TEXT,
-    provider_instance_name   TEXT,
-    api_type                 TEXT NOT NULL,
-    route_trace_json         TEXT NOT NULL,
-    created_at_ms            INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_time
-    ON aicc_route_trace(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
-    ON aicc_route_trace(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
-    ON aicc_route_trace(request_model, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
-    ON aicc_route_trace(task_id, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_video_continuation_source (
-    tenant_id                 TEXT NOT NULL,
-    content_id                TEXT NOT NULL,
-    source_task_id            TEXT NOT NULL,
-    created_at_ms             INTEGER NOT NULL,
-    PRIMARY KEY (tenant_id, content_id)
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_video_continuation_source_task
-    ON aicc_video_continuation_source(source_task_id);
-"#;
-
-/// Postgres DDL mirroring the sqlite schema above.
-pub const AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES: &str = r#"
-CREATE TABLE IF NOT EXISTS aicc_usage_event (
-    event_id              TEXT PRIMARY KEY,
-    tenant_id             TEXT NOT NULL,
-    user_id               TEXT NOT NULL,
-    caller_app_id         TEXT,
-    task_id               TEXT NOT NULL,
-    trace_id              TEXT,
-    idempotency_key       TEXT,
-    method                TEXT NOT NULL,
-    capability            TEXT NOT NULL,
-    request_model         TEXT NOT NULL,
-    provider_instance_name TEXT NOT NULL,
-    provider_model        TEXT NOT NULL,
-    input_tokens          BIGINT,
-    output_tokens         BIGINT,
-    total_tokens          BIGINT,
-    request_units         BIGINT,
-    usage_json            TEXT NOT NULL,
-    finance_snapshot_json TEXT,
-    created_at_ms         BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_time
-    ON aicc_usage_event(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_time
-    ON aicc_usage_event(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_trace_time
-    ON aicc_usage_event(trace_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_user_time
-    ON aicc_usage_event(user_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_method_time
-    ON aicc_usage_event(method, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_provider_instance_time
-    ON aicc_usage_event(provider_instance_name, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_model_time
-    ON aicc_usage_event(provider_model, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_usage_event_request_model_time
-    ON aicc_usage_event(request_model, created_at_ms);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_task
-    ON aicc_usage_event(tenant_id, task_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_aicc_usage_event_tenant_idem
-    ON aicc_usage_event(tenant_id, idempotency_key)
-    WHERE idempotency_key IS NOT NULL;
-CREATE TABLE IF NOT EXISTS aicc_route_trace (
-    trace_id                 TEXT PRIMARY KEY,
-    tenant_id                TEXT NOT NULL,
-    caller_app_id            TEXT,
-    task_id                  TEXT NOT NULL,
-    request_model            TEXT NOT NULL,
-    selected_exact_model     TEXT,
-    provider_instance_name   TEXT,
-    api_type                 TEXT NOT NULL,
-    route_trace_json         TEXT NOT NULL,
-    created_at_ms            BIGINT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_time
-    ON aicc_route_trace(created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_tenant_time
-    ON aicc_route_trace(tenant_id, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_request_model_time
-    ON aicc_route_trace(request_model, created_at_ms);
-CREATE INDEX IF NOT EXISTS idx_aicc_route_trace_task_time
-    ON aicc_route_trace(task_id, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_video_continuation_source (
-    tenant_id                 TEXT NOT NULL,
-    content_id                TEXT NOT NULL,
-    source_task_id            TEXT NOT NULL,
-    created_at_ms             BIGINT NOT NULL,
-    PRIMARY KEY (tenant_id, content_id)
-);
-CREATE INDEX IF NOT EXISTS idx_aicc_video_continuation_source_task
-    ON aicc_video_continuation_source(source_task_id);
-"#;
-
 /// Default rdb-instance config for the aicc usage-log. The scheduler drops
 /// this into `spec_config.rdb_instances` when bootstrapping the service.
+/// The schema map is intentionally empty: AICC applies its own migrations
+/// (`src/frame/aicc/src/storage/mod.rs`) and never reads `instance.schema`.
 pub fn aicc_usage_log_default_rdb_instance_config() -> RdbInstanceConfig {
-    let mut schema = HashMap::new();
-    schema.insert(
-        RdbBackend::Sqlite,
-        AICC_USAGE_LOG_RDB_SCHEMA_SQLITE.to_string(),
-    );
-    schema.insert(
-        RdbBackend::Postgres,
-        AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES.to_string(),
-    );
     RdbInstanceConfig {
         backend: RdbBackend::Sqlite,
-        version: AICC_USAGE_LOG_RDB_SCHEMA_VERSION,
-        schema,
+        version: 1,
+        schema: HashMap::new(),
         connection: String::new(),
         partitions: vec![RdbPartition::UserData],
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AiccVideoContinuationSource {
-    pub tenant_id: String,
-    pub content_id: String,
-    pub source_task_id: String,
-    pub created_at_ms: i64,
 }
 
 /// One durable row in `aicc_usage_event`.
@@ -672,32 +502,6 @@ mod tests {
                 "end_time_ms": 200
             })
         );
-    }
-
-    #[test]
-    fn usage_schema_v6_contains_identity_columns_and_indexes() {
-        assert_eq!(AICC_USAGE_LOG_RDB_SCHEMA_VERSION, 6);
-        for ddl in [
-            AICC_USAGE_LOG_RDB_SCHEMA_SQLITE,
-            AICC_USAGE_LOG_RDB_SCHEMA_POSTGRES,
-        ] {
-            for column in [
-                "user_id               TEXT NOT NULL",
-                "method                TEXT NOT NULL",
-                "provider_instance_name TEXT NOT NULL",
-                "trace_id              TEXT",
-            ] {
-                assert!(ddl.contains(column), "missing column: {column}");
-            }
-            for index in [
-                "idx_aicc_usage_event_user_time",
-                "idx_aicc_usage_event_method_time",
-                "idx_aicc_usage_event_provider_instance_time",
-                "idx_aicc_usage_event_trace_time",
-            ] {
-                assert!(ddl.contains(index), "missing index: {index}");
-            }
-        }
     }
 
     #[test]

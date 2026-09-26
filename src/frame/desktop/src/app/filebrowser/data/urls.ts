@@ -3,7 +3,7 @@
  *
  *   dfs:///home/photos          folder (bare paths like `/home/photos` normalize here)
  *   view://recent               derived, read-only views
- *   view://topic/<id>           AI topic aggregation (legacy `topic://<id>` rewrites here)
+ *   view://topic/<id>           AI topic aggregation
  *   collection://<id>/<group?>  ordered reference collections
  *
  * Internally everything stores the canonical form; `displayPath()` converts
@@ -25,14 +25,10 @@ function stripTrailingSlash(value: string): string {
   return value.length > 1 && value.endsWith('/') ? value.replace(/\/+$/, '') : value
 }
 
-/** Normalize any user/legacy input (bare path, `topic://`, scheme URL) to canonical form. */
+/** Normalize any user input (bare path or scheme URL) to canonical form. */
 export function normalizeUrl(input: string): string {
   const raw = input.trim()
   if (!raw) return `${DFS_SCHEME}/`
-  // Legacy topic scheme → view://topic/<id>
-  if (raw.startsWith('topic://')) {
-    return `${VIEW_SCHEME}topic/${raw.slice('topic://'.length)}`
-  }
   if (SCHEME_RE.test(raw)) {
     if (raw.startsWith(DFS_SCHEME)) {
       const path = raw.slice(DFS_SCHEME.length)

@@ -187,7 +187,6 @@ impl WorkflowSchedule {
 #[serde(rename_all = "snake_case")]
 pub enum FireStatus {
     Created,
-    #[serde(alias = "run_created")]
     TaskCreated,
     Skipped,
     Failed,
@@ -1017,7 +1016,7 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 task_type: "workflow.send_message".to_string(),
                 name_template: "remind: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
-                    "send_message": {
+                    "request": {
                         "to": to,
                         "text": text,
                         "trigger": trigger_template()
@@ -1041,9 +1040,9 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 .and_then(Value::as_str)
                 .ok_or_else(|| "missing target.workspace_id".to_string())?
                 .to_string();
-            // The executing agent lives in the task payload
-            // (`execution.runner`, OpenDAN's business schema) — it is not a
-            // TaskMgr dispatch parameter anymore.
+            // The target agent rides in the task payload
+            // (`request.target_agent_id`, OpenDAN's business schema) — it is
+            // not a TaskMgr dispatch parameter.
             let agent = value
                 .get("agent")
                 .and_then(Value::as_str)
@@ -1054,8 +1053,9 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 task_type: "agent.delegate".to_string(),
                 name_template: title.clone(),
                 data_template: json!({
-                    "agent_delegate": {
+                    "request": {
                         "version": 1,
+                        "target_agent_id": agent,
                         "purpose": objective,
                         "title": title,
                         "requester_agent_id": "${schedule.owner.app_id}",
@@ -1066,11 +1066,12 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                         "workspace_hints": [{
                             "workspace_id": workspace_id
                         }],
-                        "trigger": trigger_template(),
+                        "trigger": trigger_template()
+                    },
+                    "progress": {
                         "execution": {
                             "workspace_id": workspace_id,
                             "behavior": value.get("behavior").cloned().unwrap_or(Value::Null),
-                            "runner": agent,
                             "status": "pending"
                         }
                     }
@@ -1087,7 +1088,7 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 task_type: "workflow.run".to_string(),
                 name_template: "workflow/run: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
-                    "workflow_run": {
+                    "request": {
                         "workflow_id": workflow_id,
                         "input": value.get("input").cloned().unwrap_or(Value::Null),
                         "trigger": trigger_template()
@@ -1128,7 +1129,7 @@ pub fn schedule_target_from_value(value: &Value) -> Result<ScheduleTarget, Strin
                 task_type: "service.rpc".to_string(),
                 name_template: "service.rpc: ${schedule.name} [${fire.fire_id}]".to_string(),
                 data_template: json!({
-                    "service_rpc": {
+                    "request": {
                         "service": service,
                         "method": method,
                         "params": value.get("params").cloned().unwrap_or(Value::Null),
@@ -1190,7 +1191,7 @@ pub fn schedule_workflow_id(target: &ScheduleSubtaskTemplate) -> Option<&str> {
     }
     target
         .data_template
-        .pointer("/workflow_run/workflow_id")
+        .pointer("/request/workflow_id")
         .and_then(Value::as_str)
 }
 
@@ -1208,7 +1209,7 @@ pub fn validate_subtask_template(target: &ScheduleSubtaskTemplate) -> Result<(),
             .filter(|value| !value.trim().is_empty())
             .map(|_| ())
             .ok_or_else(|| {
-                "workflow.run target requires data_template.workflow_run.workflow_id".to_string()
+                "workflow.run target requires data_template.request.workflow_id".to_string()
             }),
         _ => Ok(()),
     }
@@ -1217,8 +1218,8 @@ pub fn validate_subtask_template(target: &ScheduleSubtaskTemplate) -> Result<(),
 fn validate_agent_delegate_template(target: &ScheduleSubtaskTemplate) -> Result<(), String> {
     let delegate = target
         .data_template
-        .get("agent_delegate")
-        .ok_or_else(|| "agent.delegate target requires data_template.agent_delegate".to_string())?;
+        .get("request")
+        .ok_or_else(|| "agent.delegate target requires data_template.request".to_string())?;
     for field in ["title", "purpose"] {
         if delegate
             .get(field)
@@ -1253,9 +1254,10 @@ fn validate_agent_delegate_template(target: &ScheduleSubtaskTemplate) -> Result<
 }
 
 fn validate_send_message_template(target: &ScheduleSubtaskTemplate) -> Result<(), String> {
-    let send_message = target.data_template.get("send_message").ok_or_else(|| {
-        "workflow.send_message target requires data_template.send_message".to_string()
-    })?;
+    let send_message = target
+        .data_template
+        .get("request")
+        .ok_or_else(|| "workflow.send_message target requires data_template.request".to_string())?;
     if send_message
         .get("to")
         .and_then(Value::as_str)
@@ -1766,6 +1768,74 @@ mod schema_tests {
                 value["kind"],
                 schema_id
             );
+        }
+    }
+
+    /// Builtin targets must render into the typed `{request, progress?}`
+    /// task data shape; the old `{send_message|agent_delegate|...: {...}}`
+    /// wrappers have no parser anymore.
+    #[test]
+    fn builtin_schedule_targets_render_typed_task_data() {
+        let context = json!({
+            "schedule": {
+                "schedule_id": "sch-1",
+                "name": "n",
+                "owner": {"user_id": "u", "app_id": "jarvis"}
+            },
+            "fire": {"fire_id": "f-1", "fire_key": "k", "fire_time": 100, "manual": false}
+        });
+        let cases = [
+            (
+                json!({"kind": "remind", "text": "hi"}),
+                buckyos_api::TaskDataType::WorkflowSendMessage,
+            ),
+            (
+                json!({
+                    "kind": "agent_task",
+                    "title": "t",
+                    "objective": "o",
+                    "workspace_id": "ws",
+                    "behavior": "work_default"
+                }),
+                buckyos_api::TaskDataType::AgentDelegate,
+            ),
+            (
+                json!({"kind": "workflow.run", "workflow_id": "wf"}),
+                buckyos_api::TaskDataType::WorkflowRunTarget,
+            ),
+            (
+                json!({"kind": "service.rpc", "service": "svc", "method": "m"}),
+                buckyos_api::TaskDataType::ServiceRpc,
+            ),
+        ];
+        for (value, task_data_type) in cases {
+            let target = schedule_target_from_value(&value).expect("target parses");
+            validate_subtask_template(&target).expect("template validates");
+            let data = render_value(&target.data_template, &context);
+            let typed = buckyos_api::TypedTaskData::parse(task_data_type, data)
+                .unwrap_or_else(|err| panic!("{} renders untyped data: {err}", value["kind"]));
+            match typed {
+                buckyos_api::TypedTaskData::AgentDelegate(data) => {
+                    assert_eq!(data.request.target_agent_id.as_deref(), Some("jarvis"));
+                    assert_eq!(
+                        data.request.trigger.as_ref().and_then(|t| t.fire_time),
+                        Some(100)
+                    );
+                    let execution = data.progress.and_then(|p| p.execution).unwrap();
+                    assert_eq!(execution["behavior"], "work_default");
+                }
+                buckyos_api::TypedTaskData::WorkflowSendMessage(data) => {
+                    assert_eq!(data.request.to, "self");
+                    assert_eq!(data.request.text, "hi");
+                }
+                buckyos_api::TypedTaskData::WorkflowRunTarget(data) => {
+                    assert_eq!(data.request.workflow_id, "wf");
+                }
+                buckyos_api::TypedTaskData::ServiceRpc(data) => {
+                    assert_eq!(data.request.method, "m");
+                }
+                other => panic!("unexpected typed data {:?}", other.task_data_type()),
+            }
         }
     }
 

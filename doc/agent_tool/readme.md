@@ -105,7 +105,6 @@ AgentTool CLI 可执行文件启动
 - `detail` 是内置工具结构化数据
 - `output` 不是 builtin tool 默认字段，只在明确需要 bash 主文本输出时才使用
 - `pending_reason` 当前统一使用 `long_running | user_approval | wait_for_install`
-- 历史值 `external_callback` 仅作为兼容别名继续接受
 
 ### Agent 决策流程
 

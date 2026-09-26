@@ -1185,7 +1185,7 @@ impl WorkflowRpcHandler {
         if rendered.task_type == "workflow.run" {
             let workflow_id = match rendered
                 .data
-                .pointer("/workflow_run/workflow_id")
+                .pointer("/request/workflow_id")
                 .and_then(Value::as_str)
             {
                 Some(value) => value.to_string(),
@@ -1201,7 +1201,7 @@ impl WorkflowRpcHandler {
             };
             let input = rendered
                 .data
-                .pointer("/workflow_run/input")
+                .pointer("/request/input")
                 .cloned()
                 .unwrap_or(Value::Null);
             let definition = match self.definitions.get_by_id(&workflow_id).await {
@@ -2814,7 +2814,7 @@ mod tests {
         assert_eq!(task.schema_id, "workflow.send_message/v1");
         assert_eq!(task.parent_id, Some(root_task_id.clone()));
         assert_eq!(task.root_id, root_task_id);
-        assert_eq!(task.input["send_message"]["text"], "drink water");
+        assert_eq!(task.input["request"]["text"], "drink water");
     }
 
     #[tokio::test]

@@ -344,21 +344,11 @@ fn now_millis() -> u64 {
 }
 
 fn decode_snapshot_data(data: &[u8]) -> KResult<KLogStateSnapshotData> {
-    let decoded_new: Result<(KLogStateSnapshotData, usize), _> =
-        bincode::serde::decode_from_slice(data, bincode::config::legacy());
-    if let Ok((snapshot_data, _)) = decoded_new {
-        return Ok(snapshot_data);
-    }
-
-    // Temporary fallback for old test snapshots generated before meta support.
-    let (entries, _): (Vec<KLogEntry>, usize) =
+    let (snapshot_data, _): (KLogStateSnapshotData, usize) =
         bincode::serde::decode_from_slice(data, bincode::config::legacy()).map_err(|e| {
             let msg = format!("Failed to decode state snapshot: {}", e);
             error!("{}", msg);
             KLogError::InvalidFormat(msg)
         })?;
-    Ok(KLogStateSnapshotData {
-        entries,
-        meta_entries: Vec::new(),
-    })
+    Ok(snapshot_data)
 }

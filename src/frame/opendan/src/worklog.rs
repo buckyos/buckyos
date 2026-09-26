@@ -167,7 +167,7 @@ impl WorklogService {
         let _ = step_idx; // step_idx is carried via the record payload's step_id
         let args = json!({
             "record": record,
-            "session_id": sid,
+            "owner_session_id": sid,
         });
         let input = AppendRecordInput::parse(&ctx, &args)?;
         self.run_db("worklog append", move |conn| insert_record(conn, input))
@@ -242,14 +242,6 @@ pub struct WorklogRecord {
     pub payload: Json,
 }
 
-/// Backwards-compatible alias used by older call sites that read
-/// `record.record_type`. Prefer `event_type` directly.
-impl WorklogRecord {
-    pub fn record_type(&self) -> &str {
-        self.event_type.as_str()
-    }
-}
-
 #[derive(Clone, Debug)]
 struct AppendRecordInput {
     now_ms: u64,
@@ -269,22 +261,24 @@ struct AppendRecordInput {
 }
 
 impl AppendRecordInput {
+    /// Accepted input shape: `{ "record": { type, status?, ts?, owner_session_id?,
+    /// workspace_id?, agent_id?, behavior?, step_id?, step_index?, trace_id?,
+    /// task_id?, payload? }, owner_session_id? }`. The top-level
+    /// `owner_session_id` is only a fallback used by
+    /// `append_record_for_session`.
     fn parse(ctx: &WorklogAppendCtx, args: &Json) -> Result<Self, AgentToolError> {
-        let raw = args.get("record").unwrap_or(args);
-        let map = raw.as_object().ok_or_else(|| {
-            AgentToolError::InvalidArgs("`record` must be a json object".to_string())
-        })?;
+        let map = args
+            .get("record")
+            .and_then(Json::as_object)
+            .ok_or_else(|| {
+                AgentToolError::InvalidArgs("`record` must be a json object".to_string())
+            })?;
 
         let now_ms = now_ms();
         let timestamp = map
-            .get("timestamp")
-            .and_then(|v| v.as_u64())
-            .or_else(|| {
-                map.get("ts")
-                    .and_then(|v| v.as_str())
-                    .and_then(parse_rfc3339_to_ms)
-            })
-            .or_else(|| args.get("timestamp").and_then(|v| v.as_u64()))
+            .get("ts")
+            .and_then(|v| v.as_str())
+            .and_then(parse_rfc3339_to_ms)
             .unwrap_or(now_ms);
         let ts = map
             .get("ts")
@@ -295,26 +289,15 @@ impl AppendRecordInput {
         let event_type_raw = map
             .get("type")
             .and_then(|v| v.as_str())
-            .or_else(|| map.get("log_type").and_then(|v| v.as_str()))
-            .or_else(|| args.get("type").and_then(|v| v.as_str()))
-            .or_else(|| args.get("log_type").and_then(|v| v.as_str()))
             .ok_or_else(|| AgentToolError::InvalidArgs("missing `type`".to_string()))?;
         let event_type = normalize_event_type(event_type_raw)?;
 
         let session_id = map
-            .get("session_id")
+            .get("owner_session_id")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string())
-            .or_else(|| {
-                map.get("owner_session_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.to_string())
-            })
-            .or_else(|| optional_string(args, "session_id").ok().flatten())
             .or_else(|| optional_string(args, "owner_session_id").ok().flatten());
 
         let workspace_id = map
@@ -322,22 +305,14 @@ impl AppendRecordInput {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .map(|v| v.to_string())
-            .or_else(|| optional_string(args, "workspace_id").ok().flatten());
+            .map(|v| v.to_string());
 
         let agent_did = map
-            .get("agent_did")
+            .get("agent_id")
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
             .map(|v| v.to_string())
-            .or_else(|| {
-                map.get("agent_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.to_string())
-            })
             .or_else(|| {
                 let v = ctx.agent_name.trim();
                 if v.is_empty() {
@@ -367,33 +342,21 @@ impl AppendRecordInput {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .map(|v| v.to_string())
-            .or_else(|| optional_string(args, "step_id").ok().flatten());
+            .map(|v| v.to_string());
         let step_index = map
             .get("step_index")
             .and_then(|v| v.as_u64())
             .and_then(u64_to_u32)
             .or_else(|| step_id.as_deref().and_then(parse_step_index_from_id));
 
-        let status = normalize_status(
-            map.get("status")
-                .and_then(|v| v.as_str())
-                .or_else(|| args.get("status").and_then(|v| v.as_str()))
-                .unwrap_or("OK"),
-        );
+        let status = normalize_status(map.get("status").and_then(|v| v.as_str()).unwrap_or("OK"));
 
         let trace_id = map
-            .get("trace")
-            .and_then(|v| v.get("taskmgr_id"))
+            .get("trace_id")
             .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
             .map(|v| v.to_string())
-            .or_else(|| {
-                map.get("trace_id")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.to_string())
-            })
             .or_else(|| {
                 let v = ctx.trace_id.trim();
                 if v.is_empty() {
@@ -407,13 +370,11 @@ impl AppendRecordInput {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|v| !v.is_empty())
-            .map(|v| v.to_string())
-            .or_else(|| optional_string(args, "task_id").ok().flatten());
+            .map(|v| v.to_string());
 
         let payload = map
             .get("payload")
             .cloned()
-            .or_else(|| args.get("payload").cloned())
             .unwrap_or_else(|| Json::Object(serde_json::Map::new()));
 
         Ok(Self {

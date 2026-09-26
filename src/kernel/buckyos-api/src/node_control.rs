@@ -96,7 +96,6 @@
 //   - stdout/stderr: `/var/log/buckyos.service.out.log`、`/var/log/buckyos.service.err.log`
 //   - plist 设置 `RunAtLoad=true`、`KeepAlive=true`、`AbandonProcessGroup=true`
 //   - preinstall 会检查 Docker CLI 和 root/LaunchDaemon 上下文中的 `docker info`。
-//   - preinstall/uninstall 还会 best-effort 清理旧版 `/Library/LaunchAgents/buckyos.service.plist`。
 // - Linux/Debian:
 //   - 使用 systemd service。
 //   - unit: `/etc/systemd/system/buckyos.service`
@@ -117,7 +116,7 @@
 //     `<root>\bin\node-daemon\node_daemon.exe --enable_active`。
 //   - root 记录在 `HKCU\Environment\BUCKYOS_ROOT`、`HKCU\Software\BuckyOS\InstallDir`、
 //     `HKCU\Software\BuckyOS\BuckyOSUserDir` 和 `HKCU\Software\BuckyOS\InstDir_buckyos`。
-//   - 安装/卸载会删除计划任务、删除 Run 启动项，并为兼容旧版执行 `sc stop/delete buckyos`。
+//   - 安装/卸载会删除计划任务、删除 Run 启动项。
 //   - 如果能解析旧 root，优先执行 `<root>\bin\stop.ps1`；否则 fallback 到
 //     `taskkill /F /IM node_daemon.exe`。
 //
@@ -129,7 +128,6 @@
 // - service_unit_name
 // - scheduled_task_name
 // - run_key_name
-// - legacy_service_name
 // - install_record_path
 // - confidence
 // - evidence
@@ -305,10 +303,9 @@
 //
 // 当前版本 check 流程：
 // 1. 解析 BUCKYOS_ROOT。
+//    - 优先使用进程环境变量 `BUCKYOS_ROOT`。
 //    - macOS/Linux 默认 `/opt/buckyos`。
-//    - Windows 优先读取 `HKCU\Environment\BUCKYOS_ROOT`，再读 `HKCU\Software\BuckyOS\InstallDir`，
-//      兼容旧版 `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment\BUCKYOS_ROOT`
-//      和 `HKLM\Software\BuckyOS\BuckyOSServiceDir`。
+//    - Windows 依次 fallback 到 `%APPDATA%\buckyos`、`%USERPROFILE%\buckyos`、`C:\buckyos`。
 // 2. 检查 `$BUCKYOS_ROOT/etc/node_identity.json` 判断 activated / activation pending。
 // 3. 如果未激活：
 //    - 检查 node_daemon 进程。
@@ -753,7 +750,6 @@ pub struct NodeHostControlState {
     pub service_plist_path: Option<PathBuf>,
     pub scheduled_task_name: Option<String>,
     pub run_key_name: Option<String>,
-    pub legacy_service_name: Option<String>,
     pub confidence: Confidence,
     pub evidence: Vec<String>,
     pub service_enabled: Option<bool>,
@@ -1424,11 +1420,6 @@ pub fn detect_host_control_state() -> NodeHostControlState {
     let mut service_plist_path = None;
     let mut scheduled_task_name = None;
     let mut run_key_name = None;
-    let legacy_service_name = if platform == NodePlatform::Windows {
-        Some("buckyos".to_string())
-    } else {
-        None
-    };
     let mut service_enabled = None;
     let mut service_active = None;
 
@@ -1524,7 +1515,6 @@ pub fn detect_host_control_state() -> NodeHostControlState {
         service_plist_path,
         scheduled_task_name,
         run_key_name,
-        legacy_service_name,
         confidence,
         evidence,
         service_enabled,
@@ -2367,9 +2357,6 @@ fn stop_host_service(host: &NodeHostControlState, report: &mut NodeStopReport) {
                     &["/Delete", "/TN", task, "/F"],
                     &mut report.host_service_actions,
                 );
-            }
-            if let Some(legacy) = &host.legacy_service_name {
-                run_quiet("sc", &["stop", legacy], &mut report.host_service_actions);
             }
             // Run key
             if let Some(run_key) = &host.run_key_name {

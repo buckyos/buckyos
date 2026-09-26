@@ -32,23 +32,6 @@ pub struct SqliteLogStorage {
 }
 
 impl SqliteLogStorage {
-    fn ensure_logs_column(conn: &Connection, col_def: &str) -> Result<(), String> {
-        let sql = format!("ALTER TABLE logs ADD COLUMN {}", col_def);
-        match conn.execute_batch(&sql) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                let err_text = e.to_string();
-                if err_text.contains("duplicate column name") {
-                    Ok(())
-                } else {
-                    let msg = format!("Failed to alter logs table with '{}': {}", col_def, e);
-                    error!("{}", msg);
-                    Err(msg)
-                }
-            }
-        }
-    }
-
     pub fn open(db_path: &Path) -> Result<Self, String> {
         // First initialize the database
         let conn = Connection::open(db_path).map_err(|e| {
@@ -91,6 +74,9 @@ impl SqliteLogStorage {
                 file        TEXT,
                 line        INTEGER,
                 content     TEXT NOT NULL,
+                batch_id    TEXT,
+                record_index INTEGER,
+                record_id   TEXT,
                 FOREIGN KEY(source_fk) REFERENCES log_sources(source_id)
             );",
         )
@@ -99,11 +85,6 @@ impl SqliteLogStorage {
             error!("{}", msg);
             msg
         })?;
-
-        // Backward-compatible schema extension for idempotent append.
-        Self::ensure_logs_column(&conn, "batch_id TEXT")?;
-        Self::ensure_logs_column(&conn, "record_index INTEGER")?;
-        Self::ensure_logs_column(&conn, "record_id TEXT")?;
 
         // Create index on (source_fk, timestamp DESC) for efficient querying by source and time
         // Create index on (timestamp DESC) for efficient time-based queries

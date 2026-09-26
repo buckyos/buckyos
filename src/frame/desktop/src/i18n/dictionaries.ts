@@ -1,3 +1,4 @@
+import { aiCenterPlaygroundEn, aiCenterPlaygroundZh } from './ai-center-playground'
 import { modelCatalogEn, modelCatalogZh } from './model-catalog'
 import { aiCenterEn, aiCenterZh } from './ai-center'
 import { aiCenterRoutingEn, aiCenterRoutingZh } from './ai-center-routing'
@@ -11,6 +12,7 @@ type Dictionary = Record<string, string>
 const en: Dictionary = {
   ...modelCatalogEn,
   ...aiCenterEn,
+  ...aiCenterPlaygroundEn,
   ...aiCenterRoutingEn,
   ...messageHubEn,
   'shell.title': 'BuckyOS Web Desktop',
@@ -917,6 +919,7 @@ const en: Dictionary = {
 const zhCN: Dictionary = {
   ...modelCatalogZh,
   ...aiCenterZh,
+  ...aiCenterPlaygroundZh,
   ...aiCenterRoutingZh,
   ...messageHubZh,
   'shell.title': 'BuckyOS Web Desktop',

@@ -106,10 +106,9 @@ impl BehaviorOutput {
 ///     `{{ session.id }}`, `{{ session.title }}`, `{{ behavior.name }}`,
 ///     `{{ behavior.objective }}`, `{{ workspace.id }}`,
 ///     `{{ paths.agent_root }}`, `{{ paths.session_root }}`,
-///     `{{ runtime.clock_unix_ms }}`, `{{ result_protocol }}`, … See `doc/opendan/Agent Enviroment.md`
-///     §15.1 for the complete set. Render-time extras: `{{ role_md }}`,
-///     `{{ self_md }}` (pre-read from `agent_root/role.md` and
-///     `agent_root/self.md`).
+///     `{{ runtime.clock_unix_ms }}`, `{{ xml_behavior_result_protocol }}`, … See `doc/opendan/Agent Enviroment.md`
+///     §15.1 for the complete set. Pull `role.md` / `self.md` in with
+///     `__INCLUDE(/role.md)__` / `__INCLUDE(/self.md)__`.
 ///   * `on_input_event`: `{event_id}`, `{event_data}` plus any top-level
 ///     scalar field of the JSON payload as `{<key>}`
 ///   * `on_behavior_step_ob` (upon syntax): full Phase-1 contract plus render-time

@@ -193,11 +193,9 @@ interface RawModelMetadata {
   model_driver_id?: unknown
   origin_model_id?: unknown
   provider_model_id?: unknown
-  provider_actual_model_id?: unknown
   provider_options?: unknown
   exact_model?: unknown
   variant?: unknown
-  model_driver?: unknown
   parameter_scale?: unknown
   api_types?: unknown
   logical_mounts?: unknown
@@ -205,7 +203,6 @@ interface RawModelMetadata {
   attributes?: unknown
   pricing?: unknown
   health?: unknown
-  quota?: unknown
 }
 
 interface RawLogicalRouteItem {
@@ -311,7 +308,6 @@ interface RawTraceQueryResponse {
   traces?: unknown[]
   next_cursor?: unknown
   total_count?: unknown
-  total?: unknown
 }
 
 interface AiccDataProvider {
@@ -1053,7 +1049,7 @@ class BuckyOSAiccProvider implements AiccDataProvider {
     return {
       traces,
       nextCursor: asOptionalString(raw.next_cursor),
-      totalCount: asOptionalNumber(raw.total_count) ?? asOptionalNumber(raw.total) ?? traces.length,
+      totalCount: asOptionalNumber(raw.total_count) ?? traces.length,
     }
   }
 
@@ -1357,21 +1353,15 @@ function toRouteTraces(raw: RawTraceQueryResponse): RouteTrace[] {
     .filter((trace): trace is RouteTrace => trace !== null)
 }
 
+// `trace.query` returns the flattened routing trace (AICC `RoutingTrace` plus
+// the stored event identity columns); see `route_trace_record_to_value`.
 function toRouteTrace(value: unknown, index: number): RouteTrace | null {
-  const raw = asRecord(value)
-  const traceEvent = asRecord(raw.trace)
-  const embeddedTrace = asRecord(traceEvent.route_trace_json)
-  const trace = Object.keys(traceEvent).length > 0
-    ? { ...embeddedTrace, ...traceEvent, ...raw }
-    : raw
+  const trace = asRecord(value)
   const requestedModel = asOptionalString(trace.requested_model)
   if (!requestedModel) return null
   const selectedExactModel = asOptionalString(trace.selected_exact_model)
-    ?? asOptionalString(trace.final_model)
   const rankedCandidates = toRankedCandidates(trace.ranked_candidates)
-  const selectedPricingSnapshot = toRoutePricingSnapshot(trace.pricing_snapshot ?? trace.pricing)
-    ?? rankedCandidates.find((candidate) => candidate.selected)?.pricing_snapshot
-    ?? rankedCandidates.find((candidate) => candidate.exact_model === selectedExactModel)?.pricing_snapshot
+  const selectedPricingSnapshot = toRoutePricingSnapshot(trace.estimated_cost)
   return {
     request_id: asNonEmptyString(trace.request_id, asNonEmptyString(trace.trace_id, `route-trace-${index}`)),
     session_id: asOptionalString(trace.session_id ?? trace.task_id),
@@ -1400,24 +1390,14 @@ function toRouteTrace(value: unknown, index: number): RouteTrace | null {
   }
 }
 
+// AICC route traces only carry the selected route's pre-call `estimated_cost`
+// (`Money { amount, currency }`); per-token pricing is not part of the trace.
 function toRoutePricingSnapshot(value: unknown): RouteTrace['pricing_snapshot'] {
-  const source = asRecord(value)
-  const pricing = Object.keys(source).length > 0 ? source : asRecord(asRecord(value).pricing)
-  const snapshot = {
-    input_token_usd: asOptionalNumber(pricing.input_token_usd) ?? asOptionalNumber(pricing.input),
-    output_token_usd: asOptionalNumber(pricing.output_token_usd) ?? asOptionalNumber(pricing.output),
-    cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd) ?? asOptionalNumber(pricing.cache_input),
-    estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd) ?? asOptionalNumber(pricing.cost),
-  }
-  if (
-    snapshot.input_token_usd == null &&
-    snapshot.output_token_usd == null &&
-    snapshot.cache_input_token_usd == null &&
-    snapshot.estimated_cost_usd == null
-  ) {
-    return undefined
-  }
-  return snapshot
+  const money = asRecord(value)
+  const amount = asOptionalNumber(money.amount)
+  const currency = asOptionalString(money.currency)
+  if (amount == null || currency?.toUpperCase() !== 'USD') return undefined
+  return { estimated_cost_usd: amount }
 }
 
 function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
@@ -1428,7 +1408,6 @@ function toRankedCandidates(value: unknown): RouteTrace['ranked_candidates'] {
         exact_model: asNonEmptyString(candidate.exact_model, 'unknown-model'),
         final_score: asOptionalNumber(candidate.final_score),
         selected: asBoolean(candidate.selected, false),
-        pricing_snapshot: toRoutePricingSnapshot(candidate.pricing_snapshot ?? candidate.pricing),
         exact_model_weight: asOptionalNumber(candidate.exact_model_weight),
         provider_weight: asOptionalNumber(candidate.provider_weight),
         preference_score_inputs: toPreferenceScoreInputs(candidate.preference_score_inputs),
@@ -1945,7 +1924,7 @@ function toModelMetadata(
     typeof raw.health === 'string' ? raw.health : rawHealth.status,
     providerHealth,
   )
-  const quotaState = normalizeQuotaState(rawHealth.quota_state ?? raw.quota)
+  const quotaState = normalizeQuotaState(rawHealth.quota_state)
   const capabilities = asRecord(raw.capabilities)
   const attributes = asRecord(raw.attributes)
   const pricing = asRecord(raw.pricing)
@@ -1953,11 +1932,11 @@ function toModelMetadata(
 
   return {
     provider_model_id: providerModelId,
-    provider_actual_model_id: asOptionalString(raw.origin_model_id ?? raw.provider_actual_model_id),
+    provider_actual_model_id: asOptionalString(raw.origin_model_id),
     provider_options: raw.provider_options,
     exact_model: exactModel,
     variant: asOptionalString(raw.variant),
-    model_driver: asNonEmptyString(raw.model_driver_id ?? raw.model_driver, providerDriver),
+    model_driver: asNonEmptyString(raw.model_driver_id, providerDriver),
     parameter_scale: asOptionalString(raw.parameter_scale),
     api_types: apiTypes,
     logical_mounts: toStringArray(raw.logical_mounts),
@@ -1985,8 +1964,7 @@ function toModelMetadata(
       input_token_usd: asOptionalNumber(pricing.input_token_usd),
       output_token_usd: asOptionalNumber(pricing.output_token_usd),
       cache_input_token_usd: asOptionalNumber(pricing.cache_input_token_usd),
-      estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd)
-        ?? asOptionalNumber(pricing.estimated_cost),
+      estimated_cost_usd: asOptionalNumber(pricing.estimated_cost_usd),
     },
     health: {
       status,
