@@ -231,7 +231,10 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &CatalogBuildOptions::default(),
+        )
         .unwrap()
     }
 
@@ -308,7 +311,10 @@ mod tests {
             "OpenAI"
         );
         assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 1);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 2);
+        assert_eq!(
+            catalog.model_driver("openai").unwrap().revision_seq,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ
+        );
     }
 
     #[tokio::test]

@@ -17,7 +17,10 @@ fn catalog() -> Arc<CatalogSnapshot> {
         builtin: load_builtin_metadata().unwrap(),
         ..Default::default()
     }
-    .build_snapshot(2, &CatalogBuildOptions::default())
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &CatalogBuildOptions::default(),
+    )
     .unwrap()
 }
 fn instance(profile: &ProviderProfile, name: &str) -> ProviderInstanceConfig {

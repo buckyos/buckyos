@@ -2360,6 +2360,121 @@ mod tests {
     }
 
     #[test]
+    fn builtin_gpt_token_limits_preserve_priority_and_enforce_boundaries() {
+        let catalog = crate::model::llm_tests::builtin_catalog();
+        let policy = engine(&RoutingPolicyPatch::default());
+        for (model, context) in [
+            ("gpt-5.4", 1_050_000),
+            ("gpt-5.5", 1_050_000),
+            ("gpt-5.4-pro", 1_050_000),
+            ("gpt-5.5-pro", 1_050_000),
+            ("gpt-5.4-mini", 400_000),
+            ("gpt-5.4-nano", 400_000),
+            ("gpt-5.3-codex", 400_000),
+        ] {
+            let llm = catalog.llm_model("openai", model).unwrap();
+            let effort = llm.semantics.effort.as_str();
+            let stocks = [
+                crate::model::llm_tests::inventory("openai", model, model, "openai", &[effort]),
+                crate::model::llm_tests::inventory(
+                    "openai",
+                    model,
+                    &format!("openai/{model}"),
+                    "openrouter",
+                    &[effort],
+                ),
+                crate::model::llm_tests::inventory(
+                    "claude",
+                    "claude-sonnet-5",
+                    "claude-sonnet-5",
+                    "claude",
+                    &["high"],
+                ),
+            ];
+            let overlay = AiccRouteOverlay {
+                logical_tree: BTreeMap::from([(
+                    "llm.chat".into(),
+                    AiccLogicalNodeOverlay {
+                        items: Some(
+                            catalog
+                                .model_drivers()
+                                .flat_map(|driver| &driver.specs)
+                                .filter(|spec| !spec.direct_only)
+                                .map(|spec| {
+                                    LogicalItem::new(
+                                        spec.id.clone(),
+                                        format!("llm.{}", spec.id),
+                                        if spec.id == llm.semantics.spec {
+                                            2.2
+                                        } else if spec.id == "claude-sonnet" {
+                                            2.1
+                                        } else {
+                                            0.1
+                                        },
+                                    )
+                                })
+                                .collect(),
+                        ),
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            };
+            let registry = ModelRegistry::build(
+                &catalog,
+                &stocks,
+                vec![crate::model::llm_tests::definition("llm.chat")],
+                RegistryLayers {
+                    factory: Some(&overlay),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let runtime: BTreeMap<_, _> = registry
+                .model_views()
+                .into_iter()
+                .map(|model| (model.exact_model, state(false, 0.1, 100.0)))
+                .collect();
+            let router = Router::new(&registry, &policy, &runtime);
+            let mut request = RoutingRequest::new(
+                "trace-token-limits",
+                "request-token-limits",
+                "llm.chat",
+                ApiType::Llm,
+                request("llm.chat").caller,
+            );
+            request.requirements.tool_call = true;
+            request.estimated_input_tokens = Some(1_000);
+            for output in [8_192, 128_000] {
+                request.estimated_output_tokens = Some(output);
+                let decision = router.route(&request).unwrap();
+                assert_eq!(decision.selected.origin_model_id, model);
+                assert!(decision
+                    .fallback_candidates
+                    .iter()
+                    .all(|candidate| candidate.origin_model_id == model));
+            }
+            for instance in registry
+                .model_views()
+                .into_iter()
+                .filter(|m| m.model_driver_id == "openai")
+            {
+                request.model = instance.exact_model;
+                request.estimated_output_tokens = Some(128_000);
+                assert!(router.route(&request).is_ok(), "{}", request.model);
+                request.estimated_output_tokens = Some(128_001);
+                assert!(router.route(&request).is_err(), "{}", request.model);
+                request.estimated_output_tokens = Some(8_192);
+                request.estimated_input_tokens = Some(context - 8_192);
+                assert!(router.route(&request).is_ok(), "{}", request.model);
+                request.estimated_input_tokens = Some(context - 8_192 + 1);
+                assert!(router.route(&request).is_err(), "{}", request.model);
+                request.estimated_input_tokens = Some(1_000);
+            }
+        }
+    }
+
+    #[test]
     fn llm_lower_weights_are_tried_only_when_higher_groups_are_unavailable() {
         let old =
             crate::model::llm_tests::inventory("openai", "gpt-5.5-pro", "old", "old", &["high"]);

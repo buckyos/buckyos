@@ -1899,9 +1899,10 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
         )
         .unwrap()
     };
+    let base_seq = crate::settings::BUILTIN_CATALOG_REVISION_SEQ as usize;
     let mut document = crate::model::llm_tests::openai_document();
     let inputs = Arc::new(Inputs {
-        target: AtomicUsize::new(2),
+        target: AtomicUsize::new(base_seq),
         sources: Mutex::new(MetadataSources {
             builtin: crate::model::llm_tests::documents()
                 .iter()
@@ -1925,9 +1926,9 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
     let initial = runtime.capture().await;
     assert!(initial.models.model_views().is_empty());
     for (seq, source, marker) in [
-        (3, MetadataSource::Cloud, "cloud"),
-        (4, MetadataSource::Local, "local"),
-        (5, MetadataSource::SystemConfig, "system"),
+        (base_seq + 1, MetadataSource::Cloud, "cloud"),
+        (base_seq + 2, MetadataSource::Local, "local"),
+        (base_seq + 3, MetadataSource::SystemConfig, "system"),
     ] {
         document["revision_seq"] = json!(seq);
         document["defaults"] = json!({"parameter_scale": marker});
@@ -1966,7 +1967,7 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
         assert_eq!(snapshot.metadata_target_seq, seq as u64);
     }
     let last_good = runtime.capture().await;
-    document["revision_seq"] = json!(6);
+    document["revision_seq"] = json!(base_seq + 4);
     for spec in document["specs"].as_array_mut().unwrap() {
         if spec["id"] == "gpt-pro" {
             spec["id"] = json!("gpt-renamed");
@@ -1979,7 +1980,7 @@ async fn model_metadata_sources_replace_whole_documents_and_publish_trees_atomic
         }
     }
     inputs.sources.lock().await.system_config = vec![file(MetadataSource::SystemConfig, &document)];
-    inputs.target.store(6, Ordering::SeqCst);
+    inputs.target.store(base_seq + 4, Ordering::SeqCst);
     assert!(runtime.before_inference().await.is_err());
     assert!(Arc::ptr_eq(&last_good, &runtime.capture().await));
     assert!(model_directory_json(&last_good.models)

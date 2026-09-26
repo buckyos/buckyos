@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -11,7 +11,7 @@
       "parameter_scale": "turbo",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
-        "max_context_tokens": 204800,
+        "max_context_tokens": 200000,
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
@@ -62,7 +62,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 65536,
-        "max_output_tokens": 16384,
+        "max_output_tokens": 32768,
         "streaming": true,
         "reasoning": true,
         "vision": true
@@ -101,7 +101,8 @@
       "capabilities": {
         "max_context_tokens": 1048576,
         "streaming": true,
-        "tool_call": true
+        "tool_call": true,
+        "max_output_tokens": 4096
       },
       "llm": {
         "spec": "glm-long",
@@ -119,7 +120,8 @@
       "capabilities": {
         "max_context_tokens": 131072,
         "streaming": true,
-        "tool_call": true
+        "tool_call": true,
+        "max_output_tokens": 16384
       },
       "llm": {
         "spec": "glm-flashx",
@@ -137,7 +139,8 @@
       "capabilities": {
         "max_context_tokens": 131072,
         "streaming": true,
-        "tool_call": true
+        "tool_call": true,
+        "max_output_tokens": 32768
       },
       "llm": {
         "spec": "glm-flash",
@@ -182,7 +185,9 @@
       "id": "codegeex-4",
       "api_types": ["llm"],
       "capabilities": {
-        "streaming": true
+        "streaming": true,
+        "max_context_tokens": 131072,
+        "max_output_tokens": 32768
       },
       "llm": {
         "spec": "glm-code",
@@ -309,7 +314,8 @@
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 202752
       },
       "llm": {
         "spec": "glm-standard",
@@ -389,7 +395,8 @@
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 200000
       },
       "llm": {
         "spec": "glm-turbo",
@@ -407,7 +414,8 @@
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 202752
       },
       "llm": {
         "spec": "glm-standard",
@@ -425,7 +433,8 @@
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 202752
       },
       "llm": {
         "spec": "glm-standard",
@@ -443,7 +452,9 @@
       "capabilities": {
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 202752,
+        "max_output_tokens": 131072
       },
       "llm": {
         "spec": "glm-flash",
@@ -461,7 +472,9 @@
       "capabilities": {
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 200000,
+        "max_output_tokens": 131072
       },
       "llm": {
         "spec": "glm-flashx",
@@ -479,7 +492,8 @@
         "max_output_tokens": 131072,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 202752
       },
       "llm": {
         "spec": "glm-standard",
@@ -658,7 +672,8 @@
       "api_types": ["llm"],
       "capabilities": {
         "streaming": true,
-        "tool_call": true
+        "tool_call": true,
+        "max_context_tokens": 131072
       },
       "llm": {
         "spec": "glm-dense-32b",

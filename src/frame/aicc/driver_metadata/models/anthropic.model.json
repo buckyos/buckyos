@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "claude",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -12,7 +12,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -34,7 +34,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -56,7 +56,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -66,7 +66,7 @@
       "llm": {
         "spec": "claude-opus",
         "effort": "high",
-        "default_effort": "high",
+        "default_effort": "medium",
         "supported_efforts": ["low", "medium", "high", "xhigh", "max"],
         "stability": "stable",
         "weight": 55
@@ -78,7 +78,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -100,7 +100,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -122,7 +122,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -144,7 +144,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -166,7 +166,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -188,7 +188,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 200000,
-        "max_output_tokens": 65536,
+        "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -210,7 +210,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 1000000,
-        "max_output_tokens": 131072,
+        "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -232,7 +232,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 200000,
-        "max_output_tokens": 65536,
+        "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -254,7 +254,7 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 200000,
-        "max_output_tokens": 65536,
+        "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
         "vision": true,

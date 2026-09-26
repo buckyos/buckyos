@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "openai",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -26,7 +26,7 @@
         "effort": "none",
         "stability": "stable",
         "weight": 56,
-        "default_effort": "none",
+        "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
     },
@@ -35,7 +35,9 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 400000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-nano",
@@ -59,7 +61,7 @@
         "effort": "low",
         "stability": "stable",
         "weight": 56,
-        "default_effort": "low",
+        "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
     },
@@ -68,14 +70,16 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 400000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-mini",
         "effort": "low",
         "stability": "stable",
         "weight": 54,
-        "default_effort": "low",
+        "default_effort": "none",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
     },
@@ -84,7 +88,9 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-standard",
@@ -100,14 +106,16 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true, "image_generation": true
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-standard",
         "effort": "medium",
         "stability": "stable",
         "weight": 54,
-        "default_effort": "medium",
+        "default_effort": "none",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh"]
       }
     },
@@ -124,7 +132,7 @@
         "effort": "high",
         "stability": "stable",
         "weight": 56,
-        "default_effort": "high",
+        "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
     },
@@ -141,7 +149,7 @@
         "effort": "high",
         "stability": "stable",
         "weight": 56,
-        "default_effort": "high",
+        "default_effort": "medium",
         "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
       }
     },
@@ -150,7 +158,10 @@
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
       "capabilities": {
         "streaming": false, "tool_call": true, "web_search": true, "reasoning": true,
-        "vision": true, "image_generation": true
+        "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000,
+        "json_schema": true
       },
       "llm": {
         "spec": "gpt-pro",
@@ -165,15 +176,17 @@
       "id": "gpt-5.4-pro",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img"],
       "capabilities": {
-        "streaming": false, "tool_call": true, "web_search": true, "reasoning": true,
-        "vision": true, "image_generation": true
+        "streaming": true, "tool_call": true, "web_search": true, "reasoning": true,
+        "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-pro",
         "effort": "high",
         "stability": "stable",
         "weight": 54,
-        "default_effort": "high",
+        "default_effort": "medium",
         "supported_efforts": ["medium", "high", "xhigh"]
       }
     },
@@ -199,7 +212,9 @@
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "reasoning": true,
-        "vision": true
+        "vision": true,
+        "max_context_tokens": 400000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "gpt-codex",
@@ -258,7 +273,8 @@
     {
       "id": "gpt-4o-mini-transcribe",
       "api_types": ["audio.asr"],
-      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"]
+      "logical_mounts": ["audio.asr", "audio.asr.openai", "audio.asr.{model}"],
+      "capabilities": {"max_context_tokens": 16000, "max_output_tokens": 2000}
     },
     {
       "id": "gpt-4o-mini-tts",

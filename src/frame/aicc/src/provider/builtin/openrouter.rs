@@ -560,7 +560,10 @@ mod tests {
             builtin: crate::settings::load_builtin_metadata().unwrap(),
             ..Default::default()
         }
-        .build_snapshot(2, &Default::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
         .unwrap();
         let providers = super::super::builtin_provider_registry(&catalog).unwrap();
         let inventory = crate::provider::InventoryBuilder::build_with_matcher(
@@ -654,7 +657,10 @@ mod tests {
             builtin: crate::settings::load_builtin_metadata().unwrap(),
             ..Default::default()
         }
-        .build_snapshot(2, &Default::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
         .unwrap();
         let providers = super::super::builtin_provider_registry(&catalog).unwrap();
         crate::provider::InventoryBuilder::build_with_matcher(
@@ -777,7 +783,10 @@ mod tests {
             builtin: crate::settings::load_builtin_metadata().unwrap(),
             ..Default::default()
         }
-        .build_snapshot(2, &Default::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
         .unwrap();
         let discovery = OpenRouterDiscovery::with_transport(Arc::new(FakeTransport {
             request: Mutex::new(None),

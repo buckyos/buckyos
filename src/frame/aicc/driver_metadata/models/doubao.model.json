@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -14,7 +14,9 @@
         "streaming": true,
         "tool_call": true,
         "reasoning": true,
-        "vision": true
+        "vision": true,
+        "max_context_tokens": 256000,
+        "max_output_tokens": 128000
       },
       "llm": {
         "spec": "doubao-lite",

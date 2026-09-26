@@ -21,7 +21,9 @@ use serde_json::{json, Map as JsonMap, Value as Json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
 
-use crate::path_utils::{normalize_abs_path, resolve_path_under_root, to_abs_path};
+use crate::path_utils::{
+    normalize_abs_path, resolve_path_from_root, resolve_path_under_root, to_abs_path,
+};
 use crate::tool::CallingConventions;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, AgentToolStatus,
@@ -143,6 +145,7 @@ impl BinOverlayConfig {
 #[derive(Clone, Debug)]
 pub struct LlmBashConfig {
     pub workspace: PathBuf,
+    pub restrict_cwd: bool,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
     pub max_output_bytes: usize,
@@ -156,6 +159,7 @@ impl LlmBashConfig {
     pub fn local_workspace(workspace: impl Into<PathBuf>) -> Self {
         Self {
             workspace: workspace.into(),
+            restrict_cwd: true,
             default_timeout_ms: DEFAULT_TIMEOUT_MS,
             max_timeout_ms: DEFAULT_MAX_TIMEOUT_MS,
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
@@ -195,11 +199,16 @@ impl LlmBashConfig {
         self.allow_env = allow;
         self
     }
+
+    pub fn with_restrict_cwd(mut self, restrict: bool) -> Self {
+        self.restrict_cwd = restrict;
+        self
+    }
 }
 
 /// One-shot run request handed to a [`BashRunner`].
 ///
-/// `cwd` is already validated to live under the configured workspace;
+/// `cwd` is already validated according to the configured directory policy;
 /// `env` is already filtered against `allow_env` and key validation;
 /// `target` is the resolved structured target.
 #[derive(Clone, Debug)]
@@ -649,7 +658,11 @@ impl ExecBashTool {
         let workspace = to_abs_path(&self.config.workspace)?;
         match raw.map(str::trim).filter(|s| !s.is_empty()) {
             Some(value) => {
-                let resolved = resolve_path_under_root(&workspace, value)?;
+                let resolved = if self.config.restrict_cwd {
+                    resolve_path_under_root(&workspace, value)?
+                } else {
+                    resolve_path_from_root(&workspace, value)?
+                };
                 if !resolved.exists() {
                     return Err(AgentToolError::InvalidArgs(format!(
                         "cwd does not exist: {}",
@@ -838,6 +851,14 @@ impl AgentTool for ExecBashTool {
                     "command": {
                         "type": "string",
                         "description": "shell command to execute"
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": if self.config.restrict_cwd {
+                            "Working directory, relative to or within the configured workspace. Defaults to the workspace."
+                        } else {
+                            "Working directory, absolute or relative to the default working directory. Defaults to that directory; outside paths are allowed subject to OS permissions."
+                        }
                     },
                     "target": {
                         "type": "string",

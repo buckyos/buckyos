@@ -626,7 +626,10 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &CatalogBuildOptions::default(),
+        )
         .unwrap();
         for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
             assert!(catalog.known_provider(profile_id).is_some());
@@ -646,7 +649,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             flash.capabilities.as_ref().unwrap()["max_context_tokens"],
-            1_000_000
+            1_048_576
         );
         assert_eq!(
             flash.capabilities.as_ref().unwrap()["max_output_tokens"],
@@ -831,7 +834,7 @@ mod tests {
     #[test]
     fn rules_and_dialects_build_complete_inventory_identity_for_all_three_providers() {
         let catalog = CatalogSnapshot::from_current_files(
-            2,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
             openai_responses_compatible_catalog_files(),
             &CatalogBuildOptions::default(),
         )

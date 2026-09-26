@@ -856,7 +856,10 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &CatalogBuildOptions::default(),
+        )
         .unwrap();
 
         assert_eq!(

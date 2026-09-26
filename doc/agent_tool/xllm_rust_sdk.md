@@ -29,6 +29,8 @@
 
 `默认值 → 合并后的文件配置 → 选中组 → prompt.tools → CLI（TaskOverrides）`。工具开关：`tools.enabled` 默认 false；`--tools/--no-tools` 最高。仅启用未配置列表时使用 `bash` 组（`read_file`、`write_file`、`edit_file`、`exec`）。`exec` 默认超时 1800s、上限 3600s，输出按头 1/4 + 尾 3/4 保留 64KB；命令在独立进程组中运行，超时、中断或到达总时长时整组 SIGKILL，超时返回 Error 结果（`timed_out`、已有输出与重试提示）；非 0 退出的 Error 观察同时带 summary 与输出。运行中的工具调用受 `--timeout`（默认 3600s）和 Ctrl-C 取消。function_call 下配置 `actions` 或 `tools2actions` 报能力错误；behavior + `tools2actions` 把 tools 转为 actions，原生列表置空。
 
+`tools.filesystem_policy` 可在顶层、选中组或 `prompt.tools` 中配置，按同样的字段覆盖顺序生效。`workspace`（省略时的默认值）将内置文件工具路径和 `exec.cwd` 限制在工作目录内；`unrestricted` 清空读写路径白名单并允许 `exec.cwd` 指向其它目录，实际文件访问由运行用户的操作系统权限决定，相对路径仍以工作目录为基准。[通用模板](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 显式选择 `unrestricted`。该策略对 function_call 和 behavior 中的内置 `bash` 组均生效，不改变 MCP 或宿主工具的策略；`workspace` 也不隔离 shell 命令自身的文件访问。实际策略保存在 `RunRecord.config.tools.filesystem_policy` 中，resume 使用保存值，不重新读取目录配置。
+
 ## 4. 提示词组装
 
 system = 按行号升序的非空 section（`## <name>` 标题 + 用户文本 + 系统说明）+ `## runtime_protocol`。系统说明：20 补齐未被模板引用的时间/时区/OS/工作目录；30 列出实际可用 tools/actions（或声明没有工具）；40 只在 exec 启用时输出命令手册（含 `bash_tools`），exec 未启用时整段省略。custom 模式 = 用户整段 + `## capabilities` + `## runtime_protocol`。
@@ -69,11 +71,15 @@ resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非
 
 ## 7. CLI（`agent_tool xllm`）
 
+CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）、阶段、进度日志和诊断信息统一使用英文。用户输入、模型结果和外部工具返回内容按原文保留。
+
 参数面与 PRD §6 一致。stdin 只在是管道（FIFO）或文件重定向时自动读到 EOF；终端、socket、`/dev/null` 视为无管道输入；管道为空报错且不建立 Run。
 
 退出码：0 完成/查询成功；1 终态失败或查询目标不存在；2 参数/配置/输入预检错误（无 Run）；3 可恢复暂停；4 用户中断；5 `--output` 写入失败；6 结果提取或 `--json` 校验失败（原文已保存）。
 
 `--format json` 输出 `XllmResult`（runid、状态、是否终态/可恢复、answer、artifacts、usage、error、Provider/模型/实际返回模型、resume 命令）。
+
+`run_logs: info/debug` 启动时在 stderr 显示实际合并的 `.llm_context` 数量及路径，按祖先到工作目录的覆盖顺序排列；未找到配置时显示 0。resume 显示沿用的原 Run 配置来源，不重新合并。`exec` 的开始、完成和失败日志在括号中显示实际 command，多行和控制字符转义为单行；call_id 保留在内部事件与运行记录中。日志级别取生效配置，显式 `--run-logs` 可覆盖；warn/result 隐藏这些常规进度。
 
 ## 8. buckyos Provider 的登录方式
 

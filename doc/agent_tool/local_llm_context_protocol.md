@@ -1,6 +1,8 @@
 # run_local_llm SDK 化：目录与命令行协议基线
 
-> **2026-09-18 更新**：Rust `LocalLLMContext` 已按 [xllm PRD](../../product/xllm/PRD.md) 重写为 xllm SDK 核心（`src/frame/agent_tool/src/local_llm_context.rs`），命令行入口改为 `agent_tool xllm ...`（旧 `run_local_llm` 命令名已移除），Run 目录格式、请求、结果与退出码均已重新定义，不兼容本文第 2–12 节描述的旧格式。新实现的协议摘要见 [xllm Rust SDK 参考](xllm_rust_sdk.md)。本文其余内容仍作为旧实现的基线记录保留。
+> **2026-09-18 更新**：Rust `LocalLLMContext` 已按 [xllm PRD](../../product/xllm/PRD.md) 重写为 xllm SDK 核心（`src/frame/agent_tool/src/local_llm_context.rs`），命令行入口改为 `agent_tool xllm ...`（旧 `run_local_llm` 命令名已移除），Run 目录格式、请求、结果与退出码均已重新定义，不兼容本文第 2–12 节描述的旧格式。新实现的协议摘要见 [xllm Rust SDK 参考](xllm_rust_sdk.md)。本文第 1–13 节仍作为旧实现的基线与设计参考保留。
+
+> **通用配置入口**：[xllm PRD §4.9](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 提供适用于当前 `agent_tool xllm` 的 `.llm_context` 模板，可用于代码、文档、文件和命令行任务。
 
 
 本轮目标是以 `run_local_llm` 工具为起点，将 OpenDAN 的任务执行能力 SDK 化，并通过新的 TypeScript agent tools 提供命令行入口。SDK 提供可编程接口，CLI 封装 SDK；新设计可以重新定义目录协议、请求、结果及命令行参数。

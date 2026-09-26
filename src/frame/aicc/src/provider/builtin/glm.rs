@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn inventory_uses_glm_metadata_after_models_discovery() {
         let catalog = CatalogSnapshot::build(
-            2,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
             CatalogDocuments {
                 model_drivers: vec![glm_model_driver()],
                 provider_rules: vec![glm_provider_rules(1)],

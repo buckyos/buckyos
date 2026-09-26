@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "deepseek",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -16,7 +16,7 @@
         "json_schema": true,
         "web_search": true,
         "reasoning": true,
-        "max_context_tokens": 1000000,
+        "max_context_tokens": 1048576,
         "max_output_tokens": 393216
       },
       "llm": {
@@ -38,7 +38,7 @@
         "json_schema": true,
         "web_search": true,
         "reasoning": true,
-        "max_context_tokens": 1000000,
+        "max_context_tokens": 1048576,
         "max_output_tokens": 393216
       },
       "llm": {

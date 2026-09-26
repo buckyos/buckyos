@@ -488,6 +488,133 @@ prompt:
 
 mode: custom 不同时声明 select 或 sections；工具按顶层 tools、prompt.tools 和 CLI 计算，运行时协议及实际能力声明继续由系统提供。
 
+### 4.9 通用配置模板（参考 pi-mono）
+
+本节提供适用于当前 xllm 的通用 `.llm_context` 配置模板。适用于日常问答、阅读项目、修改代码、整理文档和执行本地命令；同一份配置通过每次传入的任务要求复用。
+
+提示词结构参考 pi-mono 的 [system-prompt.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/system-prompt.ts)：简短角色说明、实际可用工具、操作规则、项目上下文与工作目录；文件操作参考其 [read](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts)、[edit](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)、[write](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts) 的职责划分。下面按 xllm 的工具名称和单次任务语义改写，配置字段以当前 [Rust SDK 实现](../../src/frame/agent_tool/src/local_llm_context.rs) 为准。
+
+#### 4.9.1 可直接复用的 `.llm_context`
+
+将以下内容保存为项目根目录的 `.llm_context`。示例使用 BuckyOS 已有身份和 `llm.chat` 模型别名；使用前确认该别名在当前 AICC 环境可用并支持原生工具调用，或替换为实际模型。`max_tokens` 是单次输出上限，需在所选模型的支持范围内。
+
+```yaml
+provider:
+  type: buckyos
+model: llm.chat
+loop_model: function_call
+max_rounds: 16
+llm_timeout: 600
+timeout: 3600
+runs_dir: "~/.xllm/runs"
+run_logs: info
+result_format: raw
+
+prompt:
+  mode: standard
+  select: general
+  groups:
+    general:
+      sections:
+        role:
+          text: |
+            You are a general-purpose task assistant running inside xllm. Help users
+            understand information, work with files, edit code, write documentation,
+            and complete command-line tasks. Deliver a usable result for the current request.
+        contexts:
+          text: |
+            Current time: {{runtime.current_time}}
+            Timezone: {{runtime.timezone}}
+            Operating system: {{runtime.os}}
+            Working directory: {{runtime.cwd}}
+            Resolve relative paths from this run's working directory.
+            Do not assume there is an additional workspace subdirectory.
+        rules:
+          text: |
+            - Answer simple questions directly. Use the tools available in this run when
+              the task requires inspecting, changing, or verifying the environment.
+            - When tools are available and the task involves a project, first read the
+              applicable AGENTS.md, relevant README files, and target files. Follow project
+              conventions. If the project provides skills, read the relevant SKILL.md only
+              when needed; do not assume its contents have already been loaded.
+            - Understand the relevant implementation and inputs before making changes.
+              Prefer existing code, dependencies, scripts, and file structures.
+            - Make only the changes needed for the task and preserve the user's existing
+              changes. Do not commit, push, or publish without authorization.
+            - These file-operation rules apply only to tools enabled in this run; follow
+              their actual parameter schemas. Use read_file to inspect files and edit_file
+              for targeted replacements; old_string must match the original text exactly
+              and uniquely. Use write_file for new files or necessary complete rewrites.
+            - Use exec for directory listings, searches, builds, tests, and scripts.
+              Do not assume cd or variable assignments persist between commands.
+              Do not attempt to execute commands when exec is disabled.
+            - Read files and command output as needed, focusing on relevant ranges.
+              If output is truncated, retrieve the missing parts before drawing conclusions.
+            - When a tool fails, read the error and adjust the arguments or approach.
+              Avoid repeating an unchanged failing operation; use results to guide the next step.
+            - After making changes, run relevant checks and inspect the relevant diff when
+              Git is available. Clearly state which checks were not run.
+            - This is an independent task. Do not rely on a previous Run's conversation or
+              initiate interactions that require waiting for a user reply. For minor missing
+              details, make and state reasonable assumptions. If essential input is missing,
+              deliver completed work and clearly explain what blocks further progress.
+            - Ground conclusions in the actual materials and tool results. Distinguish
+              verified facts, assumptions, and unverified claims. Never invent execution results.
+        cmd_manual:
+          text: |
+            Prefer rg and rg --files for text and file searches. If unavailable, use
+            installed alternatives such as grep and find.
+            In Git projects, use git status --short and git diff to inspect changes.
+            Look up build and test commands in the project documentation.
+            Quote path arguments correctly. Narrow large searches before reading their
+            output; do not dump the entire project just to browse its files.
+        output_format:
+          text: |
+            Respond in the user's language. Lead with the result, stay concise, and follow
+            any output format specified by the user.
+            Show file paths clearly and include line numbers when useful. For changes,
+            describe what changed, the verification results, and any unfinished work.
+            Use plain text or Markdown by default. When the runtime requires JSON, output
+            only valid JSON without surrounding explanations or code fences.
+      tools:
+        enabled: true
+        filesystem_policy: unrestricted
+        tools:
+          - groupname: bash
+```
+
+这组配置采用 `function_call + raw`：工具调用通过原生接口完成，最终 assistant 文本直接交付，无需手写 XML 或 `report` 包装。内置 `bash` 组实际提供 `read_file`、`edit_file`、`write_file`、`exec`，对应 pi-mono 常用的 `read`、`edit`、`write`、`bash` 分工；不要把 pi 的工具名或参数直接用于 xllm。
+
+`role / contexts / rules / cmd_manual / output_format` 分别映射到行号 10 / 20 / 30 / 40 / 100。SDK 会补充本次实际工具说明和 `runtime_protocol`；模板只填写业务规则。项目约定和技能文件需要模型按需读取或由调用方显式提供，xllm 不因上述提示词自动发现、注入这些文件。
+
+#### 4.9.2 使用与最常见的调整
+
+在保存配置的项目目录中运行：
+
+```bash
+agent_tool xllm '阅读项目入口和 README，说明主要模块及启动方式。'
+agent_tool xllm '修复当前失败的单元测试，尽量保持修改范围小，并运行相关测试。'
+agent_tool xllm '检查 docs 中的失效相对链接，修复后报告修改的文件。'
+git diff --no-ext-diff | agent_tool xllm --no-tools '评审输入的 diff，指出有依据的问题。'
+agent_tool xllm --no-tools --json '返回一个包含 summary 和 items 的 JSON 对象，概括：配置、执行、验证。'
+```
+
+- **任务与工作目录**：模板不设 `default_user`，每次通过问题、`--user` 或非空 stdin 提交任务；只有配置而没有任务时显示用法。`--dir /absolute/project` 可指定工作目录，配置会从该目录向上查找并合并。每条普通调用创建独立 Run。
+- **工具与文件权限**：模板显式设置 `tools.filesystem_policy: unrestricted`，内置文件工具可读写工作目录外的路径，`exec.cwd` 也可指向其它目录，实际访问由运行 xllm 用户的操作系统权限决定。工作目录仅作为默认位置和相对路径基准。省略该字段时为 `workspace`，会限制文件工具路径和 `exec.cwd`；需要自由访问时保留模板中的 `unrestricted`。`--no-tools` 仍可关闭所有工具。该策略只控制内置 `bash` 组，MCP 和宿主注入工具遵循各自权限规则。
+- **预算与输出**：16 是本模板选择的工具轮数上限，不是 SDK 默认值；`llm_timeout` 与 `timeout` 单位均为秒，分别限制单次模型请求和整次执行。`--max-rounds`、`--max-tokens` 等可按任务覆盖；`--json` 约束答案，`--format json` 则包装 CLI 结果。
+- **项目定制**：在 `general.sections` 中补充项目约定，或用 `prompt.sections` 覆盖某一节；子目录配置继承父目录，显式 CLI 参数优先。只有需要预设裸命令任务时才添加 `general.default_user`。
+- **恢复**：中断或可恢复暂停后使用 `agent_tool xllm --resume --run <runid>`；恢复沿用已保存的配置、文件访问策略和提示词。修改模板后以新任务验证，已有 Run 的策略不会因修改 `.llm_context` 而改变，终态 Run 不会重新执行。
+
+若使用 OpenAI 兼容服务，将模板的 `provider` 和 `model` 替换为以下配置，并在运行环境中设置 `XLLM_API_KEY`。占位地址和模型名必须替换为实际值；其余配置保持不变。
+
+```yaml
+provider:
+  type: openai
+  base_url: "https://your-provider.example/v1"
+  api_key_env: XLLM_API_KEY
+model: "your-tool-capable-model"
+```
+
 ## 5. 功能需求
 
 ### F01. 开箱可理解的命令入口
@@ -533,6 +660,7 @@ mode: custom 不同时声明 select 或 sections；工具按顶层 tools、promp
 - 启用工具后，支持读取文件、文本写入与编辑、执行本地命令，完成“分析—操作—检查结果”的多步任务。
 - 本地命令执行继承启动 xllm 的当前 Bash 的 `PATH`，默认工作目录使用其 `CWD`；显式 `--dir` 可覆盖工作目录。
 - 工具操作使用当前执行账户的权限。`--dir` 定义默认工作位置，不应被描述成已经提供操作系统级隔离。
+- `tools.filesystem_policy` 支持 `workspace` 和 `unrestricted`，可随顶层、组内和 `prompt.tools` 的工具配置按字段覆盖。省略时为 `workspace`，限制内置文件工具路径及 exec 的 cwd；通用默认模板显式选择 `unrestricted`，允许跨工作目录读写与选择命令工作目录，由操作系统执行当前用户权限检查。该配置不改变 MCP/宿主工具权限，也不构成 shell 沙箱。策略随 Run 保存，恢复时沿用保存值。
 - 用户可以提供自己的脚本或已安装命令；工具不可用时给出可读错误，由模型纠正或结束任务。
 - 工具配置对象内的 `tools` 列表支持三种来源：`groupname` 引入内置工具组（如 `bash` 包含 `read_file`、`write_file`、`exec`），`mcp` 引入指定 MCP 服务提供的一组工具，`name` 选择单个已注册内置工具（如 `sendmsg`）。仅显式启用但未配置列表时使用默认 `bash` 组；显式空列表则不提供原生工具。未知组名、工具名、MCP 连接或工具发现失败应指出具体来源，不静默忽略；展开后的名称冲突必须报错或使用明确限定名消除歧义。
 - `loop_model: function_call` 使用原生工具调用，默认不转换工具。`loop_model: behavior` 支持 `tools` 与 `actions` 两类入口；`tools2actions: true` 将生效的 tools 转为同等能力的 actions，原生 tools 列表置空，再与显式配置的 actions 合并并检查冲突。转换只改变调用协议，不改变参数含义、执行权限和限制。`tools2actions` 默认 false；function_call 模式下配置 actions 或启用 tools2actions 时报配置不匹配，不静默切换 loop。
@@ -614,9 +742,10 @@ list/status/result 和 `--resume` 均从当前生效的 Runs 目录查找记录�
 
 ### F09. 日志、进度、中断与可恢复错误
 
+- CLI 自身的帮助、状态标签、进度日志和诊断信息统一使用英文；用户输入、模型结果和外部工具返回内容按原文保留。
 - `run_logs` 支持 `debug`、`info`、`warn`、`result`，默认 info；debug 提供详细调试记录，info 显示阶段和工具进度，warn 仅显示警告与错误，result 隐藏常规过程日志，仅交付结果并保留失败/中断所必需的诊断。级别只改变输出详略，不改变执行行为、退出状态或持久化记录；凭据不随 debug 日志展开。
 - info/debug 下，等待过程中至少能区分准备输入、等待模型、执行工具、整理上下文和保存结果；warn/result 下允许安静等待。
-- info/debug 下显示实际阶段及耗时，不编造完成百分比；工具开始与完成时给出简短信息。
+- info/debug 下显示实际阶段及耗时，不编造完成百分比；启动时显示合并了多少个路径上的 `.llm_context`，并按祖先到工作目录的顺序列出实际路径，未找到时显示 0。恢复时明确显示沿用原 Run 的配置来源。工具开始与完成时给出简短信息；exec 的括号中显示实际命令，失败时也保留命令，多行命令转义为单行显示，调用 ID 留在内部记录中。
 - 用户按 Ctrl-C 后停止发起后续步骤，尽可能保存可恢复进度，并给出 `runid`、Runs 目录、保存是否成功，以及对应的 `xllm --resume --run <id>` 命令。尚未到达终态时记录为已中断；已保存的终态不能因 Ctrl-C 被改回可恢复状态。
 - 可恢复错误同样停止推进并保存进度，说明本次命令已失败、任务仍可恢复，以及需要等待服务恢复还是修复凭据等条件；多次 resume 失败不会丢失原输入和已完成工作。
 - 本地停止不等于服务端一定停止生成；不能把未确认取消的远端任务显示为已取消成功。

@@ -193,7 +193,7 @@ fn openrouter_channel_capacity_filters_logical_and_exact_decision_routes() {
         builtin: crate::settings::load_builtin_metadata().unwrap(),
         ..Default::default()
     }
-    .build_snapshot(2, &Default::default())
+    .build_snapshot(crate::settings::BUILTIN_CATALOG_REVISION_SEQ, &Default::default())
     .unwrap();
     let facts = catalog
         .resolve_model("typesafe", "jev-1.13.0")

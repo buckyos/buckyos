@@ -465,7 +465,8 @@ fn encode_messages(
 ) -> ProtocolResultValue<(Vec<Value>, Vec<Value>)> {
     let mut system = Vec::new();
     let mut wire_messages = Vec::new();
-    for message in messages {
+    for group in messages.chunk_by(|a, b| a.role == AiRole::Tool && b.role == AiRole::Tool) {
+        let message = &group[0];
         match message.role {
             AiRole::System | AiRole::Developer => {
                 for block in &message.content {
@@ -491,7 +492,7 @@ fn encode_messages(
             }
             AiRole::Tool => wire_messages.push(json!({
                 "role": "user",
-                "content": message.content.iter()
+                "content": group.iter().flat_map(|message| &message.content)
                     .map(|block| encode_content(block, true, context))
                     .collect::<ProtocolResultValue<Vec<_>>>()?
             })),
@@ -549,7 +550,8 @@ fn encode_message_content(
 fn validate_message_sequence(messages: &[AiMessage]) -> ProtocolResultValue<()> {
     let mut saw_conversation = false;
     let mut pending_tool_uses = BTreeSet::new();
-    for message in messages {
+    for group in messages.chunk_by(|a, b| a.role == AiRole::Tool && b.role == AiRole::Tool) {
+        let message = &group[0];
         if matches!(message.role, AiRole::System | AiRole::Developer) {
             if saw_conversation {
                 return Err(ProtocolError::invalid_request(
@@ -565,9 +567,9 @@ fn validate_message_sequence(messages: &[AiMessage]) -> ProtocolResultValue<()> 
                     "Claude tool results must immediately follow assistant tool use",
                 ));
             }
-            let result_ids = message
-                .content
+            let result_ids = group
                 .iter()
+                .flat_map(|message| &message.content)
                 .map(|content| match content {
                     AiContent::ToolResult { call_id, .. } => Ok(call_id.clone()),
                     _ => Err(ProtocolError::invalid_request(
@@ -575,7 +577,13 @@ fn validate_message_sequence(messages: &[AiMessage]) -> ProtocolResultValue<()> 
                     )),
                 })
                 .collect::<ProtocolResultValue<BTreeSet<_>>>()?;
-            if result_ids.len() != message.content.len() || result_ids != pending_tool_uses {
+            if result_ids.len()
+                != group
+                    .iter()
+                    .map(|message| message.content.len())
+                    .sum::<usize>()
+                || result_ids != pending_tool_uses
+            {
                 return Err(ProtocolError::invalid_request(
                     "Claude tool results must match every immediately preceding tool use",
                 ));
@@ -1671,6 +1679,130 @@ mod tests {
         assert_eq!(body["thinking"]["budget_tokens"], 256);
         assert_eq!(body["stream"], true);
         assert!(body.get("execution_mode").is_none());
+    }
+
+    #[test]
+    fn encodes_parallel_tool_results_in_one_user_message() {
+        let tool_use = |id: &str| AiContent::ToolUse {
+            call_id: id.to_string(),
+            name: "exec".to_string(),
+            args: HashMap::new(),
+        };
+        let tool_result = |id: &str, is_error| AiContent::ToolResult {
+            call_id: id.to_string(),
+            content: vec![AiToolResultContent::text(format!("result {id}"))],
+            is_error,
+        };
+        let results = vec![tool_result("tool-2", true), tool_result("tool-1", false)];
+        let mut messages = vec![
+            AiMessage::text(AiRole::User, "run both tools"),
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![tool_use("tool-1"), tool_use("tool-2")],
+            ),
+        ];
+        messages.extend(
+            results
+                .into_iter()
+                .map(|result| AiMessage::new(AiRole::Tool, vec![result])),
+        );
+        messages.extend([
+            AiMessage::new(AiRole::Assistant, vec![tool_use("tool-3")]),
+            AiMessage::new(AiRole::Tool, vec![tool_result("tool-3", false)]),
+            AiMessage::text(AiRole::Assistant, "finished"),
+        ]);
+        let mut request = LlmChatInvokeRequest::new("ignored@instance", messages);
+        request.max_output_tokens = Some(8192);
+        let input = input(request, &[]);
+        let wire = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            })
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert_eq!(body["messages"].as_array().unwrap().len(), 6);
+        assert_eq!(
+            body["messages"][2],
+            json!({
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "tool-2", "content": [
+                        {"type": "text", "text": "result tool-2"}
+                    ], "is_error": true},
+                    {"type": "tool_result", "tool_use_id": "tool-1", "content": [
+                        {"type": "text", "text": "result tool-1"}
+                    ], "is_error": false}
+                ]
+            }),
+        );
+        assert_eq!(body["messages"][3]["role"], "assistant");
+        assert_eq!(body["messages"][3]["content"][0]["id"], "tool-3");
+        assert_eq!(body["messages"][4]["role"], "user");
+        assert_eq!(body["messages"][4]["content"].as_array().unwrap().len(), 1);
+        assert_eq!(body["messages"][4]["content"][0]["tool_use_id"], "tool-3");
+        assert_eq!(body["messages"][5]["content"][0]["text"], "finished");
+    }
+
+    #[test]
+    fn rejects_missing_duplicate_unknown_or_interrupted_parallel_tool_results() {
+        let tool_result = |id: &str| {
+            AiMessage::new(
+                AiRole::Tool,
+                vec![AiContent::ToolResult {
+                    call_id: id.to_string(),
+                    content: vec![AiToolResultContent::text("result")],
+                    is_error: false,
+                }],
+            )
+        };
+        for results in [
+            vec![tool_result("tool-1")],
+            vec![tool_result("tool-1"), tool_result("tool-1")],
+            vec![tool_result("tool-1"), tool_result("unknown")],
+            vec![
+                tool_result("tool-1"),
+                AiMessage::text(AiRole::User, "interrupt"),
+                tool_result("tool-2"),
+            ],
+            vec![
+                tool_result("tool-1"),
+                AiMessage::text(AiRole::Assistant, "interrupt"),
+                tool_result("tool-2"),
+            ],
+            vec![
+                tool_result("tool-1"),
+                tool_result("tool-2"),
+                tool_result("tool-2"),
+            ],
+        ] {
+            let mut messages = vec![AiMessage::new(
+                AiRole::Assistant,
+                ["tool-1", "tool-2"]
+                    .into_iter()
+                    .map(|id| AiContent::ToolUse {
+                        call_id: id.to_string(),
+                        name: "exec".to_string(),
+                        args: HashMap::new(),
+                    })
+                    .collect(),
+            )];
+            messages.extend(results);
+            let mut request = LlmChatInvokeRequest::new("ignored@instance", messages);
+            request.max_output_tokens = Some(8192);
+            let input = input(request, &[]);
+            let error = codec()
+                .encode(&CodecCall {
+                    api_type: ApiType::Llm,
+                    input: &input,
+                    context: &context(),
+                })
+                .unwrap_err();
+            assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        }
     }
 
     #[test]

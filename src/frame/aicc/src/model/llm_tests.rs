@@ -37,6 +37,63 @@ pub(crate) fn builtin_catalog() -> CatalogSnapshot {
     compile(documents()).unwrap()
 }
 
+#[test]
+fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
+    let catalog = builtin_catalog();
+    let mut missing = BTreeSet::new();
+    for driver in catalog.model_drivers() {
+        for model in &driver.models {
+            let semantics = catalog
+                .resolve_model(&driver.model_driver_id, &model.id)
+                .unwrap()
+                .semantics;
+            if semantics.exclude == Some(true)
+                || !semantics
+                    .api_types
+                    .as_ref()
+                    .is_some_and(|types| types.contains("llm"))
+            {
+                continue;
+            }
+            let caps = semantics.capabilities.unwrap_or_default();
+            for key in ["max_context_tokens", "max_output_tokens"] {
+                if let Some(value) = caps.get(key) {
+                    assert!(
+                        value.as_u64().is_some_and(|tokens| tokens > 0),
+                        "{} / {}: {key} must be a positive integer",
+                        driver.model_driver_id,
+                        model.id
+                    );
+                } else {
+                    missing.insert((driver.model_driver_id.clone(), model.id.clone(), key));
+                }
+            }
+            if let (Some(context), Some(output)) = (
+                caps.get("max_context_tokens").and_then(Value::as_u64),
+                caps.get("max_output_tokens").and_then(Value::as_u64),
+            ) {
+                assert!(output <= context, "{}: output exceeds context", model.id);
+            }
+        }
+    }
+    let documented = [
+        ("glm", "charglm-4", "max_context_tokens"),
+        ("glm", "charglm-4", "max_output_tokens"),
+        ("glm", "emohaa", "max_context_tokens"),
+        ("glm", "emohaa", "max_output_tokens"),
+        ("glm", "glm-4-32b-0414-128k", "max_output_tokens"),
+        ("kimi", "kimi-k2.5", "max_output_tokens"),
+        ("kimi", "kimi-k2.6", "max_output_tokens"),
+    ]
+    .into_iter()
+    .map(|(driver, model, field)| (driver.to_owned(), model.to_owned(), field))
+    .collect();
+    assert_eq!(
+        missing, documented,
+        "Check official model limits and doc/aicc/driver_metadata_review_20260926.md"
+    );
+}
+
 pub(crate) fn definition(path: &str) -> LogicalModelDefinition {
     LogicalModelDefinition {
         path: path.into(),

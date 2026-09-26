@@ -601,6 +601,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同四元组回放时原生状态是权威表示并替代对应 canonical block；跨实例、原厂或模型时由源坐标到目标坐标执行转换，不能仅凭 namespace 直传。
 7. tool result 的 canonical `call_id` 必须能关联此前的 `tool_use`。若目标协议还要求函数名，Adapter 必须从同一历史中的 `tool_use` 恢复并校验名称，不能把内部生成的占位 ID 或缺失名称发送给 Provider。
+8. 每条 canonical `tool` 消息只包含一个 `tool_result`；同一 assistant 消息的多个工具结果通过连续多条 `tool` 消息回传。Claude Adapter 将这些消息合并为一条原生 `user` 消息，按输入顺序保留全部结果，并检查结果与前一轮工具调用一一对应；缺失、重复、未知 ID 或结果之间插入其他角色消息仍属非法。参见 [Claude 并行工具协议](https://platform.claude.com/docs/en/agents-and-tools/tool-use/parallel-tool-use)。
 
 ### 3.3 Generation Parameters
 

@@ -976,7 +976,7 @@ const zhCN: Dictionary = {
   'runtime.browser': '浏览器',
   'runtime.desktop-app': '桌面 App',
   'runtime.mobile-app': '移动 App',
-  'states.loadingTitle': '正在加载桌面原型',
+  'states.loadingTitle': '正在加载桌面',
   'states.loadingBody': 'Mock provider 正在准备页面、部件与应用 Manifest。',
   'states.emptyTitle': '布局为空',
   'states.emptyBody': '当前没有放置任何图标或部件，可恢复默认布局继续体验。',

@@ -14,7 +14,10 @@ use crate::catalog::CatalogKind;
 use crate::catalog::{CatalogSnapshot, CurrentCatalogFile};
 use crate::error::{CloudUpdateError, SettingsError};
 use crate::matching::{CompiledMatchRule, MatchContext, MatchRule, RELEASE_TRACK_MATCH_SCHEMA};
-use crate::settings::{CloudMetadataSource, MetadataFile, MetadataSource, MetadataSourceManager};
+use crate::settings::{
+    CloudMetadataSource, MetadataFile, MetadataSource, MetadataSourceManager,
+    BUILTIN_CATALOG_REVISION_SEQ,
+};
 #[cfg(test)]
 use crate::settings::{MetadataOverrideLoader, StaticMetadataOverrideLoader};
 
@@ -25,7 +28,6 @@ const MANIFEST_FORMAT: &str = "buckyos.aicc.provider-catalog-manifest";
 const INDEX_PATH: &str = "aicc/provider-catalog/index.json";
 const STATE_FILE: &str = "state.json";
 const REVISIONS_DIR: &str = "revisions";
-const BUILTIN_CATALOG_REVISION_SEQ: u64 = 2;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

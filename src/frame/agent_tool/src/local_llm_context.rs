@@ -377,15 +377,15 @@ impl RunStatus {
         }
     }
 
-    /// 面向用户的中文标签。
+    /// User-facing status label.
     pub fn label(&self) -> &'static str {
         match self {
-            RunStatus::Running => "执行中",
-            RunStatus::Interrupted => "已中断",
-            RunStatus::Paused => "暂停（可恢复错误）",
-            RunStatus::Completed => "已完成",
-            RunStatus::Failed => "失败（不可恢复）",
-            RunStatus::LimitReached => "达到限制",
+            RunStatus::Running => "running",
+            RunStatus::Interrupted => "interrupted",
+            RunStatus::Paused => "paused (recoverable error)",
+            RunStatus::Completed => "completed",
+            RunStatus::Failed => "failed (unrecoverable)",
+            RunStatus::LimitReached => "limit reached",
         }
     }
 }
@@ -512,12 +512,22 @@ pub struct BashToolManual {
     pub usage: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FilesystemPolicy {
+    #[default]
+    Workspace,
+    Unrestricted,
+}
+
 /// 工具配置对象；顶层、组内、`prompt.tools` 三处共用同一形状。
 /// `None` 表示未声明（继承），`Some(vec![])` 表示显式清空。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolsConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filesystem_policy: Option<FilesystemPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools2actions: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -533,6 +543,9 @@ impl ToolsConfig {
     pub fn merge_over(&mut self, over: &ToolsConfig) {
         if over.enabled.is_some() {
             self.enabled = over.enabled;
+        }
+        if over.filesystem_policy.is_some() {
+            self.filesystem_policy = over.filesystem_policy;
         }
         if over.tools2actions.is_some() {
             self.tools2actions = over.tools2actions;
@@ -996,9 +1009,31 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
     ctx.check_keys(
         field,
         m,
-        &["enabled", "tools2actions", "tools", "actions", "bash_tools"],
+        &[
+            "enabled",
+            "filesystem_policy",
+            "tools2actions",
+            "tools",
+            "actions",
+            "bash_tools",
+        ],
     )?;
     let enabled = ctx.get_bool(field, m, "enabled")?;
+    let filesystem_policy = match ctx.get_str(field, m, "filesystem_policy")? {
+        None => None,
+        Some(s) => Some(match s.trim().to_ascii_lowercase().as_str() {
+            "workspace" => FilesystemPolicy::Workspace,
+            "unrestricted" => FilesystemPolicy::Unrestricted,
+            _ => {
+                return Err(ctx.err(
+                    &join_field(field, "filesystem_policy"),
+                    format!(
+                        "unsupported filesystem_policy `{s}` (supported: workspace, unrestricted)"
+                    ),
+                ))
+            }
+        }),
+    };
     let tools2actions = ctx.get_bool(field, m, "tools2actions")?;
     let tools = match m.get("tools") {
         None => None,
@@ -1048,6 +1083,7 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
     };
     Ok(ToolsConfig {
         enabled,
+        filesystem_policy,
         tools2actions,
         tools,
         actions,
@@ -1534,6 +1570,11 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         if let Some(t) = &f.tools {
             merged.tools.merge_over(t);
             merged.sources.insert("tools".into(), src.clone());
+            if t.filesystem_policy.is_some() {
+                merged
+                    .sources
+                    .insert("tools.filesystem_policy".into(), src.clone());
+            }
         }
         if let Some(p) = &f.prompt {
             if p.mode.is_some() {
@@ -1588,6 +1629,11 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
                     None => merged.prompt.tools = Some(t.clone()),
                 }
                 merged.sources.insert("prompt.tools".into(), src.clone());
+                if t.filesystem_policy.is_some() {
+                    merged
+                        .sources
+                        .insert("prompt.tools.filesystem_policy".into(), src.clone());
+                }
             }
         }
     }
@@ -1909,6 +1955,8 @@ pub struct ResolvedTool {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveTools {
     pub enabled: bool,
+    #[serde(default)]
+    pub filesystem_policy: FilesystemPolicy,
     pub tools2actions: bool,
     /// 声明的来源（展开前）。
     #[serde(default)]
@@ -1984,12 +2032,23 @@ pub fn compute_tools_config(
     for key in ["enabled", "tools2actions", "tools", "actions", "bash_tools"] {
         sources.insert(key.to_string(), top_src.clone());
     }
+    sources.insert(
+        "filesystem_policy".into(),
+        merged
+            .sources
+            .get("tools.filesystem_policy")
+            .cloned()
+            .unwrap_or_else(|| "default".into()),
+    );
     if include_group {
         if let Some(gt) = group.and_then(|g| g.tools.as_ref()) {
             cfg.merge_over(gt);
             let gsrc = "selected group".to_string();
             if gt.enabled.is_some() {
                 sources.insert("enabled".into(), gsrc.clone());
+            }
+            if gt.filesystem_policy.is_some() {
+                sources.insert("filesystem_policy".into(), gsrc.clone());
             }
             if gt.tools2actions.is_some() {
                 sources.insert("tools2actions".into(), gsrc.clone());
@@ -2014,6 +2073,16 @@ pub fn compute_tools_config(
             .unwrap_or_else(|| "prompt.tools".into());
         if pt.enabled.is_some() {
             sources.insert("enabled".into(), psrc.clone());
+        }
+        if pt.filesystem_policy.is_some() {
+            sources.insert(
+                "filesystem_policy".into(),
+                merged
+                    .sources
+                    .get("prompt.tools.filesystem_policy")
+                    .cloned()
+                    .unwrap_or_else(|| psrc.clone()),
+            );
         }
         if pt.tools2actions.is_some() {
             sources.insert("tools2actions".into(), psrc.clone());
@@ -2421,7 +2490,18 @@ fn build_rules_system_text(loop_model: LoopModel, tools: &EffectiveTools) -> Str
     if tools.tools2actions {
         lines.push("Configured tools were converted into actions; call them through the XML action protocol, not through native function calls.".to_string());
     }
-    lines.push("Tools run with the permissions of the current user in the working directory. Do not claim a tool or command exists unless it is listed here.".to_string());
+    if tools
+        .native
+        .iter()
+        .chain(&tools.actions)
+        .any(|tool| tool.source == "groupname:bash")
+    {
+        lines.push(match tools.filesystem_policy {
+            FilesystemPolicy::Workspace => "Builtin file tools and exec's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.",
+            FilesystemPolicy::Unrestricted => "Builtin file tools and exec's cwd may access paths outside the working directory, subject to the current user's operating-system permissions. Relative paths default to the working directory.",
+        }.to_string());
+    }
+    lines.push("Do not claim a tool or command exists unless it is listed here.".to_string());
     lines.join("\n")
 }
 
@@ -3164,12 +3244,12 @@ pub enum RunPhase {
 impl RunPhase {
     pub fn label(&self) -> &'static str {
         match self {
-            RunPhase::PreparingInput => "准备输入",
-            RunPhase::FileModel => "文件模型分析附件",
-            RunPhase::WaitingModel => "等待模型",
-            RunPhase::ExecutingTool => "执行工具",
-            RunPhase::CompactingContext => "整理上下文",
-            RunPhase::SavingResult => "保存结果",
+            RunPhase::PreparingInput => "preparing input",
+            RunPhase::FileModel => "analyzing attachments with file model",
+            RunPhase::WaitingModel => "waiting for model",
+            RunPhase::ExecutingTool => "executing tool",
+            RunPhase::CompactingContext => "compacting context",
+            RunPhase::SavingResult => "saving result",
         }
     }
 }
@@ -3190,10 +3270,12 @@ pub enum RunEvent {
     ToolStarted {
         name: String,
         call_id: String,
+        command: Option<String>,
     },
     ToolFinished {
         name: String,
         call_id: String,
+        command: Option<String>,
         ok: bool,
         duration_ms: u64,
     },
@@ -3215,6 +3297,7 @@ struct ObserverWorklog {
     run_id: String,
     observer: Arc<dyn RunObserver>,
     llm_started_at: Mutex<Option<u64>>,
+    tool_commands: Mutex<HashMap<String, String>>,
 }
 
 #[async_trait]
@@ -3235,10 +3318,30 @@ impl WorklogSink for ObserverWorklog {
             WorkEvent::LLMInferenceFailed { error, .. } => {
                 Some(RunEvent::Warning(format!("model request failed: {error}")))
             }
-            WorkEvent::ToolCallPlanned { tool, call_id, .. } => Some(RunEvent::ToolStarted {
-                name: tool,
+            WorkEvent::ToolCallPlanned {
+                tool,
                 call_id,
-            }),
+                args,
+                ..
+            } => {
+                let command = if tool == TOOL_EXEC {
+                    args.get("command")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                } else {
+                    None
+                };
+                let mut commands = self.tool_commands.lock().expect("lock");
+                commands.remove(&call_id);
+                if let Some(command) = &command {
+                    commands.insert(call_id.clone(), command.clone());
+                }
+                Some(RunEvent::ToolStarted {
+                    name: tool,
+                    call_id,
+                    command,
+                })
+            }
             WorkEvent::ToolCallFinished {
                 tool,
                 call_id,
@@ -3247,6 +3350,7 @@ impl WorklogSink for ObserverWorklog {
                 ..
             } => Some(RunEvent::ToolFinished {
                 name: tool,
+                command: self.tool_commands.lock().expect("lock").remove(&call_id),
                 call_id,
                 ok,
                 duration_ms,
@@ -3258,6 +3362,7 @@ impl WorklogSink for ObserverWorklog {
                 ..
             } => Some(RunEvent::ToolFinished {
                 name: format!("{tool} ({message})"),
+                command: self.tool_commands.lock().expect("lock").remove(&call_id),
                 call_id,
                 ok: false,
                 duration_ms: 0,
@@ -3265,9 +3370,17 @@ impl WorklogSink for ObserverWorklog {
             WorkEvent::OutputParseFailed { error, .. } => {
                 Some(RunEvent::Warning(format!("response parse failed: {error}")))
             }
-            WorkEvent::ToolDispatchFailed { tool, message, .. } => Some(RunEvent::Warning(
-                format!("tool `{tool}` dispatch failed: {message}"),
-            )),
+            WorkEvent::ToolDispatchFailed {
+                tool,
+                call_id,
+                message,
+                ..
+            } => {
+                self.tool_commands.lock().expect("lock").remove(&call_id);
+                Some(RunEvent::Warning(format!(
+                    "tool `{tool}` dispatch failed: {message}"
+                )))
+            }
             WorkEvent::CheckpointFailed { error, .. } => {
                 Some(RunEvent::Warning(format!("checkpoint failed: {error}")))
             }
@@ -3755,11 +3868,20 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 /// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `exec`。
-fn builtin_bash_group(workdir: &Path) -> Vec<Arc<dyn AgentTool>> {
-    let cfg = FileToolConfig::new(workdir.to_path_buf());
+fn builtin_bash_group(
+    workdir: &Path,
+    filesystem_policy: FilesystemPolicy,
+) -> Vec<Arc<dyn AgentTool>> {
+    let mut cfg = FileToolConfig::new(workdir.to_path_buf());
+    let restrict_cwd = filesystem_policy == FilesystemPolicy::Workspace;
+    if !restrict_cwd {
+        cfg.allowed_read_roots.clear();
+        cfg.allowed_write_roots.clear();
+    }
     let audit = Arc::new(NoopFileWriteAudit);
     let bash_cfg = LlmBashConfig::local_workspace(workdir.to_path_buf())
         .with_tool_name(TOOL_EXEC)
+        .with_restrict_cwd(restrict_cwd)
         .with_overlay(BinOverlayConfig::disabled())
         .with_default_timeout_ms(EXEC_DEFAULT_TIMEOUT_MS)
         .with_max_timeout_ms(EXEC_MAX_TIMEOUT_MS)
@@ -3783,6 +3905,7 @@ fn builtin_bash_group(workdir: &Path) -> Vec<Arc<dyn AgentTool>> {
 async fn expand_tool_sources(
     sources: &[ToolSource],
     workdir: &Path,
+    filesystem_policy: FilesystemPolicy,
     deps: &XllmDeps,
     manager: &mut XllmToolManager,
 ) -> Result<Vec<ResolvedTool>, XllmError> {
@@ -3796,7 +3919,7 @@ async fn expand_tool_sources(
                         "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH})"
                     )));
                 }
-                for t in builtin_bash_group(workdir) {
+                for t in builtin_bash_group(workdir, filesystem_policy) {
                     out.push(manager.register(t, &desc)?);
                 }
             }
@@ -3846,10 +3969,12 @@ pub async fn build_toolset(
     deps: &XllmDeps,
 ) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
     let enabled = cfg.enabled.unwrap_or(false);
+    let filesystem_policy = cfg.filesystem_policy.unwrap_or_default();
     let tools2actions = cfg.tools2actions.unwrap_or(false);
     let mut manager = XllmToolManager::new(workdir.to_path_buf(), run_id, loop_model);
     let mut eff = EffectiveTools {
         enabled,
+        filesystem_policy,
         tools2actions,
         tool_sources: cfg.tools.clone().unwrap_or_default(),
         action_sources: cfg.actions.clone().unwrap_or_default(),
@@ -3882,9 +4007,22 @@ pub async fn build_toolset(
         }],
     };
     eff.tool_sources = tool_sources.clone();
-    let native = expand_tool_sources(&tool_sources, workdir, deps, &mut manager).await?;
-    let explicit_actions =
-        expand_tool_sources(&eff.action_sources, workdir, deps, &mut manager).await?;
+    let native = expand_tool_sources(
+        &tool_sources,
+        workdir,
+        filesystem_policy,
+        deps,
+        &mut manager,
+    )
+    .await?;
+    let explicit_actions = expand_tool_sources(
+        &eff.action_sources,
+        workdir,
+        filesystem_policy,
+        deps,
+        &mut manager,
+    )
+    .await?;
     match loop_model {
         LoopModel::FunctionCall => {
             eff.native = native;
@@ -6216,6 +6354,7 @@ impl XllmRun {
             run_id: run_id.to_string(),
             observer: deps.observer.clone(),
             llm_started_at: Mutex::new(None),
+            tool_commands: Mutex::new(HashMap::new()),
         });
         let tools_dyn: Arc<dyn ToolManager> = manager;
         let llm_dyn: Arc<dyn LlmClient> = llm;
@@ -6397,6 +6536,7 @@ impl XllmRun {
         // 重新展开工具（同一来源），重新连接 Provider（重新解析凭据引用）。
         let tools_cfg = ToolsConfig {
             enabled: Some(record.config.tools.enabled),
+            filesystem_policy: Some(record.config.tools.filesystem_policy),
             tools2actions: Some(record.config.tools.tools2actions),
             tools: Some(record.config.tools.tool_sources.clone()),
             actions: Some(record.config.tools.action_sources.clone()),
@@ -8986,10 +9126,266 @@ there]]></write_file>
             .ends_with(".llm_context"));
     }
 
+    #[test]
+    fn filesystem_policy_config_precedence_and_validation() {
+        let env = Env::new();
+        env.write(
+            "project/.llm_context",
+            "tools:\n  filesystem_policy: unrestricted\nprompt:\n  groups:\n    general:\n      tools:\n        filesystem_policy: workspace\n",
+        );
+        env.write("project/src/.llm_context", "tools:\n  enabled: true\n");
+        let merged = merge_config_layers(&load_config_layers(&env.workdir).unwrap()).unwrap();
+        let group = merged.prompt.groups.get("general");
+        let (top, sources) = compute_tools_config(&merged, None, None, true);
+        assert_eq!(top.filesystem_policy, Some(FilesystemPolicy::Unrestricted));
+        assert_eq!(top.enabled, Some(true));
+        assert_eq!(
+            sources["filesystem_policy"],
+            env.project().join(".llm_context").to_str().unwrap()
+        );
+        let (selected, sources) = compute_tools_config(&merged, group, None, true);
+        assert_eq!(
+            selected.filesystem_policy,
+            Some(FilesystemPolicy::Workspace)
+        );
+        assert_eq!(sources["filesystem_policy"], "selected group");
+        env.write(
+            "project/src/.llm_context",
+            "prompt:\n  tools:\n    filesystem_policy: unrestricted\n",
+        );
+        let merged = merge_config_layers(&load_config_layers(&env.workdir).unwrap()).unwrap();
+        let (cfg, sources) = compute_tools_config(
+            &merged,
+            merged.prompt.groups.get("general"),
+            Some(false),
+            true,
+        );
+        assert_eq!(cfg.filesystem_policy, Some(FilesystemPolicy::Unrestricted));
+        assert_eq!(cfg.enabled, Some(false));
+        assert!(sources["filesystem_policy"].ends_with("src/.llm_context"));
+        for raw in [
+            "tools:\n  filesystem_policy: invalid\n",
+            "prompt:\n  tools:\n    filesystem_policy: false\n",
+            "prompt:\n  groups:\n    general:\n      tools:\n        filesystem_policy: invalid\n",
+        ] {
+            let err = parse_llm_context_file(Path::new(".llm_context"), raw).unwrap_err();
+            assert!(matches!(err, XllmError::Config { .. }), "{err}");
+            assert!(err.to_string().contains("filesystem_policy"), "{err}");
+        }
+    }
+
+    #[tokio::test]
+    async fn filesystem_policy_controls_builtin_paths() {
+        for loop_model in [LoopModel::FunctionCall, LoopModel::Behavior] {
+            for policy in [None, Some(FilesystemPolicy::Unrestricted)] {
+                let env = Env::new();
+                env.write("project/fixture.txt", "outside-original");
+                let cfg = ToolsConfig {
+                    enabled: Some(true),
+                    filesystem_policy: policy,
+                    tools2actions: Some(loop_model == LoopModel::Behavior),
+                    ..Default::default()
+                };
+                let (effective, manager) = build_toolset(
+                    &cfg,
+                    BTreeMap::new(),
+                    loop_model,
+                    &env.workdir,
+                    "test-policy",
+                    &env.deps(ScriptedLlm::new(vec![])),
+                )
+                .await
+                .unwrap();
+                assert_eq!(effective.filesystem_policy, policy.unwrap_or_default());
+                let unrestricted = policy == Some(FilesystemPolicy::Unrestricted);
+                let outside = env.project();
+                let calls = [
+                    ("read_file", json!({"path": outside.join("fixture.txt")})),
+                    ("read_file", json!({"path": "../fixture.txt"})),
+                    (
+                        "write_file",
+                        json!({"path": outside.join("created.txt"), "content": "created"}),
+                    ),
+                    (
+                        "edit_file",
+                        json!({"path": "../fixture.txt", "old_string": "outside-original", "new_string": "outside-edited"}),
+                    ),
+                    (TOOL_EXEC, json!({"command": "pwd", "cwd": outside})),
+                    (TOOL_EXEC, json!({"command": "pwd", "cwd": ".."})),
+                ];
+                for (name, args) in calls {
+                    let obs = manager
+                        .call_tool(AiToolCall {
+                            name: name.into(),
+                            args: serde_json::from_value(args).unwrap(),
+                            call_id: "test-call".into(),
+                        })
+                        .await
+                        .unwrap();
+                    if unrestricted {
+                        let Observation::Success { content, .. } = obs else {
+                            panic!("{name}: {obs:?}");
+                        };
+                        let content = content.as_str().expect("text observation");
+                        if name == "read_file" {
+                            assert!(content.contains("outside-original"), "{content}");
+                        }
+                        if name == TOOL_EXEC {
+                            assert!(content.contains(outside.to_str().unwrap()), "{content}");
+                        }
+                    } else {
+                        let Observation::Error { message, .. } = obs else {
+                            panic!("{name} escaped workspace: {obs:?}");
+                        };
+                        assert!(
+                            message.contains("policy") || message.contains("workspace scope"),
+                            "{message}"
+                        );
+                    }
+                }
+                assert_eq!(outside.join("created.txt").exists(), unrestricted);
+                assert_eq!(
+                    std::fs::read_to_string(outside.join("fixture.txt")).unwrap(),
+                    if unrestricted {
+                        "outside-edited"
+                    } else {
+                        "outside-original"
+                    },
+                );
+                let obs = manager
+                    .call_tool(AiToolCall {
+                        name: "write_file".into(),
+                        args: serde_json::from_value(
+                            json!({"path": "local.txt", "content": "local"}),
+                        )
+                        .unwrap(),
+                        call_id: "local-call".into(),
+                    })
+                    .await
+                    .unwrap();
+                assert!(matches!(obs, Observation::Success { .. }), "{obs:?}");
+                assert_eq!(
+                    std::fs::read_to_string(env.workdir.join("local.txt")).unwrap(),
+                    "local"
+                );
+                let obs = manager.call_tool(exec_call("pwd")).await.unwrap();
+                let Observation::Success { content, .. } = obs else {
+                    panic!("{obs:?}")
+                };
+                let content = content.as_str().expect("text observation");
+                assert!(content.contains(env.workdir.to_str().unwrap()), "{content}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn documented_filesystem_policy_survives_resume() {
+        let env = Env::new();
+        let template = include_str!("../../../../product/xllm/PRD.md")
+            .split("#### 4.9.1 ")
+            .nth(1)
+            .unwrap()
+            .split("```yaml\n")
+            .nth(1)
+            .unwrap()
+            .split("```")
+            .next()
+            .unwrap();
+        env.write("project/.llm_context", template);
+        let disabled = XllmTask::prepare(
+            &env.workdir,
+            TaskInput::question("q"),
+            TaskOverrides {
+                tools: Some(false),
+                ..env.overrides()
+            },
+            &env.deps(ScriptedLlm::new(vec![])),
+        )
+        .await
+        .unwrap();
+        assert!(!disabled.tools.enabled);
+        assert!(disabled.tools.native.is_empty());
+        assert!(disabled.manager.tools.is_empty());
+        let llm = ScriptedLlm::new(vec![
+            tool_call(
+                "write_file",
+                json!({"path": "../shared.txt", "content": "before-resume"}),
+                "write",
+            ),
+            Err(LLMComputeError::provider(
+                ProviderFailure::Transient,
+                "temporary outage",
+            )),
+        ]);
+        let outcome = env
+            .run(
+                TaskInput::question("edit shared file"),
+                env.overrides(),
+                llm.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Paused(_)), "{outcome:?}");
+        let record = outcome.record();
+        assert_eq!(
+            record.config.tools.filesystem_policy,
+            FilesystemPolicy::Unrestricted
+        );
+        assert!(system_text(&llm.seen()[0]).contains("may access paths outside"));
+        assert_eq!(
+            std::fs::read_to_string(env.project().join("shared.txt")).unwrap(),
+            "before-resume"
+        );
+        env.write(
+            "project/.llm_context",
+            "tools:\n  enabled: true\n  filesystem_policy: workspace\n",
+        );
+        let llm = ScriptedLlm::new(vec![
+            tool_call(
+                "edit_file",
+                json!({"path": "../shared.txt", "old_string": "before-resume", "new_string": "after-resume"}),
+                "edit",
+            ),
+            tool_call(
+                TOOL_EXEC,
+                json!({"command": "pwd > resumed-cwd.txt", "cwd": ".."}),
+                "exec",
+            ),
+            text("done"),
+        ]);
+        let ResumeStart::Run(mut run) = XllmRun::resume(
+            &env.store(),
+            Some(&record.run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm.clone()),
+        )
+        .await
+        .unwrap() else {
+            panic!("expected resumable run")
+        };
+        let outcome = run.execute().await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Completed(_)), "{outcome:?}");
+        assert_eq!(
+            outcome.record().config.tools.filesystem_policy,
+            FilesystemPolicy::Unrestricted
+        );
+        assert_eq!(
+            std::fs::read_to_string(env.project().join("shared.txt")).unwrap(),
+            "after-resume"
+        );
+        assert_eq!(
+            std::fs::read_to_string(env.project().join("resumed-cwd.txt"))
+                .unwrap()
+                .trim(),
+            env.project().to_str().unwrap(),
+        );
+    }
+
     fn exec_manager(workdir: &Path) -> XllmToolManager {
         let mut manager =
             XllmToolManager::new(workdir.to_path_buf(), "run-test", LoopModel::FunctionCall);
-        for t in builtin_bash_group(workdir) {
+        for t in builtin_bash_group(workdir, FilesystemPolicy::Workspace) {
             manager.register(t, "groupname:bash").expect("register");
         }
         manager

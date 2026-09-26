@@ -18,7 +18,7 @@
 
 use std::io::{IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use buckyos_api::{LlmResponseFormat, TaskError};
@@ -509,11 +509,21 @@ impl CliOpts {
 // =========================================================================
 
 struct StderrObserver {
-    level: RunLogLevel,
+    level: Mutex<RunLogLevel>,
 }
 
-impl RunObserver for StderrObserver {
-    fn on_event(&self, run_id: &str, event: RunEvent) {
+impl StderrObserver {
+    fn new(level: RunLogLevel) -> Self {
+        Self {
+            level: Mutex::new(level),
+        }
+    }
+
+    fn set_level(&self, level: RunLogLevel) {
+        *self.level.lock().expect("log level lock") = level;
+    }
+
+    fn render_event(&self, run_id: &str, event: RunEvent) -> Option<String> {
         let (min, line) = match event {
             RunEvent::Phase { phase, detail } => (
                 // 等待模型的阶段由 LlmStarted 事件单独播报，避免重复。
@@ -528,46 +538,99 @@ impl RunObserver for StderrObserver {
                     format!("[{run_id}] {}: {detail}", phase.label())
                 },
             ),
-            RunEvent::LlmStarted { model } => {
-                (RunLogLevel::Info, format!("[{run_id}] 等待模型 {model} …"))
-            }
+            RunEvent::LlmStarted { model } => (
+                RunLogLevel::Info,
+                format!("[{run_id}] waiting for model {model} ..."),
+            ),
             RunEvent::LlmFinished { ok, elapsed_ms } => (
                 RunLogLevel::Info,
                 format!(
-                    "[{run_id}] 模型返回 ({}, {:.1}s)",
+                    "[{run_id}] model finished ({}, {:.1}s)",
                     if ok { "ok" } else { "failed" },
                     elapsed_ms as f64 / 1000.0
                 ),
             ),
-            RunEvent::ToolStarted { name, call_id } => (
+            RunEvent::ToolStarted {
+                name,
+                call_id,
+                command,
+            } => (
                 RunLogLevel::Info,
-                format!("[{run_id}] 执行工具 {name} ({call_id})"),
+                format!(
+                    "[{run_id}] executing tool {name} ({})",
+                    tool_log_detail(command.as_deref(), &call_id)
+                ),
             ),
             RunEvent::ToolFinished {
                 name,
                 call_id,
+                command,
                 ok,
                 duration_ms,
             } => (
                 RunLogLevel::Info,
                 format!(
-                    "[{run_id}] 工具 {name} ({call_id}) {} ({duration_ms} ms)",
-                    if ok { "完成" } else { "失败" }
+                    "[{run_id}] tool {name} ({}) {} ({duration_ms} ms)",
+                    tool_log_detail(command.as_deref(), &call_id),
+                    if ok { "completed" } else { "failed" }
                 ),
             ),
             RunEvent::Warning(msg) => (RunLogLevel::Warn, format!("[{run_id}] warning: {msg}")),
             RunEvent::Debug(msg) => (RunLogLevel::Debug, format!("[{run_id}] debug: {msg}")),
         };
         // level 顺序：Debug < Info < Warn < Result；事件的 min 级别小于等于配置才显示。
-        let show = match self.level {
+        let show = match *self.level.lock().expect("log level lock") {
             RunLogLevel::Debug => true,
             RunLogLevel::Info => min >= RunLogLevel::Info,
             RunLogLevel::Warn => min >= RunLogLevel::Warn,
             RunLogLevel::Result => false,
         };
-        if show {
+        show.then_some(line)
+    }
+}
+
+impl RunObserver for StderrObserver {
+    fn on_event(&self, run_id: &str, event: RunEvent) {
+        if let Some(line) = self.render_event(run_id, event) {
             eprintln!("{line}");
         }
+    }
+}
+
+fn tool_log_detail(command: Option<&str>, call_id: &str) -> String {
+    command
+        .unwrap_or(call_id)
+        .chars()
+        .map(|c| {
+            if c.is_control() {
+                c.escape_default().to_string()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect()
+}
+
+fn config_sources_message(files: &[String], resumed: bool) -> String {
+    let action = if resumed {
+        "reusing the original run's merged"
+    } else {
+        "merged"
+    };
+    let paths = if files.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", files.join(" → "))
+    };
+    format!(
+        "{action} .llm_context files from {} path(s){paths}",
+        files.len()
+    )
+}
+
+fn log_config_sources(level: RunLogLevel, files: &[String], resumed: bool) {
+    if matches!(level, RunLogLevel::Debug | RunLogLevel::Info) {
+        eprintln!("xllm: {}", config_sources_message(files, resumed));
     }
 }
 
@@ -667,7 +730,7 @@ fn store_for(opts: &CliOpts, workdir: &Path) -> RunStore {
     }
 }
 
-async fn run_new(opts: CliOpts) -> i32 {
+async fn run_new(mut opts: CliOpts) -> i32 {
     let level = opts.log_level();
     let workdir = match opts.workdir() {
         Ok(w) => w,
@@ -706,7 +769,8 @@ async fn run_new(opts: CliOpts) -> i32 {
         && opts.select.is_none()
         && input.attachments.is_empty();
 
-    let deps = XllmDeps::default().with_observer(Arc::new(StderrObserver { level }));
+    let observer = Arc::new(StderrObserver::new(level));
+    let deps = XllmDeps::default().with_observer(observer.clone());
     let prepared = match XllmTask::prepare(&workdir, input, opts.overrides(), &deps).await {
         Ok(p) => p,
         Err(err) => {
@@ -718,6 +782,10 @@ async fn run_new(opts: CliOpts) -> i32 {
             return exit_code_for_error(&err);
         }
     };
+    let level = prepared.config.run_logs;
+    opts.run_logs = Some(level);
+    observer.set_level(level);
+    log_config_sources(level, &prepared.config.config_files, false);
     let mut run = match XllmRun::start(prepared, deps).await {
         Ok(r) => r,
         Err(err) => {
@@ -1050,7 +1118,7 @@ fn fmt_time(ms: u64) -> String {
         .to_string()
 }
 
-async fn run_resume(opts: CliOpts) -> i32 {
+async fn run_resume(mut opts: CliOpts) -> i32 {
     let level = opts.log_level();
     let workdir = match opts.workdir() {
         Ok(w) => w,
@@ -1060,7 +1128,8 @@ async fn run_resume(opts: CliOpts) -> i32 {
         }
     };
     let store = store_for(&opts, &workdir);
-    let deps = XllmDeps::default().with_observer(Arc::new(StderrObserver { level }));
+    let observer = Arc::new(StderrObserver::new(level));
+    let deps = XllmDeps::default().with_observer(observer.clone());
     let start = XllmRun::resume(
         &store,
         opts.run.as_deref(),
@@ -1071,6 +1140,9 @@ async fn run_resume(opts: CliOpts) -> i32 {
     .await;
     match start {
         Ok(ResumeStart::Terminal(record)) => {
+            let level = opts.run_logs.unwrap_or(record.config.run_logs);
+            opts.run_logs = Some(level);
+            log_config_sources(level, &record.config.config_files, true);
             let summary = store.summarize(&record);
             diag(
                 level,
@@ -1091,6 +1163,10 @@ async fn run_resume(opts: CliOpts) -> i32 {
         }
         Ok(ResumeStart::Run(mut run)) => {
             let rec = run.record();
+            let level = opts.run_logs.unwrap_or(rec.config.run_logs);
+            opts.run_logs = Some(level);
+            observer.set_level(level);
+            log_config_sources(level, &rec.config.config_files, true);
             diag(
                 level,
                 &format!(
@@ -1254,9 +1330,10 @@ fn print_status_text(record: &RunRecord, summary: &RunSummary) {
             .unwrap_or_else(|| "model default".into())
     );
     println!("result_format:  {}", c.result_format.as_string());
-    if !c.config_files.is_empty() {
-        println!("config files:   {}", c.config_files.join(" → "));
-    }
+    println!(
+        "config files:   {}",
+        config_sources_message(&c.config_files, true)
+    );
     let mut src: Vec<String> = c
         .sources
         .iter()

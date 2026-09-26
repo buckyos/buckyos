@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "gemini",
-  "revision_seq": 2,
+  "revision_seq": 3,
   "required_features": [],
   "models": [
     {
@@ -36,7 +36,9 @@
         "tool_call": true,
         "json_schema": true,
         "vision": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 65536
       },
       "llm": {
         "spec": "gemini-flash",
@@ -99,7 +101,9 @@
         "tool_call": true,
         "json_schema": true,
         "vision": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 65536
       },
       "llm": {
         "spec": "gemini-flash-lite",
@@ -168,7 +172,9 @@
         "tool_call": true,
         "json_schema": true,
         "vision": true,
-        "reasoning": true
+        "reasoning": true,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 65536
       },
       "llm": {
         "spec": "gemini-flash",

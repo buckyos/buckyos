@@ -737,6 +737,7 @@ impl WorklogSink for OpenDanWorklogSink {
                 trace_id,
                 tool,
                 call_id,
+                ..
             } => (
                 "ToolCallPlanned",
                 "ok",

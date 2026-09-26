@@ -159,6 +159,7 @@ pub enum WorkEvent {
         trace_id: Option<String>,
         tool: String,
         call_id: String,
+        args: std::collections::HashMap<String, Value>,
     },
     ToolCallFinished {
         trace_id: Option<String>,

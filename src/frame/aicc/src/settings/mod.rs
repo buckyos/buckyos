@@ -20,6 +20,7 @@ use std::sync::Arc;
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
+pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 3;
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
@@ -949,7 +950,10 @@ mod tests {
             builtin: files,
             ..Default::default()
         }
-        .build_snapshot(2, &CatalogBuildOptions::default())
+        .build_snapshot(
+            BUILTIN_CATALOG_REVISION_SEQ,
+            &CatalogBuildOptions::default(),
+        )
         .unwrap();
         assert!(catalog.model_driver("openai").is_some());
         assert!(catalog.provider_rules("openai").is_some());

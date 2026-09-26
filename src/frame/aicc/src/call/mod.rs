@@ -1416,7 +1416,12 @@ mod tests {
                 contents: std::fs::read(path).unwrap(),
             }));
         }
-        CatalogSnapshot::from_current_files(2, files, &CatalogBuildOptions::default()).unwrap()
+        CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            files,
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap()
     }
 
     fn built_in_rules() -> Vec<(ResolvedProviderConfiguration, ProviderRulesCatalog)> {

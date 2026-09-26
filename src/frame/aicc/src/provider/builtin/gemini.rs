@@ -480,7 +480,10 @@ mod tests {
             builtin,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &CatalogBuildOptions::default(),
+        )
         .unwrap();
 
         assert!(catalog.known_provider(GEMINI_PROVIDER_PROFILE_ID).is_some());
@@ -593,7 +596,7 @@ mod tests {
     #[test]
     fn rules_bind_inventory_to_the_gemini_base_adapter() {
         let catalog = CatalogSnapshot::from_current_files(
-            2,
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
             gemini_catalog_files(),
             &CatalogBuildOptions::default(),
         )

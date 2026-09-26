@@ -575,7 +575,10 @@ mod tests {
             builtin: load_builtin_metadata().unwrap(),
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         builtin_provider_registry(catalog.as_ref()).unwrap()
     }
@@ -586,7 +589,10 @@ mod tests {
             builtin: load_builtin_metadata().unwrap(),
             ..Default::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         let registry = builtin_provider_registry(&catalog).unwrap();
         let binding = registry
@@ -671,7 +677,10 @@ mod tests {
             builtin: load_builtin_metadata().unwrap(),
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         let behaviors = discovery_behaviors();
         for provider in catalog.known_providers() {
@@ -720,7 +729,10 @@ mod tests {
             builtin: load_builtin_metadata().unwrap(),
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
 
@@ -866,7 +878,10 @@ mod tests {
             local,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
 
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
@@ -919,7 +934,10 @@ mod tests {
             builtin: files,
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
         for profile in registry.profiles() {
             if profile.provider_profile_id == CUSTOM_PROVIDER_PROFILE_ID {
@@ -967,7 +985,10 @@ mod tests {
             local: vec![local],
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
 
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();
@@ -1041,7 +1062,10 @@ mod tests {
             local: vec![local],
             ..MetadataSources::default()
         }
-        .build_snapshot(2, &crate::catalog::CatalogBuildOptions::default())
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &crate::catalog::CatalogBuildOptions::default(),
+        )
         .unwrap();
 
         let registry = builtin_provider_registry(catalog.as_ref()).unwrap();

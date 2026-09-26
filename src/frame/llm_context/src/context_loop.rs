@@ -416,6 +416,7 @@ impl LLMContext {
                         trace_id: self.request.trace.clone(),
                         tool: call.name.clone(),
                         call_id: call.call_id.clone(),
+                        args: call.args.clone(),
                     })
                     .await;
 
@@ -1020,6 +1021,7 @@ impl LLMContext {
                         trace_id: self.request.trace.clone(),
                         tool: action.name.clone(),
                         call_id: action.call_id.clone(),
+                        args: action.args.clone(),
                     })
                     .await;
                 let dispatched = self.deps.tools.call_tool(action.clone()).await;
