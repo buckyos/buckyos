@@ -195,10 +195,10 @@ def create_sbom(
 
 
 def installed_deno() -> tuple[Path, str]:
-    executable = shutil.which("deno")
+    executable = os.environ.get("BUCKYOS_SDK_TOOL_DENO") or shutil.which("deno")
     if executable is None:
         raise FileNotFoundError("deno is not installed or is missing from PATH")
-    deno = Path(executable).resolve(strict=True)
+    deno = Path(executable).expanduser().resolve(strict=True)
     output = subprocess.run(
         [str(deno), "--version"],
         check=True,

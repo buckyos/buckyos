@@ -39,9 +39,10 @@ Beta2.2 仍在持续完善。服务或界面的存在并不代表所有规划能
 ```bash
 git clone --branch main https://github.com/buckyos/buckyos.git
 git clone --branch main https://github.com/buckyos/cyfs-gateway.git
-git clone --branch main https://github.com/buckyos/buckyos-websdk.git
 cd buckyos
 ```
+
+需要开发 SDK/CLI 时，可在同一父目录执行 `git clone --branch main https://github.com/buckyos/buckyos-websdk.git`。该仓库是可选的；缺少时构建会使用 npm 已发布的 `buckyos@latest`。
 
 构建需要稳定版 Rust 工具链、当前平台的 C/C++ 构建工具、Python 3.12+、`uv`、Node.js 及 npm 和 pnpm，以及 Deno。容器应用需要 Docker，开发工具会用到 tmux。当前 CI 使用 Node.js 24、pnpm 10.13.1 和 Deno 2.9.2。
 
@@ -72,7 +73,7 @@ cd ../../buckyos/src
 uv run buckyos-build.py
 ```
 
-该脚本先从同级的 `buckyos-websdk` 仓库构建并打包 SDK/CLI，将 Deno 运行时一同打包，再调用 devkit 构建。如果 SDK 源码位于其他位置，可通过 `BUCKYOS_SDK_TOOL_SOURCE` 指定。使用 `--skip-web` 或 `-s <module>` 时也会执行这一步，因此仍需要 SDK 源码、Node.js、npm、pnpm 和 Deno。
+该脚本先准备包含 Deno 运行时的 SDK/CLI 分发包，再调用 devkit 构建。同级的 `buckyos-websdk` 目录存在时从源码构建，不存在时下载 npm 已发布的 `buckyos@latest`。如果 SDK 源码位于其他位置，可通过 `BUCKYOS_SDK_TOOL_SOURCE` 指定。使用 `--skip-web` 或 `-s <module>` 时也会执行这一步。使用发布包需要 npm 和 Deno，无需 SDK 源码或 pnpm；从源码构建还需要 pnpm。本地源码构建失败时直接报错，不会回退到发布包。
 
 构建产物汇总到 `src/rootfs`。**`buckyos-build.py` 不会更新已安装的运行环境。** 使用 `start.py` 将最新产物复制到安装目录并重启系统。发布构建所用的预构建 SDK/CLI 输入，参见 [`src/readme.md`](src/readme.md)。
 

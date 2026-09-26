@@ -40,9 +40,10 @@ Clone these repositories into the same parent directory, using the `main` branch
 ```bash
 git clone --branch main https://github.com/buckyos/buckyos.git
 git clone --branch main https://github.com/buckyos/cyfs-gateway.git
-git clone --branch main https://github.com/buckyos/buckyos-websdk.git
 cd buckyos
 ```
+
+To develop the SDK/CLI locally, also clone `buckyos-websdk` alongside these repositories with `git clone --branch main https://github.com/buckyos/buckyos-websdk.git`. This checkout is optional; without it, the build uses the published npm package `buckyos@latest`.
 
 The build needs a stable Rust toolchain and platform C/C++ build tools, Python 3.12+, `uv`, Node.js with npm and pnpm, and Deno. Docker is needed for container applications; tmux is used by development tools. The current CI uses Node.js 24, pnpm 10.13.1, and Deno 2.9.2.
 
@@ -73,7 +74,7 @@ From `buckyos/src`:
 uv run buckyos-build.py
 ```
 
-The wrapper first builds and packages the SDK/CLI from the sibling `buckyos-websdk` checkout, including its bundled Deno runtime, then invokes the devkit build. Set `BUCKYOS_SDK_TOOL_SOURCE` if your SDK checkout is elsewhere. This preparation also runs with `--skip-web` or `-s <module>`; those options still require the SDK sources, Node.js, npm, pnpm, and Deno.
+The wrapper first prepares the SDK/CLI with a bundled Deno runtime, then invokes the devkit build. If the sibling `buckyos-websdk` checkout exists, it builds from that source; otherwise, it downloads the published npm package `buckyos@latest`. Set `BUCKYOS_SDK_TOOL_SOURCE` if your SDK checkout is elsewhere. This preparation also runs with `--skip-web` or `-s <module>`. The published-package path requires npm and Deno but no SDK checkout or pnpm; local source builds also require pnpm. A failed local build stops the build rather than falling back to the published package.
 
 Build output is assembled under `src/rootfs`. **`buckyos-build.py` does not update the installed runtime.** Use `start.py` to copy the latest artifacts into the installation and restart it. For the prebuilt SDK/CLI inputs used by release builds, see [`src/readme.md`](src/readme.md).
 

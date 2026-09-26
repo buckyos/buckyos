@@ -39,13 +39,9 @@ def _find_command(command: str) -> str | None:
     return None
 
 
-def _build_local_sdk_tool_distribution(env: dict[str, str]) -> int:
+def _build_local_sdk_tool_distribution(env: dict[str, str], source: Path) -> int:
     import yaml
 
-    source = Path(env.get(
-        "BUCKYOS_SDK_TOOL_SOURCE",
-        str(Path(__file__).resolve().parents[2] / "buckyos-websdk"),
-    )).expanduser().resolve()
     if not (source / "package.json").is_file():
         print(f"SDK/Tool source not found: {source}")
         print("Set BUCKYOS_SDK_TOOL_SOURCE to the local buckyos-websdk checkout.")
@@ -102,11 +98,33 @@ def _build_local_sdk_tool_distribution(env: dict[str, str]) -> int:
         })
 
 
+def _build_published_sdk_tool_distribution(env: dict[str, str]) -> int:
+    print("Preparing SDK/Tool from published buckyos@latest", flush=True)
+    with tempfile.TemporaryDirectory(prefix="buckyos-sdk-tool-release-") as temporary:
+        command = [
+            sys.executable,
+            str(Path(__file__).parent / "tools" / "prepare_sdk_tool_distribution.py"),
+            "--work-dir",
+            temporary,
+        ]
+        result = subprocess.run(command, env=env).returncode
+    if result != 0:
+        print(f"Published SDK/Tool preparation failed with return code {result}")
+    return result
+
+
 def _prepare_sdk_tool_distribution(env: dict[str, str]) -> int:
     artifact_inputs = set(SDK_TOOL_INPUTS) - {"BUCKYOS_SDK_TOOL_DENO"}
     if any(env.get(name) for name in artifact_inputs):
         return _build_sdk_tool_distribution(env)
-    return _build_local_sdk_tool_distribution(env)
+    source = Path(env.get(
+        "BUCKYOS_SDK_TOOL_SOURCE",
+        str(Path(__file__).resolve().parents[2] / "buckyos-websdk"),
+    )).expanduser().resolve()
+    if source.exists():
+        return _build_local_sdk_tool_distribution(env, source)
+    print(f"SDK/Tool source not found: {source}; using the published package.")
+    return _build_published_sdk_tool_distribution(env)
 
 
 def _build_sdk_tool_distribution(env: dict[str, str]) -> int:

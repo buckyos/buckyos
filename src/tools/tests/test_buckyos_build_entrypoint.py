@@ -82,10 +82,59 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
 
     def test_default_build_uses_local_source_even_with_deno_override(self) -> None:
         module = _load_build_script()
-        for env in ({}, {"BUCKYOS_SDK_TOOL_DENO": "/inputs/deno"}):
-            with patch.object(module, "_build_local_sdk_tool_distribution", return_value=17) as build:
-                self.assertEqual(module._prepare_sdk_tool_distribution(env), 17)
-                build.assert_called_once_with(env)
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "buckyos-websdk"
+            source.mkdir()
+            script = Path(temporary) / "buckyos" / "src" / "buckyos-build.py"
+            for env in ({}, {"BUCKYOS_SDK_TOOL_DENO": "/inputs/deno"}):
+                with (
+                    patch.object(module, "__file__", str(script)),
+                    patch.object(module, "_build_local_sdk_tool_distribution", return_value=17) as build,
+                    patch.object(module, "_build_published_sdk_tool_distribution") as published,
+                ):
+                    self.assertEqual(module._prepare_sdk_tool_distribution(env), 17)
+                    build.assert_called_once_with(env, source.resolve())
+                    published.assert_not_called()
+
+    def test_missing_source_uses_published_package(self) -> None:
+        module = _load_build_script()
+        with tempfile.TemporaryDirectory() as temporary:
+            script = Path(temporary) / "buckyos" / "src" / "buckyos-build.py"
+            for env in ({}, {
+                "BUCKYOS_SDK_TOOL_SOURCE": str(Path(temporary) / "missing-sdk"),
+                "BUCKYOS_SDK_TOOL_DENO": "/inputs/deno",
+            }):
+                with (
+                    patch.object(module, "__file__", str(script)),
+                    patch.object(module, "_build_local_sdk_tool_distribution") as local,
+                    patch.object(module, "_build_published_sdk_tool_distribution", return_value=0) as published,
+                ):
+                    self.assertEqual(module._prepare_sdk_tool_distribution(env), 0)
+                    published.assert_called_once_with(env)
+                    local.assert_not_called()
+
+    def test_published_build_delegates_to_release_preparation_and_cleans_up(self) -> None:
+        module = _load_build_script()
+        env = {"BUCKYOS_SDK_TOOL_DENO": "/inputs/deno"}
+        for returncode in (0, 19):
+            with self.subTest(returncode=returncode):
+                work_dirs = []
+
+                def run(command, **kwargs):
+                    self.assertEqual(command[:3], [
+                        module.sys.executable,
+                        str(SCRIPT_PATH.parent / "tools" / "prepare_sdk_tool_distribution.py"),
+                        "--work-dir",
+                    ])
+                    self.assertEqual(kwargs, {"env": env})
+                    work_dirs.append(Path(command[3]))
+                    self.assertTrue(work_dirs[-1].is_dir())
+                    return module.subprocess.CompletedProcess(command, returncode)
+
+                with patch.object(module.subprocess, "run", side_effect=run) as prepare:
+                    self.assertEqual(module._build_published_sdk_tool_distribution(env), returncode)
+                    prepare.assert_called_once()
+                self.assertFalse(work_dirs[0].exists())
 
     def test_main_does_not_build_modules_when_sdk_build_fails(self) -> None:
         module = _load_build_script()
@@ -114,7 +163,7 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
                 self.assertEqual(run.call_count, 2)
                 install.assert_not_called()
 
-    def test_missing_local_source_does_not_fall_back_to_old_distribution(self) -> None:
+    def test_invalid_local_source_does_not_fall_back_to_published_package(self) -> None:
         module = _load_build_script()
         with tempfile.TemporaryDirectory() as temporary:
             with patch.object(module.subprocess, "run") as run:

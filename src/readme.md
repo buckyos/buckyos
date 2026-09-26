@@ -2,10 +2,13 @@
 
 ## 开发构建中的 SDK/CLI 更新
 
-在本目录执行 `uv run buckyos-build.py` 时，会先从同级仓库 `../../buckyos-websdk`
-安装锁定的依赖、重新构建 SDK/CLI、打包并生成校验清单，然后更新
-`rootfs/libexec/buckyos-tool/`。每次构建都会执行，包括 `--skip-web` 和 `-s` 指定模块的构建；
-SDK/CLI 构建失败时停止，不继续使用旧分发包构建其它模块。需要本机安装 Node.js、npm、pnpm 和 Deno。
+在本目录执行 `uv run buckyos-build.py` 时，会先准备 SDK/CLI 分发包，再更新
+`rootfs/libexec/buckyos-tool/`。同级仓库 `../../buckyos-websdk` 存在时，安装锁定的依赖、
+重新构建 SDK/CLI、打包并生成校验清单；目录不存在时，通过 npm 下载已发布的
+`buckyos@latest`，生成校验清单并打包本机 Deno 运行时，无需 SDK 源码或 pnpm。
+每次构建都会执行，包括 `--skip-web` 和 `-s` 指定模块的构建；准备失败时停止，
+不继续使用旧分发包构建其它模块。本地源码构建失败不会回退到发布包。
+需要本机安装 Node.js、npm 和 Deno；从源码构建还需要 pnpm。
 
 源码不在默认位置时，用 `BUCKYOS_SDK_TOOL_SOURCE` 指定本地 websdk 仓库路径；
 `BUCKYOS_SDK_TOOL_DENO` 可指定 Deno 可执行文件，默认从 PATH 查找。
