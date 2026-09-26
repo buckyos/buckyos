@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "glm",
   "supplemental_inventory_api_types": [
     "image.txt2img",
@@ -792,6 +792,812 @@
       "match": {
         "provider_model_id": "glm-4.5v",
         "region": "china"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5v-turbo"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000005,
+        "output_token": 0.000022,
+        "cache_input_token": 0.0000012,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000005,
+              "output_token": 0.000022,
+              "cache_input_token": 0.0000012
+            },
+            {
+              "input_token": 0.000007,
+              "output_token": 0.000026,
+              "cache_input_token": 0.0000018
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-ocr"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 2e-7,
+        "output_token": 2e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.1v-thinking-flashx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000002,
+        "output_token": 0.000002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.1v-thinking-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4v-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-long"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000001,
+        "output_token": 0.000001,
+        "cache_input_token": 5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-flashx-250414"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-7,
+        "output_token": 1e-7,
+        "cache_input_token": 5e-8
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-flash-250414"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "charglm-4"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000001,
+        "output_token": 0.000001
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "emohaa"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000015,
+        "output_token": 0.000015
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "codegeex-4"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-7,
+        "output_token": 1e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-image"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.1,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogview-4-250304"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.06,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogview-4"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.06,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogview-3-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-asr-2512"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000016
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-tts"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0.0002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "embedding-3"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "embedding-2"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogvideox-3"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogvideox-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 0,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "viduq1-text"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "viduq1-image"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "viduq1-start-end"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "vidu2-image"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1.25,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "vidu2-start-end"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 1.25,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "vidu2-reference"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "amount": 2.5,
+        "unit": "request"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5.1"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000006,
+        "output_token": 0.000024,
+        "cache_input_token": 0.0000013,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000006,
+              "output_token": 0.000024,
+              "cache_input_token": 0.0000013
+            },
+            {
+              "input_token": 0.000008,
+              "output_token": 0.000028,
+              "cache_input_token": 0.000002
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5.3"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000008,
+        "output_token": 0.000028,
+        "cache_input_token": 0.000002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5.3-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-7,
+        "output_token": 0.0000028,
+        "cache_input_token": 2.3e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5.2"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000008,
+        "output_token": 0.000028,
+        "cache_input_token": 0.000002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5-turbo"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000005,
+        "output_token": 0.000022,
+        "cache_input_token": 0.0000012,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000005,
+              "output_token": 0.000022,
+              "cache_input_token": 0.0000012
+            },
+            {
+              "input_token": 0.000007,
+              "output_token": 0.000026,
+              "cache_input_token": 0.0000018
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000004,
+        "output_token": 0.000018,
+        "cache_input_token": 0.000001,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000004,
+              "output_token": 0.000018,
+              "cache_input_token": 0.000001
+            },
+            {
+              "input_token": 0.000006,
+              "output_token": 0.000022,
+              "cache_input_token": 0.0000015
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.7"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000003,
+        "output_token": 0.000014,
+        "cache_input_token": 6e-7,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000003,
+              "output_token": 0.000014,
+              "cache_input_token": 6e-7
+            },
+            {
+              "input_token": 0.000004,
+              "output_token": 0.000016,
+              "cache_input_token": 8e-7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.7-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.7-flashx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-7,
+        "output_token": 0.000003,
+        "cache_input_token": 1e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.6"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000002,
+        "output_token": 0.000008,
+        "cache_input_token": 4e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.6v"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000001,
+        "output_token": 0.000003,
+        "cache_input_token": 2e-7,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000001,
+              "output_token": 0.000003,
+              "cache_input_token": 2e-7
+            },
+            {
+              "input_token": 0.000002,
+              "output_token": 0.000006,
+              "cache_input_token": 4e-7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.6v-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.6v-flashx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1.5e-7,
+        "output_token": 0.0000015,
+        "cache_input_token": 3e-8,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 1.5e-7,
+              "output_token": 0.0000015,
+              "cache_input_token": 3e-8
+            },
+            {
+              "input_token": 3e-7,
+              "output_token": 0.000003,
+              "cache_input_token": 3e-8
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000002,
+        "output_token": 0.000008,
+        "cache_input_token": 4e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5-x"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000008,
+        "output_token": 0.000016,
+        "cache_input_token": 0.0000016
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5-air"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-7,
+        "output_token": 0.000006,
+        "cache_input_token": 1.6e-7,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 8e-7,
+              "output_token": 0.000006,
+              "cache_input_token": 1.6e-7
+            },
+            {
+              "input_token": 0.0000012,
+              "output_token": 0.000008,
+              "cache_input_token": 2.4e-7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5-airx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000004,
+        "output_token": 0.000012,
+        "cache_input_token": 8e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5v"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000002,
+        "output_token": 0.000006,
+        "cache_input_token": 4e-7,
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 32768,
+              "input_token": 0.000002,
+              "output_token": 0.000006,
+              "cache_input_token": 4e-7
+            },
+            {
+              "input_token": 0.000004,
+              "output_token": 0.000012,
+              "cache_input_token": 8e-7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-32b-0414-128k"
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 1e-7,
+        "output_token": 1e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-5.3-flashx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000002,
+        "output_token": 0.000007,
+        "cache_input_token": 5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-plus"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000005,
+        "output_token": 0.000005,
+        "cache_input_token": 0.0000025
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-air-250414"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-7,
+        "output_token": 5e-7,
+        "cache_input_token": 2.5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-airx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.00001,
+        "output_token": 0.00001
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-assistant"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000005,
+        "output_token": 0.000005
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-z1-air"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 5e-7,
+        "output_token": 5e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-z1-airx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000005,
+        "output_token": 0.000005
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-z1-flashx"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 1e-7,
+        "output_token": 1e-7
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-z1-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4.5-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0,
+        "output_token": 0,
+        "cache_input_token": 0
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4v-plus-0111"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.000004,
+        "output_token": 0.000004,
+        "cache_input_token": 0.000002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "cogvideox-2"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "unit": "request",
+        "amount": 0.5
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-tts-clone"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "unit": "request",
+        "amount": 6
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-4-voice"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 0.00008,
+        "output_token": 0.00008
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-realtime-flash"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "unit": "audio_second",
+        "amount": 0.003
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-realtime-air"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "unit": "audio_second",
+        "amount": 0.005
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "rerank"
+      },
+      "pricing": {
+        "currency": "CNY",
+        "input_token": 8e-7,
+        "output_token": 0
       }
     }
   ],

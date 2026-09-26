@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -388,6 +388,238 @@
         },
         "source_url": "https://developers.openai.com/api/docs/models/gpt-6-astra",
         "verified_at": "2026-09-25"
+      }
+    },
+    {
+      "id": "gpt-5.6",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 4e-7
+      }
+    },
+    {
+      "id": "gpt-image-2",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000008,
+        "output_token": 0.00003,
+        "cache_input_token": 0.000002
+      }
+    },
+    {
+      "id": "text-embedding-3-large",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 1.3e-7
+      }
+    },
+    {
+      "id": "text-embedding-3-small",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2e-8
+      }
+    },
+    {
+      "id": "text-embedding-ada-002",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 1e-7
+      }
+    },
+    {
+      "id": "whisper-1",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.0001,
+        "unit": "audio_second"
+      }
+    },
+    {
+      "id": "gpt-transcribe",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.000075,
+        "unit": "audio_second"
+      }
+    },
+    {
+      "id": "gpt-4o-transcribe",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000025,
+        "output_token": 0.00001
+      }
+    },
+    {
+      "id": "gpt-4o-mini-transcribe",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00000125,
+        "output_token": 0.000005
+      }
+    },
+    {
+      "id": "gpt-4o-mini-tts",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 6e-7,
+        "output_token": 0.000012
+      }
+    },
+    {
+      "id": "tts-1",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.000015,
+        "unit": "character"
+      }
+    },
+    {
+      "id": "tts-1-hd",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.00003,
+        "unit": "character"
+      }
+    },
+    {
+      "id": "sora-2",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.1,
+        "unit": "video_second"
+      }
+    },
+    {
+      "id": "sora-2-pro",
+      "pricing": {
+        "currency": "USD",
+        "amount": 0.3,
+        "unit": "video_second"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "gpt-5.6-sol*"
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "cache_input_token": 4e-7,
+        "output_token": 0.00002
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "gpt-5.6-terra*"
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "cache_input_token": 2e-7,
+        "output_token": 0.000012
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "gpt-5.6-luna*"
+      },
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2e-7,
+        "cache_input_token": 2e-8,
+        "output_token": 0.0000012
+      }
+    },
+    {
+      "id": "gpt-5.5",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000005,
+        "output_token": 0.00003,
+        "cache_input_token": 5e-7
+      }
+    },
+    {
+      "id": "gpt-5.5-pro",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00003,
+        "output_token": 0.00018
+      }
+    },
+    {
+      "id": "gpt-5.4",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.0000025,
+        "output_token": 0.000015,
+        "cache_input_token": 2.5e-7
+      }
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 7.5e-7,
+        "output_token": 0.0000045,
+        "cache_input_token": 7.5e-8
+      }
+    },
+    {
+      "id": "gpt-5.4-nano",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2e-7,
+        "output_token": 0.00000125,
+        "cache_input_token": 2e-8
+      }
+    },
+    {
+      "id": "gpt-5.4-pro",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00003,
+        "output_token": 0.00018
+      }
+    },
+    {
+      "id": "gpt-5.3-codex",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.00000175,
+        "output_token": 0.000014,
+        "cache_input_token": 1.75e-7
+      }
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000004,
+        "output_token": 0.00002,
+        "cache_input_token": 4e-7
+      }
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 0.000002,
+        "output_token": 0.000012,
+        "cache_input_token": 2e-7
+      }
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "pricing": {
+        "currency": "USD",
+        "input_token": 2e-7,
+        "output_token": 0.0000012,
+        "cache_input_token": 2e-8
       }
     }
   ]

@@ -763,7 +763,7 @@ fn provider_normalization_is_scoped_and_reports_collisions() {
 }
 
 #[test]
-fn static_prices_are_scoped_to_the_verified_billing_region() {
+fn migrated_default_prices_fill_regions_without_a_newer_channel_price() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -771,7 +771,7 @@ fn static_prices_are_scoped_to_the_verified_billing_region() {
         .find(|p| p.provider_profile_id == "glm")
         .unwrap();
     let mut instance = instance(profile, "glm");
-    for (region, priced) in [("china", true), ("global", false)] {
+    for region in ["china", "global"] {
         instance.region = Some(region.into());
         let inv = InventoryBuilder::build(
             profile,
@@ -781,14 +781,61 @@ fn static_prices_are_scoped_to_the_verified_billing_region() {
             &providers.codecs(),
         )
         .unwrap();
+        assert!(inv
+            .models
+            .iter()
+            .find(|m| m.provider_model_id == "glm-5.3")
+            .unwrap()
+            .pricing
+            .is_some());
+    }
+}
+
+#[test]
+fn provider_pricing_contains_all_rebased_model_defaults() {
+    let catalog = catalog();
+    for (provider, expected_count) in [
+        ("claude", 12),
+        ("deepseek", 3),
+        ("doubao", 18),
+        ("fal", 4),
+        ("gemini", 29),
+        ("glm", 102),
+        ("kimi", 4),
+        ("minimax", 23),
+        ("openai", 28),
+        ("qwen", 85),
+    ] {
         assert_eq!(
-            inv.models
-                .iter()
-                .find(|m| m.provider_model_id == "glm-5.3")
+            catalog
+                .provider_rules(provider)
                 .unwrap()
-                .pricing
-                .is_some(),
-            priced
+                .model_pricing
+                .len(),
+            expected_count,
+            "{provider} pricing migration is incomplete"
         );
     }
+
+    let fallback = catalog
+        .resolve_provider_rule("openai", "gpt-5.6", &Default::default())
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    assert_eq!(fallback.input_token, Some(4e-6));
+
+    let verified = catalog
+        .resolve_provider_rule("openai", "gpt-6-astra", &Default::default())
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    assert_eq!(verified.cache_write_input_token, Some(1.25e-5));
+    assert_eq!(
+        verified.source_url.as_deref(),
+        Some("https://developers.openai.com/api/docs/models/gpt-6-astra")
+    );
 }

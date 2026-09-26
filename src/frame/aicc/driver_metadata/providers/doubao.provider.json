@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "provider_profile_id": "doubao",
   "static_inventory_models": [
     "doubao-seedream-5.0-lite",
@@ -41,5 +41,25 @@
   ],
   "variants": [
     {"model_driver": "doubao", "variant": "reasoning-none", "match": {"origin_model_id": ["doubao-seed-2-0-lite-260215"], "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}}
+  ],
+  "model_pricing": [
+    { "id": "doubao-seed-2.0-mini", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 0.000002, "cache_input_token": 4e-8 }, { "up_to": 131072, "input_token": 4e-7, "output_token": 0.000004, "cache_input_token": 8e-8 }, { "input_token": 8e-7, "output_token": 0.000008, "cache_input_token": 1.6e-7 }] } } },
+    { "id": "doubao-seed-2.0-lite", "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-7, "output_token": 0.0000036, "cache_input_token": 1.2e-7 }, { "up_to": 131072, "input_token": 9e-7, "output_token": 0.0000054, "cache_input_token": 1.8e-7 }, { "input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 3.6e-7 }] } } },
+    { "id": "doubao-seed-2.1-lite", "pricing": { "currency": "CNY", "input_token": 8e-7, "output_token": 0.0000027, "cache_input_token": 1.6e-7 } },
+    { "id": "doubao-seed-2.1-turbo", "pricing": { "currency": "CNY", "input_token": 0.000003, "output_token": 0.000015, "cache_input_token": 6e-7 } },
+    { "id": "doubao-seed-2.1-pro", "pricing": { "currency": "CNY", "input_token": 0.000006, "output_token": 0.00003, "cache_input_token": 0.0000012 } },
+    { "id": "doubao-seed-evolving", "pricing": { "currency": "CNY", "input_token": 0.000006, "output_token": 0.00003, "cache_input_token": 0.0000012 } },
+    { "id": "doubao-embedding-vision", "pricing": { "currency": "CNY", "input_token": 7e-7 } },
+    { "id": "doubao-seedream-5.0-lite", "pricing": { "currency": "CNY", "amount": 0.22, "unit": "image" } },
+    { "id": "doubao-seedream-5-0-pro", "pricing": { "currency": "CNY", "amount": 0.3, "unit": "image" } },
+    { "id": "doubao-seedance-2.0", "pricing": { "currency": "CNY", "output_token": 0.000028 } },
+    { "id": "doubao-seedance-2.0-fast", "pricing": { "currency": "CNY", "output_token": 0.000022 } },
+    { "id": "doubao-seedance-2.0-mini", "pricing": { "currency": "CNY", "output_token": 0.000014 } },
+    { "id": "doubao-seedance-2.5", "pricing": { "currency": "CNY", "output_token": 0.000042 } },
+    { "id": "doubao-seed-tts-2.0", "pricing": { "currency": "CNY", "amount": 0.0003, "unit": "character" } },
+    { "id": "doubao-seed-asr-2.0", "pricing": { "currency": "CNY", "amount": 0.00022222222222222223, "unit": "audio_second" } },
+    { "match": { "provider_model_id": "doubao-seed-2-0-mini*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 0.000002, "cache_input_token": 4e-8 }, { "up_to": 131072, "input_token": 4e-7, "output_token": 0.000004, "cache_input_token": 8e-8 }, { "input_token": 8e-7, "output_token": 0.000008, "cache_input_token": 1.6e-7 }] } } },
+    { "match": { "provider_model_id": "doubao-seed-2-0-lite*" }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 6e-7, "output_token": 0.0000036, "cache_input_token": 1.2e-7 }, { "up_to": 131072, "input_token": 9e-7, "output_token": 0.0000054, "cache_input_token": 1.8e-7 }, { "input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 3.6e-7 }] } } },
+    { "match": { "provider_model_id": ["doubao-seed-2-0-pro*", "doubao-seed-2-0-code*"] }, "pricing": { "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 0.0000032, "output_token": 0.000016, "cache_input_token": 6.4e-7 }, { "up_to": 131072, "input_token": 0.0000048, "output_token": 0.000024, "cache_input_token": 9.6e-7 }, { "input_token": 0.0000096, "output_token": 0.000048, "cache_input_token": 0.00000192 }] } } }
   ]
 }

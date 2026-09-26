@@ -257,7 +257,7 @@ mod tests {
             known.ui_hints["instance_fields"]["region"]["mode"],
             "unsupported"
         );
-        assert_eq!(rules.revision_seq, 1);
+        assert_eq!(rules.revision_seq, 2);
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -312,7 +312,7 @@ mod tests {
             catalog.known_provider("openai").unwrap().display_name,
             "OpenAI"
         );
-        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 1);
+        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 2);
         assert_eq!(
             catalog.model_driver("openai").unwrap().revision_seq,
             crate::settings::BUILTIN_CATALOG_REVISION_SEQ

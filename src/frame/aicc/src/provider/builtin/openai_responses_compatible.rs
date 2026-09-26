@@ -744,13 +744,9 @@ mod tests {
             let rules = provider.provider_rules(7);
             assert_eq!(
                 rules.revision_seq,
-                if matches!(
-                    provider.profile.provider_profile_id.as_str(),
-                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID
-                ) {
-                    2
-                } else {
-                    1
+                match provider.profile.provider_profile_id.as_str() {
+                    DOUBAO_PROFILE_ID | QWEN_PROFILE_ID => 3,
+                    _ => 2,
                 }
             );
             if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {

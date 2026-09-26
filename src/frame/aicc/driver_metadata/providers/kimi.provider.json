@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 0,
-  "revision_seq": 1,
+  "revision_seq": 2,
   "provider_profile_id": "kimi",
   "models": [],
   "patterns": [
@@ -14,5 +14,11 @@
   "variants": [
     {"model_driver": "kimi", "variant": "reasoning-thinking", "match": {"origin_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-thinking"}, "provider_options": {"thinking": {"type": "enabled"}}},
     {"model_driver": "kimi", "variant": "reasoning-none", "match": {"origin_model_id": ["kimi-k2.5", "kimi-k2.6"], "variant": "reasoning-none"}, "provider_options": {"thinking": {"type": "disabled"}}}
+  ],
+  "model_pricing": [
+    { "id": "kimi-k3", "pricing": { "currency": "CNY", "input_token": 0.00002, "output_token": 0.0001, "cache_input_token": 0.000002 } },
+    { "id": "kimi-k2.7-code", "pricing": { "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000013 } },
+    { "id": "kimi-k2.7-code-highspeed", "pricing": { "currency": "CNY", "input_token": 0.000013, "output_token": 0.000054, "cache_input_token": 0.0000026 } },
+    { "id": "kimi-k2.6", "pricing": { "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000011 } }
   ]
 }

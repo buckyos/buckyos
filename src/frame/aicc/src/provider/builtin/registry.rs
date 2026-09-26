@@ -1170,7 +1170,7 @@ mod tests {
             })
             .unwrap();
         let inventory = binding.profile.default_inventory.unwrap();
-        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-1"));
+        assert_eq!(inventory.revision.as_deref(), Some("catalog-fal-2"));
         assert_eq!(inventory.models.len(), 4);
         assert!(inventory
             .models
