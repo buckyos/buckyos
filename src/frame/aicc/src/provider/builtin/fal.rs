@@ -198,6 +198,7 @@ mod tests {
             provider_profile_id: FAL_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: FAL_QUEUE_ADAPTER_ID.to_owned(),
             base_url: fal_connection_contract().default_base_url,
+            operation_base_urls: Default::default(),
             credential: CredentialReference {
                 reference: "secret://fal/main".to_owned(),
             },
@@ -236,7 +237,7 @@ mod tests {
         );
 
         let rules = fal_provider_rules(7);
-        assert_eq!(rules.revision_seq, 1);
+        assert_eq!(rules.revision_seq, 3);
         assert_eq!(
             rules.patterns[0].operations["video.img2video"],
             FAL_QUEUE_OPERATION_ID

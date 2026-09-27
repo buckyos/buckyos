@@ -33,7 +33,12 @@ import {
   withMockSettings,
 } from "./settings_transaction.ts";
 import { ProviderScheduler } from "./scheduler.ts";
-import { buildFinancialReport, CostBudget, extractFinance } from "./finance.ts";
+import {
+  buildFinancialReport,
+  CostBudget,
+  exceedsUsdBudget,
+  extractFinance,
+} from "./finance.ts";
 import {
   indexUsageByTask,
   providerCoverage,
@@ -81,6 +86,7 @@ import {
 import {
   assertT15ResponseMapping,
   buildT15TypedParams,
+  exactModel,
   variantCells,
 } from "./run_t15_gateway.ts";
 import {
@@ -118,6 +124,7 @@ function t15FieldValue(
   field: string,
   contract: ProviderProtocolContract,
   model: string,
+  apiType: string,
 ): unknown {
   if (field === "model") return model;
   if (field === "messages") {
@@ -125,6 +132,21 @@ function t15FieldValue(
   }
   if (field === "instances") return [{ prompt: "BUCKYOS-AICC-4827" }];
   if (field === "documents") return ["wrong", "BUCKYOS-AICC-4827"];
+  if (field === "content" && contract.async_protocol === "doubao_video") {
+    return [{ type: "text", text: "BUCKYOS-AICC-4827" }];
+  }
+  if (field === "content" && contract.async_protocol === "minimax_video_v2") {
+    return [
+      { type: "text", text: "BUCKYOS-AICC-4827" },
+      ...(apiType === "video.img2video"
+        ? [{
+          type: "image_url",
+          image_url: { url: "https://example.com/input.png" },
+          role: "first_frame",
+        }]
+        : []),
+    ];
+  }
   if (field === "content") return { parts: [{ text: "BUCKYOS-AICC-4827" }] };
   if (field === "tools") return [{ type: "computer_preview" }];
   if (
@@ -132,6 +154,9 @@ function t15FieldValue(
     contract.id === "gemini.interactions.tts.v1beta"
   ) {
     return { type: "audio", mime_type: "audio/l16" };
+  }
+  if (field === "response_format" && apiType.startsWith("video.")) {
+    return { type: "video", resolution: "720p" };
   }
   if (
     field === "generation_config" &&
@@ -154,6 +179,7 @@ function t15ProviderRequest(
   contract: ProviderProtocolContract,
   model: string,
   extraBody: Record<string, unknown> = {},
+  apiType = contract.api_types[0],
 ): { url: string; init: RequestInit } {
   let path = contract.path.replaceAll("{model}", encodeURIComponent(model));
   const headers = new Headers(contract.required_headers ?? {});
@@ -167,10 +193,14 @@ function t15ProviderRequest(
     );
     path = `${url.pathname}${url.search}`;
   }
+  const requiredFields = [
+    ...contract.required_body_fields,
+    ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
+  ];
   const fields = Object.fromEntries(
-    contract.required_body_fields.map((field) => [
+    requiredFields.map((field) => [
       field,
-      t15FieldValue(field, contract, model),
+      t15FieldValue(field, contract, model, apiType),
     ]),
   );
   if (contract.api_types.includes("decision")) Object.assign(fields, contract.operation === "decisions.create" ? openrouterDecisionFixture.wire_request : decisionFixture.wire_request, {model});
@@ -264,15 +294,15 @@ test("cloud update fixtures replace complete catalog files and tombstone every c
     true,
   );
   assert.ok(
-    (firstModels.find((model) => model.id === "gpt-5.6")
+    (firstModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V1),
   );
   assert.ok(
-    !(firstModels.find((model) => model.id === "gpt-5.6")
+    !(firstModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2),
   );
   assert.ok(
-    (secondModels.find((model) => model.id === "gpt-5.6")
+    (secondModels.find((model) => model.id === "text-embedding-3-large")
       ?.logical_mounts as string[]).includes(CLOUD_TEST_MOUNT_V2),
   );
   assert.deepEqual(
@@ -310,6 +340,18 @@ test("cloud update config cleanup retries with refreshed authentication", async 
   await restore(refreshed);
   assert.equal(expiredDeletes, 1);
   assert.equal(refreshedDeletes, 1);
+});
+
+test("cloud update config cleanup accepts an already absent key", async () => {
+  const systemConfig: RpcClient = {
+    call: async (method) => {
+      if (method === "sys_config_get") return null;
+      throw new Error("key not found : services/aicc/driver_metadata_update");
+    },
+  };
+  const restore = await backupCloudUpdateConfig(systemConfig);
+  await restore();
+  await restore();
 });
 
 test("judge model selection prefers current exact Gemini and honors overrides", () => {
@@ -488,6 +530,86 @@ test("official catalog fetches paginated Provider inventory independently of AIC
   });
   assert.deepEqual(ids, ["claude-fable-5", "claude-opus-5"]);
   assert.equal(requests[1].searchParams.get("after_id"), "page-1");
+});
+
+test("frozen official inventory is explicit and does not make a network request", async () => {
+  const profile = (await baseline()).providers.find((item) =>
+    item.provider_driver === "doubao"
+  )!;
+  let requests = 0;
+  const ids = await fetchOfficialModelIds({
+    profile,
+    timeoutMs: 1_000,
+    fetcher: async () => {
+      requests += 1;
+      throw new Error("frozen inventory must not use the network");
+    },
+  });
+  assert.deepEqual(ids, [
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
+    "deepseek-v4.1-flash",
+    "doubao-embedding-vision",
+    "doubao-seed-2.0-lite",
+    "doubao-seed-2.0-mini",
+    "doubao-seed-2.1-lite",
+    "doubao-seed-2.1-pro",
+    "doubao-seed-2.1-turbo",
+    "doubao-seed-evolving",
+    "doubao-seed-tts-2.0",
+    "doubao-seedance-2.0",
+    "doubao-seedance-2.0-fast",
+    "doubao-seedance-2.0-mini",
+    "doubao-seedance-2.5",
+    "doubao-seedream-5-0-pro",
+    "doubao-seedream-5.0-lite",
+    "glm-5.3",
+    "glm-5.3-flash",
+    "kimi-k2.7-code",
+    "kimi-k2.8-preview",
+    "kimi-k3",
+    "minimax-m3",
+  ]);
+  assert.equal(requests, 0);
+  assert.equal(profile.official_catalog.checked_at, "2026-09-24");
+  assert.match(profile.official_catalog.risk ?? "", /not revalidated at run time/);
+});
+
+test("Doubao Agent Plan capability rules distinguish text-only and vision models", async () => {
+  const instance = "doubao-main";
+  const models: ProviderInventory["models"] = [
+    {
+      exact_model: `deepseek-v4-flash@${instance}`,
+      provider_model_id: "deepseek-v4-flash",
+      api_types: ["llm"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `deepseek-v4.1-flash@${instance}`,
+      provider_model_id: "deepseek-v4.1-flash",
+      api_types: ["llm"],
+      logical_mounts: [],
+    },
+  ];
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: instance,
+      provider_driver: "doubao",
+      models,
+    }]),
+  });
+  assert.deepEqual(result.mismatches, []);
+  assert.deepEqual(
+    result.cells.filter((cell) => cell.provider_model_id === "deepseek-v4-flash")
+      .map((cell) => cell.api_type),
+    ["llm"],
+  );
+  assert.deepEqual(
+    result.cells.filter((cell) => cell.provider_model_id === "deepseek-v4.1-flash")
+      .map((cell) => cell.api_type).sort(),
+    ["llm"],
+  );
 });
 
 test("SN official catalog requires an independent bearer session token", async () => {
@@ -1035,14 +1157,13 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
     api_token: { locked: "mock-a-run-one" },
   });
   assert.deepEqual(
-    providers.slice(8).map((
+    providers.slice(9).map((
       item,
     ) => [item.provider_profile_id, item.protocol_adapter_id]),
     [
       ["custom", "openai-responses"],
       ["custom", "claude-messages"],
       ["custom", "gemini-interactions"],
-      ["custom", "fal-queue"],
     ],
   );
   assert.equal(
@@ -1207,9 +1328,15 @@ test("Provider credentials accept TOML values or provider-specific environment v
   }, (name) => {
     if (name === "AICC_CLAUDE_API_TOKEN") return "env-claude";
     if (name === "AICC_GLM_API_TOKEN") return "env-glm";
+    if (name === "AICC_DOUBAO_API_TOKEN") return "env-doubao";
     return undefined;
   });
-  assert.deepEqual(tokens, { openai: "toml-openai", claude: "env-claude", glm: "env-glm" });
+  assert.deepEqual(tokens, {
+    openai: "toml-openai",
+    claude: "env-claude",
+    glm: "env-glm",
+    doubao: "env-doubao",
+  });
 });
 
 test("Provider credentials create one current-schema instance when the section is absent", () => {
@@ -1218,11 +1345,12 @@ test("Provider credentials create one current-schema instance when the section i
     "google-gemini": "gemini-token",
     openrouter: "router-token",
     glm: "glm-token",
+    doubao: "doubao-token",
   }, {}) as { providers: Array<Record<string, unknown>> };
-  assert.equal(patched.providers.length, 4);
+  assert.equal(patched.providers.length, 5);
   assert.deepEqual(
     patched.providers.map((instance) => instance.provider_profile_id),
-    ["openai", "gemini", "openrouter", "glm"],
+    ["openai", "gemini", "openrouter", "glm", "doubao"],
   );
   assert.equal(
     patched.providers[1].provider_instance_name,
@@ -1234,6 +1362,12 @@ test("Provider credentials create one current-schema instance when the section i
   );
   assert.equal(patched.providers[3].provider_instance_name, "glm-main");
   assert.equal(patched.providers[3].base_url, "https://api.z.ai/api/paas/v4");
+  assert.equal(patched.providers[4].provider_instance_name, "doubao-main");
+  assert.equal(
+    patched.providers[4].base_url,
+    "https://ark.cn-beijing.volces.com/api/plan/v3",
+  );
+  assert.equal(patched.providers[4].protocol_adapter_id, "doubao-responses");
 });
 
 test("provider scheduler runs sessions concurrently within global and provider limits", async () => {
@@ -1388,6 +1522,14 @@ test("finance budget reserves concurrent attempts and reports unknown exposure",
   assert.equal(report.estimated_exposure_usd, 0.01);
   assert.equal(report.unknown_cost_calls, 1);
   assert.equal(report.by_provider[0].calls, 2);
+});
+
+test("financial budget comparison ignores multiplication roundoff only", () => {
+  assert.equal(exceedsUsdBudget(0.01 * 76, 0.76), false);
+  assert.equal(exceedsUsdBudget(0.760001, 0.76), true);
+  const budget = new CostBudget(0.76);
+  for (let index = 0; index < 76; index += 1) budget.reserve(0.01);
+  assert.equal(budget.budgetExceeded(), false);
 });
 
 test("durable usage audit paginates and preserves finance snapshot", async () => {
@@ -1817,6 +1959,32 @@ test("typed inference adapter removes the legacy request envelope", async () => 
   assert.equal(calls[1].method, "images.generate");
   assert.equal(calls[1].params.prompt, "a fox");
   assert.equal("payload" in calls[1].params, false);
+});
+
+test("T2 multimodal embedding request honors the selected input combination", () => {
+  const request = buildExactRequest({
+    cell: {
+      case_id: "embedding-text-only",
+      provider_driver: "doubao",
+      provider_instance: "doubao-main",
+      exact_model: "doubao-embedding-vision@doubao-main",
+      provider_model_id: "doubao-embedding-vision",
+      api_type: "embedding.multimodal",
+      method: "embedding.multimodal",
+      baseline_status: "active",
+      input_kinds: ["text"],
+      output_kinds: ["embedding"],
+      source_urls: [],
+    },
+    runId: "run",
+    fixtures: {
+      image: { kind: "base64", mime: "image/png", data_base64: "aW1hZ2U=" },
+    },
+  });
+  assert.deepEqual(
+    (request.payload as { resources: unknown[] }).resources,
+    [],
+  );
 });
 
 test("active official model families are not excluded by lifecycle filters", async () => {
@@ -2514,51 +2682,25 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       },
     });
   assert.deepEqual(claudeRequest({ type: "adaptive" }), []);
-  assert.deepEqual(claudeRequest({ type: "enabled", budget_tokens: 1024 }), [
-    "body field thinking.type=enabled is invalid for anthropic.messages.2023-06-01; expected adaptive",
+  assert.deepEqual(claudeRequest({ type: "enabled", budget_tokens: 1024 }), []);
+  assert.deepEqual(claudeRequest({ type: "manual" }), [
+    "body field thinking.type=manual is invalid for anthropic.messages.2023-06-01; expected adaptive|disabled|enabled",
   ]);
-  const minimaxMusic = protocolContract(
+  const minimaxAsr = protocolContract(
     catalog,
     "minimax",
-    "minimax.music-generation.v1",
+    "minimax.speech-to-text.v1",
   );
-  const musicRequest = (body: Record<string, unknown>) =>
-    validateProviderRequest(minimaxMusic, {
+  assert.deepEqual(validateProviderRequest(minimaxAsr, {
       method: "POST",
-      pathname: "/v1/music_generation",
+      pathname: "/v1/speech_to_text",
       query: new URLSearchParams(),
       headers: new Headers({
-        "content-type": "application/json",
+        "content-type": "multipart/form-data; boundary=test",
         authorization: "Bearer test-key",
       }),
-      body,
-    });
-  assert.deepEqual(
-    musicRequest({ model: "music-3.0", prompt: "calm instrumental" }),
-    [
-      "MiniMax non-instrumental music requires lyrics or lyrics_optimizer=true",
-    ],
-  );
-  assert.deepEqual(
-    musicRequest({
-      model: "music-3.0",
-      prompt: "calm instrumental",
-      is_instrumental: true,
-    }),
-    [],
-  );
-  assert.deepEqual(
-    musicRequest({ model: "music-cover", prompt: "cover this" }),
-    ["MiniMax cover music requires exactly one audio reference"],
-  );
-  assert.deepEqual(
-    musicRequest({
-      model: "music-cover",
-      prompt: "cover this",
-      audio_url: "https://example.invalid/source.mp3",
-    }),
-    [],
-  );
+      body: { model: "asr-1.0", file: { name: "speech.wav" } },
+    }), []);
 });
 
 test("T1.5 Provider mock rejects non-official wire and redacts captured credentials", async (context) => {
@@ -2652,6 +2794,8 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
     assert.equal(response.status, 200);
   };
   await select();
+  const controlState = await fetch(`${baseUrl}/__control/state`);
+  assert.equal(controlState.status, 200);
   const headers = {
     "content-type": "application/json",
     "x-api-key": "t15-secret-value",
@@ -2672,6 +2816,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
       { headers: Record<string, string>; validation_errors: string[] }
     >;
   };
+  assert.equal(audit.requests.length, 1);
   assert.equal(audit.requests[0].headers["x-api-key"], "[REDACTED]");
   assert.deepEqual(audit.requests[0].validation_errors, []);
   await select();
@@ -2689,7 +2834,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.match(await invalid.text(), /unknown body field invented/);
 });
 
-test("T1.5 Provider mock serves every contract for all 13 Providers", async (context) => {
+test("T1.5 Provider mock serves every contract for all Provider profiles", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   assert.equal(catalog.providers.length, 13);
   assert.deepEqual(
@@ -2715,52 +2860,108 @@ test("T1.5 Provider mock serves every contract for all 13 Providers", async (con
 
   for (const provider of catalog.providers) {
     for (const contract of provider.contracts) {
-      const selected = await fetch(`${baseUrl}/__mock/select`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          provider_driver: provider.provider_driver,
-          contract_id: contract.id,
-          scenario: "success",
-        }),
-      });
-      assert.equal(
-        selected.status,
-        200,
-        `${provider.provider_driver}/${contract.id} selection`,
-      );
-      const model = provider.test_model_ids[contract.api_types[0]];
-      const providerRequest = t15ProviderRequest(baseUrl, contract, model);
-      const response = await fetch(providerRequest.url, providerRequest.init);
-      assert.equal(
-        response.status,
-        200,
-        `${provider.provider_driver}/${contract.id}: ${await response.clone()
-          .text()}`,
-      );
-      const audit = await (await fetch(`${baseUrl}/__mock/requests`))
-        .json() as {
-          requests: Array<
-            { headers: Record<string, string>; validation_errors: string[] }
-          >;
-        };
-      assert.equal(
-        audit.requests.length,
-        1,
-        `${provider.provider_driver}/${contract.id} audit count`,
-      );
-      assert.deepEqual(
-        audit.requests[0].validation_errors,
-        [],
-        `${provider.provider_driver}/${contract.id} wire validation`,
-      );
-      const authHeader = contract.auth.kind === "header"
-        ? contract.auth.name.toLowerCase()
-        : undefined;
-      if (authHeader) {
-        assert.equal(audit.requests[0].headers[authHeader], "[REDACTED]");
+      for (const apiType of contract.api_types) {
+        const selected = await fetch(`${baseUrl}/__mock/select`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            provider_driver: provider.provider_driver,
+            contract_id: contract.id,
+            api_type: apiType,
+            scenario: "success",
+          }),
+        });
+        assert.equal(
+          selected.status,
+          200,
+          `${provider.provider_driver}/${contract.id} selection`,
+        );
+        const model = provider.test_model_ids[apiType];
+        const providerRequest = t15ProviderRequest(
+          baseUrl,
+          contract,
+          model,
+          {},
+          apiType,
+        );
+        const response = await fetch(providerRequest.url, providerRequest.init);
+        assert.equal(
+          response.status,
+          200,
+          `${provider.provider_driver}/${contract.id}/${apiType}: ${await response
+            .clone()
+            .text()}`,
+        );
+        const audit = await (await fetch(`${baseUrl}/__mock/requests`))
+          .json() as {
+            requests: Array<
+              { headers: Record<string, string>; validation_errors: string[] }
+            >;
+          };
+        assert.equal(
+          audit.requests.length,
+          1,
+          `${provider.provider_driver}/${contract.id}/${apiType} audit count`,
+        );
+        assert.deepEqual(
+          audit.requests[0].validation_errors,
+          [],
+          `${provider.provider_driver}/${contract.id}/${apiType} wire validation`,
+        );
+        const authHeader = contract.auth.kind === "header"
+          ? contract.auth.name.toLowerCase()
+          : undefined;
+        if (authHeader) {
+          assert.equal(audit.requests[0].headers[authHeader], "[REDACTED]");
+        }
       }
     }
+  }
+});
+
+test("T1.5 shared endpoints require API-specific media fields", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (
+    const [providerDriver, contractId, apiType, expectedError] of [
+      ["openai", "openai.videos.v1", "video.img2video", "missing body field input_reference"],
+      [
+        "minimax",
+        "minimax.image-generation.v1",
+        "image.img2img",
+        "missing body field subject_reference",
+      ],
+      [
+        "minimax",
+        "minimax.video-generation.v2",
+        "video.img2video",
+        "MiniMax image-to-video content requires a first_frame image_url block",
+      ],
+      ["glm", "glm.videos.generations.v4", "video.img2video", "missing body field image_url"],
+    ] as const
+  ) {
+    const contract = protocolContract(catalog, providerDriver, contractId);
+    const headers = new Headers({ "content-type": contract.content_type });
+    headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
+    const body = Object.fromEntries(
+      contract.required_body_fields.map((field) => [
+        field,
+        t15FieldValue(field, contract, "mock-model", apiType),
+      ]),
+    );
+    if (contract.id === "minimax.video-generation.v2") {
+      body.content = [{ type: "text", text: "BUCKYOS-AICC-4827" }];
+    }
+    const errors = validateProviderRequest(contract, {
+      method: contract.http_method,
+      pathname: contract.path,
+      query: new URLSearchParams(),
+      headers,
+      body,
+    }, apiType);
+    assert.ok(
+      errors.includes(expectedError),
+      `${contractId}/${apiType} accepted a request without its API-specific media input`,
+    );
   }
 });
 
@@ -3097,7 +3298,14 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
   );
   assert.deepEqual(
     new Set(asyncContracts.map(({ contract }) => contract.async_protocol)),
-    new Set(["openai_video", "google_lro", "fal_queue", "minimax_video"]),
+    new Set([
+      "openai_video",
+      "google_lro",
+      "fal_queue",
+      "minimax_video_v2",
+      "glm_video",
+      "doubao_video",
+    ]),
   );
 
   for (const { provider, contract } of asyncContracts) {
@@ -3108,6 +3316,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
         body: JSON.stringify({
           provider_driver: provider.provider_driver,
           contract_id: contract.id,
+          api_type: contract.api_types[0],
           scenario: "async_success",
         }),
       })).status,
@@ -3130,6 +3339,8 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
           "{operation_id}",
           contract.async_protocol === "google_lro"
             ? "gemini_mock_1"
+            : contract.async_protocol === "glm_video" || contract.async_protocol === "doubao_video"
+            ? "glm_video_mock_1"
             : "video_mock_1",
         );
       const url = new URL(`${baseUrl}${path}`);
@@ -3397,6 +3608,39 @@ test("T1.5 variants are independently derived from official expectations", async
       }),
     /undocumented metadata variant gpt-5\.5:reasoning-max/,
   );
+  assert.doesNotThrow(() =>
+    variantCells(catalog, {
+      ...inventory,
+      models: [],
+    })
+  );
+});
+
+test("T1.5 exact model selectors rebind to a recreated Provider instance", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const testCase = buildT15Manifest(catalog).find((candidate) =>
+    candidate.provider_driver === "openai" &&
+    candidate.api_type === "llm"
+  );
+  assert.ok(testCase);
+  testCase.model_selector = {
+    kind: "exact",
+    value: "gpt-5.6:reasoning-high@openai-old",
+  };
+  assert.equal(
+    exactModel(catalog, testCase, {
+      provider_instance_name: "openai-new",
+      provider_driver: "openai",
+      models: [{
+        exact_model: "gpt-5.6:reasoning-high@openai-new",
+        provider_model_id: "gpt-5.6:reasoning-high",
+        provider_actual_model_id: "gpt-5.6",
+        api_types: ["llm"],
+        logical_mounts: [],
+      }],
+    }),
+    "gpt-5.6:reasoning-high@openai-new",
+  );
 });
 
 test("T1.5 typed request fixtures use current provider-neutral methods without legacy envelopes", () => {
@@ -3531,6 +3775,18 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.equal(
     isProviderRestricted(new Error("provider request failed")),
     false,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("OpenAI UnsupportedModel: model does not support the agent plan feature"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("The requested model does not support the agent plan feature"),
+    ),
+    true,
   );
 });
 

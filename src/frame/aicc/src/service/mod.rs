@@ -848,6 +848,7 @@ fn validate_request(request: &ProviderAddRequest) -> ProviderValidateRequest {
         protocol_family_id: request.protocol_family_id.clone(),
         protocol_adapter_id: request.protocol_adapter_id.clone(),
         base_url: request.base_url.clone(),
+        operation_base_urls: request.operation_base_urls.clone(),
         credentials: request.credentials.clone(),
         region: request.region.clone(),
         workspace: request.workspace.clone(),
@@ -869,6 +870,7 @@ fn validate_settings_provider(provider: &ProviderSettings) -> ProviderValidateRe
         protocol_family_id: provider.protocol_family_id.clone(),
         protocol_adapter_id: Some(provider.protocol_adapter_id.clone()),
         base_url: provider.base_url.clone(),
+        operation_base_urls: provider.operation_base_urls.clone(),
         credentials: provider.credentials.clone(),
         region: provider.region.clone(),
         workspace: provider.workspace.clone(),
@@ -901,6 +903,7 @@ fn provider_from_add(
         protocol_family_id: request.protocol_family_id,
         protocol_adapter_id,
         base_url: request.base_url,
+        operation_base_urls: request.operation_base_urls,
         credentials: request.credentials,
         enabled: true,
         region: request.region,
@@ -924,6 +927,9 @@ fn apply_provider_update(provider: &mut ProviderSettings, request: ProviderUpdat
     }
     if let Some(base_url) = request.base_url {
         provider.base_url = base_url;
+    }
+    if let Some(operation_base_urls) = request.operation_base_urls {
+        provider.operation_base_urls = operation_base_urls;
     }
     if let Some(credential) = request.credential {
         provider.credentials = credential;
@@ -1206,6 +1212,7 @@ fn runtime_admin_snapshot(
                 provider_profile_id: settings.provider_profile_id.clone(),
                 protocol_adapter_id: settings.protocol_adapter_id.clone(),
                 base_url: settings.base_url.clone(),
+                operation_base_urls: settings.operation_base_urls.clone(),
                 enabled: settings.enabled,
                 auth,
                 inventory,
@@ -1243,6 +1250,8 @@ fn runtime_admin_snapshot(
                     provider_profile_id: provider.provider_profile_id.clone(),
                     display_name: provider.display_name.clone(),
                     base_url: provider.base_url.clone(),
+                    region_base_urls: provider.connection.region_base_urls.clone(),
+                    operation_base_urls: provider.connection.operation_base_urls.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
                     discovery_behavior_id: provider.discovery_behavior_id.clone(),
                     dynamic_login_behavior_id: provider.dynamic_login_behavior_id.clone(),
@@ -1252,7 +1261,10 @@ fn runtime_admin_snapshot(
                 })
                 .collect(),
         },
-        protocol_adapters: protocol_adapter_response(codecs),
+        protocol_adapters: protocol_adapter_response(
+            codecs,
+            &snapshot.catalog.custom_provider_adapter_ids(),
+        ),
         models: json!({
             "catalog": model_catalog_json(&snapshot.catalog, &snapshot.models, &providers),
             "models": snapshot.models.model_views().into_iter().map(|model| json!({
@@ -1274,6 +1286,10 @@ fn runtime_admin_snapshot(
             })).collect::<Vec<_>>(),
             "directory": model_directory_json(&snapshot.models),
             "logical_definitions": logical_definitions_json(&snapshot.models),
+            "catalog_patterns": snapshot.catalog.model_drivers().map(|driver| json!({
+                "model_driver_id": driver.model_driver_id,
+                "patterns": driver.patterns,
+            })).collect::<Vec<_>>(),
             "generation": snapshot.generation,
         }),
         routing: snapshot.settings.session_config.clone().unwrap_or_default(),
@@ -1455,13 +1471,18 @@ fn provider_health_state(health: ProviderHealthState) -> ProviderInstanceHealthS
     }
 }
 
-fn protocol_adapter_response(codecs: &CodecRegistry) -> ProtocolAdapterListResponse {
+fn protocol_adapter_response(
+    codecs: &CodecRegistry,
+    custom_provider_adapter_ids: &BTreeSet<String>,
+) -> ProtocolAdapterListResponse {
     ProtocolAdapterListResponse {
         adapters: codecs
             .adapters()
             .map(|adapter| buckyos_api::ProtocolAdapterView {
                 protocol_family_id: adapter.protocol_family_id.clone(),
                 protocol_adapter_id: adapter.protocol_adapter_id.clone(),
+                custom_provider_selectable: custom_provider_adapter_ids
+                    .contains(&adapter.protocol_adapter_id),
                 interface_generation: adapter.interface_generation.clone(),
                 status: match adapter.status {
                     AdapterStatus::Stable => buckyos_api::ProtocolAdapterStatus::Stable,
@@ -1471,6 +1492,7 @@ fn protocol_adapter_response(codecs: &CodecRegistry) -> ProtocolAdapterListRespo
                 probe_priority: adapter.probe_priority,
                 probe_path: adapter.probe_path.clone(),
                 base_adapter_id: adapter.base_adapter_id.clone(),
+                component_adapter_ids: adapter.component_adapter_ids.clone(),
                 operations: adapter
                     .operations
                     .values()

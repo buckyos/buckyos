@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
-pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 3;
+pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 5;
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
@@ -44,6 +44,8 @@ pub(crate) struct ProviderSettings {
     pub protocol_family_id: Option<String>,
     pub protocol_adapter_id: String,
     pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credentials: ProviderCredentials,
     #[serde(default = "default_enabled")]
     pub enabled: bool,
@@ -86,6 +88,7 @@ impl fmt::Debug for ProviderSettings {
             .field("protocol_family_id", &self.protocol_family_id)
             .field("protocol_adapter_id", &self.protocol_adapter_id)
             .field("base_url", &self.base_url)
+            .field("operation_base_urls", &self.operation_base_urls)
             .field("credentials", &"<redacted>")
             .field("enabled", &self.enabled)
             .field("region", &self.region)

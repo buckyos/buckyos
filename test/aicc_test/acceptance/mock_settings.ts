@@ -85,7 +85,7 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   acceptanceChildren.disable_line = {
     items: [{
       name: "primary",
-      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      target: "llm.gpt-pro",
       weight: 1,
     }],
     disable_line: { web_search: true },
@@ -94,7 +94,7 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   acceptanceChildren.system_overlay = {
     items: [{
       name: "system",
-      target: `gpt-5.6@dv-openai-a-${suffix}`,
+      target: "llm.gpt-pro",
       weight: 1,
     }],
     source: "dv_system_routing_fixture",
@@ -133,7 +133,7 @@ export function buildMockSettings(
     baseUrl: string;
     runId: string;
     timeoutMs?: number;
-    customModels?: Record<"openai" | "claude" | "google-gemini" | "fal", Record<string, string>>;
+    customModels?: Record<"openai" | "claude" | "google-gemini", Record<string, string>>;
   },
 ): JsonObject {
   const settings = structuredClone(object(original));
@@ -146,7 +146,6 @@ export function buildMockSettings(
     openai: { llm: "gpt-5.6-sol" },
     claude: { llm: "claude-sonnet-5" },
     "google-gemini": { llm: "gemini-3.8-flash" },
-    fal: { "image.upscale": "fal-ai/esrgan" },
   };
   const currentProviders = Array.isArray(settings.providers)
     ? settings.providers.filter((item) => item && typeof item === "object")
@@ -202,6 +201,14 @@ export function buildMockSettings(
       timeoutMs,
     }),
     provider({
+      name: `dv-typesafe-${suffix}`,
+      profile: "typesafe",
+      adapter: "typesafe-systemone",
+      baseUrl: `${baseUrl}/instance-typesafe/v1`,
+      token: `mock-typesafe-${suffix}`,
+      timeoutMs,
+    }),
+    provider({
       name: `dv-fal-${suffix}`,
       profile: "fal",
       adapter: "fal-queue",
@@ -239,16 +246,6 @@ export function buildMockSettings(
       token: `mock-custom-gemini-${suffix}`,
       timeoutMs,
       discovery: customDiscovery(`t1-custom-gemini-${suffix}`, "google-gemini", customModels["google-gemini"]),
-    }),
-    provider({
-      name: `dv-custom-fal-${suffix}`,
-      profile: "custom",
-      adapter: "fal-queue",
-      providerRulesId: null,
-      baseUrl,
-      token: `mock-custom-fal-${suffix}`,
-      timeoutMs,
-      discovery: customDiscovery(`t1-custom-fal-${suffix}`, "fal", customModels.fal),
     }),
   ];
   installRoutingFixtures(settings, suffix);

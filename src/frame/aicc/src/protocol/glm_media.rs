@@ -1,10 +1,10 @@
 use super::{
-    openai_responses_adapter, CodecRegistration, HttpBody, HttpRequest, HttpResponse,
-    NativeTaskCodec, NativeTaskHandle, NativeTaskInput, NativeTaskOperation, NativeTaskOutput,
-    NativeTaskState, OperationBinding, OperationDescriptor, ProtocolError, ProtocolErrorKind,
-    ProtocolOutput, ProtocolResultValue, OPENAI_AUDIO_SPEECH_OPERATION_ID,
-    OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID, OPENAI_EMBEDDINGS_OPERATION_ID,
-    OPENAI_IMAGES_GENERATE_OPERATION_ID,
+    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, HttpBody,
+    HttpRequest, HttpResponse, NativeTaskCodec, NativeTaskHandle, NativeTaskInput,
+    NativeTaskOperation, NativeTaskOutput, NativeTaskState, OperationBinding, OperationDescriptor,
+    ProtocolError, ProtocolErrorKind, ProtocolOutput, ProtocolResultValue,
+    OPENAI_AUDIO_SPEECH_OPERATION_ID, OPENAI_AUDIO_TRANSCRIPTIONS_OPERATION_ID,
+    OPENAI_EMBEDDINGS_OPERATION_ID, OPENAI_IMAGES_GENERATE_OPERATION_ID,
 };
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const GLM_VIDEOS_OPERATION_ID: &str = "videos.generate";
+pub(crate) const GLM_MEDIA_ADAPTER_ID: &str = "glm-media";
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -65,6 +66,31 @@ pub(super) fn glm_media_registration() -> (Vec<OperationDescriptor>, CodecRegist
     ]);
     operations.push(video);
     (operations, registration)
+}
+
+pub(crate) fn glm_media_adapter() -> (AdapterDescriptor, CodecRegistration) {
+    let (operations, registration) = glm_media_registration();
+    (
+        AdapterDescriptor {
+            protocol_family_id: "glm".to_owned(),
+            protocol_adapter_id: GLM_MEDIA_ADAPTER_ID.to_owned(),
+            interface_generation: "v4".to_owned(),
+            base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
+            status: AdapterStatus::Stable,
+            probe_priority: 200,
+            probe_path: None,
+            credential: super::AdapterCredentialContract {
+                kind: super::CredentialKind::GlmJwt,
+                header_name: None,
+            },
+            operations: operations
+                .into_iter()
+                .map(|operation| (operation.operation_id.clone(), operation))
+                .collect(),
+        },
+        registration,
+    )
 }
 
 #[derive(Clone)]
@@ -271,8 +297,11 @@ fn decode_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
             metadata: video.get("cover_image_url").cloned(),
         });
     }
+    let video = resources.into_iter().next().ok_or_else(|| {
+        ProtocolError::invalid_response("GLM video result must contain at least one video")
+    })?;
     Ok(NativeTaskOutput::Result(ProtocolOutput {
-        value: json!({"videos": resources}),
+        value: json!({"video": video}),
         usage: Some(AiUsage::request_units(1)),
         artifacts,
     }))
@@ -343,6 +372,15 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         return Ok(());
     }
     let parsed = serde_json::from_slice::<Value>(&response.body).ok();
+    let provider_code = parsed
+        .as_ref()
+        .and_then(|value| value.pointer("/error/code"))
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string())
+        });
     let message = parsed
         .as_ref()
         .and_then(|value| value.pointer("/error/message").or_else(|| value.get("msg")))
@@ -352,6 +390,34 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         super::protocol_error_kind_from_http_status(response.status),
         message,
     )
+    .with_provider_code(provider_code)
+    .with_http_status(response.status.as_u16())
     .with_request_id(Some(response.request_id.clone()))
     .with_retry_after(response.retry_after))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use reqwest::header::HeaderMap;
+    use reqwest::StatusCode;
+
+    #[test]
+    fn error_response_keeps_glm_business_code() {
+        let response = HttpResponse {
+            status: StatusCode::BAD_REQUEST,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(
+                br#"{"error":{"code":"1210","message":"API call parameters are incorrect"}}"#,
+            ),
+            request_id: "glm-request-1".to_owned(),
+            retry_after: None,
+        };
+
+        let error = ensure_success(&response).unwrap_err();
+        assert_eq!(error.provider_code.as_deref(), Some("1210"));
+        assert_eq!(error.http_status, Some(400));
+        assert_eq!(error.request_id.as_deref(), Some("glm-request-1"));
+    }
 }

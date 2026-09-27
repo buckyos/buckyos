@@ -28,8 +28,8 @@ function objects(
 
 export const CLOUD_TEST_PROFILE_ID = "aicc-cloud-update-openai";
 export const CLOUD_TEST_RULES_ID = "aicc-cloud-update-openai";
-export const CLOUD_TEST_MOUNT_V1 = "llm.aicc-cloud-update.v1";
-export const CLOUD_TEST_MOUNT_V2 = "llm.aicc-cloud-update.v2";
+export const CLOUD_TEST_MOUNT_V1 = "embedding.text.aicc-cloud-update.v1";
+export const CLOUD_TEST_MOUNT_V2 = "embedding.text.aicc-cloud-update.v2";
 
 async function openAiModelDriver(
   revisionSeq: number,
@@ -38,12 +38,12 @@ async function openAiModelDriver(
   const catalog = await json(join(metadataRoot, "models/openai.model.json"));
   catalog.revision_seq = revisionSeq;
   const models = objects(catalog.models, "openai.models");
-  const gpt = models.find((model) => model.id === "gpt-5.6");
-  if (!gpt || !Array.isArray(gpt.logical_mounts)) {
-    throw new Error("builtin OpenAI catalog has no gpt-5.6 logical mounts");
+  const embedding = models.find((model) => model.id === "text-embedding-3-large");
+  if (!embedding || !Array.isArray(embedding.logical_mounts)) {
+    throw new Error("builtin OpenAI catalog has no text-embedding-3-large logical mounts");
   }
-  gpt.logical_mounts = [
-    ...gpt.logical_mounts.filter((mount) =>
+  embedding.logical_mounts = [
+    ...embedding.logical_mounts.filter((mount) =>
       mount !== CLOUD_TEST_MOUNT_V1 && mount !== CLOUD_TEST_MOUNT_V2
     ),
     phase === "v1" ? CLOUD_TEST_MOUNT_V1 : CLOUD_TEST_MOUNT_V2,
@@ -67,9 +67,6 @@ async function cloudProviderRules(
     schema_revision: 0,
     revision_seq: revisionSeq,
     provider_profile_id: CLOUD_TEST_PROFILE_ID,
-    metadata_drivers: ["openai"],
-    origin_provider_aliases: {},
-    origin_mappings: [],
     models: [],
     patterns: objects(openAiRules.patterns, "openai.provider.patterns"),
     variants: objects(openAiRules.variants, "openai.provider.variants"),
@@ -88,6 +85,7 @@ async function cloudKnownProvider(
   );
   provider.provider_profile_id = CLOUD_TEST_PROFILE_ID;
   provider.provider_rules_id = CLOUD_TEST_RULES_ID;
+  provider.discovery_behavior_id = "standard-models";
   provider.display_name = `AICC Cloud Update ${marker.toUpperCase()}`;
   return {
     format: "buckyos.aicc.known-provider-catalog",

@@ -97,8 +97,12 @@ pub(crate) struct ProviderConnectionContract {
     pub region: ProviderFieldSchema,
     pub workspace: ProviderFieldSchema,
     pub account: ProviderFieldSchema,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_region: Option<ProviderFieldSchema>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub region_base_urls: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub operation_base_urls: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -107,11 +111,13 @@ pub(crate) struct ProviderConnectionInput<'a> {
     pub region: Option<&'a str>,
     pub workspace: Option<&'a str>,
     pub account: Option<&'a str>,
+    pub operation_base_urls: Option<&'a BTreeMap<String, String>>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ResolvedProviderConnection {
     pub base_url: String,
+    pub operation_base_urls: BTreeMap<String, String>,
     pub region: Option<String>,
     pub workspace: Option<String>,
     pub account: Option<String>,
@@ -122,21 +128,30 @@ impl ProviderConnectionContract {
         &self,
         input: ProviderConnectionInput<'_>,
     ) -> ProviderResult<ResolvedProviderConnection> {
-        let region = self.region.resolve("region", input.region)?;
+        let region =
+            if input.region == Some("unknown") && self.region.mode == ProviderFieldMode::Optional {
+                Some("unknown".to_owned())
+            } else {
+                self.region.resolve("region", input.region)?
+            };
         let workspace = self.workspace.resolve("workspace", input.workspace)?;
         let account = self.account.resolve("account", input.account)?;
+        let endpoint_region = if region.as_deref() == Some("unknown") {
+            self.region.default_value.as_deref()
+        } else {
+            region.as_deref()
+        };
         let mut base_url = input
             .base_url
             .or_else(|| {
-                region
-                    .as_ref()
+                endpoint_region
                     .and_then(|region| self.region_base_urls.get(region))
                     .map(String::as_str)
             })
             .unwrap_or(&self.default_base_url)
             .to_owned();
         for (placeholder, value) in [
-            ("{region}", region.as_deref()),
+            ("{region}", endpoint_region),
             ("{workspace}", workspace.as_deref()),
             ("{account}", account.as_deref()),
         ] {
@@ -155,8 +170,39 @@ impl ProviderConnectionContract {
             ));
         }
         validate_provider_url("base_url", &base_url)?;
+        let mut operation_base_urls = self.operation_base_urls.clone();
+        if let Some(overrides) = input.operation_base_urls {
+            operation_base_urls.extend(overrides.clone());
+        }
+        for (operation, operation_base_url) in &mut operation_base_urls {
+            validate_id("operation", operation)?;
+            for (placeholder, value) in [
+                ("{region}", region.as_deref()),
+                ("{workspace}", workspace.as_deref()),
+                ("{account}", account.as_deref()),
+            ] {
+                if operation_base_url.contains(placeholder) {
+                    let value = value.ok_or_else(|| {
+                        ProviderError::InvalidConfiguration(format!(
+                            "{placeholder} is required to resolve operation_base_urls"
+                        ))
+                    })?;
+                    *operation_base_url = operation_base_url.replace(placeholder, value);
+                }
+            }
+            if operation_base_url.contains('{') || operation_base_url.contains('}') {
+                return Err(ProviderError::InvalidConfiguration(format!(
+                    "operation_base_urls.{operation} contains an unsupported placeholder"
+                )));
+            }
+            validate_provider_url(
+                &format!("operation_base_urls.{operation}"),
+                operation_base_url,
+            )?;
+        }
         Ok(ResolvedProviderConnection {
             base_url,
+            operation_base_urls,
             region,
             workspace,
             account,
@@ -170,6 +216,7 @@ pub(crate) struct ProviderInstanceConfig {
     pub provider_profile_id: String,
     pub protocol_adapter_id: String,
     pub base_url: String,
+    pub operation_base_urls: BTreeMap<String, String>,
     pub credential: CredentialReference,
     pub credential_kind: Option<CredentialKind>,
     pub provider_rules_id: Option<String>,
@@ -203,6 +250,13 @@ impl ProviderInstanceConfig {
             return Err(ProviderError::InvalidConfiguration(
                 "base_url must use http or https and support relative paths".into(),
             ));
+        }
+        for (operation, operation_base_url) in &self.operation_base_urls {
+            validate_id("operation", operation)?;
+            validate_provider_url(
+                &format!("operation_base_urls.{operation}"),
+                operation_base_url,
+            )?;
         }
         if let Some(provider_rules_id) = &self.provider_rules_id {
             validate_id("provider_rules_id", provider_rules_id)?;
@@ -308,7 +362,7 @@ pub(crate) struct ProviderQuotaReading {
 pub(crate) struct ProviderQuotaObservation {
     pub state: ProviderQuotaObservationState,
     pub remaining_request_units: Option<u64>,
-    pub remaining_cost_usd: Option<AiCost>,
+    pub remaining_cost: Option<AiCost>,
     pub reset_at_ms: Option<i64>,
     pub observed_at_ms: i64,
     pub source: String,
@@ -787,7 +841,7 @@ impl InventoryBuilder {
         let mut unmatched_models = Vec::new();
         let mut unavailable_presets = Vec::new();
 
-        for discovered in discovery.models {
+        for mut discovered in discovery.models {
             if instance_rules
                 .exclude_models
                 .contains(&discovered.provider_model_id)
@@ -843,6 +897,21 @@ impl InventoryBuilder {
             ] {
                 if let Some(value) = value {
                     dimensions.insert(name.into(), Value::String(value.clone()));
+                }
+            }
+            if let Some(policy_region) = instance_rules.policy_region.as_ref() {
+                dimensions.insert("policy_region".into(), Value::String(policy_region.clone()));
+            }
+            if catalog.provider_rules(rules_id).is_some() {
+                match catalog
+                    .resolve_provider_access(rules_id, &discovered.provider_model_id, &dimensions)
+                    .map_err(|error| ProviderError::Inventory(error.to_string()))?
+                {
+                    crate::catalog::ProviderModelAccess::Denied => {
+                        discovered.availability = ModelAvailability::Unavailable;
+                    }
+                    crate::catalog::ProviderModelAccess::Allowed
+                    | crate::catalog::ProviderModelAccess::Unknown => {}
                 }
             }
             let provider_rule = if catalog.provider_rules(rules_id).is_some() {
@@ -915,7 +984,13 @@ impl InventoryBuilder {
                     discovered.remote_methods.as_ref(),
                     api_type,
                     &api_type_name,
-                )?;
+                )
+                .map_err(|error| {
+                    ProviderError::Inventory(format!(
+                        "provider instance {:?} model {:?}: {error}",
+                        instance.provider_instance_name, discovered.provider_model_id
+                    ))
+                })?;
                 let Some(operation_id) = operation_id else {
                     continue;
                 };

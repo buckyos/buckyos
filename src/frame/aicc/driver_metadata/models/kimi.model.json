@@ -3,11 +3,31 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "kimi",
-  "revision_seq": 2,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
-      "id": "kimi-k2.5",
+      "id": "kimi-k3",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1000000,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "kimi-flagship",
+        "effort": "max",
+        "default_effort": "max",
+        "supported_efforts": ["low", "high", "max"],
+        "stability": "stable",
+        "weight": 30
+      }
+    },
+    {
+      "id": "kimi-k2.7-code",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "max_context_tokens": 262144,
@@ -18,13 +38,39 @@
         "reasoning": true
       },
       "llm": {
-        "spec": "kimi-general",
-        "effort": "thinking",
-        "default_effort": "thinking",
-        "supported_efforts": ["thinking", "none"],
+        "spec": "kimi-code",
+        "effort": "medium",
+        "default_effort": "medium",
+        "supported_efforts": ["medium"],
         "stability": "stable",
-        "weight": 25
+        "weight": 27
       }
+    },
+    {
+      "id": "kimi-k2.7-code-highspeed",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 262144,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {
+        "spec": "kimi-code-highspeed",
+        "effort": "medium",
+        "default_effort": "medium",
+        "supported_efforts": ["medium"],
+        "stability": "stable",
+        "weight": 28
+      }
+    },
+    {
+      "id": "kimi-k2.8-preview",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true, "tool_call": true, "json_schema": true, "reasoning": true},
+      "llm": {"spec": "kimi-general", "effort": "native", "default_effort": "native", "supported_efforts": ["native"], "stability": "experimental", "weight": 28}
     },
     {
       "id": "kimi-k2.6",
@@ -39,9 +85,9 @@
       },
       "llm": {
         "spec": "kimi-general",
-        "effort": "thinking",
-        "default_effort": "thinking",
-        "supported_efforts": ["thinking", "none"],
+        "effort": "medium",
+        "default_effort": "medium",
+        "supported_efforts": ["medium", "none"],
         "stability": "stable",
         "weight": 26
       }
@@ -50,6 +96,9 @@
   "patterns": [],
   "defaults": {},
   "specs": [
+    {
+      "id": "kimi-flagship"
+    },
     {
       "id": "kimi-code"
     },

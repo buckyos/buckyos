@@ -200,9 +200,9 @@
       },
       "llm": {
         "spec": "gemini-flash",
-        "effort": "thinking",
-        "default_effort": "thinking",
-        "supported_efforts": ["none", "thinking"],
+        "effort": "high",
+        "default_effort": "high",
+        "supported_efforts": ["low", "medium", "high"],
         "stability": "stable",
         "weight": 25
       }

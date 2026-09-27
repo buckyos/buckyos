@@ -78,7 +78,9 @@ fn provider_connection_resolves_workspace_and_default_base_url() {
             .with_allowed_values(["cn-beijing", "cn-shanghai"]),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     let resolved = contract
         .resolve(ProviderConnectionInput {
@@ -114,7 +116,9 @@ fn provider_connection_rejects_missing_or_unsupported_fields() {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::unsupported(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     };
     assert!(matches!(
         contract.resolve(ProviderConnectionInput::default()),
@@ -245,42 +249,6 @@ impl ProviderDiscovery for WorkspaceRecordingDiscovery {
     }
 }
 
-struct FakeQuotaObserver {
-    fail: AtomicBool,
-    calls: AtomicUsize,
-}
-
-#[async_trait]
-impl ProviderQuotaObserver for FakeQuotaObserver {
-    fn source(&self) -> &'static str {
-        "provider_api"
-    }
-
-    async fn observe(
-        &self,
-        context: &ProviderQuotaContext<'_>,
-    ) -> ProviderResult<ProviderQuotaReading> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        assert_eq!(context.profile.provider_profile_id, "openai");
-        assert_eq!(context.instance.provider_instance_name, "primary");
-        assert!(!format!("{:?}", context.credential).contains("test-secret"));
-        if self.fail.load(Ordering::SeqCst) {
-            return Err(ProviderError::Discovery(
-                "quota endpoint leaked-private-detail".into(),
-            ));
-        }
-        Ok(ProviderQuotaReading {
-            state: ProviderQuotaLevel::NearLimit,
-            remaining_request_units: Some(12),
-            remaining_cost_usd: Some(AiCost {
-                amount: 3.5,
-                currency: "USD".into(),
-            }),
-            reset_at_ms: Some(4_000_000_000_000),
-        })
-    }
-}
-
 struct BlockingDiscovery {
     snapshot: ProviderDiscoverySnapshot,
     calls: AtomicUsize,
@@ -333,6 +301,7 @@ fn instance(name: &str) -> ProviderInstanceConfig {
         provider_profile_id: "openai".into(),
         protocol_adapter_id: "openai-responses".into(),
         base_url: "https://api.example.test/v1/".into(),
+        operation_base_urls: BTreeMap::new(),
         credential: CredentialReference {
             reference: "system-config://secrets/aicc/openai".into(),
         },
@@ -611,6 +580,7 @@ fn codecs() -> Arc<CodecRegistry> {
         protocol_adapter_id: "openai-responses".into(),
         interface_generation: "responses-v1".into(),
         base_adapter_id: None,
+        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 0,
         probe_path: Some("probe".to_owned()),
@@ -654,7 +624,9 @@ fn connection_contract() -> ProviderConnectionContract {
         region: ProviderFieldSchema::unsupported(),
         workspace: ProviderFieldSchema::required(),
         account: ProviderFieldSchema::optional(),
+        policy_region: None,
         region_base_urls: BTreeMap::new(),
+        operation_base_urls: BTreeMap::new(),
     }
 }
 
@@ -665,6 +637,7 @@ fn draft(auth: ProviderAuthConfig) -> ProviderDraftConfig {
         protocol_adapter_id: "openai-responses".into(),
         provider_rules_id: None,
         base_url: None,
+        operation_base_urls: BTreeMap::new(),
         region: None,
         workspace: Some("workspace-1".into()),
         account: None,
@@ -842,7 +815,7 @@ async fn workspace_survives_inventory_build_and_instance_replace() {
 }
 
 #[tokio::test]
-async fn quota_view_uses_only_registered_truth_and_distinguishes_query_failure() {
+async fn quota_view_ignores_untrusted_discovery_and_reports_provider_quota_unsupported() {
     let store = Arc::new(MemoryStore::default());
     let mut untrusted_discovery = discovery("gpt-test");
     untrusted_discovery.models[0]
@@ -864,54 +837,9 @@ async fn quota_view_uses_only_registered_truth_and_distinguishes_query_failure()
         ProviderQuotaObservationState::Unsupported
     );
     assert_eq!(unsupported.remaining_request_units, None);
-    assert_eq!(unsupported.remaining_cost_usd, None);
+    assert_eq!(unsupported.remaining_cost, None);
     assert_eq!(unsupported.source, "unsupported");
     unsupported_manager.shutdown().await;
-
-    let observer = Arc::new(FakeQuotaObserver {
-        fail: AtomicBool::new(false),
-        calls: AtomicUsize::new(0),
-    });
-    let discovery = Arc::new(ScriptedDiscovery::new([], discovery("gpt-test")));
-    let manager = ProviderRuntimeManager::new(
-        [profile()],
-        resolver("test-secret"),
-        catalog(),
-        codecs(),
-        Arc::new(MemoryStore::default()),
-    )
-    .unwrap()
-    .with_quota_observers([(
-        "openai".into(),
-        observer.clone() as Arc<dyn ProviderQuotaObserver>,
-    )])
-    .unwrap();
-    manager.start(instance("primary"), discovery).await.unwrap();
-
-    let observed = manager.quota_observation("primary").await.unwrap();
-    assert_eq!(observed.state, ProviderQuotaObservationState::NearLimit);
-    assert_eq!(observed.remaining_request_units, Some(12));
-    assert_eq!(
-        observed.remaining_cost_usd,
-        Some(AiCost {
-            amount: 3.5,
-            currency: "USD".into()
-        })
-    );
-    assert_eq!(observed.reset_at_ms, Some(4_000_000_000_000));
-    assert!(observed.observed_at_ms > 0);
-    assert_eq!(observed.source, "provider_api");
-
-    observer.fail.store(true, Ordering::SeqCst);
-    let failed = manager.quota_observation("primary").await.unwrap();
-    assert_eq!(failed.state, ProviderQuotaObservationState::QueryFailed);
-    assert_eq!(failed.remaining_request_units, None);
-    assert_eq!(failed.remaining_cost_usd, None);
-    assert_eq!(failed.reset_at_ms, None);
-    assert_eq!(failed.source, "provider_api");
-    assert!(!format!("{failed:?}").contains("leaked-private-detail"));
-    assert_eq!(observer.calls.load(Ordering::SeqCst), 2);
-    manager.shutdown().await;
 }
 
 #[tokio::test]
@@ -1383,6 +1311,7 @@ async fn disabled_auto_sync_keeps_initial_discovery_without_periodic_task() {
 fn instance_rules_exclude_models_before_inventory_publication() {
     let mut config = instance("filtered");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
         model_driver_overrides: BTreeMap::new(),
     });
@@ -1401,6 +1330,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
 fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     let mut config = instance("doubao-endpoint");
     config.instance_rules = Some(buckyos_api::ProviderInstanceRules {
+        policy_region: None,
         exclude_models: BTreeSet::new(),
         model_driver_overrides: BTreeMap::from([(
             "ep-user-specific".into(),
@@ -1418,6 +1348,28 @@ fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     assert_eq!(inventory.models.len(), 1);
     assert_eq!(inventory.models[0].provider_model_id, "ep-user-specific");
     assert_eq!(inventory.models[0].origin_model_id, "gpt-test");
+}
+
+#[test]
+fn doubao_endpoint_ids_without_an_instance_origin_override_are_unmatched() {
+    let mut doubao = profile();
+    doubao.provider_profile_id = "doubao".into();
+    let mut config = instance("doubao-endpoint");
+    config.provider_profile_id = "doubao".into();
+    let inventory = InventoryBuilder::build(
+        &doubao,
+        &config,
+        discovery("ep-user-specific"),
+        &catalog(),
+        &codecs(),
+    )
+    .unwrap();
+    assert!(inventory.models.is_empty());
+    assert_eq!(inventory.unmatched_models.len(), 1);
+    assert_eq!(
+        inventory.unmatched_models[0].provider_model_id,
+        "ep-user-specific"
+    );
 }
 
 #[tokio::test]

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 3,
   "provider_profile_id": "deepseek",
   "models": [],
   "patterns": [
@@ -162,6 +162,97 @@
         ],
         "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
         "verified_at": "2026-09-25"
+      }
+    },
+    {
+      "id": "deepseek-flash",
+      "pricing": {
+        "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+        "verified_at": "2026-09-26",
+        "currency": "USD",
+        "input_token": 1.5e-7,
+        "output_token": 6e-7,
+        "cache_input_token": 3e-9,
+        "time_windows": [
+          {
+            "from": "09:00",
+            "to": "12:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "utc_offset_minutes": 480,
+            "input_token": 3e-7,
+            "output_token": 0.0000012,
+            "cache_input_token": 6e-9
+          },
+          {
+            "from": "14:00",
+            "to": "18:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "utc_offset_minutes": 480,
+            "input_token": 3e-7,
+            "output_token": 0.0000012,
+            "cache_input_token": 6e-9
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": [
+          "deepseek-v4.1-flash*",
+          "deepseek-v4-flash*"
+        ]
+      },
+      "pricing": {
+        "source_url": "https://api-docs.deepseek.com/quick_start/pricing/",
+        "verified_at": "2026-09-26",
+        "currency": "USD",
+        "input_token": 1.5e-7,
+        "output_token": 6e-7,
+        "cache_input_token": 3e-9,
+        "time_windows": [
+          {
+            "from": "09:00",
+            "to": "12:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "utc_offset_minutes": 480,
+            "input_token": 3e-7,
+            "output_token": 0.0000012,
+            "cache_input_token": 6e-9
+          },
+          {
+            "from": "14:00",
+            "to": "18:00",
+            "days": [
+              "mon",
+              "tue",
+              "wed",
+              "thu",
+              "fri"
+            ],
+            "utc_offset_minutes": 480,
+            "input_token": 3e-7,
+            "output_token": 0.0000012,
+            "cache_input_token": 6e-9
+          }
+        ]
       }
     }
   ]

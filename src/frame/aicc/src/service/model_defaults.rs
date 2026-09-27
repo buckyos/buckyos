@@ -142,12 +142,12 @@
 //   long = glm-4-long；code = codegeex-4（代码补全，不等同完整代码 Agent，direct_only）。[G6]
 //   character = charglm-4；emohaa = emohaa（分别 direct_only，无依据将二者排成版本链）；
 //   glm-ocr 已只保留 vision.ocr。
-// - kimi：general = kimi-k2.6、kimi-k2.5；code = kimi-k*-code；
+// - kimi：flagship = kimi-k3；general = kimi-k2.8-preview/kimi-k2.6；code = kimi-k*-code；
 //   code-highspeed = kimi-k*-code-highspeed。
-// - deepseek：flash = deepseek-v4-flash；pro = deepseek-v4-pro；
+// - deepseek：flash = deepseek-v4.1-flash/deepseek-v4-flash；pro = deepseek-v4-pro；
 //   vision = deepseek-v4-flash-vision-exp（实验分支，受稳定性策略限制）。
-// - doubao：mini/lite/pro/code = doubao-seed-2-0-{mini,lite,pro,code}-*。
-// - minimax：standard = MiniMax-M2.7/M2.5/M2.1/M2；highspeed = 对应 -highspeed。
+// - doubao：mini/lite/pro/code = Doubao Seed 2.0/2.1 对应规格及版本化模型。
+// - minimax：standard = minimax-m3/MiniMax-M2.7/M2.5/M2.1/M2；highspeed = 对应 -highspeed。
 //
 // 官方已发布、当前 metadata 尚待补齐的接入清单（不伪装成下方树已覆盖的库存）：
 // - Qwen3.6-27B 可接 dense-27b；Qwen3.8-Flash-Next 是独立开放权重发布，不能被
@@ -155,11 +155,7 @@
 // - Qwen3-Coder 有 480B-A35B、30B-A3B、Next 80B-A3B 等并列部署线；接入时分别声明
 //   code-large/code-small/code-next 并编排进 code，不能并入通用模型或共用版本链。
 //   Coder-Next 只支持非思考输出，不因它是代码 Agent 模型就生成 high 预设。[Q6,Q8]
-// - Kimi K3 是与 K2.6 并列提供的更大旗舰，接入时新增 kimi-flagship 并给 plan/code/vision
-//   权重；K2.7-Code 及 highspeed 可归既有 code 线。K2.5 官方停服不删除其权重定义。[K1]
-// - DeepSeek 2026-09-10 已用 deepseek-flash 提供 V4.1，并将官方旧 V4 Flash / Vision-Exp
-//   API 名暂时重定向到 V4.1；须补版本绑定后归 flash，不能把官方旧名挂回旧家族。[D1]
-// - GLM-5.3-FlashX、Doubao Seed 2.1 等新服务需补各自 metadata；名称相近不代表已接入。[G2,B2]
+// - GLM-5.3-FlashX 等新服务需补各自 metadata；名称相近不代表已接入。[G2]
 //
 // 资料来源（模型规模/能力据官方资料；上述规格拆分及下方任务偏好属于 AICC 设计判断）：
 // [Q1] https://huggingface.co/Qwen/Qwen3.8-2.4T-A95B
@@ -995,6 +991,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("claude_fable", "llm.claude-fable", 2.6),
                                 ("gpt_max", "llm.gpt-max", 2.6),
                                 ("claude_opus", "llm.claude-opus", 2.5),
+                                ("kimi_flagship", "llm.kimi-flagship", 2.5),
                                 ("gemini_pro", "llm.gemini-pro", 2.4),
                                 ("gpt_pro", "llm.gpt-pro", 2.3),
                                 ("gpt_standard", "llm.gpt-standard", 2.0),
@@ -1014,6 +1011,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                             "code".into(),
                             logical_node(&[
                                 ("claude_sonnet", "llm.claude-sonnet", 2.4),
+                                ("kimi_flagship", "llm.kimi-flagship", 2.3),
                                 ("gpt_codex", "llm.gpt-codex", 2.2),
                                 ("gpt_standard", "llm.gpt-standard", 2.1),
                                 ("qwen_max", "llm.qwen-max", 1.9),
@@ -1081,6 +1079,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                             "vision".into(),
                             logical_node(&[
                                 ("gpt_standard", "llm.gpt-standard", 2.2),
+                                ("kimi_flagship", "llm.kimi-flagship", 2.2),
                                 ("gemini_pro", "llm.gemini-pro", 2.1),
                                 ("claude_opus", "llm.claude-opus", 1.9),
                                 ("claude_sonnet", "llm.claude-sonnet", 1.8),
@@ -1158,6 +1157,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_nano", "llm.gpt-nano", 1.0),
                                 ("gpt_pro", "llm.gpt-pro", 1.0),
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
+                                ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
                             ]),
                         ),
@@ -1191,6 +1191,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_nano", "llm.gpt-nano", 1.0),
                                 ("gpt_pro", "llm.gpt-pro", 1.0),
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
+                                ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
                             ]),
                         ),

@@ -4,6 +4,7 @@
   "schema_revision": 1,
   "revision_seq": 1,
   "provider_profile_id": "typesafe",
+  "custom_provider_adapters": ["typesafe-systemone"],
   "static_inventory_models": [
     "jev-1.13.0"
   ],

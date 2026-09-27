@@ -8,9 +8,9 @@ pub(crate) use schema::{
     ModelMatchFailure, ModelPricingRule, ModelSemantics, ModelStability, Pricing, PricingTierStep,
     PricingTiers, PricingTimeWindow, PricingUnit, PricingWeekday, ProviderCredentialDescriptor,
     ProviderCredentialKind, ProviderExactRule, ProviderFieldMode, ProviderFieldSchema,
-    ProviderModelMatch, ProviderPatternRule, ProviderRuleAction, ProviderRulesCatalog,
-    ProviderVariantRule, RequestRule, ResolvedModelSemantics, ResolvedProviderConfiguration,
-    ResolvedProviderRule, TierDimension, TierMode,
+    ProviderModelAccess, ProviderModelMatch, ProviderPatternRule, ProviderRuleAction,
+    ProviderRulesCatalog, ProviderVariantRule, RequestRule, ResolvedModelSemantics,
+    ResolvedProviderConfiguration, ResolvedProviderRule, TierDimension, TierMode,
 };
 #[cfg(test)]
 pub(crate) use schema::{Effort, ProviderRuleMatchKind};
@@ -138,6 +138,7 @@ struct CompiledProviderRulesCatalog {
     pricing: CompiledPricingTable,
     exact_compiled: Vec<CompiledProviderRule>,
     pattern_compiled: Vec<CompiledProviderRule>,
+    compiled_access_rules: Vec<CompiledMatchRule>,
     compiled_variants: Vec<CompiledMatchRule>,
 }
 
@@ -365,6 +366,14 @@ impl CatalogSnapshot {
             .get(&cost.currency)?;
         let amount = cost.amount * rate;
         (amount.is_finite() && amount >= 0.0).then(|| buckyos_api::Money::new(amount, "USD"))
+    }
+
+    pub(crate) fn custom_provider_adapter_ids(&self) -> BTreeSet<String> {
+        self.known_providers()
+            .filter_map(|provider| provider.provider_rules_id.as_deref())
+            .filter_map(|rules_id| self.provider_rules(rules_id))
+            .flat_map(|rules| rules.custom_provider_adapters.iter().cloned())
+            .collect()
     }
 
     pub(crate) fn known_provider(&self, provider_profile_id: &str) -> Option<&KnownProvider> {
@@ -660,6 +669,31 @@ impl CatalogSnapshot {
             compiled,
         }))
     }
+
+    pub(crate) fn resolve_provider_access(
+        &self,
+        provider_profile_id: &str,
+        provider_model_id: &str,
+        dimensions: &MatchContext,
+    ) -> Result<ProviderModelAccess, CatalogResolveError> {
+        let catalog = self
+            .provider_rules
+            .get(provider_profile_id)
+            .ok_or_else(|| CatalogResolveError::UnknownProviderRules {
+                provider_profile_id: provider_profile_id.to_owned(),
+            })?;
+        let mut context = dimensions.clone();
+        context.insert(
+            "provider_model_id".to_owned(),
+            Value::String(provider_model_id.to_owned()),
+        );
+        Ok(catalog
+            .compiled_access_rules
+            .iter()
+            .zip(&catalog.document.access_rules)
+            .find_map(|(compiled, rule)| compiled.matches(&context).then_some(rule.access))
+            .unwrap_or_default())
+    }
 }
 
 fn unique_identity(mut candidates: Vec<ModelIdentity>) -> Result<ModelIdentity, ModelMatchFailure> {
@@ -789,6 +823,13 @@ fn compile_provider_rules(
             CompiledMatchRule::compile(variant.match_rule.clone(), &PROVIDER_RULE_MATCH_SCHEMA)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let compiled_access_rules = document
+        .access_rules
+        .iter()
+        .map(|rule| {
+            CompiledMatchRule::compile(rule.match_rule.clone(), &PROVIDER_RULE_MATCH_SCHEMA)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(CompiledProviderRulesCatalog {
         document,
         exact_index,
@@ -796,6 +837,7 @@ fn compile_provider_rules(
         pricing,
         exact_compiled,
         pattern_compiled,
+        compiled_access_rules,
         compiled_variants,
     })
 }

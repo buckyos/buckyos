@@ -104,11 +104,14 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 
 | 模型 | 缺失字段 | 原因 |
 | --- | --- | --- |
-| kimi-k2.5、kimi-k2.6 | max_output_tokens | 官方模型卡确认 256K 上下文，但未找到这两个型号的明确 API 输出硬上限；32,768 是请求默认值，98,304 / 49,152 是评测设置 |
+| doubao-seed-2.1-lite、doubao-seed-2.1-turbo、doubao-seed-2.1-pro、doubao-seed-evolving | max_output_tokens | Agent Plan 当前模型清单确认这些型号可用，但未给出可安全用于路由硬过滤的逐型号最大输出整数 |
+| kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k3 | max_output_tokens | 当前官方模型页未给出这些型号的明确 API 输出硬上限 |
+| kimi-k2.8-preview | max_context_tokens、max_output_tokens | Agent Plan 清单已列出该预览型号，但当前 Kimi 公共模型文档尚无可核实的硬限制 |
+| minimax-m3 | max_context_tokens、max_output_tokens | Agent Plan 清单已列出 M3，但 MiniMax 公共模型文档尚无可核实的 M3 硬限制 |
 | charglm-4、emohaa | max_context_tokens、max_output_tokens | 当前官方型号表和 API 参数表未给出可确认的型号级限制 |
 | glm-4-32b-0414-128k | max_output_tokens | 官方开源卡和部署说明给出上下文，未给出这个托管 ID 的独立输出上限 |
 
-Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[K2.5 官方模型卡](https://huggingface.co/MoonshotAI/Kimi-K2.5)、[K2.6 官方模型卡](https://huggingface.co/MoonshotAI/Kimi-K2.6)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)。新 K3 的默认值和上限不能回填给 K2.x。
+Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
 
 这些未知值继续缺省。有明确输出预算的请求仍会按现有路由规则过滤缺少上限的模型；本次不把未知值解释为无限容量。
 

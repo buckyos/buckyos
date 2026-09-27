@@ -439,6 +439,7 @@ fn schema_revision_required_features_and_references_are_validated() {
     let mut revision_one_static_inventory = provider_rules();
     revision_one_static_inventory["schema_revision"] = json!(1);
     revision_one_static_inventory["static_inventory_models"] = json!(["gpt-special"]);
+    revision_one_static_inventory["models"] = json!([]);
     let mut files = complete_files();
     files[1] = file(CatalogKind::ProviderRules, revision_one_static_inventory);
     let snapshot = build(files).unwrap();
@@ -449,6 +450,42 @@ fn schema_revision_required_features_and_references_are_validated() {
             .static_inventory_models,
         vec!["gpt-special".to_owned()]
     );
+
+    let mut uncovered_static_inventory = provider_rules();
+    uncovered_static_inventory["schema_revision"] = json!(1);
+    uncovered_static_inventory["static_inventory_models"] = json!(["claude-special"]);
+    uncovered_static_inventory["models"] = json!([]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, uncovered_static_inventory);
+    let snapshot = build(files).unwrap();
+    assert_eq!(
+        snapshot
+            .provider_rules("openai")
+            .unwrap()
+            .static_inventory_models,
+        vec!["claude-special".to_owned()]
+    );
+
+    let mut revision_zero_custom_adapters = provider_rules();
+    revision_zero_custom_adapters["custom_provider_adapters"] = json!(["openai-responses"]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, revision_zero_custom_adapters);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. }) if field == "schema_revision"
+    ));
+
+    let mut duplicate_custom_adapters = provider_rules();
+    duplicate_custom_adapters["schema_revision"] = json!(1);
+    duplicate_custom_adapters["custom_provider_adapters"] =
+        json!(["openai-responses", "openai-responses"]);
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, duplicate_custom_adapters);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. })
+            if field == "custom_provider_adapters"
+    ));
 
     let missing_driver = vec![file(CatalogKind::ProviderRules, provider_rules())];
     assert!(matches!(

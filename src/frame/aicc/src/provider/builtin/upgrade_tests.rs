@@ -29,6 +29,7 @@ fn instance(profile: &ProviderProfile, name: &str) -> ProviderInstanceConfig {
         provider_profile_id: profile.provider_profile_id.clone(),
         protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
         base_url: "https://example.test/v1".into(),
+        operation_base_urls: BTreeMap::new(),
         credential: CredentialReference {
             reference: "secret://test".into(),
         },
@@ -161,41 +162,10 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
     );
     assert_eq!(
         deepseek.match_model_driver("deepseek-v4-flash", &catalog),
-        ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
-    );
-    let mut updated: Value =
-        builtin_catalog_document(crate::catalog::CatalogKind::ModelDriver, "deepseek");
-    let mut next_model = updated["models"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|model| model["id"] == "deepseek-v4-flash")
-        .unwrap()
-        .clone();
-    next_model["id"] = json!("deepseek-v4.1-flash");
-    updated["models"].as_array_mut().unwrap().push(next_model);
-    let updated = MetadataSources {
-        builtin: load_builtin_metadata().unwrap(),
-        system_config: vec![crate::settings::MetadataFile::parse(
-            crate::settings::MetadataSource::SystemConfig,
-            crate::catalog::CatalogKind::ModelDriver,
-            serde_json::to_vec(&updated).unwrap(),
-        )
-        .unwrap()],
-        ..Default::default()
-    }
-    .build_snapshot(3, &Default::default())
-    .unwrap();
-    assert_eq!(
-        deepseek.match_model_driver("deepseek-v4-flash", &updated),
         ProviderModelMatch::Matched(ModelIdentity {
             model_driver_id: "deepseek".into(),
             model_id: "deepseek-v4.1-flash".into()
         })
-    );
-    assert_eq!(
-        updated.match_model("deepseek-v4-flash").unwrap().model_id,
-        "deepseek-v4-flash"
     );
     assert_eq!(
         catalog
@@ -250,9 +220,23 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         (
             "kimi",
             "kimi-k2.6",
-            "thinking",
+            "medium",
             "/thinking/type",
             json!("enabled"),
+        ),
+        (
+            "kimi",
+            "kimi-k2.7-code",
+            "medium",
+            "/thinking/keep",
+            json!("all"),
+        ),
+        (
+            "kimi",
+            "kimi-k3",
+            "high",
+            "/reasoning_effort",
+            json!("high"),
         ),
         (
             "glm",
@@ -431,6 +415,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         let target = ProviderCallTarget {
             provider_rules_id: Some(provider.into()),
             base_url: config.base_url.clone(),
+            operation_base_urls: BTreeMap::new(),
             credential,
             credential_reference: "secret://test".into(),
             credential_header_name: None,
@@ -626,11 +611,15 @@ fn invalid_exact_and_cached_presets_are_rejected_and_unmapped_presets_diagnosed(
         &codecs,
     )
     .unwrap();
-    assert!(inv.models[0].variants.is_empty());
-    assert!(inv
-        .unavailable_presets
-        .iter()
-        .any(|p| p.effort == "thinking"));
+    assert_eq!(
+        inv.models[0]
+            .variants
+            .iter()
+            .map(|variant| variant.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["reasoning-high", "reasoning-low", "reasoning-medium"]
+    );
+    assert!(inv.unavailable_presets.is_empty());
     assert!(inv.unmatched_models.is_empty());
 }
 
@@ -661,7 +650,10 @@ fn glm_supplements_use_effective_catalog_and_never_resurrect_dynamic_llms() {
         .unwrap()],
         ..Default::default()
     }
-    .build_snapshot(3, &Default::default())
+    .build_snapshot(
+        crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+        &Default::default(),
+    )
     .unwrap();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -761,7 +753,7 @@ fn provider_normalization_is_scoped_and_reports_collisions() {
 }
 
 #[test]
-fn static_prices_are_scoped_to_the_verified_billing_region() {
+fn migrated_default_prices_fill_regions_without_a_newer_channel_price() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -769,7 +761,7 @@ fn static_prices_are_scoped_to_the_verified_billing_region() {
         .find(|p| p.provider_profile_id == "glm")
         .unwrap();
     let mut instance = instance(profile, "glm");
-    for (region, priced) in [("china", true), ("global", false)] {
+    for region in ["china", "global"] {
         instance.region = Some(region.into());
         let inv = InventoryBuilder::build(
             profile,
@@ -779,14 +771,163 @@ fn static_prices_are_scoped_to_the_verified_billing_region() {
             &providers.codecs(),
         )
         .unwrap();
+        assert!(inv
+            .models
+            .iter()
+            .find(|m| m.provider_model_id == "glm-5.3")
+            .unwrap()
+            .pricing
+            .is_some());
+    }
+}
+
+#[test]
+fn provider_pricing_contains_all_rebased_model_defaults() {
+    let catalog = catalog();
+    for (provider, expected_count) in [
+        ("claude", 12),
+        ("deepseek", 3),
+        ("doubao", 18),
+        ("fal", 4),
+        ("gemini", 29),
+        ("glm", 102),
+        ("kimi", 4),
+        ("minimax", 23),
+        ("openai", 28),
+        ("qwen", 85),
+    ] {
         assert_eq!(
-            inv.models
-                .iter()
-                .find(|m| m.provider_model_id == "glm-5.3")
+            catalog
+                .provider_rules(provider)
                 .unwrap()
-                .pricing
-                .is_some(),
-            priced
+                .model_pricing
+                .len(),
+            expected_count,
+            "{provider} pricing migration is incomplete"
         );
     }
+
+    let fallback = catalog
+        .resolve_provider_rule("openai", "gpt-5.6", &Default::default())
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    assert_eq!(fallback.input_token, Some(4e-6));
+
+    let verified = catalog
+        .resolve_provider_rule("openai", "gpt-6-astra", &Default::default())
+        .unwrap()
+        .unwrap()
+        .action
+        .pricing
+        .unwrap();
+    assert_eq!(verified.cache_write_input_token, Some(1.25e-5));
+    assert_eq!(
+        verified.source_url.as_deref(),
+        Some("https://developers.openai.com/api/docs/models/gpt-6-astra")
+    );
+}
+
+#[test]
+fn every_builtin_provider_price_has_provenance() {
+    let files = load_builtin_metadata().unwrap();
+    let mut pricing_count = 0;
+    for file in files
+        .iter()
+        .filter(|file| file.kind == crate::catalog::CatalogKind::ProviderRules)
+    {
+        let rules: crate::catalog::ProviderRulesCatalog =
+            serde_json::from_slice(&file.contents).unwrap();
+        for (index, rule) in rules.model_pricing.iter().enumerate() {
+            pricing_count += 1;
+            assert!(
+                rule.pricing
+                    .source_url
+                    .as_deref()
+                    .is_some_and(|url| url.starts_with("https://")),
+                "{} model_pricing[{index}] is missing source_url",
+                rules.provider_profile_id
+            );
+            assert!(
+                rule.pricing
+                    .verified_at
+                    .as_deref()
+                    .is_some_and(|date| date.len() == 10),
+                "{} model_pricing[{index}] is missing verified_at",
+                rules.provider_profile_id
+            );
+        }
+    }
+    assert_eq!(pricing_count, 311);
+}
+
+#[test]
+fn corrected_provider_prices_match_official_billing_dimensions() {
+    let catalog = catalog();
+
+    let doubao = catalog.provider_rules("doubao").unwrap();
+    let mini = doubao
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("doubao-seed-2.0-mini"))
+        .unwrap();
+    assert!(mini
+        .pricing
+        .tiers
+        .as_ref()
+        .unwrap()
+        .steps
+        .iter()
+        .all(|step| step.cache_input_token == Some(4e-8)));
+
+    let fal = catalog.provider_rules("fal").unwrap();
+    let rembg = fal
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("fal-ai/imageutils/rembg"))
+        .unwrap();
+    assert_eq!(rembg.pricing.amount, Some(0.0));
+
+    let gemini = catalog.provider_rules("gemini").unwrap();
+    let veo = gemini
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("veo-3.1-generate-preview"))
+        .unwrap();
+    assert_eq!(
+        veo.pricing.unit,
+        Some(crate::catalog::PricingUnit::VideoSecond)
+    );
+    assert_eq!(veo.pricing.amount, Some(0.4));
+
+    let kimi = catalog.provider_rules("kimi").unwrap();
+    let k3 = kimi
+        .model_pricing
+        .iter()
+        .find(|rule| rule.id.as_deref() == Some("kimi-k3"))
+        .unwrap();
+    assert_eq!(k3.pricing.cache_write_input_token, Some(2e-5));
+    assert_eq!(k3.pricing.cache_write_1h_input_token, Some(4e-5));
+
+    let minimax = catalog.provider_rules("minimax").unwrap();
+    let h3 = minimax
+        .model_pricing
+        .iter()
+        .find(|rule| rule.pricing.rules.iter().any(|rule| rule.amount == 0.8))
+        .unwrap();
+    assert_eq!(h3.pricing.amount, Some(0.5));
+    assert!(h3.pricing.rules.iter().any(|rule| rule.amount == 0.8));
+    assert_eq!(
+        h3.pricing.source_url.as_deref(),
+        Some("https://platform.minimaxi.com/docs/guides/pricing-paygo")
+    );
+
+    let h3_max = minimax
+        .model_pricing
+        .iter()
+        .find(|rule| rule.pricing.rules.iter().any(|rule| rule.amount == 0.33))
+        .unwrap();
+    assert!(h3_max.pricing.rules.iter().any(|rule| rule.amount == 0.33));
 }

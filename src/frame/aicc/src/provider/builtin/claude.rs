@@ -4,9 +4,10 @@ use super::anthropic_models::{AnthropicModelsDiscovery, AnthropicModelsSpec};
 #[cfg(test)]
 use crate::catalog::{CurrentCatalogFile, ModelDriverCatalog, ProviderRulesCatalog};
 #[cfg(test)]
+use crate::protocol::claude_messages_adapter;
+#[cfg(test)]
 use crate::protocol::CredentialKind;
-use crate::protocol::{ClaudeMessagesCodec, CodecRegistration, HttpTransport};
-use std::sync::Arc;
+use crate::protocol::HttpTransport;
 
 pub(crate) const CLAUDE_PROVIDER_PROFILE_ID: &str = "claude";
 
@@ -48,26 +49,6 @@ pub(crate) fn claude_catalog_files() -> Vec<CurrentCatalogFile> {
 
 pub(crate) fn claude_discovery(transport: HttpTransport) -> AnthropicModelsDiscovery {
     AnthropicModelsDiscovery::new(CLAUDE_SPEC, transport)
-}
-
-pub(crate) fn claude_messages_adapter() -> (crate::protocol::AdapterDescriptor, CodecRegistration) {
-    let codec = ClaudeMessagesCodec::new();
-    let descriptor = codec.adapter_descriptor();
-    (
-        descriptor,
-        CodecRegistration {
-            operation_codecs: vec![
-                Arc::new(codec),
-                Arc::new(ClaudeMessagesCodec::new_for(
-                    buckyos_api::ApiType::VisionOcr,
-                )),
-                Arc::new(ClaudeMessagesCodec::new_for(
-                    buckyos_api::ApiType::VisionCaption,
-                )),
-            ],
-            native_task_codecs: Vec::new(),
-        },
-    )
 }
 
 #[cfg(test)]

@@ -64,8 +64,9 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogBuildOptions;
     use crate::protocol::{
-        minimax_messages_adapter, minimax_messages_dialect_contract, CodecRegistry,
-        CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID, MINIMAX_MESSAGES_ADAPTER_ID,
+        claude_messages_adapter, minimax_messages_adapter, minimax_messages_dialect_contract,
+        CodecRegistry, CLAUDE_MESSAGES_ADAPTER_ID, CLAUDE_MESSAGES_OPERATION_ID,
+        MINIMAX_MESSAGES_ADAPTER_ID,
     };
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
 
@@ -99,11 +100,13 @@ mod tests {
             .base_url,
             known.connection.region_base_urls["china"]
         );
-        assert!(resolve_minimax_connection(ProviderConnectionInput {
+        let unknown = resolve_minimax_connection(ProviderConnectionInput {
             region: Some("unknown"),
             ..Default::default()
         })
-        .is_err());
+        .unwrap();
+        assert_eq!(unknown.base_url, known.base_url);
+        assert_eq!(unknown.region.as_deref(), Some("unknown"));
         assert_eq!(
             known.provider_rules_id.as_deref(),
             Some(MINIMAX_PROVIDER_PROFILE_ID)
@@ -123,8 +126,8 @@ mod tests {
             adapter.base_adapter_id.as_deref(),
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
-        assert_eq!(registration.operation_codecs.len(), 5);
-        assert_eq!(registration.native_task_codecs.len(), 2);
+        assert_eq!(registration.operation_codecs.len(), 8);
+        assert_eq!(registration.native_task_codecs.len(), 4);
         let builtin = minimax_catalog_files()
             .into_iter()
             .map(|file| MetadataFile::parse(MetadataSource::Builtin, file.kind, file.contents))
@@ -150,10 +153,14 @@ mod tests {
 
     #[test]
     fn derived_registration_depends_one_way_on_the_unchanged_base_adapter() {
-        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let (base_descriptor, base_registration) = claude_messages_adapter();
         let mut registry = CodecRegistry::default();
         registry
             .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        let (media_descriptor, media_registration) = crate::protocol::minimax_media_adapter();
+        registry
+            .register_codecs(media_descriptor, media_registration)
             .unwrap();
         let (derived_descriptor, derived_registration) = minimax_messages_adapter();
         registry
@@ -163,7 +170,7 @@ mod tests {
         assert!(registry.adapter(CLAUDE_MESSAGES_ADAPTER_ID).is_some());
         assert!(registry.adapter(MINIMAX_MESSAGES_ADAPTER_ID).is_some());
 
-        let (base_descriptor, base_registration) = super::super::claude_messages_adapter();
+        let (base_descriptor, base_registration) = claude_messages_adapter();
         let mut base_only = CodecRegistry::default();
         base_only
             .register_codecs(base_descriptor, base_registration)

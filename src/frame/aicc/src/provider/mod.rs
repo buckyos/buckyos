@@ -3,20 +3,20 @@ mod inventory;
 mod runtime;
 
 #[cfg(test)]
+pub(crate) use crate::protocol::{claude_messages_adapter, register_sn_openai_adapter};
+#[cfg(test)]
 pub(crate) use builtin::openai_catalog_files;
 pub(crate) use builtin::{
-    builtin_provider_codecs, builtin_provider_registry, claude_messages_adapter,
-    register_sn_openai_adapter, resolve_sn_provider_instance_with_config, BuiltinProviderRequest,
-    SnCredentialBroker, SnProviderInstanceInput,
+    builtin_provider_codecs, builtin_provider_registry, resolve_sn_provider_instance_with_config,
+    BuiltinProviderRequest, SnCredentialBroker, SnProviderInstanceInput,
 };
 pub(crate) use inventory::{
     catalog_only_inventory, CatalogOnlyDiscovery, CredentialResolver, DiscoveredModel,
     DiscoveryContext, FallbackDiscovery, InventoryBuilder, ModelAvailability, PricingSource,
     ProviderConnectionContract, ProviderConnectionInput, ProviderDiscovery,
     ProviderDiscoverySnapshot, ProviderFieldMode, ProviderFieldSchema, ProviderHealthState,
-    ProviderInstanceConfig, ProviderInventorySnapshot, ProviderQuotaContext, ProviderQuotaLevel,
-    ProviderQuotaObservation, ProviderQuotaObservationState, ProviderQuotaObserver,
-    ProviderQuotaReading, ResolvedProviderConnection, StaticCredentialResolver,
+    ProviderInstanceConfig, ProviderInventorySnapshot, ProviderQuotaObservation,
+    ProviderQuotaObservationState, ResolvedProviderConnection, StaticCredentialResolver,
 };
 use runtime::ProviderRuntime;
 pub(crate) use runtime::ProviderRuntimeManager;
@@ -434,6 +434,7 @@ pub(crate) struct ProviderDraftConfig {
     pub protocol_adapter_id: String,
     pub provider_rules_id: Option<String>,
     pub base_url: Option<String>,
+    pub operation_base_urls: BTreeMap<String, String>,
     pub region: Option<String>,
     pub workspace: Option<String>,
     pub account: Option<String>,
@@ -450,6 +451,7 @@ impl fmt::Debug for ProviderDraftConfig {
             .field("protocol_adapter_id", &self.protocol_adapter_id)
             .field("provider_rules_id", &self.provider_rules_id)
             .field("base_url", &self.base_url)
+            .field("operation_base_urls", &self.operation_base_urls)
             .field("region", &self.region)
             .field("workspace", &self.workspace)
             .field("account", &self.account)
@@ -609,21 +611,6 @@ fn validate_pricing(pricing: &Pricing) -> ProviderResult<()> {
         .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))
 }
 
-fn validate_quota_reading(reading: ProviderQuotaReading) -> ProviderResult<ProviderQuotaReading> {
-    if reading.remaining_cost_usd.as_ref().is_some_and(|value| {
-        value.currency.trim().is_empty()
-            || value.currency.trim() != value.currency
-            || !value.amount.is_finite()
-            || value.amount < 0.0
-    }) || reading.reset_at_ms.is_some_and(|value| value < 0)
-    {
-        return Err(ProviderError::InvalidConfiguration(
-            "provider quota observation contains an invalid value".into(),
-        ));
-    }
-    Ok(reading)
-}
-
 fn resolve_operation(
     adapter: &crate::protocol::AdapterDescriptor,
     overrides: &BTreeMap<String, String>,
@@ -669,7 +656,8 @@ fn resolve_operation(
         [] => Ok(None),
         [operation] => Ok(Some(operation.clone())),
         _ => Err(ProviderError::Inventory(format!(
-            "adapter has multiple default operations for api_type `{api_type_name}`"
+            "adapter {:?} has multiple default operations {:?} for api_type `{api_type_name}`",
+            adapter.protocol_adapter_id, matching
         ))),
     }
 }

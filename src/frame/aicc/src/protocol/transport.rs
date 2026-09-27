@@ -482,6 +482,7 @@ impl HttpTransport {
                 }
             };
 
+        let has_content_type = request.headers.contains_key(CONTENT_TYPE);
         let mut builder = self
             .client
             .request(request.method, &request.url)
@@ -507,7 +508,11 @@ impl HttpTransport {
             HttpBody::Empty => builder,
             HttpBody::Json(value) => {
                 let body = encode_json(&value, request_limit.min(self.config.max_json_bytes))?;
-                builder.header(CONTENT_TYPE, "application/json").body(body)
+                if has_content_type {
+                    builder.body(body)
+                } else {
+                    builder.header(CONTENT_TYPE, "application/json").body(body)
+                }
             }
             HttpBody::Bytes {
                 bytes,
@@ -520,8 +525,11 @@ impl HttpTransport {
                 }
                 let builder = builder.body(bytes);
                 match content_type {
-                    Some(content_type) => builder.header(CONTENT_TYPE, content_type),
+                    Some(content_type) if !has_content_type => {
+                        builder.header(CONTENT_TYPE, content_type)
+                    }
                     None => builder,
+                    Some(_) => builder,
                 }
             }
             HttpBody::Multipart(form) => {
@@ -887,6 +895,36 @@ mod tests {
         assert_eq!(response.request_id, "server-request");
         assert_eq!(response.retry_after, Some(Duration::from_secs(3)));
         assert_eq!(response.body, Bytes::from_static(b"rate-limited"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn http_transport_does_not_duplicate_explicit_json_content_type() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = vec![0_u8; 4096];
+            let read = stream.read(&mut request).await.unwrap();
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            assert_eq!(request.matches("content-type:").count(), 1);
+            assert!(request.contains("content-type: application/json"));
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 2\r\nconnection: close\r\n\r\n{}")
+                .await
+                .unwrap();
+        });
+
+        let transport = HttpTransport::new(HttpTransportConfig::default()).unwrap();
+        let mut request = HttpRequest::new(Method::POST, format!("http://{address}/json"));
+        request
+            .headers
+            .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        request.body = HttpBody::Json(serde_json::json!({"ok": true}));
+        assert_eq!(
+            transport.send(request).await.unwrap().status,
+            StatusCode::OK
+        );
         server.await.unwrap();
     }
 

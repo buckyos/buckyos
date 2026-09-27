@@ -74,6 +74,7 @@ type Options = {
   providerMinIntervalMs: number;
   caseIds: string[];
   allowAiccRestart: boolean;
+  restartViaDocker: boolean;
   ndnGatewayBinary: string;
   ndnNamedStoreConfigPath: string;
   ndnGatewayControlUrl: string;
@@ -167,6 +168,7 @@ async function options(args: string[]): Promise<Options> {
     providerMinIntervalMs: tomlNumber(config, "runner.provider_min_interval_ms") ?? 50,
     caseIds: [],
     allowAiccRestart: tomlBoolean(config, "runner.allow_aicc_restart") ?? false,
+    restartViaDocker: tomlBoolean(config, "runner.restart_via_docker") ?? false,
     ndnGatewayBinary: tomlString(config, "fixtures.ndn_gateway_binary") ??
       env("AICC_NDN_GATEWAY_BINARY") ?? "/opt/buckyos/bin/cyfs-gateway/cyfs_gateway",
     ndnNamedStoreConfigPath: tomlString(config, "fixtures.ndn_named_store_config") ??
@@ -234,6 +236,53 @@ async function waitHealth(baseUrl: string, timeoutMs = 15_000): Promise<void> {
   throw new Error(`mock provider is unreachable at ${baseUrl}: ${last}`);
 }
 
+async function waitForRouteMatch(
+  expectation: string,
+  timeoutMs: number,
+  matches: (route: Record<string, unknown>) => boolean,
+  resolveRoute: (attempt: number) => Promise<Record<string, unknown>>,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + Math.min(timeoutMs, 10_000);
+  let attempt = 0;
+  let last: Record<string, unknown> | undefined;
+  while (Date.now() < deadline) {
+    last = await resolveRoute(attempt++);
+    if (matches(last)) return last;
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 200));
+  }
+  throw new Error(`route did not converge to ${expectation}: ${JSON.stringify(last)}`);
+}
+
+async function recordExactProviderFailures(input: {
+  session: GatewaySession;
+  mockControlUrl: string;
+  pathPrefix: string;
+  scenario: "not_found" | "connection_failed";
+  cell: MatrixCell;
+  runId: string;
+  caseId: string;
+  attempts: number;
+  timeoutMs: number;
+}): Promise<void> {
+  await setScenario(input.mockControlUrl, input.scenario, input.pathPrefix);
+  for (let attempt = 0; attempt < input.attempts; attempt += 1) {
+    const request = buildExactRequest({
+      cell: { ...input.cell, case_id: `${input.caseId}.health.${attempt}` },
+      runId: input.runId,
+      fixtures: {},
+    });
+    let failed = false;
+    try {
+      const initial = await callChatCompletions(input.session.aicc, request) as AiMethodResponse;
+      if (initial.status === "failed") failed = true;
+      else await terminal(input.session, initial, Math.min(input.timeoutMs, 10_000));
+    } catch {
+      failed = true;
+    }
+    if (!failed) throw new Error(`${input.scenario} health probe unexpectedly succeeded`);
+  }
+}
+
 async function restartAicc(session: GatewaySession, input: Options): Promise<string> {
   if (!input.allowAiccRestart) {
     throw new Error("AICC restart requires runner.allow_aicc_restart=true or --allow-aicc-restart");
@@ -257,7 +306,30 @@ async function restartAicc(session: GatewaySession, input: Options): Promise<str
   if (!inspected.success || !command.endsWith("/bin/aicc/aicc")) {
     throw new Error(`refusing to restart unexpected PID ${oldPid}`);
   }
-  Deno.kill(oldPid, "SIGTERM");
+  try {
+    Deno.kill(oldPid, "SIGTERM");
+  } catch (error) {
+    if (!(error instanceof Deno.errors.PermissionDenied) || !input.restartViaDocker) throw error;
+    const killed = await new Deno.Command("docker", {
+      args: [
+        "run",
+        "--rm",
+        "--privileged",
+        "--pid=host",
+        "alpine:latest",
+        "kill",
+        "-TERM",
+        String(oldPid),
+      ],
+      stdout: "piped",
+      stderr: "piped",
+    }).output();
+    if (!killed.success) {
+      throw new Error(
+        `configured Docker AICC restart failed: ${new TextDecoder().decode(killed.stderr).trim()}`,
+      );
+    }
+  }
   const deadline = Date.now() + input.timeoutMs;
   let last = "restart not observed";
   while (Date.now() < deadline) {
@@ -436,11 +508,11 @@ async function waitForMockInventories(
     `dv-gemini-${suffix}`,
     `dv-minimax-${suffix}`,
     `dv-openrouter-${suffix}`,
+    `dv-typesafe-${suffix}`,
     `dv-fal-${suffix}`,
     `dv-custom-openai-${suffix}`,
     `dv-custom-claude-${suffix}`,
     `dv-custom-gemini-${suffix}`,
-    `dv-custom-fal-${suffix}`,
   ];
   const deadline = Date.now() + timeoutMs;
   let latest: ProviderInventory[] = [];
@@ -468,21 +540,32 @@ async function waitForMockInventories(
       item.models.some((model) => model.api_types.includes("image.upscale")) &&
       item.models.some((model) => model.api_types.includes("video.upscale"))
     );
-    const customReady = ["openai", "claude", "gemini", "fal"].every((protocol) =>
+    const typesafeReady = selected.some((item) =>
+      item.provider_instance_name === `dv-typesafe-${suffix}` &&
+      item.models.some((model) => model.api_types.includes("decision"))
+    );
+    const customReady = ["openai", "claude", "gemini"].every((protocol) =>
       selected.some((item) =>
         item.provider_instance_name === `dv-custom-${protocol}-${suffix}` && item.models.length > 0
       )
     );
     if (
       expected.every((name) => selected.some((item) => item.provider_instance_name === name)) &&
-      openAiReady && geminiReady && falReady && customReady
+      openAiReady && geminiReady && falReady && typesafeReady && customReady
     ) {
       return selected;
     }
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 500));
   }
-  const found = latest.map((item) => item.provider_instance_name);
-  throw new Error(`mock inventories did not converge; expected=${expected.join(",")} found=${found.join(",")}`);
+  const found = latest.map((item) => ({
+    provider_driver: item.provider_driver,
+    provider_instance_name: item.provider_instance_name,
+    models: item.models.map((model) => ({
+      provider_model_id: model.provider_model_id,
+      api_types: model.api_types,
+    })),
+  }));
+  throw new Error(`mock inventories did not converge; expected=${expected.join(",")} found=${JSON.stringify(found)}`);
 }
 
 async function terminal(
@@ -490,7 +573,14 @@ async function terminal(
   initial: AiMethodResponse,
   timeoutMs: number,
 ): Promise<unknown> {
-  if (initial.status === "failed") throw new Error(`AICC returned failed: ${failedResponseDiagnostic(initial)}`);
+  if (initial.status === "failed") {
+    const task = taskValue(
+      await session.taskManager.call("get_task", { task_id: initial.task_id }),
+    ) as { error?: unknown };
+    throw new Error(
+      `AICC returned failed: ${failedResponseDiagnostic(initial)}: ${JSON.stringify(compactFailure(task.error) ?? {})}`,
+    );
+  }
   if (initial.status === "succeeded") return initial;
   const deadline = Date.now() + timeoutMs;
   let lastTask: unknown;
@@ -683,21 +773,34 @@ async function runRouteCases(
 ): Promise<CaseReport[]> {
   const openaiA = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-a-"));
   const openaiB = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-b-"));
-  const modelA = openaiA?.models.find((item) => item.api_types.includes("llm"));
+  const modelA = openaiA?.models.find((item) => item.provider_model_id === "gpt-5.6:reasoning-high");
   const modelB = openaiB?.models.find((item) => item.provider_model_id === modelA?.provider_model_id);
-  const logicalModel = modelA?.logical_mounts.find((mount) =>
-    mount.startsWith("llm.") && modelB?.logical_mounts.includes(mount)
-  );
+  const logicalModel = modelA && modelB ? "llm.gpt-pro" : undefined;
   if (!openaiA || !openaiB || !modelA || !modelB || !logicalModel) {
-    throw new Error("route tests require two OpenAI mock instances with one shared LLM logical mount");
+    throw new Error(`route tests require two OpenAI mock instances with one shared LLM logical mount: ${JSON.stringify({
+      openaiA: openaiA && {
+        provider_instance_name: openaiA.provider_instance_name,
+        models: openaiA.models.map((model) => ({
+          provider_model_id: model.provider_model_id,
+          api_types: model.api_types,
+          logical_mounts: model.logical_mounts,
+        })),
+      },
+      openaiB: openaiB && {
+        provider_instance_name: openaiB.provider_instance_name,
+        models: openaiB.models.map((model) => ({
+          provider_model_id: model.provider_model_id,
+          api_types: model.api_types,
+          logical_mounts: model.logical_mounts,
+        })),
+      },
+      modelA: modelA?.provider_model_id,
+      modelB: modelB?.provider_model_id,
+    })}`);
   }
   const exactRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-image-2");
-  const patternRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6-luna-mock");
-  const defaultRuleModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.6");
   const basicModel = openaiA.models.find((item) => item.provider_model_id === "gpt-5.3-codex");
-  const exactRuleMount = exactRuleModel?.logical_mounts.find((mount) => mount === "image.txt2img.openai");
-  const patternRuleMount = patternRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-nano");
-  const defaultRuleMount = defaultRuleModel?.logical_mounts.find((mount) => mount === "llm.gpt-standard");
+  const exactRuleMount = exactRuleModel?.logical_mounts.find((mount) => mount === "image.txt2img.gpt-image-2");
   type RouteCase = {
     id: string;
     apiType: string;
@@ -785,8 +888,6 @@ async function runRouteCases(
   ];
   const versionCases = [
     { id: "version_exact_rule", apiType: "image.txt2img", model: exactRuleModel, mount: exactRuleMount },
-    { id: "version_pattern_rule", apiType: "llm", model: patternRuleModel, mount: patternRuleMount },
-    { id: "version_default_rule", apiType: "llm", model: defaultRuleModel, mount: defaultRuleMount },
   ];
   const preconditionFailures: CaseReport[] = [];
   for (const versionCase of versionCases) {
@@ -927,6 +1028,26 @@ async function runRouteCases(
     }));
   };
 
+  await pushRouteProbe("t1.route.version_pattern_rule", async () => {
+    if (openaiA.models.some((model) => model.provider_model_id === "gpt-5.6-luna-mock")) {
+      throw new Error("an unknown pattern-only LLM identity entered the executable inventory");
+    }
+    return "Model Driver v2 omitted the unknown pattern-only LLM identity";
+  });
+  await pushRouteProbe("t1.route.version_default_rule", async () => {
+    const response = await session.aicc.call("route.resolve", routeRequest("t1.route.version_default_rule", {
+      logical_model: logicalModel,
+      policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
+    })) as Record<string, unknown>;
+    if (
+      response.provider_instance_name !== openaiA.provider_instance_name ||
+      response.origin_model_id !== "gpt-5.6"
+    ) {
+      throw new Error(`finite Model Driver identity did not route as declared: ${JSON.stringify(response)}`);
+    }
+    return "finite Model Driver identity routed through its derived LLM specification";
+  });
+
   await pushRouteProbe("t1.route.legal_missing_model", async () => {
     const before = await mockRequestCount(input.mockControlUrl);
     const request = buildExactRequest({
@@ -979,18 +1100,16 @@ async function runRouteCases(
     },
   })));
   await pushRouteProbe("t1.route.missing_metadata_is_conservative", async () => {
-    const unclassified = `gpt-4o-mini@${openaiA.provider_instance_name}`;
-    if (openaiA.models.some((model) => model.exact_model === unclassified)) {
-      throw new Error(`${unclassified} was admitted without Model Driver metadata`);
-    }
-    return await expectRouteRejected(routeRequest("t1.route.missing_metadata_is_conservative", {
-      logical_model: unclassified,
-    }));
+    const unclassified = openaiA.models.find((model) =>
+      model.provider_model_id === "vendor-unknown-mock"
+    );
+    if (unclassified) throw new Error(`unknown model entered executable inventory: ${JSON.stringify(unclassified)}`);
+    return "unknown discovered model was conservatively omitted from executable inventory";
   });
 
   await pushRouteProbe("t1.route.auto_mount_admission", async () => {
     const response = await session.aicc.call("route.resolve", routeRequest("t1.route.auto_mount_admission", {
-      logical_model: "llm.gpt-standard",
+      logical_model: logicalModel,
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     })) as Record<string, unknown>;
     if (response.provider_instance_name !== openaiA.provider_instance_name) {
@@ -1024,14 +1143,10 @@ async function runRouteCases(
     return "definition disable_line removed web_search";
   });
 
-  const exactWeights = Object.fromEntries([
-    ...openaiA.models
-      .filter((model) => model.api_types.includes("llm") && model.logical_mounts.includes(logicalModel))
-      .map((model) => [model.exact_model, 0]),
-    ...openaiB.models
-      .filter((model) => model.api_types.includes("llm") && model.logical_mounts.includes(logicalModel))
-      .map((model) => [model.exact_model, 1]),
-  ]);
+  const exactWeights = {
+    [modelA.exact_model]: 0,
+    [modelB.exact_model]: 1,
+  };
   for (const [caseId, sessionOverlay] of [
     ["t1.route.global_exact_model_weight", {
       global_exact_model_weights: exactWeights,
@@ -1058,19 +1173,32 @@ async function runRouteCases(
   }
 
   await pushRouteProbe("t1.route.system_config_then_request_overlay", async () => {
+    const systemModel = openaiA.models.find((model) => model.provider_model_id === "gpt-5.6");
+    const requestModel = openaiB.models.find((model) => model.provider_model_id === "gpt-5.3-codex:reasoning-high");
+    if (!systemModel || !requestModel) {
+      throw new Error("system/request overlay test models are missing from OpenAI mock inventory");
+    }
     const systemResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_request_overlay.system", {
       logical_model: "llm.dv_acceptance.system_overlay",
+      policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     })) as Record<string, unknown>;
-    if (systemResponse.provider_instance_name !== openaiA.provider_instance_name) {
-      throw new Error(`system routing fixture selected ${String(systemResponse.provider_instance_name)}`);
+    if (
+      systemResponse.provider_instance_name !== openaiA.provider_instance_name ||
+      !String(systemResponse.provider_model_id).startsWith(systemModel.provider_model_id)
+    ) {
+      throw new Error(`system routing fixture selected an unexpected target: ${JSON.stringify(systemResponse)}`);
     }
     const requestResponse = await session.aicc.call("route.resolve", routeRequest("t1.route.system_config_then_request_overlay.request", {
       logical_model: "llm.dv_acceptance.system_overlay",
       session_overlay: replacingOverlay("llm.dv_acceptance.system_overlay", {
-        items: [{ name: "request", target: modelB.exact_model, weight: 1 }],
+        items: [{ name: "request", target: "llm.gpt-codex", weight: 1 }],
       }),
+      policy: { allowed_provider_instances: [openaiB.provider_instance_name] },
     })) as Record<string, unknown>;
-    if (requestResponse.provider_instance_name !== openaiB.provider_instance_name) {
+    if (
+      requestResponse.provider_instance_name !== openaiB.provider_instance_name ||
+      requestResponse.selected_exact_model !== requestModel.exact_model
+    ) {
       throw new Error(`request overlay did not replace system route: ${JSON.stringify(requestResponse)}`);
     }
     return "request session_overlay took precedence over system routing config";
@@ -1084,24 +1212,34 @@ async function runRouteCases(
     await pushRouteProbe(caseId, async () => {
       if (state.health === "unavailable") {
         try {
-          await setScenario(input.mockControlUrl, "connection_failed", "/instance-a/v1/models");
-          try {
-            await session.aicc.call("provider.refresh_models", {
-              provider_instance_name: openaiA.provider_instance_name,
-            });
-          } catch {}
-          const response = await session.aicc.call("route.resolve", routeRequest(caseId, {
-            policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
-          })) as Record<string, unknown>;
-          if (response.provider_instance_name !== openaiB.provider_instance_name) {
-            throw new Error(`unhealthy Provider remained routable: ${JSON.stringify(response)}`);
-          }
-          return `runtime health excluded ${openaiA.provider_instance_name}`;
-        } finally {
-          await setScenario(input.mockControlUrl, "success", "/instance-a/v1/models");
-          await session.aicc.call("provider.refresh_models", {
-            provider_instance_name: openaiA.provider_instance_name,
+          const offlineModel = caseId === "t1.route.offline_model";
+          await recordExactProviderFailures({
+            session,
+            mockControlUrl: input.mockControlUrl,
+            pathPrefix: "/instance-a/",
+            scenario: offlineModel ? "not_found" : "connection_failed",
+            cell: cellFor(openaiA, modelA, "llm", "chat.completions.create"),
+            runId,
+            caseId,
+            attempts: offlineModel ? 1 : 3,
+            timeoutMs: input.timeoutMs,
           });
+          const response = await waitForRouteMatch(
+            offlineModel ? `a model other than ${modelA.exact_model}` : openaiB.provider_instance_name,
+            input.timeoutMs,
+            (route) => offlineModel
+              ? route.selected_exact_model !== modelA.exact_model
+              : route.provider_instance_name === openaiB.provider_instance_name,
+            (attempt) => session.aicc.call("route.resolve", routeRequest(`${caseId}.${attempt}`, {
+              policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+            })) as Promise<Record<string, unknown>>,
+          );
+          return offlineModel
+            ? `unavailable exact model yielded to ${String(response.selected_exact_model)}`
+            : `open circuit excluded ${openaiA.provider_instance_name}`;
+        } finally {
+          await setScenario(input.mockControlUrl, "success", "/instance-a/");
+          await restartAicc(session, input);
         }
       }
       const key = [
@@ -1131,17 +1269,20 @@ async function runRouteCases(
     });
   }
 
-  const fallbackPath = `${logicalModel}.dv`;
+  const fallbackPath = "llm.plan";
   const fallbackLeaf = (fallback: Record<string, unknown>): Record<string, unknown> => ({
-    items: [{ name: "missing", target: `missing@${openaiA.provider_instance_name}`, weight: 1 }],
+    items: [{ name: "disabled-primary", target: logicalModel, weight: 0 }],
     fallback,
   });
   await pushRouteProbe("t1.route.strict_no_fallback", () => expectRouteRejected(routeRequest("t1.route.strict_no_fallback", {
     logical_model: fallbackPath,
     session_overlay: replacingOverlay(fallbackPath, fallbackLeaf({ mode: "strict" })),
   })));
+  await pushRouteProbe("t1.route.parent_fallback", () => expectRouteRejected(routeRequest("t1.route.parent_fallback", {
+    logical_model: fallbackPath,
+    session_overlay: replacingOverlay(fallbackPath, fallbackLeaf({ mode: "parent" })),
+  })));
   for (const [caseId, fallback] of [
-    ["t1.route.parent_fallback", { mode: "parent" }],
     ["t1.route.target_logical_fallback", { mode: "target_logical", target: logicalModel }],
     ["t1.route.target_exact_fallback", { mode: "target_exact", target: modelB.exact_model }],
   ] as const) {
@@ -1389,7 +1530,6 @@ async function runCases(
     ["openai", "llm", "chat.completions.create"],
     ["claude", "llm", "chat.completions.create"],
     ["gemini", "llm", "chat.completions.create"],
-    ["fal", "image.upscale", "image.upscale"],
   ] as const) {
     const caseId = `t1.custom.${protocol}`;
     if (!wants(input, caseId)) continue;
@@ -1614,11 +1754,9 @@ async function runCases(
 
   const openaiA = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-a-"));
   const openaiB = mockInventories.find((item) => item.provider_instance_name.includes("dv-openai-b-"));
-  const modelA = openaiA?.models.find((item) => item.api_types.includes("llm"));
+  const modelA = openaiA?.models.find((item) => item.provider_model_id === "gpt-5.6:reasoning-high");
   const modelB = openaiB?.models.find((item) => item.provider_model_id === modelA?.provider_model_id);
-  const logicalModel = modelA?.logical_mounts.find((mount) =>
-    mount.startsWith("llm.") && modelB?.logical_mounts.includes(mount)
-  );
+  const logicalModel = modelA && modelB ? "llm.gpt-pro" : undefined;
   if (!openaiA || !openaiB || !modelA || !modelB || !logicalModel) {
     throw new Error("history cases need two OpenAI mock instances with a shared LLM mount");
   }
@@ -1646,15 +1784,9 @@ async function runCases(
       ...overrides,
       session_id: sessionId,
       session_overlay: {
-        logical_profile: {
-          overlays: [{
-            path: logicalModel,
-            merge_mode: "replace",
-            items: [
-              { name: "primary", target: modelA.exact_model, weight: 1 },
-              { name: "secondary", target: modelB.exact_model, weight: 1 },
-            ],
-          }],
+        provider_weights: {
+          [openaiA.provider_instance_name]: 1,
+          [openaiB.provider_instance_name]: 1,
         },
         ...requestedOverlay,
       },
@@ -1663,7 +1795,7 @@ async function runCases(
   const seedSession = async (sessionId: string, caseId: string): Promise<void> => {
     const seeded = await sessionRoute(sessionId, `${caseId}.seed`, {
       session_overlay: {
-        global_exact_model_weights: { [modelA.exact_model]: 1, [modelB.exact_model]: 0 },
+        provider_weights: { [openaiA.provider_instance_name]: 1, [openaiB.provider_instance_name]: 0 },
       },
       policy: { allowed_provider_instances: [openaiA.provider_instance_name] },
     });
@@ -1733,7 +1865,7 @@ async function runCases(
           item.api_types.includes("image.txt2img") &&
           item.logical_mounts.some((mount) => mount.startsWith("image."))
         );
-        const imageMount = imageModel?.logical_mounts.find((mount) => mount.startsWith("image."));
+        const imageMount = imageModel?.logical_mounts.find((mount) => mount.startsWith("image.txt2img"));
         if (!imageModel || !imageMount) throw new Error("no image route exists");
         const routed = await sessionRoute(sessionId, caseId, {
           api_type: "image.txt2img",
@@ -1744,18 +1876,30 @@ async function runCases(
       }
       if (reason === "instance_unhealthy") {
         try {
-          await setScenario(input.mockControlUrl, "connection_failed", "/instance-a/v1/models");
-          try {
-            await session.aicc.call("provider.refresh_models", { provider_instance_name: openaiA.provider_instance_name });
-          } catch {}
-          const routed = await sessionRoute(sessionId, caseId, {
-            policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+          await recordExactProviderFailures({
+            session,
+            mockControlUrl: input.mockControlUrl,
+            pathPrefix: "/instance-a/",
+            scenario: "connection_failed",
+            cell: cellFor(openaiA, modelA, "llm", "chat.completions.create"),
+            runId,
+            caseId,
+            attempts: 3,
+            timeoutMs: input.timeoutMs,
           });
+          const routed = await waitForRouteMatch(
+            openaiB.provider_instance_name,
+            input.timeoutMs,
+            (route) => route.provider_instance_name === openaiB.provider_instance_name,
+            (attempt) => sessionRoute(sessionId, `${caseId}.${attempt}`, {
+              policy: { allowed_provider_instances: [openaiA.provider_instance_name, openaiB.provider_instance_name] },
+            }),
+          );
           if (routed.selected_exact_model !== modelB.exact_model) throw new Error(`unhealthy history selected ${String(routed.selected_exact_model)}`);
           return `unhealthy prior instance yielded to ${modelB.exact_model}`;
         } finally {
-          await setScenario(input.mockControlUrl, "success", "/instance-a/v1/models");
-          await session.aicc.call("provider.refresh_models", { provider_instance_name: openaiA.provider_instance_name });
+          await setScenario(input.mockControlUrl, "success", "/instance-a/");
+          await restartAicc(session, input);
         }
       }
       if (reason === "quota_exhausted") {
@@ -1863,16 +2007,12 @@ async function runCases(
   const fallbackA = mockInventories.find((inventory) => inventory.provider_instance_name.includes("dv-openai-a-"));
   const fallbackB = mockInventories.find((inventory) => inventory.provider_instance_name.includes("dv-openai-b-"));
   const fallbackModelA = fallbackA?.models.find((model) =>
-    model.api_types.includes("llm") && fallbackB?.models.some((candidate) =>
-      candidate.provider_model_id === model.provider_model_id && candidate.api_types.includes("llm")
-    )
+    model.provider_model_id === "gpt-5.6:reasoning-high"
   );
   const fallbackModelB = fallbackModelA && fallbackB?.models.find((model) =>
     model.provider_model_id === fallbackModelA.provider_model_id
   );
-  const fallbackLogicalModel = fallbackModelA?.logical_mounts.find((mount) =>
-    fallbackModelB?.logical_mounts.includes(mount)
-  );
+  const fallbackLogicalModel = fallbackModelA && fallbackModelB ? "llm.gpt-pro" : undefined;
   if (!fallbackA || !fallbackB || !fallbackModelA || !fallbackModelB || !fallbackLogicalModel) {
     throw new Error("runtime boundary cases require two OpenAI Mock instances with a shared logical model");
   }
@@ -1945,6 +2085,29 @@ async function runCases(
     } finally {
       await setScenario(input.mockControlUrl, "success", "/instance-a/");
     }
+    if (!boundary.expectsFallback) {
+      try {
+        const recoveryRequest = buildExactRequest({
+          cell: { ...fallbackCell, case_id: `${boundary.caseId}.health_recovery` },
+          runId,
+          fixtures: {},
+        });
+        const recovery = await callChatCompletions(session.aicc, recoveryRequest) as AiMethodResponse;
+        await terminal(session, recovery, Math.min(input.timeoutMs, 10_000));
+      } catch (error) {
+        report.status = "failed";
+        report.attempts.push({
+          attempt: 2,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+          status: "failed",
+          failure_class: "provider_runtime_failed",
+          diagnostic: `Provider health recovery failed after ${boundary.scenario}: ${String(error)}`,
+          estimated_cost_usd: 0,
+          cost_status: "unknown",
+        });
+      }
+    }
     results.push(report);
   }
 
@@ -1957,6 +2120,9 @@ async function runCases(
   const asyncProbeCell = asyncInventory && asyncModel
     ? cellFor(asyncInventory, asyncModel, "video.txt2video", "video.txt2video")
     : undefined;
+  const cancelProbeCell = cells.find((cell) =>
+    cell.provider_driver === "fal" && cell.api_type === "image.upscale" && cell.method === "image.upscale"
+  );
   const invokeProbe = async (caseId: string, scenario = "success"): Promise<AiMethodResponse> => {
     await setScenario(input.mockControlUrl, scenario);
     const request = buildExactRequest({
@@ -2046,9 +2212,26 @@ async function runCases(
     }
   }, "video.txt2video");
 
-  await pushProbe("t1.task.cancelled", asyncProbeCell?.method ?? "video.txt2video", "task_lifecycle_failed", async () => {
+  await pushProbe("t1.task.cancelled", cancelProbeCell?.method ?? "image.upscale", "task_lifecycle_failed", async () => {
+    if (!cancelProbeCell) throw new Error("Mock inventory has no cancellable FAL queue cell");
     try {
-      const initial = await invokeAsyncProbe("t1.task.cancelled", "async_pending");
+      await setScenario(input.mockControlUrl, "async_pending");
+      const request = buildExactRequest({
+        cell: { ...cancelProbeCell, case_id: "t1.task.cancelled" },
+        runId,
+        fixtures: {
+          image: {
+            kind: "base64",
+            mime: "image/png",
+            data_base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+          },
+        },
+      });
+      const initial = await callInference(
+        session.aicc,
+        cancelProbeCell.method,
+        request,
+      ) as AiMethodResponse;
       if (initial.status !== "running") throw new Error(`expected cancellable running task, received ${initial.status}`);
       const cancelled = await session.aicc.call("cancel", { task_id: initial.task_id }) as Record<string, unknown>;
       if (cancelled.accepted !== true) throw new Error(`AICC did not accept cancellation: ${JSON.stringify(cancelled)}`);
@@ -2067,7 +2250,7 @@ async function runCases(
     } finally {
       await setScenario(input.mockControlUrl, "success");
     }
-  }, "video.txt2video");
+  }, "image.upscale");
 
   await pushProbe("t1.task.unknown", "get_task", "task_lifecycle_failed", async () => {
     try {
@@ -2240,9 +2423,7 @@ async function runCases(
       item.api_types.includes("llm") &&
       !item.exact_model.split("@")[0].includes(":")
     );
-    const logical = modelA?.logical_mounts.find((mount) =>
-      mount.startsWith("llm.") && modelB?.logical_mounts.includes(mount)
-    );
+    const logical = modelA && modelB ? "llm.gpt-pro" : undefined;
     if (!openaiA || !openaiB || !modelA || !modelB || !logical) throw new Error("fallback attribution needs the same base model and logical mount on two instances");
     const before = await mockRequestCount(input.mockControlUrl);
     try {
@@ -2250,15 +2431,9 @@ async function runCases(
       const request = buildExactRequest({ cell: { ...probeCell, case_id: "t1.usage.fallback_attempts_attributed" }, runId, fixtures: {} });
       request.model = { alias: logical };
       const sessionOverlay = {
-        logical_profile: {
-          overlays: [{
-            path: logical,
-            merge_mode: "replace",
-            items: [
-              { name: "primary", target: modelA.exact_model, weight: 2 },
-              { name: "backup", target: modelB.exact_model, weight: 2 },
-            ],
-          }],
+        provider_weights: {
+          [openaiA.provider_instance_name]: 2,
+          [openaiB.provider_instance_name]: 1,
         },
       };
       request.session_overlay = sessionOverlay;
@@ -2290,23 +2465,30 @@ async function runCases(
       } catch (error) {
         throw new Error(`helper route diverged from route.resolve ${JSON.stringify(route)}: ${String(error)}`);
       }
-      let rejected = false;
-      try {
-        await terminal(session, initial, input.timeoutMs);
-      } catch {
-        rejected = true;
-      }
-      if (!rejected) throw new Error("accepted Provider failure unexpectedly completed through another Provider");
+      await terminal(session, initial, input.timeoutMs);
       const providerCalls = await mockRequestCount(input.mockControlUrl) - before;
-      if (providerCalls !== 1) {
-        throw new Error(`accepted Provider failure caused ${providerCalls} Provider calls; expected one`);
+      if (providerCalls !== 3) {
+        throw new Error(`runtime failover caused ${providerCalls} Provider calls; expected primary, one same-model retry, and backup`);
       }
       const traces = await queryRouteTraces({ aicc: session.aicc, startTimeMs: Date.now() - input.timeoutMs - 2_000, endTimeMs: Date.now() + 1_000, taskIds: [initial.task_id] });
       const traceText = JSON.stringify(traces);
-      if (traces.length !== 1 || /runtime_failover/i.test(traceText)) {
-        throw new Error(`accepted Provider failure trace incorrectly records runtime failover: ${traceText}`);
+      if (
+        traces.length !== 1 || !/runtime_failover/i.test(traceText) ||
+        !traceText.includes(openaiA.provider_instance_name) || !traceText.includes(openaiB.provider_instance_name)
+      ) {
+        throw new Error(`runtime failover trace did not attribute both Provider attempts: ${traceText}`);
       }
-      return `route offered a backup, but accepted Provider failure stayed pinned for task ${initial.task_id}`;
+      const events = await queryUsageEvents({
+        aicc: session.aicc,
+        startTimeMs: Date.now() - input.timeoutMs - 2_000,
+        endTimeMs: Date.now() + 1_000,
+        taskIds: [initial.task_id],
+      });
+      const usageText = JSON.stringify(events);
+      if (events.length !== 1 || !usageText.includes(openaiB.provider_instance_name)) {
+        throw new Error(`runtime failover usage was not attributed to the successful Provider: ${usageText}`);
+      }
+      return `primary failure, same-model retry, and successful backup were attributed for task ${initial.task_id}`;
     } finally {
       await setScenario(input.mockControlUrl, "success", "/instance-a/");
     }
@@ -2399,29 +2581,30 @@ async function runCases(
     const primaryDid = session.userId.startsWith("did:") ? session.userId : `did:bns:${session.userId}`;
     const primaryMsgCenter = new buckyos.kRPCClient(`${input.gatewayUrl}/kapi/msg-center`, session.sessionToken) as RpcClient;
     const otherMsgCenter = new buckyos.kRPCClient(`${input.gatewayUrl}/kapi/msg-center`, token) as RpcClient;
-    const primaryRaw = await primaryMsgCenter.call("msg.list_sessions", {
+    const created = await primaryMsgCenter.call("msg.create_session", {
       owner: primaryDid,
-      limit: 100,
-      with_object: false,
-    }) as { items?: Array<Record<string, unknown>> };
-    const sessionId = primaryRaw.items?.map((item) =>
-      typeof item.session_id === "string" ? item.session_id :
-      typeof item.topic === "string" ? item.topic : undefined
-    ).find(Boolean);
-    if (!sessionId) throw new SkipCase("primary tenant has no existing msg-center session fixture to test isolation");
+      peer_did: "did:web:jarvis.test.buckyos.io",
+      title: `AICC T1 isolation ${runId}`,
+    }) as { session_id?: unknown };
+    if (typeof created.session_id !== "string" || !created.session_id) {
+      throw new Error(`msg.create_session returned no session_id: ${JSON.stringify(created)}`);
+    }
+    const sessionId = created.session_id;
     try {
-      const raw = await otherMsgCenter.call("msg.list_session", {
-        owner: primaryDid,
-        session_id: sessionId,
-        limit: 100,
-        descending: false,
-        with_object: true,
-      }) as { items?: unknown[] };
-      if ((raw.items?.length ?? 0) > 0) throw new Error("secondary tenant unexpectedly read primary messages");
-      return `secondary tenant saw no records in primary session ${sessionId}`;
-    } catch (error) {
-      if (/unexpectedly read/.test(String(error))) throw error;
-      return `secondary tenant message query rejected: ${String(error).slice(0, 180)}`;
+      try {
+        await otherMsgCenter.call("msg.list_session", {
+          owner: primaryDid,
+          session_id: sessionId,
+          limit: 100,
+          descending: false,
+          with_object: true,
+        });
+      } catch (error) {
+        return `secondary tenant message query rejected: ${String(error).slice(0, 180)}`;
+      }
+      throw new Error("secondary tenant unexpectedly read a primary tenant session");
+    } finally {
+      await primaryMsgCenter.call("msg.delete_session", { owner: primaryDid, session_id: sessionId });
     }
   });
 
@@ -2726,7 +2909,7 @@ async function runCases(
       }
 
       cloudStage = "add_dynamic_provider";
-      await session.aicc.call("provider.add", {
+      const dynamicProvider = {
         provider_instance_name: cloudProviderName,
         provider_type: "cloud_api",
         provider_profile_id: CLOUD_TEST_PROFILE_ID,
@@ -2735,7 +2918,16 @@ async function runCases(
         base_url: `${mockBaseUrl}/instance-a/v1`,
         credentials: { api_token: { locked: `cloud-mock-${runId}` } },
         auto_sync_models: true,
-      });
+      };
+      const validation = await session.aicc.call("provider.validate", dynamicProvider) as Record<string, unknown>;
+      if (
+        validation.base_url_reachable !== true || validation.auth_valid !== true ||
+        (Array.isArray(validation.errors) && validation.errors.length > 0) ||
+        (Array.isArray(validation.error_details) && validation.error_details.length > 0)
+      ) {
+        throw new Error(`dynamic Provider validation failed: ${JSON.stringify(validation)}`);
+      }
+      await session.aicc.call("provider.add", dynamicProvider);
       cloudStage = "wait_dynamic_provider";
       providerAdded = true;
       await waitForProvider(cloudProviderName, true);
@@ -2755,7 +2947,7 @@ async function runCases(
         execute: async () => {
           const routedV1 = await session.aicc.call("route.resolve", {
             request_id: `${runId}:cloud-update-v1-route`,
-            api_type: "llm",
+            api_type: "embedding.text",
             logical_model: CLOUD_TEST_MOUNT_V1,
             requirements: {},
             disable: {},
@@ -2764,12 +2956,23 @@ async function runCases(
           if (routedV1.provider_instance_name !== cloudProviderName || typeof routedV1.selected_exact_model !== "string") {
             throw new Error(`V1 cloud mount did not route to the dynamic Provider: ${JSON.stringify(routedV1)}`);
           }
-          const initialV1 = await session.aicc.call("chat.completions.create", {
-            exact_model: routedV1.selected_exact_model,
-            messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
-            max_output_tokens: 32,
-            idempotency_key: `${runId}:cloud-update-v1-call`,
-          }) as AiMethodResponse;
+          const initialV1 = await callInference(session.aicc, "embedding.text", buildExactRequest({
+            cell: {
+              case_id: "t1.config.cloud_update_dynamic_catalog.v1",
+              provider_driver: cloudInventoryV1.provider_driver,
+              provider_instance: cloudProviderName,
+              exact_model: String(routedV1.selected_exact_model),
+              provider_model_id: "text-embedding-3-large",
+              api_type: "embedding.text",
+              method: "embedding.text",
+              baseline_status: "active",
+              input_kinds: ["text"],
+              output_kinds: ["embedding"],
+              source_urls: [],
+            },
+            runId,
+            fixtures: {},
+          })) as AiMethodResponse;
           await terminal(session, initialV1, input.timeoutMs);
         },
       });
@@ -2786,14 +2989,18 @@ async function runCases(
       await waitCloudUpdateConverged(cloudAdmin, revisionV2, input.timeoutMs);
       const cloudInventoryV2 = inventories(await session.aicc.call("models.list", {}))
         .find((inventory) => inventory.provider_instance_name === cloudProviderName);
-      const gptV2 = cloudInventoryV2?.models.find((model) => model.provider_model_id === "gpt-5.6");
-      if (!gptV2?.logical_mounts.includes(CLOUD_TEST_MOUNT_V2) || gptV2.logical_mounts.includes(CLOUD_TEST_MOUNT_V1)) {
+      const embeddingV2 = cloudInventoryV2?.models.find((model) =>
+        model.provider_model_id === "text-embedding-3-large"
+      );
+      if (!embeddingV2?.logical_mounts.includes(CLOUD_TEST_MOUNT_V2) || embeddingV2.logical_mounts.includes(CLOUD_TEST_MOUNT_V1)) {
         throw new Error("V2 cloud modification did not replace the V1 logical mount");
       }
       if (!cloudInventoryV2?.models.some((model) =>
         model.provider_model_id === "text-embedding-3-small" && model.api_types.includes("embedding.text")
       )) {
-        throw new Error("V2 cloud addition did not restore text-embedding-3-small");
+        throw new Error(
+          `V2 cloud addition did not restore text-embedding-3-small: ${JSON.stringify(cloudInventoryV2)}`,
+        );
       }
       const catalogV2 = await session.aicc.call("provider.catalog", {}) as {
         providers?: Array<Record<string, unknown>>;
@@ -2813,7 +3020,7 @@ async function runCases(
         execute: async () => {
           const routedV2 = await session.aicc.call("route.resolve", {
             request_id: `${runId}:cloud-update-v2-route`,
-            api_type: "llm",
+            api_type: "embedding.text",
             logical_model: CLOUD_TEST_MOUNT_V2,
             requirements: {},
             disable: {},
@@ -2822,12 +3029,23 @@ async function runCases(
           if (routedV2.provider_instance_name !== cloudProviderName || typeof routedV2.selected_exact_model !== "string") {
             throw new Error(`V2 cloud mount did not route to the dynamic Provider: ${JSON.stringify(routedV2)}`);
           }
-          const initialV2 = await session.aicc.call("chat.completions.create", {
-            exact_model: routedV2.selected_exact_model,
-            messages: [{ role: "user", content: [{ type: "text", text: "Return BUCKYOS-AICC-4827." }] }],
-            max_output_tokens: 32,
-            idempotency_key: `${runId}:cloud-update-v2-call`,
-          }) as AiMethodResponse;
+          const initialV2 = await callInference(session.aicc, "embedding.text", buildExactRequest({
+            cell: {
+              case_id: "t1.config.cloud_update_dynamic_catalog.v2",
+              provider_driver: cloudInventoryV2.provider_driver,
+              provider_instance: cloudProviderName,
+              exact_model: String(routedV2.selected_exact_model),
+              provider_model_id: "text-embedding-3-large",
+              api_type: "embedding.text",
+              method: "embedding.text",
+              baseline_status: "active",
+              input_kinds: ["text"],
+              output_kinds: ["embedding"],
+              source_urls: [],
+            },
+            runId,
+            fixtures: {},
+          })) as AiMethodResponse;
           await terminal(session, initialV2, input.timeoutMs);
         },
       });
@@ -2849,6 +3067,12 @@ async function runCases(
       }
       if (fixture) {
         try {
+          if (!cloudCatalogActive) {
+            const view = await cloudAdmin.call("driver_metadata_update.get", {}) as {
+              active_revision?: unknown;
+            };
+            cloudCatalogActive = view.active_revision === revisionV1 || view.active_revision === revisionV2;
+          }
           if (cloudCatalogActive) {
             const cleanupRelease = await fixture.publish({
               revisionSeq: cleanupRevision,

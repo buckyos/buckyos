@@ -32,6 +32,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
@@ -46,9 +47,11 @@ export type ProtocolErrorFixture = {
 export type ProviderProtocolContract = {
   id: string;
   protocol_adapter_id: string;
+  error_fixture_key?: string;
   base_contract_id?: string;
   api_version: string;
   api_types: string[];
+  variant_api_types?: string[];
   operation: string;
   http_method: string;
   path: string;
@@ -56,6 +59,7 @@ export type ProviderProtocolContract = {
   required_headers?: Record<string, string>;
   content_type: string;
   required_body_fields: string[];
+  required_body_fields_by_api_type?: Record<string, string[]>;
   allowed_body_fields: string[];
   body_field_types: Record<
     string,
@@ -81,8 +85,11 @@ export type ProviderProtocolContract = {
   async_protocol?:
     | "fal_queue"
     | "minimax_video"
+    | "minimax_video_v2"
     | "google_lro"
-    | "openai_video";
+    | "openai_video"
+    | "glm_video"
+    | "doubao_video";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -91,6 +98,7 @@ export type ProviderProtocolContract = {
   }>;
   success_content_type?: string;
   success_fixture?: Record<string, unknown>;
+  success_chunk_fixtures?: Array<Record<string, unknown>>;
   async_result_fixture?: Record<string, unknown>;
   success_fixture_base64?: string;
   provider_artifact_identity?: {
@@ -112,6 +120,7 @@ export type ProviderProtocolCatalog = {
     provider_driver: string;
     provider_profile_id: string;
     endpoint_path: string;
+    operation_endpoint_paths?: Record<string, string>;
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
@@ -196,6 +205,20 @@ export function validateProviderProtocolCatalog(
     ) {
       throw new Error(`${driver}.endpoint_path must be empty or start with /`);
     }
+    if (provider.operation_endpoint_paths !== undefined) {
+      const paths = object(
+        provider.operation_endpoint_paths,
+        `${driver}.operation_endpoint_paths`,
+      );
+      for (const [operation, path] of Object.entries(paths)) {
+        nonEmptyString(operation, `${driver}.operation_endpoint_paths operation`);
+        if (typeof path !== "string" || !path.startsWith("/")) {
+          throw new Error(
+            `${driver}.operation_endpoint_paths.${operation} must start with /`,
+          );
+        }
+      }
+    }
     if (!["api_key", "bearer"].includes(String(provider.credential_type))) {
       throw new Error(`${driver}.credential_type is invalid`);
     }
@@ -219,7 +242,7 @@ export function validateProviderProtocolCatalog(
       nonEmptyString(apiType, `${driver}.test_model_ids key`);
       nonEmptyString(modelId, `${driver}.test_model_ids.${apiType}`);
     }
-    if (["openai", "claude", "google-gemini", "fal"].includes(driver)) {
+    if (provider.official_first_party_model_ids !== undefined) {
       const officialModelIds = object(
         provider.official_first_party_model_ids,
         `${driver}.official_first_party_model_ids`,
@@ -319,6 +342,9 @@ export function validateProviderProtocolCatalog(
           throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
         }
       }
+      if (contract.variant_api_types !== undefined) {
+        stringArray(contract.variant_api_types, `${id}.variant_api_types`);
+      }
       stringArray(contract.allowed_body_fields, `${id}.allowed_body_fields`);
       if (
         !Array.isArray(contract.required_body_fields) ||
@@ -339,6 +365,35 @@ export function validateProviderProtocolCatalog(
           throw new Error(
             `${id} required field ${required} has no type schema`,
           );
+        }
+      }
+      if (contract.required_body_fields_by_api_type !== undefined) {
+        const conditional = object(
+          contract.required_body_fields_by_api_type,
+          `${id}.required_body_fields_by_api_type`,
+        );
+        for (const [apiType, rawFields] of Object.entries(conditional)) {
+          if (!(contract.api_types as string[]).includes(apiType)) {
+            throw new Error(
+              `${id}.required_body_fields_by_api_type.${apiType} is not declared by the contract`,
+            );
+          }
+          const fields = stringArray(
+            rawFields,
+            `${id}.required_body_fields_by_api_type.${apiType}`,
+          );
+          for (const field of fields) {
+            if (!allowed.has(field)) {
+              throw new Error(
+                `${id} conditional required field ${field} is not allowed`,
+              );
+            }
+            if (!bodyFieldTypes[field]) {
+              throw new Error(
+                `${id} conditional required field ${field} has no type schema`,
+              );
+            }
+          }
         }
       }
       for (const [field, rawTypes] of Object.entries(bodyFieldTypes)) {
@@ -430,8 +485,12 @@ export function validateProviderProtocolCatalog(
           `${id}.provider_artifact_identity.id_fields`,
         );
         if (
-          returnsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType)) ||
-          acceptsApiTypes.some((apiType) => !(contract.api_types as string[]).includes(apiType))
+          returnsApiTypes.some((apiType) =>
+            !(contract.api_types as string[]).includes(apiType)
+          ) ||
+          acceptsApiTypes.some((apiType) =>
+            !(contract.api_types as string[]).includes(apiType)
+          )
         ) {
           throw new Error(
             `${id}.provider_artifact_identity api types must be declared by the contract`,
@@ -693,6 +752,7 @@ export function validateProviderAuxiliaryRequest(
 export function validateProviderRequest(
   contract: ProviderProtocolContract,
   request: CapturedProviderRequest,
+  apiType = contract.api_types[0],
 ): string[] {
   const errors: string[] = [];
   if (request.method.toUpperCase() !== contract.http_method.toUpperCase()) {
@@ -738,7 +798,11 @@ export function validateProviderRequest(
     return errors;
   }
   const body = request.body as Record<string, unknown>;
-  for (const field of contract.required_body_fields) {
+  const requiredFields = [
+    ...contract.required_body_fields,
+    ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
+  ];
+  for (const field of requiredFields) {
     if (body[field] === undefined || body[field] === null) {
       errors.push(`missing body field ${field}`);
     }
@@ -782,7 +846,7 @@ export function validateProviderRequest(
       } else errors.push("invalid System One question type");
     }
   }
-  validateNestedProviderBody(contract, body, errors);
+  validateNestedProviderBody(contract, body, errors, requiredFields, apiType);
   return errors;
 }
 
@@ -796,8 +860,10 @@ function validateNestedProviderBody(
   contract: ProviderProtocolContract,
   body: Record<string, unknown>,
   errors: string[],
+  requiredFields = contract.required_body_fields,
+  apiType?: string,
 ): void {
-  for (const field of contract.required_body_fields) {
+  for (const field of requiredFields) {
     if (typeof body[field] === "string" && !(body[field] as string).trim()) {
       errors.push(`body field ${field} must be a non-empty string`);
     }
@@ -888,6 +954,32 @@ function validateNestedProviderBody(
       errors.push(
         "body field content.parts must be a non-empty array of objects",
       );
+    }
+  }
+  if (contract.operation === "video_generation.v2.create") {
+    const content = Array.isArray(body.content) ? body.content : [];
+    const blocks = content.map(recordValue).filter(Boolean) as Array<
+      Record<string, unknown>
+    >;
+    if (
+      blocks.length !== content.length ||
+      !blocks.some((block) =>
+        block.type === "text" && typeof block.text === "string" &&
+        block.text.trim()
+      )
+    ) {
+      errors.push("MiniMax V2 video content requires a non-empty text block");
+    }
+    if (apiType === "video.img2video") {
+      const firstFrame = blocks.find((block) =>
+        block.type === "image_url" && block.role === "first_frame"
+      );
+      const imageUrl = recordValue(firstFrame?.image_url);
+      if (typeof imageUrl?.url !== "string" || !imageUrl.url.trim()) {
+        errors.push(
+          "MiniMax image-to-video content requires a first_frame image_url block",
+        );
+      }
     }
   }
   if (
@@ -1386,6 +1478,7 @@ export function validateProviderSuccessFixture(
   contract: ProviderProtocolContract,
 ): string[] {
   if (contract.success_fixture_base64) return [];
+  if (contract.success_chunk_fixtures?.length) return [];
   const fixture = recordValue(contract.success_fixture);
   if (!fixture) return ["fixture must be an object"];
   const errors: string[] = [];
@@ -1638,9 +1731,9 @@ export function buildT15Manifest(
               candidateContract.api_types.includes(apiType)
             )
           );
-          const crossContract = crossProvider?.contracts.find((candidateContract) =>
-            candidateContract.api_types.includes(apiType)
-          );
+          const crossContract = crossProvider?.contracts.find((
+            candidateContract,
+          ) => candidateContract.api_types.includes(apiType));
           if (crossProvider && crossContract) {
             cases.push({
               ...common,
@@ -1657,7 +1750,8 @@ export function buildT15Manifest(
               ],
               provider_driver: crossProvider.provider_driver,
               provider_instance: `t15-${crossProvider.provider_driver}`,
-              expected_provider_instance: `t15-${crossProvider.provider_driver}`,
+              expected_provider_instance:
+                `t15-${crossProvider.provider_driver}`,
               protocol_contract_id: crossContract.id,
               protocol_adapter_id: crossContract.protocol_adapter_id,
               provider_api_version: crossContract.api_version,
@@ -1722,8 +1816,11 @@ export function buildT15Manifest(
             response_fixture: `${contract.id}.async.failed`,
           } as AcceptanceCase);
           const terminalFailureScenarios =
-            contract.async_protocol === "google_lro" ||
-              contract.async_protocol === "minimax_video"
+              contract.async_protocol === "google_lro" ||
+              contract.async_protocol === "minimax_video" ||
+              contract.async_protocol === "minimax_video_v2" ||
+              contract.async_protocol === "glm_video" ||
+              contract.async_protocol === "doubao_video"
               ? ["async_poll_timeout"] as const
               : ["async_poll_timeout", "async_artifact_unavailable"] as const;
           for (const scenario of terminalFailureScenarios) {
@@ -1739,7 +1836,13 @@ export function buildT15Manifest(
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-                ? 1_500
+              ? contract.async_protocol === "google_lro" ||
+                    contract.async_protocol === "minimax_video" ||
+                    contract.async_protocol === "minimax_video_v2" ||
+                    contract.async_protocol === "glm_video" ||
+                    contract.async_protocol === "doubao_video"
+                  ? 3_500
+                  : 1_500
                 : common.timeout_ms,
             } as AcceptanceCase);
           }
@@ -1759,7 +1862,9 @@ export function buildT15Manifest(
         }
         for (
           const error of apiType === primaryApiType
-            ? catalog.error_fixtures[provider.provider_driver]
+            ? catalog.error_fixtures[
+              contract.error_fixture_key ?? provider.provider_driver
+            ]
             : []
         ) {
           cases.push({
@@ -1773,7 +1878,7 @@ export function buildT15Manifest(
             expected_task_status: "failed",
             expected_error_class: "provider_protocol_failed",
             response_fixture:
-              `${provider.provider_driver}.error.${error.scenario}`,
+              `${contract.error_fixture_key ?? provider.provider_driver}.error.${error.scenario}`,
             expected_aicc_error_code: "provider_error",
             expected_provider_error_code: providerErrorCode(error),
             expected_retriable: providerErrorRetriable(error),
@@ -1899,7 +2004,7 @@ export function buildT15Manifest(
       } as AcceptanceCase);
     }
   }
-  const customDrivers = new Set(["openai", "claude", "google-gemini", "fal"]);
+  const customDrivers = new Set(["openai", "claude", "google-gemini"]);
   cases.push(
     ...cases.filter((testCase) =>
       customDrivers.has(testCase.provider_driver ?? "") &&
@@ -1927,12 +2032,9 @@ export function buildT15Manifest(
       variant.provider_driver,
       variant.contract_id,
     );
-    const openAiResponsesImage = variant.provider_driver === "openai" &&
-      variant.model.provider_model_id.startsWith("gpt-5") &&
-      ["image.txt2img", "image.img2img"].includes(variant.api_type) &&
-      contract.operation === "responses.create";
     if (
-      !contract.api_types.includes(variant.api_type) && !openAiResponsesImage
+      !contract.api_types.includes(variant.api_type) &&
+      !contract.variant_api_types?.includes(variant.api_type)
     ) {
       throw new Error(
         `${variant.contract_id} does not support ${variant.api_type}`,

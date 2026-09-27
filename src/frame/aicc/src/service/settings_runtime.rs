@@ -99,6 +99,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     region: provider.region.as_deref(),
                     workspace: provider.workspace.as_deref(),
                     account: provider.account.as_deref(),
+                    operation_base_urls: Some(&provider.operation_base_urls),
                 })
                 .map_err(|error| RuntimeError::Backend(error.to_string()))?;
             let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
@@ -116,6 +117,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                     provider_profile_id: provider.provider_profile_id.clone(),
                     protocol_adapter_id: provider.protocol_adapter_id.clone(),
                     base_url: connection.base_url,
+                    operation_base_urls: connection.operation_base_urls,
                     credential: CredentialReference {
                         reference: credential_ref.clone(),
                     },
@@ -337,8 +339,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                 let family = request.protocol_family_id.as_deref().unwrap_or_default();
                 let mut selected = None;
                 for candidate in builtins
-                    .codecs()
-                    .probe_candidates(family)
+                    .custom_provider_probe_candidates(family)
                     .map_err(to_rpc_error)?
                 {
                     let candidate_binding = builtins
@@ -357,6 +358,7 @@ impl ProviderValidator for RuntimeProviderValidator {
                             region: request.region.as_deref(),
                             workspace: request.workspace.as_deref(),
                             account: request.account.as_deref(),
+                            operation_base_urls: Some(&request.operation_base_urls),
                         })
                         .map_err(to_rpc_error)?;
                     let descriptor = candidate_binding
@@ -422,6 +424,7 @@ impl ProviderValidator for RuntimeProviderValidator {
             protocol_adapter_id: adapter.clone(),
             provider_rules_id: request.provider_rules_id,
             base_url: Some(request.base_url),
+            operation_base_urls: request.operation_base_urls,
             region: request.region,
             workspace: request.workspace,
             account: request.account,

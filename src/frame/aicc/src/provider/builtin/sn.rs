@@ -12,10 +12,14 @@ use super::super::{
 use crate::catalog::KnownProvider;
 #[cfg(test)]
 use crate::catalog::{CatalogKind, CurrentCatalogFile, ProviderRulesCatalog};
+#[cfg(test)]
 use crate::protocol::{
-    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecRegistration, CodecRegistry,
+    openai_responses_adapter, register_sn_openai_adapter, CodecRegistry,
+    OPENAI_RESPONSES_ADAPTER_ID,
+};
+use crate::protocol::{
     CredentialKind, HttpRequest, HttpResponse, HttpTransport, ProtocolResultValue,
-    ResolvedCredential, OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
+    ResolvedCredential, OPENAI_RESPONSES_OPERATION_ID, SN_OPENAI_ADAPTER_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::{generate_sn_user_device_token, login_sn_user_by_device_token};
@@ -32,8 +36,6 @@ use tokio::sync::{Mutex, RwLock};
 
 pub(crate) const SN_PROVIDER_PROFILE_ID: &str = "sn";
 pub(crate) const SN_DYNAMIC_LOGIN_PROFILE_ID: &str = "device_jwt";
-pub(crate) const SN_OPENAI_ADAPTER_ID: &str = "sn-openai";
-
 const SN_MODELS_RESPONSE_LIMIT: usize = 8 * 1024 * 1024;
 
 #[cfg(test)]
@@ -62,7 +64,9 @@ pub(crate) fn sn_connection_contract(auth_mode: ProviderAuthMode) -> ProviderCon
             ProviderAuthMode::ApiKey => fields.account.api_key,
             ProviderAuthMode::DynamicLogin => fields.account.dynamic_login,
         },
+        policy_region: None,
         region_base_urls: known.connection.region_base_urls,
+        operation_base_urls: known.connection.operation_base_urls,
     }
 }
 
@@ -108,6 +112,7 @@ pub(crate) fn resolve_sn_provider_instance_with_config(
             provider_profile_id: profile.provider_profile_id.clone(),
             protocol_adapter_id: profile.default_protocol_adapter_id.clone(),
             base_url: connection.base_url,
+            operation_base_urls: connection.operation_base_urls,
             credential,
             credential_kind: input.auth.credential_kind(),
             provider_rules_id,
@@ -198,34 +203,6 @@ pub(crate) fn sn_dialect_contract() -> SnDialectContract {
             .flat_map(|rule| rule.remove_api_types)
             .collect(),
     }
-}
-
-pub(crate) fn sn_openai_adapter() -> ProtocolResultValue<AdapterDescriptor> {
-    let (base, _) = openai_responses_adapter();
-    let responses = base
-        .operations
-        .get(OPENAI_RESPONSES_OPERATION_ID)
-        .cloned()
-        .ok_or_else(|| {
-            crate::protocol::ProtocolError::invalid_configuration(
-                "OpenAI Responses operation is not registered",
-            )
-        })?;
-    Ok(AdapterDescriptor {
-        protocol_family_id: base.protocol_family_id,
-        protocol_adapter_id: SN_OPENAI_ADAPTER_ID.to_owned(),
-        interface_generation: base.interface_generation,
-        base_adapter_id: Some(OPENAI_RESPONSES_ADAPTER_ID.to_owned()),
-        status: AdapterStatus::Stable,
-        probe_priority: 200,
-        probe_path: None,
-        credential: crate::protocol::AdapterCredentialContract::bearer(),
-        operations: BTreeMap::from([(responses.operation_id.clone(), responses)]),
-    })
-}
-
-pub(crate) fn register_sn_openai_adapter(registry: &mut CodecRegistry) -> ProtocolResultValue<()> {
-    registry.register_derived(sn_openai_adapter()?, CodecRegistration::default())
 }
 
 #[async_trait]

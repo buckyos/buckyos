@@ -4,6 +4,7 @@ import {
   MOCK_PROVIDER_SCENARIOS,
   type MockProviderScenario as Scenario,
 } from "./mock_provider_contract.ts";
+import { decisionFixture } from "./decision.ts";
 
 type Json = null | boolean | number | string | Json[] | { [key: string]: Json };
 
@@ -205,7 +206,7 @@ function errorResponse(response: ServerResponse, scenario: Scenario): boolean {
   json(response, mapped[0], {
     error: {
       type: mapped[1],
-      code: `mock/${mapped[1]}`,
+      code: mapped[1],
       message: `deterministic ${mapped[1]} from AICC mock provider`,
     },
   });
@@ -474,6 +475,10 @@ async function providerResponse(
     });
     return;
   }
+  if (path === "/v1/systemone" && request.method === "POST") {
+    json(response, 200, structuredClone(decisionFixture.wire_response) as Json);
+    return;
+  }
   if (path === "/v1/models") {
     if (request.headers["anthropic-version"] || request.headers["x-api-key"]) {
       const minimax = !request.headers["anthropic-version"];
@@ -500,10 +505,12 @@ async function providerResponse(
         { id: "gpt-5.6", object: "model", owned_by: "mock" },
         { id: "gpt-5.3-codex", object: "model", owned_by: "mock" },
         { id: "text-embedding-3-small", object: "model", owned_by: "mock" },
+        { id: "text-embedding-3-large", object: "model", owned_by: "mock" },
         { id: "gpt-image-2", object: "model", owned_by: "mock" },
         { id: "gpt-transcribe", object: "model", owned_by: "mock" },
         { id: "gpt-4o-mini-tts", object: "model", owned_by: "mock" },
         { id: "gpt-5.6-luna-mock", object: "model", owned_by: "mock" },
+        { id: "vendor-unknown-mock", object: "model", owned_by: "mock" },
       ],
       has_more: false,
     });
@@ -590,7 +597,12 @@ async function providerResponse(
         mask: { format: "polygon", points: [[0.1, 0.1], [0.9, 0.1], [0.9, 0.9]] },
       }],
     });
-    const output: Json = serialized.includes("audio") || serialized.includes("speech")
+    const responseType = object(object(body)?.response_format ?? null)?.type;
+    const output: Json = responseType === "video"
+      ? { type: "video", id: `gemini-video-${state.calls}`, data: "bW9jay12aWRlbw==", mime_type: "video/mp4" }
+      : responseType === "image"
+      ? { type: "image", data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", mime_type: "image/png" }
+      : responseType === "audio" || serialized.includes("audio") || serialized.includes("speech")
       ? { type: "audio", data: "UklGRm1vY2stYXVkaW8tV0FWRQ==", mime_type: "audio/wav" }
       : { type: "text", text: structured };
     json(response, 200, {
@@ -717,6 +729,10 @@ async function providerResponse(
     json(response, 200, { status: operation.polls < 2 ? "IN_PROGRESS" : "COMPLETED" });
     return;
   }
+  if (/^\/fal-ai\/.+\/requests\/[^/]+\/cancel$/.test(path) && request.method === "PUT") {
+    json(response, 202, { status: "CANCELLATION_REQUESTED" });
+    return;
+  }
   if (/^\/fal-ai\/.+\/requests\/[^/]+$/.test(path)) {
     const mime = path.includes("video") ? "video/mp4" : path.includes("deepfilter") ? "audio/wav" : "image/png";
     const output = { url: `https://mock.invalid/output.${mime.split("/")[1]}`, content_type: mime };
@@ -779,7 +795,7 @@ const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const providerPath = url.pathname.replace(
-      /^\/instance-(?:a|b|openrouter|custom-(?:openai|claude|gemini))(?=\/)/,
+      /^\/instance-(?:a|b|openrouter|typesafe|custom-(?:openai|claude|gemini))(?=\/)/,
       "",
     );
     const body = request.method === "POST" ? await readJson(request) : null;
@@ -795,6 +811,18 @@ const server = createServer(async (request, response) => {
       body,
       scenario,
     });
+    if (
+      request.method === "GET" &&
+      /^\/instance-custom-(?:openai|claude|gemini)\/.*\/models$/.test(url.pathname)
+    ) {
+      json(response, 503, {
+        error: {
+          type: "mock_discovery_unavailable",
+          message: "custom Provider discovery intentionally uses its configured inventory fallback",
+        },
+      });
+      return;
+    }
     await providerResponse(request, response, providerPath, body, scenario);
   } catch (error) {
     state.errors += 1;

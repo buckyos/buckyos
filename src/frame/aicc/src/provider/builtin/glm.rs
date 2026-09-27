@@ -154,11 +154,13 @@ mod tests {
             .base_url,
             "https://open.bigmodel.cn/api/paas/v4"
         );
-        assert!(resolve_glm_connection(ProviderConnectionInput {
+        let unknown = resolve_glm_connection(ProviderConnectionInput {
             region: Some("unknown"),
             ..ProviderConnectionInput::default()
         })
-        .is_err());
+        .unwrap();
+        assert_eq!(unknown.base_url, "https://api.z.ai/api/paas/v4");
+        assert_eq!(unknown.region.as_deref(), Some("unknown"));
         assert_eq!(
             glm_known_provider().protocol_adapter_id,
             GLM_CHAT_ADAPTER_ID
@@ -166,8 +168,11 @@ mod tests {
         assert_eq!(glm_known_provider().discovery_behavior_id, "glm-models");
         assert_eq!(glm_profile().discovery_mode, DiscoveryMode::MachineApi);
         assert_eq!(
-            glm_provider_rules(5).patterns[0].operations["llm"],
-            OPENAI_CHAT_COMPLETIONS_OPERATION_ID
+            glm_provider_rules(5)
+                .patterns
+                .iter()
+                .find_map(|rule| rule.operations.get("llm")),
+            Some(&OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned())
         );
         assert!(glm_provider_rules(5)
             .static_inventory_models
@@ -183,6 +188,7 @@ mod tests {
             provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
             protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
             base_url: glm_known_provider().base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://glm".to_owned(),
             },
@@ -224,6 +230,8 @@ mod tests {
         let mut codecs = CodecRegistry::default();
         let (descriptor, registration) = openai_chat_completions_adapter();
         codecs.register_codecs(descriptor, registration).unwrap();
+        let (descriptor, registration) = crate::protocol::glm_media_adapter();
+        codecs.register_codecs(descriptor, registration).unwrap();
         let (descriptor, registration) = glm_chat_adapter();
         codecs.register_derived(descriptor, registration).unwrap();
         let discovery = ProviderDiscoverySnapshot {
@@ -248,6 +256,7 @@ mod tests {
                 provider_profile_id: GLM_PROVIDER_PROFILE_ID.to_owned(),
                 protocol_adapter_id: GLM_CHAT_ADAPTER_ID.to_owned(),
                 base_url: glm_known_provider().base_url,
+                operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {
                     reference: "secret://glm".to_owned(),
                 },

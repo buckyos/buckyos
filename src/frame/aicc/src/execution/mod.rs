@@ -1600,6 +1600,9 @@ impl ExecutionEngine {
         binding: PinnedProviderTask,
         output: ProtocolOutput,
     ) -> Result<ExecutionReceipt, AiccError> {
+        if let Err(error) = output.validate_canonical_type(binding.api_type) {
+            return self.finish_failure(task_id, error.into()).await;
+        }
         let finance_snapshot = match self
             .providers
             .completion_cost(&binding, &output)
@@ -1617,6 +1620,7 @@ impl ExecutionEngine {
             Ok(output) => output,
             Err(error) => return self.finish_failure(task_id, error).await,
         };
+        output.usage.cost = finance_snapshot.clone();
         output.cost = finance_snapshot.clone();
         let record = self.store.get_task(task_id).await?.ok_or_else(|| {
             aicc_error(

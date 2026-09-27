@@ -103,7 +103,13 @@ fn builtin_connection_contract(profile_id: &str) -> crate::provider::ProviderCon
         region: field_from_catalog(&known.connection.region),
         workspace: field_from_catalog(&known.connection.workspace),
         account: field_from_catalog(&known.connection.account),
+        policy_region: known
+            .connection
+            .policy_region
+            .as_ref()
+            .map(field_from_catalog),
         region_base_urls: known.connection.region_base_urls,
+        operation_base_urls: known.connection.operation_base_urls,
     }
 }
 
@@ -127,9 +133,11 @@ fn builtin_catalog_files(catalog_ids: &[&str]) -> Vec<crate::catalog::CurrentCat
         .collect()
 }
 
+#[cfg(test)]
+pub(crate) use crate::protocol::SN_OPENAI_ADAPTER_ID;
 use claude::CLAUDE_SPEC;
 #[allow(unused_imports)]
-pub(crate) use claude::{claude_discovery, claude_messages_adapter, CLAUDE_PROVIDER_PROFILE_ID};
+pub(crate) use claude::{claude_discovery, CLAUDE_PROVIDER_PROFILE_ID};
 #[allow(unused_imports)]
 pub(crate) use fal::FAL_PROVIDER_PROFILE_ID;
 #[allow(unused_imports)]
@@ -171,9 +179,9 @@ pub(crate) use registry::{
 };
 #[allow(unused_imports)]
 pub(crate) use sn::{
-    register_sn_openai_adapter, resolve_sn_provider_instance_with_config, SnCredentialBroker,
-    SnDiscovery, SnDynamicLoginResolver, SnProviderInstanceInput, SN_DYNAMIC_LOGIN_PROFILE_ID,
-    SN_OPENAI_ADAPTER_ID, SN_PROVIDER_PROFILE_ID,
+    resolve_sn_provider_instance_with_config, SnCredentialBroker, SnDiscovery,
+    SnDynamicLoginResolver, SnProviderInstanceInput, SN_DYNAMIC_LOGIN_PROFILE_ID,
+    SN_PROVIDER_PROFILE_ID,
 };
 
 #[cfg(test)]
@@ -219,6 +227,7 @@ mod wp08d_tests {
             provider_profile_id: profile.to_owned(),
             protocol_adapter_id: adapter.to_owned(),
             base_url: "https://example.test/v1".to_owned(),
+            operation_base_urls: Default::default(),
             credential: CredentialReference {
                 reference: format!("secret://{profile}"),
             },
@@ -296,6 +305,8 @@ mod wp08d_tests {
         codecs.register_codecs(base, registration).unwrap();
         let (base, registration) = crate::protocol::openai_responses_adapter();
         codecs.register_codecs(base, registration).unwrap();
+        let (media, registration) = crate::protocol::glm_media_adapter();
+        codecs.register_codecs(media, registration).unwrap();
         for (descriptor, registration) in [
             openrouter_responses_adapter(),
             kimi_chat_adapter(),
@@ -344,14 +355,12 @@ mod wp08d_tests {
                 inventory.protocol_adapter_id,
                 profile.default_protocol_adapter_id
             );
-            assert!(!inventory.models.is_empty());
-            let main = inventory
+            let discovered = inventory
                 .models
                 .iter()
-                .find(|model| model.operations.contains_key("llm"))
+                .find(|model| model.operations.get("llm") == Some(&expected_operation.to_owned()))
                 .unwrap();
-            assert_eq!(main.model_driver_id, expected_driver);
-            assert_eq!(main.operations["llm"], expected_operation);
+            assert_eq!(discovered.model_driver_id, expected_driver);
         }
     }
 

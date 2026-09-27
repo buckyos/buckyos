@@ -1,9 +1,8 @@
 use super::{
-    openai_responses_adapter, AdapterDescriptor, AdapterStatus, CodecCall, CodecInput,
-    CodecRegistration, ExecutionMode, HttpRequest, HttpResponse, OperationCodec,
-    OperationDescriptor, ProtocolError, ProtocolEvent, ProtocolExecution, ProtocolOutput,
-    ProtocolResultValue, ProtocolStream, StreamingHttpResponse, OPENAI_RESPONSES_ADAPTER_ID,
-    OPENAI_RESPONSES_OPERATION_ID,
+    AdapterDescriptor, AdapterStatus, CodecCall, CodecInput, CodecRegistration, ExecutionMode,
+    HttpRequest, HttpResponse, OperationCodec, OperationDescriptor, ProtocolError, ProtocolEvent,
+    ProtocolExecution, ProtocolOutput, ProtocolResultValue, ProtocolStream, StreamingHttpResponse,
+    OPENAI_RESPONSES_ADAPTER_ID, OPENAI_RESPONSES_OPERATION_ID,
 };
 use async_trait::async_trait;
 use buckyos_api::ApiType;
@@ -78,6 +77,7 @@ impl ResponsesDialectKind {
         }
     }
 
+    #[cfg(test)]
     fn provider_namespace(self) -> &'static str {
         match self {
             Self::DeepSeek => "deepseek",
@@ -103,103 +103,241 @@ pub(crate) fn openai_responses_compatible_adapters(
 pub(crate) fn responses_dialect_adapter(
     dialect: ResponsesDialectKind,
 ) -> ProtocolResultValue<(AdapterDescriptor, CodecRegistration)> {
-    let (base_descriptor, mut base_registration) = openai_responses_adapter();
+    let reported_cost_currency = (dialect == ResponsesDialectKind::OpenRouter).then_some("USD");
+    let (base_descriptor, base_registration) =
+        super::openai_responses::openai_responses_adapter_with_reported_cost_currency(
+            reported_cost_currency,
+        );
     let operation = base_descriptor
         .operations
         .get(OPENAI_RESPONSES_OPERATION_ID)
         .cloned()
         .ok_or_else(|| ProtocolError::invalid_configuration("Responses operation is missing"))?;
-    let codec_index = base_registration
+    let base_codecs = base_registration
         .operation_codecs
+        .into_iter()
+        .filter(|codec| codec.descriptor().operation_id == OPENAI_RESPONSES_OPERATION_ID)
+        .collect::<Vec<_>>();
+    if !base_codecs
         .iter()
-        .position(|codec| {
-            codec.descriptor().operation_id == OPENAI_RESPONSES_OPERATION_ID
-                && codec.api_type() == ApiType::Llm
-        })
-        .ok_or_else(|| ProtocolError::invalid_configuration("Responses LLM codec is missing"))?;
-    let base_codec = base_registration.operation_codecs.swap_remove(codec_index);
+        .any(|codec| codec.api_type() == ApiType::Llm)
+    {
+        return Err(ProtocolError::invalid_configuration(
+            "Responses LLM codec is missing",
+        ));
+    }
     let contract = dialect.contract();
-    let descriptor = AdapterDescriptor {
+    let mut descriptor = AdapterDescriptor {
         protocol_family_id: base_descriptor.protocol_family_id,
         protocol_adapter_id: contract.protocol_adapter_id.to_string(),
         interface_generation: "responses-v1".to_string(),
         base_adapter_id: Some(contract.base_adapter_id.to_string()),
+        component_adapter_ids: Vec::new(),
         status: AdapterStatus::Stable,
         probe_priority: 200,
         probe_path: None,
         credential: super::AdapterCredentialContract::bearer(),
         operations: BTreeMap::from([(operation.operation_id.clone(), operation.clone())]),
     };
-    let codec: Arc<dyn OperationCodec> = Arc::new(ResponsesDialectCodec {
-        dialect,
-        descriptor: operation,
-        base: base_codec,
-    });
-    Ok((
-        descriptor,
-        CodecRegistration {
-            operation_codecs: vec![codec],
-            native_task_codecs: Vec::new(),
-        },
-    ))
+    let strategy = dialect_strategy(dialect);
+    let mut registration = CodecRegistration {
+        operation_codecs: base_codecs
+            .into_iter()
+            .map(|base| {
+                Arc::new(ResponsesDialectCodec {
+                    dialect: strategy.clone(),
+                    descriptor: operation.clone(),
+                    api_type: base.api_type(),
+                    base,
+                }) as Arc<dyn OperationCodec>
+            })
+            .collect(),
+        native_task_codecs: Vec::new(),
+    };
+    let media = match dialect {
+        ResponsesDialectKind::Doubao => Some((
+            "doubao",
+            super::DOUBAO_MEDIA_ADAPTER_ID,
+            super::doubao_media::doubao_media_registration(),
+        )),
+        ResponsesDialectKind::Qwen => Some((
+            "qwen",
+            super::QWEN_MEDIA_ADAPTER_ID,
+            super::qwen_media::qwen_media_registration(),
+        )),
+        _ => None,
+    };
+    if let Some((family, component_id, (operations, media_registration))) = media {
+        descriptor.protocol_family_id = family.to_owned();
+        descriptor.component_adapter_ids = vec![
+            OPENAI_RESPONSES_ADAPTER_ID.to_owned(),
+            component_id.to_owned(),
+        ];
+        for operation in operations {
+            descriptor
+                .operations
+                .insert(operation.operation_id.clone(), operation);
+        }
+        registration
+            .operation_codecs
+            .extend(media_registration.operation_codecs);
+        registration
+            .native_task_codecs
+            .extend(media_registration.native_task_codecs);
+    }
+    if dialect == ResponsesDialectKind::Doubao {
+        let (operation, speech_registration) = super::doubao_speech::doubao_speech_registration();
+        descriptor
+            .component_adapter_ids
+            .push(super::doubao_speech::DOUBAO_SPEECH_ADAPTER_ID.to_owned());
+        descriptor
+            .operations
+            .insert(operation.operation_id.clone(), operation);
+        registration
+            .operation_codecs
+            .extend(speech_registration.operation_codecs);
+    }
+    Ok((descriptor, registration))
 }
 
 struct ResponsesDialectCodec {
-    dialect: ResponsesDialectKind,
+    dialect: Arc<dyn ResponsesDialectStrategy>,
     descriptor: OperationDescriptor,
+    api_type: ApiType,
     base: Arc<dyn OperationCodec>,
 }
 
-#[async_trait]
-impl OperationCodec for ResponsesDialectCodec {
-    fn descriptor(&self) -> &OperationDescriptor {
-        &self.descriptor
+#[derive(Default)]
+struct PreparedDialectRequest {
+    body_extensions: BTreeMap<String, Value>,
+    session_cache: Option<Value>,
+    enable_thinking: Option<Value>,
+}
+
+trait ResponsesDialectStrategy: Send + Sync {
+    fn provider_namespace(&self) -> &'static str;
+
+    fn prepare_parameters(
+        &self,
+        _parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest::default())
     }
 
-    fn api_type(&self) -> ApiType {
-        ApiType::Llm
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        request: HttpRequest,
+        _prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        Ok(request)
+    }
+}
+
+struct StandardDialect(&'static str);
+
+impl ResponsesDialectStrategy for StandardDialect {
+    fn provider_namespace(&self) -> &'static str {
+        self.0
+    }
+}
+
+struct DeepSeekDialect;
+
+impl ResponsesDialectStrategy for DeepSeekDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "deepseek"
     }
 
-    fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
-        BTreeSet::from([ExecutionMode::Immediate, ExecutionMode::Stream])
-    }
-
-    fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
-        let mut parameters = call.input.resolved_parameters.clone();
-        let openrouter_parameters = if self.dialect == ResponsesDialectKind::OpenRouter {
-            take_openrouter_parameters(&mut parameters)?
-        } else {
-            BTreeMap::new()
-        };
-        let session_cache = if self.dialect == ResponsesDialectKind::Qwen {
-            parameters.remove(QWEN_SESSION_CACHE_PARAMETER)
-        } else {
-            None
-        };
-        let enable_thinking = if self.dialect == ResponsesDialectKind::Qwen {
-            parameters.remove("enable_thinking")
-        } else {
-            None
-        };
-        if enable_thinking
-            .as_ref()
-            .is_some_and(|value| !value.is_boolean())
-        {
-            return Err(ProtocolError::invalid_request(
-                "enable_thinking must be a boolean",
-            ));
+    fn transform_request(
+        &self,
+        call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        _prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        let base = Url::parse(&call.context.base_url)
+            .map_err(|_| ProtocolError::invalid_configuration("DeepSeek base URL is invalid"))?;
+        if base.path().trim_matches('/').is_empty() {
+            let mut endpoint = base;
+            endpoint.set_path("/responses");
+            request.url = endpoint.to_string();
         }
-        let input = CodecInput {
-            canonical_request: call.input.canonical_request.clone(),
-            resolved_parameters: parameters,
+        Ok(request)
+    }
+}
+
+struct OpenRouterDialect;
+
+impl ResponsesDialectStrategy for OpenRouterDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "openrouter"
+    }
+
+    fn prepare_parameters(
+        &self,
+        parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest {
+            body_extensions: take_openrouter_parameters(parameters)?,
+            session_cache: None,
+            enable_thinking: None,
+        })
+    }
+
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        if prepared.body_extensions.is_empty() {
+            return Ok(request);
+        }
+        let super::HttpBody::Json(body) = &mut request.body else {
+            return Err(ProtocolError::invalid_configuration(
+                "OpenRouter Responses request body is not JSON",
+            ));
         };
-        let delegated = CodecCall {
-            api_type: call.api_type,
-            input: &input,
-            context: call.context,
-        };
-        let mut request = self.base.encode(&delegated)?;
-        if let Some(value) = enable_thinking {
+        let body = body.as_object_mut().ok_or_else(|| {
+            ProtocolError::invalid_configuration(
+                "OpenRouter Responses request body is not an object",
+            )
+        })?;
+        body.extend(prepared.body_extensions);
+        Ok(request)
+    }
+}
+
+struct QwenDialect;
+
+impl ResponsesDialectStrategy for QwenDialect {
+    fn provider_namespace(&self) -> &'static str {
+        "qwen"
+    }
+
+    fn prepare_parameters(
+        &self,
+        parameters: &mut BTreeMap<String, Value>,
+    ) -> ProtocolResultValue<PreparedDialectRequest> {
+        Ok(PreparedDialectRequest {
+            body_extensions: BTreeMap::new(),
+            session_cache: parameters.remove(QWEN_SESSION_CACHE_PARAMETER),
+            enable_thinking: parameters.remove("enable_thinking"),
+        })
+    }
+
+    fn transform_request(
+        &self,
+        _call: &CodecCall<'_>,
+        mut request: HttpRequest,
+        prepared: PreparedDialectRequest,
+    ) -> ProtocolResultValue<HttpRequest> {
+        if let Some(value) = prepared.enable_thinking {
+            if !value.is_boolean() {
+                return Err(ProtocolError::invalid_request(
+                    "enable_thinking must be a boolean",
+                ));
+            }
             let super::HttpBody::Json(body) = &mut request.body else {
                 return Err(ProtocolError::invalid_configuration(
                     "Qwen request body must be JSON",
@@ -207,30 +345,7 @@ impl OperationCodec for ResponsesDialectCodec {
             };
             body["enable_thinking"] = value;
         }
-        if !openrouter_parameters.is_empty() {
-            let super::HttpBody::Json(body) = &mut request.body else {
-                return Err(ProtocolError::invalid_configuration(
-                    "OpenRouter Responses request body is not JSON",
-                ));
-            };
-            let body = body.as_object_mut().ok_or_else(|| {
-                ProtocolError::invalid_configuration(
-                    "OpenRouter Responses request body is not an object",
-                )
-            })?;
-            body.extend(openrouter_parameters);
-        }
-        if self.dialect == ResponsesDialectKind::DeepSeek {
-            let base = Url::parse(&call.context.base_url).map_err(|_| {
-                ProtocolError::invalid_configuration("DeepSeek base URL is invalid")
-            })?;
-            if base.path().trim_matches('/').is_empty() {
-                let mut endpoint = base;
-                endpoint.set_path("/responses");
-                request.url = endpoint.to_string();
-            }
-        }
-        if let Some(enabled) = session_cache {
+        if let Some(enabled) = prepared.session_cache {
             let enabled = enabled.as_bool().ok_or_else(|| {
                 ProtocolError::invalid_request("Qwen session_cache must be a boolean")
             })?;
@@ -240,6 +355,46 @@ impl OperationCodec for ResponsesDialectCodec {
             );
         }
         Ok(request)
+    }
+}
+
+fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectStrategy> {
+    match dialect {
+        ResponsesDialectKind::DeepSeek => Arc::new(DeepSeekDialect),
+        ResponsesDialectKind::Doubao => Arc::new(StandardDialect("doubao")),
+        ResponsesDialectKind::OpenRouter => Arc::new(OpenRouterDialect),
+        ResponsesDialectKind::Qwen => Arc::new(QwenDialect),
+    }
+}
+
+#[async_trait]
+impl OperationCodec for ResponsesDialectCodec {
+    fn descriptor(&self) -> &OperationDescriptor {
+        &self.descriptor
+    }
+
+    fn api_type(&self) -> ApiType {
+        self.api_type
+    }
+
+    fn execution_modes(&self) -> BTreeSet<ExecutionMode> {
+        self.base.execution_modes()
+    }
+
+    fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest> {
+        let mut parameters = call.input.resolved_parameters.clone();
+        let prepared = self.dialect.prepare_parameters(&mut parameters)?;
+        let input = CodecInput {
+            canonical_request: call.input.canonical_request.clone(),
+            resolved_parameters: parameters,
+        };
+        let delegated = CodecCall {
+            api_type: call.api_type,
+            input: &input,
+            context: call.context,
+        };
+        let request = self.base.encode(&delegated)?;
+        self.dialect.transform_request(call, request, prepared)
     }
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
@@ -364,7 +519,10 @@ fn rewrite_value_namespace(value: &mut Value, namespace: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::{CodecContext, CodecLimits, CodecRegistry, HttpBody, ResolvedCredential};
+    use crate::protocol::{
+        openai_responses_adapter, CodecContext, CodecLimits, CodecRegistry, HttpBody,
+        ResolvedCredential,
+    };
     use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest};
     use reqwest::header::AUTHORIZATION;
     use serde_json::json;
@@ -411,7 +569,7 @@ mod tests {
     }
 
     #[test]
-    fn derived_adapters_declare_base_overrides_and_only_llm_operation() {
+    fn derived_adapters_declare_base_and_provider_media_components() {
         let adapters = openai_responses_compatible_adapters().unwrap();
         assert_eq!(adapters.len(), 3);
         for (descriptor, registration) in adapters {
@@ -419,12 +577,41 @@ mod tests {
                 descriptor.base_adapter_id.as_deref(),
                 Some(OPENAI_RESPONSES_ADAPTER_ID)
             );
-            assert_eq!(descriptor.operations.len(), 1);
             assert!(descriptor
                 .operations
                 .contains_key(OPENAI_RESPONSES_OPERATION_ID));
-            assert_eq!(registration.operation_codecs.len(), 1);
-            assert!(registration.native_task_codecs.is_empty());
+            if descriptor.protocol_adapter_id == DEEPSEEK_RESPONSES_ADAPTER_ID {
+                assert_eq!(descriptor.operations.len(), 1);
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::Llm));
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::VisionOcr));
+                assert!(registration
+                    .operation_codecs
+                    .iter()
+                    .any(|codec| codec.api_type() == ApiType::VisionCaption));
+                assert!(registration.native_task_codecs.is_empty());
+            } else {
+                let expected_operations = match descriptor.protocol_adapter_id.as_str() {
+                    DOUBAO_RESPONSES_ADAPTER_ID => 5,
+                    QWEN_RESPONSES_ADAPTER_ID => 4,
+                    _ => 3,
+                };
+                assert_eq!(descriptor.operations.len(), expected_operations);
+                assert!(registration.operation_codecs.len() >= 1);
+                assert!(!registration.native_task_codecs.is_empty());
+                let expected_components =
+                    if descriptor.protocol_adapter_id == DOUBAO_RESPONSES_ADAPTER_ID {
+                        3
+                    } else {
+                        2
+                    };
+                assert_eq!(descriptor.component_adapter_ids.len(), expected_components);
+            }
         }
         assert_eq!(
             ResponsesDialectKind::DeepSeek.contract().override_points,
@@ -450,6 +637,13 @@ mod tests {
         registry
             .register_codecs(base_descriptor, base_registration)
             .unwrap();
+        for (descriptor, registration) in [
+            super::super::doubao_media_adapter(),
+            super::super::doubao_speech_adapter(),
+            super::super::qwen_media_adapter(),
+        ] {
+            registry.register_codecs(descriptor, registration).unwrap();
+        }
         for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
             registry.register_derived(descriptor, registration).unwrap();
         }
@@ -491,6 +685,31 @@ mod tests {
             assert_eq!(request.url, "https://provider.example/v1/responses");
             assert!(request.headers.contains_key(AUTHORIZATION));
         }
+    }
+
+    #[tokio::test]
+    async fn openrouter_assigns_usd_to_reported_numeric_cost() {
+        let (_, registration) =
+            responses_dialect_adapter(ResponsesDialectKind::OpenRouter).unwrap();
+        let response = HttpResponse {
+            status: reqwest::StatusCode::OK,
+            headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(
+                br#"{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok","annotations":[]}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2,"cost":0.001}}"#,
+            ),
+            request_id: "request-1".into(),
+            retry_after: None,
+        };
+        let ProtocolExecution::Immediate(output) = registration.operation_codecs[0]
+            .decode(response)
+            .await
+            .unwrap()
+        else {
+            panic!("expected immediate response")
+        };
+        let cost = output.usage.unwrap().cost.unwrap();
+        assert_eq!(cost.amount, 0.001);
+        assert_eq!(cost.currency, "USD");
     }
 
     #[test]

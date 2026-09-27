@@ -26,7 +26,7 @@ Pricing、tier、time-window 支持上述独立费率。非零维度缺费率、
 
 ## 核验的数据与来源
 
-以下来源核对于 2026-09-25；静态价格是普通按量渠道价，按 token 原始单位存储。未确认/不能准确表达的条件不填价。
+以下 main 分支新增或修订的数据来源核对于 2026-09-25；静态价格是普通按量渠道价，按 token 原始单位存储。未确认/不能准确表达的新价格不填入已核验规则。
 
 | Provider | 本次写入/修订 | 官方来源 |
 | --- | --- | --- |
@@ -38,6 +38,8 @@ Pricing、tier、time-window 支持上述独立费率。非零维度缺费率、
 | GLM | 核对既有价格并补来源，只用于 china 区域；ASR 改为官方 token 费率 | [价格](https://docs.bigmodel.cn/cn/guide/start/pricing)、[thinking](https://docs.bigmodel.cn/cn/guide/capabilities/thinking) |
 | Qwen/Kimi | 按 supported_efforts 精确映射；Qwen enable_thinking，Kimi thinking.type | [Qwen Responses](https://docs.qwencloud.com/api-reference/chat/openai-responses)、[Kimi](https://platform.kimi.com/docs/api/chat) |
 | OpenRouter/FAL | OpenRouter 保留动态 token 价；FAL discovery 查询带账户认证的单位报价 | [OpenRouter models](https://openrouter.ai/api/v1/models)、[FAL pricing](https://fal.ai/docs/platform-apis/v1/models/pricing) |
+
+本分支 rebase 时将旧 Model Driver 中 10 个直属 Provider 的默认 `model_pricing` 迁移到对应 Provider Rules；无冲突的精确条目继续使用 `id`，模式选择器及需要让区域价格优先的 fallback 使用 `provider_model_id`。main 已核验的精确或带区域规则保持在前，旧默认价作为后置 fallback，重叠的全局精确价格不重复迁移。Cohere 当前没有直属 Provider，只通过 OpenRouter 的动态渠道价格使用，因此没有把 Cohere 原厂默认价写入 OpenRouter。
 
 Fable 5.1 的缓存读取价 0.25 USD/百万 token 与 Fable 5 的 1 USD/百万不同，官方当前表证实该差异，未强行拉齐。GLM-4.7、GLM-4.5-Air 的输入/输出双维分档当前单维 tiers 无法准确表达，撤下旧的不准确报价；当前官方表没有确认的其它旧价格也撤下。
 

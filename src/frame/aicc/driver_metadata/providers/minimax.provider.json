@@ -2,9 +2,15 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 4,
   "provider_profile_id": "minimax",
   "models": [
+    {
+      "id": "asr-1.0",
+      "operations": {
+        "audio.asr": "speech_to_text.create"
+      }
+    },
     {
       "id": "speech-2.8-hd",
       "operations": {
@@ -27,6 +33,20 @@
       }
     },
     {
+      "id": "MiniMax-H3",
+      "operations": {
+        "video.txt2video": "video_generation.v2.create",
+        "video.img2video": "video_generation.v2.create"
+      }
+    },
+    {
+      "id": "MiniMax-H3-Max",
+      "operations": {
+        "video.txt2video": "video_generation.v2.create",
+        "video.img2video": "video_generation.v2.create"
+      }
+    },
+    {
       "id": "MiniMax-Hailuo-02",
       "operations": {
         "video.txt2video": "video_generation.create",
@@ -44,7 +64,9 @@
     {
       "match": "MiniMax-M2*",
       "operations": {
-        "llm": "messages.create"
+        "llm": "messages.create",
+        "vision.ocr": "messages.create",
+        "vision.caption": "messages.create"
       },
       "request_rules": [
         {
@@ -276,6 +298,185 @@
       "match": {
         "provider_model_id": "image-01",
         "region": "global"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "MiniMax-M3"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 524288,
+              "input_token": 0.0000021,
+              "output_token": 0.0000084,
+              "cache_input_token": 4.2e-7
+            },
+            {
+              "up_to": null,
+              "input_token": 0.0000042,
+              "output_token": 0.0000168,
+              "cache_input_token": 8.4e-7
+            }
+          ]
+        }
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "MiniMax-M2.7"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "input_token": 0.0000021,
+        "cache_input_token": 4.2e-7,
+        "output_token": 0.0000084
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "MiniMax-M2.7-highspeed"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "input_token": 0.0000042,
+        "cache_input_token": 4.2e-7,
+        "output_token": 0.0000168
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "speech-2.8-hd"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.00035,
+        "unit": "character"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "speech-2.8-turbo"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.0002,
+        "unit": "character"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "asr-1.0"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.0006944444444444445,
+        "unit": "audio_second"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "image-01"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.025,
+        "unit": "image"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "image-01-live"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.025,
+        "unit": "image"
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "MiniMax-H3"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.5,
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["2K", "2k"] },
+            "amount": 0.8,
+            "unit": "video_second"
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "MiniMax-H3-Max"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "amount": 0.5,
+        "unit": "video_second",
+        "rules": [
+          {
+            "when": { "/resolution": ["480P", "480p"] },
+            "amount": 0.33,
+            "unit": "video_second"
+          }
+        ]
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "minimax-m3"
+      },
+      "pricing": {
+        "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "tiers": {
+          "dimension": "input_tokens",
+          "mode": "volume",
+          "steps": [
+            {
+              "up_to": 524288,
+              "input_token": 0.0000021,
+              "output_token": 0.0000084,
+              "cache_input_token": 4.2e-7
+            },
+            {
+              "input_token": 0.0000042,
+              "output_token": 0.0000168,
+              "cache_input_token": 8.4e-7
+            }
+          ]
+        }
       }
     }
   ]

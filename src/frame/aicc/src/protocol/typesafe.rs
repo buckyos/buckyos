@@ -39,6 +39,7 @@ pub(crate) fn typesafe_adapter() -> (AdapterDescriptor, CodecRegistration) {
             protocol_adapter_id: "typesafe-systemone".into(),
             interface_generation: "v1".into(),
             base_adapter_id: None,
+            component_adapter_ids: Vec::new(),
             status: AdapterStatus::Stable,
             probe_priority: 100,
             probe_path: None,

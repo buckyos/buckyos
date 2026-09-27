@@ -63,7 +63,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 不使用 Provider family section、`instances[]` 包装、`provider_driver`、settings 中的 `endpoint`、section 级 token、`features` 或字段别名。`base_url` 是 Provider Instance settings 的正式字段；Profile 默认值只用于创建表单，不能覆盖实例显式配置。
 
-用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。需要指定已注册的历史/派生协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族。例如：
+用户通过管理 RPC 添加自定义 Provider 时可以只提交协议族、`base_url` 和凭据；registry 解析族默认 Adapter。自定义 Provider 表单只展示至少包含一个 `custom_provider_selectable=true` Adapter 的协议族，该值由当前 Provider Rules JSON 的 `custom_provider_adapters` 数组推导。需要指定已注册的历史协议时可同时提交 `protocol_adapter_id`，但它必须属于所给协议族且被该数组开放；GLM、MiniMax 等内置复合 Adapter 以及渠道派生 Adapter 默认不接受显式提交。例如：
 
 ```json
 {
@@ -101,19 +101,19 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 实例字段 `timeout_ms` 直接控制 HTTP 请求超时；`auto_sync_models=false` 只关闭周期同步，
 不跳过启动时的首次发现；`instance_rules` 是强类型对象，目前支持
-`exclude_models` 与 `origin_model_overrides`，未知字段会被拒绝。
+`exclude_models` 与 `model_driver_overrides`，未知字段会被拒绝。
 
 模型名转换的事实源按以下顺序处理：
 
 - OpenRouter 这类稳定的聚合渠道命名规则写入可更新的 Provider Rules `origin_mappings`；
 - 豆包方舟 `ep-*` 是用户实例自己的 endpoint ID，必须在该实例的
-  `instance_rules.origin_model_overrides` 中映射到官方模型 ID，不能写成全局映射；
+  `instance_rules.model_driver_overrides` 中映射到 `<model_driver_id>/<model_id>`，不能写成全局映射；
 - SN 的 `provider_actual_model_id` 来自网关动态 discovery，继续以动态响应为事实源；
 - 恒等命名的 provider 不配置映射。
 
 Provider 不提供价格或价格无法由现有 schema 精确表达时，价格保持未知。禁止为了让
-`finance_complete` 变为 true 而填写估算常量。OpenRouter `/models` 与响应 `usage.cost`
-当前按其官方约定使用 USD；响应给出的实际金额优先于本地估算。
+`finance_complete` 变为 true 而填写估算常量。动态目录价格必须携带币种；响应费用只有在
+同时携带金额和币种时才作为实际金额使用，否则回退到本地定价并保留财务完整性状态。
 各内置 Provider 的事实源和静态/动态/unknown 决策见
 [`../provider_pricing_sources.md`](../provider_pricing_sources.md)。
 

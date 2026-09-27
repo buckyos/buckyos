@@ -250,7 +250,7 @@ export function callInference(
     case "audio.tts": params = {
       ...common,
       ...input,
-      voice: input.voice ?? { voice_id: "alloy" },
+      voice: input.voice ?? { language: "en", gender: "neutral" },
     }; break;
     case "audio.asr": params = { ...common, ...input, audio: resources[0] }; break;
     case "audio.enhance": {

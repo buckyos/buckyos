@@ -144,7 +144,14 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
 
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogFile> {
-    super::builtin_catalog_files(&[DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID])
+    super::builtin_catalog_files(&[
+        DEEPSEEK_PROFILE_ID,
+        DOUBAO_PROFILE_ID,
+        QWEN_PROFILE_ID,
+        "glm",
+        "kimi",
+        "minimax",
+    ])
 }
 
 pub(crate) fn openai_compatible_models_discovery(
@@ -614,6 +621,7 @@ mod tests {
     use crate::settings::{MetadataFile, MetadataSource, MetadataSources};
     use reqwest::header::AUTHORIZATION;
     use serde_json::{json, Value};
+    use std::collections::BTreeMap;
 
     #[test]
     fn bundled_provider_and_model_catalogs_build_one_snapshot() {
@@ -635,7 +643,10 @@ mod tests {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             assert_eq!(
-                rules.patterns[0].operations.get("llm"),
+                rules
+                    .patterns
+                    .iter()
+                    .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
             );
             assert!(catalog.model_driver(profile_id).is_some());
@@ -697,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             providers[1].known_provider().base_url,
-            "https://ark.cn-beijing.volces.com/api/v3"
+            "https://ark.cn-beijing.volces.com/api/plan/v3"
         );
     }
 
@@ -738,18 +749,43 @@ mod tests {
     fn provider_rules_are_loaded_without_rust_generated_revisions() {
         for provider in openai_responses_compatible_builtin_providers() {
             let rules = provider.provider_rules(7);
-            assert_eq!(rules.revision_seq, 1);
-            assert!(rules.models.is_empty());
-            assert_eq!(rules.patterns.len(), 1);
             assert_eq!(
-                rules.patterns[0].operations.get("llm"),
+                rules.revision_seq,
+                match provider.profile.provider_profile_id.as_str() {
+                    DOUBAO_PROFILE_ID => 5,
+                    QWEN_PROFILE_ID => 4,
+                    _ => 3,
+                }
+            );
+            if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {
+                assert!(!rules.models.is_empty());
+            } else {
+                assert!(rules.models.is_empty());
+            }
+            let expected_patterns = match provider.profile.provider_profile_id.as_str() {
+                DOUBAO_PROFILE_ID => 3,
+                QWEN_PROFILE_ID => 8,
+                _ => 1,
+            };
+            assert_eq!(rules.patterns.len(), expected_patterns);
+            assert_eq!(
+                rules
+                    .patterns
+                    .iter()
+                    .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
             );
         }
         assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
             .remove
             .contains(&"/store".to_owned()));
-        assert!(qwen().provider_rules(99).patterns[0].request_rules[0]
+        let qwen_rules = qwen().provider_rules(99);
+        let qwen_llm_rule = qwen_rules
+            .patterns
+            .iter()
+            .find(|rule| rule.operations.contains_key("llm"))
+            .unwrap();
+        assert!(qwen_llm_rule.request_rules[0]
             .remove
             .contains(&"/background".to_owned()));
     }
@@ -804,6 +840,7 @@ mod tests {
             provider_profile_id: DEEPSEEK_PROFILE_ID.to_owned(),
             protocol_adapter_id: DEEPSEEK_RESPONSES_ADAPTER_ID.to_owned(),
             base_url: deepseek().known_provider().base_url,
+            operation_base_urls: BTreeMap::new(),
             credential: CredentialReference {
                 reference: "secret://deepseek/main".to_owned(),
             },
@@ -853,6 +890,13 @@ mod tests {
             codecs
                 .register_codecs(base_descriptor, base_registration)
                 .unwrap();
+            for (descriptor, registration) in [
+                crate::protocol::doubao_media_adapter(),
+                crate::protocol::doubao_speech_adapter(),
+                crate::protocol::qwen_media_adapter(),
+            ] {
+                codecs.register_codecs(descriptor, registration).unwrap();
+            }
             for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
                 codecs.register_derived(descriptor, registration).unwrap();
             }
@@ -866,6 +910,7 @@ mod tests {
                 provider_profile_id: profile_id.clone(),
                 protocol_adapter_id: provider.profile.default_protocol_adapter_id.clone(),
                 base_url,
+                operation_base_urls: BTreeMap::new(),
                 credential: CredentialReference {
                     reference: format!("secret://{profile_id}/main"),
                 },
@@ -878,6 +923,10 @@ mod tests {
                 auto_sync_models: true,
                 instance_rules: None,
             };
+            let mut models = vec![catalog_model(model_id.to_owned())];
+            if profile_id == DOUBAO_PROFILE_ID {
+                models.push(catalog_model("deepseek-v4-flash".to_owned()));
+            }
             let inventory = InventoryBuilder::build(
                 &provider.profile,
                 &instance,
@@ -885,20 +934,20 @@ mod tests {
                     revision: Some("fixture-v1".to_owned()),
                     discovered_at_ms: 1,
                     health: ProviderHealthState::Healthy,
-                    models: vec![catalog_model(model_id.to_owned())],
+                    models,
                 },
                 &catalog,
                 &codecs,
             )
             .unwrap();
             assert_eq!(inventory.provider_profile_id, profile_id);
-            assert_eq!(inventory.models.len(), 1);
-            assert_eq!(inventory.models[0].provider_model_id, model_id);
-            assert!(inventory.models[0].api_types.contains(&ApiType::Llm));
-            assert_eq!(
-                inventory.models[0].operations["llm"],
-                OPENAI_RESPONSES_OPERATION_ID
-            );
+            let model = inventory
+                .models
+                .iter()
+                .find(|model| model.provider_model_id == model_id)
+                .unwrap();
+            assert!(model.api_types.contains(&ApiType::Llm));
+            assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
         }
     }
 }
