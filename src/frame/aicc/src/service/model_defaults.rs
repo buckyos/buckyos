@@ -38,9 +38,9 @@
 //    - 每个声明的规格至少被一个功能目录引用，或在 metadata 中显式标记 direct_only
 //      （默认只按规格名或家族名直选），防止新增规格无人接入；显式配置将其接入任务时，
 //      须同时解除 direct_only，且不能通过 fallback 暗中接入。
-//    - 内置 metadata 中每个 api_types 含 llm 的有效模型规则恰好声明一个规格。
+//    - 内置 metadata 中每个 api_types 含 llm 的有效模型规则声明主规格及可选 additional_specs。
 //      按现有精确匹配优先、pattern 首个匹配的语义解析，再校验最终归属；允许规则覆盖，
-//      不允许最终结果未归档或同时归入多个规格；零库存时也检查每条 LLM 规则的声明。
+//      每个规格绑定独立声明 effort/weight，禁止重复规格；零库存时也检查每条绑定。
 //    - 家族 ID 不得与功能名、规格名重名。
 // 8. 显式 overlay 可以调整路由偏好；默认契约测试应验证零 Provider 时的空规格、
 //    接入后的动态填充、最后一个对应模型移除后的清理、静态结构保留，以及第 7 条校验。
@@ -50,7 +50,7 @@
 // LLM 的选择原则：
 // - 使用者优先按功能选择，其次按确定版本的家族名选择，最后直接选择规格。
 //   规格之间没有跨厂商的统一强弱刻度，由功能表按厂商逐个给权重。
-// - 功能到规格的权重表达跨厂商偏好；规格到家族的权重由 model-driver metadata 的 llm.weight
+// - 功能到规格的权重表达跨厂商偏好；规格到家族的权重由 llm.weight 或 additional_specs[].weight
 //   声明（如 gpt-5.6 = 56、gpt-5.5 = 55），只在同一规格内比较，不要求跨厂商统一。
 //   路由逐层展开：每个目录只展开本层可用 item 中权重最大的一组，并列全部展开；最高组没有
 //   可用候选时才尝试下一组；子目录独立重复该规则。两层权重不相乘、不跨分支比较，
@@ -117,9 +117,10 @@
 //   专用；这些是产品定位，不承诺跨代始终 Pro 胜过 Lite，也不表示全部开放权重。[B1]
 //
 // 当前仓库模型的目标归档（下方树覆盖本批模型；已写入 metadata 并落实第 7 条校验）：
-// - gpt：nano = gpt-5.6-luna、gpt-5.4-nano；mini = gpt-5.6-terra、gpt-5.4-mini；
-//   standard = gpt-5.5、gpt-5.4；pro = gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
-//   max = gpt-6-astra（新的旗舰规格）；codex = gpt-5.3-codex。
+// - gpt：nano = gpt-6-luna:none、gpt-5.6-luna、gpt-5.4-nano；
+//   mini = gpt-6-luna:low、gpt-5.6-terra、gpt-5.4-mini；standard = gpt-6-sol:medium、gpt-5.5、gpt-5.4；
+//   pro = gpt-6-sol:high、gpt-5.6/gpt-5.6-sol、gpt-5.5-pro、gpt-5.4-pro；
+//   max = gpt-6-astra:high；codex = gpt-6-sol:xhigh、gpt-5.3-codex。
 // - claude：haiku = claude-haiku-4-5；sonnet = claude-sonnet-5/4.6/4.5；
 //   opus = claude-opus-5.5/5/4.8/4.7/4.6/4.5；fable = claude-fable-5-1、claude-fable-5。
 // - gemini：flash-lite = 3.5/3.1/2.5-flash-lite；flash = 3.8/3.7/3.6/3.5-flash、

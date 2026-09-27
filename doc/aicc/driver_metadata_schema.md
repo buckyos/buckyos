@@ -1,6 +1,7 @@
 # AICC Model Driver Metadata Schema
 
-Implemented contract: Model Driver **2.0**, 2026-09-25. This is a breaking change.
+Implemented contract: Model Driver **2.1**, 2026-09-27. Revision 1 adds explicit
+additional specification bindings to the Model Driver v2 contract.
 Provider Rules, Known Provider and the system-config envelope keep their existing
 versions. Implementation, offline coverage and remaining Provider integration are
 recorded in [the implementation report](model_driver_v2_implementation.md).
@@ -17,22 +18,30 @@ registers Providers nor promises that a channel can execute every supported effo
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 2,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 2,
+  "revision_seq": 6,
   "required_features": [],
-  "specs": [{ "id": "gpt-pro", "direct_only": true }],
+  "specs": [
+    { "id": "gpt-pro", "direct_only": true },
+    { "id": "gpt-standard", "direct_only": true },
+    { "id": "gpt-codex", "direct_only": true }
+  ],
   "models": [{
-    "id": "gpt-5.6-sol",
+    "id": "gpt-6-sol",
     "api_types": ["llm"],
-    "capabilities": { "tool_call": true, "max_context_tokens": 200000 },
+    "capabilities": { "tool_call": true, "max_context_tokens": 1050000 },
     "llm": {
       "spec": "gpt-pro",
       "effort": "high",
+      "additional_specs": [
+        { "spec": "gpt-standard", "effort": "medium", "weight": 60 },
+        { "spec": "gpt-codex", "effort": "xhigh", "weight": 60 }
+      ],
       "default_effort": "medium",
-      "supported_efforts": ["none", "low", "medium", "high", "xhigh"],
+      "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
       "stability": "stable",
-      "weight": 56
+      "weight": 60
     }
   }],
   "patterns": [],
@@ -50,13 +59,41 @@ filename does not change the stable `model_driver_id` (Anthropic uses `claude`).
 | `specs[].id` | Unique normalized path segment; declares `llm.{id}` independently of inventory. |
 | `specs[].direct_only` | Defaults to false. A specification must have a task reference or explicitly set this flag. Task/fallback references cannot bypass it. |
 | `models[].id` | Official origin identity, preserved for matching. Provider channel IDs remain separate. |
-| `llm.spec` | Exactly one specification declared by the same Model Driver. |
+| `llm.spec` | Required primary specification declared by the same Model Driver. |
+| `llm.additional_specs` | Optional array of additional `{spec, effort, weight}` bindings; nonempty arrays require `schema_revision: 1`. All specs must be declared by the same driver and unique across primary and additional bindings. |
 | `llm.family_id` | Optional normalized segment used only to resolve family naming conflicts. |
-| `llm.effort` | Fixed effort of the specification's family reference. |
+| `llm.effort` | Fixed effort of the primary specification's family reference. Each additional binding declares its own fixed effort. |
 | `llm.default_effort` | Effort used when selecting the family without a suffix. |
-| `llm.supported_efforts` | Nonempty, unique list containing both selected efforts. |
+| `llm.supported_efforts` | Nonempty, unique list containing the default effort and every specification binding's effort. |
 | `llm.stability` | Required `stable` or `experimental`. Admission only: experimental families need explicit permission; stability adds no ranking. |
-| `llm.weight` | Required finite, non-negative default weight of the specification-to-family item (for example `gpt-5.6 = 56`, `gpt-5.5 = 55`). Compared only against other families of the same specification. |
+| `llm.weight` | Required finite, non-negative default weight of the primary specification-to-family item. Each additional binding requires its own weight under the same rules. Compared only against other families of the same specification. |
+
+Bindings share one official model identity and one family node. Each specification
+references that family once, with its declared effort and weight. Adding a binding
+does not change `default_effort` or create a Provider model. Missing channel efforts
+yield no candidate for that binding; lower-weight families may still be selected.
+If any binding is `direct_only`, fallback directly to the family or its physical
+instances remains forbidden. Explicit task references to other, non-direct specs
+remain valid.
+
+GPT-6 builtin routing uses the following project policy; OpenAI documents supported
+efforts and capabilities, not these BuckyOS specification assignments:
+
+| Specification | Official model | Fixed effort | Weight |
+| --- | --- | --- | ---: |
+| `gpt-nano` | `gpt-6-luna` | `none` | 60 |
+| `gpt-mini` | `gpt-6-luna` | `low` | 60 |
+| `gpt-standard` | `gpt-6-sol` | `medium` | 60 |
+| `gpt-pro` | `gpt-6-sol` | `high` | 60 |
+| `gpt-max` | `gpt-6-astra` | `high` | 60 |
+| `gpt-codex` | `gpt-6-sol` | `xhigh` | 60 |
+
+Luna provides the low-cost tiers, Sol covers general work and stronger reasoning,
+and Astra supplies the highest-capability tier. Codex uses Sol with a larger
+reasoning budget for complex coding. These are initial routing choices, not
+benchmark-derived equivalences. Sources: [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna),
+[Sol](https://developers.openai.com/api/docs/models/gpt-6-sol),
+[Astra](https://developers.openai.com/api/docs/models/gpt-6-astra).
 
 Efforts are `native`, `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`,
 and `thinking`. Each non-native effort derives the semantic variant identity
@@ -85,7 +122,7 @@ Provider failure and invalid overrides are terminal for that model. Unknown and
 ambiguous IDs produce diagnostics and never enter the routable inventory.
 
 Every effective, non-excluded LLM rule requires `llm`; non-LLM rules cannot carry
-it. LLM ownership cannot redirect to a different driver. Duplicate specifications,
+it. LLM ownership cannot redirect to a different driver. Duplicate specifications or bindings,
 invalid efforts, undeclared membership, invalid normalized names and name collisions
 fail catalog construction without Providers. Task references, `direct_only` and
 graph cycles are validated when assembling the tree.
@@ -104,7 +141,8 @@ Missing channel price remains unknown, never zero or an origin price estimate.
 
 ### Family weights and selection
 
-Model Driver metadata declares version preference directly as `llm.weight`. The
+Model Driver metadata declares version preference directly as `llm.weight` or
+`llm.additional_specs[].weight` for each binding. The
 Registry writes the declared value, unchanged, into the default
 specification-to-family item. Routing does not parse versions from model names
 or compare version tuples, so a model whose name has no recognizable version

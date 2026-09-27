@@ -130,7 +130,7 @@ fn validate_llm_semantics(
         return Err(CatalogBuildError::InvalidValue {
             owner: owner.into(),
             field: "llm",
-            reason: "each LLM model must belong to exactly one declared specification".into(),
+            reason: "each LLM model must declare specification bindings".into(),
         });
     }
     if let Some(llm) = &semantics.llm {
@@ -145,33 +145,54 @@ fn validate_llm_semantics(
                 reason: "LLM ownership must remain in the declaring driver".into(),
             });
         }
-        if !catalog.specs.iter().any(|spec| spec.id == llm.spec) {
-            return Err(CatalogBuildError::UnknownReference {
-                owner: owner.into(),
-                field: "llm.spec",
-                target: llm.spec.clone(),
-            });
-        }
         if let Some(family) = &llm.family_id {
             validate_segment(owner, "llm.family_id", family)?;
         }
-        if !llm.weight.is_finite() || llm.weight < 0.0 {
+        if catalog.schema_revision == 0 && !llm.additional_specs.is_empty() {
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.into(),
-                field: "llm.weight",
-                reason: "must be a finite non-negative number".into(),
+                field: "llm.additional_specs",
+                reason: "additional_specs requires schema_revision 1".into(),
             });
         }
         let efforts: BTreeSet<_> = llm.supported_efforts.iter().collect();
-        if efforts.len() != llm.supported_efforts.len()
-            || !efforts.contains(&llm.effort)
-            || !efforts.contains(&llm.default_effort)
-        {
+        if efforts.len() != llm.supported_efforts.len() || !efforts.contains(&llm.default_effort) {
             return Err(CatalogBuildError::InvalidValue {
                 owner: owner.into(),
                 field: "llm.supported_efforts",
-                reason: "requires unique efforts including effort and default_effort".into(),
+                reason: "requires unique efforts including default_effort".into(),
             });
+        }
+        let mut bound_specs = BTreeSet::new();
+        for (spec, effort, weight) in llm.spec_bindings() {
+            if !catalog.specs.iter().any(|declared| declared.id == spec) {
+                return Err(CatalogBuildError::UnknownReference {
+                    owner: owner.into(),
+                    field: "llm.spec_bindings.spec",
+                    target: spec.into(),
+                });
+            }
+            if !bound_specs.insert(spec) {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.into(),
+                    field: "llm.spec_bindings.spec",
+                    reason: format!("duplicate specification binding `{spec}`"),
+                });
+            }
+            if !efforts.contains(&effort) {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.into(),
+                    field: "llm.spec_bindings.effort",
+                    reason: format!("{spec}: effort {} is not supported", effort.as_str()),
+                });
+            }
+            if !weight.is_finite() || weight < 0.0 {
+                return Err(CatalogBuildError::InvalidValue {
+                    owner: owner.into(),
+                    field: "llm.spec_bindings.weight",
+                    reason: format!("{spec}: must be a finite non-negative number"),
+                });
+            }
         }
         if semantics
             .logical_mounts

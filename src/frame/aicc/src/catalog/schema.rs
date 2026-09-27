@@ -243,6 +243,8 @@ pub(crate) enum ModelStability {
 #[serde(deny_unknown_fields)]
 pub(crate) struct LlmSemantics {
     pub spec: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_specs: Vec<LlmSpecBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub family_id: Option<String>,
     pub effort: Effort,
@@ -250,6 +252,24 @@ pub(crate) struct LlmSemantics {
     pub supported_efforts: Vec<Effort>,
     pub stability: ModelStability,
     pub weight: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct LlmSpecBinding {
+    pub spec: String,
+    pub effort: Effort,
+    pub weight: f64,
+}
+
+impl LlmSemantics {
+    pub(crate) fn spec_bindings(&self) -> impl Iterator<Item = (&str, Effort, f64)> {
+        std::iter::once((self.spec.as_str(), self.effort, self.weight)).chain(
+            self.additional_specs
+                .iter()
+                .map(|binding| (binding.spec.as_str(), binding.effort, binding.weight)),
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

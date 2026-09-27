@@ -46,3 +46,27 @@ Deno.test('decision catalog is discoverable with zero inventory and filters by A
   assert(filterModelCatalog(decisionCatalog, { ...filters, available: true })[0].models[0].available, 'real inventory activates decision')
   assert(filterModelCatalog(decisionCatalog, { ...filters, query: 'llm' }).length === 0, 'decision does not match the LLM filter')
 })
+
+Deno.test('additional specifications remain searchable and retain their model members', () => {
+  const multiSpecCatalog: ModelCatalog = {
+    revision: 6,
+    vendors: [{
+      id: 'openai', revision: 6,
+      models: [{
+        id: 'gpt-6-sol', providers: [],
+        metadata: { api_types: ['llm'], llm: {
+          spec: 'gpt-pro', effort: 'high', default_effort: 'medium',
+          supported_efforts: ['none', 'low', 'medium', 'high', 'xhigh', 'max'], stability: 'stable',
+          additional_specs: [{ spec: 'gpt-codex', effort: 'xhigh', weight: 60 }],
+        } },
+      }],
+      specs: [{ id: 'gpt-codex', path: 'llm.gpt-codex', direct_only: false,
+        members: [{ model_id: 'gpt-6-sol', target: 'llm.gpt-6-sol:xhigh', weight: 60, active: false }],
+      }],
+    }],
+  }
+  const filtered = filterModelCatalog(multiSpecCatalog, { ...defaultModelFilters, query: 'GPT-CODEX' })
+  assert(filtered[0].models.length === 1 && filtered[0].models[0].id === 'gpt-6-sol', 'additional spec matches model')
+  assert(filtered[0].specs[0].members.length === 1, 'matching model stays in the spec')
+  assert(filtered[0].specs[0].members[0].target === 'llm.gpt-6-sol:xhigh', 'spec preserves its effort')
+})

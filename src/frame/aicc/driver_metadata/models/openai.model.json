@@ -1,9 +1,9 @@
 {
   "format": "buckyos.aicc.model-driver-catalog",
   "schema_version": 2,
-  "schema_revision": 0,
+  "schema_revision": 1,
   "model_driver_id": "openai",
-  "revision_seq": 3,
+  "revision_seq": 6,
   "specs": [
     {"id": "gpt-nano"},
     {"id": "gpt-mini"},
@@ -13,6 +13,26 @@
     {"id": "gpt-codex"}
   ],
   "models": [
+    {
+      "id": "gpt-6-luna",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "capabilities": {
+        "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000, "max_output_tokens": 128000
+      },
+      "llm": {
+        "spec": "gpt-nano",
+        "effort": "none",
+        "additional_specs": [
+          {"spec": "gpt-mini", "effort": "low", "weight": 60}
+        ],
+        "stability": "stable",
+        "weight": 60,
+        "default_effort": "medium",
+        "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+      }
+    },
     {
       "id": "gpt-5.6-luna",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
@@ -120,6 +140,27 @@
       }
     },
     {
+      "id": "gpt-6-sol",
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
+      "capabilities": {
+        "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
+        "reasoning": true, "vision": true, "image_generation": true,
+        "max_context_tokens": 1050000, "max_output_tokens": 128000
+      },
+      "llm": {
+        "spec": "gpt-pro",
+        "effort": "high",
+        "additional_specs": [
+          {"spec": "gpt-standard", "effort": "medium", "weight": 60},
+          {"spec": "gpt-codex", "effort": "xhigh", "weight": 60}
+        ],
+        "stability": "stable",
+        "weight": 60,
+        "default_effort": "medium",
+        "supported_efforts": ["none", "low", "medium", "high", "xhigh", "max"]
+      }
+    },
+    {
       "id": "gpt-5.6-sol",
       "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
@@ -192,10 +233,10 @@
     },
     {
       "id": "gpt-6-astra",
-      "api_types": ["llm", "vision.ocr", "vision.caption", "agent.computer_use"],
+      "api_types": ["llm", "vision.ocr", "vision.caption", "image.txt2img", "image.img2img", "agent.computer_use"],
       "capabilities": {
         "streaming": true, "tool_call": true, "json_schema": true, "web_search": true,
-        "reasoning": true, "vision": true,
+        "reasoning": true, "vision": true, "image_generation": true,
         "max_context_tokens": 1050000, "max_output_tokens": 128000
       },
       "llm": {

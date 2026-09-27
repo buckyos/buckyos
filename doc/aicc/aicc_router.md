@@ -247,9 +247,9 @@ llm                                      # 只作命名空间
         └── gpt-5.6-sol:reasoning-high@provider-b
 ```
 
-Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1～lv5。GPT 有 nano/mini/standard/pro/max 五个通用规格，另有 codex 专用规格。模型条目声明官方 ID、能力、唯一规格及进入该规格时的固定思考预设；完整字段见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
+Model Driver 按原厂组织，声明自己的规格；AICC 不预设统一 lv1～lv5。GPT 有 nano/mini/standard/pro/max 五个通用规格，另有 codex 专用规格。模型条目声明官方 ID、能力、主规格及可选的 `additional_specs`，每个绑定声明固定思考预设与权重；完整字段见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 
-家族路径通常是 `llm.{归一化官方模型ID}`，多个 Provider 的同模型实例在此汇集。规格到家族的默认 item 权重直接取自 metadata 的 `llm.weight`（见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)），家族到 instance 的默认权重为 `1.0`；两层都可被 system/session 的 `item_overrides` 只改权重，但不能改变成员归属。家族直选使用声明的默认预设且默认 strict，不升级到其他版本。
+家族路径通常是 `llm.{归一化官方模型ID}`，多个 Provider 的同模型实例在此汇集。规格到家族的默认 item 权重直接取自对应绑定的 `llm.weight` 或 `llm.additional_specs[].weight`（见 [Metadata 目标契约](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)），家族到 instance 的默认权重为 `1.0`；两层都可被 system/session 的 `item_overrides` 只改权重，但不能改变成员归属。家族直选使用声明的默认预设且默认 strict，不升级到其他版本。
 
 ### 6.2.1 LLM 选择顺序
 
@@ -380,7 +380,7 @@ LogicalModelDefinition
 
 LLM 装配在构建 `ModelRegistry` 时先创建 builtin 功能节点与 metadata 声明的全部规格，再从 metadata 与有效 inventory 的交集创建家族、固定预设和物理实例，最后按 factory/system/user/session 顺序叠加偏好并校验。零 inventory 时规格为空，但功能引用仍可见；最后一个家族实例被移除时，只清理动态节点及引用，保留规格和功能偏好。
 
-每个有效 LLM 规则恰好归入一个规格，规格必须被功能引用或显式标记 `direct_only`。`direct_only` 不得通过任务或 fallback 暗中接入；显式接入任务时须同时解除标记。规格引用、预设、版本顺序和名称冲突等校验不依赖库存数量；失败不得发布部分树。
+每个有效 LLM 规则声明主规格及可选 `additional_specs`，每个绑定的规格须唯一且被功能引用或显式标记 `direct_only`。`direct_only` 不得通过任务或 fallback 暗中接入；显式接入任务时须同时解除标记。规格引用、预设、版本顺序和名称冲突等校验不依赖库存数量；失败不得发布部分树。
 
 > 能力判断的真相源是 Model Driver 静态能力、Protocol Adapter operation 能力和 Provider discovery 动态能力的交集。请求只使用结构化 `ModelRequirement` / `ModelDisable`。
 

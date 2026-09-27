@@ -1351,19 +1351,21 @@ fn model_catalog_json(
             let specs = driver.specs.iter().map(|spec| {
                 let path = format!("llm.{}", spec.id);
                 let members = catalog.llm_models()
-                    .filter(|(owner, _, model)| *owner == driver.model_driver_id && model.semantics.spec == spec.id)
-                    .map(|(_, id, model)| {
-                        let target = format!("{}:{}", model.family, model.semantics.effort.as_str());
+                    .filter(|(owner, _, _)| *owner == driver.model_driver_id)
+                    .filter_map(|(_, id, model)| {
+                        let (_, effort, weight) = model.semantics.spec_bindings()
+                            .find(|(bound_spec, _, _)| *bound_spec == spec.id)?;
+                        let target = format!("{}:{}", model.family, effort.as_str());
                         let item = directory[&path].as_array().and_then(|items| {
                             items.iter().find(|item| item["target"].as_str() == Some(target.as_str()))
                         });
-                        json!({
+                        Some(json!({
                             "model_id": id,
                             "target": target,
-                            "weight": item.map(|item| item["weight"].clone()).unwrap_or(json!(model.semantics.weight)),
-                            "default_weight": model.semantics.weight,
+                            "weight": item.map(|item| item["weight"].clone()).unwrap_or(json!(weight)),
+                            "default_weight": weight,
                             "active": item.is_some(),
-                        })
+                        }))
                     }).collect::<Vec<_>>();
                 json!({"id": spec.id, "path": path, "direct_only": spec.direct_only, "members": members})
             }).collect::<Vec<_>>();

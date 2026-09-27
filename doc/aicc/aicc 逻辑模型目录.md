@@ -171,7 +171,7 @@ agent_runtime
 - **功能目录**如 `llm.plan`、`llm.chat`，通过带偏好权重的 item 引用厂商规格。功能目录不直接接收 inventory 的 exact model，也不使用通用 Auto/Hybrid 按能力自动吸入模型。
 - **规格目录**由每个原厂 Model Driver 的 `specs` 独立声明，路径为 `llm.{spec.id}`。规格名不带版本号；既可以是产品线，也可以是 code/highspeed 等专用规格，没有跨厂商统一档位。
 - **模型家族目录**通常为 `llm.{归一化官方模型ID}`，如 `llm.gpt-5-6-sol`；它是确定官方模型的可选择入口，也是多个物理 instance 的汇集处。官方 ID 中的小数点等分隔符归一为连字符，保留原始 ID 用于匹配/调用，并校验与功能、规格和其他家族的重名。
-- **固定思考预设**表示为 `llm.gpt-5-6-sol:high`；`:high` 是预设选择器，不是逻辑子目录。模型条目明确自己以哪个预设归入唯一规格，家族直选的默认预设另行声明。只能声明实际支持的强度；`none`、`thinking`、`native` 分别表示关闭、仅开关的开启、不可调原生行为。
+- **固定思考预设**表示为 `llm.gpt-5-6-sol:high`；`:high` 是预设选择器，不是逻辑子目录。模型条目通过主规格及 `additional_specs` 明确每个规格采用的预设和权重，家族直选的默认预设另行声明。只能声明实际支持的强度；`none`、`thinking`、`native` 分别表示关闭、仅开关的开启、不可调原生行为。
 - **物理 instance**沿用 exact model 身份，例如 `gpt-5.6-sol:reasoning-high@provider-a`。不同渠道的模型名先由 Provider Rules/discovery 归一到同一官方身份，才能共享家族。渠道不支持所需预设时跳过该实例，不能静默换成另一个思考强度。
 - **能力约束与偏好分开**：家族、预设和实例仍必须通过原任务/request 的能力、库存、Provider 状态及策略筛选；能力合格不等于可以绕过规格归属。
 

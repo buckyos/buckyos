@@ -33,7 +33,7 @@ uv run stop.py
 
 ### 单元测试命令
 ```bash
-cargo test
+cargo test -- --test-threads=1
 ```
 ### 单点测试(DV Test)命令
 

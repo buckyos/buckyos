@@ -117,7 +117,6 @@ mod tests {
     use crate::constants::DEFAULT_UPLOAD_TIMEOUT_SECS;
 
     #[test]
-    #[ignore]
     fn test_validate_upload_response_success_when_ret_is_zero() {
         let result = LogUploader::validate_upload_response(
             reqwest::StatusCode::OK,
@@ -127,7 +126,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_validate_upload_response_fails_when_status_is_not_success() {
         let result = LogUploader::validate_upload_response(
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
@@ -138,7 +136,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_validate_upload_response_fails_when_ret_is_non_zero() {
         let result = LogUploader::validate_upload_response(
             reqwest::StatusCode::OK,
@@ -149,19 +146,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_validate_upload_response_fails_when_response_body_is_invalid_json() {
         let result = LogUploader::validate_upload_response(reqwest::StatusCode::OK, "not-json");
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .contains("failed to parse upload response from server")
-        );
+        assert!(result
+            .unwrap_err()
+            .contains("failed to parse upload response from server"));
     }
 
     #[test]
-    #[ignore]
     fn test_effective_timeout_secs_uses_default_when_zero() {
         assert_eq!(
             LogUploader::effective_timeout_secs(0),
@@ -170,7 +163,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_effective_timeout_secs_keeps_non_zero_value() {
         assert_eq!(LogUploader::effective_timeout_secs(25), 25);
     }

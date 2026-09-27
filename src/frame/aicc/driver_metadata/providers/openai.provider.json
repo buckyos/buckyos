@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "provider_profile_id": "openai",
   "custom_provider_adapters": ["openai-responses", "openai-chat-completions"],
   "models": [
@@ -12,6 +12,8 @@
         "llm": "responses.create",
         "vision.ocr": "responses.create",
         "vision.caption": "responses.create",
+        "image.txt2img": "responses.create",
+        "image.img2img": "responses.create",
         "agent.computer_use": "responses.create"
       },
       "request_rules": [
@@ -62,6 +64,34 @@
           "remove": [
             "/temperature",
             "/top_p"
+          ]
+        }
+      ]
+    },
+    {
+      "match": {
+        "origin_model_id": ["gpt-6-sol", "gpt-6-luna"]
+      },
+      "operations": {
+        "llm": "responses.create",
+        "vision.ocr": "responses.create",
+        "vision.caption": "responses.create",
+        "image.txt2img": "responses.create",
+        "image.img2img": "responses.create",
+        "agent.computer_use": "responses.create"
+      },
+      "request_rules": [
+        {
+          "when": {
+            "/reasoning/effort": {
+              "not": "none"
+            }
+          },
+          "remove": [
+            "/temperature",
+            "/top_p",
+            "/logprobs",
+            "/top_logprobs"
           ]
         }
       ]
@@ -163,6 +193,8 @@
       "variant": "reasoning-none",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
           "gpt-5.6-terra",
@@ -185,6 +217,8 @@
       "variant": "reasoning-low",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
           "gpt-5.6-terra",
@@ -208,6 +242,8 @@
       "variant": "reasoning-medium",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
           "gpt-5.6-terra",
@@ -233,6 +269,8 @@
       "variant": "reasoning-high",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
           "gpt-5.6-terra",
@@ -258,6 +296,8 @@
       "variant": "reasoning-xhigh",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.4-nano",
           "gpt-5.6-terra",
@@ -283,6 +323,8 @@
       "variant": "reasoning-max",
       "match": {
         "origin_model_id": [
+          "gpt-6-luna",
+          "gpt-6-sol",
           "gpt-5.6-luna",
           "gpt-5.6-terra",
           "gpt-5.6-sol",

@@ -1050,6 +1050,35 @@ fn model_catalog_preserves_known_models_and_empty_specs_without_providers() {
         .find(|model| model["id"] == "qwen3.5-27b")
         .unwrap();
     assert_eq!(model["metadata"]["local_deployable"], true);
+    let openai = vendors
+        .iter()
+        .find(|vendor| vendor["id"] == "openai")
+        .unwrap();
+    for (spec, model, effort) in [
+        ("gpt-nano", "gpt-6-luna", "none"),
+        ("gpt-mini", "gpt-6-luna", "low"),
+        ("gpt-standard", "gpt-6-sol", "medium"),
+        ("gpt-pro", "gpt-6-sol", "high"),
+        ("gpt-max", "gpt-6-astra", "high"),
+        ("gpt-codex", "gpt-6-sol", "xhigh"),
+    ] {
+        let entry = openai["specs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == spec)
+            .unwrap();
+        let members = entry["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|member| member["model_id"] == model)
+            .collect::<Vec<_>>();
+        assert_eq!(members.len(), 1, "{spec}");
+        assert_eq!(members[0]["target"], format!("llm.{model}:{effort}"));
+        assert_eq!(members[0]["weight"], 60.0);
+        assert_eq!(members[0]["active"], false);
+    }
     assert!(vendors
         .iter()
         .flat_map(|vendor| vendor["specs"].as_array().unwrap())

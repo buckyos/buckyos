@@ -64,7 +64,7 @@ system-config 使用一个原子 value，避免读取到多文件的混合版本
 职责固定为：
 
 - Model Driver 声明厂商规格 `specs`，AICC 据此创建 `llm.{spec.id}`。例如 OpenAI driver 声明 `gpt-nano/mini/standard/pro/max` 五个通用规格，另有专用 `gpt-codex`；规格 ID 的产品线前缀不要求等于 driver ID `openai`。
-- 配置主体 `models[]` 定义官方 `origin_model_id`、API 类型和能力，并在 `llm` 中明确唯一规格、固定 `effort`、`default_effort`、`supported_efforts` 与稳定性。规格内版本顺序从官方模型 ID 推导，不逐模型填写 `version_order`。不按 `parameter_scale` 或名字前缀猜规格归属，不因思考强度变化将同一模型自动分入多个规格。
+- 配置主体 `models[]` 定义官方 `origin_model_id`、API 类型和能力，并在 `llm` 中明确主规格及可选 `additional_specs`，每个绑定独立声明固定 `effort` 和 `weight`；家族共用 `default_effort`、`supported_efforts` 与稳定性。规格内版本偏好采用绑定的显式权重，不从模型 ID 推导。不按 `parameter_scale` 或名字前缀猜规格归属；多规格必须逐项声明。
 - 家族默认是 `llm.{归一化官方模型ID}`，例如 `gpt-5.6-sol` 对应 `llm.gpt-5-6-sol`。原始 ID 保留用于匹配和调用；逻辑段归一化后须检查重名。同一家族是多个物理 instance 的汇集处，Provider 渠道 ID 先归一到官方身份，再挂入同一家族。
 - `llm.gpt-5-6-sol:high` 是家族的固定思考预设；其下引用 `gpt-5.6-sol:reasoning-high@provider-a` 等 exact model。`:high` 不是 `.high` 子目录，不能由请求改成其他强度。Provider 无法执行该预设时，该实例不成为此预设的候选。
 - `supported_efforts` 是模型支持强度的唯一声明，AICC 据此派生思考 variant 身份；Model Driver 不再维护重复的 `variants` 模型列表或参数模板。标准参数转换属于 Protocol Adapter，渠道差异与限制属于 Provider Rules；没有适用转换的实例不能执行该预设。库存生成和 lowering 共用有效渠道映射，并与模型 supported_efforts、已知渠道限制求交；无映射的 effort 产生独立诊断，不以其他强度替代。
@@ -88,7 +88,7 @@ LLM 装配顺序为：
 
 先过滤可执行候选，跳过空规格，再按功能权重选规格、在规格内按推导的版本值选最新合格稳定家族，最后调度物理实例。OpenAI 的 `5.6 -> 560`、`5.5 -> 550`、`6 -> 600`；同版本允许同值，并以归一化家族 ID 升序稳定排序，不依赖配置声明顺序。版本分段、扩展数字段和无版本模型的处理见 Metadata Schema，不把日期、参数量或产品后缀当版本号。实验版仅在无合格稳定版且策略允许时参与。两层顺序不相乘，Provider 数量不增加家族权重；规格耗尽再换下一个规格。
 
-inventory 消失只清理动态家族/预设及其引用，保留空规格、功能节点及偏好权重。官方 Provider 停供时保留模型定义，其他 Provider 仍可提供同一家族。每个规格须被功能引用或声明 `direct_only`，每个有效 LLM 模型规则须归档到唯一规格；零库存也校验这些声明。字段、JSON 示例、迁移边界和验收项统一见 [Metadata Schema](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
+inventory 消失只清理动态家族/预设及其引用，保留空规格、功能节点及偏好权重。官方 Provider 停供时保留模型定义，其他 Provider 仍可提供同一家族。每个规格须被功能引用或声明 `direct_only`，每个有效 LLM 模型规则须显式声明主规格与可选的额外规格绑定，绑定的规格不可重复；零库存也校验这些声明。字段、JSON 示例、迁移边界和验收项统一见 [Metadata Schema](driver_metadata_schema.md#llm-target-contract-vendor-specifications-and-model-families)。
 
 ## 4. Schema Definitions
 

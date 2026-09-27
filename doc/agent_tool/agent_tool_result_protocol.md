@@ -292,13 +292,16 @@ AgentToolResult.summary | AgentToolResult.title
   "summary": "multi-line compressed view",
 
   "output": "complete terminal text output",
-  "detail": {},
+  "detail": {}, // 通常不写
 
   "return_code": 0,
 
+  //下面的字段只有在pending的时候才有
   "task_id": "optional",
   "partial_output": "optional pending progress text",
+  //可以随意扩展
   "pending_reason": "long_running|user_approval|wait_for_install",
+  //预期多久后完成
   "check_after": 5
 }
 ```

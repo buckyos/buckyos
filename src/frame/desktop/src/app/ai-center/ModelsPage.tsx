@@ -209,8 +209,8 @@ function ModelDetails({ model, onClose }: { model: ModelCardView; onClose: () =>
   const facts = [
     [t('aiCenter.models.vendor'), vendorNames[model.vendorId] ?? model.vendorId],
     [t('aiCenter.models.apiTypes'), model.metadata.api_types?.join(', ') ?? '—'],
-    [t('aiCenter.models.specs'), llm?.spec ?? '—'],
-    [t('aiCenter.models.effort'), llm?.effort ?? '—'],
+    [t('aiCenter.models.specs'), llm ? [llm.spec, ...(llm.additional_specs ?? []).map((binding) => binding.spec)].join(', ') : '—'],
+    [t('aiCenter.models.effort'), llm ? [llm, ...(llm.additional_specs ?? [])].map((binding) => `${binding.spec}: ${binding.effort}`).join(', ') : '—'],
     [t('aiCenter.models.defaultEffort'), llm?.default_effort ?? '—'],
     [t('aiCenter.models.supportedEfforts'), llm?.supported_efforts.join(', ') ?? '—'],
   ]

@@ -257,7 +257,7 @@ mod tests {
             known.ui_hints["instance_fields"]["region"]["mode"],
             "unsupported"
         );
-        assert_eq!(rules.revision_seq, 3);
+        assert_eq!(rules.revision_seq, 4);
         assert_eq!(
             rules.patterns[0].operations["image.txt2img"],
             OPENAI_RESPONSES_OPERATION_ID
@@ -312,8 +312,8 @@ mod tests {
             catalog.known_provider("openai").unwrap().display_name,
             "OpenAI"
         );
-        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 3);
-        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 3);
+        assert_eq!(catalog.provider_rules("openai").unwrap().revision_seq, 4);
+        assert_eq!(catalog.model_driver("openai").unwrap().revision_seq, 6);
     }
 
     #[tokio::test]
@@ -389,19 +389,27 @@ mod tests {
                 revision: Some("models-v1".to_owned()),
                 discovered_at_ms: 1,
                 health: ProviderHealthState::Healthy,
-                models: ["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
-                    .into_iter()
-                    .map(|model_id| DiscoveredModel {
-                        provider_model_id: model_id.to_owned(),
-                        api_types: None,
-                        supported_features: None,
-                        unsupported_features: std::collections::BTreeSet::new(),
-                        remote_methods: None,
-                        availability: ModelAvailability::Available,
-                        deprecated: false,
-                        pricing: None,
-                    })
-                    .collect(),
+                models: [
+                    "gpt-5.6",
+                    "gpt-5.6-sol",
+                    "gpt-5.6-terra",
+                    "gpt-5.6-luna",
+                    "gpt-6-luna",
+                    "gpt-6-sol",
+                    "gpt-6-astra",
+                ]
+                .into_iter()
+                .map(|model_id| DiscoveredModel {
+                    provider_model_id: model_id.to_owned(),
+                    api_types: None,
+                    supported_features: None,
+                    unsupported_features: std::collections::BTreeSet::new(),
+                    remote_methods: None,
+                    availability: ModelAvailability::Available,
+                    deprecated: false,
+                    pricing: None,
+                })
+                .collect(),
             },
             &catalog,
             &registry,
@@ -409,7 +417,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(inventory.protocol_adapter_id, OPENAI_RESPONSES_ADAPTER_ID);
-        assert_eq!(inventory.models.len(), 4);
+        assert_eq!(inventory.models.len(), 7);
         let model = inventory
             .models
             .iter()
@@ -427,6 +435,30 @@ mod tests {
             .logical_mounts
             .iter()
             .all(|mount| !mount.starts_with("llm"))));
+        let models = crate::model::llm_tests::gpt_registry(&[inventory.as_model_inventory()]);
+        for (spec, origin, effort) in [
+            ("gpt-nano", "gpt-6-luna", "none"),
+            ("gpt-mini", "gpt-6-luna", "low"),
+            ("gpt-standard", "gpt-6-sol", "medium"),
+            ("gpt-pro", "gpt-6-sol", "high"),
+            ("gpt-max", "gpt-6-astra", "high"),
+            ("gpt-codex", "gpt-6-sol", "xhigh"),
+        ] {
+            let candidates = models
+                .resolve_candidates(&format!("llm.{spec}"), buckyos_api::ApiType::Llm)
+                .unwrap()
+                .candidates;
+            assert_eq!(candidates.len(), 1, "{spec}");
+            assert_eq!(
+                candidates[0].model.identity.origin_model_id, origin,
+                "{spec}"
+            );
+            assert_eq!(
+                candidates[0].model.exact_model.to_string(),
+                format!("{origin}:reasoning-{effort}@openai-main"),
+                "{spec}"
+            );
+        }
     }
 }
 

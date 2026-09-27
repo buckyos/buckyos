@@ -89,7 +89,7 @@ The transform is O(n + c log c), where `n` is the returned row count and `c` is 
 
 状态：首次读取显示 loading；首次失败显示 error/retry；后续刷新失败保留旧目录并显示错误；成功但零元数据显示空目录；筛选无结果有独立提示和清除入口。详情用 MUI Dialog 处理焦点、Esc、遮罩关闭和窄屏布局。本地部署入口当前禁用并解释后续开放，已存在本地 Provider 时展示已部署，不模拟安装进度。
 
-字段稳定性：身份、providers 关联和规格成员结构是前后端共同契约；metadata 字段可扩展；搜索状态和派生计数属于 UI 实现。新增 `local_deployable` 与 `models.list.catalog` 是本次用户授权的 breaking-change 数据定义更新，无旧结构回退，无新增依赖。
+字段稳定性：身份、providers 关联和规格成员结构是前后端共同契约；metadata 字段可扩展；`llm.additional_specs` 声明额外规格及对应 effort/weight，搜索和模型详情覆盖全部绑定，规格成员来自服务端目录；搜索状态和派生计数属于 UI 实现。新增 `local_deployable` 与 `models.list.catalog` 是本次用户授权的 breaking-change 数据定义更新，无旧结构回退，无新增依赖。
 
 Mock 契约：`mock/model-catalog.ts` 提供三个厂商、七个模型、一个空规格；populated 场景含云端、本地、未接入与可部署但未安装模型，empty 场景仍提供全部目录但所有模型无 Provider。Playwright 额外注入 loading、error/retry、空目录响应。
 

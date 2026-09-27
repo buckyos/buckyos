@@ -126,7 +126,7 @@ Run these from `buckyos/src`:
 | Inspect activation and runtime health | `uv run check.py` |
 | Stop local processes | `uv run stop.py` |
 | Debug Jarvis in the foreground | `./debug_jarvis.sh` |
-| Run Rust unit tests | `cargo test` |
+| Run Rust unit tests | `cargo test -- --test-threads=1` |
 
 To discover and run DV tests, use the repository root after starting the required development environment:
 

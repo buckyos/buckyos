@@ -289,6 +289,207 @@ fn z06_z08_invalid_catalogs_fail_without_inventory() {
 }
 
 #[test]
+fn additional_spec_bindings_validate_revision_membership_effort_and_weight() {
+    for (name, edit) in [
+        ("revision zero", 0),
+        ("duplicate primary spec", 1),
+        ("duplicate additional spec", 2),
+        ("unknown spec", 3),
+        ("unsupported effort", 4),
+        ("negative weight", 5),
+        ("missing weight", 6),
+    ] {
+        let mut value = openai_document();
+        let llm = &mut value["models"][0]["llm"];
+        match edit {
+            0 => value["schema_revision"] = json!(0),
+            1 => llm["additional_specs"][0]["spec"] = llm["spec"].clone(),
+            2 => {
+                let binding = llm["additional_specs"][0].clone();
+                llm["additional_specs"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(binding);
+            }
+            3 => llm["additional_specs"][0]["spec"] = json!("missing"),
+            4 => llm["additional_specs"][0]["effort"] = json!("native"),
+            5 => llm["additional_specs"][0]["weight"] = json!(-1),
+            _ => {
+                llm["additional_specs"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("weight");
+            }
+        }
+        let result = serde_json::from_value(value)
+            .map_err(|error| error.to_string())
+            .and_then(|document| compile(vec![document]).map_err(|error| error.to_string()));
+        assert!(result.is_err(), "{name}");
+    }
+}
+
+#[test]
+fn additional_spec_bindings_preserve_family_defaults_and_require_exact_efforts() {
+    let sol = inventory("openai", "gpt-6-sol", "sol", "a", &["medium", "high"]);
+    let luna = inventory("openai", "gpt-6-luna", "luna", "b", &["none"]);
+    let registry = gpt_registry(&[sol.clone(), luna.clone()]);
+    for (path, exact) in [
+        ("llm.gpt-6-sol", "sol:reasoning-medium@a"),
+        ("llm.gpt-standard", "sol:reasoning-medium@a"),
+        ("llm.gpt-pro", "sol:reasoning-high@a"),
+        ("llm.gpt-nano", "luna:reasoning-none@b"),
+    ] {
+        let result = registry.resolve_candidates(path, ApiType::Llm).unwrap();
+        assert_eq!(result.candidates.len(), 1, "{path}");
+        assert_eq!(result.candidates[0].model.exact_model.to_string(), exact);
+    }
+    for path in ["llm.gpt-mini", "llm.gpt-codex"] {
+        assert!(registry
+            .resolve_candidates(path, ApiType::Llm)
+            .unwrap()
+            .candidates
+            .is_empty());
+    }
+    let views = registry.logical_model_views();
+    assert_eq!(
+        views
+            .iter()
+            .filter(|node| node.path == "llm.gpt-6-sol")
+            .count(),
+        1
+    );
+    for spec in ["gpt-standard", "gpt-pro", "gpt-codex"] {
+        let node = views
+            .iter()
+            .find(|node| node.path == format!("llm.{spec}"))
+            .unwrap();
+        assert_eq!(node.items.len(), 1);
+        assert_eq!(node.items[0].default_weight, 60.0);
+    }
+    let legacy_codex = inventory("openai", "gpt-5.3-codex", "codex", "c", &["high"]);
+    let with_legacy = gpt_registry(&[sol, luna, legacy_codex]);
+    let codex = with_legacy
+        .resolve_candidates("llm.gpt-codex", ApiType::Llm)
+        .unwrap();
+    assert_eq!(codex.candidates.len(), 1);
+    assert_eq!(
+        codex.candidates[0].model.identity.origin_model_id,
+        "gpt-5.3-codex"
+    );
+    let empty = gpt_registry(&[]);
+    assert!(!empty
+        .logical_model_views()
+        .iter()
+        .any(|node| node.path == "llm.gpt-6-sol"));
+    for spec in ["gpt-standard", "gpt-pro", "gpt-codex"] {
+        assert!(empty
+            .logical_model_views()
+            .iter()
+            .find(|node| node.path == format!("llm.{spec}"))
+            .unwrap()
+            .items
+            .is_empty());
+    }
+}
+
+#[test]
+fn additional_spec_binding_weights_are_independent() {
+    let mut value = openai_document();
+    let sol = value["models"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|model| model["id"] == "gpt-6-sol")
+        .unwrap();
+    sol["llm"]["additional_specs"][0]["weight"] = json!(1);
+    let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
+    let stocks = [
+        inventory(
+            "openai",
+            "gpt-6-sol",
+            "sol",
+            "a",
+            &["medium", "high", "xhigh"],
+        ),
+        inventory("openai", "gpt-5.5", "standard", "b", &["medium"]),
+    ];
+    let registry = ModelRegistry::build(
+        &catalog,
+        &stocks,
+        vec![definition("llm.chat")],
+        RegistryLayers {
+            factory: Some(&gpt_overlay()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (spec, origin) in [
+        ("gpt-standard", "gpt-5.5"),
+        ("gpt-pro", "gpt-6-sol"),
+        ("gpt-codex", "gpt-6-sol"),
+    ] {
+        let result = registry
+            .resolve_candidates(&format!("llm.{spec}"), ApiType::Llm)
+            .unwrap();
+        assert_eq!(result.candidates.len(), 1);
+        assert_eq!(result.candidates[0].model.identity.origin_model_id, origin);
+    }
+}
+
+#[test]
+fn additional_direct_only_spec_cannot_be_bypassed_by_fallback() {
+    let mut value = openai_document();
+    value["specs"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|spec| spec["id"] == "gpt-mini")
+        .unwrap()["direct_only"] = json!(true);
+    let catalog = compile(vec![serde_json::from_value(value).unwrap()]).unwrap();
+    let stock = inventory("openai", "gpt-6-luna", "luna", "a", &["none", "low"]);
+    let mut overlay = gpt_overlay();
+    overlay
+        .logical_tree
+        .get_mut("llm.chat")
+        .unwrap()
+        .items
+        .as_mut()
+        .unwrap()
+        .retain(|item| item.target != "llm.gpt-mini");
+    ModelRegistry::build(
+        &catalog,
+        std::slice::from_ref(&stock),
+        vec![definition("llm.chat")],
+        RegistryLayers {
+            factory: Some(&overlay),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for (mode, target) in [
+        (AiccFallbackMode::TargetLogical, "llm.gpt-6-luna:low"),
+        (AiccFallbackMode::TargetExact, "luna:reasoning-low@a"),
+    ] {
+        let mut task = definition("llm.plan");
+        task.fallback = Some(AiccFallbackRule {
+            mode,
+            target: Some(target.into()),
+        });
+        let error = ModelRegistry::build(
+            &catalog,
+            std::slice::from_ref(&stock),
+            vec![definition("llm.chat"), task],
+            RegistryLayers {
+                factory: Some(&overlay),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("fallback bypasses direct_only"));
+    }
+}
+
+#[test]
 fn z07_specs_require_explicit_admission_and_direct_only_cannot_be_bypassed() {
     let mut value = openai_document();
     let document = serde_json::from_value(value.clone()).unwrap();
@@ -473,7 +674,13 @@ fn d07_d08_efforts_never_fabricate_channel_support_or_bypass_task_membership() {
 #[test]
 fn d04_metadata_weights_select_families_without_parsing_model_names() {
     let mut value = openai_document();
-    let template = value["models"][6].clone();
+    let template = value["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "gpt-5.6-sol")
+        .unwrap()
+        .clone();
     let models = [
         ("gpt-5.5", 55.0),
         ("gpt-5.6", 56.0),
@@ -611,7 +818,13 @@ fn family_instance_weights_accept_overrides_but_not_new_members() {
 #[test]
 fn finite_llm_patterns_preserve_exact_and_first_match_precedence() {
     let mut value = openai_document();
-    let exact = value["models"][6].clone();
+    let exact = value["models"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|model| model["id"] == "gpt-5.6-sol")
+        .unwrap()
+        .clone();
     let id = exact["id"].as_str().unwrap().to_owned();
     let mut pattern = exact.clone();
     pattern.as_object_mut().unwrap().remove("id");

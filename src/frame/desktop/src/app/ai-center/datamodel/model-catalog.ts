@@ -10,6 +10,7 @@ export interface CatalogModel {
     llm?: {
       spec: string
       effort: string
+      additional_specs?: { spec: string; effort: string; weight: number }[]
       default_effort: string
       supported_efforts: string[]
       stability: string
@@ -70,7 +71,9 @@ export function filterModelCatalog(catalog: ModelCatalog, filters: ModelFilters)
   return catalog.vendors.map((vendor) => {
     const vendorMatches = `${vendor.id} ${vendorNames[vendor.id] ?? ''}`.toLocaleLowerCase().includes(query)
     const models = vendor.models.map((model) => modelCard(model, vendor.id)).filter((model) => {
-      const matches = vendorMatches || [model.id, model.metadata.llm?.spec, ...(model.metadata.api_types ?? [])]
+      const matches = vendorMatches || [model.id, model.metadata.llm?.spec,
+        ...(model.metadata.llm?.additional_specs ?? []).map((binding) => binding.spec),
+        ...(model.metadata.api_types ?? [])]
         .some((value) => value?.toLocaleLowerCase().includes(query))
       return matches && (!filters.available || model.available) && (!filters.local || model.local)
         && (!filters.deployable || model.deployable)

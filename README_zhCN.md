@@ -125,7 +125,7 @@ uv run start.py
 | 检查激活状态与运行健康状况 | `uv run check.py` |
 | 停止本地进程 | `uv run stop.py` |
 | 在前台调试 Jarvis | `./debug_jarvis.sh` |
-| 运行 Rust 单元测试 | `cargo test` |
+| 运行 Rust 单元测试 | `cargo test -- --test-threads=1` |
 
 启动所需的开发环境后，在仓库根目录列出并运行 DV 测试：
 

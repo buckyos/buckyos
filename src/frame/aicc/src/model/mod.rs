@@ -983,19 +983,20 @@ impl ModelRegistry {
                     LogicalItemSource::DriverMetadataMount,
                 ));
             }
-            let spec = format!("llm.{}", family.semantics.spec);
-            let item = EffectiveItem::new(
-                family.family.clone(),
-                format!("{}:{}", family.family, family.semantics.effort.as_str()),
-                family.semantics.weight,
-                LogicalItemSource::DriverMetadataMount,
-            );
-            node.family = Some(family);
-            self.logical_nodes
-                .get_mut(&spec)
-                .expect("catalog validated spec")
-                .items
-                .push(item);
+            node.family = Some(family.clone());
+            for (spec, effort, weight) in family.semantics.spec_bindings() {
+                let item = EffectiveItem::new(
+                    family.family.clone(),
+                    format!("{}:{}", family.family, effort.as_str()),
+                    weight,
+                    LogicalItemSource::DriverMetadataMount,
+                );
+                self.logical_nodes
+                    .get_mut(&format!("llm.{spec}"))
+                    .expect("catalog validated spec")
+                    .items
+                    .push(item);
+            }
         }
     }
 
@@ -1058,10 +1059,10 @@ impl ModelRegistry {
                     else {
                         return Err(invalid(format!("{path}: unknown family {target}")));
                     };
-                    if path != &format!("llm.{}", family.semantics.spec)
-                        || target
-                            != &format!("{}:{}", family.family, family.semantics.effort.as_str())
-                    {
+                    if !family.semantics.spec_bindings().any(|(spec, effort, _)| {
+                        path == &format!("llm.{spec}")
+                            && target == &format!("{}:{}", family.family, effort.as_str())
+                    }) {
                         return Err(invalid(format!("{path}: specification membership and effort come from metadata: {target}")));
                     }
                 }
@@ -1094,7 +1095,11 @@ impl ModelRegistry {
                     .get(target.split(':').next().unwrap_or(target))
                     .and_then(|node| node.family.as_ref())
                 {
-                    if self.specs[&format!("llm.{}", family.semantics.spec)].1 {
+                    if family
+                        .semantics
+                        .spec_bindings()
+                        .any(|(spec, _, _)| self.specs[&format!("llm.{spec}")].1)
+                    {
                         return Err(invalid(format!(
                             "{path}: fallback bypasses direct_only via {target}"
                         )));
@@ -1106,7 +1111,10 @@ impl ModelRegistry {
                         .values()
                         .filter_map(|node| node.family.as_ref())
                     {
-                        if self.specs[&format!("llm.{}", family.semantics.spec)].1
+                        if family
+                            .semantics
+                            .spec_bindings()
+                            .any(|(spec, _, _)| self.specs[&format!("llm.{spec}")].1)
                             && family.model_driver_id == model.identity.model_driver_id
                             && family.origin_model_id == model.identity.origin_model_id
                         {
