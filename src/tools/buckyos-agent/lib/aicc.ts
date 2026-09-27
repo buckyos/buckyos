@@ -174,13 +174,13 @@ async function resolveExactModel<M extends TypedMethod>(
   if (opts.method === "decision.evaluate") {
     const actual = decisionRequirements(opts.request as TypedRequestMap["decision.evaluate"]).decision!;
     const requested = requirements.decision;
-    actual.question_types = [...new Set([...(actual.question_types ?? []), ...(requested?.question_types ?? [])])];
+    const questionTypes = [...new Set([...(actual.question_types ?? []), ...(requested?.question_types ?? [])])];
     actual.structured_state ||= requested?.structured_state ?? false;
     actual.structured_rules ||= requested?.structured_rules ?? false;
     for (const key of ["question_count", "max_options", "max_levels", "input_bytes", "max_state_question_bytes"] as const) {
       actual[key] = Math.max(actual[key] ?? 0, requested?.[key] ?? 0);
     }
-    requirements = {...requirements, decision: actual};
+    requirements = {...requirements, decision: {...actual, question_types: questionTypes}};
   }
   const resolved = await client.routeResolve({
     ...(opts.traceId ? { trace_id: opts.traceId } : {}),
