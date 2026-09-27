@@ -4348,10 +4348,10 @@ pub struct ProtocolAdapterOperation {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
 pub struct ProtocolAdapterView {
     pub protocol_family_id: String,
     pub protocol_adapter_id: String,
+    #[serde(default)]
     pub custom_provider_selectable: bool,
     pub interface_generation: String,
     pub status: ProtocolAdapterStatus,

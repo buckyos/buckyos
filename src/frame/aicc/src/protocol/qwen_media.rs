@@ -149,7 +149,10 @@ impl OperationCodec for QwenImageEditCodec {
             .as_ref()
             .and_then(|output| output.size.as_ref())
         {
-            parameters.insert("size".to_owned(), json!(size));
+            parameters.insert(
+                "size".to_owned(),
+                json!(size.replace('x', "*").replace('X', "*")),
+            );
         }
         json_request(
             call.context,
@@ -196,7 +199,10 @@ impl OperationCodec for QwenImageEditCodec {
             .collect();
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
             value: json!({"images":images,"provider_states":[]}),
-            usage: Some(AiUsage::request_units(images.len() as u64)),
+            usage: Some(AiUsage {
+                image_units: Some(images.len() as u64),
+                ..AiUsage::request_units(1)
+            }),
             artifacts,
         }))
     }
@@ -268,9 +274,29 @@ impl NativeTaskCodec for QwenMediaCodec {
             }
             NativeTaskOperation::Status => {
                 let state = decode_state(&required_pointer(&value, "/output/task_status")?)?;
+                if state == NativeTaskState::Failed {
+                    let error = value.get("output").unwrap_or(&value);
+                    return Err(ProtocolError::new(
+                        ProtocolErrorKind::ProviderRejected,
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Provider video task failed"),
+                    )
+                    .with_provider_code(error.get("code").filter(|code| !code.is_null()).map(
+                        |code| {
+                            code.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| code.to_string())
+                        },
+                    ))
+                    .with_http_status(response.status.as_u16())
+                    .with_request_id(Some(response.request_id.clone())));
+                }
                 Ok(NativeTaskOutput::Status {
+                    result_usage: None,
                     state,
-                    retry_after,
+                    retry_after: retry_after.or(Some(Duration::from_secs(5))),
                     result_ref: (state == NativeTaskState::Succeeded)
                         .then(|| required_pointer(&value, "/output/task_id"))
                         .transpose()?,
@@ -304,7 +330,10 @@ fn encode_submit(
                 parameters.insert("n".to_owned(), json!(value));
             }
             if let Some(value) = &request.size {
-                parameters.insert("size".to_owned(), json!(value));
+                parameters.insert(
+                    "size".to_owned(),
+                    json!(value.replace('x', "*").replace('X', "*")),
+                );
             }
             if let Some(value) = request.seed {
                 parameters.insert("seed".to_owned(), json!(value));
@@ -320,7 +349,7 @@ fn encode_submit(
                 request.resolution.as_deref(),
                 request.seed,
                 request.generate_audio,
-            );
+            )?;
             "services/aigc/video-generation/video-synthesis"
         }
         (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
@@ -336,7 +365,7 @@ fn encode_submit(
                 request.resolution.as_deref(),
                 None,
                 None,
-            );
+            )?;
             "services/aigc/video-generation/video-synthesis"
         }
         _ => {
@@ -345,8 +374,46 @@ fn encode_submit(
             ))
         }
     };
+    if !model.starts_with("wan2.7") {
+        if let Some(ratio) = parameters.remove("ratio") {
+            if api_type == ApiType::VideoTextToVideo {
+                let resolution = parameters
+                    .remove("resolution")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_else(|| "720P".to_owned());
+                let size = wan_size(ratio.as_str().unwrap_or("16:9"), &resolution)?;
+                parameters.insert("size".into(), json!(size));
+            }
+        } else if api_type == ApiType::VideoTextToVideo {
+            if let Some(resolution) = parameters.remove("resolution") {
+                parameters.insert(
+                    "size".into(),
+                    json!(wan_size("16:9", resolution.as_str().unwrap_or("720P"))?),
+                );
+            }
+        }
+    }
     let body = json!({"model":model,"input":provider_input,"parameters":parameters});
     json_request(input.context, Method::POST, path, Some(body), true)
+}
+
+fn wan_size(ratio: &str, resolution: &str) -> ProtocolResultValue<&'static str> {
+    match (resolution.to_ascii_uppercase().as_str(), ratio) {
+        ("480P", "16:9") => Ok("832*480"),
+        ("480P", "9:16") => Ok("480*832"),
+        ("480P", "1:1") => Ok("624*624"),
+        ("720P", "16:9") => Ok("1280*720"),
+        ("720P", "9:16") => Ok("720*1280"),
+        ("720P", "1:1") => Ok("960*960"),
+        ("720P", "4:3") => Ok("1088*832"),
+        ("720P", "3:4") => Ok("832*1088"),
+        ("1080P", "16:9") => Ok("1920*1080"),
+        ("1080P", "9:16") => Ok("1080*1920"),
+        ("1080P", "1:1") => Ok("1440*1440"),
+        ("1080P", "4:3") => Ok("1632*1248"),
+        ("1080P", "3:4") => Ok("1248*1632"),
+        _ => Err(ProtocolError::invalid_request("unsupported Wan size")),
+    }
 }
 
 fn video_parameters(
@@ -356,9 +423,12 @@ fn video_parameters(
     resolution: Option<&str>,
     seed: Option<u64>,
     audio: Option<bool>,
-) {
+) -> ProtocolResultValue<()> {
     if let Some(value) = duration {
-        parameters.insert("duration".to_owned(), json!(value));
+        parameters.insert(
+            "duration".to_owned(),
+            json!(super::adapter::integer_seconds(value)?),
+        );
     }
     if let Some(value) = ratio {
         parameters.insert("ratio".to_owned(), json!(value));
@@ -372,6 +442,7 @@ fn video_parameters(
     if let Some(value) = audio {
         parameters.insert("audio".to_owned(), json!(value));
     }
+    Ok(())
 }
 
 fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<NativeTaskOutput> {
@@ -384,6 +455,13 @@ fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<Native
             })?;
         let mut images = Vec::new();
         for item in results {
+            if item
+                .get("code")
+                .and_then(Value::as_str)
+                .is_some_and(|code| !code.is_empty())
+            {
+                continue;
+            }
             let url = item
                 .get("url")
                 .and_then(Value::as_str)
@@ -413,7 +491,10 @@ fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<Native
             .collect();
         return Ok(NativeTaskOutput::Result(ProtocolOutput {
             value: json!({"images":images,"provider_states":[]}),
-            usage: Some(AiUsage::request_units(results.len() as u64)),
+            usage: Some(AiUsage {
+                image_units: Some(images.len() as u64),
+                ..AiUsage::request_units(1)
+            }),
             artifacts,
         }));
     }
@@ -427,7 +508,13 @@ fn decode_result(value: &Value, api_type: ApiType) -> ProtocolResultValue<Native
     let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video":resource}),
-        usage: Some(AiUsage::request_units(1)),
+        usage: Some(AiUsage {
+            video_seconds: value
+                .pointer("/usage/duration")
+                .or_else(|| value.pointer("/usage/video_duration"))
+                .and_then(Value::as_f64),
+            ..AiUsage::request_units(1)
+        }),
         artifacts: vec![AiArtifact {
             name: "video".to_owned(),
             resource,
@@ -580,6 +667,14 @@ fn ensure_success(response: &HttpResponse) -> ProtocolResultValue<()> {
         super::protocol_error_kind_from_http_status(response.status),
         message,
     )
+    .with_provider_code(
+        parsed
+            .as_ref()
+            .and_then(|value| value.get("code").or_else(|| value.pointer("/error/code")))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    )
+    .with_http_status(response.status.as_u16())
     .with_request_id(Some(response.request_id.clone()))
     .with_retry_after(response.retry_after))
 }

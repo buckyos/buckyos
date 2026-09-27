@@ -9,21 +9,31 @@
     {
       "id": "minimax-m3",
       "parameter_scale": "m3",
-      "api_types": ["llm"],
-      "capabilities": {"streaming": true, "tool_call": true, "reasoning": true},
+      "api_types": [
+        "llm",
+        "vision.ocr",
+        "vision.caption"
+      ],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "reasoning": true,
+        "vision": true
+      },
       "llm": {"spec": "minimax-standard", "effort": "native", "default_effort": "native", "supported_efforts": ["native"], "stability": "stable", "weight": 30}
     },
     {
       "id": "MiniMax-M2.7",
       "parameter_scale": "m2.7",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -37,14 +47,15 @@
     {
       "id": "MiniMax-M2.7-highspeed",
       "parameter_scale": "m2.7-highspeed",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -58,14 +69,15 @@
     {
       "id": "MiniMax-M2.5",
       "parameter_scale": "m2.5",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -79,14 +91,15 @@
     {
       "id": "MiniMax-M2.5-highspeed",
       "parameter_scale": "m2.5-highspeed",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -100,14 +113,15 @@
     {
       "id": "MiniMax-M2.1",
       "parameter_scale": "m2.1",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-standard",
@@ -121,14 +135,15 @@
     {
       "id": "MiniMax-M2.1-highspeed",
       "parameter_scale": "m2.1-highspeed",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-highspeed",
@@ -142,14 +157,15 @@
     {
       "id": "MiniMax-M2",
       "parameter_scale": "m2",
-      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "api_types": [
+        "llm"
+      ],
       "capabilities": {
         "max_context_tokens": 204800,
         "max_output_tokens": 204800,
         "streaming": true,
         "tool_call": true,
-        "reasoning": true,
-        "vision": true
+        "reasoning": true
       },
       "llm": {
         "spec": "minimax-standard",

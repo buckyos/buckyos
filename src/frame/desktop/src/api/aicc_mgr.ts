@@ -129,7 +129,7 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'kimi-chat'],
   ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat'],
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
-  ['doubao', 'Doubao (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'doubao-responses'],
+  ['doubao', 'Doubao (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
   ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
 ]
 
@@ -154,7 +154,7 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
       ? {
         'ark.images.generate': 'https://ark.cn-beijing.volces.com/api/v3',
         'ark.contents.generate': 'https://ark.cn-beijing.volces.com/api/v3',
-        'tts.unidirectional': 'https://openspeech.bytedance.com/api/v3/plan/tts',
+        'tts.unidirectional': 'https://openspeech.bytedance.com/api/v3/tts',
       }
       : undefined,
     protocol_adapter_id,

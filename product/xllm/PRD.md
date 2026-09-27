@@ -615,6 +615,67 @@ provider:
 model: "your-tool-capable-model"
 ```
 
+#### 4.9.3 同构的 behavior loop 示例
+
+与 4.9.1 的通用模板对应，behavior 版本复用相同的角色、环境、任务规则、命令手册和工具能力，通过 XML actions 推进同一次任务。将完整模板中的 `loop_model`、`result_format` 及 `general` 组的 `tools` / `output_format` 调整为下列值；Provider、模型、执行限制和其余 sections 沿用原模板。
+
+```yaml
+loop_model: behavior
+result_format: result.report
+
+prompt:
+  mode: standard
+  select: general
+  groups:
+    general:
+      sections:
+        output_format:
+          text: |
+            Put the complete final answer in the runtime protocol's report field.
+            Respond in the user's language. Lead with the result, stay concise, and follow
+            any output format specified by the user within report.
+            Show file paths clearly and include line numbers when useful. For changes,
+            describe what changed, the verification results, and any unfinished work.
+            Use plain text or Markdown within report by default. When the runtime requires
+            JSON, report must contain only valid JSON without explanations or code fences.
+      tools:
+        enabled: true
+        filesystem_policy: unrestricted
+        tools2actions: true
+        tools:
+          - groupname: bash
+```
+
+这里的“同构”指任务能力和执行语义对应：`read_file`、`edit_file`、`write_file`、`exec` 的名称、参数、权限和执行限制保持一致，原生工具调用转换为同名 actions，原生 tools 列表置空。SDK 根据实际 actions 自动提供 XML 调用格式和结束条件；最终结果从 `report` 提取后交付给调用方。
+
+例如，在保存了上述完整配置的项目目录执行：
+
+```bash
+agent_tool xllm '读取 README.md，只返回文档的一级标题文本。'
+```
+
+下面是一次可能的协议交互，假设示例项目的 `README.md` 包含一级标题 `# Demo Project`，仅用于说明循环过程。模型先请求读取文件：
+
+```xml
+<response>
+  <actions>
+    <read_file path="README.md" />
+  </actions>
+</response>
+```
+
+执行器调用同一个 `read_file` 工具，将读取结果送回当前 Run。模型依据结果完成任务，返回不含 actions 的最终响应：
+
+```xml
+<response>
+  <report><![CDATA[Demo Project]]></report>
+</response>
+```
+
+`result_format: result.report` 使 stdout 只输出 `Demo Project`；Run 记录仍保留最终原始 XML。若任务还需编辑或验证，模型继续提交 actions、读取执行结果，直到完成或达到限制，无需配置多个 behavior 或状态切换。
+
+4.9.2 的使用方式同样适用：`--no-tools` 同时关闭 tools/actions，模型以一次包含 `report` 的响应完成任务；`--json` 约束 `report` 内的结果为合法 JSON。behavior 配合 `result_format: raw` 会输出完整 XML，因此本模板采用 `result.report`，以保持与 function_call 通用模板一致的最终答案交付方式。
+
 ## 5. 功能需求
 
 ### F01. 开箱可理解的命令入口

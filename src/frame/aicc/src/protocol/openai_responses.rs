@@ -1328,15 +1328,11 @@ fn decode_reported_cost(
         return Ok(None);
     };
     if !amount.is_finite() || amount < 0.0 {
-        return Err(ProtocolError::invalid_response(
-            "reported usage cost must be finite and non-negative",
-        ));
+        return Ok(None);
     }
     let currency = currency.trim().to_ascii_uppercase();
     if currency.is_empty() {
-        return Err(ProtocolError::invalid_response(
-            "reported usage cost currency must not be empty",
-        ));
+        return Ok(None);
     }
     Ok(Some(buckyos_api::AiCost { amount, currency }))
 }
@@ -2000,7 +1996,11 @@ impl OperationCodec for OpenAiImageCodec {
             .collect();
         Ok(ProtocolExecution::Immediate(ProtocolOutput {
             value: json!({"images": images, "provider_states": []}),
-            usage: decode_usage(value.get("usage"), None)?,
+            usage: Some(AiUsage {
+                image_units: Some(images.len() as u64),
+                request_units: Some(1),
+                ..decode_usage(value.get("usage"), None)?.unwrap_or_default()
+            }),
             artifacts,
         }))
     }
@@ -2729,8 +2729,14 @@ fn decode_video_status(response: HttpResponse) -> ProtocolResultValue<NativeTask
     }
     let artifact_id = required_string(&value, "id", "OpenAI video job")?;
     Ok(NativeTaskOutput::Status {
+        result_usage: Some(AiUsage {
+            video_seconds: value
+                .get("seconds")
+                .and_then(|value| value.as_f64().or_else(|| value.as_str()?.parse().ok())),
+            ..AiUsage::request_units(1)
+        }),
         state,
-        retry_after: response.retry_after,
+        retry_after: response.retry_after.or(Some(Duration::from_secs(1))),
         result_ref: None,
         result_artifacts: BTreeMap::from([(
             "video".to_string(),
@@ -4206,5 +4212,19 @@ mod billing_usage_tests {
         .unwrap()
         .unwrap();
         assert!((pinned.completion_cost(&usage).unwrap().amount - 0.0003395).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod review_cost_tests {
+    use super::*;
+    #[test]
+    fn invalid_optional_cost_telemetry_is_ignored() {
+        for value in [
+            serde_json::json!({"cost":{"amount":-1,"currency":"USD"}}),
+            serde_json::json!({"cost":{"amount":1,"currency":" "}}),
+        ] {
+            assert!(decode_reported_cost(&value, None).unwrap().is_none());
+        }
     }
 }

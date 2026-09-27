@@ -288,7 +288,7 @@ impl OperationCodec for DoubaoImageCodec {
             if let Some(size) = &request.size {
                 body.insert("size".to_owned(), json!(size));
             } else if let Some(ratio) = &request.aspect_ratio {
-                body.insert("size".to_owned(), json!(ratio));
+                body.insert("size".to_owned(), json!(seedream_size(ratio)?));
             }
             if let Some(seed) = request.seed {
                 body.insert("seed".to_owned(), json!(seed));
@@ -385,9 +385,29 @@ impl NativeTaskCodec for DoubaoVideoCodec {
             }
             NativeTaskOperation::Status => {
                 let state = decode_state(required_string(&value, "status")?.as_str())?;
+                if state == NativeTaskState::Failed {
+                    let error = value.get("error").unwrap_or(&value);
+                    return Err(ProtocolError::new(
+                        ProtocolErrorKind::ProviderRejected,
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Provider video task failed"),
+                    )
+                    .with_provider_code(error.get("code").filter(|code| !code.is_null()).map(
+                        |code| {
+                            code.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| code.to_string())
+                        },
+                    ))
+                    .with_http_status(response.status.as_u16())
+                    .with_request_id(Some(response.request_id.clone())));
+                }
                 Ok(NativeTaskOutput::Status {
+                    result_usage: None,
                     state,
-                    retry_after,
+                    retry_after: retry_after.or(Some(Duration::from_secs(3))),
                     result_ref: (state == NativeTaskState::Succeeded)
                         .then(|| required_string(&value, "id"))
                         .transpose()?,
@@ -421,7 +441,7 @@ fn encode_video_submit(
                 request.resolution.as_deref(),
                 request.seed,
                 request.generate_audio,
-            );
+            )?;
         }
         (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
             content.push(json!({"type":"text","text":request.prompt}));
@@ -433,7 +453,7 @@ fn encode_video_submit(
                 request.resolution.as_deref(),
                 None,
                 None,
-            );
+            )?;
         }
         (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) => {
             content.push(json!({"type":"text","text":request.prompt}));
@@ -449,10 +469,19 @@ fn encode_video_submit(
                 request.resolution.as_deref(),
                 None,
                 None,
-            );
-            parameters.insert("operation".to_owned(), json!("extend"));
-            if let Some(handle) = &request.continuation_handle {
-                parameters.insert("continuation_handle".to_owned(), json!(handle));
+            )?;
+            if model.starts_with("doubao-seedance-2.5") {
+                parameters.insert("omni_reference_task_type".into(), json!("extend"));
+                parameters.insert("ratio".into(), json!("adaptive"));
+            }
+            if request.continuation_handle.is_some() {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Ark video extension uses a reference video, not a continuation handle",
+                ));
+            }
+            if let Some(Value::Object(video)) = content.last_mut() {
+                video.insert("role".into(), json!("reference_video"));
             }
         }
         _ => {
@@ -481,9 +510,12 @@ fn video_options(
     resolution: Option<&str>,
     seed: Option<u64>,
     audio: Option<bool>,
-) {
+) -> ProtocolResultValue<()> {
     if let Some(value) = duration {
-        body.insert("duration".to_owned(), json!(value));
+        body.insert(
+            "duration".to_owned(),
+            json!(super::adapter::integer_seconds(value)?),
+        );
     }
     if let Some(value) = ratio {
         body.insert("ratio".to_owned(), json!(value));
@@ -496,6 +528,23 @@ fn video_options(
     }
     if let Some(value) = audio {
         body.insert("generate_audio".to_owned(), json!(value));
+    }
+    Ok(())
+}
+
+fn seedream_size(ratio: &str) -> ProtocolResultValue<&'static str> {
+    match ratio {
+        "1:1" => Ok("2048x2048"),
+        "4:3" => Ok("2304x1728"),
+        "3:4" => Ok("1728x2304"),
+        "16:9" => Ok("2848x1600"),
+        "9:16" => Ok("1600x2848"),
+        "3:2" => Ok("2496x1664"),
+        "2:3" => Ok("1664x2496"),
+        "21:9" => Ok("3136x1344"),
+        _ => Err(ProtocolError::invalid_request(
+            "unsupported Seedream aspect ratio; specify size in pixels",
+        )),
     }
 }
 
@@ -553,7 +602,10 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
         .collect::<Vec<_>>();
     Ok(ProtocolOutput {
         value: json!({"images":resources,"provider_states":[]}),
-        usage: Some(AiUsage::request_units(data.len() as u64)),
+        usage: Some(AiUsage {
+            image_units: Some(resources.len() as u64),
+            ..AiUsage::request_units(1)
+        }),
         artifacts,
     })
 }
@@ -589,7 +641,9 @@ fn image_mime_from_bytes(value: &[u8]) -> Option<&'static str> {
 
 fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
     let url = value
-        .pointer("/content/video_url/url")
+        .pointer("/content/video_url")
+        .filter(|value| value.is_string())
+        .or_else(|| value.pointer("/content/video_url/url"))
         .or_else(|| value.get("video_url"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
@@ -599,7 +653,18 @@ fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
     let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video":resource}),
-        usage: Some(AiUsage::request_units(1)),
+        usage: Some(AiUsage {
+            input_tokens: value
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64)
+                .or(Some(0)),
+            output_tokens: value
+                .pointer("/usage/completion_tokens")
+                .and_then(Value::as_u64),
+            total_tokens: value.pointer("/usage/total_tokens").and_then(Value::as_u64),
+            video_seconds: value.get("duration").and_then(Value::as_f64),
+            ..AiUsage::request_units(1)
+        }),
         artifacts: vec![AiArtifact {
             name: "video".to_owned(),
             resource,

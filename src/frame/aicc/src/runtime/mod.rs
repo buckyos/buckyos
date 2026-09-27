@@ -188,14 +188,20 @@ pub(crate) trait ModelRegistryAssembler: Send + Sync {
 pub(crate) struct ProviderRuntimeBackend {
     manager: Arc<ProviderRuntimeManager>,
     models: Arc<dyn ModelRegistryAssembler>,
+    startup_failures: BTreeMap<String, String>,
 }
 
 impl ProviderRuntimeBackend {
     pub(crate) fn new(
         manager: Arc<ProviderRuntimeManager>,
         models: Arc<dyn ModelRegistryAssembler>,
+        startup_failures: BTreeMap<String, String>,
     ) -> Self {
-        Self { manager, models }
+        Self {
+            manager,
+            models,
+            startup_failures,
+        }
     }
 }
 
@@ -256,7 +262,21 @@ impl RuntimeBackend for ProviderRuntimeBackend {
             .collect();
         let provider_registry = self.manager.registry().await;
         let providers = Arc::new(RuntimeProviderRegistry::capture(&provider_registry).await);
-        let mut provider_metadata = BTreeMap::new();
+        let mut provider_metadata: BTreeMap<_, _> = self
+            .startup_failures
+            .iter()
+            .map(|(name, error)| {
+                (
+                    name.clone(),
+                    ProviderMetadataState {
+                        metadata_applied_seq: 0,
+                        metadata_updating_seq: None,
+                        routable: false,
+                        last_error: Some(error.clone()),
+                    },
+                )
+            })
+            .collect();
         let mut inventories = Vec::new();
         for instance in providers.list() {
             let inventory = &instance.inventory;

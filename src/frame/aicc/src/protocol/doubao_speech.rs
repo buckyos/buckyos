@@ -136,8 +136,8 @@ impl OperationCodec for DoubaoTtsCodec {
             HeaderValue::from_static("seed-tts-2.0"),
         );
         wire.headers.insert(
-            HeaderName::from_static("x-control-request-usage-tokens"),
-            HeaderValue::from_static("true"),
+            HeaderName::from_static("x-control-require-usage-tokens-return"),
+            HeaderValue::from_static("*"),
         );
         apply_speech_credential(&mut wire.headers, call)?;
         wire.body = HttpBody::Json(body);
@@ -148,108 +148,150 @@ impl OperationCodec for DoubaoTtsCodec {
     }
 
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution> {
-        let content_type = response
-            .headers
-            .get(CONTENT_TYPE)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.split(';').next())
-            .map(str::trim);
-        if !matches!(content_type, Some("text/plain" | "application/json")) {
-            return Err(ProtocolError::invalid_response(
-                "Doubao TTS response has an invalid content type",
-            ));
-        }
-        let body = std::str::from_utf8(&response.body).map_err(|_| {
-            ProtocolError::invalid_response("Doubao TTS response is not UTF-8 JSON lines")
-        })?;
-        let frames = body
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .map(|line| {
-                serde_json::from_str::<Value>(line).map_err(|_| {
-                    ProtocolError::invalid_response(
-                        "Doubao TTS response contains malformed JSON lines",
-                    )
-                })
-            })
-            .collect::<ProtocolResultValue<Vec<_>>>()?;
-        if frames.is_empty() {
-            return Err(ProtocolError::invalid_response(
-                "Doubao TTS response contains no JSON frames",
-            ));
-        }
-        let mut audio = Vec::new();
-        let mut usage = None;
-        let mut completed = false;
-        for frame in frames {
-            let code = frame.get("code").and_then(Value::as_i64).unwrap_or(-1);
-            if !response.status.is_success() || !matches!(code, 0 | 20_000_000) {
-                let message = frame
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Doubao TTS request failed");
-                return Err(ProtocolError::new(
-                    super::protocol_error_kind_from_http_status(response.status),
-                    message,
-                )
-                .with_provider_code((code >= 0).then(|| code.to_string()))
-                .with_http_status(response.status.as_u16())
-                .with_request_id(Some(response.request_id.clone()))
-                .with_retry_after(response.retry_after));
-            }
-            if code == 20_000_000 {
-                completed = true;
-                continue;
-            }
-            if let Some(data) = frame
-                .get("data")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-            {
-                audio.extend(STANDARD.decode(data).map_err(|_| {
-                    ProtocolError::invalid_response(
-                        "Doubao TTS response contains invalid base64 audio",
-                    )
-                })?);
-            }
-            if frame.get("usage").is_some() {
-                usage = frame.get("usage").cloned();
-            }
-        }
-        if !completed {
-            return Err(ProtocolError::invalid_response(
-                "Doubao TTS response is missing the completion frame",
-            ));
-        }
-        if audio.is_empty() {
-            return Err(ProtocolError::invalid_response(
-                "Doubao TTS response is missing audio data",
-            ));
-        }
-        let data = STANDARD.encode(audio);
-        let mime = "audio/mpeg".to_owned();
-        let resource = ResourceRef::base64(mime.clone(), data);
-        let characters = usage
-            .as_ref()
-            .and_then(|value| value.get("text_words"))
-            .and_then(Value::as_u64);
-        Ok(ProtocolExecution::Immediate(ProtocolOutput {
-            value: json!({"audio": resource}),
-            usage: Some(AiUsage {
-                characters,
-                ..AiUsage::request_units(1)
-            }),
-            artifacts: vec![AiArtifact {
-                name: "speech".to_owned(),
-                resource,
-                mime: Some(mime),
-                metadata: Some(Value::Object(Map::from_iter([(
-                    "provider_usage".to_owned(),
-                    usage.unwrap_or(Value::Null),
-                )]))),
-            }],
-        }))
+        decode_audio(response, "mp3")
     }
+
+    async fn decode_with_input(
+        &self,
+        response: HttpResponse,
+        input: &super::CodecInput,
+    ) -> ProtocolResultValue<ProtocolExecution> {
+        let AiccCall::AudioTextToSpeech(request) = &input.canonical_request else {
+            return Err(ProtocolError::invalid_request(
+                "Doubao TTS requires audio.tts",
+            ));
+        };
+        let format = request
+            .output
+            .as_ref()
+            .and_then(|output| output.media_type.as_deref())
+            .map(audio_format)
+            .transpose()?
+            .unwrap_or("mp3");
+        decode_audio(response, format)
+    }
+}
+
+fn decode_audio(response: HttpResponse, format: &str) -> ProtocolResultValue<ProtocolExecution> {
+    if !response.status.is_success() {
+        let value = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
+        return Err(ProtocolError::new(
+            super::protocol_error_kind_from_http_status(response.status),
+            value
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Doubao TTS request failed"),
+        )
+        .with_provider_code(value.get("code").map(Value::to_string))
+        .with_http_status(response.status.as_u16())
+        .with_request_id(Some(response.request_id.clone()))
+        .with_retry_after(response.retry_after));
+    }
+    let content_type = response
+        .headers
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .map(str::trim);
+    if !matches!(content_type, Some("text/plain" | "application/json")) {
+        return Err(ProtocolError::invalid_response(
+            "Doubao TTS response has an invalid content type",
+        ));
+    }
+    let body = std::str::from_utf8(&response.body).map_err(|_| {
+        ProtocolError::invalid_response("Doubao TTS response is not UTF-8 JSON lines")
+    })?;
+    let frames = body
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<Value>(line).map_err(|_| {
+                ProtocolError::invalid_response("Doubao TTS response contains malformed JSON lines")
+            })
+        })
+        .collect::<ProtocolResultValue<Vec<_>>>()?;
+    if frames.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "Doubao TTS response contains no JSON frames",
+        ));
+    }
+    let mut audio = Vec::new();
+    let mut usage = None;
+    let mut completed = false;
+    for frame in frames {
+        let code = frame.get("code").and_then(Value::as_i64).unwrap_or(-1);
+        if !response.status.is_success() || !matches!(code, 0 | 20_000_000) {
+            let message = frame
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Doubao TTS request failed");
+            return Err(
+                ProtocolError::new(ProtocolErrorKind::ProviderRejected, message)
+                    .with_provider_code((code >= 0).then(|| code.to_string()))
+                    .with_http_status(response.status.as_u16())
+                    .with_request_id(Some(response.request_id.clone()))
+                    .with_retry_after(response.retry_after),
+            );
+        }
+        if let Some(value) = frame.get("usage") {
+            usage = Some(value.clone());
+        }
+        if code == 20_000_000 {
+            completed = true;
+            continue;
+        }
+        if let Some(data) = frame
+            .get("data")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            audio.extend(STANDARD.decode(data).map_err(|_| {
+                ProtocolError::invalid_response("Doubao TTS response contains invalid base64 audio")
+            })?);
+        }
+        if frame.get("usage").is_some() {
+            usage = frame.get("usage").cloned();
+        }
+    }
+    if !completed {
+        return Err(ProtocolError::invalid_response(
+            "Doubao TTS response is missing the completion frame",
+        ));
+    }
+    if audio.is_empty() {
+        return Err(ProtocolError::invalid_response(
+            "Doubao TTS response is missing audio data",
+        ));
+    }
+    let data = STANDARD.encode(audio);
+    let mime = match format {
+        "wav" => "audio/wav",
+        "pcm" => "audio/pcm",
+        "ogg_opus" => "audio/ogg",
+        _ => "audio/mpeg",
+    }
+    .to_owned();
+    let resource = ResourceRef::base64(mime.clone(), data);
+    let characters = usage
+        .as_ref()
+        .and_then(|value| value.get("text_words"))
+        .and_then(Value::as_u64);
+    Ok(ProtocolExecution::Immediate(ProtocolOutput {
+        value: json!({"audio": resource}),
+        usage: Some(AiUsage {
+            characters,
+            ..AiUsage::request_units(1)
+        }),
+        artifacts: vec![AiArtifact {
+            name: "speech".to_owned(),
+            resource,
+            mime: Some(mime),
+            metadata: Some(Value::Object(Map::from_iter([(
+                "provider_usage".to_owned(),
+                usage.unwrap_or(Value::Null),
+            )]))),
+        }],
+    }))
 }
 
 fn apply_speech_credential(

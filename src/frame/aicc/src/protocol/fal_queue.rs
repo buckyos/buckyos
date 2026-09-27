@@ -377,6 +377,7 @@ fn decode_status(response: HttpResponse) -> ProtocolResultValue<NativeTaskOutput
         }
     };
     Ok(NativeTaskOutput::Status {
+        result_usage: None,
         state,
         retry_after,
         result_ref: None,

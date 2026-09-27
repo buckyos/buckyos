@@ -18,6 +18,8 @@ pub(crate) mod openrouter_decisions;
 mod provider_state;
 mod qwen_media;
 mod result;
+#[cfg(test)]
+mod review_tests;
 mod sn_openai;
 mod sse;
 mod task;

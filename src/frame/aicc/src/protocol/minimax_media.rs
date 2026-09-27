@@ -435,7 +435,29 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     "preparing" | "queueing" | "queued" => NativeTaskState::Queued,
                     "processing" | "running" => NativeTaskState::Running,
                     "success" | "succeeded" => NativeTaskState::Succeeded,
-                    "fail" | "failed" => NativeTaskState::Failed,
+                    "fail" | "failed" => {
+                        let error = value
+                            .pointer("/task/error")
+                            .or_else(|| value.get("error"))
+                            .unwrap_or(&value);
+                        return Err(ProtocolError::new(
+                            ProtocolErrorKind::ProviderRejected,
+                            error
+                                .get("message")
+                                .and_then(Value::as_str)
+                                .unwrap_or("MiniMax video task failed"),
+                        )
+                        .with_provider_code(error.get("code").filter(|code| !code.is_null()).map(
+                            |code| {
+                                code.as_str()
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| code.to_string())
+                            },
+                        ))
+                        .with_http_status(response.status.as_u16())
+                        .with_request_id(Some(response.request_id.clone())));
+                    }
+                    "cancelled" | "canceled" => NativeTaskState::Cancelled,
                     _ => {
                         return Err(ProtocolError::invalid_response(
                             "MiniMax video status is unknown",
@@ -461,8 +483,9 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                     None
                 };
                 Ok(NativeTaskOutput::Status {
+                    result_usage: None,
                     state,
-                    retry_after,
+                    retry_after: retry_after.or(Some(Duration::from_secs(2))),
                     result_ref,
                     result_artifacts: BTreeMap::new(),
                 })
@@ -485,7 +508,13 @@ impl NativeTaskCodec for MiniMaxVideoCodec {
                 let resource = ResourceRef::url(url.to_string(), Some("video/mp4".to_string()));
                 Ok(NativeTaskOutput::Result(ProtocolOutput {
                     value: json!({"video":resource}),
-                    usage: Some(AiUsage::request_units(1)),
+                    usage: Some(AiUsage {
+                        video_seconds: value
+                            .pointer("/task/usage/output_seconds")
+                            .or_else(|| value.pointer("/task/duration"))
+                            .and_then(Value::as_f64),
+                        ..AiUsage::request_units(1)
+                    }),
                     artifacts: vec![AiArtifact {
                         name: "video".to_string(),
                         resource,

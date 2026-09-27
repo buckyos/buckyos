@@ -562,6 +562,23 @@ pub(crate) trait OperationCodec: Send + Sync {
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution>;
 
+    async fn decode_with_input(
+        &self,
+        response: HttpResponse,
+        input: &CodecInput,
+    ) -> ProtocolResultValue<ProtocolExecution> {
+        let mut execution = self.decode(response).await?;
+        if let (AiccCall::AudioTextToSpeech(request), ProtocolExecution::Immediate(output)) =
+            (&input.canonical_request, &mut execution)
+        {
+            let usage = output.usage.get_or_insert_with(Default::default);
+            usage.characters = usage
+                .characters
+                .or(Some(request.text.chars().count() as u64));
+        }
+        Ok(execution)
+    }
+
     async fn decode_stream(
         &self,
         _response: StreamingHttpResponse,
@@ -618,6 +635,7 @@ pub(crate) enum NativeTaskOutput {
         state: NativeTaskState,
         retry_after: Option<Duration>,
         result_ref: Option<String>,
+        result_usage: Option<buckyos_api::AiUsage>,
         result_artifacts: BTreeMap<String, super::ProviderArtifactRef>,
     },
     Result(ProtocolOutput),
@@ -631,6 +649,9 @@ pub(crate) trait NativeTaskCodec: Send + Sync {
     fn descriptor(&self) -> &OperationDescriptor;
     fn api_type(&self) -> ApiType;
     fn operations(&self) -> BTreeSet<NativeTaskOperation>;
+    fn output_video_seconds(&self, _request: &HttpRequest) -> Option<u64> {
+        None
+    }
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode_native(
         &self,
@@ -1184,6 +1205,32 @@ impl CodecRegistry {
             .await
     }
 
+    pub(crate) async fn decode_with_input(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+        response: HttpResponse,
+        input: &CodecInput,
+    ) -> ProtocolResultValue<ProtocolExecution> {
+        let registered = self.registered(adapter_id, operation_id, api_type)?;
+        if !registered
+            .binding
+            .execution_modes
+            .contains(&ExecutionMode::Immediate)
+        {
+            return Err(ProtocolError::new(
+                super::ProtocolErrorKind::UnsupportedOperation,
+                "selected binding does not declare buffered execution",
+            ));
+        }
+        input.validate_for(&registered.binding)?;
+        let codec = registered.codec.as_ref().ok_or_else(|| {
+            ProtocolError::invalid_configuration("buffered operation codec is missing")
+        })?;
+        codec.decode_with_input(response, input).await
+    }
+
     pub(crate) async fn decode_stream(
         &self,
         adapter_id: &str,
@@ -1256,6 +1303,20 @@ impl CodecRegistry {
             ));
         }
         codec.encode_native(input)
+    }
+
+    pub(crate) fn output_video_seconds(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+        request: &HttpRequest,
+    ) -> ProtocolResultValue<Option<u64>> {
+        let registered = self.registered(adapter_id, operation_id, api_type)?;
+        Ok(registered
+            .native_task_codec
+            .as_ref()
+            .and_then(|codec| codec.output_video_seconds(request)))
     }
 
     pub(crate) async fn decode_native(
@@ -1461,6 +1522,7 @@ mod tests {
                         _ => return Err(ProtocolError::invalid_response("unknown task state")),
                     };
                     Ok(NativeTaskOutput::Status {
+                        result_usage: None,
                         state,
                         retry_after,
                         result_ref: None,
@@ -2502,4 +2564,13 @@ mod tests {
         .unwrap_err();
         assert_eq!(cancelled.kind, super::super::ProtocolErrorKind::Cancelled);
     }
+}
+
+pub(super) fn integer_seconds(value: f64) -> ProtocolResultValue<u64> {
+    if !value.is_finite() || value <= 0.0 || value.fract() != 0.0 || value >= u64::MAX as f64 {
+        return Err(ProtocolError::invalid_request(
+            "video duration must be a positive integer number of seconds",
+        ));
+    }
+    Ok(value as u64)
 }

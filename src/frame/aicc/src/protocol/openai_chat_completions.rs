@@ -1087,15 +1087,11 @@ fn decode_reported_cost(value: &Value) -> ProtocolResultValue<Option<buckyos_api
         return Ok(None);
     };
     if !amount.is_finite() || amount < 0.0 {
-        return Err(ProtocolError::invalid_response(
-            "reported usage cost must be finite and non-negative",
-        ));
+        return Ok(None);
     }
     let currency = currency.trim().to_ascii_uppercase();
     if currency.is_empty() {
-        return Err(ProtocolError::invalid_response(
-            "reported usage cost currency must not be empty",
-        ));
+        return Ok(None);
     }
     Ok(Some(buckyos_api::AiCost { amount, currency }))
 }
@@ -2484,5 +2480,19 @@ mod billing_usage_tests {
         .unwrap()
         .unwrap();
         assert!((pinned.completion_cost(&usage).unwrap().amount - 0.0003395).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod review_cost_tests {
+    use super::*;
+    #[test]
+    fn invalid_optional_cost_telemetry_is_ignored() {
+        for value in [
+            serde_json::json!({"cost":{"amount":-1,"currency":"USD"}}),
+            serde_json::json!({"cost":{"amount":1,"currency":" "}}),
+        ] {
+            assert!(decode_reported_cost(&value).unwrap().is_none());
+        }
     }
 }

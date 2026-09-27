@@ -119,3 +119,14 @@ fn provider_add_accepts_only_the_current_locked_credential_schema() {
     }))
     .is_err());
 }
+
+#[test]
+fn protocol_adapter_view_accepts_optional_and_future_catalog_fields() {
+    let mut value = json!({"protocol_family_id":"openai", "protocol_adapter_id":"openai-responses",
+        "interface_generation":"responses", "status":"stable", "probe_priority":1, "future_field":true});
+    let view: buckyos_api::ProtocolAdapterView = serde_json::from_value(value.clone()).unwrap();
+    assert!(!view.custom_provider_selectable);
+    value["custom_provider_selectable"] = json!(true);
+    let view: buckyos_api::ProtocolAdapterView = serde_json::from_value(value).unwrap();
+    assert!(view.custom_provider_selectable);
+}

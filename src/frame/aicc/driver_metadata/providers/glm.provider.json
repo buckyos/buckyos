@@ -224,7 +224,8 @@
         "currency": "CNY",
         "amount": 0.0002,
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
-        "verified_at": "2026-09-25"
+        "verified_at": "2026-09-25",
+        "unit": "character"
       },
       "match": {
         "provider_model_id": "glm-tts",
@@ -796,29 +797,30 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-5v-turbo"
+        "provider_model_id": "glm-5v-turbo",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000005,
-        "output_token": 0.000022,
-        "cache_input_token": 0.0000012,
+        "input_token": 5e-06,
+        "output_token": 2.2e-05,
+        "cache_input_token": 1.2e-06,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000005,
-              "output_token": 0.000022,
-              "cache_input_token": 0.0000012
+              "input_token": 5e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.2e-06
             },
             {
-              "input_token": 0.000007,
-              "output_token": 0.000026,
-              "cache_input_token": 0.0000018
+              "input_token": 7e-06,
+              "output_token": 2.6e-05,
+              "cache_input_token": 1.8e-06
             }
           ]
         }
@@ -826,43 +828,34 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-ocr"
+        "provider_model_id": "glm-ocr",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 2e-7,
-        "output_token": 2e-7
+        "input_token": 2e-07,
+        "output_token": 2e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.1v-thinking-flashx"
+        "provider_model_id": "glm-4.1v-thinking-flashx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000002,
-        "output_token": 0.000002
+        "input_token": 2e-06,
+        "output_token": 2e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.1v-thinking-flash"
-      },
-      "pricing": {
-        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "CNY",
-        "input_token": 0,
-        "output_token": 0
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "glm-4v-flash"
+        "provider_model_id": "glm-4.1v-thinking-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -874,33 +867,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4-long"
-      },
-      "pricing": {
-        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "CNY",
-        "input_token": 0.000001,
-        "output_token": 0.000001,
-        "cache_input_token": 5e-7
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "glm-4-flashx-250414"
-      },
-      "pricing": {
-        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "CNY",
-        "input_token": 1e-7,
-        "output_token": 1e-7,
-        "cache_input_token": 5e-8
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "glm-4-flash-250414"
+        "provider_model_id": "glm-4v-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -912,43 +880,88 @@
     },
     {
       "match": {
-        "provider_model_id": "charglm-4"
+        "provider_model_id": "glm-4-long",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000001,
-        "output_token": 0.000001
+        "input_token": 1e-06,
+        "output_token": 1e-06,
+        "cache_input_token": 5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "emohaa"
+        "provider_model_id": "glm-4-flashx-250414",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000015,
-        "output_token": 0.000015
+        "input_token": 1e-07,
+        "output_token": 1e-07,
+        "cache_input_token": 5e-08
       }
     },
     {
       "match": {
-        "provider_model_id": "codegeex-4"
+        "provider_model_id": "glm-4-flash-250414",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 1e-7,
-        "output_token": 1e-7
+        "input_token": 0,
+        "output_token": 0
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-image"
+        "provider_model_id": "charglm-4",
+        "region": "china"
+      },
+      "pricing": {
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "input_token": 1e-06,
+        "output_token": 1e-06
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "emohaa",
+        "region": "china"
+      },
+      "pricing": {
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "input_token": 1.5e-05,
+        "output_token": 1.5e-05
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "codegeex-4",
+        "region": "china"
+      },
+      "pricing": {
+        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
+        "verified_at": "2026-09-26",
+        "currency": "CNY",
+        "input_token": 1e-07,
+        "output_token": 1e-07
+      }
+    },
+    {
+      "match": {
+        "provider_model_id": "glm-image",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -960,7 +973,8 @@
     },
     {
       "match": {
-        "provider_model_id": "cogview-4-250304"
+        "provider_model_id": "cogview-4-250304",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -972,7 +986,8 @@
     },
     {
       "match": {
-        "provider_model_id": "cogview-4"
+        "provider_model_id": "cogview-4",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -984,7 +999,8 @@
     },
     {
       "match": {
-        "provider_model_id": "cogview-3-flash"
+        "provider_model_id": "cogview-3-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -996,51 +1012,57 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-asr-2512"
+        "provider_model_id": "glm-asr-2512",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000016
+        "input_token": 1.6e-05
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-tts"
+        "provider_model_id": "glm-tts",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "amount": 0.0002
+        "amount": 0.0002,
+        "unit": "character"
       }
     },
     {
       "match": {
-        "provider_model_id": "embedding-3"
+        "provider_model_id": "embedding-3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 5e-7
+        "input_token": 5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "embedding-2"
+        "provider_model_id": "embedding-2",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 5e-7
+        "input_token": 5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "cogvideox-3"
+        "provider_model_id": "cogvideox-3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1052,7 +1074,8 @@
     },
     {
       "match": {
-        "provider_model_id": "cogvideox-flash"
+        "provider_model_id": "cogvideox-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1064,7 +1087,8 @@
     },
     {
       "match": {
-        "provider_model_id": "viduq1-text"
+        "provider_model_id": "viduq1-text",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1076,7 +1100,8 @@
     },
     {
       "match": {
-        "provider_model_id": "viduq1-image"
+        "provider_model_id": "viduq1-image",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1088,7 +1113,8 @@
     },
     {
       "match": {
-        "provider_model_id": "viduq1-start-end"
+        "provider_model_id": "viduq1-start-end",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1100,7 +1126,8 @@
     },
     {
       "match": {
-        "provider_model_id": "vidu2-image"
+        "provider_model_id": "vidu2-image",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1112,7 +1139,8 @@
     },
     {
       "match": {
-        "provider_model_id": "vidu2-start-end"
+        "provider_model_id": "vidu2-start-end",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1124,7 +1152,8 @@
     },
     {
       "match": {
-        "provider_model_id": "vidu2-reference"
+        "provider_model_id": "vidu2-reference",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1136,29 +1165,30 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-5.1"
+        "provider_model_id": "glm-5.1",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000006,
-        "output_token": 0.000024,
-        "cache_input_token": 0.0000013,
+        "input_token": 6e-06,
+        "output_token": 2.4e-05,
+        "cache_input_token": 1.3e-06,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000006,
-              "output_token": 0.000024,
-              "cache_input_token": 0.0000013
+              "input_token": 6e-06,
+              "output_token": 2.4e-05,
+              "cache_input_token": 1.3e-06
             },
             {
-              "input_token": 0.000008,
-              "output_token": 0.000028,
-              "cache_input_token": 0.000002
+              "input_token": 8e-06,
+              "output_token": 2.8e-05,
+              "cache_input_token": 2e-06
             }
           ]
         }
@@ -1166,68 +1196,72 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-5.3"
+        "provider_model_id": "glm-5.3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000008,
-        "output_token": 0.000028,
-        "cache_input_token": 0.000002
+        "input_token": 8e-06,
+        "output_token": 2.8e-05,
+        "cache_input_token": 2e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-5.3-flash"
+        "provider_model_id": "glm-5.3-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 8e-7,
-        "output_token": 0.0000028,
-        "cache_input_token": 2.3e-7
+        "input_token": 8e-07,
+        "output_token": 2.8e-06,
+        "cache_input_token": 2.3e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-5.2"
+        "provider_model_id": "glm-5.2",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000008,
-        "output_token": 0.000028,
-        "cache_input_token": 0.000002
+        "input_token": 8e-06,
+        "output_token": 2.8e-05,
+        "cache_input_token": 2e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-5-turbo"
+        "provider_model_id": "glm-5-turbo",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000005,
-        "output_token": 0.000022,
-        "cache_input_token": 0.0000012,
+        "input_token": 5e-06,
+        "output_token": 2.2e-05,
+        "cache_input_token": 1.2e-06,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000005,
-              "output_token": 0.000022,
-              "cache_input_token": 0.0000012
+              "input_token": 5e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.2e-06
             },
             {
-              "input_token": 0.000007,
-              "output_token": 0.000026,
-              "cache_input_token": 0.0000018
+              "input_token": 7e-06,
+              "output_token": 2.6e-05,
+              "cache_input_token": 1.8e-06
             }
           ]
         }
@@ -1235,29 +1269,30 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-5"
+        "provider_model_id": "glm-5",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000004,
-        "output_token": 0.000018,
-        "cache_input_token": 0.000001,
+        "input_token": 4e-06,
+        "output_token": 1.8e-05,
+        "cache_input_token": 1e-06,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000004,
-              "output_token": 0.000018,
-              "cache_input_token": 0.000001
+              "input_token": 4e-06,
+              "output_token": 1.8e-05,
+              "cache_input_token": 1e-06
             },
             {
-              "input_token": 0.000006,
-              "output_token": 0.000022,
-              "cache_input_token": 0.0000015
+              "input_token": 6e-06,
+              "output_token": 2.2e-05,
+              "cache_input_token": 1.5e-06
             }
           ]
         }
@@ -1265,29 +1300,30 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.7"
+        "provider_model_id": "glm-4.7",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000003,
-        "output_token": 0.000014,
-        "cache_input_token": 6e-7,
+        "input_token": 3e-06,
+        "output_token": 1.4e-05,
+        "cache_input_token": 6e-07,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000003,
-              "output_token": 0.000014,
-              "cache_input_token": 6e-7
+              "input_token": 3e-06,
+              "output_token": 1.4e-05,
+              "cache_input_token": 6e-07
             },
             {
-              "input_token": 0.000004,
-              "output_token": 0.000016,
-              "cache_input_token": 8e-7
+              "input_token": 4e-06,
+              "output_token": 1.6e-05,
+              "cache_input_token": 8e-07
             }
           ]
         }
@@ -1295,7 +1331,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.7-flash"
+        "provider_model_id": "glm-4.7-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1308,55 +1345,58 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.7-flashx"
+        "provider_model_id": "glm-4.7-flashx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 5e-7,
-        "output_token": 0.000003,
-        "cache_input_token": 1e-7
+        "input_token": 5e-07,
+        "output_token": 3e-06,
+        "cache_input_token": 1e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.6"
+        "provider_model_id": "glm-4.6",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000002,
-        "output_token": 0.000008,
-        "cache_input_token": 4e-7
+        "input_token": 2e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 4e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.6v"
+        "provider_model_id": "glm-4.6v",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000001,
-        "output_token": 0.000003,
-        "cache_input_token": 2e-7,
+        "input_token": 1e-06,
+        "output_token": 3e-06,
+        "cache_input_token": 2e-07,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000001,
-              "output_token": 0.000003,
-              "cache_input_token": 2e-7
+              "input_token": 1e-06,
+              "output_token": 3e-06,
+              "cache_input_token": 2e-07
             },
             {
-              "input_token": 0.000002,
-              "output_token": 0.000006,
-              "cache_input_token": 4e-7
+              "input_token": 2e-06,
+              "output_token": 6e-06,
+              "cache_input_token": 4e-07
             }
           ]
         }
@@ -1364,7 +1404,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.6v-flash"
+        "provider_model_id": "glm-4.6v-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1377,29 +1418,30 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.6v-flashx"
+        "provider_model_id": "glm-4.6v-flashx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 1.5e-7,
-        "output_token": 0.0000015,
-        "cache_input_token": 3e-8,
+        "input_token": 1.5e-07,
+        "output_token": 1.5e-06,
+        "cache_input_token": 3e-08,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 1.5e-7,
-              "output_token": 0.0000015,
-              "cache_input_token": 3e-8
+              "input_token": 1.5e-07,
+              "output_token": 1.5e-06,
+              "cache_input_token": 3e-08
             },
             {
-              "input_token": 3e-7,
-              "output_token": 0.000003,
-              "cache_input_token": 3e-8
+              "input_token": 3e-07,
+              "output_token": 3e-06,
+              "cache_input_token": 3e-08
             }
           ]
         }
@@ -1407,55 +1449,58 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5"
+        "provider_model_id": "glm-4.5",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000002,
-        "output_token": 0.000008,
-        "cache_input_token": 4e-7
+        "input_token": 2e-06,
+        "output_token": 8e-06,
+        "cache_input_token": 4e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5-x"
+        "provider_model_id": "glm-4.5-x",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000008,
-        "output_token": 0.000016,
-        "cache_input_token": 0.0000016
+        "input_token": 8e-06,
+        "output_token": 1.6e-05,
+        "cache_input_token": 1.6e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5-air"
+        "provider_model_id": "glm-4.5-air",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 8e-7,
-        "output_token": 0.000006,
-        "cache_input_token": 1.6e-7,
+        "input_token": 8e-07,
+        "output_token": 6e-06,
+        "cache_input_token": 1.6e-07,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 8e-7,
-              "output_token": 0.000006,
-              "cache_input_token": 1.6e-7
+              "input_token": 8e-07,
+              "output_token": 6e-06,
+              "cache_input_token": 1.6e-07
             },
             {
-              "input_token": 0.0000012,
-              "output_token": 0.000008,
-              "cache_input_token": 2.4e-7
+              "input_token": 1.2e-06,
+              "output_token": 8e-06,
+              "cache_input_token": 2.4e-07
             }
           ]
         }
@@ -1463,42 +1508,44 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5-airx"
+        "provider_model_id": "glm-4.5-airx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000004,
-        "output_token": 0.000012,
-        "cache_input_token": 8e-7
+        "input_token": 4e-06,
+        "output_token": 1.2e-05,
+        "cache_input_token": 8e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5v"
+        "provider_model_id": "glm-4.5v",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000002,
-        "output_token": 0.000006,
-        "cache_input_token": 4e-7,
+        "input_token": 2e-06,
+        "output_token": 6e-06,
+        "cache_input_token": 4e-07,
         "tiers": {
           "dimension": "input_tokens",
           "mode": "volume",
           "steps": [
             {
               "up_to": 32768,
-              "input_token": 0.000002,
-              "output_token": 0.000006,
-              "cache_input_token": 4e-7
+              "input_token": 2e-06,
+              "output_token": 6e-06,
+              "cache_input_token": 4e-07
             },
             {
-              "input_token": 0.000004,
-              "output_token": 0.000012,
-              "cache_input_token": 8e-7
+              "input_token": 4e-06,
+              "output_token": 1.2e-05,
+              "cache_input_token": 8e-07
             }
           ]
         }
@@ -1506,118 +1553,115 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4-32b-0414-128k"
-      },
-      "pricing": {
-        "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
-        "verified_at": "2026-09-26",
-        "currency": "USD",
-        "input_token": 1e-7,
-        "output_token": 1e-7
-      }
-    },
-    {
-      "match": {
-        "provider_model_id": "glm-5.3-flashx"
+        "provider_model_id": "glm-5.3-flashx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000002,
-        "output_token": 0.000007,
-        "cache_input_token": 5e-7
+        "input_token": 2e-06,
+        "output_token": 7e-06,
+        "cache_input_token": 5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4-plus"
+        "provider_model_id": "glm-4-plus",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000005,
-        "output_token": 0.000005,
-        "cache_input_token": 0.0000025
+        "input_token": 5e-06,
+        "output_token": 5e-06,
+        "cache_input_token": 2.5e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4-air-250414"
+        "provider_model_id": "glm-4-air-250414",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 5e-7,
-        "output_token": 5e-7,
-        "cache_input_token": 2.5e-7
+        "input_token": 5e-07,
+        "output_token": 5e-07,
+        "cache_input_token": 2.5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4-airx"
+        "provider_model_id": "glm-4-airx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.00001,
-        "output_token": 0.00001
+        "input_token": 1e-05,
+        "output_token": 1e-05
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-4-assistant"
+        "provider_model_id": "glm-4-assistant",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000005,
-        "output_token": 0.000005
+        "input_token": 5e-06,
+        "output_token": 5e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-z1-air"
+        "provider_model_id": "glm-z1-air",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 5e-7,
-        "output_token": 5e-7
+        "input_token": 5e-07,
+        "output_token": 5e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-z1-airx"
+        "provider_model_id": "glm-z1-airx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000005,
-        "output_token": 0.000005
+        "input_token": 5e-06,
+        "output_token": 5e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-z1-flashx"
+        "provider_model_id": "glm-z1-flashx",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 1e-7,
-        "output_token": 1e-7
+        "input_token": 1e-07,
+        "output_token": 1e-07
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-z1-flash"
+        "provider_model_id": "glm-z1-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1630,7 +1674,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4.5-flash"
+        "provider_model_id": "glm-4.5-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1643,20 +1688,22 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4v-plus-0111"
+        "provider_model_id": "glm-4v-plus-0111",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.000004,
-        "output_token": 0.000004,
-        "cache_input_token": 0.000002
+        "input_token": 4e-06,
+        "output_token": 4e-06,
+        "cache_input_token": 2e-06
       }
     },
     {
       "match": {
-        "provider_model_id": "cogvideox-2"
+        "provider_model_id": "cogvideox-2",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1668,7 +1715,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-tts-clone"
+        "provider_model_id": "glm-tts-clone",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1680,19 +1728,21 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-4-voice"
+        "provider_model_id": "glm-4-voice",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 0.00008,
-        "output_token": 0.00008
+        "input_token": 8e-05,
+        "output_token": 8e-05
       }
     },
     {
       "match": {
-        "provider_model_id": "glm-realtime-flash"
+        "provider_model_id": "glm-realtime-flash",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1704,7 +1754,8 @@
     },
     {
       "match": {
-        "provider_model_id": "glm-realtime-air"
+        "provider_model_id": "glm-realtime-air",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
@@ -1716,13 +1767,14 @@
     },
     {
       "match": {
-        "provider_model_id": "rerank"
+        "provider_model_id": "rerank",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing",
         "verified_at": "2026-09-26",
         "currency": "CNY",
-        "input_token": 8e-7,
+        "input_token": 8e-07,
         "output_token": 0
       }
     }

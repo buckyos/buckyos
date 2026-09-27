@@ -287,56 +287,40 @@ async function restartAicc(session: GatewaySession, input: Options): Promise<str
   if (!input.allowAiccRestart) {
     throw new Error("AICC restart requires runner.allow_aicc_restart=true or --allow-aicc-restart");
   }
-  const output = await new Deno.Command("pgrep", {
-    args: ["-f", "/bin/aicc/aicc$"],
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
+  const processCommand = (command: string, args: string[]) => new Deno.Command(
+    input.restartViaDocker ? "docker" : command,
+    {
+      args: input.restartViaDocker
+        ? ["run", "--rm", "--pid=host", "alpine:latest", command, ...args]
+        : args,
+      stdout: "piped",
+      stderr: "piped",
+    },
+  ).output();
+  const output = await processCommand("pgrep", ["-f", "/bin/aicc/aicc$"]);
   if (!output.success) throw new Error("cannot locate the supervised AICC process");
   const pids = new TextDecoder().decode(output.stdout).trim().split(/\s+/)
     .filter(Boolean).map(Number).filter((pid) => Number.isInteger(pid) && pid > 1);
   if (pids.length !== 1) throw new Error(`expected one supervised AICC process, found ${pids.length}`);
   const oldPid = pids[0];
-  const inspected = await new Deno.Command("ps", {
-    args: ["-p", String(oldPid), "-o", "args="],
-    stdout: "piped",
-    stderr: "piped",
-  }).output();
-  const command = new TextDecoder().decode(inspected.stdout).trim();
+  const inspected = await processCommand("cat", [`/proc/${oldPid}/cmdline`]);
+  const command = new TextDecoder().decode(inspected.stdout).replace(/\0/g, " ").trim();
   if (!inspected.success || !command.endsWith("/bin/aicc/aicc")) {
     throw new Error(`refusing to restart unexpected PID ${oldPid}`);
   }
-  try {
-    Deno.kill(oldPid, "SIGTERM");
-  } catch (error) {
-    if (!(error instanceof Deno.errors.PermissionDenied) || !input.restartViaDocker) throw error;
-    const killed = await new Deno.Command("docker", {
-      args: [
-        "run",
-        "--rm",
-        "--privileged",
-        "--pid=host",
-        "alpine:latest",
-        "kill",
-        "-TERM",
-        String(oldPid),
-      ],
-      stdout: "piped",
-      stderr: "piped",
-    }).output();
+  if (input.restartViaDocker) {
+    const killed = await processCommand("kill", ["-TERM", String(oldPid)]);
     if (!killed.success) {
-      throw new Error(
-        `configured Docker AICC restart failed: ${new TextDecoder().decode(killed.stderr).trim()}`,
-      );
+      throw new Error(`configured Docker AICC restart failed: ${new TextDecoder().decode(killed.stderr).trim()}`);
     }
+  } else {
+    Deno.kill(oldPid, "SIGTERM");
   }
   const deadline = Date.now() + input.timeoutMs;
   let last = "restart not observed";
   while (Date.now() < deadline) {
     try {
-      const current = await new Deno.Command("pgrep", {
-        args: ["-f", "/bin/aicc/aicc$"], stdout: "piped", stderr: "null",
-      }).output();
+      const current = await processCommand("pgrep", ["-f", "/bin/aicc/aicc$"]);
       const pid = Number(new TextDecoder().decode(current.stdout).trim());
       if (current.success && Number.isInteger(pid) && pid > 1 && pid !== oldPid) {
         await session.aicc.call("models.list", {});

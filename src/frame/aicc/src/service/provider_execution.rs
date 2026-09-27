@@ -845,11 +845,12 @@ impl RuntimeProviderExecutionPort {
                     .map_err(ProviderStartFailure::after_accept)?;
                 let decoded = self
                     .codecs
-                    .decode(
+                    .decode_with_input(
                         &call.protocol_adapter_id,
                         &call.operation,
                         call.api_type,
                         response,
+                        &call.input,
                     )
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
@@ -983,6 +984,15 @@ impl RuntimeProviderExecutionPort {
                         },
                     )
                     .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
+                let output_video_seconds = self
+                    .codecs
+                    .output_video_seconds(
+                        &call.protocol_adapter_id,
+                        &call.operation,
+                        call.api_type,
+                        &request,
+                    )
+                    .map_err(|error| ProviderStartFailure::before_accept(error, false))?;
                 let response = Self::send_cancelable(cancellation, transport.send(request))
                     .await
                     .map_err(ProviderStartFailure::after_accept)?;
@@ -1029,6 +1039,7 @@ impl RuntimeProviderExecutionPort {
                             },
                         )?,
                         resolved_parameters: call.input.resolved_parameters.clone(),
+                        output_video_seconds,
                         request_timeout_ms: call.context.limits.request_timeout.as_millis() as u64,
                         max_request_bytes: call.context.limits.max_request_bytes as u64,
                         max_response_bytes: call.context.limits.max_response_bytes as u64,
@@ -1111,6 +1122,7 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
             NativeTaskOutput::Status {
                 state,
                 result_ref,
+                result_usage,
                 result_artifacts,
                 ..
             } if state == crate::protocol::NativeTaskState::Succeeded => {
@@ -1127,6 +1139,20 @@ impl ProviderExecutionPort for RuntimeProviderExecutionPort {
                     .await?
                 {
                     NativeTaskOutput::Result(mut output) => {
+                        let seconds =
+                            result_usage
+                                .and_then(|usage| usage.video_seconds)
+                                .or_else(|| {
+                                    binding
+                                        .resume
+                                        .as_ref()?
+                                        .output_video_seconds
+                                        .map(|seconds| seconds as f64)
+                                });
+                        if let Some(seconds) = seconds {
+                            let usage = output.usage.get_or_insert_with(Default::default);
+                            usage.video_seconds = usage.video_seconds.or(Some(seconds));
+                        }
                         let mut artifact_refs = binding.result_artifacts.clone();
                         artifact_refs.extend(result_artifacts);
                         output.bind_provider_artifact_refs(&artifact_refs);

@@ -328,6 +328,42 @@ pub(crate) struct Pricing {
     pub time_windows: Vec<PricingTimeWindow>,
 }
 
+impl Pricing {
+    pub(crate) fn has_token_rates(&self) -> bool {
+        [
+            self.input_token,
+            self.output_token,
+            self.cache_input_token,
+            self.cache_write_input_token,
+            self.cache_write_1h_input_token,
+            self.audio_input_token,
+            self.image_input_token,
+            self.audio_output_token,
+            self.image_output_token,
+        ]
+        .into_iter()
+        .chain(
+            self.tiers
+                .iter()
+                .flat_map(|tiers| &tiers.steps)
+                .flat_map(|step| {
+                    [
+                        step.input_token,
+                        step.output_token,
+                        step.cache_input_token,
+                        step.cache_write_input_token,
+                        step.cache_write_1h_input_token,
+                        step.audio_input_token,
+                        step.image_input_token,
+                        step.audio_output_token,
+                        step.image_output_token,
+                    ]
+                }),
+        )
+        .any(|rate| rate.is_some())
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PricingUnit {

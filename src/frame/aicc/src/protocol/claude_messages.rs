@@ -818,9 +818,13 @@ fn apply_resolved_parameters(
         }
         let valid = match name.as_str() {
             "max_tokens" | "top_k" => value.as_u64().is_some(),
-            "temperature" | "top_p" => value.as_f64().is_some(),
+            "temperature" | "top_p" => value
+                .as_f64()
+                .is_some_and(|value| value.is_finite() && (0.0..=1.0).contains(&value)),
             "metadata" | "output_config" | "thinking" | "tool_choice" => value.is_object(),
-            "stop_sequences" => value.is_array(),
+            "stop_sequences" => value
+                .as_array()
+                .is_some_and(|values| values.iter().all(Value::is_string)),
             "service_tier" => value.is_string(),
             "stream" => value.is_boolean(),
             _ => false,
@@ -829,6 +833,11 @@ fn apply_resolved_parameters(
             return Err(ProtocolError::invalid_request(format!(
                 "resolved Claude parameter `{name}` has an invalid type"
             )));
+        }
+        if matches!(name.as_str(), "temperature" | "top_p" | "stop_sequences")
+            && body.contains_key(name)
+        {
+            continue;
         }
         body.insert(name.clone(), value.clone());
     }
@@ -2139,5 +2148,40 @@ mod billing_usage_tests {
         .unwrap()
         .unwrap();
         assert!((pinned.completion_cost(&usage).unwrap().amount - 0.000347).abs() < 1e-12);
+    }
+}
+
+#[cfg(test)]
+mod review_parameter_tests {
+    use super::*;
+    #[test]
+    fn canonical_sampling_fields_win_and_options_remain_validated() {
+        let mut body = Map::from_iter([
+            ("temperature".into(), json!(0.2)),
+            ("top_p".into(), json!(0.3)),
+            ("stop_sequences".into(), json!(["END"])),
+        ]);
+        let canonical = body.clone();
+        apply_resolved_parameters(
+            &mut body,
+            &BTreeMap::from_iter([
+                ("temperature".into(), json!(0.9)),
+                ("top_p".into(), json!(0.8)),
+                ("stop_sequences".into(), json!(["STOP"])),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(body, canonical);
+        for (field, value) in [
+            ("temperature", json!(-1)),
+            ("top_p", json!(2)),
+            ("stop_sequences", json!([1])),
+        ] {
+            assert!(apply_resolved_parameters(
+                &mut Map::new(),
+                &BTreeMap::from([(field.into(), value)])
+            )
+            .is_err());
+        }
     }
 }

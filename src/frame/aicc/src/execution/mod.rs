@@ -379,20 +379,7 @@ impl PinnedPricingSnapshot {
         if currency.is_empty() {
             return Err(invalid_pinned_pricing());
         }
-        let has_token_price = [
-            pricing.input_token,
-            pricing.output_token,
-            pricing.cache_input_token,
-            pricing.cache_write_input_token,
-            pricing.cache_write_1h_input_token,
-            pricing.audio_input_token,
-            pricing.image_input_token,
-            pricing.audio_output_token,
-            pricing.image_output_token,
-        ]
-        .iter()
-        .any(Option::is_some);
-        let basis = if has_token_price {
+        let basis = if pricing.has_token_rates() {
             if pricing.unit.is_some()
                 || pricing.input_token.is_some_and(invalid_price)
                 || pricing.cache_input_token.is_some_and(invalid_price)
@@ -690,6 +677,7 @@ pub(crate) struct NativeTaskResumeDescriptor {
     pub credential: Option<ResumeCredential>,
     pub resource_access_context: ResourceAccessContext,
     pub resolved_parameters: BTreeMap<String, Value>,
+    pub output_video_seconds: Option<u64>,
     pub request_timeout_ms: u64,
     pub max_request_bytes: u64,
     pub max_response_bytes: u64,
@@ -1358,25 +1346,51 @@ impl ExecutionEngine {
             return self.current_receipt(task_id).await;
         }
         let mut next_poll_after = initial_poll_after;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30 * 60);
         loop {
+            if tokio::time::Instant::now() >= deadline {
+                return self
+                    .finish_failure(
+                        task_id,
+                        aicc_error(
+                            AiccErrorCode::Timeout,
+                            "native Provider task exceeded the 30 minute polling deadline",
+                            false,
+                        ),
+                    )
+                    .await;
+            }
             if let Some(delay) = next_poll_after.take().filter(|delay| !delay.is_zero()) {
                 tokio::select! {
                     _ = cancellation.cancelled() => {
                         self.remove_active(task_id);
                         return self.current_receipt(task_id).await;
                     }
-                    _ = tokio::time::sleep(delay) => {}
+                    _ = tokio::time::sleep_until((tokio::time::Instant::now() + delay).min(deadline)) => {}
                 }
             }
             if cancellation.is_cancelled() {
                 self.remove_active(task_id);
                 return self.current_receipt(task_id).await;
             }
-            match self
-                .providers
-                .poll_native(&binding, cancellation.clone())
-                .await
-            {
+            let polled = tokio::time::timeout_at(
+                deadline,
+                self.providers.poll_native(&binding, cancellation.clone()),
+            )
+            .await;
+            let Ok(polled) = polled else {
+                return self
+                    .finish_failure(
+                        task_id,
+                        aicc_error(
+                            AiccErrorCode::Timeout,
+                            "native Provider task exceeded the 30 minute polling deadline",
+                            false,
+                        ),
+                    )
+                    .await;
+            };
+            match polled {
                 Ok(NativeTaskPoll::Pending(state, progress, retry_after)) => {
                     if state.is_terminal() {
                         let error = aicc_error(
@@ -1401,7 +1415,7 @@ impl ExecutionEngine {
                             json_state("provider_progress", progress, record.trace_id.as_deref()),
                         )
                         .await?;
-                    next_poll_after = Some(retry_after.unwrap_or(Duration::from_millis(250)));
+                    next_poll_after = Some(retry_after.unwrap_or(Duration::from_secs(3)));
                 }
                 Ok(NativeTaskPoll::Complete(output)) => {
                     return self
@@ -2170,6 +2184,7 @@ mod tests {
             resolved_parameters: BTreeMap::from([("provider_model_id".into(), json!("model"))]),
             resource_access_context: ResourceAccessContext::new("tenant-a", "alice", "request-a")
                 .unwrap(),
+            output_video_seconds: None,
             request_timeout_ms: 10_000,
             max_request_bytes: 1_024,
             max_response_bytes: 2_048,
@@ -3776,6 +3791,24 @@ mod billing_boundary_tests {
         .unwrap()
         .unwrap()
     }
+    #[test]
+    fn tiers_only_prices_bill_actual_usage() {
+        let pricing = pin(
+            json!({"currency":"CNY","tiers":{"dimension":"input_tokens","steps":[
+                {"up_to":100,"input_token":1.0,"output_token":2.0},
+                {"input_token":3.0,"output_token":4.0}
+            ]}}),
+        );
+        for (input, expected) in [(99, 119.0), (100, 340.0)] {
+            let usage = AiUsage {
+                input_tokens: Some(input),
+                output_tokens: Some(10),
+                ..Default::default()
+            };
+            assert_eq!(pricing.completion_cost(&usage).unwrap().amount, expected);
+        }
+    }
+
     #[test]
     fn missing_prices_missing_usage_and_uncovered_tiers_never_become_free() {
         let mut usage = AiUsage {

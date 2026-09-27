@@ -630,6 +630,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         ) as Record<string, unknown>;
         const task = (result.task ?? {}) as Record<string, unknown>;
         task.status = status;
+        if (status === "failed") task.error = { code: "content_rejected", message: "Video content was rejected" };
         if (selection.scenario === "async_artifact_unavailable") {
           task.content = {
             url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
@@ -691,6 +692,14 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
             },
         );
       }
+      if (contract.async_protocol === "qwen_media" && url.pathname === "/api/v1/tasks/qwen_task_mock_1" && request.method === "GET") {
+        const prior = requests.filter((captured) => captured.selection.contract_id === selection!.contract_id && captured.pathname === url.pathname);
+        const errors = captureAuxiliary(prior.length === 0 ? "poll" : "result");
+        if (errors.length) return json(response, 400, { type: "t15_mock_contract_violation", errors });
+        if (selection.scenario === "async_failed") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "FAILED", code: "DataInspectionFailed", message: "Generated media was blocked" } });
+        if (selection.scenario === "async_poll_timeout") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "RUNNING" } });
+        return json(response, 200, rewriteMockUrls(contract.async_result_fixture ?? {}, request.headers.host ?? "127.0.0.1", ""));
+      }
       if (
         contract.async_protocol === "doubao_video" &&
         url.pathname === "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" &&
@@ -710,7 +719,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         const errors = captureAuxiliary(step);
         if (errors.length > 0) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         if (selection.scenario === "async_failed") {
-          return json(response, 200, { id: "doubao_video_mock_1", status: "failed" });
+          return json(response, 200, { id: "doubao_video_mock_1", status: "failed", error: { code: "OutputVideoSensitiveContentDetected", message: "Generated video failed content inspection" } });
         }
         if (selection.scenario === "async_poll_timeout") {
           return json(response, 200, { id: "doubao_video_mock_1", status: "processing" });
@@ -720,9 +729,10 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           : {
             id: "doubao_video_mock_1",
             status: "succeeded",
-            content: { video_url: { url: selection.scenario === "async_artifact_unavailable"
+            duration: 5, usage: { completion_tokens: 100, total_tokens: 100 },
+            content: { video_url: selection.scenario === "async_artifact_unavailable"
               ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-              : `http://${request.headers.host}/artifacts/doubao.mp4` } },
+              : `http://${request.headers.host}/artifacts/doubao.mp4` },
           });
       }
       if (
@@ -751,6 +761,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           return json(response, 200, {
             id: "glm_video_mock_1",
             task_status: "FAIL",
+            error: { code: "1301", message: "Content inspection failed" },
           });
         }
         if (selection.scenario === "async_poll_timeout") {
@@ -835,6 +846,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           progress: 100,
           created_at: 1770000000,
           completed_at: 1770000001,
+          seconds: "4",
         });
       }
       if (

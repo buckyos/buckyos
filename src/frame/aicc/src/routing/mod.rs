@@ -168,6 +168,7 @@ pub(crate) struct RoutingTrace {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub estimated_cost: Option<Money>,
     pub runtime_failover_count: u32,
+    pub warnings: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub logical_item_sources: Vec<LogicalItemSourceTrace>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -722,6 +723,16 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             scheduler_profile: scheduler_profile_name(&profile).into(),
             score_breakdown: score_breakdown(&selected_score, &weights),
             estimated_cost: selected_result.estimated_cost.clone(),
+            warnings: [
+                selected_result
+                    .estimated_cost
+                    .is_none()
+                    .then(|| "Selected model has no verified cost estimate".to_owned()),
+                was_fallback.then(|| "Routing used a fallback model".to_owned()),
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
             runtime_failover_count: 0,
             logical_item_sources: logical_sources(&ranked),
             logical_admission: admission_trace(admissions),

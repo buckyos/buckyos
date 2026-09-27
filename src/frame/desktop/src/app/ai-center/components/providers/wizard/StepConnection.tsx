@@ -187,7 +187,11 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
   const providerType = draft.provider_profile_id
   const profile = catalog?.providers.find((item) => item.provider_profile_id === providerType)
   const isDynamicSn = providerType === 'sn' && draft.auth_mode === 'dynamic_login'
-  const operationBaseUrls = Object.entries(draft.operation_base_urls)
+  const usesCustomBase = profile && draft.base_url && ![profile.base_url, ...Object.values(profile.region_base_urls)]
+    .some((url) => url.replace(/\/+$/, '') === draft.base_url.replace(/\/+$/, ''))
+  const inheritedOperationUrls = Object.fromEntries(Object.entries(profile?.operation_base_urls ?? {})
+    .map(([operation, url]) => [operation, usesCustomBase ? draft.base_url : url]))
+  const operationBaseUrls = Object.entries({ ...inheritedOperationUrls, ...draft.operation_base_urls })
   const regionField = profile?.connection_fields.region
   const policyRegionField = profile?.connection_fields.policy_region
   const defaultRegion = regionField?.default_value ?? regionField?.allowed_values[0]
@@ -276,14 +280,17 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
               key={operation}
               label={`${t('aiCenter.wizard.operationBaseUrl', 'Operation Base URL')} · ${operation}`}
               value={url}
-              onChange={(next) => onUpdate({
-                operation_base_urls: { ...draft.operation_base_urls, [operation]: next },
-              })}
+              onChange={(next) => {
+                const overrides = { ...draft.operation_base_urls }
+                if (!next.trim() || next === inheritedOperationUrls[operation]) delete overrides[operation]
+                else overrides[operation] = next
+                onUpdate({ operation_base_urls: overrides })
+              }}
               options={profile?.operation_base_urls?.[operation]
                 ? [{
                   key: operation,
                   label: t('aiCenter.wizard.defaultEndpoint', 'Default'),
-                  url: profile.operation_base_urls[operation],
+                  url: inheritedOperationUrls[operation],
                 }]
                 : []}
               placeholder={profile?.operation_base_urls?.[operation] || 'https://'}

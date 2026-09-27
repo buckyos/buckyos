@@ -1902,7 +1902,7 @@ export function variantCells(
         model.provider_actual_model_id === modelId
       );
       if (!baseExists) {
-        continue;
+        throw new Error(`${inventory.provider_driver} is missing official base model ${modelId}`);
       }
       for (const [variant, options] of Object.entries(rule.variants)) {
         const key = `${modelId}:${variant}`;

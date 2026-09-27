@@ -527,6 +527,8 @@ impl ProtocolError {
                 "余额不足",
                 "请充值",
                 "insufficient balance",
+                "insufficient credits",
+                "requires more credits",
                 "insufficient quota",
                 "quota exhausted",
                 "quota exceeded",
@@ -550,7 +552,9 @@ impl ProtocolError {
     }
 
     fn requires_candidate_change(&self) -> bool {
-        self.is_model_unavailable()
+        self.http_status == Some(402)
+            || self.is_model_unavailable()
+            || self.is_account_exhausted()
             || contains_any(
                 &self.message,
                 &[
@@ -662,6 +666,21 @@ mod tests {
             ProtocolError::new(ProtocolErrorKind::Authentication, "invalid API key");
         assert!(!authentication.retry_same_model());
         assert!(!authentication.allows_model_failover());
+    }
+
+    #[test]
+    fn payment_required_always_changes_candidate_without_retrying() {
+        for message in [
+            "Insufficient credits",
+            "requires more credits",
+            "Payment required",
+        ] {
+            let error = ProtocolError::new(ProtocolErrorKind::ProviderRejected, message)
+                .with_http_status(402)
+                .with_retry_after(Some(Duration::from_secs(1)));
+            assert!(!error.retry_same_model());
+            assert!(error.allows_model_failover());
+        }
     }
 
     #[test]

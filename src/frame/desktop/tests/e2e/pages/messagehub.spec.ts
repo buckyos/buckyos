@@ -1,6 +1,6 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type Page } from '@playwright/test'
 
-async function getComposerMetrics(page: Parameters<typeof test>[0]['page']) {
+async function getComposerMetrics(page: Page) {
   return page.evaluate(() => {
     const textarea = document.querySelector('textarea')
     const composer = document.querySelector('[data-testid="message-composer"]')
@@ -82,7 +82,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 375, height: 812 
       element.scrollHeight - element.clientHeight - element.scrollTop
     ))).toBeLessThanOrEqual(1)
     await expect.poll(() => history.locator('img').evaluateAll((images) => (
-      images.every((image) => image.complete)
+      images.every((image) => image instanceof HTMLImageElement && image.complete)
     ))).toBe(true)
     await history.hover()
 

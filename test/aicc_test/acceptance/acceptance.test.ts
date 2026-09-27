@@ -130,6 +130,11 @@ function t15FieldValue(
   if (field === "messages") {
     return [{ role: "user", content: "BUCKYOS-AICC-4827" }];
   }
+  if (field === "input" && contract.operation.startsWith("dashscope.")) {
+    return contract.operation === "dashscope.image_edit"
+      ? { messages: [{ role: "user", content: [{ image: "https://example.com/input.png" }, { text: "BUCKYOS-AICC-4827" }] }] }
+      : { prompt: "BUCKYOS-AICC-4827" };
+  }
   if (field === "instances") return [{ prompt: "BUCKYOS-AICC-4827" }];
   if (field === "documents") return ["wrong", "BUCKYOS-AICC-4827"];
   if (field === "content" && contract.async_protocol === "doubao_video") {
@@ -205,7 +210,7 @@ function t15ProviderRequest(
   );
   if (contract.api_types.includes("decision")) Object.assign(fields, contract.operation === "decisions.create" ? openrouterDecisionFixture.wire_request : decisionFixture.wire_request, {model});
   if (contract.id === "minimax.music-generation.v1") {
-    fields.is_instrumental = true;
+    fields.lyrics = "[Verse]\nBUCKYOS-AICC-4827";
   }
   if (contract.content_type === "multipart/form-data") {
     const form = new FormData();
@@ -579,6 +584,12 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
   const instance = "doubao-main";
   const models: ProviderInventory["models"] = [
     {
+      exact_model: `doubao-seed-2.1-pro@${instance}`,
+      provider_model_id: "doubao-seed-2.1-pro",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
       exact_model: `deepseek-v4-flash@${instance}`,
       provider_model_id: "deepseek-v4-flash",
       api_types: ["llm"],
@@ -600,6 +611,8 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
     }]),
   });
   assert.deepEqual(result.mismatches, []);
+  assert.deepEqual(result.cells.filter((cell) => cell.provider_model_id === "doubao-seed-2.1-pro")
+    .map((cell) => cell.api_type).sort(), ["llm", "vision.caption", "vision.ocr"]);
   assert.deepEqual(
     result.cells.filter((cell) => cell.provider_model_id === "deepseek-v4-flash")
       .map((cell) => cell.api_type),
@@ -3305,6 +3318,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       "minimax_video_v2",
       "glm_video",
       "doubao_video",
+      "qwen_media",
     ]),
   );
 
@@ -3608,11 +3622,9 @@ test("T1.5 variants are independently derived from official expectations", async
       }),
     /undocumented metadata variant gpt-5\.5:reasoning-max/,
   );
-  assert.doesNotThrow(() =>
-    variantCells(catalog, {
-      ...inventory,
-      models: [],
-    })
+  assert.throws(() =>
+    variantCells(catalog, { ...inventory, models: [] }),
+    /missing official base model/,
   );
 });
 
@@ -4052,5 +4064,26 @@ test("OpenRouter complete official catalog checks alias drift and plans one Jev 
     (body: any) => body.data.find((m:any)=>m.id==="typesafe/jev-1.13").architecture.output_modalities=["text"],
   ]) {
     const bad=structuredClone(fixture); change(bad); await assert.rejects(fetchIds(bad),/drift/);
+  }
+});
+
+
+test("review media wire regressions reject invalid sizes, duration, missing input, and removed fields", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  for (const [provider, id, valid, invalid] of [
+    ["qwen", "qwen.dashscope.video_synthesis.v1", { parameters: {duration:5,size:"1280*720"} }, [{parameters:{duration:5.5}}, {parameters:{ratio:"16:9"}}, {input:{}}]],
+    ["qwen", "qwen.dashscope.image_synthesis.v1", { parameters:{size:"1024*1024",n:2} }, [{parameters:{size:"1024x1024"}}, {input:{}}]],
+    ["qwen", "qwen.dashscope.image_edit.v1", {}, [{input:{messages:[]}}, {input:{messages:[{role:"user",content:[{text:"missing image"}]}]}}]],
+    ["doubao", "doubao.images.plan-v3", {size:"2848x1600"}, [{size:"16:9"}]],
+    ["doubao", "doubao.video-tasks.plan-v3", {duration:5}, [{duration:5.5}, {operation:"extend"}, {continuation_handle:"opaque"}]],
+    ["minimax", "minimax.music-generation.v1", {lyrics:"[Verse]\nhello"}, [{lyrics:""}]],
+  ] as Array<[string,string,Record<string,unknown>,Array<Record<string,unknown>>]>) {
+    const contract = protocolContract(catalog, provider, id);
+    const model = catalog.providers.find((item) => item.provider_driver === provider)!.test_model_ids[contract.api_types[0]];
+    const request = t15ProviderRequest("https://mock.test", contract, model, valid);
+    const wire = { method:"POST",pathname:new URL(request.url).pathname,query:new URLSearchParams(),headers:new Headers(request.init.headers),body:JSON.parse(request.init.body as string) };
+    wire.headers.set("content-type","application/json");
+    assert.deepEqual(validateProviderRequest(contract,wire),[],id);
+    for (const fields of invalid) assert.ok(validateProviderRequest(contract,{...wire,body:{...wire.body,...fields}}).length > 0,`${id} accepted ${JSON.stringify(fields)}`);
   }
 });

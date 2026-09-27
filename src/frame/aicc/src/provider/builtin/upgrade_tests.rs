@@ -753,7 +753,7 @@ fn provider_normalization_is_scoped_and_reports_collisions() {
 }
 
 #[test]
-fn migrated_default_prices_fill_regions_without_a_newer_channel_price() {
+fn domestic_prices_do_not_fill_global_regions() {
     let catalog = catalog();
     let providers = builtin_provider_registry(&catalog).unwrap();
     let profile = providers
@@ -771,13 +771,15 @@ fn migrated_default_prices_fill_regions_without_a_newer_channel_price() {
             &providers.codecs(),
         )
         .unwrap();
-        assert!(inv
-            .models
-            .iter()
-            .find(|m| m.provider_model_id == "glm-5.3")
-            .unwrap()
-            .pricing
-            .is_some());
+        assert!(
+            inv.models
+                .iter()
+                .find(|m| m.provider_model_id == "glm-5.3")
+                .unwrap()
+                .pricing
+                .is_some()
+                == (region == "china")
+        );
     }
 }
 
@@ -790,7 +792,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("doubao", 18),
         ("fal", 4),
         ("gemini", 29),
-        ("glm", 102),
+        ("glm", 101),
         ("kimi", 4),
         ("minimax", 23),
         ("openai", 28),
@@ -860,7 +862,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 311);
+    assert_eq!(pricing_count, 310);
 }
 
 #[test]
@@ -906,7 +908,7 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
     let k3 = kimi
         .model_pricing
         .iter()
-        .find(|rule| rule.id.as_deref() == Some("kimi-k3"))
+        .find(|rule| rule.pricing.cache_write_input_token == Some(2e-5))
         .unwrap();
     assert_eq!(k3.pricing.cache_write_input_token, Some(2e-5));
     assert_eq!(k3.pricing.cache_write_1h_input_token, Some(4e-5));
@@ -930,4 +932,301 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
         .find(|rule| rule.pricing.rules.iter().any(|rule| rule.amount == 0.33))
         .unwrap();
     assert!(h3_max.pricing.rules.iter().any(|rule| rule.amount == 0.33));
+}
+
+#[test]
+fn domestic_currency_never_matches_global_and_minimax_vision_matches_contract() {
+    let catalog = catalog();
+    for (provider, model) in [
+        ("glm", "glm-5.3"),
+        ("minimax", "MiniMax-M3"),
+        ("kimi", "kimi-k3"),
+    ] {
+        let context = BTreeMap::from([("region".into(), json!("global"))]);
+        let pricing = catalog
+            .resolve_provider_rule(provider, model, &context)
+            .unwrap()
+            .and_then(|rule| rule.action.pricing);
+        assert!(
+            pricing.is_none_or(|pricing| pricing.currency != "CNY"),
+            "{provider}/{model}"
+        );
+    }
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let profile = registry
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "minimax")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "minimax"),
+        discovery(&["MiniMax-M3", "MiniMax-M2.7"]),
+        &catalog,
+        &registry.codecs(),
+    )
+    .unwrap();
+    for model in &inventory.models {
+        assert_eq!(
+            model.api_types.contains(&ApiType::VisionCaption),
+            model.provider_model_id == "MiniMax-M3"
+        );
+    }
+    assert_eq!(inventory.models.len(), 2);
+}
+
+#[test]
+fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_validated() {
+    let catalog = catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let binding = registry
+        .resolve(BuiltinProviderRequest {
+            provider_profile_id: "doubao",
+            protocol_adapter_id: "doubao-responses",
+            auth_mode: ProviderAuthMode::ApiKey,
+            credential_kind: None,
+            configured_inventory: None,
+        })
+        .unwrap();
+    let custom = binding
+        .connection
+        .resolve(ProviderConnectionInput {
+            base_url: Some("https://proxy.example/api/v3"),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(custom.operation_base_urls.is_empty());
+    let defaults = binding.connection.resolve(Default::default()).unwrap();
+    assert!(defaults
+        .operation_base_urls
+        .contains_key("tts.unidirectional"));
+    let overrides = BTreeMap::from([(
+        "tts.unidirectional".into(),
+        "https://proxy.example/tts".into(),
+    )]);
+    let explicit = binding
+        .connection
+        .resolve(ProviderConnectionInput {
+            base_url: Some("https://proxy.example/api/v3"),
+            operation_base_urls: Some(&overrides),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(explicit.operation_base_urls, overrides);
+    let schema = binding.connection.policy_region.as_ref().unwrap();
+    assert_eq!(
+        schema.resolve("policy_region", None).unwrap().as_deref(),
+        Some("unknown")
+    );
+    assert!(schema
+        .resolve("policy_region", Some("invalid-region"))
+        .is_err());
+    let profile = registry
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "doubao")
+        .unwrap();
+    let mut plan = instance(profile, "plan");
+    plan.base_url = "https://ark.cn-beijing.volces.com/api/plan/v3".into();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &plan,
+        discovery(&["doubao-seed-2.1-pro", "doubao-seedream-5.0-lite"]),
+        &catalog,
+        &registry.codecs(),
+    )
+    .unwrap();
+    assert!(inventory
+        .models
+        .iter()
+        .any(|model| model.provider_model_id == "doubao-seed-2.1-pro"));
+    assert!(inventory
+        .models
+        .iter()
+        .any(|model| model.provider_model_id == "doubao-seedream-5.0-lite"));
+    assert!(inventory.models.iter().all(|model| model.pricing.is_none()));
+}
+
+#[test]
+fn all_builtin_prices_with_supported_units_can_complete_finance() {
+    use crate::catalog::PricingUnit;
+    let catalog = catalog();
+    let usage = buckyos_api::AiUsage {
+        input_tokens: Some(100),
+        output_tokens: Some(10),
+        total_tokens: Some(110),
+        request_units: Some(1),
+        image_units: Some(1),
+        audio_seconds: Some(1.0),
+        video_seconds: Some(1.0),
+        characters: Some(1),
+        ..Default::default()
+    };
+    for provider in catalog.known_providers() {
+        let Some(rules) = catalog.provider_rules(&provider.provider_profile_id) else {
+            continue;
+        };
+        for (index, entry) in rules.model_pricing.iter().enumerate() {
+            let price = &entry.pricing;
+            let mut usage = usage.clone();
+            let first_tier = price.tiers.as_ref().and_then(|tiers| tiers.steps.first());
+            if price.has_token_rates() {
+                usage.input_tokens = Some(
+                    if price
+                        .input_token
+                        .or_else(|| first_tier.and_then(|tier| tier.input_token))
+                        .is_some()
+                    {
+                        100
+                    } else {
+                        0
+                    },
+                );
+                usage.output_tokens = Some(
+                    if price
+                        .output_token
+                        .or_else(|| first_tier.and_then(|tier| tier.output_token))
+                        .is_some()
+                    {
+                        10
+                    } else {
+                        0
+                    },
+                );
+                usage.total_tokens =
+                    Some(usage.input_tokens.unwrap() + usage.output_tokens.unwrap());
+            }
+            let pinned = crate::execution::PinnedPricingSnapshot::from_pricing(
+                price,
+                price
+                    .amount
+                    .or_else(|| price.rules.first().map(|rule| rule.amount)),
+                std::time::SystemTime::now(),
+            )
+            .unwrap()
+            .unwrap();
+            if matches!(
+                price.unit,
+                Some(PricingUnit::Second | PricingUnit::Megapixel)
+            ) {
+                assert!(pinned.completion_cost(&usage).is_none());
+            } else {
+                assert!(
+                    pinned.completion_cost(&usage).is_some(),
+                    "{} pricing[{index}] cannot be billed",
+                    provider.provider_profile_id
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn routable_builtin_unit_prices_match_operation_usage_dimensions() {
+    use crate::catalog::PricingUnit;
+    let catalog = catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let mut checked = 0;
+    for profile in registry.profiles() {
+        let Some(rules) = catalog.provider_rules(&profile.provider_profile_id) else {
+            continue;
+        };
+        let ids = rules
+            .static_inventory_models
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        for region in ["global", "china", "cn-beijing", "ap-southeast-1"] {
+            let mut config = instance(profile, &profile.provider_profile_id);
+            config.region = Some(region.into());
+            let inventory = InventoryBuilder::build(
+                profile,
+                &config,
+                discovery(&ids),
+                &catalog,
+                &registry.codecs(),
+            )
+            .unwrap();
+            for model in inventory.models {
+                let Some(unit) = model
+                    .pricing
+                    .as_ref()
+                    .and_then(|pricing| pricing.value.unit)
+                else {
+                    continue;
+                };
+                for api in model.api_types {
+                    let supported = match unit {
+                        PricingUnit::Character => api == ApiType::AudioTextToSpeech,
+                        PricingUnit::Image => matches!(
+                            api,
+                            ApiType::ImageTextToImage
+                                | ApiType::ImageImageToImage
+                                | ApiType::ImageInpaint
+                                | ApiType::ImageUpscale
+                                | ApiType::ImageBackgroundRemove
+                        ),
+                        PricingUnit::VideoSecond => matches!(
+                            api,
+                            ApiType::VideoTextToVideo
+                                | ApiType::VideoImageToVideo
+                                | ApiType::VideoToVideo
+                                | ApiType::VideoExtend
+                        ),
+                        PricingUnit::AudioSecond => {
+                            matches!(api, ApiType::AudioSpeechRecognition | ApiType::AudioEnhance)
+                        }
+                        PricingUnit::Request => true,
+                        PricingUnit::Second | PricingUnit::Megapixel => continue,
+                    };
+                    assert!(
+                        supported,
+                        "{} {} {api:?} has incompatible {unit:?} pricing",
+                        profile.provider_profile_id, model.provider_model_id
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(
+        checked >= 39,
+        "pricing coverage unexpectedly shrank: {checked}"
+    );
+}
+
+#[test]
+fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
+    let catalog = catalog();
+    let registry = builtin_provider_registry(&catalog).unwrap();
+    let profile = registry
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "qwen")
+        .unwrap();
+    let ids = ["wan2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"];
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "qwen"),
+        discovery(&ids),
+        &catalog,
+        &registry.codecs(),
+    )
+    .unwrap();
+    assert!(
+        inventory.unmatched_models.is_empty(),
+        "{:?}",
+        inventory.unmatched_models
+    );
+    assert_eq!(inventory.models.len(), 3);
+    for (model, api) in ids.into_iter().zip([
+        ApiType::ImageTextToImage,
+        ApiType::ImageImageToImage,
+        ApiType::VideoTextToVideo,
+    ]) {
+        assert!(inventory
+            .models
+            .iter()
+            .find(|item| item.provider_model_id == model)
+            .unwrap()
+            .api_types
+            .contains(&api));
+    }
 }

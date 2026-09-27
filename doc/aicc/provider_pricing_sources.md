@@ -64,3 +64,17 @@ Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
 5. 官方价格变更时必须更新事实源检查日期、metadata golden 和相应协议/计费测试。
 
 本轮补齐与复核日期：2026-09-26。具体条目的核验日期以其 `verified_at` 为准。
+
+## PR #634 Review 修正
+
+- `tiers` 内有 token 单价即可钉住 token 价格；静态条目必须具备可结算维度，`amount` 必须同时声明 `unit`。
+- GLM、Kimi、MiniMax 的国内 CNY 条目只匹配 `region: china`，不回退到默认 global。
+  `glm-4-32b-0414-128k` 原条目的 USD 币种缺乏可复核依据，已移除，保持 unknown。
+- Doubao 默认使用 `/api/v3` 按量端点；显式使用包含 `/plan/` 的端点时，不套用按量价格。
+  自定义 Base URL 作为各 operation 的默认端点，显式 operation URL 仍优先。
+- 图片按成功张数结算。Seedance 从响应 completion tokens 结算；Qwen、MiniMax、Sora
+  使用 Provider 返回的视频秒数。Veo 的响应没有时长字段，因此在提交时钉住最终下发时长，
+  并随 native task 保存以支持恢复；缺省为 8 秒，extend 缺省新增 7 秒。
+  依据：[Veo 官方说明](https://ai.google.dev/gemini-api/docs/veo?hl=en)。
+- `usage.cost` 有效时仍优先采用 Provider 实际费用；负数或空币种等无效可选遥测被忽略，
+  不再使已成功的响应失败。无法完整计量的费用继续保持 unknown。

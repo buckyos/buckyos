@@ -61,7 +61,11 @@ impl ProviderFieldSchema {
         self
     }
 
-    fn resolve(&self, field: &str, value: Option<&str>) -> ProviderResult<Option<String>> {
+    pub(crate) fn resolve(
+        &self,
+        field: &str,
+        value: Option<&str>,
+    ) -> ProviderResult<Option<String>> {
         if self.mode == ProviderFieldMode::Unsupported {
             if value.is_some() || self.default_value.is_some() || !self.allowed_values.is_empty() {
                 return Err(ProviderError::InvalidConfiguration(format!(
@@ -170,7 +174,18 @@ impl ProviderConnectionContract {
             ));
         }
         validate_provider_url("base_url", &base_url)?;
-        let mut operation_base_urls = self.operation_base_urls.clone();
+        let uses_custom_base = input.base_url.is_some_and(|url| {
+            url.trim_end_matches('/') != self.default_base_url.trim_end_matches('/')
+                && !self
+                    .region_base_urls
+                    .values()
+                    .any(|known| url.trim_end_matches('/') == known.trim_end_matches('/'))
+        });
+        let mut operation_base_urls = if uses_custom_base {
+            BTreeMap::new()
+        } else {
+            self.operation_base_urls.clone()
+        };
         if let Some(overrides) = input.operation_base_urls {
             operation_base_urls.extend(overrides.clone());
         }
@@ -956,6 +971,17 @@ impl InventoryBuilder {
                     std::sync::LazyLock::new(BTreeMap::new);
                 &EMPTY_OPERATIONS
             };
+            if instance.provider_profile_id == "doubao"
+                && std::iter::once(&instance.base_url)
+                    .chain(instance.operation_base_urls.values())
+                    .any(|url| {
+                        reqwest::Url::parse(url)
+                            .ok()
+                            .is_some_and(|url| url.path().split('/').any(|part| part == "plan"))
+                    })
+            {
+                pricing = None;
+            }
             if let Some(value) = discovered.pricing.clone() {
                 pricing = Some(InventoryPricing {
                     source: PricingSource::Discovery,

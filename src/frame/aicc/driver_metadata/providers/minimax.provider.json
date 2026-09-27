@@ -62,11 +62,22 @@
   ],
   "patterns": [
     {
-      "match": "MiniMax-M2*",
+      "match": {
+        "provider_model_id": [
+          "MiniMax-M3*",
+          "minimax-m3*"
+        ]
+      },
       "operations": {
         "llm": "messages.create",
         "vision.ocr": "messages.create",
         "vision.caption": "messages.create"
+      }
+    },
+    {
+      "match": "MiniMax-M2*",
+      "operations": {
+        "llm": "messages.create"
       },
       "request_rules": [
         {
@@ -302,7 +313,8 @@
     },
     {
       "match": {
-        "provider_model_id": "MiniMax-M3"
+        "provider_model_id": "MiniMax-M3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -330,7 +342,8 @@
     },
     {
       "match": {
-        "provider_model_id": "MiniMax-M2.7"
+        "provider_model_id": "MiniMax-M2.7",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -343,7 +356,8 @@
     },
     {
       "match": {
-        "provider_model_id": "MiniMax-M2.7-highspeed"
+        "provider_model_id": "MiniMax-M2.7-highspeed",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -356,7 +370,8 @@
     },
     {
       "match": {
-        "provider_model_id": "speech-2.8-hd"
+        "provider_model_id": "speech-2.8-hd",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -368,7 +383,8 @@
     },
     {
       "match": {
-        "provider_model_id": "speech-2.8-turbo"
+        "provider_model_id": "speech-2.8-turbo",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -380,7 +396,8 @@
     },
     {
       "match": {
-        "provider_model_id": "asr-1.0"
+        "provider_model_id": "asr-1.0",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -392,7 +409,8 @@
     },
     {
       "match": {
-        "provider_model_id": "image-01"
+        "provider_model_id": "image-01",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -404,7 +422,8 @@
     },
     {
       "match": {
-        "provider_model_id": "image-01-live"
+        "provider_model_id": "image-01-live",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -416,7 +435,8 @@
     },
     {
       "match": {
-        "provider_model_id": "MiniMax-H3"
+        "provider_model_id": "MiniMax-H3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -435,7 +455,8 @@
     },
     {
       "match": {
-        "provider_model_id": "MiniMax-H3-Max"
+        "provider_model_id": "MiniMax-H3-Max",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",
@@ -454,7 +475,8 @@
     },
     {
       "match": {
-        "provider_model_id": "minimax-m3"
+        "provider_model_id": "minimax-m3",
+        "region": "china"
       },
       "pricing": {
         "source_url": "https://platform.minimaxi.com/docs/guides/pricing-paygo",

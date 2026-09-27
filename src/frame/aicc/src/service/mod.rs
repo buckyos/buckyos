@@ -1193,7 +1193,11 @@ fn runtime_admin_snapshot(
                 (
                     ProviderInstanceInventoryView {
                         unmatched_models: Vec::new(),
-                        unavailable_presets: Vec::new(),
+                        unavailable_presets: snapshot.provider_metadata
+                            .get(&settings.provider_instance_name)
+                            .and_then(|state| state.last_error.as_ref())
+                            .map(|error| vec![json!({"reason": "provider_configuration_error", "message": error})])
+                            .unwrap_or_default(),
                         unpriced_models: Vec::new(),
                         state: ProviderInstanceInventoryState::NotLoaded,
                         revision: None,

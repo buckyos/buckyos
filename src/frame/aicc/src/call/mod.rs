@@ -493,7 +493,7 @@ impl<'a> CallResolver<'a> {
             })
             .transpose()?;
         let pricing_context = request_match_context(api_name, &operation, &normalized);
-        let pricing = resolve_pricing(
+        let mut pricing = resolve_pricing(
             target.pricing,
             provider_rule
                 .as_ref()
@@ -511,6 +511,15 @@ impl<'a> CallResolver<'a> {
             .get(&operation)
             .cloned()
             .unwrap_or(target.base_url);
+        if decision.selected.provider_profile_id == "doubao"
+            && reqwest::Url::parse(&base_url)
+                .ok()
+                .is_some_and(|url| url.path().split('/').any(|part| part == "plan"))
+        {
+            pricing.pricing = None;
+            pricing.matched_amount = None;
+            pricing.estimated_cost = None;
+        }
         let context = CodecContext {
             base_url,
             state_coordinate: buckyos_api::ProviderStateCoordinate {
@@ -1512,6 +1521,7 @@ mod tests {
                 },
                 estimated_cost: Some(Money::new(0.01, "USD")),
                 runtime_failover_count: 0,
+                warnings: Vec::new(),
                 logical_item_sources: Vec::new(),
                 logical_admission: Vec::new(),
                 logical_expansion: Vec::new(),

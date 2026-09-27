@@ -120,7 +120,12 @@ impl OperationCodec for MiniMaxMessagesCodec {
         let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
             unreachable!("MiniMax request validation checked the canonical method")
         };
-        let Some(temperature) = request.temperature.filter(|value| *value > 1.0) else {
+        let Some(temperature) = request.temperature.or_else(|| {
+            call.input
+                .resolved_parameters
+                .get("temperature")
+                .and_then(Value::as_f64)
+        }) else {
             return self.base.encode(call);
         };
         let mut canonical_request = call.input.canonical_request.clone();
@@ -128,10 +133,11 @@ impl OperationCodec for MiniMaxMessagesCodec {
             unreachable!("MiniMax request validation checked the canonical method")
         };
         request.temperature = None;
-        let input = CodecInput {
+        let mut input = CodecInput {
             canonical_request,
             resolved_parameters: call.input.resolved_parameters.clone(),
         };
+        input.resolved_parameters.remove("temperature");
         let mut encoded = self.base.encode(&CodecCall {
             api_type: call.api_type,
             input: &input,
@@ -174,6 +180,21 @@ impl OperationCodec for MiniMaxMessagesCodec {
 }
 
 fn validate_minimax_request(call: &CodecCall<'_>) -> ProtocolResultValue<()> {
+    if call
+        .input
+        .resolved_parameters
+        .get("temperature")
+        .is_some_and(|value| {
+            value
+                .as_f64()
+                .is_none_or(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
+        })
+    {
+        return Err(ProtocolError::invalid_request(
+            "MiniMax Messages temperature must be between 0 and 2",
+        ));
+    }
+
     let AiccCall::ChatCompletionsCreate(request) = &call.input.canonical_request else {
         return match (&call.input.canonical_request, call.api_type) {
             (AiccCall::VisionOcr(_), ApiType::VisionOcr)
@@ -397,6 +418,30 @@ mod tests {
             panic!("expected JSON request");
         };
         assert_eq!(body["temperature"], 1.5);
+    }
+
+    #[test]
+    fn canonical_sampling_wins_over_valid_provider_options() {
+        let (_, registration) = minimax_messages_adapter();
+        let mut input = input(vec!["canonical-stop".into()], Some(0.5));
+        input
+            .resolved_parameters
+            .insert("temperature".into(), json!(1.5));
+        input
+            .resolved_parameters
+            .insert("stop_sequences".into(), json!(["provider-stop"]));
+        let encoded = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            })
+            .unwrap();
+        let HttpBody::Json(body) = encoded.body else {
+            panic!()
+        };
+        assert_eq!(body["temperature"], 0.5);
+        assert_eq!(body["stop_sequences"], json!(["canonical-stop"]));
     }
 
     #[test]

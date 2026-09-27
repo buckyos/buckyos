@@ -465,13 +465,22 @@ fn take_openrouter_parameters(
     Ok(extensions)
 }
 
-fn rewrite_execution_namespace(execution: ProtocolExecution, namespace: &str) -> ProtocolExecution {
+fn rewrite_execution_namespace(
+    execution: ProtocolExecution,
+    namespace: &'static str,
+) -> ProtocolExecution {
     match execution {
         ProtocolExecution::Immediate(mut output) => {
             rewrite_value_namespace(&mut output.value, namespace);
             ProtocolExecution::Immediate(output)
         }
-        ProtocolExecution::Stream(stream) => ProtocolExecution::Stream(stream),
+        ProtocolExecution::Stream(stream) => {
+            ProtocolExecution::Stream(ProtocolStream {
+                events: Box::pin(stream.events.map(move |event| {
+                    event.map(|event| rewrite_event_namespace(event, namespace))
+                })),
+            })
+        }
         ProtocolExecution::NativeTask(task) => ProtocolExecution::NativeTask(task),
     }
 }
@@ -830,5 +839,37 @@ mod tests {
             value.pointer("/message/content/0/provider"),
             Some(&Value::String("doubao".to_string()))
         );
+    }
+}
+
+#[cfg(test)]
+mod review_stream_tests {
+    use super::*;
+    #[tokio::test]
+    async fn buffered_sse_rewrites_delta_and_final_namespaces() {
+        let value = serde_json::json!({"provider":"openai","value":{}});
+        let execution = ProtocolExecution::Stream(ProtocolStream {
+            events: Box::pin(futures_util::stream::iter([
+                Ok(ProtocolEvent::Delta(value.clone())),
+                Ok(ProtocolEvent::Final(ProtocolOutput {
+                    value,
+                    usage: None,
+                    artifacts: Vec::new(),
+                })),
+            ])),
+        });
+        let ProtocolExecution::Stream(mut stream) =
+            rewrite_execution_namespace(execution, "doubao")
+        else {
+            panic!()
+        };
+        while let Some(event) = stream.events.next().await {
+            let value = match event.unwrap() {
+                ProtocolEvent::Delta(value) => value,
+                ProtocolEvent::Final(output) => output.value,
+                _ => panic!(),
+            };
+            assert_eq!(value["provider"], "doubao");
+        }
     }
 }

@@ -1884,7 +1884,7 @@ fn push_caller_app_filter(query: &mut QueryBuilder<'_, Any>, values: &[String]) 
         .collect::<Vec<_>>();
     query.push(" AND (");
     if includes_system {
-        query.push("caller_app_id IS NULL OR caller_app_id='' ");
+        query.push("caller_app_id IS NULL OR caller_app_id='' OR caller_app_id='system' ");
         if !explicit.is_empty() {
             query.push("OR ");
         }
@@ -2554,6 +2554,7 @@ mod tests {
                     "request-a",
                 )
                 .unwrap(),
+                output_video_seconds: None,
                 request_timeout_ms: 30_000,
                 max_request_bytes: 1_048_576,
                 max_response_bytes: 8_388_608,
@@ -2969,7 +2970,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn usage_system_app_filters_match_missing_caller_app_id() {
+    async fn usage_system_app_filters_match_missing_empty_and_literal_system_ids() {
         let db = db().await;
         let mut system = completion("system", "task-system", "idem-system", 10_000);
         system.caller_app_id = None;
@@ -2978,6 +2979,11 @@ mod tests {
             .await
             .unwrap();
 
+        for (id, caller) in [("literal-system", "system"), ("empty-system", "")] {
+            let mut event = completion(id, &format!("task-{id}"), &format!("idem-{id}"), 10_002);
+            event.caller_app_id = Some(caller.into());
+            db.write_provider_completion(event).await.unwrap();
+        }
         for filters in [
             UsageQueryFilters {
                 caller_app_ids: vec!["system".into()],
@@ -3006,8 +3012,11 @@ mod tests {
                 )
                 .await
                 .unwrap();
-            assert_eq!(response.total.total_requests, 1);
-            assert_eq!(response.events[0].event_id, "system");
+            assert_eq!(response.total.total_requests, 3);
+            assert!(response
+                .events
+                .iter()
+                .all(|event| event.event_id.ends_with("system")));
         }
     }
 

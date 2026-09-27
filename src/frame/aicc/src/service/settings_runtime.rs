@@ -31,8 +31,7 @@ impl RuntimeFactory for ServiceRuntimeFactory {
     ) -> Result<PreparedRuntime, RuntimeError> {
         let builtins = builtin_provider_registry(catalog.as_ref())
             .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-        let (resolver, auth) = settings_credentials(settings.as_ref())
-            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+        let (resolver, auth) = settings_credentials(settings.as_ref());
         let static_resolver: Arc<dyn CredentialResolver> = Arc::new(resolver);
         let credential_broker = Arc::new(SnCredentialBroker::new(
             static_resolver,
@@ -61,116 +60,158 @@ impl RuntimeFactory for ServiceRuntimeFactory {
                 }
             }
         });
+        let mut startup_failures = BTreeMap::new();
         for provider in settings
             .providers
             .iter()
             .filter(|provider| provider.enabled)
         {
-            builtins
-                .codecs()
-                .resolve_adapter_id(
-                    provider.protocol_family_id.as_deref(),
-                    Some(&provider.protocol_adapter_id),
-                    None,
-                )
-                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-            let provider_auth = auth.get(&provider.provider_instance_name).ok_or_else(|| {
-                RuntimeError::Backend("provider authentication was not prepared".to_string())
-            })?;
-            let configured_inventory = provider
-                .discovery
-                .as_ref()
-                .map(provider_discovery_snapshot)
-                .transpose()
-                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-            let binding = builtins
-                .resolve(BuiltinProviderRequest {
-                    provider_profile_id: &provider.provider_profile_id,
-                    protocol_adapter_id: &provider.protocol_adapter_id,
-                    auth_mode: provider_auth.mode(),
-                    credential_kind: provider_auth.credential_kind(),
-                    configured_inventory,
-                })
-                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-            let connection = binding
-                .connection
-                .resolve(ProviderConnectionInput {
-                    base_url: Some(&provider.base_url),
-                    region: provider.region.as_deref(),
-                    workspace: provider.workspace.as_deref(),
-                    account: provider.account.as_deref(),
-                    operation_base_urls: Some(&provider.operation_base_urls),
-                })
-                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-            let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
-                catalog
-                    .resolve_provider_configuration(&provider.provider_profile_id)
-                    .ok()
-                    .map(|configuration| configuration.provider_rules_id)
-            });
-            let mut runtime_config = match provider_auth {
-                ProviderAuthConfig::ApiKey {
-                    credential_ref,
-                    credential_kind,
-                } => ProviderInstanceConfig {
-                    provider_instance_name: provider.provider_instance_name.clone(),
-                    provider_profile_id: provider.provider_profile_id.clone(),
-                    protocol_adapter_id: provider.protocol_adapter_id.clone(),
-                    base_url: connection.base_url,
-                    operation_base_urls: connection.operation_base_urls,
-                    credential: CredentialReference {
-                        reference: credential_ref.clone(),
-                    },
-                    credential_kind: *credential_kind,
-                    provider_rules_id,
-                    region: connection.region,
-                    workspace: connection.workspace,
-                    account: connection.account,
-                    request_timeout: Duration::from_millis(provider.timeout_ms.unwrap_or(120_000)),
-                    auto_sync_models: provider.auto_sync_models.unwrap_or(true),
-                    instance_rules: provider
-                        .instance_rules
-                        .clone()
-                        .or(binding.instance_rules.clone()),
-                },
-                ProviderAuthConfig::DynamicLogin { .. } => {
-                    let resolved = resolve_sn_provider_instance_with_config(
-                        &binding.profile,
-                        &binding.connection,
-                        provider_rules_id,
-                        SnProviderInstanceInput {
-                            provider_instance_name: &provider.provider_instance_name,
-                            base_url: Some(&provider.base_url),
-                            account: provider.account.as_deref(),
-                            auth: provider_auth.clone(),
-                        },
+            let started: Result<(), RuntimeError> = async {
+                builtins
+                    .codecs()
+                    .resolve_adapter_id(
+                        provider.protocol_family_id.as_deref(),
+                        Some(&provider.protocol_adapter_id),
+                        None,
                     )
                     .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-                    credential_broker
-                        .register_dynamic_instance(resolved.clone())
-                        .await
+                let provider_auth = auth
+                    .get(&provider.provider_instance_name)
+                    .ok_or_else(|| {
+                        RuntimeError::Backend(
+                            "provider authentication was not prepared".to_string(),
+                        )
+                    })?
+                    .as_ref()
+                    .map_err(|error| RuntimeError::Backend(error.clone()))?;
+                let configured_inventory = provider
+                    .discovery
+                    .as_ref()
+                    .map(provider_discovery_snapshot)
+                    .transpose()
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let binding = builtins
+                    .resolve(BuiltinProviderRequest {
+                        provider_profile_id: &provider.provider_profile_id,
+                        protocol_adapter_id: &provider.protocol_adapter_id,
+                        auth_mode: provider_auth.mode(),
+                        credential_kind: provider_auth.credential_kind(),
+                        configured_inventory,
+                    })
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let connection = binding
+                    .connection
+                    .resolve(ProviderConnectionInput {
+                        base_url: Some(&provider.base_url),
+                        region: provider.region.as_deref(),
+                        workspace: provider.workspace.as_deref(),
+                        account: provider.account.as_deref(),
+                        operation_base_urls: Some(&provider.operation_base_urls),
+                    })
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                let provider_rules_id = provider.provider_rules_id.clone().or_else(|| {
+                    catalog
+                        .resolve_provider_configuration(&provider.provider_profile_id)
+                        .ok()
+                        .map(|configuration| configuration.provider_rules_id)
+                });
+                let mut runtime_config = match provider_auth {
+                    ProviderAuthConfig::ApiKey {
+                        credential_ref,
+                        credential_kind,
+                    } => ProviderInstanceConfig {
+                        provider_instance_name: provider.provider_instance_name.clone(),
+                        provider_profile_id: provider.provider_profile_id.clone(),
+                        protocol_adapter_id: provider.protocol_adapter_id.clone(),
+                        base_url: connection.base_url,
+                        operation_base_urls: connection.operation_base_urls,
+                        credential: CredentialReference {
+                            reference: credential_ref.clone(),
+                        },
+                        credential_kind: *credential_kind,
+                        provider_rules_id,
+                        region: connection.region,
+                        workspace: connection.workspace,
+                        account: connection.account,
+                        request_timeout: Duration::from_millis(
+                            provider.timeout_ms.unwrap_or(120_000),
+                        ),
+                        auto_sync_models: provider.auto_sync_models.unwrap_or(true),
+                        instance_rules: provider
+                            .instance_rules
+                            .clone()
+                            .or(binding.instance_rules.clone()),
+                    },
+                    ProviderAuthConfig::DynamicLogin { .. } => {
+                        let resolved = resolve_sn_provider_instance_with_config(
+                            &binding.profile,
+                            &binding.connection,
+                            provider_rules_id,
+                            SnProviderInstanceInput {
+                                provider_instance_name: &provider.provider_instance_name,
+                                base_url: Some(&provider.base_url),
+                                account: provider.account.as_deref(),
+                                auth: provider_auth.clone(),
+                            },
+                        )
                         .map_err(|error| RuntimeError::Backend(error.to_string()))?;
-                    resolved.runtime
+                        credential_broker
+                            .register_dynamic_instance(resolved.clone())
+                            .await
+                            .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                        resolved.runtime
+                    }
+                };
+                runtime_config.request_timeout =
+                    Duration::from_millis(provider.timeout_ms.unwrap_or(120_000));
+                runtime_config.auto_sync_models = provider.auto_sync_models.unwrap_or(true);
+                runtime_config.instance_rules = provider
+                    .instance_rules
+                    .clone()
+                    .or(binding.instance_rules.clone());
+                if let Some(schema) = &binding.connection.policy_region {
+                    let policy_region = schema
+                        .resolve(
+                            "policy_region",
+                            runtime_config
+                                .instance_rules
+                                .as_ref()
+                                .and_then(|rules| rules.policy_region.as_deref()),
+                        )
+                        .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                    runtime_config
+                        .instance_rules
+                        .get_or_insert_with(Default::default)
+                        .policy_region = policy_region;
                 }
-            };
-            runtime_config.request_timeout =
-                Duration::from_millis(provider.timeout_ms.unwrap_or(120_000));
-            runtime_config.auto_sync_models = provider.auto_sync_models.unwrap_or(true);
-            runtime_config.instance_rules = provider
-                .instance_rules
-                .clone()
-                .or(binding.instance_rules.clone());
-            manager
-                .start(runtime_config, binding.discovery)
-                .await
-                .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                manager
+                    .start(runtime_config, binding.discovery)
+                    .await
+                    .map_err(|error| RuntimeError::Backend(error.to_string()))?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = started {
+                log::warn!(
+                    "provider {} disabled at runtime: {}",
+                    provider.provider_instance_name,
+                    error
+                );
+                self.events.record(buckyos_api::AiccEventLevel::Warning, "provider_configuration_error",
+                    format!("Provider {} disabled at runtime: {error}", provider.provider_instance_name),
+                    json!({"provider_instance_name": provider.provider_instance_name, "error": error.to_string()}));
+                startup_failures.insert(provider.provider_instance_name.clone(), error.to_string());
+            }
         }
         let models: Arc<dyn ModelRegistryAssembler> = Arc::new(ServiceModelAssembler {
             session: settings.session_config.clone(),
             events: Some(self.events.clone()),
         });
-        let backend: Arc<dyn RuntimeBackend> =
-            Arc::new(ProviderRuntimeBackend::new(manager, models));
+        let backend: Arc<dyn RuntimeBackend> = Arc::new(ProviderRuntimeBackend::new(
+            manager,
+            models,
+            startup_failures,
+        ));
         let state = backend
             .converge(catalog, target_seq, ConvergenceTrigger::MetadataRefresh)
             .await?;
@@ -180,43 +221,48 @@ impl RuntimeFactory for ServiceRuntimeFactory {
 
 fn settings_credentials(
     settings: &AiccSettings,
-) -> Result<
-    (
-        StaticCredentialResolver,
-        BTreeMap<String, ProviderAuthConfig>,
-    ),
-    RPCErrors,
-> {
+) -> (
+    StaticCredentialResolver,
+    BTreeMap<String, Result<ProviderAuthConfig, String>>,
+) {
     let mut values = BTreeMap::new();
     let mut auth = BTreeMap::new();
-    for provider in &settings.providers {
-        let parsed = provider.auth.as_ref().map(provider_auth_config);
-        let parsed = match parsed {
-            Some(value) => {
-                if let ProviderAuthConfig::ApiKey { credential_ref, .. } = &value {
-                    let (_, secret) = first_locked_credential(
+    for provider in settings
+        .providers
+        .iter()
+        .filter(|provider| provider.enabled)
+    {
+        let parsed = (|| -> Result<ProviderAuthConfig, RPCErrors> {
+            let parsed = provider.auth.as_ref().map(provider_auth_config);
+            let parsed = match parsed {
+                Some(value) => {
+                    if let ProviderAuthConfig::ApiKey { credential_ref, .. } = &value {
+                        let (_, secret) = first_locked_credential(
+                            &provider.provider_instance_name,
+                            &provider.credentials,
+                        )?;
+                        values.insert(credential_ref.clone(), secret);
+                    }
+                    value
+                }
+                None => {
+                    let (reference, secret) = first_locked_credential(
                         &provider.provider_instance_name,
                         &provider.credentials,
                     )?;
-                    values.insert(credential_ref.clone(), secret);
+                    values.insert(reference.clone(), secret);
+                    ProviderAuthConfig::ApiKey {
+                        credential_ref: reference,
+                        credential_kind: None,
+                    }
                 }
-                value
-            }
-            None => {
-                let (reference, secret) = first_locked_credential(
-                    &provider.provider_instance_name,
-                    &provider.credentials,
-                )?;
-                values.insert(reference.clone(), secret);
-                ProviderAuthConfig::ApiKey {
-                    credential_ref: reference,
-                    credential_kind: None,
-                }
-            }
-        };
+            };
+            Ok(parsed)
+        })()
+        .map_err(|error| error.to_string());
         auth.insert(provider.provider_instance_name.clone(), parsed);
     }
-    Ok((StaticCredentialResolver::new(values), auth))
+    (StaticCredentialResolver::new(values), auth)
 }
 
 pub(super) fn provider_auth_config(settings: &ProviderAuthSettings) -> ProviderAuthConfig {
@@ -495,5 +541,90 @@ impl ProviderValidator for RuntimeProviderValidator {
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn persisted_reserved_custom_adapters_do_not_block_startup_or_reload() {
+        let catalog = crate::settings::MetadataSources {
+            builtin: crate::settings::load_builtin_metadata().unwrap(),
+            ..Default::default()
+        }
+        .build_snapshot(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            &Default::default(),
+        )
+        .unwrap();
+        let storage = Arc::new(
+            AiccStorage::open("sqlite::memory:", buckyos_api::RdbBackend::Sqlite)
+                .await
+                .unwrap(),
+        );
+        let events = Arc::new(AiccEventLog::default());
+        let factory = ServiceRuntimeFactory::new(storage, events.clone());
+        let mut settings = AiccSettings::default();
+        for adapter in [
+            "glm-chat",
+            "kimi-chat",
+            "deepseek-responses",
+            "openrouter-responses",
+        ] {
+            settings.providers.push(serde_json::from_value(json!({
+                "provider_instance_name": adapter, "provider_type": "cloud_api",
+                "provider_profile_id": "custom", "protocol_adapter_id": adapter,
+                "base_url": "https://example.invalid/v1", "credentials": {"api_token":{"locked":"test-secret"}},
+                "auto_sync_models": false
+            })).unwrap());
+        }
+        settings.providers.push(
+            serde_json::from_value(json!({
+                "provider_instance_name": "healthy", "provider_type": "cloud_api",
+                "provider_profile_id": "doubao", "protocol_adapter_id": "doubao-responses",
+                "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+                "credentials": {"api_token":{"locked":"test-secret"}}, "auto_sync_models": false
+            }))
+            .unwrap(),
+        );
+        for _ in 0..2 {
+            let prepared = factory
+                .prepare(
+                    Arc::new(settings.clone()),
+                    catalog.clone(),
+                    catalog.target_revision_seq(),
+                )
+                .await
+                .unwrap();
+            assert!(prepared.state.providers.get("healthy").is_some());
+            for adapter in [
+                "glm-chat",
+                "kimi-chat",
+                "deepseek-responses",
+                "openrouter-responses",
+            ] {
+                let state = &prepared.state.provider_metadata[adapter];
+                assert!(!state.routable);
+                assert!(state.last_error.as_deref().unwrap().contains("reserved"));
+            }
+            let converged = prepared
+                .backend
+                .converge(
+                    catalog.clone(),
+                    catalog.target_revision_seq(),
+                    ConvergenceTrigger::Inference,
+                )
+                .await
+                .unwrap();
+            assert!(converged.provider_metadata["glm-chat"].last_error.is_some());
+            prepared.backend.shutdown().await;
+        }
+        assert!(events
+            .list(20)
+            .0
+            .iter()
+            .any(|event| event.kind == "provider_configuration_error"));
     }
 }

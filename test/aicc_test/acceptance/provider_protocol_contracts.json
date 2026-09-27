@@ -641,17 +641,56 @@
       "endpoint_path": "/anthropic",
       "credential_type": "bearer",
       "official_first_party_model_ids": {
-        "llm": ["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.7-highspeed"],
-        "vision.ocr": ["MiniMax-M3"],
-        "vision.caption": ["MiniMax-M3"],
-        "audio.tts": ["speech-2.8-hd", "speech-2.8-turbo"],
-        "audio.asr": ["asr-1.0"],
-        "image.txt2img": ["image-01", "image-01-live"],
-        "image.img2img": ["image-01", "image-01-live"],
-        "video.txt2video": ["MiniMax-H3", "MiniMax-H3-Max"],
-        "video.img2video": ["MiniMax-H3", "MiniMax-H3-Max"]
+        "llm": [
+          "MiniMax-M3",
+          "MiniMax-M2.7",
+          "MiniMax-M2.7-highspeed"
+        ],
+        "vision.ocr": [
+          "MiniMax-M3"
+        ],
+        "vision.caption": [
+          "MiniMax-M3"
+        ],
+        "audio.tts": [
+          "speech-2.8-hd",
+          "speech-2.8-turbo"
+        ],
+        "audio.asr": [
+          "asr-1.0"
+        ],
+        "image.txt2img": [
+          "image-01",
+          "image-01-live"
+        ],
+        "image.img2img": [
+          "image-01",
+          "image-01-live"
+        ],
+        "video.txt2video": [
+          "MiniMax-H3",
+          "MiniMax-H3-Max"
+        ],
+        "video.img2video": [
+          "MiniMax-H3",
+          "MiniMax-H3-Max"
+        ],
+        "audio.music": [
+          "music-2.0"
+        ]
       },
-      "test_model_ids": { "llm": "MiniMax-M3", "vision.ocr": "MiniMax-M3", "vision.caption": "MiniMax-M3", "audio.tts": "speech-2.8-hd", "audio.asr": "asr-1.0", "image.txt2img": "image-01", "image.img2img": "image-01", "video.txt2video": "MiniMax-H3", "video.img2video": "MiniMax-H3" },
+      "test_model_ids": {
+        "llm": "MiniMax-M3",
+        "vision.ocr": "MiniMax-M3",
+        "vision.caption": "MiniMax-M3",
+        "audio.tts": "speech-2.8-hd",
+        "audio.asr": "asr-1.0",
+        "image.txt2img": "image-01",
+        "image.img2img": "image-01",
+        "video.txt2video": "MiniMax-H3",
+        "video.img2video": "MiniMax-H3",
+        "audio.music": "music-2.0"
+      },
       "contracts": [
         {
           "id": "minimax.anthropic.messages.v1",
@@ -746,6 +785,106 @@
           "async_result_fixture": { "task": { "id": "minimax_video_mock_1", "model": "MiniMax-H3", "status": "succeeded", "content": { "url": "http://mock/artifacts/result.mp4" }, "resolution": "768P", "duration": 5, "ratio": "16:9", "usage": { "total_seconds": 5, "input_seconds": 0, "output_seconds": 5, "input_image_count": 0 }, "task_type": "generation", "modality": "video" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-v2-create", "https://platform.minimax.io/docs/api-reference/video-generation-v2-query", "https://platform.minimax.io/docs/api-reference/video-generation-v2-delete"],
           "evidence_summary": "MiniMax H3 video generation submits V2 multimodal content, queries the task by path ID, and supports queued-task cancellation with DELETE."
+        },
+        {
+          "id": "minimax.music-generation.v1",
+          "protocol_adapter_id": "minimax-messages",
+          "api_version": "v1",
+          "api_types": [
+            "audio.music"
+          ],
+          "operation": "music_generation.create",
+          "http_method": "POST",
+          "path": "/v1/music_generation",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "prompt"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "prompt",
+            "lyrics",
+            "stream",
+            "output_format",
+            "audio_setting",
+            "lyrics_optimizer",
+            "is_instrumental",
+            "audio_url",
+            "audio_base64",
+            "cover_feature_id"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "prompt": [
+              "string"
+            ],
+            "lyrics": [
+              "string"
+            ],
+            "stream": [
+              "boolean"
+            ],
+            "output_format": [
+              "string"
+            ],
+            "audio_setting": [
+              "object"
+            ],
+            "lyrics_optimizer": [
+              "boolean"
+            ],
+            "is_instrumental": [
+              "boolean"
+            ],
+            "audio_url": [
+              "string"
+            ],
+            "audio_base64": [
+              "string"
+            ],
+            "cover_feature_id": [
+              "string"
+            ]
+          },
+          "minimax_music": {
+            "cover_model_ids": [
+              "music-cover",
+              "music-cover-free"
+            ],
+            "cover_reference_fields": [
+              "audio_url",
+              "audio_base64",
+              "cover_feature_id"
+            ],
+            "non_instrumental_requires_lyrics_or_optimizer": true
+          },
+          "success_fixture": {
+            "data": {
+              "audio": "494433",
+              "status": 2
+            },
+            "trace_id": "minimax_music_mock_1",
+            "base_resp": {
+              "status_code": 0,
+              "status_msg": "success"
+            },
+            "extra_info": {
+              "music_duration": 1000,
+              "audio_format": "mp3"
+            }
+          },
+          "official_sources": [
+            "https://platform.minimax.io/docs/api-reference/music-generation"
+          ],
+          "evidence_summary": "MiniMax music generation uses POST /v1/music_generation and returns audio/status with base_resp."
         }
       ]
     },
@@ -1439,9 +1578,17 @@
         "async_protocol": "glm_video",
         "async_steps": [{ "name": "poll", "http_method": "GET", "path": "/api/paas/v4/async-result/{operation_id}" }, { "name": "result", "http_method": "GET", "path": "/api/paas/v4/async-result/{operation_id}" }],
         "success_fixture": { "id": "glm_video_mock_1", "task_status": "PROCESSING" },
-        "async_result_fixture": { "id": "glm_video_mock_1", "task_status": "SUCCESS", "video_result": [{ "url": "http://mock/artifacts/result.mp4" }] },
-        "official_sources": ["https://docs.z.ai/api-reference/video-generation/generate-video", "https://docs.z.ai/api-reference/video-generation/query-video-generation-task"],
-        "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available."
+        "async_result_fixture": {
+          "task_status": "SUCCESS",
+          "video_result": [
+            {
+              "url": "http://mock/artifacts/result.mp4"
+            }
+          ],
+          "request_id": "glm_request_mock_1"
+        },
+        "official_sources": ["https://docs.z.ai/api-reference/video-generation/generate-video", "https://docs.z.ai/api-reference/video-generation/query-video-generation-task", "https://raw.githubusercontent.com/MetaGLM/glm-cookbook/main/vision/cogvideox_pysdk.ipynb"],
+        "evidence_summary": "GLM video generation submits to videos/generations and polls async-result until video_result is available. The official MetaGLM cookbook shows successful query responses with id=None and a request_id; polling must retain the original submitted task ID."
       }]
     },
     {
@@ -1602,8 +1749,17 @@
         "auth": { "kind": "header", "name": "authorization", "prefix": "Bearer " },
         "content_type": "application/json",
         "required_body_fields": ["model", "content"],
-        "allowed_body_fields": ["model", "content", "duration", "ratio", "resolution", "seed", "generate_audio", "operation", "continuation_handle"],
-        "body_field_types": { "model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"] },
+        "allowed_body_fields": [
+          "model",
+          "content",
+          "duration",
+          "ratio",
+          "resolution",
+          "seed",
+          "generate_audio",
+          "omni_reference_task_type"
+        ],
+        "body_field_types": { "model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"], "omni_reference_task_type": ["string"] },
         "async_protocol": "doubao_video",
         "async_steps": [
           { "name": "poll", "http_method": "GET", "path": "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" },
@@ -1611,7 +1767,18 @@
           { "name": "cancel", "http_method": "DELETE", "path": "/api/plan/v3/contents/generations/tasks/doubao_video_mock_1" }
         ],
         "success_fixture": { "id": "doubao_video_mock_1", "status": "queued" },
-        "async_result_fixture": { "id": "doubao_video_mock_1", "status": "succeeded", "content": { "video_url": { "url": "http://mock/artifacts/doubao.mp4" } } },
+        "async_result_fixture": {
+          "id": "doubao_video_mock_1",
+          "status": "succeeded",
+          "content": {
+            "video_url": "http://mock/artifacts/doubao.mp4"
+          },
+          "usage": {
+            "completion_tokens": 100,
+            "total_tokens": 100
+          },
+          "duration": 5
+        },
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
         "evidence_summary": "Agent Plan Seedance video generation uses /api/plan/v3 asynchronous content generation tasks with GET status/result and DELETE cancellation."
       }, {
@@ -1624,7 +1791,11 @@
         "http_method": "POST",
         "path": "/api/v3/plan/tts/unidirectional",
         "auth": { "kind": "header", "name": "x-api-key", "prefix": "" },
-        "required_headers": { "x-api-resource-id": "seed-tts-2.0", "x-control-request-usage-tokens": "true" },
+        "required_headers": {
+          "x-api-resource-id": "seed-tts-2.0",
+          "x-control-request-usage-tokens": "true",
+          "x-control-require-usage-tokens-return": "*"
+        },
         "content_type": "application/json",
         "required_body_fields": ["req_params"],
         "allowed_body_fields": ["req_params"],
@@ -1633,7 +1804,14 @@
         "success_chunk_fixtures": [
           { "code": 0, "message": "", "data": "SUQz" },
           { "code": 0, "message": "", "data": "BA==" },
-          { "code": 20000000, "message": "OK", "data": null }
+          {
+            "code": 20000000,
+            "message": "OK",
+            "data": null,
+            "usage": {
+              "text_words": 12
+            }
+          }
         ],
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"],
         "evidence_summary": "Agent Plan synchronous TTS uses X-Api-Key and seed-tts-2.0 against /api/v3/plan/tts/unidirectional."
@@ -1645,7 +1823,33 @@
       "endpoint_path": "/compatible-mode/v1",
       "credential_type": "bearer",
       "instance_fields": { "region": "cn-beijing", "workspace": "t15-workspace" },
-      "official_first_party_model_ids": { "llm": ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.8-omni-flash"], "vision.ocr": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"], "vision.caption": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"] },
+      "official_first_party_model_ids": {
+        "llm": [
+          "qwen3.8-max",
+          "qwen3.8-flash",
+          "qwen3.7-plus",
+          "qwen3.8-omni-flash"
+        ],
+        "vision.ocr": [
+          "qwen3.8-max",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash"
+        ],
+        "vision.caption": [
+          "qwen3.8-max",
+          "qwen3.8-flash",
+          "qwen3.8-omni-flash"
+        ],
+        "image.txt2img": [
+          "wan2.1-t2i-turbo"
+        ],
+        "image.img2img": [
+          "qwen-image-edit"
+        ],
+        "video.txt2video": [
+          "wan2.6-t2v"
+        ]
+      },
       "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
       "official_variant_rules": [{
         "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.8-omni-flash"],
@@ -1659,8 +1863,16 @@
           "reasoning-max": { "reasoning": { "effort": "max" } }
         }
       }],
-      "test_model_ids": { "llm": "qwen3.8-max", "vision.ocr": "qwen3.8-max", "vision.caption": "qwen3.8-max" },
-      "contracts": [{
+      "test_model_ids": {
+        "llm": "qwen3.8-max",
+        "vision.ocr": "qwen3.8-max",
+        "vision.caption": "qwen3.8-max",
+        "image.txt2img": "wan2.1-t2i-turbo",
+        "image.img2img": "qwen-image-edit",
+        "video.txt2video": "wan2.6-t2v"
+      },
+      "contracts": [
+        {
         "id": "qwen.responses.compatible-v1",
         "protocol_adapter_id": "qwen-responses",
         "api_version": "compatible-v1",
@@ -1677,7 +1889,228 @@
         "success_fixture": { "id": "resp_qwen_mock_1", "object": "response", "created_at": 1770000000, "status": "completed", "model": "qwen3.8-max", "output": [{ "type": "message", "id": "msg_mock_1", "status": "completed", "role": "assistant", "content": [{ "type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": [] }] }], "usage": { "input_tokens": 4, "output_tokens": 3, "total_tokens": 7 } },
         "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/error-code"],
         "evidence_summary": "Qwen workspace-compatible Responses uses POST /compatible-mode/v1/responses with Bearer authentication and JSON model/input, returning OpenAI-style response output."
-      }]
+      },
+        {
+          "id": "qwen.dashscope.image_synthesis.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "image.txt2img"
+          ],
+          "operation": "dashscope.image_synthesis",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/text2image/image-synthesis",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/en/model-studio/text-to-image-v2-api-reference"
+          ],
+          "evidence_summary": "DashScope media uses model/input/parameters with operation-specific nested fields and documented usage counters.",
+          "required_headers": {
+            "x-dashscope-async": "enable"
+          },
+          "async_protocol": "qwen_media",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            }
+          ],
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "PENDING"
+            }
+          },
+          "async_result_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "SUCCEEDED",
+              "results": [
+                {
+                  "url": "http://mock/artifacts/result.png"
+                },
+                {
+                  "code": "DataInspectionFailed",
+                  "message": "Output image was blocked"
+                }
+              ]
+            },
+            "usage": {
+              "image_count": 1
+            }
+          }
+        },
+        {
+          "id": "qwen.dashscope.image_edit.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "image.img2img"
+          ],
+          "operation": "dashscope.image_edit",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/multimodal-generation/generation",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/en/model-studio/qwen-image-edit-api"
+          ],
+          "evidence_summary": "DashScope media uses model/input/parameters with operation-specific nested fields and documented usage counters.",
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "choices": [
+                {
+                  "message": {
+                    "role": "assistant",
+                    "content": [
+                      {
+                        "image": "http://mock/artifacts/result.png"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            "usage": {
+              "image_count": 1
+            }
+          }
+        },
+        {
+          "id": "qwen.dashscope.video_synthesis.v1",
+          "protocol_adapter_id": "qwen-responses",
+          "api_version": "compatible-v1",
+          "api_types": [
+            "video.txt2video"
+          ],
+          "operation": "dashscope.video_synthesis",
+          "http_method": "POST",
+          "path": "/api/v1/services/aigc/video-generation/video-synthesis",
+          "auth": {
+            "kind": "header",
+            "name": "authorization",
+            "prefix": "Bearer "
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "model",
+            "input"
+          ],
+          "allowed_body_fields": [
+            "model",
+            "input",
+            "parameters"
+          ],
+          "body_field_types": {
+            "model": [
+              "string"
+            ],
+            "input": [
+              "object"
+            ],
+            "parameters": [
+              "object"
+            ]
+          },
+          "official_sources": [
+            "https://help.aliyun.com/en/model-studio/legacy-wan-text-to-video-api-reference"
+          ],
+          "evidence_summary": "DashScope media uses model/input/parameters with operation-specific nested fields and documented usage counters.",
+          "required_headers": {
+            "x-dashscope-async": "enable"
+          },
+          "async_protocol": "qwen_media",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            },
+            {
+              "name": "result",
+              "http_method": "GET",
+              "path": "/api/v1/tasks/qwen_task_mock_1"
+            }
+          ],
+          "success_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "PENDING"
+            }
+          },
+          "async_result_fixture": {
+            "request_id": "qwen_request_mock_1",
+            "output": {
+              "task_id": "qwen_task_mock_1",
+              "task_status": "SUCCEEDED",
+              "video_url": "http://mock/artifacts/result.mp4"
+            },
+            "usage": {
+              "video_count": 1,
+              "duration": 5
+            }
+          }
+        }
+      ]
     },
     {
       "provider_driver": "sn-ai-provider",

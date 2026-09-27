@@ -98,12 +98,98 @@
     { "match": { "provider_model_id": "qwen3.7-flash" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 2e-7, "output_token": 8e-7, "cache_input_token": 4e-8 }, { "up_to": 262144, "input_token": 6e-7, "output_token": 0.0000024, "cache_input_token": 1.2e-7 }, { "input_token": 0.0000012, "output_token": 0.0000048, "cache_input_token": 2.4e-7 }] } } },
     { "match": { "provider_model_id": "qwen3.6-plus" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 0.000002, "output_token": 0.000012, "cache_input_token": 2e-7 }, { "input_token": 0.000008, "output_token": 0.000048, "cache_input_token": 9.6e-7 }] } } },
     { "match": { "provider_model_id": "qwen3.6-plus-2026-04-02" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 262144, "input_token": 0.000002, "output_token": 0.000012, "cache_input_token": 2e-7 }, { "input_token": 0.000008, "output_token": 0.000048, "cache_input_token": 9.6e-7 }] } } },
-    { "match": { "provider_model_id": "qwen3.6-flash" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.0000012, "output_token": 0.0000072 } },
-    { "match": { "provider_model_id": "qwen3.6-flash-2026-04-16" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 0.0000012, "output_token": 0.0000072 } },
+    { "match": { "provider_model_id": "qwen3.6-flash" }, "pricing": {
+      "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "verified_at": "2026-09-26",
+      "currency": "CNY",
+      "tiers": {
+        "dimension": "input_tokens",
+        "mode": "volume",
+        "steps": [
+          {
+            "up_to": 262144,
+            "input_token": 1.2e-06,
+            "output_token": 7.2e-06
+          },
+          {
+            "input_token": 4.8e-06,
+            "output_token": 2.88e-05
+          }
+        ]
+      }
+    } },
+    { "match": { "provider_model_id": "qwen3.6-flash-2026-04-16" }, "pricing": {
+      "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "verified_at": "2026-09-26",
+      "currency": "CNY",
+      "tiers": {
+        "dimension": "input_tokens",
+        "mode": "volume",
+        "steps": [
+          {
+            "up_to": 262144,
+            "input_token": 1.2e-06,
+            "output_token": 7.2e-06
+          },
+          {
+            "input_token": 4.8e-06,
+            "output_token": 2.88e-05
+          }
+        ]
+      }
+    } },
     { "match": { "provider_model_id": "qwen3.5-plus" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-7, "output_token": 0.0000048, "cache_input_token": null }, { "up_to": 262144, "input_token": 0.000002, "output_token": 0.000012, "cache_input_token": null }, { "input_token": 0.000004, "output_token": 0.000024, "cache_input_token": null }] } } },
     { "match": { "provider_model_id": "qwen3.5-plus-2026-04-20" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-7, "output_token": 0.0000048, "cache_input_token": null }, { "up_to": 262144, "input_token": 0.000002, "output_token": 0.000012, "cache_input_token": null }, { "input_token": 0.000004, "output_token": 0.000024, "cache_input_token": null }] } } },
-    { "match": { "provider_model_id": "qwen3.5-flash" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 2e-7, "output_token": 0.000002 } },
-    { "match": { "provider_model_id": "qwen3.5-flash-2026-02-23" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 2e-7, "output_token": 0.000002 } },
+    { "match": { "provider_model_id": "qwen3.5-flash" }, "pricing": {
+      "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "verified_at": "2026-09-26",
+      "currency": "CNY",
+      "tiers": {
+        "dimension": "input_tokens",
+        "mode": "volume",
+        "steps": [
+          {
+            "up_to": 131072,
+            "input_token": 2e-07,
+            "output_token": 2e-06
+          },
+          {
+            "up_to": 262144,
+            "input_token": 8e-07,
+            "output_token": 8e-06
+          },
+          {
+            "input_token": 1.2e-06,
+            "output_token": 1.2e-05
+          }
+        ]
+      }
+    } },
+    { "match": { "provider_model_id": "qwen3.5-flash-2026-02-23" }, "pricing": {
+      "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing",
+      "verified_at": "2026-09-26",
+      "currency": "CNY",
+      "tiers": {
+        "dimension": "input_tokens",
+        "mode": "volume",
+        "steps": [
+          {
+            "up_to": 131072,
+            "input_token": 2e-07,
+            "output_token": 2e-06
+          },
+          {
+            "up_to": 262144,
+            "input_token": 8e-07,
+            "output_token": 8e-06
+          },
+          {
+            "input_token": 1.2e-06,
+            "output_token": 1.2e-05
+          }
+        ]
+      }
+    } },
     { "match": { "provider_model_id": "qwen3.5-397b-a17b" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 0.0000012, "output_token": 0.0000072, "cache_input_token": null }, { "input_token": 0.000003, "output_token": 0.000018, "cache_input_token": null }] } } },
     { "match": { "provider_model_id": "qwen3.5-122b-a10b" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 8e-7, "output_token": 0.0000064, "cache_input_token": null }, { "input_token": 0.000002, "output_token": 0.000016, "cache_input_token": null }] } } },
     { "match": { "provider_model_id": "qwen3.5-27b" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 131072, "input_token": 6e-7, "output_token": 0.0000048, "cache_input_token": null }, { "input_token": 0.0000018, "output_token": 0.0000144, "cache_input_token": null }] } } },

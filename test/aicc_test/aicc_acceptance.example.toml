@@ -18,6 +18,8 @@ start_local = false
 allow_config_mutation = false
 
 [runner]
+allow_aicc_restart = false
+restart_via_docker = false
 providers = ["openai", "claude", "google-gemini", "fal", "minimax", "openrouter", "sn-ai-provider"]
 allow_real_model_calls = false
 max_real_calls = 500

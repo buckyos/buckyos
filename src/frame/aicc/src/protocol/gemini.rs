@@ -2057,6 +2057,22 @@ impl NativeTaskCodec for GeminiVideoCodec {
         ])
     }
 
+    fn output_video_seconds(&self, request: &HttpRequest) -> Option<u64> {
+        let HttpBody::Json(body) = &request.body else {
+            return None;
+        };
+        match body.pointer("/parameters/durationSeconds") {
+            Some(value) => value
+                .as_f64()
+                .and_then(|duration| super::adapter::integer_seconds(duration).ok()),
+            None => Some(if self.api_type == ApiType::VideoExtend {
+                7
+            } else {
+                8
+            }),
+        }
+    }
+
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
         match input.operation {
             NativeTaskOperation::Submit => encode_video_submit(input, self.api_type),
@@ -2330,6 +2346,7 @@ fn decode_video_status(response: HttpResponse) -> ProtocolResultValue<NativeTask
         NativeTaskState::Succeeded
     };
     Ok(NativeTaskOutput::Status {
+        result_usage: None,
         state,
         retry_after,
         result_ref: None,
@@ -3394,6 +3411,18 @@ mod tests {
             context: &ctx,
         };
         let wire = codec.encode_native(&submit).unwrap();
+        assert_eq!(codec.output_video_seconds(&wire), Some(8));
+        let mut explicit = wire.clone();
+        if let HttpBody::Json(body) = &mut explicit.body {
+            body["parameters"]["durationSeconds"] = json!(6);
+        }
+        assert_eq!(codec.output_video_seconds(&explicit), Some(6));
+        if let HttpBody::Json(body) = &mut explicit.body {
+            body["parameters"]["durationSeconds"] = json!(6.5);
+        }
+        assert_eq!(codec.output_video_seconds(&explicit), None);
+        let extension = GeminiVideoCodec::new(codec.descriptor.clone(), ApiType::VideoExtend);
+        assert_eq!(extension.output_video_seconds(&wire), Some(7));
         assert!(wire
             .url
             .ends_with("/v1beta/models/veo-test:predictLongRunning"));

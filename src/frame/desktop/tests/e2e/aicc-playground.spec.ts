@@ -18,7 +18,7 @@ function fillField(field: PlaygroundField): unknown {
   return fieldDefault(field)
 }
 function sample(api: ApiType): JsonObject {
-  const params = { ...defaultRequest(api), exact_model: `${api}@test-provider`, ...Object.fromEntries(PLAYGROUND_APIS[api].fields.filter((field) => field.required).map((field) => [field.key, fillField(field)])) }
+  const params: JsonObject = { ...defaultRequest(api), exact_model: `${api}@test-provider`, ...Object.fromEntries(PLAYGROUND_APIS[api].fields.filter((field) => field.required).map((field) => [field.key, fillField(field)])) }
   if (api === 'embedding.multimodal') params.items = [{ id: 'item-1', text: 'hello' }]
   if (api === 'rerank') params.documents = [{ id: 'doc-1', text: 'hello' }]
   return params

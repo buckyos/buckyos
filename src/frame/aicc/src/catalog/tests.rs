@@ -764,3 +764,18 @@ fn channel_capacity_ceilings_only_narrow_existing_model_facts() {
     assert!(!narrowed.capabilities.contains_key("decision.max_levels"));
     assert_eq!(narrowed.capabilities["decision.choice"], true);
 }
+
+#[test]
+fn pricing_requires_a_usable_dimension_and_unit_for_amounts() {
+    for value in [
+        json!({"currency":"USD"}),
+        json!({"currency":"USD","amount":0.1}),
+        json!({"currency":"USD","tiers":{"dimension":"input_tokens","steps":[{"up_to":100}]}}),
+        json!({"currency":"USD","input_token":0.1,"unit":"image","amount":0.1}),
+    ] {
+        let price = serde_json::from_value(value).unwrap();
+        assert!(super::validation::validate_pricing("review", &price).is_err());
+    }
+    let price = serde_json::from_value(json!({"currency":"USD","tiers":{"dimension":"input_tokens","steps":[{"input_token":0.1,"output_token":0.2}]}})).unwrap();
+    assert!(super::validation::validate_pricing("review", &price).is_ok());
+}

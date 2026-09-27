@@ -20,6 +20,8 @@ export const REQUIRED_T15_PROVIDER_DRIVERS = [
   "typesafe",
 ] as const;
 
+const GLM_VIDEO_EXAMPLE_URL = "https://raw.githubusercontent.com/MetaGLM/glm-cookbook/main/vision/cogvideox_pysdk.ipynb";
+
 const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   typesafe: new Set(["docs.typesafe.ai"]),
   openai: new Set(["platform.openai.com", "developers.openai.com"]),
@@ -33,7 +35,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
   "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
-  qwen: new Set(["www.alibabacloud.com"]),
+  qwen: new Set(["www.alibabacloud.com", "help.aliyun.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
 
@@ -89,7 +91,8 @@ export type ProviderProtocolContract = {
     | "google_lro"
     | "openai_video"
     | "glm_video"
-    | "doubao_video";
+    | "doubao_video"
+    | "qwen_media";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -267,7 +270,7 @@ export function validateProviderProtocolCatalog(
       if (
         sources.some((source) =>
           !/^https:\/\//.test(source) ||
-          !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
+          !(driver === "glm" && source === GLM_VIDEO_EXAMPLE_URL) && !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
         )
       ) {
         throw new Error(
@@ -516,7 +519,7 @@ export function validateProviderProtocolCatalog(
       }
       if (
         sources.some((source) =>
-          !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
+          !(driver === "glm" && source === GLM_VIDEO_EXAMPLE_URL) && !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
         )
       ) {
         throw new Error(
@@ -599,7 +602,7 @@ export function validateProviderProtocolCatalog(
     }
     if (
       evidenceSources.some((source) =>
-        !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
+        !(driver === "glm" && source === GLM_VIDEO_EXAMPLE_URL) && !OFFICIAL_PROTOCOL_SOURCE_HOSTS[driver]?.has(new URL(source).hostname)
       )
     ) {
       throw new Error(
@@ -1028,6 +1031,40 @@ function validateNestedProviderBody(
     ) {
       errors.push(`body field ${field} must be a positive integer`);
     }
+  }
+  if (["ark.contents.generate", "videos.generate", "video_generation.v2.create"].includes(contract.operation)
+      && body.duration !== undefined && (!Number.isInteger(body.duration) || Number(body.duration) <= 0)) {
+    errors.push("duration must be a positive integer");
+  }
+  if (contract.operation === "ark.images.generate" && body.size !== undefined
+      && !/^(1K|2K|4K|[0-9]+x[0-9]+)$/.test(String(body.size))) errors.push("Seedream size must be a resolution or WxH");
+  if (contract.operation.startsWith("dashscope.")) {
+    const input = recordValue(body.input) ?? {};
+    const parameters = recordValue(body.parameters) ?? {};
+    if (contract.operation === "dashscope.image_edit") {
+      const messages = input.messages;
+      if (!Array.isArray(messages) || messages.length === 0) errors.push("DashScope image edit requires input.messages");
+      else for (const raw of messages) {
+        const message = recordValue(raw);
+        const content = message?.content;
+        if (message?.role !== "user" || !Array.isArray(content) || content.length === 0) errors.push("DashScope image edit requires user content");
+        else {
+          for (const rawPart of content) {
+            const part = recordValue(rawPart);
+            if (!part || Object.keys(part).length !== 1 || !["image", "text"].some((key) => typeof part[key] === "string" && String(part[key]).length > 0)) errors.push("invalid DashScope image edit content");
+          }
+          if (!content.some((part) => typeof recordValue(part)?.image === "string") || !content.some((part) => typeof recordValue(part)?.text === "string")) errors.push("DashScope image edit requires image and text");
+        }
+      }
+    } else if (typeof input.prompt !== "string" || !input.prompt.trim()) errors.push("DashScope requires input.prompt");
+    const allowedInput = contract.operation === "dashscope.image_edit" ? ["messages"] : ["prompt", "negative_prompt", "img_url"];
+    const allowedParameters = contract.operation === "dashscope.video_synthesis"
+      ? (String(body.model).startsWith("wan2.7") ? ["duration", "resolution", "ratio", "seed", "audio"] : ["duration", "size", "resolution", "seed", "audio"])
+      : ["size", "n", "seed", "negative_prompt"];
+    for (const field of Object.keys(input)) if (!allowedInput.includes(field)) errors.push(`unsupported DashScope input.${field}`);
+    for (const field of Object.keys(parameters)) if (!allowedParameters.includes(field)) errors.push(`unsupported DashScope parameters.${field}`);
+    if (parameters.size !== undefined && !/^[0-9]+\*[0-9]+$/.test(String(parameters.size))) errors.push("DashScope size must be W*H");
+    if (parameters.duration !== undefined && (!Number.isInteger(parameters.duration) || Number(parameters.duration) <= 0)) errors.push("duration must be a positive integer");
   }
   if (contract.minimax_music) {
     const model = String(body.model ?? "");

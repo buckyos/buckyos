@@ -453,6 +453,13 @@ fn validate_model_pricing(
                 });
             }
         }
+        if !entry.pricing.has_token_rates() && entry.pricing.unit.is_none() {
+            return Err(CatalogBuildError::InvalidValue {
+                owner: owner.into(),
+                field: "model_pricing",
+                reason: "static pricing requires a billable dimension".into(),
+            });
+        }
         validate_pricing(owner, &entry.pricing)?;
     }
     Ok(())
@@ -464,6 +471,19 @@ pub(crate) fn validate_pricing(owner: &str, pricing: &Pricing) -> Result<(), Cat
             owner: owner.to_owned(),
             field: "pricing.currency",
             reason: "must be non-empty".to_owned(),
+        });
+    }
+    if (pricing.amount.is_some() && pricing.unit.is_none())
+        || (!pricing.has_token_rates()
+            && pricing.unit.is_none()
+            && pricing.estimated_cost.is_none())
+        || (pricing.has_token_rates() && pricing.unit.is_some())
+    {
+        return Err(CatalogBuildError::InvalidValue {
+            owner: owner.to_owned(),
+            field: "pricing",
+            reason: "declare token rates (including tiers) or unit billing; amount requires unit"
+                .into(),
         });
     }
     let ratio_ok = |input: Option<f64>,

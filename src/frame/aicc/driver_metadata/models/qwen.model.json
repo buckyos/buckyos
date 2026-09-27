@@ -7,6 +7,21 @@
   "required_features": [],
   "models": [
     {
+      "id": "wan2.1-t2i-turbo",
+      "api_types": ["image.txt2img"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "qwen-image-edit",
+      "api_types": ["image.img2img"],
+      "capabilities": { "image_generation": true }
+    },
+    {
+      "id": "wan2.6-t2v",
+      "api_types": ["video.txt2video"],
+      "capabilities": { "video_generation": true }
+    },
+    {
       "id": "qwen3.6-max-preview",
       "parameter_scale": "max",
       "api_types": ["llm"],

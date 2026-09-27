@@ -1084,13 +1084,29 @@
       },
       "rules": [
         {
-          "model_pattern": "MiniMax-M*",
+          "model_pattern": "MiniMax-M3*",
           "status": "active",
-          "api_types": ["llm", "vision.ocr", "vision.caption"],
-          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
-          "input_kinds": ["text", "image"],
-          "output_kinds": ["text", "tool_call"],
-          "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
+          "api_types": [
+            "llm",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "methods": [
+            "chat.completions.create",
+            "vision.ocr",
+            "vision.caption"
+          ],
+          "input_kinds": [
+            "text",
+            "image"
+          ],
+          "output_kinds": [
+            "text",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://platform.minimax.io/docs/guides/models-intro"
+          ],
           "evidence_summary": "Current MiniMax M models provide text generation, reasoning, streaming, tool calling, and model-specific vision input."
         },
         {
@@ -1132,6 +1148,47 @@
           "output_kinds": ["video"],
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
           "evidence_summary": "MiniMax Hailuo models support text-to-video and model-specific image-to-video."
+        },
+        {
+          "model_pattern": "MiniMax-M2*",
+          "status": "active",
+          "api_types": [
+            "llm"
+          ],
+          "methods": [
+            "chat.completions.create"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "text",
+            "tool_call"
+          ],
+          "source_urls": [
+            "https://platform.minimax.io/docs/guides/models-intro"
+          ],
+          "evidence_summary": "MiniMax M2 models accept text inputs."
+        },
+        {
+          "model_pattern": "music-*",
+          "status": "active",
+          "api_types": [
+            "audio.music"
+          ],
+          "methods": [
+            "audio.music"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "audio"
+          ],
+          "source_urls": [
+            "https://platform.minimax.io/docs/api-reference/music-generation"
+          ],
+          "evidence_summary": "Music generation remains available to existing paid accounts."
         }
       ]
     },

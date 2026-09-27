@@ -152,12 +152,30 @@ impl NativeTaskCodec for GlmVideoCodec {
             }
             NativeTaskOperation::Status => {
                 let state = decode_state(required_string(&value, "task_status")?.as_str())?;
+                if state == NativeTaskState::Failed {
+                    let error = value.get("error").unwrap_or(&value);
+                    return Err(ProtocolError::new(
+                        ProtocolErrorKind::ProviderRejected,
+                        error
+                            .get("message")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Provider video task failed"),
+                    )
+                    .with_provider_code(error.get("code").filter(|code| !code.is_null()).map(
+                        |code| {
+                            code.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| code.to_string())
+                        },
+                    ))
+                    .with_http_status(response.status.as_u16())
+                    .with_request_id(Some(response.request_id.clone())));
+                }
                 Ok(NativeTaskOutput::Status {
+                    result_usage: None,
                     state,
-                    retry_after,
-                    result_ref: (state == NativeTaskState::Succeeded)
-                        .then(|| required_string(&value, "id"))
-                        .transpose()?,
+                    retry_after: retry_after.or(Some(Duration::from_secs(2))),
+                    result_ref: None,
                     result_artifacts: Default::default(),
                 })
             }
@@ -206,7 +224,10 @@ fn encode_submit(
     match &codec_input.canonical_request {
         AiccCall::VideoTextToVideo(request) => {
             if let Some(duration) = request.duration_seconds {
-                body.insert("duration".to_owned(), json!(duration));
+                body.insert(
+                    "duration".to_owned(),
+                    json!(super::adapter::integer_seconds(duration)?),
+                );
             }
             if let Some(resolution) = &request.resolution {
                 body.insert("size".to_owned(), json!(resolution));
@@ -214,7 +235,10 @@ fn encode_submit(
         }
         AiccCall::VideoImageToVideo(request) => {
             if let Some(duration) = request.duration_seconds {
-                body.insert("duration".to_owned(), json!(duration));
+                body.insert(
+                    "duration".to_owned(),
+                    json!(super::adapter::integer_seconds(duration)?),
+                );
             }
             if let Some(resolution) = &request.resolution {
                 body.insert("size".to_owned(), json!(resolution));

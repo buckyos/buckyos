@@ -708,7 +708,7 @@ mod tests {
         );
         assert_eq!(
             providers[1].known_provider().base_url,
-            "https://ark.cn-beijing.volces.com/api/plan/v3"
+            "https://ark.cn-beijing.volces.com/api/v3"
         );
     }
 
