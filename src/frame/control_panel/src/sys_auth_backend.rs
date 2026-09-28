@@ -1,10 +1,10 @@
 use crate::{gateway_etc_dir, ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{RPCErrors, RPCRequest, RPCResponse, RPCResult, RPCSessionToken};
 use buckyos_api::{
-    get_buckyos_api_runtime, is_system_login_target, validate_verify_hub_token_claims, AppId,
-    AppInstanceId, AuthTarget, ControlPanelClient, LoginByPasswordResponse, SystemServiceId,
-    TokenPrincipalKind, TokenUse, UserInfo, UserPrivateProfile, UserSettings, UserState, UserType,
-    CONTROL_PANEL_SERVICE_UNIQUE_ID,
+    get_buckyos_api_runtime, is_system_login_target, validate_verify_hub_token_claims,
+    zone_document_hostname, AppId, AppInstanceId, AuthTarget, BuckyOSRuntime, ControlPanelClient,
+    LoginByPasswordResponse, SystemServiceId, TokenPrincipalKind, TokenUse, UserInfo,
+    UserPrivateProfile, UserSettings, UserState, UserType, CONTROL_PANEL_SERVICE_UNIQUE_ID,
 };
 use buckyos_http_server::{server_err, ServerError, ServerErrorCode, ServerResult, StreamInfo};
 use buckyos_kit::buckyos_get_unix_timestamp;
@@ -74,7 +74,7 @@ impl ControlPanelServer {
         let resolved_target = match redirect_url.as_deref() {
             Some(redirect_url) => Some(Self::resolve_sso_auth_target(
                 redirect_url,
-                runtime.zone_id.to_host_name().as_str(),
+                Self::sso_zone_host(runtime)?.as_str(),
                 !runtime.force_https,
                 runtime.node_gateway_port,
             )?),
@@ -214,9 +214,10 @@ impl ControlPanelServer {
         };
         let runtime = get_buckyos_api_runtime().map_err(Self::rpc_to_server_error)?;
         let validation = (|| -> Result<(), RPCErrors> {
+            let zone_host = Self::sso_zone_host(runtime)?;
             let callback_target = Self::resolve_sso_auth_target(
                 redirect_url.as_str(),
-                runtime.zone_id.to_host_name().as_str(),
+                zone_host.as_str(),
                 !runtime.force_https,
                 runtime.node_gateway_port,
             )?;
@@ -224,7 +225,7 @@ impl ControlPanelServer {
                 Self::request_origin(&req, !runtime.force_https, runtime.node_gateway_port)?;
             let request_target = Self::resolve_sso_auth_target(
                 format!("{request_origin}/").as_str(),
-                runtime.zone_id.to_host_name().as_str(),
+                zone_host.as_str(),
                 !runtime.force_https,
                 runtime.node_gateway_port,
             )?;
@@ -306,7 +307,7 @@ impl ControlPanelServer {
                 Self::request_origin(&req, !runtime.force_https, runtime.node_gateway_port)?;
             let current_route = Self::resolve_sso_auth_target(
                 format!("{request_origin}/").as_str(),
-                runtime.zone_id.to_host_name().as_str(),
+                Self::sso_zone_host(runtime)?.as_str(),
                 !runtime.force_https,
                 runtime.node_gateway_port,
             )?;
@@ -874,6 +875,26 @@ impl ControlPanelServer {
         )
     }
 
+    fn sso_zone_host(runtime: &BuckyOSRuntime) -> Result<String, RPCErrors> {
+        let zone_config = runtime
+            .get_zone_config()
+            .ok_or_else(|| RPCErrors::ReasonError("SSO requires a Zone config".to_string()))?;
+        let zone_document = zone_config.zone_document().map_err(|error| {
+            RPCErrors::ReasonError(format!("load SSO Zone document failed: {error}"))
+        })?;
+        if zone_document
+            .hostname
+            .trim()
+            .trim_end_matches('.')
+            .is_empty()
+        {
+            return Err(RPCErrors::ReasonError(
+                "SSO requires a published Zone hostname".to_string(),
+            ));
+        }
+        Ok(zone_document_hostname(&zone_document).to_ascii_lowercase())
+    }
+
     fn resolve_sso_auth_target(
         redirect_url: &str,
         zone_host: &str,
@@ -1238,6 +1259,54 @@ fn is_control_panel_user_session(token: &RPCSessionToken) -> Result<bool, RPCErr
 mod tests {
     use super::*;
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use buckyos_api::{BuckyOSRuntimeType, ZoneConfig};
+    use buckyos_kit::BuckyOSMachineConfig;
+    use name_lib::ZoneDocument;
+
+    fn sso_runtime(hostname: &str) -> BuckyOSRuntime {
+        let mut runtime = BuckyOSRuntime::new(
+            CONTROL_PANEL_SERVICE_UNIQUE_ID,
+            None,
+            BuckyOSRuntimeType::KernelService,
+        );
+        let machine_config = BuckyOSMachineConfig::default();
+        runtime.web3_bridges = machine_config.web3_bridge;
+        runtime.force_https = machine_config.force_https;
+        runtime.zone_id = DID::new("bns", "wugren021");
+        let public_key = serde_json::from_value(json!({
+            "kty": "OKP",
+            "crv": "Ed25519",
+            "x": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        }))
+        .unwrap();
+        let mut document = ZoneDocument::new(
+            runtime.zone_id.clone(),
+            DID::new("bns", "wugren021"),
+            public_key,
+        );
+        document.hostname = hostname.to_string();
+        runtime.zone_config = Some(ZoneConfig::from_zone_document(&document, None).unwrap());
+        runtime
+    }
+
+    fn resolve_sso_test_target(
+        runtime: &BuckyOSRuntime,
+        redirect_url: &str,
+    ) -> Result<ResolvedSsoAuthTarget, RPCErrors> {
+        let zone_host = ControlPanelServer::sso_zone_host(runtime)?;
+        let (url, app_key, is_root) = ControlPanelServer::parse_sso_redirect_url(
+            redirect_url,
+            &zone_host,
+            !runtime.force_https,
+            runtime.node_gateway_port,
+        )?;
+        ControlPanelServer::resolve_sso_auth_target_from_gateway_info(
+            &url,
+            &app_key,
+            is_root,
+            &gateway_info(),
+        )
+    }
 
     fn request(cookie: Option<&str>, secure: bool) -> http::Request<BoxBody<Bytes, ServerError>> {
         let mut builder = http::Request::builder()
@@ -1332,6 +1401,105 @@ mod tests {
             AuthTarget::system("control-panel".parse().unwrap())
         );
         assert_eq!(resolved.canonical_origin, "https://example.test");
+    }
+
+    #[test]
+    fn published_hostname_drives_login_callback_and_refresh_routes() {
+        for hostname in ["wugren021.web3.buckyos.ai", "zone.custom.example"] {
+            let mut runtime = sso_runtime(hostname);
+            for bridge in ["bns.buckyos.ai", "web3.buckyos.ai"] {
+                runtime
+                    .web3_bridges
+                    .insert("bns".to_string(), bridge.to_string());
+                assert_eq!(
+                    ControlPanelServer::sso_zone_host(&runtime).unwrap(),
+                    hostname
+                );
+                for (host, target) in [
+                    (
+                        hostname.to_string(),
+                        AuthTarget::system("control-panel".parse().unwrap()),
+                    ),
+                    (
+                        format!("files.{hostname}"),
+                        AuthTarget::app("filebrowser@alice".parse().unwrap()),
+                    ),
+                    (
+                        format!("files-{hostname}"),
+                        AuthTarget::app("filebrowser@alice".parse().unwrap()),
+                    ),
+                ] {
+                    let redirect_url = format!("https://{host}/folder?tab=recent#files");
+                    let login = resolve_sso_test_target(&runtime, &redirect_url).unwrap();
+                    assert_eq!(login.auth_target, target);
+                    let expected = pending(target.clone(), &login.canonical_origin, &redirect_url);
+                    let callback = resolve_sso_test_target(&runtime, &redirect_url).unwrap();
+                    let mut req = request(None, true);
+                    req.headers_mut().insert(HOST, host.parse().unwrap());
+                    let origin = ControlPanelServer::request_origin(
+                        &req,
+                        !runtime.force_https,
+                        runtime.node_gateway_port,
+                    )
+                    .unwrap();
+                    let route = resolve_sso_test_target(&runtime, &format!("{origin}/")).unwrap();
+                    ControlPanelServer::validate_sso_callback_binding(&callback, &route, &expected)
+                        .unwrap();
+                    ControlPanelServer::validate_sso_refresh_route(&route, &target).unwrap();
+                    assert!(ControlPanelServer::validate_sso_refresh_route(
+                        &route,
+                        &AuthTarget::app("filebrowser@bob".parse().unwrap()),
+                    )
+                    .is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn published_hostname_does_not_authorize_other_hosts_or_unknown_apps() {
+        let runtime = sso_runtime("wugren021.web3.buckyos.ai");
+        for redirect_url in [
+            "https://outside.example/",
+            "https://wugren021.bns.buckyos.ai/",
+            "https://wugren021.web3.buckyos.ai.evil.example/",
+            "https://evilwugren021.web3.buckyos.ai/",
+            "https://unknown.wugren021.web3.buckyos.ai/",
+            "https://unknown-wugren021.web3.buckyos.ai/",
+        ] {
+            assert!(
+                resolve_sso_test_target(&runtime, redirect_url).is_err(),
+                "{redirect_url}"
+            );
+        }
+        let custom = sso_runtime("zone.custom.example");
+        assert!(resolve_sso_test_target(&custom, "https://wugren021.web3.buckyos.ai/").is_err());
+    }
+
+    #[test]
+    fn sso_requires_a_readable_zone_document_with_a_published_hostname() {
+        let mut runtime = sso_runtime("wugren021.web3.buckyos.ai");
+        runtime.zone_config = None;
+        assert!(matches!(
+            ControlPanelServer::sso_zone_host(&runtime),
+            Err(RPCErrors::ReasonError(_))
+        ));
+        runtime.zone_config = Some(ZoneConfig::new("invalid document".to_string()));
+        assert!(matches!(
+            ControlPanelServer::sso_zone_host(&runtime),
+            Err(RPCErrors::ReasonError(_))
+        ));
+        for hostname in ["", "   ", "."] {
+            assert!(matches!(
+                ControlPanelServer::sso_zone_host(&sso_runtime(hostname)),
+                Err(RPCErrors::ReasonError(_))
+            ));
+        }
+        assert_eq!(
+            ControlPanelServer::sso_zone_host(&sso_runtime(" WUGREN021.web3.buckyos.ai. "))
+                .unwrap(),
+            "wugren021.web3.buckyos.ai"
+        );
     }
 
     #[test]
