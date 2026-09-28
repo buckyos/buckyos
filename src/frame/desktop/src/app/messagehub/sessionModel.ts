@@ -22,6 +22,11 @@ export function relativeActivity(time: number | undefined, now: number, justNow:
 export function sortSessions(sessions: Session[], preferences: (id: string) => SessionPreferences) {
   return [...sessions].sort((a, b) => Number(preferences(b.id).pinned) - Number(preferences(a.id).pinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
 }
+export function selectDefaultSession(entity: Entity, sessions: Session[]): Session | null {
+  const active = sessions.filter(session => session.entityId === entity.id && session.lifecycle === 'active')
+  const candidates = entity.type === 'agent' ? active.filter(session => session.binding.kind === 'native') : active
+  return [...candidates].sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))[0] ?? null
+}
 export function sessionTitle(session: Session, preferences: SessionPreferences) {
   return preferences.title || session.shared.title || session.title
 }
@@ -34,7 +39,7 @@ export function sessionAccess(context: MessageHubContext, session: Session, conf
 }
 export function creationReason(context: MessageHubContext, entity: Entity, policy: string, binding?: SessionBinding) {
   if (context.mode !== 'self' || context.viewerDid !== context.ownerDid) return 'agent_observer'
-  if (policy === 'deny' || (policy !== 'allow' && entity.type !== 'agent')) return 'creation_disabled'
+  if (policy === 'deny' || (policy !== 'allow' && entity.type !== 'agent' && binding?.kind !== 'native')) return 'creation_disabled'
   if (!binding || binding.kind === 'unknown') return 'binding_unknown'
   if (binding.kind === 'tunnel') {
     if (!binding.connected) return 'transport_unavailable'

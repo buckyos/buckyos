@@ -123,7 +123,7 @@ projection 保留 raw `messageIndex` 与 `messageCount`，重新生成可见 ent
 3. 同一 owner 与同一对端可以有多个 Session。每条到该实体的 tunnel 连接至少对应一个独立 Session；
    同一连接支持多 Session 时再细分远端 thread / topic。不同实例、不同端点不能因联系人合并或 topic 同名而串会话。
 4. 隧道会话通常默认只读；满足发送能力与授权后，显式确认外部软件历史风险才能启用当前 Session 写入。
-5. 默认仅与 Agent 的 Session 可手工创建；其它由建立通信连接或发现远端上下文自动添加。
+5. BuckyOS 原生连接默认允许各类实体手工创建 Session；外部连接仍受实体创建策略和平台能力限制。
    “允许手工创建到该实体的会话”是 `(ownerDid, entityId)` 级配置，与发送权限分开。
 6. 默认 owner 是登录用户；从 Agent 主页观察其会话时，owner 是 Agent，实际 viewer 仍是登录用户。
    首期 Agent 视角全部只读，包括已读状态与配置；未来代 Agent 写入需要独立授权。
@@ -273,7 +273,7 @@ export interface Entity {
   lastMessage?: MessagePreview
   /** max(session.updated_at_ms)。实体列表默认排序键。 */
   lastActiveAt: number
-  /** 最近活动的 session，点击实体时默认打开它；空会话允许没有 lastMessage。 */
+  /** 最近活动的 session；点击实体按 §3.3.3 的默认会话规则打开，空会话允许没有 lastMessage。 */
   lastActivitySessionId?: SessionId
 
   /** 该实体下可见 session 数。等于 1 时 ConversationView 隐藏 Session 入口。 */
@@ -453,7 +453,9 @@ export interface EntitySessionCreation {
 }
 ```
 
-策略按 `(ownerDid, entityId)` 保存，`default` 对 Agent 为允许、其它实体为禁止。
+策略按 `(ownerDid, entityId)` 保存，`default` 对 Agent 和 BuckyOS 原生连接为允许，其它外部连接为禁止。显式 `deny` 对所有类型生效。
+
+实体点击和带 `entityId` 的入口统一调用 `ensureDefaultSession`：只选择 active 会话，按 `lastActiveAt` 降序、ID 升序选择，置顶不影响默认会话。Agent 仅选择未绑定 msg-tunnel 的原生会话；Person / Group / Service 可选择已有的外部会话。缺失时先继续查询分页，再在创建策略和连接能力允许的情况下登记空会话并进入；观察模式不创建。同一 viewer/owner/entity 的并发请求合并，切换实体后忽略旧请求的界面跳转。
 `canCreate` 是策略、当前视角、后端授权与所选连接能力共同计算的结果；多连接时在提交前明确选定连接，
 并重新校验对应能力。在 tunnel 中新建还要求 `supportsMultipleSessions && canCreateRemoteSession`。
 原生 Agent 会话不要求外部 tunnel 存在。配置允许不能绕过平台限制，不能解除已有 Session 的只读模式。

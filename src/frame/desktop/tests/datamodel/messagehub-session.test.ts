@@ -1,4 +1,5 @@
-import { creationReason, defaultPreferences, isActionMessage, isMessageActivity, relativeActivity, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
+import { creationReason, defaultPreferences, isActionMessage, isMessageActivity, relativeActivity, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
+import { ensureDefaultSession } from '../../src/app/messagehub/store/defaultSession.ts'
 import type { Entity, MessageHubContext, Session } from '../../src/app/messagehub/types.ts'
 import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 
@@ -43,7 +44,11 @@ Deno.test('owner scope, observer capabilities and tunnel creation limits cannot 
   equal(sessionAccess(observe, { ...session, ownerDid: entity.id }, true).canManage, false)
   equal(sessionAccess(observe, { ...session, ownerDid: entity.id }, true).mode, 'read_only')
   equal(creationReason(context, entity, 'default', session.binding), undefined)
-  equal(creationReason(context, { ...entity, type: 'person' }, 'default', session.binding), 'creation_disabled')
+  for (const type of ['person', 'agent', 'group', 'service'] as const) {
+    equal(creationReason(context, { ...entity, type }, 'default', session.binding), undefined)
+    equal(creationReason(context, { ...entity, type }, 'deny', session.binding), 'creation_disabled')
+    equal(creationReason(observe, { ...entity, type }, 'allow', session.binding), 'agent_observer')
+  }
   const tunnel = { kind: 'tunnel' as const, tunnelInstanceId: 'work', endpointDid: 'did:telegram:alice', connectionName: 'Telegram · Work', supportsMultipleSessions: false, canCreateRemoteSession: true, canSend: true, connected: true }
   equal(creationReason(context, { ...entity, type: 'person' }, 'allow', tunnel), 'platform_read_only')
   equal(creationReason(context, { ...entity, type: 'person' }, 'allow', { ...tunnel, supportsMultipleSessions: true }), undefined)
@@ -72,4 +77,69 @@ Deno.test('Action filtering preserves raw indices and rebuilds dates, including 
   equal(onlyAction.totalCount, 0)
   equal((await buildConversationProjection(reader)).messageCount, 3)
   equal((await buildConversationProjection(reader)).entries.filter(entry => entry.kind === 'message').length, 3)
+})
+
+Deno.test('entity defaults follow recent activity, ignore pinning and keep agent defaults native', () => {
+  const older = { ...session, id: 'pinned', lastActiveAt: now - 1000 }
+  const newer = { ...session, id: 'recent' }
+  const tunnel: Session = { ...session, id: 'tunnel', lastActiveAt: now + 1000, binding: { kind: 'tunnel', tunnelInstanceId: 'tg', endpointDid: 'did:msgtunnel:alice.user.tg', connectionName: 'Telegram', connected: true, canSend: true, supportsMultipleSessions: false, canCreateRemoteSession: false } }
+  const ordered = sortSessions([newer, older, tunnel], id => ({ ...defaultPreferences, pinned: id === 'pinned' }))
+  equal(ordered[0].id, 'pinned')
+  for (const type of ['person', 'agent', 'group', 'service'] as const) {
+    equal(selectDefaultSession({ ...entity, type }, ordered)?.id, type === 'agent' ? 'recent' : 'tunnel')
+    equal(selectDefaultSession({ ...entity, type }, [{ ...newer, lifecycle: 'archived' }, older])?.id, 'pinned')
+    equal(selectDefaultSession({ ...entity, type }, [tunnel])?.id ?? null, type === 'agent' ? null : 'tunnel')
+  }
+  equal(selectDefaultSession(entity, [{ ...session, entityId: 'another' }, { ...session, binding: { kind: 'unknown' } }]), null)
+})
+
+function defaultSessionFixture() {
+  const state = { sessions: [] as Session[], pages: [] as Session[][], creates: 0, failNext: false }
+  const store = {
+    ensureOwner: () => Promise.resolve(),
+    canView: () => true,
+    ownerStatus: () => ({ phase: 'ready' as const }),
+    defaultSession: (ctx: MessageHubContext) => selectDefaultSession(entity, state.sessions.filter(item => item.ownerDid === ctx.ownerDid)),
+    hasMoreEntities: () => state.pages.length > 0,
+    loadMoreEntities: async () => { state.sessions.push(...state.pages.shift()!) },
+    findEntity: () => entity,
+    connections: () => [{ id: 'native', label: 'BuckyOS', binding: session.binding }],
+    policy: () => 'default' as const,
+    create: async (ctx: MessageHubContext) => {
+      state.creates++
+      await Promise.resolve()
+      if (state.failNext) { state.failNext = false; throw new Error('unavailable') }
+      const created = { ...session, ownerDid: ctx.ownerDid, id: `created-${state.creates}` }
+      state.sessions.push(created)
+      return created
+    },
+  }
+  return { state, store }
+}
+
+Deno.test('default lookup searches later pages before creating and leaves archived sessions archived', async () => {
+  const { state, store } = defaultSessionFixture()
+  state.sessions.push({ ...session, lifecycle: 'archived' })
+  state.pages.push([{ ...session, id: 'later-page' }])
+  equal((await ensureDefaultSession(store, context, entity.id))?.id, 'later-page')
+  equal(state.creates, 0)
+  state.sessions.pop()
+  equal((await ensureDefaultSession(store, context, entity.id))?.id, 'created-1')
+  equal(state.sessions[0].lifecycle, 'archived')
+})
+
+Deno.test('concurrent default creation is deduplicated, failed requests can retry and owners stay isolated', async () => {
+  const { state, store } = defaultSessionFixture()
+  state.failNext = true
+  const failures = await Promise.allSettled([ensureDefaultSession(store, context, entity.id), ensureDefaultSession(store, context, entity.id)])
+  equal(failures.map(result => result.status), ['rejected', 'rejected'])
+  equal(state.creates, 1)
+  const sessions = await Promise.all([ensureDefaultSession(store, context, entity.id), ensureDefaultSession(store, context, entity.id)])
+  equal(sessions.map(item => item?.id), ['created-2', 'created-2'])
+  equal(state.creates, 2)
+  const other: MessageHubContext = { viewerDid: 'did:user:other', ownerDid: 'did:user:other', mode: 'self' }
+  equal((await ensureDefaultSession(store, other, entity.id))?.ownerDid, other.ownerDid)
+  equal(state.creates, 3)
+  equal(await ensureDefaultSession(store, { ...context, ownerDid: 'did:agent:observed', mode: 'observe' }, entity.id), null)
+  equal(state.creates, 3)
 })

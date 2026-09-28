@@ -22,7 +22,8 @@ import {
   type Contact, type GroupSummary, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import type { MessageObject, MsgObject, RefItem } from '../protocol/msgobj'
-import { createSessionSchema, creationReason, defaultPreferences, memberStateSchema, presentationSchema, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createSessionSchema, creationReason, defaultPreferences, memberStateSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { ensureDefaultSession } from '../store/defaultSession'
 import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 import { LocalStateStore } from './local'
@@ -375,6 +376,13 @@ export class MessageHubApiStore implements MessageHubStore {
     const prefs = new Map(filtered.map(session => [session.id, this.preferences(context, session.id)]))
     return sortSessions(filtered, id => prefs.get(id) ?? this.preferences(context, id))
   }
+
+  defaultSession(context: MessageHubContext, entityId: string) {
+    const entity = this.findEntity(context, entityId)
+    return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
+  }
+
+  ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
 
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = this.findEntity(context, entityId)

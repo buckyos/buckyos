@@ -163,6 +163,73 @@ async function details(page: import('@playwright/test').Page) {
   return page.getByTestId('session-details')
 }
 
+test('New Session includes native users and selecting an empty user creates one reusable default', async ({ page }) => {
+  await openHub(page)
+  await page.getByRole('button', { name: 'New Session', exact: true }).first().click()
+  const dialog = page.getByRole('dialog')
+  const target = dialog.getByRole('combobox').first()
+  await expect(target.locator('option', { hasText: 'Bob Zhang' })).toHaveCount(1)
+  await target.selectOption('did:buckyos:person:bob')
+  await expect(dialog.getByRole('button', { name: 'Create', exact: true })).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  await page.evaluate(async context => {
+    const store = window.__messageHubMock
+    for (const session of store.sessions(context, 'did:buckyos:person:bob')) await store.manage(context, session.id, 'delete')
+  }, OWN)
+  await page.getByRole('button', { name: /^Bob Zhang/ }).click()
+  await expect(page.locator('textarea')).toBeVisible()
+  await page.locator('textarea').fill('Draft in the default session')
+  await page.getByRole('button', { name: /^CodeAssistant/ }).click()
+  await page.getByRole('button', { name: /^Bob Zhang/ }).dblclick()
+  await expect(page.locator('textarea')).toHaveValue('Draft in the default session')
+  expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:buckyos:person:bob').length, OWN)).toBe(1)
+})
+
+test('agent entity entry creates a missing default and skips pinned or tunnel sessions', async ({ page }) => {
+  await openHub(page, 'did:bns:assistant.alice')
+  await expect(page.locator('textarea')).toBeVisible()
+  const before = await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:assistant.alice').map(session => session.id), OWN)
+  expect(before).toHaveLength(1)
+  await page.reload()
+  await expect(page.locator('textarea')).toBeVisible()
+  expect(await page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:assistant.alice').map(session => session.id), OWN)).toEqual(before)
+  await page.evaluate(async ({ context, agent }) => {
+    const store = window.__messageHubMock
+    await store.updatePreferences(context, 'session-coder-2', { pinned: true })
+    await store.discoverConnection(context.ownerDid, agent, { kind: 'tunnel', tunnelInstanceId: 'agent-tunnel', endpointDid: 'did:msgtunnel:agent.user.agent-tunnel', connectionName: 'Agent Telegram', connected: true, canSend: true, supportsMultipleSessions: false, canCreateRemoteSession: false })
+  }, { context: OWN, agent: CODER })
+  await page.getByRole('button', { name: /^CodeAssistant/ }).click()
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  await expect(page.locator('[data-session-id="session-coder-1"] button').first()).toHaveAttribute('aria-current', 'true')
+  await expect(page.locator('[data-session-id="session-coder-2"] button').first()).not.toHaveAttribute('aria-current', 'true')
+  await page.evaluate(async ({ context, agent }) => {
+    const store = window.__messageHubMock
+    for (const session of store.sessions(context, agent, 'active')) if (session.binding.kind === 'native') await store.manage(context, session.id, 'archive')
+  }, { context: OWN, agent: CODER })
+  await page.getByRole('button', { name: /^Bucky Assistant/ }).click()
+  await page.getByRole('button', { name: /^CodeAssistant/ }).click()
+  await expect(page.locator('textarea')).toBeVisible()
+  expect(await page.evaluate(({ context, agent }) => window.__messageHubMock.sessions(context, agent, 'active').filter(session => session.binding.kind === 'native').length, { context: OWN, agent: CODER })).toBe(1)
+})
+
+test('default creation can retry and a delayed completion cannot replace a newer entity selection', async ({ page }) => {
+  await openHub(page)
+  await page.evaluate(() => window.__messageHubMock.configure({ failNext: 'mock_failure' }))
+  await page.getByRole('button', { name: /^Bucky Assistant/ }).click()
+  await expect(page.getByRole('alert')).toBeVisible()
+  await page.getByRole('button', { name: 'Retry', exact: true }).click()
+  await expect(page.locator('textarea')).toBeVisible()
+  await page.evaluate(async context => {
+    const store = window.__messageHubMock
+    for (const session of store.sessions(context, 'did:bns:assistant.alice')) await store.manage(context, session.id, 'delete')
+    store.configure({ delayMs: 800 })
+  }, OWN)
+  await page.getByRole('button', { name: /^Bucky Assistant/ }).dblclick()
+  await page.getByRole('button', { name: /^CodeAssistant/ }).click()
+  await expect.poll(() => page.evaluate(context => window.__messageHubMock.sessions(context, 'did:bns:assistant.alice').length, OWN)).toBe(1)
+  await expect(page.getByRole('button', { name: 'Entity details: CodeAssistant' })).toBeVisible()
+})
+
 for (const width of [1440, 375]) {
   test(`session lifecycle, independent drafts and details at ${width}px`, async ({ page }) => {
     const errors: string[] = []
@@ -300,7 +367,10 @@ test('failed creation and deletion retain input, selection and data, and block d
 
 test('tunnel writing, explicit creation policy, connection limits and binding isolation', async ({ page }) => {
   await openHub(page, ALICE)
-  await expect(page.getByRole('button', { name: 'New Session', exact: true }).last()).toBeDisabled()
+  await page.getByRole('button', { name: 'New Session', exact: true }).last().click()
+  await page.getByRole('dialog').getByRole('combobox', { name: 'Connection', exact: true }).selectOption('telegram-work')
+  await expect(page.getByRole('dialog').getByRole('button', { name: 'Create', exact: true })).toBeDisabled()
+  await page.getByRole('dialog').getByRole('button', { name: 'Cancel' }).click()
   await page.getByRole('button', { name: 'Entity details: Alice Chen' }).click()
   await page.getByLabel('Allow manual sessions with this entity').selectOption('allow')
   await page.getByRole('button', { name: 'Save', exact: true }).click()

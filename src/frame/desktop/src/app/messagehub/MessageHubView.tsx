@@ -68,7 +68,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   // is what the mock route did with the CodeAssistant seed.
   // Resolved once: the component is keyed on the context and the initial entity.
   const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : store.entities(context)[0]?.id ?? null)
-  const getDefaultSessionId = (entityId: string | null) => entityId ? store.sessions(context, entityId, 'active')[0]?.id ?? null : null
+  const getDefaultSessionId = (entityId: string | null) => entityId ? store.defaultSession(context, entityId)?.id ?? null : null
   const contextEpoch = useRef(0)
   const ownerDid = context.ownerDid
   useEffect(() => () => { contextEpoch.current++; store.clearTransient(ownerDid) }, [ownerDid, store])
@@ -79,6 +79,18 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
     () => getDefaultSessionId(resolvedInitialEntityId),
   )
+  const [defaultSessionError, setDefaultSessionError] = useState(false)
+  const resolveDefaultSession = useCallback((entityId: string, epoch: number) => {
+    void store.ensureDefaultSession(context, entityId).then(session => {
+      if (contextEpoch.current === epoch) {
+        setSelectedSessionId(session?.id ?? null)
+        setDefaultSessionError(false)
+      }
+    }).catch(() => { if (contextEpoch.current === epoch) setDefaultSessionError(true) })
+  }, [store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (resolvedInitialEntityId) resolveDefaultSession(resolvedInitialEntityId, contextEpoch.current)
+  }, [resolvedInitialEntityId, resolveDefaultSession])
   const [filter, setFilter] = useState<EntityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [mobileView, setMobileView] = useState<MobileView>(
@@ -152,7 +164,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   // Without a selected entity nothing is rendered, so no session may become
   // active (an empty entity id would otherwise return every session).
   const sessions = useMemo(() => selectedEntityId ? store.sessions(context, selectedEntityId, archived ? 'archived' : 'active') : EMPTY_SESSIONS, [store, snapshot, selectedEntityId, archived, context.ownerDid, context.mode, context.viewerDid]) // eslint-disable-line react-hooks/exhaustive-deps
-  const activeSession = sessions.find(session => session.id === selectedSessionId) ?? sessions[0] ?? null
+  const activeSession = sessions.find(session => session.id === selectedSessionId) ?? (archived ? sessions[0] : selectedEntityId ? store.defaultSession(context, selectedEntityId) : null) ?? null
   const messageReader = activeSession ? store.reader(context, activeSession.id) : EMPTY_READER
   const entityDetail = selectedEntity ? store.entityDetail(context, selectedEntity.id) : null
   const confirmed = !!activeSession && writeConfirmations[activeSession.id] === JSON.stringify(activeSession.binding)
@@ -166,6 +178,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   })() : undefined
   const openCreate = (entityId: string | null = selectedEntityId) => {
     const epoch = ++contextEpoch.current, trigger = document.activeElement
+    setDefaultSessionError(false)
     void dialog.open({ title: t('messagehub.newSession'), size: 'sm', dismissible: false, renderBody: controls => <CreateSessionForm context={context} entityId={entityId} onCancel={() => { contextEpoch.current++; controls.close() }} onCreated={session => {
       controls.close()
       if (contextEpoch.current !== epoch) return
@@ -177,20 +190,23 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
     void dialog.open({ title: `${t('messagehub.manageSession')}: ${store.title(context, session)}`, size: 'sm', dismissible: false, renderBody: controls => <ManageSessionForm context={context} session={session} onCancel={() => controls.close()} onDone={() => {
       controls.close()
       if (contextEpoch.current !== epoch) return
-      if (session.id === activeSession?.id) { setSelectedSessionId(store.sessions(context, session.entityId, 'active')[0]?.id ?? null); setArchived(false); setDetailsTarget(null); setMobileView('conversation') }
+      if (session.id === activeSession?.id) { setSelectedSessionId(getDefaultSessionId(session.entityId)); setArchived(false); setDetailsTarget(null); setMobileView('conversation') }
     }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
   }
   const sidebarProps = {
-    onCreate: () => openCreate(), onManage: openManage, onToggleArchived: () => { setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null) }, archived,
+    onCreate: () => openCreate(), onManage: openManage, onToggleArchived: () => { contextEpoch.current++; setArchived(value => !value); setSelectedSessionId(null); setDetailsTarget(null); setDefaultSessionError(false) }, archived,
     archivedCount: selectedEntityId ? store.sessions(context, selectedEntityId, 'archived').length : 0, canManage, creationReason: createReason, titleFor: (session: Session) => store.title(context, session),
     statusFor: (session: Session) => store.runtimeFor(context, session.id).map(state => t(`messagehub.runtime.${state.status}`)).join(' · '),
   }
 
   const handleSelectEntity = (
     (id: string) => {
-      contextEpoch.current++; setArchived(false)
+      const epoch = ++contextEpoch.current
+      setArchived(false)
       setSelectedEntityId(id)
       setSelectedSessionId(getDefaultSessionId(id))
+      setDefaultSessionError(false)
+      resolveDefaultSession(id, epoch)
       setDetailsTarget(null)
       setShowSessionSidebar(false)
 
@@ -221,7 +237,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   }, [isDesktop])
 
   const handleSelectSession = (id: string) => {
-    contextEpoch.current++; setSelectedSessionId(id)
+    contextEpoch.current++; setSelectedSessionId(id); setDefaultSessionError(false)
     if (!isDesktop) setShowSessionSidebar(false)
   }
 
@@ -322,6 +338,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
   }
   const conversationProps = {
     context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
+    defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
     historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,
     hasOlder: activeSession ? store.hasOlder(context, activeSession.id) : false,
     onLoadOlder: () => activeSession ? store.loadOlder(context, activeSession.id) : Promise.resolve(false),

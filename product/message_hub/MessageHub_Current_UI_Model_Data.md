@@ -84,7 +84,8 @@ type SessionBinding =
 
 - 同一实体下的连接按实例与端点区分，同一实例多个远端上下文各有 Session。
 - Alice seed 包含 Telegram Personal、Telegram Work 两个实例，Work 中含 General / Design 两个会话。
-- 原生 Agent 可以直接创建。Person 默认禁止创建；显式允许仍需可用连接。多连接必须在表单中选择。
+- 原生连接默认允许各类实体创建会话，New Session 包含系统内其他用户；外部连接仍受策略和平台能力限制。多连接必须在表单中选择。
+- `defaultSession()` / `ensureDefaultSession()` 统一选择及按需创建默认会话：选择最近活跃的 active 会话，Agent 仅选择原生会话并排除 tunnel，置顶不影响选择；创建前检查后续分页，并合并同一实体的并发请求。
 - 创建 tunnel Session 还要求 `supportsMultipleSessions && canCreateRemoteSession`；Personal seed 不满足此条件，Work 满足。
 - `discoverConnection()` 按 owner、实例、端点和远端上下文幂等登记默认空 Session；重复发现和旧删除标记不会重新加载 seed。
 - 删除保留连接来源，不删除联系人、父子实体或对端记录。连接失效后保留历史，禁止改用其它 tunnel 发送。

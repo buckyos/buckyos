@@ -40,6 +40,8 @@ interface ConversationViewProps {
   onOpenSessionDetails?: () => void
   onCreate?: () => void
   creationReason?: string
+  defaultSessionError?: boolean
+  onRetryDefaultSession?: () => void
   draft?: string
   draftAttachments?: ComposerAttachmentInput[]
   onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
@@ -68,7 +70,7 @@ export function ConversationView({
   onOpenSessionSidebar,
   onOpenDetails,
   onSendMessage,
-  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
+  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
   leadingPane = null,
   isSessionSidebarOpen = false,
   historyStatus = 'ready',
@@ -219,6 +221,7 @@ export function ConversationView({
         {filterError && <span role="alert">{t('messagehub.operationFailed')}</span>}
       </div>}
 
+      {defaultSessionError && <div role="alert" className="flex shrink-0 items-center gap-2 px-3 py-2 text-xs text-[color:var(--cp-danger)]"><span>{t('messagehub.operationFailed')}</span><button type="button" className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2" onClick={onRetryDefaultSession}>{t('messagehub.retry')}</button></div>}
       <div className="flex min-h-0 flex-1">
         {leadingPane}
 

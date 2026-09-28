@@ -63,6 +63,8 @@ export interface MessageHubStore {
   admission(context: MessageHubContext, entityId: string): EntityAdmission | null
   setAdmission(context: MessageHubContext, entityId: string, action: 'accept' | 'block'): Promise<void>
   sessions(context: MessageHubContext, entityId?: string, lifecycle?: Session['lifecycle']): Session[]
+  defaultSession(context: MessageHubContext, entityId: string): Session | null
+  ensureDefaultSession(context: MessageHubContext, entityId: string): Promise<Session | null>
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[]
   reader(context: MessageHubContext, sessionId: string): ConversationMessageReader
   historyStatus(context: MessageHubContext, sessionId: string): 'idle' | 'loading' | 'ready' | 'error'

@@ -4,7 +4,8 @@ import { createCodeAssistantMockReaders } from '../../codeassistant/mockHistory'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
-import { createSessionSchema, creationReason, defaultPreferences, isMessageActivity, memberStateSchema, presentationSchema, sessionAccess, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createSessionSchema, creationReason, defaultPreferences, isMessageActivity, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { ensureDefaultSession } from '../store/defaultSession'
 import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockSessions } from './data'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
@@ -198,11 +199,16 @@ export class MessageHubMockStore implements MessageHubStore {
     }
     return mockEntities.map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
+  defaultSession(context: MessageHubContext, entityId: string) {
+    const entity = this.findEntity(context, entityId)
+    return entity ? selectDefaultSession(entity, this.sessions(context, entityId, 'active')) : null
+  }
+  ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
     const entity = findEntity(entityId)
     const choices = new Map<string, ConnectionChoice>()
     const known = [...Object.values(this.snapshot.sessions), ...Object.values(this.snapshot.deleted).map(deleted => deleted.session)].filter(session => session.ownerDid === context.ownerDid && session.entityId === entityId)
-    if (entity && (entity.type === 'agent' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
+    if (entity && (entity.type === 'agent' || entity.source === 'buckyos' || entity.domain === 'managed' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
     for (const session of known) {
       if (session.binding.kind === 'tunnel') choices.set(session.binding.tunnelInstanceId, { id: session.binding.tunnelInstanceId, binding: session.binding, label: session.binding.connectionName })
     }

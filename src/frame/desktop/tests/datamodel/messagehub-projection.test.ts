@@ -1,5 +1,6 @@
 import { attributeSession, canonicalizeDid, parseTunnelDid, projectOwner, summarizeMessage, UNASSIGNED_ENTITY_ID, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
 import { itemToMessage, recordMeta, removeMessage, upsertMessages, emptyHistory } from '../../src/app/messagehub/api/reader.ts'
+import { creationReason, selectDefaultSession } from '../../src/app/messagehub/sessionModel.ts'
 import type { Contact, SessionMessageItem, SessionSummary } from '../../src/app/messagehub/datamodel/sessionApi.ts'
 import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 
@@ -127,8 +128,19 @@ Deno.test('web DID zone users are people and unknown local DIDs do not become ag
   const entity = projected.entities.find(item => item.id === lucy)!
   equal(entity.type, 'person')
   equal(entity.domain, 'managed')
+  equal(creationReason({ viewerDid: owner, ownerDid: owner, mode: 'self' }, entity, 'default', { kind: 'native', targetDid: lucy }), undefined)
   equal(projected.entities.find(item => item.id === agent)?.type, 'agent')
   equal(projected.entities.find(item => item.id === unknown)?.type, 'person')
   const own = projectOwner({ ownerDid: lucy, summaries: [], contacts: [userContact], groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
   equal(own.entities.some(item => item.id === lucy), false)
+})
+
+Deno.test('registered tunnel bindings on canonical agent DIDs cannot become native defaults', () => {
+  const agent = 'did:web:jarvis.test.buckyos.io'
+  const binding = { kind: 'tunnel', tunnelInstanceId: 'tg-main-tunnel', endpointDid: peerEndpoint, connectionName: 'Telegram', connected: true, canSend: true }
+  const registered = summary('registered-tunnel', null, { last_activity_ms: 20, state: { owner, session_id: 'registered-tunnel', lifecycle: 'active', registered: true, peer_did: agent, binding, created_at_ms: 20, updated_at_ms: 20 } })
+  const native = summary(`dm:${agent}`, { box_kind: 'INBOX', from: agent, to: owner, msg: chat(agent, [owner], 'hi', 10) })
+  const projected = projectOwner({ ownerDid: owner, summaries: [registered, native], contacts, groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
+  equal(projected.sessions[0].binding.kind, 'tunnel')
+  equal(selectDefaultSession(projected.entityById.get(agent)!, projected.sessions)?.id, `dm:${agent}`)
 })

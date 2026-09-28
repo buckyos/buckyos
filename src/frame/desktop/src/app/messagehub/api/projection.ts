@@ -166,6 +166,20 @@ interface EntitySeed {
 
 function bindingFor(peerDid: string, contacts: readonly Contact[], summary: SessionSummary | null): SessionBinding {
   const registered = summary?.state?.registered ? summary.state.binding : undefined
+  if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'tunnel') {
+    const binding = registered as Record<string, unknown>
+    if (typeof binding.tunnelInstanceId !== 'string' || !binding.tunnelInstanceId || typeof binding.endpointDid !== 'string' || !binding.endpointDid) return { kind: 'unknown' }
+    return {
+      kind: 'tunnel', tunnelInstanceId: binding.tunnelInstanceId, endpointDid: binding.endpointDid,
+      connectionName: typeof binding.connectionName === 'string' ? binding.connectionName : binding.tunnelInstanceId,
+      remoteContextId: typeof binding.remoteContextId === 'string' ? binding.remoteContextId : undefined,
+      supportsMultipleSessions: binding.supportsMultipleSessions === true,
+      canCreateRemoteSession: binding.canCreateRemoteSession === true,
+      canSend: binding.canSend === true, connected: binding.connected === true,
+      revision: typeof binding.revision === 'number' ? binding.revision : undefined,
+    }
+  }
+  if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'unknown') return { kind: 'unknown' }
   if (registered && typeof registered === 'object' && (registered as { kind?: string }).kind === 'native') {
     const target = (registered as { targetDid?: string }).targetDid ?? peerDid
     return { kind: 'native', targetDid: target }
