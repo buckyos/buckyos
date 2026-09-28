@@ -85,6 +85,11 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("doubao", "doubao-seed-2.1-lite", "max_output_tokens"),
         ("doubao", "doubao-seed-2.1-pro", "max_output_tokens"),
         ("doubao", "doubao-seed-2.1-turbo", "max_output_tokens"),
+        (
+            "doubao",
+            "doubao-seed-2-1-turbo-260628",
+            "max_output_tokens",
+        ),
         ("doubao", "doubao-seed-evolving", "max_output_tokens"),
         ("kimi", "kimi-k2.6", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code", "max_output_tokens"),

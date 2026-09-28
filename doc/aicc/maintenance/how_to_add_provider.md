@@ -108,6 +108,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 - OpenRouter 这类稳定的聚合渠道命名规则写入可更新的 Provider Rules `origin_mappings`；
 - 豆包方舟 `ep-*` 是用户实例自己的 endpoint ID，必须在该实例的
   `instance_rules.model_driver_overrides` 中映射到 `<model_driver_id>/<model_id>`，不能写成全局映射；
+- 豆包方舟 `/models` 返回的稳定基础模型物理 ID 若与原厂 Model Driver 精确 ID 不恒等，写入该渠道 Provider Rules 的 `model_driver_overrides`；只映射官方确认等价的 ID，不得把历史模型强行归到较新的模型；
 - SN 的 `provider_actual_model_id` 来自网关动态 discovery，继续以动态响应为事实源；
 - 恒等命名的 provider 不配置映射。
 

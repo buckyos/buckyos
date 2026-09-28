@@ -9,13 +9,19 @@ use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
 use reqwest::{Method, Url};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) const DOUBAO_SPEECH_ADAPTER_ID: &str = "doubao-speech";
 pub(crate) const DOUBAO_TTS_OPERATION_ID: &str = "tts.unidirectional";
 const MAX_REQUEST_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn doubao_speech_adapter() -> (AdapterDescriptor, CodecRegistration) {
     let (operation, registration) = doubao_speech_registration();
@@ -135,10 +141,36 @@ impl OperationCodec for DoubaoTtsCodec {
             HeaderName::from_static("x-api-resource-id"),
             HeaderValue::from_static("seed-tts-2.0"),
         );
-        wire.headers.insert(
-            HeaderName::from_static("x-control-require-usage-tokens-return"),
-            HeaderValue::from_static("*"),
-        );
+        match call
+            .input
+            .resolved_parameters
+            .get("doubao_tts_wire_profile")
+            .and_then(Value::as_str)
+        {
+            Some("standard") => {
+                wire.headers.insert(
+                    HeaderName::from_static("x-api-request-id"),
+                    HeaderValue::from_str(&request_id()).map_err(|_| {
+                        ProtocolError::invalid_configuration("Doubao TTS request ID is invalid")
+                    })?,
+                );
+                wire.headers.insert(
+                    HeaderName::from_static("x-control-require-usage-tokens-return"),
+                    HeaderValue::from_static("*"),
+                );
+            }
+            Some("agent_plan") => {
+                wire.headers.insert(
+                    HeaderName::from_static("x-control-request-usage-tokens"),
+                    HeaderValue::from_static("true"),
+                );
+            }
+            _ => {
+                return Err(ProtocolError::invalid_configuration(
+                    "Doubao TTS wire profile is missing or unsupported",
+                ));
+            }
+        }
         apply_speech_credential(&mut wire.headers, call)?;
         wire.body = HttpBody::Json(body);
         wire.timeout = Some(call.context.limits.request_timeout);
@@ -294,6 +326,33 @@ fn decode_audio(response: HttpResponse, format: &str) -> ProtocolResultValue<Pro
     }))
 }
 
+fn request_id() -> String {
+    let sequence = REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let mut digest = Sha256::new();
+    digest.update(timestamp.to_le_bytes());
+    digest.update(sequence.to_le_bytes());
+    digest.update(std::process::id().to_le_bytes());
+    let mut bytes: [u8; 16] = digest.finalize()[..16]
+        .try_into()
+        .expect("fixed digest slice");
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        u32::from_be_bytes(bytes[0..4].try_into().expect("fixed UUID field")),
+        u16::from_be_bytes(bytes[4..6].try_into().expect("fixed UUID field")),
+        u16::from_be_bytes(bytes[6..8].try_into().expect("fixed UUID field")),
+        u16::from_be_bytes(bytes[8..10].try_into().expect("fixed UUID field")),
+        u64::from_be_bytes([
+            0, 0, bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+        ])
+    )
+}
+
 fn apply_speech_credential(
     headers: &mut HeaderMap,
     call: &CodecCall<'_>,
@@ -349,8 +408,97 @@ fn audio_format(media_type: &str) -> ProtocolResultValue<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{
+        CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
+    };
+    use buckyos_api::{AudioTextToSpeechRequest, ProviderStateCoordinate};
     use bytes::Bytes;
     use reqwest::{header::HeaderMap, StatusCode};
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    fn context(base_url: &str) -> CodecContext {
+        CodecContext {
+            base_url: base_url.to_owned(),
+            state_coordinate: ProviderStateCoordinate {
+                provider_profile_id: "doubao".to_owned(),
+                adapter_type: DOUBAO_SPEECH_ADAPTER_ID.to_owned(),
+                origin_provider: "doubao".to_owned(),
+                origin_model: "doubao-seed-tts-2.0".to_owned(),
+            },
+            credential: Some(ResolvedCredential::bearer("secret://ark", "secret").unwrap()),
+            resources: BTreeMap::new(),
+            limits: CodecLimits {
+                request_timeout: Duration::from_secs(10),
+                max_request_bytes: MAX_REQUEST_BYTES,
+                max_response_bytes: MAX_RESPONSE_BYTES,
+            },
+        }
+    }
+
+    fn input(wire_profile: &str) -> CodecInput {
+        CodecInput {
+            canonical_request: AiccCall::AudioTextToSpeech(
+                AudioTextToSpeechRequest::from_json(json!({
+                    "exact_model": "doubao-seed-tts-2.0@doubao-main",
+                    "text": "hello",
+                    "voice": {"language": "zh-CN"}
+                }))
+                .unwrap(),
+            ),
+            resolved_parameters: BTreeMap::from([
+                ("provider_model_id".to_owned(), json!("doubao-seed-tts-2.0")),
+                ("speaker".to_owned(), json!("zh_female_test")),
+                ("doubao_tts_wire_profile".to_owned(), json!(wire_profile)),
+            ]),
+        }
+    }
+
+    #[test]
+    fn standard_and_agent_plan_tts_headers_follow_configured_wire_profile() {
+        let (descriptor, registration) = doubao_speech_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+
+        let standard = registry
+            .encode(
+                DOUBAO_SPEECH_ADAPTER_ID,
+                DOUBAO_TTS_OPERATION_ID,
+                ApiType::AudioTextToSpeech,
+                &input("standard"),
+                &context("https://openspeech.bytedance.com/api/v3/tts"),
+            )
+            .unwrap();
+        assert_eq!(
+            standard
+                .headers
+                .get("x-control-require-usage-tokens-return")
+                .unwrap(),
+            "*"
+        );
+        assert!(standard.headers.contains_key("x-api-request-id"));
+        assert!(!standard
+            .headers
+            .contains_key("x-control-request-usage-tokens"));
+
+        let agent_plan = registry
+            .encode(
+                DOUBAO_SPEECH_ADAPTER_ID,
+                DOUBAO_TTS_OPERATION_ID,
+                ApiType::AudioTextToSpeech,
+                &input("agent_plan"),
+                &context("https://openspeech.bytedance.com/api/v3/plan/tts"),
+            )
+            .unwrap();
+        assert_eq!(
+            agent_plan
+                .headers
+                .get("x-control-request-usage-tokens")
+                .unwrap(),
+            "true"
+        );
+        assert!(!agent_plan.headers.contains_key("x-api-request-id"));
+    }
 
     #[tokio::test]
     async fn error_response_keeps_doubao_tts_business_code() {

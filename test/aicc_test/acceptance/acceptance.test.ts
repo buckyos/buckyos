@@ -56,6 +56,7 @@ import { filterPhysicalModels } from "./model_coverage.ts";
 import {
   bindOfficialCatalogInstances,
   fetchOfficialModelIds,
+  scopeInventoriesToRequestedCases,
 } from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import {
@@ -188,6 +189,11 @@ function t15ProviderRequest(
 ): { url: string; init: RequestInit } {
   let path = contract.path.replaceAll("{model}", encodeURIComponent(model));
   const headers = new Headers(contract.required_headers ?? {});
+  for (const [name, value] of headers) {
+    if (value === "<uuid>") {
+      headers.set(name, "123e4567-e89b-42d3-a456-426614174000");
+    }
+  }
   if (contract.auth.kind === "header") {
     headers.set(contract.auth.name, `${contract.auth.prefix}t15-secret`);
   } else {
@@ -539,7 +545,7 @@ test("official catalog fetches paginated Provider inventory independently of AIC
 
 test("frozen official inventory is explicit and does not make a network request", async () => {
   const profile = (await baseline()).providers.find((item) =>
-    item.provider_driver === "doubao"
+    item.provider_driver === "doubao-agent-plan"
   )!;
   let requests = 0;
   const ids = await fetchOfficialModelIds({
@@ -580,8 +586,36 @@ test("frozen official inventory is explicit and does not make a network request"
   assert.match(profile.official_catalog.risk ?? "", /not revalidated at run time/);
 });
 
+test("targeted T2 inventory reconciliation keeps only requested physical models", () => {
+  const inventories: ProviderInventory[] = [{
+    provider_driver: "doubao",
+    provider_instance_name: "doubao-main",
+    models: [
+      {
+        exact_model: "doubao-seed-2-0-lite-260428@doubao-main",
+        provider_model_id: "doubao-seed-2-0-lite-260428",
+        api_types: ["llm", "vision.ocr", "vision.caption"],
+        logical_mounts: [],
+      },
+      {
+        exact_model: "doubao-seedance-2-0-260128@doubao-main",
+        provider_model_id: "doubao-seedance-2-0-260128",
+        api_types: ["video.txt2video"],
+        logical_mounts: [],
+      },
+    ],
+  }];
+  const scoped = scopeInventoriesToRequestedCases(inventories, [
+    "t2.doubao.doubao-main.doubao-seed-2-0-lite-260428.vision.ocr",
+  ]);
+  assert.deepEqual(
+    scoped[0].models.map((model) => model.provider_model_id),
+    ["doubao-seed-2-0-lite-260428"],
+  );
+});
+
 test("Doubao Agent Plan capability rules distinguish text-only and vision models", async () => {
-  const instance = "doubao-main";
+  const instance = "doubao-agent-plan-main";
   const models: ProviderInventory["models"] = [
     {
       exact_model: `doubao-seed-2.1-pro@${instance}`,
@@ -606,7 +640,7 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
     baseline: await baseline(),
     ...matrixInputs([{
       provider_instance_name: instance,
-      provider_driver: "doubao",
+      provider_driver: "doubao-agent-plan",
       models,
     }]),
   });
@@ -969,6 +1003,7 @@ test("preflight covers protocol, providers, and static cases", async () => {
     "claude",
     "deepseek",
     "doubao",
+    "doubao-agent-plan",
     "fal",
     "glm",
     "google-gemini",
@@ -1342,6 +1377,7 @@ test("Provider credentials accept TOML values or provider-specific environment v
     if (name === "AICC_CLAUDE_API_TOKEN") return "env-claude";
     if (name === "AICC_GLM_API_TOKEN") return "env-glm";
     if (name === "AICC_DOUBAO_API_TOKEN") return "env-doubao";
+    if (name === "AICC_DOUBAO_AGENT_PLAN_API_TOKEN") return "env-doubao-agent-plan";
     return undefined;
   });
   assert.deepEqual(tokens, {
@@ -1349,6 +1385,7 @@ test("Provider credentials accept TOML values or provider-specific environment v
     claude: "env-claude",
     glm: "env-glm",
     doubao: "env-doubao",
+    "doubao-agent-plan": "env-doubao-agent-plan",
   });
 });
 
@@ -1359,11 +1396,12 @@ test("Provider credentials create one current-schema instance when the section i
     openrouter: "router-token",
     glm: "glm-token",
     doubao: "doubao-token",
+    "doubao-agent-plan": "doubao-agent-plan-token",
   }, {}) as { providers: Array<Record<string, unknown>> };
-  assert.equal(patched.providers.length, 5);
+  assert.equal(patched.providers.length, 6);
   assert.deepEqual(
     patched.providers.map((instance) => instance.provider_profile_id),
-    ["openai", "gemini", "openrouter", "glm", "doubao"],
+    ["openai", "gemini", "openrouter", "glm", "doubao", "doubao-agent-plan"],
   );
   assert.equal(
     patched.providers[1].provider_instance_name,
@@ -1378,9 +1416,15 @@ test("Provider credentials create one current-schema instance when the section i
   assert.equal(patched.providers[4].provider_instance_name, "doubao-main");
   assert.equal(
     patched.providers[4].base_url,
-    "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "https://ark.cn-beijing.volces.com/api/v3",
   );
   assert.equal(patched.providers[4].protocol_adapter_id, "doubao-responses");
+  assert.equal(patched.providers[5].provider_instance_name, "doubao-agent-plan-main");
+  assert.equal(
+    patched.providers[5].base_url,
+    "https://ark.cn-beijing.volces.com/api/plan/v3",
+  );
+  assert.equal(patched.providers[5].protocol_adapter_id, "doubao-responses");
 });
 
 test("provider scheduler runs sessions concurrently within global and provider limits", async () => {
@@ -1978,9 +2022,9 @@ test("T2 multimodal embedding request honors the selected input combination", ()
   const request = buildExactRequest({
     cell: {
       case_id: "embedding-text-only",
-      provider_driver: "doubao",
-      provider_instance: "doubao-main",
-      exact_model: "doubao-embedding-vision@doubao-main",
+      provider_driver: "doubao-agent-plan",
+      provider_instance: "doubao-agent-plan-main",
+      exact_model: "doubao-embedding-vision@doubao-agent-plan-main",
       provider_model_id: "doubao-embedding-vision",
       api_type: "embedding.multimodal",
       method: "embedding.multimodal",
@@ -2278,13 +2322,14 @@ test("T2 Gemini Embedding 2 has one minimal cell per API type and no variant cel
 
 test("T1.5 protocol catalog is independent, traceable, and strict on Provider wire", async () => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 13);
+  assert.equal(catalog.providers.length, 14);
   assert.deepEqual(
     catalog.providers.map((provider) => provider.provider_driver).sort(),
     [
       "claude",
       "deepseek",
       "doubao",
+      "doubao-agent-plan",
       "fal",
       "glm",
       "google-gemini",
@@ -2849,7 +2894,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
 
 test("T1.5 Provider mock serves every contract for all Provider profiles", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 13);
+  assert.equal(catalog.providers.length, 14);
   assert.deepEqual(
     new Set(Object.keys(T15_PROVIDER_DISCOVERY_CONTRACTS)),
     new Set(catalog.providers.map((provider) => provider.provider_driver)),

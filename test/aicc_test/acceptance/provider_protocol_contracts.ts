@@ -34,6 +34,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-agent-plan": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com", "help.aliyun.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
@@ -778,7 +779,13 @@ export function validateProviderRequest(
   for (
     const [name, expected] of Object.entries(contract.required_headers ?? {})
   ) {
-    if (request.headers.get(name) !== expected) {
+    const actual = request.headers.get(name);
+    if (
+      expected === "<uuid>"
+        ? !actual ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(actual)
+        : actual !== expected
+    ) {
       errors.push(`header ${name} must equal ${expected}`);
     }
   }

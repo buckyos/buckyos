@@ -789,7 +789,8 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
     for (provider, expected_count) in [
         ("claude", 12),
         ("deepseek", 3),
-        ("doubao", 18),
+        ("doubao", 12),
+        ("doubao-agent-plan", 0),
         ("fal", 4),
         ("gemini", 29),
         ("glm", 101),
@@ -869,20 +870,19 @@ fn every_builtin_provider_price_has_provenance() {
 fn corrected_provider_prices_match_official_billing_dimensions() {
     let catalog = catalog();
 
+    let agent_plan = catalog.provider_rules("doubao-agent-plan").unwrap();
+    assert!(agent_plan.model_pricing.is_empty());
+
     let doubao = catalog.provider_rules("doubao").unwrap();
-    let mini = doubao
+    let speech = doubao
         .model_pricing
         .iter()
-        .find(|rule| rule.id.as_deref() == Some("doubao-seed-2.0-mini"))
+        .find(|rule| rule.id.as_deref() == Some("doubao-seed-tts-2.0"))
         .unwrap();
-    assert!(mini
-        .pricing
-        .tiers
-        .as_ref()
-        .unwrap()
-        .steps
-        .iter()
-        .all(|step| step.cache_input_token == Some(4e-8)));
+    assert_eq!(
+        speech.pricing.unit,
+        Some(crate::catalog::PricingUnit::Character)
+    );
 
     let fal = catalog.provider_rules("fal").unwrap();
     let rembg = fal

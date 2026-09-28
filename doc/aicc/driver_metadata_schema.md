@@ -114,7 +114,7 @@ non-LLM membership. Defaults only supply missing semantics to an existing exact
 entry. `resolve_model(driver, model)` rejects unknown IDs.
 
 Inventory identity is resolved across all loaded drivers: instance
-`model_driver_overrides` → optional Provider matcher → exact ID → longest bounded
+`model_driver_overrides` → Provider Rules `model_driver_overrides` → optional Provider matcher → exact ID → longest bounded
 case-insensitive containment. A containment match must begin at a non-alphanumeric
 boundary and end at the string end or a date-shaped suffix (`-YYYY-MM-DD`,
 `-YYYYMMDD`, `-YYMMDD`, `-MMDD`). Equal longest candidates are ambiguous.

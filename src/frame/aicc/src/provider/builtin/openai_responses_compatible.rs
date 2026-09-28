@@ -28,6 +28,7 @@ use std::time::Duration;
 
 pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
+pub(crate) const DOUBAO_AGENT_PLAN_PROFILE_ID: &str = "doubao-agent-plan";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
 #[cfg(test)]
@@ -97,14 +98,23 @@ impl BuiltinProviderDescriptor {
 
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
-    let known: [KnownProviderCatalog; 3] = [
-        super::builtin_catalog_document(CatalogKind::KnownProvider, DEEPSEEK_PROFILE_ID),
-        super::builtin_catalog_document(CatalogKind::KnownProvider, DOUBAO_PROFILE_ID),
-        super::builtin_catalog_document(CatalogKind::KnownProvider, QWEN_PROFILE_ID),
-    ];
-    let rules: [ProviderRulesCatalog; 3] = [
+    let known = crate::settings::load_builtin_metadata()
+        .expect("WP-15 builtin metadata must load")
+        .into_iter()
+        .filter(|file| file.kind == CatalogKind::KnownProvider)
+        .map(|file| {
+            serde_json::from_slice::<KnownProviderCatalog>(&file.contents).unwrap_or_else(|error| {
+                panic!(
+                    "WP-15 builtin metadata `{}` is invalid: {error}",
+                    file.catalog_id
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let rules: [ProviderRulesCatalog; 4] = [
         super::builtin_catalog_document(CatalogKind::ProviderRules, DEEPSEEK_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_AGENT_PLAN_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, QWEN_PROFILE_ID),
     ];
     [
@@ -115,6 +125,11 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
         ),
         (
             DOUBAO_PROFILE_ID,
+            BuiltinDiscoveryKind::OpenAiModelsApi,
+            ResponsesDialectKind::Doubao,
+        ),
+        (
+            DOUBAO_AGENT_PLAN_PROFILE_ID,
             BuiltinDiscoveryKind::CatalogOnly,
             ResponsesDialectKind::Doubao,
         ),
@@ -147,6 +162,7 @@ pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogF
     super::builtin_catalog_files(&[
         DEEPSEEK_PROFILE_ID,
         DOUBAO_PROFILE_ID,
+        DOUBAO_AGENT_PLAN_PROFILE_ID,
         QWEN_PROFILE_ID,
         "glm",
         "kimi",
@@ -170,6 +186,11 @@ fn deepseek() -> BuiltinProviderDescriptor {
 #[cfg(test)]
 fn doubao() -> BuiltinProviderDescriptor {
     configured_provider(DOUBAO_PROFILE_ID)
+}
+
+#[cfg(test)]
+fn doubao_agent_plan() -> BuiltinProviderDescriptor {
+    configured_provider(DOUBAO_AGENT_PLAN_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -639,7 +660,12 @@ mod tests {
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
+        for profile_id in [
+            DEEPSEEK_PROFILE_ID,
+            DOUBAO_PROFILE_ID,
+            DOUBAO_AGENT_PLAN_PROFILE_ID,
+            QWEN_PROFILE_ID,
+        ] {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             assert_eq!(
@@ -649,7 +675,12 @@ mod tests {
                     .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
             );
-            assert!(catalog.model_driver(profile_id).is_some());
+            let model_driver_id = if profile_id == DOUBAO_AGENT_PLAN_PROFILE_ID {
+                DOUBAO_PROFILE_ID
+            } else {
+                profile_id
+            };
+            assert!(catalog.model_driver(model_driver_id).is_some());
         }
 
         let deepseek = catalog.model_driver(DEEPSEEK_PROFILE_ID).unwrap();
@@ -689,7 +720,12 @@ mod tests {
                 .iter()
                 .map(|provider| provider.profile.provider_profile_id.as_str())
                 .collect::<Vec<_>>(),
-            vec![DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID]
+            vec![
+                DEEPSEEK_PROFILE_ID,
+                DOUBAO_PROFILE_ID,
+                DOUBAO_AGENT_PLAN_PROFILE_ID,
+                QWEN_PROFILE_ID
+            ]
         );
         for provider in &providers {
             assert_eq!(provider.profile.credential.kind, CredentialKind::Bearer);
@@ -703,12 +739,16 @@ mod tests {
             );
         }
         assert_eq!(
-            providers[2].connection.workspace.mode,
+            providers[3].connection.workspace.mode,
             crate::provider::ProviderFieldMode::Required
         );
         assert_eq!(
             providers[1].known_provider().base_url,
             "https://ark.cn-beijing.volces.com/api/v3"
+        );
+        assert_eq!(
+            providers[2].known_provider().base_url,
+            "https://ark.cn-beijing.volces.com/api/plan/v3"
         );
     }
 
@@ -729,7 +769,7 @@ mod tests {
 
     #[test]
     fn catalog_only_inventory_uses_explicit_models_without_guessing_capabilities() {
-        let snapshot = doubao()
+        let snapshot = doubao_agent_plan()
             .catalog_only_inventory(["endpoint-a".to_string(), "endpoint-b".to_string()])
             .unwrap();
         assert_eq!(snapshot.health, ProviderHealthState::Healthy);
@@ -737,8 +777,11 @@ mod tests {
         assert!(snapshot.models[0].supported_features.is_none());
         assert!(snapshot.models[0].api_types.is_none());
         assert!(snapshot.models[0].remote_methods.is_none());
-        assert!(doubao()
+        assert!(doubao_agent_plan()
             .catalog_only_inventory(["endpoint-a".to_string(), "endpoint-a".to_string()])
+            .is_err());
+        assert!(doubao()
+            .catalog_only_inventory(["doubao-seed-2-0-lite-260428".to_string()])
             .is_err());
         assert!(deepseek()
             .catalog_only_inventory(["deepseek-model".to_string()])
@@ -752,18 +795,23 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 5,
+                    DOUBAO_PROFILE_ID => 7,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 6,
                     QWEN_PROFILE_ID => 4,
                     _ => 3,
                 }
             );
-            if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {
+            if matches!(
+                provider.profile.provider_profile_id.as_str(),
+                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID
+            ) {
                 assert!(!rules.models.is_empty());
             } else {
                 assert!(rules.models.is_empty());
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
-                DOUBAO_PROFILE_ID => 3,
+                DOUBAO_PROFILE_ID => 4,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 3,
                 QWEN_PROFILE_ID => 8,
                 _ => 1,
             };
@@ -798,12 +846,21 @@ mod tests {
             .map(BuiltinProviderDescriptor::known_provider)
             .collect::<Vec<_>>();
         assert_eq!(known[0].base_url, "https://api.deepseek.com");
+        assert_eq!(known[1].ui_hints["setup_group"]["id"], "doubao");
+        assert_eq!(known[1].ui_hints["setup_group"]["account_type"], "standard");
+        assert_eq!(known[1].ui_hints["setup_group"]["default"], true);
+        assert_eq!(known[2].ui_hints["setup_group"]["id"], "doubao");
         assert_eq!(
-            known[2].base_url,
+            known[2].ui_hints["setup_group"]["account_type"],
+            "agent_plan"
+        );
+        assert_eq!(known[2].ui_hints["setup_group"]["default"], false);
+        assert_eq!(
+            known[3].base_url,
             "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1"
         );
         assert_eq!(
-            known[2].ui_hints["instance_fields"]["workspace"]["mode"],
+            known[3].ui_hints["instance_fields"]["workspace"]["mode"],
             Value::String("required".to_owned())
         );
     }
@@ -881,6 +938,7 @@ mod tests {
             .zip([
                 "deepseek-v4-flash",
                 "doubao-seed-2-0-lite-260215",
+                "doubao-seed-2-0-lite-260428",
                 "qwen3.8-max",
             ])
         {

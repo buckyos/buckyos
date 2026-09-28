@@ -348,6 +348,29 @@ impl CatalogSnapshot {
         self.provider_rules.get(id).map(|catalog| &catalog.document)
     }
 
+    pub(crate) fn provider_model_identity_override(
+        &self,
+        provider_rules_id: &str,
+        provider_model_id: &str,
+    ) -> Option<Result<ModelIdentity, ModelMatchFailure>> {
+        let target = self
+            .provider_rules(provider_rules_id)?
+            .model_driver_overrides
+            .get(provider_model_id)?;
+        Some(
+            target
+                .split_once('/')
+                .filter(|(driver, model)| self.resolve_model(driver, model).is_ok())
+                .map(|(driver, model)| ModelIdentity {
+                    model_driver_id: driver.into(),
+                    model_id: model.into(),
+                })
+                .ok_or_else(|| ModelMatchFailure::InvalidOverride {
+                    target: target.clone(),
+                }),
+        )
+    }
+
     pub(crate) fn cost_in_usd(
         &self,
         cost: buckyos_api::Money,

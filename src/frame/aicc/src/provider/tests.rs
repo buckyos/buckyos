@@ -390,6 +390,7 @@ fn catalog_with_revision(revision_seq: u64, context_tokens: u64) -> Arc<CatalogS
         "schema_revision": 0,
         "revision_seq": revision_seq,
         "provider_profile_id": "openai",
+        "model_driver_overrides": {"ark-gpt-test-260101": "openai/gpt-test"},
         "models": [{
             "id": "gpt-test",
             "operations": {"llm": "responses.create"}
@@ -1347,6 +1348,22 @@ fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
     .unwrap();
     assert_eq!(inventory.models.len(), 1);
     assert_eq!(inventory.models[0].provider_model_id, "ep-user-specific");
+    assert_eq!(inventory.models[0].origin_model_id, "gpt-test");
+}
+
+#[test]
+fn provider_rules_map_channel_model_ids_before_generic_catalog_matching() {
+    let inventory = InventoryBuilder::build(
+        &profile(),
+        &instance("ark"),
+        discovery("ark-gpt-test-260101"),
+        &catalog(),
+        &codecs(),
+    )
+    .unwrap();
+    assert_eq!(inventory.models.len(), 1);
+    assert_eq!(inventory.models[0].provider_model_id, "ark-gpt-test-260101");
+    assert_eq!(inventory.models[0].model_driver_id, "openai");
     assert_eq!(inventory.models[0].origin_model_id, "gpt-test");
 }
 

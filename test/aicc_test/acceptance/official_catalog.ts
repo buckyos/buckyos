@@ -307,3 +307,26 @@ export function bindOfficialCatalogInstances(
     };
   });
 }
+
+function caseModelSegment(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9._-]+/g, "-");
+}
+
+export function scopeInventoriesToRequestedCases(
+  inventories: ProviderInventory[],
+  caseIds: string[],
+): ProviderInventory[] {
+  if (caseIds.length === 0) return inventories;
+  const requested = caseIds.map((caseId) => caseId.toLowerCase());
+  return inventories.map((inventory) => ({
+    ...inventory,
+    models: inventory.models.filter((model) => {
+      const identities = [model.provider_model_id, model.provider_actual_model_id]
+        .filter((value): value is string => typeof value === "string" && value.length > 0)
+        .map(caseModelSegment);
+      return identities.some((identity) =>
+        requested.some((caseId) => caseId.includes(`.${identity}.`))
+      );
+    }),
+  }));
+}

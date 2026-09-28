@@ -777,6 +777,8 @@ impl InventoryBuilder {
                     .ok_or_else(|| ModelMatchFailure::InvalidOverride {
                         target: target.clone(),
                     })
+            } else if let Some(identity) = catalog.provider_model_identity_override(rules_id, id) {
+                identity.map(|identity| (identity, ModelIdentitySource::Provider))
             } else {
                 match matcher
                     .map(|matcher| matcher.match_model_driver(id, catalog))

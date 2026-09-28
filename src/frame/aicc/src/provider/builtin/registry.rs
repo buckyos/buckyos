@@ -744,6 +744,7 @@ mod tests {
                 "custom",
                 "deepseek",
                 "doubao",
+                "doubao-agent-plan",
                 "fal",
                 "gemini",
                 "glm",
@@ -1021,7 +1022,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 38);
+        assert_eq!(files.len(), 39);
         assert_eq!(
             files
                 .iter()
@@ -1034,7 +1035,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ProviderRules)
                 .count(),
-            13
+            14
         );
         assert_eq!(
             files
@@ -1305,6 +1306,15 @@ mod tests {
             registry
                 .providers
                 .get(DOUBAO_PROFILE_ID)
+                .unwrap()
+                .profile
+                .discovery_mode,
+            crate::provider::DiscoveryMode::MachineApi
+        );
+        assert_eq!(
+            registry
+                .providers
+                .get(DOUBAO_AGENT_PLAN_PROFILE_ID)
                 .unwrap()
                 .profile
                 .discovery_mode,
