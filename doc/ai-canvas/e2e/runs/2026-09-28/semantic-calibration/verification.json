@@ -1,0 +1,124 @@
+{
+  "toolTestsPassed": 27,
+  "toolTestsFailed": 0,
+  "localLinksChecked": 28,
+  "evidenceSourcesVerified": 3,
+  "preparedCases": 12,
+  "liveCalls": 0,
+  "liveEvaluation": "NOT_RUN",
+  "legacyRequirementsAndAssertionsUnchanged": true,
+  "links": [
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "test-requirements.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "execution-guide.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "assertions.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "coverage-gaps.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "semantic-evaluation.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "../../../src/frame/desktop/src/app/canvas/README.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "runs/2026-09-28/browser-journey/README.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "runs/2026-09-28/semantic-calibration/README.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/README.md",
+      "target": "assertions.md#8-结果记录与问题归属"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/execution-guide.md",
+      "target": "test-requirements.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/execution-guide.md",
+      "target": "assertions.md#8-结果记录与问题归属"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/execution-guide.md",
+      "target": "semantic-evaluation.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/semantic-evaluation.md",
+      "target": "../../../test/canvas_e2e/README.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/semantic-evaluation.md",
+      "target": "runs/2026-09-28/semantic-calibration/README.md"
+    },
+    {
+      "file": "test/canvas_e2e/README.md",
+      "target": "../../doc/ai-canvas/e2e/execution-guide.md"
+    },
+    {
+      "file": "test/canvas_e2e/README.md",
+      "target": "../../doc/ai-canvas/e2e/semantic-evaluation.md"
+    },
+    {
+      "file": "test/canvas_e2e/README.md",
+      "target": "../../doc/aicc/decision_api.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "records.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "request.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "reference.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "report.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "started.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "environment.json"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "tool-tests.txt"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "../../../../../../test/canvas_e2e/README.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "../../../semantic-evaluation.md"
+    },
+    {
+      "file": "doc/ai-canvas/e2e/runs/2026-09-28/semantic-calibration/README.md",
+      "target": "../browser-journey/README.md"
+    }
+  ]
+}

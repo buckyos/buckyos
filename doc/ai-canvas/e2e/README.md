@@ -9,6 +9,7 @@
 2. [浏览器执行约定](execution-guide.md)：Agent 通过 Playwright 等工具观察、操作和留证；首条可跑的资料 → 修订 → 文件交接任务包。
 3. [细粒度验收与追溯附录](assertions.md)：保留四组 PRD 验收、15 条 TC、3 条数据边界补充、23 条原型子断言、可观测性与八字段记录，逐条映射到场景。
 4. [覆盖缺口附录](coverage-gaps.md)：33 个待补设计（12 P0 / 21 P1）和六组交叉条件；当前执行范围和未完成项见附录状态说明。
+5. [语义复核与新增协作场景](semantic-evaluation.md)：Jev 辅助评估的边界、八类协作问题、正反样本与旁路校准。
 
 [产品 PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 与
 [原型 README](../../../src/frame/desktop/src/app/canvas/README.md) 是产品范围和当前实现入口。
@@ -23,6 +24,9 @@ UI 改版时更新当次操作轨迹，不随意改变场景的成功标准。20
 [2026-09-28：S01–S03 浏览器连续旅程](runs/2026-09-28/browser-journey/README.md) 已归档。十个子目标 8 PASS / 1 FAIL /
 1 INCONCLUSIVE；图表请求未交付，实际请求边界证据不足。风险附录 TA-N17 仅执行了销售额变体，
 其余分支未完成；不能据此宣告整个场景或风险用例通过。
+
+[2026-09-28：Jev 语义复核离线准备](runs/2026-09-28/semantic-calibration/README.md)：12 个具名样本已准备，
+离线工具检查 27 项通过；真实 Jev 评估尚缺凭据配置路径，全部 NOT_RUN，不改变上述浏览器结论。
 
 ## 历史执行与迁移边界
 

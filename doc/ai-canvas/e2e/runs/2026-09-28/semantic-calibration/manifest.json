@@ -1,0 +1,77 @@
+{
+  "scope": "Offline evaluator preparation; not real Jev answers or additional Canvas product verdicts",
+  "archived": [
+    {
+      "path": "README.md",
+      "bytes": 4363,
+      "sha256": "413133ee43c326c230799d5f15483ab86b06c025702e0a9c59c3d48495d299dd"
+    },
+    {
+      "path": "environment.json",
+      "bytes": 564,
+      "sha256": "e84bbc577e6f64c8b4b2c52cb35ace841d090fb79f5f33014759384e9e8d1642"
+    },
+    {
+      "path": "records.json",
+      "bytes": 23277,
+      "sha256": "f8b658c74c327e00f1a537080a4096f89e36cc450f7fc2c7087f3b41b54ddc11"
+    },
+    {
+      "path": "reference.json",
+      "bytes": 16738,
+      "sha256": "e34ba17106a31417c87aeef680247216a2856b33ecc07d5d08de5840de62d820"
+    },
+    {
+      "path": "report.json",
+      "bytes": 644,
+      "sha256": "8631abe5d38ca9b114fca95eb1c71b1d34cd5a6bc0bdaf81bbc218ca61ae3142"
+    },
+    {
+      "path": "request.json",
+      "bytes": 17546,
+      "sha256": "044e7609d4cf9098d9c2af931e55894671b2e9b499160b9eec2515c7ef24a19f"
+    },
+    {
+      "path": "started.json",
+      "bytes": 474,
+      "sha256": "3cade77dc59b503af0a21198e7663c0d2119f4e984ac8d5d20efbc674ec85187"
+    },
+    {
+      "path": "tool-tests.txt",
+      "bytes": 2018,
+      "sha256": "1774e224b573a6572dba5d9cbea372277cb64dbc860206303043e3cfcc0dff75"
+    },
+    {
+      "path": "verification.json",
+      "bytes": 3643,
+      "sha256": "0f2fa4d69b4c5166e97f94ac083b09d608de19bd2b6f9b857e302d54af6939f1"
+    }
+  ],
+  "toolSources": [
+    {
+      "path": "test/canvas_e2e/README.md",
+      "bytes": 4941,
+      "sha256": "63d564fff2887a51d233582bb0f69b1a943c08a7d8ac18a1cee1a81e25c1bd56"
+    },
+    {
+      "path": "test/canvas_e2e/cases.mjs",
+      "bytes": 9103,
+      "sha256": "01339d82635ae5210b6ebd1fddd494571a1fbc1157d4f670b2d2263ba8f8057e"
+    },
+    {
+      "path": "test/canvas_e2e/evaluator.mjs",
+      "bytes": 9722,
+      "sha256": "965258102ecae6c3d4fa3b82d33106f3637440660b56bbc65ff0c39373c99eea"
+    },
+    {
+      "path": "test/canvas_e2e/evaluator.test.mjs",
+      "bytes": 9269,
+      "sha256": "18463611a75c0b488b9428bda62b2ed389c4c91042c758699a20ee8366d012b6"
+    }
+  ],
+  "sharedParser": {
+    "path": "test/jarvis_media_dv/config.ts",
+    "bytes": 4131,
+    "sha256": "8c58cc5e6d19b38b1edccdf752b91b4d77dc75b6b54e0977ab6b07d50e5f1290"
+  }
+}

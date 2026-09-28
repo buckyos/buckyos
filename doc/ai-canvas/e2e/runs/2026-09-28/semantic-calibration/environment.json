@@ -1,0 +1,14 @@
+{
+  "host": "mylinux / offline Node.js v24.13.0",
+  "account": "no provider credential configured; no browser or real account in this batch",
+  "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+  "branch": "devtest/example-univ-org-group",
+  "preexistingChanges": "clean before this task",
+  "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+  "rubricVersion": "canvas-semantic-2026-09-28.1",
+  "requestedModel": "typesafe/jev-1.13",
+  "returnedModel": null,
+  "networkCalls": 0,
+  "costUsd": 0,
+  "costBasis": "no provider request was made"
+}

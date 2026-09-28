@@ -1,0 +1,18 @@
+{
+  "rubricVersion": "canvas-semantic-2026-09-28.1",
+  "mode": "prepare",
+  "provider": "openrouter",
+  "startedAt": "2026-09-28T05:20:31.925Z",
+  "requestHash": "46523cf33b6691be597f9d1a2c46a75b33ba35a805e8bd97d866d47d3892f111",
+  "limits": {
+    "maxCalls": 1,
+    "retries": 0,
+    "timeoutMs": 45000,
+    "requestBytes": 24576,
+    "responseBytes": 65536,
+    "maxQuestions": 12
+  },
+  "networkCalls": 0,
+  "liveEvaluation": "NOT_RUN",
+  "productVerdict": "UNCHANGED"
+}

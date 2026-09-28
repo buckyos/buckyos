@@ -1,0 +1,35 @@
+✔ archived evidence has verified hashes; samples distinguish observed and constructed (2.099264ms)
+✔ request excludes reference labels, rationale, sample names and provenance (2.002742ms)
+✔ fixture agreement is a comparison test, never a product verdict (1.125517ms)
+✔ reject missing answer without repair (0.624534ms)
+✔ reject extra answer without repair (0.230411ms)
+✔ reject missing probability without repair (0.192557ms)
+✔ reject extra option without repair (0.176004ms)
+✔ reject negative probability without repair (0.184595ms)
+✔ reject non-finite probability without repair (0.23991ms)
+✔ reject non-normalized probability without repair (0.369468ms)
+✔ reject non-winning choice without repair (0.246056ms)
+✔ reject model drift without repair (0.377081ms)
+✔ reject wrong answer type without repair (0.225313ms)
+✔ reject invalid confidence without repair (0.18683ms)
+✔ reject negative cost without repair (0.202055ms)
+✔ reject invalid usage without repair (0.388884ms)
+✔ one bounded request uses fixed endpoint and does not follow redirects (26.85804ms)
+✔ HTTP 401 is evaluator error with no retry or response leak (0.914521ms)
+✔ HTTP 429 is evaluator error with no retry or response leak (0.45754ms)
+✔ HTTP 529 is evaluator error with no retry or response leak (0.362903ms)
+✔ transport exception redacts arbitrary diagnostics (0.496303ms)
+✔ oversized request is rejected before any call (0.33308ms)
+✔ oversized or invalid JSON responses are evaluator errors (2.564766ms)
+✔ network use is an explicit mode and never implied by supplying a key (0.521446ms)
+✔ outputs outside the project scratch directory are rejected before writing (22.044057ms)
+✔ direct TypeSafe request and response retain their own model identity (0.547986ms)
+✔ CLI prepares offline, rejects overwrite, replays bound evidence and rejects wrong request hash (389.428803ms)
+ℹ tests 27
+ℹ suites 0
+ℹ pass 27
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 651.536735

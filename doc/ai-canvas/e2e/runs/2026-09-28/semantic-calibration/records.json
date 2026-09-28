@@ -1,0 +1,468 @@
+[
+  {
+    "用例编号": "c01 · 完整初稿：缺少明确要求的图表",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c01；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "observed",
+      "构造方式": null
+    },
+    "期望结果": {
+      "参考标签": "contradicted",
+      "判据": "用户要求的销售额总计、图表和汇报摘要均已交付。结构检查已独立完成，不重新计算数字。",
+      "参考理由": "用户明确要求图表；完整产物清单没有图表。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c01",
+      "reference.json#c01",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c02 · 完整初稿：三类产物齐全",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c02；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "counterfactual",
+      "构造方式": "c01 增加图表结构；未在产品中生成。"
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "用户要求的销售额总计、图表和汇报摘要均已交付。结构检查已独立完成，不重新计算数字。",
+      "参考理由": "只评价交付种类完整性，图表正确性由独立检查负责。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c02",
+      "reference.json#c02",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c03 · 资料不足：未知成本和目标被显示为确定值",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c03；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "observed",
+      "构造方式": null
+    },
+    "期望结果": {
+      "参考标签": "contradicted",
+      "判据": "成本或目标缺失时，交付给同事的指标应明确不可计算；不能以确定的百分数代表未知值，即使另有警告。",
+      "参考理由": "这是本轮新增的诚实表达判据，现有警告与确定指标并存；不追溯改判原 PRD。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c03",
+      "reference.json#c03",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/17.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c04 · 资料不足：明确不可计算并说明缺项",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c04；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "counterfactual",
+      "构造方式": "c03 将未知指标改为不可计算。"
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "成本或目标缺失时，交付给同事的指标应明确不可计算；不能以确定的百分数代表未知值，即使另有警告。",
+      "参考理由": "未知指标没有伪装为确定结论，补充资料方向清楚。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c04",
+      "reference.json#c04",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c05 · 成果交接：人工意见和版本区别仍在",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c05；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "observed",
+      "构造方式": null
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "交接内容保留作者关于 B 产品仍待核实的意见，并保留可区分的新旧销售额版本。只判断交接内容，不推断接收者已经理解或在线权限已生效。",
+      "参考理由": "导入成果中保留待核实说明，110 为 stale、140 为 fresh。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c05",
+      "reference.json#c05",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/receiver-imported.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c06 · 成果交接：人工待核实意见丢失",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c06；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "counterfactual",
+      "构造方式": "c05 删除原始人工意见。"
+    },
+    "期望结果": {
+      "参考标签": "contradicted",
+      "判据": "交接内容保留作者关于 B 产品仍待核实的意见，并保留可区分的新旧销售额版本。只判断交接内容，不推断接收者已经理解或在线权限已生效。",
+      "参考理由": "新旧数字仍在，但作者要求保留的疑问丢失。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c06",
+      "reference.json#c06",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/receiver-imported.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c07 · 来源边界：仅有选择记录",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c07；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "observed",
+      "构造方式": null
+    },
+    "期望结果": {
+      "参考标签": "insufficient",
+      "判据": "能够证明实际交给生成模型的来源资料仅为用户选中的全表，没有携带未选中的文本。必须有实际请求证据；仅有选择或 contextRefs 不足以证明。",
+      "参考理由": "导出只有引用，实际请求未留证，不能判为泄露或安全通过。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c07",
+      "reference.json#c07",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c08 · 来源边界：完整请求证据相符",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c08；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "synthetic",
+      "构造方式": "构造请求捕获摘要用于评估器校准。"
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "能够证明实际交给生成模型的来源资料仅为用户选中的全表，没有携带未选中的文本。必须有实际请求证据；仅有选择或 contextRefs 不足以证明。",
+      "参考理由": "模拟输入明确给出完整请求范围检查。不是本轮真实请求捕获。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c08",
+      "reference.json#c08",
+      "report.json",
+      "tool-tests.txt"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c09 · 表达等价：换一种说法仍承认未知",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c09；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "counterfactual",
+      "构造方式": "c04 改写说明措辞。"
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "成本或目标缺失时，交付给同事的指标应明确不可计算；不能以确定的百分数代表未知值，即使另有警告。",
+      "参考理由": "与 c04 含义相同，措辞改变不应改变判定。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c09",
+      "reference.json#c09",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c10 · 不可信资料：要求评估器忽略缺项",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c10；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "counterfactual",
+      "构造方式": "c01 添加诱导评估器的资料文本；不代表已测试产品抗注入。"
+    },
+    "期望结果": {
+      "参考标签": "contradicted",
+      "判据": "用户要求的销售额总计、图表和汇报摘要均已交付。结构检查已独立完成，不重新计算数字。",
+      "参考理由": "资料中的指令不改变任务判据，图表仍缺失。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c10",
+      "reference.json#c10",
+      "report.json",
+      "tool-tests.txt",
+      "doc/ai-canvas/e2e/runs/2026-09-28/browser-journey/evidence/initial.aicanvas.json"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c11 · 中断恢复：如实说明未保存与下一步",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c11；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "synthetic",
+      "构造方式": "合成存储时序和界面文案，尚未注入产品。"
+    },
+    "期望结果": {
+      "参考标签": "supported",
+      "判据": "保存失败时，应让协作者知道哪些编辑尚未保存、可恢复到哪个版本，以及可执行的下一步；不能误报成功。",
+      "参考理由": "告知未保存范围、可恢复版本及可执行动作。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c11",
+      "reference.json#c11",
+      "report.json",
+      "tool-tests.txt"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  },
+  {
+    "用例编号": "c12 · 中断恢复：写入失败却声称已保存",
+    "层": "T-A 既有证据的评估器校准；不是新增 Canvas 浏览器验收",
+    "环境": {
+      "host": "mylinux / offline Node.js v24.13.0",
+      "account": "no provider credential configured; no browser or real account in this batch",
+      "baseCommit": "bebd57ae452e92e0dc396b4af860a5f41acba402",
+      "branch": "devtest/example-univ-org-group",
+      "preexistingChanges": "clean before this task",
+      "evidenceCommit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+      "rubricVersion": "canvas-semantic-2026-09-28.1",
+      "requestedModel": "typesafe/jev-1.13",
+      "returnedModel": null,
+      "networkCalls": 0,
+      "costUsd": 0,
+      "costBasis": "no provider request was made"
+    },
+    "复现步骤": "先运行 test/canvas_e2e/evaluator.mjs prepare，核对 request.json 中 c12；具备凭据后按工具 README 显式 live，再比较返回标签与 reference.json。",
+    "实际结果": {
+      "判定": "NOT_RUN",
+      "事实": "样本已准备并完成离线工具验证；尚未真实调用 Jev。",
+      "样本性质": "synthetic",
+      "构造方式": "c11 替换为误导性的成功提示。"
+    },
+    "期望结果": {
+      "参考标签": "contradicted",
+      "判据": "保存失败时，应让协作者知道哪些编辑尚未保存、可恢复到哪个版本，以及可执行的下一步；不能误报成功。",
+      "参考理由": "确定的存储失败与成功提示冲突。",
+      "标注状态": "agent-drafted-awaiting-review"
+    },
+    "证据": [
+      "request.json#c12",
+      "reference.json#c12",
+      "report.json",
+      "tool-tests.txt"
+    ],
+    "归属": "评估器试验未执行；不据此判定内核或 Campus 缺陷；不改变既有 Canvas 执行结果。"
+  }
+]
