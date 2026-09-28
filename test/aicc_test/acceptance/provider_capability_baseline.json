@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-09-25.1",
-  "checked_at": "2026-09-25",
+  "baseline_revision": "2026-09-28.1",
+  "checked_at": "2026-09-28",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -1449,8 +1449,8 @@
       "rules": [{ "model_pattern": "*", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Responses capability follows the official per-model compatibility table." }]
     },
     {
-      "provider_driver": "doubao",
-      "provider_profile_id": "doubao",
+      "provider_driver": "doubao-agent-plan",
+      "provider_profile_id": "doubao-agent-plan",
       "protocol_adapter_ids": ["doubao-responses"],
       "model_driver_ids": ["doubao", "deepseek", "kimi", "minimax", "glm"],
       "discovery": "official_catalog",
@@ -1490,6 +1490,164 @@
         { "model_pattern": "kimi-k2.8-preview", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents Kimi K2.8 Preview as a text-input Responses model." },
         { "model_pattern": "minimax-m3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents MiniMax M3 as a text-input Responses model." },
         { "model_pattern": "*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh", "https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "Agent Plan publishes a static model inventory and a dedicated OpenAI-compatible Responses base URL." }
+      ]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "protocol_adapter_ids": ["doubao-responses"],
+      "model_driver_ids": ["doubao", "deepseek", "glm", "kimi", "qwen"],
+      "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://ark.cn-beijing.volces.com/api/v3/models",
+        "format": "openai",
+        "authentication": "bearer"
+      },
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1554682",
+        "https://docs.volcengine.com/docs/82379/1362931?lang=zh",
+        "https://docs.volcengine.com/docs/82379/1520757?lang=zh&redirect=1",
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh",
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh",
+        "https://www.volcengine.com/docs/82379/1526459",
+        "https://docs.volcengine.com/docs/82379/1541523?lang=zh",
+        "https://www.volcengine.com/docs/6561/2528925?lang=zh"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "official documentation and authenticated /api/v3/models checked 2026-09-28",
+        "streaming_semantics": "Responses supports documented semantic SSE events for compatible language models.",
+        "async_operation_semantics": "Seedance uses /api/v3/contents/generations/tasks with create, poll/result and cancellation lifecycle.",
+        "usage_semantics": "Responses and content-generation task results expose model-specific token usage when returned by Ark.",
+        "input_output_formats": "Responses accepts text and input_image content; Seedance accepts text, image_url and video_url content items according to task type.",
+        "item_request_batch_limits": "Request and reference-item limits are model and task specific.",
+        "image_audio_video_limits": "Seed 2.0 Lite supports image understanding; Seedance 2.0 and 2.5 use documented 4-second minimum outputs and model-specific resolution/reference limits.",
+        "context_output_limits": "Seed 2.0 Lite has a 256k context window; other limits remain model specific.",
+        "region_restrictions": "The built-in standard profile uses the cn-beijing /api/v3 endpoint.",
+        "account_tier_restrictions": "Model activation, account balance and media-service activation apply. Speech uses the same project API key but a separate openspeech data plane and is therefore supplemental to /api/v3/models.",
+        "preview_allowlist": "Only physical model IDs returned by the authenticated /api/v3/models catalog are eligible, plus explicitly documented supplemental speech models absent from that endpoint."
+      },
+      "rules": [
+        {
+          "model_pattern": "doubao-seed-tts-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://www.volcengine.com/docs/6561/2528925?lang=zh"],
+          "evidence_summary": "Standard TTS 2.0 is absent from Ark /models because it uses the separate openspeech API; the documented HTTP endpoint uses the same project API key with X-Api-Key."
+        },
+        {
+          "model_pattern": "doubao-embedding-vision-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["embedding.multimodal"],
+          "methods": ["embedding.multimodal"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["embedding"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1526459"],
+          "evidence_summary": "Ark multimodal embedding IDs returned by /api/v3/models use the standard /api/v3/embeddings/multimodal operation."
+        },
+        {
+          "model_pattern": "doubao-seedream-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["images.generate", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
+          "evidence_summary": "Seedream physical IDs returned by /api/v3/models use the standard /api/v3/images/generations operation."
+        },
+        {
+          "model_pattern": "deepseek-v4-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark publishes current DeepSeek V4 physical IDs in the standard model catalog."
+        },
+        {
+          "model_pattern": "glm-*-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark publishes GLM physical IDs in the standard model catalog; only IDs with verified Model Driver identity are routable."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-260128",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"],
+          "evidence_summary": "Seedance 2.0 Standard documents text/image generation, multimodal reference video editing and video extension on the standard content-generation task API."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-fast-260128",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
+          "evidence_summary": "The Seedance 2.0 capability table marks Fast active for generation, video editing and extension."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-mini-260615",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
+          "evidence_summary": "The Seedance 2.0 capability table marks Mini active for generation, video editing and extension."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-5-260628",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
+          "evidence_summary": "Seedance 2.5 documents generation, video editing and explicit omni_reference_task_type=extend on the standard task API."
+        },
+        {
+          "model_pattern": "doubao-seed-2-0-lite-260428",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1554682", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
+          "evidence_summary": "The current model list marks Seed 2.0 Lite 260428 for text generation and multimodal understanding through Responses."
+        },
+        {
+          "model_pattern": "doubao-seed-2-1-turbo-260628",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1554682", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
+          "evidence_summary": "The authenticated catalog exposes Seed 2.1 Turbo 260628 and the visual-understanding documentation covers current visual Seed models."
+        }
       ]
     },
     {

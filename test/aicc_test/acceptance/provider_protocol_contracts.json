@@ -1459,7 +1459,7 @@
       "official_variant_rules": [{
         "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v"],
         "variants": {
-          "reasoning-medium": { "thinking": { "type": "enabled" } }
+          "reasoning-thinking": { "thinking": { "type": "enabled" } }
         }
       }, {
         "model_ids": ["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-flash"],
@@ -1632,8 +1632,8 @@
       }]
     },
     {
-      "provider_driver": "doubao",
-      "provider_profile_id": "doubao",
+      "provider_driver": "doubao-agent-plan",
+      "provider_profile_id": "doubao-agent-plan",
       "endpoint_path": "/api/plan/v3",
       "operation_endpoint_paths": { "ark.images.generate": "/api/plan/v3", "ark.contents.generate": "/api/plan/v3", "tts.unidirectional": "/api/v3/plan/tts" },
       "credential_type": "bearer",
@@ -1690,7 +1690,7 @@
       ],
       "test_model_ids": { "llm": "doubao-seed-2.0-mini", "vision.ocr": "doubao-seed-2.0-mini", "vision.caption": "doubao-seed-2.0-mini", "embedding.multimodal": "doubao-embedding-vision", "audio.tts": "doubao-seed-tts-2.0", "image.txt2img": "doubao-seedream-5.0-lite", "image.img2img": "doubao-seedream-5.0-lite", "video.txt2video": "doubao-seedance-2.0", "video.img2video": "doubao-seedance-2.0", "video.video2video": "doubao-seedance-2.0", "video.extend": "doubao-seedance-2.0" },
       "contracts": [{
-        "id": "doubao.responses.plan-v3",
+        "id": "doubao-agent-plan.responses.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "plan-v3",
         "api_types": ["llm", "vision.ocr", "vision.caption"],
@@ -1707,7 +1707,7 @@
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh", "https://www.volcengine.com/docs/82379/1958524?lang=zh"],
         "evidence_summary": "Agent Plan OpenAI-compatible inference uses the dedicated /api/plan/v3 base URL and Responses JSON/SSE wire."
       }, {
-        "id": "doubao.embedding-multimodal.plan-v3",
+        "id": "doubao-agent-plan.embedding-multimodal.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "plan-v3",
         "api_types": ["embedding.multimodal"],
@@ -1723,7 +1723,7 @@
         "official_sources": ["https://www.volcengine.com/docs/82379/1526459"],
         "evidence_summary": "Ark multimodal embedding uses POST /embeddings/multimodal with typed text/image input items."
       }, {
-        "id": "doubao.images.plan-v3",
+        "id": "doubao-agent-plan.images.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "plan-v3",
         "api_types": ["image.txt2img", "image.img2img"],
@@ -1739,7 +1739,7 @@
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
         "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image."
       }, {
-        "id": "doubao.video-tasks.plan-v3",
+        "id": "doubao-agent-plan.video-tasks.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "api_version": "plan-v3",
         "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
@@ -1782,7 +1782,7 @@
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
         "evidence_summary": "Agent Plan Seedance video generation uses /api/plan/v3 asynchronous content generation tasks with GET status/result and DELETE cancellation."
       }, {
-        "id": "doubao.tts.plan-v3",
+        "id": "doubao-agent-plan.tts.plan-v3",
         "protocol_adapter_id": "doubao-responses",
         "error_fixture_key": "doubao-tts",
         "api_version": "plan-v3",
@@ -1815,6 +1815,145 @@
         ],
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"],
         "evidence_summary": "Agent Plan synchronous TTS uses X-Api-Key and seed-tts-2.0 against /api/v3/plan/tts/unidirectional."
+      }]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "endpoint_path": "/api/v3",
+      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/tts"},
+      "credential_type": "bearer",
+      "instance_fields": {"region": "cn-beijing"},
+      "official_first_party_model_ids": {
+        "llm": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
+        "vision.ocr": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
+        "vision.caption": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
+        "embedding.multimodal": ["doubao-embedding-vision-251215"],
+        "audio.tts": ["doubao-seed-tts-2.0"],
+        "image.txt2img": ["doubao-seedream-5-0-pro-260628"],
+        "image.img2img": ["doubao-seedream-5-0-pro-260628"],
+        "video.txt2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
+        "video.img2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
+        "video.video2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
+        "video.extend": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"]
+      },
+      "official_variant_sources": ["https://docs.volcengine.com/docs/ark/deep-thinking?lang=zh", "https://www.volcengine.com/docs/82379/1554682"],
+      "official_variant_rules": [{
+        "model_ids": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
+        "variants": {"reasoning-none": {"reasoning": {"effort": "minimal"}}}
+      }],
+      "test_model_ids": {
+        "llm": "doubao-seed-2-0-lite-260428",
+        "vision.ocr": "doubao-seed-2-0-lite-260428",
+        "vision.caption": "doubao-seed-2-0-lite-260428",
+        "embedding.multimodal": "doubao-embedding-vision-251215",
+        "audio.tts": "doubao-seed-tts-2.0",
+        "image.txt2img": "doubao-seedream-5-0-pro-260628",
+        "image.img2img": "doubao-seedream-5-0-pro-260628",
+        "video.txt2video": "doubao-seedance-2-0-260128",
+        "video.img2video": "doubao-seedance-2-0-260128",
+        "video.video2video": "doubao-seedance-2-0-260128",
+        "video.extend": "doubao-seedance-2-0-260128"
+      },
+      "contracts": [{
+        "id": "doubao.responses.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao",
+        "api_version": "v3",
+        "api_types": ["llm", "vision.ocr", "vision.caption"],
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v3/responses",
+        "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "thinking", "tool_choice", "tools", "top_p"],
+        "body_field_types": {"model": ["string"], "input": ["string", "array"], "stream": ["boolean"], "reasoning": ["object"], "thinking": ["object"]},
+        "stream_protocol": "openai_responses",
+        "success_fixture": {"created_at": 1780000000, "id": "resp_doubao_standard_mock_1", "model": "doubao-seed-2-0-lite-260428", "object": "response", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": []}], "status": "completed", "id": "msg_mock_1"}], "status": "completed", "store": false, "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
+        "official_sources": ["https://www.volcengine.com/docs/82379/1585128", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
+        "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
+      }, {
+        "id": "doubao.video-tasks.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao",
+        "api_version": "v3",
+        "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+        "operation": "ark.contents.generate",
+        "http_method": "POST",
+        "path": "/api/v3/contents/generations/tasks",
+        "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+        "content_type": "application/json",
+        "required_body_fields": ["model", "content"],
+        "allowed_body_fields": ["model", "content", "duration", "ratio", "resolution", "seed", "generate_audio", "omni_reference_task_type"],
+        "body_field_types": {"model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"], "omni_reference_task_type": ["string"]},
+        "async_protocol": "doubao_video",
+        "async_steps": [
+          {"name": "poll", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"},
+          {"name": "result", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"},
+          {"name": "cancel", "http_method": "DELETE", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"}
+        ],
+        "success_fixture": {"id": "doubao_video_v3_mock_1", "status": "queued"},
+        "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": {"url": "http://mock/artifacts/doubao-v3.mp4"}}},
+        "official_sources": ["https://docs.volcengine.com/docs/82379/1520757?redirect=1", "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh", "https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
+        "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks; Seedance 2.5 uses omni_reference_task_type for edit and extend validation."
+      }, {
+        "id": "doubao.embedding-multimodal.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao",
+        "api_version": "v3",
+        "api_types": ["embedding.multimodal"],
+        "operation": "ark.embeddings.multimodal",
+        "http_method": "POST",
+        "path": "/api/v3/embeddings/multimodal",
+        "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "encoding_format", "dimensions"],
+        "body_field_types": {"model": ["string"], "input": ["array"], "encoding_format": ["string"], "dimensions": ["number"]},
+        "success_fixture": {"object": "list", "data": [{"object": "embedding", "index": 0, "embedding": [0.1, 0.2, 0.3]}], "model": "doubao-embedding-vision-251215", "usage": {"prompt_tokens": 2, "total_tokens": 2}},
+        "official_sources": ["https://www.volcengine.com/docs/82379/1526459"],
+        "evidence_summary": "Standard Ark multimodal embedding uses POST /api/v3/embeddings/multimodal with typed text/image input items."
+      }, {
+        "id": "doubao.images.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao",
+        "api_version": "v3",
+        "api_types": ["image.txt2img", "image.img2img"],
+        "operation": "ark.images.generate",
+        "http_method": "POST",
+        "path": "/api/v3/images/generations",
+        "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+        "content_type": "application/json",
+        "required_body_fields": ["model", "prompt", "response_format"],
+        "allowed_body_fields": ["model", "prompt", "image", "response_format", "size", "seed", "sequential_image_generation", "sequential_image_generation_options"],
+        "body_field_types": {"model": ["string"], "prompt": ["string"], "image": ["array"], "response_format": ["string"], "size": ["string"], "seed": ["number"]},
+        "success_fixture": {"created": 1780000000, "data": [{"url": "http://mock/artifacts/doubao-standard.jpeg"}], "usage": {"generated_images": 1}},
+        "official_sources": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
+        "evidence_summary": "Standard Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
+      }, {
+        "id": "doubao.tts.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao-tts",
+        "api_version": "v3",
+        "api_types": ["audio.tts"],
+        "operation": "tts.unidirectional",
+        "http_method": "POST",
+        "path": "/api/v3/tts/unidirectional",
+        "auth": {"kind": "header", "name": "x-api-key", "prefix": ""},
+        "required_headers": {"x-api-resource-id": "seed-tts-2.0", "x-api-request-id": "<uuid>", "x-control-require-usage-tokens-return": "*"},
+        "content_type": "application/json",
+        "required_body_fields": ["req_params"],
+        "allowed_body_fields": ["req_params"],
+        "body_field_types": {"req_params": ["object"]},
+        "success_content_type": "text/plain",
+        "success_chunk_fixtures": [
+          {"code": 0, "message": "", "data": "SUQz"},
+          {"code": 0, "message": "", "data": "BA==", "usage": {"text_words": 4}},
+          {"code": 20000000, "message": "OK", "data": null}
+        ],
+        "official_sources": ["https://www.volcengine.com/docs/6561/2528925?lang=zh"],
+        "evidence_summary": "Standard TTS uses X-Api-Key, a UUID request ID and seed-tts-2.0 against /api/v3/tts/unidirectional; usage-token return is requested with the documented control header."
       }]
     },
     {
@@ -2170,8 +2309,9 @@
     "kimi": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.kimi.com/docs/api/errors"], "evidence_summary": "Kimi documents error.type/message envelopes for invalid requests, authentication, permissions, missing resources, rate limits, quota and server failures." },
     "glm": { "applicable_api_versions": ["v4"], "official_sources": ["https://docs.bigmodel.cn/cn/api/api-code", "https://docs.bigmodel.cn/cn/api/rate-limit"], "evidence_summary": "GLM documents an error code/message envelope with HTTP status plus business codes including 1000 authentication, 1210 invalid parameter, 1302 rate limit and 1305 overload." },
     "deepseek": { "applicable_api_versions": ["v1"], "official_sources": ["https://api-docs.deepseek.com/quick_start/error_codes/"], "evidence_summary": "DeepSeek documents 400 invalid format, 401 authentication, 402 balance, 422 invalid parameters, 429 rate limit and 5xx service failures." },
-    "doubao": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
-    "doubao-tts": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Agent Plan TTS reports authentication, request, throttling and service errors through HTTP status and code/message fields." },
+    "doubao-agent-plan": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "doubao": { "applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Standard ModelArk documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
+    "doubao-tts": { "applicable_api_versions": ["v3", "plan-v3"], "official_sources": ["https://www.volcengine.com/docs/6561/2528925?lang=zh", "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Standard and Agent Plan TTS report authentication, request, throttling and service errors through HTTP status and code/message fields." },
     "qwen": { "applicable_api_versions": ["compatible-v1"], "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/error-code"], "evidence_summary": "Alibaba Model Studio documents OpenAI-compatible error codes including invalid_request_error, invalid_api_key, access_denied, Throttling and InternalError." },
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
@@ -2245,6 +2385,13 @@
       { "scenario": "invalid_parameters", "status": 422, "body": { "error": { "message": "Invalid parameters", "type": "invalid_request_error", "code": "invalid_parameters" } } },
       { "scenario": "rate_limit", "status": 429, "body": { "error": { "message": "Rate limit reached", "type": "rate_limit_error", "code": "rate_limit_exceeded" } } },
       { "scenario": "overloaded", "status": 503, "body": { "error": { "message": "Server overloaded", "type": "server_error", "code": "server_overloaded" } } }
+    ],
+    "doubao-agent-plan": [
+      { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "InvalidParameter", "message": "The request parameter is invalid", "param": "input", "type": "BadRequest" } } },
+      { "scenario": "authentication", "status": 401, "body": { "error": { "code": "AuthenticationError", "message": "Invalid API key", "param": "", "type": "Unauthorized" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "error": { "code": "RequestBurstTooFast", "message": "System protection triggered by request burst", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "overloaded", "status": 429, "body": { "error": { "code": "ServerOverloaded", "message": "The service is currently unable to handle additional requests", "param": "", "type": "TooManyRequests" } } },
+      { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalServiceError", "message": "Internal service error", "param": "", "type": "InternalServerError" } } }
     ],
     "doubao": [
       { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "InvalidParameter", "message": "The request parameter is invalid", "param": "input", "type": "BadRequest" } } },

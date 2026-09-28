@@ -65,7 +65,11 @@ import {
   type ReadableNamedData,
 } from "./artifact_validation.ts";
 import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
-import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
+import {
+  bindOfficialCatalogInstances,
+  fetchOfficialCatalogs,
+  scopeInventoriesToRequestedCases,
+} from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { methodsForApiType } from "./canonical.ts";
@@ -1140,10 +1144,18 @@ async function executeAcceptance(input: {
   });
   const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
   const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
+  const matrixOfficialInventories = scopeInventoriesToRequestedCases(
+    officialInventories,
+    options.caseIds,
+  );
+  const matrixAiccInventories = scopeInventoriesToRequestedCases(
+    selectedInventories,
+    options.caseIds,
+  );
   const matrix = analyzeProviderMatrix({
     baseline,
-    officialInventories,
-    aiccInventories: selectedInventories,
+    officialInventories: matrixOfficialInventories,
+    aiccInventories: matrixAiccInventories,
     selectedDrivers,
   });
   const sortedCells = [...matrix.cells].sort((left, right) =>

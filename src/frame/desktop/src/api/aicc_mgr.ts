@@ -129,7 +129,8 @@ const BUILTIN_PROVIDER_NAMES: Array<[ProviderType, string, string, string]> = [
   ['kimi', 'Moonshot Kimi', 'https://api.moonshot.ai/v1', 'kimi-chat'],
   ['glm', 'Z.ai GLM', 'https://api.z.ai/api/paas/v4', 'glm-chat'],
   ['deepseek', 'DeepSeek', 'https://api.deepseek.com', 'deepseek-responses'],
-  ['doubao', 'Doubao (Volcengine Ark)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
+  ['doubao', 'Doubao (Volcengine Ark Standard Account)', 'https://ark.cn-beijing.volces.com/api/v3', 'doubao-responses'],
+  ['doubao-agent-plan', 'Doubao (Volcengine Ark Agent Plan)', 'https://ark.cn-beijing.volces.com/api/plan/v3', 'doubao-responses'],
   ['qwen', 'Qwen（阿里云百炼）', 'https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1', 'qwen-responses'],
 ]
 
@@ -150,16 +151,40 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
         eu: 'https://eu.openrouter.ai/api/v1',
       }
       : {} as Record<string, string>,
-    operation_base_urls: provider_profile_id === 'doubao'
+    operation_base_urls: provider_profile_id === 'doubao-agent-plan'
       ? {
-        'ark.images.generate': 'https://ark.cn-beijing.volces.com/api/v3',
-        'ark.contents.generate': 'https://ark.cn-beijing.volces.com/api/v3',
-        'tts.unidirectional': 'https://openspeech.bytedance.com/api/v3/tts',
-      }
+        'ark.images.generate': 'https://ark.cn-beijing.volces.com/api/plan/v3',
+        'ark.contents.generate': 'https://ark.cn-beijing.volces.com/api/plan/v3',
+        'tts.unidirectional': 'https://openspeech.bytedance.com/api/v3/plan/tts',
+      } as Record<string, string>
+      : provider_profile_id === 'doubao'
+        ? {
+          'ark.images.generate': 'https://ark.cn-beijing.volces.com/api/v3',
+          'ark.contents.generate': 'https://ark.cn-beijing.volces.com/api/v3',
+        } as Record<string, string>
       : undefined,
     protocol_adapter_id,
     provider_rules_id: provider_profile_id,
-    ui_hints: {},
+    ui_hints: provider_profile_id === 'doubao' || provider_profile_id === 'doubao-agent-plan'
+      ? {
+        setup_group: {
+          id: 'doubao',
+          display_name: 'Doubao (Volcengine Ark)',
+          account_type: provider_profile_id === 'doubao' ? 'standard' : 'agent_plan',
+          account_type_label: provider_profile_id === 'doubao' ? 'Standard account' : 'Agent Plan',
+          default: provider_profile_id === 'doubao',
+        },
+      }
+      : {},
+    setup_group: provider_profile_id === 'doubao' || provider_profile_id === 'doubao-agent-plan'
+      ? {
+        id: 'doubao',
+        display_name: 'Doubao (Volcengine Ark)',
+        account_type: provider_profile_id === 'doubao' ? 'standard' : 'agent_plan',
+        account_type_label: provider_profile_id === 'doubao' ? 'Standard account' : 'Agent Plan',
+        default: provider_profile_id === 'doubao',
+      }
+      : undefined,
     endpoint_hints: provider_profile_id === 'openrouter'
       ? {
         global: { label: 'Global' },
@@ -179,7 +204,7 @@ const MOCK_PROVIDER_SETUP_CATALOG: ProviderSetupCatalog = {
         }
         : provider_profile_id === 'glm' || provider_profile_id === 'minimax'
         ? { region: { mode: 'optional', default_value: 'global', allowed_values: ['global', 'china'] } }
-        : provider_profile_id === 'doubao'
+        : provider_profile_id === 'doubao' || provider_profile_id === 'doubao-agent-plan'
           ? { policy_region: { mode: 'optional', default_value: 'unknown', allowed_values: ['unknown', 'cn', 'other'] } }
           : {},
   })),
@@ -2493,6 +2518,7 @@ function toProviderSetupCatalog(
         protocol_adapter_id: asNonEmptyString(entry.protocol_adapter_id, ''),
         provider_rules_id: asOptionalString(entry.provider_rules_id),
         ui_hints: asRecord(entry.ui_hints),
+        setup_group: toProviderSetupGroup(entry.ui_hints),
         endpoint_hints: toProviderEndpointHints(entry.ui_hints),
         connection_fields: toProviderConnectionFields(entry.ui_hints),
       }
@@ -2512,6 +2538,22 @@ function toProviderSetupCatalog(
       protocol_family_id,
       display_name: `${labelFromPath(protocol_family_id)} compatible`,
     })),
+  }
+}
+
+function toProviderSetupGroup(value: unknown): KnownProviderProfile['setup_group'] {
+  const group = asRecord(asRecord(value).setup_group)
+  const id = asOptionalString(group.id)
+  const displayName = asOptionalString(group.display_name)
+  const accountType = asOptionalString(group.account_type)
+  const accountTypeLabel = asOptionalString(group.account_type_label)
+  if (!id || !displayName || !accountType || !accountTypeLabel) return undefined
+  return {
+    id,
+    display_name: displayName,
+    account_type: accountType,
+    account_type_label: accountTypeLabel,
+    default: group.default === true,
   }
 }
 

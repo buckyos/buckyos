@@ -10,6 +10,17 @@ claude|claude-messages|vision.ocr|messages.create
 deepseek|deepseek-responses|llm|responses.create
 deepseek|deepseek-responses|vision.caption|responses.create
 deepseek|deepseek-responses|vision.ocr|responses.create
+doubao-agent-plan|doubao-responses|audio.tts|tts.unidirectional
+doubao-agent-plan|doubao-responses|embedding.multimodal|ark.embeddings.multimodal
+doubao-agent-plan|doubao-responses|image.img2img|ark.images.generate
+doubao-agent-plan|doubao-responses|image.txt2img|ark.images.generate
+doubao-agent-plan|doubao-responses|llm|responses.create
+doubao-agent-plan|doubao-responses|video.extend|ark.contents.generate
+doubao-agent-plan|doubao-responses|video.img2video|ark.contents.generate
+doubao-agent-plan|doubao-responses|video.txt2video|ark.contents.generate
+doubao-agent-plan|doubao-responses|video.video2video|ark.contents.generate
+doubao-agent-plan|doubao-responses|vision.caption|responses.create
+doubao-agent-plan|doubao-responses|vision.ocr|responses.create
 doubao|doubao-responses|audio.tts|tts.unidirectional
 doubao|doubao-responses|embedding.multimodal|ark.embeddings.multimodal
 doubao|doubao-responses|image.img2img|ark.images.generate

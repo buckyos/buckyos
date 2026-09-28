@@ -2,6 +2,8 @@
 
 Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provider profile；保存时通过 `provider.add`、修改时通过 `provider.update` 写入 Provider Instance。UI 不把服务商清单、协议选择或默认 `base_url` 作为真相源。Provider Instance settings、管理 RPC 和 UI DataModel 统一使用 `base_url`，不接收或返回配置字段 `endpoint`。
 
+同一服务商存在多种账号渠道时，各渠道仍使用独立 `provider_profile_id` 和 Provider Rules；Known Provider 的 `ui_hints.setup_group` 只负责把它们合并成一个向导入口，并提供账号类型标签和默认项。选择账号类型后，UI 必须整体切换到该 profile 的 `base_url`、operation base URLs、连接字段和凭据表单，不得混合不同 profile 的默认值。模型库存由所选 profile 的 discovery 与 Provider Rules 决定，UI 不维护账号类型模型白名单。
+
 `provider_profile_id` 是 catalog 提供的开放字符串，不是前端枚举。前端必须原样保留和展示后端返回的未知新 ID；不得把它归一化为 `custom`、过滤或要求随客户端版本更新白名单。`custom` 只表示用户主动选择的自定义 Provider。
 
 | UI DataModel | Backend field | Durable owner | Notes |

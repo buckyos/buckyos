@@ -345,6 +345,15 @@ export interface KnownProviderProfile {
   ui_hints: Record<string, unknown>
   endpoint_hints: Record<string, ProviderEndpointHint>
   connection_fields: Partial<Record<'region' | 'workspace' | 'account' | 'policy_region', ProviderConnectionField>>
+  setup_group?: ProviderSetupGroup
+}
+
+export interface ProviderSetupGroup {
+  id: string
+  display_name: string
+  account_type: string
+  account_type_label: string
+  default: boolean
 }
 
 export interface ProviderEndpointHint {

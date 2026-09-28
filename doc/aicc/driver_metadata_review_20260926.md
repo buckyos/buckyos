@@ -1,6 +1,6 @@
 # Driver metadata 核对记录（2026-09-26）
 
-本次盘点 `src/frame/aicc/driver_metadata` 的 38 份文件：12 份 model-driver、13 份 provider rules、13 份 known-provider。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
+本次盘点最初覆盖 `src/frame/aicc/driver_metadata` 的 38 份文件；豆包普通账号与 Agent Plan 拆分后为 39 份：12 份 model-driver、14 份 provider rules、13 份 known-provider。两个豆包 profile 合并在同一份 known-provider catalog 中，账号专属规则仍分别保存。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
 
 核对重点是当前目录中 93 个未排除的 LLM 条目的上下文和输出限制，以及核对过程中发现的明确能力错误。修复前 45 个条目至少缺少一个长度字段，修复后剩余 5 个，原因见下文。共修改 7 份 model-driver 文件、62 个模型条目，其中 58 个涉及长度；包括一个 ASR 条目。
 
@@ -105,6 +105,7 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 | 模型 | 缺失字段 | 原因 |
 | --- | --- | --- |
 | doubao-seed-2.1-lite、doubao-seed-2.1-turbo、doubao-seed-2.1-pro、doubao-seed-evolving | max_output_tokens | Agent Plan 当前模型清单确认这些型号可用，但未给出可安全用于路由硬过滤的逐型号最大输出整数 |
+| doubao-seed-2-1-turbo-260628 | max_output_tokens | 普通账号 `/api/v3/models` 确认可用，官方资料给出上下文窗口但未给出可安全用于路由硬过滤的最大输出整数 |
 | kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k3 | max_output_tokens | 当前官方模型页未给出这些型号的明确 API 输出硬上限 |
 | kimi-k2.8-preview | max_context_tokens、max_output_tokens | Agent Plan 清单已列出该预览型号，但当前 Kimi 公共模型文档尚无可核实的硬限制 |
 | minimax-m3 | max_context_tokens、max_output_tokens | Agent Plan 清单已列出 M3，但 MiniMax 公共模型文档尚无可核实的 M3 硬限制 |
