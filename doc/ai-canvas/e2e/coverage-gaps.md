@@ -1,12 +1,19 @@
 # BuckyOS AI Canvas E2E 覆盖缺口与待补用例
 
+本文是 [协作场景主文档](test-requirements.md) 的风险附录，保留详细变体供按需补测。
+[逐条场景映射](assertions.md#9-协作场景与既有断言的映射) 提供所有编号的名称和归属；
+执行入口见 [浏览器执行约定](execution-guide.md)。
+
 ## 1. 结论与适用范围
 
 本文于 2026-09-28 迁入 BuckyOS，维护 2026-09-24 两轮评审提出的 **33 个 T-A 待补用例
 （12 个 P0、21 个 P1）**。编号、名称、步骤和断言保留；第二轮为 TA-N23～N33。跨用例条件
 见 §7.1，复用原编号。应用业务的五个时序场景留在应用仓库，不属于本表。
 
-所有 TA-N 项仍为 **NOT_RUN**：尚未编写自动化脚本，也未执行。既有阶段 1 的
+迁入时 33 项均为 NOT_RUN。后续 2026-09-28 浏览器试跑对 TA-N17「图表与指标的数值
+独立核对」执行了销售额变体（110 → 140）；图表没有产出，其余数据和指标变体未执行，整条覆盖
+记为 **INCONCLUSIVE**，不能算通过。其余 32 项仍为 **NOT_RUN**。本地执行包位于 Git 忽略的
+`runs/`，证据不随本附录发布。既有阶段 1 的
 15 PASS / 6 FAIL / 1 INCONCLUSIVE、阶段 2 的 19 PASS / 4 FAIL / 0 INCONCLUSIVE 是历史结果，
 不因本次迁移改变。每条必要变体都需记录；源码风险依据不是动态失败证据。
 
@@ -35,7 +42,7 @@ P0/P1 表示补测顺序，不改变产品 PRD 范围；P0 优先防止丢数据
 
 ## 3. T-A 待补清单
 
-所有行均为 NOT_RUN。“可跑”指可以用当前原型入口和受控夹具观察，不承诺实现已满足判据。
+除 TA-N17 部分执行、整条 INCONCLUSIVE 外，其余行均为 NOT_RUN。“可跑”指可以用当前原型入口和受控夹具观察，不承诺实现已满足判据。
 
 | 编号 | 用例名称 | 优先级 | 今天的执行条件 |
 |---|---|---|---|
@@ -55,7 +62,7 @@ P0/P1 表示补测顺序，不改变产品 PRD 范围；P0 优先防止丢数据
 | TA-N14 | 上下文裁剪、嵌套范围与字节上限可解释 | P1 | 边界数据、范围外哨兵和实际请求捕获 |
 | TA-N15 | 损坏文档、循环组与异常结构的导入恢复 | P1 | 正常文件导入入口；给每个变体单独浏览器超时 |
 | TA-N16 | 真实表格数据语义与导入边界 | P1 | CSV 可跑；XLSX 深层断言依赖 CANVAS-L01 修复 |
-| TA-N17 | 图表与指标的数值独立核对 | P1 | 人工可核算数据集，不使用被测聚合函数算期望 |
+| TA-N17 | 图表与指标的数值独立核对 | P1 | 部分执行，整条 INCONCLUSIVE，见 §1；人工可核算数据集，不使用被测聚合函数算期望 |
 | TA-N18 | 增删行列、改表头后的引用与目标单元格身份 | P1 | 现有 UI；范围跟坐标还是跟记录的口径需明确 |
 | TA-N19 | 自动刷新、同时运行与失败后的请求收敛 | P1 | 当前 on_change 入口 + 可控时钟 / 响应 |
 | TA-N20 | 中文输入、表内结构粘贴与快捷键隔离 | P1 | 浏览器交互可跑；真实系统输入法需单独人工覆盖 |
@@ -280,7 +287,7 @@ P0/P1 表示补测顺序，不改变产品 PRD 范围；P0 优先防止丢数据
 
 本表只维护通用原型的 TA-N01～N33。内核接口冻结后的完整契约需要在 T-B 重验；
 课程 / 作业 / 权限等应用场景及其时序变体由应用仓库维护。本文不启动 T-B / T-C。
-原型子断言与未来能力的区别见 [主需求 §7](test-requirements.md#7-追溯矩阵与分层限制)。
+原型子断言与未来能力的区别见 [验收附录 §7](assertions.md#7-追溯矩阵与分层限制)。
 
 ## 7. 执行顺序与判定纪律
 
@@ -335,4 +342,4 @@ P0/P1 表示补测顺序，不改变产品 PRD 范围；P0 优先防止丢数据
 | [quiet 命令](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/domain/commands.ts#L80)；[修订计算](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/domain/reducer.ts#L43)；[讲述导航](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/ui/EditorShell.tsx#L123) | TA-N29、TA-N30：浏览、修订、播放目标 |
 | [相机与坐标](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/ui/InfiniteCanvas.tsx#L73)；[帧调度与清理](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/ui/InfiniteCanvas.tsx#L41)；[图片资源释放](https://github.com/buckyos/buckyos/blob/400c758e7420cda88c97eb29e51dabd9218f04c3/src/frame/desktop/src/app/canvas/data/image.ts#L37) | TA-N31、TA-N32：几何正确性与资源生命周期 |
 
-通用原型的完整追溯见 [主需求](test-requirements.md)。真实内核契约与应用业务验收需另行冻结；本轮补充建议不能代替尚未核实的内核设计条文。
+通用原型的完整追溯见 [验收附录](assertions.md)。真实内核契约与应用业务验收需另行冻结；本轮补充建议不能代替尚未核实的内核设计条文。
