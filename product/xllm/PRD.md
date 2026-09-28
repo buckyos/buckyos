@@ -704,7 +704,7 @@ agent_tool xllm '读取 README.md，只返回文档的一级标题文本。'
 ### F03. AI Provider 与模型选择
 
 - `provider` 是接入配置对象，`provider.type` 首版支持 `buckyos`（默认）和 `openai`。buckyos 模式使用 AICC、taskmgr 等所需 BuckyOS 服务，可沿用当前身份或手工配置 `session_token`；openai 模式使用该接入方式的连接设置与凭据，不依赖 BuckyOS 服务。选择不同 Provider 不改变 CLI/SDK 的 Run 语义，也不要求启动 Jarvis 会话。
-- `model` 是执行主任务的模型，可填写具体模型名或 Provider 支持的逻辑模型名，例如 `llm.chat`。`file_model` 是可选的附件理解模型，例如 `llm.vision`：首版用于处理图片，文本文件仍直接作为材料输入；配置它不代表首版自动支持 PDF、音视频。
+- `model` 是执行主任务的模型，可填写具体模型名或 Provider 支持的逻辑模型名，例如 `llm.chat`。BuckyOS Provider 中，逻辑模型名走 AICC 逻辑路由，`model@provider`（含 `model:variant@provider`）走精确调用，不进行逻辑路由或 fallback。`file_model` 支持同样的选择器，是可选的附件理解模型，例如 `llm.vision`：首版用于处理图片，文本文件仍直接作为材料输入；配置它不代表首版自动支持 PDF、音视频。
 - 配置 file_model 时，系统将真实图片、图片顺序、材料标签和本次任务要求提交给它，将分析结果连同来源交给主模型继续处理。多图比较必须保留图片之间的关联，不能对每张图孤立总结后丢失比较信息。文件模型调用属于显式输入准备，不受工具开关控制；关闭工具时仍可能有附件理解调用，但主任务只有一次推理，二者分别记录模型与用量。未配置 file_model 时，由主模型直接接收图片并检查其视觉能力；配置的文件模型不支持图片或调用失败时明确报错，不静默跳过或换模型。
 - `--provider`、`--model`、`--file-model` 分别覆盖接入类型、主模型和文件模型；`--model` 不隐式覆盖 file_model。合并后的 Provider、模型能力和所选 loop 必须一起校验，配置不匹配时明确报错，不静默切换服务商或模型。主模型是否需要视觉能力取决于是否直接接收图片，不能在已经配置有效 file_model 时一概拒绝纯文本主模型。
 - 启用工具、要求 JSON 输出等能力也参与模型可用性判断；不能为成功运行而静默去掉图片、工具或输出约束。

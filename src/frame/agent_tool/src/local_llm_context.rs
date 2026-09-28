@@ -62,10 +62,10 @@ use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiContent,
-    AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage,
+    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiContent,
+    AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage, AiccClient,
     AiccExecutionMode, BuckyOSRuntimeType, HelperModelRequirement, LlmChatHelperRequest,
-    LlmResponseFormat, ModelDisable, ResourceRef,
+    LlmChatInvokeRequest, LlmResponseFormat, ModelDisable, ResourceRef,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -4301,6 +4301,27 @@ fn build_aicc_llm_options(
 #[async_trait]
 impl LlmClient for AiccLlmClient {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        let runtime = get_buckyos_api_runtime()
+            .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
+        if let Some(token) = &self.session_token {
+            let mut guard = runtime.session_token.write().await;
+            if guard.as_str() != token.as_str() {
+                *guard = token.clone();
+            }
+        }
+        let client = runtime
+            .get_aicc_client()
+            .await
+            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
+        Self::infer_with_client(&client, req).await
+    }
+}
+
+impl AiccLlmClient {
+    async fn infer_with_client(
+        client: &AiccClient,
+        req: LlmInferenceRequest,
+    ) -> Result<AiResponse, LLMComputeError> {
         let LlmInferenceRequest {
             trace_id,
             messages,
@@ -4349,54 +4370,49 @@ impl LlmClient for AiccLlmClient {
         } else {
             None
         };
-        let request = LlmChatHelperRequest {
-            logical_model: model_alias,
+        let request = LlmChatInvokeRequest {
             trace_id,
             execution_mode: AiccExecutionMode::Immediate,
-            requirements: HelperModelRequirement {
-                tool_call: allow_tool_calls && !advertised_tools.is_empty(),
-                json_schema: force_json,
-                ..Default::default()
-            },
-            disable,
-            policy: None,
-            messages,
             tools: advertised_tools,
             response_format,
             temperature: temperature.map(f64::from),
-            top_p: None,
             max_output_tokens: max_completion_tokens.map(u64::from),
-            seed: None,
-            stop: Vec::new(),
-            output: None,
-            idempotency_key: None,
-            task_options: None,
-            session_overlay: None,
-            session_id: None,
+            ..LlmChatInvokeRequest::new(model_alias, messages)
         };
-
-        let runtime = get_buckyos_api_runtime()
-            .map_err(|e| provider_error_from_rpc("get buckyos runtime failed", e))?;
-        if let Some(token) = &self.session_token {
-            let mut guard = runtime.session_token.write().await;
-            if guard.as_str() != token.as_str() {
-                *guard = token.clone();
-            }
-        }
-        let client = runtime
-            .get_aicc_client()
-            .await
-            .map_err(|e| provider_error_from_rpc("get aicc client failed", e))?;
-        let response = client
-            .helper_llm_chat(request)
-            .await
-            .map_err(|e| provider_error_from_rpc("aicc helper.llm_chat failed", e))?;
+        let (method, response) = if request.exact_model.contains('@') {
+            (
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                client.chat_completions_create(request).await,
+            )
+        } else {
+            let request = LlmChatHelperRequest {
+                trace_id: request.trace_id,
+                execution_mode: request.execution_mode,
+                requirements: HelperModelRequirement {
+                    tool_call: allow_tool_calls && !request.tools.is_empty(),
+                    json_schema: force_json,
+                    ..Default::default()
+                },
+                disable,
+                tools: request.tools,
+                response_format: request.response_format,
+                temperature: request.temperature,
+                max_output_tokens: request.max_output_tokens,
+                ..LlmChatHelperRequest::new(request.exact_model, request.messages)
+            };
+            (
+                ai_methods::HELPER_LLM_CHAT,
+                client.helper_llm_chat(request).await,
+            )
+        };
+        let response =
+            response.map_err(|e| provider_error_from_rpc(&format!("aicc {method} failed"), e))?;
         match response.status {
             AiMethodStatus::Succeeded => {
                 let message = response.message.ok_or_else(|| {
                     LLMComputeError::provider(
                         ProviderFailure::Unknown,
-                        "aicc helper.llm_chat succeeded but message is empty",
+                        format!("aicc {method} succeeded but message is empty"),
                     )
                 })?;
                 Ok(AiResponse {
@@ -4411,7 +4427,7 @@ impl LlmClient for AiccLlmClient {
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
                 ProviderFailure::Unknown,
                 format!(
-                    "aicc helper.llm_chat failed: task_id={}, event_ref={}",
+                    "aicc {method} failed: task_id={}, event_ref={}",
                     response.task_id,
                     response.event_ref.as_deref().unwrap_or("")
                 ),
@@ -4419,7 +4435,7 @@ impl LlmClient for AiccLlmClient {
             AiMethodStatus::Running => Err(LLMComputeError::provider(
                 ProviderFailure::Permanent,
                 format!(
-                    "aicc helper.llm_chat returned async task `{}`; xllm does not poll async tasks — use a synchronous-capable model",
+                    "aicc {method} returned async task `{}`; xllm does not poll async tasks — use a synchronous-capable model",
                     response.task_id
                 ),
             )),
@@ -7419,9 +7435,209 @@ pub fn build_result_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use buckyos_api::AiRole;
+    use ::kRPC::RPCContext;
+    use buckyos_api::{AiRole, AiccHandler, CancelResponse, LlmChatInvokeResponse};
     use llm_context::deps::LlmInferenceRequest;
     use std::sync::Mutex as StdMutex;
+
+    struct RecordingAicc {
+        calls: Arc<StdMutex<Vec<(&'static str, Value)>>>,
+        response: LlmChatInvokeResponse,
+    }
+
+    #[async_trait]
+    impl AiccHandler for RecordingAicc {
+        async fn handle_cancel(
+            &self,
+            _task_id: &str,
+            _ctx: RPCContext,
+        ) -> Result<CancelResponse, RPCErrors> {
+            panic!("unexpected cancellation")
+        }
+
+        async fn handle_chat_completions_create(
+            &self,
+            request: LlmChatInvokeRequest,
+            _ctx: RPCContext,
+        ) -> Result<LlmChatInvokeResponse, RPCErrors> {
+            self.calls.lock().unwrap().push((
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                serde_json::to_value(request).unwrap(),
+            ));
+            Ok(self.response.clone())
+        }
+
+        async fn handle_helper_llm_chat(
+            &self,
+            request: LlmChatHelperRequest,
+            _ctx: RPCContext,
+        ) -> Result<LlmChatInvokeResponse, RPCErrors> {
+            self.calls.lock().unwrap().push((
+                ai_methods::HELPER_LLM_CHAT,
+                serde_json::to_value(request).unwrap(),
+            ));
+            Ok(self.response.clone())
+        }
+    }
+
+    fn aicc_inference_request(model: &str) -> LlmInferenceRequest {
+        LlmInferenceRequest {
+            trace_id: Some("xllm-trace".into()),
+            messages: vec![AiMessage::text(AiRole::User, "hello")],
+            model_alias: model.into(),
+            fallbacks: vec!["llm.fallback".into()],
+            temperature: Some(0.5),
+            max_completion_tokens: Some(1234),
+            force_json: true,
+            json_schema: Some(json!({"type": "object"})),
+            provider_options: None,
+            disable_capabilities: vec!["web_search".into()],
+            tool_specs: vec![ToolSpecLite {
+                name: "read_file".into(),
+                description: "Read a file".into(),
+                args_schema: json!({"type": "object"}),
+            }],
+            allow_tool_calls: true,
+            abort: llm_context::interrupt::InferenceAbortToken::noop(),
+        }
+    }
+
+    fn aicc_success_response() -> LlmChatInvokeResponse {
+        serde_json::from_value(json!({
+            "task_id": "aicc-task",
+            "status": "succeeded",
+            "message": AiMessage::text(AiRole::Assistant, "done"),
+            "usage": {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6},
+            "cost": {"amount": 0.01, "currency": "USD"},
+            "finish_reason": "stop",
+            "provider_task_ref": "provider-task"
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn aicc_model_selectors_preserve_inference_contract() {
+        for (model, method, model_field) in [
+            ("llm.chat", ai_methods::HELPER_LLM_CHAT, "logical_model"),
+            (
+                "gpt-5.6-sol@openai-main",
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                "exact_model",
+            ),
+            (
+                "gpt-5.6-sol:reasoning-medium@openai-main",
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+                "exact_model",
+            ),
+        ] {
+            for mode in ["text", "json_object", "json_schema"] {
+                let calls = Arc::new(StdMutex::new(Vec::new()));
+                let response = aicc_success_response();
+                let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+                    calls: calls.clone(),
+                    response: response.clone(),
+                }));
+                let mut request = aicc_inference_request(model);
+                request.allow_tool_calls = mode == "json_schema";
+                request.force_json = mode != "text";
+                if mode == "json_object" {
+                    request.json_schema = None;
+                }
+                let result = AiccLlmClient::infer_with_client(&client, request)
+                    .await
+                    .unwrap();
+                assert_eq!(result.message, response.message.unwrap());
+                assert_eq!(result.usage, response.usage);
+                assert_eq!(result.cost, response.cost);
+                assert_eq!(result.finish_reason, response.finish_reason);
+                assert_eq!(result.provider_task_ref, response.provider_task_ref);
+
+                let calls = calls.lock().unwrap();
+                assert_eq!(calls.len(), 1);
+                assert_eq!(calls[0].0, method);
+                let mut expected = json!({
+                    "trace_id": "xllm-trace",
+                    "execution_mode": "immediate",
+                    "messages": [AiMessage::text(AiRole::User, "hello")],
+                    "temperature": 0.5,
+                    "max_output_tokens": 1234
+                });
+                expected[model_field] = json!(model);
+                if mode == "json_schema" {
+                    expected["tools"] = json!([{
+                        "type": "function", "name": "read_file", "description": "Read a file",
+                        "args_json_schema": {"type": "object"}
+                    }]);
+                    expected["response_format"] = json!({
+                        "type": "json_schema",
+                        "json_schema": {"name": "llm_response", "schema": {"type": "object"}}
+                    });
+                } else if mode == "json_object" {
+                    expected["response_format"] = json!({"type": "json_object"});
+                }
+                if model_field == "logical_model" {
+                    expected["requirements"] = json!({});
+                    if mode == "json_schema" {
+                        expected["requirements"]["tool_call"] = json!(true);
+                    }
+                    if mode != "text" {
+                        expected["requirements"]["json_schema"] = json!(true);
+                    }
+                    expected["disable"] = json!({"web_search": true});
+                }
+                assert_eq!(calls[0].1, expected);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn aicc_invalid_exact_selectors_never_reach_routing() {
+        let calls = Arc::new(StdMutex::new(Vec::new()));
+        let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+            calls: calls.clone(),
+            response: aicc_success_response(),
+        }));
+        for model in ["@provider", "model@", "model@provider@other"] {
+            let error = AiccLlmClient::infer_with_client(&client, aicc_inference_request(model))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("chat.completions.create"));
+            assert!(error.to_string().contains("exact_model"));
+        }
+        assert!(calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn aicc_unsuccessful_calls_report_selected_method_without_fallback() {
+        for (model, method) in [
+            ("llm.chat", ai_methods::HELPER_LLM_CHAT),
+            (
+                "gpt-5.6-sol@openai-main",
+                ai_methods::CHAT_COMPLETIONS_CREATE,
+            ),
+        ] {
+            for status in [
+                AiMethodStatus::Succeeded,
+                AiMethodStatus::Failed,
+                AiMethodStatus::Running,
+            ] {
+                let calls = Arc::new(StdMutex::new(Vec::new()));
+                let mut response = aicc_success_response();
+                response.status = status;
+                response.message = None;
+                let client = AiccClient::new_in_process(Box::new(RecordingAicc {
+                    calls: calls.clone(),
+                    response,
+                }));
+                let error =
+                    AiccLlmClient::infer_with_client(&client, aicc_inference_request(model))
+                        .await
+                        .unwrap_err();
+                assert!(error.to_string().contains(method));
+                assert_eq!(calls.lock().unwrap().len(), 1);
+            }
+        }
+    }
 
     /// 记录每次推理请求的关键信息。
     #[derive(Clone, Debug)]

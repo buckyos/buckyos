@@ -83,6 +83,8 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 
 ## 8. buckyos Provider 的登录方式
 
+`model` / `file_model`（包括 `--model` / `--file-model` 覆盖）支持两种选择器：`llm.chat`、`llm.vision` 等逻辑名走 AICC `helper.llm_chat`；`model@provider` 或 `model:variant@provider` 精确选择器走 `chat.completions.create`，原样保留模型、variant 和 provider，不进行逻辑路由或 fallback。例如：`agent_tool xllm --model 'gpt-5.6-sol@openai-main' '你好'`。精确选择器中的模型和 provider 必须存在于当前 AICC 环境；格式错误由 AICC SDK 拒绝。
+
 `ensure_buckyos_runtime` 按顺序选择身份（`BUCKYOS_APP_ID` 可覆盖默认的 `buckycli`）：
 
 1. 设置了 `BUCKYOS_APPCLIENT_SESSION_TOKEN`：AppClient，直接使用该会话（OpenDAN 给工具注入的方式）。

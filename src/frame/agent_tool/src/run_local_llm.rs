@@ -67,6 +67,7 @@ Input:
 
 Model:
   --provider buckyos|openai    --model <name>    --file-model <name>
+  buckyos model names: llm.chat (logical) or model[:variant]@provider (exact)
   --loop-model function_call|behavior
   --tools | --no-tools         override every file-level tool switch
 
