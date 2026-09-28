@@ -1,0 +1,201 @@
+{
+  "checks": [
+    {
+      "name": "导入三行四列原值",
+      "actual": [
+        [
+          "A",
+          2,
+          10,
+          20
+        ],
+        [
+          "B",
+          3,
+          20,
+          60
+        ],
+        [
+          "C",
+          1,
+          30,
+          30
+        ]
+      ],
+      "expected": [
+        [
+          "A",
+          2,
+          10,
+          20
+        ],
+        [
+          "B",
+          3,
+          20,
+          60
+        ],
+        [
+          "C",
+          1,
+          30,
+          30
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "name": "首次销售额指标",
+      "actual": [
+        110
+      ],
+      "expected": [
+        110
+      ],
+      "pass": true
+    },
+    {
+      "name": "Prompt 请求的图表至少一张",
+      "actual": false,
+      "expected": true,
+      "pass": false
+    },
+    {
+      "name": "取消刷新前后整份文档一致",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "新增块数和绑定数",
+      "actual": [
+        6,
+        1
+      ],
+      "expected": [
+        6,
+        1
+      ],
+      "pass": true
+    },
+    {
+      "name": "旧结果和用户块保持原内容",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "更新来源后两版本销售额",
+      "actual": [
+        110,
+        140
+      ],
+      "expected": [
+        110,
+        140
+      ],
+      "pass": true
+    },
+    {
+      "name": "保留人工说明",
+      "actual": 1,
+      "expected": 1,
+      "pass": true
+    },
+    {
+      "name": "撤销移除本次生成内容和绑定并恢复既有业务对象",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "一次重做恢复生成后的完整文档",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "作者重开文档逐字段一致",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "文件导入只有副本身份和元数据变化",
+      "actual": [
+        "id",
+        "updatedAt",
+        "metadata"
+      ],
+      "expected": [
+        "id",
+        "updatedAt",
+        "metadata"
+      ],
+      "pass": true
+    },
+    {
+      "name": "接收者空白存储起点",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "接收者新增复核意见且原说明保留",
+      "actual": [
+        1,
+        1
+      ],
+      "expected": [
+        1,
+        1
+      ],
+      "pass": true
+    },
+    {
+      "name": "接收者编辑保存重开逐字段一致",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "作者副本未被接收方修改",
+      "actual": true,
+      "expected": true,
+      "pass": true
+    },
+    {
+      "name": "来源只引用表格",
+      "actual": [
+        {
+          "kind": "block",
+          "blockId": "blk_1c7aa239-c93",
+          "revision": 0
+        }
+      ],
+      "expected": [
+        {
+          "kind": "block",
+          "blockId": "blk_1c7aa239-c93",
+          "revision": 0
+        }
+      ],
+      "pass": true
+    }
+  ],
+  "passed": 16,
+  "failed": 1,
+  "undo_comparison_scope": {
+    "excluded": [
+      "wish.content.runHistory",
+      "wish.content.lastRunId",
+      "sheet.camera"
+    ],
+    "reason": "TC-009 判据是整组生成内容和绑定一次性移除及重做恢复；不要求删除运行历史或撤回当前导航。原始导出完整保留这些差异。"
+  },
+  "limitations": [
+    "请求选择来自导出 contextRefs，不是实际请求捕获，TA-C1 无法由此通过。",
+    "图表断言是本次用户目标，不是完整 PRD-21.1 的执行。",
+    "未验证图表数值、权限、真实协作、媒体和全部边界。"
+  ]
+}

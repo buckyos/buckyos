@@ -1,0 +1,152 @@
+- main:
+  - button "BuckyOS": B
+  - text: Relay 1
+  - button "Desktop Tips": "8"
+  - text: 12:36 PM
+  - paragraph: 12:36 PM
+  - text: Mon
+  - paragraph: Sep 28, 2026
+  - button "Settings"
+  - button "Files"
+  - button "Studio"
+  - button "Marketplace"
+  - button "Docs"
+  - button "Demos"
+  - button "CodeAssistant"
+  - button "MessageHub"
+  - button "AI Center"
+  - button "HomeStation"
+  - button "Systest"
+  - button "AI Canvas"
+  - button "Preview"
+  - button "Review drag semantics, dead zone behavior, and window polish.":
+    - paragraph: Review drag semantics, dead zone behavior, and window polish.
+  - button "Diagnostics"
+  - button "Users & Agents"
+  - button "Task Center"
+  - button "My Network"
+  - button "App Service"
+  - button "Workflow"
+  - paragraph: AI Canvas
+  - button "Minimize"
+  - button "Restore"
+  - button "Close"
+  - button "返回画布列表"
+  - button "S01-S03 协作交接试跑 20260928"
+  - text: 已保存到本机
+  - button "撤销 (Ctrl/⌘+Z)"
+  - button "重做 (Ctrl/⌘+Shift+Z)" [disabled]
+  - button "Mock Agent（离线）"
+  - button "播放" [disabled]
+  - button "反馈"
+  - button "更多"
+  - complementary:
+    - button "Sheet"
+    - button "数据"
+    - button "讲述路径"
+    - text: 工作页
+    - button "新建 Sheet"
+    - list:
+      - listitem:
+        - button "Sheet 1 (15)"
+    - paragraph: 每个 Sheet 是一张可以自由平移缩放的无限画布，切换 Sheet 会记住各自的镜头位置。
+  - img
+  - text: sales A产品 B数量 C单价 D销售额 1 A 2 10 20 2 B 3 20 90 3 C 1 30 30 3 行 × 4 列 来源：sales.csv 已修改 1 次 许愿格：sales
+  - textbox "在这里用一句话写下你想要的结果，例如：按区域汇总销售额并找出下滑最明显的产品…": 请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。
+  - text: 数据来源
+  - button "sales!全部 (3行×4列)"
+  - button "移除来源"
+  - button "添加"
+  - combobox:
+    - option "自动决定输出" [selected]
+    - option "生成表格"
+    - option "生成图表与指标"
+    - option "生成汇报摘要"
+  - button "重新运行"
+  - text: 已完成 已生成 10 个结果 ◐ 需要刷新 最后运行 刚刚
+  - button "技术详情与将发送的上下文"
+  - text: 文本
+  - paragraph: OUTSIDE_SOURCE_20260928：这段合成资料没有选为分析来源。
+  - text: 本季度销售额 本季度销售额 ¥110 整体毛利率 整体毛利率 100.0% 目标完成率 目标完成率 0.0% 产品毛利率 A产品 B销售额 C成本 D毛利率 E目标完成率 1 A 20 0 100.0% — 2 B 60 0 100.0% — 3 C 30 0 100.0% — 3 行 × 5 列 来源：手动创建 管理层总结
+  - heading "本季度经营总结" [level=2]
+  - paragraph:
+    - text: 本季度总销售额
+    - strong: ¥110
+    - text: 。
+  - list:
+    - listitem: 增长最快的三项：A（0.0%）、B（0.0%）、C（0.0%）。
+    - listitem: 下滑最明显的三项：C（0.0%）、B（0.0%）、A（0.0%）。
+    - listitem: 未发现明显异常记录。
+  - paragraph: 建议：优先复盘下滑项的成本结构与目标设定，对增长项追加库存与渠道投入。
+  - paragraph: 人工复核 HANDOFF_REVIEW_20260928：B 产品销售额待二次核实，请保留此说明。
+  - text: 季度经营分析：销售额 ¥110，毛利率 100.0% AI 生成 ◐ 需要刷新 已手工修改 1 分钟前
+  - button "重新运行"
+  - button "查看来源（许愿格）"
+  - button "更多"
+  - text: 本季度销售额 本季度销售额 ¥140 整体毛利率 整体毛利率 100.0% 目标完成率 目标完成率 0.0% 产品毛利率 A产品 B销售额 C成本 D毛利率 E目标完成率 1 A 20 0 100.0% — 2 B 90 0 100.0% — 3 C 30 0 100.0% — 3 行 × 5 列 来源：手动创建 管理层总结
+  - heading "本季度经营总结" [level=2]
+  - paragraph:
+    - text: 本季度总销售额
+    - strong: ¥140
+    - text: 。
+  - list:
+    - listitem: 增长最快的三项：A（0.0%）、B（0.0%）、C（0.0%）。
+    - listitem: 下滑最明显的三项：C（0.0%）、B（0.0%）、A（0.0%）。
+    - listitem: 未发现明显异常记录。
+  - paragraph: 建议：优先复盘下滑项的成本结构与目标设定，对增长项追加库存与渠道投入。
+  - text: 季度经营分析：销售额 ¥140，毛利率 100.0% AI 生成 ● 最新 刚刚
+  - button "重新运行"
+  - button "查看来源（许愿格）"
+  - button "更多"
+  - complementary:
+    - text: 许愿格
+    - button "锁定位置"
+    - button "创建副本"
+    - button "删除"
+    - text: 标题
+    - textbox "标题": 许愿格：sales
+    - text: X
+    - spinbutton "X": "684"
+    - text: "Y"
+    - spinbutton "Y": "256"
+    - text: 宽
+    - spinbutton "宽": "420"
+    - text: 高
+    - spinbutton "高": "330"
+    - text: 运行方式 输出偏好
+    - combobox "输出偏好":
+      - option "自动决定" [selected]
+      - option "生成表格"
+      - option "生成图表与指标"
+      - option "生成汇报摘要"
+    - text: 数据来源变化后
+    - combobox "数据来源变化后 原型中的自动运行只在页面打开期间生效；含手工修改的结果不会被自动覆盖。":
+      - option "仅手动刷新"
+      - option "提醒\"需要刷新\"（默认）" [selected]
+      - option "自动重新运行"
+    - text: 原型中的自动运行只在页面打开期间生效；含手工修改的结果不会被自动覆盖。
+    - button "运行 (Ctrl/⌘+Enter)"
+    - text: 运行历史（最近 10 次）
+    - list:
+      - listitem:
+        - text: 已完成 刚刚 · mock
+        - button "定位结果"
+        - text: 请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。
+      - listitem:
+        - text: 已完成 2 分钟前 · mock
+        - button "定位结果"
+        - text: 请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。
+  - text: 添加块
+  - button "文本"
+  - button "表格"
+  - button "图片"
+  - button "许愿格"
+  - button "指标"
+  - button "框架"
+  - button "导入 Excel / CSV"
+  - button "缩小"
+  - button "36%"
+  - button "放大"
+  - button "适应全部内容 (F)"
+  - text: 完成 已导出 .aicanvas.json
+  - button "关闭"

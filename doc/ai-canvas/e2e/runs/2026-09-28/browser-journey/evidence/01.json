@@ -1,0 +1,8 @@
+{
+  "step": "01",
+  "startedAt": "2026-09-28T04:29:25.048Z",
+  "error": "locator.waitFor: Timeout 90000ms exceeded.\nCall log:\n  - waiting for getByRole('button', { name: 'AI 画布', exact: true }) to be visible\n\n    at Module.default (/root/app/buckyos/.work/canvas-journey-20260928/steps/01.mjs:3:64)\n    at async file:///root/app/buckyos/.work/canvas-journey-20260928/driver.mjs:23:23",
+  "finishedAt": "2026-09-28T04:31:00.700Z",
+  "ui": "- main:\n  - button \"BuckyOS\": B\n  - text: Relay\n  - button \"Desktop Tips\": \"8\"\n  - text: 12:31 PM\n  - paragraph: 12:31 PM\n  - text: Mon\n  - paragraph: Sep 28, 2026\n  - button \"Settings\"\n  - button \"Files\"\n  - button \"Studio\"\n  - button \"Marketplace\"\n  - button \"Docs\"\n  - button \"Demos\"\n  - button \"CodeAssistant\"\n  - button \"MessageHub\"\n  - button \"AI Center\"\n  - button \"HomeStation\"\n  - button \"Systest\"\n  - button \"AI Canvas\"\n  - button \"Preview\"\n  - button \"Review drag semantics, dead zone behavior, and window polish.\":\n    - paragraph: Review drag semantics, dead zone behavior, and window polish.\n  - button \"Diagnostics\"\n  - button \"Users & Agents\"\n  - button \"Task Center\"\n  - button \"My Network\"\n  - button \"App Service\"\n  - button \"Workflow\"",
+  "pageErrors": []
+}

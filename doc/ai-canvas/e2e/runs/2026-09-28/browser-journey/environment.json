@@ -1,0 +1,13 @@
+{
+  "host": "Linux single-host prototype (mylinux)",
+  "accounts": "Mock desktop; author and receiver in independent browser contexts; no real DID",
+  "commit": "6c22d201d3cefa115c1a66632484d2effffa2239",
+  "preexistingChanges": "clean",
+  "url": "http://127.0.0.1:4179/?scenario=normal",
+  "browser": "Chromium 148.0.7778.96",
+  "playwright": "1.60.0",
+  "viewport": "1600x1000",
+  "adapter": "MockCanvasAgentAdapter",
+  "fixture": "fixtures/sales.csv; full table selected",
+  "window": "2026-09-28 12:29–12:39 Asia/Shanghai"
+}

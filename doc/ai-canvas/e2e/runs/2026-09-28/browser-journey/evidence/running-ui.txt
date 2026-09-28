@@ -1,0 +1,110 @@
+- main:
+  - button "BuckyOS": B
+  - text: Relay 1
+  - button "Desktop Tips": "8"
+  - text: 12:34 PM
+  - paragraph: 12:34 PM
+  - text: Mon
+  - paragraph: Sep 28, 2026
+  - button "Settings"
+  - button "Files"
+  - button "Studio"
+  - button "Marketplace"
+  - button "Docs"
+  - button "Demos"
+  - button "CodeAssistant"
+  - button "MessageHub"
+  - button "AI Center"
+  - button "HomeStation"
+  - button "Systest"
+  - button "AI Canvas"
+  - button "Preview"
+  - button "Review drag semantics, dead zone behavior, and window polish.":
+    - paragraph: Review drag semantics, dead zone behavior, and window polish.
+  - button "Diagnostics"
+  - button "Users & Agents"
+  - button "Task Center"
+  - button "My Network"
+  - button "App Service"
+  - button "Workflow"
+  - paragraph: AI Canvas
+  - button "Minimize"
+  - button "Restore"
+  - button "Close"
+  - button "返回画布列表"
+  - button "S01-S03 协作交接试跑 20260928"
+  - text: 已保存到本机
+  - button "撤销 (Ctrl/⌘+Z)"
+  - button "重做 (Ctrl/⌘+Shift+Z)" [disabled]
+  - button "Mock Agent（离线）"
+  - button "播放" [disabled]
+  - button "反馈"
+  - button "更多"
+  - complementary:
+    - button "Sheet"
+    - button "数据"
+    - button "讲述路径"
+    - text: 工作页
+    - button "新建 Sheet"
+    - list:
+      - listitem:
+        - button "Sheet 1 (3)"
+    - paragraph: 每个 Sheet 是一张可以自由平移缩放的无限画布，切换 Sheet 会记住各自的镜头位置。
+  - img
+  - text: sales A产品 B数量 C单价 D销售额 1 A 2 10 20 2 B 3 20 60 3 C 1 30 30 3 行 × 4 列 来源：sales.csv 许愿格：sales
+  - textbox "在这里用一句话写下你想要的结果，例如：按区域汇总销售额并找出下滑最明显的产品…" [disabled]: 请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。
+  - text: 数据来源
+  - button "sales!全部 (3行×4列)"
+  - button "添加" [disabled]
+  - combobox [disabled]:
+    - option "自动决定输出" [selected]
+    - option "生成表格"
+    - option "生成图表与指标"
+    - option "生成汇报摘要"
+  - button "取消"
+  - text: 正在理解目标 正在理解目标
+  - button "技术详情与将发送的上下文"
+  - text: 文本
+  - paragraph: OUTSIDE_SOURCE_20260928：这段合成资料没有选为分析来源。
+  - complementary:
+    - text: 许愿格
+    - button "锁定位置"
+    - button "创建副本"
+    - button "删除"
+    - text: 标题
+    - textbox "标题": 许愿格：sales
+    - text: X
+    - spinbutton "X": "684"
+    - text: "Y"
+    - spinbutton "Y": "256"
+    - text: 宽
+    - spinbutton "宽": "420"
+    - text: 高
+    - spinbutton "高": "330"
+    - text: 运行方式 输出偏好
+    - combobox "输出偏好":
+      - option "自动决定" [selected]
+      - option "生成表格"
+      - option "生成图表与指标"
+      - option "生成汇报摘要"
+    - text: 数据来源变化后
+    - combobox "数据来源变化后 原型中的自动运行只在页面打开期间生效；含手工修改的结果不会被自动覆盖。":
+      - option "仅手动刷新"
+      - option "提醒\"需要刷新\"（默认）" [selected]
+      - option "自动重新运行"
+    - text: 原型中的自动运行只在页面打开期间生效；含手工修改的结果不会被自动覆盖。
+    - button "运行 (Ctrl/⌘+Enter)"
+    - text: 运行历史（最近 10 次）
+    - paragraph: 尚未运行
+  - text: 添加块
+  - button "文本"
+  - button "表格"
+  - button "图片"
+  - button "许愿格"
+  - button "指标"
+  - button "框架"
+  - button "导入 Excel / CSV"
+  - button "缩小"
+  - button "112%"
+  - button "放大"
+  - button "适应全部内容 (F)"

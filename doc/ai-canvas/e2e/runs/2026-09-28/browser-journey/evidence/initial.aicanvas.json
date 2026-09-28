@@ -1,0 +1,672 @@
+{
+  "schemaVersion": "0.1",
+  "id": "canvas_f1994fde-832",
+  "title": "S01-S03 协作交接试跑 20260928",
+  "revision": 7,
+  "activeSheetId": "sheet_7e4b6809-e60",
+  "sheets": [
+    {
+      "id": "sheet_7e4b6809-e60",
+      "name": "Sheet 1",
+      "order": 0,
+      "blockIds": [
+        "blk_1c7aa239-c93",
+        "blk_7a049acc-282",
+        "blk_0d208338-116",
+        "run_ec68150b-45e_b1",
+        "run_ec68150b-45e_b2",
+        "run_ec68150b-45e_b3",
+        "run_ec68150b-45e_b4",
+        "run_ec68150b-45e_b5",
+        "run_ec68150b-45e_b6"
+      ],
+      "camera": {
+        "zoom": 0.611965811965812,
+        "x": -68.72649572649573,
+        "y": -96.66324786324788
+      }
+    }
+  ],
+  "blocks": {
+    "blk_1c7aa239-c93": {
+      "id": "blk_1c7aa239-c93",
+      "sheetId": "sheet_7e4b6809-e60",
+      "title": "sales",
+      "rect": {
+        "x": 264,
+        "y": 256,
+        "width": 380,
+        "height": 164
+      },
+      "zIndex": 1,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "createdAt": "2026-09-28T04:33:15.976Z",
+      "updatedAt": "2026-09-28T04:33:15.976Z",
+      "type": "table",
+      "content": {
+        "columns": [
+          {
+            "id": "col_9eabdbc1-1ca",
+            "name": "产品",
+            "width": 80,
+            "inferredType": "string"
+          },
+          {
+            "id": "col_b95fc7dc-a2d",
+            "name": "数量",
+            "width": 80,
+            "inferredType": "number"
+          },
+          {
+            "id": "col_da4a58da-e72",
+            "name": "单价",
+            "width": 80,
+            "inferredType": "number"
+          },
+          {
+            "id": "col_99d6686e-b35",
+            "name": "销售额",
+            "width": 80,
+            "inferredType": "number"
+          }
+        ],
+        "rows": [
+          {
+            "id": "row_89b5f8b0-b38",
+            "cells": {
+              "col_9eabdbc1-1ca": {
+                "kind": "value",
+                "value": "A",
+                "valueType": "string"
+              },
+              "col_b95fc7dc-a2d": {
+                "kind": "value",
+                "value": 2,
+                "valueType": "number",
+                "displayValue": "2"
+              },
+              "col_da4a58da-e72": {
+                "kind": "value",
+                "value": 10,
+                "valueType": "number",
+                "displayValue": "10"
+              },
+              "col_99d6686e-b35": {
+                "kind": "value",
+                "value": 20,
+                "valueType": "number",
+                "displayValue": "20"
+              }
+            }
+          },
+          {
+            "id": "row_b6bb9b20-859",
+            "cells": {
+              "col_9eabdbc1-1ca": {
+                "kind": "value",
+                "value": "B",
+                "valueType": "string"
+              },
+              "col_b95fc7dc-a2d": {
+                "kind": "value",
+                "value": 3,
+                "valueType": "number",
+                "displayValue": "3"
+              },
+              "col_da4a58da-e72": {
+                "kind": "value",
+                "value": 20,
+                "valueType": "number",
+                "displayValue": "20"
+              },
+              "col_99d6686e-b35": {
+                "kind": "value",
+                "value": 60,
+                "valueType": "number",
+                "displayValue": "60"
+              }
+            }
+          },
+          {
+            "id": "row_e0cb346b-18d",
+            "cells": {
+              "col_9eabdbc1-1ca": {
+                "kind": "value",
+                "value": "C",
+                "valueType": "string"
+              },
+              "col_b95fc7dc-a2d": {
+                "kind": "value",
+                "value": 1,
+                "valueType": "number",
+                "displayValue": "1"
+              },
+              "col_da4a58da-e72": {
+                "kind": "value",
+                "value": 30,
+                "valueType": "number",
+                "displayValue": "30"
+              },
+              "col_99d6686e-b35": {
+                "kind": "value",
+                "value": 30,
+                "valueType": "number",
+                "displayValue": "30"
+              }
+            }
+          }
+        ],
+        "source": {
+          "kind": "csv",
+          "filename": "sales.csv",
+          "importedAt": "2026-09-28T04:33:15.975Z"
+        }
+      }
+    },
+    "blk_7a049acc-282": {
+      "id": "blk_7a049acc-282",
+      "sheetId": "sheet_7e4b6809-e60",
+      "title": "许愿格：sales",
+      "rect": {
+        "x": 684,
+        "y": 256,
+        "width": 420,
+        "height": 330
+      },
+      "zIndex": 1,
+      "locked": false,
+      "contentRevision": 1,
+      "dataRevision": 0,
+      "createdAt": "2026-09-28T04:33:29.708Z",
+      "updatedAt": "2026-09-28T04:33:48.200Z",
+      "type": "wish",
+      "content": {
+        "prompt": "请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。",
+        "contextRefs": [
+          {
+            "kind": "block",
+            "blockId": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "outputPreference": "auto",
+        "refreshPolicy": {
+          "mode": "notify_on_change"
+        },
+        "state": "succeeded",
+        "generatedGroupIds": [
+          "run_ec68150b-45e_b6"
+        ],
+        "runHistory": [
+          {
+            "runId": "run_ec68150b-45e",
+            "startedAt": "2026-09-28T04:34:30.924Z",
+            "finishedAt": "2026-09-28T04:34:33.220Z",
+            "status": "succeeded",
+            "promptExcerpt": "请基于全部三行，按产品汇总销售额，生成销售额总计、图表和汇报摘要。请使用销售额列，不使用数量或单价作为销售额。",
+            "sourceRevisions": [
+              {
+                "refKey": "blk_1c7aa239-c93",
+                "revision": 0
+              }
+            ],
+            "adapter": "mock",
+            "groupId": "run_ec68150b-45e_b6"
+          }
+        ],
+        "lastRunId": "run_ec68150b-45e"
+      }
+    },
+    "blk_0d208338-116": {
+      "id": "blk_0d208338-116",
+      "sheetId": "sheet_7e4b6809-e60",
+      "title": "文本",
+      "rect": {
+        "x": 296,
+        "y": 520,
+        "width": 320,
+        "height": 140
+      },
+      "zIndex": 1,
+      "locked": false,
+      "contentRevision": 1,
+      "dataRevision": 1,
+      "createdAt": "2026-09-28T04:34:13.757Z",
+      "updatedAt": "2026-09-28T04:34:30.615Z",
+      "type": "text",
+      "content": {
+        "text": "OUTSIDE_SOURCE_20260928：这段合成资料没有选为分析来源。",
+        "format": "markdown"
+      }
+    },
+    "run_ec68150b-45e_b1": {
+      "id": "run_ec68150b-45e_b1",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "metric",
+      "title": "本季度销售额",
+      "rect": {
+        "x": 700,
+        "y": 670,
+        "width": 230,
+        "height": 120
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "label": "本季度销售额",
+        "value": 110,
+        "format": "currency",
+        "tone": "positive"
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    },
+    "run_ec68150b-45e_b2": {
+      "id": "run_ec68150b-45e_b2",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "metric",
+      "title": "整体毛利率",
+      "rect": {
+        "x": 946,
+        "y": 670,
+        "width": 230,
+        "height": 120
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "label": "整体毛利率",
+        "value": 1,
+        "format": "percent",
+        "tone": "positive"
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    },
+    "run_ec68150b-45e_b3": {
+      "id": "run_ec68150b-45e_b3",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "metric",
+      "title": "目标完成率",
+      "rect": {
+        "x": 1192,
+        "y": 670,
+        "width": 230,
+        "height": 120
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "label": "目标完成率",
+        "value": 0,
+        "format": "percent",
+        "tone": "negative"
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    },
+    "run_ec68150b-45e_b4": {
+      "id": "run_ec68150b-45e_b4",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "table",
+      "title": "产品毛利率",
+      "rect": {
+        "x": 1200,
+        "y": 810,
+        "width": 480,
+        "height": 320
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "columns": [
+          {
+            "id": "col_237aede8-67f",
+            "name": "产品",
+            "width": 80,
+            "inferredType": "string"
+          },
+          {
+            "id": "col_030c8af6-c83",
+            "name": "销售额",
+            "width": 80,
+            "inferredType": "number"
+          },
+          {
+            "id": "col_de98abac-c75",
+            "name": "成本",
+            "width": 80,
+            "inferredType": "number"
+          },
+          {
+            "id": "col_b7cba5f7-65c",
+            "name": "毛利率",
+            "width": 80,
+            "inferredType": "number"
+          },
+          {
+            "id": "col_ac50fff2-490",
+            "name": "目标完成率",
+            "width": 80,
+            "inferredType": "string"
+          }
+        ],
+        "rows": [
+          {
+            "id": "row_56cec62c-5f4",
+            "cells": {
+              "col_237aede8-67f": {
+                "kind": "value",
+                "value": "A",
+                "valueType": "string"
+              },
+              "col_030c8af6-c83": {
+                "kind": "value",
+                "value": 20,
+                "valueType": "number"
+              },
+              "col_de98abac-c75": {
+                "kind": "value",
+                "value": 0,
+                "valueType": "number"
+              },
+              "col_b7cba5f7-65c": {
+                "kind": "value",
+                "value": 1,
+                "valueType": "number",
+                "displayValue": "100.0%"
+              },
+              "col_ac50fff2-490": {
+                "kind": "value",
+                "value": "—",
+                "valueType": "string"
+              }
+            }
+          },
+          {
+            "id": "row_b4da97d7-92f",
+            "cells": {
+              "col_237aede8-67f": {
+                "kind": "value",
+                "value": "B",
+                "valueType": "string"
+              },
+              "col_030c8af6-c83": {
+                "kind": "value",
+                "value": 60,
+                "valueType": "number"
+              },
+              "col_de98abac-c75": {
+                "kind": "value",
+                "value": 0,
+                "valueType": "number"
+              },
+              "col_b7cba5f7-65c": {
+                "kind": "value",
+                "value": 1,
+                "valueType": "number",
+                "displayValue": "100.0%"
+              },
+              "col_ac50fff2-490": {
+                "kind": "value",
+                "value": "—",
+                "valueType": "string"
+              }
+            }
+          },
+          {
+            "id": "row_ca7c9d91-215",
+            "cells": {
+              "col_237aede8-67f": {
+                "kind": "value",
+                "value": "C",
+                "valueType": "string"
+              },
+              "col_030c8af6-c83": {
+                "kind": "value",
+                "value": 30,
+                "valueType": "number"
+              },
+              "col_de98abac-c75": {
+                "kind": "value",
+                "value": 0,
+                "valueType": "number"
+              },
+              "col_b7cba5f7-65c": {
+                "kind": "value",
+                "value": 1,
+                "valueType": "number",
+                "displayValue": "100.0%"
+              },
+              "col_ac50fff2-490": {
+                "kind": "value",
+                "value": "—",
+                "valueType": "string"
+              }
+            }
+          }
+        ],
+        "source": {
+          "kind": "manual"
+        }
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    },
+    "run_ec68150b-45e_b5": {
+      "id": "run_ec68150b-45e_b5",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "text",
+      "title": "管理层总结",
+      "rect": {
+        "x": 700,
+        "y": 1150,
+        "width": 480,
+        "height": 260
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "text": "## 本季度经营总结\n本季度总销售额 **¥110**。\n- 增长最快的三项：A（0.0%）、B（0.0%）、C（0.0%）。\n- 下滑最明显的三项：C（0.0%）、B（0.0%）、A（0.0%）。\n- 未发现明显异常记录。\n\n建议：优先复盘下滑项的成本结构与目标设定，对增长项追加库存与渠道投入。",
+        "format": "markdown"
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    },
+    "run_ec68150b-45e_b6": {
+      "id": "run_ec68150b-45e_b6",
+      "sheetId": "sheet_7e4b6809-e60",
+      "type": "group",
+      "title": "季度经营分析：销售额 ¥110，毛利率 100.0%",
+      "rect": {
+        "x": 684,
+        "y": 626,
+        "width": 1012,
+        "height": 800
+      },
+      "zIndex": 2,
+      "locked": false,
+      "contentRevision": 0,
+      "dataRevision": 0,
+      "content": {
+        "childBlockIds": [
+          "run_ec68150b-45e_b1",
+          "run_ec68150b-45e_b2",
+          "run_ec68150b-45e_b3",
+          "run_ec68150b-45e_b4",
+          "run_ec68150b-45e_b5"
+        ],
+        "summary": "季度经营分析：销售额 ¥110，毛利率 100.0%"
+      },
+      "createdAt": "2026-09-28T04:34:33.220Z",
+      "updatedAt": "2026-09-28T04:34:33.220Z",
+      "generated": {
+        "runId": "run_ec68150b-45e",
+        "wishBlockId": "blk_7a049acc-282",
+        "agentAdapter": "mock",
+        "generatedAt": "2026-09-28T04:34:33.220Z",
+        "sourceRevisions": [
+          {
+            "refKey": "blk_1c7aa239-c93",
+            "revision": 0
+          }
+        ],
+        "status": "fresh",
+        "userModified": false,
+        "detached": false,
+        "assumptions": [
+          "毛利率 = (销售额 − 成本) / 销售额",
+          "目标完成率 = 销售额 / 目标"
+        ],
+        "warnings": [
+          "未找到\"成本\"列，毛利率按 0 计算",
+          "未找到\"目标\"列，无法计算目标完成率"
+        ]
+      }
+    }
+  },
+  "bindings": [
+    {
+      "id": "bind_c15cf3ed-afe",
+      "source": {
+        "kind": "block",
+        "blockId": "blk_1c7aa239-c93",
+        "revision": 0
+      },
+      "targetBlockId": "run_ec68150b-45e_b6",
+      "createdByRunId": "run_ec68150b-45e"
+    }
+  ],
+  "presentationPaths": [],
+  "comments": [],
+  "createdAt": "2026-09-28T04:31:58.825Z",
+  "updatedAt": "2026-09-28T04:34:33.220Z",
+  "metadata": {}
+}
