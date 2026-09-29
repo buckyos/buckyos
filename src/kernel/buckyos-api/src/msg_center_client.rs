@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 9;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 10;
 pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS mailbox_records (
     updated_at_ms    INTEGER NOT NULL,
     PRIMARY KEY (owner, record_id)
 );
+CREATE INDEX IF NOT EXISTS idx_mailbox_msg_id
+    ON mailbox_records(msg_id);
+CREATE INDEX IF NOT EXISTS idx_mailbox_address_box_state_sort
+    ON mailbox_records(owner, session_id, box_kind, state, sort_key, record_id);
 CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_sort
     ON mailbox_records(owner, box_kind, sort_key DESC, record_id DESC);
 CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_state_sort
@@ -292,6 +296,10 @@ CREATE TABLE IF NOT EXISTS mailbox_records (
     updated_at_ms    BIGINT NOT NULL,
     PRIMARY KEY (owner, record_id)
 );
+CREATE INDEX IF NOT EXISTS idx_mailbox_msg_id
+    ON mailbox_records(msg_id);
+CREATE INDEX IF NOT EXISTS idx_mailbox_address_box_state_sort
+    ON mailbox_records(owner, session_id, box_kind, state, sort_key, record_id);
 CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_sort
     ON mailbox_records(owner, box_kind, sort_key DESC, record_id DESC);
 CREATE INDEX IF NOT EXISTS idx_mailbox_owner_box_state_sort
@@ -513,6 +521,8 @@ const METHOD_MSG_PEEK_BOX: &str = "msg.peek_box";
 const METHOD_MSG_LIST_BOX_BY_TIME: &str = "msg.list_box_by_time";
 const METHOD_MSG_LIST_SESSIONS: &str = "msg.list_sessions";
 const METHOD_MSG_LIST_SESSION: &str = "msg.list_session";
+const METHOD_MSG_LIST_MAILBOXES: &str = "msg.list_mailboxes";
+const METHOD_MSG_MOVE_RECORD: &str = "msg.move_record";
 const METHOD_MSG_UPDATE_RECORD_SESSION: &str = "msg.update_record_session";
 const METHOD_MSG_UPDATE_RECORD_STATE: &str = "msg.update_record_state";
 const METHOD_MSG_REPORT_DELIVERY: &str = "msg.report_delivery";
@@ -625,6 +635,164 @@ pub enum MailboxKind {
     Sent,
     GroupInbox,
     RequestBox,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct MailboxAddress {
+    owner: DID,
+    session_id: Option<String>,
+}
+
+impl MailboxAddress {
+    pub fn new(owner: DID, session_id: Option<String>) -> std::result::Result<Self, String> {
+        let owner_text = owner.to_string();
+        if owner_text.contains(['/', '?', '#', '*', '|', '\\'])
+            || owner.method.is_empty()
+            || owner.id.is_empty()
+            || owner_text
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err("mailbox owner must be a bare DID".into());
+        }
+        if let Some(session) = session_id.as_deref() {
+            Self::validate_session_id(session)?;
+        }
+        Ok(Self { owner, session_id })
+    }
+
+    pub fn validate_session_id(session: &str) -> std::result::Result<(), String> {
+        if session.is_empty()
+            || session.chars().count() > 200
+            || session == "."
+            || session == ".."
+            || session.trim() != session
+            || session.chars().any(char::is_control)
+        {
+            return Err("invalid mailbox session_id".into());
+        }
+        Ok(())
+    }
+
+    pub fn owner(&self) -> &DID {
+        &self.owner
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
+
+    pub fn resource(&self, box_kind: MailboxKind) -> String {
+        let kind = match box_kind {
+            MailboxKind::Inbox => "inbox",
+            MailboxKind::Sent => "sent",
+            MailboxKind::GroupInbox => "group_inbox",
+            MailboxKind::RequestBox => "request_box",
+        };
+        format!(
+            "obj://msg-center/{kind}/{}",
+            Self::encode_resource_address(&self.to_string())
+        )
+    }
+
+    pub fn owner_resource(&self) -> String {
+        format!(
+            "obj://msg-center/owners/{}",
+            Self::encode_resource_address(&self.owner.to_string())
+        )
+    }
+
+    fn encode_resource_address(value: &str) -> String {
+        let mut result = String::new();
+        for byte in value.as_bytes() {
+            match byte {
+                b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'_'
+                | b'~'
+                | b':'
+                | b'@'
+                | b'/' => result.push(*byte as char),
+                _ => result.push_str(&format!("%{byte:02X}")),
+            }
+        }
+        result
+    }
+}
+
+impl std::fmt::Display for MailboxAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.owner.to_string())?;
+        if let Some(session) = self.session_id.as_deref() {
+            write!(f, "/")?;
+            for byte in session.as_bytes() {
+                match byte {
+                    b'A'..=b'Z'
+                    | b'a'..=b'z'
+                    | b'0'..=b'9'
+                    | b'-'
+                    | b'_'
+                    | b'.'
+                    | b'~'
+                    | b':'
+                    | b'@' => write!(f, "{}", *byte as char)?,
+                    _ => write!(f, "%{byte:02X}")?,
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl TryFrom<String> for MailboxAddress {
+    type Error = String;
+
+    fn try_from(value: String) -> std::result::Result<Self, Self::Error> {
+        let (owner, encoded_session) = match value.split_once('/') {
+            Some((owner, session)) => (owner, Some(session)),
+            None => (value.as_str(), None),
+        };
+        if !owner.starts_with("did:") || owner.split(':').count() < 3 {
+            return Err("mailbox owner must be a bare DID".into());
+        }
+        let owner = DID::from_str(owner).map_err(|error| error.to_string())?;
+        let session_id = encoded_session
+            .map(|encoded| {
+                let bytes = encoded.as_bytes();
+                let mut decoded = Vec::with_capacity(bytes.len());
+                let mut i = 0;
+                while i < bytes.len() {
+                    if bytes[i] == b'%' {
+                        let hi = bytes.get(i + 1).and_then(|b| (*b as char).to_digit(16));
+                        let lo = bytes.get(i + 2).and_then(|b| (*b as char).to_digit(16));
+                        match (hi, lo) {
+                            (Some(hi), Some(lo)) => decoded.push((hi * 16 + lo) as u8),
+                            _ => return Err("invalid mailbox session encoding".to_string()),
+                        }
+                        i += 3;
+                    } else {
+                        decoded.push(bytes[i]);
+                        i += 1;
+                    }
+                }
+                String::from_utf8(decoded).map_err(|_| "invalid mailbox session UTF-8".to_string())
+            })
+            .transpose()?;
+        let address = Self::new(owner, session_id)?;
+        if address.to_string() != value {
+            return Err("mailbox address must use canonical encoding".into());
+        }
+        Ok(address)
+    }
+}
+
+impl From<MailboxAddress> for String {
+    fn from(value: MailboxAddress) -> Self {
+        value.to_string()
+    }
 }
 
 /// Owner-managed read state of a `MailboxRecord`.
@@ -760,6 +928,7 @@ pub struct DeliveryRecord {
 /// A mailbox owner's reference to one immutable `MsgObject`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MailboxRecord {
+    pub mailbox: MailboxAddress,
     pub record_id: String,
     pub owner: DID,
     pub box_kind: MailboxKind,
@@ -771,8 +940,8 @@ pub struct MailboxRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub from_name: Option<String>,
     pub to: DID,
-    /// Local session projection key (per owner). Derived at dispatch/post_send
-    /// time; a trusted backend/agent may re-classify it later.
+    /// Inbox partition and local session projection key (per owner).
+    /// Reclassification moves the record and requires both mailbox grants.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     pub sort_key: u64,
@@ -1325,8 +1494,23 @@ impl MsgCenterPostSendReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MsgCenterGetNextReq {
+pub struct MsgCenterListMailboxesReq {
     pub owner: DID,
+    pub box_kind: MailboxKind,
+}
+
+impl MsgCenterListMailboxesReq {
+    pub fn new(owner: DID, box_kind: MailboxKind) -> Self {
+        Self { owner, box_kind }
+    }
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterListMailboxesReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetNextReq {
+    pub mailbox: MailboxAddress,
     pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_filter: Option<Vec<RecipientState>>,
@@ -1338,14 +1522,14 @@ pub struct MsgCenterGetNextReq {
 
 impl MsgCenterGetNextReq {
     pub fn new(
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
     ) -> Self {
         Self {
-            owner,
+            mailbox,
             box_kind,
             state_filter,
             lock_on_take,
@@ -1385,7 +1569,7 @@ impl MsgCenterGetNextDeliveryReq {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterPeekBoxReq {
-    pub owner: DID,
+    pub mailbox: MailboxAddress,
     pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_filter: Option<Vec<RecipientState>>,
@@ -1397,14 +1581,14 @@ pub struct MsgCenterPeekBoxReq {
 
 impl MsgCenterPeekBoxReq {
     pub fn new(
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
     ) -> Self {
         Self {
-            owner,
+            mailbox,
             box_kind,
             state_filter,
             limit,
@@ -1419,7 +1603,7 @@ impl MsgCenterPeekBoxReq {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MsgCenterListBoxByTimeReq {
-    pub owner: DID,
+    pub mailbox: MailboxAddress,
     pub box_kind: MailboxKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub state_filter: Option<Vec<RecipientState>>,
@@ -1437,7 +1621,7 @@ pub struct MsgCenterListBoxByTimeReq {
 
 impl MsgCenterListBoxByTimeReq {
     pub fn new(
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -1447,7 +1631,7 @@ impl MsgCenterListBoxByTimeReq {
         with_object: Option<bool>,
     ) -> Self {
         Self {
-            owner,
+            mailbox,
             box_kind,
             state_filter,
             limit,
@@ -1564,6 +1748,22 @@ impl MsgCenterUpdateRecordSessionReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterUpdateRecordSessionReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterMoveRecordReq {
+    pub record_id: String,
+    pub mailbox: MailboxAddress,
+}
+
+impl MsgCenterMoveRecordReq {
+    pub fn new(record_id: String, mailbox: MailboxAddress) -> Self {
+        Self { record_id, mailbox }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterMoveRecordReq")
     }
 }
 
@@ -2314,9 +2514,33 @@ impl MsgCenterClient {
         }
     }
 
-    pub async fn get_next(
+    pub async fn list_mailboxes(
         &self,
         owner: DID,
+        box_kind: MailboxKind,
+    ) -> std::result::Result<Vec<MailboxAddress>, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                handler
+                    .handle_list_mailboxes(owner, box_kind, RPCContext::default())
+                    .await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterListMailboxesReq::new(owner, box_kind);
+                let value = client
+                    .call(
+                        METHOD_MSG_LIST_MAILBOXES,
+                        serialize_to_json(&req, "MsgCenterListMailboxesReq")?,
+                    )
+                    .await?;
+                parse_rpc_response(value, "Vec<MailboxAddress>")
+            }
+        }
+    }
+
+    pub async fn get_next(
+        &self,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
@@ -2327,7 +2551,7 @@ impl MsgCenterClient {
                 let ctx = RPCContext::default();
                 handler
                     .handle_get_next(
-                        owner,
+                        mailbox,
                         box_kind,
                         state_filter,
                         lock_on_take,
@@ -2338,7 +2562,7 @@ impl MsgCenterClient {
             }
             Self::KRPC(client) => {
                 let req = MsgCenterGetNextReq::new(
-                    owner,
+                    mailbox,
                     box_kind,
                     state_filter,
                     lock_on_take,
@@ -2378,7 +2602,7 @@ impl MsgCenterClient {
 
     pub async fn peek_box(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -2388,12 +2612,12 @@ impl MsgCenterClient {
             Self::InProcess(handler) => {
                 let ctx = RPCContext::default();
                 handler
-                    .handle_peek_box(owner, box_kind, state_filter, limit, with_object, ctx)
+                    .handle_peek_box(mailbox, box_kind, state_filter, limit, with_object, ctx)
                     .await
             }
             Self::KRPC(client) => {
                 let req =
-                    MsgCenterPeekBoxReq::new(owner, box_kind, state_filter, limit, with_object);
+                    MsgCenterPeekBoxReq::new(mailbox, box_kind, state_filter, limit, with_object);
                 let req_json = serialize_to_json(&req, "MsgCenterPeekBoxReq")?;
                 let result = client.call(METHOD_MSG_PEEK_BOX, req_json).await?;
                 parse_rpc_response(result, "Vec<MailboxRecordWithObject>")
@@ -2403,7 +2627,7 @@ impl MsgCenterClient {
 
     pub async fn list_box_by_time(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -2417,7 +2641,7 @@ impl MsgCenterClient {
                 let ctx = RPCContext::default();
                 handler
                     .handle_list_box_by_time(
-                        owner,
+                        mailbox,
                         box_kind,
                         state_filter,
                         limit,
@@ -2431,7 +2655,7 @@ impl MsgCenterClient {
             }
             Self::KRPC(client) => {
                 let req = MsgCenterListBoxByTimeReq::new(
-                    owner,
+                    mailbox,
                     box_kind,
                     state_filter,
                     limit,
@@ -2701,6 +2925,25 @@ impl MsgCenterClient {
                 let result = client
                     .call(METHOD_MSG_UPDATE_RECORD_SESSION, req_json)
                     .await?;
+                parse_rpc_response(result, "MailboxRecord")
+            }
+        }
+    }
+
+    pub async fn move_record(
+        &self,
+        record_id: String,
+        mailbox: MailboxAddress,
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_move_record(record_id, mailbox, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterMoveRecordReq::new(record_id, mailbox);
+                let req_json = serialize_to_json(&req, "MsgCenterMoveRecordReq")?;
+                let result = client.call(METHOD_MSG_MOVE_RECORD, req_json).await?;
                 parse_rpc_response(result, "MailboxRecord")
             }
         }
@@ -3701,9 +3944,16 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors>;
 
-    async fn handle_get_next(
+    async fn handle_list_mailboxes(
         &self,
         owner: DID,
+        box_kind: MailboxKind,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<MailboxAddress>, RPCErrors>;
+
+    async fn handle_get_next(
+        &self,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
@@ -3721,7 +3971,7 @@ pub trait MsgCenterHandler: Send + Sync {
 
     async fn handle_peek_box(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -3731,7 +3981,7 @@ pub trait MsgCenterHandler: Send + Sync {
 
     async fn handle_list_box_by_time(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -3760,7 +4010,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _req: MsgCenterCreateSessionReq,
         _ctx: RPCContext,
     ) -> std::result::Result<OwnerSessionState, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_MSG_CREATE_SESSION.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_CREATE_SESSION.to_string(),
+        ))
     }
 
     async fn handle_archive_session(
@@ -3769,7 +4021,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<OwnerSessionState, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_MSG_ARCHIVE_SESSION.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_ARCHIVE_SESSION.to_string(),
+        ))
     }
 
     async fn handle_restore_session(
@@ -3778,7 +4032,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<OwnerSessionState, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_MSG_RESTORE_SESSION.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_RESTORE_SESSION.to_string(),
+        ))
     }
 
     async fn handle_delete_session(
@@ -3787,7 +4043,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<OwnerSessionState, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_MSG_DELETE_SESSION.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_DELETE_SESSION.to_string(),
+        ))
     }
 
     async fn handle_get_session_state(
@@ -3796,7 +4054,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<Option<OwnerSessionState>, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_MSG_GET_SESSION_STATE.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_MSG_GET_SESSION_STATE.to_string(),
+        ))
     }
 
     async fn handle_list_session(
@@ -3822,6 +4082,13 @@ pub trait MsgCenterHandler: Send + Sync {
         &self,
         record_id: String,
         session_id: String,
+        ctx: RPCContext,
+    ) -> std::result::Result<MailboxRecord, RPCErrors>;
+
+    async fn handle_move_record(
+        &self,
+        record_id: String,
+        mailbox: MailboxAddress,
         ctx: RPCContext,
     ) -> std::result::Result<MailboxRecord, RPCErrors>;
 
@@ -3897,7 +4164,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _value: Value,
         _ctx: RPCContext,
     ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_UPDATE_STATE.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_UI_SESSION_UPDATE_STATE.to_string(),
+        ))
     }
 
     async fn handle_get_owner_ui_session_state(
@@ -3907,7 +4176,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _key: String,
         _ctx: RPCContext,
     ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_GET_STATE.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_UI_SESSION_GET_STATE.to_string(),
+        ))
     }
 
     async fn handle_list_owner_ui_session_state(
@@ -3916,7 +4187,9 @@ pub trait MsgCenterHandler: Send + Sync {
         _session_id: String,
         _ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
-        Err(RPCErrors::UnknownMethod(METHOD_UI_SESSION_LIST_STATE.to_string()))
+        Err(RPCErrors::UnknownMethod(
+            METHOD_UI_SESSION_LIST_STATE.to_string(),
+        ))
     }
 
     async fn handle_get_tunnel_cursor(
@@ -4318,12 +4591,20 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                     .await?;
                 RPCResult::Success(json!(result))
             }
+            METHOD_MSG_LIST_MAILBOXES => {
+                let list_req = MsgCenterListMailboxesReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_list_mailboxes(list_req.owner, list_req.box_kind, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
             METHOD_MSG_GET_NEXT => {
                 let next_req = MsgCenterGetNextReq::from_json(req.params)?;
                 let result = self
                     .0
                     .handle_get_next(
-                        next_req.owner,
+                        next_req.mailbox,
                         next_req.box_kind,
                         next_req.state_filter,
                         next_req.lock_on_take,
@@ -4351,7 +4632,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let result = self
                     .0
                     .handle_peek_box(
-                        peek_req.owner,
+                        peek_req.mailbox,
                         peek_req.box_kind,
                         peek_req.state_filter,
                         peek_req.limit,
@@ -4366,7 +4647,7 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let result = self
                     .0
                     .handle_list_box_by_time(
-                        list_req.owner,
+                        list_req.mailbox,
                         list_req.box_kind,
                         list_req.state_filter,
                         list_req.limit,
@@ -4455,6 +4736,14 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let result = self
                     .0
                     .handle_update_record_session(update_req.record_id, update_req.session_id, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_MOVE_RECORD => {
+                let update_req = MsgCenterMoveRecordReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_move_record(update_req.record_id, update_req.mailbox, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }
@@ -4958,6 +5247,67 @@ mod tests {
     use super::*;
 
     #[test]
+    fn mailbox_address_is_exact_and_requires_the_new_wire_field() {
+        let owner = DID::new("bns", "alice");
+        let default = MailboxAddress::new(owner.clone(), None).unwrap();
+        let a = MailboxAddress::new(owner, Some("session-a".into())).unwrap();
+        assert_eq!(
+            serde_json::to_value(&default).unwrap(),
+            json!("did:bns:alice")
+        );
+        assert_eq!(
+            serde_json::to_value(&a).unwrap(),
+            json!("did:bns:alice/session-a")
+        );
+        let complex = MailboxAddress::new(
+            DID::new("web", "example.com%3A8080"),
+            Some("审批/a b%*".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            complex.to_string(),
+            "did:web:example.com%3A8080/%E5%AE%A1%E6%89%B9%2Fa%20b%25%2A"
+        );
+        assert_eq!(
+            MailboxAddress::try_from(complex.to_string()).unwrap(),
+            complex
+        );
+        assert!(MailboxAddress::try_from("did".to_string()).is_err());
+        assert!(MailboxAddress::try_from("alice".to_string()).is_err());
+        assert_ne!(
+            default.resource(MailboxKind::Inbox),
+            a.resource(MailboxKind::Inbox)
+        );
+        assert_eq!(
+            serde_json::from_value::<MailboxAddress>(json!(a.to_string())).unwrap(),
+            a
+        );
+        for invalid in [
+            "did:bns:alice/",
+            "did:bns:alice/../b",
+            "did:bns:alice/*",
+            "did:bns:alice/a/b",
+            "did:bns:alice/a%2fb",
+            "did:bns:alice/a?x",
+            "did:bns:alice/a b",
+        ] {
+            assert!(
+                serde_json::from_value::<MailboxAddress>(json!(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+        assert!(MsgCenterGetNextReq::from_json(
+            json!({"owner":"did:bns:alice", "box_kind":"INBOX"})
+        )
+        .is_err());
+        let req = MsgCenterGetNextReq::from_json(
+            json!({"mailbox":"did:bns:alice/session-a", "box_kind":"INBOX"}),
+        )
+        .unwrap();
+        assert_eq!(req.mailbox, a);
+    }
+
+    #[test]
     fn build_telegram_ui_session_id_uses_canonical_parts() {
         assert_eq!(
             build_telegram_ui_session_id("lzc_jarvis", 5_397_330_802_i64),
@@ -4974,8 +5324,8 @@ mod tests {
     }
 
     #[test]
-    fn schema_v9_scopes_idempotency_and_has_owner_sessions() {
-        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 9);
+    fn schema_v10_scopes_inboxes_and_has_owner_sessions() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 10);
         for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
             assert!(schema.contains("owner_scope     TEXT NOT NULL"));
             assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));

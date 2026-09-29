@@ -49,7 +49,7 @@ objects. No durable state is stored in service-private filesystem paths.
 | Column | Type | Nullable | Description |
 |---|---|---|---|
 | `scope` | TEXT | No | Operation: `dispatch` or `post_send` |
-| `owner_scope` | TEXT | No | Stable recipient owner for dispatch or message author for post-send |
+| `owner_scope` | TEXT | No | Stable recipient owner for dispatch; canonical sender mailbox address for post-send |
 | `idempotency_key` | TEXT | No | Caller/platform replay key |
 | `msg_id` | TEXT | Yes | Content-addressed message id |
 | `retention_key` | TEXT | Yes | Stable external conversation or local sender bucket |
@@ -110,15 +110,15 @@ query indexes, and a schema-version bump before enabling these records.
 
 ## 5. Schema Version
 
-The shared msg-center RDB instance schema version is `8`, stored in the
+The shared msg-center RDB instance schema version is `10`, stored in the
 scheduler-provided RDB instance spec. Every DDL or frozen-key semantic change
 increments this version.
 
 ## 6. Upgrade Compatibility Strategy
 
-Beta 2.2 is in no-compat mode. Version 7 instances are rebuilt as version 8;
-there is no in-place migration. Durable version 8 fields and key semantics are
-frozen until the next explicit schema version.
+Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 10 service schema;
+there is no in-place migration. Version 10 freezes session-addressed queue and sender-mailbox idempotency semantics
+until the next explicit schema version.
 
 ## 7. Extensibility Rules
 
@@ -140,3 +140,19 @@ frozen until the next explicit schema version.
 
 Idempotency maintenance never runs in `dispatch` or `post_send` request paths.
 The background worker runs immediately at service startup and then hourly.
+
+
+## Session inbox partition (version 10)
+
+The existing `mailbox_records.session_id` is both the inbox partition and the
+owner-local session projection key. `(owner, session_id, box_kind)` identifies
+one queue; NULL selects only the default inbox. API `mailbox` addresses are
+computed from these columns and are not an independent stored routing field.
+The new `idx_mailbox_address_box_state_sort` index covers
+`(owner, session_id, box_kind, state, sort_key, record_id)` on SQLite and PostgreSQL.
+`idx_mailbox_msg_id(msg_id)` supports message-body authorization through its mailbox references.
+
+Queue claims and record moves compare the persisted session, state and update
+version before updating. Replayed dispatches do not restore the old session,
+even after a record has moved into the NULL/default partition. No owner-wide
+fallback or legacy `owner` queue RPC alias is provided.

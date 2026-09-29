@@ -15,7 +15,7 @@ use buckyos_api::{
     GroupSubmitMemberProofReq, GroupSummary, GroupUpdateAttributionPolicyReq,
     GroupUpdateCollectionPolicyReq, GroupUpdateMemberRoleReq, GroupUpdateProfileReq,
     GroupUpdateSubgroupReq, ImportContactEntry, ImportReport, IngressContext, KEventClient,
-    MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject,
+    MailboxAddress, MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject,
     MsgCenterCreateSessionReq, MsgCenterHandler, MsgReceiptObj, OwnerSessionState,
     PostSendDelivery, PostSendResult, ReadReceiptState, RecipientState, SessionDeliveryOverall,
     SessionDeliveryTarget, SessionDeliveryView, SessionLifecycle, SessionListLifecycleFilter,
@@ -93,38 +93,6 @@ pub struct MessageCenter {
 }
 
 impl MessageCenter {
-    async fn authorize_mailbox_owner(
-        owner: &DID,
-        ctx: &RPCContext,
-    ) -> std::result::Result<(), RPCErrors> {
-        let Some(token) = ctx
-            .token
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        else {
-            return Ok(());
-        };
-        let verified = get_buckyos_api_runtime()?
-            .verify_trusted_session_token(token)
-            .await?;
-        let user_id = verified
-            .sub
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| RPCErrors::InvalidToken("session token has no subject".to_string()))?;
-        let caller = if user_id.starts_with("did:") {
-            user_id.to_string()
-        } else {
-            format!("did:bns:{user_id}")
-        };
-        if owner.to_string() != caller {
-            return Err(RPCErrors::NoPermission(
-                "mailbox owner does not match authenticated user".to_string(),
-            ));
-        }
-        Ok(())
-    }
-
     /// Resolve the msg-center rdb instance from the service spec and build a
     /// MessageCenter. Both `ContactMgr` and the msg-box share the same pool.
     pub async fn open_from_service_spec() -> std::result::Result<Self, RPCErrors> {
@@ -416,15 +384,6 @@ impl MessageCenter {
         }
     }
 
-    fn box_id_prefix(box_kind: &MailboxKind) -> &'static str {
-        match box_kind {
-            MailboxKind::Inbox => "box_in",
-            MailboxKind::Sent => "box_sent",
-            MailboxKind::GroupInbox => "box_group_in",
-            MailboxKind::RequestBox => "box_request",
-        }
-    }
-
     /// Always go through the runtime: it owns the single process-wide client
     /// and decides which transport this deployment uses.
     async fn get_kevent_client() -> Option<KEventClient> {
@@ -442,24 +401,6 @@ impl MessageCenter {
                 None
             }
         }
-    }
-
-    fn build_box_id(owner: &DID, box_kind: &MailboxKind) -> String {
-        let owner_token = owner.to_raw_host_name();
-        format!(
-            "/msg_center/{}/{}_{}",
-            owner_token,
-            Self::box_id_prefix(box_kind),
-            owner_token
-        )
-    }
-
-    fn build_box_changed_event_id(owner: &DID, box_kind: &MailboxKind) -> String {
-        format!(
-            "{}/{}",
-            Self::build_box_id(owner, box_kind),
-            MSG_CENTER_BOX_CHANGED_EVENT_NAME
-        )
     }
 
     fn publish_event(event_id: String, payload: Value) {
@@ -484,13 +425,19 @@ impl MessageCenter {
     }
 
     fn publish_box_changed_event(record: &MailboxRecord, operation: &str) {
-        let box_id = Self::build_box_id(&record.owner, &record.box_kind);
-        let event_id = Self::build_box_changed_event_id(&record.owner, &record.box_kind);
+        let box_id = format!(
+            "/msg_center/{}/{}/{}",
+            record.owner.to_raw_host_name(),
+            Self::box_kind_name(&record.box_kind),
+            hex::encode(record.mailbox.to_string())
+        );
+        let event_id = format!("{box_id}/changed");
         let payload = json!({
             "operation": operation,
             "owner": record.owner.to_string(),
             "box_kind": Self::box_kind_name(&record.box_kind),
             "box_id": box_id,
+            "mailbox": record.mailbox,
             "record_id": record.record_id.clone(),
             "msg_id": record.msg_id.to_string(),
             "state": record.state,
@@ -637,8 +584,15 @@ impl MessageCenter {
         format!("targets:{}", hex::encode(hasher.finalize()))
     }
 
-    fn post_send_idempotency_owner_scope(msg: &MsgObject) -> String {
-        msg.from.to_string()
+    fn post_send_idempotency_owner_scope(
+        msg: &MsgObject,
+    ) -> std::result::Result<String, RPCErrors> {
+        MailboxAddress::new(
+            msg.from.clone(),
+            Self::derive_session_id(&MailboxKind::Sent, msg),
+        )
+        .map(|address| address.to_string())
+        .map_err(RPCErrors::ParseRequestError)
     }
 
     fn post_send_idempotency_retention_key(msg: &MsgObject) -> String {
@@ -831,16 +785,19 @@ impl MessageCenter {
         ingress: Option<IngressContext>,
         tags: Vec<String>,
         variant: &str,
-    ) -> MailboxRecord {
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
         let msg_id = Self::message_obj_id(msg);
         let record_id = Self::build_record_id(&owner, &box_kind, &msg_id, variant);
         let session_id = Self::derive_session_id(&box_kind, msg);
+        let mailbox = MailboxAddress::new(owner.clone(), session_id.clone())
+            .map_err(RPCErrors::ParseRequestError)?;
         let now_ms = Self::now_ms();
         let record_to = match box_kind {
             MailboxKind::Inbox | MailboxKind::GroupInbox | MailboxKind::RequestBox => owner.clone(),
             MailboxKind::Sent => msg.to.first().cloned().unwrap_or_else(|| owner.clone()),
         };
-        MailboxRecord {
+        Ok(MailboxRecord {
+            mailbox,
             record_id,
             owner,
             box_kind,
@@ -860,18 +817,18 @@ impl MessageCenter {
             ingress,
             created_at_ms: now_ms,
             updated_at_ms: now_ms,
-        }
+        })
     }
 
     async fn load_box_records(
         &self,
-        owner: &DID,
+        mailbox: &MailboxAddress,
         box_kind: &MailboxKind,
         state_filter: Option<&[RecipientState]>,
         descending: bool,
     ) -> std::result::Result<Vec<MailboxRecord>, RPCErrors> {
         self.msg_box_db
-            .list_records(owner, box_kind, state_filter, descending)
+            .list_records(mailbox, box_kind, state_filter, descending)
             .await
     }
 
@@ -906,12 +863,15 @@ impl MessageCenter {
         let owner = record_id.split('|').next().ok_or_else(|| {
             RPCErrors::ReasonError(format!("invalid record id '{}': missing owner", record_id))
         })?;
-        DID::from_str(owner).map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "invalid record id '{}': owner DID parse failed: {}",
-                record_id, error
-            ))
-        })
+        let mailbox = MailboxAddress::try_from(owner.to_string()).map_err(|error| {
+            RPCErrors::ParseRequestError(format!("invalid record owner: {error}"))
+        })?;
+        if mailbox.session_id().is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "record owner must be a bare DID".into(),
+            ));
+        }
+        Ok(mailbox.owner().clone())
     }
 
     pub(crate) async fn build_record_view(
@@ -1287,7 +1247,7 @@ impl MessageCenter {
                 ingress.clone(),
                 Vec::new(),
                 "group-inbox",
-            ));
+            )?);
 
             // Prefer the authoritative member list from GroupMgr when this
             // group is hosted locally; fall back to the ContactMgr
@@ -1325,7 +1285,7 @@ impl MessageCenter {
                     ingress.clone(),
                     vec![tag],
                     &format!("group-agent-{}", group_id.to_string()),
-                ));
+                )?);
             }
 
             result.delivered_group = Some(group_id);
@@ -1395,7 +1355,7 @@ impl MessageCenter {
                             ingress.clone(),
                             Vec::new(),
                             "inbox",
-                        ));
+                        )?);
                         result.delivered_recipients.push(recipient);
                     }
                     None => {
@@ -1456,7 +1416,7 @@ impl MessageCenter {
             ));
         }
 
-        let idempotency_owner_scope = Self::post_send_idempotency_owner_scope(&msg);
+        let idempotency_owner_scope = Self::post_send_idempotency_owner_scope(&msg)?;
 
         if let Some(key) = idempotency_key.as_ref() {
             if let Some(cached) = self
@@ -1610,7 +1570,7 @@ impl MessageCenter {
             None,
             Vec::new(),
             "owner-sent",
-        );
+        )?;
 
         let now_ms = Self::now_ms();
         let mut delivery_records = Vec::with_capacity(envelopes.len());
@@ -1681,7 +1641,7 @@ impl MessageCenter {
 
     async fn get_next_internal(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
@@ -1696,20 +1656,28 @@ impl MessageCenter {
         let effective_filter = state_filter.or(default_filter);
         let state_filter_ref = effective_filter.as_deref();
         let records = self
-            .load_box_records(&owner, &box_kind, state_filter_ref, false)
+            .load_box_records(&mailbox, &box_kind, state_filter_ref, false)
             .await?;
-        let mut selected = records.into_iter().next();
-        if let Some(record) = selected.as_mut() {
+        let mut selected = None;
+        for mut record in records {
             if lock_on_take.unwrap_or(true) {
                 if let Some(next_state) = Self::next_state_on_take(&box_kind, &record.state) {
+                    let before = record.clone();
                     record.state = next_state;
-                    record.updated_at_ms = Self::now_ms();
-                    self.msg_box_db.upsert_record(record).await?;
-                    Self::publish_box_changed_event(record, "take");
+                    record.updated_at_ms = Self::now_ms().max(before.updated_at_ms + 1);
+                    if !self
+                        .msg_box_db
+                        .compare_update_record(&before, &record)
+                        .await?
+                    {
+                        continue;
+                    }
+                    Self::publish_box_changed_event(&record, "take");
                 }
             }
+            selected = Some(record);
+            break;
         }
-
         let Some(record) = selected else {
             return Ok(None);
         };
@@ -1825,15 +1793,10 @@ impl MessageCenter {
 
     async fn update_record_state_internal(
         &self,
-        record_id: String,
+        mut record: MailboxRecord,
         new_state: RecipientState,
     ) -> std::result::Result<MailboxRecord, RPCErrors> {
-        let owner = Self::owner_from_record_id(&record_id)?;
-        let mut record = self
-            .msg_box_db
-            .get_record(&owner, &record_id)
-            .await?
-            .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
+        let before = record.clone();
 
         if !Self::is_valid_transition(&record.box_kind, &record.state, &new_state) {
             return Err(RPCErrors::ReasonError(format!(
@@ -1843,15 +1806,23 @@ impl MessageCenter {
         }
 
         record.state = new_state;
-        record.updated_at_ms = Self::now_ms();
-        self.msg_box_db.upsert_record(&record).await?;
+        record.updated_at_ms = Self::now_ms().max(before.updated_at_ms + 1);
+        if !self
+            .msg_box_db
+            .compare_update_record(&before, &record)
+            .await?
+        {
+            return Err(RPCErrors::ReasonError(
+                "mailbox record changed; retry".into(),
+            ));
+        }
         Self::publish_box_changed_event(&record, "state");
         Ok(record)
     }
 
     async fn update_record_session_internal(
         &self,
-        record_id: String,
+        mut record: MailboxRecord,
         session_id: String,
     ) -> std::result::Result<MailboxRecord, RPCErrors> {
         let session_id = session_id.trim();
@@ -1861,21 +1832,27 @@ impl MessageCenter {
             ));
         }
 
-        let owner = Self::owner_from_record_id(&record_id)?;
-        let mut record = self
-            .msg_box_db
-            .get_record(&owner, &record_id)
-            .await?
-            .ok_or_else(|| RPCErrors::ReasonError(format!("record {} not found", record_id)))?;
+        let before = record.clone();
 
         if record.session_id.as_deref() == Some(session_id) {
             return Ok(record);
         }
 
         record.session_id = Some(session_id.to_string());
-        record.updated_at_ms = Self::now_ms();
-        self.msg_box_db.upsert_record(&record).await?;
-        Self::publish_box_changed_event(&record, "session");
+        record.mailbox = MailboxAddress::new(record.owner.clone(), record.session_id.clone())
+            .map_err(RPCErrors::ParseRequestError)?;
+        record.updated_at_ms = Self::now_ms().max(before.updated_at_ms + 1);
+        if !self
+            .msg_box_db
+            .compare_update_record(&before, &record)
+            .await?
+        {
+            return Err(RPCErrors::ReasonError(
+                "mailbox record changed; retry".into(),
+            ));
+        }
+        Self::publish_box_changed_event(&before, "move_out");
+        Self::publish_box_changed_event(&record, "move_in");
         Ok(record)
     }
 
@@ -2078,7 +2055,7 @@ impl MessageCenter {
 
     async fn peek_box_internal(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -2087,7 +2064,7 @@ impl MessageCenter {
         let limit = Self::clamp_limit(limit, DEFAULT_PEEK_LIMIT, MAX_PEEK_LIMIT);
         let state_filter_ref = state_filter.as_deref();
         let records = self
-            .load_box_records(&owner, &box_kind, state_filter_ref, true)
+            .load_box_records(&mailbox, &box_kind, state_filter_ref, true)
             .await?
             .into_iter()
             .take(limit)
@@ -2102,7 +2079,7 @@ impl MessageCenter {
 
     async fn list_box_by_time_internal(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -2115,7 +2092,7 @@ impl MessageCenter {
         let limit = Self::clamp_limit(limit, DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT);
         let state_filter_ref = state_filter.as_deref();
         let records = self
-            .load_box_records(&owner, &box_kind, state_filter_ref, descending)
+            .load_box_records(&mailbox, &box_kind, state_filter_ref, descending)
             .await?;
         let records = Self::filter_after_cursor(
             records,
@@ -2228,20 +2205,6 @@ impl MessageCenter {
         })
     }
 
-    async fn get_record_internal(
-        &self,
-        record_id: String,
-        with_object: Option<bool>,
-    ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
-        let owner = Self::owner_from_record_id(&record_id)?;
-        let record = self.msg_box_db.get_record(&owner, &record_id).await?;
-        let Some(record) = record else {
-            return Ok(None);
-        };
-        let with_object_record = Self::build_record_view(record, with_object).await?;
-        Ok(Some(with_object_record))
-    }
-
     async fn get_message_internal(
         &self,
         msg_id: ObjId,
@@ -2346,8 +2309,10 @@ impl MsgCenterHandler for MessageCenter {
         msg: MsgObject,
         ingress_ctx: Option<IngressContext>,
         idempotency_key: Option<String>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
+        self.authorize_resource(&ctx, "obj://msg-center/dispatch", "write")
+            .await?;
         self.dispatch_internal(msg, ingress_ctx, idempotency_key, None)
             .await
     }
@@ -2358,22 +2323,38 @@ impl MsgCenterHandler for MessageCenter {
         idempotency_key: Option<String>,
         ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors> {
-        self.authorize_owner_write(&ctx, &msg.from).await?;
+        let mailbox = MailboxAddress::new(
+            msg.from.clone(),
+            Self::derive_session_id(&MailboxKind::Sent, &msg),
+        )
+        .map_err(RPCErrors::ParseRequestError)?;
+        self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
+            .await?;
         self.post_send_internal(msg, idempotency_key).await
     }
 
     async fn handle_get_next(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
-        // Taking a record mutates its state: treat as a write of the owner.
-        self.authorize_owner_write(&ctx, &owner).await?;
-        self.get_next_internal(owner, box_kind, state_filter, lock_on_take, with_object)
+        // Taking a record mutates its state: treat as a write of the mailbox.
+        self.authorize_mailbox(
+            &ctx,
+            &mailbox,
+            box_kind,
+            if lock_on_take.unwrap_or(true) {
+                "write"
+            } else {
+                "read"
+            },
+        )
+        .await?;
+        self.get_next_internal(mailbox, box_kind, state_filter, lock_on_take, with_object)
             .await
     }
 
@@ -2382,29 +2363,36 @@ impl MsgCenterHandler for MessageCenter {
         transport_did: DID,
         lock_on_take: Option<bool>,
         with_object: Option<bool>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<DeliveryRecordWithObject>, RPCErrors> {
+        self.authorize_resource(
+            &ctx,
+            &format!("obj://msg-center/delivery/{}", transport_did.to_string()),
+            "write",
+        )
+        .await?;
         self.get_next_delivery_internal(transport_did, lock_on_take, with_object)
             .await
     }
 
     async fn handle_peek_box(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
         with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<Vec<MailboxRecordWithObject>, RPCErrors> {
-        self.authorize_owner_read(&ctx, &owner).await?;
-        self.peek_box_internal(owner, box_kind, state_filter, limit, with_object)
+        self.authorize_mailbox(&ctx, &mailbox, box_kind, "read")
+            .await?;
+        self.peek_box_internal(mailbox, box_kind, state_filter, limit, with_object)
             .await
     }
 
     async fn handle_list_box_by_time(
         &self,
-        owner: DID,
+        mailbox: MailboxAddress,
         box_kind: MailboxKind,
         state_filter: Option<Vec<RecipientState>>,
         limit: Option<usize>,
@@ -2414,9 +2402,10 @@ impl MsgCenterHandler for MessageCenter {
         with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<MailboxRecordPage, RPCErrors> {
-        self.authorize_owner_read(&ctx, &owner).await?;
+        self.authorize_mailbox(&ctx, &mailbox, box_kind, "read")
+            .await?;
         self.list_box_by_time_internal(
-            owner,
+            mailbox,
             box_kind,
             state_filter,
             limit,
@@ -2533,10 +2522,8 @@ impl MsgCenterHandler for MessageCenter {
         new_state: RecipientState,
         ctx: RPCContext,
     ) -> std::result::Result<MailboxRecord, RPCErrors> {
-        let owner = Self::record_owner(&record_id)?;
-        self.authorize_owner_write(&ctx, &owner).await?;
-        self.update_record_state_internal(record_id, new_state)
-            .await
+        let record = self.authorize_record(&ctx, &record_id, "write").await?;
+        self.update_record_state_internal(record, new_state).await
     }
 
     async fn handle_update_owner_ui_session_state(
@@ -2579,18 +2566,67 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         record_id: String,
         session_id: String,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<MailboxRecord, RPCErrors> {
-        self.update_record_session_internal(record_id, session_id)
+        let record = self.authorize_record(&ctx, &record_id, "write").await?;
+        let mailbox = MailboxAddress::new(record.owner.clone(), Some(session_id.clone()))
+            .map_err(RPCErrors::ParseRequestError)?;
+        self.authorize_mailbox(&ctx, &mailbox, record.box_kind, "write")
+            .await?;
+        self.update_record_session_internal(record, session_id)
             .await
+    }
+
+    async fn handle_list_mailboxes(
+        &self,
+        owner: DID,
+        box_kind: MailboxKind,
+        ctx: RPCContext,
+    ) -> std::result::Result<Vec<MailboxAddress>, RPCErrors> {
+        self.authorize_owner_read(&ctx, &owner).await?;
+        self.msg_box_db.list_mailboxes(&owner, &box_kind).await
+    }
+
+    async fn handle_move_record(
+        &self,
+        record_id: String,
+        mailbox: MailboxAddress,
+        ctx: RPCContext,
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
+        let before = self.authorize_record(&ctx, &record_id, "write").await?;
+        if mailbox.owner() != &before.owner {
+            return Err(RPCErrors::ParseRequestError(
+                "cannot move a record to another owner".into(),
+            ));
+        }
+        self.authorize_mailbox(&ctx, &mailbox, before.box_kind, "write")
+            .await?;
+        let mut record = before.clone();
+        record.mailbox = mailbox;
+        record.session_id = record.mailbox.session_id().map(str::to_string);
+        record.updated_at_ms = Self::now_ms().max(before.updated_at_ms + 1);
+        if !self
+            .msg_box_db
+            .compare_update_record(&before, &record)
+            .await?
+        {
+            return Err(RPCErrors::ReasonError(
+                "mailbox record changed; retry".into(),
+            ));
+        }
+        Self::publish_box_changed_event(&before, "move_out");
+        Self::publish_box_changed_event(&record, "move_in");
+        Ok(record)
     }
 
     async fn handle_report_delivery(
         &self,
         delivery_id: String,
         result_payload: DeliveryReportResult,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<DeliveryRecord, RPCErrors> {
+        self.authorize_resource(&ctx, "obj://msg-center/delivery", "write")
+            .await?;
         self.report_delivery_internal(delivery_id, result_payload)
             .await
     }
@@ -2617,8 +2653,9 @@ impl MsgCenterHandler for MessageCenter {
         reader: Option<DID>,
         limit: Option<usize>,
         offset: Option<u64>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<MsgReceiptObj>, RPCErrors> {
+        self.authorize_message(&ctx, &msg_id).await?;
         self.list_read_receipts_internal(msg_id, group_id, reader, limit, offset)
     }
 
@@ -2628,16 +2665,16 @@ impl MsgCenterHandler for MessageCenter {
         with_object: Option<bool>,
         ctx: RPCContext,
     ) -> std::result::Result<Option<MailboxRecordWithObject>, RPCErrors> {
-        let owner = Self::record_owner(&record_id)?;
-        self.authorize_owner_read(&ctx, &owner).await?;
-        self.get_record_internal(record_id, with_object).await
+        let record = self.authorize_record(&ctx, &record_id, "read").await?;
+        Ok(Some(Self::build_record_view(record, with_object).await?))
     }
 
     async fn handle_get_message(
         &self,
         msg_id: ObjId,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<MsgObject>, RPCErrors> {
+        self.authorize_message(&ctx, &msg_id).await?;
         self.get_message_internal(msg_id).await
     }
 
@@ -2646,8 +2683,10 @@ impl MsgCenterHandler for MessageCenter {
         session_id: String,
         key: String,
         value: Value,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        self.authorize_resource(&ctx, "obj://msg-center/ui-state", "write")
+            .await?;
         self.update_ui_session_state_internal(session_id, key, value)
             .await
     }
@@ -2656,16 +2695,20 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         session_id: String,
         key: String,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<UiSessionStateEntry>, RPCErrors> {
+        self.authorize_resource(&ctx, "obj://msg-center/ui-state", "read")
+            .await?;
         self.get_ui_session_state_internal(session_id, key).await
     }
 
     async fn handle_list_ui_session_state(
         &self,
         session_id: String,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<UiSessionStateEntry>, RPCErrors> {
+        self.authorize_resource(&ctx, "obj://msg-center/ui-state", "read")
+            .await?;
         self.list_ui_session_state_internal(session_id).await
     }
 

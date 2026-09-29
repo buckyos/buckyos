@@ -3,12 +3,12 @@
 //! Bridges buckyos's msg-center inbox boxes into [`AIAgent::inbox()`]:
 //!
 //! ```text
-//!   kevent_client.create_event_reader(["/msg_center/{owner}/box_in_{owner}/**", ...])
+//!   kevent_client.create_event_reader(["/msg_center/{owner}/INBOX/**", ...])
 //!       └── pull_event(1s) ──┐
 //!                            ├─ Ok(Some(e))  → derive MailboxKind from eventid → drain
 //!                            ├─ Ok(None)     → sweep all inbox boxes (timeout fallback)
 //!                            └─ Err(closed)  → drop reader, retry create
-//!   msg_center.get_next(owner, box_kind, [Unread], lock_on_take=true)
+//!   msg_center.get_next(mailbox, box_kind, [Unread], lock_on_take=true)
 //!       └── loop until None  → push Inbound::Msg{record_id, ...} into inbox_tx
 //! ```
 //!
@@ -184,72 +184,84 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
         _ => return,
     };
 
-    for attempt in 0..MAX_MSG_PULL_PER_TICK {
-        let msg_center = match cfg.msg_center.as_ref() {
-            Some(client) => client.clone(),
-            None => match get_buckyos_api_runtime() {
-                Ok(runtime) => match runtime.get_msg_center_client().await {
-                    Ok(client) => Arc::new(client),
-                    Err(err) => {
-                        warn!(
-                            "opendan.msg_pump[{}]: get msg-center client failed: {err}",
-                            cfg.agent_name
-                        );
-                        return;
-                    }
-                },
+    let msg_center = match cfg.msg_center.as_ref() {
+        Some(client) => client.clone(),
+        None => match get_buckyos_api_runtime() {
+            Ok(runtime) => match runtime.get_msg_center_client().await {
+                Ok(client) => Arc::new(client),
                 Err(err) => {
                     warn!(
-                        "opendan.msg_pump[{}]: get runtime for msg-center failed: {err}",
+                        "opendan.msg_pump[{}]: get msg-center client failed: {err}",
                         cfg.agent_name
                     );
                     return;
                 }
             },
-        };
-        match msg_center
-            .get_next(
-                cfg.owner_did.clone(),
-                box_kind.clone(),
-                state_filter.clone(),
-                Some(true), // lock_on_take — moves record from Unread → Reading
-                Some(true), // with_object — inline the MsgObject so we can lower it
-            )
-            .await
-        {
-            Ok(Some(record)) => {
-                if !matches!(
-                    record.record.state,
-                    RecipientState::Unread | RecipientState::Reading
-                ) {
-                    warn!(
+            Err(err) => {
+                warn!(
+                    "opendan.msg_pump[{}]: get runtime for msg-center failed: {err}",
+                    cfg.agent_name
+                );
+                return;
+            }
+        },
+    };
+    let mailboxes = match msg_center
+        .list_mailboxes(cfg.owner_did.clone(), box_kind)
+        .await
+    {
+        Ok(mailboxes) => mailboxes,
+        Err(err) => {
+            warn!("opendan.msg_pump: list inboxes failed: {err}");
+            return;
+        }
+    };
+    for mailbox in mailboxes {
+        for attempt in 0..MAX_MSG_PULL_PER_TICK {
+            match msg_center
+                .get_next(
+                    mailbox.clone(),
+                    box_kind.clone(),
+                    state_filter.clone(),
+                    Some(true), // lock_on_take — moves record from Unread → Reading
+                    Some(true), // with_object — inline the MsgObject so we can lower it
+                )
+                .await
+            {
+                Ok(Some(record)) => {
+                    if !matches!(
+                        record.record.state,
+                        RecipientState::Unread | RecipientState::Reading
+                    ) {
+                        warn!(
                         "opendan.msg_pump[{}]: unexpected msg state record_id={} state={:?} — skipping box",
                         cfg.agent_name, record.record.record_id, record.record.state
                     );
-                    break;
-                }
-                if !deliver_record(cfg, &box_kind, record).await {
-                    // Either the receiver is closed (shutdown) or the
-                    // record had nothing actionable — either way, stop
-                    // draining; the outer loop handles shutdown.
-                    if cfg.inbox_tx.is_closed() {
-                        return;
+                        break;
+                    }
+                    if !deliver_record(cfg, &box_kind, record).await {
+                        // Either the receiver is closed (shutdown) or the
+                        // record had nothing actionable — either way, stop
+                        // draining; the outer loop handles shutdown.
+                        if cfg.inbox_tx.is_closed() {
+                            return;
+                        }
                     }
                 }
-            }
-            Ok(None) => {
-                debug!(
-                    "opendan.msg_pump[{}]: box={:?} drained after {} pulls",
-                    cfg.agent_name, box_kind, attempt
-                );
-                break;
-            }
-            Err(err) => {
-                warn!(
-                    "opendan.msg_pump[{}]: get_next box={:?} failed: {err}",
-                    cfg.agent_name, box_kind
-                );
-                break;
+                Ok(None) => {
+                    debug!(
+                        "opendan.msg_pump[{}]: box={:?} drained after {} pulls",
+                        cfg.agent_name, box_kind, attempt
+                    );
+                    break;
+                }
+                Err(err) => {
+                    warn!(
+                        "opendan.msg_pump[{}]: get_next box={:?} failed: {err}",
+                        cfg.agent_name, box_kind
+                    );
+                    break;
+                }
             }
         }
     }
@@ -462,14 +474,14 @@ fn append_all_inbox_boxes(target: &mut Vec<MailboxKind>) {
     }
 }
 
-fn msg_center_box_id_segment(owner_token: &str, box_kind: &MailboxKind) -> String {
+fn msg_center_box_id_segment(box_kind: &MailboxKind) -> String {
     let prefix = match box_kind {
-        MailboxKind::Inbox => "box_in",
-        MailboxKind::GroupInbox => "box_group_in",
-        MailboxKind::RequestBox => "box_request",
+        MailboxKind::Inbox => "INBOX",
+        MailboxKind::GroupInbox => "GROUP_INBOX",
+        MailboxKind::RequestBox => "REQUEST_BOX",
         MailboxKind::Sent => return String::new(),
     };
-    format!("{prefix}_{owner_token}")
+    prefix.to_string()
 }
 
 /// Build the kevent patterns the agent subscribes to so msg-center publishes
@@ -489,7 +501,7 @@ pub fn build_msg_center_event_patterns(owner: &DID) -> Vec<String> {
             MailboxKind::GroupInbox,
             MailboxKind::RequestBox,
         ] {
-            let box_id_segment = msg_center_box_id_segment(&owner_token, &box_kind);
+            let box_id_segment = msg_center_box_id_segment(&box_kind);
             let pattern = format!("/msg_center/{owner_token}/{box_id_segment}/**");
             if !out.contains(&pattern) {
                 out.push(pattern);
@@ -528,20 +540,12 @@ fn msg_center_event_box_kind(event: &Event) -> Option<MailboxKind> {
 }
 
 fn event_box_id_to_box_kind(raw: &str) -> Option<MailboxKind> {
-    let n = raw.trim().to_ascii_lowercase().replace('-', "_");
-    if has_box_id_prefix(&n, "box_group_in_") {
-        Some(MailboxKind::GroupInbox)
-    } else if has_box_id_prefix(&n, "box_request_") {
-        Some(MailboxKind::RequestBox)
-    } else if has_box_id_prefix(&n, "box_in_") {
-        Some(MailboxKind::Inbox)
-    } else {
-        None
+    match raw {
+        "INBOX" => Some(MailboxKind::Inbox),
+        "GROUP_INBOX" => Some(MailboxKind::GroupInbox),
+        "REQUEST_BOX" => Some(MailboxKind::RequestBox),
+        _ => None,
     }
-}
-
-fn has_box_id_prefix(value: &str, prefix: &str) -> bool {
-    value.len() > prefix.len() && value.starts_with(prefix)
 }
 
 /// Parse `agent.toml`'s `agent_did` into a `DID`. Returns `None` on empty /
@@ -573,13 +577,13 @@ mod tests {
 
     #[test]
     fn classifies_box_kind_from_canonical_path() {
-        let e = ev("/msg_center/alice/box_in_alice/changed");
+        let e = ev("/msg_center/alice/INBOX/646964/changed");
         assert_eq!(msg_center_event_box_kind(&e), Some(MailboxKind::Inbox));
     }
 
     #[test]
     fn classifies_request_box_kind_from_canonical_path() {
-        let e = ev("/msg_center/alice/box_request_alice/changed");
+        let e = ev("/msg_center/alice/REQUEST_BOX/646964/changed");
         assert_eq!(msg_center_event_box_kind(&e), Some(MailboxKind::RequestBox));
     }
 
@@ -595,15 +599,9 @@ mod tests {
         let owner_token = owner.to_raw_host_name();
         let patterns = build_msg_center_event_patterns(&owner);
 
-        assert!(patterns.contains(&format!(
-            "/msg_center/{owner_token}/box_in_{owner_token}/**"
-        )));
-        assert!(patterns.contains(&format!(
-            "/msg_center/{owner_token}/box_group_in_{owner_token}/**"
-        )));
-        assert!(patterns.contains(&format!(
-            "/msg_center/{owner_token}/box_request_{owner_token}/**"
-        )));
+        assert!(patterns.contains(&format!("/msg_center/{owner_token}/INBOX/**")));
+        assert!(patterns.contains(&format!("/msg_center/{owner_token}/GROUP_INBOX/**")));
+        assert!(patterns.contains(&format!("/msg_center/{owner_token}/REQUEST_BOX/**")));
         assert!(!patterns
             .iter()
             .any(|pattern| pattern.contains("/box/") || pattern.ends_with("/in/**")));

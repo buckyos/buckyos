@@ -595,7 +595,7 @@ function buildGroupRunners(
       }),
       await runSelftestCase("MsgCenterClient.peekBox", async () => {
         const records = await sdk.buckyos.getMsgCenterClient().peekBox({
-          owner,
+          mailbox: owner,
           box_kind: "INBOX",
           limit: 1,
           with_object: false,

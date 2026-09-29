@@ -231,8 +231,7 @@ impl MsgBoxDbMgr {
 INSERT INTO mailbox_records ({MAILBOX_COLUMNS})
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(owner, record_id) DO UPDATE SET
-    msg_kind = COALESCE(excluded.msg_kind, mailbox_records.msg_kind),
-    session_id = COALESCE(mailbox_records.session_id, excluded.session_id)
+    msg_kind = COALESCE(excluded.msg_kind, mailbox_records.msg_kind)
 "#
         ));
 
@@ -545,7 +544,7 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
     msg_from = COALESCE(excluded.msg_from, mailbox_records.msg_from),
     msg_to = COALESCE(excluded.msg_to, mailbox_records.msg_to),
     state = excluded.state,
-    session_id = COALESCE(excluded.session_id, mailbox_records.session_id),
+    session_id = excluded.session_id,
     sort_key = excluded.sort_key,
     tags_json = excluded.tags_json,
     ingress_json = COALESCE(excluded.ingress_json, mailbox_records.ingress_json),
@@ -604,9 +603,68 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
         row.as_ref().map(row_to_mailbox_record).transpose()
     }
 
-    pub async fn list_records(
+    pub async fn list_message_records(
+        &self,
+        msg_id: &ObjId,
+    ) -> std::result::Result<Vec<MailboxRecord>, RPCErrors> {
+        let sql = self.render_sql(&format!(
+            "SELECT {MAILBOX_COLUMNS} FROM mailbox_records WHERE msg_id = ?"
+        ));
+        let rows = sqlx::query(&sql)
+            .bind(msg_id.to_string())
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        rows.iter().map(row_to_mailbox_record).collect()
+    }
+
+    pub async fn compare_update_record(
+        &self,
+        before: &MailboxRecord,
+        after: &MailboxRecord,
+    ) -> std::result::Result<bool, RPCErrors> {
+        let sql = self.render_sql("UPDATE mailbox_records SET state = ?, session_id = ?, updated_at_ms = ? WHERE owner = ? AND record_id = ? AND COALESCE(session_id, '') = ? AND state = ? AND updated_at_ms = ?");
+        let result = sqlx::query(&sql)
+            .bind(recipient_state_name(&after.state))
+            .bind(after.session_id.clone())
+            .bind(to_sql_i64(after.updated_at_ms))
+            .bind(before.owner.to_string())
+            .bind(before.record_id.clone())
+            .bind(before.session_id.as_deref().unwrap_or(""))
+            .bind(recipient_state_name(&before.state))
+            .bind(to_sql_i64(before.updated_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn list_mailboxes(
         &self,
         owner: &DID,
+        box_kind: &MailboxKind,
+    ) -> std::result::Result<Vec<buckyos_api::MailboxAddress>, RPCErrors> {
+        let sql = self.render_sql("SELECT DISTINCT session_id FROM mailbox_records WHERE owner = ? AND box_kind = ? AND state = 'UNREAD' ORDER BY session_id");
+        let rows = sqlx::query(&sql)
+            .bind(owner.to_string())
+            .bind(mailbox_kind_name(box_kind))
+            .fetch_all(self.pool())
+            .await
+            .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+        rows.iter()
+            .map(|row| {
+                let session = row
+                    .try_get::<Option<String>, _>("session_id")
+                    .map_err(|e| decode_err("session_id", &e))?;
+                buckyos_api::MailboxAddress::new(owner.clone(), session)
+                    .map_err(RPCErrors::ReasonError)
+            })
+            .collect()
+    }
+
+    pub async fn list_records(
+        &self,
+        mailbox: &buckyos_api::MailboxAddress,
         box_kind: &MailboxKind,
         state_filter: Option<&[RecipientState]>,
         descending: bool,
@@ -616,12 +674,19 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
         } else {
             "ORDER BY sort_key ASC, record_id ASC"
         };
+        let session_clause = if mailbox.session_id().is_some() {
+            "session_id = ?"
+        } else {
+            "session_id IS NULL"
+        };
         let sql = self.render_sql(&format!(
-            "SELECT {MAILBOX_COLUMNS} FROM mailbox_records WHERE owner = ? AND box_kind = ? {order_clause}"
+            "SELECT {MAILBOX_COLUMNS} FROM mailbox_records WHERE owner = ? AND {session_clause} AND box_kind = ? {order_clause}"
         ));
-
-        let rows = sqlx::query(&sql)
-            .bind(owner.to_string())
+        let mut query = sqlx::query(&sql).bind(mailbox.owner().to_string());
+        if let Some(session) = mailbox.session_id() {
+            query = query.bind(session);
+        }
+        let rows = query
             .bind(mailbox_kind_name(box_kind).to_string())
             .fetch_all(self.pool())
             .await
@@ -1723,6 +1788,8 @@ pub(crate) fn row_to_mailbox_record(row: &AnyRow) -> std::result::Result<Mailbox
         parse_optional_json(ingress_json.as_deref(), &record_id, "ingress_json")?;
 
     Ok(MailboxRecord {
+        mailbox: buckyos_api::MailboxAddress::new(owner.clone(), session_id.clone())
+            .map_err(RPCErrors::ReasonError)?,
         record_id: record_id.clone(),
         owner,
         box_kind,
@@ -2083,6 +2150,8 @@ mod tests {
             suffix
         );
         MailboxRecord {
+            mailbox: buckyos_api::MailboxAddress::new(owner.clone(), Some("topic-1".into()))
+                .unwrap(),
             record_id,
             owner: owner.clone(),
             box_kind,
@@ -2151,13 +2220,18 @@ mod tests {
         mgr.upsert_record(&r1).await.unwrap();
         mgr.upsert_record(&r2).await.unwrap();
         let all = mgr
-            .list_records(&owner, &MailboxKind::Inbox, None, true)
+            .list_records(
+                &buckyos_api::MailboxAddress::new(owner.clone(), Some("topic-1".into())).unwrap(),
+                &MailboxKind::Inbox,
+                None,
+                true,
+            )
             .await
             .unwrap();
         assert_eq!(all.len(), 2);
         let unread = mgr
             .list_records(
-                &owner,
+                &buckyos_api::MailboxAddress::new(owner.clone(), Some("topic-1".into())).unwrap(),
                 &MailboxKind::Inbox,
                 Some(&[RecipientState::Unread]),
                 true,

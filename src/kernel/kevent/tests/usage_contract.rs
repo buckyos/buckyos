@@ -127,31 +127,31 @@ fn assert_patterns_do_not_match(patterns: &[String], eventid: &str) {
 fn msg_center_box_events_match_current_consumers() {
     let owner = "alice";
     let control_panel_patterns = vec![
-        format!("/msg_center/{owner}/box_in_{owner}/**"),
-        format!("/msg_center/{owner}/box_out_{owner}/**"),
+        format!("/msg_center/{owner}/INBOX/**"),
+        format!("/msg_center/{owner}/SENT/**"),
     ];
-    let opendan_patterns = ["box_in", "box_group_in", "box_request"]
+    let opendan_patterns = ["INBOX", "GROUP_INBOX", "REQUEST_BOX"]
         .into_iter()
-        .map(|box_prefix| format!("/msg_center/{owner}/{box_prefix}_{owner}/**"))
+        .map(|box_prefix| format!("/msg_center/{owner}/{box_prefix}/**"))
         .collect::<Vec<_>>();
 
     assert_patterns_match(
         &control_panel_patterns,
-        "/msg_center/alice/box_in_alice/changed",
+        "/msg_center/alice/INBOX/646964/changed",
     );
     assert_patterns_match(
         &control_panel_patterns,
-        "/msg_center/alice/box_out_alice/changed",
+        "/msg_center/alice/SENT/646964/changed",
     );
     assert_patterns_do_not_match(
         &control_panel_patterns,
-        "/msg_center/alice/box_group_in_alice/changed",
+        "/msg_center/alice/GROUP_INBOX/646964/changed",
     );
 
     for eventid in [
-        "/msg_center/alice/box_in_alice/changed",
-        "/msg_center/alice/box_group_in_alice/changed",
-        "/msg_center/alice/box_request_alice/changed",
+        "/msg_center/alice/INBOX/646964/changed",
+        "/msg_center/alice/GROUP_INBOX/646964/changed",
+        "/msg_center/alice/REQUEST_BOX/646964/changed",
     ] {
         assert_patterns_match(&opendan_patterns, eventid);
     }
@@ -185,11 +185,11 @@ fn event_payload_carries_locator_not_truth() {
     );
     assert_eq!(
         locator_from_payload(&json!({
-            "box_id": "/msg_center/alice/box_in_alice",
+            "box_id": "/msg_center/alice/INBOX/646964",
             "changed": true
         })),
         Some(TruthLocator::MsgBox {
-            box_id: "/msg_center/alice/box_in_alice".to_string()
+            box_id: "/msg_center/alice/INBOX/646964".to_string()
         })
     );
     assert_eq!(

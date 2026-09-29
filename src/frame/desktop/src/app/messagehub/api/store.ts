@@ -287,7 +287,7 @@ export class MessageHubApiStore implements MessageHubStore {
     }
     let subscription: { close(): Promise<void> } | null = null
     const token = ownerToken(context.ownerDid)
-    const patterns = ['box_in', 'box_sent', 'box_group_in', 'box_request'].map(prefix => `/msg_center/${token}/${prefix}_${token}/changed`)
+    const patterns = ['INBOX', 'SENT', 'GROUP_INBOX', 'REQUEST_BOX'].map(kind => `/msg_center/${token}/${kind}/**`)
     void buckyos.subscribeKEvent(patterns, () => {
       if (stopped || data.epoch === -1) return
       void this.refreshSummaries(context)

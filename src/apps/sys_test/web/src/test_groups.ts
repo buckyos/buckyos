@@ -291,7 +291,7 @@ export const TEST_GROUPS: TestGroup[] = [
         run: async ({ sdk, userId }) => {
           const owner = bns.didBnsFromName(userId)
           const records = await sdk.getMsgCenterClient().peekBox({
-            owner,
+            mailbox: owner,
             box_kind: 'INBOX',
             limit: 1,
             with_object: false,

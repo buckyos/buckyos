@@ -11,10 +11,10 @@ use crate::msg_center::MessageCenter;
 use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry};
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, validate_verify_hub_token_claims, MailboxRecord,
-    MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle, SessionListLifecycleFilter,
-    SessionListOrder, SessionMessagePage, SessionSummary, SessionSummaryPage, TokenPrincipalKind,
-    TokenUse, UiSessionStateEntry, UserPrivateProfile,
+    get_buckyos_api_runtime, validate_verify_hub_token_claims, MailboxAddress, MailboxKind,
+    MailboxRecord, MsgCenterCreateSessionReq, OwnerSessionState, SessionLifecycle,
+    SessionListLifecycleFilter, SessionListOrder, SessionMessagePage, SessionSummary,
+    SessionSummaryPage, TokenPrincipalKind, TokenUse, UiSessionStateEntry, UserPrivateProfile,
 };
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken};
 use log::warn;
@@ -35,6 +35,20 @@ const MAX_SESSION_ID_CHARS: usize = 200;
 /// tests inject a static key.
 #[async_trait]
 pub trait SessionTokenVerifier: Send + Sync {
+    async fn authorize(
+        &self,
+        token: &str,
+        resource: &str,
+        action: &str,
+    ) -> std::result::Result<(), RPCErrors> {
+        let mut req = kRPC::RPCRequest::new("msg.authorize", Value::Null);
+        req.token = Some(token.to_string());
+        get_buckyos_api_runtime()?
+            .enforce(&req, action, resource)
+            .await?;
+        Ok(())
+    }
+
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors>;
     async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors>;
     async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors>;
@@ -155,6 +169,7 @@ fn normalize_session_id(raw: &str) -> std::result::Result<String, RPCErrors> {
             "session_id is too long".to_string(),
         ));
     }
+    MailboxAddress::validate_session_id(trimmed).map_err(RPCErrors::ParseRequestError)?;
     Ok(trimmed.to_string())
 }
 
@@ -183,9 +198,8 @@ impl MessageCenter {
 
     /// Resolve the caller from `ctx.token`.
     ///
-    /// * `Ok(None)`: no token at all. Kept for in-process callers and legacy
-    ///   trusted transports; such calls are not restricted (pre-existing
-    ///   behaviour).
+    /// * `Ok(None)`: a trusted in-process call without a token.
+    ///   Network calls must carry a verified session token.
     /// * `Ok(Some(_))`: a verified verify-hub session token.
     /// * `Err(_)`: a token was supplied but is invalid / expired / not trusted.
     pub(crate) async fn caller_identity(
@@ -198,7 +212,11 @@ impl MessageCenter {
             .map(str::trim)
             .filter(|t| !t.is_empty())
         else {
-            return Ok(None);
+            return if ctx.from_ip.is_some() {
+                Err(permission_denied("session token required"))
+            } else {
+                Ok(None)
+            };
         };
         let verified = self
             .token_verifier
@@ -247,7 +265,7 @@ impl MessageCenter {
     }
 
     /// Read access of the caller to `owner`'s mailbox / sessions.
-    pub(crate) async fn authorize_owner_read(
+    async fn authorize_owner_read_identity(
         &self,
         ctx: &RPCContext,
         owner: &DID,
@@ -275,7 +293,7 @@ impl MessageCenter {
 
     /// Write access: a zone user may only act as themselves. Agent observation
     /// is read-only by design (`Message Center.md` §5.6).
-    pub(crate) async fn authorize_owner_write(
+    async fn authorize_owner_write_identity(
         &self,
         ctx: &RPCContext,
         owner: &DID,
@@ -297,6 +315,116 @@ impl MessageCenter {
                 _ => Ok(()),
             },
         }
+    }
+
+    pub(crate) async fn authorize_resource(
+        &self,
+        ctx: &RPCContext,
+        resource: &str,
+        action: &str,
+    ) -> std::result::Result<(), RPCErrors> {
+        if self.caller_identity(ctx).await?.is_none() {
+            return Ok(());
+        }
+        self.token_verifier
+            .get()
+            .authorize(ctx.token.as_deref().unwrap(), resource, action)
+            .await
+    }
+
+    pub(crate) async fn authorize_owner_read(
+        &self,
+        ctx: &RPCContext,
+        owner: &DID,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.authorize_owner_read_identity(ctx, owner).await?;
+        self.authorize_resource(
+            ctx,
+            &MailboxAddress::new(owner.clone(), None)
+                .map_err(RPCErrors::ParseRequestError)?
+                .owner_resource(),
+            "read",
+        )
+        .await
+    }
+
+    pub(crate) async fn authorize_owner_write(
+        &self,
+        ctx: &RPCContext,
+        owner: &DID,
+    ) -> std::result::Result<(), RPCErrors> {
+        self.authorize_owner_write_identity(ctx, owner).await?;
+        self.authorize_resource(
+            ctx,
+            &MailboxAddress::new(owner.clone(), None)
+                .map_err(RPCErrors::ParseRequestError)?
+                .owner_resource(),
+            "write",
+        )
+        .await
+    }
+
+    pub(crate) async fn authorize_mailbox(
+        &self,
+        ctx: &RPCContext,
+        mailbox: &MailboxAddress,
+        kind: MailboxKind,
+        action: &str,
+    ) -> std::result::Result<(), RPCErrors> {
+        if action == "read" {
+            self.authorize_owner_read_identity(ctx, mailbox.owner())
+                .await?;
+        } else if let Err(error) = self
+            .authorize_owner_write_identity(ctx, mailbox.owner())
+            .await
+        {
+            if mailbox.session_id().is_none() {
+                return Err(error);
+            }
+            self.authorize_owner_read_identity(ctx, mailbox.owner())
+                .await?;
+            self.authorize_resource(ctx, &mailbox.resource(kind), "delegate")
+                .await?;
+        }
+        self.authorize_resource(ctx, &mailbox.resource(kind), action)
+            .await
+    }
+
+    pub(crate) async fn authorize_record(
+        &self,
+        ctx: &RPCContext,
+        record_id: &str,
+        action: &str,
+    ) -> std::result::Result<MailboxRecord, RPCErrors> {
+        let owner = Self::owner_from_record_id(record_id)?;
+        let record = self
+            .msg_box_db
+            .get_record(&owner, record_id)
+            .await?
+            .ok_or_else(|| permission_denied("mailbox record unavailable"))?;
+        self.authorize_mailbox(ctx, &record.mailbox, record.box_kind, action)
+            .await?;
+        Ok(record)
+    }
+
+    pub(crate) async fn authorize_message(
+        &self,
+        ctx: &RPCContext,
+        msg_id: &ndn_lib::ObjId,
+    ) -> std::result::Result<(), RPCErrors> {
+        if self.caller_identity(ctx).await?.is_none() {
+            return Ok(());
+        }
+        for record in self.msg_box_db.list_message_records(msg_id).await? {
+            if self
+                .authorize_mailbox(ctx, &record.mailbox, record.box_kind, "read")
+                .await
+                .is_ok()
+            {
+                return Ok(());
+            }
+        }
+        Err(permission_denied("message unavailable"))
     }
 
     // ------------------------------------------------------------------
@@ -783,10 +911,5 @@ impl MessageCenter {
         self.msg_box_db
             .list_owner_ui_session_state(&owner, &session_id)
             .await
-    }
-
-    /// Owner of a mailbox record id (`owner|box|msg|variant`).
-    pub(crate) fn record_owner(record_id: &str) -> std::result::Result<DID, RPCErrors> {
-        Self::owner_from_record_id(record_id)
     }
 }

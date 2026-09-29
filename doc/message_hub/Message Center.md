@@ -111,10 +111,11 @@ pub struct DeliveryEnvelope {
 pub struct MailboxRecord {
     pub record_id: String,       // 可推导：hash(owner + box_kind + msg_id + variant)，天然幂等
     pub owner: DID,              // user / agent / group DID
+    pub mailbox: MailboxAddress, // $did/session_id；裸 $did 是默认 inbox
     pub box_kind: MailboxKind,   // INBOX / SENT / GROUP_INBOX / REQUEST_BOX
     pub msg_id: ObjId,           // 指向不可变 MsgObject（只存引用，不复制内容）
     pub state: RecipientState,   // 见 §2.5
-    pub session_id: String,      // 本地会话投影 key（见 §5.4）
+    pub session_id: Option<String>, // inbox 分区及本地会话投影 key；None 是默认 inbox
     pub sort_key: u64,           // 排序，通常 = msg.created_at_ms
     pub tags: Vec<String>,
     pub created_at_ms: u64,
@@ -140,6 +141,32 @@ pub enum MailboxKind {
 | `TunnelOutboxRecord`（`TUNNEL_OUTBOX` 里的 `MsgRecord`） | `DeliveryRecord` | 投递队列条目 |
 | `RouteInfo` | `DeliveryEnvelope` / `DeliverySnapshot` | 确定投递的结果快照 |
 | `MsgRecord`（mailbox 语义部分） | `MailboxRecord` | owner 的本地消息引用 |
+
+### 2.3.1 Session inbox 地址（breaking change）
+
+`MailboxAddress` 的 wire 格式为 `$did/session_id`；省略 `/session_id` 时只表示默认 inbox（`session_id IS NULL`），不表示该 DID 的所有会话。记录的 `mailbox` 是由 `owner` 和现有 `session_id` 计算出的地址，不维护另一套会话分区。完整队列键为 `(mailbox, box_kind)`。
+
+`msg.get_next`、`msg.peek_box`、`msg.list_box_by_time` 的请求把 `owner` 替换为必填 `mailbox`。例如：
+
+```json
+{"mailbox":"did:bns:alice/approval-123","box_kind":"INBOX","lock_on_take":true,"with_object":true}
+```
+
+查询在 SQL 中精确限定 `owner + session_id + box_kind`。`get_next` 默认取 `UNREAD`，领取使用原子条件更新；`lock_on_take=false` 只要求 `read`，领取和状态修改要求 `write`。裸 DID 与任意具名会话互不读取。
+
+投递沿用 §5.4 的现有 session 推导：显式 topic / correlation / session hint 优先，否则私聊为 `dm:<peer DID>`、群消息为群 DID。因此旧的“按 DID 扫描全部消息”调用必须改写；省略消息 topic 不保证投到默认 inbox。向特定 UI session 发送消息时，把其 session ID 放入 `thread.topic`。
+
+`msg.list_mailboxes(owner, box_kind)` 返回存在 `UNREAD` 记录的精确地址（包括默认 inbox），需要 owner 集合的读取权限，供 OpenDAN 等总收件路由器扫描。归档、删除 UI 投影不阻止待消费队列被发现。只获授权某个 session 的消费者直接调用 `get_next(mailbox, ...)`。
+
+`msg.update_record_session(record_id, session_id)` 同时移动记录所属的 inbox。`msg.move_record(record_id, mailbox)` 支持移入默认 inbox；只允许同一 owner 内移动。两者都检查源和目标 inbox 的写权限，采用条件更新防止授权后记录被并发搬走，且不会改变消息对象或 record ID。dispatch 重放保留已经移动的 session（包括 NULL）及阅读状态。
+
+权限资源为 `obj://msg-center/<kind>/<resource-encoded mailbox>`，`kind` 为 `inbox`、`sent`、`group_inbox` 或 `request_box`。例如给应用授予 `obj://msg-center/inbox/did:bns:alice/approval-123` 的 `read|write`，不会授权相邻会话或裸 DID。资源地址对点号、百分号和其它模式字符再次编码，避免 RBAC 的 `keyMatch3` 将它们解释为正则。用 Rust `MailboxAddress::resource` 或 WebSDK `mailboxResource` 生成策略键，例如 `did:web:agent.zone/approval.1` 对应 `obj://msg-center/inbox/did:web:agent%2Ezone/approval%2E1`。owner 集合资源也使用相同规则。资源检查通过 runtime 的 RBAC 执行，仍叠加 viewer/owner 身份约束；普通 App 没有默认全 inbox 权限。按 record ID 读取、改状态、改 session，以及按 msg ID 取正文，都检查实际持久记录所属的 inbox。用户驱动 Zone Agent 的具名 inbox 时，还需对该精确资源显式授予 `delegate`；普通观察权限仍然只读。`post_send` 的幂等作用域也按发送方 mailbox 划分，同一 key 在不同 session 内互不复用。
+
+`list_sessions`、`list_session` 和 owner UI 状态等聚合接口需要 `obj://msg-center/owners/<did>` 的权限；单 inbox 授权不能借它们读取其它会话。dispatch、delivery queue、全局 UI 状态和对象下载各有独立资源权限，不能仅凭 inbox 授权访问。网络 RPC 缺少 token 会被拒绝；无 token 的进程内调用仍视为服务内部调用。
+
+变更通知为 `/msg_center/<owner_token>/<BOX_KIND>/<hex(UTF-8 mailbox)>/changed`，payload 带精确 `mailbox`。移动向源和目标各发送通知。订阅者需获得相应 kevent 路径权限，并以精确 inbox 轮询补偿丢失的通知。
+
+地址必须规范：DID 为裸 DID（保留 DID 自身的合法编码）；原始 session ID 为 1–200 个字符，禁止首尾空白、控制字符、`.` 和 `..`。session 中的斜杠、内部空格、Unicode、百分号等按 UTF-8 编码成单一路径段（大写百分号编码；字母、数字、`-._~:@` 保留）。解析后必须重新编码得到相同地址，禁止空尾斜杠、裸通配符或大小写不同的编码别名。SDK 的 `MailboxAddress::new` / `mailboxAddress` 负责编码；数据库仍保存原始 session ID。
 
 ### 2.4 DeliveryRecord：投递队列、重试和结果
 
@@ -322,7 +349,7 @@ def post_send(msg_obj, idempotency_key=None):
 
 ### 4.4 投递执行与回报
 
-executor（MessageHub / tunnel）通过 `get_next(transport_did, DELIVERY_QUEUE, WAIT, lock_on_take=true)` 以 CAS 抢占方式取任务（`WAIT → SENDING`），执行后调用：
+executor（MessageHub / tunnel）通过 `get_next_delivery(transport_did, lock_on_take=true)` 以 CAS 抢占方式取任务（`WAIT → SENDING`），执行后调用：
 
 ```python
 def report_delivery(delivery_id, result):
@@ -667,7 +694,12 @@ update_record_state(owner, record_id, recipient_state)   # 已读/归档/删除
 set_session_state(owner, session_id, key, value)         # 此处指易失 SessionRuntimeState，不是共享状态修改
 
 # 队列（仅 executor / agent pump 使用，UI 不可见）
-get_next(owner, box_or_queue, state_filter, lock_on_take)
+get_next(mailbox, box_kind, state_filter, lock_on_take)
+peek_box(mailbox, box_kind, state_filter, limit, with_object)
+list_box_by_time(mailbox, box_kind, state_filter, limit, cursor_sort_key, cursor_record_id, descending, with_object)
+list_mailboxes(owner, box_kind)  # owner 集合授权；仅返回有 UNREAD 的地址
+move_record(record_id, mailbox)
+get_next_delivery(transport_did, lock_on_take, with_object)
 ```
 
 群聊 read receipt（`MsgReceiptObj`，per-reader）见 Self-Host-Group 文档；其存储同样遵守"独立对象 + 索引"模式。

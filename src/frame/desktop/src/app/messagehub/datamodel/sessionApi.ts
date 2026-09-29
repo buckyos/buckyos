@@ -53,6 +53,7 @@ export interface IngressContext {
 
 /** A mailbox owner's reference to one immutable MsgObject. */
 export interface MailboxRecord {
+  mailbox: string
   record_id: string
   owner: DID
   box_kind: MailboxKind
@@ -304,7 +305,7 @@ export const deleteSession = (owner: DID, sessionId: string) => call<OwnerSessio
 
 export const updateRecordState = (recordId: string, newState: RecipientState) => call<MailboxRecord>('msg.update_record_state', { record_id: recordId, new_state: newState })
 export const getRecord = (recordId: string, withObject = true) => call<MailboxRecordWithObject | null>('msg.get_record', { record_id: recordId, with_object: withObject })
-export const listBoxByTime = (input: { owner: DID; box_kind: MailboxKind; limit?: number; cursor_sort_key?: number; cursor_record_id?: string; descending?: boolean; with_object?: boolean }) => call<MailboxRecordPage | null>('msg.list_box_by_time', input as unknown as Record<string, unknown>).then(page => page ?? {})
+export const listBoxByTime = (input: { mailbox: string; box_kind: MailboxKind; limit?: number; cursor_sort_key?: number; cursor_record_id?: string; descending?: boolean; with_object?: boolean }) => call<MailboxRecordPage | null>('msg.list_box_by_time', input as unknown as Record<string, unknown>).then(page => page ?? {})
 
 /* ── Send ── */
 

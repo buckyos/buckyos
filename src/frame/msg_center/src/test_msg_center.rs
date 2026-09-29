@@ -224,7 +224,11 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
 
     let inbox = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -243,7 +247,11 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
 
     let next = center
         .handle_get_next(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -256,7 +264,15 @@ async fn dispatch_single_chat_goes_to_inbox_and_locking_moves_state() {
     assert_eq!(next.record.state, RecipientState::Reading);
 
     let no_more_unread = center
-        .handle_get_next(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_get_next(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert!(no_more_unread.is_none());
@@ -267,7 +283,7 @@ async fn dispatch_stranger_goes_to_request_box() {
     let (center, _tmp) = new_center("dispatch_request").await;
     let sender = DID::new("bns", "sender-b");
     let recipient = DID::new("bns", "recipient-b");
-    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
 
     let dispatch = center
         .handle_dispatch(msg, None, None, ctx())
@@ -278,7 +294,11 @@ async fn dispatch_stranger_goes_to_request_box() {
 
     let inbox = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -290,7 +310,15 @@ async fn dispatch_stranger_goes_to_request_box() {
     assert_eq!(inbox.len(), 0);
 
     let request_box = center
-        .handle_peek_box(recipient, MailboxKind::RequestBox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::RequestBox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(request_box.len(), 1);
@@ -325,7 +353,7 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
 
     let group_box = center
         .handle_peek_box(
-            group_id.clone(),
+            buckyos_api::MailboxAddress::new(group_id.clone(), Some(group_id.to_string())).unwrap(),
             MailboxKind::GroupInbox,
             None,
             None,
@@ -342,13 +370,27 @@ async fn dispatch_group_message_creates_group_and_agent_views() {
     );
 
     let agent1_box = center
-        .handle_peek_box(agent_1, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(agent_1, Some(group_id.to_string())).unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(agent1_box.len(), 1);
 
     let agent2_box = center
-        .handle_peek_box(agent_2, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(agent_2, Some(group_id.to_string())).unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(agent2_box.len(), 1);
@@ -393,7 +435,15 @@ async fn post_send_to_endpoint_did_creates_sent_and_delivery_records() {
     ));
 
     let sent_box = center
-        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(author, Some(format!("dm:{}", target.to_string())))
+                .unwrap(),
+            MailboxKind::Sent,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(sent_box.len(), 1);
@@ -462,7 +512,14 @@ async fn post_send_to_shareable_did_fails_without_message_hub() {
 
     // Phase-1 failure keeps the database clean: no SENT record was written.
     let sent_box = center
-        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(author, None).unwrap(),
+            MailboxKind::Sent,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert!(sent_box.is_empty());
@@ -491,7 +548,14 @@ async fn post_send_rejects_message_without_target() {
 
     assert!(matches!(err, kRPC::RPCErrors::ParseRequestError(_)));
     let sent_box = center
-        .handle_peek_box(author, MailboxKind::Sent, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(author, None).unwrap(),
+            MailboxKind::Sent,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert!(sent_box.is_empty());
@@ -565,7 +629,7 @@ async fn report_delivery_handles_success_and_failure_paths() {
     assert_eq!(failed_record.attempts, 1);
     assert!(failed_record.last_error.is_some());
 
-    let success_msg = make_msg(sender, vec![target], MsgObjKind::Chat);
+    let success_msg = make_msg(sender.clone(), vec![target], MsgObjKind::Chat);
     let success_post = center
         .handle_post_send(success_msg, None, ctx())
         .await
@@ -601,7 +665,7 @@ async fn retryable_failure_requeues_with_backoff() {
         .unwrap();
     let sender = DID::new("bns", "sender-retry");
     let target = DID::new("msgtunnel", "42.user.tg-retry-tunnel");
-    let msg = make_msg(sender, vec![target], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![target], MsgObjKind::Chat);
     let post = center.handle_post_send(msg, None, ctx()).await.unwrap();
     let delivery_id = post.deliveries[0].delivery_id.clone();
 
@@ -647,7 +711,7 @@ async fn update_record_state_checks_transition_rules() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     center
         .handle_dispatch(
             msg,
@@ -662,7 +726,15 @@ async fn update_record_state_checks_transition_rules() {
         .unwrap();
 
     let inbox = center
-        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     let record_id = inbox[0].record.record_id.clone();
@@ -698,7 +770,7 @@ async fn dispatch_replay_preserves_existing_recipient_state() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     let ingress = IngressContext {
         context_id: Some(context_id),
         ..Default::default()
@@ -714,7 +786,11 @@ async fn dispatch_replay_preserves_existing_recipient_state() {
         .unwrap();
     let inbox = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -740,7 +816,11 @@ async fn dispatch_replay_preserves_existing_recipient_state() {
         .unwrap();
     let record = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -761,7 +841,11 @@ async fn dispatch_replay_preserves_existing_recipient_state() {
         .unwrap();
     let record = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -781,7 +865,15 @@ async fn dispatch_replay_preserves_existing_recipient_state() {
         .await
         .unwrap();
     let record = center
-        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(record[0].record.state, RecipientState::Deleted);
@@ -804,7 +896,7 @@ async fn update_record_session_sets_session_id() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     center
         .handle_dispatch(
             msg,
@@ -819,13 +911,21 @@ async fn update_record_session_sets_session_id() {
         .unwrap();
 
     let inbox = center
-        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     let record_id = inbox[0].record.record_id.clone();
 
     let updated = center
-        .handle_update_record_session(record_id.clone(), " ui-session-record ".to_string(), ctx())
+        .handle_update_record_session(record_id.clone(), "ui-session-record".to_string(), ctx())
         .await
         .unwrap();
     assert_eq!(updated.session_id.as_deref(), Some("ui-session-record"));
@@ -918,7 +1018,7 @@ async fn list_box_by_time_supports_pagination() {
         .unwrap();
 
     let first_msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
-    let second_msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let second_msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     center
         .handle_dispatch(
             first_msg,
@@ -946,7 +1046,11 @@ async fn list_box_by_time_supports_pagination() {
 
     let page_1 = center
         .handle_list_box_by_time(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             Some(1),
@@ -964,7 +1068,8 @@ async fn list_box_by_time_supports_pagination() {
 
     let page_2 = center
         .handle_list_box_by_time(
-            recipient,
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
             MailboxKind::Inbox,
             None,
             Some(1),
@@ -1194,7 +1299,11 @@ async fn idempotency_key_prevents_duplicate_records() {
 
     let inbox = center
         .handle_peek_box(
-            recipient.clone(),
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
             MailboxKind::Inbox,
             None,
             None,
@@ -1205,7 +1314,7 @@ async fn idempotency_key_prevents_duplicate_records() {
         .unwrap();
     assert_eq!(inbox.len(), 1);
 
-    let send_msg = make_msg(sender, vec![endpoint_target], MsgObjKind::Chat);
+    let send_msg = make_msg(sender.clone(), vec![endpoint_target], MsgObjKind::Chat);
     let first_post = center
         .handle_post_send(
             send_msg.clone(),
@@ -1255,7 +1364,7 @@ async fn idempotency_key_survives_message_center_restart() {
         .await
         .unwrap();
 
-    let msg = make_msg(sender, vec![recipient.clone()], MsgObjKind::Chat);
+    let msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
     let first_dispatch = first_center
         .handle_dispatch(
             msg.clone(),
@@ -1287,7 +1396,15 @@ async fn idempotency_key_survives_message_center_restart() {
     assert_eq!(first_dispatch, second_dispatch);
 
     let inbox = second_center
-        .handle_peek_box(recipient, MailboxKind::Inbox, None, None, None, ctx())
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(recipient, Some(format!("dm:{}", sender.to_string())))
+                .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
         .await
         .unwrap();
     assert_eq!(inbox.len(), 1);
@@ -2025,6 +2142,15 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
 
     #[async_trait::async_trait]
     impl SessionTokenVerifier for StaticKeyVerifier {
+        async fn authorize(
+            &self,
+            _token: &str,
+            _resource: &str,
+            _action: &str,
+        ) -> std::result::Result<(), RPCErrors> {
+            Ok(())
+        }
+
         async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
             let mut parsed = RPCSessionToken::from_string(token)?;
             parsed.verify_by_key(&self.key)?;
@@ -2041,6 +2167,375 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
             Ok(self.agents.contains(did))
         }
+    }
+
+    struct ScopedVerifier {
+        inner: StaticKeyVerifier,
+        resource: String,
+        write: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SessionTokenVerifier for ScopedVerifier {
+        async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors> {
+            self.inner.verify(token).await
+        }
+        async fn resolve_user_did(&self, user: &str) -> std::result::Result<DID, RPCErrors> {
+            self.inner.resolve_user_did(user).await
+        }
+        async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+            self.inner.is_zone_agent(did).await
+        }
+        async fn authorize(
+            &self,
+            _token: &str,
+            resource: &str,
+            action: &str,
+        ) -> std::result::Result<(), RPCErrors> {
+            if resource == self.resource && (action == "read" || self.write) {
+                Ok(())
+            } else {
+                Err(RPCErrors::NoPermission("outside granted mailbox".into()))
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn session_mailbox_grant_cannot_read_consume_or_move_other_sessions() {
+        let (center, _tmp) = new_center("scoped-mailbox").await;
+        let owner = DID::new("bns", "alice");
+        let peer = DID::new("bns", "peer");
+        let a = buckyos_api::MailboxAddress::new(owner.clone(), Some("a".into())).unwrap();
+        let b = buckyos_api::MailboxAddress::new(owner.clone(), Some("b".into())).unwrap();
+        let default = buckyos_api::MailboxAddress::new(owner.clone(), None).unwrap();
+        grant(&center, &peer, &owner, "scoped").await;
+        for session in ["a", "b", "default-source"] {
+            let mut msg = make_msg(peer.clone(), vec![owner.clone()], MsgObjKind::Chat);
+            msg.thread.topic = Some(session.into());
+            inbound(&center, msg, "scoped", session).await;
+        }
+        let seed =
+            buckyos_api::MailboxAddress::new(owner.clone(), Some("default-source".into())).unwrap();
+        let seed_record = center
+            .handle_get_next(seed, MailboxKind::Inbox, None, Some(false), None, ctx())
+            .await
+            .unwrap()
+            .unwrap()
+            .record;
+        center
+            .handle_move_record(seed_record.record_id.clone(), default.clone(), ctx())
+            .await
+            .unwrap();
+        let other = center
+            .handle_get_next(
+                b.clone(),
+                MailboxKind::Inbox,
+                None,
+                Some(false),
+                None,
+                ctx(),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .record;
+        center
+            .handle_archive_session(owner.clone(), "a".into(), ctx())
+            .await
+            .unwrap();
+        let pending = center
+            .handle_list_mailboxes(owner.clone(), MailboxKind::Inbox, ctx())
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 3);
+        for mailbox in [&default, &a, &b] {
+            assert!(pending.contains(mailbox));
+        }
+        center.set_token_verifier(Arc::new(ScopedVerifier {
+            inner: StaticKeyVerifier {
+                key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+                users: HashMap::from([("alice".into(), owner.clone())]),
+                agents: vec![],
+            },
+            resource: a.resource(MailboxKind::Inbox),
+            write: true,
+        }));
+        let mine = center
+            .handle_peek_box(
+                a.clone(),
+                MailboxKind::Inbox,
+                None,
+                None,
+                None,
+                user_ctx("alice"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mine.len(), 1);
+        assert_eq!(mine[0].record.mailbox, a);
+        for mailbox in [b.clone(), default.clone()] {
+            assert!(is_denied(
+                center
+                    .handle_get_next(
+                        mailbox.clone(),
+                        MailboxKind::Inbox,
+                        None,
+                        None,
+                        None,
+                        user_ctx("alice")
+                    )
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_peek_box(
+                        mailbox.clone(),
+                        MailboxKind::Inbox,
+                        None,
+                        None,
+                        None,
+                        user_ctx("alice")
+                    )
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_list_box_by_time(
+                        mailbox,
+                        MailboxKind::Inbox,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        user_ctx("alice")
+                    )
+                    .await
+            ));
+        }
+        for record in [&other, &seed_record] {
+            assert!(is_denied(
+                center
+                    .handle_get_record(record.record_id.clone(), Some(true), user_ctx("alice"))
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_get_message(record.msg_id.clone(), user_ctx("alice"))
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_update_record_state(
+                        record.record_id.clone(),
+                        RecipientState::Read,
+                        user_ctx("alice")
+                    )
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_update_record_session(
+                        record.record_id.clone(),
+                        "a".into(),
+                        user_ctx("alice")
+                    )
+                    .await
+            ));
+            assert!(is_denied(
+                center
+                    .handle_move_record(record.record_id.clone(), a.clone(), user_ctx("alice"))
+                    .await
+            ));
+        }
+        let mine_id = mine[0].record.record_id.clone();
+        assert!(is_denied(
+            center
+                .handle_move_record(mine_id.clone(), b.clone(), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_update_record_session(mine_id.clone(), "b".into(), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_mailboxes(owner.clone(), MailboxKind::Inbox, user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_sessions(
+                    owner.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    user_ctx("alice")
+                )
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_get_next_delivery(owner.clone(), None, Some(true), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_get_next(
+                    a.clone(),
+                    MailboxKind::Inbox,
+                    None,
+                    None,
+                    None,
+                    RPCContext {
+                        from_ip: Some("127.0.0.1".parse().unwrap()),
+                        ..Default::default()
+                    }
+                )
+                .await
+        ));
+        let taken = center
+            .handle_get_next(
+                a.clone(),
+                MailboxKind::Inbox,
+                None,
+                None,
+                None,
+                user_ctx("alice"),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(taken.record.record_id, mine_id);
+        assert_eq!(taken.record.state, RecipientState::Reading);
+        assert!(center
+            .handle_get_next(
+                a.clone(),
+                MailboxKind::Inbox,
+                None,
+                None,
+                None,
+                user_ctx("alice")
+            )
+            .await
+            .unwrap()
+            .is_none());
+        center
+            .handle_update_record_state(mine_id, RecipientState::Read, user_ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(
+            center
+                .handle_get_record(other.record_id, None, ctx())
+                .await
+                .unwrap()
+                .unwrap()
+                .record
+                .state,
+            RecipientState::Unread
+        );
+        assert_eq!(
+            center
+                .handle_get_next(default, MailboxKind::Inbox, None, None, None, ctx())
+                .await
+                .unwrap()
+                .unwrap()
+                .record
+                .record_id,
+            seed_record.record_id
+        );
+        center.set_token_verifier(Arc::new(ScopedVerifier {
+            inner: StaticKeyVerifier {
+                key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+                users: HashMap::from([("alice".into(), owner)]),
+                agents: vec![],
+            },
+            resource: b.resource(MailboxKind::Inbox),
+            write: false,
+        }));
+        assert!(center
+            .handle_get_next(
+                b.clone(),
+                MailboxKind::Inbox,
+                None,
+                Some(false),
+                None,
+                user_ctx("alice")
+            )
+            .await
+            .unwrap()
+            .is_some());
+        assert!(is_denied(
+            center
+                .handle_get_next(
+                    b,
+                    MailboxKind::Inbox,
+                    None,
+                    Some(true),
+                    None,
+                    user_ctx("alice")
+                )
+                .await
+        ));
+    }
+
+    #[tokio::test]
+    async fn delegated_agent_session_is_consumable_through_the_rpc_boundary() {
+        use kRPC::{RPCHandler, RPCRequest, RPCResult};
+        let (center, _tmp) = new_center("delegated-agent").await;
+        let user = DID::new("bns", "alice");
+        let agent = DID::new("web", "agent.zone.example");
+        center.register_local_recipients([agent.clone()]);
+        let address =
+            buckyos_api::MailboxAddress::new(agent.clone(), Some("approval/1".into())).unwrap();
+        grant(&center, &user, &agent, "delegate").await;
+        let mut msg = make_msg(user.clone(), vec![agent.clone()], MsgObjKind::Chat);
+        msg.thread.topic = Some("approval/1".into());
+        inbound(&center, msg, "delegate", "delegate").await;
+        let install_grant = |write| {
+            center.set_token_verifier(Arc::new(ScopedVerifier {
+                inner: StaticKeyVerifier {
+                    key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+                    users: HashMap::from([("alice".into(), user.clone())]),
+                    agents: vec![agent.clone()],
+                },
+                resource: address.resource(MailboxKind::Inbox),
+                write,
+            }))
+        };
+        let server = buckyos_api::MsgCenterServerHandler::new(center.clone());
+        let request = || {
+            let mut req = RPCRequest::new(
+                "msg.get_next",
+                json!({"mailbox": address.to_string(), "box_kind": "INBOX", "lock_on_take": true}),
+            );
+            req.token = user_ctx("alice").token;
+            req
+        };
+        let ip = "127.0.0.1".parse().unwrap();
+        install_grant(false);
+        assert!(is_denied(server.handle_rpc_call(request(), ip).await));
+        install_grant(true);
+        let response = server.handle_rpc_call(request(), ip).await.unwrap();
+        match response.result {
+            RPCResult::Success(value) => {
+                assert_eq!(
+                    value["record"]["mailbox"],
+                    json!("did:web:agent.zone.example/approval%2F1")
+                );
+                assert_eq!(value["record"]["session_id"], json!("approval/1"));
+                assert_eq!(value["record"]["state"], json!("READING"));
+            }
+            other => panic!("unexpected response: {other:?}"),
+        }
+        let mut anonymous = request();
+        anonymous.token = None;
+        assert!(is_denied(server.handle_rpc_call(anonymous, ip).await));
     }
 
     fn signed_token(user_id: &str, principal_kind: TokenPrincipalKind) -> String {
@@ -2262,7 +2757,18 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         )
         .await;
         let inbox = center
-            .handle_peek_box(lucy.clone(), MailboxKind::Inbox, None, None, None, ctx())
+            .handle_peek_box(
+                buckyos_api::MailboxAddress::new(
+                    lucy.clone(),
+                    Some(format!("dm:{}", devtest.to_string())),
+                )
+                .unwrap(),
+                MailboxKind::Inbox,
+                None,
+                None,
+                None,
+                ctx(),
+            )
             .await
             .unwrap();
         assert_eq!(inbox.len(), 1);
@@ -2291,7 +2797,15 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .unwrap();
         assert_eq!(result.dropped_recipients, vec![lucy.clone()]);
         let inbox = center
-            .handle_peek_box(lucy, MailboxKind::Inbox, None, None, None, ctx())
+            .handle_peek_box(
+                buckyos_api::MailboxAddress::new(lucy, Some(format!("dm:{}", devtest.to_string())))
+                    .unwrap(),
+                MailboxKind::Inbox,
+                None,
+                None,
+                None,
+                ctx(),
+            )
             .await
             .unwrap();
         assert_eq!(inbox.len(), 1);
@@ -2440,5 +2954,119 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             ..Default::default()
         };
         assert_eq!(list_as(bob.clone(), system).await.unwrap().items.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn concurrent_consumers_take_each_record_once_and_moves_survive_restart() {
+    let (center, tmp) = new_center("concurrent-mailbox").await;
+    let owner = DID::new("bns", "consumer");
+    let peer = DID::new("bns", "producer");
+    let address = buckyos_api::MailboxAddress::new(owner.clone(), Some("work".into())).unwrap();
+    center
+        .handle_grant_temporary_access(
+            vec![peer.clone()],
+            "work".into(),
+            60,
+            Some(owner.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let mut msg = make_msg(peer, vec![owner.clone()], MsgObjKind::Chat);
+    msg.thread.topic = Some("work".into());
+    center
+        .handle_dispatch(
+            msg.clone(),
+            Some(IngressContext {
+                context_id: Some("work".into()),
+                ..Default::default()
+            }),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let (a, b) = tokio::join!(
+        center.handle_get_next(address.clone(), MailboxKind::Inbox, None, None, None, ctx()),
+        center.handle_get_next(address.clone(), MailboxKind::Inbox, None, None, None, ctx()),
+    );
+    let records: Vec<_> = [a.unwrap(), b.unwrap()].into_iter().flatten().collect();
+    assert_eq!(records.len(), 1);
+    let record = &records[0].record;
+    let default = buckyos_api::MailboxAddress::new(owner.clone(), None).unwrap();
+    center
+        .handle_move_record(record.record_id.clone(), default.clone(), ctx())
+        .await
+        .unwrap();
+    center
+        .handle_dispatch(
+            msg,
+            Some(IngressContext {
+                context_id: Some("work".into()),
+                ..Default::default()
+            }),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let conn = format!(
+        "sqlite:///{}?mode=rwc",
+        tmp.path().join("msg-center.db").display()
+    );
+    let reopened = open_center_at(&conn).await;
+    assert!(reopened
+        .handle_peek_box(address, MailboxKind::Inbox, None, None, None, ctx())
+        .await
+        .unwrap()
+        .is_empty());
+    let moved = reopened
+        .handle_peek_box(default, MailboxKind::Inbox, None, None, None, ctx())
+        .await
+        .unwrap();
+    assert_eq!(moved.len(), 1);
+    assert!(moved[0].record.session_id.is_none());
+    assert_eq!(moved[0].record.state, RecipientState::Reading);
+}
+
+#[tokio::test]
+async fn post_send_idempotency_key_is_scoped_to_the_sender_session() {
+    let (center, _tmp) = new_center("session-idempotency").await;
+    center.set_message_hub_did(DID::new("bns", "hub"));
+    let owner = DID::new("bns", "sender");
+    let peer = DID::new("bns", "recipient");
+    let mut results = Vec::new();
+    for session in ["session-a", "session-b"] {
+        let mut msg = make_msg(owner.clone(), vec![peer.clone()], MsgObjKind::Chat);
+        msg.thread.topic = Some(session.into());
+        let expected = msg.gen_obj_id().0;
+        let first = center
+            .handle_post_send(msg.clone(), Some("same-key".into()), ctx())
+            .await
+            .unwrap();
+        let replay = center
+            .handle_post_send(msg, Some("same-key".into()), ctx())
+            .await
+            .unwrap();
+        assert!(first.ok);
+        assert_eq!(first.msg_id, expected);
+        assert_eq!(first.msg_id, replay.msg_id);
+        results.push(first.msg_id);
+    }
+    assert_ne!(results[0], results[1]);
+}
+
+#[test]
+fn malformed_record_owners_are_rejected_without_panicking() {
+    for record_id in [
+        "",
+        "did",
+        "did:",
+        "did:bns:",
+        "alice|INBOX|msg|v",
+        "did:bns:alice/session|INBOX|msg|v",
+    ] {
+        assert!(MessageCenter::owner_from_record_id(record_id).is_err());
     }
 }

@@ -167,6 +167,14 @@ pub(crate) async fn serve(center: &MessageCenter, req: &Request<Body>) -> Option
         Err(_) => return Some(text_response(StatusCode::UNAUTHORIZED, "unauthenticated")),
     }
 
+    if center
+        .authorize_resource(&ctx, "obj://msg-center/objects", "read")
+        .await
+        .is_err()
+    {
+        return Some(text_response(StatusCode::FORBIDDEN, "object access denied"));
+    }
+
     let runtime = match get_buckyos_api_runtime() {
         Ok(runtime) => runtime,
         Err(_) => {

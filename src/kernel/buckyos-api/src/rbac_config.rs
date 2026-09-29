@@ -151,6 +151,23 @@ p, users,obj://config/services/{service}/info,read,allow
 p, users,obj://config/services/{service}/instances/{node},write,allow
 p, users,obj://task/{users},read,allow
 
+p, users,obj://msg-center/objects,read,allow
+p, admin,obj://msg-center/objects,read,allow
+p, users,obj://msg-center/inbox/*,read|write,allow
+p, users,obj://msg-center/sent/*,read|write,allow
+p, users,obj://msg-center/group_inbox/*,read|write,allow
+p, users,obj://msg-center/request_box/*,read|write,allow
+p, users,obj://msg-center/owners/*,read|write,allow
+p, admin,obj://msg-center/inbox/*,read|write,allow
+p, admin,obj://msg-center/sent/*,read|write,allow
+p, admin,obj://msg-center/group_inbox/*,read|write,allow
+p, admin,obj://msg-center/request_box/*,read|write,allow
+p, admin,obj://msg-center/owners/*,read|write,allow
+p, system:opendan,obj://msg-center/*,all,allow
+p, system:msg-center,obj://msg-center/*,all,allow
+p, agent_runtime,obj://msg-center/*,all,allow
+p, agent,obj://msg-center/*,all,allow
+
 g, system:node-daemon, kernel
 g, system:scheduler, kernel
 g, system:system-config, kernel
@@ -240,6 +257,90 @@ mod tests {
     // otherwise a parallel test can swap the policy out from under us.
     lazy_static! {
         static ref TEST_LOCK: Mutex<()> = Mutex::new(());
+    }
+
+    #[tokio::test]
+    async fn mailbox_grant_is_exact_and_does_not_authorize_owner_collections() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some(
+            r#"
+g, alice, users
+g, app:session-ui, app
+p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allow
+"#,
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let resource = "obj://msg-center/inbox/did:bns:alice/session-a";
+        assert!(rbac::enforce("alice", "app:session-ui", resource, "read", None).await);
+        assert!(rbac::enforce("alice", "app:session-ui", resource, "write", None).await);
+        assert!(!rbac::enforce("alice", "app:session-ui", resource, "delegate", None).await);
+        for resource in [
+            "obj://msg-center/inbox/did:bns:alice/session-b",
+            "obj://msg-center/inbox/did:bns:alice/session-a-child",
+            "obj://msg-center/inbox/did:bns:alice",
+            "obj://msg-center/owners/did:bns:alice",
+            "obj://msg-center/sent/did:bns:alice/session-a",
+            "obj://msg-center/objects",
+            "obj://msg-center/delivery",
+        ] {
+            assert!(
+                !rbac::enforce("alice", "app:session-ui", resource, "read", None).await,
+                "{resource}"
+            );
+        }
+        assert!(rbac::enforce("alice", "system:control-panel", resource, "read", None).await);
+    }
+
+    #[tokio::test]
+    async fn mailbox_grants_escape_pattern_metacharacters_without_aliases() {
+        use crate::{MailboxAddress, MailboxKind};
+        use name_lib::DID;
+        let _guard = TEST_LOCK.lock().await;
+        let address =
+            MailboxAddress::new(DID::new("web", "agent.zone"), Some("approval.1".into())).unwrap();
+        let resource = address.resource(MailboxKind::Inbox);
+        assert_eq!(
+            resource,
+            "obj://msg-center/inbox/did:web:agent%2Ezone/approval%2E1"
+        );
+        let policy = format!("g, alice, users\ng, app:session-ui, app\np, app:session-ui,{resource},read,allow\np, app:session-ui,{},read,allow", address.owner_resource());
+        let config = build_current_rbac_config(Some(&policy));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        assert!(rbac::enforce("alice", "app:session-ui", &resource, "read", None).await);
+        for (owner, session) in [
+            ("agentXzone", "approval.1"),
+            ("agent.zone", "approvalX1"),
+            ("agent%2Ezone", "approval.1"),
+            ("agent.zone", "approval%2E1"),
+        ] {
+            let other = MailboxAddress::new(DID::new("web", owner), Some(session.into())).unwrap();
+            assert!(
+                !rbac::enforce(
+                    "alice",
+                    "app:session-ui",
+                    &other.resource(MailboxKind::Inbox),
+                    "read",
+                    None
+                )
+                .await
+            );
+            if owner != "agent.zone" {
+                assert!(
+                    !rbac::enforce(
+                        "alice",
+                        "app:session-ui",
+                        &other.owner_resource(),
+                        "read",
+                        None
+                    )
+                    .await
+                );
+            }
+        }
     }
 
     #[tokio::test]

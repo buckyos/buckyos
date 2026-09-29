@@ -197,7 +197,7 @@ async fn bridge_reader_receives_daemon_published_events() {
     let data = expect_event_eventually(
         &daemon,
         &reader,
-        "/msg_center/alice/box_in_alice/changed",
+        "/msg_center/alice/INBOX/646964/changed",
         Duration::from_secs(10),
     )
     .await;
