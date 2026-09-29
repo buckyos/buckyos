@@ -10,6 +10,7 @@
 3. [细粒度验收与追溯附录](assertions.md)：保留四组 PRD 验收、15 条 TC、3 条数据边界补充、23 条原型子断言、可观测性与八字段记录，逐条映射到场景。
 4. [覆盖缺口附录](coverage-gaps.md)：33 个待补设计（12 P0 / 21 P1）和六组交叉条件；当前执行范围和未完成项见附录状态说明。
 5. [语义复核与新增协作场景](semantic-evaluation.md)：Jev 辅助评估的边界、八类协作问题、正反样本与旁路校准。
+6. [长文交付场景](long-form-writing.md)：两万字网络短篇小说与研究论文初稿的用户任务包、浏览器旅程、分层判据和证据要求。
 
 [产品 PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 与
 [原型 README](../../../src/frame/desktop/src/app/canvas/README.md) 是产品范围和当前实现入口。
