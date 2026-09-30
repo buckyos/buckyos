@@ -323,6 +323,23 @@ pub(crate) struct OpenAiCompatibleModelsDiscovery {
     transport: Arc<dyn OpenAiCompatibleModelsTransport>,
 }
 
+#[derive(Clone)]
+pub(crate) struct VolcengineArkModelsDiscovery(OpenAiCompatibleModelsDiscovery);
+
+impl VolcengineArkModelsDiscovery {
+    pub(crate) fn new(
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
+        transport: HttpTransport,
+    ) -> Self {
+        Self(OpenAiCompatibleModelsDiscovery::new(
+            provider_profile_id,
+            protocol_adapter_id,
+            transport,
+        ))
+    }
+}
+
 impl OpenAiCompatibleModelsDiscovery {
     pub(crate) fn new(
         provider_profile_id: impl Into<String>,
@@ -413,6 +430,155 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
         validate_discovery(&snapshot)?;
         Ok(snapshot)
     }
+}
+
+#[async_trait]
+impl ProviderDiscovery for VolcengineArkModelsDiscovery {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        validate_openai_compatible_models_context(
+            context,
+            &self.0.provider_profile_id,
+            &self.0.protocol_adapter_id,
+        )?;
+        let request = openai_compatible_models_request(context, &self.0.provider_profile_id)?;
+        let (models, revision) = discover_volcengine_ark_models(
+            self.0.transport.as_ref(),
+            request,
+            &self.0.provider_profile_id,
+        )
+        .await?;
+        let snapshot = ProviderDiscoverySnapshot {
+            revision,
+            discovered_at_ms: super::super::now_ms()?,
+            health: ProviderHealthState::Healthy,
+            models,
+        };
+        validate_discovery(&snapshot)?;
+        Ok(snapshot)
+    }
+}
+
+pub(super) async fn discover_volcengine_ark_models(
+    transport: &dyn OpenAiCompatibleModelsTransport,
+    request: HttpRequest,
+    provider: &str,
+) -> ProviderResult<(Vec<DiscoveredModel>, Option<String>)> {
+    let limit = request.max_response_bytes.unwrap_or(1024 * 1024);
+    let response = transport
+        .send(request)
+        .await
+        .map_err(|error| ProviderError::Discovery(error.to_string()))?;
+    ensure_openai_compatible_models_success(&response, provider)?;
+    let revision = response
+        .headers
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let value: serde_json::Value = response
+        .json(limit)
+        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))?;
+    if value
+        .get("object")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind != "list")
+    {
+        return Err(ProviderError::DiscoveryResponse(format!(
+            "{provider} models response must be a list"
+        )));
+    }
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::DiscoveryResponse(format!("{provider} models response requires data"))
+        })?;
+    let mut models = std::collections::BTreeMap::new();
+    for item in data {
+        let id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty() && !id.contains('@'))
+            .ok_or_else(|| {
+                ProviderError::DiscoveryResponse(format!("{provider} invalid model id"))
+            })?;
+        if item
+            .get("object")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind != "model")
+        {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} invalid model object"
+            )));
+        }
+        let mut model = catalog_model(id.into());
+        if matches!(
+            item.get("status").and_then(serde_json::Value::as_str),
+            Some("Retiring" | "Shutdown")
+        ) {
+            model.availability = ModelAvailability::Unavailable;
+            model.deprecated = true;
+        }
+        if let Some(task_types) = item.get("task_type").and_then(serde_json::Value::as_array) {
+            let mut api_types = Vec::new();
+            let mut add_api_type = |api_type| {
+                if !api_types.contains(&api_type) {
+                    api_types.push(api_type);
+                }
+            };
+            for task_type in task_types.iter().filter_map(serde_json::Value::as_str) {
+                match task_type {
+                    "TextGeneration" => {
+                        add_api_type(ApiType::Llm);
+                    }
+                    "VisualQuestionAnswering" => {
+                        add_api_type(ApiType::VisionOcr);
+                        add_api_type(ApiType::VisionCaption);
+                    }
+                    "TextEmbedding" => {
+                        add_api_type(ApiType::EmbeddingText);
+                    }
+                    "ImageEmbedding" => {
+                        add_api_type(ApiType::EmbeddingMultimodal);
+                    }
+                    "TextToImage" => {
+                        add_api_type(ApiType::ImageTextToImage);
+                    }
+                    "ImageToImage" => {
+                        add_api_type(ApiType::ImageImageToImage);
+                    }
+                    "TextToVideo" => {
+                        add_api_type(ApiType::VideoTextToVideo);
+                    }
+                    "ImageToVideo" => {
+                        add_api_type(ApiType::VideoImageToVideo);
+                    }
+                    "MultimodalToVideo" => {
+                        add_api_type(ApiType::VideoTextToVideo);
+                        add_api_type(ApiType::VideoImageToVideo);
+                    }
+                    "VideoEditing" => {
+                        add_api_type(ApiType::VideoToVideo);
+                    }
+                    "VideoExtension" => {
+                        add_api_type(ApiType::VideoExtend);
+                    }
+                    _ => {}
+                }
+            }
+            if !task_types.is_empty() {
+                model.api_types = Some(api_types);
+            }
+        }
+        if models.insert(id.to_owned(), model).is_some() {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} duplicate model id {id}"
+            )));
+        }
+    }
+    Ok((models.into_values().collect(), revision))
 }
 
 pub(super) async fn discover_model_ids(
@@ -795,8 +961,8 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 7,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 6,
+                    DOUBAO_PROFILE_ID => 9,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 7,
                     QWEN_PROFILE_ID => 4,
                     _ => 3,
                 }
@@ -810,12 +976,30 @@ mod tests {
                 assert!(rules.models.is_empty());
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
-                DOUBAO_PROFILE_ID => 4,
-                DOUBAO_AGENT_PLAN_PROFILE_ID => 3,
+                DOUBAO_PROFILE_ID => 7,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 4,
                 QWEN_PROFILE_ID => 8,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
+            if matches!(
+                provider.profile.provider_profile_id.as_str(),
+                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID
+            ) {
+                let vision_rule = rules
+                    .patterns
+                    .iter()
+                    .find(|rule| !rule.request_rules.is_empty())
+                    .unwrap();
+                assert_eq!(
+                    vision_rule.request_rules[0].defaults["max_output_tokens"],
+                    2048
+                );
+                assert_eq!(
+                    vision_rule.request_rules[0].defaults["reasoning"]["effort"],
+                    "minimal"
+                );
+            }
             assert_eq!(
                 rules
                     .patterns

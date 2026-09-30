@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-25.1",
-  "checked_at": "2026-09-25",
+  "revision": "official-provider-protocols-2026-09-29.2",
+  "checked_at": "2026-09-29",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1821,15 +1821,14 @@
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
       "endpoint_path": "/api/v3",
-      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/tts"},
+      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3"},
       "credential_type": "bearer",
       "instance_fields": {"region": "cn-beijing"},
       "official_first_party_model_ids": {
-        "llm": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
+        "llm": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628", "doubao-seed-translation-250915"],
         "vision.ocr": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "vision.caption": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "embedding.multimodal": ["doubao-embedding-vision-251215"],
-        "audio.tts": ["doubao-seed-tts-2.0"],
         "image.txt2img": ["doubao-seedream-5-0-pro-260628"],
         "image.img2img": ["doubao-seedream-5-0-pro-260628"],
         "video.txt2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
@@ -1847,7 +1846,6 @@
         "vision.ocr": "doubao-seed-2-0-lite-260428",
         "vision.caption": "doubao-seed-2-0-lite-260428",
         "embedding.multimodal": "doubao-embedding-vision-251215",
-        "audio.tts": "doubao-seed-tts-2.0",
         "image.txt2img": "doubao-seedream-5-0-pro-260628",
         "image.img2img": "doubao-seedream-5-0-pro-260628",
         "video.txt2video": "doubao-seedance-2-0-260128",
@@ -1874,6 +1872,24 @@
         "official_sources": ["https://www.volcengine.com/docs/82379/1585128", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
         "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
       }, {
+        "id": "doubao.translation.responses.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao",
+        "api_version": "v3",
+        "api_types": ["llm"],
+        "test_model_ids": {"llm": "doubao-seed-translation-250915"},
+        "operation": "responses.create",
+        "http_method": "POST",
+        "path": "/api/v3/responses",
+        "auth": {"kind": "header", "name": "authorization", "prefix": "Bearer "},
+        "content_type": "application/json",
+        "required_body_fields": ["model", "input"],
+        "allowed_body_fields": ["model", "input", "instructions", "max_output_tokens", "previous_response_id", "reasoning", "store", "stream", "temperature", "text", "thinking", "tool_choice", "tools", "top_p"],
+        "body_field_types": {"model": ["string"], "input": ["array"], "stream": ["boolean"], "reasoning": ["object"], "thinking": ["object"]},
+        "success_fixture": {"created_at": 1780000000, "id": "resp_doubao_translation_mock_1", "model": "doubao-seed-translation-250915", "object": "response", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": []}], "status": "completed", "id": "msg_translation_mock_1"}], "status": "completed", "store": false, "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
+        "official_sources": ["https://www.volcengine.com/docs/82379/1820188", "https://www.volcengine.com/docs/82379/1585128"],
+        "evidence_summary": "Doubao Seed Translation uses Responses only and requires translation_options.target_language as a supported language code in the user input_text content block."
+      }, {
         "id": "doubao.video-tasks.v3",
         "protocol_adapter_id": "doubao-responses",
         "error_fixture_key": "doubao",
@@ -1886,7 +1902,7 @@
         "content_type": "application/json",
         "required_body_fields": ["model", "content"],
         "allowed_body_fields": ["model", "content", "duration", "ratio", "resolution", "seed", "generate_audio", "omni_reference_task_type"],
-        "body_field_types": {"model": ["string"], "content": ["array"], "duration": ["number"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"], "omni_reference_task_type": ["string"]},
+        "body_field_types": {"model": ["string"], "content": ["array"], "duration": ["integer"], "ratio": ["string"], "resolution": ["string"], "seed": ["number"], "generate_audio": ["boolean"], "omni_reference_task_type": ["string"]},
         "async_protocol": "doubao_video",
         "async_steps": [
           {"name": "poll", "http_method": "GET", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"},
@@ -1894,9 +1910,9 @@
           {"name": "cancel", "http_method": "DELETE", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"}
         ],
         "success_fixture": {"id": "doubao_video_v3_mock_1", "status": "queued"},
-        "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": {"url": "http://mock/artifacts/doubao-v3.mp4"}}},
-        "official_sources": ["https://docs.volcengine.com/docs/82379/1520757?redirect=1", "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh", "https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
-        "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks; Seedance 2.5 uses omni_reference_task_type for edit and extend validation."
+        "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": "http://mock/artifacts/doubao-v3.mp4"}},
+        "official_sources": ["https://docs.volcengine.com/docs/ark/get-video-generation-task-api?lang=zh", "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh", "https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
+        "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks and returns the result URL as content.video_url; Seedance 2.5 uses omni_reference_task_type for edit and extend validation."
       }, {
         "id": "doubao.embedding-multimodal.v3",
         "protocol_adapter_id": "doubao-responses",
@@ -1931,29 +1947,6 @@
         "success_fixture": {"created": 1780000000, "data": [{"url": "http://mock/artifacts/doubao-standard.jpeg"}], "usage": {"generated_images": 1}},
         "official_sources": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
         "evidence_summary": "Standard Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
-      }, {
-        "id": "doubao.tts.v3",
-        "protocol_adapter_id": "doubao-responses",
-        "error_fixture_key": "doubao-tts",
-        "api_version": "v3",
-        "api_types": ["audio.tts"],
-        "operation": "tts.unidirectional",
-        "http_method": "POST",
-        "path": "/api/v3/tts/unidirectional",
-        "auth": {"kind": "header", "name": "x-api-key", "prefix": ""},
-        "required_headers": {"x-api-resource-id": "seed-tts-2.0", "x-api-request-id": "<uuid>", "x-control-require-usage-tokens-return": "*"},
-        "content_type": "application/json",
-        "required_body_fields": ["req_params"],
-        "allowed_body_fields": ["req_params"],
-        "body_field_types": {"req_params": ["object"]},
-        "success_content_type": "text/plain",
-        "success_chunk_fixtures": [
-          {"code": 0, "message": "", "data": "SUQz"},
-          {"code": 0, "message": "", "data": "BA==", "usage": {"text_words": 4}},
-          {"code": 20000000, "message": "OK", "data": null}
-        ],
-        "official_sources": ["https://www.volcengine.com/docs/6561/2528925?lang=zh"],
-        "evidence_summary": "Standard TTS uses X-Api-Key, a UUID request ID and seed-tts-2.0 against /api/v3/tts/unidirectional; usage-token return is requested with the documented control header."
       }]
     },
     {
@@ -2311,7 +2304,7 @@
     "deepseek": { "applicable_api_versions": ["v1"], "official_sources": ["https://api-docs.deepseek.com/quick_start/error_codes/"], "evidence_summary": "DeepSeek documents 400 invalid format, 401 authentication, 402 balance, 422 invalid parameters, 429 rate limit and 5xx service failures." },
     "doubao-agent-plan": { "applicable_api_versions": ["plan-v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Volcano Ark documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
     "doubao": { "applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/82379/1330312?lang=zh"], "evidence_summary": "Standard ModelArk documents OpenAI-compatible error envelopes and HTTP-aligned request, authentication, throttling and server failure codes." },
-    "doubao-tts": { "applicable_api_versions": ["v3", "plan-v3"], "official_sources": ["https://www.volcengine.com/docs/6561/2528925?lang=zh", "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Standard and Agent Plan TTS report authentication, request, throttling and service errors through HTTP status and code/message fields." },
+    "doubao-tts": { "applicable_api_versions": ["v3", "plan-v3"], "official_sources": ["https://www.volcengine.com/docs/6561/2528925?lang=zh", "https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Standard and Agent Plan TTS report authentication, request, throttling and service errors through HTTP status and header.code/header.message fields." },
     "qwen": { "applicable_api_versions": ["compatible-v1"], "official_sources": ["https://www.alibabacloud.com/help/en/model-studio/error-code"], "evidence_summary": "Alibaba Model Studio documents OpenAI-compatible error codes including invalid_request_error, invalid_api_key, access_denied, Throttling and InternalError." },
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
@@ -2401,10 +2394,10 @@
       { "scenario": "server_error", "status": 500, "body": { "error": { "code": "InternalServiceError", "message": "Internal service error", "param": "", "type": "InternalServerError" } } }
     ],
     "doubao-tts": [
-      { "scenario": "invalid_request", "status": 400, "body": { "code": 40000000, "message": "invalid request" } },
-      { "scenario": "authentication", "status": 401, "body": { "code": 40100000, "message": "invalid api key" } },
-      { "scenario": "rate_limit", "status": 429, "body": { "code": 42900000, "message": "rate limit reached" } },
-      { "scenario": "server_error", "status": 500, "body": { "code": 50000000, "message": "internal service error" } }
+      { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-tts-invalid", "code": 40000000, "message": "invalid request" } } },
+      { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-tts-auth", "code": 45000010, "message": "Invalid X-Api-Key" } } },
+      { "scenario": "rate_limit", "status": 429, "body": { "header": { "reqid": "mock-doubao-tts-rate-limit", "code": 42900000, "message": "rate limit reached" } } },
+      { "scenario": "server_error", "status": 500, "body": { "header": { "reqid": "mock-doubao-tts-server", "code": 50000000, "message": "internal service error" } } }
     ],
     "qwen": [
       { "scenario": "invalid_request", "status": 400, "body": { "error": { "code": "invalid_request_error", "message": "You must provide a model parameter", "type": "invalid_request_error" } } },

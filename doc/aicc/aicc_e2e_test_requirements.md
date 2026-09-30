@@ -559,7 +559,7 @@ T2 不覆盖同一 API type 的格式全集、多输入规模边界、参数排�
 
 - 请求命中 baseline 指定的 Provider instance 和 exact model。
 - Provider 返回真实 operation/request ID，或有其他可审计证据证明发生了线上调用。
-- task 达到正确终态，输出 schema、消息类型、artifact MIME 和可读性符合该 API type。
+- task 达到正确终态，输出 schema、消息类型、artifact MIME 和可读性符合该 API type；Provider 返回 URL artifact 时必须通过 AICC `/kapi/aicc/artifact/open` 下载验证，不得由 runner 直接请求 Provider URL。
 - 对含生成前置的二次创作单元，source task、source artifact、target task、Provider operation/request ID、exact model、Provider instance 和资源引用必须在报告中关联；如果 adapter 复用了 provider 原生内容标识，报告只能记录脱敏摘要和复用命中，不得泄露完整标识。
 - 推理结果通过 9.4 节规定的确定性断言或语义 rubric。
 - usage、cost、trace 和 Provider operation ID 归因到目标 instance、模型和 API type。

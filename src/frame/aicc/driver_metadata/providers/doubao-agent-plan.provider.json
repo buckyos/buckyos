@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",
@@ -51,6 +51,13 @@
     {
       "match": "doubao-seedance-*",
       "operations": { "video.txt2video": "ark.contents.generate", "video.img2video": "ark.contents.generate", "video.video2video": "ark.contents.generate", "video.extend": "ark.contents.generate" }
+    },
+    {
+      "match": "doubao-seed-*",
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" },
+      "request_rules": [
+        {"when": {"api_type": ["vision.ocr", "vision.caption"]}, "defaults": {"max_output_tokens": 2048, "reasoning": {"effort": "minimal"}}}
+      ]
     },
     {
       "match": "*",

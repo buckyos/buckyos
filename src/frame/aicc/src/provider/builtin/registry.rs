@@ -27,6 +27,7 @@ enum BuiltinDiscoveryFactory {
     Kimi,
     Glm,
     DeepSeek,
+    VolcengineArk,
     Sn,
     Standard,
 }
@@ -43,6 +44,10 @@ fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
         ("kimi-models", BuiltinDiscoveryFactory::Kimi),
         ("glm-models", BuiltinDiscoveryFactory::Glm),
         ("deepseek-models", BuiltinDiscoveryFactory::DeepSeek),
+        (
+            "volcengine-ark-models",
+            BuiltinDiscoveryFactory::VolcengineArk,
+        ),
         ("sn-models", BuiltinDiscoveryFactory::Sn),
         (
             "openai-compatible-models",
@@ -361,6 +366,13 @@ impl BuiltinProviderRegistry {
                 crate::protocol::DEEPSEEK_RESPONSES_ADAPTER_ID,
                 transport()?,
             )),
+            BuiltinDiscoveryFactory::VolcengineArk => Arc::new(
+                openai_responses_compatible::VolcengineArkModelsDiscovery::new(
+                    provider_profile_id,
+                    protocol_adapter_id,
+                    transport()?,
+                ),
+            ),
             BuiltinDiscoveryFactory::Sn => Arc::new(SnDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Standard => match self
                 .codecs

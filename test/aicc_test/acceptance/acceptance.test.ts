@@ -55,6 +55,7 @@ import {
 import { filterPhysicalModels } from "./model_coverage.ts";
 import {
   bindOfficialCatalogInstances,
+  fetchOfficialCatalogs,
   fetchOfficialModelIds,
   scopeInventoriesToRequestedCases,
 } from "./official_catalog.ts";
@@ -72,9 +73,10 @@ import {
 import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
-import { callInference, type RpcClient } from "./gateway.ts";
+import { callInference, openAiccArtifact, type RpcClient } from "./gateway.ts";
 import {
   buildT15Manifest,
+  contractTestModelId,
   loadProviderProtocolCatalog,
   protocolContract,
   type ProviderProtocolContract,
@@ -175,7 +177,7 @@ function t15FieldValue(
     return [{ type: "message", role: "user", content: "BUCKYOS-AICC-4827" }];
   }
   if (type === "object") return {};
-  if (type === "number") return 1;
+  if (type === "number" || type === "integer") return 1;
   if (type === "boolean") return true;
   return `t15-${field}`;
 }
@@ -214,6 +216,16 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
+  if (contract.id === "doubao.translation.responses.v3") {
+    fields.input = [{
+      role: "user",
+      content: [{
+        type: "input_text",
+        text: "Translate this marker: BUCKYOS-AICC-4827",
+        translation_options: { target_language: "en" },
+      }],
+    }];
+  }
   if (contract.api_types.includes("decision")) Object.assign(fields, contract.operation === "decisions.create" ? openrouterDecisionFixture.wire_request : decisionFixture.wire_request, {model});
   if (contract.id === "minimax.music-generation.v1") {
     fields.lyrics = "[Verse]\nBUCKYOS-AICC-4827";
@@ -543,6 +555,71 @@ test("official catalog fetches paginated Provider inventory independently of AIC
   assert.equal(requests[1].searchParams.get("after_id"), "page-1");
 });
 
+test("Doubao official catalog preserves lifecycle and task evidence without cross-product speech inventory", async () => {
+  const providerBaseline = await baseline();
+  const inventory = (await fetchOfficialCatalogs({
+    baseline: providerBaseline,
+    drivers: ["doubao"],
+    instanceNames: { doubao: "doubao-main" },
+    tokens: { doubao: "catalog-test-token" },
+    timeoutMs: 1_000,
+    fetcher: async () => new Response(JSON.stringify({
+      object: "list",
+      data: [
+        { id: "doubao-seed-current", object: "model", task_type: ["TextGeneration"] },
+        { id: "doubao-seed-retiring", object: "model", status: "Retiring", task_type: ["TextGeneration"] },
+        { id: "doubao-seed-shutdown", object: "model", status: "Shutdown", task_type: ["TextGeneration"] },
+      ],
+    }), { status: 200 }),
+  }))[0];
+  assert.deepEqual(
+    inventory.models.map((model) => model.provider_model_id),
+    ["doubao-seed-current", "doubao-seed-retiring", "doubao-seed-shutdown"],
+  );
+  assert.deepEqual(inventory.models[0].official_task_types, ["TextGeneration"]);
+  assert.equal(inventory.models[1].official_lifecycle_status, "Retiring");
+  assert.equal(inventory.models[2].official_lifecycle_status, "Shutdown");
+
+  const filtered = filterPhysicalModels({
+    baseline: providerBaseline,
+    source: "official_catalog",
+    inventories: [inventory],
+  });
+  assert.deepEqual(
+    filtered.inventories[0].models.map((model) => model.provider_model_id),
+    ["doubao-seed-current"],
+  );
+  assert.deepEqual(
+    filtered.coverage.filter((item) => item.reason === "deprecated_or_retiring")
+      .map((item) => item.provider_model_id),
+    ["doubao-seed-retiring", "doubao-seed-shutdown"],
+  );
+});
+
+test("Doubao T2 derives canonical cells from configured official task types", async () => {
+  const inventory: ProviderInventory = {
+    provider_driver: "doubao",
+    provider_instance_name: "doubao-main",
+    models: [{
+      exact_model: "future-ark-model-260101@doubao-main",
+      provider_model_id: "future-ark-model-260101",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+      official_task_types: ["TextGeneration", "VisualQuestionAnswering", "SpeechToText"],
+    }],
+  };
+  const result = analyzeProviderMatrix({
+    baseline: await baseline(),
+    officialInventories: [inventory],
+    aiccInventories: [inventory],
+  });
+  assert.deepEqual(result.mismatches, []);
+  assert.deepEqual(
+    result.cells.map((cell) => cell.api_type).sort(),
+    ["llm", "vision.caption", "vision.ocr"],
+  );
+});
+
 test("frozen official inventory is explicit and does not make a network request", async () => {
   const profile = (await baseline()).providers.find((item) =>
     item.provider_driver === "doubao-agent-plan"
@@ -632,6 +709,36 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
     {
       exact_model: `deepseek-v4.1-flash@${instance}`,
       provider_model_id: "deepseek-v4.1-flash",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `glm-5.3@${instance}`,
+      provider_model_id: "glm-5.3",
+      api_types: ["llm"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `glm-5.3-flash@${instance}`,
+      provider_model_id: "glm-5.3-flash",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `kimi-k2.7-code@${instance}`,
+      provider_model_id: "kimi-k2.7-code",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `kimi-k3@${instance}`,
+      provider_model_id: "kimi-k3",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `kimi-k2.8-preview@${instance}`,
+      provider_model_id: "kimi-k2.8-preview",
       api_types: ["llm"],
       logical_mounts: [],
     },
@@ -655,8 +762,22 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
   assert.deepEqual(
     result.cells.filter((cell) => cell.provider_model_id === "deepseek-v4.1-flash")
       .map((cell) => cell.api_type).sort(),
-    ["llm"],
+    ["llm", "vision.caption", "vision.ocr"],
   );
+  for (const model of ["glm-5.3-flash", "kimi-k2.7-code", "kimi-k3"]) {
+    assert.deepEqual(
+      result.cells.filter((cell) => cell.provider_model_id === model)
+        .map((cell) => cell.api_type).sort(),
+      ["llm", "vision.caption", "vision.ocr"],
+    );
+  }
+  for (const model of ["glm-5.3", "kimi-k2.8-preview"]) {
+    assert.deepEqual(
+      result.cells.filter((cell) => cell.provider_model_id === model)
+        .map((cell) => cell.api_type),
+      ["llm"],
+    );
+  }
 });
 
 test("SN official catalog requires an independent bearer session token", async () => {
@@ -784,6 +905,7 @@ test("T2 stops each selected Provider inventory refresh after its first success"
           ok: true,
           provider_instance_name: params.provider_instance_name,
           inventory_revision: `${params.provider_instance_name}-refresh`,
+          unmatched_count: 2,
         };
       },
     },
@@ -809,6 +931,10 @@ test("T2 stops each selected Provider inventory refresh after its first success"
   assert.deepEqual(
     result.evidence.map((item) => item.after_inventory_revision),
     ["openai-after", "claude-after"],
+  );
+  assert.deepEqual(
+    result.evidence.map((item) => item.unmatched_count),
+    [2, 2],
   );
 });
 
@@ -1427,6 +1553,35 @@ test("Provider credentials create one current-schema instance when the section i
   assert.equal(patched.providers[5].protocol_adapter_id, "doubao-responses");
 });
 
+test("Provider credentials create an explicitly named run-scoped instance without rewriting an existing account type", () => {
+  const original = {
+    providers: [{
+      provider_instance_name: "doubao-main",
+      provider_profile_id: "doubao",
+      protocol_adapter_id: "doubao-responses",
+      base_url: "https://ark.cn-beijing.volces.com/api/plan/v3",
+      credentials: { api_token: { locked: "agent-plan-token" } },
+    }],
+  };
+  const patched = applyProviderTokens(original, { doubao: "standard-token" }, {
+    doubao: "doubao-standard-t2",
+  }) as { providers: Array<Record<string, unknown>> };
+  assert.equal(original.providers.length, 1);
+  assert.equal(patched.providers.length, 2);
+  assert.equal(patched.providers[0].base_url, "https://ark.cn-beijing.volces.com/api/plan/v3");
+  assert.deepEqual(patched.providers[1], {
+    provider_instance_name: "doubao-standard-t2",
+    provider_type: "cloud_api",
+    provider_profile_id: "doubao",
+    protocol_adapter_id: "doubao-responses",
+    base_url: "https://ark.cn-beijing.volces.com/api/v3",
+    credentials: { api_token: { locked: "standard-token" } },
+    provider_rules_id: "doubao",
+    enabled: true,
+    timeout_ms: 300_000,
+  });
+});
+
 test("provider scheduler runs sessions concurrently within global and provider limits", async () => {
   const scheduler = new ProviderScheduler(3, {
     maxConcurrency: 2,
@@ -1971,6 +2126,38 @@ test("T2 LLM output variants build and assert JSON schema and tool-call contract
   );
 });
 
+test("T2 plain-text LLM marker assertion tolerates typographic separator spacing", () => {
+  const cell = {
+    case_id: "llm",
+    provider_driver: "doubao",
+    provider_instance: "doubao-standard-t2",
+    exact_model: "doubao-seed-character-251128@doubao-standard-t2",
+    provider_model_id: "doubao-seed-character-251128",
+    api_type: "llm",
+    method: "responses.create",
+    baseline_status: "active" as const,
+    input_kinds: ["text"],
+    output_kinds: ["text"],
+    source_urls: [],
+  };
+  const response = (text: string) => ({
+    task_id: "task",
+    status: "succeeded",
+    result: {
+      message: { role: "assistant", content: [{ type: "text", text }] },
+      usage: {},
+      cost: {},
+    },
+  });
+  assert.doesNotThrow(() =>
+    assertResponseShape(cell, response("BUCKYOS - AICC - 4827"))
+  );
+  assert.throws(() =>
+    assertResponseShape(cell, response("BUCKYOS AICC 4827")),
+    /omitted the requested acceptance marker/,
+  );
+});
+
 test("typed inference adapter removes the legacy request envelope", async () => {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   const client: RpcClient = {
@@ -2016,6 +2203,60 @@ test("typed inference adapter removes the legacy request envelope", async () => 
   assert.equal(calls[1].method, "images.generate");
   assert.equal(calls[1].params.prompt, "a fox");
   assert.equal("payload" in calls[1].params, false);
+});
+
+test("T2 artifact downloads go through the authenticated AICC endpoint", async (context) => {
+  const requests: Array<{
+    method?: string;
+    url?: string;
+    authorization?: string;
+    body: unknown;
+  }> = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests.push({
+      method: request.method,
+      url: request.url,
+      authorization: request.headers.authorization,
+      body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
+    });
+    response.writeHead(200, {
+      "content-type": "video/mp4",
+      "content-length": "12",
+    });
+    response.end(Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0]));
+  });
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() =>
+    new Promise<void>((resolvePromise, reject) =>
+      server.close((error) => error ? reject(error) : resolvePromise())
+    )
+  );
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+
+  const response = await openAiccArtifact({
+    gatewayUrl: `http://127.0.0.1:${address.port}/`,
+    sessionToken: "test-session-token",
+    url: "https://provider.example/artifacts/video.mp4",
+    artifactId: "provider-artifact-1",
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.arrayBuffer()).byteLength, 12);
+  assert.deepEqual(requests, [{
+    method: "POST",
+    url: "/kapi/aicc/artifact/open",
+    authorization: "Bearer test-session-token",
+    body: {
+      url: "https://provider.example/artifacts/video.mp4",
+      artifact_id: "provider-artifact-1",
+    },
+  }]);
 });
 
 test("T2 multimodal embedding request honors the selected input combination", () => {
@@ -2934,12 +3175,18 @@ test("T1.5 Provider mock serves every contract for all Provider profiles", async
           200,
           `${provider.provider_driver}/${contract.id} selection`,
         );
-        const model = provider.test_model_ids[apiType];
+        const model = contractTestModelId(provider, contract, apiType);
+        const extraBody =
+          ["doubao", "doubao-agent-plan"].includes(provider.provider_driver) &&
+            ["vision.ocr", "vision.caption"].includes(apiType) &&
+            model.startsWith("doubao-seed-")
+            ? { max_output_tokens: 2048, reasoning: { effort: "minimal" } }
+            : {};
         const providerRequest = t15ProviderRequest(
           baseUrl,
           contract,
           model,
-          {},
+          extraBody,
           apiType,
         );
         const response = await fetch(providerRequest.url, providerRequest.init);
@@ -3094,7 +3341,14 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
       assert.ok(Array.isArray(fixture.models));
     } else if (discovery.response_shape === "sn") {
       assert.ok(Array.isArray(fixture.items));
-    } else assert.ok(Array.isArray(fixture.data));
+    } else {
+      assert.ok(Array.isArray(fixture.data));
+      if (provider.provider_driver === "doubao") {
+        const models = fixture.data as Array<Record<string, unknown>>;
+        assert.ok(models.every((model) => Array.isArray(model.task_type)));
+        assert.ok(models.every((model) => model.id !== "doubao-seed-tts-2.0"));
+      }
+    }
   }
 });
 
@@ -3842,6 +4096,38 @@ test("report redaction removes secrets and totals statuses", () => {
   assert.equal(
     isProviderRestricted(
       new Error("The requested model does not support the agent plan feature"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("OpenAI ModelNotOpen: Your account has not activated the model example"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("OpenAI AccessDenied: you do not have access to the requested resource"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("OpenAI InvalidEndpointOrModel.NotFound: model does not exist or you do not have access to it"),
+    ),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(new Error("OpenAI InvalidEndpointOrModel.NotFound")),
+    false,
+  );
+  assert.equal(
+    isProviderRestricted(new Error("Doubao TTS Authentication: Invalid X-Api-Key")),
+    true,
+  );
+  assert.equal(
+    isProviderRestricted(
+      new Error("OpenAI AccountOverdueError: The request failed because your account has an overdue balance"),
     ),
     true,
   );

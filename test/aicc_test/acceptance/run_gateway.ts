@@ -13,6 +13,7 @@ import {
   callChatCompletions,
   callInference,
   loginGateway,
+  openAiccArtifact,
   type GatewaySession,
   type RpcClient,
 } from "./gateway.ts";
@@ -876,12 +877,12 @@ async function validateTerminalArtifacts(input: {
     } else if (typeof source.url === "string") {
       if (seen.has(`url:${source.url}`)) continue;
       seen.add(`url:${source.url}`);
-      const target = new URL(source.url);
-      const gateway = new URL(input.gatewayUrl);
-      const response = await fetch(target, target.origin === gateway.origin
-        ? { headers: { authorization: `Bearer ${input.sessionToken}` } }
-        : undefined);
-      if (!response.ok) throw new Error(`artifact URL download failed with HTTP ${response.status}`);
+      const response = await openAiccArtifact({
+        gatewayUrl: input.gatewayUrl,
+        sessionToken: input.sessionToken,
+        url: source.url,
+        artifactId: typeof source.artifact_id === "string" ? source.artifact_id : undefined,
+      });
       const declared = Number(response.headers.get("content-length"));
       if (Number.isFinite(declared) && declared > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
       const bytes = new Uint8Array(await response.arrayBuffer());
@@ -1134,6 +1135,7 @@ async function executeAcceptance(input: {
       options.providerLimitOverrides[driver]?.minIntervalMs ?? options.providerLimits.minIntervalMs,
     ])),
   });
+  const providerRuntimeAfterRefresh = await session.aicc.call("provider.list", {});
   const selectedInventories = selectSingleProviderInstances({
     inventories: refreshed.inventories,
     drivers: selectedDrivers,
@@ -2058,6 +2060,7 @@ async function executeAcceptance(input: {
       max_delay_ms: 30_000,
     },
     provider_inventory_refreshes: refreshed.evidence,
+    provider_runtime_after_refresh: providerRuntimeAfterRefresh,
     official_provider_catalogs: officialInventories.map((inventory) => ({
       provider_driver: inventory.provider_driver,
       provider_instance_name: inventory.provider_instance_name,

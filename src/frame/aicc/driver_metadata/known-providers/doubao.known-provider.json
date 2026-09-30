@@ -10,7 +10,7 @@
       "display_name": "Doubao (Volcengine Ark Standard Account)",
       "base_url": "https://ark.cn-beijing.volces.com/api/v3",
       "protocol_adapter_id": "doubao-responses",
-      "discovery_behavior_id": "openai-compatible-models",
+      "discovery_behavior_id": "volcengine-ark-models",
       "provider_rules_id": "doubao",
       "credential": {"kind": "bearer"},
       "connection": {
@@ -20,8 +20,7 @@
         "policy_region": {"mode": "optional", "default_value": "unknown", "allowed_values": ["unknown", "cn", "other"]},
         "operation_base_urls": {
           "ark.images.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3"
         }
       },
       "ui_hints": {

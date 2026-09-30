@@ -53,12 +53,13 @@
     {
       "id": "deepseek-v4.1-flash",
       "parameter_scale": "flash",
-      "api_types": ["llm"],
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
         "web_search": true,
+        "vision": true,
         "reasoning": true,
         "max_context_tokens": 1048576,
         "max_output_tokens": 393216
