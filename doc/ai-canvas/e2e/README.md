@@ -11,6 +11,7 @@
 4. [覆盖缺口附录](coverage-gaps.md)：33 个待补设计（12 P0 / 21 P1）和六组交叉条件；当前执行范围和未完成项见附录状态说明。
 5. [语义复核与新增协作场景](semantic-evaluation.md)：Jev 辅助评估的边界、八类协作问题、正反样本与旁路校准。
 6. [长文交付场景](long-form-writing.md)：两万字网络短篇小说与研究论文初稿的用户任务包、浏览器旅程、分层判据和证据要求。
+7. [交付物型场景目录](user-goal-scenarios.md)：W03–W20 的用户目标、输入变化、主要步骤、交付判据与原型能力边界。
 
 [产品 PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 与
 [原型 README](../../../src/frame/desktop/src/app/canvas/README.md) 是产品范围和当前实现入口。

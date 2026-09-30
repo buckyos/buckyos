@@ -1,6 +1,7 @@
 # AI Canvas：Agent 浏览器执行约定
 
-本文件服务于 [七条协作场景](test-requirements.md) 和 [长文交付场景](long-form-writing.md)。目标是让测试设计在 UI 变化后继续适用，
+本文件服务于 [七条协作场景](test-requirements.md)、[长文交付场景](long-form-writing.md) 和
+[交付物型场景目录](user-goal-scenarios.md)。目标是让测试设计在 UI 变化后继续适用，
 同时保留能复现当次运行的操作与证据。它不是自动化框架安装指南，也不引入产品实现改动。
 
 ## 1. 每次运行的输入
