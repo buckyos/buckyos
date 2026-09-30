@@ -12,6 +12,7 @@
  */
 
 import { isMockRuntime } from '../../runtime'
+import { previewSourceResolverFor } from './hostSources'
 import type { PreviewProvider } from './types'
 
 let provider: PreviewProvider | null = null
@@ -39,9 +40,30 @@ function dataModeOverride(): 'mock' | 'nfsp' | null {
 
 let installing: Promise<PreviewProvider> | null = null
 
+const CORE_SOURCE_KINDS = new Set(['cyfs-path', 'object-id', 'blob'])
+const routed = new WeakMap<PreviewProvider, PreviewProvider>()
+
+function withHostSources(base: PreviewProvider): PreviewProvider {
+  let wrapped = routed.get(base)
+  if (!wrapped) {
+    wrapped = {
+      id: base.id,
+      resolvePreviewSource(source, opts) {
+        const host = CORE_SOURCE_KINDS.has(source.kind) ? undefined : previewSourceResolverFor(source.kind)
+        return host ? host.resolvePreviewSource(source, opts) : base.resolvePreviewSource(source, opts)
+      },
+      enumerateContainer: (container, opts) => base.enumerateContainer(container, opts),
+      ensurePreviewWork: (request) => base.ensurePreviewWork(request),
+      getPreviewWork: (workKey, opts) => base.getPreviewWork(workKey, opts),
+    }
+    routed.set(base, wrapped)
+  }
+  return wrapped
+}
+
 /** Lazily installs the runtime's provider (idempotent, concurrent-safe). */
 export function ensurePreviewProvider(): Promise<PreviewProvider> {
-  if (provider) return Promise.resolve(provider)
+  if (provider) return Promise.resolve(withHostSources(provider))
   if (installing) return installing
   const mode = dataModeOverride() ?? (isMockRuntime() ? 'mock' : 'nfsp')
   installing = (mode === 'mock'
@@ -50,7 +72,7 @@ export function ensurePreviewProvider(): Promise<PreviewProvider> {
   ).then((created) => {
     if (!provider) provider = created
     installing = null
-    return provider
+    return withHostSources(provider)
   })
   return installing
 }

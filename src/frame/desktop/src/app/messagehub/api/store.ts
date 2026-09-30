@@ -29,13 +29,14 @@ import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, 
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
 import { projectOwner, UNASSIGNED_ENTITY_ID, type ProjectedOwner, type ProjectionLabels } from './projection'
-import { emptyHistory, itemToMessage, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
+import { emptyHistory, itemToMessage, messageId as messageIdOf, recordMeta, removeMessage, SessionApiReader, upsertMessages, type SessionHistory } from './reader'
 import { uploadAttachments } from './upload'
 
 const SESSION_PAGE_SIZE = 50
 const HISTORY_PAGE_SIZE = 64
 const SUMMARY_POLL_MS = 20_000
 const RUNTIME_POLL_MS = 5_000
+const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
 const STATUS_LINE_TTL_MS = 10 * 60_000
 const GROUP_POST_ACTION = 'group.post_message'
@@ -124,6 +125,8 @@ export class MessageHubApiStore implements MessageHubStore {
   private readonly local = new LocalStateStore()
   private readers = new Map<string, { revision: number; reader: ConversationMessageReader }>()
   private pendingSendKeys = new Map<string, string>()
+  private deliveryFollowers = new Map<string, ReturnType<typeof setTimeout>>()
+  private runtimeDenied = new Set<string>()
   private writeConfirmations = new Set<string>()
 
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
@@ -358,7 +361,13 @@ export class MessageHubApiStore implements MessageHubStore {
 
   async setAdmission(context: MessageHubContext, entityId: string, action: 'accept' | 'block') {
     this.requireOwn(context)
-    if (action === 'accept') await updateContact(entityId, { access_level: 'friend' }, context.ownerDid)
+    if (action === 'accept') {
+      // Accepting a sender that only reached the request box creates its
+      // contact, which is named after what the conversation already shows.
+      const known = this.owner(context.ownerDid).contacts.some(contact => contact.did === entityId)
+      const name = this.findEntity(context, entityId)?.name
+      await updateContact(entityId, { access_level: 'friend', ...(!known && name && name !== entityId ? { name } : {}) }, context.ownerDid)
+    }
     else await blockContact(entityId, context.ownerDid)
     await this.ensureOwner(context, true)
   }
@@ -458,6 +467,26 @@ export class MessageHubApiStore implements MessageHubStore {
     } catch (error) {
       console.warn('MessageHub timeline reconcile failed.', error)
     }
+  }
+
+  /**
+   * Delivery finishes asynchronously after `post_send`. While an own message
+   * of the session is still sending, its tail is re-read on a short backoff
+   * so the delivered state does not wait for the next summary poll.
+   */
+  private followDelivery(context: MessageHubContext, sessionId: string, attempt = 0) {
+    const key = viewerSessionKey(context, sessionId)
+    const pending = this.deliveryFollowers.get(key)
+    if (pending) clearTimeout(pending)
+    this.deliveryFollowers.delete(key)
+    if (attempt >= DELIVERY_FOLLOW_DELAYS_MS.length) return
+    this.deliveryFollowers.set(key, setTimeout(() => {
+      this.deliveryFollowers.delete(key)
+      const history = this.owner(context.ownerDid).histories.get(key)
+      const sending = history?.messages.some(message => message.from === context.ownerDid && message.ui_delivery_status === 'sending')
+      if (!sending) return
+      void this.reconcileTail(context, sessionId).finally(() => this.followDelivery(context, sessionId, attempt + 1))
+    }, DELIVERY_FOLLOW_DELAYS_MS[attempt]))
   }
 
   hasOlder(context: MessageHubContext, sessionId: string) {
@@ -683,13 +712,16 @@ export class MessageHubApiStore implements MessageHubStore {
     return { to: binding.targetDid, kind: isGroup ? 'group_msg' : 'chat', topic: keepsTopic || isUuid(session.id) ? session.id : undefined }
   }
 
-  async send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined) {
+  private writableSession(context: MessageHubContext, sessionId: string, confirmation: string | undefined): Session {
     this.requireOwn(context)
-    const data = this.owner(context.ownerDid)
     const session = this.projected(context).sessions.find(item => item.id === sessionId)
     if (!session) throw new Error('session_missing')
     if (this.access(context, session, confirmation === JSON.stringify(session.binding)).mode !== 'read_write') throw new Error('permission_denied')
-    const target = this.sendTarget(session)
+    return session
+  }
+
+  async send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined) {
+    const session = this.writableSession(context, sessionId, confirmation)
     const text = payload.content.trim()
     const attachmentSignature = payload.attachments.map(item => `${item.relativePath ?? item.file.name}:${item.file.size}:${item.file.lastModified}`).join('|')
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:${await hashKey(`${text}\n${attachmentSignature}`)}`
@@ -699,12 +731,29 @@ export class MessageHubApiStore implements MessageHubStore {
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
     const uploads = await uploadAttachments(payload.attachments)
     const refs: RefItem[] = uploads.map(upload => ({ role: 'input', target: { type: 'data_obj', obj_id: upload.objId, uri_hint: `cyfs://${upload.objId}` }, label: upload.name }))
+    await this.postOutgoing(context, session, { format: 'text/plain', content: text, ...(refs.length ? { refs } : {}) }, pendingKey, idempotencyKey)
+  }
+
+  /** A failed outgoing message is posted again as a new message with the same content and attachment refs. */
+  async resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined) {
+    const session = this.writableSession(context, sessionId, confirmation)
+    const content: MsgObject['content'] = { format: message.content.format ?? 'text/plain', content: message.content.content ?? '', ...(message.content.refs?.length ? { refs: message.content.refs } : {}) }
+    const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:resend:${messageIdOf(message)}`
+    const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
+    this.pendingSendKeys.set(pendingKey, idempotencyKey)
+    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey)
+  }
+
+  private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string) {
+    const data = this.owner(context.ownerDid)
+    const sessionId = session.id
+    const target = this.sendTarget(session)
     const message: MsgObject = {
       from: context.ownerDid,
       to: [target.to],
       kind: target.kind,
       created_at_ms: this.now(),
-      content: { format: 'text/plain', content: text, ...(refs.length ? { refs } : {}) },
+      content,
       ...(target.topic ? { thread: { topic: target.topic } } : {}),
     }
     const key = viewerSessionKey(context, sessionId)
@@ -732,34 +781,58 @@ export class MessageHubApiStore implements MessageHubStore {
       throw new Error(`rejected: ${result.reason ?? 'unknown'}`)
     }
     this.pendingSendKeys.delete(pendingKey)
-    data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, optimisticId))
-    await this.local.update(next => { next.drafts[key] = ''; next.draftAttachments[key] = [] })
+    // The composer owns the draft (it may already hold the next message), so
+    // only the timeline changes here. The optimistic bubble stays until a
+    // reconcile brings in the stored record with the same msg_id.
+    data.histories.set(key, upsertMessages(data.histories.get(key) ?? emptyHistory, [{ ...optimistic, ui_sent_msg_id: result.msg_id }]))
+    this.notify()
     await this.reconcileTail(context, sessionId)
+    this.followDelivery(context, sessionId)
     const summary = data.summaries.find(item => item.session_id === sessionId)
     if (summary) { summary.last_activity_ms = Math.max(summary.last_activity_ms, message.created_at_ms); summary.lifecycle = 'active' }
     this.bump(data)
     void this.refreshSummaries(context)
   }
 
+  /**
+   * Where the runtime state (typing / processing line) of a session lives.
+   * Only agents publish it, into their own owner-scoped UI state under their
+   * side of the session id; human conversations have none and are not polled.
+   */
+  private runtimeSource(context: MessageHubContext, sessionId: string): { owner: string; sessionId: string } | null {
+    if (context.mode === 'observe') return { owner: context.ownerDid, sessionId }
+    const session = this.projected(context).sessions.find(item => item.id === sessionId)
+    if (!session || session.binding.kind !== 'native') return null
+    const entity = this.findEntity(context, session.entityId)
+    const isAgent = entity?.type === 'agent' || this.owner(context.ownerDid).agentDids.includes(session.entityId)
+    if (!isAgent) return null
+    return { owner: session.entityId, sessionId: sessionId.startsWith('dm:') ? `dm:${context.ownerDid}` : sessionId }
+  }
+
   private async refreshRuntime(context: MessageHubContext, sessionId: string) {
     const data = this.owner(context.ownerDid)
     if (!this.canView(context)) return
+    const source = this.runtimeSource(context, sessionId)
+    const blockedKey = `${context.ownerDid}\n${sessionId}`
+    if (!source || this.runtimeDenied.has(blockedKey)) return
     try {
-      const entries = await listUiSessionState(sessionId)
+      const entries = await listUiSessionState(source.sessionId, source.owner)
       const now = this.now()
       const states: RuntimeState[] = []
       const typing = entries.find(entry => entry.key === 'typing')
-      if (typing?.value === true && typing.updated_at_ms + TYPING_TTL_MS > now) states.push({ memberDid: context.ownerDid, status: 'typing', expiresAt: typing.updated_at_ms + TYPING_TTL_MS })
+      if (typing?.value === true && typing.updated_at_ms + TYPING_TTL_MS > now) states.push({ memberDid: source.owner, status: 'typing', expiresAt: typing.updated_at_ms + TYPING_TTL_MS })
       const active = entries.find(entry => entry.key === 'active')
       const statusLine = entries.find(entry => entry.key === 'status_line')
       const line = statusLine && typeof statusLine.value === 'object' && statusLine.value ? (statusLine.value as { value?: unknown }).value : statusLine?.value
       if (typeof line === 'string' && line.trim() && (statusLine!.updated_at_ms + STATUS_LINE_TTL_MS > now) && (active?.value === true || typing?.value === true)) {
-        states.push({ memberDid: context.ownerDid, status: 'processing', statusLine: line.trim(), expiresAt: statusLine!.updated_at_ms + STATUS_LINE_TTL_MS })
+        states.push({ memberDid: source.owner, status: 'processing', statusLine: line.trim(), expiresAt: statusLine!.updated_at_ms + STATUS_LINE_TTL_MS })
       }
       const previous = data.runtime.get(sessionId) ?? []
       if (JSON.stringify(previous) !== JSON.stringify(states)) { data.runtime.set(sessionId, states); this.emitRuntime() }
-    } catch {
-      /* runtime state is best effort */
+    } catch (error) {
+      // Runtime state is best effort; a session whose state may not be read
+      // is not asked again every few seconds.
+      if (error instanceof MessageHubApiError && error.kind === 'permission_denied') this.runtimeDenied.add(blockedKey)
     }
   }
 
@@ -775,6 +848,7 @@ export class MessageHubApiStore implements MessageHubStore {
   clearTransient(ownerDid: string) {
     const data = this.owner(ownerDid)
     data.runtime.clear()
+    this.runtimeDenied.clear()
     this.writeConfirmations.clear()
     this.emitRuntime()
   }

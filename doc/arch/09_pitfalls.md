@@ -75,6 +75,9 @@
 - Likely cause：
   - `SystemConfigClient` 对 `system/rbac/*`（以及 `services/*`）启用了 10s 的进程内 cache（并非 KV 没更新，而是读路径命中缓存）。
   - 目前没有 watch/主动失效机制（代码里也有 TODO）。
+  - 2026-09-30 起 `BuckyOSRuntime::enforce` 在拒绝前会丢弃缓存重读一次策略并重新判断（每进程每秒最多一次），
+    因此“授权刚写入就被拒绝”（例如新建用户首次访问 msg-center）不再需要等缓存过期；
+    不经过 `enforce`、直接读取策略的路径以及撤销权限的传播仍受 10s 缓存影响。
 - Where to look in code/KV：
   - code: `src/kernel/buckyos-api/src/system_config.rs`（`CONFIG_CACHE_TIME: 10`；`cache_key_control` 包含 `system/rbac/`；日志：`get system_config from CONFIG_CACHE ...`）
   - code: `src/kernel/scheduler/src/system_config_agent.rs`（RBAC 更新写入点；日志：`will update system/rbac/policy => ...`）

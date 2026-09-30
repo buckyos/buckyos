@@ -53,6 +53,7 @@ const METHOD_SERVICE_RELOAD_SETTINGS: &str = "service.reload_settings";
 const METHOD_REALOAD_SETTINGS: &str = "reaload_settings";
 const METHOD_SERVICE_REALOAD_SETTINGS: &str = "service.reaload_settings";
 const DELIVERY_PUMP_IDLE_SLEEP_MS: u64 = 300;
+const ZONE_USER_SYNC_INTERVAL_SECS: u64 = 30;
 const DELIVERY_PUMP_ERROR_SLEEP_MS: u64 = 1_000;
 const DELIVERY_PUMP_RETRY_AFTER_MS: u64 = 2_000;
 
@@ -647,9 +648,90 @@ async fn load_zone_user_contact_seeds() -> Result<Vec<ZoneUserContactSeed>> {
     Ok(contacts)
 }
 
-async fn sync_zone_user_contacts_once(center: &MessageCenter, raw_settings: &Value) -> Result<()> {
+async fn sync_zone_user_contacts_once(
+    center: &MessageCenter,
+    raw_settings: &Value,
+) -> Result<String> {
     let contacts = load_zone_user_contact_seeds().await?;
-    sync_zone_user_contacts(center, contacts, raw_settings).await
+    let signature = zone_user_seed_signature(&contacts);
+    sync_zone_user_contacts(center, contacts, raw_settings).await?;
+    Ok(signature)
+}
+
+/// What a sync would write, without the per-load binding timestamps.
+fn zone_user_seed_signature(seeds: &[ZoneUserContactSeed]) -> String {
+    let mut parts: Vec<String> = seeds
+        .iter()
+        .map(|seed| {
+            let mut bindings: Vec<String> = seed
+                .bindings
+                .iter()
+                .map(|binding| {
+                    let mut meta: Vec<_> = binding.meta.iter().collect();
+                    meta.sort();
+                    format!(
+                        "{}|{}|{}|{}|{:?}",
+                        binding.platform,
+                        binding.account_id,
+                        binding.display_id,
+                        binding.tunnel_instance_id,
+                        meta
+                    )
+                })
+                .collect();
+            bindings.sort();
+            format!(
+                "{}|{}|{:?}|{:?}|{:?}|{:?}",
+                seed.did.to_string(),
+                seed.name,
+                seed.note,
+                seed.groups,
+                seed.tags,
+                bindings
+            )
+        })
+        .collect();
+    parts.sort();
+    parts.join("\n")
+}
+
+/// Users created or changed after startup (control-panel `user.create`,
+/// invites, profile edits) do not notify msg-center, so the zone user list
+/// is re-read periodically and applied to every owner's contacts whenever it
+/// changed. Until then a new member's first messages land in request boxes
+/// and "accept" has no contact to update.
+fn start_zone_user_sync(center: MessageCenter, mut last_applied: Option<String>) {
+    tokio::spawn(async move {
+        let period = std::time::Duration::from_secs(ZONE_USER_SYNC_INTERVAL_SECS);
+        loop {
+            tokio::time::sleep(period).await;
+            let seeds = match load_zone_user_contact_seeds().await {
+                Ok(seeds) => seeds,
+                Err(error) => {
+                    warn!("periodic zone-user scan failed: {}", error);
+                    continue;
+                }
+            };
+            let signature = zone_user_seed_signature(&seeds);
+            if last_applied.as_deref() == Some(signature.as_str()) {
+                continue;
+            }
+            let settings = match get_buckyos_api_runtime() {
+                Ok(runtime) => runtime.get_my_settings().await.unwrap_or_else(|error| {
+                    warn!(
+                        "load msg-center settings for zone-user sync failed: {}",
+                        error
+                    );
+                    serde_json::json!({})
+                }),
+                Err(_) => serde_json::json!({}),
+            };
+            match sync_zone_user_contacts(&center, seeds, &settings).await {
+                Ok(()) => last_applied = Some(signature),
+                Err(error) => warn!("periodic zone-user sync failed: {}", error),
+            }
+        }
+    });
 }
 
 async fn sync_zone_user_contacts(
@@ -684,7 +766,7 @@ async fn sync_zone_user_contacts(
             })?;
 
         info!(
-            "zone user sync applied on settings reload/startup: owner_scope={}, contacts={}",
+            "zone user sync applied: owner_scope={}, contacts={}",
             owner
                 .as_ref()
                 .map(|did| did.to_string())
@@ -1047,9 +1129,14 @@ pub async fn start_msg_center_service() -> Result<()> {
         .await
         .map_err(|err| anyhow::anyhow!("assemble tunnel registry failed: {}", err))?;
     info!("msg-center settings initialized: {}", tunnel_result);
-    if let Err(error) = sync_zone_user_contacts_once(&center, &settings).await {
-        warn!("zone-user sync failed during startup: {}", error);
-    }
+    let zone_user_signature = match sync_zone_user_contacts_once(&center, &settings).await {
+        Ok(signature) => Some(signature),
+        Err(error) => {
+            warn!("zone-user sync failed during startup: {}", error);
+            None
+        }
+    };
+    start_zone_user_sync(center.clone(), zone_user_signature);
     start_delivery_pump(center.clone(), executor_mgr.clone());
     let server = Arc::new(MsgCenterHttpServer::new(center, executor_mgr));
 

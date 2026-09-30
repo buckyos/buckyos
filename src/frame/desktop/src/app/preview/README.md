@@ -23,13 +23,22 @@ Implementation of `product/bucky_file/BuckyOS Preview App-Component PRD.md` (Dra
 />
 ```
 
-- Sources: `cyfs-path`, `object-id`, plus the `blob` extension (host-provided bytes) — unknown kinds resolve to Unsupported.
+- Sources: `cyfs-path`, `object-id`, plus the `blob` extension (host-provided bytes) — unknown kinds resolve to Unsupported unless a host registered a Source Resolver for them (see below).
 - Session contexts: `single`, `container` (enumerated through the provider), `list` (explicit, stable), `provider` (P1 — one-shot `listItems()` today).
 - Events: `onReady`, `onProgress`, `onItemChanged`, `onCapabilitiesChanged`, `onUiVisibilityChanged`, `onRequestExit`, `onRequestOpenWith`, `onActionInvoked`, `onError`.
 - Imperative handle (`ref`): `next/previous/goTo`, `zoomIn/zoomOut/fitToView/actualSize/rotate`, `toggleInfo`, `retry`, `getCapabilities/getStatus/getItem`.
 - Root data attributes for hosts/tests: `data-status`, `data-renderer`, `data-item-index`, `data-item-count`, `data-ui-visible`, `data-degraded`.
 
 Shortcuts: `Esc` exit · `←/→` previous/next (media: seek ±5 s; use `PageUp/PageDown` or `[`/`]`) · `Home/End` · `Space` play/pause · `+ − 0 1` zoom/fit/100 % · `R` rotate · `I` info · `F` fullscreen · `Ctrl/⌘+F` find (text) · `Ctrl/⌘ + wheel` zoom · drag (left or right button) pan · double-click fit ⇄ 100 %.
+
+## Host-resolved sources (§10.2, §11.5)
+
+A host that owns content the system provider cannot address registers a resolver for its own source kind (`components/preview/hostSources.ts` → `registerPreviewSourceResolver(kind, resolver)`). `ensurePreviewProvider()` routes resolution of that kind to the host; Pipeline work stays with the system provider, keyed by `inputObjectId`. An extension ref's `value.name` / `value.reference` (strings) are used as display name and copyable reference. MessageHub registers `messagehub-object` (msg-center attachments, trusted external images).
+
+## Thumbnails (§9.3 `purpose: thumbnail`, §17.2)
+
+`components/preview/thumbnail.ts` → `ensurePreviewThumbnail(source, { width, height })` / `usePreviewThumbnail()`:
+resolve → bounded probe → classify; a Runtime-decodable image is its own thumbnail; otherwise the Pipeline is asked with `purpose: 'thumbnail'` and an image-only target; when no Pipeline can produce one, a video the Runtime plays gets a frame captured in the browser (at most 2 captures at a time). Results are shared per source and size bucket; shared work stops only when its last consumer leaves. The mock catalog plans posters for `mp4/mov/mkv/avi` and raster thumbnails for `heic/tiff/psd`; WebM is left to the frame capture.
 
 ## Resolution flow (§23.2)
 
@@ -77,4 +86,5 @@ npx playwright test tests/e2e/pages/preview.spec.ts
 - `repr` Pipeline on nfs_server is not implemented server-side; the client contract is provisional.
 - "Open with…" offers Download / Copy reference only — the Full App association protocol is pending (§23.8 item 10).
 - Provider-based sessions are one-shot; no Session Navigation Stack (P1).
+- nfs_server has no `repr`, so real-mode thumbnails come only from Runtime frame capture (videos the browser plays) — other formats show the host's placeholder.
 - Fullscreen uses the component's own element (`allowFullscreen`).

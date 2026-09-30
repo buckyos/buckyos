@@ -42,6 +42,13 @@ export interface ExtensionRef {
   value?: unknown
 }
 
+export function extensionRefField(ref: ContentRef, field: 'name' | 'reference'): string | undefined {
+  const value = (ref as ExtensionRef).value
+  if (!value || typeof value !== 'object') return undefined
+  const found = (value as Record<string, unknown>)[field]
+  return typeof found === 'string' && found ? found : undefined
+}
+
 export type ContentRef = CyfsPathRef | ObjectIdRef | BlobRef | ExtensionRef
 
 export function isCyfsPathRef(ref: ContentRef): ref is CyfsPathRef {

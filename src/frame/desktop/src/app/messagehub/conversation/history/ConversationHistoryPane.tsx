@@ -26,6 +26,7 @@ import type {
 } from './types'
 
 type PaneProjection = Awaited<ReturnType<typeof buildConversationProjection>> & { readerRevision: number }
+type PaneWindow = ConversationMaterializedWindow & { projection: PaneProjection }
 
 function getReaderRevision(reader: ConversationMessageReader): number {
   const value = (reader as { revision?: unknown }).revision
@@ -85,29 +86,45 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   const visibleReportRef = useRef<string>('')
   const scrollRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
+  const rowsRef = useRef<HTMLDivElement>(null)
   const [viewportProfile, setViewportProfile] = useState<ViewportProfile>({
     isMobileViewport: false,
     visibleItemCount: DEFAULT_VISIBLE_ITEM_COUNT,
   })
   const [projection, setProjection] = useState<PaneProjection | null>(null)
-  const [windowState, setWindowState] = useState<ConversationMaterializedWindow | null>(null)
+  const [windowState, setWindowState] = useState<PaneWindow | null>(null)
   const previousTotalCountRef = useRef(0)
   const projectionRef = useRef<PaneProjection | null>(null)
   const scrollModeRef = useRef<ScrollMode>('bottom-anchored')
   const bottomAnchorLockUntilRef = useRef(0)
   const bottomAnchorRequestIdRef = useRef(0)
+  const keepRowsInPlaceRef = useRef<() => void>(() => {})
+  const compensatingRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const hasProjection = projection !== null
   const { isMobileViewport, visibleItemCount } = viewportProfile
+  // Rows of a window materialized for an earlier projection are carried over
+  // by their stable key until the current window is ready, so a rebuild never
+  // swaps rendered messages (and their loaded media) for placeholders.
   const itemsByIndex = useMemo(() => {
     const map = new Map<number, ConversationListItem>()
+    if (!windowState || !projection) return map
 
-    windowState?.items.forEach((item) => {
-      map.set(item.index, item)
+    if (windowState.projection === projection) {
+      windowState.items.forEach((item) => {
+        map.set(item.index, item)
+      })
+      return map
+    }
+
+    const byKey = new Map(windowState.items.map(item => [item.key, item]))
+    projection.entries.forEach((entry, index) => {
+      const item = byKey.get(entry.key)
+      if (!item || item.kind !== entry.kind) return
+      map.set(index, item.kind === 'message' && entry.kind === 'message' ? { ...item, index, messageIndex: entry.messageIndex } : { ...item, index })
     })
-
     return map
-  }, [windowState])
+  }, [windowState, projection])
 
   const windowItemsRef = useRef(itemsByIndex)
   useEffect(() => { windowItemsRef.current = itemsByIndex }, [itemsByIndex])
@@ -199,10 +216,15 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
           Date.now() + CONTENT_GROWTH_LOCK_MS,
         )
         stickToBottom(scrollRef.current)
+        return
       }
+      keepRowsInPlaceRef.current()
     })
 
     resizeObserver.observe(contentElement)
+    // The rendered rows grow before the virtualizer re-measures them (media
+    // finishing loading), so they are observed directly as well.
+    if (rowsRef.current) resizeObserver.observe(rowsRef.current)
 
     return () => {
       resizeObserver.disconnect()
@@ -292,8 +314,12 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       if (entry?.kind === 'message' && row) filterAnchor.current = { messageIndex: entry.messageIndex, messageId: item?.kind === 'message' ? getMessageStableId(item.data, entry.messageIndex) : undefined, offset: row.getBoundingClientRect().top - container.getBoundingClientRect().top }
     }
     if (!filterChanged && !revisionChanged) { scrollModeRef.current = 'bottom-anchored'; setProjection(null) }
-    bottomAnchorLockUntilRef.current = 0
-    cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
+    // A record update while pinned to the bottom (own send, delivery state)
+    // keeps any pending bottom anchoring; everything else starts over.
+    if (filterChanged || !revisionChanged || scrollModeRef.current !== 'bottom-anchored') {
+      bottomAnchorLockUntilRef.current = 0
+      cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
+    }
 
     void buildConversationProjection(reader, statusItems, showActions).then(async (nextProjection) => {
       if (cancelled) {
@@ -309,7 +335,6 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       }
 
       startTransition(() => {
-        setWindowState(null)
         setProjection({ ...nextProjection, readerRevision })
       })
     })
@@ -338,10 +363,42 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
 
   useEffect(() => {
     virtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => (
-      !filterAnchor.current
+      !compensatingRef.current
+      && !filterAnchor.current
       && scrollModeRef.current === 'free-scroll'
       && item.end <= (instance.scrollElement?.scrollTop ?? instance.scrollOffset ?? 0)
     )
+    // Rows are laid out in flow, so a row above the viewport that mounts or
+    // changes height moves every visible row at once. Before that frame is
+    // painted the difference is taken out of the scroll offset and the new
+    // heights are handed to the virtualizer, which would otherwise correct
+    // it only on its next (deferred) measurement.
+    keepRowsInPlaceRef.current = () => {
+      const scroller = scrollRef.current
+      const rows = rowsRef.current
+      if (!scroller || !rows || filterAnchor.current) return
+      const viewportTop = scroller.getBoundingClientRect().top
+      const sizes = new Map(virtualizer.getVirtualItems().map(item => [item.index, item.size]))
+      const updates: Array<[number, number]> = []
+      let delta = 0
+      for (const element of Array.from(rows.children) as HTMLElement[]) {
+        const rect = element.getBoundingClientRect()
+        if (rect.bottom > viewportTop) break
+        const index = Number(element.dataset.index)
+        const size = sizes.get(index)
+        if (size === undefined || Math.abs(rect.height - size) < 0.5) continue
+        delta += rect.height - size
+        updates.push([index, rect.height])
+      }
+      if (updates.length === 0) return
+      compensatingRef.current = true
+      try {
+        for (const [index, height] of updates) virtualizer.resizeItem(index, height)
+      } finally {
+        compensatingRef.current = false
+      }
+      scroller.scrollTop += delta
+    }
   }, [virtualizer])
 
   const virtualItems = virtualizer.getVirtualItems()
@@ -372,7 +429,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       lastVisibleIndex + buffer + visibleItemCount,
     )
 
-    if (hasWindowCoverage(windowState, startIndex, endIndex)) {
+    if (windowState?.projection === projection && hasWindowCoverage(windowState, startIndex, endIndex)) {
       return
     }
 
@@ -385,7 +442,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       endIndex,
     ).then((nextWindow) => {
       if (!cancelled) {
-        setWindowState(nextWindow)
+        setWindowState({ ...nextWindow, projection })
       }
     })
 
@@ -517,37 +574,46 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
             width: '100%',
           }}
         >
-          {virtualItems.map((virtualItem) => {
-            const item = itemsByIndex.get(virtualItem.index)
+          {/* Rows stay in normal flow below the first item's offset: a row
+              whose media is still loading pushes the following rows down
+              instead of being overlapped until it is re-measured. */}
+          <div
+            ref={rowsRef}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${virtualItems[0]?.start ?? 0}px)`,
+            }}
+          >
+            {virtualItems.map((virtualItem) => {
+              const item = itemsByIndex.get(virtualItem.index)
 
-            return (
-              <div
-                key={virtualItem.key}
-                ref={item ? virtualizer.measureElement : undefined}
-                data-index={virtualItem.index}
-                data-message-index={item?.kind === 'message' ? item.messageIndex : undefined}
-                className="flow-root"
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  transform: `translateY(${virtualItem.start}px)`,
-                  height: item ? undefined : virtualItem.size,
-                }}
-              >
-                {item ? (
-                  <ConversationListRow
-                    item={item}
-                    isGroup={isGroup}
-                    selfDid={selfDid}
-                  />
-                ) : (
-                  <ListItemPlaceholder />
-                )}
-              </div>
-            )
-          })}
+              return (
+                <div
+                  key={virtualItem.key}
+                  ref={item ? virtualizer.measureElement : undefined}
+                  data-index={virtualItem.index}
+                  data-message-index={item?.kind === 'message' ? item.messageIndex : undefined}
+                  className="flow-root"
+                  style={{
+                    height: item ? undefined : virtualItem.size,
+                  }}
+                >
+                  {item ? (
+                    <ConversationListRow
+                      item={item}
+                      isGroup={isGroup}
+                      selfDid={selfDid}
+                    />
+                  ) : (
+                    <ListItemPlaceholder />
+                  )}
+                </div>
+              )
+            })}
+          </div>
         </div>
       </div>
       {showScrollToBottom && (
@@ -561,7 +627,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
             border: '1px solid color-mix(in srgb, var(--cp-text) 12%, transparent)',
             zIndex: 10,
           }}
-          aria-label="Scroll to bottom"
+          aria-label={t('messagehub.scrollToBottom', 'Scroll to bottom')}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="6 9 12 15 18 9" />

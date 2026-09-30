@@ -164,7 +164,7 @@ pub enum MailboxKind {
 
 `list_sessions`、`list_session` 和 owner UI 状态等聚合接口需要 `obj://msg-center/owners/<did>` 的权限；单 inbox 授权不能借它们读取其它会话。dispatch、delivery queue、全局 UI 状态和对象下载各有独立资源权限，不能仅凭 inbox 授权访问。网络 RPC 缺少 token 会被拒绝；无 token 的进程内调用仍视为服务内部调用。
 
-变更通知为 `/msg_center/<owner_token>/<BOX_KIND>/<hex(UTF-8 mailbox)>/changed`，payload 带精确 `mailbox`。移动向源和目标各发送通知。订阅者需获得相应 kevent 路径权限，并以精确 inbox 轮询补偿丢失的通知。
+变更通知为 `/msg_center/<owner_token>/<BOX_KIND>/<hex(UTF-8 mailbox)>/changed`，payload 带精确 `mailbox`。移动向源和目标各发送通知。投递结果（`report_delivery` 写入 SENT / 重试 / DEAD）不改 SENT 记录本身，但会对该消息的 SENT 记录再发一次通知（`operation: "delivery"`），让发送方界面及时刷新送达状态。订阅者需获得相应 kevent 路径权限，并以精确 inbox 轮询补偿丢失的通知。
 
 地址必须规范：DID 为裸 DID（保留 DID 自身的合法编码）；原始 session ID 为 1–200 个字符，禁止首尾空白、控制字符、`.` 和 `..`。session 中的斜杠、内部空格、Unicode、百分号等按 UTF-8 编码成单一路径段（大写百分号编码；字母、数字、`-._~:@` 保留）。解析后必须重新编码得到相同地址，禁止空尾斜杠、裸通配符或大小写不同的编码别名。SDK 的 `MailboxAddress::new` / `mailboxAddress` 负责编码；数据库仍保存原始 session ID。
 

@@ -1,3 +1,10 @@
+/**
+ * Largest attachment that can be sent. The upload splits bigger files into a
+ * chunk list that the msg-center object route cannot serve, so they would be
+ * delivered but could never be opened; they are refused before upload.
+ */
+export const MAX_ATTACHMENT_BYTES = 32 * 1024 * 1024
+
 export interface ComposerAttachmentInput {
   file: File
   relativePath?: string

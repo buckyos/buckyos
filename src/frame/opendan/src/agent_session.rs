@@ -203,23 +203,35 @@ impl OneLineStatusSink for InMemoryStatus {
     }
 }
 
+/// Publishes the session's runtime state (typing / status line) to
+/// msg-center. With an agent DID the entries are owner scoped
+/// `(agent_did, session_id, key)`, which is what MessageHub reads for the
+/// agent side of a conversation; without one the legacy session-only table
+/// is used.
 #[derive(Clone)]
 pub struct UiSessionStateSync {
     msg_center: Option<Arc<MsgCenterClient>>,
     session_id: String,
+    owner: Option<name_lib::DID>,
 }
 
 impl UiSessionStateSync {
-    fn new(msg_center: Option<Arc<MsgCenterClient>>, session_id: String) -> Self {
+    fn new(
+        msg_center: Option<Arc<MsgCenterClient>>,
+        session_id: String,
+        owner: Option<name_lib::DID>,
+    ) -> Self {
         Self {
             msg_center,
             session_id,
+            owner,
         }
     }
 
     fn update(&self, key: &'static str, value: serde_json::Value) {
         let msg_center = self.msg_center.clone();
         let session_id = self.session_id.clone();
+        let owner = self.owner.clone();
         let key = key.to_string();
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
@@ -245,10 +257,17 @@ impl UiSessionStateSync {
                         }
                     },
                 };
-                if let Err(err) = msg_center
-                    .update_ui_session_state(session_id.clone(), key.clone(), value)
-                    .await
-                {
+                let result = match owner {
+                    Some(owner) => msg_center
+                        .update_owner_ui_session_state(owner, session_id.clone(), key.clone(), value)
+                        .await
+                        .map(|_| ()),
+                    None => msg_center
+                        .update_ui_session_state(session_id.clone(), key.clone(), value)
+                        .await
+                        .map(|_| ()),
+                };
+                if let Err(err) = result {
                     warn!(
                         "opendan.session[{}]: update ui_session state key={} failed: {err}",
                         session_id, key
@@ -722,6 +741,7 @@ impl AgentSession {
             Some(UiSessionStateSync::new(
                 b.runtime.msg_center.clone(),
                 b.session_id.clone(),
+                crate::msg_center_pump::parse_owner_did(&b.agent_config.toml.identity.agent_did),
             ))
         } else {
             None

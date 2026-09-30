@@ -2,12 +2,14 @@ import type { ComposerAttachmentInput } from '../conversation/input/attachmentDr
 import type { z } from 'zod'
 import { createCodeAssistantMockReaders } from '../../codeassistant/mockHistory'
 import { InMemoryConversationMessageReader } from '../conversation/history/data-source'
+import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, isMessageActivity, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockSessions } from './data'
+import { mockObjectAccess } from './objects'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
 type Snapshot = {
@@ -116,6 +118,7 @@ export class MessageHubMockStore implements MessageHubStore {
     return this.initializePromise
   }
   private async load() {
+    registerObjectAccess(mockObjectAccess)
     this.db = await openDatabase()
     const stored = await new Promise<Snapshot | undefined>((resolve, reject) => {
       const request = this.db!.transaction('state').objectStore('state').get('snapshot')
@@ -326,6 +329,11 @@ export class MessageHubMockStore implements MessageHubStore {
     const message = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: buildOutgoingDraftContent(payload), createdAtMs: this.now() })
     return this.sendMessage(context, id, message, confirmation)
   }
+  resend(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
+    const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
+    const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: message.content.content ?? '', createdAtMs: this.now() })
+    return this.sendMessage(context, id, { ...outgoing, content: { ...message.content } }, confirmation)
+  }
   sendMessage(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     return this.mutate(next => {
       this.requireOwn(context)
@@ -333,8 +341,6 @@ export class MessageHubMockStore implements MessageHubStore {
       if (sessionAccess(context, session, confirmation === JSON.stringify(session.binding)).mode !== 'read_write') throw Error('permission_denied')
       const to = session.binding.kind === 'native' ? session.binding.targetDid : session.binding.kind === 'tunnel' ? session.binding.endpointDid : ''
       this.append(next, session, { ...message, from: context.ownerDid, to: [to], ui_session_id: id, ui_binding: session.binding }, false)
-      next.drafts[viewerSessionKey(context, id)] = ''
-      next.draftAttachments[viewerSessionKey(context, id)] = []
     })
   }
   runtimeFor(context: MessageHubContext, id: string) { return (this.runtime.get(sessionKey(context.ownerDid, id)) ?? []).filter(state => state.expiresAt > this.now()) }

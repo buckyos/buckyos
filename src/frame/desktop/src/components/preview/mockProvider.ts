@@ -285,6 +285,8 @@ function makeWebm(): Promise<Blob | null> {
   return webmPromise
 }
 
+export { makePdf as makeMockPdf, makePng as makeMockPng, makeWebm as makeMockWebm }
+
 // ─── Sample gallery (`cyfs:///samples`) ───
 
 interface SampleSpec {
@@ -493,6 +495,20 @@ const CATALOG: Record<string, MockPlan> = {
   psd: { pipelineId: 'raster-decode', pipelineVersion: '1.0.0', output: 'image', ticks: 3, fidelityNote: 'Flattened composite; layers and adjustment effects are not editable.' },
 }
 
+const VIDEO_POSTER: MockPlan = { pipelineId: 'video-poster', pipelineVersion: '1.0.0', output: 'image', ticks: 2, fidelityNote: 'Poster frame extracted by the built-in Pipeline.' }
+const RASTER_THUMB: MockPlan = { pipelineId: 'raster-thumb', pipelineVersion: '1.0.0', output: 'image', ticks: 2, fidelityNote: 'Downscaled PNG thumbnail.' }
+const THUMBNAIL_CATALOG: Record<string, MockPlan> = {
+  mp4: VIDEO_POSTER,
+  mov: VIDEO_POSTER,
+  mkv: VIDEO_POSTER,
+  avi: VIDEO_POSTER,
+  heic: RASTER_THUMB,
+  heif: RASTER_THUMB,
+  tiff: RASTER_THUMB,
+  tif: RASTER_THUMB,
+  psd: RASTER_THUMB,
+}
+
 interface MockWork {
   state: PreviewWorkState
   attempts: number
@@ -532,6 +548,10 @@ async function produceResult(plan: MockPlan, source: ResolvedPreviewSource): Pro
     const blob = await makeWebm()
     if (!blob) throw { code: 'CONVERTER_UNAVAILABLE', message: 'This Runtime cannot produce a playable stream for this video', retryable: false }
     return { resultType: 'video', readRef: { kind: 'blob', blob }, mediaType: 'video/webm', sourceVersion: source.versionToken, fidelityNote: plan.fidelityNote, progressive: true, cacheable: true }
+  }
+  if (plan.pipelineId === 'video-poster' || plan.pipelineId === 'raster-thumb') {
+    const blob = await cachedBlob(`work:${plan.pipelineId}:${source.inputObjectId}`, () => makePng(title, source.inputObjectId ?? name, 640, 360))
+    return { resultType: 'image', readRef: { kind: 'blob', blob }, mediaType: 'image/png', sourceVersion: source.versionToken, width: 640, height: 360, fidelityNote: plan.fidelityNote, cacheable: true }
   }
   const blob = await cachedBlob(`work:${plan.pipelineId}:${source.inputObjectId}`, () => makePng(title, source.inputObjectId ?? name))
   return { resultType: 'image', readRef: { kind: 'blob', blob }, mediaType: 'image/png', sourceVersion: source.versionToken, fidelityNote: plan.fidelityNote, cacheable: true }
@@ -633,7 +653,7 @@ export function createMockPreviewProvider(): PreviewProvider {
     async ensurePreviewWork(request) {
       const { source, options } = request
       const ext = extensionOf(source.displayName)
-      const plan = CATALOG[ext]
+      const plan = request.targetProfile.purpose === 'thumbnail' ? THUMBNAIL_CATALOG[ext] : CATALOG[ext]
       if (!plan) {
         return { kind: 'unsupported', reason: 'no-pipeline' as PreviewUnsupportedReason, detail: 'No built-in Pipeline accepts this format' }
       }

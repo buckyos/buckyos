@@ -222,10 +222,12 @@ pub fn build_current_rbac_config(policy_tail: Option<&str>) -> RbacConfig {
     }
 }
 
+pub const RBAC_POLICY_KEY: &str = "system/rbac/policy";
+
 pub async fn load_current_rbac_config(
     system_config_client: &SystemConfigClient,
 ) -> Result<RbacConfig> {
-    let policy_result = match system_config_client.get("system/rbac/policy").await {
+    let policy_result = match system_config_client.get(RBAC_POLICY_KEY).await {
         Ok(value) => Some(value),
         Err(SystemConfigError::KeyNotFound(_)) => None,
         Err(error) => {

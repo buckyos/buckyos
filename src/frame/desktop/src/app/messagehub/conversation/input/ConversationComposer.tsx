@@ -23,6 +23,7 @@ import {
   filesFromInputList,
   formatAttachmentSize,
   getAttachmentPathKey,
+  MAX_ATTACHMENT_BYTES,
   revokeAttachmentItem,
   type ComposerAttachmentInput,
   type ComposerAttachmentItem,
@@ -65,9 +66,19 @@ const ConversationComposerInner = forwardRef<
   const { t } = useI18n()
   const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>(() => initialAttachments.map(createAttachmentItem))
   const [inputValue, setInputValue] = useState(initialDraft)
-  const [sending, setSending] = useState(false)
+  const [pendingSends, setPendingSends] = useState(0)
+  const [oversizeNames, setOversizeNames] = useState<string[]>([])
   const [sendError, setSendError] = useState<string | false>(false)
-  const sendLock = useRef(false)
+  // Each submit snapshots the draft into this queue and clears the input at
+  // once, so typing continues while earlier messages are still being sent.
+  // Sends run one at a time to keep their order; a failure stops the queue
+  // and puts the failed and still-queued drafts back into the composer.
+  const sendQueue = useRef<ConversationComposerSubmitPayload[]>([])
+  const draining = useRef(false)
+  const mounted = useRef(false)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
+  const sendCallback = useRef(onSendMessage)
+  useEffect(() => { sendCallback.current = onSendMessage }, [onSendMessage])
   const attachmentsCallback = useRef(onAttachmentsChange)
   useEffect(() => { attachmentsCallback.current = onAttachmentsChange }, [onAttachmentsChange])
   const draftCallback = useRef(onDraftChange)
@@ -172,7 +183,9 @@ const ConversationComposerInner = forwardRef<
     }
   }, [pickerOpen])
 
-  const appendAttachmentInputs = useCallback((items: ComposerAttachmentInput[]) => {
+  const appendAttachmentInputs = useCallback((selected: ComposerAttachmentInput[]) => {
+    const items = selected.filter(item => item.file.size <= MAX_ATTACHMENT_BYTES)
+    setOversizeNames(selected.filter(item => item.file.size > MAX_ATTACHMENT_BYTES).map(item => item.relativePath || item.file.name))
     if (items.length === 0) {
       return
     }
@@ -224,25 +237,74 @@ const ConversationComposerInner = forwardRef<
     })
   }, [])
 
-  const handleSend = useCallback(async () => {
-    if (sendLock.current) return
+  const restoreFailedSends = useCallback((failed: ConversationComposerSubmitPayload[]) => {
+    const text = failed.map(item => item.content).filter(Boolean).join('\n')
+    const items = failed.flatMap(item => item.attachments)
+    if (!mounted.current) {
+      const draft = [text, latestDraft.current].filter(Boolean).join('\n')
+      const inputs = [...items, ...attachmentsRef.current].map(({ file, relativePath }) => ({ file, relativePath }))
+      items.forEach(revokeAttachmentItem)
+      latestDraft.current = draft
+      persistedDraft.current = draft
+      persistedAttachments.current = inputs
+      void draftCallback.current?.(draft)?.catch(() => undefined)
+      void attachmentsCallback.current?.(inputs)?.catch(() => undefined)
+      return
+    }
+    setInputValue(current => [text, current].filter(Boolean).join('\n'))
+    setAttachments(current => {
+      const keys = new Set(current.map(getAttachmentPathKey))
+      return [...items.filter(item => !keys.has(getAttachmentPathKey(item))), ...current]
+    })
+  }, [])
+
+  const drainSendQueue = useCallback(async () => {
+    if (draining.current) return
+    draining.current = true
+    try {
+      while (sendQueue.current.length > 0) {
+        const next = sendQueue.current[0]
+        try {
+          await sendCallback.current(next)
+        } catch (error) {
+          const failed = sendQueue.current.splice(0)
+          restoreFailedSends(failed)
+          if (mounted.current) setSendError(error instanceof Error && error.message ? error.message : 'true')
+          break
+        }
+        sendQueue.current.shift()
+        next.attachments.forEach(revokeAttachmentItem)
+        if (mounted.current) setPendingSends(sendQueue.current.length)
+      }
+    } finally {
+      draining.current = false
+      if (mounted.current) setPendingSends(sendQueue.current.length)
+    }
+  }, [restoreFailedSends])
+
+  const handleSend = useCallback(() => {
     const text = inputValue.trim()
 
     if (!text && attachments.length === 0) {
       return
     }
 
-    sendLock.current = true; setSending(true); setSendError(false)
-    try {
-      await onSendMessage({ attachments, content: text })
-      setInputValue(''); clearAttachments(); inputRef.current?.focus()
-    } catch (error) { setSendError(error instanceof Error && error.message ? error.message : 'true') } finally { sendLock.current = false; setSending(false) }
-  }, [attachments, clearAttachments, inputValue, onSendMessage])
+    sendQueue.current.push({ attachments, content: text })
+    setPendingSends(sendQueue.current.length)
+    setSendError(false)
+    setOversizeNames([])
+    setInputValue('')
+    latestDraft.current = ''
+    flushDraft()
+    setAttachments([])
+    inputRef.current?.focus()
+    void drainSendQueue()
+  }, [attachments, drainSendQueue, flushDraft, inputValue])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
-      void handleSend()
+      if (!event.nativeEvent.isComposing) handleSend()
     }
 
     if (event.key === 'Escape') {
@@ -294,8 +356,7 @@ const ConversationComposerInner = forwardRef<
     <div
       ref={composerRef}
       data-testid="message-composer"
-      aria-busy={sending}
-      inert={sending}
+      aria-busy={pendingSends > 0}
       className="relative z-20 flex min-h-0 flex-shrink-0 flex-col"
       style={{
         borderTop: '1px solid var(--cp-border)',
@@ -318,6 +379,8 @@ const ConversationComposerInner = forwardRef<
         onChange={handleFileInputChange}
       />
 
+      {pendingSends > 0 && <p role="status" className="sr-only">{t('messagehub.sendingQueue', undefined, { count: pendingSends })}</p>}
+      {oversizeNames.length > 0 && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]" data-testid="attachment-too-large">{t('messagehub.attachmentTooLarge', undefined, { name: oversizeNames.join(', '), limit: formatAttachmentSize(MAX_ATTACHMENT_BYTES) })}</p>}
       {sendError && <p role="alert" className="px-3 pt-2 text-xs text-[color:var(--cp-danger)]">{t('messagehub.sendFailed')}{typeof sendError === 'string' && sendError !== 'true' ? ` ${describeSendError(sendError, t)}` : ''}</p>}
       {/* Anchored to the composer root: the message input area is overflow-hidden
           and would clip a menu popping upward from inside it. */}
@@ -356,12 +419,16 @@ const ConversationComposerInner = forwardRef<
         className="flex flex-shrink-0 flex-col px-3 pt-2 pb-1 overflow-hidden"
         style={messageInputMaxHeight != null ? { maxHeight: messageInputMaxHeight } : undefined}
       >
-        <div className="relative flex min-w-0 items-end gap-2 px-1 py-1">
+        <div className="relative flex min-w-0 items-end gap-1 py-0.5">
           <button
-            className="p-1 rounded-lg flex-shrink-0"
+            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-lg"
             style={{ color: 'var(--cp-muted)' }}
             onClick={() => setPickerOpen((previous) => !previous)}
             type="button"
+            aria-label={t('messagehub.addAttachment', 'Add attachment')}
+            aria-haspopup="menu"
+            aria-expanded={pickerOpen}
+            title={t('messagehub.addAttachment', 'Add attachment')}
           >
             <Paperclip size={18} />
           </button>
@@ -376,7 +443,8 @@ const ConversationComposerInner = forwardRef<
             }}
             placeholder={placeholder}
             rows={1}
-            className="block min-h-[22px] flex-1 bg-transparent border-none py-1 text-sm outline-none resize-none"
+            aria-label={placeholder}
+            className="block min-h-[22px] flex-1 self-center bg-transparent border-none py-1 text-sm outline-none resize-none"
             style={{
               color: 'var(--cp-text)',
               lineHeight: '1.5',
@@ -384,18 +452,24 @@ const ConversationComposerInner = forwardRef<
             }}
           />
           <button
-            onClick={() => void handleSend()}
-            disabled={sending || !hasDraft}
-            className="p-1.5 rounded-full flex-shrink-0 transition-colors"
-            style={{
-              background: hasDraft
-                ? 'var(--cp-accent)'
-                : 'color-mix(in srgb, var(--cp-text) 10%, transparent)',
-              color: hasDraft ? '#fff' : 'var(--cp-muted)',
-            }}
+            onClick={handleSend}
+            disabled={!hasDraft}
+            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center"
             type="button"
+            aria-label={t('messagehub.send', 'Send')}
+            title={t('messagehub.send', 'Send')}
           >
-            <Send size={16} />
+            <span
+              className="flex h-7 w-7 items-center justify-center rounded-full transition-colors"
+              style={{
+                background: hasDraft
+                  ? 'var(--cp-accent)'
+                  : 'color-mix(in srgb, var(--cp-text) 10%, transparent)',
+                color: hasDraft ? '#fff' : 'var(--cp-muted)',
+              }}
+            >
+              <Send size={16} />
+            </span>
           </button>
         </div>
       </div>
@@ -460,6 +534,7 @@ function describeSendError(message: string, t: (key: string, fallback?: string, 
     case 'result_unknown': return t('messagehub.sendResultUnknown')
     case 'attachment_upload_unavailable': return t('messagehub.attachmentUploadUnavailable')
     case 'attachment_upload_failed': return t('messagehub.attachmentUploadFailed')
+    case 'attachment_too_large': return t('messagehub.attachmentTooLarge', undefined, { name: detail, limit: formatAttachmentSize(MAX_ATTACHMENT_BYTES) })
     case 'permission_denied': return t('messagehub.reason.permission_denied')
     default: return ''
   }
@@ -474,6 +549,7 @@ const MemoAttachmentCard = memo(function AttachmentCard({
   attachment: ComposerAttachmentItem
   onRemove: (id: string) => void
 }) {
+  const { t } = useI18n()
   const displayPath = attachment.relativePath || attachment.file.name
   const metaLine = `${attachment.file.name} · ${formatAttachmentSize(attachment.file.size)}`
 
@@ -486,15 +562,15 @@ const MemoAttachmentCard = memo(function AttachmentCard({
       }}
     >
       <button
-        className="absolute right-1.5 top-1.5 z-10 rounded-full p-1"
-        style={{
-          background: 'rgba(15, 23, 42, 0.72)',
-          color: '#fff',
-        }}
+        className="absolute right-0 top-0 z-10 flex h-8 w-8 items-center justify-center"
         onClick={() => onRemove(attachment.id)}
         type="button"
+        aria-label={t('messagehub.removeAttachment', 'Remove {{name}}', { name: displayPath })}
+        title={t('messagehub.removeAttachment', 'Remove {{name}}', { name: displayPath })}
       >
-        <X size={12} />
+        <span className="rounded-full p-1" style={{ background: 'rgba(15, 23, 42, 0.72)', color: '#fff' }}>
+          <X size={12} />
+        </span>
       </button>
 
       {attachment.previewUrl || attachment.kind === 'image' ? (

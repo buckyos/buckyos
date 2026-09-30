@@ -43,7 +43,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Buffer } from "node:buffer";
-import { createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, sign } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
   assertProvisionRuntime,
@@ -52,6 +52,7 @@ import {
   createUserEnv,
   deviceIdentityPathsForRoots,
   ensureCa,
+  getDevTestKeyPairById,
   IdentityRoots,
   loadLocalNodeIdentityConfig,
 } from "buckyos/provision";
@@ -843,7 +844,7 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function applyDevBootTemplateOverride(
+function applyDevBootTemplate(
   targetDir: string,
   groupName: string,
 ): void {
@@ -851,14 +852,89 @@ function applyDevBootTemplateOverride(
     return;
   }
 
+  const identity = loadLocalNodeIdentityConfig(
+    path.join(targetDir, "etc", "node_identity.json"),
+  );
+  const username = "bob";
+  const zoneDid = identity.zone_did;
+  const zone = parseDid(zoneDid);
+  const userDid = `did:${zone.method}:${username}.${zone.id}`;
+  const keyPair = getDevTestKeyPairById(username);
+  const now = Math.floor(Date.now() / 1000);
+  const userEntries: Record<string, unknown> = {
+    [`users/${username}/settings`]: {
+      user_id: username,
+      type: "user",
+      password: createHash("sha256").update(`buckyos2026${username}.buckyos`)
+        .digest("base64"),
+      state: "active",
+      res_pool_id: "default",
+      is_local: true,
+      allow_password_change: true,
+    },
+    [`users/${username}/doc`]: {
+      "@context": [
+        "https://www.w3.org/ns/did/v1",
+        "https://buckyos.org/ns/owner/v1",
+      ],
+      id: userDid,
+      name: username,
+      display_name: username,
+      verificationMethod: [{
+        id: "#main_key",
+        type: "Ed25519VerificationKey2020",
+        controller: userDid,
+        publicKeyJwk: { kty: "OKP", crv: "Ed25519", x: keyPair.publicKeyX },
+      }],
+      authentication: ["#main_key"],
+      assertion_method: ["#main_key"],
+      capabilityInvocation: ["#main_key"],
+      iat: now,
+      exp: now + 3600 * 24 * 365 * 10,
+      version_seq: 0,
+      zone_binding_model_version: 2,
+      binded_zone_list: [zoneDid],
+      service: [{
+        id: `${userDid}#lastDoc`,
+        type: "DIDDoc",
+        serviceEndpoint: `https://${
+          didRawHostName(zoneDid)
+        }/resolve/${userDid}`,
+      }],
+    },
+    [`users/${username}/profile`]: {
+      did: userDid,
+      name: username,
+      display_name: username,
+      private_extra: {
+        system_contact: { did: userDid, groups: ["users"] },
+      },
+    },
+    [`security/${username}/key`]: keyPair.privateKeyPem,
+  };
+  const entries: Array<[string, string]> = Object.entries(userEntries).map(
+    ([key, value]) => {
+      const content = typeof value === "string"
+        ? value
+        : JSON.stringify(value, null, 2);
+      return [key, `"${key}" = """\n${content}\n"""`];
+    },
+  );
+
   const localBootToml = path.join(
     os.homedir(),
     ".buckycli",
     "buckyos_boot.toml",
   );
-  if (!fs.existsSync(localBootToml)) {
+  if (fs.existsSync(localBootToml)) {
+    const srcText = fs.readFileSync(localBootToml, "utf8");
+    for (const match of srcText.matchAll(BOOT_ENTRY_PATTERN)) {
+      const key = match[1];
+      console.log(`load ${key} from .buckycli/boot_template`);
+      entries.push([key, `"${key}" = """\n${match[2]}\n"""`]);
+    }
+  } else {
     console.log(`skip missing dev boot override: ${localBootToml}`);
-    return;
   }
 
   const dstBootTemplate = path.join(
@@ -867,28 +943,9 @@ function applyDevBootTemplateOverride(
     "scheduler",
     "boot.template.toml",
   );
-  const srcText = fs.readFileSync(localBootToml, "utf8");
-  const entries: Array<[string, string]> = [];
-  for (const match of srcText.matchAll(BOOT_ENTRY_PATTERN)) {
-    const key = match[1];
-    console.log(`load ${key} from .buckycli/boot_template`);
-    entries.push([key, `"${key}" = """\n${match[2]}\n"""`]);
-  }
-
-  if (entries.length === 0) {
-    console.log(
-      `skip invalid dev boot override (no key/value found): ${localBootToml}`,
-    );
-    return;
-  }
-
-  if (!fs.existsSync(dstBootTemplate)) {
-    writeText(dstBootTemplate, srcText);
-    console.log(`create boot template from local override: ${dstBootTemplate}`);
-    return;
-  }
-
-  let merged = fs.readFileSync(dstBootTemplate, "utf8");
+  let merged = fs.existsSync(dstBootTemplate)
+    ? fs.readFileSync(dstBootTemplate, "utf8")
+    : "";
   let replaced = 0;
   let added = 0;
   for (const [key, block] of entries) {
@@ -916,7 +973,7 @@ function applyDevBootTemplateOverride(
 
   writeText(dstBootTemplate, merged);
   console.log(
-    `merge dev boot override into template: ${dstBootTemplate} (replaced=${replaced}, added=${added})`,
+    `merge dev boot entries into template: ${dstBootTemplate} (replaced=${replaced}, added=${added})`,
   );
 }
 
@@ -1000,7 +1057,7 @@ export async function makeConfigByGroupName(
   } else {
     await makeIdentityFiles(targetDir, params, resolvedCaDir);
   }
-  applyDevBootTemplateOverride(targetDir, groupName);
+  applyDevBootTemplate(targetDir, groupName);
 
   console.log(`config ${groupName} generation finished.`);
 }

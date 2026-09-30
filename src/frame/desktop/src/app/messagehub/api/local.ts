@@ -23,6 +23,25 @@ function openDatabase(): Promise<IDBDatabase> {
   })
 }
 
+/**
+ * Drops every viewer's unsent drafts on this device. Called on logout so a
+ * shared browser does not keep the previous user's drafts in plain storage.
+ */
+export function clearMessageHubLocalState(timeoutMs = 1_500): Promise<void> {
+  if (typeof indexedDB === 'undefined') return Promise.resolve()
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, timeoutMs)
+    const done = () => { clearTimeout(timer); resolve() }
+    try {
+      const request = indexedDB.deleteDatabase(DB_NAME)
+      request.onsuccess = done
+      request.onerror = done
+    } catch {
+      done()
+    }
+  })
+}
+
 export class LocalStateStore {
   private db?: IDBDatabase
   private state: LocalRecord = { drafts: {}, draftAttachments: {}, showActions: {}, policies: {} }
@@ -32,7 +51,11 @@ export class LocalStateStore {
   async load(): Promise<void> {
     if (typeof indexedDB === 'undefined') return
     try {
-      this.db = await openDatabase()
+      const db = await openDatabase()
+      // Yield to a logout that deletes the database instead of blocking it;
+      // later edits in this page stay in memory only.
+      db.onversionchange = () => { db.close(); if (this.db === db) this.db = undefined }
+      this.db = db
       const stored = await new Promise<LocalRecord | undefined>((resolve, reject) => {
         const request = this.db!.transaction('state').objectStore('state').get('snapshot')
         request.onsuccess = () => resolve(request.result)

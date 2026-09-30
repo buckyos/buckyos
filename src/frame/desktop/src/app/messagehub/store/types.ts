@@ -1,6 +1,7 @@
 import type { z } from 'zod'
 import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import type { ConversationMessageReader } from '../conversation/history/types'
+import type { MessageObject } from '../protocol/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 
@@ -85,6 +86,8 @@ export interface MessageHubStore {
   updatePreferences(context: MessageHubContext, sessionId: string, patch: Partial<SessionPreferences>): Promise<void>
   updateState(context: MessageHubContext, sessionId: string, scope: 'shared' | 'member', input: unknown): Promise<void>
   send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined): Promise<void>
+  /** Post a failed outgoing message again as a new message (same text and attachment refs). */
+  resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
   runtimeFor(context: MessageHubContext, sessionId: string): RuntimeState[]
   clearTransient(ownerDid: string): void
   title(context: MessageHubContext, session: Session): string

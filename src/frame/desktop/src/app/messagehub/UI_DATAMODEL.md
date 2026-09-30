@@ -637,23 +637,25 @@ export type ConversationStatusType =
 
 | 渲染器 | 触发条件 | 消费字段 |
 |---|---|---|
-| `renderImageMessage` | `content.refs` 中存在 `target.type === 'data_obj'` 且 `uri_hint` 为可识别图片 URL | `refs[].target.uri_hint`、`refs[].label`、`content.content`（caption） |
+| `AttachmentMessage` | `content.refs` 中存在 `data_obj`：已注册 `ObjectAccess` 的对象引用，或 `uri_hint` 为 HTTP(S) 图片 URL | `refs[]`、`content.content`（caption） |
 | `renderTextMessage` | `content.format` ∈ `text/plain` / `text/markdown` / `text/html` | `content.content` |
 | `renderFallbackMessage` | 其余 | `content.format`、`content.content` |
 | 状态 pill（原型现状） | `kind === 'notify'` 或 `ui_item_kind === 'status'` | 仅保留 status/content；真实持久通知的完整投影需修正，见下 |
 
-已知限制：`text/markdown` 与 `text/html` 当前按纯文本显示；图片仅识别 HTTP(S) 图片 URL，
-通用 fallback 只显示 format / content，没有通用附件入口。Telegram 实际附件已保存为 FileObject，
-通过 `refs[].target.obj_id` 与 `cyfs://<obj_id>` 引用，因此当前渲染不能访问这些真实附件。
+已知限制：`text/markdown` 与 `text/html` 当前按纯文本显示。
 
-集成目标：
+附件（`conversation/media/`）与 Preview 的集成：
 
-- 所有 `data_obj` 引用按 `obj_id` 经有权限的对象访问通道解析，`uri_hint` 只作提示；缺少 hint 也须可解析。
-- 图片按解析后的 MIME / 对象元数据预览，文件提供名称、类型及下载入口；音视频不能预览时保留下载入口。
-  不要求 URL 带文件扩展名，也不直接将 `cyfs://` 塞入浏览器 img src。
-- 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用。
-- refs 的 input/output/context 等角色保持原值；`service_did` 引用保留可识别的信息，不能伪装成文件。
-- 对象解析与上传使用既有 named_store / content_mgr 能力，具体浏览器访问接口见 §9.3；未接通前不能把文件名摘要当成上传成功。
+- 每个 `data_obj` 引用映射为 Preview 的宿主 Source（`kind: 'messagehub-object'`，`value: { objId | uri, name, reference }`），
+  由 MessageHub 注册的 Source Resolver 经 `ObjectAccess`（真实模式为 msg-center 对象路由，mock 模式为 `mock/objects.ts`）解析；
+  `uri_hint` 只作提示。外部 HTTP(S) 图片仅对可信主机内联，其余外链只显示链接。
+- 消息流展示：Runtime 可直接解码的图片直接内联原图（GIF 默认自动播放）；视频及不可直接解码的图片走 Preview 缩略图流程
+  （`components/preview/thumbnail.ts`：Pipeline `purpose: thumbnail` → 不可用时对 Runtime 可播放的视频截取一帧）；其余为文件卡片。
+- 点击任一附件打开 Preview：默认在 MessageHub 窗口内弹出 Preview Component（Esc / 关闭按钮 / 点击遮罩退出）；
+  图片与视频以当前会话已加载的图片/视频为 Session（provider 形式，`navigation: bounded`），文件单独打开。
+- 媒体设置（`conversation/media/settings.ts`，localStorage `buckyos.messagehub.media.v1`）：`previewTarget: overlay | window`
+  （`window` 交给 Preview App，仅桌面窗口内可用）与 `autoplayGif`（关闭后消息流只显示 GIF 首帧）。
+- 显示加载、不可用、无权限与重试状态；单个附件失败不隐藏正文或其它引用；`service_did` 引用保留原样显示。
 
 `kind=notify` 也不能一概作为 typing 等易失运行态。当前原型将它投影为只剩正文的状态 pill；
 集成时只有明确的运行态来源进入独立状态通道，持久通知须保留记录上下文、内容与引用。
@@ -825,7 +827,16 @@ export type ConversationComposerSubmitPayload = ComposerDraft
 
 - `content` 上限 32 KiB，超出时禁用发送并显示计数提示，不做静默截断。
 - `attachments` 上限 64 项；附件按 `relativePath || file.name` 归一化后去重。
+- 单个附件上限 32 MiB（`MAX_ATTACHMENT_BYTES`，2026-09-30）：WebSDK 把更大的文件切成 chunk list，
+  但上传不保存 chunk list 对象，msg-center 对象路由也只能读单 chunk，发出去也无法打开。
+  超限文件在选择时拒绝并提示名称与上限，`uploadAttachments` 在上传前再次拒绝（`attachment_too_large`）。
+  支持更大附件需要 WebSDK 发布 chunk list 并由对象路由流式读取（`NamedDataMgr::open_reader`），届时再放宽。
 - 空草稿（无文本且无附件）不可提交，错误文案走 i18n key。
+- 提交即快照（2026-09-30，E2E MH2U-1）：Enter / 发送把当前文本与附件快照放入 Composer 发送队列，
+  立即清空输入并持久化空草稿，用户可继续输入；发送中不锁输入框。队列按提交顺序逐条调用 `store.send`，
+  保证顺序；任一条失败即停止，把失败项与仍在排队的项按顺序放回输入框（位于当前输入之前）并提示，
+  组件已卸载时写回持久草稿。草稿只由 Composer 写；`store.send` 成功后不得再清空持久草稿，否则会覆盖下一条。
+  输入法组合中的 Enter 不提交。
 
 #### 4.2.1 草稿 → MsgObject 的构造规则
 
@@ -858,10 +869,17 @@ function buildOutgoingMessage(draft: ComposerDraft, ctx: OutgoingContext): MsgOb
 - `ok:true`：只表示消息进入发送历史与投递队列。可显示“已提交”（现有 `sent` 提示），
   随后以 `SessionMessageItem.delivery` 更新发送中、部分失败、送达等状态。
 - 保留 clientNonce、幂等键、原始 MsgObject、返回 msg_id 及 deliveries；用 owner + msg_id + 出站方向
-  对账服务端记录，以 record_id 替换乐观项，避免提交回显产生双消息。
+  对账服务端记录，以 record_id 替换乐观项，避免提交回显产生双消息。实现：`ok:true` 后乐观项带
+  `ui_sent_msg_id = msg_id` 继续显示“发送中”，任何一次时间线合并出现同 msg_id 的记录时才移除，
+  中间不会出现气泡消失的空档。
 - 提交超时 / 结果未知时保持原始对象和幂等键重试，不重建 created_at_ms / nonce。
   后端自动投递重试由 executor 管理；复用 post_send 的幂等键不会重新启动 DEAD 任务。
   按目标人工重投目前没有对应 UI RPC，协议补齐前不提供会造成整条消息重复投递的通用“重发”。
+  例外（2026-09-30）：全部目标均 FAILED / DEAD（`delivery.overall = failed`，无任何成功或待投目标）时，
+  气泡提供“重新发送”，以同样正文与附件 refs 作为一条新消息（新 created_at_ms 与幂等键）提交，
+  不会向已收到的目标重复投递。失败说明主文案说明可采取的动作，逐目标状态与错误放在默认折叠的“技术详情”。
+- 投递状态图标带可读文字（sending / sent / delivered / read / failed）；delivered 明确为“已送达对方收件箱，
+  不代表已读”，不使用 live region 以免重复播报。
 - `cyfs-cached` 只表示网关暂存、仍待接收确认；保留该状态提示，不标记 delivered/read。
 
 ### 4.3 实体备注编辑（Panel C）
@@ -907,6 +925,12 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 - 共享标题与成员昵称不能写入此 KV；它们使用 §3.3.5 的持久状态及授权修改契约。
 - 当前 KV 只按 `session_id` 寻址，尚不满足多 owner 隔离。目标至少按 `(ownerDid, sessionId, key)`
   保存与授权；浏览器草稿 / 选择态 / 缓存另按 viewer 隔离。接口补齐前不能向其中写 Agent 的会话状态。
+  （owner 维度已实现：`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`，个人偏好均走该路径。）
+- 运行态（`typing` / `active` / `status_line`，2026-09-30，MH2U-5）：只有 Agent 产生，OpenDAN 以自身 DID 为 owner
+  写入 `(agentDid, agent 侧 sessionId, key)`。UI 仅对 Agent 会话轮询，读 `owner = agentDid`；
+  原生 DM 的 agent 侧 session id 为 `dm:<viewerDid>`，topic 会话两侧同 id；观察模式直接读被观察 owner。
+  人类之间的会话不轮询运行态；无 owner 的旧 `obj://msg-center/ui-state` 路径普通用户无权读取，UI 不再调用，
+  若某会话读取被拒绝则本页不再重试。
 - `binding`、实体创建策略、授权能力不是此 KV 的展示键；tunnel 风险确认按 §3.3.4 仅保存在页面内存。
 
 ### 4.5 owner 本地 Session 生命周期（2026-09-07 已实现：`owner_sessions`）
@@ -942,6 +966,11 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
 允许后续投递是不同动作；查看请求不授予 friend / temporary 权限。
 授权操作复用 `contact.grant_temporary_access` 或经校验的联系人准入修改，拉黑复用 `contact.block_contact`。
 这些动作调整本 owner 的准入规则，不修改域外实体自身资料；Agent 观察禁用。
+
+“接受为联系人”调用 `contact.update_contact(did, { access_level: 'friend' }, owner)`：只因请求到达、
+从未建立联系人的发送者（例如新建的家庭成员）没有联系人记录，后端在设置 `access_level` 时创建该记录
+（2026-09-30，MH2U-2），UI 在本地无联系人时附带当前显示名。以保存结果决定反馈，失败提示“未能更新该联系人”。
+`contact.*` 按 owner 授权：用户只能读写自己 DID 的联系人库（读另含可观察的 Zone Agent），系统库仅服务可写。
 
 当前改变联系人准入并不会迁移旧 REQUEST_BOX 记录。接受后的历史迁移 / 保留、请求处理状态与幂等结果
 须补显式服务契约；在此之前只准确反馈本次权限变更，不能清空请求列表或伪称历史已转入 INBOX。
@@ -1178,6 +1207,9 @@ delivery 事件按 transport/executor 组织，没有现成的 viewer / owner / 
 UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session API 重读，不读取 DELIVERY_QUEUE。
 只补拉末尾新消息不能发现旧记录更新 / 删除；需定向重读受影响记录 / 已加载页，或补有变更游标的接口。
 首次进入、重新联网及恢复前台须对账摘要和已加载状态；重复事件按稳定记录键去重，缺失 / 乱序事件不得回滚权威状态。
+投递完成（SENT / 失败 / DEAD）时 msg-center 对发送方的 SENT 记录再发布一次 box changed（`operation: "delivery"`），
+已有的 owner 订阅即可刷新送达状态（2026-09-30，MH2U-6）；事件不可用时，发送后若仍有本人消息处于发送中，
+按 0.3 / 0.7 / 1.5 / 3 / 5 / 8 秒退避重读尾页，不等 20 秒摘要轮询。
 切换 owner 取消订阅和旧请求，丢弃迟到结果。具体事件网关或轮询实现不预设新的 RPC 名称。
 
 ---

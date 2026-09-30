@@ -627,3 +627,135 @@ for (const width of [1440, 375]) {
     await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-visible-count', '101')
   })
 }
+
+test('rapid sends are queued in order while typing continues; a failure returns every unsent draft', async ({ page }) => {
+  await openHub(page)
+  const id = await createSession(page, 'Rapid sends')
+  const input = page.locator('textarea')
+  const history = page.getByTestId('conversation-history')
+  await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 400 }))
+  for (const text of ['FAST1', 'FAST2', 'FAST3', 'FAST4', 'FAST5']) {
+    await input.fill(text)
+    await input.press('Enter')
+    await expect(input).toHaveValue('')
+  }
+  await expect(history).toHaveAttribute('data-raw-count', '5')
+  const sent = await page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 10)).map(message => message.content.content), { context: OWN, id })
+  expect(sent).toEqual(['FAST1', 'FAST2', 'FAST3', 'FAST4', 'FAST5'])
+  await expect.poll(() => page.evaluate(({ context, id }) => window.__messageHubMock.draft(context, id), { context: OWN, id })).toBe('')
+
+  await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 400, failNext: 'send_failure' }))
+  await input.fill('LOST1')
+  await input.press('Enter')
+  await input.fill('LOST2')
+  await input.press('Enter')
+  await input.fill('still typing')
+  await expect(page.getByTestId('message-composer').getByRole('alert')).toBeVisible()
+  await expect(input).toHaveValue('LOST1\nLOST2\nstill typing')
+  await expect(history).toHaveAttribute('data-raw-count', '5')
+  await page.evaluate(() => window.__messageHubMock.configure({ delayMs: 0 }))
+})
+
+test('touch controls have names and 44px targets; message status is readable text', async ({ page }) => {
+  await page.setViewportSize({ width: 412, height: 839 })
+  await openHub(page)
+  await createSession(page, 'Accessible controls')
+  const composer = page.getByTestId('message-composer')
+  const targets = [
+    page.getByRole('button', { name: 'Back to conversation list', exact: true }),
+    page.getByRole('button', { name: 'Sessions', exact: true }),
+    page.getByRole('button', { name: /^Entity details:/ }),
+    page.getByRole('button', { name: 'Session details', exact: true }),
+    composer.getByRole('button', { name: 'Add attachment', exact: true }),
+    composer.getByRole('button', { name: 'Send', exact: true }),
+  ]
+  for (const target of targets) {
+    const box = await target.boundingBox()
+    expect(box?.width ?? 0).toBeGreaterThanOrEqual(44)
+    expect(box?.height ?? 0).toBeGreaterThanOrEqual(44)
+  }
+  await page.locator('input[type="file"]').first().setInputFiles('package.json')
+  await expect(composer.getByRole('button', { name: 'Remove package.json', exact: true })).toBeVisible()
+  await page.locator('textarea').fill('Status check')
+  await page.locator('textarea').press('Enter')
+  await expect(page.getByTestId('conversation-history').getByRole('img', { name: 'Sent', exact: true })).toBeVisible()
+})
+
+test('attachments over the sendable size are refused before upload', async ({ page }) => {
+  await openHub(page)
+  await createSession(page, 'Large attachment')
+  await page.locator('input[type="file"]').first().setInputFiles({ name: 'big.bin', mimeType: 'application/octet-stream', buffer: Buffer.alloc(32 * 1024 * 1024 + 1) })
+  await expect(page.getByTestId('attachment-too-large')).toContainText('big.bin')
+  await expect(page.getByTestId('message-composer').getByRole('button', { name: 'Remove big.bin', exact: true })).toHaveCount(0)
+  await page.locator('input[type="file"]').first().setInputFiles('package.json')
+  await expect(page.getByTestId('attachment-too-large')).toHaveCount(0)
+  await expect(page.getByTestId('message-composer').getByRole('button', { name: 'Remove package.json', exact: true })).toBeVisible()
+})
+
+test('media that loads late pushes later bubbles down instead of covering them', async ({ page }) => {
+  await openHub(page)
+  const id = await createSession(page, 'Late media')
+  let release!: () => void
+  const released = new Promise<void>(resolve => { release = resolve })
+  await page.route('https://upload.wikimedia.org/late.png', async route => {
+    await released
+    await route.fulfill({ contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="300"><rect width="400" height="300" fill="orange"/></svg>' })
+  })
+  await page.evaluate(async ({ context, id }) => {
+    const store = window.__messageHubMock
+    const base = store.now()
+    await store.injectMessage(context.ownerDid, id, {
+      kind: 'chat', from: 'did:buckyos:agent:codeassistant', to: [context.ownerDid], created_at_ms: base, ui_message_id: 'late-photo',
+      content: { format: 'text/plain', content: 'photo', refs: [{ role: 'input', label: 'late.png', target: { type: 'data_obj', obj_id: 'cyfile:late', uri_hint: 'https://upload.wikimedia.org/late.png' } }] },
+    })
+    for (let index = 1; index <= 3; index++) {
+      await store.injectMessage(context.ownerDid, id, { kind: 'chat', from: 'did:buckyos:agent:codeassistant', to: [context.ownerDid], created_at_ms: base + index, ui_message_id: `after-${index}`, content: { format: 'text/plain', content: `after ${index}` } })
+    }
+  }, { context: OWN, id })
+  const history = page.getByTestId('conversation-history')
+  await expect(history.getByText('after 3', { exact: true })).toBeVisible()
+  const overlaps = () => page.evaluate(() => {
+    const rows = [...document.querySelectorAll<HTMLElement>('[data-testid="conversation-history"] [data-index]')].sort((a, b) => Number(a.dataset.index) - Number(b.dataset.index))
+    let count = 0
+    for (let index = 1; index < rows.length; index++) if (rows[index].getBoundingClientRect().top < rows[index - 1].getBoundingClientRect().bottom - 0.5) count++
+    return count
+  })
+  expect(await overlaps()).toBe(0)
+  release()
+  await expect(history.getByRole('img', { name: 'late.png', exact: true })).toBeVisible()
+  await expect.poll(() => page.evaluate(() => (document.querySelector('[data-testid="conversation-history"] img[alt="late.png"]') as HTMLImageElement | null)?.naturalWidth ?? 0)).toBeGreaterThan(0)
+  expect(await overlaps()).toBe(0)
+})
+
+test('a failed delivery explains itself, keeps technical details folded and can be resent', async ({ page }) => {
+  await openHub(page)
+  const id = await createSession(page, 'Failed delivery')
+  await page.evaluate(async ({ context, id }) => {
+    await window.__messageHubMock.injectMessage(context.ownerDid, id, {
+      kind: 'chat', from: context.ownerDid, to: ['did:buckyos:agent:codeassistant'], created_at_ms: window.__messageHubMock.now(), ui_message_id: 'dead-1', ui_delivery_status: 'failed',
+      ui_record: { recordId: 'dead-1', direction: 'out', boxKind: 'SENT', delivery: { overall: 'failed', per_target: [{ target_did: 'did:buckyos:agent:codeassistant', state: 'DEAD', attempts: 1, last_error: { message: 'local dispatch dropped recipient', retryable: false, duplicate_risk: false } }] } },
+      content: { format: 'text/plain', content: 'b1' },
+    })
+  }, { context: OWN, id })
+  const failure = page.getByTestId('delivery-failure')
+  await expect(failure).toContainText('You can resend it later')
+  await expect(failure.getByText(/local dispatch dropped/)).toBeHidden()
+  await expect(page.getByTestId('conversation-history').getByRole('img', { name: 'Not delivered', exact: true })).toBeVisible()
+  await failure.getByRole('button', { name: 'Resend', exact: true }).click()
+  await expect(page.getByTestId('conversation-history')).toHaveAttribute('data-raw-count', '2')
+  const texts = await page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 5)).map(message => message.content.content), { context: OWN, id })
+  expect(texts).toEqual(['b1', 'b1'])
+})
+
+test('leaving an observed owner rewrites the address and the standalone route leads home', async ({ page }) => {
+  await openHub(page)
+  await page.goto(`/messagehub?entityId=${encodeURIComponent(ALICE)}&ownerDid=${encodeURIComponent(CODER)}&mode=observe`)
+  await page.getByTestId('owner-banner').getByRole('button', { name: 'Return to my messages', exact: true }).click()
+  await expect(page.getByTestId('owner-banner')).toHaveCount(0)
+  await expect.poll(() => new URL(page.url()).searchParams.get('mode')).toBeNull()
+  await page.reload()
+  await expect(page.getByTestId('owner-banner')).toHaveCount(0)
+  await expect(page.locator('textarea')).toBeVisible()
+  await page.getByTestId('messagehub-home').first().click()
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/')
+})

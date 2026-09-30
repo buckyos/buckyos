@@ -1826,6 +1826,8 @@ impl AIAgent {
         let progress_sink = self.runtime.msg_center.as_ref().map(|msg_center| {
             let msg_center = msg_center.clone();
             let progress_session_id = progress_status_session_id(kind, &session_id, &owner);
+            let progress_owner =
+                msg_center_pump::parse_owner_did(&self.config.toml.identity.agent_did);
             let i18n = self.config.i18n.clone();
             Arc::new(
                 move |ctx: &agent_tool::SessionRuntimeContext,
@@ -1846,19 +1848,25 @@ impl AIAgent {
                     };
                     let msg_center = msg_center.clone();
                     let session_id = progress_session_id.clone();
+                    let owner = progress_owner.clone();
                     let turn_nonce = ui_status_nonce(&ctx.trace_id);
                     tokio::spawn(async move {
                         let value = serde_json::json!({
                             "value": line,
                             "turn_nonce": turn_nonce,
                         });
-                        if let Err(err) = msg_center
-                            .update_ui_session_state(
-                                session_id.clone(),
-                                UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
-                                value,
-                            )
-                            .await
+                        let key = UI_SESSION_STATE_STATUS_LINE_KEY.to_string();
+                        let result = match owner {
+                            Some(owner) => msg_center
+                                .update_owner_ui_session_state(owner, session_id.clone(), key, value)
+                                .await
+                                .map(|_| ()),
+                            None => msg_center
+                                .update_ui_session_state(session_id.clone(), key, value)
+                                .await
+                                .map(|_| ()),
+                        };
+                        if let Err(err) = result
                         {
                             warn!(
                                 "opendan.agent: update AICC progress for session {} failed: {err}",

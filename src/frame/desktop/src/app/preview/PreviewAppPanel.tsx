@@ -18,7 +18,7 @@ import {
   type PreviewOpenWithRequest,
 } from '../../components/ContentPreview'
 import { refIdentity } from '../../components/preview/session'
-import { isCyfsPathRef, isObjectIdRef } from '../../components/preview/types'
+import { extensionRefField, isCyfsPathRef, isObjectIdRef } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
@@ -191,7 +191,7 @@ function OpenWithSheet({
   const { t } = useI18n()
   const readRef = request.resolved?.readRef
   const source = request.item.source
-  const reference = isCyfsPathRef(source) ? source.path : isObjectIdRef(source) ? source.objectId : request.item.title
+  const reference = isCyfsPathRef(source) ? source.path : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? request.item.title
   const download = () => {
     if (!readRef) return
     const anchor = document.createElement('a')

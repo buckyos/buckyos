@@ -5,7 +5,7 @@
  * `refs[].target.obj_id` on the outgoing message.
  */
 import { buckyos, ndm, ndn } from 'buckyos'
-import type { ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
+import { MAX_ATTACHMENT_BYTES, type ComposerAttachmentInput } from '../conversation/input/attachmentDraft'
 import { currentSessionToken } from '../datamodel/sessionApi'
 
 export interface UploadedAttachment {
@@ -44,6 +44,8 @@ async function putFileObject(endpoint: string, objId: string, fileObject: Record
 
 export async function uploadAttachments(attachments: readonly ComposerAttachmentInput[]): Promise<UploadedAttachment[]> {
   if (attachments.length === 0) return []
+  const oversize = attachments.filter(item => item.file.size > MAX_ATTACHMENT_BYTES)
+  if (oversize.length > 0) throw new Error(`attachment_too_large: ${oversize.map(item => item.relativePath || item.file.name).join(', ')}`)
   const files = attachments.map(item => item.file)
   ndm.setImportProvider({
     // Pure browser runtime: nothing is materialized locally, so every file

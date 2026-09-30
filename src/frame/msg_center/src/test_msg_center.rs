@@ -2955,6 +2955,83 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         };
         assert_eq!(list_as(bob.clone(), system).await.unwrap().items.len(), 1);
     }
+
+    #[tokio::test]
+    async fn contact_admission_is_owner_scoped_and_creates_missing_contacts() {
+        let (center, _tmp) = new_center("contact-auth").await;
+        let alice = DID::new("bns", "alice");
+        let bob = DID::new("bns", "bob");
+        center.set_token_verifier(Arc::new(StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+            users: HashMap::from([("alice".into(), alice.clone()), ("bob".into(), bob.clone())]),
+            agents: vec![],
+        }));
+        center.register_local_recipients([alice.clone(), bob.clone()]);
+        let sender = DID::new("web", "carol.zone.example");
+        let accept = buckyos_api::ContactPatch {
+            access_level: Some(buckyos_api::AccessGroupLevel::Friend),
+            ..Default::default()
+        };
+
+        // A sender that only reached the request box has no contact record;
+        // accepting it creates one and later messages are admitted.
+        let before = center
+            .handle_check_access_permission(sender.clone(), None, Some(alice.clone()), user_ctx("alice"))
+            .await
+            .unwrap();
+        assert!(!before.allow_delivery || before.level != buckyos_api::AccessGroupLevel::Friend);
+        let contact = center
+            .handle_update_contact(sender.clone(), accept.clone(), Some(alice.clone()), user_ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+        let after = center
+            .handle_check_access_permission(sender.clone(), None, Some(alice.clone()), user_ctx("alice"))
+            .await
+            .unwrap();
+        assert_eq!(after.level, buckyos_api::AccessGroupLevel::Friend);
+        assert!(after.allow_delivery);
+
+        // Other edits still need an existing contact.
+        let rename = buckyos_api::ContactPatch {
+            name: Some("Dave".into()),
+            ..Default::default()
+        };
+        assert!(center
+            .handle_update_contact(DID::new("web", "dave.zone.example"), rename, Some(alice.clone()), user_ctx("alice"))
+            .await
+            .is_err());
+
+        // A user changes only their own store; the system scope is service only.
+        assert!(is_denied(
+            center
+                .handle_update_contact(sender.clone(), accept.clone(), Some(bob.clone()), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_block_contact(sender.clone(), None, Some(bob.clone()), user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_update_contact(sender.clone(), accept.clone(), None, user_ctx("alice"))
+                .await
+        ));
+        assert!(is_denied(
+            center
+                .handle_list_contacts(Default::default(), Some(bob.clone()), user_ctx("alice"))
+                .await
+        ));
+        assert!(center
+            .handle_list_contacts(Default::default(), None, user_ctx("alice"))
+            .await
+            .is_ok());
+        assert!(center
+            .handle_update_contact(sender, accept, Some(bob.clone()), user_ctx("bob"))
+            .await
+            .is_ok());
+    }
 }
 
 #[tokio::test]

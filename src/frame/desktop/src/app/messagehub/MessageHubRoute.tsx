@@ -1,10 +1,16 @@
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { messageHubRouteContext } from './launch'
 import { MessageHubView } from './MessageHubView'
 
 export function MessageHubRoute() {
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const entityId = searchParams.get('entityId')
+  const exitObserver = () => setSearchParams(previous => {
+    const next = new URLSearchParams(previous)
+    next.delete('ownerDid'); next.delete('mode'); next.delete('entityId')
+    return next
+  }, { replace: true })
 
   return (
     <main className="min-h-dvh bg-[color:var(--cp-bg)] p-0 md:p-5">
@@ -17,7 +23,7 @@ export function MessageHubRoute() {
           backdropFilter: 'blur(20px)',
         }}
       >
-        <MessageHubView initialEntityId={entityId} contextRequest={messageHubRouteContext(searchParams)} />
+        <MessageHubView initialEntityId={entityId} contextRequest={messageHubRouteContext(searchParams)} onHome={() => navigate('/')} onExitObserver={exitObserver} />
       </div>
     </main>
   )

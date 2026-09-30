@@ -1,22 +1,25 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
-import { memo, useEffect, useState } from 'react'
+import { memo, useContext, useState } from 'react'
 import {
   AlertCircle,
   Check,
   CheckCheck,
   Clock,
-  FileText,
 } from 'lucide-react'
 import {
   getMessageDeliveryStatus,
   getMessageSenderName,
+  getMessageStableId,
   type RefItem,
   type DID,
   type MessageDeliveryStatus,
   type MessageObject,
 } from '../../protocol/msgobj'
-import { getObjectAccess, type ObjectInfo } from './objectAccess'
+import { MessageAttachmentView } from '../media/MediaAttachment'
+import { attachmentOfRef, isHttpUri } from '../media/source'
+import { ConversationMessageActionsContext } from './actions'
+import { getObjectAccess } from './objectAccess'
 import type { ConversationListItem } from './types'
 
 interface RecordContext {
@@ -34,6 +37,7 @@ function getRecordContext(message: MessageObject): RecordContext | undefined {
 interface MessageRenderContext {
   isGroup: boolean
   selfDid: DID
+  messageIndex: number
 }
 
 type MessageRenderer = (
@@ -44,8 +48,7 @@ type MessageRenderer = (
 const messageRenderers: readonly MessageRenderer[] = [
   message => isActionMessage(message) ? <ActionMessage message={message} /> : null,
   message => message.ui_unavailable === true ? <UnavailableMessage message={message} /> : null,
-  (message, context) => hasObjectRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
-  renderImageMessage,
+  (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
   renderTextMessage,
   renderFallbackMessage,
 ]
@@ -93,7 +96,7 @@ export const ConversationListRow = memo(function ConversationListRow({
 
   return (
     <>
-      {messageRenderers.map((renderer) => renderer(item.data, { isGroup, selfDid })).find(Boolean)}
+      {messageRenderers.map((renderer) => renderer(item.data, { isGroup, selfDid, messageIndex: item.messageIndex })).find(Boolean)}
     </>
   )
 })
@@ -158,6 +161,7 @@ function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageOb
   const record = getRecordContext(message)
   const failedTargets = record?.delivery?.per_target?.filter(target => target.state === 'FAILED' || target.state === 'DEAD') ?? []
   const pendingTargets = record?.delivery?.per_target?.filter(target => target.state === 'WAIT' || target.state === 'SENDING') ?? []
+  const metaColor = isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
   return (
     <>
       <div className="flex items-center justify-end gap-1 mt-1">
@@ -165,9 +169,7 @@ function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageOb
         <span
           className="text-[10px]"
           style={{
-            color: isSelf
-              ? 'var(--cp-message-self-meta)'
-              : 'var(--cp-muted)',
+            color: metaColor,
           }}
         >
           {formatMessageTime(message.created_at_ms)}
@@ -175,17 +177,38 @@ function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageOb
         {isSelf ? <MessageStatusIcon status={deliveryStatus} /> : null}
       </div>
       {isSelf && record?.delivery && (failedTargets.length > 0 || record.delivery.overall === 'partial_failed') ? (
-        <details className="mt-1 text-[10px]" data-testid="delivery-details" style={{ color: isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }}>
-          <summary className="cursor-pointer">{t(record.delivery.overall === 'partial_failed' ? 'messagehub.delivery.partialFailed' : 'messagehub.delivery.failed')}</summary>
-          <ul className="mt-1 space-y-0.5 break-all">
-            {(record.delivery.per_target ?? []).map(target => (
-              <li key={target.target_did}>{target.target_did} · {target.state}{target.attempts ? ` · ${t('messagehub.delivery.attempts', undefined, { count: target.attempts })}` : ''}{target.last_error ? ` · ${target.last_error.message}${target.last_error.retryable ? ` (${t('messagehub.delivery.retryable')})` : ''}${target.last_error.duplicate_risk ? ` (${t('messagehub.delivery.duplicateRisk')})` : ''}` : ''}</li>
-            ))}
-          </ul>
-          {pendingTargets.length > 0 ? <p className="mt-1">{t('messagehub.delivery.pending', undefined, { count: pendingTargets.length })}</p> : null}
-        </details>
+        <div className="mt-1 text-[11px]" data-testid="delivery-failure" style={{ color: metaColor }}>
+          <p role="note">{t(record.delivery.overall === 'partial_failed' ? 'messagehub.delivery.partialFailed' : 'messagehub.delivery.failed')} · {t('messagehub.delivery.failedHint', undefined, { count: Math.max(1, failedTargets.length) })}</p>
+          {record.delivery.overall === 'failed' && failedTargets.length === (record.delivery.per_target?.length ?? 0) ? <ResendButton message={message} /> : null}
+          <details className="mt-1 text-[10px]" data-testid="delivery-details">
+            <summary className="cursor-pointer">{t('messagehub.delivery.technical')}</summary>
+            <ul className="mt-1 space-y-0.5 break-all">
+              {(record.delivery.per_target ?? []).map(target => (
+                <li key={target.target_did}>{target.target_did} · {target.state}{target.attempts ? ` · ${t('messagehub.delivery.attempts', undefined, { count: target.attempts })}` : ''}{target.last_error ? ` · ${target.last_error.message}${target.last_error.retryable ? ` (${t('messagehub.delivery.retryable')})` : ''}${target.last_error.duplicate_risk ? ` (${t('messagehub.delivery.duplicateRisk')})` : ''}` : ''}</li>
+              ))}
+            </ul>
+            {pendingTargets.length > 0 ? <p className="mt-1">{t('messagehub.delivery.pending', undefined, { count: pendingTargets.length })}</p> : null}
+          </details>
+        </div>
       ) : null}
     </>
+  )
+}
+
+function ResendButton({ message }: { message: MessageObject }) {
+  const { t } = useI18n()
+  const { resend } = useContext(ConversationMessageActionsContext)
+  const [state, setState] = useState<'idle' | 'pending' | 'failed'>('idle')
+  if (!resend) return null
+  const run = () => {
+    setState('pending')
+    void resend(message).then(() => setState('idle'), () => setState('failed'))
+  }
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2">
+      <button type="button" className="min-h-8 rounded-lg border border-current px-2 text-[11px] font-medium disabled:opacity-50" disabled={state === 'pending'} onClick={run} data-testid="message-resend">{t('messagehub.resend')}</button>
+      {state === 'failed' ? <span role="alert">{t('messagehub.resendFailed')}</span> : null}
+    </div>
   )
 }
 
@@ -199,15 +222,18 @@ function UnavailableMessage({ message }: { message: MessageObject }) {
   )
 }
 
-function hasObjectRefs(message: MessageObject): boolean {
-  return (message.content.refs ?? []).some(ref => ref.target.type === 'data_obj' && !isHttpUri(ref.target.uri_hint)) && getObjectAccess() !== null
+function hasAttachmentRefs(message: MessageObject): boolean {
+  const hasAccess = getObjectAccess() !== null
+  return (message.content.refs ?? []).some(ref => {
+    if (ref.target.type !== 'data_obj') return false
+    const uri = ref.target.uri_hint?.trim()
+    return uri && isHttpUri(uri) ? isLikelyImageUri(uri) : hasAccess
+  })
 }
 
-function isHttpUri(uri: string | undefined): boolean {
-  if (!uri) return false
+function isLikelyImageUri(uri: string): boolean {
   try {
-    const parsed = new URL(uri)
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:'
+    return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(new URL(uri).pathname)
   } catch {
     return false
   }
@@ -219,6 +245,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const deliveryStatus = getMessageDeliveryStatus(message)
   const caption = message.content.content?.trim() ?? ''
   const refs = message.content.refs ?? []
+  const messageId = getMessageStableId(message, context.messageIndex)
   return (
     <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}>
       <div
@@ -232,7 +259,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
       >
         {!isSelf && context.isGroup ? <p className="text-xs font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null}
         <div className="flex flex-col gap-2">
-          {refs.map((ref, index) => <AttachmentRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} isSelf={isSelf} />)}
+          {refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf} />)}
         </div>
         {caption.length > 0 ? <p className="text-sm whitespace-pre-wrap break-words leading-relaxed mt-2">{caption}</p> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} />
@@ -241,146 +268,18 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   )
 }
 
-type AttachmentState =
-  | { phase: 'loading' }
-  | { phase: 'ready'; info: ObjectInfo; contentUrl?: string }
-  | { phase: 'error'; message: string }
-
-function AttachmentRef({ item, isSelf }: { item: RefItem; isSelf: boolean }) {
-  const { t } = useI18n()
-  const linkColor = isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)'
+function MessageRef({ item, id, isSelf }: { item: RefItem; id: string; isSelf: boolean }) {
   const target = item.target
-  const objId = target.type === 'data_obj' ? target.obj_id : null
-  const httpUri = target.type === 'data_obj' && isHttpUri(target.uri_hint) ? target.uri_hint : null
-  const [state, setState] = useState<AttachmentState>({ phase: 'loading' })
-  const [retry, setRetry] = useState(0)
-  useEffect(() => {
-    if (!objId || httpUri) return
-    const access = getObjectAccess()
-    let cancelled = false
-    // Resolution is asynchronous by design; state changes only land in the
-    // promise callbacks so the effect body never sets state synchronously.
-    const resolve = access
-      ? access.describe(objId)
-      : Promise.reject(new Error('unavailable'))
-    void resolve.then(async (info) => {
-      if (cancelled) return
-      const previewable = info.isFile && (info.mimeType?.startsWith('image/') ?? false)
-      const contentUrl = previewable && access ? await access.contentUrl(objId).catch(() => undefined) : undefined
-      if (!cancelled) setState({ phase: 'ready', info, contentUrl })
-    }).catch((error: unknown) => {
-      if (!cancelled) setState({ phase: 'error', message: error instanceof Error ? error.message : String(error) })
-    })
-    return () => { cancelled = true }
-  }, [objId, httpUri, retry, t])
   if (target.type === 'service_did') {
     return <span className="text-xs break-all" data-testid="attachment-service">{item.label ? `${item.label} · ` : ''}{target.did} · {item.role}</span>
   }
-  if (httpUri) {
-    return <a href={httpUri} target="_blank" rel="noreferrer noopener" className="text-sm break-all underline underline-offset-2" style={{ color: linkColor }}>{item.label ?? httpUri}</a>
+  const attachment = attachmentOfRef(item, id)
+  if (attachment) return <MessageAttachmentView attachment={attachment} isSelf={isSelf} />
+  const uri = target.uri_hint?.trim()
+  if (uri && isHttpUri(uri)) {
+    return <a href={uri} target="_blank" rel="noreferrer noopener" className="text-sm break-all underline underline-offset-2" style={{ color: isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)' }}>{item.label ?? uri}</a>
   }
-  const label = item.label ?? (state.phase === 'ready' ? state.info.name : undefined) ?? objId ?? ''
-  if (state.phase === 'loading') return <span className="text-xs" data-testid="attachment-loading">{t('messagehub.attachmentLoading')} · {label}</span>
-  if (state.phase === 'error') {
-    return <span className="text-xs break-all" role="alert" data-testid="attachment-error">{label} · {t('messagehub.attachmentUnavailable')} <button type="button" className="underline" onClick={() => { setState({ phase: 'loading' }); setRetry(value => value + 1) }}>{t('messagehub.retry')}</button></span>
-  }
-  const openContent = async () => {
-    const access = getObjectAccess()
-    if (!access || !objId) return
-    try {
-      const url = await access.contentUrl(objId)
-      window.open(url, '_blank', 'noopener')
-    } catch {
-      setState({ phase: 'error', message: 'download' })
-    }
-  }
-  return (
-    <div className="flex flex-col gap-1" data-testid="attachment-ready">
-      {state.contentUrl ? <img src={state.contentUrl} alt={label} className="block w-full h-auto max-h-[360px] object-cover" style={{ borderRadius: 12 }} /> : null}
-      <button type="button" onClick={() => void openContent()} disabled={!state.info.isFile} className="flex items-center gap-2 text-left text-sm underline-offset-2 disabled:no-underline disabled:opacity-70" style={{ color: linkColor }}>
-        <FileText size={14} />
-        <span className="break-all">{label}{state.info.size !== undefined ? ` · ${formatBytes(state.info.size)}` : ''}{state.info.mimeType ? ` · ${state.info.mimeType}` : ''}{!state.info.isFile ? ` · ${t('messagehub.attachmentNotFile')}` : ''}</span>
-      </button>
-    </div>
-  )
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${Math.round(size / 102.4) / 10} KB`
-  return `${Math.round(size / (1024 * 102.4)) / 10} MB`
-}
-
-function renderImageMessage(
-  message: MessageObject,
-  { isGroup, selfDid }: MessageRenderContext,
-) {
-  const imageRefs = getImageRefs(message)
-  if (imageRefs.length === 0) {
-    return null
-  }
-
-  const isSelf = message.from === selfDid
-  const senderName = getMessageSenderName(message)
-  const deliveryStatus = getMessageDeliveryStatus(message)
-  const caption = message.content.content?.trim() ?? ''
-
-  return (
-    <div
-      className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}
-      key={`${message.from}:${message.created_at_ms}:image`}
-    >
-      <div
-        className="max-w-[75%] min-w-[120px]"
-        style={{
-          background: isSelf
-            ? 'var(--cp-message-self-bg)'
-            : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-          color: isSelf ? 'var(--cp-message-self-text)' : 'var(--cp-text)',
-          borderRadius: isSelf
-            ? '18px 18px 4px 18px'
-            : '18px 18px 18px 4px',
-          padding: '8px 12px',
-        }}
-      >
-        {!isSelf && isGroup ? (
-          <p
-            className="text-xs font-semibold mb-1"
-            style={{ color: 'var(--cp-accent)' }}
-          >
-            {senderName}
-          </p>
-        ) : null}
-        <div className="flex flex-col gap-2">
-          {imageRefs.map((imageRef, index) => (
-            <ImageRefPreview
-              key={`${imageRef.uri}:${index}`}
-              imageRef={imageRef}
-              isSelf={isSelf}
-            />
-          ))}
-        </div>
-        {caption.length > 0 ? (
-          <p className="text-sm whitespace-pre-wrap break-words leading-relaxed mt-2">
-            {caption}
-          </p>
-        ) : null}
-        <div className="flex items-center justify-end gap-1 mt-1">
-          <span
-            className="text-[10px]"
-            style={{
-              color: isSelf
-                ? 'var(--cp-message-self-meta)'
-                : 'var(--cp-muted)',
-            }}
-          >
-            {formatMessageTime(message.created_at_ms)}
-          </span>
-          {isSelf ? <MessageStatusIcon status={deliveryStatus} /> : null}
-        </div>
-      </div>
-    </div>
-  )
+  return <span className="text-xs break-all">{item.label ?? target.obj_id}</span>
 }
 
 function renderFallbackMessage(
@@ -419,116 +318,31 @@ function MessageStatusIcon({
 }: {
   status?: MessageDeliveryStatus
 }) {
+  const { t } = useI18n()
+  let icon: React.ReactNode
   switch (status) {
     case 'sending':
-      return <Clock size={14} style={{ color: 'var(--cp-muted)' }} />
+      icon = <Clock size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      break
     case 'sent':
-      return <Check size={14} style={{ color: 'var(--cp-muted)' }} />
+      icon = <Check size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      break
     case 'delivered':
-      return <CheckCheck size={14} style={{ color: 'var(--cp-muted)' }} />
+      icon = <CheckCheck size={14} style={{ color: 'var(--cp-muted)' }} aria-hidden />
+      break
     case 'read':
-      return <CheckCheck size={14} style={{ color: 'var(--cp-accent)' }} />
+      icon = <CheckCheck size={14} style={{ color: 'var(--cp-accent)' }} aria-hidden />
+      break
     case 'failed':
-      return <AlertCircle size={14} style={{ color: 'var(--cp-danger)' }} />
+      icon = <AlertCircle size={14} style={{ color: 'var(--cp-danger)' }} aria-hidden />
+      break
     default:
       return null
   }
-}
-
-function ImageRefPreview({
-  imageRef,
-  isSelf,
-}: {
-  imageRef: ImageRefDescriptor
-  isSelf: boolean
-}) {
-  const linkColor = isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)'
-
-  if (!imageRef.isTrusted) {
-    return (
-      <a
-        href={imageRef.uri}
-        target="_blank"
-        rel="noreferrer noopener"
-        className="text-sm break-all underline underline-offset-2"
-        style={{ color: linkColor }}
-      >
-        {imageRef.label ?? imageRef.uri}
-      </a>
-    )
-  }
-
-  return (
-    <a
-      href={imageRef.uri}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="block"
-    >
-      <img
-        src={imageRef.uri}
-        alt={imageRef.label ?? 'Image preview'}
-        className="block w-full h-auto max-h-[360px] object-cover"
-        style={{
-          borderRadius: 12,
-          background: 'color-mix(in srgb, var(--cp-text) 6%, transparent)',
-        }}
-      />
-    </a>
-  )
-}
-
-interface ImageRefDescriptor {
-  uri: string
-  label?: string
-  isTrusted: boolean
-}
-
-function getImageRefs(message: MessageObject): ImageRefDescriptor[] {
-  return (message.content.refs ?? [])
-    .map(resolveImageRef)
-    .filter((value): value is ImageRefDescriptor => value !== null)
-}
-
-function resolveImageRef(ref: RefItem): ImageRefDescriptor | null {
-  if (ref.target.type !== 'data_obj' || typeof ref.target.uri_hint !== 'string') {
-    return null
-  }
-
-  const uri = ref.target.uri_hint.trim()
-  if (!isLikelyImageUri(uri)) {
-    return null
-  }
-
-  return {
-    uri,
-    label: ref.label,
-    isTrusted: isTrustedImageHost(uri),
-  }
-}
-
-function isLikelyImageUri(uri: string): boolean {
-  try {
-    const url = new URL(uri)
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-      return false
-    }
-
-    return /\.(avif|bmp|gif|jpe?g|png|svg|webp)$/i.test(url.pathname)
-  }
-  catch {
-    return false
-  }
-}
-
-function isTrustedImageHost(uri: string): boolean {
-  try {
-    const host = new URL(uri).hostname.toLowerCase()
-    return host === 'wikimedia.org' || host.endsWith('.wikimedia.org')
-  }
-  catch {
-    return false
-  }
+  // A labelled image rather than a live region: the state is read with the
+  // bubble, not announced again every time it changes.
+  const label = t(`messagehub.deliveryStatus.${status}`)
+  return <span role="img" aria-label={label} title={label} className="inline-flex" data-testid="delivery-status" data-status={status}>{icon}</span>
 }
 
 function formatMessageTime(ts: number): string {

@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -163,6 +163,19 @@ impl BackgroundTaskPolicy {
             .min(self.max_retry_secs);
         now.saturating_add(delay)
     }
+}
+
+/// Denied `enforce` calls may force one uncached policy read per interval.
+const RBAC_FORCED_REFRESH_INTERVAL_MS: u64 = 1_000;
+static LAST_RBAC_FORCED_REFRESH_MS: AtomicU64 = AtomicU64::new(0);
+
+fn claim_rbac_forced_refresh() -> bool {
+    let now_ms = buckyos_get_unix_timestamp() * 1000;
+    let last = LAST_RBAC_FORCED_REFRESH_MS.load(Ordering::Relaxed);
+    now_ms.saturating_sub(last) >= RBAC_FORCED_REFRESH_INTERVAL_MS
+        && LAST_RBAC_FORCED_REFRESH_MS
+            .compare_exchange(last, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
 }
 
 pub struct BuckyOSRuntime {
@@ -1600,11 +1613,32 @@ impl BuckyOSRuntime {
                 })?;
         }
 
-        let sudo = token
-            .sudo
-            .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(userid)));
+        let sudo = || {
+            token
+                .sudo
+                .then(|| rbac::SudoMode::Sudo(RPCSessionToken::get_default_sudo_userid(userid)))
+        };
 
-        let result = rbac::enforce(userid, &authorization_key, resource_path, action, sudo).await;
+        let mut result =
+            rbac::enforce(userid, &authorization_key, resource_path, action, sudo()).await;
+        if !result && claim_rbac_forced_refresh() {
+            // The policy is cached for a few seconds; a grant written just
+            // before this call (a new user, a changed role) is re-read once
+            // before the request is denied.
+            system_config_client
+                .invalidate_cache(crate::RBAC_POLICY_KEY)
+                .await;
+            let fresh = crate::load_current_rbac_config(system_config_client.as_ref()).await?;
+            if fresh.is_changed {
+                rbac::update_enforcer(fresh.model.as_str(), fresh.policy.as_str())
+                    .await
+                    .map_err(|error| {
+                        RPCErrors::ReasonError(format!("update rbac enforcer failed: {}", error))
+                    })?;
+                result =
+                    rbac::enforce(userid, &authorization_key, resource_path, action, sudo()).await;
+            }
+        }
         if !result {
             return Err(RPCErrors::NoPermission(format!(
                 "enforce failed,userid:{},appid:{},resource:{},action:{}",

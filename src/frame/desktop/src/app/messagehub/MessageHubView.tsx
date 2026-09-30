@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronLeft, ChevronRight, MessageSquare } from 'lucide-react'
+import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { InMemoryConversationMessageReader } from './conversation/history/data-source'
+import { useMessageMediaHost } from './conversation/media/context'
+import { MessageMediaHost } from './conversation/media/MessageMediaHost'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { EntityList } from './EntityList'
@@ -33,32 +35,82 @@ import type {
 const EMPTY_READER = InMemoryConversationMessageReader.empty()
 const EMPTY_SESSIONS: Session[] = []
 
-export function MessageHubView({ initialEntityId = null, contextRequest }: { initialEntityId?: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext }) {
+interface MessageHubViewProps {
+  initialEntityId?: string | null
+  contextRequest?: MessageHubContextRequest | MessageHubContext
+  windowId?: string
+  /** Standalone route only: leave MessageHub for the desktop. */
+  onHome?: () => void
+  /** Standalone route only: drop the observed owner from the address, so a reload stays in the viewer's own messages. */
+  onExitObserver?: () => void
+}
+
+export function MessageHubView({ initialEntityId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
   const { t } = useI18n()
   const [exitFrom, setExitFrom] = useState<string | null>(null)
   const { status, retry } = useMessageHubReady()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   if (status !== 'ready') return <div className="flex h-full items-center justify-center gap-3"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.loadFailed')}</p>{status === 'error' && <button type="button" className={hubButtonClass} onClick={retry}>{t('messagehub.retry')}</button>}</div>
-  return <MessageHubOwnerGate initialEntityId={initialEntityId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={setExitFrom} isDesktop={isDesktop} />
+  const exit = (value: string | null) => { setExitFrom(value); onExitObserver?.() }
+  return <MessageHubOwnerGate initialEntityId={initialEntityId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
 }
 
-function MessageHubOwnerGate({ initialEntityId, contextRequest, exitFrom, onExit, isDesktop }: { initialEntityId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean }) {
+/** How long a freshly created account may wait for its mailbox permission to propagate. */
+const SELF_DENIED_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
+
+function MessageHubOwnerGate({ initialEntityId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
   const { t } = useI18n()
   const store = useMessageHubStore()
   const requested = resolveMessageHubContext(store.defaultContext(), contextRequest)
   const context = exitFrom === JSON.stringify(requested) ? store.defaultContext() : requested
   const ownerStatus = store.ownerStatus(context)
+  const isOwn = context.mode === 'self' && context.ownerDid === context.viewerDid
+  const [selfRetry, setSelfRetry] = useState(0)
   useEffect(() => { if (store.canView(context)) void store.ensureOwner(context) }, [store, context.ownerDid, context.mode, context.viewerDid]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Permission for a new account's own mailbox reaches msg-center a little
+  // after the account itself; the own view retries on a backoff instead of
+  // stopping at "no permission".
+  const selfDenied = isOwn && ownerStatus.phase === 'denied'
+  useEffect(() => {
+    if (!selfDenied || selfRetry >= SELF_DENIED_RETRY_DELAYS_MS.length) return
+    const timer = setTimeout(() => { setSelfRetry(value => value + 1); void store.ensureOwner(context, true) }, SELF_DENIED_RETRY_DELAYS_MS[selfRetry])
+    return () => clearTimeout(timer)
+  }, [selfDenied, selfRetry]) // eslint-disable-line react-hooks/exhaustive-deps
+  if (selfDenied || (isOwn && selfRetry > 0 && ownerStatus.phase === 'loading')) {
+    const waiting = selfRetry < SELF_DENIED_RETRY_DELAYS_MS.length
+    return <div role={waiting ? 'status' : 'alert'} className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+      <p>{t(waiting ? 'messagehub.preparingMailbox' : 'messagehub.mailboxUnavailable')}</p>
+      {!waiting && <button type="button" className={hubButtonClass} onClick={() => { setSelfRetry(0); void store.ensureOwner(context, true) }}>{t('messagehub.retry')}</button>}
+    </div>
+  }
   if (!store.canView(context)) return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.reason.permission_denied')}</p>{context.mode === 'observe' && <button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button>}</div>
   if (ownerStatus.phase === 'loading' || ownerStatus.phase === 'idle') return <div className="flex h-full items-center justify-center"><p role="status">{t('messagehub.loading')}</p></div>
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
     {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
-    <div className="relative min-h-0 flex-1"><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}`} initialEntityId={initialEntityId} context={context} /></WindowDialogProvider></div>
+    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}`} initialEntityId={initialEntityId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
   </div>
 }
 
-function MessageHubContent({ initialEntityId, context }: { initialEntityId: string | null; context: MessageHubContext }) {
+function HomeButton({ onHome }: { onHome: () => void }) {
+  const { t } = useI18n()
+  const label = t('messagehub.home', 'Back to desktop')
+  return (
+    <button
+      type="button"
+      onClick={onHome}
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
+      style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
+      aria-label={label}
+      title={label}
+      data-testid="messagehub-home"
+    >
+      <House size={17} />
+    </button>
+  )
+}
+
+function MessageHubContent({ initialEntityId, context, onHome }: { initialEntityId: string | null; context: MessageHubContext; onHome?: () => void }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
@@ -336,7 +388,12 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
     await store.send(context, activeSession.id, { content: payload.content, attachments: payload.attachments.map(({ file, relativePath }) => ({ file, relativePath })) }, writeConfirmations[activeSession.id])
   }
+  const handleResend = async (message: import('./protocol/msgobj').MessageObject) => {
+    if (!activeSession) throw Error('session_missing')
+    await store.resend(context, activeSession.id, message, writeConfirmations[activeSession.id])
+  }
   const conversationProps = {
+    onResend: handleResend,
     context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
     defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
     historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,
@@ -425,7 +482,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
-            headerActions={<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button>}
+            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><MediaSettingsButton /></>}
             enableDrilldownNavigation
             useCompactInlineChildren
             childNavigationTrigger="icon"
@@ -549,7 +606,7 @@ function MessageHubContent({ initialEntityId, context }: { initialEntityId: stri
             enableDrilldownNavigation
             useCompactInlineChildren
             headerActions={(
-              <><button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><button
+              <>{onHome ? <HomeButton onHome={onHome} /> : null}<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><MediaSettingsButton /><button
                 type="button"
                 onClick={handleCollapseEntityList}
                 className="flex h-9 w-9 items-center justify-center rounded-xl"
@@ -659,5 +716,24 @@ function EmptyConversation() {
         {t('messagehub.selectConversation', 'Select a conversation to start')}
       </p>
     </div>
+  )
+}
+
+function MediaSettingsButton() {
+  const { t } = useI18n()
+  const host = useMessageMediaHost()
+  if (!host) return null
+  const label = t('messagehub.media.settings', 'Media settings')
+  return (
+    <button
+      type="button"
+      onClick={() => host.openSettings()}
+      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
+      style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
+      aria-label={label}
+      title={label}
+    >
+      <ImagePlay size={17} />
+    </button>
   )
 }

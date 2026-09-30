@@ -704,6 +704,57 @@ const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
         ],
       },
     }),
+    createChatMessage({
+      id: 'msg-a1-7',
+      from: participantDids.alice,
+      to: [participantDids.you],
+      senderName: 'Alice',
+      content: 'New loading animation, plus the harbor shot for the header.',
+      createdAtMs: Date.now() - 11 * 60_000,
+      sessionId: 'session-alice-1',
+      contentOverride: {
+        format: 'text/plain',
+        content: 'New loading animation, plus the harbor shot for the header.',
+        refs: [
+          { role: 'input', label: 'orbit-loader.gif', target: { type: 'data_obj', obj_id: 'cyfile:mock-gif-orbit', uri_hint: 'cyfs://cyfile:mock-gif-orbit' } },
+          { role: 'input', label: 'harbor-sunset.png', target: { type: 'data_obj', obj_id: 'cyfile:mock-photo-harbor', uri_hint: 'cyfs://cyfile:mock-photo-harbor' } },
+        ],
+      },
+    }),
+    createChatMessage({
+      id: 'msg-a1-8',
+      from: participantDids.you,
+      to: [participantDids.alice],
+      senderName: 'You',
+      content: 'Here is the screen recording and the interview cut.',
+      createdAtMs: Date.now() - 10 * 60_000,
+      deliveryStatus: 'read',
+      sessionId: 'session-alice-1',
+      contentOverride: {
+        format: 'text/plain',
+        content: 'Here is the screen recording and the interview cut.',
+        refs: [
+          { role: 'input', label: 'screen-recording.webm', target: { type: 'data_obj', obj_id: 'cyfile:mock-video-clip', uri_hint: 'cyfs://cyfile:mock-video-clip' } },
+          { role: 'input', label: 'interview-cut.mov', target: { type: 'data_obj', obj_id: 'cyfile:mock-video-interview', uri_hint: 'cyfs://cyfile:mock-video-interview' } },
+        ],
+      },
+    }),
+    createChatMessage({
+      id: 'msg-a1-9',
+      from: participantDids.alice,
+      to: [participantDids.you],
+      senderName: 'Alice',
+      content: 'And the brief for Friday.',
+      createdAtMs: Date.now() - 9 * 60_000,
+      sessionId: 'session-alice-1',
+      contentOverride: {
+        format: 'text/plain',
+        content: 'And the brief for Friday.',
+        refs: [
+          { role: 'input', label: 'design-brief.pdf', target: { type: 'data_obj', obj_id: 'cyfile:mock-doc-brief', uri_hint: 'cyfs://cyfile:mock-doc-brief' } },
+        ],
+      },
+    }),
   ],
   'session-team-1': [
     createChatMessage({

@@ -77,6 +77,7 @@ import {
   type SessionItem,
 } from './preview/session'
 import {
+  extensionRefField,
   isAbortError,
   isBlobRef,
   isCyfsPathRef,
@@ -209,7 +210,7 @@ function sourceLabel(ref: ContentRef): string {
   if (isCyfsPathRef(ref)) return ref.path.startsWith('cyfs://') ? ref.path : `cyfs://${ref.path.startsWith('/') ? '' : '/'}${ref.path}`
   if (isObjectIdRef(ref)) return ref.objectId
   if (isBlobRef(ref)) return ref.value.name ?? 'blob'
-  return ref.kind
+  return extensionRefField(ref, 'reference') ?? ref.kind
 }
 
 function errorStateFrom(err: unknown, contentLabel?: string): PreviewErrorState {

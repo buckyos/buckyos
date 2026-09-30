@@ -121,6 +121,17 @@ pub struct Contact {
 
 
 
+5. **原生 DID 发送者不自动创建**：未知的原生 DID（例如另一 Zone 用户，或尚未同步进来的新 Zone 成员）只按 Stranger 进入 REQUEST_BOX，不写联系人记录。
+   owner 对其作出准入决定时才创建：`block_contact`、`grant_temporary_access`，以及携带 `access_level` 的 `update_contact`（`source = ManualCreate`，可带 `name`）。
+   不带 `access_level` 的其它字段修改仍要求联系人已存在。
+
+**Zone 用户同步**：启动、`reload_settings` 以及每 30 秒一次的周期扫描读取 Zone 用户列表与资料，在列表变化时写入系统库和各 owner 库（`source = Shared`，tag `zone_user`）。
+DID 首次成为 Zone 用户联系人时授予 Friend（Block 保留）；之后的同步只更新名称、分组、绑定等资料，不覆盖 owner 手动设置的准入级别。
+control-panel 创建 / 修改用户不通知 msg-center，新成员最迟一个扫描周期后成为彼此的 Friend。
+
+**授权**：`contact.*` 网络调用按 `contact_mgr_owner` 授权。指定 owner 时，写操作要求调用者就是该 owner（服务主体沿用 RBAC），读操作另允许观察 Zone Agent；
+未指定 owner 的系统库对所有已认证调用者可读，仅服务主体可写。无 token 的进程内调用视为服务内部调用。
+
 ### 3.2 动态访问控制 (ACL & Temporary Access)
 
 `MsgCenter` 在分发消息前（Dispatch），必须通过 ContactMgr 检查权限。

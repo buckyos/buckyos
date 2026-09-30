@@ -415,6 +415,11 @@ impl SystemConfigClient {
         cache_guard.remove(key);
     }
 
+    /// Drop a cached entry so the next `get` reads it from the server.
+    pub async fn invalidate_cache(&self, key: &str) {
+        self.remove_config_cache(key).await;
+    }
+
     pub fn new(service_url: Option<&str>, session_token: Option<&str>) -> Self {
         let real_session_token = session_token.map(|token| token.to_string());
         //let default_sys_config_url =

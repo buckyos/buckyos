@@ -968,9 +968,21 @@ impl ContactMgr {
                 RPCErrors::ReasonError("contact store missing after load".to_string())
             })?;
             let now_ms = Self::now_ms();
-            let contact = store.contacts.get_mut(&did).ok_or_else(|| {
-                RPCErrors::ReasonError(format!("contact not found for did {}", did.to_string()))
-            })?;
+            let did = Self::canonical_did_in_store(store, &did);
+            // Setting an access level is an admission decision about a DID,
+            // which may never have been stored (a native sender that only
+            // reached the request box), so it creates the record like
+            // `block_contact` does. Other edits still require a contact.
+            let contact = if patch.access_level.is_some() {
+                Self::ensure_contact_exists(store, did, now_ms, ContactSource::ManualCreate)
+            } else {
+                store.contacts.get_mut(&did).ok_or_else(|| {
+                    RPCErrors::ReasonError(format!(
+                        "contact not found for did {}",
+                        did.to_string()
+                    ))
+                })?
+            };
 
             if let Some(name) = patch.name {
                 let trimmed = name.trim();
@@ -1185,6 +1197,9 @@ impl ContactMgr {
                 let created = !store.contacts.contains_key(&did);
                 let contact =
                     Self::ensure_contact_exists(store, did.clone(), now_ms, ContactSource::Shared);
+                // Admission is granted when the DID first becomes a zone user
+                // contact; later (periodic) syncs keep the owner's own choice.
+                let newly_zone_user = created || !contact.tags.iter().any(|tag| tag == "zone_user");
 
                 let trimmed_name = name.trim();
                 if !trimmed_name.is_empty() {
@@ -1194,8 +1209,9 @@ impl ContactMgr {
                 }
                 contact.source = ContactSource::Shared;
                 contact.is_verified = true;
-                if contact.access_level != AccessGroupLevel::Block {
+                if newly_zone_user && contact.access_level != AccessGroupLevel::Block {
                     contact.access_level = AccessGroupLevel::Friend;
+                    contact.temp_grants.clear();
                 }
                 contact.note = note
                     .as_ref()
@@ -2879,5 +2895,79 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resolved, zone_user_did);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn repeated_zone_user_sync_keeps_the_owners_access_choice() {
+        let (mgr, _tmp) = new_test_mgr().await;
+        let owner = DID::new("bns", "devtest");
+        let member = DID::new("web", "carol.test.buckyos.io");
+        let seed = || ZoneUserContactSeed {
+            did: member.clone(),
+            name: "Carol".to_string(),
+            note: None,
+            bindings: vec![],
+            groups: vec![],
+            tags: vec![],
+        };
+
+        mgr.upsert_zone_user_contacts(vec![seed()], Some(owner.clone()))
+            .await
+            .unwrap();
+        let contact = mgr
+            .get_contact(member.clone(), Some(owner.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+
+        mgr.update_contact(
+            member.clone(),
+            ContactPatch {
+                access_level: Some(AccessGroupLevel::Stranger),
+                ..Default::default()
+            },
+            Some(owner.clone()),
+        )
+        .await
+        .unwrap();
+        mgr.upsert_zone_user_contacts(vec![seed()], Some(owner.clone()))
+            .await
+            .unwrap();
+        let contact = mgr
+            .get_contact(member.clone(), Some(owner.clone()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(contact.access_level, AccessGroupLevel::Stranger);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn accepting_an_unknown_sender_creates_the_contact() {
+        let (mgr, _tmp) = new_test_mgr().await;
+        let owner = DID::new("bns", "devtest");
+        let sender = DID::new("web", "carol.test.buckyos.io");
+
+        let contact = mgr
+            .update_contact(
+                sender.clone(),
+                ContactPatch {
+                    name: Some("Carol".to_string()),
+                    access_level: Some(AccessGroupLevel::Friend),
+                    ..Default::default()
+                },
+                Some(owner.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(contact.did, sender);
+        assert_eq!(contact.name, "Carol");
+        assert_eq!(contact.access_level, AccessGroupLevel::Friend);
+        let decision = mgr
+            .check_access_permission(sender, None, Some(owner))
+            .await
+            .unwrap();
+        assert!(decision.allow_delivery);
+        assert_eq!(decision.level, AccessGroupLevel::Friend);
     }
 }

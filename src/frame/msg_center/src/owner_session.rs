@@ -364,6 +364,31 @@ impl MessageCenter {
         .await
     }
 
+    /// Contact stores are owner scoped: a zone user reads and changes only the
+    /// store named by their own DID (reads also cover observable agents). The
+    /// system scope (no owner) is readable, but only services may change it.
+    pub(crate) async fn authorize_contact_scope(
+        &self,
+        ctx: &RPCContext,
+        owner: Option<&DID>,
+        write: bool,
+    ) -> std::result::Result<(), RPCErrors> {
+        match owner {
+            Some(owner) if write => self.authorize_owner_write(ctx, owner).await,
+            Some(owner) => self.authorize_owner_read(ctx, owner).await,
+            None if write => match self.caller_identity(ctx).await? {
+                Some(caller) if caller.principal_kind == TokenPrincipalKind::User => {
+                    Err(permission_denied(format!(
+                        "user {} may not change system contacts",
+                        caller.user_id
+                    )))
+                }
+                _ => Ok(()),
+            },
+            None => Ok(()),
+        }
+    }
+
     pub(crate) async fn authorize_mailbox(
         &self,
         ctx: &RPCContext,

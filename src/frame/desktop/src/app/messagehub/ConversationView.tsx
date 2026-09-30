@@ -8,12 +8,13 @@ import {
   User,
   Users,
 } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useI18n } from '../../i18n/provider'
 import {
   ConversationHistoryPane,
   type ConversationHistoryPaneHandle,
 } from './conversation/history/ConversationHistoryPane'
+import { ConversationMessageActionsContext } from './conversation/history/actions'
 import type { ConversationMessageReader } from './conversation/history/types'
 import {
   ConversationComposer,
@@ -21,7 +22,8 @@ import {
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
-import type { DID } from './protocol/msgobj'
+import { ConversationMediaScopeContext } from './conversation/media/context'
+import type { DID, MessageObject } from './protocol/msgobj'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
 import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
 
@@ -34,6 +36,7 @@ interface ConversationViewProps {
   onOpenSessionSidebar: () => void
   onOpenDetails: () => void
   onSendMessage: (payload: ConversationComposerSubmitPayload) => void | Promise<void>
+  onResend?: (message: MessageObject) => Promise<void>
   context?: MessageHubContext
   access?: SessionAccess | null
   title?: string
@@ -70,6 +73,7 @@ export function ConversationView({
   onOpenSessionSidebar,
   onOpenDetails,
   onSendMessage,
+  onResend,
   context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
   leadingPane = null,
   isSessionSidebarOpen = false,
@@ -103,6 +107,8 @@ export function ConversationView({
   const historyPaneRef = useRef<ConversationHistoryPaneHandle>(null)
   const [isDropActive, setIsDropActive] = useState(false)
   const [composerMaxHeight, setComposerMaxHeight] = useState<number | undefined>(undefined)
+  const mediaScope = useMemo(() => ({ reader: messageReader, hostContext: session?.id }), [messageReader, session?.id])
+  const messageActions = useMemo(() => ({ resend: canSend ? onResend : undefined }), [canSend, onResend])
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {
@@ -126,6 +132,7 @@ export function ConversationView({
 
   const handleSendMessage = useCallback(async (payload: ConversationComposerSubmitPayload) => {
     if (!canSend) throw Error('permission_denied')
+    historyPaneRef.current?.scrollToBottom()
     await onSendMessage(payload)
     historyPaneRef.current?.scrollToBottom()
   }, [onSendMessage, canSend])
@@ -193,27 +200,35 @@ export function ConversationView({
       >
         <button
           onClick={onBack}
-          className="p-1.5 rounded-lg md:hidden"
+          className="-ml-2 flex min-h-11 min-w-11 items-center justify-center rounded-lg md:hidden"
           style={{ color: 'var(--cp-accent)' }}
           type="button"
+          aria-label={t('messagehub.backToList')}
+          title={t('messagehub.backToList')}
         >
           <ArrowLeft size={20} />
         </button>
 
-        <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} className="p-2 min-h-11" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} /></button>
+        <button onClick={onOpenSessionSidebar} aria-label={t('messagehub.sessions')} title={t('messagehub.sessions')} className="flex min-h-11 min-w-11 items-center justify-center" style={{ color: isSessionSidebarOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }} type="button"><Menu size={18} /></button>
         <div className="min-w-0 flex-1">
-          <button onClick={onOpenDetails} className="flex max-w-full items-center gap-1.5 text-left" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></button>
-          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]" aria-label={t('messagehub.sessionDetails')}>{session ? title : t('messagehub.noSessions')}</button>
+          {/* On touch layouts the whole title block is one entity target; session
+              details stay on the ⋮ button. */}
+          <button onClick={onOpenDetails} className="flex min-h-11 w-full min-w-0 flex-col justify-center text-left md:hidden" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}>
+            <span className="flex max-w-full items-center gap-1.5"><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></span>
+            <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{session ? title : t('messagehub.noSessions')}</span>
+          </button>
+          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></button>
+          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')}>{session ? title : t('messagehub.noSessions')}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
         {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="min-h-11 min-w-11 text-lg disabled:opacity-40">+</button>}
-        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} className="min-h-11 p-2 disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
+        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
       {session && requestCount > 0 && <div role="note" data-testid="request-banner" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-xs">
         <span className="flex-1">{t('messagehub.requestBanner', undefined, { count: requestCount })}{admission?.accessLevel ? ` · ${t(`messagehub.access.${admission.accessLevel}`)}` : ''}{admission?.temporaryExpiresAt ? ` · ${t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() })}` : ''}</span>
-        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
-        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2 text-[color:var(--cp-danger)]" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
-        {admissionError && <span role="alert">{t('messagehub.operationFailed')}</span>}
+        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-3" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
+        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-3 text-[color:var(--cp-danger)]" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
+        {admissionError && <span role="alert">{t('messagehub.admissionFailed')}</span>}
       </div>}
       {session && onShowActions && <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 px-3 py-1 text-[11px] text-[color:var(--cp-muted)]">
         <span>{session.binding.kind === 'tunnel' ? session.binding.connectionName : 'BuckyOS'} · {t(canSend ? 'messagehub.readWrite' : 'messagehub.readOnly')}</span>
@@ -233,17 +248,21 @@ export function ConversationView({
             className="flex flex-1 min-h-0 flex-col"
             style={{ minHeight: MIN_HISTORY_PANE_HEIGHT }}
           >
-            <ConversationHistoryPane
-              ref={historyPaneRef}
-              reader={messageReader}
-              showActions={showActions}
-              emptyLabel={t(!session ? 'messagehub.noSessions' : historyStatus === 'loading' ? 'messagehub.loadingHistory' : historyStatus === 'error' ? 'messagehub.historyFailed' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
-              selfDid={selfDid}
-              isGroup={isGroup}
-              hasOlder={hasOlder}
-              onLoadOlder={onLoadOlder}
-              onVisibleMessages={onVisibleMessages}
-            />
+            <ConversationMediaScopeContext.Provider value={mediaScope}>
+              <ConversationMessageActionsContext.Provider value={messageActions}>
+              <ConversationHistoryPane
+                ref={historyPaneRef}
+                reader={messageReader}
+                showActions={showActions}
+                emptyLabel={t(!session ? 'messagehub.noSessions' : historyStatus === 'loading' ? 'messagehub.loadingHistory' : historyStatus === 'error' ? 'messagehub.historyFailed' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
+                selfDid={selfDid}
+                isGroup={isGroup}
+                hasOlder={hasOlder}
+                onLoadOlder={onLoadOlder}
+                onVisibleMessages={onVisibleMessages}
+              />
+              </ConversationMessageActionsContext.Provider>
+            </ConversationMediaScopeContext.Provider>
           </div>
 
           {canSend ? <ConversationComposer

@@ -1788,7 +1788,31 @@ impl MessageCenter {
             .await?
             .unwrap_or(record);
         Self::publish_delivery_changed_event(&record, "delivery");
+        self.publish_sent_delivery_changed(&record.envelope.msg_id)
+            .await;
         Ok(record)
+    }
+
+    /// Delivery progress is aggregated into the sender's SENT timeline at read
+    /// time and never changes the SENT record itself, so the record is
+    /// announced as changed for the sender's own subscribers (MessageHub
+    /// refreshes its delivery state from that event).
+    async fn publish_sent_delivery_changed(&self, msg_id: &ObjId) {
+        match self.msg_box_db.list_message_records(msg_id).await {
+            Ok(records) => {
+                for record in records
+                    .iter()
+                    .filter(|record| record.box_kind == MailboxKind::Sent)
+                {
+                    Self::publish_box_changed_event(record, "delivery");
+                }
+            }
+            Err(error) => warn!(
+                "msg_center cannot announce delivery of {}: {:?}",
+                msg_id.to_string(),
+                error
+            ),
+        }
     }
 
     async fn update_record_state_internal(
@@ -2827,8 +2851,10 @@ impl MsgCenterHandler for MessageCenter {
         did: DID,
         context_id: Option<String>,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<AccessDecision, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
+            .await?;
         self.contact_mgr
             .check_access_permission(did, context_id, contact_mgr_owner)
             .await
@@ -2840,8 +2866,10 @@ impl MsgCenterHandler for MessageCenter {
         context_id: String,
         duration_secs: u64,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<GrantTemporaryAccessResult, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .grant_temporary_access(dids, context_id, duration_secs, contact_mgr_owner)
             .await
@@ -2852,8 +2880,10 @@ impl MsgCenterHandler for MessageCenter {
         did: DID,
         reason: Option<String>,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .block_contact(did, reason, contact_mgr_owner)
             .await
@@ -2864,8 +2894,10 @@ impl MsgCenterHandler for MessageCenter {
         contacts: Vec<ImportContactEntry>,
         upgrade_to_friend: Option<bool>,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<ImportReport, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .import_contacts(contacts, upgrade_to_friend, contact_mgr_owner)
             .await
@@ -2876,8 +2908,10 @@ impl MsgCenterHandler for MessageCenter {
         target_did: DID,
         source_did: DID,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Contact, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .merge_contacts(target_did, source_did, contact_mgr_owner)
             .await
@@ -2888,8 +2922,10 @@ impl MsgCenterHandler for MessageCenter {
         did: DID,
         patch: ContactPatch,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Contact, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .update_contact(did, patch, contact_mgr_owner)
             .await
@@ -2899,8 +2935,10 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         did: DID,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Option<Contact>, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
+            .await?;
         self.contact_mgr.get_contact(did, contact_mgr_owner).await
     }
 
@@ -2908,8 +2946,10 @@ impl MsgCenterHandler for MessageCenter {
         &self,
         query: ContactQuery,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<Contact>, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
+            .await?;
         self.contact_mgr
             .list_contacts(query, contact_mgr_owner)
             .await
@@ -2921,8 +2961,10 @@ impl MsgCenterHandler for MessageCenter {
         limit: Option<usize>,
         offset: Option<u64>,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<Vec<DID>, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), false)
+            .await?;
         self.contact_mgr
             .get_group_subscribers(group_id, limit, offset, contact_mgr_owner)
             .await
@@ -2933,8 +2975,10 @@ impl MsgCenterHandler for MessageCenter {
         group_id: DID,
         subscribers: Vec<DID>,
         contact_mgr_owner: Option<DID>,
-        _ctx: RPCContext,
+        ctx: RPCContext,
     ) -> std::result::Result<SetGroupSubscribersResult, RPCErrors> {
+        self.authorize_contact_scope(&ctx, contact_mgr_owner.as_ref(), true)
+            .await?;
         self.contact_mgr
             .set_group_subscribers(group_id, subscribers, contact_mgr_owner)
             .await

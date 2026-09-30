@@ -68,6 +68,7 @@ import type {
   WindowRecord,
 } from '../models/ui'
 import { supportedLocales } from '../models/ui'
+import { clearMessageHubLocalState } from '../app/messagehub/api/local'
 import { useThemeMode } from '../theme/provider'
 
 // --- New unified store ---
@@ -514,6 +515,7 @@ export function DesktopRoute() {
       }
 
       clearDesktopAuthState()
+      await clearMessageHubLocalState()
 
       const loginUrl = new URL('/login', window.location.origin)
       loginUrl.searchParams.set('redirect_url', window.location.href)

@@ -102,6 +102,12 @@ export function upsertMessages(history: SessionHistory, incoming: readonly Messa
     const previous = byId.get(id)
     if (!previous || JSON.stringify(previous) !== JSON.stringify(message)) { byId.set(id, message); changed = true }
   }
+  // An accepted local send is replaced by its stored record once present.
+  const storedMsgIds = new Set<string>()
+  for (const message of byId.values()) { const meta = recordMeta(message); if (meta) storedMsgIds.add(meta.msgId) }
+  for (const [id, message] of byId) {
+    if (typeof message.ui_sent_msg_id === 'string' && storedMsgIds.has(message.ui_sent_msg_id)) { byId.delete(id); changed = true }
+  }
   const patched = Object.keys(patch).some(key => (patch as Record<string, unknown>)[key] !== (history as unknown as Record<string, unknown>)[key])
   if (!changed && !patched) return history
   const messages = [...byId.values()].sort(compare)

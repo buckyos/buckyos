@@ -7,6 +7,7 @@
  */
 
 import {
+  extensionRefField,
   isBlobRef,
   isCyfsPathRef,
   isObjectIdRef,
@@ -93,7 +94,7 @@ export function refDisplayName(ref: ContentRef): string {
     return id.length > 20 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id
   }
   if (isBlobRef(ref)) return ref.value.name ?? 'Untitled'
-  return ref.kind
+  return extensionRefField(ref, 'name') ?? ref.kind
 }
 
 /** Container a source naturally belongs to (paths only — objects have none). */

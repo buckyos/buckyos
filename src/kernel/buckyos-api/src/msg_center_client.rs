@@ -3083,6 +3083,35 @@ impl MsgCenterClient {
         }
     }
 
+    /// Owner-scoped variant of `update_ui_session_state`: the entry is stored
+    /// as `(owner, session_id, key)` and the caller must be allowed to write
+    /// as `owner` (an agent publishes its runtime state under its own DID).
+    pub async fn update_owner_ui_session_state(
+        &self,
+        owner: DID,
+        session_id: String,
+        key: String,
+        value: Value,
+    ) -> std::result::Result<UiSessionStateEntry, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler
+                    .handle_update_owner_ui_session_state(owner, session_id, key, value, ctx)
+                    .await
+            }
+            Self::KRPC(client) => {
+                let mut req = MsgCenterUpdateUiSessionStateReq::new(session_id, key, value);
+                req.owner = Some(owner);
+                let req_json = serialize_to_json(&req, "MsgCenterUpdateUiSessionStateReq")?;
+                let result = client
+                    .call(METHOD_UI_SESSION_UPDATE_STATE, req_json)
+                    .await?;
+                parse_rpc_response(result, "UiSessionStateEntry")
+            }
+        }
+    }
+
     pub async fn get_ui_session_state(
         &self,
         session_id: String,
