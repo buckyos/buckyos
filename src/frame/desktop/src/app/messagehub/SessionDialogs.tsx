@@ -9,6 +9,8 @@ import type { MessageHubContext, Session } from './types'
 
 export const hubInputClass = 'mt-1 min-h-11 w-full rounded-lg border border-[color:var(--cp-border)] bg-[color:var(--cp-bg)] px-3 py-2 text-sm'
 export const hubButtonClass = 'min-h-11 rounded-lg border border-[color:var(--cp-border)] px-3 py-2 text-sm disabled:opacity-40'
+export const hubPrimaryButtonClass = 'min-h-11 rounded-lg border border-transparent bg-[color:var(--cp-accent)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40'
+export const hubIconButtonClass = 'flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[color:color-mix(in_srgb,var(--cp-text)_7%,transparent)] text-[color:var(--cp-muted)] transition-colors hover:text-[color:var(--cp-text)] disabled:opacity-40 md:h-9 md:w-9'
 
 export function DialogFocus({ children, onCancel }: { children: ReactNode; onCancel: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -52,7 +54,7 @@ export function CreateSessionForm({ context, entityId, onCreated, onCancel }: { 
     <label className="block text-sm">{t('messagehub.connection')}<select className={hubInputClass} {...form.register('connection')}><option value="">{t('messagehub.selectConnection')}</option>{choices.map(choice => <option value={choice.id} key={choice.id}>{choice.label}</option>)}</select></label>
     {reason && <p className="text-sm text-[color:var(--cp-muted)]">{t(`messagehub.reason.${reason}`)}</p>}
     {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
-    <div className="flex justify-end gap-2"><button type="button" className={hubButtonClass} onClick={onCancel}>{t('messagehub.cancel')}</button><button type="submit" className={hubButtonClass} disabled={form.formState.isSubmitting || !!reason}>{t(form.formState.isSubmitting ? 'messagehub.creating' : 'messagehub.create')}</button></div>
+    <div className="flex justify-end gap-2"><button type="button" className={hubButtonClass} onClick={onCancel}>{t('messagehub.cancel')}</button><button type="submit" className={hubPrimaryButtonClass} disabled={form.formState.isSubmitting || !!reason}>{t(form.formState.isSubmitting ? 'messagehub.creating' : 'messagehub.create')}</button></div>
   </form></DialogFocus>
 }
 

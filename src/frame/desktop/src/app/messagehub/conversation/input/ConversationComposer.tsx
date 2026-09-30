@@ -31,6 +31,8 @@ import {
 
 /** Keystrokes are coalesced before the draft text is persisted. */
 const DRAFT_PERSIST_DELAY_MS = 300
+const COMPOSER_FIELD_MIN_HEIGHT = 44
+const COMPOSER_FIELD_CHROME = 18
 
 function sameAttachmentInputs(a: readonly ComposerAttachmentInput[], b: readonly ComposerAttachmentInput[]) {
   return a.length === b.length && a.every((item, index) => item.file === b[index].file && item.relativePath === b[index].relativePath)
@@ -114,7 +116,6 @@ const ConversationComposerInner = forwardRef<
   const [pickerOpen, setPickerOpen] = useState(false)
   const attachmentsRef = useRef<ComposerAttachmentItem[]>([])
   const composerRef = useRef<HTMLDivElement>(null)
-  const messageInputContainerRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const directoryInputRef = useRef<HTMLInputElement>(null)
@@ -131,17 +132,10 @@ const ConversationComposerInner = forwardRef<
 
     element.style.height = '0px'
     const scrollHeight = element.scrollHeight
-    element.style.height = `${scrollHeight}px`
-
-    // After layout, check if the message container clips the textarea
-    requestAnimationFrame(() => {
-      const container = messageInputContainerRef.current
-      if (container) {
-        const isOverflowing = container.scrollHeight > container.clientHeight
-        element.style.overflow = isOverflowing ? 'auto' : 'hidden'
-      }
-    })
-  }, [inputValue, maxHeight])
+    const limit = messageInputMaxHeight != null ? Math.max(COMPOSER_FIELD_MIN_HEIGHT, messageInputMaxHeight - COMPOSER_FIELD_CHROME) : scrollHeight
+    element.style.height = `${Math.min(scrollHeight, limit)}px`
+    element.style.overflowY = scrollHeight > limit ? 'auto' : 'hidden'
+  }, [inputValue, messageInputMaxHeight])
 
   useEffect(() => {
     const element = directoryInputRef.current
@@ -414,14 +408,13 @@ const ConversationComposerInner = forwardRef<
       ) : null}
 
       {/* Message input area – top, max 50% of composer */}
-      <div
-        ref={messageInputContainerRef}
-        className="flex flex-shrink-0 flex-col px-3 pt-2 pb-1 overflow-hidden"
-        style={messageInputMaxHeight != null ? { maxHeight: messageInputMaxHeight } : undefined}
-      >
-        <div className="relative flex min-w-0 items-end gap-1 py-0.5">
+      <div className="flex flex-shrink-0 flex-col px-2 py-2 md:px-3">
+        <div
+          className="relative flex min-w-0 items-end gap-0.5 rounded-[22px] border px-0.5 transition-[border-color,box-shadow] focus-within:border-[color:color-mix(in_srgb,var(--cp-accent)_55%,var(--cp-border))] focus-within:shadow-[0_0_0_3px_color-mix(in_srgb,var(--cp-accent)_14%,transparent)]"
+          style={{ background: 'var(--cp-message-canvas)', borderColor: 'var(--cp-border)' }}
+        >
           <button
-            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-lg"
+            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
             style={{ color: 'var(--cp-muted)' }}
             onClick={() => setPickerOpen((previous) => !previous)}
             type="button"
@@ -444,28 +437,27 @@ const ConversationComposerInner = forwardRef<
             placeholder={placeholder}
             rows={1}
             aria-label={placeholder}
-            className="block min-h-[22px] flex-1 self-center bg-transparent border-none py-1 text-sm outline-none resize-none"
+            className="block min-h-11 min-w-0 flex-1 resize-none border-none bg-transparent px-1 py-[10px] text-[16px] leading-6 outline-none md:text-[15px]"
             style={{
               color: 'var(--cp-text)',
-              lineHeight: '1.5',
-              overflow: 'hidden',
+              overflowY: 'hidden',
             }}
           />
           <button
             onClick={handleSend}
             disabled={!hasDraft}
-            className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center"
+            className="group flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center disabled:cursor-not-allowed"
             type="button"
             aria-label={t('messagehub.send', 'Send')}
             title={t('messagehub.send', 'Send')}
           >
             <span
-              className="flex h-7 w-7 items-center justify-center rounded-full transition-colors"
+              className="flex h-8 w-8 items-center justify-center rounded-full transition-colors"
               style={{
                 background: hasDraft
-                  ? 'var(--cp-accent)'
-                  : 'color-mix(in srgb, var(--cp-text) 10%, transparent)',
-                color: hasDraft ? '#fff' : 'var(--cp-muted)',
+                  ? 'var(--cp-message-self-bg)'
+                  : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
+                color: hasDraft ? 'var(--cp-message-self-text)' : 'color-mix(in srgb, var(--cp-muted) 70%, transparent)',
               }}
             >
               <Send size={16} />

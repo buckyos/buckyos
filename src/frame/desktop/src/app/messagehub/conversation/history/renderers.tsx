@@ -19,6 +19,7 @@ import {
 import { MessageAttachmentView } from '../media/MediaAttachment'
 import { attachmentOfRef, isHttpUri } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
+import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
 import type { ConversationListItem } from './types'
 
@@ -38,6 +39,28 @@ interface MessageRenderContext {
   isGroup: boolean
   selfDid: DID
   messageIndex: number
+  continued: boolean
+  peerMarkdown: boolean
+}
+
+const bubbleWidthClass = 'max-w-[85%] md:max-w-[min(75%,660px)]'
+const bodyTextClass = 'text-[16px] leading-[1.5] md:text-[15px]'
+
+function bubbleStyle(isSelf: boolean, continued: boolean): React.CSSProperties {
+  return {
+    '--mh-link': isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)',
+    background: isSelf ? 'var(--cp-message-self-bg)' : 'var(--cp-message-peer-bg)',
+    color: isSelf ? 'var(--cp-message-self-text)' : 'var(--cp-text)',
+    border: isSelf ? '1px solid transparent' : '1px solid var(--cp-message-peer-border)',
+    borderRadius: isSelf
+      ? `18px ${continued ? 6 : 18}px 6px 18px`
+      : `${continued ? 6 : 18}px 18px 18px 6px`,
+    padding: '8px 12px',
+  } as React.CSSProperties
+}
+
+function rowClass(isSelf: boolean, continued: boolean): string {
+  return `flex ${isSelf ? 'justify-end' : 'justify-start'} ${continued ? 'pt-0.5' : 'pt-3'}`
 }
 
 type MessageRenderer = (
@@ -57,10 +80,14 @@ export const ConversationListRow = memo(function ConversationListRow({
   item,
   isGroup,
   selfDid,
+  continued = false,
+  peerMarkdown = false,
 }: {
   item: ConversationListItem
   isGroup: boolean
   selfDid: DID
+  continued?: boolean
+  peerMarkdown?: boolean
 }) {
   if (item.kind === 'timestamp') {
     return (
@@ -96,7 +123,7 @@ export const ConversationListRow = memo(function ConversationListRow({
 
   return (
     <>
-      {messageRenderers.map((renderer) => renderer(item.data, { isGroup, selfDid, messageIndex: item.messageIndex })).find(Boolean)}
+      {messageRenderers.map((renderer) => renderer(item.data, { isGroup, selfDid, messageIndex: item.messageIndex, continued, peerMarkdown })).find(Boolean)}
     </>
   )
 })
@@ -105,7 +132,7 @@ ConversationListRow.displayName = 'ConversationListRow'
 
 function renderTextMessage(
   message: MessageObject,
-  { isGroup, selfDid }: MessageRenderContext,
+  { isGroup, selfDid, continued, peerMarkdown }: MessageRenderContext,
 ) {
   const format = message.content.format ?? 'text/plain'
 
@@ -120,36 +147,32 @@ function renderTextMessage(
   const isSelf = message.from === selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
+  const asMarkdown = format === 'text/markdown' || (peerMarkdown && !isSelf && format === 'text/plain')
 
   return (
     <div
-      className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}
+      className={rowClass(isSelf, continued)}
       key={`${message.from}:${message.created_at_ms}`}
     >
       <div
-        className="max-w-[75%] min-w-[80px]"
-        style={{
-          background: isSelf
-            ? 'var(--cp-message-self-bg)'
-            : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-          color: isSelf ? 'var(--cp-message-self-text)' : 'var(--cp-text)',
-          borderRadius: isSelf
-            ? '18px 18px 4px 18px'
-            : '18px 18px 18px 4px',
-          padding: '8px 12px',
-        }}
+        className={`${bubbleWidthClass} min-w-[80px]`}
+        style={bubbleStyle(isSelf, continued)}
       >
-        {!isSelf && isGroup ? (
+        {!isSelf && isGroup && !continued ? (
           <p
-            className="text-xs font-semibold mb-1"
+            className="text-[13px] font-semibold mb-1"
             style={{ color: 'var(--cp-accent)' }}
           >
             {senderName}
           </p>
         ) : null}
-        <p className="text-sm whitespace-pre-wrap break-words leading-relaxed">
-          {message.content.content}
-        </p>
+        {asMarkdown ? (
+          <div className={bodyTextClass}><MessageMarkdown text={message.content.content ?? ''} /></div>
+        ) : (
+          <p className={`${bodyTextClass} whitespace-pre-wrap break-words`}>
+            {message.content.content}
+          </p>
+        )}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} />
       </div>
     </div>
@@ -164,10 +187,10 @@ function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageOb
   const metaColor = isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
   return (
     <>
-      <div className="flex items-center justify-end gap-1 mt-1">
-        {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[10px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 18%, transparent)', color: 'var(--cp-warning)' }}>{t('messagehub.requestShort')}</span> : null}
+      <div className="mt-1 flex items-center justify-end gap-1">
+        {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}
         <span
-          className="text-[10px]"
+          className="text-[11px] tabular-nums"
           style={{
             color: metaColor,
           }}
@@ -247,21 +270,16 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const refs = message.content.refs ?? []
   const messageId = getMessageStableId(message, context.messageIndex)
   return (
-    <div className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}>
+    <div className={rowClass(isSelf, context.continued)}>
       <div
-        className="max-w-[75%] min-w-[160px]"
-        style={{
-          background: isSelf ? 'var(--cp-message-self-bg)' : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-          color: isSelf ? 'var(--cp-message-self-text)' : 'var(--cp-text)',
-          borderRadius: isSelf ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-          padding: '8px 12px',
-        }}
+        className={`${bubbleWidthClass} min-w-[160px]`}
+        style={bubbleStyle(isSelf, context.continued)}
       >
-        {!isSelf && context.isGroup ? <p className="text-xs font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null}
+        {!isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null}
         <div className="flex flex-col gap-2">
           {refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf} />)}
         </div>
-        {caption.length > 0 ? <p className="text-sm whitespace-pre-wrap break-words leading-relaxed mt-2">{caption}</p> : null}
+        {caption.length > 0 ? <p className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{caption}</p> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} />
       </div>
     </div>
@@ -284,23 +302,18 @@ function MessageRef({ item, id, isSelf }: { item: RefItem; id: string; isSelf: b
 
 function renderFallbackMessage(
   message: MessageObject,
-  { selfDid }: MessageRenderContext,
+  { selfDid, continued }: MessageRenderContext,
 ) {
   const isSelf = message.from === selfDid
 
   return (
     <div
-      className={`flex ${isSelf ? 'justify-end' : 'justify-start'} mb-1`}
+      className={rowClass(isSelf, continued)}
       key={`${message.from}:${message.created_at_ms}:fallback`}
     >
       <div
-        className="max-w-[75%] min-w-[120px]"
-        style={{
-          background: 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-          color: 'var(--cp-text)',
-          borderRadius: '18px',
-          padding: '8px 12px',
-        }}
+        className={`${bubbleWidthClass} min-w-[120px]`}
+        style={{ ...bubbleStyle(false, continued), borderRadius: '18px' }}
       >
         <p className="text-xs font-semibold mb-1" style={{ color: 'var(--cp-muted)' }}>
           {message.content.format ?? 'unknown content'}

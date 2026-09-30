@@ -17,6 +17,7 @@ import {
   extendConversationProjection,
   materializeConversationWindow,
 } from './data-source'
+import { continuesMessageRun } from './messageRun'
 import { ConversationListRow } from './renderers'
 import type {
   ConversationListItem,
@@ -63,6 +64,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   reader: ConversationMessageReader
   selfDid: DID
   isGroup: boolean
+  peerMarkdown?: boolean
   showActions?: boolean
   emptyLabel?: string
   statusItems?: readonly ConversationStatusDescriptor[]
@@ -73,6 +75,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   reader,
   selfDid,
   isGroup,
+  peerMarkdown = false,
   statusItems,
   showActions = true,
   emptyLabel,
@@ -544,7 +547,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     return (
       <div
         className="h-full min-h-0 flex-1 overflow-hidden px-3 py-2"
-        style={{ background: 'var(--cp-bg)' }}
+        style={{ background: 'var(--cp-message-canvas)' }}
       >
         <div className="h-full animate-pulse rounded-3xl" style={{
           background: 'color-mix(in srgb, var(--cp-text) 4%, transparent)',
@@ -606,6 +609,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
                       item={item}
                       isGroup={isGroup}
                       selfDid={selfDid}
+                      continued={continuesMessageRun(itemsByIndex.get(virtualItem.index - 1), item)}
+                      peerMarkdown={peerMarkdown}
                     />
                   ) : (
                     <ListItemPlaceholder />

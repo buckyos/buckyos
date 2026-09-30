@@ -88,11 +88,11 @@ UI DataModel 层（本文档定义，UI 需求驱动）
 | 生命周期 | `active` / `archived`；删除保留时间水位与最小来源信息，移除本地历史引用、文本 / 文件草稿与偏好 |
 | 持久化 | `messagehub-prototype-v1` IndexedDB 保存小型 Session 元数据和 mock 消息差量；长 seed 沿用现有 IndexedDB reader |
 | 临时状态 | 带 member DID 与过期时间的运行态、绑定版本对应的写入确认均仅存在内存，刷新 / 切换 owner 清除 |
-| 详情目标 | `detailsTarget: 'entity' | 'session' | null`，会话详情跟随当前有效 Session；移动详情覆盖 Conversation，保持其挂载 |
+| 详情目标 | `detailsTarget: 'entity' | 'session' | null`，会话详情跟随当前有效 Session；移动详情覆盖 Conversation，保持其挂载；桌面端会话侧栏与详情仅在聊天区仍有 480px（`CONVERSATION_MIN_READING_WIDTH`）时并排，否则改为覆盖抽屉（先让详情成为抽屉） |
 | 创建输入 | `createSessionSchema`: entityId、trim 后最多 64 字符 title、显式连接选择；当前只创建 chat |
 | 编辑输入 | `sharedStateSchema`（title / description 64 / 500 字符）、`memberStateSchema`（nickname 64 字符）、`presentationSchema`（title / pinned / muted） |
 | 操作状态 | 初始化 loading / error / retry；创建、编辑、管理和发送具有 pending / error，成功提交后才发布 store 结果 |
-| Action 过滤 | `SessionPreferences.showActions` 默认 true；只能在 projection 过滤，不删除原始消息，不改业务状态 |
+| Action 过滤 | `SessionPreferences.showActions` 默认 true；开关位于会话详情的“偏好设置”；只能在 projection 过滤，不删除原始消息，不改业务状态 |
 
 `lastActiveAt` 的唯一语义是最后有效消息活动时间：
 
@@ -249,7 +249,7 @@ export interface Entity {
   domain: EntityDomain
   /** 当前 owner 到该实体的手工创建策略与有效能力，见 3.3.3。 */
   sessionCreation: EntitySessionCreation
-  /** 展示名。优先级：Contact.name → GroupSummary.name → MailboxRecord.from_name → DID 短写。 */
+  /** 展示名。优先级：Contact.name → GroupSummary.name → MailboxRecord.from_name → DID 友好名（did:web / did:bns 取域名首段，Agent 首字母大写，其余为 DID 短写）；完整 DID 在实体详情显示。 */
   name: string
   /** 头像 URL。当前渲染层仍按 type 生成图标，此字段为预留位。 */
   avatar?: string
@@ -642,7 +642,11 @@ export type ConversationStatusType =
 | `renderFallbackMessage` | 其余 | `content.format`、`content.content` |
 | 状态 pill（原型现状） | `kind === 'notify'` 或 `ui_item_kind === 'status'` | 仅保留 status/content；真实持久通知的完整投影需修正，见下 |
 
-已知限制：`text/markdown` 与 `text/html` 当前按纯文本显示。
+`text/markdown` 由 `MessageMarkdown.tsx` 渲染（段落与单换行、标题、列表、引用、代码块、表格、强调、链接；链接仅允许 http(s) / mailto）。
+Agent 实体会话中对端发来的 `text/plain` 也按 Markdown 渲染，因为 OpenDAN 的 LLM 出口目前把 Markdown 回复标为 `text/plain`；
+本人发送的 `text/plain` 保持原文。已知限制：`text/html` 当前按纯文本显示。列表摘要在显示时去除 Markdown 标记。
+
+同一发送者 5 分钟内的连续消息（Action 除外）视为一组：组内间距收紧、群聊只在组首显示发送者名称。
 
 附件（`conversation/media/`）与 Preview 的集成：
 

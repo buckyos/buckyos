@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare } from 'lucide-react'
+import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare, SquarePen } from 'lucide-react'
+import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
 import { InMemoryConversationMessageReader } from './conversation/history/data-source'
@@ -14,10 +15,12 @@ import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './
 import { creationReason, viewerSessionKey } from './sessionModel'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
-import { CreateSessionForm, ManageSessionForm, hubButtonClass } from './SessionDialogs'
+import { CreateSessionForm, ManageSessionForm, hubButtonClass, hubIconButtonClass } from './SessionDialogs'
 import type { MessageHubContext, Session } from './types'
 import { SessionSidebar } from './SessionSidebar'
 import {
+  CONVERSATION_MIN_READING_WIDTH,
+  DETAILS_PANEL_WIDTH,
   ENTITY_LIST_COLLAPSED_WIDTH,
   ENTITY_LIST_DEFAULT_WIDTH,
   ENTITY_LIST_MAX_WIDTH,
@@ -99,8 +102,7 @@ function HomeButton({ onHome }: { onHome: () => void }) {
     <button
       type="button"
       onClick={onHome}
-      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl"
-      style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
+      className={hubIconButtonClass}
       aria-label={label}
       title={label}
       data-testid="messagehub-home"
@@ -157,6 +159,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   const [isEntityListCollapsed, setIsEntityListCollapsed] = useState(false)
   const [isResizingEntityList, setIsResizingEntityList] = useState(false)
   const [isResizingSessionSidebar, setIsResizingSessionSidebar] = useState(false)
+  const [layoutWidth, setLayoutWidth] = useState(0)
   const desktopLayoutRef = useRef<HTMLDivElement>(null)
   const entityListWidthRef = useRef(ENTITY_LIST_DEFAULT_WIDTH)
   const sessionSidebarWidthRef = useRef(SESSION_SIDEBAR_DEFAULT_WIDTH)
@@ -186,14 +189,16 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     sessionSidebarWidthRef.current = sessionSidebarWidth
   }, [sessionSidebarWidth])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const element = desktopLayoutRef.current
 
     if (!isDesktop || !element) {
       return
     }
 
+    setLayoutWidth(element.clientWidth)
     const resizeObserver = new ResizeObserver(() => {
+      setLayoutWidth(element.clientWidth)
       setEntityListWidth((prev) => clampEntityListWidth(prev))
       setSessionSidebarWidth((prev) => clampSessionSidebarWidth(prev))
     })
@@ -408,12 +413,44 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     onAttachmentsChange: (attachments: import('./conversation/input/attachmentDraft').ComposerAttachmentInput[]) => activeSession ? store.saveAttachments(context, activeSession.id, attachments) : undefined,
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
-    onShowActions: async (showActions: boolean) => { if (activeSession) await store.updatePreferences(context, activeSession.id, { showActions }) },
   }
-  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} /> : null
+  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} /> : null
   const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context) }
+  const newSessionLabel = t('messagehub.newSession')
+  const newSessionButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreate(null)} aria-label={newSessionLabel} title={newSessionLabel}><SquarePen size={17} /></button>
+  const conversationSpace = layoutWidth - (isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth)
+  const sessionSidebarInline = conversationSpace - sessionSidebarWidth >= CONVERSATION_MIN_READING_WIDTH
+  const detailsInline = conversationSpace - (showSessionSidebar && sessionSidebarInline ? sessionSidebarWidth : 0) - DETAILS_PANEL_WIDTH >= CONVERSATION_MIN_READING_WIDTH
+  const closeDesktopDrawer = (event: React.KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented) return
+    if (showDetails && !detailsInline) { event.preventDefault(); setDetailsTarget(null) }
+    else if (showSessionSidebar && !sessionSidebarInline) { event.preventDefault(); setShowSessionSidebar(false) }
+  }
 
-  const desktopSessionSidebarPane = showSessionSidebar ? (
+  const desktopSessionSidebarPane = showSessionSidebar && !sessionSidebarInline ? (
+    <>
+      <div className="absolute inset-0 z-30" style={{ background: 'rgba(15, 23, 42, 0.18)' }} onClick={() => setShowSessionSidebar(false)} />
+      <div
+        className="absolute inset-y-0 left-0 z-40"
+        style={{
+          width: sessionSidebarWidth,
+          maxWidth: '85%',
+          borderRight: '1px solid var(--cp-border)',
+          background: 'var(--cp-surface-opaque)',
+          boxShadow: 'var(--cp-panel-shadow)',
+        }}
+      >
+        <SessionSidebar
+          {...sidebarProps}
+          sessions={sessions}
+          activeSessionId={activeSession?.id ?? null}
+          onSelectSession={handleSelectSession}
+          onClose={() => setShowSessionSidebar(false)}
+          showHeader={false}
+        />
+      </div>
+    </>
+  ) : showSessionSidebar ? (
     <>
       <div
         className="h-full flex-shrink-0"
@@ -482,7 +519,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
-            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><MediaSettingsButton /></>}
+            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}<MediaSettingsButton /></>}
             enableDrilldownNavigation
             useCompactInlineChildren
             childNavigationTrigger="icon"
@@ -546,7 +583,8 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   return (
     <div
       ref={desktopLayoutRef}
-      className="flex h-full w-full"
+      className="relative flex h-full w-full"
+      onKeyDown={closeDesktopDrawer}
       style={{
         background: 'var(--cp-bg)',
         zIndex: 1,
@@ -606,14 +644,10 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             enableDrilldownNavigation
             useCompactInlineChildren
             headerActions={(
-              <>{onHome ? <HomeButton onHome={onHome} /> : null}<button type="button" disabled={!canManage} className={hubButtonClass} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button><MediaSettingsButton /><button
+              <>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}<MediaSettingsButton /><button
                 type="button"
                 onClick={handleCollapseEntityList}
-                className="flex h-9 w-9 items-center justify-center rounded-xl"
-                style={{
-                  color: 'var(--cp-muted)',
-                  background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)',
-                }}
+                className={hubIconButtonClass}
                 aria-label={t('messagehub.collapseEntityList', 'Collapse entity list')}
                 title={t('messagehub.collapseEntityList', 'Collapse entity list')}
               >
@@ -684,37 +718,55 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             isSessionSidebarOpen={showSessionSidebar}
           />
         ) : (
-          <div className="h-full"><EmptyConversation /><button className={hubButtonClass} type="button" disabled={!canManage} onClick={() => openCreate(null)}>{t('messagehub.newSession')}</button></div>
+          <EmptyConversation action={<button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreate(null)}><SquarePen size={16} />{newSessionLabel}</button>} />
         )}
       </div>
 
-      {showDetails && entityDetail ? (
+      {showDetails && entityDetail && detailsInline ? (
         <div
           className="h-full flex-shrink-0"
           style={{
-            width: 320,
+            width: DETAILS_PANEL_WIDTH,
             borderLeft: '1px solid var(--cp-border)',
           }}
         >
           {detailsPane}
         </div>
       ) : null}
+      {showDetails && entityDetail && !detailsInline ? (
+        <>
+          <div className="absolute inset-0 z-40" style={{ background: 'rgba(15, 23, 42, 0.18)' }} onClick={handleCloseDetails} />
+          <div
+            className="absolute inset-y-0 right-0 z-50"
+            style={{
+              width: DETAILS_PANEL_WIDTH,
+              maxWidth: '90%',
+              borderLeft: '1px solid var(--cp-border)',
+              background: 'var(--cp-surface-opaque)',
+              boxShadow: 'var(--cp-panel-shadow)',
+            }}
+          >
+            {detailsPane}
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }
 
-function EmptyConversation() {
+function EmptyConversation({ action }: { action?: React.ReactNode }) {
   const { t } = useI18n()
 
   return (
     <div
       className="flex h-full flex-col items-center justify-center gap-3"
-      style={{ color: 'var(--cp-muted)' }}
+      style={{ color: 'var(--cp-muted)', background: 'var(--cp-message-canvas)' }}
     >
       <MessageSquare size={48} strokeWidth={1.2} />
       <p className="text-sm">
         {t('messagehub.selectConversation', 'Select a conversation to start')}
       </p>
+      {action}
     </div>
   )
 }
@@ -728,8 +780,7 @@ function MediaSettingsButton() {
     <button
       type="button"
       onClick={() => host.openSettings()}
-      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl"
-      style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
+      className={hubIconButtonClass}
       aria-label={label}
       title={label}
     >

@@ -1,6 +1,6 @@
 import { useMessageHubClock } from './store'
 import { relativeActivity } from './sessionModel'
-import { useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeft,
   BellOff,
@@ -65,8 +65,19 @@ function entityMatchesSearch(entity: Entity, query: string): boolean {
   const q = query.toLowerCase()
   return (
     entity.name.toLowerCase().includes(q) ||
+    entity.id.toLowerCase().includes(q) ||
     (entity.lastMessage?.text.toLowerCase().includes(q) ?? false)
   )
+}
+
+function previewText(text: string): string {
+  return text
+    .replace(/^\s{0,3}(`{3,}|~{3,}).*$/gm, '')
+    .replace(/^\s{0,3}(#{1,6}\s+|>\s?|[-*+]\s+|\d{1,9}[.)]\s+)/gm, '')
+    .replace(/\[([^\]\n]+)\]\([^)\s]+\)/g, '$1')
+    .replace(/\*\*|__|~~|`/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function findEntityInTree(entities: Entity[], id: string): Entity | null {
@@ -268,7 +279,7 @@ function TopLevelEntityItem({
           <div className="flex items-center justify-between gap-2">
             <div className="flex min-w-0 items-center gap-1.5">
               <span
-                className="truncate text-sm font-semibold"
+                className="truncate text-[15px] font-semibold"
                 style={{ color: 'var(--cp-text)' }}
               >
                 {entity.name}
@@ -283,7 +294,7 @@ function TopLevelEntityItem({
             <div className="flex flex-shrink-0 items-center gap-1.5">
               {entity.lastActiveAt ? (
                 <span
-                  className="text-xs"
+                  className="text-xs tabular-nums"
                   style={{ color: 'var(--cp-muted)' }}
                 >
                   <EntityActivityTime time={entity.lastActiveAt} />
@@ -294,13 +305,13 @@ function TopLevelEntityItem({
           {entity.lastMessage ? (
             <div className="mt-0.5 flex items-center justify-between gap-2">
               <p
-                className="truncate text-xs"
+                className="truncate text-[13px]"
                 style={{ color: 'var(--cp-muted)' }}
               >
                 {entity.lastMessage.senderName && entity.type !== 'person'
                   ? `${entity.lastMessage.senderName}: `
                   : ''}
-                {entity.lastMessage.text}
+                {previewText(entity.lastMessage.text)}
               </p>
               {entity.unreadCount > 0 ? (
                 <span
@@ -352,7 +363,7 @@ function TopLevelEntityItem({
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-1.5">
             <span
-              className="truncate text-sm font-semibold"
+              className="truncate text-[15px] font-semibold"
               style={{ color: 'var(--cp-text)' }}
             >
               {entity.name}
@@ -367,7 +378,7 @@ function TopLevelEntityItem({
           <div className="flex flex-shrink-0 items-center gap-1.5">
             {entity.lastActiveAt ? (
               <span
-                className="text-xs"
+                className="text-xs tabular-nums"
                 style={{ color: 'var(--cp-muted)' }}
               >
                 <EntityActivityTime time={entity.lastActiveAt} />
@@ -378,13 +389,13 @@ function TopLevelEntityItem({
         {entity.lastMessage ? (
           <div className="mt-0.5 flex items-center justify-between gap-2">
             <p
-              className="truncate text-xs"
+              className="truncate text-[13px]"
               style={{ color: 'var(--cp-muted)' }}
             >
               {entity.lastMessage.senderName && entity.type !== 'person'
                 ? `${entity.lastMessage.senderName}: `
                 : ''}
-              {entity.lastMessage.text}
+              {previewText(entity.lastMessage.text)}
             </p>
             {entity.unreadCount > 0 ? (
               <span
@@ -546,6 +557,78 @@ function DrilldownEntityRow({
         <ChevronRight size={15} style={{ color: 'var(--cp-muted)' }} />
       </div>
     </button>
+  )
+}
+
+function FilterStrip({
+  filter,
+  onFilterChange,
+}: {
+  filter: EntityFilter
+  onFilterChange: (filter: EntityFilter) => void
+}) {
+  const { t } = useI18n()
+  const stripRef = useRef<HTMLDivElement>(null)
+  const [fade, setFade] = useState<'none' | 'left' | 'right' | 'both'>('none')
+  const updateFade = useCallback(() => {
+    const strip = stripRef.current
+    if (!strip) return
+    const left = strip.scrollLeft > 1
+    const right = strip.scrollLeft + strip.clientWidth < strip.scrollWidth - 1
+    setFade(left && right ? 'both' : left ? 'left' : right ? 'right' : 'none')
+  }, [])
+
+  useLayoutEffect(() => {
+    const strip = stripRef.current
+    if (!strip) return
+    updateFade()
+    const observer = new ResizeObserver(updateFade)
+    observer.observe(strip)
+    return () => observer.disconnect()
+  }, [updateFade])
+
+  useEffect(() => {
+    const strip = stripRef.current
+    const chip = strip?.querySelector<HTMLElement>('[aria-pressed="true"]')
+    if (!strip || !chip) return
+    const box = strip.getBoundingClientRect()
+    const item = chip.getBoundingClientRect()
+    const margin = 36
+    if (item.left < box.left + margin) strip.scrollBy({ left: item.left - box.left - margin, behavior: 'smooth' })
+    else if (item.right > box.right - margin) strip.scrollBy({ left: item.right - box.right + margin, behavior: 'smooth' })
+  }, [filter])
+
+  return (
+    <div
+      ref={stripRef}
+      onScroll={updateFade}
+      data-fade={fade}
+      data-testid="entity-filters"
+      className="mh-filter-strip flex items-center overflow-x-auto px-[13px]"
+    >
+      {filters.map((item) => (
+        <button
+          key={item.key}
+          onClick={() => onFilterChange(item.key)}
+          aria-pressed={filter === item.key}
+          className="flex min-h-11 min-w-11 shrink-0 items-center justify-center px-[3px] md:min-h-9"
+          type="button"
+        >
+          <span
+            className="whitespace-nowrap rounded-full px-3 py-1 text-[13px] font-medium leading-5 transition-colors"
+            style={{
+              background:
+                filter === item.key
+                  ? 'var(--cp-accent)'
+                  : 'color-mix(in srgb, var(--cp-text) 7%, transparent)',
+              color: filter === item.key ? '#fff' : 'var(--cp-muted)',
+            }}
+          >
+            {t(item.labelKey, item.key)}
+          </span>
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -758,15 +841,16 @@ export function EntityList({
       style={{ background: 'var(--cp-surface)' }}
     >
       <div className="px-4 pt-4 pb-2">
-        <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="mb-3 flex items-center gap-2">
           <h1
-            className="min-w-0 text-lg font-bold"
+            className="min-w-0 flex-1 truncate text-lg font-bold"
             style={{ color: 'var(--cp-text)' }}
+            title={t('messagehub.title', 'MessageHub')}
           >
             {t('messagehub.title', 'MessageHub')}
           </h1>
           {headerActions ? (
-            <div className="flex flex-shrink-0 items-center gap-2">
+            <div className="flex flex-shrink-0 items-center gap-1.5">
               {headerActions}
             </div>
           ) : null}
@@ -821,31 +905,13 @@ export function EntityList({
         />
       ) : (
         <>
-          <div className="flex items-center gap-1.5 overflow-x-auto px-4 py-2">
-            {filters.map((item) => (
-              <button
-                key={item.key}
-                onClick={() => onFilterChange(item.key)}
-                className="whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium transition-colors"
-                style={{
-                  background:
-                    filter === item.key
-                      ? 'var(--cp-accent)'
-                      : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-                  color: filter === item.key ? '#fff' : 'var(--cp-muted)',
-                }}
-                type="button"
-              >
-                {t(item.labelKey, item.key)}
-              </button>
-            ))}
-          </div>
+          <FilterStrip filter={filter} onFilterChange={onFilterChange} />
 
-          <div className="flex-1 overflow-y-auto pb-2 shell-scrollbar">
+          <div className="flex-1 overflow-y-auto pb-2 pt-1 shell-scrollbar">
             {filtered.length === 0 ? (
-              <div className="flex h-32 items-center justify-center">
+              <div className="flex h-32 items-center justify-center" role="status">
                 <p className="text-sm" style={{ color: 'var(--cp-muted)' }}>
-                  {t('messagehub.noResults', 'No conversations found')}
+                  {t(searchQuery ? 'messagehub.noSearchResults' : filter === 'unread' ? 'messagehub.noUnread' : filter === 'requests' ? 'messagehub.noRequests' : 'messagehub.noResults')}
                 </p>
               </div>
             ) : (

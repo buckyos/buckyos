@@ -98,7 +98,7 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
     >
       {/* Header */}
       <div
-        className="flex items-center justify-between px-4 py-3 flex-shrink-0"
+        className="flex flex-shrink-0 items-center justify-between py-1 pl-4 pr-1"
         style={{ borderBottom: '1px solid var(--cp-border)' }}
       >
         <h2
@@ -108,9 +108,11 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
           {t('messagehub.entityDetails')}
         </h2>
         <button
+          type="button"
           aria-label={t('messagehub.close')}
+          title={t('messagehub.close')}
           onClick={onClose}
-          className="p-1 rounded-lg"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-lg"
           style={{ color: 'var(--cp-muted)' }}
         >
           <X size={18} />
@@ -128,6 +130,9 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
           >
             {entity.name}
           </h3>
+          <p className="mx-auto mt-1 max-w-full select-text break-all text-xs" style={{ color: 'var(--cp-muted)' }} data-testid="entity-address">
+            {entity.id}
+          </p>
           <p className="text-xs mt-1" style={{ color: 'var(--cp-muted)' }}>
             {typeLabels[entity.type]}
             {entity.isOnline && (

@@ -75,6 +75,14 @@ export function shortDid(did: string): string {
   return parts.length >= 3 ? parts.slice(2).join(':') : did
 }
 
+export function friendlyDidName(did: string, isAgent: boolean): string {
+  const short = shortDid(did)
+  if (parseTunnelDid(did) || !/^did:(web|bns):/.test(did)) return short
+  const label = short.split('.')[0]
+  if (!label) return short
+  return isAgent ? label.charAt(0).toUpperCase() + label.slice(1) : label
+}
+
 export function platformOfInstance(tunnelInstanceId: string): string {
   const lower = tunnelInstanceId.toLowerCase()
   if (lower.startsWith('tg') || lower.includes('telegram')) return 'telegram'
@@ -223,7 +231,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     const isAgent = !isGroup && !isZoneUser && (agentSet.has(did) || contact?.tags?.includes('agent') === true)
     const type: Entity['type'] = isGroup ? 'group' : isAgent ? 'agent' : 'person'
     const domain: EntitySeed['domain'] = tunnel ? 'external' : group ? (group.is_hosted_by_self ? 'managed' : 'external') : isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
-    const name = contact?.name?.trim() || group?.name?.trim() || hint?.fromName?.trim() || shortDid(did)
+    const name = contact?.name?.trim() || group?.name?.trim() || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
     const seed: EntitySeed = { id: did, type, name, domain, contact, group, sources: new Set() }
     if (tunnel) seed.sources.add(platformOfInstance(tunnel.tunnelInstanceId))
     contact?.bindings?.forEach(binding => seed.sources.add(binding.platform))

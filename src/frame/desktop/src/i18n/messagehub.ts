@@ -27,7 +27,7 @@ export const messageHubEn: Record<string, string> = {
   "messagehub.attachmentUploadFailed": "Attachment upload failed.",
   "messagehub.sendRejected": "Rejected by the message service: {{reason}}",
   "messagehub.sendResultUnknown": "The result is unknown; retrying reuses the same message and will not send it twice.",
-  "messagehub.sharedStateUnavailable": "Shared title, description and member nicknames require the session state service, which this zone has not enabled yet.",
+  "messagehub.sharedStateUnavailable": "Shared title and nicknames aren't enabled in this zone yet.",
   "messagehub.reason.permission_pending": "Checking group permissions…",
   "messagehub.reason.backend_unavailable": "This capability is not available on the message service yet.",
   "messagehub.requests": "Requests",
@@ -157,7 +157,13 @@ export const messageHubEn: Record<string, string> = {
   "messagehub.admissionFailed": "Could not update this contact. Please try again.",
   "messagehub.preparingMailbox": "Setting up your messages… This can take a few seconds for a new account.",
   "messagehub.mailboxUnavailable": "Your messages are not available yet. Retry in a moment; if this keeps happening, ask the administrator to check your account.",
-  "messagehub.attachmentTooLarge": "{{name}} is larger than {{limit}} and cannot be sent as an attachment."
+  "messagehub.attachmentTooLarge": "{{name}} is larger than {{limit}} and cannot be sent as an attachment.",
+  "messagehub.requestPending": "{{count}} pending message(s)",
+  "messagehub.noUnread": "No unread messages",
+  "messagehub.noRequests": "No pending requests",
+  "messagehub.noSearchResults": "No matching conversations",
+  "messagehub.preferences": "Preferences",
+  "messagehub.technicalInfo": "Technical details"
 }
 
 export const messageHubZh: Record<string, string> = {
@@ -189,7 +195,7 @@ export const messageHubZh: Record<string, string> = {
   "messagehub.attachmentUploadFailed": "附件上传失败。",
   "messagehub.sendRejected": "消息服务拒绝：{{reason}}",
   "messagehub.sendResultUnknown": "结果未知；重试会复用同一条消息，不会重复发送。",
-  "messagehub.sharedStateUnavailable": "共享标题、说明与成员昵称需要会话状态服务，当前 zone 尚未启用。",
+  "messagehub.sharedStateUnavailable": "当前 zone 尚未启用共享标题与成员昵称。",
   "messagehub.reason.permission_pending": "正在检查群权限…",
   "messagehub.reason.backend_unavailable": "消息服务尚未提供此能力。",
   "messagehub.requests": "请求",
@@ -319,5 +325,11 @@ export const messageHubZh: Record<string, string> = {
   "messagehub.admissionFailed": "未能更新该联系人，请重试。",
   "messagehub.preparingMailbox": "正在准备你的消息…新账号可能需要几秒钟。",
   "messagehub.mailboxUnavailable": "你的消息暂时不可用。请稍后重试；如果一直如此，请联系管理员检查账号。",
-  "messagehub.attachmentTooLarge": "{{name}} 超过 {{limit}}，无法作为附件发送。"
+  "messagehub.attachmentTooLarge": "{{name}} 超过 {{limit}}，无法作为附件发送。",
+  "messagehub.requestPending": "{{count}} 条待接收消息",
+  "messagehub.noUnread": "暂无未读消息",
+  "messagehub.noRequests": "暂无待处理请求",
+  "messagehub.noSearchResults": "没有匹配的会话",
+  "messagehub.preferences": "偏好设置",
+  "messagehub.technicalInfo": "技术信息"
 }

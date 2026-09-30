@@ -1,0 +1,138 @@
+.mh-markdown {
+  overflow-wrap: anywhere;
+}
+
+.mh-markdown > * + * {
+  margin-top: 0.6em;
+}
+
+.mh-markdown p,
+.mh-markdown ul,
+.mh-markdown ol,
+.mh-markdown blockquote,
+.mh-markdown pre {
+  margin-bottom: 0;
+}
+
+.mh-markdown ul,
+.mh-markdown ol {
+  padding-left: 1.35em;
+}
+
+.mh-markdown ul {
+  list-style: disc;
+}
+
+.mh-markdown ol {
+  list-style: decimal;
+}
+
+.mh-markdown li + li,
+.mh-markdown li > * + * {
+  margin-top: 0.25em;
+}
+
+.mh-markdown li::marker {
+  color: color-mix(in srgb, currentColor 60%, transparent);
+}
+
+.mh-markdown .mh-md-heading {
+  font-weight: 650;
+}
+
+.mh-markdown .mh-md-heading[data-level='1'],
+.mh-markdown .mh-md-heading[data-level='2'] {
+  font-size: 1.08em;
+}
+
+.mh-markdown > .mh-md-heading:not(:first-child) {
+  margin-top: 0.9em;
+}
+
+.mh-markdown strong {
+  font-weight: 650;
+}
+
+.mh-markdown a {
+  color: var(--mh-link, var(--cp-accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.mh-markdown code {
+  border-radius: 6px;
+  padding: 0.1em 0.35em;
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+}
+
+.mh-markdown pre {
+  overflow-x: auto;
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: color-mix(in srgb, currentColor 7%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mh-markdown pre code {
+  padding: 0;
+  background: none;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.mh-markdown blockquote {
+  border-left: 3px solid color-mix(in srgb, currentColor 22%, transparent);
+  padding-left: 0.75em;
+  color: color-mix(in srgb, currentColor 82%, transparent);
+}
+
+.mh-markdown hr {
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.mh-md-table {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mh-markdown table {
+  border-collapse: collapse;
+  font-size: 0.93em;
+}
+
+.mh-markdown th,
+.mh-markdown td {
+  border: 1px solid color-mix(in srgb, currentColor 15%, transparent);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.mh-markdown th {
+  background: color-mix(in srgb, currentColor 5%, transparent);
+  font-weight: 600;
+}
+
+.mh-filter-strip {
+  scrollbar-width: none;
+}
+
+.mh-filter-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.mh-filter-strip[data-fade='right'] {
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+
+.mh-filter-strip[data-fade='left'] {
+  mask-image: linear-gradient(to left, #000 calc(100% - 36px), transparent);
+}
+
+.mh-filter-strip[data-fade='both'] {
+  mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
+}

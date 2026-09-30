@@ -2,9 +2,11 @@ import {
   ArrowLeft,
   Bot,
   FileUp,
+  Lock,
   Menu,
   MoreVertical,
   SlidersHorizontal,
+  SquarePen,
   User,
   Users,
 } from 'lucide-react'
@@ -50,7 +52,6 @@ interface ConversationViewProps {
   onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
   onDraftChange?: (value: string) => Promise<void> | undefined
   showActions?: boolean
-  onShowActions?: (value: boolean) => Promise<void>
   sessionCount: number
   leadingPane?: ReactNode
   isSessionSidebarOpen?: boolean
@@ -74,7 +75,7 @@ export function ConversationView({
   onOpenDetails,
   onSendMessage,
   onResend,
-  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true, onShowActions,
+  context: contextProp, access, title = session?.title ?? '', onOpenSessionDetails, onCreate, creationReason, defaultSessionError, onRetryDefaultSession, draft, draftAttachments, onAttachmentsChange, onDraftChange, showActions = true,
   leadingPane = null,
   isSessionSidebarOpen = false,
   historyStatus = 'ready',
@@ -98,9 +99,13 @@ export function ConversationView({
     try { await onAdmission(action) } catch { setAdmissionError(true) } finally { setAdmissionPending(false) }
   }
   const canSend = access === undefined || access?.mode === 'read_write'
-  const [filterError, setFilterError] = useState(false)
-  const [pendingFilter, setPendingFilter] = useState<boolean | null>(null)
   const isGroup = entity.type === 'group'
+  const subtitle = session ? [title, session.binding.kind === 'tunnel' ? session.binding.connectionName : ''].filter(Boolean).join(' · ') : t('messagehub.noSessions')
+  const admissionDetail = [
+    t('messagehub.requestBanner', undefined, { count: requestCount }),
+    admission?.accessLevel ? t(`messagehub.access.${admission.accessLevel}`) : '',
+    admission?.temporaryExpiresAt ? t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() }) : '',
+  ].filter(Boolean).join(' · ')
   const bodyRef = useRef<HTMLDivElement>(null)
   const composerRef = useRef<ConversationComposerHandle>(null)
   const dragDepthRef = useRef(0)
@@ -189,10 +194,10 @@ export function ConversationView({
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
-      style={{ background: 'var(--cp-bg)' }}
+      style={{ background: 'var(--cp-message-canvas)' }}
     >
       <div
-        className="flex items-center gap-2 px-3 py-2 flex-shrink-0"
+        className="flex items-center gap-1 px-2 py-1.5 flex-shrink-0 md:gap-2 md:px-3"
         style={{
           borderBottom: '1px solid var(--cp-border)',
           background: 'var(--cp-surface)',
@@ -214,30 +219,25 @@ export function ConversationView({
           {/* On touch layouts the whole title block is one entity target; session
               details stay on the ⋮ button. */}
           <button onClick={onOpenDetails} className="flex min-h-11 w-full min-w-0 flex-col justify-center text-left md:hidden" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}>
-            <span className="flex max-w-full items-center gap-1.5"><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></span>
-            <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{session ? title : t('messagehub.noSessions')}</span>
+            <span className="flex max-w-full items-center gap-1.5"><EntityTypeIcon type={entity.type} /><span className="truncate text-base font-semibold">{entity.name}</span></span>
+            <span className="block max-w-full truncate text-xs text-[color:var(--cp-muted)]">{subtitle}</span>
           </button>
-          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`}><EntityTypeIcon type={entity.type} /><span className="truncate text-sm font-semibold">{entity.name}</span></button>
-          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')}>{session ? title : t('messagehub.noSessions')}</button>
+          <button onClick={onOpenDetails} className="hidden max-w-full items-center gap-1.5 text-left md:flex" type="button" aria-label={`${t('messagehub.entityDetails')}: ${entity.name}`} title={t('messagehub.entityDetails')}><EntityTypeIcon type={entity.type} /><span className="truncate text-[15px] font-semibold">{entity.name}</span></button>
+          <button onClick={onOpenSessionDetails} disabled={!session} type="button" className="hidden max-w-full truncate text-xs text-[color:var(--cp-muted)] md:block" aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')}>{subtitle}</button>
           <div role="status" data-testid="session-runtime" className="truncate text-xs text-[color:var(--cp-accent)]">{runtime.map(state => `${state.memberDid === context.ownerDid ? t('messagehub.you') : session?.members[state.memberDid]?.nickname || entity.name} · ${t(`messagehub.runtime.${state.status}`)}${state.statusLine ? ` · ${state.statusLine}` : ''}`).join(' · ')}</div>
         </div>
-        {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="min-h-11 min-w-11 text-lg disabled:opacity-40">+</button>}
-        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
+        {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>}
+        <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
-      {session && requestCount > 0 && <div role="note" data-testid="request-banner" className="flex shrink-0 flex-wrap items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-xs">
-        <span className="flex-1">{t('messagehub.requestBanner', undefined, { count: requestCount })}{admission?.accessLevel ? ` · ${t(`messagehub.access.${admission.accessLevel}`)}` : ''}{admission?.temporaryExpiresAt ? ` · ${t('messagehub.temporaryUntil', undefined, { time: new Date(admission.temporaryExpiresAt).toLocaleString() })}` : ''}</span>
-        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-3" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
-        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-11 rounded-lg border border-[color:var(--cp-border)] px-3 text-[color:var(--cp-danger)]" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
-        {admissionError && <span role="alert">{t('messagehub.admissionFailed')}</span>}
+      {session && requestCount > 0 && <div role="note" data-testid="request-banner" title={admissionDetail} className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-3 py-1 text-[13px]">
+        <span className="min-w-0 flex-1 truncate font-medium">{t('messagehub.requestPending', undefined, { count: requestCount })}{admission?.accessLevel && admission.accessLevel !== 'stranger' ? <span className="font-normal text-[color:var(--cp-muted)]"> · {t(`messagehub.access.${admission.accessLevel}`)}</span> : null}</span>
+        {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
+        {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
       </div>}
-      {session && onShowActions && <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 px-3 py-1 text-[11px] text-[color:var(--cp-muted)]">
-        <span>{session.binding.kind === 'tunnel' ? session.binding.connectionName : 'BuckyOS'} · {t(canSend ? 'messagehub.readWrite' : 'messagehub.readOnly')}</span>
-        <label className="flex min-h-8 items-center gap-1"><input type="checkbox" checked={pendingFilter ?? showActions} disabled={pendingFilter !== null} onChange={event => { const value = event.target.checked; setPendingFilter(value); setFilterError(false); void onShowActions?.(value).catch(() => setFilterError(true)).finally(() => setPendingFilter(null)) }} />{t('messagehub.showActions')}</label>
-        {filterError && <span role="alert">{t('messagehub.operationFailed')}</span>}
-      </div>}
+      {session && requestCount > 0 && admissionError && <p role="alert" className="shrink-0 px-3 py-1 text-xs text-[color:var(--cp-danger)]">{t('messagehub.admissionFailed')}</p>}
 
       {defaultSessionError && <div role="alert" className="flex shrink-0 items-center gap-2 px-3 py-2 text-xs text-[color:var(--cp-danger)]"><span>{t('messagehub.operationFailed')}</span><button type="button" className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2" onClick={onRetryDefaultSession}>{t('messagehub.retry')}</button></div>}
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {leadingPane}
 
         <div
@@ -257,6 +257,7 @@ export function ConversationView({
                 emptyLabel={t(!session ? 'messagehub.noSessions' : historyStatus === 'loading' ? 'messagehub.loadingHistory' : historyStatus === 'error' ? 'messagehub.historyFailed' : canSend ? 'messagehub.startConversation' : 'messagehub.noMessages')}
                 selfDid={selfDid}
                 isGroup={isGroup}
+                peerMarkdown={entity.type === 'agent'}
                 hasOlder={hasOlder}
                 onLoadOlder={onLoadOlder}
                 onVisibleMessages={onVisibleMessages}
@@ -274,7 +275,7 @@ export function ConversationView({
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
-          /> : <div className="p-4 text-center text-xs text-[color:var(--cp-muted)]" data-testid="composer-readonly">{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</div>}
+          /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</span></div>}
         </div>
       </div>
 
