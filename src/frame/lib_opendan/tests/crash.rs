@@ -1,0 +1,568 @@
+//! A-03 / §8.3 crash windows: a child process drives the session and dies
+//! (fault injection = abort, or `kill -9` while a tool runs); the parent
+//! recovers in-process and checks the protocol invariants.
+
+mod common;
+
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use agent_tool::exec_tracking::{probe_execution, ExecutionProbe};
+use common::*;
+use libopendan::protocol::*;
+use libopendan::runner::{drive, DriveResult, StopWhen};
+use libopendan::SessionDir;
+use llm_context::deps::LlmInferenceRequest;
+use serde_json::json;
+
+const ENV_ROOT: &str = "LIBOPENDAN_TEST_ROOT";
+const ENV_SESSION: &str = "LIBOPENDAN_TEST_SESSION";
+const ENV_SCENARIO: &str = "LIBOPENDAN_TEST_SCENARIO";
+
+/// Content based scripts (the parent and the child must agree).
+fn script(name: &str) -> Arc<ScriptedLlm> {
+    script_for(name, None)
+}
+
+fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
+    match name {
+        "change_obs" => {
+            let (qd, q) = ctx.expect("queue context");
+            ScriptedLlm::new(move |req: &LlmInferenceRequest, _| {
+                if render(&req.messages).contains("motion at door") {
+                    text("noted")
+                } else {
+                    post_blocking(
+                        &qd,
+                        &q,
+                        Input::change(
+                            "cam01#motion",
+                            json!({ "text": "motion at door", "subscription": "s2", "version": "e1" }),
+                        ),
+                    );
+                    tool_call("c1", "exec", json!({ "command": "true" }))
+                }
+            })
+        }
+        "transient" => ScriptedLlm::fallible(|req: &LlmInferenceRequest, _| {
+            if render(&req.messages).contains("second message") {
+                Ok(text("got both"))
+            } else {
+                Err(llm_context::error::LLMComputeError::Provider {
+                    failure: llm_context::error::ProviderFailure::Transient,
+                    message: "busy".into(),
+                })
+            }
+        }),
+        "simple_tool" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            if has_tool_result(req, "c1").is_some() {
+                text("all done")
+            } else {
+                tool_call("c1", "exec", json!({ "command": "echo step >> steps.log" }))
+            }
+        }),
+        "exec_sleep" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            match has_tool_result(req, "c1") {
+                Some(r) => text(&format!("recovered: {r}")),
+                None => tool_call(
+                    "c1",
+                    "exec",
+                    json!({ "command": "echo start >> marker; sleep 30; echo done >> marker" }),
+                ),
+            }
+        }),
+        "answer" => ScriptedLlm::new(|_, _| text("plain answer")),
+        "wait" => ScriptedLlm::new(|_, _| {
+            text("<response><next_behavior>WAIT_USER_MSG</next_behavior></response>")
+        }),
+        "switch" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            if render(&req.messages).contains("behavior_switch to=\"do\"") {
+                text("<response><report><![CDATA[both phases done]]></report></response>")
+            } else {
+                text("<response><next_behavior>do</next_behavior></response>")
+            }
+        }),
+        "fork" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            let all = render(&req.messages);
+            if all.contains("research result X") {
+                text("<response><report><![CDATA[final answer]]></report></response>")
+            } else if all.contains("behavior_switch to=\"research\"") {
+                text("<response><report><![CDATA[research result X]]></report></response>")
+            } else {
+                text("<response><next_behavior>research</next_behavior></response>")
+            }
+        }),
+        other => panic!("unknown scenario {other}"),
+    }
+}
+
+/// Child entry point: a no-op unless spawned by `spawn_child`.
+#[tokio::test]
+async fn child_driver() {
+    let (Ok(root), Ok(session), Ok(scenario)) = (
+        std::env::var(ENV_ROOT),
+        std::env::var(ENV_SESSION),
+        std::env::var(ENV_SCENARIO),
+    ) else {
+        return;
+    };
+    let env = Env::at(Path::new(&root));
+    let sd = SessionDir::open(&session).unwrap();
+    let deps = env.deps(script_for(&scenario, Some((env.queue_dir.clone(), queue_of(&sd)))));
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    eprintln!("child drive result: {r:?}");
+}
+
+fn spawn_child(env: &Env, sd: &SessionDir, scenario: &str, fault: Option<&str>) -> Child {
+    let exe = std::env::current_exe().unwrap();
+    let mut cmd = Command::new(exe);
+    cmd.args(["--exact", "child_driver", "--nocapture", "--test-threads=1"])
+        .env(ENV_ROOT, &env.root)
+        .env(ENV_SESSION, sd.path())
+        .env(ENV_SCENARIO, scenario)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(f) = fault {
+        cmd.env("LIBOPENDAN_FAULT", f);
+    } else {
+        cmd.env_remove("LIBOPENDAN_FAULT");
+    }
+    cmd.spawn().unwrap()
+}
+
+fn wait_exit(child: &mut Child, max: Duration) -> std::process::ExitStatus {
+    let start = Instant::now();
+    loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            return st;
+        }
+        if start.elapsed() > max {
+            let _ = child.kill();
+            panic!("child did not exit in time");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn assert_worklog_contiguous(sd: &SessionDir) {
+    let wl = read_worklog(sd);
+    for (i, e) in wl.iter().enumerate() {
+        assert_eq!(e.seq, i as u64 + 1, "worklog seq gap / duplicate: {wl:#?}");
+    }
+    let st = sd.state().unwrap();
+    assert_eq!(st.worklog.committed_seq, wl.len() as u64);
+    assert_eq!(
+        st.worklog.committed_bytes,
+        std::fs::metadata(sd.worklog().path()).unwrap().len()
+    );
+}
+
+fn count_kind(sd: &SessionDir, kind: &str) -> usize {
+    read_worklog(sd).iter().filter(|e| e.body.kind() == kind).count()
+}
+
+async fn post_msg(env: &Env, sd: &SessionDir, key: &str, text: &str) {
+    let ch = env.channels();
+    let q = sd.config().unwrap().channels.kmsg().unwrap().1.to_string();
+    libopendan::channel::kmsg::post_to_queue(&ch.client(), &q, &Input::msg(key, text), APP)
+        .await
+        .unwrap();
+}
+
+/// Crash at a commit window of the first round, then recover in-process.
+async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("append a line to steps.log")).await;
+    post_msg(&env, &sd, "m-1", "please do it").await;
+    let mut child = spawn_child(&env, &sd, "simple_tool", Some(fault));
+    let st = wait_exit(&mut child, Duration::from_secs(60));
+    assert!(!st.success(), "child must die at {fault}");
+    let llm = script("simple_tool");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{fault}: {r:?}");
+    assert_worklog_contiguous(&sd);
+    // Exactly one round with exactly one copy of the round message.
+    assert_eq!(count_kind(&sd, "round_started"), 1, "{fault}");
+    assert_eq!(count_kind(&sd, "user_message"), 1, "{fault}");
+    if llm.count() > 0 {
+        let transcript = llm.transcript(llm.count() - 1);
+        assert_eq!(transcript.matches("please do it").count(), 1, "{fault}: {transcript}");
+    }
+    let msg = read_worklog(&sd)
+        .into_iter()
+        .find_map(|e| match e.body {
+            WorklogBody::UserMessage { content, .. } => Some(content),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(msg.matches("please do it").count(), 1, "{fault}: {msg}");
+    // The input was consumed once and acknowledged.
+    let st = sd.state().unwrap();
+    assert_eq!(st.source("q").acked_index, 1, "{fault}");
+    let q = libopendan::channel::DirMsgQueue::new(&env.queue_dir).unwrap();
+    let sub = match &sd.config().unwrap().channels.inputs[0] {
+        InputSourceConfig::Kmsg { subscriber, .. } => subscriber.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(q.cursor(&sub), Some(2), "{fault}: kmsg ack");
+    // Only the last run survives.
+    let runs = sd.runs().list().unwrap();
+    assert_eq!(runs, vec![st.last_run.clone().unwrap()], "{fault}");
+    (env, sd, llm)
+}
+
+#[tokio::test]
+async fn crash_after_input_checkpoint_of_new_run() {
+    // Orphan run (gate set, state never referenced it): removed, the input
+    // is fetched again and processed once.
+    let (_env, sd, _llm) = crash_window("begin_round:after_input_checkpoint").await;
+    assert!(std::fs::read_to_string(sd.path().join("steps.log")).is_ok());
+}
+
+#[tokio::test]
+async fn crash_after_state_commit_before_gate_clear() {
+    crash_window("begin_round:after_state_commit").await;
+}
+
+#[tokio::test]
+async fn crash_after_gate_clear_before_confirm() {
+    crash_window("begin_round:after_gate_clear").await;
+}
+
+#[tokio::test]
+async fn crash_after_flush_before_commit() {
+    // The flushed tail was never committed: it is truncated and rewritten
+    // once from the kept run.
+    let (_env, sd, _) = crash_window("finish_run:after_flush").await;
+    assert_eq!(count_kind(&sd, "outcome"), 1);
+    assert_eq!(count_kind(&sd, "step"), 2);
+}
+
+#[tokio::test]
+async fn crash_after_finish_commit() {
+    let (env, sd, llm) = crash_window("finish_run:after_commit").await;
+    // Finished by the child; the parent only caught up the reports.
+    assert_eq!(llm.count(), 0);
+    let agent = env.agent();
+    use libopendan::state::AgentStateClient;
+    let e = agent.sessions().lookup(sd.sid()).await.unwrap().unwrap();
+    assert_eq!(e.status.run_state, RunState::Finished);
+    assert_eq!(e.status.rev, sd.state().unwrap().rev);
+    assert!(agent.perception().last_seq(sd.sid()).await.unwrap() >= 2);
+}
+
+#[tokio::test]
+async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("long running command")).await;
+    let mut child = spawn_child(&env, &sd, "exec_sleep", None);
+    // Wait until the command started.
+    let marker = sd.path().join("marker");
+    let start = Instant::now();
+    while !std::fs::read_to_string(&marker).unwrap_or_default().contains("start") {
+        assert!(start.elapsed() < Duration::from_secs(60), "tool never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe {
+        libc::kill(child.id() as i32, libc::SIGKILL);
+    }
+    let _ = child.wait();
+    // The runner is gone, its tool is not.
+    let st = sd.state().unwrap();
+    let live = st.live_run.clone().expect("live run");
+    let rec = sd.runs().record(&live.run_id).unwrap();
+    assert_eq!(rec.inflight.len(), 1, "inflight persisted before the tool ran");
+    assert_eq!(rec.executions.len(), 1, "execution identity persisted");
+    let exec = rec.executions[0].clone();
+    assert!(matches!(probe_execution(&exec, None), ExecutionProbe::Alive { .. }));
+    // Same identity, other process: takes over after stopping the old tool.
+    let llm = script("exec_sleep");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(probe_execution(&exec, None), ExecutionProbe::Stopped);
+    // The tool was not re-run and its result is reported as unknown.
+    let m = std::fs::read_to_string(&marker).unwrap();
+    assert_eq!(m.matches("start").count(), 1, "{m}");
+    assert!(!m.contains("done"), "old tool must be stopped: {m}");
+    let result = has_tool_result(&llm.requests.lock().unwrap()[0], "c1").unwrap();
+    assert!(result.contains("unknown"), "{result}");
+    assert_eq!(llm.count(), 1);
+    let wl = read_worklog(&sd);
+    assert!(wl.iter().any(|e| matches!(&e.body,
+        WorklogBody::ActionResult { status, .. } if status == "unresolved")));
+    assert_worklog_contiguous(&sd);
+    let last = sd.state().unwrap().last_run.unwrap();
+    let rec = sd.runs().record(&last).unwrap();
+    assert!(rec.inflight.is_empty() && rec.executions.is_empty());
+}
+
+#[tokio::test]
+async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("x")).await;
+    let mut child = spawn_child(&env, &sd, "simple_tool", Some("begin_round:after_gate_clear"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    let st = sd.state().unwrap();
+    let run_id = st.live_run.clone().unwrap().run_id;
+    let rec = sd.runs().record(&run_id).unwrap();
+    let idx = rec.latest_snapshot_idx.unwrap();
+    let snap_path: PathBuf = sd
+        .runs_dir()
+        .join(&run_id)
+        .join("snapshots")
+        .join(format!("{idx:04}.json"));
+    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&snap_path).unwrap()).unwrap();
+    v["state"]["snapshot_version"] = json!(99);
+    std::fs::write(&snap_path, serde_json::to_vec(&v).unwrap()).unwrap();
+    let llm = script("simple_tool");
+    match drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await {
+        DriveResult::RecoveryBlocked(b) => assert!(b.reason.contains("not supported"), "{b:?}"),
+        r => panic!("{r:?}"),
+    }
+    assert_eq!(llm.count(), 0, "no inference");
+    let after = sd.state().unwrap();
+    assert_eq!(after.live_run, st.live_run, "live run kept");
+    assert_eq!(after.inputs, st.inputs, "consumption untouched");
+    assert!(after.last_error.is_some());
+    assert!(sd.runs().exists(&run_id));
+    // Repair → retry works.
+    v["state"]["snapshot_version"] = json!(1);
+    std::fs::write(&snap_path, serde_json::to_vec(&v).unwrap()).unwrap();
+    assert!(drive(&sd, &env.deps(llm), StopWhen::Finished).await.is_finished());
+}
+
+#[tokio::test]
+async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
+    use agent_tool::local_llm_context::{ResumeLimits, ResumeStart, RunStatus, RunStore, XllmDeps, XllmRun};
+    let env = Env::new();
+    let sd = env.create_work(work_spec("answer")).await;
+    let mut child = spawn_child(&env, &sd, "answer", Some("begin_round:after_gate_clear"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    let store = RunStore::disk(sd.runs_dir());
+    let llm = script("answer");
+    let deps = XllmDeps::default().with_llm(llm.clone());
+    let started = XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps)
+        .await
+        .unwrap();
+    let ResumeStart::Run(mut run) = started else { panic!("terminal?") };
+    let out = run.execute().await.unwrap();
+    assert_eq!(out.status(), RunStatus::Completed);
+    drop(run);
+    assert_eq!(llm.count(), 1);
+    // xllm never touched state.json / worklog.
+    assert!(sd.state().unwrap().live_run.is_some());
+    let r = drive(&sd, &env.deps(script("answer")), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert!(sd.report().unwrap().contains("plain answer"));
+    assert_eq!(count_kind(&sd, "outcome"), 1);
+    assert_worklog_contiguous(&sd);
+}
+
+#[tokio::test]
+async fn xllm_refuses_run_with_pending_host_commit() {
+    use agent_tool::local_llm_context::{ResumeLimits, RunStore, XllmDeps, XllmRun};
+    let env = Env::new();
+    let sd = env.create_work(work_spec("answer")).await;
+    let mut child = spawn_child(&env, &sd, "answer", Some("begin_round:after_input_checkpoint"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    let runs = sd.runs().list().unwrap();
+    assert_eq!(runs.len(), 1);
+    let rec = sd.runs().record(&runs[0]).unwrap();
+    assert!(rec.host_commit_pending.is_some());
+    let store = RunStore::disk(sd.runs_dir());
+    let deps = XllmDeps::default().with_llm(script("answer"));
+    let err = XllmRun::resume(&store, Some(&runs[0]), None, ResumeLimits::default(), deps)
+        .await
+        .err()
+        .expect("must refuse");
+    assert!(err.to_string().contains("not committed"), "{err}");
+}
+
+#[tokio::test]
+async fn crash_after_observation_injection_does_not_reinject() {
+    let env = Env::new();
+    let mut spec = work_spec("watch");
+    spec.subscriptions.push(Subscription {
+        id: "s2".into(),
+        mode: SubscriptionMode::Semi,
+        source: SubscriptionSource::ObjectEvent {
+            object: "https://cam/01".into(),
+            event: "motion".into(),
+        },
+        watch: vec![],
+    });
+    let sd = env.create_work(spec).await;
+    let mut child = spawn_child(&env, &sd, "change_obs", Some("hook:after_input_checkpoint"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    // Snapshot has the injected change + receipt; state has not applied it.
+    let st = sd.state().unwrap();
+    let live = st.live_run.clone().unwrap();
+    assert_eq!(live.applied_input_seq, 1);
+    assert_eq!(st.source("q").acked_index, 0);
+    let llm = script_for("change_obs", Some((env.queue_dir.clone(), queue_of(&sd))));
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 1, "resumed from the snapshot, no re-post");
+    let t = llm.transcript(0);
+    assert_eq!(t.matches("motion at door").count(), 1, "{t}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.source("q").acked_index, 1);
+    assert_eq!(st.subscription_cursors["s2"]["version"], json!("e1"));
+    let users = read_worklog(&sd)
+        .into_iter()
+        .filter(|e| matches!(e.body, WorklogBody::UserMessage { .. }))
+        .count();
+    assert_eq!(users, 2);
+    assert_worklog_contiguous(&sd);
+}
+
+#[tokio::test]
+async fn new_input_into_a_resumed_run_survives_a_crash_once() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("needs two messages")).await;
+    // Transient provider failure: the run is kept (paused), state ready.
+    match drive(&sd, &env.deps(script("transient")), StopWhen::Finished).await {
+        DriveResult::Error { error, .. } => assert_eq!(error["recoverable"], json!(true)),
+        r => panic!("{r:?}"),
+    }
+    let st = sd.state().unwrap();
+    let run_id = st.live_run.clone().unwrap().run_id;
+    assert_eq!(st.run_state, RunState::Ready);
+    post_msg(&env, &sd, "m-2", "second message").await;
+    // The child resumes the same run, injects the message, crashes before
+    // committing state.
+    let mut child = spawn_child(&env, &sd, "transient", Some("begin_round:after_input_checkpoint"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    assert_eq!(sd.state().unwrap().live_run.unwrap().applied_input_seq, 1);
+    let llm = script("transient");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let t = llm.transcript(llm.count() - 1);
+    assert_eq!(t.matches("second message").count(), 1, "{t}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()), "same run continued");
+    assert_eq!(st.source("q").acked_index, 1);
+    assert_eq!(count_kind(&sd, "round_started"), 2);
+    assert_eq!(count_kind(&sd, "user_message"), 2);
+    assert_worklog_contiguous(&sd);
+}
+
+#[tokio::test]
+async fn active_sessions_on_the_same_workspace_see_each_other() {
+    let env = Env::new();
+    let ws = env.root.join("snake");
+    std::fs::create_dir_all(ws.join("src")).unwrap();
+    let mk = |obj: &str, path: &str| {
+        let mut s = work_spec(obj);
+        s.workspace = Some(WorkspaceRef::External {
+            path: ws.display().to_string(),
+        });
+        s.scope = Some(Scope {
+            paths: vec![path.into()],
+            objects: vec![],
+        });
+        s
+    };
+    let a = env.create_work(mk("A: wall wrap mode", "ws:snake/src/")).await;
+    let mut child = spawn_child(&env, &a, "answer", Some("begin_round:after_gate_clear"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    assert_eq!(a.state().unwrap().run_state, RunState::Running);
+    let b = env.create_work(mk("B: collision tweak", "ws:snake/src/collision.js")).await;
+    let a_sid = a.sid().to_string();
+    let llm = ScriptedLlm::new(move |req, _| {
+        let u = last_user_text(req);
+        assert!(u.contains("<active_sessions>"), "{u}");
+        assert!(u.contains(&a_sid), "{u}");
+        assert!(u.contains("relation=\"same_target\""), "{u}");
+        assert!(u.contains("<overlap>"), "{u}");
+        text("I will wait for the other session")
+    });
+    let r = drive(&b, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 1);
+}
+
+fn behavior_spec(obj: &str, modes: serde_json::Value) -> libopendan::api::SessionSpec {
+    let mut spec = work_spec(obj);
+    spec.prompt.llm_context = json!({
+        "loop_model": "behavior",
+        "tools": { "enabled": true, "tools2actions": true }
+    });
+    spec.prompt.behavior = Some("plan".into());
+    spec.extensions.insert("opendan".into(), json!({ "process_modes": modes }));
+    spec
+}
+
+// Review regressions -------------------------------------------------------
+
+#[tokio::test]
+async fn redo_of_finish_keeps_the_answer() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("answer")).await;
+    post_msg(&env, &sd, "m-1", "question").await;
+    let mut child = spawn_child(&env, &sd, "answer", Some("finish_run:after_flush"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    let llm = script("answer");
+    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert_eq!(llm.count(), 0);
+    assert!(sd.report().unwrap().contains("plain answer"));
+    let st = sd.state().unwrap();
+    assert_eq!(st.result.unwrap()["answer"], json!("plain answer"));
+    assert!(st.one_line_status.contains("plain answer"));
+}
+
+#[tokio::test]
+async fn redo_of_finish_keeps_waiting() {
+    let env = Env::new();
+    let mut spec = work_spec("wait");
+    spec.prompt.llm_context = json!({
+        "loop_model": "behavior",
+        "tools": { "enabled": true, "tools2actions": true }
+    });
+    let sd = env.create_work(spec).await;
+    let mut child = spawn_child(&env, &sd, "wait", Some("finish_run:after_flush"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    let r = drive(&sd, &env.deps(script("wait")), StopWhen::Idle).await;
+    assert!(!r.is_finished(), "{r:?}");
+    assert_eq!(sd.state().unwrap().run_state, RunState::Waiting);
+}
+
+#[tokio::test]
+async fn fork_return_survives_a_crash_after_the_child_finish() {
+    let env = Env::new();
+    let sd = env
+        .create_work(behavior_spec("research then answer", json!({ "research": "fork" })))
+        .await;
+    let mut child = spawn_child(&env, &sd, "fork", Some("finish_run:after_commit"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    // One commit: child finished AND parent live again with the result.
+    let st = sd.state().unwrap();
+    assert!(st.process_stack.is_empty(), "{:?}", st.process_stack);
+    assert!(st.live_run.is_some());
+    assert!(st.process_result.is_some());
+    let llm = script("fork");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert!(sd.report().unwrap().contains("final answer"));
+    assert_eq!(llm.count(), 1, "only the parent's final step");
+}
+
+#[tokio::test]
+async fn crash_while_opening_the_switch_round_does_not_repeat_it() {
+    let env = Env::new();
+    let sd = env.create_work(behavior_spec("two phases", json!({}))).await;
+    // Hit #2 = the hand-over round of the normal switch (same run).
+    let mut child = spawn_child(&env, &sd, "switch", Some("begin_round:after_input_checkpoint#2"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    let llm = script("switch");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    let t = llm.transcript(llm.count() - 1);
+    assert_eq!(t.matches("behavior_switch to=\"do\"").count(), 1, "{t}");
+    assert!(sd.state().unwrap().internal_continuation.is_none());
+    assert_eq!(count_kind(&sd, "round_started"), 2);
+    assert_worklog_contiguous(&sd);
+}

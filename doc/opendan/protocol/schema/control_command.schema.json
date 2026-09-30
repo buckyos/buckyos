@@ -1,0 +1,241 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Subscription": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubscriptionMode"
+        },
+        "source": {
+          "$ref": "#/definitions/SubscriptionSource"
+        },
+        "watch": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "mode",
+        "source"
+      ],
+      "type": "object"
+    },
+    "SubscriptionMode": {
+      "oneOf": [
+        {
+          "description": "Delivered as `event`; wakes the session and triggers inference.",
+          "enum": [
+            "active"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Delivered as `change`; only injected at observation boundaries.",
+          "enum": [
+            "semi"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SubscriptionSource": {
+      "oneOf": [
+        {
+          "description": "Another session of the same agent (pull: registry rev compare).",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "session"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "External object events bridged into the kmsg queue.",
+          "properties": {
+            "event": {
+              "type": "string"
+            },
+            "object": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "object_event"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "object",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "Touching": {
+      "properties": {
+        "kind": {
+          "description": "`path | object | artifact`.",
+          "type": "string"
+        },
+        "mode": {
+          "default": "write",
+          "description": "`read | write`.",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "since_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`control` payloads.",
+  "oneOf": [
+    {
+      "properties": {
+        "command": {
+          "enum": [
+            "stop"
+          ],
+          "type": "string"
+        },
+        "reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "by": {
+          "default": "",
+          "type": "string"
+        },
+        "command": {
+          "enum": [
+            "decide"
+          ],
+          "type": "string"
+        },
+        "decision": {
+          "description": "`accept | discard`.",
+          "type": "string"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "command",
+        "decision"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "command": {
+          "enum": [
+            "subscribe"
+          ],
+          "type": "string"
+        },
+        "subscription": {
+          "$ref": "#/definitions/Subscription"
+        }
+      },
+      "required": [
+        "command",
+        "subscription"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "command": {
+          "enum": [
+            "unsubscribe"
+          ],
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "id"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Activity declaration (e.g. `agent-session activity --touch <ref>`).",
+      "properties": {
+        "clear": {
+          "default": false,
+          "type": "boolean"
+        },
+        "command": {
+          "enum": [
+            "activity"
+          ],
+          "type": "string"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "touch": {
+          "items": {
+            "$ref": "#/definitions/Touching"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "ControlCommand"
+}

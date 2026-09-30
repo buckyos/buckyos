@@ -1,0 +1,42 @@
+{
+  "session_id": "work-fixture-receipt",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-receipt",
+  "input_queue": "app2::alice::opendan.session.work-fixture-receipt",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-receipt/input",
+  "agent_access": "full",
+  "objective": "needs two messages",
+  "status": {
+    "rev": 3,
+    "run_state": "ready",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "needs two messages",
+      "heartbeat_ms": 1790701180959
+    },
+    "last_runner": {
+      "runner_id": "rn-7480c51010ea404e",
+      "host": "host:lzc-pve:6b719608768f",
+      "pid": 1467264,
+      "lock_epoch": 1,
+      "at_ms": 1790701180975
+    },
+    "last_error": {
+      "kind": "provider",
+      "message": "llm provider failed (Transient): busy",
+      "recoverable": true
+    },
+    "updated_at_ms": 1790701180973
+  },
+  "location_rev": 0
+}

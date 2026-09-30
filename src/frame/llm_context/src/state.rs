@@ -7,6 +7,7 @@
 
 use buckyos_api::{AiMessage, AiUsage};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::behavior_loop::{HistoryInputRecord, HistorySummaryRecord, StepRecord};
 use crate::observation::PendingToolCall;
@@ -78,7 +79,21 @@ pub struct LLMContextState {
 
     #[serde(default)]
     pub next_action_id: u32,
+
+    /// Snapshot format version (`0` = written before versioning). `resume`
+    /// refuses versions newer than [`SNAPSHOT_FORMAT_VERSION`].
+    #[serde(default)]
+    pub snapshot_version: u32,
+
+    /// Opaque host metadata carried verbatim through every snapshot, resume
+    /// and continuation by another executor (e.g. libOpenDAN input receipts,
+    /// keyed by host name). The waist never interprets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<Value>,
 }
+
+/// Current snapshot format version.
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 1;
 
 impl LLMContextState {
     pub fn from_request(req: &LLMContextRequest, started_at_ms: u64) -> Self {
@@ -98,6 +113,8 @@ impl LLMContextState {
             last_report: None,
             next_step_index: 0,
             next_action_id: 0,
+            snapshot_version: SNAPSHOT_FORMAT_VERSION,
+            host: None,
         }
     }
 }

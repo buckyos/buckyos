@@ -1,0 +1,43 @@
+{
+  "schema": "opendan.session_state/1",
+  "rev": 3,
+  "writer": {
+    "runner_id": "rn-957db21d3eb042f8",
+    "principal": "app:app2@alice",
+    "host": "host:lzc-pve:6b719608768f",
+    "pid": 1467264,
+    "lock_epoch": 1
+  },
+  "run_state": "finished",
+  "outcome": "succeeded",
+  "acceptance": "pending",
+  "result": {
+    "answer": "answer",
+    "answer_ref": "report.md"
+  },
+  "round": 1,
+  "bootstrap_done": true,
+  "topic": {
+    "title": ""
+  },
+  "live_run": null,
+  "last_run": "20260929-095941-3190f3",
+  "worklog": {
+    "committed_seq": 5,
+    "committed_bytes": 833
+  },
+  "inputs": {},
+  "recent_keys": [],
+  "subscription_cursors": {
+    "_active_sessions": []
+  },
+  "perception_seq": 2,
+  "reported_rev": 2,
+  "activity": {
+    "summary": "",
+    "heartbeat_ms": 0
+  },
+  "one_line_status": "finished: answer",
+  "stop_requested": false,
+  "updated_at_ms": 1790701181125
+}

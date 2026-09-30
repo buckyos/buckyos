@@ -35,9 +35,9 @@ pub const TOOL_EXEC_BASH: &str = "exec_bash";
 const DEFAULT_TIMEOUT_MS: u64 = 30 * 60_000;
 const DEFAULT_MAX_TIMEOUT_MS: u64 = 60 * 60_000;
 const DEFAULT_MAX_OUTPUT_BYTES: usize = 256 * 1024;
-const LOCAL_ENGINE: &str = "local";
-const TIMEOUT_EXIT_CODE: i32 = 124;
-const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const LOCAL_ENGINE: &str = "local";
+pub(crate) const TIMEOUT_EXIT_CODE: i32 = 124;
+pub(crate) const PIPE_DRAIN_GRACE: Duration = Duration::from_secs(2);
 
 /// User-facing target field. `None` / empty string means [`BashTarget::Local`];
 /// other values are passed through [`BashTargetSpec::parse`] before reaching
@@ -325,7 +325,7 @@ fn prepend_path_entry(entry: &str, base_path: &str) -> String {
 
 /// Bounded output buffer keeping the head and the tail of a stream; the
 /// tail gets the larger share because errors usually land at the end.
-struct OutputCollector {
+pub(crate) struct OutputCollector {
     head: Vec<u8>,
     tail: VecDeque<u8>,
     head_cap: usize,
@@ -334,7 +334,7 @@ struct OutputCollector {
 }
 
 impl OutputCollector {
-    fn new(max_bytes: usize) -> Self {
+    pub(crate) fn new(max_bytes: usize) -> Self {
         let head_cap = max_bytes / 4;
         Self {
             head: Vec::new(),
@@ -345,7 +345,7 @@ impl OutputCollector {
         }
     }
 
-    fn push(&mut self, mut data: &[u8]) {
+    pub(crate) fn push(&mut self, mut data: &[u8]) {
         self.total += data.len();
         if self.head.len() < self.head_cap {
             let n = (self.head_cap - self.head.len()).min(data.len());
@@ -357,11 +357,11 @@ impl OutputCollector {
         self.tail.drain(..overflow);
     }
 
-    fn is_truncated(&self) -> bool {
+    pub(crate) fn is_truncated(&self) -> bool {
         self.total > self.head.len() + self.tail.len()
     }
 
-    fn render(&self) -> String {
+    pub(crate) fn render(&self) -> String {
         let (a, b) = self.tail.as_slices();
         let mut tail = Vec::with_capacity(self.tail.len());
         tail.extend_from_slice(a);
@@ -377,13 +377,13 @@ impl OutputCollector {
     }
 }
 
-struct RunCollectors {
-    stdout: OutputCollector,
-    stderr: OutputCollector,
-    combined: OutputCollector,
+pub(crate) struct RunCollectors {
+    pub(crate) stdout: OutputCollector,
+    pub(crate) stderr: OutputCollector,
+    pub(crate) combined: OutputCollector,
 }
 
-async fn drain_pipe<R: AsyncRead + Unpin>(
+pub(crate) async fn drain_pipe<R: AsyncRead + Unpin>(
     mut reader: R,
     collectors: Arc<Mutex<RunCollectors>>,
     is_stderr: bool,
@@ -410,7 +410,7 @@ fn live_process_groups() -> &'static Mutex<BTreeSet<u32>> {
     GROUPS.get_or_init(|| Mutex::new(BTreeSet::new()))
 }
 
-fn kill_process_group(pgid: u32) {
+pub(crate) fn kill_process_group(pgid: u32) {
     let _ = std::process::Command::new("/bin/bash")
         .arg("-c")
         .arg(format!("kill -KILL -- -{pgid}"))
@@ -437,12 +437,12 @@ pub fn kill_running_bash_process_groups() {
 /// Kills the command's whole process group if the run is abandoned
 /// (timeout, or the caller dropping the future on cancel). Disarmed once
 /// bash exits normally so intentionally backgrounded jobs survive.
-struct ProcessGroupGuard {
+pub(crate) struct ProcessGroupGuard {
     pgid: Option<u32>,
 }
 
 impl ProcessGroupGuard {
-    fn new(pgid: Option<u32>) -> Self {
+    pub(crate) fn new(pgid: Option<u32>) -> Self {
         if let Some(id) = pgid {
             live_process_groups()
                 .lock()
@@ -452,7 +452,7 @@ impl ProcessGroupGuard {
         Self { pgid }
     }
 
-    fn kill(&mut self) {
+    pub(crate) fn kill(&mut self) {
         if let Some(id) = self.pgid.take() {
             kill_process_group(id);
             live_process_groups()
@@ -462,7 +462,7 @@ impl ProcessGroupGuard {
         }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         if let Some(id) = self.pgid.take() {
             live_process_groups()
                 .lock()

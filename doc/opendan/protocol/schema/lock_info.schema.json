@@ -1,0 +1,76 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "HolderInfo": {
+      "properties": {
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "principal": {
+          "type": "string"
+        },
+        "runner_id": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "pid",
+        "principal",
+        "runner_id"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Holder information written into a lock file (`lease.json`, run `.lock`, `.locks/*.lease`). Rewritten in place by the holder; never replaced.",
+  "properties": {
+    "acquired_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "epoch": {
+      "description": "+1 on every successful acquisition.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "holder": {
+      "$ref": "#/definitions/HolderInfo"
+    },
+    "released_at_ms": {
+      "default": null,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "resource": {
+      "description": "`session:<sid> | run:<run_id> | self_improve | artifact:<aid>`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "acquired_at_ms",
+    "epoch",
+    "holder",
+    "resource"
+  ],
+  "title": "LockInfo",
+  "type": "object"
+}

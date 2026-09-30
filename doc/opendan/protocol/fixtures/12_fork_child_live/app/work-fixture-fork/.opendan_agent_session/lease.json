@@ -1,0 +1,13 @@
+{
+  "resource": "session:work-fixture-fork",
+  "epoch": 1,
+  "holder": {
+    "runner_id": "rn-1098feb8a35f47ed",
+    "principal": "app:app2@alice",
+    "host": "host:lzc-pve:6b719608768f",
+    "pid": 1467656,
+    "runtime_id": "rt-fixture-native"
+  },
+  "acquired_at_ms": 1790701181371,
+  "released_at_ms": null
+}

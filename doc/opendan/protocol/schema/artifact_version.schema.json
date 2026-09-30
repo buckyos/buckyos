@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "SideEffectRef": {
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "VersionState": {
+      "enum": [
+        "produced",
+        "accepted",
+        "discarded"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "`state/artifacts/<aid>/versions/v-<sid>.json`.",
+  "properties": {
+    "base": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "outputs": {
+      "description": "One-off outputs inside the session directory (relative paths).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "session": {
+      "type": "string"
+    },
+    "side_effects": {
+      "items": {
+        "$ref": "#/definitions/SideEffectRef"
+      },
+      "type": "array"
+    },
+    "state": {
+      "$ref": "#/definitions/VersionState"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "ver": {
+      "type": "string"
+    },
+    "workspace_ref": {
+      "description": "Workspace change reference given by the workspace mechanism."
+    }
+  },
+  "required": [
+    "session",
+    "state",
+    "ver"
+  ],
+  "title": "ArtifactVersion",
+  "type": "object"
+}

@@ -1,0 +1,37 @@
+{
+  "description": "Snapshot + run.json(host_commit_pending) were written for a new run, state.json never referenced it.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "remove_unreferenced_run_then_new_round",
+    "refetch_inputs": [
+      "q#1"
+    ],
+    "xllm_resume": "refuse"
+  },
+  "scenario": "orphan_run_pending_host_commit",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [
+        "20260929-095940-b2c02a"
+      ],
+      "session_id": "work-fixture-orphan",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 1,
+        "round": 0,
+        "run_state": "created"
+      },
+      "worklog": {
+        "committed_bytes": 133,
+        "committed_seq": 1,
+        "file_bytes": 133,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

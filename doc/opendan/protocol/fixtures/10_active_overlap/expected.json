@@ -1,0 +1,69 @@
+{
+  "description": "A is running (registry status running, touching ws:snake/src/); B is created on the same workspace.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "render_active_sessions",
+    "overlap": [
+      "ws:snake/src/"
+    ],
+    "relation": "same_target",
+    "sees": [
+      "work-fixture-active-a"
+    ],
+    "session": "work-fixture-active-b"
+  },
+  "scenario": "active_overlap",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "executions": 0,
+        "host_commit_pending": null,
+        "inflight": [],
+        "run_id": "20260929-095941-e7a3c5",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20260929-095941-e7a3c5"
+      ],
+      "session_id": "work-fixture-active-a",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 2,
+        "round": 1,
+        "run_state": "running"
+      },
+      "worklog": {
+        "committed_bytes": 138,
+        "committed_seq": 1,
+        "file_bytes": 138,
+        "uncommitted_tail": false
+      }
+    },
+    {
+      "live_run": null,
+      "runs_on_disk": [],
+      "session_id": "work-fixture-active-b",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 1,
+        "round": 0,
+        "run_state": "created"
+      },
+      "worklog": {
+        "committed_bytes": 138,
+        "committed_seq": 1,
+        "file_bytes": 138,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

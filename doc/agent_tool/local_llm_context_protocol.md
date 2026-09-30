@@ -2,6 +2,8 @@
 
 > **2026-09-18 更新**：Rust `LocalLLMContext` 已按 [xllm PRD](../../product/xllm/PRD.md) 重写为 xllm SDK 核心（`src/frame/agent_tool/src/local_llm_context.rs`），命令行入口改为 `agent_tool xllm ...`（旧 `run_local_llm` 命令名已移除），Run 目录格式、请求、结果与退出码均已重新定义，不兼容本文第 2–12 节描述的旧格式。新实现的协议摘要见 [xllm Rust SDK 参考](xllm_rust_sdk.md)。本文第 1–13 节仍作为旧实现的基线与设计参考保留。
 
+> **2026-09-29 更新**：Agent Session 的 `runs/` 直接采用 xllm 的 run 目录，run 目录因此成为 session 协议的一部分（见 `doc/opendan/protocol/Session Directory Protocol.md` §7）。“TS 版不绑定 Rust 格式”这一条改为：TS 版需要接手 Rust 建立的 run 时，按版本规则对齐——`RunRecord.version` 与快照 `snapshot_version` 不认识的版本必须拒绝，已认识的版本内只做加法、必须保留宿主元数据。
+
 > **通用配置入口**：[xllm PRD §4.9](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 提供适用于当前 `agent_tool xllm` 的 `.llm_context` 模板，可用于代码、文档、文件和命令行任务。
 
 

@@ -1,0 +1,37 @@
+{
+  "session_id": "work-fixture-blocked",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-blocked",
+  "input_queue": "app2::alice::opendan.session.work-fixture-blocked",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-blocked/input",
+  "agent_access": "full",
+  "objective": "x",
+  "status": {
+    "rev": 2,
+    "run_state": "running",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "x",
+      "heartbeat_ms": 1790701181478
+    },
+    "last_runner": {
+      "runner_id": "rn-fa17786ba92f4e24",
+      "host": "host:lzc-pve:6b719608768f",
+      "pid": 1467682,
+      "lock_epoch": 1,
+      "at_ms": 1790701181479
+    },
+    "updated_at_ms": 1790701181478
+  },
+  "location_rev": 0
+}

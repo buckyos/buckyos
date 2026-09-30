@@ -1,0 +1,38 @@
+{
+  "session_id": "work-fixture-finished",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-finished",
+  "input_queue": "app2::alice::opendan.session.work-fixture-finished",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-finished/input",
+  "agent_access": "full",
+  "objective": "write notes.txt",
+  "status": {
+    "rev": 3,
+    "run_state": "finished",
+    "outcome": "succeeded",
+    "acceptance": "pending",
+    "one_line_status": "finished: done: notes.txt written",
+    "report_brief": "# Report — write notes.txt\n\n- session: `work-fixture-finished`\n- outcome: succeeded\n- rounds: 1\n\ndone: notes.txt written\n",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "last_runner": {
+      "runner_id": "rn-68f8904a382c4587",
+      "host": "host:lzc-pve:6b719608768f",
+      "pid": 1467264,
+      "lock_epoch": 1,
+      "at_ms": 1790701180637
+    },
+    "updated_at_ms": 1790701180633
+  },
+  "location_rev": 0
+}

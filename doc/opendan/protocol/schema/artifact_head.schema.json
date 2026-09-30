@@ -1,0 +1,88 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WorkspaceRef": {
+      "oneOf": [
+        {
+          "description": "Agent internal workspace `<agent_root>/workspace/<id>`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Directory owned by a user / application.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "external"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "`state/artifacts/<aid>/artifact.json`.",
+  "properties": {
+    "aid": {
+      "type": "string"
+    },
+    "head": {
+      "default": null,
+      "description": "Version the user accepted last (`null` = none valid).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "rev": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "aid"
+  ],
+  "title": "ArtifactHead",
+  "type": "object"
+}

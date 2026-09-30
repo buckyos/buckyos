@@ -1,0 +1,698 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Acl": {
+      "properties": {
+        "agent_access": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AgentAccess"
+            }
+          ],
+          "default": "full"
+        },
+        "owner": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "readers": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AgentAccess": {
+      "enum": [
+        "full",
+        "status_only"
+      ],
+      "type": "string"
+    },
+    "Channels": {
+      "properties": {
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InputSourceConfig"
+          },
+          "type": "array"
+        },
+        "outbound": true,
+        "wake_event": {
+          "description": "kevent id published after posting; every segment only uses letters, digits and `_ - .`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "CreatedBy": {
+      "properties": {
+        "principal": {
+          "description": "`app:<appid>@<owner>` (A9).",
+          "type": "string"
+        },
+        "via": {
+          "default": "app",
+          "description": "`app | ui_session:<sid> | opendan | task_mgr:<task_id>`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal"
+      ],
+      "type": "object"
+    },
+    "DriverRef": {
+      "properties": {
+        "principal": {
+          "description": "Driving identity = the appid of the driving process (Q9 / Q16).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal"
+      ],
+      "type": "object"
+    },
+    "EndCondition": {
+      "properties": {
+        "detail": true,
+        "type": {
+          "$ref": "#/definitions/EndConditionType"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "EndConditionType": {
+      "enum": [
+        "llm_declares_done",
+        "output_schema",
+        "max_rounds"
+      ],
+      "type": "string"
+    },
+    "InputPolicy": {
+      "enum": [
+        "any",
+        "supplement_only",
+        "none"
+      ],
+      "type": "string"
+    },
+    "InputSourceConfig": {
+      "oneOf": [
+        {
+          "description": "kmsg queue input (all sessions).",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "kmsg"
+              ],
+              "type": "string"
+            },
+            "queue": {
+              "type": "string"
+            },
+            "subscriber": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "queue",
+            "subscriber"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "msg-center inbox (UI sessions; deferred, V1).",
+          "properties": {
+            "did": {
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "msg_center"
+              ],
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "did",
+            "id",
+            "kind",
+            "session_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "MechanicalCompress": {
+      "description": "Mechanical compression parameters for rendering worklog history (§4.4).",
+      "properties": {
+        "drop_kinds": {
+          "default": [
+            "created",
+            "decide",
+            "compaction",
+            "input_rejected",
+            "change_dropped"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_result_chars": {
+          "default": 4096,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "recent_full_steps": {
+          "default": 2,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary_chars": {
+          "default": 280,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "Origin": {
+      "properties": {
+        "intent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason_messages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "PromptSection": {
+      "description": "Prompt configuration: a superset of xllm's `.llm_context` (§4.2).",
+      "properties": {
+        "behavior": {
+          "description": "`behaviors/<name>` reference (BehaviorAssembler).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "compact_ratio": {
+          "description": "Compact after a run once the history uses more than this ratio of the budget (`maybe_compact`).",
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "context": {
+          "description": "Initial context material supplied by the application.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "history_budget_tokens": {
+          "description": "Context budget (tokens) available to the history section when the next llm_context is assembled. `None` → runner default.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "llm_context": {
+          "description": "JSON form of an xllm `.llm_context` file (same schema, strict keys). xllm can resume a run of this session without understanding the OpenDAN extensions below."
+        },
+        "mechanical_compress": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MechanicalCompress"
+            }
+          ],
+          "default": {
+            "drop_kinds": [
+              "created",
+              "decide",
+              "compaction",
+              "input_rejected",
+              "change_dropped"
+            ],
+            "max_result_chars": 4096,
+            "recent_full_steps": 2,
+            "summary_chars": 280
+          }
+        },
+        "system_prompt": {
+          "description": "Application system prompt (S-05); composed after the agent identity and the non-overridable constraints.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "RuntimeRequirement": {
+      "properties": {
+        "app_tools": {
+          "description": "Tools that only exist inside the runner process; verified on every drive (§7.1).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "runtime_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "description": "Executables that must be reachable on PATH.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "RuntimeSection": {
+      "properties": {
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "requirement": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RuntimeRequirement"
+            }
+          ],
+          "default": {}
+        },
+        "tool_plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Scope": {
+      "description": "Initial activity declaration: what this session plans to modify (§6.7).",
+      "properties": {
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SessionKind": {
+      "enum": [
+        "ui",
+        "work",
+        "self_improve",
+        "self_check"
+      ],
+      "type": "string"
+    },
+    "SessionSection": {
+      "properties": {
+        "acl": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Acl"
+            }
+          ],
+          "default": {
+            "agent_access": "full"
+          }
+        },
+        "agent_did": {
+          "type": "string"
+        },
+        "class": {
+          "default": "work",
+          "description": "`agent.toml [session.<class>]`; decides loop / driver defaults.",
+          "type": "string"
+        },
+        "created_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "created_by": {
+          "$ref": "#/definitions/CreatedBy"
+        },
+        "driver": {
+          "$ref": "#/definitions/DriverRef"
+        },
+        "end_condition": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EndCondition"
+            }
+          ],
+          "default": {
+            "type": "llm_declares_done"
+          }
+        },
+        "idempotency_key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_policy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputPolicy"
+            }
+          ],
+          "default": "any"
+        },
+        "kind": {
+          "$ref": "#/definitions/SessionKind"
+        },
+        "objective": {
+          "default": "",
+          "type": "string"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Origin"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "route_key": {
+          "description": "UI sessions only (deferred, V1).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scope": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Scope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "task_binding": true
+      },
+      "required": [
+        "agent_did",
+        "created_at_ms",
+        "created_by",
+        "driver",
+        "kind",
+        "session_id"
+      ],
+      "type": "object"
+    },
+    "Subscription": {
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "mode": {
+          "$ref": "#/definitions/SubscriptionMode"
+        },
+        "source": {
+          "$ref": "#/definitions/SubscriptionSource"
+        },
+        "watch": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "mode",
+        "source"
+      ],
+      "type": "object"
+    },
+    "SubscriptionMode": {
+      "oneOf": [
+        {
+          "description": "Delivered as `event`; wakes the session and triggers inference.",
+          "enum": [
+            "active"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Delivered as `change`; only injected at observation boundaries.",
+          "enum": [
+            "semi"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "SubscriptionSource": {
+      "oneOf": [
+        {
+          "description": "Another session of the same agent (pull: registry rev compare).",
+          "properties": {
+            "ref": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "session"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "ref",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "External object events bridged into the kmsg queue.",
+          "properties": {
+            "event": {
+              "type": "string"
+            },
+            "object": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "object_event"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "event",
+            "object",
+            "type"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "WorkspaceRef": {
+      "oneOf": [
+        {
+          "description": "Agent internal workspace `<agent_root>/workspace/<id>`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Directory owned by a user / application.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "external"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "channels": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Channels"
+        }
+      ],
+      "default": {
+        "inputs": []
+      }
+    },
+    "config_rev": {
+      "default": 1,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "extensions": {
+      "additionalProperties": true,
+      "description": "Application extension items, preserved verbatim.",
+      "type": "object"
+    },
+    "prompt": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/PromptSection"
+        }
+      ],
+      "default": {
+        "mechanical_compress": {
+          "drop_kinds": [
+            "created",
+            "decide",
+            "compaction",
+            "input_rejected",
+            "change_dropped"
+          ],
+          "max_result_chars": 4096,
+          "recent_full_steps": 2,
+          "summary_chars": 280
+        }
+      }
+    },
+    "runtime": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RuntimeSection"
+        }
+      ],
+      "default": {
+        "requirement": {}
+      }
+    },
+    "schema": {
+      "type": "string"
+    },
+    "session": {
+      "$ref": "#/definitions/SessionSection"
+    },
+    "subscriptions": {
+      "items": {
+        "$ref": "#/definitions/Subscription"
+      },
+      "type": "array"
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema",
+    "session"
+  ],
+  "title": "SessionConfig",
+  "type": "object"
+}

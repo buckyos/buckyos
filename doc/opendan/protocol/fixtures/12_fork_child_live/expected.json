@@ -1,0 +1,49 @@
+{
+  "description": "The plan process was suspended into process_stack (fork) and the research child run is live.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "resume_child_run",
+    "keep_runs": "live child + suspended parent",
+    "on_child_done": "pop_parent_inject_process_result"
+  },
+  "scenario": "fork_child_live",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "executions": 0,
+        "host_commit_pending": null,
+        "inflight": [],
+        "run_id": "20260929-095941-f1021f",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20260929-095941-d295c4",
+        "20260929-095941-f1021f"
+      ],
+      "session_id": "work-fixture-fork",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [
+          {
+            "entry": "plan",
+            "mode": "fork",
+            "run_id": "20260929-095941-d295c4"
+          }
+        ],
+        "rev": 4,
+        "round": 2,
+        "run_state": "running"
+      },
+      "worklog": {
+        "committed_bytes": 1336,
+        "committed_seq": 7,
+        "file_bytes": 1336,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

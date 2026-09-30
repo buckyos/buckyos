@@ -1,0 +1,54 @@
+{
+  "session_id": "work-fixture-active-a",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-active-a",
+  "input_queue": "app2::alice::opendan.session.work-fixture-active-a",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-a/input",
+  "agent_access": "full",
+  "workspace": {
+    "kind": "external",
+    "path": "${FIXTURE_ROOT}/ws"
+  },
+  "objective": "edit",
+  "scope": {
+    "paths": [
+      "ws:snake/src/"
+    ]
+  },
+  "status": {
+    "rev": 2,
+    "run_state": "running",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "edit",
+      "touching": [
+        {
+          "kind": "path",
+          "ref": "ws:snake/src/",
+          "mode": "write",
+          "since_ms": 1790701181179
+        }
+      ],
+      "heartbeat_ms": 1790701181179
+    },
+    "last_runner": {
+      "runner_id": "rn-1bc7b1099a244d11",
+      "host": "host:lzc-pve:6b719608768f",
+      "pid": 1467596,
+      "lock_epoch": 1,
+      "at_ms": 1790701181181
+    },
+    "updated_at_ms": 1790701181179
+  },
+  "location_rev": 0
+}

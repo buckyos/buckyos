@@ -42,6 +42,10 @@ pub struct XmlStepRenderer {
     /// disables truncation. The hot `last_step` always goes through `render`,
     /// so this knob also caps it.
     pub max_result_chars: usize,
+    /// Render `started_at_ms` / `ended_at_ms` into history records. Hosts that
+    /// need a byte-stable history prefix (Agent Session SDK §8.7 X8) turn it
+    /// off; freshness belongs to the per-turn variable section.
+    pub timestamps: bool,
 }
 
 impl Default for XmlStepRenderer {
@@ -49,6 +53,7 @@ impl Default for XmlStepRenderer {
         Self {
             summary_chars: 280,
             max_result_chars: 4 * 1024,
+            timestamps: true,
         }
     }
 }
@@ -56,6 +61,12 @@ impl Default for XmlStepRenderer {
 impl XmlStepRenderer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// History records without wall-clock timestamps (deterministic).
+    pub fn without_timestamps(mut self) -> Self {
+        self.timestamps = false;
+        self
     }
 
     pub fn with_summary_chars(mut self, n: usize) -> Self {
@@ -100,7 +111,10 @@ impl StepRenderer for XmlStepRenderer {
     }
 
     fn render_inherited(&self, step: &StepRecord) -> AiMessage {
-        AiMessage::text(AiRole::User, render_inherited_step_record(step))
+        AiMessage::text(
+            AiRole::User,
+            render_inherited_step_record(step, self.timestamps),
+        )
     }
 
     fn render_summary(&self, summary: &HistorySummaryRecord) -> AiMessage {
@@ -111,16 +125,27 @@ impl StepRenderer for XmlStepRenderer {
         };
         AiMessage::text(
             AiRole::User,
-            format!(
-                "<history_summary steps=\"{}..{}\" count=\"{}\" started_at_ms=\"{}\" ended_at_ms=\"{}\" behaviors=\"{}\">{}</history_summary>",
-                summary.start_step_index,
-                summary.end_step_index,
-                summary.step_count,
-                summary.started_at_ms,
-                summary.ended_at_ms,
-                xml_escape(&behaviors),
-                xml_escape(&summary.summary)
-            ),
+            if self.timestamps {
+                format!(
+                    "<history_summary steps=\"{}..{}\" count=\"{}\" started_at_ms=\"{}\" ended_at_ms=\"{}\" behaviors=\"{}\">{}</history_summary>",
+                    summary.start_step_index,
+                    summary.end_step_index,
+                    summary.step_count,
+                    summary.started_at_ms,
+                    summary.ended_at_ms,
+                    xml_escape(&behaviors),
+                    xml_escape(&summary.summary)
+                )
+            } else {
+                format!(
+                    "<history_summary steps=\"{}..{}\" count=\"{}\" behaviors=\"{}\">{}</history_summary>",
+                    summary.start_step_index,
+                    summary.end_step_index,
+                    summary.step_count,
+                    xml_escape(&behaviors),
+                    xml_escape(&summary.summary)
+                )
+            },
         )
     }
 
@@ -774,7 +799,7 @@ fn stringify_content(content: &Value) -> String {
     }
 }
 
-fn render_inherited_step_record(step: &StepRecord) -> String {
+fn render_inherited_step_record(step: &StepRecord, timestamps: bool) -> String {
     let thought = step
         .thought
         .as_deref()
@@ -788,15 +813,23 @@ fn render_inherited_step_record(step: &StepRecord) -> String {
         .filter(|s| !s.is_empty())
         .unwrap_or("");
     let actions = render_history_actions_compact(step, 512);
+    let times = if timestamps {
+        format!(
+            " started_at_ms=\"{}\" ended_at_ms=\"{}\"",
+            step.meta.started_at_ms,
+            step.meta
+                .ended_at_ms
+                .map(|v| v.to_string())
+                .unwrap_or_default()
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "<step_record behavior=\"{}\" index=\"{}\" started_at_ms=\"{}\" ended_at_ms=\"{}\" compression=\"{}\">\n<observation>{}</observation>\n<thought>{}</thought>\n<actions>\n{}\n</actions>\n</step_record>",
+        "<step_record behavior=\"{}\" index=\"{}\"{} compression=\"{}\">\n<observation>{}</observation>\n<thought>{}</thought>\n<actions>\n{}\n</actions>\n</step_record>",
         step.meta.behavior_name,
         step.meta.step_index,
-        step.meta.started_at_ms,
-        step.meta
-            .ended_at_ms
-            .map(|v| v.to_string())
-            .unwrap_or_default(),
+        times,
         match step.meta.compression_level {
             crate::behavior_loop::StepCompressionLevel::Full => "full",
             crate::behavior_loop::StepCompressionLevel::Compact => "compact",
@@ -1308,6 +1341,25 @@ mod tests {
     }
 
     #[test]
+    fn history_without_timestamps_is_stable() {
+        let mut step = StepRecord::default();
+        step.assistant_text = "<thinking>t</thinking>".into();
+        step.meta.behavior_name = "plan".into();
+        step.meta.started_at_ms = 123;
+        step.meta.ended_at_ms = Some(456);
+        let with = XmlStepRenderer::new()
+            .render_history(vec![step.clone()], "do", Vec::new(), Vec::new());
+        assert!(plain_text(&with[0]).contains("started_at_ms=\"123\""));
+        let r = XmlStepRenderer::new().without_timestamps();
+        let a = r.render_history(vec![step.clone()], "do", Vec::new(), Vec::new());
+        step.meta.started_at_ms = 999;
+        step.meta.ended_at_ms = Some(1000);
+        let b = r.render_history(vec![step], "do", Vec::new(), Vec::new());
+        assert_eq!(plain_text(&a[0]), plain_text(&b[0]));
+        assert!(!plain_text(&a[0]).contains("started_at_ms"));
+    }
+
+    #[test]
     fn observation_deserializes_old_success_without_tool_result() {
         let value = json!({
             "kind": "success",
@@ -1328,6 +1380,7 @@ mod tests {
         let renderer = XmlStepRenderer {
             summary_chars: 20,
             max_result_chars: 0,
+            timestamps: true,
         };
         let make_step = |idx: u32, body: &str| {
             let mut step = StepRecord::default();
@@ -1446,6 +1499,7 @@ mod tests {
         let renderer = XmlStepRenderer {
             summary_chars: 20,
             max_result_chars: 0,
+            timestamps: true,
         };
         let make_step = |behavior: &str, idx: u32| {
             let mut step = StepRecord::default();

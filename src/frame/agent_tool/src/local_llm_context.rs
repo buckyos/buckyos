@@ -86,6 +86,8 @@ use llm_context::request::{
 use llm_context::state::LLMContextSnapshot;
 use llm_context::{LLMContext, LLMContextInterruptHandle, XmlStepRenderer};
 
+use crate::exec_tracking::{ExecutionRecord, HostRunInfo, InflightAction};
+use crate::llm_bash::BashRunner;
 use crate::llm_compress::LlmSummarizeCompressor;
 use crate::tool::TypedToolHandle;
 use crate::{
@@ -3417,6 +3419,12 @@ pub struct XllmDeps {
     pub observer: Arc<dyn RunObserver>,
     /// 锁目录（默认 `~/.xllm/locks`）。
     pub lock_dir: Option<PathBuf>,
+    /// 内置 `exec` 使用的执行器（默认 `LocalProcessBashRunner`）。宿主可注入
+    /// 带执行跟踪的 runner（`exec_tracking::TrackedBashRunner`）。
+    pub bash_runner: Option<Arc<dyn BashRunner>>,
+    /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
+    /// 多个 session 共享 workspace，由活动视图避让）。
+    pub skip_workdir_lock: bool,
 }
 
 impl Default for XllmDeps {
@@ -3426,6 +3434,8 @@ impl Default for XllmDeps {
             host_tools: HashMap::new(),
             observer: Arc::new(NoopRunObserver),
             lock_dir: None,
+            bash_runner: None,
+            skip_workdir_lock: false,
         }
     }
 }
@@ -3450,6 +3460,11 @@ impl XllmDeps {
 
     pub fn with_lock_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.lock_dir = Some(dir.into());
+        self
+    }
+
+    pub fn with_bash_runner(mut self, runner: Arc<dyn BashRunner>) -> Self {
+        self.bash_runner = Some(runner);
         self
     }
 
@@ -3871,6 +3886,7 @@ fn truncate_chars(s: &str, max: usize) -> String {
 fn builtin_bash_group(
     workdir: &Path,
     filesystem_policy: FilesystemPolicy,
+    bash_runner: Option<Arc<dyn BashRunner>>,
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut cfg = FileToolConfig::new(workdir.to_path_buf());
     let restrict_cwd = filesystem_policy == FilesystemPolicy::Workspace;
@@ -3898,7 +3914,10 @@ fn builtin_bash_group(
         Arc::new(TypedToolHandle::with_null_host(EditFileTool::new(
             cfg, audit,
         ))),
-        Arc::new(ExecBashTool::new(bash_cfg)),
+        match bash_runner {
+            Some(runner) => Arc::new(ExecBashTool::with_runner(bash_cfg, runner)),
+            None => Arc::new(ExecBashTool::new(bash_cfg)),
+        },
     ]
 }
 
@@ -3919,7 +3938,7 @@ async fn expand_tool_sources(
                         "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH})"
                     )));
                 }
-                for t in builtin_bash_group(workdir, filesystem_policy) {
+                for t in builtin_bash_group(workdir, filesystem_policy, deps.bash_runner.clone()) {
                     out.push(manager.register(t, &desc)?);
                 }
             }
@@ -4951,6 +4970,20 @@ pub struct RunRecord {
     pub compactions: u32,
     #[serde(default)]
     pub pid: u32,
+    /// 由宿主（如 libOpenDAN）装配的 Run：提示词与输入来自宿主，xllm 接手时
+    /// 不重新装配（Agent Session SDK §8.7 X2）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<HostRunInfo>,
+    /// 宿主输入提交门槛：该批输入已写入快照、宿主尚未提交其消费状态。
+    /// 非空时任何执行者都不得推理或调用工具（xllm 拒绝接手）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_commit_pending: Option<u64>,
+    /// 已派发、结果尚未随快照持久化的工具动作（X6）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inflight: Vec<InflightAction>,
+    /// 尚未确认停止的受管进程执行（X6）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub executions: Vec<ExecutionRecord>,
 }
 
 impl RunRecord {
@@ -5019,6 +5052,10 @@ impl RunRecord {
             interrupt_reason: None,
             compactions: 0,
             pid: std::process::id(),
+            host: None,
+            host_commit_pending: None,
+            inflight: Vec::new(),
+            executions: Vec::new(),
         }
     }
 
@@ -5124,7 +5161,7 @@ impl RunStore {
     }
 
     /// 创建新的 Run 目录并返回 run_id（目录已存在时换编号重试）。
-    fn create_run(&self) -> Result<String, XllmError> {
+    pub fn create_run(&self) -> Result<String, XllmError> {
         for _ in 0..8 {
             let run_id = generate_run_id();
             match self {
@@ -5162,13 +5199,19 @@ impl RunStore {
                 let dir = runs_dir.join(&rec.run_id);
                 std::fs::create_dir_all(&dir)?;
                 let path = dir.join("run.json");
-                let tmp = dir.join(format!("run.json.tmp-{}", std::process::id()));
+                let tmp = dir.join(format!(
+                    "run.json.tmp-{}-{}",
+                    std::process::id(),
+                    RUN_ID_COUNTER.fetch_add(1, Ordering::SeqCst)
+                ));
                 let bytes = serde_json::to_vec_pretty(rec)
                     .map_err(|e| XllmError::Storage(format!("serialize run.json: {e}")))?;
-                std::fs::write(&tmp, &bytes)
+                write_file_synced(&tmp, &bytes)
                     .map_err(|e| XllmError::Storage(format!("write {}: {e}", tmp.display())))?;
                 std::fs::rename(&tmp, &path)
                     .map_err(|e| XllmError::Storage(format!("commit {}: {e}", path.display())))?;
+                sync_dir(&dir)
+                    .map_err(|e| XllmError::Storage(format!("sync {}: {e}", dir.display())))?;
                 Ok(())
             }
             RunStore::Memory(m) => {
@@ -5266,8 +5309,9 @@ impl RunStore {
                 let tmp = dir.join(format!("{next:04}.json.tmp"));
                 let bytes = serde_json::to_vec(snap)
                     .map_err(|e| XllmError::Storage(format!("serialize snapshot: {e}")))?;
-                std::fs::write(&tmp, &bytes)?;
+                write_file_synced(&tmp, &bytes)?;
                 std::fs::rename(&tmp, &path)?;
+                sync_dir(&dir)?;
                 Ok(next)
             }
             RunStore::Memory(m) => {
@@ -5335,6 +5379,72 @@ impl RunStore {
                 .unwrap_or(0) as u32)
                 .collect()),
         }
+    }
+
+    /// 持有 Run 执行锁（`<run>/.lock`，长期持有的排他 flock）。被占用返回
+    /// `Ok(None)`；内存模式返回 `Ok(None)` 以外的空锁无意义，因此报错。
+    pub fn lock_run(&self, run_id: &str) -> Result<Option<FileLock>, XllmError> {
+        match self.run_dir(run_id) {
+            Some(dir) => FileLock::try_acquire(&dir.join(".lock")),
+            None => Err(XllmError::Storage(
+                "memory run store has no run locks".into(),
+            )),
+        }
+    }
+
+    /// 删除 Run 目录。调用方须持有该 Run 的锁并确认没有未核对的执行。
+    pub fn remove_run(&self, run_id: &str) -> Result<(), XllmError> {
+        match self {
+            RunStore::Disk { runs_dir } => {
+                let dir = runs_dir.join(run_id);
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(XllmError::Storage(format!(
+                            "remove {}: {e}",
+                            dir.display()
+                        )))
+                    }
+                }
+                let _ = sync_dir(runs_dir);
+                Ok(())
+            }
+            RunStore::Memory(m) => {
+                let mut g = m.lock().expect("memory store lock");
+                g.records.remove(run_id);
+                g.snapshots.remove(run_id);
+                Ok(())
+            }
+        }
+    }
+
+    /// 裁剪旧快照：保留 `keep` 中的编号与最新的 `keep_latest` 份。
+    pub fn prune_snapshots(
+        &self,
+        run_id: &str,
+        keep: &[u32],
+        keep_latest: usize,
+    ) -> Result<usize, XllmError> {
+        let RunStore::Disk { runs_dir } = self else {
+            return Ok(0);
+        };
+        let idxs = self.list_snapshots(run_id)?;
+        let cut = idxs.len().saturating_sub(keep_latest);
+        let mut removed = 0;
+        for idx in &idxs[..cut] {
+            if keep.contains(idx) {
+                continue;
+            }
+            let p = runs_dir
+                .join(run_id)
+                .join("snapshots")
+                .join(format!("{idx:04}.json"));
+            if std::fs::remove_file(&p).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     /// 该 Run 是否正被某个进程执行（持有 `.lock`）。内存模式恒为 false。
@@ -5416,6 +5526,27 @@ impl FileLock {
             Err(_) => Ok(None),
         }
     }
+}
+
+/// 写文件并 fsync（Run 记录与快照先落盘，再原子发布）。
+fn write_file_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut f = File::create(path)?;
+    f.write_all(bytes)?;
+    f.sync_all()
+}
+
+/// fsync 目录，使其中的 rename 持久化。
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        File::open(dir)?.sync_all()?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
 }
 
 fn workdir_lock_path(lock_dir: &Path, workdir: &Path) -> PathBuf {
@@ -6140,6 +6271,356 @@ impl XllmTask {
 }
 
 // =========================================================================
+// 宿主装配的 Run（Agent Session SDK §8.7 X2）
+// =========================================================================
+
+/// A run assembled by a host: the host supplies an `.llm_context` (JSON
+/// form, same schema and strict keys) and its own system text; xllm supplies
+/// the effective config, tool set, capability / runtime-protocol text and the
+/// run record layout. The resulting run directory can later be continued by
+/// `xllm --resume` without understanding the host (it never re-assembles).
+pub struct HostedTask {
+    pub workdir: PathBuf,
+    pub config: EffectiveConfig,
+    pub prompt: PromptPlan,
+    pub manager: XllmToolManager,
+}
+
+impl std::fmt::Debug for HostedTask {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostedTask")
+            .field("workdir", &self.workdir)
+            .field("model", &self.config.model)
+            .field("loop_model", &self.config.loop_model)
+            .finish()
+    }
+}
+
+impl XllmTask {
+    /// Prepare a host-assembled run. `llm_context` is the JSON form of an
+    /// `.llm_context` file (`origin` names it in diagnostics); `host_system`
+    /// is the host's system text, followed by xllm's capability and
+    /// runtime-protocol sections.
+    pub async fn prepare_hosted(
+        workdir: &Path,
+        llm_context: &Value,
+        origin: &str,
+        host_system: &str,
+        deps: &XllmDeps,
+    ) -> Result<HostedTask, XllmError> {
+        let workdir = workdir.canonicalize().map_err(|e| {
+            XllmError::Input(format!(
+                "working directory {} is not accessible: {e}",
+                workdir.display()
+            ))
+        })?;
+        let raw = if llm_context.is_null() {
+            "{}".to_string()
+        } else {
+            serde_json::to_string(llm_context)
+                .map_err(|e| XllmError::Input(format!("{origin}: {e}")))?
+        };
+        let origin_path = PathBuf::from(origin);
+        let file = parse_llm_context_file(&origin_path, &raw)?;
+        let merged = merge_config_layers(&[ConfigLayer {
+            path: origin_path.clone(),
+            file,
+        }])?;
+        let mut sources = merged.sources.clone();
+        let provider = merged.provider.clone();
+        let model = match &merged.model {
+            Some(m) => m.clone(),
+            None => match provider.effective_kind() {
+                ProviderKind::Buckyos => {
+                    sources.insert("model".into(), "default".into());
+                    "llm.chat".to_string()
+                }
+                ProviderKind::Openai => {
+                    return Err(XllmError::Capability(format!(
+                        "{origin}: openai provider requires a model"
+                    )))
+                }
+            },
+        };
+        let loop_model = merged.loop_model.unwrap_or(LoopModel::FunctionCall);
+        let limits = RunLimits {
+            max_tokens: merged.max_tokens,
+            max_rounds: merged.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS),
+            timeout_secs: merged.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
+            llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
+        };
+        let group = merged
+            .prompt
+            .select
+            .as_ref()
+            .and_then(|n| merged.prompt.groups.get(n))
+            .cloned();
+        let (tools_cfg, tool_sources) =
+            compute_tools_config(&merged, group.as_ref(), None, group.is_some());
+        let (tools, manager) = build_toolset(
+            &tools_cfg,
+            tool_sources,
+            loop_model,
+            &workdir,
+            "pending",
+            deps,
+        )
+        .await?;
+        let runtime_protocol = build_runtime_protocol(loop_model, &tools, false);
+        let mut system = host_system.trim_end().to_string();
+        if !system.is_empty() {
+            system.push_str("\n\n");
+        }
+        system.push_str(&format!(
+            "## capabilities\n{}\n",
+            build_rules_system_text(loop_model, &tools).trim_end()
+        ));
+        if let Some(manual) = build_cmd_manual_system_text(&tools) {
+            system.push_str(&format!("\n## cmd_manual\n{}\n", manual.trim_end()));
+        }
+        system.push_str(&format!(
+            "\n## runtime_protocol\n{}\n",
+            runtime_protocol.trim_end()
+        ));
+        let prompt = PromptPlan {
+            mode: PromptMode::Custom,
+            group: None,
+            loop_model,
+            sections: Vec::new(),
+            custom_system: Some(host_system.to_string()),
+            custom_system_source: Some(format!("host:{origin}")),
+            runtime_protocol,
+            protocol_version: RUNTIME_PROTOCOL_VERSION.into(),
+            system_prompt: system,
+            user_request: None,
+            user_request_source: "structured".into(),
+            template_vars: BTreeMap::new(),
+            runtime_vars: BTreeMap::new(),
+        };
+        let config = EffectiveConfig {
+            provider,
+            model,
+            file_model: merged.file_model.clone(),
+            loop_model,
+            limits,
+            run_logs: merged.run_logs.unwrap_or(RunLogLevel::Warn),
+            result_format: merged.result_format.clone().unwrap_or(ResultFormat::Raw),
+            json: false,
+            json_schema: None,
+            disable_capabilities: Vec::new(),
+            tools,
+            config_files: vec![origin.to_string()],
+            sources,
+        };
+        Ok(HostedTask {
+            workdir,
+            config,
+            prompt,
+            manager,
+        })
+    }
+}
+
+impl HostedTask {
+    /// Create the provider client for this run (with the per-request timeout).
+    pub async fn create_llm(&self, deps: &XllmDeps) -> Result<Arc<dyn LlmClient>, XllmError> {
+        let inner = deps.llm_factory.create(&self.config.provider).await?;
+        Ok(Arc::new(TimeoutLlmClient::new(
+            inner,
+            Duration::from_secs(self.config.limits.llm_timeout_secs.max(1)),
+        )))
+    }
+
+    /// Initial run record (status `running`, no snapshot yet).
+    pub fn new_record(
+        &self,
+        run_id: &str,
+        runs_dir: Option<&Path>,
+        summary: &str,
+        host: HostRunInfo,
+    ) -> RunRecord {
+        let now = now_ms();
+        RunRecord {
+            version: RUN_RECORD_VERSION,
+            run_id: run_id.to_string(),
+            status: RunStatus::Running,
+            workdir: self.workdir.display().to_string(),
+            runs_dir: runs_dir.map(|p| p.display().to_string()),
+            created_at_ms: now,
+            updated_at_ms: now,
+            summary: summarize_request(summary),
+            input: InputRecord {
+                request: None,
+                request_source: "structured".into(),
+                ..Default::default()
+            },
+            config: self.config.clone(),
+            prompt: self.prompt.clone(),
+            file_model_stage: None,
+            pending_input: None,
+            latest_snapshot_idx: None,
+            last_error: None,
+            result: None,
+            artifacts: Vec::new(),
+            usage: UsageRecord::default(),
+            limit_reason: None,
+            interrupt_reason: None,
+            compactions: 0,
+            pid: std::process::id(),
+            host: Some(host),
+            host_commit_pending: None,
+            inflight: Vec::new(),
+            executions: Vec::new(),
+        }
+    }
+
+    /// Waist request with xllm's tool / budget policy for this config.
+    pub fn build_request(
+        &self,
+        owner: ContextOwnerRef,
+        trace: &str,
+        objective: &str,
+        behavior_name: &str,
+        input: Vec<AiMessage>,
+    ) -> LLMContextRequest {
+        hosted_request(&self.config, owner, trace, objective, behavior_name, input)
+    }
+}
+
+/// Rebuild the tool set of a saved run from its recorded sources and policy
+/// (what `XllmRun::resume` does), bound to the run id.
+pub async fn rebuild_toolset(
+    record: &RunRecord,
+    deps: &XllmDeps,
+) -> Result<XllmToolManager, XllmError> {
+    let workdir = PathBuf::from(&record.workdir);
+    let tools_cfg = ToolsConfig {
+        enabled: Some(record.config.tools.enabled),
+        filesystem_policy: Some(record.config.tools.filesystem_policy),
+        tools2actions: Some(record.config.tools.tools2actions),
+        tools: Some(record.config.tools.tool_sources.clone()),
+        actions: Some(record.config.tools.action_sources.clone()),
+        bash_tools: Some(record.config.tools.bash_tools.clone()),
+    };
+    let (_eff, mut manager) = build_toolset(
+        &tools_cfg,
+        record.config.tools.sources.clone(),
+        record.config.loop_model,
+        &workdir,
+        &record.run_id,
+        deps,
+    )
+    .await?;
+    manager.bind_run(&record.run_id);
+    Ok(manager)
+}
+
+/// Provider client of a saved run (credentials re-resolved from references).
+pub async fn create_run_llm(
+    record: &RunRecord,
+    deps: &XllmDeps,
+) -> Result<Arc<dyn LlmClient>, XllmError> {
+    let inner = deps.llm_factory.create(&record.config.provider).await?;
+    Ok(Arc::new(TimeoutLlmClient::new(
+        inner,
+        Duration::from_secs(record.config.limits.llm_timeout_secs.max(1)),
+    )))
+}
+
+/// Waist request for an effective config (same policy as xllm's own runs).
+pub fn hosted_request(
+    cfg: &EffectiveConfig,
+    owner: ContextOwnerRef,
+    trace: &str,
+    objective: &str,
+    behavior_name: &str,
+    input: Vec<AiMessage>,
+) -> LLMContextRequest {
+    let native_names: Vec<String> = cfg.tools.native.iter().map(|t| t.name.clone()).collect();
+    let action_names: Vec<String> = cfg.tools.actions.iter().map(|t| t.name.clone()).collect();
+    let tool_policy = ToolPolicy {
+        mode: if native_names.is_empty() {
+            ToolMode::None
+        } else {
+            ToolMode::Whitelist
+        },
+        whitelist: native_names,
+        action_mode: if action_names.is_empty() {
+            ToolMode::None
+        } else {
+            ToolMode::Whitelist
+        },
+        action_whitelist: action_names,
+        max_rounds: if cfg.tools.enabled {
+            cfg.limits.max_rounds
+        } else {
+            0
+        },
+        max_calls_per_round: 16,
+        max_observation_bytes: 64 * 1024,
+        disable_capabilities: cfg.disable_capabilities.clone(),
+        parallel: false,
+        allow_deferred: false,
+    };
+    LLMContextRequest {
+        owner,
+        trace: Some(trace.to_string()),
+        objective: objective.to_string(),
+        behavior_name: if cfg.loop_model == LoopModel::Behavior {
+            if behavior_name.is_empty() {
+                "xllm".to_string()
+            } else {
+                behavior_name.to_string()
+            }
+        } else {
+            String::new()
+        },
+        input,
+        model_policy: ModelPolicy {
+            preferred: cfg.model.clone(),
+            fallbacks: Vec::new(),
+            temperature: None,
+            max_completion_tokens: cfg.limits.max_tokens,
+            provider_options: None,
+        },
+        tool_policy,
+        output: OutputSpec::Text,
+        budget: BudgetSpec {
+            max_total_tokens: None,
+            max_completion_tokens: cfg.limits.max_tokens,
+            max_wallclock_ms: Some(cfg.limits.timeout_secs * 1000),
+            max_cost_units: None,
+            on_exhausted: llm_context::request::BudgetAction::Fail,
+            context_yield_threshold: Some(ContextThreshold::Ratio {
+                value: DEFAULT_CONTEXT_YIELD_RATIO,
+            }),
+        },
+        human_policy: Default::default(),
+        error_policy: ErrorPolicy {
+            max_consecutive_errors: DEFAULT_MAX_CONSECUTIVE_ERRORS,
+        },
+        forbid_next_behavior: false,
+    }
+}
+
+/// Waist deps for a hosted run: behavior runs use xllm's action parser and
+/// step renderer (without wall-clock timestamps, so the rendered history is
+/// byte-stable for a prefix cache) — xllm can continue the run unchanged.
+pub fn hosted_waist_deps(
+    cfg: &EffectiveConfig,
+    llm: Arc<dyn LlmClient>,
+    tools: Arc<dyn ToolManager>,
+) -> LLMContextDeps {
+    let mut d = LLMContextDeps::new(llm, tools);
+    if cfg.loop_model == LoopModel::Behavior {
+        d = d
+            .with_result_parser(Arc::new(XllmActionParser::new(&cfg.tools.actions)))
+            .with_step_renderer(Arc::new(XmlStepRenderer::new().without_timestamps()));
+    }
+    d
+}
+
+// =========================================================================
 // 执行（F05 / F08 / F09）
 // =========================================================================
 
@@ -6332,7 +6813,7 @@ impl XllmRun {
             },
             None => None,
         };
-        let workdir_lock = if tools_enabled {
+        let workdir_lock = if tools_enabled && !deps.skip_workdir_lock {
             let path = workdir_lock_path(&deps.effective_lock_dir(), workdir);
             match FileLock::try_acquire(&path)? {
                 Some(l) => {
@@ -6439,6 +6920,10 @@ impl XllmRun {
             interrupt_reason: None,
             compactions: 0,
             pid: std::process::id(),
+            host: None,
+            host_commit_pending: None,
+            inflight: Vec::new(),
+            executions: Vec::new(),
         };
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
@@ -6520,6 +7005,35 @@ impl XllmRun {
                 run_id: record.run_id.clone(),
             });
         }
+        if record.version > RUN_RECORD_VERSION {
+            return Err(XllmError::NotResumable {
+                run_id: record.run_id.clone(),
+                reason: format!(
+                    "run record version {} is not supported by this executor (max {})",
+                    record.version, RUN_RECORD_VERSION
+                ),
+            });
+        }
+        if let Some(seq) = record.host_commit_pending {
+            return Err(XllmError::NotResumable {
+                run_id: record.run_id.clone(),
+                reason: format!(
+                    "host input batch {seq} is not committed yet; drive the session with its host runner first"
+                ),
+            });
+        }
+        if let Some(host) = &record.host {
+            if host.runtime_kind.as_deref().unwrap_or("native") != "native" {
+                return Err(XllmError::NotResumable {
+                    run_id: record.run_id.clone(),
+                    reason: format!(
+                        "run was assembled by {} for a `{}` runtime; only native runs can be continued by xllm",
+                        host.assembled_by,
+                        host.runtime_kind.as_deref().unwrap_or("?")
+                    ),
+                });
+            }
+        }
         if record.prompt.protocol_version != RUNTIME_PROTOCOL_VERSION {
             return Err(XllmError::NotResumable {
                 run_id: record.run_id.clone(),
@@ -6548,6 +7062,16 @@ impl XllmRun {
             &deps,
         )
         .await?;
+        // Holding the run lock: re-read, then make sure no execution of the
+        // previous executor is still alive and settle in-flight actions.
+        let mut record = store.read_record(&run_id_s)?;
+        if record.host_commit_pending.is_some() {
+            return Err(XllmError::NotResumable {
+                run_id: run_id_s.clone(),
+                reason: "host input batch is not committed yet".into(),
+            });
+        }
+        Self::settle_previous_executor(store, &mut record).await?;
 
         // 重新展开工具（同一来源），重新连接 Provider（重新解析凭据引用）。
         let tools_cfg = ToolsConfig {
@@ -6675,6 +7199,50 @@ impl XllmRun {
             _run_lock: run_lock,
             _workdir_lock: workdir_lock,
         })))
+    }
+
+    /// Before continuing a run: confirm every tracked execution of the
+    /// previous executor stopped (terminate verified leftovers, refuse when
+    /// unverifiable), then turn in-flight actions without a persisted result
+    /// into explicit "result unknown" observations — never re-run them.
+    async fn settle_previous_executor(
+        store: &RunStore,
+        record: &mut RunRecord,
+    ) -> Result<(), XllmError> {
+        if !record.executions.is_empty() {
+            for exec in record.executions.clone() {
+                crate::exec_tracking::stop_execution(&exec, None, Duration::from_secs(10))
+                    .await
+                    .map_err(|reason| XllmError::NotResumable {
+                        run_id: record.run_id.clone(),
+                        reason: format!(
+                            "cannot confirm that execution {} of the previous executor stopped: {reason}",
+                            exec.execution_id
+                        ),
+                    })?;
+                record
+                    .executions
+                    .retain(|e| e.execution_id != exec.execution_id);
+                store.write_record(record)?;
+            }
+        }
+        if !record.inflight.is_empty() {
+            let Some(idx) = record.latest_snapshot_idx else {
+                return Err(XllmError::NotResumable {
+                    run_id: record.run_id.clone(),
+                    reason: "in-flight actions recorded but no snapshot is published".into(),
+                });
+            };
+            let mut snap = store.get_snapshot(&record.run_id, idx)?;
+            let behavior = record.config.loop_model == LoopModel::Behavior;
+            crate::exec_tracking::materialize_unresolved(&mut snap, &record.inflight, behavior);
+            let new_idx = store.put_snapshot(&record.run_id, &snap)?;
+            record.latest_snapshot_idx = Some(new_idx);
+            record.inflight.clear();
+            record.updated_at_ms = now_ms();
+            store.write_record(record)?;
+        }
+        Ok(())
     }
 
     fn classify_error(err: &LLMComputeError, provider: &ProviderConfig) -> RunErrorRecord {
@@ -7244,6 +7812,11 @@ impl XllmRun {
 }
 
 impl XllmToolManager {
+    /// Bind the manager to a run id (trace / session context of tool calls).
+    pub fn set_run_id(&mut self, run_id: &str) {
+        self.bind_run(run_id);
+    }
+
     fn bind_run(&mut self, run_id: &str) {
         self.session_template.trace_id = run_id.to_string();
         self.session_template.session_id = run_id.to_string();
@@ -9601,7 +10174,7 @@ there]]></write_file>
     fn exec_manager(workdir: &Path) -> XllmToolManager {
         let mut manager =
             XllmToolManager::new(workdir.to_path_buf(), "run-test", LoopModel::FunctionCall);
-        for t in builtin_bash_group(workdir, FilesystemPolicy::Workspace) {
+        for t in builtin_bash_group(workdir, FilesystemPolicy::Workspace, None) {
             manager.register(t, "groupname:bash").expect("register");
         }
         manager

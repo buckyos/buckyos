@@ -1,0 +1,34 @@
+{
+  "description": "summary.json start point near the end of a 200 entry worklog.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "build_history_reverse_read",
+    "raw_entries": 10,
+    "stop_at_offset": 16539,
+    "summary": "Summary of rounds 0..189."
+  },
+  "scenario": "worklog_with_summary",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [],
+      "session_id": "work-fixture-summary",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 2,
+        "round": 0,
+        "run_state": "created"
+      },
+      "worklog": {
+        "committed_bytes": 17419,
+        "committed_seq": 201,
+        "file_bytes": 17419,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

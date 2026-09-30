@@ -1,0 +1,33 @@
+{
+  "description": "Freshly created work session located outside the AgentRoot; registered, queue created, no binding yet.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "bind_runtime_then_round",
+    "expect_binding_json": false,
+    "hook": "on_init"
+  },
+  "scenario": "new_work_session",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [],
+      "session_id": "work-fixture-new",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 1,
+        "round": 0,
+        "run_state": "created"
+      },
+      "worklog": {
+        "committed_bytes": 144,
+        "committed_seq": 1,
+        "file_bytes": 144,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  "description": "A paused run was resumed with input q#1; the snapshot carries receipt batch 2 (and the message), state.json only applied batch 1.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "apply_receipts_from_snapshot_then_clear_gate",
+    "apply_batches": [
+      2
+    ],
+    "fetch_new_inputs_after": true,
+    "reappend_message": false
+  },
+  "scenario": "receipt_ahead_of_state",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "executions": 0,
+        "host_commit_pending": 2,
+        "inflight": [],
+        "run_id": "20260929-095940-c67935",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20260929-095940-c67935"
+      ],
+      "session_id": "work-fixture-receipt",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 3,
+        "round": 1,
+        "run_state": "ready"
+      },
+      "worklog": {
+        "committed_bytes": 151,
+        "committed_seq": 1,
+        "file_bytes": 151,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

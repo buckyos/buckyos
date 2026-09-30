@@ -1,0 +1,39 @@
+{
+  "session_id": "work-fixture-active-b",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-active-b",
+  "input_queue": "app2::alice::opendan.session.work-fixture-active-b",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-b/input",
+  "agent_access": "full",
+  "workspace": {
+    "kind": "external",
+    "path": "${FIXTURE_ROOT}/ws"
+  },
+  "objective": "edit",
+  "scope": {
+    "paths": [
+      "ws:snake/src/collision.js"
+    ]
+  },
+  "status": {
+    "rev": 0,
+    "run_state": "created",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "updated_at_ms": 1790701181196
+  },
+  "location_rev": 0
+}

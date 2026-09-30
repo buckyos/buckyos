@@ -1,0 +1,13 @@
+{
+  "resource": "session:work-fixture-orphan",
+  "epoch": 1,
+  "holder": {
+    "runner_id": "rn-771e393e725d49ac",
+    "principal": "app:app2@alice",
+    "host": "host:lzc-pve:6b719608768f",
+    "pid": 1467338,
+    "runtime_id": "rt-fixture-native"
+  },
+  "acquired_at_ms": 1790701180662,
+  "released_at_ms": null
+}

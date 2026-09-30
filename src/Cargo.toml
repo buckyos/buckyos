@@ -28,6 +28,7 @@ members = [
     "./frame/agent_tool_cli_dev",
     "./frame/llm_context",
     "./frame/opendan",
+    "./frame/lib_opendan",
 
     "./test/test_rbac"
 ]

@@ -1,0 +1,111 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "MechanicalCompress": {
+      "description": "Mechanical compression parameters for rendering worklog history (§4.4).",
+      "properties": {
+        "drop_kinds": {
+          "default": [
+            "created",
+            "decide",
+            "compaction",
+            "input_rejected",
+            "change_dropped"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "max_result_chars": {
+          "default": 4096,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "recent_full_steps": {
+          "default": 2,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary_chars": {
+          "default": 280,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "history_summary": {
+      "default": "",
+      "description": "Summary (LLM generated) of all history before `start_seq`.",
+      "type": "string"
+    },
+    "made_at_seq": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "made_by": {
+      "default": "",
+      "description": "`context_limit | ratio | manual`.",
+      "type": "string"
+    },
+    "mechanical": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/MechanicalCompress"
+        }
+      ],
+      "default": {
+        "drop_kinds": [
+          "created",
+          "decide",
+          "compaction",
+          "input_rejected",
+          "change_dropped"
+        ],
+        "max_result_chars": 4096,
+        "recent_full_steps": 2,
+        "summary_chars": 280
+      }
+    },
+    "renderer": {
+      "default": "libopendan.mechanical/1",
+      "type": "string"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "start_offset": {
+      "default": 0,
+      "description": "Byte offset of `start_seq` in the worklog: reverse reads stop here.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "start_seq": {
+      "default": 0,
+      "description": "First worklog seq used verbatim.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "schema"
+  ],
+  "title": "SessionSummary",
+  "type": "object"
+}

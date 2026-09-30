@@ -24,6 +24,7 @@ pub mod agent_memory;
 pub mod agent_notebook;
 pub mod aicc_model_tools;
 pub mod dcrontab_tool;
+pub mod exec_tracking;
 pub mod file_tools;
 pub mod glob_tool;
 pub mod grep_tool;

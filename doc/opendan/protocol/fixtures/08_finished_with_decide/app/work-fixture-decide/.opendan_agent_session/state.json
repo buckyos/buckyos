@@ -1,0 +1,47 @@
+{
+  "schema": "opendan.session_state/1",
+  "rev": 3,
+  "writer": {
+    "runner_id": "rn-cd65c236d7a044a7",
+    "principal": "app:app2@alice",
+    "host": "host:lzc-pve:6b719608768f",
+    "pid": 1467264,
+    "lock_epoch": 1
+  },
+  "run_state": "finished",
+  "outcome": "succeeded",
+  "acceptance": "pending",
+  "result": {
+    "answer": "done: notes.txt written",
+    "answer_ref": "report.md",
+    "artifact_ref": {
+      "aid": "demo",
+      "ver": "v-work-fixture-decide"
+    }
+  },
+  "round": 1,
+  "bootstrap_done": true,
+  "topic": {
+    "title": ""
+  },
+  "live_run": null,
+  "last_run": "20260929-095941-d25421",
+  "worklog": {
+    "committed_seq": 7,
+    "committed_bytes": 1181
+  },
+  "inputs": {},
+  "recent_keys": [],
+  "subscription_cursors": {
+    "_active_sessions": []
+  },
+  "perception_seq": 2,
+  "reported_rev": 2,
+  "activity": {
+    "summary": "",
+    "heartbeat_ms": 0
+  },
+  "one_line_status": "finished: done: notes.txt written",
+  "stop_requested": false,
+  "updated_at_ms": 1790701181066
+}

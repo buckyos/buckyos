@@ -1,0 +1,37 @@
+{
+  "session_id": "work-fixture-gate",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-gate",
+  "input_queue": "app2::alice::opendan.session.work-fixture-gate",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-gate/input",
+  "agent_access": "full",
+  "objective": "x",
+  "status": {
+    "rev": 2,
+    "run_state": "running",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "x",
+      "heartbeat_ms": 1790701180715
+    },
+    "last_runner": {
+      "runner_id": "rn-9d65ce4af4ba46f9",
+      "host": "host:lzc-pve:6b719608768f",
+      "pid": 1467381,
+      "lock_epoch": 1,
+      "at_ms": 1790701180717
+    },
+    "updated_at_ms": 1790701180715
+  },
+  "location_rev": 0
+}

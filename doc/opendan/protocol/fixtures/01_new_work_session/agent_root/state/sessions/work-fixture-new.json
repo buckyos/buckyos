@@ -1,0 +1,35 @@
+{
+  "session_id": "work-fixture-new",
+  "kind": "work",
+  "class": "work",
+  "created_by": {
+    "principal": "app:app2@alice",
+    "via": "app"
+  },
+  "driver": {
+    "principal": "app:app2@alice"
+  },
+  "location": "${FIXTURE_ROOT}/app/work-fixture-new",
+  "input_queue": "app2::alice::opendan.session.work-fixture-new",
+  "wake_event": "/opendan/jarvis.alice/session/work-fixture-new/input",
+  "agent_access": "full",
+  "objective": "write notes.txt",
+  "scope": {
+    "paths": [
+      "ws:notes.txt"
+    ]
+  },
+  "status": {
+    "rev": 0,
+    "run_state": "created",
+    "acceptance": "n/a",
+    "one_line_status": "",
+    "report_brief": "",
+    "activity": {
+      "summary": "",
+      "heartbeat_ms": 0
+    },
+    "updated_at_ms": 1790701180561
+  },
+  "location_rev": 0
+}

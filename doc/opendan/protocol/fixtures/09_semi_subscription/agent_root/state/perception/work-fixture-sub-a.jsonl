@@ -1,0 +1,2 @@
+{"seq":1,"at_ms":1790701181128,"session_id":"work-fixture-sub-a","kind":"round_digest","source":"session","summary":"finished: answer","payload":{"round":1},"refs":{"worklog_seq":5}}
+{"seq":2,"at_ms":1790701181128,"session_id":"work-fixture-sub-a","kind":"task_outcome","source":"session","summary":"finished: answer","payload":{"acceptance":"pending","outcome":"succeeded"}}

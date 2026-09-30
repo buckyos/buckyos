@@ -1,0 +1,418 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ActionEntry": {
+      "properties": {
+        "args": {
+          "default": null
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "effect": {
+          "default": "unknown",
+          "description": "`read_only | idempotent | side_effect | unknown`.",
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "tool"
+      ],
+      "type": "object"
+    },
+    "InputRef": {
+      "description": "Stable reference to one consumed input instance.",
+      "properties": {
+        "index": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`msg | event | change | control | perception`.",
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "src"
+      ],
+      "type": "object"
+    }
+  },
+  "oneOf": [
+    {
+      "description": "First entry of every session.",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "by": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "objective": {
+          "default": "",
+          "type": "string"
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "created"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "by",
+        "kind",
+        "session_id",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "changes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InputRef"
+          },
+          "type": "array"
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "round_started"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "round",
+        "run_id",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "content": {
+          "type": "string"
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "user_message"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "round",
+        "run_id",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/definitions/ActionEntry"
+          },
+          "type": "array"
+        },
+        "assistant": {
+          "default": "",
+          "type": "string"
+        },
+        "behavior": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "step"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "round",
+        "run_id",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "call_id": {
+          "type": "string"
+        },
+        "result": {
+          "default": "",
+          "type": "string"
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "status": {
+          "description": "`ok | error | unresolved | cancelled | pending`.",
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "action_result"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "call_id",
+        "round",
+        "run_id",
+        "status",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "kind": {
+          "description": "`done | wait | pending_tool | budget | error | interrupted | context_limit | stopped`.",
+          "type": "string"
+        },
+        "next_behavior": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "report": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "outcome"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "round",
+        "run_id",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A new summary.json was produced (audit only).",
+      "properties": {
+        "made_by": {
+          "default": "",
+          "type": "string"
+        },
+        "summary_start_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "t": {
+          "enum": [
+            "compaction"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary_start_seq",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "properties": {
+        "by": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "report": true,
+        "t": {
+          "enum": [
+            "decide"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "by",
+        "decision",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An input marked consumed without being processed.",
+      "properties": {
+        "input": {
+          "$ref": "#/definitions/InputRef"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "input_rejected"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "input",
+        "reason",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A subscription change dropped by coalescing / trimming.",
+      "properties": {
+        "change": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "change_dropped"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "change",
+        "reason",
+        "t"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Control inputs applied outside a run (stop / subscribe / activity).",
+      "properties": {
+        "command": {
+          "type": "string"
+        },
+        "detail": true,
+        "input": {
+          "$ref": "#/definitions/InputRef"
+        },
+        "t": {
+          "enum": [
+            "control_applied"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "command",
+        "input",
+        "t"
+      ],
+      "type": "object"
+    }
+  ],
+  "properties": {
+    "seq": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "seq"
+  ],
+  "title": "WorklogEntry",
+  "type": "object"
+}

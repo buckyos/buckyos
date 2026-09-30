@@ -243,6 +243,56 @@ pub trait TurnHook: Send + Sync {
     fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String>;
 }
 
+/// Content injected at an observation boundary (§8.7 X5 of the Agent Session
+/// SDK plan): user messages appended before the next inference, and an
+/// optional replacement of the host metadata carried in the snapshot (e.g.
+/// the input receipts that describe the injected messages).
+#[derive(Debug, Clone, Default)]
+pub struct Injection {
+    pub messages: Vec<AiMessage>,
+    pub host: Option<Value>,
+}
+
+/// Where [`crate::LLMContext::inject`] placed an injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InjectionPosition {
+    /// Appended to `request.input` starting at this index (behavior mode
+    /// before the first step).
+    RequestInput(usize),
+    /// Appended to `state.accumulated` starting at this index.
+    Accumulated(usize),
+    /// Attached to the hot behavior step with this index as part of its
+    /// `next_user_message`.
+    Step(u32),
+    /// Nothing to place (empty message list).
+    None,
+}
+
+/// Async checkpoint / observation hook (§8.7 X4 + X5).
+///
+/// Called before **every** inference with the *outer* snapshot: in function
+/// call mode after a round of tool results, in behavior mode at every step
+/// boundary (i.e. after each do-action). It is never handed to the inner
+/// per-step contexts of the behavior loop, so it never sees a flattened
+/// snapshot.
+///
+/// - `Ok(None)`: the snapshot is durably checkpointed; inference may start.
+/// - `Ok(Some(injection))`: the waist applies the injection and calls the
+///   hook again, so the post-injection state is checkpointed before the
+///   inference (at most [`MAX_INJECTIONS_PER_BOUNDARY`] injections).
+/// - `Err(reason)`: persistence / commit failed — the run stops with
+///   `LLMComputeError::Checkpoint { stage: BeforeInference }` without paying
+///   for an inference; the in-memory snapshot stays resumable.
+#[async_trait]
+pub trait CheckpointHook: Send + Sync {
+    async fn before_inference(
+        &self,
+        snapshot: &LLMContextSnapshot,
+    ) -> Result<Option<Injection>, String>;
+}
+
+pub const MAX_INJECTIONS_PER_BOUNDARY: usize = 4;
+
 /// No-op worklog sink. Useful for tests and `OneShot` scenarios.
 pub struct NoopWorklogSink;
 
@@ -297,6 +347,8 @@ pub struct LLMContextDeps {
     /// Behavior Loop: optional hook invoked after a behavior step has action
     /// results. It may override the next rendered user message.
     pub step_result_hook: Option<Arc<dyn StepResultHook>>,
+    /// Optional async checkpoint / observation hook with outer snapshots.
+    pub checkpoint_hook: Option<Arc<dyn CheckpointHook>>,
 }
 
 impl LLMContextDeps {
@@ -311,6 +363,7 @@ impl LLMContextDeps {
             result_parser: None,
             step_renderer: None,
             step_result_hook: None,
+            checkpoint_hook: None,
         }
     }
 
@@ -349,6 +402,11 @@ impl LLMContextDeps {
         self
     }
 
+    pub fn with_checkpoint_hook(mut self, hook: Arc<dyn CheckpointHook>) -> Self {
+        self.checkpoint_hook = Some(hook);
+        self
+    }
+
     /// Strip Behavior-Loop-only fields so the result can drive an inner
     /// traditional `run_inner`. The inner LLMContext must not run the
     /// Behavior dispatch path again — otherwise we'd recurse forever.
@@ -356,6 +414,9 @@ impl LLMContextDeps {
         self.result_parser = None;
         self.step_renderer = None;
         self.step_result_hook = None;
+        // The outer behavior loop owns checkpoints; inner per-step contexts
+        // must never hand their flattened snapshot to the host.
+        self.checkpoint_hook = None;
         self
     }
 }

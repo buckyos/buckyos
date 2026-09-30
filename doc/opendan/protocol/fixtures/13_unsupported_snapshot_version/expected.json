@@ -1,0 +1,46 @@
+{
+  "description": "The published snapshot of the live run has snapshot_version 99.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "recovery_blocked",
+    "infer": false,
+    "keep": [
+      "live_run",
+      "run directory",
+      "consumption"
+    ]
+  },
+  "scenario": "unsupported_snapshot_version",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "executions": 0,
+        "host_commit_pending": null,
+        "inflight": [],
+        "run_id": "20260929-095941-c80cce",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20260929-095941-c80cce"
+      ],
+      "session_id": "work-fixture-blocked",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 2,
+        "round": 1,
+        "run_state": "running"
+      },
+      "worklog": {
+        "committed_bytes": 134,
+        "committed_seq": 1,
+        "file_bytes": 134,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

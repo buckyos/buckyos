@@ -30,9 +30,10 @@ pub use behavior_loop::{
 };
 pub use context_loop::LLMContext;
 pub use deps::{
-    AllowAllPolicy, ByteHeuristicTokenizer, LLMContextDeps, LlmClient, LlmInferenceRequest,
-    NoopWorklogSink, PolicyEngine, Tokenizer, ToolDispatchError, ToolManager, ToolSpecLite,
-    TurnHook, WorkEvent, WorklogSink,
+    AllowAllPolicy, ByteHeuristicTokenizer, CheckpointHook, Injection, InjectionPosition,
+    LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink, PolicyEngine, Tokenizer,
+    ToolDispatchError, ToolManager, ToolSpecLite, TurnHook, WorkEvent, WorklogSink,
+    MAX_INJECTIONS_PER_BOUNDARY,
 };
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
@@ -69,7 +70,7 @@ pub use request::{
 pub use snapshot_overrides::{
     apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,
 };
-pub use state::{LLMContextSnapshot, LLMContextState};
+pub use state::{LLMContextSnapshot, LLMContextState, SNAPSHOT_FORMAT_VERSION};
 pub use step_record::XmlStepRenderer;
 pub use xml_behavior::{XmlBehaviorParser, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT};
 

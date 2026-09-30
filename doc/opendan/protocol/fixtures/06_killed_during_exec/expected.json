@@ -1,0 +1,47 @@
+{
+  "description": "The runner was killed while `exec` ran: run.json holds the in-flight call c1 and its execution identity; the latest snapshot has no result for c1.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "confirm_execution_stopped_then_resume",
+    "if_execution_unverifiable": "recovery_blocked",
+    "materialize_unresolved": [
+      "c1"
+    ],
+    "rerun_tool": false
+  },
+  "scenario": "killed_during_exec",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "executions": 1,
+        "host_commit_pending": null,
+        "inflight": [
+          "c1"
+        ],
+        "run_id": "20260929-095940-076018",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20260929-095940-076018"
+      ],
+      "session_id": "work-fixture-kill",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 2,
+        "round": 1,
+        "run_state": "running"
+      },
+      "worklog": {
+        "committed_bytes": 142,
+        "committed_seq": 1,
+        "file_bytes": 142,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

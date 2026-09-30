@@ -10,6 +10,13 @@
 - 当前代码（2026-09-29）：`src/frame/opendan`、`llm_context`、`agent_tool`、`kernel/buckyos-api`、`kernel/kmsg`、`frame/msg_center`；对照代码的核对结果见 §1.5
 - [Agent Memory 认知管理需求](<Agent Memroy 认知管理需求.md>)（已补回；设计尚未冻结，对本计划没有影响）
 
+> **实现落地**（2026-09-29，Rust 参考实现）
+>
+> - 代码：`src/frame/lib_opendan`（package `libopendan`）；LX 改动在 `llm_context`（`CheckpointHook` / `inject` / 快照 `host` 与 `snapshot_version`）与 `agent_tool`（`exec_tracking`、RunRecord 宿主字段、`prepare_hosted`、resume 检查）。反写的 Spec、JSON Schema 与 fixtures 在 [`protocol/`](protocol/README.md)。
+> - 已完成：L1、L2（native + tmux）、L3（work session；普通 / fork / independent 切换）、L4（感知、self_improve 锁与整理游标、认知门面）、L5（产物登记、decide、discard 报告）、L6；LX 的 X1 ~ X6 与 X8（宿主 run 的 step 渲染不带时间戳）；真实 kmsg 服务的 DV 用例 `tests/dv_kmsg.rs`（`--ignored`，在 DV Test OOD 上以 root 运行）。
+> - 与本文的差异：X4 / X5 合为一个异步 `CheckpointHook`（每次推理前、外层快照、可注入）；`AgentRuntime` 以 `bash_runner(env, registrar)` + `reconcile_execution` 表达执行准备与核对；执行跟踪按环境标记 `OPENDAN_EXECUTION_ID` 扫描 `/proc`（非 Linux 一律 Unknown → RecoveryBlocked）；`recent_keys` 放在 state.json 顶层；state 增加 `stop_requested` / `internal_continuation` / `process_result`，live_run / process_stack 增加 `flushed_input_seq`（behavior run 按身份记录已写入部分）；worklog 增加 `created` / `change_dropped` / `control_applied`。
+> - 未完成：X7（waist 仍不产出 ContextLimitReached / PendingTool，runner 遇到时保留 run 暂停）、ToolSpec 的 effect 字段与 `ToolUse.args` 规范键序（libopendan 按工具名分类、worklog 内规范化）；OpenDAN `BehaviorAssembler`（behaviors 配置、prompt_env、HintRecallEngine）与 session-aware 工具未移植（用 `DefaultAssembler`、`extensions.opendan.process_modes` 与 `agent-session` CLI 代替）；1 GB worklog 基准（以数 MB 文件验证读取量有界）。UI session、kRPC、DID Object 宿主按本文后移。
+
 > **v0.10 Review 修订**（2026-09-29）
 >
 > 1. **sid 全局唯一**：覆盖不同 Agent、App 和 owner；统一随机与确定性生成规则，队列仍按 sid 命名（§4.1、§4.2）。

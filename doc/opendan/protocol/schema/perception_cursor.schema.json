@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "`state/perception/.cursor.json` — consolidation offsets per session file.",
+  "properties": {
+    "offsets": {
+      "additionalProperties": {
+        "format": "uint64",
+        "minimum": 0.0,
+        "type": "integer"
+      },
+      "default": {},
+      "type": "object"
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "title": "PerceptionCursor",
+  "type": "object"
+}

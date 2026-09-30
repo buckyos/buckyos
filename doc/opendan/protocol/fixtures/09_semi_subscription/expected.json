@@ -1,0 +1,57 @@
+{
+  "description": "B semi-subscribes to A; A is finished (registry status rev > B's cursor, which is empty).",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "action": "inject_change_on_next_round",
+    "change_id_prefix": "sa@",
+    "extra_inference": false,
+    "session": "work-fixture-sub-b"
+  },
+  "scenario": "semi_subscription",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [
+        "20260929-095941-3190f3"
+      ],
+      "session_id": "work-fixture-sub-a",
+      "state": {
+        "acceptance": "pending",
+        "inputs": {},
+        "last_run": "20260929-095941-3190f3",
+        "outcome": "succeeded",
+        "process_stack": [],
+        "rev": 3,
+        "round": 1,
+        "run_state": "finished"
+      },
+      "worklog": {
+        "committed_bytes": 833,
+        "committed_seq": 5,
+        "file_bytes": 833,
+        "uncommitted_tail": false
+      }
+    },
+    {
+      "live_run": null,
+      "runs_on_disk": [],
+      "session_id": "work-fixture-sub-b",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 1,
+        "round": 0,
+        "run_state": "created"
+      },
+      "worklog": {
+        "committed_bytes": 144,
+        "committed_seq": 1,
+        "file_bytes": 144,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

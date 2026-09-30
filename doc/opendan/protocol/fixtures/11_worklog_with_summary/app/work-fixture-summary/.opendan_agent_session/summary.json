@@ -1,0 +1,22 @@
+{
+  "schema": "opendan.session_summary/1",
+  "history_summary": "Summary of rounds 0..189.",
+  "start_seq": 192,
+  "start_offset": 16539,
+  "mechanical": {
+    "recent_full_steps": 2,
+    "summary_chars": 280,
+    "max_result_chars": 4096,
+    "drop_kinds": [
+      "created",
+      "decide",
+      "compaction",
+      "input_rejected",
+      "change_dropped"
+    ]
+  },
+  "renderer": "libopendan.mechanical/1",
+  "made_at_seq": 201,
+  "made_by": "manual",
+  "updated_at_ms": 0
+}

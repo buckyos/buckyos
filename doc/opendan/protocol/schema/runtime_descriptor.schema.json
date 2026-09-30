@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Capabilities": {
+      "properties": {
+        "network": {
+          "default": false,
+          "type": "boolean"
+        },
+        "os": {
+          "default": "",
+          "type": "string"
+        },
+        "tools": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "FsView": {
+      "properties": {
+        "agent_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extra": {
+          "description": "Extra roots the runtime can see (e.g. an app data directory).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "workspace_root": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "properties": {
+    "capabilities": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Capabilities"
+        }
+      ],
+      "default": {
+        "network": false,
+        "os": ""
+      }
+    },
+    "fs_view": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/FsView"
+        }
+      ],
+      "default": {}
+    },
+    "host": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "description": "`native | tmux`.",
+      "type": "string"
+    },
+    "path_layers": {
+      "description": "PATH layers in front of the inherited PATH (`<sid>/.runtime/bin` first).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "provider": {
+      "default": "",
+      "description": "`opendan | app:<app_id>`.",
+      "type": "string"
+    },
+    "runtime_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "kind",
+    "runtime_id"
+  ],
+  "title": "RuntimeDescriptor",
+  "type": "object"
+}

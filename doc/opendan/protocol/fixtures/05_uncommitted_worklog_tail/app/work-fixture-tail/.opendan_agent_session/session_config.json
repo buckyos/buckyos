@@ -1,0 +1,59 @@
+{
+  "schema": "opendan.session_config/1",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-fixture-tail",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1790701180728,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "app"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "objective": "x",
+    "end_condition": {
+      "type": "llm_declares_done"
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true
+      }
+    },
+    "mechanical_compress": {
+      "recent_full_steps": 2,
+      "summary_chars": 280,
+      "max_result_chars": 4096,
+      "drop_kinds": [
+        "created",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "change_dropped"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {}
+  },
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "app2::alice::opendan.session.work-fixture-tail",
+        "subscriber": "opendan.jarvis.alice.work-fixture-tail"
+      }
+    ],
+    "wake_event": "/opendan/jarvis.alice/session/work-fixture-tail/input"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "description": "One run with an exec call, finished (acceptance pending). last_run kept, report.md written.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "accepts": [
+      "control:decide"
+    ],
+    "action": "idle",
+    "rejects": [
+      "msg",
+      "event",
+      "change"
+    ]
+  },
+  "scenario": "finished_work_session",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [
+        "20260929-095940-f43203"
+      ],
+      "session_id": "work-fixture-finished",
+      "state": {
+        "acceptance": "pending",
+        "inputs": {},
+        "last_run": "20260929-095940-f43203",
+        "outcome": "succeeded",
+        "process_stack": [],
+        "rev": 3,
+        "round": 1,
+        "run_state": "finished"
+      },
+      "worklog": {
+        "committed_bytes": 1197,
+        "committed_seq": 7,
+        "file_bytes": 1197,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

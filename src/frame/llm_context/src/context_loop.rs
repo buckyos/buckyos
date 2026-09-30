@@ -34,7 +34,10 @@ use buckyos_api::{
 use serde_json::Value;
 
 use crate::behavior_loop::{is_terminal_next_behavior, LLMBehaviorResult, StepMeta, StepRecord};
-use crate::deps::{resolve_tool_specs, LLMContextDeps, LlmInferenceRequest, WorkEvent};
+use crate::deps::{
+    resolve_tool_specs, Injection, InjectionPosition, LLMContextDeps, LlmInferenceRequest,
+    WorkEvent, MAX_INJECTIONS_PER_BOUNDARY,
+};
 use crate::error::{CheckpointStage, LLMComputeError};
 use crate::interrupt::{
     InferenceAbortState, InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle,
@@ -42,7 +45,7 @@ use crate::interrupt::{
 use crate::observation::{Observation, ToolExecRecord, ToolExecStatus};
 use crate::outcome::{BudgetKind, ContextOutput, ContextRunTrace, LLMContextOutcome, ResumeFill};
 use crate::request::{ErrorClass, LLMContextRequest, OutputSpec, ToolMode};
-use crate::state::{LLMContextSnapshot, LLMContextState};
+use crate::state::{LLMContextSnapshot, LLMContextState, SNAPSHOT_FORMAT_VERSION};
 
 pub struct LLMContext {
     request: LLMContextRequest,
@@ -112,6 +115,13 @@ impl LLMContext {
         deps: LLMContextDeps,
     ) -> Result<Self, LLMComputeError> {
         let LLMContextSnapshot { request, mut state } = snapshot;
+
+        if state.snapshot_version > SNAPSHOT_FORMAT_VERSION {
+            return Err(LLMComputeError::SnapshotCorrupted(format!(
+                "unsupported snapshot format version {} (this build supports up to {})",
+                state.snapshot_version, SNAPSHOT_FORMAT_VERSION
+            )));
+        }
 
         match fill {
             ResumeFill::ToolResults { results } => {
@@ -183,9 +193,136 @@ impl LLMContext {
     }
 
     pub fn snapshot(&self) -> LLMContextSnapshot {
+        let mut state = self.state.clone();
+        state.snapshot_version = SNAPSHOT_FORMAT_VERSION;
         LLMContextSnapshot {
             request: self.request.clone(),
-            state: self.state.clone(),
+            state,
+        }
+    }
+
+    /// `true` when the context runs the Behavior Loop.
+    pub fn behavior_mode(&self) -> bool {
+        self.is_behavior_mode()
+    }
+
+    /// Host metadata carried in every snapshot (see `LLMContextState.host`).
+    pub fn host_meta(&self) -> Option<&Value> {
+        self.state.host.as_ref()
+    }
+
+    pub fn set_host_meta(&mut self, host: Option<Value>) {
+        self.state.host = host;
+    }
+
+    /// Append user messages to the live context (between runs, or from a
+    /// [`crate::deps::CheckpointHook`] at an observation boundary).
+    ///
+    /// - function call mode: appended to `accumulated`;
+    /// - behavior mode with a hot step (or, after a `Done`, the last
+    ///   sedimented step): merged into that step's `next_user_message` (after
+    ///   its default action-result rendering), so the injection stays part of
+    ///   the rendered step history;
+    /// - behavior mode before the first step: appended to `request.input`.
+    pub fn inject(&mut self, injection: Injection) -> InjectionPosition {
+        let Injection { messages, host } = injection;
+        if let Some(h) = host {
+            self.state.host = Some(h);
+        }
+        let messages: Vec<AiMessage> = messages
+            .into_iter()
+            .filter(|m| !m.content.is_empty())
+            .collect();
+        if messages.is_empty() {
+            return InjectionPosition::None;
+        }
+        if !self.is_behavior_mode() {
+            let at = self.state.accumulated.len();
+            self.state.accumulated.extend(messages);
+            return InjectionPosition::Accumulated(at);
+        }
+        let renderer = self.deps.step_renderer.clone();
+        let behavior_name = self.request.behavior_name.clone();
+        let target = match self.state.last_step.as_mut() {
+            Some(step) => Some(step),
+            // After a `Done` the hot step was sedimented. Steps of another
+            // behavior render as inherited records (without their user
+            // message), so only attach to a step of the current behavior.
+            None => self
+                .state
+                .steps
+                .last_mut()
+                .filter(|s| s.meta.behavior_name == behavior_name),
+        };
+        match target {
+            Some(step) => {
+                let mut base = match step.next_user_message.take() {
+                    Some(m) => m,
+                    None => match &renderer {
+                        Some(r) => r.render(step).1,
+                        None => AiMessage::text(AiRole::User, String::new()),
+                    },
+                };
+                for m in messages {
+                    base.content.extend(m.content);
+                }
+                step.next_user_message = Some(base);
+                InjectionPosition::Step(step.meta.step_index)
+            }
+            None => {
+                let at = self.request.input.len();
+                self.request.input.extend(messages.clone());
+                // Keep `accumulated` a prefix-extension of `request.input`
+                // so the behavior turn tail detection stays valid.
+                if self.state.accumulated.len() >= at
+                    && self.state.accumulated[..at] == self.request.input[..at]
+                {
+                    let tail: Vec<AiMessage> = self.state.accumulated.split_off(at);
+                    self.state.accumulated.extend(messages);
+                    self.state.accumulated.extend(tail);
+                }
+                InjectionPosition::RequestInput(at)
+            }
+        }
+    }
+
+    /// Run the checkpoint hook at an inference boundary (applies injections,
+    /// re-checkpoints). `Some(outcome)` stops the run.
+    async fn run_checkpoint_hook(&mut self) -> Option<LLMContextOutcome> {
+        let hook = self.deps.checkpoint_hook.clone()?;
+        let mut injections = 0usize;
+        loop {
+            let snapshot = self.snapshot();
+            match hook.before_inference(&snapshot).await {
+                Ok(None) => return None,
+                Ok(Some(injection)) => {
+                    injections += 1;
+                    if injections > MAX_INJECTIONS_PER_BOUNDARY {
+                        let message = format!(
+                            "checkpoint hook injected more than {MAX_INJECTIONS_PER_BOUNDARY} times at one boundary"
+                        );
+                        return Some(self.finish_error(LLMComputeError::Checkpoint {
+                            stage: CheckpointStage::BeforeInference,
+                            message,
+                        }));
+                    }
+                    self.inject(injection);
+                }
+                Err(message) => {
+                    self.deps
+                        .worklog
+                        .emit(WorkEvent::CheckpointFailed {
+                            trace_id: self.request.trace.clone(),
+                            stage: CheckpointStage::BeforeInference,
+                            error: message.clone(),
+                        })
+                        .await;
+                    return Some(self.finish_error(LLMComputeError::Checkpoint {
+                        stage: CheckpointStage::BeforeInference,
+                        message,
+                    }));
+                }
+            }
         }
     }
 
@@ -222,6 +359,12 @@ impl LLMContext {
         loop {
             if let Some(budget_outcome) = self.check_wallclock_budget() {
                 return budget_outcome;
+            }
+
+            // 0. Host checkpoint / observation boundary (async, outer
+            //    snapshot). Injected messages become part of s0.
+            if let Some(outcome) = self.run_checkpoint_hook().await {
+                return outcome;
             }
 
             // 1. Pre-inference snapshot (s0). It is the critical checkpoint
@@ -836,6 +979,13 @@ impl LLMContext {
                 return outcome;
             }
 
+            // Step boundary: the previous step (if any) has been sedimented
+            // with its action results. The host checkpoints the OUTER
+            // snapshot here and may inject observations.
+            if let Some(outcome) = self.run_checkpoint_hook().await {
+                return outcome;
+            }
+
             let step_started_at_ms = now_ms();
 
             // 1. Inner run — get one AiResponse, or bubble up an error
@@ -1306,17 +1456,18 @@ impl LLMContext {
             // state; the outer Behavior Loop returns it verbatim so the
             // scheduler can resume the same way it would for any other
             // Interrupted outcome.
-            LLMContextOutcome::Interrupted {
-                reason,
-                snapshot,
-                abort,
-                ..
-            } => Err(LLMContextOutcome::Interrupted {
-                reason,
-                usage: self.state.usage.clone(),
-                snapshot,
-                abort,
-            }),
+            // The outer state has not changed since this step started (the
+            // inner run was aborted before any assistant output entered it),
+            // so the OUTER snapshot is the correct resume point for the
+            // behavior loop; the inner snapshot is a flattened prompt.
+            LLMContextOutcome::Interrupted { reason, abort, .. } => {
+                Err(LLMContextOutcome::Interrupted {
+                    reason,
+                    usage: self.state.usage.clone(),
+                    snapshot: self.snapshot(),
+                    abort,
+                })
+            }
             LLMContextOutcome::Error { error, trace, .. } => {
                 self.absorb_trace(trace);
                 Err(self.finish_error(error))

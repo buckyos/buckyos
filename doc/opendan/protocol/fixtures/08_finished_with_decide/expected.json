@@ -1,0 +1,38 @@
+{
+  "description": "Finished work session (artifact demo, version produced) with control(decide: accept) and a late msg in the queue.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "acceptance_after": "accepted",
+    "action": "apply_decide_reject_late_msg",
+    "artifact_head_after": "v-work-fixture-decide",
+    "rejected": [
+      "q#2"
+    ]
+  },
+  "scenario": "finished_with_decide",
+  "sessions": [
+    {
+      "live_run": null,
+      "runs_on_disk": [
+        "20260929-095941-d25421"
+      ],
+      "session_id": "work-fixture-decide",
+      "state": {
+        "acceptance": "pending",
+        "inputs": {},
+        "last_run": "20260929-095941-d25421",
+        "outcome": "succeeded",
+        "process_stack": [],
+        "rev": 3,
+        "round": 1,
+        "run_state": "finished"
+      },
+      "worklog": {
+        "committed_bytes": 1181,
+        "committed_seq": 7,
+        "file_bytes": 1181,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

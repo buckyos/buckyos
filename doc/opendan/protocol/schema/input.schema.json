@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InputKind": {
+      "enum": [
+        "msg",
+        "event",
+        "change",
+        "control",
+        "perception"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "An input to post (producer side).",
+  "properties": {
+    "intent": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "key": {
+      "description": "Producer dedup key. Change inputs coalesce by key; terminal changes use a separate `…#terminal` key.",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/definitions/InputKind"
+    },
+    "payload": true,
+    "reply_to": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "key",
+    "kind",
+    "payload"
+  ],
+  "title": "Input",
+  "type": "object"
+}

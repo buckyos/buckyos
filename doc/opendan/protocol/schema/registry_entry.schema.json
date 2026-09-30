@@ -1,0 +1,435 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Acceptance": {
+      "enum": [
+        "n/a",
+        "pending",
+        "accepted",
+        "discarded"
+      ],
+      "type": "string"
+    },
+    "Activity": {
+      "description": "What this session is doing and roughly what it modifies (§6.7).",
+      "properties": {
+        "heartbeat_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        },
+        "touching": {
+          "items": {
+            "$ref": "#/definitions/Touching"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "AgentAccess": {
+      "enum": [
+        "full",
+        "status_only"
+      ],
+      "type": "string"
+    },
+    "CreatedBy": {
+      "properties": {
+        "principal": {
+          "description": "`app:<appid>@<owner>` (A9).",
+          "type": "string"
+        },
+        "via": {
+          "default": "app",
+          "description": "`app | ui_session:<sid> | opendan | task_mgr:<task_id>`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal"
+      ],
+      "type": "object"
+    },
+    "DriverRef": {
+      "properties": {
+        "principal": {
+          "description": "Driving identity = the appid of the driving process (Q9 / Q16).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "principal"
+      ],
+      "type": "object"
+    },
+    "LastRunner": {
+      "description": "Driver of the last commit (Q9: which runner advanced the session).",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock_epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runner_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "lock_epoch",
+        "pid",
+        "runner_id"
+      ],
+      "type": "object"
+    },
+    "Origin": {
+      "properties": {
+        "intent_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason_messages": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Outcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "stopped"
+      ],
+      "type": "string"
+    },
+    "RunState": {
+      "enum": [
+        "created",
+        "ready",
+        "running",
+        "waiting",
+        "finished"
+      ],
+      "type": "string"
+    },
+    "Scope": {
+      "description": "Initial activity declaration: what this session plans to modify (§6.7).",
+      "properties": {
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "SessionKind": {
+      "enum": [
+        "ui",
+        "work",
+        "self_improve",
+        "self_check"
+      ],
+      "type": "string"
+    },
+    "SessionStatus": {
+      "description": "Cached status of a session (the truth is its own state.json).",
+      "properties": {
+        "acceptance": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Acceptance"
+            }
+          ],
+          "default": "n/a"
+        },
+        "activity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/Activity"
+            }
+          ],
+          "default": {
+            "heartbeat_ms": 0,
+            "summary": ""
+          }
+        },
+        "last_error": true,
+        "last_runner": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LastRunner"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "one_line_status": {
+          "default": "",
+          "type": "string"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Outcome"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pending_decision": true,
+        "report_brief": {
+          "default": "",
+          "description": "≤ 500 chars.",
+          "type": "string"
+        },
+        "rev": {
+          "description": "= state.json `rev`; updates with `rev ≤` the stored one are ignored.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_state": {
+          "$ref": "#/definitions/RunState"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "rev",
+        "run_state"
+      ],
+      "type": "object"
+    },
+    "Touching": {
+      "properties": {
+        "kind": {
+          "description": "`path | object | artifact`.",
+          "type": "string"
+        },
+        "mode": {
+          "default": "write",
+          "description": "`read | write`.",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "since_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRef": {
+      "oneOf": [
+        {
+          "description": "Agent internal workspace `<agent_root>/workspace/<id>`.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "agent"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Directory owned by a user / application.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "external"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "path"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "`state/sessions/<sid>.json`.",
+  "properties": {
+    "agent_access": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/AgentAccess"
+        }
+      ],
+      "default": "full"
+    },
+    "artifact_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "class": {
+      "default": "",
+      "type": "string"
+    },
+    "created_by": {
+      "$ref": "#/definitions/CreatedBy"
+    },
+    "driver": {
+      "$ref": "#/definitions/DriverRef"
+    },
+    "idempotency_key": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "input_queue": {
+      "description": "kmsg queue urn other parties post to.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "kind": {
+      "$ref": "#/definitions/SessionKind"
+    },
+    "location": {
+      "description": "Path of the session directory (DFS path).",
+      "type": "string"
+    },
+    "location_rev": {
+      "default": 0,
+      "description": "Location changes (session moved); last write wins, driver only.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "objective": {
+      "default": "",
+      "type": "string"
+    },
+    "origin": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Origin"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Scope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Initial activity declaration copied from the session scope."
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/definitions/SessionStatus"
+    },
+    "unreachable": {
+      "description": "`verify` marks entries whose location disappeared (never deleted).",
+      "type": "boolean"
+    },
+    "wake_event": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "workspace": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "created_by",
+    "driver",
+    "kind",
+    "location",
+    "session_id",
+    "status"
+  ],
+  "title": "RegistryEntry",
+  "type": "object"
+}

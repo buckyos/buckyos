@@ -1,0 +1,560 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "Acceptance": {
+      "enum": [
+        "n/a",
+        "pending",
+        "accepted",
+        "discarded"
+      ],
+      "type": "string"
+    },
+    "Activity": {
+      "description": "What this session is doing and roughly what it modifies (§6.7).",
+      "properties": {
+        "heartbeat_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        },
+        "touching": {
+          "items": {
+            "$ref": "#/definitions/Touching"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "LiveRun": {
+      "description": "A run that is not finished yet (xllm run directory).",
+      "properties": {
+        "applied_input_seq": {
+          "default": 0,
+          "description": "Receipt batches of this run already applied to state (§8.3).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "flushed_input_seq": {
+          "default": 0,
+          "description": "Behavior runs: receipts (injected messages) with `input_seq ≤` this are in the worklog.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "flushed_step": {
+          "default": 0,
+          "description": "What of this run is already in the worklog. Function call runs: the number of messages after the prefix; behavior runs: steps with `step_index < flushed_step`.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "process_entry": {
+          "description": "Process entry the run belongs to (behavior process ↔ run).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rounds": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/RoundInputs"
+          },
+          "type": "array"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "Outcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "stopped"
+      ],
+      "type": "string"
+    },
+    "ProcessFrame": {
+      "description": "Suspended behavior process (its run is kept, §4.4).",
+      "properties": {
+        "applied_input_seq": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "entry": {
+          "type": "string"
+        },
+        "flushed_input_seq": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "flushed_step": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "mode": {
+          "$ref": "#/definitions/ProcessMode"
+        },
+        "rounds": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/RoundInputs"
+          },
+          "type": "array"
+        },
+        "run_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "entry",
+        "mode",
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "ProcessMode": {
+      "enum": [
+        "fork",
+        "independent"
+      ],
+      "type": "string"
+    },
+    "RecentKeys": {
+      "description": "Bounded dedup cache of producer `key`s (§4.5). It only filters duplicate deliveries; it never replaces the receipts persisted in snapshots or the per-source consumption positions.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "RoundInputs": {
+      "description": "Inputs consumed by one round of a run (written into `round_started`).",
+      "properties": {
+        "at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "changes": {
+          "description": "Subscription changes, e.g. `s1@16`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "description": "Hook point that started the round (`on_init`, `on_wakeup`, ...).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_seq": {
+          "default": 0,
+          "description": "`input_seq` of the receipt that opened the round.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inputs": {
+          "description": "Stable input ids, e.g. `q#121`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "round": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "round"
+      ],
+      "type": "object"
+    },
+    "RunState": {
+      "enum": [
+        "created",
+        "ready",
+        "running",
+        "waiting",
+        "finished"
+      ],
+      "type": "string"
+    },
+    "SourceProgress": {
+      "description": "Consumption progress of one input source (§4.5).",
+      "properties": {
+        "acked_index": {
+          "default": 0,
+          "description": "Highest index acknowledged-able: every index ≤ this was consumed.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "consumed_above": {
+          "description": "Consumed indices above `acked_index` (selective consumption).",
+          "items": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "reading": {
+          "description": "msg-center records consumed but not yet marked `Read` (deferred).",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "Topic": {
+      "properties": {
+        "tags": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "title": {
+          "default": "",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "Touching": {
+      "properties": {
+        "kind": {
+          "description": "`path | object | artifact`.",
+          "type": "string"
+        },
+        "mode": {
+          "default": "write",
+          "description": "`read | write`.",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "since_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "WaitingFor": {
+      "properties": {
+        "deadline_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "description": "`input | tool | event | children`.",
+          "type": "string"
+        },
+        "refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "WorklogBoundary": {
+      "properties": {
+        "committed_bytes": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "committed_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "committed_bytes",
+        "committed_seq"
+      ],
+      "type": "object"
+    },
+    "WriterInfo": {
+      "properties": {
+        "host": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lock_epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "pid": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "principal": {
+          "type": "string"
+        },
+        "runner_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "lock_epoch",
+        "pid",
+        "principal",
+        "runner_id"
+      ],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "acceptance": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Acceptance"
+        }
+      ],
+      "default": "n/a"
+    },
+    "activity": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Activity"
+        }
+      ],
+      "default": {
+        "heartbeat_ms": 0,
+        "summary": ""
+      }
+    },
+    "bootstrap_done": {
+      "default": false,
+      "type": "boolean"
+    },
+    "current_behavior": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "inputs": {
+      "additionalProperties": {
+        "$ref": "#/definitions/SourceProgress"
+      },
+      "default": {},
+      "description": "Per input source consumption progress, keyed by source id.",
+      "type": "object"
+    },
+    "internal_continuation": {
+      "description": "A round to start without new input (behavior switch hand-over).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "last_error": true,
+    "last_run": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "live_run": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/LiveRun"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "one_line_status": {
+      "default": "",
+      "type": "string"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Outcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "pending_decision": {
+      "description": "Decisions seen in the queue but not applied yet (UI display)."
+    },
+    "pending_task_calls": {
+      "items": true,
+      "type": "array"
+    },
+    "perception_seq": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "process_entry": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "process_result": {
+      "description": "Result of a fork child process, handed to the resumed parent in the next round (`{behavior, result}`)."
+    },
+    "process_stack": {
+      "items": {
+        "$ref": "#/definitions/ProcessFrame"
+      },
+      "type": "array"
+    },
+    "recent_keys": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/RecentKeys"
+        }
+      ],
+      "default": []
+    },
+    "reported_rev": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "result": true,
+    "rev": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "round": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "run_state": {
+      "$ref": "#/definitions/RunState"
+    },
+    "schema": {
+      "type": "string"
+    },
+    "stop_requested": {
+      "default": false,
+      "description": "Stop requested through `control(stop)`; applied at the next safe point.",
+      "type": "boolean"
+    },
+    "subscription_cursors": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "topic": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/Topic"
+        }
+      ],
+      "default": {
+        "title": ""
+      }
+    },
+    "updated_at_ms": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "waiting_for": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WaitingFor"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "worklog": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/WorklogBoundary"
+        }
+      ],
+      "default": {
+        "committed_bytes": 0,
+        "committed_seq": 0
+      }
+    },
+    "writer": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WriterInfo"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "rev",
+    "run_state",
+    "schema"
+  ],
+  "title": "SessionState",
+  "type": "object"
+}

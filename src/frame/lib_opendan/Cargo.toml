@@ -1,0 +1,34 @@
+[package]
+name = "libopendan"
+version.workspace = true
+edition = "2021"
+authors = ["BuckyOS DAO"]
+description = "libOpenDAN: Agent Session directory protocol, Agent State, runtime and session runner"
+
+[lib]
+name = "libopendan"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+log = { workspace = true }
+chrono = { workspace = true }
+fs2 = { workspace = true }
+uuid = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+libc = "0.2.177"
+toml = { workspace = true }
+kRPC = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }
+llm_context = { path = "../llm_context" }
+agent_tool = { path = "../agent_tool" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+kmsg = { path = "../../kernel/kmsg" }

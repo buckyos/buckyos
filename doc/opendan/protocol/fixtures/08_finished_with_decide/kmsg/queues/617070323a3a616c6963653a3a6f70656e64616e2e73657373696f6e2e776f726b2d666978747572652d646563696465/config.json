@@ -1,0 +1,9 @@
+{
+  "max_messages": null,
+  "retention_seconds": null,
+  "sync_write": true,
+  "other_app_can_read": false,
+  "other_app_can_write": true,
+  "other_user_can_read": false,
+  "other_user_can_write": false
+}

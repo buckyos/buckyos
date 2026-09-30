@@ -1,0 +1,217 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ChangeReceipt": {
+      "description": "A consumed subscription change.",
+      "properties": {
+        "cursor": {
+          "description": "New cursor value for `state.subscription_cursors[subscription]`."
+        },
+        "id": {
+          "description": "`s1@16` style id.",
+          "type": "string"
+        },
+        "subscription": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "subscription"
+      ],
+      "type": "object"
+    },
+    "InputRef": {
+      "description": "Stable reference to one consumed input instance.",
+      "properties": {
+        "index": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "kind": {
+          "description": "`msg | event | change | control | perception`.",
+          "type": "string"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "src"
+      ],
+      "type": "object"
+    },
+    "MessagePos": {
+      "description": "Where the message of a receipt batch lives inside the snapshot.",
+      "oneOf": [
+        {
+          "description": "In `request.input` (first round of a new run).",
+          "properties": {
+            "index": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "request_input"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "In `state.accumulated` (function-call runs).",
+          "properties": {
+            "index": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "accumulated"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Attached to a behavior step as `next_user_message`.",
+          "properties": {
+            "index": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "kind": {
+              "enum": [
+                "step"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "index",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Nothing rendered (e.g. bootstrap without inputs).",
+          "properties": {
+            "kind": {
+              "enum": [
+                "none"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "description": "Structured receipt of one batch of inputs that entered the context (§8.3). Persisted inside the run snapshot together with the message.",
+  "properties": {
+    "after_step": {
+      "default": 0,
+      "description": "Behavior runs: `next_step_index` when the batch was injected (orders a `request_input` message among the steps).",
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "bootstrap": {
+      "default": false,
+      "type": "boolean"
+    },
+    "changes": {
+      "items": {
+        "$ref": "#/definitions/ChangeReceipt"
+      },
+      "type": "array"
+    },
+    "consumed_only": {
+      "description": "Inputs consumed by this batch without entering the context (coalesced changes, dropped changes).",
+      "items": {
+        "$ref": "#/definitions/InputRef"
+      },
+      "type": "array"
+    },
+    "content": {
+      "default": "",
+      "description": "Rendered message text (evidence; also used for `user_message`).",
+      "type": "string"
+    },
+    "extra": {
+      "additionalProperties": true,
+      "type": "object"
+    },
+    "hook": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "input_seq": {
+      "description": "Monotonic within the run; batch id = (run_id, input_seq).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/definitions/InputRef"
+      },
+      "type": "array"
+    },
+    "message_pos": {
+      "$ref": "#/definitions/MessagePos"
+    },
+    "opens_round": {
+      "default": false,
+      "description": "`true` when this batch opened a new round (vs. observation injection).",
+      "type": "boolean"
+    },
+    "round": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "run_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "at_ms",
+    "input_seq",
+    "message_pos",
+    "round",
+    "run_id"
+  ],
+  "title": "InputReceipt",
+  "type": "object"
+}

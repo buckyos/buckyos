@@ -97,3 +97,14 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 - `cargo test -p agent_tool --lib run_local_llm`（CLI 参数规则）。
 - 真实环境：在 DV Test 的 OOD 上以 root 运行 `agent_tool xllm "问题"`，即走上面第 2 种登录方式。
 - 端到端（无 BuckyOS）：用一个 OpenAI 兼容的 mock HTTP 服务（返回 `choices[0].message` 与可选 `tool_calls`），在 `.llm_context` 里配置 `provider.type: openai`、`base_url`、`api_key_env`，即可跑通新任务、管道串联、工具循环、`--json`、暂停/resume、`--output`、list/status/result。
+
+## 10. 宿主装配的 Run 与恢复检查（2026-09-29，Agent Session SDK §8.7）
+
+libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增加以下可选能力，xllm 自己的 Run 行为不变：
+
+- **宿主装配（X2）**：`XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps) -> HostedTask`。宿主给出 `.llm_context` 的 JSON 形式（同 schema、严格键）和自己的 system 文本；xllm 计算有效配置、展开工具，并在宿主文本后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`protocol_version = xllm/1`）。`HostedTask::new_record` / `build_request`、`hosted_request`、`hosted_waist_deps`（behavior 用 `XllmActionParser` + `XmlStepRenderer`）让宿主驱动 waist，而 run 目录保持 xllm 可接手。`rebuild_toolset` / `create_run_llm` 按保存的记录重建工具与 Provider。
+- **RunStore（X1）**：`create_run`、`lock_run`、`remove_run`、`prune_snapshots` 公开；`run.json` 与快照写入先 fsync 再原子发布（目录也 fsync）。
+- **RunRecord 新字段**（均可缺省）：`host`（`assembled_by`、`session_id`、`runtime_kind`、`runtime_id`、`env_check`）、`host_commit_pending`、`inflight[]`、`executions[]`。
+- **resume 检查（X3 / X6）**：`version` 大于支持版本 → 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；`host.runtime_kind` 不是 `native` → 拒绝；取得 run 锁后先确认 `executions[]` 中旧执行已停止（`exec_tracking::stop_execution`，无法确认则拒绝），再把没有持久结果的 `inflight[]` 物化为“结果未知”（`materialize_unresolved`）并落盘，**不重放工具**。
+- **执行跟踪（X6）**：`agent_tool::exec_tracking`：`TrackedBashRunner`（启动握手：执行标识经 `ExecutionRegistrar` 持久化后才放行命令；子进程继承 `OPENDAN_EXECUTION_ID`）、`probe_execution` / `stop_execution`（按环境标记而不是可复用的 PID 核对，无法核对返回 Unknown）。`XllmDeps.bash_runner` 可注入该 runner；`XllmDeps.skip_workdir_lock` 让宿主自行协调共享 workspace。
+- 快照版本与宿主元数据见《LLM Context 设计》§9.4；session 协议见 `doc/opendan/protocol/`。

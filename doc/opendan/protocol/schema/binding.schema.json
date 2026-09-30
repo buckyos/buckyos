@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "`binding.json` — written once on the first drive (§7.1).",
+  "properties": {
+    "bound_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "bound_by": {
+      "type": "string"
+    },
+    "kind": {
+      "description": "`native | tmux`.",
+      "type": "string"
+    },
+    "runtime_id": {
+      "type": "string"
+    },
+    "workdir": {
+      "description": "Absolute workdir for exec (the only place absolute paths are allowed besides `runs/`).",
+      "type": "string"
+    }
+  },
+  "required": [
+    "bound_at_ms",
+    "bound_by",
+    "kind",
+    "runtime_id",
+    "workdir"
+  ],
+  "title": "Binding",
+  "type": "object"
+}

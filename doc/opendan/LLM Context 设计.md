@@ -724,6 +724,32 @@ loop {
 - L4 要区分"算出 outcome"和"outcome 已提交"：边界写入失败时保留已算出的 outcome 与内存快照，只重试保存，不重新 `run()`。
 - checkpoint 不能独自保证不重复扣费、不重复执行副作用：TurnHook 写盘之后、工具执行完成之后到下一个 checkpoint 之间崩溃，恢复会重跑该段 inference / 工具调用。**ToolManager / provider 的幂等性是 effect 层私事**。Behavior 模式下 TurnHook 收到的是内层传统上下文的快照（不含 StepRecord 流），外层步骤状态只在 outcome 边界由 L4 提交。
 
+### 9.4 CheckpointHook、注入与宿主元数据（2026-09-29，Agent Session SDK §8.7 X2/X3/X4/X5）
+
+以下均为可选能力，未使用时行为不变。
+
+```rust
+#[async_trait]
+pub trait CheckpointHook: Send + Sync {
+    /// 每次推理之前、以**外层**快照调用：function call 模式在一轮工具结果之后，
+    /// behavior 模式在每个 step 的 do-action 之后（步边界）。不会交给 behavior
+    /// 的内层逐步上下文（into_traditional 会去掉它）。
+    /// Ok(None)：快照已持久化，可以推理；Ok(Some(injection))：waist 应用注入后
+    /// 再调用一次，使注入后的状态先落盘（每个边界最多 4 次注入）；
+    /// Err：以 Error{Checkpoint{BeforeInference}} 结束，内存快照仍可恢复。
+    async fn before_inference(&self, snapshot: &LLMContextSnapshot)
+        -> Result<Option<Injection>, String>;
+}
+pub struct Injection { pub messages: Vec<AiMessage>, pub host: Option<Value> }
+```
+
+- `LLMContext::inject(injection) -> InjectionPosition`：function call 追加到 `accumulated`；behavior 模式并入热 step（或 `Done` 之后当前 behavior 的最后一个 step）的 `next_user_message`（接在默认的动作结果渲染之后），否则追加到 `request.input`。宿主用同一规则预测位置，把位置写进 receipt。
+- `LLMContextState.host: Option<Value>`：宿主元数据（如 libOpenDAN 的输入 receipt，键为宿主名），随每个快照、resume 和其它执行者的续跑原样保留，waist 不解释。
+- `LLMContextState.snapshot_version`：0 = 版本化之前的快照，当前为 1；`resume` 拒绝大于 `SNAPSHOT_FORMAT_VERSION` 的版本（`SnapshotCorrupted`），调用方据此保留现场而不是新建上下文。
+- behavior 模式的 `Interrupted` 现在返回**外层**快照（此前是扁平化的内层快照），可直接 `ResumeFromMidRun`。
+- `XmlStepRenderer::without_timestamps()`：历史记录不渲染 `started_at_ms` / `ended_at_ms`，同样的 steps 渲染出相同字节（X8）；宿主装配的 xllm run 使用它，默认渲染不变。
+- 在途动作与执行跟踪（X6）属于 effect 层，见 `agent_tool::exec_tracking` 与 [Lease Protocol](protocol/Lease%20Protocol.md) §5。
+
 ---
 
 ## 10. 主循环骨架
