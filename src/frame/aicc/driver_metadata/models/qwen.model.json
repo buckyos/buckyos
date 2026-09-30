@@ -405,6 +405,41 @@
         "stability": "stable",
         "weight": 30
       }
+    },
+    {
+      "id": "qwen2-5-72b-20240919",
+      "parameter_scale": "72b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-0-6b-20250429",
+      "parameter_scale": "0.6b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-8b-20250429",
+      "parameter_scale": "8b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-14b-20250429",
+      "parameter_scale": "14b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-32b-20250429",
+      "parameter_scale": "32b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
     }
   ],
   "patterns": [],
@@ -436,6 +471,10 @@
     },
     {
       "id": "qwen-plus"
+    },
+    {
+      "id": "qwen-legacy",
+      "direct_only": true
     }
   ]
 }

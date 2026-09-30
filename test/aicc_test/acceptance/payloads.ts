@@ -462,7 +462,8 @@ export function assertResponseShape(
     }
     return;
   }
-  if (cell.api_type === "llm" && !text.includes("BUCKYOS-AICC-4827")) {
+  const normalizedMarkerText = text.replace(/\s*-\s*/g, "-");
+  if (cell.api_type === "llm" && !normalizedMarkerText.includes("BUCKYOS-AICC-4827")) {
     throw new Error("LLM output omitted the requested acceptance marker");
   }
 

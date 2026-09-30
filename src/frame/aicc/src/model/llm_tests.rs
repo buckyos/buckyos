@@ -91,6 +91,20 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
             "max_output_tokens",
         ),
         ("doubao", "doubao-seed-evolving", "max_output_tokens"),
+        (
+            "doubao",
+            "doubao-seed-2.0-code-preview",
+            "max_context_tokens",
+        ),
+        (
+            "doubao",
+            "doubao-seed-2.0-code-preview",
+            "max_output_tokens",
+        ),
+        ("doubao", "doubao-seed-character", "max_context_tokens"),
+        ("doubao", "doubao-seed-character", "max_output_tokens"),
+        ("doubao", "doubao-seed-translation", "max_context_tokens"),
+        ("doubao", "doubao-seed-translation", "max_output_tokens"),
         ("kimi", "kimi-k2.6", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code-highspeed", "max_output_tokens"),
@@ -99,6 +113,16 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("kimi", "kimi-k3", "max_output_tokens"),
         ("minimax", "minimax-m3", "max_context_tokens"),
         ("minimax", "minimax-m3", "max_output_tokens"),
+        ("qwen", "qwen2-5-72b-20240919", "max_context_tokens"),
+        ("qwen", "qwen2-5-72b-20240919", "max_output_tokens"),
+        ("qwen", "qwen3-0-6b-20250429", "max_context_tokens"),
+        ("qwen", "qwen3-0-6b-20250429", "max_output_tokens"),
+        ("qwen", "qwen3-8b-20250429", "max_context_tokens"),
+        ("qwen", "qwen3-8b-20250429", "max_output_tokens"),
+        ("qwen", "qwen3-14b-20250429", "max_context_tokens"),
+        ("qwen", "qwen3-14b-20250429", "max_output_tokens"),
+        ("qwen", "qwen3-32b-20250429", "max_context_tokens"),
+        ("qwen", "qwen3-32b-20250429", "max_output_tokens"),
     ]
     .into_iter()
     .map(|(driver, model, field)| (driver.to_owned(), model.to_owned(), field))

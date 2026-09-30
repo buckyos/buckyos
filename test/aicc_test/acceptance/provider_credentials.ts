@@ -109,9 +109,8 @@ export function applyProviderTokens(
         selected.credentials = { api_token: { locked: token } };
         continue;
       }
-      if (candidates.length > 0) {
-        throw new Error(`configured provider instance ${selectedName} was not found for ${driver}`);
-      }
+      providers.push(defaultInstance(driver, selectedName, token));
+      continue;
     }
     if (candidates.length === 1) {
       candidates[0].credentials = { api_token: { locked: token } };

@@ -332,6 +332,17 @@ async function addProvider(
       configuredModels.set(providerModelId, model);
     }
   }
+  for (const contract of provider.contracts) {
+    for (const [apiType, providerModelId] of Object.entries(contract.test_model_ids ?? {})) {
+      const model = configuredModels.get(providerModelId) ?? {
+        apiTypes: new Set<string>(),
+        remoteMethods: new Set<string>(),
+      };
+      model.apiTypes.add(apiType);
+      model.remoteMethods.add(contract.operation);
+      configuredModels.set(providerModelId, model);
+    }
+  }
   const catalogDiscovery = catalogOnly.has(driver)
     ? {
       revision: `t15-${driver}-${instance}`,

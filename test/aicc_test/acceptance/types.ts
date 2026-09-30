@@ -98,6 +98,8 @@ export type ProviderModel = {
   logical_mounts: string[];
   health?: string;
   quota?: string;
+  official_lifecycle_status?: string;
+  official_task_types?: string[];
   pricing?: {
     currency?: string;
     input_token?: number;
@@ -172,6 +174,8 @@ export type OfficialCatalogConfig = {
   page_size?: number;
   endpoint_ids?: string[];
   model_ids?: string[];
+  supplemental_model_ids?: string[];
+  task_type_api_types?: Record<string, string[]>;
   checked_at?: string;
   risk?: string;
 };

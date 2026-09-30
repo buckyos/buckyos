@@ -170,6 +170,29 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
         throw new Error(`${driver}.official_catalog.endpoint_ids must contain 1-50 unique ids`);
       }
     }
+    if (rawProvider.official_catalog.supplemental_model_ids !== undefined) {
+      const supplementalModelIds = requireStringArray(
+        rawProvider.official_catalog.supplemental_model_ids,
+        `${driver}.official_catalog.supplemental_model_ids`,
+      );
+      if (supplementalModelIds.length === 0 ||
+        new Set(supplementalModelIds).size !== supplementalModelIds.length) {
+        throw new Error(`${driver}.official_catalog.supplemental_model_ids must be non-empty and unique`);
+      }
+    }
+    if (rawProvider.official_catalog.task_type_api_types !== undefined) {
+      if (!isObject(rawProvider.official_catalog.task_type_api_types)) {
+        throw new Error(`${driver}.official_catalog.task_type_api_types must be an object`);
+      }
+      for (const [taskType, apiTypes] of Object.entries(rawProvider.official_catalog.task_type_api_types)) {
+        if (!taskType || !Array.isArray(apiTypes) || apiTypes.length === 0 ||
+          apiTypes.some((apiType) =>
+            typeof apiType !== "string" || !(CANONICAL_API_TYPES as readonly string[]).includes(apiType)
+          )) {
+          throw new Error(`${driver}.official_catalog.task_type_api_types.${taskType} is invalid`);
+        }
+      }
+    }
     if (rawProvider.official_catalog.format === "frozen") {
       const modelIds = requireStringArray(
         rawProvider.official_catalog.model_ids,
@@ -436,9 +459,26 @@ export function analyzeProviderMatrix(args: {
     }
     for (const model of inventory.models) {
       if (model.provider_actual_model_id || model.provider_model_id.includes(":")) continue;
-      const rule = capabilityProfile.rules.find((candidate) =>
+      const configuredRule = capabilityProfile.rules.find((candidate) =>
         globMatches(candidate.model_pattern, model.provider_model_id)
       );
+      const catalogApiTypes = model.official_task_types?.flatMap((taskType) =>
+        profile.official_catalog.task_type_api_types?.[taskType] ?? []
+      );
+      const derivedApiTypes = catalogApiTypes ? [...new Set(catalogApiTypes)] : [];
+      const rule = configuredRule ?? (derivedApiTypes.length > 0
+        ? {
+          model_pattern: model.provider_model_id,
+          status: "active" as const,
+          source_status: "official_catalog_task_type",
+          api_types: derivedApiTypes,
+          methods: derivedApiTypes.flatMap((apiType) => methodsForApiType(apiType)),
+          input_kinds: [],
+          output_kinds: [],
+          source_urls: profile.source_urls,
+          evidence_summary: `Official catalog task_type: ${model.official_task_types?.join(", ")}.`,
+        }
+        : undefined);
       if (!rule) {
         errors.push(
           `missing official capability rule for ${inventory.provider_driver}/${model.provider_model_id}`,

@@ -54,6 +54,7 @@ export type ProviderProtocolContract = {
   base_contract_id?: string;
   api_version: string;
   api_types: string[];
+  test_model_ids?: Record<string, string>;
   variant_api_types?: string[];
   operation: string;
   http_method: string;
@@ -66,7 +67,7 @@ export type ProviderProtocolContract = {
   allowed_body_fields: string[];
   body_field_types: Record<
     string,
-    Array<"string" | "number" | "boolean" | "array" | "object">
+    Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
   generation_config?: {
     allowed_fields: string[];
@@ -341,8 +342,23 @@ export function validateProviderProtocolCatalog(
         nonEmptyString(contract[field], `${id}.${field}`);
       }
       stringArray(contract.api_types, `${id}.api_types`);
+      const contractTestModelIds = contract.test_model_ids === undefined
+        ? {}
+        : object(contract.test_model_ids, `${id}.test_model_ids`);
+      for (const [apiType, modelId] of Object.entries(contractTestModelIds)) {
+        if (!(contract.api_types as string[]).includes(apiType)) {
+          throw new Error(`${id}.test_model_ids.${apiType} is not declared by the contract`);
+        }
+        nonEmptyString(modelId, `${id}.test_model_ids.${apiType}`);
+        const officialPool = (provider.official_first_party_model_ids as
+          | Record<string, string[]>
+          | undefined)?.[apiType];
+        if (officialPool && !officialPool.includes(String(modelId))) {
+          throw new Error(`${id}.test_model_ids.${apiType} is absent from its official model pool`);
+        }
+      }
       for (const apiType of contract.api_types as string[]) {
-        if (!testModelIds[apiType]) {
+        if (!contractTestModelIds[apiType] && !testModelIds[apiType]) {
           throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
         }
       }
@@ -407,7 +423,7 @@ export function validateProviderProtocolCatalog(
         const types = stringArray(rawTypes, `${id}.body_field_types.${field}`);
         if (
           types.some((type) =>
-            !["string", "number", "boolean", "array", "object"].includes(type)
+            !["string", "number", "integer", "boolean", "array", "object"].includes(type)
           )
         ) {
           throw new Error(
@@ -708,6 +724,18 @@ export function protocolContract(
   return contract;
 }
 
+export function contractTestModelId(
+  provider: ProviderProtocolCatalog["providers"][number],
+  contract: ProviderProtocolContract,
+  apiType: string,
+): string {
+  const model = contract.test_model_ids?.[apiType] ?? provider.test_model_ids[apiType];
+  if (!model) {
+    throw new Error(`${contract.id} has no test model for ${apiType}`);
+  }
+  return model;
+}
+
 function pathPattern(template: string): RegExp {
   const escaped = template.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
     .replace(/\\\{[^}]+\\\}/g, "[^/]+");
@@ -821,16 +849,39 @@ export function validateProviderRequest(
   for (const field of Object.keys(body)) {
     if (!allowed.has(field)) errors.push(`unknown body field ${field}`);
     const expectedTypes = contract.body_field_types[field];
-    if (
-      expectedTypes && !expectedTypes.includes(
-        Array.isArray(body[field])
-          ? "array"
-          : body[field] !== null && typeof body[field] === "object"
-          ? "object"
-          : typeof body[field] as never,
-      )
-    ) {
+    const actualType = Array.isArray(body[field])
+      ? "array"
+      : body[field] !== null && typeof body[field] === "object"
+      ? "object"
+      : typeof body[field];
+    if (expectedTypes && !(
+      expectedTypes.includes(actualType as never) ||
+      actualType === "number" && expectedTypes.includes("integer") &&
+        Number.isInteger(body[field])
+    )) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  if (contract.id === "doubao.translation.responses.v3") {
+    const input = body.input;
+    const userTextBlocks = Array.isArray(input)
+      ? input.flatMap((item) => {
+        const record = recordValue(item);
+        if (record?.role !== "user" || !Array.isArray(record.content)) return [];
+        return record.content.filter((block) => recordValue(block)?.type === "input_text");
+      })
+      : [];
+    const options = userTextBlocks.length === 1
+      ? recordValue(recordValue(userTextBlocks[0])?.translation_options)
+      : undefined;
+    if (!options || typeof options.target_language !== "string" || !options.target_language.trim()) {
+      errors.push("Doubao translation requests require one user input_text translation_options.target_language");
+    } else if (
+      Object.keys(options).some((name) => !["source_language", "target_language"].includes(name)) ||
+      options.source_language !== undefined &&
+        (typeof options.source_language !== "string" || !options.source_language.trim())
+    ) {
+      errors.push("Doubao translation_options contains invalid fields");
     }
   }
   if (contract.api_types.includes("decision")) {
@@ -1614,6 +1665,9 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
   const baseResponse = body.base_resp && typeof body.base_resp === "object"
     ? body.base_resp as Record<string, unknown>
     : undefined;
+  const header = body.header && typeof body.header === "object"
+    ? body.header as Record<string, unknown>
+    : undefined;
   for (
     const value of [
       error?.code,
@@ -1622,6 +1676,7 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
       body.code,
       body.error_type,
       baseResponse?.status_code,
+      header?.code,
     ]
   ) {
     if (value !== undefined && value !== null && String(value)) {
@@ -1681,6 +1736,7 @@ export function buildT15Manifest(
   for (const provider of catalog.providers) {
     for (const contract of provider.contracts) {
       for (const apiType of contract.api_types) {
+        const contractModel = contract.test_model_ids?.[apiType];
         const common: Partial<AcceptanceCase> = {
           layer: "T1.5",
           priority: "P0",
@@ -1695,7 +1751,9 @@ export function buildT15Manifest(
           session: "isolated-per-case",
           provider_driver: provider.provider_driver,
           provider_instance: `t15-${provider.provider_driver}`,
-          model_selector: null,
+          model_selector: contractModel
+            ? { kind: "exact", value: contractModel }
+            : null,
           api_type: apiType,
           method: methodsForApiType(apiType)[0] ?? apiType,
           execution_mode: "immediate",

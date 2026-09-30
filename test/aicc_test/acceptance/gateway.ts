@@ -18,6 +18,30 @@ export type GatewaySession = {
   systemConfig: RpcClient;
 };
 
+export async function openAiccArtifact(input: {
+  gatewayUrl: string;
+  sessionToken: string;
+  url: string;
+  artifactId?: string;
+}): Promise<Response> {
+  const gatewayUrl = input.gatewayUrl.replace(/\/+$/, "");
+  const response = await fetch(`${gatewayUrl}/kapi/aicc/artifact/open`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${input.sessionToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      url: input.url,
+      ...(input.artifactId ? { artifact_id: input.artifactId } : {}),
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`AICC artifact download failed with HTTP ${response.status}`);
+  }
+  return response;
+}
+
 function chatMessages(
   payload: Record<string, unknown> | undefined,
   input: Record<string, unknown> | undefined,

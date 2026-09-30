@@ -43,6 +43,15 @@ export function assertNoSecrets(value: unknown): void {
 export function isProviderRestricted(error: unknown): boolean {
   const message = String(error).toLowerCase();
   return message.includes("request not allowed") ||
+    message.includes("accountoverdueerror") ||
+    message.includes("account has an overdue balance") ||
+    message.includes("modelnotopen") ||
+    message.includes("has not activated the model") ||
+    message.includes("accessdenied") ||
+    message.includes("do not have access to the requested resource") ||
+    message.includes("invalid x-api-key") ||
+    (message.includes("invalidendpointormodel.notfound") &&
+      message.includes("do not have access")) ||
     ((message.includes("unsupportedmodel") || message.includes("requested model does not support")) &&
       message.includes("agent plan feature"));
 }

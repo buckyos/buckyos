@@ -515,6 +515,52 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
     }
 }
 
+#[tokio::test]
+async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
+    let body = json!({"object":"list","data":[
+        {"object":"model","id":"active-vlm","task_type":["TextGeneration","VisualQuestionAnswering","SpeechToText"]},
+        {"object":"model","id":"active-video","task_type":["MultimodalToVideo","VideoEditing","VideoExtension"]},
+        {"object":"model","id":"retiring","status":"Retiring","task_type":["TextGeneration"]},
+        {"object":"model","id":"unsupported-3d","task_type":["ImageTo3D"]}
+    ]});
+    let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
+        &ModelsHttp(body),
+        HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
+        "doubao",
+    )
+    .await
+    .unwrap();
+    let model = |id: &str| {
+        models
+            .iter()
+            .find(|model| model.provider_model_id == id)
+            .unwrap()
+    };
+    assert_eq!(
+        model("active-vlm").api_types.clone(),
+        Some(vec![
+            ApiType::Llm,
+            ApiType::VisionOcr,
+            ApiType::VisionCaption
+        ])
+    );
+    assert_eq!(
+        model("active-video").api_types.clone(),
+        Some(vec![
+            ApiType::VideoTextToVideo,
+            ApiType::VideoImageToVideo,
+            ApiType::VideoToVideo,
+            ApiType::VideoExtend,
+        ])
+    );
+    assert_eq!(
+        model("retiring").availability,
+        ModelAvailability::Unavailable
+    );
+    assert!(model("retiring").deprecated);
+    assert_eq!(model("unsupported-3d").api_types.clone(), Some(vec![]));
+}
+
 #[test]
 fn claude_account_models_are_matched_with_every_declared_preset() {
     let catalog = catalog();
@@ -789,7 +835,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
     for (provider, expected_count) in [
         ("claude", 12),
         ("deepseek", 3),
-        ("doubao", 12),
+        ("doubao", 11),
         ("doubao-agent-plan", 0),
         ("fal", 4),
         ("gemini", 29),
@@ -863,7 +909,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 310);
+    assert_eq!(pricing_count, 304);
 }
 
 #[test]
@@ -874,15 +920,10 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
     assert!(agent_plan.model_pricing.is_empty());
 
     let doubao = catalog.provider_rules("doubao").unwrap();
-    let speech = doubao
+    assert!(doubao
         .model_pricing
         .iter()
-        .find(|rule| rule.id.as_deref() == Some("doubao-seed-tts-2.0"))
-        .unwrap();
-    assert_eq!(
-        speech.pricing.unit,
-        Some(crate::catalog::PricingUnit::Character)
-    );
+        .all(|rule| rule.id.as_deref() != Some("doubao-seed-tts-2.0")));
 
     let fal = catalog.provider_rules("fal").unwrap();
     let rembg = fal

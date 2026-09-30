@@ -471,19 +471,6 @@ fn encode_video_submit(
                 None,
                 None,
             )?;
-            if model.starts_with("doubao-seedance-2.5") {
-                parameters.insert("omni_reference_task_type".into(), json!("extend"));
-                parameters.insert("ratio".into(), json!("adaptive"));
-            }
-            if request.continuation_handle.is_some() {
-                return Err(ProtocolError::new(
-                    ProtocolErrorKind::UnsupportedOperation,
-                    "Ark video extension uses a reference video, not a continuation handle",
-                ));
-            }
-            if let Some(Value::Object(video)) = content.last_mut() {
-                video.insert("role".into(), json!("reference_video"));
-            }
         }
         _ => {
             return Err(ProtocolError::invalid_request(
@@ -650,27 +637,22 @@ fn image_mime_from_bytes(value: &[u8]) -> Option<&'static str> {
 fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
     let url = value
         .pointer("/content/video_url")
-        .filter(|value| value.is_string())
-        .or_else(|| value.pointer("/content/video_url/url"))
-        .or_else(|| value.get("video_url"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             ProtocolError::invalid_response("Doubao video result is missing video_url")
         })?;
+    let usage = value.get("usage");
     let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video":resource}),
         usage: Some(AiUsage {
-            input_tokens: value
-                .pointer("/usage/prompt_tokens")
-                .and_then(Value::as_u64)
-                .or(Some(0)),
-            output_tokens: value
-                .pointer("/usage/completion_tokens")
+            output_tokens: usage
+                .and_then(|usage| usage.get("completion_tokens"))
                 .and_then(Value::as_u64),
-            total_tokens: value.pointer("/usage/total_tokens").and_then(Value::as_u64),
-            video_seconds: value.get("duration").and_then(Value::as_f64),
+            total_tokens: usage
+                .and_then(|usage| usage.get("total_tokens"))
+                .and_then(Value::as_u64),
             ..AiUsage::request_units(1)
         }),
         artifacts: vec![AiArtifact {
@@ -981,6 +963,15 @@ mod tests {
         assert!(body.get("continuation_handle").is_none());
     }
 
+    #[test]
+    fn video_duration_is_encoded_as_an_integer() {
+        let mut body = Map::new();
+        video_options(&mut body, Some(4.0), None, None, None, None).unwrap();
+        assert_eq!(body["duration"], json!(4));
+        assert_eq!(serde_json::to_string(&body["duration"]).unwrap(), "4");
+        assert!(video_options(&mut Map::new(), Some(4.5), None, None, None, None).is_err());
+    }
+
     #[tokio::test]
     async fn submitted_video_task_preserves_cancel_support() {
         let codec = DoubaoVideoCodec {
@@ -1031,5 +1022,35 @@ mod tests {
         .unwrap();
         assert_eq!(output.value["images"][0]["mime_hint"], "image/jpeg");
         assert_eq!(output.artifacts[0].mime.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn video_result_decodes_official_content_url_and_usage() {
+        let NativeTaskOutput::Result(output) = decode_video_result(&json!({
+            "id": "video-1",
+            "status": "succeeded",
+            "content": {"video_url": "https://example.test/generated/video.mp4"},
+            "usage": {"completion_tokens": 120, "total_tokens": 120}
+        }))
+        .unwrap()
+        else {
+            panic!("expected video result")
+        };
+        assert_eq!(
+            output.value["video"]["url"],
+            "https://example.test/generated/video.mp4"
+        );
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.output_tokens, Some(120));
+        assert_eq!(usage.total_tokens, Some(120));
+    }
+
+    #[test]
+    fn video_result_rejects_non_official_nested_url_shape() {
+        assert!(decode_video_result(&json!({
+            "status": "succeeded",
+            "content": {"video_url": {"url": "https://example.test/video.mp4"}}
+        }))
+        .is_err());
     }
 }

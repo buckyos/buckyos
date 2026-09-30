@@ -35,6 +35,22 @@ export function filterPhysicalModels(args: {
       evidenceSummary: string;
     }> = [];
     for (const model of inventory.models) {
+      if (["retiring", "shutdown"].includes(model.official_lifecycle_status?.toLowerCase() ?? "")) {
+        coverage.push({
+          source: args.source,
+          provider_driver: inventory.provider_driver,
+          provider_instance: inventory.provider_instance_name,
+          exact_model: model.exact_model,
+          provider_model_id: model.provider_model_id,
+          provider_actual_model_id: model.provider_actual_model_id,
+          physical_model_id: model.provider_actual_model_id ?? model.provider_model_id,
+          status: "filtered",
+          reason: "deprecated_or_retiring",
+          source_urls: profile?.source_urls ?? [],
+          evidence_summary: `Official catalog lifecycle status is ${model.official_lifecycle_status}.`,
+        });
+        continue;
+      }
       const coverageRule = capabilityProfile?.coverage_rules?.find((rule) =>
         globMatches(rule.model_pattern, model.provider_model_id)
       );

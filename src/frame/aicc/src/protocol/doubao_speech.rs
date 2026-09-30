@@ -207,16 +207,32 @@ impl OperationCodec for DoubaoTtsCodec {
 fn decode_audio(response: HttpResponse, format: &str) -> ProtocolResultValue<ProtocolExecution> {
     if !response.status.is_success() {
         let value = serde_json::from_slice::<Value>(&response.body).unwrap_or(Value::Null);
+        let header = value.get("header").and_then(Value::as_object);
+        let request_id = header
+            .and_then(|header| header.get("reqid"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| response.request_id.clone());
         return Err(ProtocolError::new(
             super::protocol_error_kind_from_http_status(response.status),
             value
                 .get("message")
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    header
+                        .and_then(|header| header.get("message"))
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("Doubao TTS request failed"),
         )
-        .with_provider_code(value.get("code").map(Value::to_string))
+        .with_provider_code(
+            value
+                .get("code")
+                .or_else(|| header.and_then(|header| header.get("code")))
+                .map(Value::to_string),
+        )
         .with_http_status(response.status.as_u16())
-        .with_request_id(Some(response.request_id.clone()))
+        .with_request_id(Some(request_id))
         .with_retry_after(response.retry_after));
     }
     let content_type = response
@@ -251,17 +267,36 @@ fn decode_audio(response: HttpResponse, format: &str) -> ProtocolResultValue<Pro
     let mut usage = None;
     let mut completed = false;
     for frame in frames {
-        let code = frame.get("code").and_then(Value::as_i64).unwrap_or(-1);
+        let header = frame.get("header").and_then(Value::as_object);
+        let code = frame
+            .get("code")
+            .and_then(Value::as_i64)
+            .or_else(|| {
+                header
+                    .and_then(|header| header.get("code"))
+                    .and_then(Value::as_i64)
+            })
+            .unwrap_or(-1);
         if !response.status.is_success() || !matches!(code, 0 | 20_000_000) {
             let message = frame
                 .get("message")
                 .and_then(Value::as_str)
+                .or_else(|| {
+                    header
+                        .and_then(|header| header.get("message"))
+                        .and_then(Value::as_str)
+                })
                 .unwrap_or("Doubao TTS request failed");
+            let request_id = header
+                .and_then(|header| header.get("reqid"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| response.request_id.clone());
             return Err(
                 ProtocolError::new(ProtocolErrorKind::ProviderRejected, message)
                     .with_provider_code((code >= 0).then(|| code.to_string()))
                     .with_http_status(response.status.as_u16())
-                    .with_request_id(Some(response.request_id.clone()))
+                    .with_request_id(Some(request_id))
                     .with_retry_after(response.retry_after),
             );
         }
@@ -508,9 +543,11 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
         let response = HttpResponse {
-            status: StatusCode::BAD_REQUEST,
+            status: StatusCode::UNAUTHORIZED,
             headers,
-            body: Bytes::from_static(br#"{"code":40000000,"message":"invalid request"}"#),
+            body: Bytes::from_static(
+                br#"{"header":{"reqid":"provider-request-1","code":45000010,"message":"Invalid X-Api-Key"}}"#,
+            ),
             request_id: "request-1".to_owned(),
             retry_after: None,
         };
@@ -523,7 +560,9 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(error.provider_code.as_deref(), Some("40000000"));
+        assert_eq!(error.provider_code.as_deref(), Some("45000010"));
+        assert_eq!(error.request_id.as_deref(), Some("provider-request-1"));
+        assert!(error.to_string().contains("Invalid X-Api-Key"));
     }
 
     #[tokio::test]

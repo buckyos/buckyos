@@ -59,7 +59,10 @@ export function reconcileOfficialAndAiccInventories(input: {
       const rule = capabilityProfile.rules.find((candidate) =>
         globMatches(candidate.model_pattern, model.provider_model_id)
       );
-      if (!rule) {
+      const taskTypeApiTypes = model.official_task_types?.flatMap((taskType) =>
+        profile?.official_catalog.task_type_api_types?.[taskType] ?? []
+      ) ?? [];
+      if (!rule && taskTypeApiTypes.length === 0) {
         mismatches.push(
           `missing official capability rule for ${officialInventory.provider_driver}/${model.provider_model_id}`,
         );
@@ -97,12 +100,19 @@ export function reconcileOfficialAndAiccInventories(input: {
     if (actualInventory) {
       retained.push({
         ...actualInventory,
-        models: actualModels.filter((model) => {
+        models: actualModels.flatMap((model) => {
           const id = membershipId(
             model,
             aiccPhysical.get(model.exact_model) ?? model.provider_model_id.toLowerCase(),
           );
-          return expected.has(id);
+          const officialModel = expected.get(id);
+          return officialModel
+            ? [{
+              ...model,
+              official_lifecycle_status: officialModel.official_lifecycle_status,
+              official_task_types: officialModel.official_task_types,
+            }]
+            : [];
         }),
       });
     }

@@ -22,6 +22,7 @@ type DiscoveryContract = {
   required_headers?: Record<string, string>;
   response_shape?: "openai" | "anthropic" | "gemini" | "sn";
   openai_model_capabilities?: boolean;
+  volcengine_ark_capabilities?: boolean;
 };
 
 export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
@@ -69,6 +70,7 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
     mode: "machine_api",
     path: "/api/v3/models",
     response_shape: "openai",
+    volcengine_ark_capabilities: true,
   },
   qwen: { mode: "catalog_only" },
   "sn-ai-provider": {
@@ -184,8 +186,14 @@ function discoveryFixture(
     provider.official_first_party_model_ids ?? {},
   ).flat();
   const modelIds = [
-    ...new Set([...Object.values(provider.test_model_ids), ...officialModels]),
-  ];
+    ...new Set([
+      ...Object.values(provider.test_model_ids),
+      ...provider.contracts.flatMap((contract) => Object.values(contract.test_model_ids ?? {})),
+      ...officialModels,
+    ]),
+  ].filter((id) =>
+    provider.provider_driver !== "doubao" || id !== "doubao-seed-tts-2.0"
+  );
   if (shape === "sn") {
     return {
       revision: "t15-mock-1",
@@ -237,6 +245,46 @@ function discoveryFixture(
           supports_reasoning: (provider.official_variant_rules ?? []).some(
             (rule) => rule.model_ids.includes(id),
           ),
+        }
+        : {}),
+      ...(T15_PROVIDER_DISCOVERY_CONTRACTS[provider.provider_driver]
+          .volcengine_ark_capabilities
+        ? {
+          task_type: [
+            ...(provider.official_first_party_model_ids?.llm?.includes(id)
+              ? ["TextGeneration"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["vision.ocr"]?.includes(id)
+              ? ["VisualQuestionAnswering"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["embedding.multimodal"]?.includes(id)
+              ? ["ImageEmbedding"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["image.txt2img"]?.includes(id)
+              ? ["TextToImage"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["image.img2img"]?.includes(id)
+              ? ["ImageToImage"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.txt2video"]?.includes(id)
+              ? ["MultimodalToVideo"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.video2video"]?.includes(id)
+              ? ["VideoEditing"]
+              : []),
+            ...(provider.official_first_party_model_ids?.["video.extend"]?.includes(id)
+              ? ["VideoExtension"]
+              : []),
+          ],
+          domain: id.includes("seedream")
+            ? "ImageGeneration"
+            : id.includes("seedance")
+            ? "VideoGeneration"
+            : id.includes("embedding")
+            ? "Embedding"
+            : id.startsWith("doubao-seed")
+            ? "VLM"
+            : "LLM",
         }
         : {}),
       ...(provider.provider_driver === "openrouter"
@@ -928,6 +976,22 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         captured,
         selection.api_type ?? contract.api_types[0],
       );
+      if (
+        ["doubao", "doubao-agent-plan"].includes(selection.provider_driver) &&
+        ["vision.ocr", "vision.caption"].includes(selection.api_type ?? "") &&
+        typeof parsedBody === "object" && parsedBody !== null &&
+        typeof (parsedBody as Record<string, unknown>).model === "string" &&
+        ((parsedBody as Record<string, unknown>).model as string).startsWith("doubao-seed-")
+      ) {
+        const body = parsedBody as Record<string, unknown>;
+        const reasoning = body.reasoning as Record<string, unknown> | undefined;
+        if (body.max_output_tokens !== 2048) {
+          validationErrors.push("Doubao Seed derived vision requests require max_output_tokens=2048");
+        }
+        if (reasoning?.effort !== "minimal") {
+          validationErrors.push("Doubao Seed derived vision requests require reasoning.effort=minimal");
+        }
+      }
       requests.push({
         received_at: new Date().toISOString(),
         selection,
