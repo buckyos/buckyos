@@ -6,6 +6,7 @@
 > 真正的 LLM 推理循环、tool dispatch、step 记录、错误自动反馈、快照/resume，
 > 全部下沉到 `llm_context` crate（slim-waist 已经实现）。
 > opendan 是这个 waist 之上的 L3/L4 调度器 + 持久化层。
+> TODO:随着agent session(L3）的协议化，agent runtime变成L4层，该文档需要更新
 
 ## 核心架构原则（必须遵守）
 
