@@ -120,6 +120,11 @@ pub struct LiveRun {
     /// are in the worklog.
     #[serde(default)]
     pub flushed_input_seq: u64,
+    /// History epoch (`HostMeta.history_epoch`) `flushed_step` counts in.
+    /// A snapshot of a newer epoch starts at zero: its whole history before
+    /// the rewrite was flushed before the rewrite was published.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_epoch: u64,
     /// Process entry the run belongs to (behavior process ↔ run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_entry: Option<String>,
@@ -144,6 +149,8 @@ pub struct ProcessFrame {
     pub flushed_step: u64,
     #[serde(default)]
     pub flushed_input_seq: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_epoch: u64,
     #[serde(default)]
     pub applied_input_seq: u64,
 }
@@ -424,4 +431,8 @@ impl SessionState {
     pub fn is_finished(&self) -> bool {
         self.run_state == RunState::Finished
     }
+}
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
 }

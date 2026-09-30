@@ -73,6 +73,29 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                 ),
             }
         }),
+        "context_limit" => ScriptedLlm::fallible(|req: &LlmInferenceRequest, _| {
+            let all = render(&req.messages);
+            if has_tool_result(req, "c2").is_some() {
+                Ok(text("all done"))
+            } else if has_tool_result(req, "c1").is_some() {
+                Err(llm_context::error::LLMComputeError::Provider {
+                    failure: llm_context::error::ProviderFailure::ContextLimit,
+                    message: "context_length_exceeded".into(),
+                })
+            } else if all.contains("<session_history>") && all.contains("[result #c1") {
+                Ok(tool_call(
+                    "c2",
+                    "exec",
+                    json!({ "command": "echo two >> steps.log" }),
+                ))
+            } else {
+                Ok(tool_call(
+                    "c1",
+                    "exec",
+                    json!({ "command": "echo one >> steps.log" }),
+                ))
+            }
+        }),
         "answer" => ScriptedLlm::new(|_, _| text("plain answer")),
         "wait" => ScriptedLlm::new(|_, _| {
             text("<response><next_behavior>WAIT_USER_MSG</next_behavior></response>")
@@ -251,6 +274,65 @@ async fn crash_after_finish_commit() {
     assert_eq!(e.status.run_state, RunState::Finished);
     assert_eq!(e.status.rev, sd.state().unwrap().rev);
     assert!(agent.perception().last_seq(sd.sid()).await.unwrap() >= 2);
+}
+
+/// Crash inside a mid-run context-limit rewrite, then recover in-process:
+/// no tool runs twice, every record is in the worklog once.
+async fn context_limit_crash(fault: &str) {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("two tool steps")).await;
+    let mut child = spawn_child(&env, &sd, "context_limit", Some(fault));
+    let st = wait_exit(&mut child, Duration::from_secs(60));
+    assert!(!st.success(), "child must die at {fault}");
+    let llm = script("context_limit");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{fault}: {r:?}");
+    assert_worklog_contiguous(&sd);
+    let log = std::fs::read_to_string(sd.path().join("steps.log")).unwrap();
+    assert_eq!(
+        log.lines().collect::<Vec<_>>(),
+        vec!["one", "two"],
+        "{fault}"
+    );
+    assert_eq!(count_kind(&sd, "round_started"), 1, "{fault}");
+    assert_eq!(count_kind(&sd, "user_message"), 1, "{fault}");
+    assert_eq!(count_kind(&sd, "step"), 3, "{fault}");
+    let results: Vec<String> = read_worklog(&sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::ActionResult { call_id, .. } => Some(call_id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(results, vec!["c1", "c2"], "{fault}");
+    let rewritten = read_worklog(&sd)
+        .iter()
+        .filter(
+            |e| matches!(&e.body, WorklogBody::Outcome { kind, .. } if kind == "context_rewritten"),
+        )
+        .count();
+    assert_eq!(rewritten, 1, "{fault}");
+    let st = sd.state().unwrap();
+    assert_eq!(
+        sd.runs().list().unwrap(),
+        vec![st.last_run.clone().unwrap()],
+        "{fault}"
+    );
+}
+
+#[tokio::test]
+async fn crash_after_context_limit_flush() {
+    context_limit_crash("context_limit:after_flush").await;
+}
+
+#[tokio::test]
+async fn crash_after_context_limit_compaction() {
+    context_limit_crash("context_limit:after_compact").await;
+}
+
+#[tokio::test]
+async fn crash_after_context_limit_rewrite_published() {
+    context_limit_crash("context_limit:after_publish").await;
 }
 
 #[tokio::test]

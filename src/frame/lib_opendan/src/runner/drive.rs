@@ -12,11 +12,11 @@ use agent_tool::local_llm_context::{
 };
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiRole, AiUsage};
-use llm_context::deps::{Injection, LlmClient};
+use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
 use llm_context::request::ContextOwnerRef;
-use llm_context::state::LLMContextSnapshot;
+use llm_context::state::{LLMContextSnapshot, Suspension};
 use llm_context::{LLMContext, LLMContextInterruptHandle, NEXT_BEHAVIOR_END};
 use serde_json::{json, Value};
 
@@ -31,7 +31,7 @@ use crate::state::{round_digest, AgentStateClient};
 
 use super::assembler::TurnMaterial;
 use super::flush::{run_history_entries, FlushMarks};
-use super::history::{build_history, maybe_compact, LlmSummarizer, Summarizer};
+use super::history::{build_history, compact_for_limit, maybe_compact, LlmSummarizer, Summarizer};
 use super::hook::{check_changes, scope_touching, SessionCheckpointHook};
 use super::receipts::{
     apply_receipt, host_meta_of, position_of, receipts_after, snapshot_host_meta,
@@ -42,6 +42,8 @@ use super::{DriveResult, RunnerDeps, StopWhen};
 
 const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 const FETCH_MAX: usize = 256;
+/// Mid-run compactions in a row before a context-limit run is paused.
+const MAX_LIMIT_COMPACTIONS: u32 = 3;
 
 /// State shared by the drive loop, the checkpoint hook and the tools.
 pub struct Shared {
@@ -879,6 +881,7 @@ async fn new_run_context_plain(
         },
         inherited_below: 0,
         input_receipts: Vec::new(),
+        ..Default::default()
     };
     ctx.set_host_meta(Some(with_host_meta(None, &meta)));
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
@@ -918,7 +921,10 @@ async fn resume_live_run(
         materialize_unresolved(&mut snapshot, &record.inflight, behavior);
         run.checkpoint_with_results(&snapshot, None)?;
     }
-    if !snapshot.state.pending_tool_calls.is_empty() {
+    if matches!(
+        snapshot.state.suspended,
+        Some(Suspension::PendingTool { .. })
+    ) {
         return Err(blocked(
             "the run waits for deferred tool results, which this runner cannot supply".into(),
         ));
@@ -952,8 +958,17 @@ async fn resume_live_run(
         sh.touched.clone(),
     );
     let deps = checkpoint_deps(sh, &run, &record.config, llm.clone(), tools);
-    let ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
-        .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?;
+    let ctx = if matches!(
+        snapshot.state.suspended,
+        Some(Suspension::ContextLimit { .. })
+    ) {
+        // Paused at the context limit (compactions exhausted, or the
+        // rewrite did not complete): compact again before running on.
+        rewrite_for_limit(sh, &run, snapshot, behavior, &deps, 1).await?
+    } else {
+        LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
+            .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?
+    };
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
     run.set_status(RunStatus::Running, None)?;
     Ok(LiveCtx {
@@ -963,6 +978,145 @@ async fn resume_live_run(
         ready: true,
         deps,
     })
+}
+
+/// Run the live context. A context-limit suspension is compacted and the run
+/// continues, at most [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one
+/// goes to `commit_round`, which pauses the run.
+async fn run_compacting(sh: &Arc<Shared>, lc: &mut LiveCtx) -> Result<LLMContextOutcome> {
+    let mut attempt = 0;
+    loop {
+        let outcome = lc.ctx.run().await;
+        let LLMContextOutcome::ContextLimitReached { snapshot, .. } = &outcome else {
+            return Ok(outcome);
+        };
+        if attempt >= MAX_LIMIT_COMPACTIONS {
+            return Ok(outcome);
+        }
+        attempt += 1;
+        lc.ctx = rewrite_for_limit(
+            sh,
+            &lc.run,
+            snapshot.clone(),
+            lc.behavior,
+            &lc.deps,
+            attempt,
+        )
+        .await?;
+        *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
+    }
+}
+
+/// Mid-run rewrite of a run suspended at the context limit (§4.4, X7):
+///
+/// 1. the run's history so far is flushed to the worklog, closed by a
+///    `context_rewritten` outcome entry, and state commits the flush marks
+///    (nothing of the run lives only in the snapshot);
+/// 2. the session history is compacted (summary.json) so that at most
+///    `budget >> attempt` tokens of raw records remain, and the history
+///    message is rebuilt;
+/// 3. the context resumes with system + history as its new input
+///    (`RewrittenHistory` / `RewrittenSteps`) in a new history epoch, and the
+///    rewritten snapshot is published before anything runs on.
+///
+/// A crash before 3 leaves the pre-inference snapshot of the old epoch
+/// (already flushed, so nothing is written twice); after 3 the new epoch
+/// counts its messages from zero. Receipts keep their `input_seq`; only
+/// their positions are left behind in the old epoch.
+async fn rewrite_for_limit(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    snapshot: LLMContextSnapshot,
+    behavior: bool,
+    deps: &LLMContextDeps,
+    attempt: u32,
+) -> Result<LLMContext> {
+    let run_id = run.run_id().to_string();
+    let summarizer: Arc<dyn Summarizer> = match &sh.deps.summarizer {
+        Some(s) => s.clone(),
+        None => Arc::new(LlmSummarizer {
+            llm: deps.llm.clone(),
+            model: run.record().config.model.clone(),
+        }),
+    };
+    let (history, round) = {
+        let mut s = sh.session.lock().await;
+        let live = s
+            .state
+            .live_run
+            .clone()
+            .filter(|l| l.run_id == run_id)
+            .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
+        let (mut bodies, marks) = run_history_entries(
+            &run_id,
+            &snapshot,
+            behavior,
+            FlushMarks::of(&live),
+            s.state.round,
+        );
+        // The boundary is written with the history it closes: a redo after a
+        // crash, or another rewrite before anything new ran, adds nothing.
+        if !bodies.is_empty() {
+            bodies.push(WorklogBody::Outcome {
+                run_id: run_id.clone(),
+                round: s.state.round,
+                kind: "context_rewritten".into(),
+                next_behavior: None,
+                report: None,
+            });
+        }
+        s.append_worklog(&sh.lease, bodies)?;
+        if let Some(l) = s.state.live_run.as_mut() {
+            marks.apply(l);
+        }
+        s.commit_state(&sh.lease)?;
+        crate::fault::point("context_limit:after_flush");
+        let budget = s
+            .config
+            .prompt
+            .history_budget_tokens
+            .unwrap_or(sh.deps.options.history_budget_tokens);
+        let keep = budget >> attempt.min(8);
+        let history =
+            compact_for_limit(&mut s, &sh.lease, summarizer.as_ref(), budget, keep).await?;
+        crate::fault::point("context_limit:after_compact");
+        (history, s.state.round)
+    };
+    let mut input: Vec<AiMessage> = snapshot
+        .request
+        .input
+        .iter()
+        .take_while(|m| m.role == AiRole::System)
+        .cloned()
+        .collect();
+    input.extend(history);
+    let mut meta = snapshot_host_meta(&snapshot);
+    meta.history_epoch += 1;
+    meta.epoch_round = round;
+    meta.epoch_input_seq = meta
+        .input_receipts
+        .iter()
+        .map(|r| r.input_seq)
+        .max()
+        .unwrap_or(0);
+    meta.base_input_len = input.len() as u64;
+    let fill = if behavior {
+        ResumeFill::RewrittenSteps {
+            input,
+            history_summaries: Vec::new(),
+            steps: Vec::new(),
+            last_step: None,
+        }
+    } else {
+        ResumeFill::RewrittenHistory { history: input }
+    };
+    let mut ctx = LLMContext::resume(snapshot, fill, deps.clone())
+        .map_err(|e| OpenDanError::blocked(format!("context limit rewrite: {e}"), Some(&run_id)))?;
+    let host = with_host_meta(ctx.host_meta(), &meta);
+    ctx.set_host_meta(Some(host));
+    run.checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
+    crate::fault::point("context_limit:after_publish");
+    Ok(ctx)
 }
 
 /// Open the run `state.live_run` points to (a process resumed after a fork
@@ -1044,6 +1198,7 @@ async fn suspend_run(
         rounds: live.rounds,
         flushed_step: marks.step,
         flushed_input_seq: marks.input_seq,
+        flushed_epoch: marks.epoch,
         applied_input_seq: live.applied_input_seq,
     });
     s.state.live_run = None;
@@ -1066,6 +1221,7 @@ async fn suspend_run(
                 applied_input_seq: f.applied_input_seq,
                 flushed_step: f.flushed_step,
                 flushed_input_seq: f.flushed_input_seq,
+                flushed_epoch: f.flushed_epoch,
                 process_entry: Some(f.entry),
             });
         }
@@ -1519,6 +1675,7 @@ async fn finish_run(
                 applied_input_seq: f.applied_input_seq,
                 flushed_step: f.flushed_step,
                 flushed_input_seq: f.flushed_input_seq,
+                flushed_epoch: f.flushed_epoch,
                 process_entry: Some(f.entry.clone()),
             });
             s.state.process_entry = Some(f.entry.clone());
@@ -2242,7 +2399,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             begin_round(sh, &mut lc, &picked, &changes, text, hook).await?;
         }
         lc.ready = false;
-        let outcome = lc.ctx.run().await;
+        let outcome = run_compacting(sh, &mut lc).await?;
         let next = commit_round(sh, &mut lc, outcome).await?;
         rounds_done += 1;
         if !next.run_ended && !next.suspended {

@@ -8,6 +8,7 @@
 
 pub mod behavior_loop;
 pub mod context_loop;
+pub mod context_window;
 pub mod deps;
 pub mod error;
 pub mod interrupt;
@@ -21,6 +22,7 @@ pub mod request;
 pub mod snapshot_overrides;
 pub mod state;
 pub mod step_record;
+pub mod suspension;
 pub mod xml_behavior;
 
 pub use behavior_loop::{
@@ -70,9 +72,15 @@ pub use request::{
 pub use snapshot_overrides::{
     apply_overrides_to_snapshot, build_fresh, rebuild_with_inherit, RequestOverrides,
 };
-pub use state::{LLMContextSnapshot, LLMContextState, SNAPSHOT_FORMAT_VERSION};
+pub use state::{
+    ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
+};
+pub use suspension::{is_thinking, strip_thinking};
+pub use context_window::ContextLimits;
 pub use step_record::XmlStepRenderer;
 pub use xml_behavior::{XmlBehaviorParser, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT};
 
+#[cfg(test)]
+mod suspension_tests;
 #[cfg(test)]
 mod tests;

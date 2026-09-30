@@ -17,11 +17,11 @@
         "executions": 0,
         "host_commit_pending": 2,
         "inflight": [],
-        "run_id": "20260929-095940-c67935",
+        "run_id": "20260930-024535-89a79a",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20260929-095940-c67935"
+        "20260930-024535-89a79a"
       ],
       "session_id": "work-fixture-receipt",
       "state": {

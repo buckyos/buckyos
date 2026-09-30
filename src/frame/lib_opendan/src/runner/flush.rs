@@ -6,7 +6,9 @@
 //! fork child never re-writes the steps it inherited.
 //!
 //! - function call runs: the messages of `accumulated` after `request.input`,
-//!   in order (append-only, counted by position);
+//!   in order (append-only, counted by position within the current history
+//!   epoch: a mid-run rewrite first flushes everything, then replaces the
+//!   prefix and starts a new epoch, see `HostMeta.history_epoch`);
 //! - behavior runs: steps (identified by `step_index`) and injected messages
 //!   (identified by their receipt `input_seq`), ordered by where each message
 //!   was injected: before step `after_step` (`request_input`) or right after
@@ -31,6 +33,8 @@ pub struct FlushMarks {
     pub step: u64,
     /// behavior: receipts with `input_seq ≤` this.
     pub input_seq: u64,
+    /// fc: the history epoch `step` counts in.
+    pub epoch: u64,
 }
 
 impl FlushMarks {
@@ -38,7 +42,14 @@ impl FlushMarks {
         Self {
             step: live.flushed_step,
             input_seq: live.flushed_input_seq,
+            epoch: live.flushed_epoch,
         }
+    }
+
+    pub fn apply(&self, live: &mut LiveRun) {
+        live.flushed_step = self.step;
+        live.flushed_input_seq = self.input_seq;
+        live.flushed_epoch = self.epoch;
     }
 }
 
@@ -173,17 +184,27 @@ pub fn run_history_entries(
         .unwrap_or(0);
 
     if !behavior {
+        // Positions only mean something within the current epoch.
         let receipt_at = |i: usize| {
-            meta.input_receipts
-                .iter()
-                .find(|r| r.message_pos == MessagePos::Accumulated { index: i as u64 })
+            meta.input_receipts.iter().find(|r| {
+                r.input_seq > meta.epoch_input_seq
+                    && r.message_pos == MessagePos::Accumulated { index: i as u64 }
+            })
         };
+        let flushed = if marks.epoch == meta.history_epoch {
+            marks.step
+        } else {
+            0
+        };
+        if meta.history_epoch > 0 {
+            round = meta.epoch_round;
+        }
         let base = snapshot.request.input.len();
         let mut unit = 0u64;
         for (i, m) in snapshot.state.accumulated.iter().enumerate().skip(base) {
             let this = unit;
             unit += 1;
-            if this < marks.step {
+            if this < flushed {
                 if let Some(r) = receipt_at(i) {
                     if r.opens_round {
                         round = r.round;
@@ -255,8 +276,9 @@ pub fn run_history_entries(
         return (
             out,
             FlushMarks {
-                step: unit.max(marks.step),
+                step: unit.max(flushed),
                 input_seq: max_receipt.max(marks.input_seq),
+                epoch: meta.history_epoch,
             },
         );
     }
@@ -312,6 +334,7 @@ pub fn run_history_entries(
         FlushMarks {
             step: max_step,
             input_seq: max_receipt.max(marks.input_seq),
+            epoch: meta.history_epoch,
         },
     )
 }

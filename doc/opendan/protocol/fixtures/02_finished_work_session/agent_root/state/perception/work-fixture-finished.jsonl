@@ -1,2 +1,2 @@
-{"seq":1,"at_ms":1790701180636,"session_id":"work-fixture-finished","kind":"round_digest","source":"session","summary":"finished: done: notes.txt written","payload":{"round":1},"refs":{"worklog_seq":7}}
-{"seq":2,"at_ms":1790701180636,"session_id":"work-fixture-finished","kind":"task_outcome","source":"session","summary":"finished: done: notes.txt written","payload":{"acceptance":"pending","outcome":"succeeded"}}
+{"seq":1,"at_ms":1790761535250,"session_id":"work-fixture-finished","kind":"round_digest","source":"session","summary":"finished: done: notes.txt written","payload":{"round":1},"refs":{"worklog_seq":7}}
+{"seq":2,"at_ms":1790761535250,"session_id":"work-fixture-finished","kind":"task_outcome","source":"session","summary":"finished: done: notes.txt written","payload":{"acceptance":"pending","outcome":"succeeded"}}

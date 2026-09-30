@@ -2141,7 +2141,7 @@ impl AgentSession {
             .ok_or_else(|| anyhow!("no snapshot to resume against"))?;
         let pending_order: Vec<String> = snapshot
             .state
-            .pending_tool_calls
+            .pending_calls()
             .iter()
             .map(|p| p.call.call_id.clone())
             .collect();
@@ -2288,7 +2288,7 @@ impl AgentSession {
                 return Ok(());
             }
         };
-        if snapshot.state.pending_tool_calls.is_empty() {
+        if snapshot.state.pending_calls().is_empty() {
             info!(
                 "opendan.session[{}]: interrupt({mode:?}) — snapshot has no pending tool calls, noop",
                 self.session_id
@@ -2338,7 +2338,7 @@ impl AgentSession {
             }
         }
 
-        let pending_calls = snapshot.state.pending_tool_calls.clone();
+        let pending_calls = snapshot.state.pending_calls().to_vec();
         let reason = self.agent_config.cancel_reason().to_string();
 
         // Behavior `[on_interrupt_graceful]` / `[on_interrupt_discard]`
@@ -2492,7 +2492,11 @@ impl AgentSession {
                 self.session_id
             );
         }
-        snapshot.state.pending_tool_calls.clear();
+        // The waited-for calls and the rest of their batch are dropped with
+        // the truncated turn.
+        snapshot.state.suspended = None;
+        snapshot.state.tool_batch = None;
+        snapshot.state.action_step = None;
         self.persist_snapshot(&snapshot).await?;
         Ok(())
     }
@@ -3303,17 +3307,23 @@ impl AgentSession {
                             ),
                         })
                         .await;
+                    // Behavior contexts fold the materialized history into
+                    // the input; the turn in progress is kept by the waist.
+                    let fill = if deps.result_parser.is_some() {
+                        ResumeFill::RewrittenSteps {
+                            input: rewritten,
+                            history_summaries: Vec::new(),
+                            steps: Vec::new(),
+                            last_step: None,
+                        }
+                    } else {
+                        ResumeFill::RewrittenHistory { history: rewritten }
+                    };
+                    ctx = LLMContext::resume(snapshot, fill, deps.clone())
+                        .map_err(|e| anyhow!("resume after compression: {e}"))?;
                     // Persist the post-compression snapshot before re-running
                     // so a crash mid-compress doesn't lose the rewrite.
-                    let mut prepared = snapshot;
-                    prepared.state.accumulated = rewritten.clone();
-                    self.persist_snapshot(&prepared).await?;
-                    ctx = LLMContext::resume(
-                        prepared,
-                        ResumeFill::RewrittenHistory { history: rewritten },
-                        deps.clone(),
-                    )
-                    .map_err(|e| anyhow!("resume after compression: {e}"))?;
+                    self.persist_snapshot(&ctx.snapshot()).await?;
                     continue;
                 }
                 other => {
@@ -3431,10 +3441,9 @@ impl AgentSession {
         let Some(mut snapshot) = self.try_load_snapshot()? else {
             return Ok(ManualCompressOutcome::NoSnapshot);
         };
-        if !snapshot.state.pending_tool_calls.is_empty() {
+        if snapshot.state.suspended.is_some() || snapshot.state.has_continuation() {
             return Err(anyhow!(
-                "snapshot has {} pending tool call(s); compress after tool results are resolved",
-                snapshot.state.pending_tool_calls.len()
+                "snapshot is suspended or mid tool batch; compress after it is resumed"
             ));
         }
 
@@ -3787,7 +3796,7 @@ impl AgentSession {
         }
 
         if let Some(snapshot) = self.try_load_snapshot()? {
-            if snapshot.state.pending_tool_calls.is_empty() {
+            if snapshot.state.suspended.is_none() && !snapshot.state.has_continuation() {
                 // Resume from the snapshot's persisted message stream.
                 // Refresh only non-message request policy here; `on_init`
                 // system prompt rendering belongs to fresh context creation.
@@ -3834,10 +3843,14 @@ impl AgentSession {
             // cannot synthesize observations to feed `ResumeFill::ToolResults`,
             // so drop the snapshot and start fresh on the current user input.
             // Emit a SystemInput marker so the gap is visible in round history.
-            let pending_count = snapshot.state.pending_tool_calls.len();
+            let pending_count = snapshot.state.pending_calls().len();
             warn!(
-                "opendan.session[{}]: discarding snapshot with {pending_count} pending tool calls — no resume fill available",
-                self.session_id
+                "opendan.session[{}]: discarding suspended snapshot ({:?}, {pending_count} pending tool calls) — no resume fill available",
+                self.session_id,
+                snapshot.state.suspended.as_ref().map(|s| match s {
+                    llm_context::Suspension::PendingTool { .. } => "pending_tool",
+                    llm_context::Suspension::ContextLimit { .. } => "context_limit",
+                })
             );
             self.discard_snapshot();
             self.history.append_event(HistoryEvent::SystemInput {
@@ -8083,8 +8096,15 @@ pub fn compress_messages_for_context_limit(accumulated: Vec<AiMessage>) -> Vec<A
     ));
     // Realign tail so it doesn't open with an Assistant message right after
     // our synthetic User (would make the LLM see User→Assistant→Assistant→...).
+    // Also skip tool results whose call was dropped: the rewrite must keep
+    // every tool call paired with its result.
     let mut tail_start = leading_system + dropped;
-    while tail_start < total && matches!(accumulated[tail_start].role, AiRole::Assistant) {
+    while tail_start < total
+        && matches!(
+            accumulated[tail_start].role,
+            AiRole::Assistant | AiRole::Tool
+        )
+    {
         tail_start += 1;
     }
     out.extend(accumulated.into_iter().skip(tail_start));

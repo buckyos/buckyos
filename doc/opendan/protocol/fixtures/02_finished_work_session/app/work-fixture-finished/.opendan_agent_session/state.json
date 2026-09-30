@@ -2,10 +2,10 @@
   "schema": "opendan.session_state/1",
   "rev": 3,
   "writer": {
-    "runner_id": "rn-68f8904a382c4587",
+    "runner_id": "rn-b56f0a5ba9864ae7",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 1467264,
+    "pid": 2701845,
     "lock_epoch": 1
   },
   "run_state": "finished",
@@ -21,7 +21,7 @@
     "title": ""
   },
   "live_run": null,
-  "last_run": "20260929-095940-f43203",
+  "last_run": "20260930-024535-baa919",
   "worklog": {
     "committed_seq": 7,
     "committed_bytes": 1197
@@ -39,5 +39,5 @@
   },
   "one_line_status": "finished: done: notes.txt written",
   "stop_requested": false,
-  "updated_at_ms": 1790701180633
+  "updated_at_ms": 1790761535246
 }

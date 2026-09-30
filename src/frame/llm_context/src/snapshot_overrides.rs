@@ -86,7 +86,9 @@ pub fn apply_overrides_to_snapshot(
     if let Some(new_user) = ov.user_messages {
         replace_after_leading_system(&mut snap.request.input, &new_user);
         replace_after_leading_system(&mut snap.state.accumulated, &new_user);
-        snap.state.pending_tool_calls.clear();
+        snap.state.suspended = None;
+        snap.state.tool_batch = None;
+        snap.state.action_step = None;
         snap.state.steps.clear();
         snap.state.history_summaries.clear();
         snap.state.history_inputs.clear();
@@ -179,18 +181,19 @@ fn replace_after_leading_system(msgs: &mut Vec<AiMessage>, new_tail: &[AiMessage
 /// the request side. Used by **switch** (caller writes snapshot back to the
 /// session) and **fork** (caller throws sub snapshot away after sub run ends).
 ///
-/// Returns `Err(SnapshotCorrupted)` if the base snapshot is in a suspended
-/// state (has `pending_tool_calls`) — caller must resume that one first via
-/// the normal [`LLMContext::resume`] flow before inheriting from it.
+/// Returns `Err(SnapshotCorrupted)` if the base snapshot is suspended or a
+/// tool batch / behavior step is only partly dispatched — caller must resume
+/// that one first via the normal [`LLMContext::resume`] flow before
+/// inheriting from it.
 pub fn rebuild_with_inherit(
     base_snap: LLMContextSnapshot,
     overrides: RequestOverrides,
     deps: LLMContextDeps,
 ) -> Result<LLMContext, LLMComputeError> {
-    if !base_snap.state.pending_tool_calls.is_empty() {
+    if base_snap.state.suspended.is_some() || base_snap.state.has_continuation() {
         return Err(LLMComputeError::SnapshotCorrupted(
-            "rebuild_with_inherit: base snapshot has pending tool calls — \
-             resume the pending tools before forking/switching"
+            "rebuild_with_inherit: base snapshot is suspended or mid-batch — \
+             resume it before forking/switching"
                 .to_string(),
         ));
     }

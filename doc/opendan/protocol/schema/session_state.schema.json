@@ -42,6 +42,12 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "flushed_epoch": {
+          "description": "History epoch (`HostMeta.history_epoch`) `flushed_step` counts in. A snapshot of a newer epoch starts at zero: its whole history before the rewrite was flushed before the rewrite was published.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "flushed_input_seq": {
           "default": 0,
           "description": "Behavior runs: receipts (injected messages) with `input_seq ≤` this are in the worklog.",
@@ -98,6 +104,11 @@
         },
         "entry": {
           "type": "string"
+        },
+        "flushed_epoch": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "flushed_input_seq": {
           "default": 0,

@@ -108,12 +108,14 @@ Schema：`schema/session_state.schema.json`。
   "result": null | { "answer": "...", "answer_ref": "report.md", "artifact_ref": {...}, "discard_report": {...} },
   "round": 12, "current_behavior": "plan", "process_entry": "plan",
   "process_stack": [ { "entry": "plan", "mode": "fork | independent", "run_id": "…",
-                       "rounds": [...], "flushed_step": 3, "flushed_input_seq": 1, "applied_input_seq": 1 } ],
+                       "rounds": [...], "flushed_step": 3, "flushed_input_seq": 1, "flushed_epoch": 0,
+                       "applied_input_seq": 1 } ],
   "bootstrap_done": true,
   "topic": { "title": "", "tags": [] },
   "live_run": null | { "run_id": "…", "rounds": [ { "round": 12, "inputs": ["q#121"], "changes": ["s1@16"],
                                                     "hook": "on_wakeup", "input_seq": 3, "at_ms": 0 } ],
-                       "applied_input_seq": 3, "flushed_step": 0, "flushed_input_seq": 0, "process_entry": null },
+                       "applied_input_seq": 3, "flushed_step": 0, "flushed_input_seq": 0, "flushed_epoch": 0,
+                       "process_entry": null },            // flushed_epoch 为 0 时省略
   "last_run": "…",
   "worklog": { "committed_seq": 340, "committed_bytes": 1048576 },
   "inputs": { "q": { "acked_index": 118, "consumed_above": [121], "reading": [] } },
@@ -147,7 +149,7 @@ Schema：`schema/session_state.schema.json`。
 | user_message | 同上 | run_id, round, content |
 | step | 同上 | run_id, round, behavior?, assistant, actions[{call_id, tool, args(键排序), effect}] |
 | action_result | 同上 | run_id, round, call_id, status(ok/error/unresolved/cancelled/pending), result |
-| outcome | run 结束 / 挂起 | run_id, round, kind(done/wait/switch/process_done/suspended/budget/error/stopped), next_behavior?, report? |
+| outcome | run 结束 / 挂起 / 中途重写 | run_id, round, kind(done/wait/switch/process_done/suspended/budget/error/stopped/context_limit/context_rewritten), next_behavior?, report? |
 | compaction | 生成新 summary.json | summary_start_seq, made_by |
 | decide | 应用 decide | decision, by, report |
 | input_rejected | 输入被拒绝但标记为已消费 | input{src,index,key,kind}, reason |
@@ -191,7 +193,7 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 | `executions[]` | 尚未确认停止的受管进程执行：`{execution_id, call_id, kind, runtime_id, host, boot_id, pgid, leader_start_ticks, command, started_at_ms}` |
 | `host.extra.finish` | 宿主的结束决定：与终态 `status` 在**同一次** run.json 写入中记录（`{kind: done|wait|process_done|budget|error|stopped, finished, outcome, waiting, answer, error, usage}`）。结束流程中途崩溃时，恢复按它重做，而不是重新推断 |
 
-快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[]}`，各执行者必须原样保留。
+快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_round?, epoch_input_seq?}`，各执行者必须原样保留。后三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_round` 是当前 epoch 开始时所在的轮，`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。
 
 **run 生命周期**：
 
@@ -209,7 +211,17 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 切换：   普通切换 run 继续，status 保持 running；fork / independent 挂起时 status 为 paused。
          终态 status 只表示 run 已结束。
 挂起：   （fork / independent，§8）先追加已产生的历史，run 由 process_stack 引用
+重写：   （上下文上限，见下）① 追加本 run 未写入的历史 + outcome(context_rewritten) 并提交 flush 标记
+         → ② 压缩 summary.json → ③ 以 system + 会话历史重建的上下文发布快照（history_epoch + 1）
 ```
+
+**上下文上限中途重写**（llm_context X7）：run 以 `ContextLimitReached` 让出时，runner 不在快照里重写历史，而是把它交还 session 历史：
+
+1. 用 flush 标记写入本 run 已产生而未写入的历史，末尾追加 `outcome(kind=context_rewritten)`，与 flush 标记同一次提交 state.json（没有新历史时两者都不写，重做不会重复）。
+2. 压缩 session 历史：起点前移到只剩约 `history_budget >> 第几次` token 的原始记录（写 summary.json 与 `compaction` 条目），再按 §6 重建历史消息。
+3. 以 `system + 历史消息` 作为新的输入恢复上下文（function call：`RewrittenHistory`；behavior：`RewrittenSteps`，step 全部折叠进输入，编号继续），HostMeta 进入新的 epoch，先发布快照（run.json `status=running`）再继续推理。
+
+一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 的轮前快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq` 与消费位置不随重写改变。
 
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。
 
@@ -223,7 +235,7 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 
 挂起时先写入该 run 已产生而未写入的历史（`flushed_step` / `flushed_input_seq` 前移），worklog 因此保持时间顺序。
 
-**flush 标记**：function call run 以位置计数（`flushed_step` = prefix 之后已写入的消息数）；behavior run 以身份计：`step_index < flushed_step` 的 step 与 `input_seq ≤ flushed_input_seq` 的注入消息已写入。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
+**flush 标记**：function call run 以位置计数（`flushed_step` = prefix 之后已写入的消息数，只在 `flushed_epoch == HostMeta.history_epoch` 时有效；快照的 epoch 更新时从 0 计，且只用 `input_seq > epoch_input_seq` 的 receipt 定位消息）；behavior run 以身份计：`step_index < flushed_step` 的 step 与 `input_seq ≤ flushed_input_seq` 的注入消息已写入，不受中途重写影响。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
 
 ## 9. binding.json 与 .runtime/bin
 
@@ -245,6 +257,6 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持 → RecoveryBlocked，保留现场）；确认旧执行已停止；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
-8. 绑定 / 核验 runtime；恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。
+8. 绑定 / 核验 runtime；恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在等待 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。
 
 RecoveryBlocked 时只在 `state.last_error` 记录原因并回报，保留 live_run、run 目录、消费位置与执行证据，不自动放弃。

@@ -169,8 +169,9 @@ impl LLMContext {
     pub async fn run(&mut self) -> LLMContextOutcome;
 
     /// 从 snapshot 恢复（context switch in）。
-    /// fill 的形态必须与产生 snapshot 时的挂起态对应；
-    /// 不一致会返回 LLMComputeError::SnapshotCorrupted。
+    /// fill 的形态必须与 snapshot 的 state.suspended 对应；
+    /// 不一致会返回 LLMComputeError::SnapshotCorrupted（在任何推理 / 工具调用之前）。
+    /// 挂起期间的时间不计入 wallclock 预算。
     pub fn resume(
         snapshot: LLMContextSnapshot,
         fill: ResumeFill,
@@ -183,21 +184,39 @@ impl LLMContext {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ResumeFill {
-    /// PendingTool ⇒ 把 deferred 工具的执行结果填回；results.len() 必须等于
-    /// snapshot.pending_tool_calls.len()，且 call_id 一一对应。
+    /// PendingTool ⇒ 把 deferred 工具的结果填回。按 call_id 匹配集合：每个等待中的
+    /// 调用恰好一个终态结果（Success / Error / Cancelled / Unresolved，不能是
+    /// Pending，观察自带的 call_id 必须一致）；缺失、多余、重复、未知 ID 都拒绝。
+    /// 顺序任意，按原调用顺序写回。回填 Cancelled 表示宿主在收尾：同批次尚未派发的
+    /// 调用不再执行（记为 not executed）。
     ToolResults { results: Vec<(String, Observation)> },
 
-    /// ContextLimitReached ⇒ 把重整后的对话历史填回。如何重整（summarize /
-    /// drop oldest / hierarchical recall / 换模型）完全由 scheduler 决定。
+    /// function call 模式的 ContextLimitReached ⇒ 重整后的历史成为新的稳定基线，
+    /// 同时替换 request.input 与 accumulated。必须保持 tool_use / tool_result 配对；
+    /// thinking 块被丢弃（只在产生它的前缀下有效）。如何重整完全由 scheduler 决定。
     RewrittenHistory { history: Vec<AiMessage> },
 
-    /// 运行中崩溃 / interrupt 后恢复 —— snapshot 不是任何挂起态的产物，
-    /// 而是 outcome 边界（或 TurnHook 触发的轮前）落盘的中途快照。
-    /// 没有 payload；resume 时校验 pending_tool_calls 必须为空，
-    /// 否则返回 SnapshotCorrupted。
+    /// behavior 模式的 ContextLimitReached ⇒ prompt 由 request.input、step 历史和热
+    /// step 物化，只换 accumulated 不够。替换 request.input / history_summaries /
+    /// steps / last_step；steps 与 last_step 只能保留（可压缩的）原 step，按 step_index
+    /// 识别；step / action 编号、history_inputs 与进行中的 turn（accumulated 中
+    /// request.input 之后的消息）保持不变；thinking 同样丢弃。把整个物化历史折叠进
+    /// input（steps 为空、没有热 step）是合法的。
+    RewrittenSteps {
+        input: Vec<AiMessage>,
+        history_summaries: Vec<HistorySummaryRecord>,
+        steps: Vec<StepRecord>,
+        last_step: Option<StepRecord>,
+    },
+
+    /// 快照不在挂起态：outcome 边界、checkpoint hook 轮前、Interrupted 之后，或
+    /// fill 已应用后落盘的快照（批次 / step 可能尚未派发完，resume 后先续派）。
+    /// 没有 payload；挂起态快照配此 fill 返回 SnapshotCorrupted。
     ResumeFromMidRun,
 }
 ```
+
+挂起后在恢复之前再调用 `run()`，返回 `Error{Internal}` 且不改动状态；`inject` 在挂起或批次未派发完时不放置任何内容（返回 `InjectionPosition::None`）。
 
 ### 3.2 LLMContextRequest
 
@@ -266,7 +285,7 @@ pub struct PendingToolCall {
 }
 ```
 
-工具执行委托给 `ToolManager` trait，policy gate 委托给 `PolicyEngine` trait。waist 不知道实现细节；`Observation::Pending` 路径在当前 v1 实现里尚未闭环（`allow_deferred=true` 时会返回 "deferred tool path not yet implemented" 的 error），但语义已在 outcome 层就位。
+工具执行委托给 `ToolManager` trait，policy gate 委托给 `PolicyEngine` trait。waist 不知道实现细节。`allow_deferred=false` 时 `Observation::Pending` 是契约违规（该调用记为结果未知、其余未执行，`Error{Internal}`）；为 true 时产生 `PendingTool`（§9.5）。`PendingToolCall` 另带 `tool_result`：effect 层随 `Pending` 给出的等待信息（任务 id、原因、部分输出）。
 
 ### 3.4 OutputSpec / ContextOutput
 
@@ -294,18 +313,22 @@ pub struct BudgetSpec {
     pub max_cost_units:        Option<u32>,
     pub on_exhausted:          BudgetAction,        // Fail | ReturnPartial | EscalateHuman
     pub context_yield_threshold: Option<ContextThreshold>,
+    /// 模型有效上下文窗口（token），由调用方 / provider adapter 提供，waist 不查询。
+    pub context_window_tokens: Option<u32>,
 }
 
 pub enum ContextThreshold {
-    Ratio { value: f32 },             // 已用 token / provider window，0.0~1.0
-    AbsoluteTokens { value: u32 },
+    Ratio { value: f32 },             // context_window_tokens 的比例，(0, 1]，需要窗口
+    AbsoluteTokens { value: u32 },    // > 0
 }
 ```
 
-- **`max_total_tokens`** 是预算红线 → 触发 `BudgetExhausted`（终态，OOM kill）。
-- **`context_yield_threshold`** 是预警阈值 → 触发 `ContextLimitReached`（挂起态，page fault yield 给 swap）。
+- **`max_total_tokens`** 是预算红线 → 触发 `BudgetExhausted`（终态，OOM kill）。它是累计花费，不能代替上下文窗口压力。
+- **`context_yield_threshold`** 是预警阈值 → 待发送请求的估算 `>=` 阈值时触发 `ContextLimitReached{ApproachingWindow}`（挂起态，page fault yield 给 swap）。
+- **`context_window_tokens`** 已知时，估算 + completion 预留（`model_policy.max_completion_tokens`）超过窗口的请求不发送 → `ContextLimitReached{HardLimit}`。
+- 非法配置（阈值为 0、比例不在 (0,1]、Ratio 无窗口、窗口为 0、预留不小于窗口）在任何推理前以 `Error{Internal}` 结束，不静默忽略。
 
-两者可以同时设置：前者必须 fail，后者可以被 scheduler 重整后 resume。
+两者可以同时设置：前者必须 fail，后者可以被 scheduler 重整后 resume。估算口径见 §9.5。
 
 ### 3.6 ErrorPolicy 与错误模型
 
@@ -345,6 +368,7 @@ pub enum LLMComputeError {
 | 工具派发基础设施故障、结果未知 | 工具 adapter / Runtime | 否 | 立即停止派发，已知结果保留、未执行项配对为 `Unresolved`，以 `Error{ToolRuntime}` 结束；快照仍可 resume，是否继续由 Runtime 决定，不自动重放 |
 | 轮前 checkpoint 失败 | 持久化层 / Runtime | 否 | `TurnHook` 返回 Err ⇒ 不发起推理，`Error{Checkpoint}`；状态仍是 s0，可只重试保存再 resume |
 | 普通 worklog 失败 | 日志实现 | 否 | best effort，不进上下文、不计数、不改 outcome |
+| Provider 以结构化错误码拒绝上下文长度（adapter 归一化为 `ProviderFailure::ContextLimit`，如 OpenAI `context_length_exceeded`） | 调度器（重整历史） | 否 | 挂起为 `ContextLimitReached{ProviderRefused}`，快照是本轮推理前的状态；不凭异常文本或任意 HTTP 400 猜测 |
 | 快照损坏 / ResumeFill 不匹配 / 未配对的 tool_use | Runtime / 调用方 | 否 | `resume()` 返回 `SnapshotCorrupted`，拒绝恢复 |
 | 编程错误 / 状态不变量损坏 | 开发者 | 否 | `Internal`，终止本次 run |
 | 主动 interrupt | 调度器 | 不作为故障 | `Interrupted` + s0 快照，不计数 |
@@ -380,20 +404,25 @@ pub enum LLMContextOutcome {
     /// 终态：预算红线击穿
     BudgetExhausted { which: BudgetKind, partial: Option<ContextOutput>, usage: AiUsage },
 
-    /// 挂起态：等待 deferred 工具回填
+    /// 挂起态：等待 deferred 工具回填。派发停在该调用，同批次其后的调用留在
+    /// 快照里，回填后才执行；trace 是本段运行的审计。
     PendingTool {
         pending: Vec<PendingToolCall>,
         snapshot: LLMContextSnapshot,
         deadline_ms: Option<u64>,
+        trace: ContextRunTrace,
     },
-    /// 挂起态：接近 / 撞到 context window —— waist 只暴露"事实信号"，
-    /// 具体压缩策略由 scheduler 在 resume 时通过 RewrittenHistory 决定。
+    /// 挂起态：待发送请求装不下 —— waist 只暴露"事实信号"，请求未发送，
+    /// 具体压缩策略由 scheduler 在 resume 时通过 RewrittenHistory / RewrittenSteps 决定。
+    /// accumulated 是可重写的历史：function call 为 state.accumulated；behavior 为
+    /// 物化 prompt（input + step 历史 + 热 step），不含进行中的 turn。
     ContextLimitReached {
         which: ContextLimitKind,          // ApproachingWindow | HardLimit | ProviderRefused
         usage: AiUsage,
         accumulated: Vec<AiMessage>,
         snapshot: LLMContextSnapshot,
         deadline_ms: Option<u64>,
+        trace: ContextRunTrace,
     },
     /// 挂起态：run 中被外部 interrupt 抢占。
     /// snapshot 是本轮 inference 前的状态；半截 assistant token / tool call 不进入 accumulated。
@@ -414,7 +443,7 @@ pub enum LLMContextOutcome {
 | `Error` | `exit(非0)` | 否 | 否 |
 | `BudgetExhausted` | OOM kill / SIGKILL | 否 | 否 |
 | `PendingTool` | `io_submit()` 后等待 | 是 | `ResumeFill::ToolResults` |
-| `ContextLimitReached` | page fault → 等 swap | 是 | `ResumeFill::RewrittenHistory` |
+| `ContextLimitReached` | page fault → 等 swap | 是 | `RewrittenHistory`（function call）/ `RewrittenSteps`（behavior） |
 | `Interrupted` | external interrupt | 是 | `ResumeFill::ResumeFromMidRun` |
 
 ### 4.2 上层如何处理
@@ -539,7 +568,7 @@ pub struct LLMContextDeps {
 ### 6.4 Behavior 模式下的 Outcome
 
 - **终态 `Done.behavior_result: Some(_)`**：parser 解出 `next_behavior == Some(_)` 即终止，action（如有）不 dispatch，由 L4 / session 解释 `next_behavior` 字符串（含 `WAIT_USER_MSG` 这类 sentinel）。
-- **挂起态语义不变**：tool 等 deferred、撞到 context window、外部 interrupt 都按 §4 走。
+- **挂起态语义不变**：tool 等 deferred、撞到 context window、外部 interrupt 都按 §4 走。deferred action 挂起时本 step 尚未沉淀（在 `state.action_step` 中），回填后续派其后的 action；step 内层原生工具挂起时，本 step 的 turn（tool_use 与已得结果）保留在 `accumulated` 的 `request.input` 之后，回填后内层续跑，不重跑已完成的工具、不重复解析或派发 action。上下文检查作用在内层实际物化的 prompt 上。
 - **`forbid_next_behavior = true`**：fork 子上下文专用，任何 `next_behavior` 字段被丢弃，确保子执行结束就终止。
 
 ---
@@ -660,7 +689,12 @@ pub struct LLMContextState {
     pub started_at_ms: u64,
     pub cost_units:    u32,
     pub consecutive_errors: u32,
-    pub pending_tool_calls: Vec<PendingToolCall>,
+    /// 挂起原因：PendingTool { pending, at_ms } | ContextLimit { which, estimated_tokens, at_ms }
+    pub suspended: Option<Suspension>,
+    /// 被 deferred 调用截断的工具批次：{ remaining, round_error }
+    pub tool_batch: Option<ToolBatch>,
+    /// behavior：派发中的 step：{ step, response }
+    pub action_step: Option<ActionStep>,
     pub llm_task_ids: Vec<String>,
     /// Behavior Loop：沉淀的历史 steps（可被 HistoryCompressor 压缩）
     pub steps: Vec<StepRecord>,
@@ -719,8 +753,9 @@ loop {
 
 **纪律**：
 
-- L4 必须能区分"崩在挂起态"与"崩在运行中"：前者用 `ToolResults` / `RewrittenHistory`，后者用 `ResumeFromMidRun`。waist 在 resume 里做一致性校验拦截误用。
-- "崩在挂起态 + 无外部 fill" 不能用 `ResumeFromMidRun` 兜底——会返回 `SnapshotCorrupted`；accumulated 里存在未配对的 `tool_use` 同样被拒绝。
+- L4 必须能区分"崩在挂起态"与"崩在运行中"：前者用 `ToolResults` / `RewrittenHistory` / `RewrittenSteps`，后者用 `ResumeFromMidRun`。waist 在 resume 里做一致性校验拦截误用。
+- "崩在挂起态 + 无外部 fill" 不能用 `ResumeFromMidRun` 兜底——会返回 `SnapshotCorrupted`；accumulated 里存在未配对的 `tool_use`（尚未派发的批次剩余调用除外）同样被拒绝。
+- 挂起快照由宿主在 outcome 边界持久化：PendingTool 必须先落盘再把调用交给异步执行器；回填后应先持久化 `ctx.snapshot()` 再 `run()`，因为续派的调用在下一个 checkpoint 之前执行。关键保存失败以 `Error{Checkpoint}` 结束，不会被挂起结果掩盖。
 - L4 要区分"算出 outcome"和"outcome 已提交"：边界写入失败时保留已算出的 outcome 与内存快照，只重试保存，不重新 `run()`。
 - checkpoint 不能独自保证不重复扣费、不重复执行副作用：TurnHook 写盘之后、工具执行完成之后到下一个 checkpoint 之间崩溃，恢复会重跑该段 inference / 工具调用。**ToolManager / provider 的幂等性是 effect 层私事**。Behavior 模式下 TurnHook 收到的是内层传统上下文的快照（不含 StepRecord 流），外层步骤状态只在 outcome 边界由 L4 提交。
 
@@ -750,6 +785,13 @@ pub struct Injection { pub messages: Vec<AiMessage>, pub host: Option<Value> }
 - `XmlStepRenderer::without_timestamps()`：历史记录不渲染 `started_at_ms` / `ended_at_ms`，同样的 steps 渲染出相同字节（X8）；宿主装配的 xllm run 使用它，默认渲染不变。
 - 在途动作与执行跟踪（X6）属于 effect 层，见 `agent_tool::exec_tracking` 与 [Lease Protocol](protocol/Lease%20Protocol.md) §5。
 
+### 9.5 挂起与恢复（X7，2026-09-30）
+
+- **快照版本 2**：`pending_tool_calls` 由 `suspended` / `tool_batch` / `action_step` 取代（§9.1）。版本 0 / 1 的快照不含这些状态，仍按未挂起快照恢复；大于 2 的版本被拒绝。
+- **PendingTool**：工具串行派发，遇到 `Pending` 即停止并挂起；已执行（结果已在 transcript / step 中）、等待中（`suspended.pending`）、尚未执行（`tool_batch.remaining` 或 step 其后的 action）三类可区分，trace 状态分别为 succeeded/failed、`pending`、未记录。回填后本批次余下调用继续派发，整批完成时才计一次轮数与错误；usage、rounds_left、错误计数、step / action / call 编号都不重置。behavior action 在第一个非成功结果（业务错误、回填的 Cancelled / Unresolved）后停止其余 action。
+- **ContextLimitReached**：只在推理边界检查（首轮、工具结果追加后、checkpoint hook 注入后、behavior 内层物化 prompt 后），顺序在 hook 与 abort 检查之后，因此 checkpoint 失败与主动 interrupt 优先于挂起；token / wallclock 预算终态也优先。估算：每条消息 4 token 开销 + 各文本部分（文本、tool_use 参数、tool_result、thinking、provider state）经 `Tokenizer` 计数，图片 / 文档等非文本部分每个按 1024 计，另计工具描述（允许调用工具时）与输出 schema；多模态 prompt 可能被低估。估算值只用于检查，不与 Provider usage 混用。重写后仍装不下时再次让出、不推理，压缩次数与失败策略由宿主决定。
+- **宿主接入**（2026-09-30）：xllm 以 `.llm_context` 的 `context_window` 提供窗口（设置后阈值为 0.75），压缩后以 `RewrittenHistory` / `RewrittenSteps` 续跑、每个 run 最多 3 次，接手上下文上限挂起的快照时先压缩，等待 deferred 工具的快照不接手；OpenAI 兼容 adapter 把 `context_length_exceeded` 归一化为 `ProviderFailure::ContextLimit`。libOpenDAN 的中途重写见 [Session Directory Protocol](protocol/Session%20Directory%20Protocol.md) §7。OpenDAN `AgentSession` 未配置阈值，PendingTool 路径未启用（`allow_deferred=false`）。
+
 ---
 
 ## 10. 主循环骨架
@@ -765,19 +807,25 @@ LLMContext::new(req, deps)
         ├─> emit(LLMFinished)
         └─> return outcome
 
+run():
+  suspended? → Error{Internal}（先 resume）；context limits invalid? → Error{Internal}
+
 run_inner():
   loop:
+    ├─> tool_batch in progress? → dispatch its remaining calls (below), continue
     ├─> check wallclock budget → BudgetExhausted?
+    ├─> checkpoint_hook (outer snapshot, may inject) → Err ⇒ Error{Checkpoint}
     ├─> s0 = snapshot()                                    // for TurnHook / Interrupted
     ├─> turn_hook.before_inference(s0)? → Err ⇒ Error{Checkpoint}, no inference   // §9.2
     ├─> if abort.is_aborted(): return Interrupted(s0)
+    ├─> estimate(request) vs window / threshold → ContextLimitReached(s0), not sent  // §9.5
     ├─> tokio::select!:
     │     - cancelled() → Interrupted(s0)
     │     - llm.infer(req) → response
-    │         ├─ any Err (adapter tolerance exhausted) → Error{err}, never fed back
+    │         ├─ Err(Provider{ContextLimit}) → ContextLimitReached{ProviderRefused}(s0)
+    │         ├─ any other Err (adapter tolerance exhausted) → Error{err}, never fed back
     │         └─ ok → continue
     ├─> account usage; check token budget → BudgetExhausted?
-    ├─> if context_yield_threshold reached: ContextLimitReached
     ├─> if no tool_calls or ToolMode::None:
     │     → Done; strict JSON parse failure ⇒ push output + diagnostic, bump, next round
     ├─> too many calls / policy reject ⇒ push assistant msg + error tool_result per call, bump
@@ -788,7 +836,8 @@ run_inner():
     │                       Error{ToolRuntime}
     │       Ok(Success)   → push tool message
     │       Ok(Error)     → push tool message, remember round_error (batch continues)
-    │       Ok(Pending|Cancelled|Unresolved) → contract violation ⇒ Internal
+    │       Ok(Pending) + allow_deferred → PendingTool (rest of the batch kept)
+    │       Ok(Pending) without allow_deferred / Ok(Cancelled|Unresolved) → contract violation ⇒ Internal
     ├─> round_error? bump once per round : reset consecutive_errors
     ├─> rounds_left -= 1; if 0: BudgetExhausted(ToolRounds)
     └─> next round

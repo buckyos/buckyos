@@ -1,6 +1,8 @@
 # run_local_llm SDK 化：目录与命令行协议基线
 
 > **2026-09-18 更新**：Rust `LocalLLMContext` 已按 [xllm PRD](../../product/xllm/PRD.md) 重写为 xllm SDK 核心（`src/frame/agent_tool/src/local_llm_context.rs`），命令行入口改为 `agent_tool xllm ...`（旧 `run_local_llm` 命令名已移除），Run 目录格式、请求、结果与退出码均已重新定义，不兼容本文第 2–12 节描述的旧格式。新实现的协议摘要见 [xllm Rust SDK 参考](xllm_rust_sdk.md)。本文第 1–13 节仍作为旧实现的基线与设计参考保留。
+>
+> **2026-09-30（llm_context X7）**：共享快照升到版本 2，`pending_tool_calls` 由 `suspended` / `tool_batch` / `action_step` 取代；`context_yield_threshold` 现在真正执行（Ratio 需要 `context_window_tokens`），`ContextLimitReached` / `PendingTool` 会被产出。下文涉及这两处的描述（§4.4 阈值“仅被保存”、快照字段表）已过时，以 [LLM Context 设计](../opendan/LLM%20Context%20设计.md) §9.5 为准。
 
 > **2026-09-29 更新**：Agent Session 的 `runs/` 直接采用 xllm 的 run 目录，run 目录因此成为 session 协议的一部分（见 `doc/opendan/protocol/Session Directory Protocol.md` §7）。“TS 版不绑定 Rust 格式”这一条改为：TS 版需要接手 Rust 建立的 run 时，按版本规则对齐——`RunRecord.version` 与快照 `snapshot_version` 不认识的版本必须拒绝，已认识的版本内只做加法、必须保留宿主元数据。
 

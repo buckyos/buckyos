@@ -2,10 +2,10 @@
   "schema": "opendan.session_state/1",
   "rev": 2,
   "writer": {
-    "runner_id": "rn-9d65ce4af4ba46f9",
+    "runner_id": "rn-0966f39f18eb400e",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 1467381,
+    "pid": 2702012,
     "lock_epoch": 1
   },
   "run_state": "running",
@@ -16,7 +16,7 @@
     "title": ""
   },
   "live_run": {
-    "run_id": "20260929-095940-9cc5ed",
+    "run_id": "20260930-024535-c46b1c",
     "rounds": [
       {
         "round": 1,
@@ -28,7 +28,7 @@
         ],
         "hook": "on_init",
         "input_seq": 1,
-        "at_ms": 1790701180712
+        "at_ms": 1790761535325
       }
     ],
     "applied_input_seq": 1,
@@ -55,9 +55,9 @@
   "reported_rev": 1,
   "activity": {
     "summary": "x",
-    "heartbeat_ms": 1790701180715
+    "heartbeat_ms": 1790761535329
   },
   "one_line_status": "",
   "stop_requested": false,
-  "updated_at_ms": 1790701180715
+  "updated_at_ms": 1790761535329
 }

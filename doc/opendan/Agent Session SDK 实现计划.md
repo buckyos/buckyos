@@ -15,7 +15,8 @@
 > - 代码：`src/frame/lib_opendan`（package `libopendan`）；LX 改动在 `llm_context`（`CheckpointHook` / `inject` / 快照 `host` 与 `snapshot_version`）与 `agent_tool`（`exec_tracking`、RunRecord 宿主字段、`prepare_hosted`、resume 检查）。反写的 Spec、JSON Schema 与 fixtures 在 [`protocol/`](protocol/README.md)。
 > - 已完成：L1、L2（native + tmux）、L3（work session；普通 / fork / independent 切换）、L4（感知、self_improve 锁与整理游标、认知门面）、L5（产物登记、decide、discard 报告）、L6；LX 的 X1 ~ X6 与 X8（宿主 run 的 step 渲染不带时间戳）；真实 kmsg 服务的 DV 用例 `tests/dv_kmsg.rs`（`--ignored`，在 DV Test OOD 上以 root 运行）。
 > - 与本文的差异：X4 / X5 合为一个异步 `CheckpointHook`（每次推理前、外层快照、可注入）；`AgentRuntime` 以 `bash_runner(env, registrar)` + `reconcile_execution` 表达执行准备与核对；执行跟踪按环境标记 `OPENDAN_EXECUTION_ID` 扫描 `/proc`（非 Linux 一律 Unknown → RecoveryBlocked）；`recent_keys` 放在 state.json 顶层；state 增加 `stop_requested` / `internal_continuation` / `process_result`，live_run / process_stack 增加 `flushed_input_seq`（behavior run 按身份记录已写入部分）；worklog 增加 `created` / `change_dropped` / `control_applied`。
-> - 未完成：X7（waist 仍不产出 ContextLimitReached / PendingTool，runner 遇到时保留 run 暂停）、ToolSpec 的 effect 字段与 `ToolUse.args` 规范键序（libopendan 按工具名分类、worklog 内规范化）；OpenDAN `BehaviorAssembler`（behaviors 配置、prompt_env、HintRecallEngine）与 session-aware 工具未移植（用 `DefaultAssembler`、`extensions.opendan.process_modes` 与 `agent-session` CLI 代替）；1 GB worklog 基准（以数 MB 文件验证读取量有界）。UI session、kRPC、DID Object 宿主按本文后移。
+> - X7（2026-09-30）：waist 能力完成——真正产出 `ContextLimitReached`（阈值 / 已知窗口 / Provider 结构化拒绝）与 `PendingTool`（`allow_deferred`），快照版本 2，传统与 behavior（action、step 内层原生工具）都能挂起后恢复，behavior 用 `RewrittenSteps` 重写；见《LLM Context 设计》§9.5。宿主接入：libopendan 实现上下文上限中途重写（先 flush、压缩 summary.json、新 history epoch，见 Session Directory Protocol §7），PendingTool 仍不接入（`allow_deferred=false`，遇到时 RecoveryBlocked）；xllm 压缩续跑与接手挂起快照；OpenDAN 只做类型适配。
+> - 未完成：libopendan / xllm 的 deferred 工具（task_mgr）回填、ToolSpec 的 effect 字段与 `ToolUse.args` 规范键序（libopendan 按工具名分类、worklog 内规范化）；OpenDAN `BehaviorAssembler`（behaviors 配置、prompt_env、HintRecallEngine）与 session-aware 工具未移植（用 `DefaultAssembler`、`extensions.opendan.process_modes` 与 `agent-session` CLI 代替）；1 GB worklog 基准（以数 MB 文件验证读取量有界）。UI session、kRPC、DID Object 宿主按本文后移。
 
 > **v0.10 Review 修订**（2026-09-29）
 >
@@ -544,7 +545,7 @@ def next_llm_context(s, lease, deps, env) -> LLMContext:
 - **确定性**：同一渲染器版本（`summary.json.renderer`）下，相同的 summary.json + worklog 渲染出相同的历史段。时间、天气等需要新鲜的量放在每轮的变量段，不进入历史段（S-20）。system + 摘要在下一次压缩之前保持不变，构成稳定前缀，有利于 KV cache。跨语言只要求语义一致，不要求字节一致。
 - **压缩**只产出新的 summary.json（摘要前移、`start_seq` / `start_offset` 后移），不改写 worklog。触发时机沿用现有的两种：
   - run 结束后，按上下文占用比例触发（`maybe_compact`，§8.3）；
-  - run 进行中遇到 `ContextLimitReached` 时，压缩后用 `ResumeFill::RewrittenHistory` 续跑，最多 3 轮（依赖 llm_context 真正产出 `ContextLimitReached`，§8.7 X7）。
+  - run 进行中遇到 `ContextLimitReached` 时（X7，已实现）：先把该 run 已产生的历史写入 worklog 并以 `outcome(context_rewritten)` 收尾，再压缩（只写 summary.json），然后以 system + 重建的历史消息恢复同一 run（function call：`RewrittenHistory`；behavior：`RewrittenSteps`），一次推进内最多 3 轮；仍装不下则 run 暂停在上下文上限，下次推进先重写。run 的历史只经 worklog 重建，不在快照里另行摘要。
 
 ```python
 def compact(s, lease, deps, cut_offset) -> Summary:          # 只写 summary.json（外加一条审计条目）
@@ -1473,7 +1474,7 @@ def resume_live_run(s, lease, deps, env) -> LLMContext | None:
 | X4 | **checkpoint 钩子**：增加异步支持并保留失败即停止的语义；behavior 步边界给出含 steps / 连续 call_id / input_receipts 的**外层**快照；各 checkpoint 共用 §8.5 的结果提交顺序 | `TurnHook` 已能返回错误阻止推理，但同步只读；behavior 模式只见内层快照 | 最细到一次 do-action 之后恢复；结果持久化后才清除 inflight |
 | X5 | **观察钩子**：function-call 模式在一轮工具结果之后、下一次推理之前返回注入内容与 receipt；两种模式均传播提交错误，完成 §8.3 提交后才继续 | function-call 没有此钩子；behavior 钩子错误被忽略 | 观察边界的变化注入与 control 检查（§8.4） |
 | X6 | **effect、在途记录与执行跟踪**：ToolSpec 增加 effect；RunRecord 增加按 call_id 的 inflight 与受管 executions；启动前持久化执行标识，结果 checkpoint 后清除 inflight；resume 先核对旧执行，再注入 Unresolved | 没有 effect / inflight；LocalProcessBashRunner 的 Drop 无法覆盖 runner 被 kill 的情况；xllm resume 清空 pending | S-04 / S-22；与 L2 共同补齐启动握手、后台进程跟踪和停止确认，xllm 同样执行 |
-| X7 | **挂起与上下文上限**：真正产出 `ContextLimitReached`（`context_yield_threshold`）与 `PendingTool`（延迟工具）；behavior 模式的 steps 可以压缩 | 两者都不产出；opendan / xllm 的相应分支是死代码；behavior 模式的 steps 无界增长 | §4.4 的“压缩后续跑”；task_mgr 结果恢复 |
+| X7 | **挂起与上下文上限**：真正产出 `ContextLimitReached`（`context_yield_threshold`）与 `PendingTool`（延迟工具）；behavior 模式的 steps 可以压缩 | 两者都不产出；opendan / xllm 的相应分支是死代码；behavior 模式的 steps 无界增长 | §4.4 的“压缩后续跑”；task_mgr 结果恢复。**2026-09-30**：waist 完成；libopendan 接入上下文上限重写，deferred 工具回填未接入 |
 | X8 | **渲染可确定**：step 渲染可以不带时间戳；时间等新鲜量不进入历史段 | step 渲染带 started / ended 时间戳；xllm 的 system 段带当前时间 | §4.4 的稳定前缀 |
 
 - **优先级**：X1、X2、X3、X4、X6 是 L3 的前置；X6 的执行跟踪与 L2 联调。X5、X7、X8 可以在 L3 期间完成。

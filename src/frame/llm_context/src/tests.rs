@@ -494,7 +494,7 @@ async fn interrupt_yields_interrupted_outcome_with_pre_inference_snapshot() {
         snapshot.state.accumulated.len(),
         snap_before.state.accumulated.len()
     );
-    assert!(snapshot.state.pending_tool_calls.is_empty());
+    assert!(snapshot.state.suspended.is_none());
     assert_eq!(snapshot.state.consecutive_errors, 0);
 }
 

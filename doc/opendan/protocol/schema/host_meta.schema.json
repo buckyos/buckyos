@@ -224,6 +224,24 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "epoch_input_seq": {
+      "description": "Receipts with `input_seq ≤` this belong to earlier epochs: their message positions no longer apply (their identity still does).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "epoch_round": {
+      "description": "Round in effect when the current epoch started.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "history_epoch": {
+      "description": "Mid-run history rewrites (context limit) of this run so far. Each rewrite starts a new epoch: the run's history before it is in the worklog, `request.input` is rebuilt from the session history.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
     "inherited_below": {
       "default": 0,
       "description": "Fork child runs: steps with `step_index` below this were inherited from the parent process and are never flushed by this run.",

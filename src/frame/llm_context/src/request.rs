@@ -92,8 +92,11 @@ pub struct ToolPolicy {
     pub disable_capabilities: Vec<String>,
     /// Whether tool calls within the same round may run concurrently.
     pub parallel: bool,
-    /// Whether ToolManager is allowed to return `Observation::Pending` and
-    /// therefore yield `Outcome::PendingTool`. First version: false.
+    /// Whether ToolManager may return `Observation::Pending`, suspending the
+    /// run with `Outcome::PendingTool` until the scheduler fills the result.
+    /// When `false`, a `Pending` observation is a contract violation: the
+    /// call is recorded with an unknown effect and the run ends with
+    /// `Internal`.
     pub allow_deferred: bool,
 }
 
@@ -146,12 +149,16 @@ pub enum BudgetAction {
     EscalateHuman,
 }
 
+/// When the waist yields `Outcome::ContextLimitReached { which:
+/// ApproachingWindow }`: the estimated size of the request about to be sent
+/// reaches (`>=`) this many tokens.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ContextThreshold {
-    /// Fraction of provider window in [0.0, 1.0].
+    /// Fraction of `BudgetSpec.context_window_tokens`, in `(0.0, 1.0]`.
+    /// Requires the window; the threshold is `floor(window * value)`.
     Ratio { value: f32 },
-    /// Absolute used-token count.
+    /// Absolute token count, `> 0`.
     AbsoluteTokens { value: u32 },
 }
 
@@ -163,9 +170,19 @@ pub struct BudgetSpec {
     pub max_wallclock_ms: Option<u64>,
     pub max_cost_units: Option<u32>,
     pub on_exhausted: BudgetAction,
-    /// Warning threshold for context window. `None` disables — hitting the
-    /// provider hard edge then becomes a normal `Outcome::Error`.
+    /// Early-warning threshold for the context window (see
+    /// [`ContextThreshold`]). `None` disables the early yield only; a known
+    /// window overflow and a structured provider refusal still yield
+    /// `ContextLimitReached`. An invalid threshold (zero, ratio outside
+    /// `(0, 1]`, ratio without a window) ends the run with `Internal` before
+    /// any inference.
     pub context_yield_threshold: Option<ContextThreshold>,
+    /// Effective context window of the model(s) this request may run on, in
+    /// tokens, supplied by the caller / provider adapter (the waist never
+    /// looks it up). When set, a request whose estimate plus the completion
+    /// reserve (`model_policy.max_completion_tokens`) exceeds it is not sent:
+    /// the run yields `ContextLimitReached { which: HardLimit }`.
+    pub context_window_tokens: Option<u32>,
 }
 
 impl Default for BudgetSpec {
@@ -177,6 +194,7 @@ impl Default for BudgetSpec {
             max_cost_units: None,
             on_exhausted: BudgetAction::Fail,
             context_yield_threshold: None,
+            context_window_tokens: None,
         }
     }
 }

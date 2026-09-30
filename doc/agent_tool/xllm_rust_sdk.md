@@ -43,6 +43,8 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 正文/CDATA 直接承载参数值，不加字段名或 `字段名:` 前缀。例如读取文件使用 `<read_file><![CDATA[fixture.txt]]></read_file>`，也可使用 `<read_file path="fixture.txt"/>`。同一个正文参数已通过属性给出时保留属性值，空 CDATA 不会覆盖它；未通过属性给出的正文参数仍支持空字符串（例如写入空文件）和原始空白。
 
+`context_window`（顶层，token，可选）是模型上下文窗口，记入 `RunLimits.context_window_tokens`。设置后，待发送请求的估算达到窗口的 75% 时 waist 让出上下文压缩，估算加 `max_tokens` 超过窗口的请求从不发送；未设置时只在 Provider 以结构化错误码拒绝（OpenAI 兼容接口的 `context_length_exceeded`）时压缩。压缩用本次模型（`LlmSummarizeCompressor`），function_call 以 `RewrittenHistory`、behavior 以 `RewrittenSteps`（物化历史折叠进 input，编号继续）续跑，压缩后的上下文先保存快照再继续，每个 run 最多 3 次。
+
 `max_rounds` 是原生 tools 与 behavior actions 共用的工具轮数预算：每个实际派发的 action 批次消耗一轮，同一步多个 action 只计一轮，工具业务失败也计入；behavior 各步内的原生工具循环沿用剩余额度。额度耗尽后仍允许模型返回无工具的最终答案，再请求工具或 action 则进入 `limit_reached`，不会执行超额调用。
 
 ## 5. Run 记录
@@ -67,7 +69,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 | failed | 是 | Provider Permanent（非凭据）/ Unknown、输出解析或工具错误连续超限、上下文压缩 3 次仍超限、deferred tool |
 | limit_reached | 是 | 工具轮数 / 总时长（`timeout`，映射为 waist wallclock 预算）/ token 预算 |
 
-resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，轮数额度沿用已消耗值（显式调高只增加差额）。
+resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，轮数额度沿用已消耗值（显式调高只增加差额）。保存于上下文上限挂起态的快照先压缩再续跑；等待 deferred 工具结果的快照报 `NotResumable`（xllm 不提供 deferred 结果）。
 
 ## 7. CLI（`agent_tool xllm`）
 

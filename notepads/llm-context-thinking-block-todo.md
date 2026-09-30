@@ -2,7 +2,7 @@
 
 日期：2026-09-26
 
-状态：待实施。第 3 节现在做（LLMContext，加上 AICC 的 Thinking 来源绑定）；第 4 节（AgentSession 及可选项）等 AgentSession 改动整理完再做。
+状态：待实施。（2026-09-30：3.1 的消息级 helper `llm_context::strip_thinking` / `is_thinking` 与 3.3 已随 [X7 TODO](llm-context-x7-suspension-todo.md) 实施，`RewrittenHistory` / `RewrittenSteps` 统一剥离；3.1 的快照级版本、3.2、3.4 其余部分与 3.5 未做。）第 3 节现在做（LLMContext，加上 AICC 的 Thinking 来源绑定）；第 4 节（AgentSession 及可选项）等 AgentSession 改动整理完再做。
 
 ## 1. 背景
 

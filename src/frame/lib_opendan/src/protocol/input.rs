@@ -319,6 +319,22 @@ pub struct HostMeta {
     pub inherited_below: u32,
     #[serde(default)]
     pub input_receipts: Vec<InputReceipt>,
+    /// Mid-run history rewrites (context limit) of this run so far. Each
+    /// rewrite starts a new epoch: the run's history before it is in the
+    /// worklog, `request.input` is rebuilt from the session history.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub history_epoch: u64,
+    /// Round in effect when the current epoch started.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub epoch_round: u64,
+    /// Receipts with `input_seq ≤` this belong to earlier epochs: their
+    /// message positions no longer apply (their identity still does).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub epoch_input_seq: u64,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";
+
+fn is_zero(v: &u64) -> bool {
+    *v == 0
+}

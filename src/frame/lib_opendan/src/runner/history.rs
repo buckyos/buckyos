@@ -344,6 +344,33 @@ pub async fn build_history(
     Ok((history_message(&sm, &window), window))
 }
 
+/// Mid-run compaction at the context limit (§4.4): the run's history so far
+/// is already in the worklog. The start point moves so that at most `keep`
+/// tokens of raw records remain, then the history message is rebuilt within
+/// `budget`.
+pub async fn compact_for_limit(
+    session: &mut Session,
+    lease: &Lease,
+    summarizer: &dyn Summarizer,
+    budget: u32,
+    keep: u32,
+) -> Result<Option<AiMessage>> {
+    let sm = session.summary()?;
+    let window = read_window(session, &sm, keep)?;
+    if !window.reached_start {
+        let cut = window
+            .oldest_offset
+            .unwrap_or(session.state.worklog.committed_bytes);
+        let cut_seq = window
+            .oldest_seq
+            .unwrap_or(session.state.worklog.committed_seq + 1);
+        compact(session, lease, summarizer, cut, cut_seq, "context_limit").await?;
+    }
+    Ok(build_history(session, lease, Some(summarizer), budget)
+        .await?
+        .0)
+}
+
 /// After a run: compact when the history occupies more than `ratio` of the
 /// budget, keeping about half of the budget as raw records.
 pub async fn maybe_compact(

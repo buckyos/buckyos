@@ -1,7 +1,7 @@
-{"seq":1,"t":"created","session_id":"work-fixture-finished","kind":"work","by":"app:app2@alice","objective":"write notes.txt","at_ms":1790701180570}
-{"seq":2,"t":"round_started","run_id":"20260929-095940-f43203","round":1,"inputs":[],"changes":["_active_sessions@turn"],"hook":"on_init","at_ms":1790701180587}
-{"seq":3,"t":"user_message","run_id":"20260929-095940-f43203","round":1,"content":"<turn hook=\"on_init\" time=\"2026-09-29T09:59:40.584-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"host\":\"host:lzc-pve:6b719608768f\",\"kind\":\"native\",\"os\":\"linux\",\"runtime_id\":\"rt-fixture-native\"}</runtime>\n</turn>"}
-{"seq":4,"t":"step","run_id":"20260929-095940-f43203","round":1,"assistant":"","actions":[{"call_id":"c1","tool":"exec","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
-{"seq":5,"t":"action_result","run_id":"20260929-095940-f43203","round":1,"call_id":"c1","status":"ok","result":"exit=0 in 1ms"}
-{"seq":6,"t":"step","run_id":"20260929-095940-f43203","round":1,"assistant":"done: notes.txt written"}
-{"seq":7,"t":"outcome","run_id":"20260929-095940-f43203","round":1,"kind":"done","report":"done: notes.txt written"}
+{"seq":1,"t":"created","session_id":"work-fixture-finished","kind":"work","by":"app:app2@alice","objective":"write notes.txt","at_ms":1790761535182}
+{"seq":2,"t":"round_started","run_id":"20260930-024535-baa919","round":1,"inputs":[],"changes":["_active_sessions@turn"],"hook":"on_init","at_ms":1790761535200}
+{"seq":3,"t":"user_message","run_id":"20260930-024535-baa919","round":1,"content":"<turn hook=\"on_init\" time=\"2026-09-30T02:45:35.197-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"host\":\"host:lzc-pve:6b719608768f\",\"kind\":\"native\",\"os\":\"linux\",\"runtime_id\":\"rt-fixture-native\"}</runtime>\n</turn>"}
+{"seq":4,"t":"step","run_id":"20260930-024535-baa919","round":1,"assistant":"","actions":[{"call_id":"c1","tool":"exec","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
+{"seq":5,"t":"action_result","run_id":"20260930-024535-baa919","round":1,"call_id":"c1","status":"ok","result":"exit=0 in 1ms"}
+{"seq":6,"t":"step","run_id":"20260930-024535-baa919","round":1,"assistant":"done: notes.txt written"}
+{"seq":7,"t":"outcome","run_id":"20260930-024535-baa919","round":1,"kind":"done","report":"done: notes.txt written"}

@@ -130,9 +130,14 @@ impl Observation {
 /// One pending (deferred) tool entry carried in `Outcome::PendingTool.pending`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingToolCall {
+    /// The original call (name, args, call_id) exactly as dispatched.
     pub call: AiToolCall,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eta_ms: Option<u64>,
+    /// Waiting information the effect layer attached to its
+    /// `Observation::Pending` (task id, reason, partial output).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_result: Option<ToolResultView>,
 }
 
 /// Final state of one tool call attempt as seen by the waist.
@@ -148,6 +153,11 @@ pub enum ToolExecStatus {
     Unknown,
     /// The round was aborted before this call was dispatched.
     NotExecuted,
+    /// Dispatched and deferred (`Observation::Pending`); the result is filled
+    /// by the scheduler through `ResumeFill::ToolResults`.
+    Pending,
+    /// A deferred call the scheduler resolved as `Observation::Cancelled`.
+    Cancelled,
 }
 
 /// Audit record for one tool call attempt. Lives in `ContextRunTrace.tool_trace`

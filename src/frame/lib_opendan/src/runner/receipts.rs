@@ -75,6 +75,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         applied_input_seq: 0,
         flushed_step: 0,
         flushed_input_seq: 0,
+        flushed_epoch: 0,
         process_entry: None,
     });
     if live.run_id != r.run_id {

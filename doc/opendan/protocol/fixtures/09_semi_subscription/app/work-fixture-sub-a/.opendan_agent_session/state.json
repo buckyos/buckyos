@@ -2,10 +2,10 @@
   "schema": "opendan.session_state/1",
   "rev": 3,
   "writer": {
-    "runner_id": "rn-957db21d3eb042f8",
+    "runner_id": "rn-bd23ee2b090e48ab",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 1467264,
+    "pid": 2701845,
     "lock_epoch": 1
   },
   "run_state": "finished",
@@ -21,7 +21,7 @@
     "title": ""
   },
   "live_run": null,
-  "last_run": "20260929-095941-3190f3",
+  "last_run": "20260930-024535-8aee3f",
   "worklog": {
     "committed_seq": 5,
     "committed_bytes": 833
@@ -39,5 +39,5 @@
   },
   "one_line_status": "finished: answer",
   "stop_requested": false,
-  "updated_at_ms": 1790701181125
+  "updated_at_ms": 1790761535741
 }

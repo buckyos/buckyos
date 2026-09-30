@@ -92,7 +92,9 @@ pub enum WorklogBody {
         run_id: String,
         round: u64,
         /// `done | wait | pending_tool | budget | error | interrupted |
-        /// context_limit | stopped`.
+        /// context_limit | stopped | suspended`, or `context_rewritten`: the
+        /// run hit the context limit, its history so far is above this entry
+        /// and it continues from the compacted session history.
         kind: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         next_behavior: Option<String>,

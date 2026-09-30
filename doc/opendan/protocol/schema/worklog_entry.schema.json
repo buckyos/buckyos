@@ -246,7 +246,7 @@
     {
       "properties": {
         "kind": {
-          "description": "`done | wait | pending_tool | budget | error | interrupted | context_limit | stopped`.",
+          "description": "`done | wait | pending_tool | budget | error | interrupted | context_limit | stopped | suspended`, or `context_rewritten`: the run hit the context limit, its history so far is above this entry and it continues from the compacted session history.",
           "type": "string"
         },
         "next_behavior": {

@@ -83,7 +83,7 @@ use llm_context::request::{
     BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
 };
-use llm_context::state::LLMContextSnapshot;
+use llm_context::state::{LLMContextSnapshot, Suspension};
 use llm_context::{LLMContext, LLMContextInterruptHandle, XmlStepRenderer};
 
 use crate::exec_tracking::{ExecutionRecord, HostRunInfo, InflightAction};
@@ -121,6 +121,16 @@ pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
 pub const RUN_RECORD_VERSION: u32 = 1;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
+
+/// The early compaction threshold needs the window; without it only the
+/// provider's structured refusal triggers compaction.
+fn context_yield_threshold(limits: &RunLimits) -> Option<ContextThreshold> {
+    limits
+        .context_window_tokens
+        .map(|_| ContextThreshold::Ratio {
+            value: DEFAULT_CONTEXT_YIELD_RATIO,
+        })
+}
 /// 默认连续可纠正错误上限。
 pub const DEFAULT_MAX_CONSECUTIVE_ERRORS: u32 = 3;
 /// 自动压缩目标 token 数兜底。
@@ -654,6 +664,8 @@ pub struct LlmContextFile {
     pub max_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1278,6 +1290,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             "max_tokens",
             "max_rounds",
             "llm_timeout",
+            "context_window",
             "timeout",
             "runs_dir",
             "loop_model",
@@ -1301,6 +1314,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
     let max_tokens = ctx.get_u32("", m, "max_tokens")?;
     let max_rounds = ctx.get_u32("", m, "max_rounds")?;
     let llm_timeout = ctx.get_u64("", m, "llm_timeout")?;
+    let context_window = ctx.get_u32("", m, "context_window")?;
     let timeout = ctx.get_u64("", m, "timeout")?;
     let runs_dir = match m.get("runs_dir") {
         None => None,
@@ -1433,6 +1447,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         max_tokens,
         max_rounds,
         llm_timeout,
+        context_window,
         timeout,
         runs_dir,
         loop_model,
@@ -1489,6 +1504,8 @@ pub struct MergedConfig {
     pub max_rounds: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_timeout: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1564,6 +1581,7 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         scalar!(max_tokens, "max_tokens");
         scalar!(max_rounds, "max_rounds");
         scalar!(llm_timeout, "llm_timeout");
+        scalar!(context_window, "context_window");
         scalar!(timeout, "timeout");
         scalar!(runs_dir, "runs_dir");
         scalar!(loop_model, "loop_model");
@@ -1941,6 +1959,12 @@ pub struct RunLimits {
     pub max_rounds: u32,
     pub timeout_secs: u64,
     pub llm_timeout_secs: u64,
+    /// Model context window in tokens (`context_window`). When set, the run
+    /// yields for compaction at `DEFAULT_CONTEXT_YIELD_RATIO` of it and never
+    /// sends a request that cannot fit; unknown windows only rely on the
+    /// provider's structured refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u32>,
 }
 
 /// 展开后的单个工具。
@@ -4692,7 +4716,18 @@ impl LlmClient for OpenAiLlmClient {
         })?;
         if !status.is_success() {
             let code = status.as_u16();
+            // OpenAI-compatible APIs report a prompt that does not fit with
+            // the structured error code `context_length_exceeded`.
+            let context_limit = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| {
+                    v.pointer("/error/code")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .is_some_and(|c| c == "context_length_exceeded");
             let failure = match code {
+                _ if context_limit => ProviderFailure::ContextLimit,
                 401 | 403 | 404 | 400 | 422 => ProviderFailure::Permanent,
                 408 | 409 | 425 | 429 | 500 | 502 | 503 | 504 => ProviderFailure::Transient,
                 _ => ProviderFailure::Unknown,
@@ -5016,6 +5051,7 @@ impl RunRecord {
                     max_rounds: DEFAULT_MAX_ROUNDS,
                     timeout_secs: DEFAULT_TIMEOUT_SECS,
                     llm_timeout_secs: DEFAULT_LLM_TIMEOUT_SECS,
+                    context_window_tokens: None,
                 },
                 run_logs: RunLogLevel::Info,
                 result_format: ResultFormat::Raw,
@@ -5971,6 +6007,7 @@ impl XllmTask {
                 DEFAULT_LLM_TIMEOUT_SECS,
                 "llm_timeout"
             ),
+            context_window_tokens: merged.context_window,
         };
         let store = match (&overrides.runs_dir, &merged.runs_dir) {
             (Some(p), _) => {
@@ -6348,6 +6385,7 @@ impl XllmTask {
             max_rounds: merged.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS),
             timeout_secs: merged.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
             llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
+            context_window_tokens: merged.context_window,
         };
         let group = merged
             .prompt
@@ -6591,9 +6629,8 @@ pub fn hosted_request(
             max_wallclock_ms: Some(cfg.limits.timeout_secs * 1000),
             max_cost_units: None,
             on_exhausted: llm_context::request::BudgetAction::Fail,
-            context_yield_threshold: Some(ContextThreshold::Ratio {
-                value: DEFAULT_CONTEXT_YIELD_RATIO,
-            }),
+            context_yield_threshold: context_yield_threshold(&cfg.limits),
+            context_window_tokens: cfg.limits.context_window_tokens,
         },
         human_policy: Default::default(),
         error_policy: ErrorPolicy {
@@ -6758,6 +6795,9 @@ pub struct XllmRun {
     llm: Arc<TimeoutLlmClient>,
     manager: Arc<XllmToolManager>,
     ctx: Option<LLMContext>,
+    /// A snapshot taken over at a context-limit suspension: compacted before
+    /// the run continues.
+    limit_snapshot: Option<LLMContextSnapshot>,
     interrupter: XllmInterrupter,
     file_stage: Option<FileStagePlan>,
     initial_messages: Vec<AiMessage>,
@@ -6948,6 +6988,7 @@ impl XllmRun {
             llm,
             manager,
             ctx: None,
+            limit_snapshot: None,
             interrupter: XllmInterrupter {
                 requested: Arc::new(Mutex::new(None)),
                 handle: Arc::new(Mutex::new(None)),
@@ -7136,6 +7177,7 @@ impl XllmRun {
             &deps,
         );
         let mut ctx = None;
+        let mut limit_snapshot = None;
         if let Some(mut snap) = snapshot {
             // 本次命令的执行时长从恢复启动重新计算；轮数额度沿用已消耗值。
             let limits_now = record.lock().expect("record lock").config.limits.clone();
@@ -7147,14 +7189,26 @@ impl XllmRun {
                 snap.state.rounds_left = limits_now.max_rounds.saturating_sub(consumed);
                 snap.request.tool_policy.max_rounds = limits_now.max_rounds;
             }
-            snap.state.pending_tool_calls.clear();
-            let resumed =
-                LLMContext::resume(snap, ResumeFill::ResumeFromMidRun, waist_deps.clone())
-                    .map_err(|e| XllmError::NotResumable {
+            match snap.state.suspended {
+                None => {
+                    let resumed =
+                        LLMContext::resume(snap, ResumeFill::ResumeFromMidRun, waist_deps.clone())
+                            .map_err(|e| XllmError::NotResumable {
+                                run_id: run_id_s.clone(),
+                                reason: format!("saved progress cannot be loaded: {e}"),
+                            })?;
+                    ctx = Some(resumed);
+                }
+                // Saved at the context limit: compacted before continuing.
+                Some(Suspension::ContextLimit { .. }) => limit_snapshot = Some(snap),
+                Some(Suspension::PendingTool { .. }) => {
+                    return Err(XllmError::NotResumable {
                         run_id: run_id_s.clone(),
-                        reason: format!("saved progress cannot be loaded: {e}"),
-                    })?;
-            ctx = Some(resumed);
+                        reason: "the run waits for deferred tool results, which xllm cannot supply"
+                            .into(),
+                    })
+                }
+            }
         }
         let interrupter = XllmInterrupter {
             requested: Arc::new(Mutex::new(None)),
@@ -7192,6 +7246,7 @@ impl XllmRun {
             llm,
             manager,
             ctx,
+            limit_snapshot,
             interrupter,
             file_stage,
             initial_messages,
@@ -7294,6 +7349,7 @@ impl XllmRun {
                     }
                 }
                 ProviderFailure::Unknown => (false, "provider_error", None),
+                ProviderFailure::ContextLimit => (false, "context_capacity", None),
             },
             LLMComputeError::Checkpoint { .. } => (
                 true,
@@ -7508,9 +7564,8 @@ impl XllmRun {
                 max_wallclock_ms: Some(cfg.limits.timeout_secs * 1000),
                 max_cost_units: None,
                 on_exhausted: llm_context::request::BudgetAction::Fail,
-                context_yield_threshold: Some(ContextThreshold::Ratio {
-                    value: DEFAULT_CONTEXT_YIELD_RATIO,
-                }),
+                context_yield_threshold: context_yield_threshold(&cfg.limits),
+                context_window_tokens: cfg.limits.context_window_tokens,
             },
             human_policy: Default::default(),
             error_policy: ErrorPolicy {
@@ -7589,6 +7644,13 @@ impl XllmRun {
                 r.interrupt_reason = Some(reason);
             })?;
             return Ok(RunOutcome::Interrupted(self.record()));
+        }
+        if let Some(snapshot) = self.limit_snapshot.take() {
+            let history = LLMContext::rewritable_history(&snapshot, &self.waist_deps);
+            let usage = snapshot.state.usage.clone();
+            if let Some(outcome) = self.compact_context(snapshot, history, usage).await? {
+                return Ok(outcome);
+            }
         }
         if self.ctx.is_none() {
             if let Some(plan) = self.file_stage.clone() {
@@ -7737,77 +7799,102 @@ impl XllmRun {
                     usage,
                     ..
                 } => {
-                    self.emit(RunEvent::Phase {
-                        phase: RunPhase::CompactingContext,
-                        detail: format!("{} messages", accumulated.len()),
-                    });
-                    let compactions = self.record().compactions;
-                    if compactions >= 3 {
-                        let calls = self.llm.calls();
-                        self.update(|r| {
-                            r.status = RunStatus::Failed;
-                            r.usage.main = Some(usage);
-                            r.usage.llm_requests += calls;
-                            r.last_error = Some(RunErrorRecord {
-                                phase: "model".into(),
-                                kind: "context_capacity".into(),
-                                message: "the task context still exceeds the model capacity after repeated compaction".into(),
-                                recoverable: false,
-                                condition: None,
-                                at_ms: now_ms(),
-                            });
-                        })?;
-                        return Ok(RunOutcome::Failed(self.record()));
-                    }
-                    let compressor = LlmSummarizeCompressor::new(
-                        self.waist_deps.clone().into_traditional(),
-                        model.clone(),
-                        DEFAULT_AUTO_COMPRESS_TARGET_TOKENS,
-                    );
-                    let rewritten = match compressor
-                        .compress(accumulated, Path::new(&self.record().workdir))
-                        .await
+                    if let Some(outcome) =
+                        self.compact_context(snapshot, accumulated, usage).await?
                     {
-                        Ok(r) => r,
-                        Err(e) => {
-                            let calls = self.llm.calls();
-                            self.update(|r| {
-                                r.status = RunStatus::Failed;
-                                r.usage.main = Some(usage);
-                                r.usage.llm_requests += calls;
-                                r.last_error = Some(RunErrorRecord {
-                                    phase: "model".into(),
-                                    kind: "context_compaction".into(),
-                                    message: format!("context compaction failed: {e}"),
-                                    recoverable: false,
-                                    condition: None,
-                                    at_ms: now_ms(),
-                                });
-                            })?;
-                            return Ok(RunOutcome::Failed(self.record()));
-                        }
-                    };
-                    let mut prepared = snapshot;
-                    prepared.state.accumulated = rewritten.clone();
-                    hook.commit(&prepared)?;
-                    let resumed = LLMContext::resume(
-                        prepared,
-                        ResumeFill::RewrittenHistory { history: rewritten },
-                        self.waist_deps.clone(),
-                    )
-                    .map_err(|e| {
-                        XllmError::Other(format!("resume after compaction failed: {e}"))
-                    })?;
-                    *self.interrupter.handle.lock().expect("lock") =
-                        Some(resumed.interrupt_handle());
-                    self.ctx = Some(resumed);
-                    self.update(|r| {
-                        r.compactions += 1;
-                    })?;
+                        return Ok(outcome);
+                    }
                     continue;
                 }
             }
         }
+    }
+
+    /// Compact a context suspended at the context limit and resume it
+    /// (at most 3 compactions per run). The compacted context is committed
+    /// before it runs. `Some(outcome)` ends this command.
+    async fn compact_context(
+        &mut self,
+        snapshot: LLMContextSnapshot,
+        history: Vec<AiMessage>,
+        usage: AiUsage,
+    ) -> Result<Option<RunOutcome>, XllmError> {
+        self.emit(RunEvent::Phase {
+            phase: RunPhase::CompactingContext,
+            detail: format!("{} messages", history.len()),
+        });
+        let fail = |this: &mut Self,
+                    kind: &str,
+                    message: String|
+         -> Result<Option<RunOutcome>, XllmError> {
+            let calls = this.llm.calls();
+            this.update(|r| {
+                r.status = RunStatus::Failed;
+                r.usage.main = Some(usage.clone());
+                r.usage.llm_requests += calls;
+                r.last_error = Some(RunErrorRecord {
+                    phase: "model".into(),
+                    kind: kind.into(),
+                    message,
+                    recoverable: false,
+                    condition: None,
+                    at_ms: now_ms(),
+                });
+            })?;
+            Ok(Some(RunOutcome::Failed(this.record())))
+        };
+        if self.record().compactions >= 3 {
+            return fail(
+                self,
+                "context_capacity",
+                "the task context still exceeds the model capacity after repeated compaction"
+                    .into(),
+            );
+        }
+        let model = self.record().config.model.clone();
+        let compressor = LlmSummarizeCompressor::new(
+            self.waist_deps.clone().into_traditional(),
+            model,
+            DEFAULT_AUTO_COMPRESS_TARGET_TOKENS,
+        );
+        let rewritten = match compressor
+            .compress(history, Path::new(&self.record().workdir))
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                return fail(
+                    self,
+                    "context_compaction",
+                    format!("context compaction failed: {e}"),
+                )
+            }
+        };
+        // Behavior runs fold the materialized history into the input; the
+        // turn in progress is kept by the waist.
+        let fill = if self.waist_deps.result_parser.is_some() {
+            ResumeFill::RewrittenSteps {
+                input: rewritten,
+                history_summaries: Vec::new(),
+                steps: Vec::new(),
+                last_step: None,
+            }
+        } else {
+            ResumeFill::RewrittenHistory { history: rewritten }
+        };
+        let resumed = LLMContext::resume(snapshot, fill, self.waist_deps.clone())
+            .map_err(|e| XllmError::Other(format!("resume after compaction failed: {e}")))?;
+        let hook = SnapshotHook {
+            store: self.store.clone(),
+            record: self.record.clone(),
+        };
+        hook.commit(&resumed.snapshot())?;
+        *self.interrupter.handle.lock().expect("lock") = Some(resumed.interrupt_handle());
+        self.ctx = Some(resumed);
+        self.update(|r| {
+            r.compactions += 1;
+        })?;
+        Ok(None)
     }
 }
 
@@ -10271,5 +10358,281 @@ there]]></write_file>
         assert!(spec
             .description
             .contains("Default timeout 1800s, max 3600s"));
+    }
+
+    fn context_refusal() -> Result<AiResponse, LLMComputeError> {
+        Err(LLMComputeError::provider(
+            ProviderFailure::ContextLimit,
+            "context_length_exceeded",
+        ))
+    }
+
+    #[tokio::test]
+    async fn provider_context_refusal_compacts_and_continues_the_same_run() {
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![
+            tool_call("exec", json!({"command":"echo before-limit"}), "c1"),
+            context_refusal(),
+            text("done after compaction"),
+        ]);
+        let overrides = TaskOverrides {
+            tools: Some(true),
+            ..env.overrides()
+        };
+        let o = env
+            .run(TaskInput::question("run it"), overrides, llm.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(o, RunOutcome::Completed(_)),
+            "{:?}",
+            o.record().last_error
+        );
+        let rec = o.record();
+        assert_eq!(rec.compactions, 1);
+        let seen = llm.seen();
+        assert_eq!(seen.len(), 3);
+        // A small history is kept verbatim by the compressor: the retried
+        // request carries the same transcript, the tool is not re-run.
+        assert_eq!(seen[2].messages, seen[1].messages);
+        let snap = env
+            .store()
+            .get_snapshot(&rec.run_id, rec.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert!(snap.state.suspended.is_none());
+        assert_eq!(
+            snap.request.input, seen[1].messages,
+            "the rewrite is the new base"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_context_refusals_fail_after_three_compactions() {
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![
+            context_refusal(),
+            context_refusal(),
+            context_refusal(),
+            context_refusal(),
+        ]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm.clone())
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Failed(_)));
+        let rec = o.record();
+        assert_eq!(rec.compactions, 3);
+        assert_eq!(rec.last_error.as_ref().unwrap().kind, "context_capacity");
+        assert_eq!(llm.calls(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_known_window_never_sends_a_request_that_cannot_fit() {
+        let env = Env::new();
+        env.write("project/.llm_context", "context_window: 50\n");
+        let llm = ScriptedLlm::new(vec![text("never")]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm.clone())
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Failed(_)));
+        let rec = o.record();
+        assert_eq!(rec.config.limits.context_window_tokens, Some(50));
+        assert_eq!(rec.compactions, 3);
+        assert_eq!(rec.last_error.as_ref().unwrap().kind, "context_capacity");
+        assert_eq!(llm.calls(), 0, "nothing over the window is sent");
+    }
+
+    #[tokio::test]
+    async fn behavior_context_refusal_rewrites_the_materialized_steps() {
+        let env = Env::new();
+        env.write(
+            "project/.llm_context",
+            "loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: true\n",
+        );
+        let llm = ScriptedLlm::new(vec![
+            text("<response><thinking>run</thinking><actions><exec><![CDATA[echo behavior-88]]></exec></actions></response>"),
+            context_refusal(),
+            text("<response><report><![CDATA[{\"report\":\"ok 88\"}]]></report></response>"),
+        ]);
+        let o = env
+            .run(TaskInput::question("do it"), env.overrides(), llm.clone())
+            .await
+            .unwrap();
+        assert!(
+            matches!(o, RunOutcome::Completed(_)),
+            "{:?}",
+            o.record().last_error
+        );
+        let rec = o.record();
+        assert_eq!(rec.compactions, 1);
+        let seen = llm.seen();
+        assert_eq!(seen.len(), 3);
+        assert_eq!(
+            seen[2].messages, seen[1].messages,
+            "folded into the input verbatim"
+        );
+        let snap = env
+            .store()
+            .get_snapshot(&rec.run_id, rec.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert!(snap.state.steps.iter().all(|s| s.meta.step_index >= 1));
+        assert_eq!(snap.state.next_step_index, 2, "step numbering continues");
+    }
+
+    #[tokio::test]
+    async fn resume_takes_over_suspended_snapshots_explicitly() {
+        let env = Env::new();
+        let llm = ScriptedLlm::new(vec![Err(LLMComputeError::provider(
+            ProviderFailure::Transient,
+            "aicc down",
+        ))]);
+        let o = env
+            .run(TaskInput::question("hello"), env.overrides(), llm)
+            .await
+            .unwrap();
+        assert!(matches!(o, RunOutcome::Paused(_)));
+        let run_id = o.record().run_id.clone();
+        let store = env.store();
+        let publish = |snap: &LLMContextSnapshot| {
+            let idx = store.put_snapshot(&run_id, snap).unwrap();
+            let mut rec = store.read_record(&run_id).unwrap();
+            rec.latest_snapshot_idx = Some(idx);
+            store.write_record(&rec).unwrap();
+        };
+        let base = store
+            .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
+            .unwrap();
+
+        // Saved while waiting for a deferred tool: xllm cannot supply it.
+        let mut pending = base.clone();
+        pending.state.suspended = Some(Suspension::PendingTool {
+            pending: Vec::new(),
+            at_ms: now_ms(),
+        });
+        publish(&pending);
+        let err = XllmRun::resume(
+            &store,
+            Some(&run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(ScriptedLlm::new(vec![])),
+        )
+        .await
+        .err()
+        .expect("a pending-tool run is not resumable by xllm");
+        assert!(err.to_string().contains("deferred tool"), "{err}");
+
+        // Saved at the context limit: compacted, then continued.
+        let mut limited = base;
+        limited.state.suspended = Some(Suspension::ContextLimit {
+            which: llm_context::outcome::ContextLimitKind::ProviderRefused,
+            estimated_tokens: None,
+            at_ms: now_ms(),
+        });
+        publish(&limited);
+        let llm = ScriptedLlm::new(vec![text("taken over")]);
+        let start = XllmRun::resume(
+            &store,
+            Some(&run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm.clone()),
+        )
+        .await
+        .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run")
+        };
+        let o = run.execute().await.unwrap();
+        assert!(
+            matches!(o, RunOutcome::Completed(_)),
+            "{:?}",
+            o.record().last_error
+        );
+        assert_eq!(o.record().compactions, 1);
+        assert_eq!(llm.calls(), 1);
+    }
+
+    /// One-shot HTTP server answering every request with `status` + `body`.
+    async fn serve_status(status: u16, body: &'static str) -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 65536];
+                let _ = sock.read(&mut buf).await;
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+        format!("http://{addr}/v1")
+    }
+
+    #[tokio::test]
+    async fn openai_context_length_code_is_a_structured_context_limit() {
+        let infer = |base: String| async move {
+            let client =
+                OpenAiLlmClient::new(Some(base), Some("k".into()), BTreeMap::new()).unwrap();
+            client
+                .infer(LlmInferenceRequest {
+                    trace_id: None,
+                    messages: vec![AiMessage::text(AiRole::User, "hi")],
+                    model_alias: "m".into(),
+                    fallbacks: Vec::new(),
+                    temperature: None,
+                    max_completion_tokens: None,
+                    force_json: false,
+                    json_schema: None,
+                    provider_options: None,
+                    disable_capabilities: Vec::new(),
+                    tool_specs: Vec::new(),
+                    allow_tool_calls: false,
+                    abort: llm_context::InferenceAbortToken::noop(),
+                })
+                .await
+                .unwrap_err()
+        };
+        let err = infer(
+            serve_status(
+                400,
+                r#"{"error":{"code":"context_length_exceeded","message":"too long"}}"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            matches!(
+                err,
+                LLMComputeError::Provider {
+                    failure: ProviderFailure::ContextLimit,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+        // A 400 whose text merely mentions the context is not guessed.
+        let err = infer(
+            serve_status(
+                400,
+                r#"{"error":{"message":"maximum context length exceeded"}}"#,
+            )
+            .await,
+        )
+        .await;
+        assert!(
+            matches!(
+                err,
+                LLMComputeError::Provider {
+                    failure: ProviderFailure::Permanent,
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
     }
 }

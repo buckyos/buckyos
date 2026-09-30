@@ -22,6 +22,12 @@ pub enum ProviderFailure {
     Permanent,
     /// The adapter could not tell. Must not be treated as safe-to-retry.
     Unknown,
+    /// The provider refused the request because it does not fit the model's
+    /// context window, reported by a structured provider code (e.g. OpenAI
+    /// `context_length_exceeded`). Adapters must not infer it from message
+    /// text or a bare HTTP 400. The waist turns it into
+    /// `Outcome::ContextLimitReached { which: ProviderRefused }`.
+    ContextLimit,
 }
 
 /// Which persistence checkpoint failed.
