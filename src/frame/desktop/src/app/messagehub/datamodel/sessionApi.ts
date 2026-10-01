@@ -338,33 +338,107 @@ export interface GroupMemberRecord {
   state: 'invited' | 'pending_admin_approval' | 'active' | 'left' | 'removed' | 'rejected' | 'expired' | 'revoked'
   entity_kind: string
   invitation_id?: string | null
+  invited_by?: DID | null
   expires_at_ms?: number | null
+}
+
+/** Shared state of a Group Session (`group.get_shared_state`); text fields are absent when unset. */
+export interface GroupSharedState {
+  revision: string
+  updated_at_ms?: number
+  title?: string
+  description?: string
+  announcement?: string
+}
+
+export interface GroupSessionRules {
+  receipts?: string
+  edit?: { edit_window_ms?: number | null; recall_window_ms?: number | null }
+  allow_guests?: boolean
 }
 
 export interface GroupSessionItem {
   session_id: string | null
   session: string
-  shared_state?: { title?: string; description?: string } | null
+  shared_state?: Partial<GroupSharedState> | null
+  rules?: GroupSessionRules | null
   lifecycle: string
   revision: string
   has_guests: boolean
+  participant_count?: number
 }
+
+/** `group.get_config`: the configuration document (`GroupConfiguration`). */
+export interface GroupConfig {
+  revision: string
+  profile?: { name?: unknown; description?: unknown } | null
+  default_session?: GroupSessionRules | null
+}
+
+export interface GroupInviteLink {
+  token: string
+  expires_at_ms?: number | null
+  max_uses?: number | null
+  require_approval: boolean
+}
+
+export interface GroupReadMarkers {
+  last_read_seq: number
+  visibility?: 'hidden'
+  count?: number
+  readers?: DID[]
+}
+
+const key = (idempotencyKey: string) => ({ idempotency_key: idempotencyKey })
+const session = (sessionId: string | undefined) => sessionId !== undefined ? { session_id: sessionId } : {}
 
 export const listGroupsByMember = () => call<{ items?: GroupDocEnvelope[]; joined?: JoinedGroupSummary[] } | null>('group.list_by_member', {}).then(result => result ?? {})
 export const getGroupDoc = (groupDid: DID) => call<GroupDocEnvelope>('group.get_doc', { group_did: groupDid })
-export const listGroupMembers = (groupDid: DID) => call<{ items?: GroupMemberRecord[] } | null>('group.list_members', { group_did: groupDid }).then(result => result?.items ?? [])
+export const getGroupConfig = (groupDid: DID) => call<GroupConfig>('group.get_config', { group_did: groupDid })
+/** Members of a hosted group plus the owner transfer still waiting for its target (members only; the public doc never carries it). */
+export const listGroupMembers = (groupDid: DID) => call<{ items?: GroupMemberRecord[]; pending_owner_transfer?: GroupOwnerTransfer | null } | null>('group.list_members', { group_did: groupDid }).then(result => ({ items: result?.items ?? [], pendingTransfer: result?.pending_owner_transfer ?? null }))
+export interface GroupOwnerTransfer { member_did: DID; transfer_id: string; expires_at_ms: number }
 export const listGroupSessions = (groupDid: DID) => call<{ items?: GroupSessionItem[] } | null>('group.list_sessions', { group_did: groupDid }).then(result => result?.items ?? [])
-export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...(sessionId !== undefined ? { session_id: sessionId } : {}) })
+export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...session(sessionId) })
 export const createGroup = (input: { idempotency_key: string; profile: { name: string }; invitations: Array<{ member_did: DID }> }) => call<{ group_did: DID; revision: string }>('group.create', input as unknown as Record<string, unknown>)
-export const inviteGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<{ invite_id: string; member_did: DID; expires_at_ms: number }>('group.invite_member', { group_did: groupDid, member_did: memberDid, idempotency_key: idempotencyKey })
-export const removeGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<unknown>('group.remove_member', { group_did: groupDid, member_did: memberDid, idempotency_key: idempotencyKey })
-export const leaveGroup = (groupDid: DID, idempotencyKey: string) => call<unknown>('group.leave', { group_did: groupDid, idempotency_key: idempotencyKey })
-export const deleteGroup = (groupDid: DID, idempotencyKey: string) => call<{ lifecycle: string }>('group.delete', { group_did: groupDid, idempotency_key: idempotencyKey })
+/** `patch` is deep-merged into the configuration (`{ profile: { name, description } }` edits the profile). */
+export const applyGroupConfig = (groupDid: DID, expectedRevision: string, patch: Record<string, unknown>, idempotencyKey: string) => call<{ revision: string }>('group.apply_config', { group_did: groupDid, expected_revision: expectedRevision, patch, ...key(idempotencyKey) })
+export const inviteGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<{ invite_id: string; member_did: DID; expires_at_ms: number; state: 'invited' | 'active' | 'pending_admin_approval' }>('group.invite_member', { group_did: groupDid, member_did: memberDid, ...key(idempotencyKey) })
+export const removeGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<unknown>('group.remove_member', { group_did: groupDid, member_did: memberDid, ...key(idempotencyKey) })
+export const approveGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<GroupMemberRecord>('group.approve_member', { group_did: groupDid, member_did: memberDid, ...key(idempotencyKey) })
+export const rejectGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<GroupMemberRecord>('group.reject_member', { group_did: groupDid, member_did: memberDid, ...key(idempotencyKey) })
+export const updateGroupMemberRole = (groupDid: DID, memberDid: DID, role: 'admin' | 'member', idempotencyKey: string) => call<{ role: string }>('group.update_member_role', { group_did: groupDid, member_did: memberDid, role, ...key(idempotencyKey) })
+export const moderateGroupMember = (groupDid: DID, memberDid: DID, patch: { blocked?: boolean; muted_until_ms?: number | null }, idempotencyKey: string) => call<unknown>('group.moderate', { group_did: groupDid, member_did: memberDid, ...patch, ...key(idempotencyKey) })
+/** Starts a two-step transfer; the target accepts with `acceptGroupOwnerTransfer`. */
+export const transferGroupOwner = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<{ transfer_id: string; member_did: DID; expires_at_ms: number }>('group.transfer_owner', { group_did: groupDid, member_did: memberDid, ...key(idempotencyKey) })
+export const acceptGroupOwnerTransfer = (groupDid: DID, transferId: string) => call<{ owner: DID }>('group.accept_owner_transfer', { group_did: groupDid, transfer_id: transferId })
+export const cancelGroupOwnerTransfer = (groupDid: DID, idempotencyKey: string) => call<unknown>('group.cancel_owner_transfer', { group_did: groupDid, ...key(idempotencyKey) })
+export const leaveGroup = (groupDid: DID, idempotencyKey: string) => call<unknown>('group.leave', { group_did: groupDid, ...key(idempotencyKey) })
+export const deleteGroup = (groupDid: DID, idempotencyKey: string) => call<{ lifecycle: string }>('group.delete', { group_did: groupDid, ...key(idempotencyKey) })
+export const createGroupInviteLink = (groupDid: DID, options: { expires_at_ms?: number; max_uses?: number; require_approval?: boolean }, idempotencyKey: string) => call<GroupInviteLink>('group.create_invite_link', { group_did: groupDid, ...options, ...key(idempotencyKey) })
+export const revokeGroupInviteLink = (groupDid: DID, token: string, idempotencyKey: string) => call<unknown>('group.revoke_invite_link', { group_did: groupDid, token, ...key(idempotencyKey) })
+/** Accepts a direct invitation; `memberDid` only when the viewer accepts on behalf of its agent. */
+export const acceptGroupInvitation = (groupDid: DID, invitationId: string, memberDid?: DID) => call<GroupMemberRecord>('group.accept_invitation', { group_did: groupDid, invitation_id: invitationId, ...(memberDid ? { member_did: memberDid } : {}) })
+/** Asks to join (open / request_and_approve policy) or joins through an invite link token. */
+export const requestGroupJoin = (groupDid: DID, invite?: string) => call<GroupMemberRecord>('group.request_join', { group_did: groupDid, ...(invite ? { invite } : {}) })
 export const createGroupSession = (groupDid: DID, input: { title?: string; idempotency_key: string }) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.create_session', { group_did: groupDid, ...input })
-/** Accepting an invitation requires the member's signed proof (`buckyos.group_member_proof`); the host rejects a request without one. */
-export const submitGroupMemberProof = (groupDid: DID, proof?: unknown) => call<GroupMemberRecord>('group.submit_member_proof', { group_did: groupDid, ...(proof !== undefined ? { proof } : {}) })
+export const updateGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, input: { add_members?: DID[]; membership?: unknown }, idempotencyKey: string) => call<{ revision: string }>('group.update_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...input, ...key(idempotencyKey) })
+export const archiveGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, idempotencyKey: string) => call<{ revision: string; lifecycle: string }>('group.archive_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...key(idempotencyKey) })
+export const deleteGroupSession = (groupDid: DID, sessionId: string, expectedRevision: string, idempotencyKey: string) => call<{ revision: string; lifecycle: string }>('group.delete_session', { group_did: groupDid, session_id: sessionId, expected_revision: expectedRevision, ...key(idempotencyKey) })
+export const removeGroupSessionMember = (groupDid: DID, sessionId: string, memberDid: DID, expectedRevision: string, idempotencyKey: string) => call<{ revision: string }>('group.remove_session_member', { group_did: groupDid, session_id: sessionId, member_did: memberDid, expected_revision: expectedRevision, ...key(idempotencyKey) })
+export const leaveGroupSession = (groupDid: DID, sessionId: string, idempotencyKey: string) => call<{ revision: string }>('group.leave_session', { group_did: groupDid, session_id: sessionId, ...key(idempotencyKey) })
+export const inviteGroupSessionGuest = (groupDid: DID, sessionId: string, memberDid: DID, idempotencyKey: string) => call<unknown>('group.invite_session_guest', { group_did: groupDid, session_id: sessionId, member_did: memberDid, ...key(idempotencyKey) })
+export const acceptGroupSessionInvitation = (groupDid: DID, sessionId: string) => call<unknown>('group.accept_session_invitation', { group_did: groupDid, session_id: sessionId })
+/** Message sequence numbers of a session (`seq` ↔ `obj_id`), which read markers are expressed in. */
+export const listGroupMessages = (groupDid: DID, sessionId: string | undefined, afterSeq: number, limit: number) => call<{ items?: Array<{ seq: number; obj_id: string; redacted?: boolean }>; next_after_seq?: number; limited?: boolean } | null>('group.list_messages', { group_did: groupDid, ...session(sessionId), after_seq: afterSeq, limit }).then(result => result ?? {})
+export const getGroupReadMarkers = (groupDid: DID, sessionId: string | undefined, sessionSeq: number) => call<GroupReadMarkers>('group.get_read_markers', { group_did: groupDid, ...session(sessionId), session_seq: sessionSeq })
+export const updateGroupReadMarker = (groupDid: DID, sessionId: string | undefined, lastReadSeq: number) => call<{ last_read_seq: number }>('group.update_read_marker', { group_did: groupDid, ...session(sessionId), last_read_seq: lastReadSeq })
+export const getGroupSharedState = (groupDid: DID, sessionId?: string) => call<GroupSharedState>('group.get_shared_state', { group_did: groupDid, ...session(sessionId) })
+export const updateGroupSharedState = (groupDid: DID, sessionId: string | undefined, expectedRevision: string, set: Record<string, string>, unset: string[], idempotencyKey: string) => call<GroupSharedState>('group.update_shared_state', { group_did: groupDid, ...session(sessionId), expected_revision: expectedRevision, set, unset, ...key(idempotencyKey) })
+export const getGroupMemberState = (groupDid: DID, sessionId?: string) => call<GroupSharedState & { nickname?: string }>('group.get_member_state', { group_did: groupDid, ...session(sessionId) })
+export const updateGroupMemberState = (groupDid: DID, sessionId: string | undefined, expectedRevision: string, set: Record<string, string>, unset: string[], idempotencyKey: string) => call<GroupSharedState & { nickname?: string }>('group.update_member_state', { group_did: groupDid, ...session(sessionId), expected_revision: expectedRevision, set, unset, ...key(idempotencyKey) })
 
-/** The host's reason code (`owner-proof-required`, `capability-denied`, …) carried in an RPC error. */
+/** The host's reason code (`capability-denied`, `invitation-mismatch`, …) carried in an RPC error. */
 export function groupErrorReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
   return message.match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? 'unknown'

@@ -3,6 +3,7 @@
  * pages prepended on demand, and record-level upsert / remove so delivery
  * and read-state changes reach the projection without a full reload.
  */
+import { foldMessageRelations } from '../conversation/history/relations'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import type { MailboxKind, RecipientState, SessionDeliveryOverall, SessionDeliveryView, SessionMessageDirection, SessionMessageItem } from '../datamodel/sessionApi'
 import type { MessageDeliveryStatus, MessageObject } from '../protocol/msgobj'
@@ -125,10 +126,11 @@ export class SessionApiReader implements ConversationMessageReader {
   readonly revision: number
   private readonly messages: readonly MessageObject[]
 
+  /** Relation messages are folded into their targets, so the rows are the history minus edits / redactions / reactions. */
   constructor(readerKey: string, history: SessionHistory) {
     this.readerKey = readerKey
-    this.messages = history.messages
-    this.totalCount = history.messages.length
+    this.messages = foldMessageRelations(history.messages)
+    this.totalCount = this.messages.length
     this.revision = history.revision
   }
 

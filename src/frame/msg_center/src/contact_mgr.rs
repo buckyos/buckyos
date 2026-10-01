@@ -464,6 +464,83 @@ impl ContactMgr {
         current
     }
 
+    /// The admission decision `owner` applies to `did`, computed without
+    /// persisting anything. Callers that hold another database transaction
+    /// (group service) use this; `check_access_permission` also persists the
+    /// cleanup of expired temporary grants.
+    pub async fn peek_access_permission(
+        &self,
+        did: &DID,
+        context_id: Option<&str>,
+        owner: Option<&DID>,
+    ) -> std::result::Result<AccessDecision, RPCErrors> {
+        let owner_key = Self::owner_key(owner);
+        self.ensure_store_loaded(&owner_key).await?;
+        let stores = self.stores.read().await;
+        let store = stores.get(&owner_key).ok_or_else(|| {
+            RPCErrors::ReasonError("contact store missing after load".to_string())
+        })?;
+        let did = Self::canonical_did_in_store(store, did);
+        let Some(contact) = store.contacts.get(&did) else {
+            return Ok(AccessDecision {
+                level: AccessGroupLevel::Stranger,
+                allow_delivery: false,
+                target_box: "REQUEST_BOX".to_string(),
+                temporary_expires_at_ms: None,
+                reason: Some("contact not found; treated as stranger".to_string()),
+            });
+        };
+        let now_ms = Self::now_ms();
+        let decision = match contact.access_level {
+            AccessGroupLevel::Block => AccessDecision {
+                level: AccessGroupLevel::Block,
+                allow_delivery: false,
+                target_box: "DROP".to_string(),
+                temporary_expires_at_ms: None,
+                reason: Some("contact is blocked".to_string()),
+            },
+            AccessGroupLevel::Friend => AccessDecision {
+                level: AccessGroupLevel::Friend,
+                allow_delivery: true,
+                target_box: "INBOX".to_string(),
+                temporary_expires_at_ms: None,
+                reason: None,
+            },
+            AccessGroupLevel::Temporary => {
+                let grant = contact
+                    .temp_grants
+                    .iter()
+                    .filter(|grant| grant.expires_at > now_ms)
+                    .filter(|grant| context_id.is_none_or(|c| grant.context_id == c))
+                    .max_by_key(|grant| grant.expires_at);
+                match grant {
+                    Some(grant) => AccessDecision {
+                        level: AccessGroupLevel::Temporary,
+                        allow_delivery: true,
+                        target_box: "INBOX".to_string(),
+                        temporary_expires_at_ms: Some(grant.expires_at),
+                        reason: None,
+                    },
+                    None => AccessDecision {
+                        level: AccessGroupLevel::Stranger,
+                        allow_delivery: false,
+                        target_box: "REQUEST_BOX".to_string(),
+                        temporary_expires_at_ms: None,
+                        reason: Some("temporary grants expired".to_string()),
+                    },
+                }
+            }
+            AccessGroupLevel::Stranger => AccessDecision {
+                level: AccessGroupLevel::Stranger,
+                allow_delivery: false,
+                target_box: "REQUEST_BOX".to_string(),
+                temporary_expires_at_ms: None,
+                reason: Some("contact is stranger".to_string()),
+            },
+        };
+        Ok(decision)
+    }
+
     pub async fn check_access_permission(
         &self,
         did: DID,
@@ -977,10 +1054,7 @@ impl ContactMgr {
                 Self::ensure_contact_exists(store, did, now_ms, ContactSource::ManualCreate)
             } else {
                 store.contacts.get_mut(&did).ok_or_else(|| {
-                    RPCErrors::ReasonError(format!(
-                        "contact not found for did {}",
-                        did.to_string()
-                    ))
+                    RPCErrors::ReasonError(format!("contact not found for did {}", did.to_string()))
                 })?
             };
 

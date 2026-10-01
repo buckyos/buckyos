@@ -705,7 +705,10 @@ fn append_turn_message_preserves_behavior_step_records() {
         "cross-behavior inherited steps must not become the new behavior hot tail"
     );
     assert_eq!(out.state.next_step_index, 1);
-    assert_eq!(out.state.tool_iterations_left, out.request.tool_policy.max_tool_iterations);
+    assert_eq!(
+        out.state.tool_iterations_left,
+        out.request.tool_policy.max_tool_iterations
+    );
 }
 
 #[test]
@@ -1442,6 +1445,7 @@ fn session_meta_round_trips_pending_inputs() {
         ],
         peer_did: Some("did:dev:alice".to_string()),
         peer_tunnel_did: Some("did:dev:tunnel".to_string()),
+        group_id: None,
         event_subscriptions: vec![EventSubscription {
             pattern: "timer.reminder_check".to_string(),
             subscribed_at_ms: 0,
@@ -1890,4 +1894,60 @@ fn changed_background_hints_suppresses_seen_fingerprint_until_changed() {
     let second = background_hint_from_recall_item(&item);
     let (changed, _) = changed_background_hints(&old, vec![second]);
     assert_eq!(changed.len(), 1);
+}
+
+#[test]
+fn group_inbound_reply_targets_group_not_sender() {
+    // messagehub-group-v2 TODO 4.4: a reply inside a group session must go
+    // to `to=[group_did]` as `GroupMsg` with the DECODED raw `to_session`,
+    // never as a DM to the human who posted.
+    let agent = name_lib::DID::from_str("did:dev:jarvis").unwrap();
+    let alice = name_lib::DID::from_str("did:dev:alice").unwrap();
+    let group = name_lib::DID::from_str("did:dev:family").unwrap();
+
+    // Named session: msg-center projects under `<group_did>/<encoded sid>`.
+    let key = buckyos_api::MailboxAddress::new(group.clone(), Some("topic one/日常".to_string()))
+        .unwrap()
+        .to_string();
+    assert_eq!(key, "did:dev:family/topic%20one%2F%E6%97%A5%E5%B8%B8");
+    let msg = build_outbound_chat_base_msg(&agent, Some(&alice), Some("did:dev:family"), &key)
+        .expect("group reply addressable");
+    assert_eq!(msg.to, vec![group.clone()]);
+    assert_eq!(msg.kind, MsgObjKind::GroupMsg);
+    assert_eq!(msg.to_session.as_deref(), Some("topic one/日常"));
+    assert_eq!(msg.from, agent);
+    msg.validate().expect("valid MsgObject");
+
+    // Default session: the bare `<group_did>` key means `to_session=None`.
+    let msg = build_outbound_chat_base_msg(
+        &agent,
+        Some(&alice),
+        Some("did:dev:family"),
+        "did:dev:family",
+    )
+    .unwrap();
+    assert_eq!(msg.to, vec![group.clone()]);
+    assert_eq!(msg.kind, MsgObjKind::GroupMsg);
+    assert_eq!(msg.to_session, None);
+
+    // A locally minted PerGroup id is not a mailbox key -> default session,
+    // and a session key of a different owner is never decoded as ours.
+    let msg =
+        build_outbound_chat_base_msg(&agent, None, Some("did:dev:family"), "ui-did_dev_family")
+            .unwrap();
+    assert_eq!(msg.to, vec![group.clone()]);
+    assert_eq!(msg.to_session, None);
+    assert_eq!(
+        decode_group_session_key(&group, "did:dev:other/topic"),
+        None
+    );
+
+    // One-to-one stays a DM keyed by the agent session id.
+    let msg = build_outbound_chat_base_msg(&agent, Some(&alice), None, "ui-did_dev_alice").unwrap();
+    assert_eq!(msg.to, vec![alice]);
+    assert_eq!(msg.kind, MsgObjKind::Chat);
+    assert_eq!(msg.to_session.as_deref(), Some("ui-did_dev_alice"));
+
+    // No peer and no group -> nothing to address.
+    assert!(build_outbound_chat_base_msg(&agent, None, None, "ui-x").is_none());
 }

@@ -239,7 +239,7 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
                     );
                         break;
                     }
-                    if !deliver_record(cfg, &box_kind, record).await {
+                    if !deliver_record(cfg, &msg_center, &box_kind, record).await {
                         // Either the receiver is closed (shutdown) or the
                         // record had nothing actionable — either way, stop
                         // draining; the outer loop handles shutdown.
@@ -277,6 +277,7 @@ async fn drain_box(cfg: &PumpConfig, box_kind: MailboxKind) {
 /// recovery will replay it on next boot.
 async fn deliver_record(
     cfg: &PumpConfig,
+    msg_center: &MsgCenterClient,
     box_kind: &MailboxKind,
     record: MailboxRecordWithObject,
 ) -> bool {
@@ -288,6 +289,29 @@ async fn deliver_record(
         );
         return false;
     };
+    // Group bookkeeping that must never become an LLM "user message":
+    //  - `buckyos.group_invitation` operation notices: msg-center already
+    //    auto-accepts the owner's invitations for agents server-side.
+    //  - the agent's own group messages, which msg-center projects back
+    //    into the agent INBOX like every other member's (would otherwise
+    //    trigger a self-reply loop once replies target the group).
+    // Both are acked as Read so lease recovery does not replay them.
+    if is_group_invitation_notice(msg) {
+        debug!(
+            "opendan.msg_pump[{}]: drop record_id={} (buckyos.group_invitation notification, handled by msg-center)",
+            cfg.agent_name, record_id
+        );
+        ack_dropped_record(cfg, msg_center, &record_id).await;
+        return false;
+    }
+    if is_own_group_echo(record.record.msg_kind, &record.record.from, &cfg.owner_did) {
+        debug!(
+            "opendan.msg_pump[{}]: drop record_id={} (own group message echoed by projection)",
+            cfg.agent_name, record_id
+        );
+        ack_dropped_record(cfg, msg_center, &record_id).await;
+        return false;
+    }
     let text = msg.content.content.trim().to_string();
     if text.is_empty() && msg.content.refs.is_empty() && msg.content.machine.is_none() {
         debug!(
@@ -355,6 +379,33 @@ async fn deliver_record(
         return false;
     }
     true
+}
+
+/// `buckyos.group_invitation` operation notices (group_service
+/// `notify_group_member`): `kind=Operation` with `content.machine.intent`.
+fn is_group_invitation_notice(msg: &ndn_lib::MsgObject) -> bool {
+    msg.content
+        .machine
+        .as_ref()
+        .and_then(|machine| machine.intent.as_deref())
+        == Some("buckyos.group_invitation")
+}
+
+/// A `GroupMsg` record whose author is the agent itself.
+fn is_own_group_echo(msg_kind: MsgObjKind, from: &DID, owner: &DID) -> bool {
+    msg_kind == MsgObjKind::GroupMsg && from == owner
+}
+
+async fn ack_dropped_record(cfg: &PumpConfig, msg_center: &MsgCenterClient, record_id: &str) {
+    if let Err(err) = msg_center
+        .update_record_state(record_id.to_string(), RecipientState::Read)
+        .await
+    {
+        warn!(
+            "opendan.msg_pump[{}]: ack dropped record_id={} failed: {err}",
+            cfg.agent_name, record_id
+        );
+    }
 }
 
 fn log_inbound_delivery(cfg: &PumpConfig, box_kind: &MailboxKind, inbound: &Inbound) {
@@ -622,6 +673,36 @@ mod tests {
         assert!(parse_owner_did("did:dev:alice").is_some());
         assert!(parse_owner_did("").is_none());
         assert!(parse_owner_did("   ").is_none());
+    }
+
+    #[test]
+    fn group_invitation_notice_is_filtered_before_llm() {
+        use ndn_lib::{MachineContent, MsgContent, MsgObject};
+        let mut msg = MsgObject {
+            kind: MsgObjKind::Operation,
+            content: MsgContent {
+                content: "invite".into(),
+                machine: Some(MachineContent {
+                    intent: Some("buckyos.group_invitation".into()),
+                    data: Default::default(),
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(is_group_invitation_notice(&msg));
+        msg.content.machine = None;
+        assert!(!is_group_invitation_notice(&msg));
+    }
+
+    #[test]
+    fn own_group_message_echo_is_filtered() {
+        let agent = DID::from_str("did:dev:jarvis").unwrap();
+        let alice = DID::from_str("did:dev:alice").unwrap();
+        assert!(is_own_group_echo(MsgObjKind::GroupMsg, &agent, &agent));
+        assert!(!is_own_group_echo(MsgObjKind::GroupMsg, &alice, &agent));
+        // A DM from ourselves is not a projection echo — leave it alone.
+        assert!(!is_own_group_echo(MsgObjKind::Chat, &agent, &agent));
     }
 
     #[test]

@@ -195,40 +195,16 @@ pub(crate) async fn serve(
             "inbox" | "sessions" | "changes" | "objects" | "read_markers"
         ) || operation.starts_with("objects/")
         {
-            let proofs = req
-                .headers()
-                .get("cyfs-proofs")
-                .and_then(|h| h.to_str().ok())
-                .ok_or_else(|| denied("member-proof-required"))?;
-            let proof = state
-                .members
-                .get(&actor.did.to_string())
-                .and_then(|m| m.proof_id.as_ref())
-                .or_else(|| {
-                    sid.as_ref()
-                        .and_then(|s| state.participants.get(s))
-                        .and_then(|p| p.get(&actor.did.to_string()))
-                        .and_then(|r| r.proof_id.as_ref())
-                });
-            let guest_proofs: Vec<String> = state
-                .participants
-                .values()
-                .filter_map(|p| {
-                    p.get(&actor.did.to_string())
-                        .and_then(|r| r.proof_id.as_ref())
-                        .map(|id| id.to_string())
-                })
-                .collect();
-            let claims: Vec<String> = serde_json::from_str(proofs)
-                .unwrap_or_else(|_| proofs.split(',').map(|s| s.trim().to_string()).collect());
-            if !proof.is_some_and(|id| claims.contains(&id.to_string()))
-                && !guest_proofs.iter().any(|id| claims.contains(id))
-                && !(operation == "changes"
-                    && state
-                        .tombstone_readers
-                        .get(&actor.did.to_string())
-                        .is_some_and(|ids| claims.iter().any(|id| ids.contains(id))))
-            {
+            // Readers are identified by the authenticated principal alone;
+            // membership, guest records and the deletion tombstone decide.
+            let known = state.members.contains_key(&actor.did.to_string())
+                || state
+                    .participants
+                    .values()
+                    .any(|p| p.contains_key(&actor.did.to_string()))
+                || (operation == "changes"
+                    && state.tombstone_readers.contains(&actor.did.to_string()));
+            if !known {
                 return Err(missing());
             }
         }
@@ -392,26 +368,45 @@ pub(crate) async fn serve(
                     };
                     p["last_read_seq"] = v["last_read_seq"].clone();
                 } else {
-                    let raw = String::from_utf8(bytes).map_err(invalid)?;
-                    p["proof"] = serde_json::from_str(&raw).unwrap_or(json!(raw));
+                    let v: Value = if bytes.iter().all(u8::is_ascii_whitespace) {
+                        json!({})
+                    } else {
+                        serde_json::from_slice(&bytes).map_err(|_| invalid("invalid-join-body"))?
+                    };
+                    if !v.is_object() {
+                        return Err(invalid("invalid-join-body"));
+                    }
                     if let Some(invite) = params.get("invite") {
                         p["invite"] = json!(invite);
                     }
                     if operation == "guest_requests" {
-                        let raw = p["proof"]
-                            .as_str()
-                            .or_else(|| p["proof"]["proof"].as_str())
-                            .ok_or_else(|| invalid("signed-member-proof-required"))?;
-                        let claims =
-                            name_lib::decode_jwt_claim_without_verify(raw).map_err(invalid)?;
-                        p["request_id"] = claims["proof_scope"]["session_request"].clone();
+                        p["request_id"] = v.get("request_id").cloned().unwrap_or(Value::Null);
+                    } else if sid.is_none() {
+                        // An explicit invitation id accepts that invitation; a
+                        // bare join accepts the caller's pending invitation when
+                        // one exists and no invite link was given, otherwise it
+                        // is a join request.
+                        let explicit = v.get("invitation_id").and_then(Value::as_str);
+                        let pending = state
+                            .members
+                            .get(&actor.did.to_string())
+                            .filter(|m| m.state == MemberStatus::Invited)
+                            .and_then(|m| m.invitation_id.as_deref());
+                        if let Some(id) = explicit.or(if params.contains_key("invite") {
+                            None
+                        } else {
+                            pending
+                        }) {
+                            p["invitation_id"] = json!(id);
+                        }
                     }
                 }
                 let method = match operation.as_str() {
                     "read_markers" => "group.update_read_marker",
                     "guest_requests" => "group.submit_guest_request",
-                    _ if sid.is_some() => "group.submit_session_proof",
-                    _ => "group.submit_member_proof",
+                    _ if sid.is_some() => "group.accept_session_invitation",
+                    _ if p.get("invitation_id").is_some() => "group.accept_invitation",
+                    _ => "group.request_join",
                 };
                 Ok(reply(
                     StatusCode::OK,

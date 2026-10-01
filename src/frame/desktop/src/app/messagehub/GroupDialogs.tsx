@@ -2,12 +2,12 @@ import { useRef, useState, type FormEvent } from 'react'
 import { Bot, Search, User, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { shortDid } from './api/projection'
-import { defaultGroupName, GROUP_MEMBER_LIMIT, groupErrorText, memberCandidates, participating } from './groupModel'
+import { defaultGroupName, GROUP_MEMBER_LIMIT, groupErrorText, memberCandidates, parseInviteLink, participating } from './groupModel'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, MessageHubContext } from './types'
 
-function MemberPicker({ candidates, selected, unavailable, onToggle }: { candidates: Entity[]; selected: string[]; unavailable?: Map<string, string>; onToggle: (id: string) => void }) {
+export function MemberPicker({ candidates, selected, unavailable, onToggle }: { candidates: Entity[]; selected: string[]; unavailable?: Map<string, string>; onToggle: (id: string) => void }) {
   const { t } = useI18n()
   const [query, setQuery] = useState('')
   const byId = new Map(candidates.map(entity => [entity.id, entity]))
@@ -46,6 +46,31 @@ function MemberPicker({ candidates, selected, unavailable, onToggle }: { candida
   </div>
 }
 
+/** Joining through an invite link (`group.request_join` with the link's token). */
+function JoinByLinkForm({ context, onJoined }: { context: MessageHubContext; onJoined: (groupDid: string) => void }) {
+  const { t } = useI18n(), store = useMessageHubStore()
+  const [link, setLink] = useState(''), [pending, setPending] = useState(false), [error, setError] = useState(''), [status, setStatus] = useState('')
+  const parsed = parseInviteLink(link)
+  const join = async () => {
+    if (!parsed || pending) return
+    setPending(true); setError(''); setStatus('')
+    try {
+      const state = await store.requestGroupJoin(context, parsed.groupDid, parsed.invite)
+      if (state === 'active') onJoined(parsed.groupDid)
+      else setStatus(t('messagehub.group.acceptedPendingApproval'))
+    } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
+  }
+  return <details className="rounded-lg border border-[color:var(--cp-border)] px-3" data-testid="join-by-link">
+    <summary className="flex min-h-11 cursor-pointer items-center text-sm font-medium">{t('messagehub.group.joinByLink')}</summary>
+    <div className="space-y-2 pb-3">
+      <label className="block text-sm">{t('messagehub.group.inviteLinkLabel')}<input className={hubInputClass} value={link} placeholder="did:…?invite=…" onChange={event => setLink(event.target.value)} aria-label={t('messagehub.group.inviteLinkLabel')} /></label>
+      {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
+      {status && <p role="status" className="text-sm text-[color:var(--cp-muted)]">{status}</p>}
+      <button type="button" className={hubButtonClass} disabled={pending || !parsed} onClick={() => void join()}>{t(pending ? 'messagehub.group.joining' : 'messagehub.group.join')}</button>
+    </div>
+  </details>
+}
+
 export function CreateGroupForm({ context, initialMembers = [], onCreated, onCancel }: { context: MessageHubContext; initialMembers?: string[]; onCreated: (groupDid: string) => void; onCancel: () => void }) {
   const { t } = useI18n(), store = useMessageHubStore()
   const candidates = memberCandidates(store, context)
@@ -74,6 +99,34 @@ export function CreateGroupForm({ context, initialMembers = [], onCreated, onCan
     <div className="flex justify-end gap-2">
       <button type="button" className={hubButtonClass} disabled={pending} onClick={onCancel}>{t('messagehub.cancel')}</button>
       <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !finalName}>{t(pending ? 'messagehub.creating' : 'messagehub.group.createAction')}</button>
+    </div>
+    <JoinByLinkForm context={context} onJoined={onCreated} />
+  </form></DialogFocus>
+}
+
+/** Picks active group members (for a Group Session) or outside contacts (for a guest invitation). */
+export function PickMembersForm({ context, candidates, title, submitLabel, onSubmit, onCancel }: { context: MessageHubContext; candidates: Entity[]; title: string; submitLabel: string; onSubmit: (dids: string[]) => Promise<void>; onCancel: () => void }) {
+  const { t } = useI18n()
+  const [members, setMembers] = useState<string[]>([])
+  const [pending, setPending] = useState(false), [error, setError] = useState('')
+  const busy = useRef(false)
+  const toggle = (id: string) => setMembers(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (busy.current || members.length === 0) return
+    busy.current = true; setPending(true); setError('')
+    try { await onSubmit(members) } catch (failure) { setError(groupErrorText(t, failure)) } finally { busy.current = false; setPending(false) }
+  }
+  void context
+  return <DialogFocus onCancel={() => { if (!busy.current) onCancel() }}><form onSubmit={event => void submit(event)} className="space-y-4" data-testid="pick-members-form">
+    <fieldset className="space-y-2">
+      <legend className="flex w-full items-baseline justify-between gap-2 text-sm"><span>{title}</span><span className="text-xs text-[color:var(--cp-muted)]" aria-live="polite">{t('messagehub.group.selectedCount', undefined, { count: members.length })}</span></legend>
+      <MemberPicker candidates={candidates} selected={members} onToggle={toggle} />
+    </fieldset>
+    {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
+    <div className="flex justify-end gap-2">
+      <button type="button" className={hubButtonClass} disabled={pending} onClick={onCancel}>{t('messagehub.cancel')}</button>
+      <button type="submit" className={hubPrimaryButtonClass} disabled={pending || members.length === 0}>{t(pending ? 'messagehub.saving' : submitLabel)}</button>
     </div>
   </form></DialogFocus>
 }

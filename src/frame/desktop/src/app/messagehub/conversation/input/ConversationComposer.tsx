@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react'
 import {
+  AtSign,
   File,
   FolderOpen,
   ImageIcon,
@@ -17,6 +18,9 @@ import {
   X,
 } from 'lucide-react'
 import { useI18n } from '../../../../i18n/provider'
+import { displayedContent, messageObjId } from '../history/relations'
+import { getMessageSenderName, type MessageObject, type MsgMentions, type MsgRelation } from '../../protocol/msgobj'
+import { collectMentions, MENTION_ALL, type MentionCandidate } from './mentions'
 import {
   createAttachmentItem,
   extractTransferFiles,
@@ -41,10 +45,23 @@ function sameAttachmentInputs(a: readonly ComposerAttachmentInput[], b: readonly
 export interface ConversationComposerSubmitPayload {
   attachments: ComposerAttachmentItem[]
   content: string
+  /** MsgObject v2 `relates_to` of a reply (`thread`) or an edit of an own message. */
+  relatesTo?: MsgRelation
+  /** Structured mentions picked in the composer; absent when none. */
+  mentions?: MsgMentions
 }
+
+/** A message the next send relates to: a reply quotes it, an edit replaces its text. */
+export interface ComposerRelation {
+  kind: 'reply' | 'edit'
+  message: MessageObject
+}
+
+export type { MentionCandidate } from './mentions'
 
 export interface ConversationComposerHandle {
   addTransferData: (dataTransfer: DataTransfer) => Promise<void>
+  focus: () => void
 }
 
 interface ConversationComposerProps {
@@ -56,18 +73,27 @@ interface ConversationComposerProps {
   initialAttachments?: ComposerAttachmentInput[]
   onAttachmentsChange?: (attachments: ComposerAttachmentInput[]) => Promise<void> | undefined
   onDraftChange?: (value: string) => Promise<void> | undefined
+  relation?: ComposerRelation | null
+  onCancelRelation?: () => void
+  /** Members offered by the mention picker (group sessions only). */
+  mentionCandidates?: MentionCandidate[]
+  canMentionAll?: boolean
 }
+
 
 const ConversationComposerInner = forwardRef<
   ConversationComposerHandle,
   ConversationComposerProps
 >(function ConversationComposer(
-  { placeholder, maxHeight, onSendMessage, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange },
+  { placeholder, maxHeight, onSendMessage, initialDraft = '', initialAttachments = [], onAttachmentsChange, onDraftChange, relation = null, onCancelRelation, mentionCandidates = [], canMentionAll = false },
   ref,
 ) {
   const { t } = useI18n()
   const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>(() => initialAttachments.map(createAttachmentItem))
   const [inputValue, setInputValue] = useState(initialDraft)
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [picked, setPicked] = useState<MentionCandidate[]>([])
+  const [mentionAll, setMentionAll] = useState(false)
   const [pendingSends, setPendingSends] = useState(0)
   const [oversizeNames, setOversizeNames] = useState<string[]>([])
   const [sendError, setSendError] = useState<string | false>(false)
@@ -119,6 +145,21 @@ const ConversationComposerInner = forwardRef<
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const directoryInputRef = useRef<HTMLInputElement>(null)
+  // An edit starts from the message's current text; the draft the user had is
+  // restored when the edit is cancelled or sent (state adjusted on prop change).
+  const [appliedRelation, setAppliedRelation] = useState<ComposerRelation | null>(null)
+  const [draftBeforeEdit, setDraftBeforeEdit] = useState<string | null>(null)
+  if (relation !== appliedRelation) {
+    setAppliedRelation(relation)
+    if (relation?.kind === 'edit') {
+      if (draftBeforeEdit === null) setDraftBeforeEdit(inputValue)
+      setInputValue(displayedContent(relation.message))
+    } else if (draftBeforeEdit !== null) {
+      setInputValue(draftBeforeEdit)
+      setDraftBeforeEdit(null)
+    }
+  }
+  useEffect(() => { if (relation) inputRef.current?.focus() }, [relation])
 
   // Message input area max is 50% of the composer's max height
   const messageInputMaxHeight = maxHeight != null ? Math.floor(maxHeight / 2) : undefined
@@ -160,13 +201,14 @@ const ConversationComposerInner = forwardRef<
   }, [])
 
   useEffect(() => {
-    if (!pickerOpen) {
+    if (!pickerOpen && !mentionOpen) {
       return
     }
 
     const handlePointerDown = (event: MouseEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setPickerOpen(false)
+        setMentionOpen(false)
       }
     }
 
@@ -175,7 +217,7 @@ const ConversationComposerInner = forwardRef<
     return () => {
       document.removeEventListener('pointerdown', handlePointerDown)
     }
-  }, [pickerOpen])
+  }, [pickerOpen, mentionOpen])
 
   const appendAttachmentInputs = useCallback((selected: ComposerAttachmentInput[]) => {
     const items = selected.filter(item => item.file.size <= MAX_ATTACHMENT_BYTES)
@@ -283,7 +325,12 @@ const ConversationComposerInner = forwardRef<
       return
     }
 
-    sendQueue.current.push({ attachments, content: text })
+    const target = relation ? messageObjId(relation.message) : undefined
+    const relatesTo: MsgRelation | undefined = relation && target ? { rel: relation.kind === 'edit' ? 'edit' : 'thread', target } : undefined
+    const mentions = collectMentions(text, picked, mentionAll)
+    sendQueue.current.push({ attachments: relation?.kind === 'edit' ? [] : attachments, content: text, ...(relatesTo ? { relatesTo } : {}), ...(mentions ? { mentions } : {}) })
+    if (relation) onCancelRelation?.()
+    setPicked([]); setMentionAll(false)
     setPendingSends(sendQueue.current.length)
     setSendError(false)
     setOversizeNames([])
@@ -293,7 +340,15 @@ const ConversationComposerInner = forwardRef<
     setAttachments([])
     inputRef.current?.focus()
     void drainSendQueue()
-  }, [attachments, drainSendQueue, flushDraft, inputValue])
+  }, [attachments, drainSendQueue, flushDraft, inputValue, relation, onCancelRelation, picked, mentionAll])
+
+  const insertMention = useCallback((candidate: MentionCandidate | 'all') => {
+    const text = candidate === 'all' ? `${MENTION_ALL} ` : `@${candidate.name} `
+    if (candidate === 'all') setMentionAll(true)
+    else setPicked(previous => previous.some(item => item.did === candidate.did) ? previous : [...previous, candidate])
+    insertTextAtSelection(text, inputValue, setInputValue, inputRef.current)
+    setMentionOpen(false)
+  }, [inputValue])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
@@ -303,6 +358,8 @@ const ConversationComposerInner = forwardRef<
 
     if (event.key === 'Escape') {
       setPickerOpen(false)
+      setMentionOpen(false)
+      if (relation) onCancelRelation?.()
     }
   }
 
@@ -313,6 +370,7 @@ const ConversationComposerInner = forwardRef<
 
   useImperativeHandle(ref, () => ({
     addTransferData,
+    focus: () => inputRef.current?.focus(),
   }), [addTransferData])
 
   const handlePaste = async (
@@ -344,13 +402,15 @@ const ConversationComposerInner = forwardRef<
     event.target.value = ''
   }
 
-  const hasDraft = hasAttachments || Boolean(inputValue.trim())
+  const hasDraft = relation?.kind === 'edit' ? Boolean(inputValue.trim()) : hasAttachments || Boolean(inputValue.trim())
+  const showMentions = mentionCandidates.length > 0 || canMentionAll
 
   return (
     <div
       ref={composerRef}
       data-testid="message-composer"
       aria-busy={pendingSends > 0}
+      onKeyDown={(event) => { if (event.key === 'Escape') { setPickerOpen(false); setMentionOpen(false) } }}
       className="relative z-20 flex min-h-0 flex-shrink-0 flex-col"
       style={{
         borderTop: '1px solid var(--cp-border)',
@@ -407,6 +467,21 @@ const ConversationComposerInner = forwardRef<
         </div>
       ) : null}
 
+      {mentionOpen ? (
+        <div role="listbox" aria-label={t('messagehub.mention.pick')} data-testid="mention-picker" className="shell-scrollbar absolute bottom-full left-4 z-40 mb-2 max-h-56 w-56 overflow-y-auto rounded-2xl p-1.5 shadow-lg" style={{ background: 'color-mix(in srgb, var(--cp-surface) 96%, white)', border: '1px solid var(--cp-border)' }}>
+          {canMentionAll ? <button type="button" role="option" aria-selected={false} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium" style={{ color: 'var(--cp-text)' }} onClick={() => insertMention('all')}><AtSign size={14} />{t('messagehub.mention.all')}</button> : null}
+          {mentionCandidates.map(candidate => <button key={candidate.did} type="button" role="option" aria-selected={false} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm" style={{ color: 'var(--cp-text)' }} onClick={() => insertMention(candidate)}><span className="truncate">{candidate.name}</span></button>)}
+        </div>
+      ) : null}
+
+      {relation ? (
+        <div className="flex items-center gap-2 border-b px-3 py-1.5 text-[12px]" style={{ borderColor: 'var(--cp-border)' }} data-testid="composer-relation" data-kind={relation.kind}>
+          <span className="shrink-0 font-semibold" style={{ color: 'var(--cp-accent)' }}>{t(relation.kind === 'edit' ? 'messagehub.message.editing' : 'messagehub.message.replyingTo', undefined, { name: getMessageSenderName(relation.message) })}</span>
+          <span className="min-w-0 flex-1 truncate" style={{ color: 'var(--cp-muted)' }}>{displayedContent(relation.message)}</span>
+          <button type="button" className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" aria-label={t('messagehub.cancel')} title={t('messagehub.cancel')} onClick={() => onCancelRelation?.()} style={{ color: 'var(--cp-muted)' }}><X size={14} /></button>
+        </div>
+      ) : null}
+
       {/* Message input area – top, max 50% of composer */}
       <div className="flex flex-shrink-0 flex-col px-2 py-2 md:px-3">
         <div
@@ -425,6 +500,21 @@ const ConversationComposerInner = forwardRef<
           >
             <Paperclip size={18} />
           </button>
+          {showMentions ? (
+            <button
+              className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
+              style={{ color: mentionOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
+              onClick={() => setMentionOpen((previous) => !previous)}
+              type="button"
+              aria-label={t('messagehub.mention.add')}
+              aria-haspopup="listbox"
+              aria-expanded={mentionOpen}
+              title={t('messagehub.mention.add')}
+              data-testid="mention-button"
+            >
+              <AtSign size={18} />
+            </button>
+          ) : null}
 
           <textarea
             ref={inputRef}
@@ -683,6 +773,9 @@ function insertTextAtSelection(
   setValue(updatedValue)
 
   requestAnimationFrame(() => {
+    // Typing may already have continued before this frame; never move the
+    // caret back behind text the user has entered since the insert.
+    if (textarea.value !== updatedValue) return
     const caret = selectionStart + nextText.length
     textarea.focus()
     textarea.setSelectionRange(caret, caret)

@@ -26,8 +26,9 @@ Turn 的规则：没有打开的 Turn 时提交的输入批次开启新 Turn（b
 
 ## 在AgentSession中的LLM Context 的状态机切换
 
+AgentSession 构造/管理 多个LLM Context，同一时刻只有一个当前 LLMContext/run 被推进。
 AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LLMContext 不直接持有或自动看到 Session 的全部状态。
-AgentSession 里，同一时刻只有一个顶层 LLMContext/run 被推进。
+
 
 ### Fork
 
@@ -186,3 +187,12 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 这些挂起都不结束 Step 或 Turn；恢复时不重扣已扣的工具迭代额度。Interrupted 只有真实发起过的推理才计入 Round。
 
 当前三个宿主都没有开启 deferred 工具，PendingTool 的结果回填还没接入。
+
+
+## AgentRuntime 
+
+简单的说，决定了tool的执行环境
+- 在
+
+
+## AgentState

@@ -20,16 +20,18 @@ import { ConversationMessageActionsContext } from './conversation/history/action
 import type { ConversationMessageReader } from './conversation/history/types'
 import {
   ConversationComposer,
+  type ComposerRelation,
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
+import { messageObjId } from './conversation/history/relations'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import { ConversationMediaScopeContext } from './conversation/media/context'
 import type { DID, MessageObject } from './protocol/msgobj'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
 import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
 import { friendlyDidName } from './api/projection'
-import { parseGroupNotice } from './groupModel'
+import { parseGroupNotice, withinWindow } from './groupModel'
 
 interface ConversationViewProps {
   entity: Entity
@@ -119,20 +121,50 @@ export function ConversationView({
   const mediaScope = useMemo(() => ({ reader: messageReader, hostContext: session?.id }), [messageReader, session?.id])
   const snapshot = store.getSnapshot()
   const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
-  const messageActions = useMemo(() => ({
-    resend: canSend ? onResend : undefined,
-    displayName: (did: DID) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false),
-    groupNotice: (message: MessageObject) => {
-      const notice = parseGroupNotice(message)
-      if (!notice) return null
-      return notice.invitation ? store.groupInvitation(context, notice.invitation) : { groupName: store.findEntity(context, notice.groupDid)?.name ?? friendlyDidName(notice.groupDid, false) }
-    },
-    joinGroup: isOwner ? (message: MessageObject) => {
-      const invitation = parseGroupNotice(message)?.invitation
-      return invitation ? store.acceptGroupInvitation(context, invitation) : Promise.reject(Error('not-found'))
-    } : undefined,
-    openEntity: onOpenEntity,
-  }), [canSend, onResend, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, onOpenEntity, t]) // eslint-disable-line react-hooks/exhaustive-deps
+  const [relation, setRelation] = useState<ComposerRelation | null>(null)
+  const sessionId = session?.id
+  const group = isGroup ? store.group(context, entity.id) : null
+  const groupMembers = group?.members
+  const mentionCandidates = useMemo(() => (groupMembers ?? []).filter(member => member.state === 'active' && member.did !== context.ownerDid).map(member => ({ did: member.did, name: store.findEntity(context, member.did)?.name ?? friendlyDidName(member.did, false) })), [groupMembers, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  const messageActions = useMemo(() => {
+    const notice = (message: MessageObject, operation: (notice: NonNullable<ReturnType<typeof parseGroupNotice>>) => Promise<void>) => {
+      const parsed = parseGroupNotice(message)
+      return parsed ? operation(parsed) : Promise.reject(Error('not-found'))
+    }
+    const sendRelation = (message: MessageObject, rel: 'redact' | 'reaction', key?: string) => {
+      const target = messageObjId(message)
+      if (!target || !canSend) return Promise.reject(Error('permission_denied'))
+      return Promise.resolve(onSendMessage({ attachments: [], content: key ?? '', relatesTo: { rel, target, ...(key ? { key } : {}) } }))
+    }
+    return {
+      resend: canSend ? onResend : undefined,
+      displayName: (did: DID) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false),
+      groupNotice: (message: MessageObject) => {
+        const parsed = parseGroupNotice(message)
+        if (!parsed) return null
+        return parsed.invitation ? store.groupInvitation(context, parsed.invitation) : { groupName: store.findEntity(context, parsed.groupDid)?.name ?? friendlyDidName(parsed.groupDid, false) }
+      },
+      joinGroup: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.invitation ? store.acceptGroupInvitation(context, parsed.invitation) : Promise.reject(Error('not-found'))) : undefined,
+      approveMember: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.memberDid ? store.approveGroupMember(context, parsed.groupDid, parsed.memberDid) : Promise.reject(Error('not-found'))) : undefined,
+      rejectMember: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.memberDid ? store.rejectGroupMember(context, parsed.groupDid, parsed.memberDid) : Promise.reject(Error('not-found'))) : undefined,
+      acceptOwnerTransfer: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.transferId ? store.acceptGroupOwnerTransfer(context, parsed.groupDid, parsed.transferId) : Promise.reject(Error('transfer-mismatch'))) : undefined,
+      acceptSessionInvitation: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.sessionId ? store.acceptGroupSessionInvitation(context, parsed.groupDid, parsed.sessionId) : Promise.reject(Error('not-found'))) : undefined,
+      openEntity: onOpenEntity,
+      relations: isGroup && isOwner && sessionId ? {
+        capabilities: (message: MessageObject) => {
+          const own = message.from === context.ownerDid, now = store.now()
+          const edit = canSend && own && withinWindow(group?.messageRules.editWindowMs, message.created_at_ms, now)
+          const redact = canSend && (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false)
+          return { reply: canSend, react: canSend, edit, redact }
+        },
+        reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),
+        edit: (message: MessageObject) => setRelation({ kind: 'edit', message }),
+        redact: (message: MessageObject) => sendRelation(message, 'redact'),
+        react: (message: MessageObject, key: string) => sendRelation(message, 'reaction', key),
+      } : undefined,
+      readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
+    }
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, t]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {
@@ -294,6 +326,10 @@ export function ConversationView({
             placeholder={t('messagehub.inputPlaceholder', 'Message...')}
             maxHeight={composerMaxHeight}
             onSendMessage={handleSendMessage}
+            relation={relation}
+            onCancelRelation={() => setRelation(null)}
+            mentionCandidates={isGroup ? mentionCandidates : undefined}
+            canMentionAll={isGroup && (group?.can.mentionAll ?? false)}
           /> : <div className="flex shrink-0 items-center justify-center gap-2 border-t border-[color:var(--cp-border)] bg-[color:var(--cp-surface)] px-4 py-3 text-[13px] text-[color:var(--cp-muted)]" data-testid="composer-readonly"><Lock size={14} className="shrink-0" aria-hidden /><span>{access?.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.noSessions')}</span></div>}
         </div>
       </div>

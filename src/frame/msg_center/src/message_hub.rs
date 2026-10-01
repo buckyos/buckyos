@@ -178,7 +178,7 @@ impl DeliveryExecutor for MessageHubExecutor {
                     })
                 }
             };
-            if let Some((route, proofs)) = route {
+            if let Some(route) = route {
                 let snapshot = envelope.address.as_ref().and_then(|a| a.address.as_deref());
                 if snapshot != Some(route.target.as_str()) {
                     return Ok(DeliveryReportResult {
@@ -197,18 +197,8 @@ impl DeliveryExecutor for MessageHubExecutor {
                     .get_msg_jwt(&envelope.msg_id)
                     .await
                     .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
-                return if proofs.is_empty() {
-                    crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id).await
-                } else {
-                    crate::cyfs_dispatch::send_with_proofs(
-                        &route,
-                        &msg,
-                        jwt.as_deref(),
-                        &envelope.msg_id,
-                        &proofs,
-                    )
-                    .await
-                };
+                return crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id)
+                    .await;
             }
             warn!(
                 "message hub has no configured native route: delivery_id={} target={}",

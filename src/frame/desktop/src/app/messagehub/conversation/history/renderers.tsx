@@ -1,12 +1,14 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
 import { groupErrorText, parseGroupNotice } from '../../groupModel'
-import { memo, useContext, useState } from 'react'
+import { memo, useContext, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
+  AtSign,
   Check,
   CheckCheck,
   Clock,
+  MoreHorizontal,
   Users,
 } from 'lucide-react'
 import {
@@ -23,7 +25,10 @@ import { attachmentOfRef, isHttpUri } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
+import { displayedContent, mentionsViewer, messageRelations } from './relations'
 import type { ConversationListItem } from './types'
+
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
 
 interface RecordContext {
   boxKind?: string
@@ -74,6 +79,7 @@ const messageRenderers: readonly MessageRenderer[] = [
   message => isActionMessage(message) ? <ActionMessage message={message} /> : null,
   message => message.ui_unavailable === true ? <UnavailableMessage message={message} /> : null,
   (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
+  (message, context) => messageRelations(message)?.redacted ? <RedactedMessage message={message} context={context} /> : null,
   (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
   renderTextMessage,
   renderFallbackMessage,
@@ -160,6 +166,7 @@ function renderTextMessage(
       <div
         className={`${bubbleWidthClass} min-w-[80px]`}
         style={bubbleStyle(isSelf, continued)}
+        data-testid="message-bubble"
       >
         {!isSelf && isGroup && !continued ? (
           <p
@@ -169,29 +176,109 @@ function renderTextMessage(
             {senderName}
           </p>
         ) : null}
+        <ReplyQuote message={message} />
         {asMarkdown ? (
-          <div className={bodyTextClass}><MessageMarkdown text={message.content.content ?? ''} /></div>
+          <div className={bodyTextClass}><MessageMarkdown text={displayedContent(message)} /></div>
         ) : (
           <p className={`${bodyTextClass} whitespace-pre-wrap break-words`}>
-            {message.content.content}
+            {displayedContent(message)}
           </p>
         )}
-        <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} />
+        <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={selfDid} />
       </div>
     </div>
   )
 }
 
-function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageObject; isSelf: boolean; deliveryStatus?: MessageDeliveryStatus }) {
+/** The quoted target of a `thread` message. */
+function ReplyQuote({ message }: { message: MessageObject }) {
   const { t } = useI18n()
+  const { displayName } = useContext(ConversationMessageActionsContext)
+  const reply = messageRelations(message)?.replyTo
+  if (!reply) return null
+  const who = reply.found ? (reply.from ? displayName?.(reply.from) ?? reply.senderName ?? reply.from : '') : ''
+  return <blockquote className="mb-1.5 border-l-2 pl-2 text-[12px] opacity-80" style={{ borderColor: 'currentColor' }} data-testid="reply-quote">
+    {reply.found ? <><span className="font-semibold">{who}</span><span className="block truncate">{reply.content || t('messagehub.message.redacted')}</span></> : <span>{t('messagehub.message.replyUnavailable')}</span>}
+  </blockquote>
+}
+
+/** Reaction counts under a bubble; clicking one adds the viewer's reaction with that key. */
+function ReactionChips({ message, isSelf }: { message: MessageObject; isSelf: boolean }) {
+  const { t } = useI18n()
+  const { relations, displayName } = useContext(ConversationMessageActionsContext)
+  const reactions = messageRelations(message)?.reactions ?? []
+  if (reactions.length === 0) return null
+  const canReact = relations?.capabilities(message).react ?? false
+  return <ul className="mt-1.5 flex flex-wrap gap-1" data-testid="reactions" aria-label={t('messagehub.message.reactions')}>
+    {reactions.map(reaction => <li key={reaction.key}>
+      <button type="button" disabled={!canReact} title={reaction.dids.map(did => displayName?.(did) ?? did).join(', ')} onClick={() => void relations?.react(message, reaction.key)} className="min-h-7 rounded-full px-2 text-[12px] tabular-nums disabled:cursor-default" style={{ background: isSelf ? 'color-mix(in srgb, var(--cp-message-self-text) 14%, transparent)' : 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }} data-reaction={reaction.key}>{reaction.key} {reaction.dids.length}</button>
+    </li>)}
+  </ul>
+}
+
+/** The in-bubble menu with the relation actions the viewer may take on a message. */
+function MessageActionsMenu({ message, isSelf }: { message: MessageObject; isSelf: boolean }) {
+  const { t } = useI18n()
+  const { relations } = useContext(ConversationMessageActionsContext)
+  const [open, setOpen] = useState(false)
+  const [error, setError] = useState('')
+  const root = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
+    document.addEventListener('pointerdown', close)
+    return () => document.removeEventListener('pointerdown', close)
+  }, [open])
+  if (!relations) return null
+  const can = relations.capabilities(message)
+  if (!can.reply && !can.react && !can.edit && !can.redact) return null
+  const run = (operation: () => Promise<void> | void) => { setOpen(false); setError(''); void Promise.resolve(operation()).catch(failure => setError(groupErrorText(t, failure))) }
+  const itemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
+  return <div ref={root} className="relative" onKeyDown={event => { if (event.key === 'Escape') setOpen(false) }}>
+    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => !value)} className="flex h-6 w-6 items-center justify-center rounded-full opacity-70 hover:opacity-100" style={{ color: isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }} data-testid="message-actions"><MoreHorizontal size={14} /></button>
+    {open ? <div role="menu" className={`absolute bottom-full z-30 mb-1 w-44 overflow-hidden rounded-xl py-1 shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={{ background: 'var(--cp-surface-opaque, var(--cp-surface))', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }} data-testid="message-actions-menu">
+      {can.react ? <div className="flex items-center justify-around px-1 pb-1" role="group" aria-label={t('messagehub.message.react')}>{QUICK_REACTIONS.map(key => <button key={key} type="button" role="menuitem" className="flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]" aria-label={`${t('messagehub.message.react')} ${key}`} onClick={() => run(() => relations.react(message, key))}>{key}</button>)}</div> : null}
+      {can.reply ? <button type="button" role="menuitem" className={itemClass} onClick={() => run(() => relations.reply(message))}>{t('messagehub.message.reply')}</button> : null}
+      {can.edit ? <button type="button" role="menuitem" className={itemClass} onClick={() => run(() => relations.edit(message))}>{t('messagehub.message.edit')}</button> : null}
+      {can.redact ? <button type="button" role="menuitem" className={`${itemClass} text-[color:var(--cp-danger)]`} onClick={() => run(() => relations.redact(message))}>{t(isSelf ? 'messagehub.message.recall' : 'messagehub.message.delete')}</button> : null}
+    </div> : null}
+    {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+  </div>
+}
+
+/** Placeholder for a redacted (recalled or deleted) message. */
+function RedactedMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const { t } = useI18n()
+  const { displayName } = useContext(ConversationMessageActionsContext)
+  const isSelf = message.from === context.selfDid
+  const redacted = messageRelations(message)?.redacted
+  const who = redacted?.by === message.from ? (isSelf ? t('messagehub.you') : displayName?.(message.from) ?? getMessageSenderName(message)) : displayName?.(redacted?.by ?? '') ?? redacted?.by ?? ''
+  return <div className={rowClass(isSelf, context.continued)}>
+    <div className={`${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted">
+      <p className="text-[13px] italic">{t(redacted?.by === message.from ? 'messagehub.message.redacted' : 'messagehub.message.deletedBy', undefined, { name: who })}</p>
+      <MessageFooter message={message} isSelf={isSelf} deliveryStatus={undefined} selfDid={context.selfDid} />
+    </div>
+  </div>
+}
+
+function MessageFooter({ message, isSelf, deliveryStatus, selfDid }: { message: MessageObject; isSelf: boolean; deliveryStatus?: MessageDeliveryStatus; selfDid?: string }) {
+  const { t } = useI18n()
+  const { readReceipt, displayName } = useContext(ConversationMessageActionsContext)
   const record = getRecordContext(message)
   const failedTargets = record?.delivery?.per_target?.filter(target => target.state === 'FAILED' || target.state === 'DEAD') ?? []
   const pendingTargets = record?.delivery?.per_target?.filter(target => target.state === 'WAIT' || target.state === 'SENDING') ?? []
   const metaColor = isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
+  const relations = messageRelations(message)
+  const receipt = isSelf && !relations?.redacted ? readReceipt?.(message) ?? null : null
+  const mentioned = !isSelf && !!selfDid && mentionsViewer(message, selfDid)
   return (
     <>
+      <ReactionChips message={message} isSelf={isSelf} />
       <div className="mt-1 flex items-center justify-end gap-1">
         {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}
+        {mentioned ? <span className="mr-auto flex items-center gap-0.5 rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="mention-badge" style={{ background: 'color-mix(in srgb, var(--cp-accent) 14%, transparent)', color: 'var(--cp-accent)' }}><AtSign size={11} aria-hidden />{t('messagehub.message.mentionsYou')}</span> : null}
+        {!relations?.redacted ? <MessageActionsMenu message={message} isSelf={isSelf} /> : null}
+        {relations?.edited ? <span className="text-[11px]" data-testid="edited-marker" style={{ color: metaColor }} title={new Date(relations.edited.at).toLocaleString()}>{t('messagehub.message.edited')}</span> : null}
         <span
           className="text-[11px] tabular-nums"
           style={{
@@ -202,6 +289,7 @@ function MessageFooter({ message, isSelf, deliveryStatus }: { message: MessageOb
         </span>
         {isSelf ? <MessageStatusIcon status={deliveryStatus} /> : null}
       </div>
+      {receipt ? <p className="mt-0.5 text-right text-[11px]" data-testid="read-receipt" style={{ color: metaColor }} title={receipt.readers?.map(did => displayName?.(did) ?? did).join(', ')}>{t('messagehub.message.readBy', undefined, { count: receipt.count })}{receipt.readers?.length ? ` · ${receipt.readers.map(did => displayName?.(did) ?? did).join(', ')}` : ''}</p> : null}
       {isSelf && record?.delivery && (failedTargets.length > 0 || record.delivery.overall === 'partial_failed') ? (
         <div className="mt-1 text-[11px]" data-testid="delivery-failure" style={{ color: metaColor }}>
           <p role="note">{t(record.delivery.overall === 'partial_failed' ? 'messagehub.delivery.partialFailed' : 'messagehub.delivery.failed')} · {t('messagehub.delivery.failedHint', undefined, { count: Math.max(1, failedTargets.length) })}</p>
@@ -269,7 +357,7 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const isSelf = message.from === context.selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
-  const caption = message.content.content?.trim() ?? ''
+  const caption = displayedContent(message).trim()
   const refs = message.content.refs ?? []
   const messageId = getMessageStableId(message, context.messageIndex)
   return (
@@ -279,11 +367,12 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
         style={bubbleStyle(isSelf, context.continued)}
       >
         {!isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null}
+        <ReplyQuote message={message} />
         <div className="flex flex-col gap-2">
           {refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf} />)}
         </div>
         {caption.length > 0 ? <p className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{caption}</p> : null}
-        <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} />
+        <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
     </div>
   )
@@ -392,6 +481,7 @@ const knownActions = new Set([
   'entity.member_joined', 'entity.member_left', 'entity.member_removed', 'session.title_changed', 'session.member_state_changed', 'session.shared_state_changed',
   'entity.group_created', 'entity.member_invited', 'entity.invite_revoked', 'entity.invite_expired', 'entity.member_requested', 'entity.member_rejected', 'entity.member_role_changed',
   'entity.owner_changed', 'entity.group_archived', 'entity.group_deleted', 'entity.config_changed', 'session.created', 'session.archived', 'session.deleted',
+  'entity.moderation_changed', 'entity.invite_link_created', 'entity.invite_link_revoked', 'session.member_added', 'session.member_removed', 'session.member_left', 'session.guest_invited', 'session.rules_changed',
 ])
 
 function ActionMessage({ message }: { message: MessageObject }) {
@@ -410,25 +500,33 @@ function ActionMessage({ message }: { message: MessageObject }) {
 function GroupNoticeMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
   const { t } = useI18n()
   const actions = useContext(ConversationMessageActionsContext)
-  const [state, setState] = useState<'idle' | 'pending'>('idle')
+  const [state, setState] = useState<'idle' | 'pending' | 'done'>('idle')
+  const [outcome, setOutcome] = useState('')
   const [error, setError] = useState('')
   const notice = parseGroupNotice(message)
   const view = notice ? actions.groupNotice?.(message) : null
   if (!notice || !view) return renderFallbackMessage(message, context)
-  const inviter = actions.displayName?.(message.from) ?? message.from
+  const nameOf = (did: string) => actions.displayName?.(did) ?? did
+  const inviter = nameOf(message.from)
   const invitation = notice.invitation
-  const join = () => {
-    if (!actions.joinGroup || state === 'pending') return
+  const run = (operation: ((message: MessageObject) => Promise<void>) | undefined, doneKey: string) => {
+    if (!operation || state === 'pending') return
     setState('pending'); setError('')
-    void actions.joinGroup(message).then(() => setState('idle'), failure => { setState('idle'); setError(groupErrorText(t, failure)) })
+    void operation(message).then(() => { setState('done'); setOutcome(doneKey) }, failure => { setState('idle'); setError(groupErrorText(t, failure)) })
   }
-  const line = invitation ? t('messagehub.group.invitedBy', undefined, { name: inviter })
-    : notice.action === 'pending_approval' ? t('messagehub.group.notice.pending_approval', undefined, { name: notice.memberDid ? actions.displayName?.(notice.memberDid) ?? notice.memberDid : inviter })
-    : notice.action === 'rejected' || notice.action === 'removed' || notice.action === 'session_invite' ? t(`messagehub.group.notice.${notice.action}`, undefined, { name: inviter })
+  const forAgent = invitation?.memberDid && invitation.memberDid !== context.selfDid ? nameOf(invitation.memberDid) : undefined
+  const line = invitation ? (forAgent ? t('messagehub.group.invitedAgent', undefined, { name: inviter, agent: forAgent }) : t('messagehub.group.invitedBy', undefined, { name: inviter }))
+    : notice.action === 'pending_approval' ? t('messagehub.group.notice.pending_approval', undefined, { name: notice.memberDid ? nameOf(notice.memberDid) : inviter })
+    : notice.action === 'owner_transfer' ? t('messagehub.group.notice.owner_transfer', undefined, { name: inviter })
+    : notice.action === 'session_invite' ? t('messagehub.group.notice.session_invite', undefined, { name: inviter, session: notice.sessionTitle || notice.sessionId || '' })
+    : notice.action === 'rejected' || notice.action === 'removed' || notice.action === 'session_removed' ? t(`messagehub.group.notice.${notice.action}`, undefined, { name: inviter })
     : notice.action
+  const primaryClass = 'min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9'
+  const secondaryClass = 'min-h-11 rounded-lg border px-3 text-sm disabled:opacity-50 md:min-h-9'
+  const pendingLabel = (key: string) => t(state === 'pending' ? 'messagehub.saving' : key)
   return (
     <div className={rowClass(false, context.continued)}>
-      <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="group-notice" data-action={notice.action} data-state={view.state}>
+      <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="group-notice" data-action={notice.action} data-state={view.state ?? (state === 'done' ? outcome : undefined)}>
         <div className="flex items-center gap-2.5">
           <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-warning) 18%, transparent)', color: 'var(--cp-warning)' }} aria-hidden><Users size={17} /></span>
           <div className="min-w-0 flex-1">
@@ -439,13 +537,33 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
         {invitation && invitation.role !== 'member' ? <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.invitedAs', undefined, { role: t(`messagehub.group.role.${invitation.role}`) })}</p> : null}
         {invitation ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            {view.state === 'pending' && actions.joinGroup ? <button type="button" className="min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9" style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={join}>{t(state === 'pending' ? 'messagehub.group.joining' : 'messagehub.group.join')}</button> : null}
+            {view.state === 'pending' && actions.joinGroup ? <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.joinGroup, 'joined')}>{t(state === 'pending' ? 'messagehub.group.joining' : forAgent ? 'messagehub.group.acceptForAgent' : 'messagehub.group.join')}</button> : null}
             {view.state === 'joined' ? <>
-              <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t('messagehub.group.joined')}</span>
-              {actions.openEntity ? <button type="button" className="min-h-11 rounded-lg border px-3 text-sm md:min-h-9" style={{ borderColor: 'var(--cp-border)' }} onClick={() => actions.openEntity?.(notice.groupDid)}>{t('messagehub.group.open')}</button> : null}
+              <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t(forAgent ? 'messagehub.group.agentJoined' : 'messagehub.group.joined')}</span>
+              {actions.openEntity && !forAgent ? <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} onClick={() => actions.openEntity?.(notice.groupDid)}>{t('messagehub.group.open')}</button> : null}
             </> : null}
+            {view.state === 'approval' ? <span className="text-xs font-medium" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.acceptedPendingApproval')}</span> : null}
             {view.state === 'expired' ? <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.invitationExpired')}</span> : null}
             {view.state === 'pending' && invitation.expiresAt ? <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.expiresAt', undefined, { time: new Date(invitation.expiresAt).toLocaleDateString() })}</span> : null}
+          </div>
+        ) : notice.action === 'pending_approval' && (actions.approveMember || actions.rejectMember) ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {state === 'done' ? <span className="text-xs font-medium" style={{ color: outcome === 'approved' ? 'var(--cp-success)' : 'var(--cp-muted)' }}>{t(`messagehub.group.${outcome}`)}</span> : <>
+              <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.approveMember, 'approved')}>{pendingLabel('messagehub.group.approve')}</button>
+              <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} disabled={state === 'pending'} onClick={() => run(actions.rejectMember, 'rejected')}>{pendingLabel('messagehub.group.reject')}</button>
+            </>}
+          </div>
+        ) : notice.action === 'owner_transfer' && actions.acceptOwnerTransfer ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {state === 'done' ? <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t('messagehub.group.transferAccepted')}</span>
+              : <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.acceptOwnerTransfer, 'transferred')}>{pendingLabel('messagehub.group.acceptTransfer')}</button>}
+          </div>
+        ) : notice.action === 'session_invite' && actions.acceptSessionInvitation ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {state === 'done' ? <>
+              <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t('messagehub.group.joined')}</span>
+              {actions.openEntity ? <button type="button" className={secondaryClass} style={{ borderColor: 'var(--cp-border)' }} onClick={() => actions.openEntity?.(notice.groupDid)}>{t('messagehub.group.open')}</button> : null}
+            </> : <button type="button" className={primaryClass} style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={() => run(actions.acceptSessionInvitation, 'joined')}>{pendingLabel('messagehub.group.acceptSessionInvite')}</button>}
           </div>
         ) : null}
         {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}

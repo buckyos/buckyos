@@ -10,7 +10,7 @@
 
 | 数据 | 分类 | 保留和重建规则 |
 |---|---|---|
-| host 群状态、配置 revision 历史、成员 proof、nonce、Session 墓碑、可见区间 | 持久 | host 唯一权威，随平台 RDB 备份恢复 |
+| host 群状态、配置 revision 历史、成员与邀请记录、待接受的群主转让、Session 墓碑、可见区间 | 持久 | host 唯一权威，随平台 RDB 备份恢复 |
 | MsgObject canonical JSON、验证后的 JWT 原文、撤回标记 | 持久 | 以 ObjectId 管理；撤回清除正文及 JWT，保留消息元数据 |
 | 消息序号、Action Log、已读水位、审计、幂等结果 | 持久 | 与状态变更事务提交；不能从发送方时钟重建 |
 | 邮箱投影、个人通知、tunnel 投递队列、本地 Session 登记 | 持久 | 复用 Message Center 现有表 |
@@ -27,7 +27,7 @@
 
 结构化数据通过既有 `MsgBoxDbMgr` 的 SQLx `AnyPool` 存储，参数占位符由 `render_sql` 适配平台 backend。DDL 使用 SQLite、PostgreSQL 共有的 TEXT、BIGINT、主键和 `ON CONFLICT` 语义。
 
-host 每群一行 `GroupState` JSON 聚合。同群写入先在事务中 UPDATE 锁定该行，再读取并修改状态。序号、proof 消费、配置 CAS、幂等结果、正文、GROUP_INBOX、成员投影与投递队列使用同一个事务。创建使用 `group_locks` 的单行锁，原子提交群、初始 Session 和邀请。
+host 每群一行 `GroupState` JSON 聚合。同群写入先在事务中 UPDATE 锁定该行，再读取并修改状态。序号、配置 CAS、幂等结果、正文、GROUP_INBOX、成员投影与投递队列使用同一个事务。创建使用 `group_locks` 的单行锁，原子提交群、初始 Session 和邀请。
 
 MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正文到邮箱记录。保存 canonical JSON 和 JWT 原文是为了支持事务内提交、原样返回签名及可靠撤回。附件仍由 NamedStore/CYFS 提供，群表仅存 ObjectId 引用，不内联二进制。
 
@@ -51,12 +51,12 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | schema_version | 当前为 1 |
 | group_did, controller, owner, host, lifecycle, doc_updated_at_ms | 身份、DID 控制者、治理 Owner、host、生命周期和公开文档更新时间 |
 | configuration, config_history | 原始配置 JSON；revision → 配置快照，保留未知字段 |
-| members | DID → role、state、epoch、entity_kind、proof_id、邀请及到期信息 |
+| members | DID → role、state、epoch、entity_kind、invited_by、邀请及到期信息 |
 | sessions | 原始 Session ID → 模板、成员策略、规则覆盖、revision、生命周期、创建者和请求 ID |
-| participants | Session ID → DID → kind、epoch、参与状态、proof_id、since_seq、actor |
+| participants | Session ID → DID → kind、epoch、参与状态、since_seq、actor |
 | intervals | Session ID → DID → 半开 `group_seq` 可见区间 |
 | moderation | DID → blocked、muted_until_ms |
-| proofs, nonces | proof ObjectId → claims/JWT/实体类型；已消费的 DID+nonce 集合 |
+| pending_owner_transfer | 待接受的群主转让：member_did、transfer_id、expires_at_ms；接受、取消或过期后清除 |
 | invite_links | token → 创建者、过期、次数、审批规则、撤销状态 |
 | group_seq, session_seqs, accepted_at_ms | 群计数器、各 Session 消息计数器和 host 接受时间 |
 | messages | ObjectId → Session、双序号、接受时间、作者、kind、关系和撤回状态 |
@@ -65,11 +65,11 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | operations | 操作键 → 请求摘要/原请求及结果；消息键为 `message:<obj_id>` |
 | read_markers | Session ID → reader DID → last_read_seq |
 | rates, audit | 频率窗口及 `group.read_all` 审计 |
-| tombstone_readers | 曾参与者 DID → proof ID 集合，仅用于获取自己的删除通知 |
+| tombstone_readers | 曾参与者 DID 集合，仅用于获取自己的删除通知 |
 
 默认 Session 的内部 map 键为 `""`，邮箱 `session_id` 为 NULL；对外始终使用规范 MailboxAddress。具名 Session 的内部 ID 是解码字符串，对外编码为单个路径段。
 
-删除群清除配置、成员、proof、Session、历史可见区间、阅读和业务状态，只保留身份墓碑、删除通知的最小受众/proof 索引及删除操作幂等结果。删除 Session 留下不可复用 ID，清除成员、共享/成员状态和 host 邮箱记录。成员已有的本地副本继续保留。
+删除群清除配置、成员、Session、历史可见区间、阅读和业务状态，只保留身份墓碑、删除通知的最小受众（曾参与者 DID）及删除操作幂等结果。删除 Session 留下不可复用 ID，清除成员、共享/成员状态和 host 邮箱记录。成员已有的本地副本继续保留。
 
 ### `group_objects`
 
@@ -129,7 +129,7 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 | group_did | TEXT | 否 | 无 | 远端群 |
 | state_json | TEXT | 否 | 无 | `JoinedGroupState` JSON |
 
-联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、session_seqs、last_read_seq、reported_read_seq、stopped 和 proof_ids。凭据不存于本表；authorization/upstream 来源于服务 Settings。更换成员 proof 后允许重新开始同步。
+联合主键 `(owner,group_did)`。JSON 包含 `schema_version=1`、owner_did、group_did、可见 session_cache、doc_cache、changes_token、session_seqs、last_read_seq、reported_read_seq 和 stopped。凭据不存于本表；authorization/upstream 来源于服务 Settings。
 
 ### `group_doc_publications`
 
@@ -147,7 +147,7 @@ MsgObject 以 ObjectId 索引的独立 `group_objects` 行保存，不复制正�
 
 `mailbox_records`、`msg_refs`、`delivery_records`、`msg_jwt_originals`、`owner_sessions` 复用现有 Message Center Schema。host 记录为 GROUP_INBOX；本地投影和成员 Zone 副本为 INBOX，带 `group:<did>` 与 `session_seq:<n>` tag。`owner_sessions.binding_json` 保存 `{authority_did,session_key}`，本地 Session ID 是群的规范 MailboxAddress。
 
-`cymsg` 使用 ndn-lib 的标准 MsgObject 内容寻址和 canonical JSON；JWT 不改变 ObjectId。Action Log 是 `kind=event`、`from=group_did`、`content.machine.intent=buckyos.action_log` 的 MsgObject，与普通消息共享序号。`gproof` 用 proof claims 的 canonical JSON 生成 ObjectId；原签名另存。`group` 用公开 GroupDoc 生成 ObjectId，公开内容是配置派生值，不是第二份规则来源。
+`cymsg` 使用 ndn-lib 的标准 MsgObject 内容寻址和 canonical JSON；JWT 不改变 ObjectId。Action Log 是 `kind=event`、`from=group_did`、`content.machine.intent=buckyos.action_log` 的 MsgObject，与普通消息共享序号。`group` 用公开 GroupDoc 生成 ObjectId，公开内容是配置派生值，不是第二份规则来源。
 
 ## 5. Schema 版本
 
@@ -170,7 +170,7 @@ Joined Group 已获取副本和阅读水位属于用户数据；不能仅为了�
 | 查询 | 索引/执行方式 | 成本说明 |
 |---|---|---|
 | 定位群、同群事务锁定 | group_states 主键 | SQL 单行；反序列化整个群聚合 |
-| 配置 CAS、proof/nonce/消息幂等查找 | 聚合内 map | 加载群后内存查找，提交整行 |
+| 配置 CAS、幂等结果与消息查找 | 聚合内 map | 加载群后内存查找，提交整行 |
 | 可见 Session、历史、变更流、读者回执 | 聚合内过滤及序号排序 | 扫描该群记录，长历史需要拆表优化 |
 | Hosted Group 启动登记、list_by_member | group_states 全表扫描 | 每群解析聚合；第一版未做成员倒排索引 |
 | 按 ObjectId 读取正文/JWT | group_objects 主键 | 单行 |

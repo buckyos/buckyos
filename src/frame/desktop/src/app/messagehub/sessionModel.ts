@@ -4,6 +4,8 @@ import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding,
 
 export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), connection: z.string().min(1) })
 export const sharedStateSchema = z.object({ title: z.string().trim().max(64), description: z.string().trim().max(500) })
+/** Group Sessions also carry an announcement (`group.update_shared_state`, at most 1024 chars). */
+export const groupSharedStateSchema = sharedStateSchema.extend({ announcement: z.string().trim().max(1024).optional() })
 export const memberStateSchema = z.object({ nickname: z.string().trim().max(64) })
 export const presentationSchema = z.object({ title: z.string().trim().max(64), pinned: z.boolean(), muted: z.boolean() })
 export const defaultPreferences: SessionPreferences = { title: '', pinned: false, muted: false, showActions: true }

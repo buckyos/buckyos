@@ -418,7 +418,7 @@ impl MessageCenter {
         }
     }
 
-    fn publish_box_changed_event(record: &MailboxRecord, operation: &str) {
+    pub(crate) fn publish_box_changed_event(record: &MailboxRecord, operation: &str) {
         let box_id = format!(
             "/msg_center/{}/{}/{}",
             record.owner.to_raw_host_name(),
@@ -1481,7 +1481,7 @@ impl MessageCenter {
                 .and_then(|mut envelope| {
                     if stored_msg.kind == MsgObjKind::GroupMsg {
                         let settings = self.cyfs_dispatch.read().unwrap();
-                        let (route, _) = settings
+                        let route = settings
                             .message_route(&stored_msg, &target)
                             .map_err(|e| e.to_string())?
                             .ok_or_else(|| "joined-group-route-not-configured".to_string())?;

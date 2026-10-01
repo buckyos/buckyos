@@ -170,6 +170,45 @@ export interface GroupMember {
   role: GroupRole
   state: GroupMemberState
   expiresAt?: number
+  /** Who issued the current invitation (member-issued ones need approval). */
+  invitedBy?: string
+}
+
+/** Capabilities of the viewer in a group, from `group.check_access` (never inferred from the role). */
+export interface GroupCapabilities {
+  invite: boolean
+  remove: boolean
+  createSession: boolean
+  approve: boolean
+  updateRole: boolean
+  moderate: boolean
+  updateConfig: boolean
+  manageSession: boolean
+  inviteGuest: boolean
+  updateSharedState: boolean
+  redactAny: boolean
+  mentionAll: boolean
+  /** Only the controller (the owner) may start an owner transfer. */
+  transferOwner: boolean
+}
+
+export const noGroupCapabilities: GroupCapabilities = { invite: false, remove: false, createSession: false, approve: false, updateRole: false, moderate: false, updateConfig: false, manageSession: false, inviteGuest: false, updateSharedState: false, redactAny: false, mentionAll: false, transferOwner: false }
+
+/** One Group Session as `group.list_sessions` reports it; `key` is the local session id (canonical MailboxAddress). */
+export interface GroupSessionInfo {
+  key: string
+  /** null for the default session. */
+  sessionId: string | null
+  title: string
+  description: string
+  announcement: string
+  /** Revision of the shared state (`group.update_shared_state` expects it). */
+  sharedRevision: string
+  lifecycle: string
+  /** Session record revision (`group.archive_session` / `group.update_session` expect it). */
+  revision: string
+  hasGuests: boolean
+  receipts: 'hidden' | 'count' | 'readers'
 }
 
 /** The viewer's view of one group: hosted by this zone, or joined on a remote host. */
@@ -180,10 +219,17 @@ export interface GroupInfo {
   ownerDid: string
   hosted: boolean
   lifecycle: 'active' | 'archived' | 'deleted'
+  /** Configuration revision (`group.apply_config` expects it). */
+  revision: string
   myRole?: GroupRole
   /** null when the member list is hidden from the viewer or managed by a remote host. */
   members: GroupMember[] | null
-  can: { invite: boolean; remove: boolean; createSession: boolean }
+  sessions: GroupSessionInfo[]
+  can: GroupCapabilities
+  /** Edit / recall windows of the default session; undefined means unlimited. */
+  messageRules: { editWindowMs?: number; recallWindowMs?: number }
+  /** An owner transfer the owner started and the target has not accepted yet. */
+  pendingTransfer?: { memberDid: string; transferId: string; expiresAt: number }
 }
 
 /** `buckyos.group_invitation` notification sent to an invited DID. */
@@ -193,9 +239,19 @@ export interface GroupInvitation {
   role: GroupRole
   expiresAt?: number
   inviterDid: string
+  /** `active`: accepted automatically; `pending_admin_approval`: accepted, waiting for approval; `invited`: waiting for the member. */
+  state?: 'invited' | 'active' | 'pending_admin_approval'
+  /** Set when the invitation is for the viewer's agent and the viewer accepts on its behalf. */
+  memberDid?: string
 }
 
 export interface GroupInvitationView {
   groupName: string
-  state: 'pending' | 'joined' | 'expired'
+  state: 'pending' | 'joined' | 'approval' | 'expired'
+}
+
+/** Read receipt of one own group message (`group.get_read_markers`). */
+export interface ReadReceipt {
+  count: number
+  readers?: string[]
 }

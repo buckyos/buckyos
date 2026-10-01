@@ -166,6 +166,12 @@ pub struct SessionMeta {
     pub peer_did: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub peer_tunnel_did: Option<String>,
+    /// Group DID when this UI session is the agent's projection of a group
+    /// chat (msg-center `GroupMsg` inbound). Outbound replies then target
+    /// the group (`to=[group_did]`, `kind=GroupMsg`, decoded `to_session`)
+    /// instead of DM-ing `peer_did` (messagehub-group-v2 TODO 4.4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub event_subscriptions: Vec<EventSubscription>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -238,6 +244,7 @@ impl SessionMeta {
             pending_inputs: Vec::new(),
             peer_did: None,
             peer_tunnel_did: None,
+            group_id: None,
             event_subscriptions: Vec::new(),
             background_events: Vec::new(),
             background_hint_state: BackgroundHintState::default(),

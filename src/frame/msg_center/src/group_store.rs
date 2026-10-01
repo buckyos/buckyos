@@ -19,6 +19,10 @@ pub struct GroupTransaction<'a> {
     pub tx: Transaction<'a, Any>,
     pub state: GroupState,
     pub store: GroupStore,
+    /// Mailbox records written in this transaction; their `box_changed`
+    /// events are published once the transaction has committed, so group
+    /// projections notify clients exactly like ordinary deliveries.
+    pub projections: Vec<MailboxRecord>,
 }
 impl GroupStore {
     pub async fn open(db: MsgBoxDbMgr) -> Result<Self> {
@@ -96,6 +100,7 @@ impl GroupStore {
             tx,
             state: serde_json::from_str(&body).map_err(db_error)?,
             store: self.clone(),
+            projections: vec![],
         })
     }
     pub async fn object(
@@ -195,7 +200,9 @@ impl GroupTransaction<'_> {
         self.store
             .db
             .upsert_record_with_msg_tx(&mut self.tx, record, Some(msg))
-            .await
+            .await?;
+        self.projections.push(record.clone());
+        Ok(())
     }
     pub async fn delivery(&mut self, record: &DeliveryRecord) -> Result<()> {
         self.store
@@ -293,6 +300,10 @@ impl GroupTransaction<'_> {
             .execute(&mut *self.tx)
             .await
             .map_err(db_error)?;
-        self.tx.commit().await.map_err(db_error)
+        self.tx.commit().await.map_err(db_error)?;
+        for record in &self.projections {
+            crate::msg_center::MessageCenter::publish_box_changed_event(record, "upsert");
+        }
+        Ok(())
     }
 }

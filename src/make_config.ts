@@ -855,71 +855,71 @@ function applyDevBootTemplate(
   const identity = loadLocalNodeIdentityConfig(
     path.join(targetDir, "etc", "node_identity.json"),
   );
-  const username = "bob";
   const zoneDid = identity.zone_did;
   const zone = parseDid(zoneDid);
-  const userDid = `did:${zone.method}:${username}.${zone.id}`;
-  const keyPair = getDevTestKeyPairById(username);
   const now = Math.floor(Date.now() / 1000);
-  const userEntries: Record<string, unknown> = {
-    [`users/${username}/settings`]: {
-      user_id: username,
-      type: "user",
-      password: createHash("sha256").update(`buckyos2026${username}.buckyos`)
-        .digest("base64"),
-      state: "active",
-      res_pool_id: "default",
-      is_local: true,
-      allow_password_change: true,
-    },
-    [`users/${username}/doc`]: {
-      "@context": [
-        "https://www.w3.org/ns/did/v1",
-        "https://buckyos.org/ns/owner/v1",
-      ],
-      id: userDid,
-      name: username,
-      display_name: username,
-      verificationMethod: [{
-        id: "#main_key",
-        type: "Ed25519VerificationKey2020",
-        controller: userDid,
-        publicKeyJwk: { kty: "OKP", crv: "Ed25519", x: keyPair.publicKeyX },
-      }],
-      authentication: ["#main_key"],
-      assertion_method: ["#main_key"],
-      capabilityInvocation: ["#main_key"],
-      iat: now,
-      exp: now + 3600 * 24 * 365 * 10,
-      version_seq: 0,
-      zone_binding_model_version: 2,
-      binded_zone_list: [zoneDid],
-      service: [{
-        id: `${userDid}#lastDoc`,
-        type: "DIDDoc",
-        serviceEndpoint: `https://${
-          didRawHostName(zoneDid)
-        }/resolve/${userDid}`,
-      }],
-    },
-    [`users/${username}/profile`]: {
-      did: userDid,
-      name: username,
-      display_name: username,
-      private_extra: {
-        system_contact: { did: userDid, groups: ["users"] },
+  const entries: Array<[string, string]> = [];
+  for (const username of ["bob", "alice"]) {
+    const userDid = `did:${zone.method}:${username}.${zone.id}`;
+    const keyPair = getDevTestKeyPairById(username);
+    const userEntries: Record<string, unknown> = {
+      [`users/${username}/settings`]: {
+        user_id: username,
+        type: "user",
+        password: createHash("sha256").update(`buckyos2026${username}.buckyos`)
+          .digest("base64"),
+        state: "active",
+        res_pool_id: "default",
+        is_local: true,
+        allow_password_change: true,
       },
-    },
-    [`security/${username}/key`]: keyPair.privateKeyPem,
-  };
-  const entries: Array<[string, string]> = Object.entries(userEntries).map(
-    ([key, value]) => {
+      [`users/${username}/doc`]: {
+        "@context": [
+          "https://www.w3.org/ns/did/v1",
+          "https://buckyos.org/ns/owner/v1",
+        ],
+        id: userDid,
+        name: username,
+        display_name: username,
+        verificationMethod: [{
+          id: "#main_key",
+          type: "Ed25519VerificationKey2020",
+          controller: userDid,
+          publicKeyJwk: { kty: "OKP", crv: "Ed25519", x: keyPair.publicKeyX },
+        }],
+        authentication: ["#main_key"],
+        assertion_method: ["#main_key"],
+        capabilityInvocation: ["#main_key"],
+        iat: now,
+        exp: now + 3600 * 24 * 365 * 10,
+        version_seq: 0,
+        zone_binding_model_version: 2,
+        binded_zone_list: [zoneDid],
+        service: [{
+          id: `${userDid}#lastDoc`,
+          type: "DIDDoc",
+          serviceEndpoint: `https://${
+            didRawHostName(zoneDid)
+          }/resolve/${userDid}`,
+        }],
+      },
+      [`users/${username}/profile`]: {
+        did: userDid,
+        name: username,
+        display_name: username,
+        private_extra: {
+          system_contact: { did: userDid, groups: ["users"] },
+        },
+      },
+      [`security/${username}/key`]: keyPair.privateKeyPem,
+    };
+    for (const [key, value] of Object.entries(userEntries)) {
       const content = typeof value === "string"
         ? value
         : JSON.stringify(value, null, 2);
-      return [key, `"${key}" = """\n${content}\n"""`];
-    },
-  );
+      entries.push([key, `"${key}" = """\n${content}\n"""`]);
+    }
+  }
 
   const localBootToml = path.join(
     os.homedir(),

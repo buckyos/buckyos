@@ -3,8 +3,8 @@ use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
 use crate::owner_session::SessionTokenVerifier;
 use buckyos_api::{
-    bind_token_principal_kind, bind_token_target, AuthTarget, MailboxAddress, MailboxKind,
-    MsgCenterHandler, SystemServiceId, TokenPrincipalKind, TokenUse,
+    bind_token_principal_kind, bind_token_target, AccessGroupLevel, AuthTarget, ContactPatch,
+    MailboxAddress, MailboxKind, MsgCenterHandler, SystemServiceId, TokenPrincipalKind, TokenUse,
 };
 use buckyos_http_server::ServerError;
 use bytes::Bytes;
@@ -110,7 +110,6 @@ fn joined_route(upstream: String, d: &DID) -> crate::group_sync::JoinedGroupRout
         host: "test.example".into(),
         upstream,
         authorization: format!("Bearer {}", context(d).token.unwrap()),
-        proof_ids: vec![],
     }
 }
 
@@ -125,6 +124,10 @@ fn member() -> DID {
 }
 fn guest() -> DID {
     DID::new("dev", "IpMPQFSbItHA0O4_RkVTraZa11q5SaVY_x6s9wZ3kUM")
+}
+/// A zone-hosted agent owned by `owner()`.
+fn agent() -> DID {
+    DID::new("dev", "agent-under-test")
 }
 fn group() -> DID {
     DID::new("web", "support.test.example")
@@ -149,7 +152,9 @@ fn actor(d: DID) -> GroupActor {
         remote: false,
     }
 }
-struct Verifier;
+struct Verifier {
+    agents: HashMap<DID, DID>,
+}
 #[async_trait::async_trait]
 impl SessionTokenVerifier for Verifier {
     async fn authorize(&self, _: &str, _: &str, _: &str) -> Result<()> {
@@ -163,8 +168,11 @@ impl SessionTokenVerifier for Verifier {
     async fn resolve_user_did(&self, id: &str) -> Result<DID> {
         DID::from_str(id).map_err(invalid)
     }
-    async fn is_zone_agent(&self, _: &DID) -> Result<bool> {
-        Ok(false)
+    async fn is_zone_agent(&self, d: &DID) -> Result<bool> {
+        Ok(self.agents.contains_key(d))
+    }
+    async fn agent_owner(&self, d: &DID) -> Result<Option<DID>> {
+        Ok(self.agents.get(d).cloned())
     }
 }
 fn context(d: &DID) -> RPCContext {
@@ -193,24 +201,14 @@ fn context(d: &DID) -> RPCContext {
         ..Default::default()
     }
 }
-fn proof(d: &DID, role: Option<&str>, scope: Value, invite: Option<String>) -> Value {
-    let mut claims = json!({"obj_type":"buckyos.group_member_proof","schema_version":1,"group_did":group(),"member_did":d,"signer":d,"proof_scope":scope,"nonce":revision(),"issued_at_ms":MessageCenter::now_ms(),"expires_at_ms":MessageCenter::now_ms()+60_000});
-    if let Some(r) = role {
-        claims["role"] = json!(r);
-    }
-    if let Some(i) = invite {
-        claims["invite_id"] = json!(i);
-    }
-    let mut h = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
-    h.kid = Some(d.to_string());
-    json!(jsonwebtoken::encode(&h, &claims, &key(d)).unwrap())
-}
 async fn opened(connection: &str) -> MessageCenter {
     let db = MsgBoxDbMgr::open_default_sqlite(connection).await.unwrap();
     let c = MessageCenter::open_with_db(db).await.unwrap();
-    c.set_token_verifier(Arc::new(Verifier));
+    c.set_token_verifier(Arc::new(Verifier {
+        agents: HashMap::from([(agent(), owner())]),
+    }));
     c.cyfs_dispatch.write().unwrap().target_zone = Some("test.example".into());
-    c.register_local_recipients([owner(), member(), guest()]);
+    c.register_local_recipients([owner(), member(), guest(), agent()]);
     c.set_message_hub_did(DID::new("web", "hub.test.example"));
     c
 }
@@ -227,13 +225,52 @@ async fn call(c: &MessageCenter, d: &DID, m: &str, mut p: Value) -> Result<Value
     c.group_rpc(m, p, context(d)).await
 }
 async fn create(c: &MessageCenter, config: Value) -> Value {
-    call(c,&owner(),"group.create",json!({"idempotency_key":"create","configuration":config,"proof":proof(&owner(),Some("owner"),json!("group"),None)})).await.unwrap()
+    call(
+        c,
+        &owner(),
+        "group.create",
+        json!({"idempotency_key":"create","configuration":config}),
+    )
+    .await
+    .unwrap()
 }
+/// Invite `d` and accept explicitly: without a contact relationship the
+/// invitee is a stranger to the inviter, so nothing is accepted automatically.
 async fn join(c: &MessageCenter, d: &DID) -> Value {
     let invite = call(c, &owner(), "group.invite_member", json!({"member_did":d}))
         .await
         .unwrap();
-    call(c,d,"group.submit_member_proof",json!({"proof":proof(d,Some("member"),json!("group"),Some(invite["invite_id"].as_str().unwrap().into()))})).await.unwrap()
+    assert_eq!(invite["state"], "invited");
+    call(
+        c,
+        d,
+        "group.accept_invitation",
+        json!({"invitation_id":invite["invite_id"]}),
+    )
+    .await
+    .unwrap()
+}
+/// Group invitation notices delivered to `d` in the given box, as the
+/// `machine.data` payload of each `buckyos.group_invitation` message.
+async fn notices(c: &MessageCenter, d: &DID, from: &DID, kind: MailboxKind) -> Vec<Value> {
+    let mailbox = MailboxAddress::new(d.clone(), Some(format!("dm:{}", from.to_string()))).unwrap();
+    let mut out = vec![];
+    for record in c
+        .msg_box_db
+        .list_records(&mailbox, &kind, None, false)
+        .await
+        .unwrap()
+    {
+        let msg = c.load_message(&record.msg_id).await.unwrap();
+        if let Some(machine) = msg
+            .content
+            .machine
+            .filter(|m| m.intent.as_deref() == Some("buckyos.group_invitation"))
+        {
+            out.push(serde_json::to_value(&machine.data).unwrap());
+        }
+    }
+    out
 }
 fn message(d: &DID, s: Option<&str>, text: &str, created: u64) -> MsgObject {
     let mut msg = MsgObject {
@@ -260,7 +297,7 @@ async fn send(c: &MessageCenter, d: &DID, s: Option<&str>, text: &str, created: 
 #[tokio::test]
 async fn group_creation_is_atomic_idempotent_and_authenticates_the_owner() {
     let (c, _tmp, path) = center().await;
-    let p = json!({"group_did":group(),"idempotency_key":"create","proof":proof(&owner(),Some("owner"),json!("group"),None),"sessions":[{"session_id":"announcements","rule_overrides":{"post":{"only":["owner","admin"]}}}]});
+    let p = json!({"group_did":group(),"idempotency_key":"create","sessions":[{"session_id":"announcements","rule_overrides":{"post":{"only":["owner","admin"]}}}]});
     assert!(c
         .group_rpc("group.create", p.clone(), RPCContext::default())
         .await
@@ -289,7 +326,7 @@ async fn group_creation_is_atomic_idempotent_and_authenticates_the_owner() {
     let g = c.groups.load(&group()).await.unwrap().unwrap();
     assert_eq!(g.members.len(), 1);
     assert_eq!(g.sessions.len(), 1);
-    assert!(g.members[&owner().to_string()].proof_id.is_some());
+    assert_eq!(g.members[&owner().to_string()].entity_kind, "device");
     drop(c);
     let c = opened(&path).await;
     assert!(c.is_local_recipient(&group()));
@@ -331,7 +368,14 @@ async fn session_isolation_guests_and_explicit_members_survive_restart() {
     )
     .await
     .unwrap();
-    call(&c,&guest(),"group.submit_session_proof",json!({"session_id":"private / 客服","proof":proof(&guest(),None,json!({"session":"private / 客服"}),None)})).await.unwrap();
+    call(
+        &c,
+        &guest(),
+        "group.accept_session_invitation",
+        json!({"session_id":"private / 客服"}),
+    )
+    .await
+    .unwrap();
     let list = call(&c, &guest(), "group.list_sessions", json!({}))
         .await
         .unwrap();
@@ -585,27 +629,25 @@ async fn config_revisions_unknown_fields_and_template_tombstones_are_enforced() 
 }
 
 #[tokio::test]
-async fn proofs_invite_links_and_approval_cannot_resurrect_removed_members() {
+async fn invite_links_and_approval_cannot_resurrect_removed_members() {
     let (c, _tmp, _) = center().await;
     create(
         &c,
         json!({"membership":{"join_policy":"request_and_approve"}}),
     )
     .await;
-    let mut forged = proof(&member(), Some("owner"), json!("group"), None)
-        .as_str()
-        .unwrap()
-        .to_owned();
-    forged.push('x');
-    assert!(
-        call(&c, &member(), "group.request_join", json!({"proof":forged}))
-            .await
-            .is_err()
-    );
-    let p = proof(&member(), Some("owner"), json!("group"), None);
-    call(&c, &member(), "group.request_join", json!({"proof":p}))
+    assert!(call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        json!({"invitation_id":"never-issued"})
+    )
+    .await
+    .is_err());
+    let requested = call(&c, &member(), "group.request_join", json!({"role":"owner"}))
         .await
         .unwrap();
+    assert_eq!(requested["state"], "pending_admin_approval");
     assert_eq!(
         c.groups.load(&group()).await.unwrap().unwrap().members[&member().to_string()].role,
         GroupRole::Member
@@ -669,11 +711,16 @@ async fn proofs_invite_links_and_approval_cannot_resurrect_removed_members() {
     assert!(call(
         &c,
         &guest(),
-        "group.submit_member_proof",
-        json!({"invite":links["token"],"proof":proof(&guest(),Some("member"),json!("group"),None)})
+        "group.request_join",
+        json!({"invite":links["token"]})
     )
     .await
     .is_err());
+    let requested = call(&c, &guest(), "group.request_join", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(requested["state"], "pending_admin_approval");
+    assert_eq!(requested["role"], "member");
 }
 
 #[tokio::test]
@@ -746,13 +793,7 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
     .await
     .unwrap();
     let (url, server) = host_fixture(host.clone()).await;
-    let mut binding = joined_route(url.clone(), &member());
-    binding.proof_ids = vec![host.groups.load(&group()).await.unwrap().unwrap().members
-        [&member().to_string()]
-        .proof_id
-        .as_ref()
-        .unwrap()
-        .to_string()];
+    let binding = joined_route(url.clone(), &member());
     let (local, _ltmp, path) = center().await;
     local
         .cyfs_dispatch
@@ -762,7 +803,7 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .push(binding.clone());
     let msg = message(&member(), Some(sid), "signed payload", u64::MAX - 100);
     let jwt = msg.to_jwt(&key(&member()), &member().to_string()).unwrap();
-    let (route, proofs) = local
+    let route = local
         .cyfs_dispatch
         .read()
         .unwrap()
@@ -771,16 +812,9 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .unwrap();
     assert!(route.target.contains("/sessions/"));
     assert!(!route.target.contains("项目"));
-    assert_eq!(proofs, binding.proof_ids);
-    let result = crate::cyfs_dispatch::send_with_proofs(
-        &route,
-        &msg,
-        Some(&jwt),
-        &msg.gen_obj_id().0,
-        &proofs,
-    )
-    .await
-    .unwrap();
+    let result = crate::cyfs_dispatch::send(&route, &msg, Some(&jwt), &msg.gen_obj_id().0)
+        .await
+        .unwrap();
     assert!(result.ok, "{result:?}");
     let saved = host
         .groups
@@ -789,15 +823,9 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .unwrap()
         .unwrap();
     assert_eq!(saved.2.as_deref(), Some(jwt.as_str()));
-    let replay = crate::cyfs_dispatch::send_with_proofs(
-        &route,
-        &msg,
-        Some(&jwt),
-        &msg.gen_obj_id().0,
-        &proofs,
-    )
-    .await
-    .unwrap();
+    let replay = crate::cyfs_dispatch::send(&route, &msg, Some(&jwt), &msg.gen_obj_id().0)
+        .await
+        .unwrap();
     assert!(replay.ok);
     let second = send(&host, &owner(), Some(sid), "older sender timestamp", 1).await;
     local.sync_joined_group(&binding).await.unwrap();
@@ -808,20 +836,19 @@ async fn group_http_signed_delivery_and_joined_sync_preserve_identity_order_and_
         .list_records(&mailbox, &MailboxKind::Inbox, None, false)
         .await
         .unwrap();
-    let first = records
-        .iter()
-        .find(|r| r.msg_id == msg.gen_obj_id().0)
-        .unwrap();
+    assert!(
+        records.iter().all(|r| r.msg_id != msg.gen_obj_id().0),
+        "the member's own message is not projected into their INBOX"
+    );
     let after = records
         .iter()
         .find(|r| r.msg_id == second.gen_obj_id().0)
         .unwrap();
     let meta = host.groups.load(&group()).await.unwrap().unwrap().messages
-        [&msg.gen_obj_id().0.to_string()]
+        [&second.gen_obj_id().0.to_string()]
         .clone();
-    assert_eq!(first.sort_key, meta.accepted_at_ms);
-    assert!(after.sort_key >= first.sort_key);
-    assert_ne!(first.sort_key, msg.created_at_ms);
+    assert_eq!(after.sort_key, meta.accepted_at_ms);
+    assert_ne!(after.sort_key, second.created_at_ms);
     assert_eq!(
         local
             .groups
@@ -872,19 +899,8 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
     join(&host, &member()).await;
     let original = send(&host, &owner(), None, "secret", 1).await;
     let (url, server) = host_fixture(host.clone()).await;
-    let state = host.groups.load(&group()).await.unwrap().unwrap();
-    let mut member_route = joined_route(url.clone(), &member());
-    member_route.proof_ids = vec![state.members[&member().to_string()]
-        .proof_id
-        .as_ref()
-        .unwrap()
-        .to_string()];
-    let mut owner_route = joined_route(url, &owner());
-    owner_route.proof_ids = vec![state.members[&owner().to_string()]
-        .proof_id
-        .as_ref()
-        .unwrap()
-        .to_string()];
+    let member_route = joined_route(url.clone(), &member());
+    let owner_route = joined_route(url, &owner());
     let (local, _ltmp, path) = center().await;
     local.sync_joined_group(&member_route).await.unwrap();
     local.sync_joined_group(&owner_route).await.unwrap();
@@ -953,8 +969,22 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
         true
     );
     let tombstone = host.groups.load(&group()).await.unwrap().unwrap();
-    assert!(tombstone.members.is_empty() && tombstone.proofs.is_empty());
+    assert!(tombstone.members.is_empty());
+    assert!(tombstone.tombstone_readers.contains(&member().to_string()));
     assert_eq!(tombstone.changes.len(), 1);
+    let notice = host
+        .group_changes(&actor(member()), &group(), None, 10)
+        .await
+        .unwrap();
+    assert!(notice["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["action"] == "entity.group_deleted"));
+    assert!(host
+        .group_changes(&actor(agent()), &group(), None, 10)
+        .await
+        .is_err());
     drop(local);
     let local = opened(&path).await;
     assert!(local.joined_groups(&owner()).await.unwrap()[0].stopped);
@@ -966,7 +996,7 @@ async fn joined_sync_erases_redacted_bodies_and_stops_after_removal_or_group_del
 async fn guest_requests_are_atomic_idempotent_and_do_not_leak_other_sessions() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1}},"session_templates":{"tickets":{"membership":{"roles":["owner","admin"]},"rules":{"allow_guests":true}}}})).await;
-    let p = json!({"request_id":"request1","proof":proof(&guest(),None,json!({"session_request":"request1"}),None)});
+    let p = json!({"request_id":"request1"});
     let one = call(&c, &guest(), "group.submit_guest_request", p.clone())
         .await
         .unwrap();
@@ -984,7 +1014,14 @@ async fn guest_requests_are_atomic_idempotent_and_do_not_leak_other_sessions() {
             .len(),
         1
     );
-    assert!(call(&c, &guest(), "group.submit_guest_request", json!({"request_id":"request2","proof":proof(&guest(),None,json!({"session_request":"request2"}),None)})).await.is_err());
+    assert!(call(
+        &c,
+        &guest(),
+        "group.submit_guest_request",
+        json!({"request_id":"request2"})
+    )
+    .await
+    .is_err());
     let sessions = c.group_sessions(&actor(guest()), &group()).await.unwrap();
     assert_eq!(sessions["items"].as_array().unwrap().len(), 1);
     assert!(sessions["group_doc"].is_null());
@@ -1220,17 +1257,19 @@ async fn attachments_require_the_exact_message_context_and_remote_client_policy(
 async fn deleted_guest_sessions_keep_minimal_notifications_and_existing_local_copies() {
     let (host, _htmp, _) = center().await;
     create(&host, json!({"membership":{"guest_entry":{"session_template":"tickets","max_open_per_guest":1}},"session_templates":{"tickets":{"membership":{"roles":["owner"]},"rules":{"allow_guests":true}}}})).await;
-    let session = call(&host, &guest(), "group.submit_guest_request", json!({"request_id":"ticket","proof":proof(&guest(),None,json!({"session_request":"ticket"}),None)})).await.unwrap();
+    let session = call(
+        &host,
+        &guest(),
+        "group.submit_guest_request",
+        json!({"request_id":"ticket"}),
+    )
+    .await
+    .unwrap();
     let sid = session["session_id"].as_str().unwrap();
     let msg = send(&host, &guest(), Some(sid), "my ticket", 1).await;
     let state = host.groups.load(&group()).await.unwrap().unwrap();
     let (url, server) = host_fixture(host.clone()).await;
-    let mut route = joined_route(url, &guest());
-    route.proof_ids = vec![state.participants[sid][&guest().to_string()]
-        .proof_id
-        .as_ref()
-        .unwrap()
-        .to_string()];
+    let route = joined_route(url, &guest());
     let (local, _tmp, _) = center().await;
     local.sync_joined_group(&route).await.unwrap();
     call(
@@ -1349,33 +1388,37 @@ async fn shadow_members_require_registered_tunnel_consent_and_authenticated_tran
     )
     .await
     .unwrap();
-    let proof = json!({"obj_type":"buckyos.group_member_proof","schema_version":1,"group_did":group(),"member_did":shadow,"role":"member","proof_scope":"group","invite_id":invite["invite_id"],"nonce":revision(),"expires_at_ms":MessageCenter::now_ms()+60_000,"attested_by":owner(),"source_event":{"event_id":"platform-event","user_consent":true}});
-    assert!(call(
-        &c,
-        &member(),
-        "group.submit_member_proof",
-        json!({"proof":proof})
-    )
-    .await
-    .is_err());
-    let mut no_consent = proof.clone();
-    no_consent["source_event"]["user_consent"] = json!(false);
-    assert!(call(
-        &c,
-        &owner(),
-        "group.submit_member_proof",
-        json!({"proof":no_consent})
-    )
-    .await
-    .is_err());
-    let p = json!({"proof":proof});
-    let first = call(&c, &owner(), "group.submit_member_proof", p.clone())
+    assert_eq!(invite["state"], "invited");
+    let accept = json!({"invitation_id":invite["invite_id"],"idempotency_key":"shadow-join","attestation":{"member_did":shadow,"source_event":{"event_id":"platform-event","user_consent":true}}});
+    assert!(
+        call(&c, &member(), "group.accept_invitation", accept.clone())
+            .await
+            .is_err()
+    );
+    let mut no_consent = accept.clone();
+    no_consent["attestation"]["source_event"]["user_consent"] = json!(false);
+    assert!(call(&c, &owner(), "group.accept_invitation", no_consent)
+        .await
+        .is_err());
+    let mut forged = accept.clone();
+    forged["attestation"]["member_did"] = json!(member());
+    assert!(call(&c, &owner(), "group.accept_invitation", forged)
+        .await
+        .is_err());
+    let first = call(&c, &owner(), "group.accept_invitation", accept.clone())
         .await
         .unwrap();
-    let second = call(&c, &owner(), "group.submit_member_proof", p)
+    let second = call(&c, &owner(), "group.accept_invitation", accept)
         .await
         .unwrap();
     assert_eq!(first, second);
+    assert_eq!(first["state"], "active");
+    assert_eq!(first["entity_kind"], "user");
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert!(state
+        .audit
+        .iter()
+        .any(|a| a["action"] == "tunnel-attestation" && a["member"] == json!(shadow)));
     let msg = message(&shadow, None, "external consented sender", 1);
     assert!(c
         .handle_dispatch(msg.clone(), None, None, context(&member()))
@@ -1545,7 +1588,14 @@ async fn invitation_expiration_is_persisted_once_and_can_be_reinvited() {
         c.groups.load(&group()).await.unwrap().unwrap().group_seq,
         expired.group_seq
     );
-    assert!(call(&c, &member(), "group.submit_member_proof", json!({"proof":proof(&member(),Some("member"),json!("group"),Some(invite["invite_id"].as_str().unwrap().into()))})).await.is_err());
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":invite["invite_id"]})
+    )
+    .await
+    .is_err());
     drop(c);
     let c = opened(&path).await;
     assert_eq!(
@@ -1562,7 +1612,7 @@ async fn invitation_expiration_is_persisted_once_and_can_be_reinvited() {
 #[tokio::test]
 async fn message_hub_group_ui_contract() {
     let (c, _tmp, _) = center().await;
-    let created = call(&c,&owner(),"group.create",json!({"idempotency_key":"ui","profile":{"name":"Launch crew"},"invitations":[{"member_did":member()}],"proof":proof(&owner(),Some("owner"),json!("group"),None)})).await.unwrap();
+    let created = call(&c,&owner(),"group.create",json!({"idempotency_key":"ui","profile":{"name":"Launch crew"},"invitations":[{"member_did":member()}]})).await.unwrap();
     assert_eq!(created["group_did"], json!(group()));
     let mine = c
         .group_rpc("group.list_by_member", json!({}), context(&owner()))
@@ -1612,6 +1662,10 @@ async fn message_hub_group_ui_contract() {
         invite["content"]["machine"]["data"]["group_did"],
         json!(group())
     );
+    assert_eq!(
+        invite["content"]["machine"]["data"]["data"]["state"],
+        "invited"
+    );
     let invite_id = invite["content"]["machine"]["data"]["data"]["invite_id"]
         .as_str()
         .unwrap()
@@ -1625,11 +1679,19 @@ async fn message_hub_group_ui_contract() {
     .await
     .unwrap();
     assert_eq!(access["allowed"], false);
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":"stale"})
+    )
+    .await
+    .is_err());
     call(
         &c,
         &member(),
-        "group.submit_member_proof",
-        json!({"proof":proof(&member(),Some("member"),json!("group"),Some(invite_id))}),
+        "group.accept_invitation",
+        json!({"invitation_id":invite_id}),
     )
     .await
     .unwrap();
@@ -1696,5 +1758,391 @@ async fn message_hub_group_ui_contract() {
     assert!(
         own.contains(&("out".to_string(), json!(owner()))),
         "{own:?}"
+    );
+    assert!(
+        !own.contains(&("in".to_string(), json!(owner()))),
+        "the sender's own message is not projected into their INBOX: {own:?}"
+    );
+}
+
+#[tokio::test]
+async fn friends_join_automatically_strangers_confirm_and_blocked_inviters_are_ignored() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    c.contact_mgr
+        .update_contact(
+            owner(),
+            ContactPatch {
+                access_level: Some(AccessGroupLevel::Friend),
+                ..Default::default()
+            },
+            Some(member()),
+        )
+        .await
+        .unwrap();
+    let friend = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(friend["state"], "active");
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(state.role(&member()), Some(GroupRole::Member));
+    assert_eq!(state.members[&member().to_string()].epoch, 1);
+    let inbox = notices(&c, &member(), &owner(), MailboxKind::Inbox).await;
+    assert!(inbox
+        .iter()
+        .any(|n| n["action"] == "invite" && n["data"]["state"] == "active"));
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_invitation",
+        json!({"invitation_id":friend["invite_id"]})
+    )
+    .await
+    .is_err());
+
+    let stranger = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stranger["state"], "invited");
+    assert!(notices(&c, &guest(), &owner(), MailboxKind::Inbox)
+        .await
+        .is_empty());
+    let request_box = notices(&c, &guest(), &owner(), MailboxKind::RequestBox).await;
+    assert!(request_box
+        .iter()
+        .any(|n| n["action"] == "invite" && n["data"]["state"] == "invited"));
+    assert!(call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        json!({"invitation_id":"another"})
+    )
+    .await
+    .is_err());
+    let joined = call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        json!({"invitation_id":stranger["invite_id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(joined["state"], "active");
+    call(
+        &c,
+        &owner(),
+        "group.remove_member",
+        json!({"member_did":guest()}),
+    )
+    .await
+    .unwrap();
+
+    c.contact_mgr
+        .block_contact(owner(), None, Some(guest()))
+        .await
+        .unwrap();
+    let blocked = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(blocked["state"], "invited");
+    let invites = |items: &[Value]| items.iter().filter(|n| n["action"] == "invite").count();
+    assert_eq!(
+        invites(&notices(&c, &guest(), &owner(), MailboxKind::RequestBox).await),
+        invites(&request_box)
+    );
+    assert_eq!(
+        c.groups.load(&group()).await.unwrap().unwrap().members[&guest().to_string()].state,
+        MemberStatus::Invited
+    );
+}
+
+#[tokio::test]
+async fn member_issued_invitations_need_approval_and_owners_appoint_admins_directly() {
+    let (c, _tmp, _) = center().await;
+    let created = create(&c, json!({})).await;
+    call(&c,&owner(),"group.apply_config",json!({"expected_revision":created["revision"],"idempotency_key":"members-invite","patch":{"roles":{"member":["session.post","session.read","group.invite_member"]}}})).await.unwrap();
+    join(&c, &member()).await;
+    let invite = call(
+        &c,
+        &member(),
+        "group.invite_member",
+        json!({"member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(invite["state"], "invited");
+    let accepted = call(
+        &c,
+        &guest(),
+        "group.accept_invitation",
+        json!({"invitation_id":invite["invite_id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(accepted["state"], "pending_admin_approval");
+    assert_eq!(accepted["invited_by"], json!(member()));
+    let pending = notices(&c, &owner(), &guest(), MailboxKind::RequestBox).await;
+    assert!(pending.iter().any(|n| n["action"] == "pending_approval"
+        && n["data"]["member_did"] == json!(guest())
+        && n["data"]["invited_by"] == json!(member())));
+    assert!(call(
+        &c,
+        &member(),
+        "group.approve_member",
+        json!({"member_did":guest()})
+    )
+    .await
+    .is_err());
+    let approved = call(
+        &c,
+        &owner(),
+        "group.approve_member",
+        json!({"member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(approved["state"], "active");
+    assert_eq!(approved["role"], "member");
+    assert!(call(
+        &c,
+        &member(),
+        "group.update_member_role",
+        json!({"member_did":guest(),"role":"admin"})
+    )
+    .await
+    .is_err());
+    let promoted = call(
+        &c,
+        &owner(),
+        "group.update_member_role",
+        json!({"member_did":guest(),"role":"admin"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(promoted["role"], "admin");
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(state.role(&guest()), Some(GroupRole::Admin));
+    assert!(state.capability(&guest(), "group.approve_member"));
+}
+
+#[tokio::test]
+async fn agents_accept_only_their_owners_invitations_and_others_need_the_owner() {
+    let (c, _tmp, _) = center().await;
+    let created = create(&c, json!({})).await;
+    let by_owner = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":agent()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(by_owner["state"], "active");
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(state.members[&agent().to_string()].entity_kind, "agent");
+    call(
+        &c,
+        &owner(),
+        "group.remove_member",
+        json!({"member_did":agent()}),
+    )
+    .await
+    .unwrap();
+
+    call(&c,&owner(),"group.apply_config",json!({"expected_revision":created["revision"],"idempotency_key":"members-invite","patch":{"roles":{"member":["session.post","session.read","group.invite_member"]}}})).await.unwrap();
+    join(&c, &member()).await;
+    let by_member = call(
+        &c,
+        &member(),
+        "group.invite_member",
+        json!({"member_did":agent()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(by_member["state"], "invited");
+    let to_owner = notices(&c, &owner(), &member(), MailboxKind::RequestBox).await;
+    assert!(to_owner.iter().any(|n| n["action"] == "invite"
+        && n["data"]["member_did"] == json!(agent())
+        && n["data"]["state"] == "invited"));
+    assert!(notices(&c, &agent(), &member(), MailboxKind::RequestBox)
+        .await
+        .is_empty());
+    let accept = json!({"invitation_id":by_member["invite_id"],"member_did":agent()});
+    assert!(
+        call(&c, &guest(), "group.accept_invitation", accept.clone())
+            .await
+            .is_err()
+    );
+    assert!(
+        call(&c, &member(), "group.accept_invitation", accept.clone())
+            .await
+            .is_err()
+    );
+    let accepted = call(&c, &owner(), "group.accept_invitation", accept)
+        .await
+        .unwrap();
+    assert_eq!(accepted["state"], "pending_admin_approval");
+    call(
+        &c,
+        &owner(),
+        "group.approve_member",
+        json!({"member_did":agent()}),
+    )
+    .await
+    .unwrap();
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(state.role(&agent()), Some(GroupRole::Member));
+    assert_eq!(state.members[&agent().to_string()].epoch, 2);
+}
+
+#[tokio::test]
+async fn owner_transfer_takes_effect_only_when_the_target_accepts() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    join(&c, &member()).await;
+    assert!(call(
+        &c,
+        &member(),
+        "group.transfer_owner",
+        json!({"member_did":member()})
+    )
+    .await
+    .is_err());
+    let first = call(
+        &c,
+        &owner(),
+        "group.transfer_owner",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let offered = notices(&c, &member(), &owner(), MailboxKind::RequestBox).await;
+    assert!(offered.iter().any(
+        |n| n["action"] == "owner_transfer" && n["data"]["transfer_id"] == first["transfer_id"]
+    ));
+    call(&c, &owner(), "group.cancel_owner_transfer", json!({}))
+        .await
+        .unwrap();
+    assert!(call(
+        &c,
+        &member(),
+        "group.accept_owner_transfer",
+        json!({"transfer_id":first["transfer_id"]})
+    )
+    .await
+    .is_err());
+    let second = call(
+        &c,
+        &owner(),
+        "group.transfer_owner",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    assert!(call(
+        &c,
+        &guest(),
+        "group.accept_owner_transfer",
+        json!({"transfer_id":second["transfer_id"]})
+    )
+    .await
+    .is_err());
+    assert_eq!(
+        c.groups.load(&group()).await.unwrap().unwrap().owner,
+        owner()
+    );
+    let result = call(
+        &c,
+        &member(),
+        "group.accept_owner_transfer",
+        json!({"transfer_id":second["transfer_id"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(result["owner"], json!(member()));
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(state.owner, member());
+    assert_eq!(state.role(&member()), Some(GroupRole::Owner));
+    assert_eq!(state.role(&owner()), Some(GroupRole::Admin));
+    assert!(state.pending_owner_transfer.is_none());
+    assert_eq!(state.public_doc().unwrap()["owner"], json!(member()));
+}
+
+#[tokio::test]
+async fn http_join_accepts_the_pending_invitation_and_reads_need_no_proofs() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    let invite = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":member()}),
+    )
+    .await
+    .unwrap();
+    let request = |method: &str, path: String, body: &str| {
+        Request::builder()
+            .method(method)
+            .uri(path)
+            .header("host", "test.example")
+            .header(
+                "authorization",
+                format!("Bearer {}", context(&member()).token.unwrap()),
+            )
+            .header(ndn_lib::CYFS_HEADER_ORIGINAL_USER, member().to_string())
+            .body(http_body(body.to_string()))
+            .unwrap()
+    };
+    let mut sessions = request("GET", format!("/{}/sessions", group().to_string()), "");
+    assert_eq!(
+        crate::group_http::serve(&c, &mut sessions)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let mut join = request("PUT", format!("/{}/join", group().to_string()), "");
+    let response = crate::group_http::serve(&c, &mut join).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["state"], "active");
+    let mut again = request(
+        "PUT",
+        format!("/{}/join", group().to_string()),
+        &json!({"invitation_id":invite["invite_id"]}).to_string(),
+    );
+    assert_eq!(
+        crate::group_http::serve(&c, &mut again)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut sessions = request("GET", format!("/{}/sessions", group().to_string()), "");
+    let response = crate::group_http::serve(&c, &mut sessions).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut changes = request("GET", format!("/{}/changes", group().to_string()), "");
+    assert_eq!(
+        crate::group_http::serve(&c, &mut changes)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
     );
 }

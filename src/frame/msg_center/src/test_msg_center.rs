@@ -2311,6 +2311,10 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
             Ok(self.agents.contains(did))
         }
+
+        async fn agent_owner(&self, _did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+            Ok(None)
+        }
     }
 
     struct ScopedVerifier {
@@ -2329,6 +2333,9 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         }
         async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
             self.inner.is_zone_agent(did).await
+        }
+        async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+            self.inner.agent_owner(did).await
         }
         async fn authorize(
             &self,

@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -771,26 +771,45 @@ Reader 的三种实现：
 
 ### 3.7 Self-host Group v2（2026-10-01 接入）
 
-依据 `doc/message_hub/Self-Host-Groupv2.md` 与 `src/frame/msg_center/doc/group-v2-backend.md`。纯规则在 `groupModel.ts`，
-store 接口为 `group / groupStatus / ensureGroup / createGroup / inviteGroupMembers / removeGroupMember / leaveGroup / deleteGroup / groupInvitation / acceptGroupInvitation`。
+依据 `doc/message_hub/Self-Host-Groupv2.md`、`src/frame/msg_center/doc/group-v2-backend.md` 与 2026-10-01 的「取消成员 proof」契约（`notepads/messagehub-group-v2-todo.md` §2.2）。
+纯规则在 `groupModel.ts`（通知解析、错误码、邀请链接、编辑窗口）和 `conversation/history/relations.ts`（消息关系折叠）；
+store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup / updateGroupProfile / inviteGroupMembers / removeGroupMember / approveGroupMember / rejectGroupMember / updateGroupMemberRole / moderateGroupMember / transferGroupOwner / cancelGroupOwnerTransfer / acceptGroupOwnerTransfer / createGroupInviteLink / revokeGroupInviteLink / requestGroupJoin / leaveGroup / deleteGroup / groupInvitation / acceptGroupInvitation / manageGroupSession / addGroupSessionMembers / removeGroupSessionMember / leaveGroupSession / inviteGroupSessionGuest / acceptGroupSessionInvitation / readReceipt`。
+
+**信任与同意**：入群不需要成员签名的 proof，只看群一方（Owner / Admin 的邀请、邀请链接、`join_policy`）和成员一方（本人在卡片上接受；好友邀请由 msg-center 自动接受；Agent 只自动接受其 owner 的邀请，其他人的邀请由 owner 代为接受）是否同意。请求认证只用登录 token。
 
 - **群目录**：self 视角加载 `group.list_by_member`（`items` 为本 Zone 托管，`joined` 为远端托管且未停止的群），`GroupDoc.profile.name` 作为群名。Agent 观察不加载，也不做任何群写入。
 - **会话键**：host 为本地成员写入登记行（`registered`、`origin = 'group'`、`peer_did = group DID`），`session_id` 是规范 MailboxAddress：默认 Session 为裸群 DID，具名 Session 为 `<group_did>/<编码后的 session_id>`。`groupSessionKey / groupSessionId` 负责互转。
 - **发送**：`to = [group_did]`、`kind = 'group_msg'`，`to_session` 取解码后的原始 Session ID，默认 Session 不带；键无法解析的群会话只读（`binding_unknown`）。
 - **默认会话**：群实体固定选择 id 为群 DID 的会话，缺失时不自动创建；在群实体上「新建会话」调用 `group.create_session`（具名 Group Session，成员默认继承）。
-- **发言能力**：托管群按会话调用 `group.check_access(session.post)` 并缓存，结果未知时只读（`permission_pending`）；远端托管群由 host 在提交时判定；不在群目录或已解散为 `group_not_member`，已归档为 `group_archived`，规则不允许为 `group_post_denied`。打开群面板或群操作后重新查询。
-- **本人消息去重**：host 把本人的群消息同时写入 SENT 和本人 INBOX（UNREAD）。时间线只保留 SENT 一侧，INBOX 副本在 self 视角下自动标为已读，避免重复气泡和虚增未读。
-- **群资料 `GroupInfo`**：`group.get_doc` + `group.list_members`（不可见时 `members = null`）+ `group.list_sessions`（具名 Session 共享标题）+ `group.check_access`（`group.invite_member` / `group.remove_member` / `session.create`）。远端托管群只显示「由托管方管理」。
+- **发言能力**：托管群按会话调用 `group.check_access(session.post)` 并缓存，结果未知时只读（`permission_pending`）；远端托管群由 host 在提交时判定；不在群目录或已解散为 `group_not_member`，已归档为 `group_archived`，规则不允许为 `group_post_denied`。打开群面板、群操作后，以及摘要刷新发现该群会话有新投影（host 对群投影发常规 `box_changed`，含移出成员时投影给本人的事件）时失效重查。
+- **本人消息**：host 不再把本人的群消息投影到本人 INBOX（只有 SENT 记录），时间线直接显示 `msg.list_session` 的结果，没有去重兜底。
+- **群资料 `GroupInfo`**：`group.get_doc` + `group.get_config`（`revision`、`profile`、默认 Session 规则：`receipts`、编辑 / 撤回窗口）+ `group.list_members`（不可见时 `members = null`；含 `invited_by`，结果另带 `pending_owner_transfer`，仅成员可见）+ `group.list_sessions`（`GroupSessionInfo`：共享标题 / 说明 / 公告及其 revision、`lifecycle`、记录 `revision`、`has_guests`、`receipts`）+ `group.check_access`（`GroupCapabilities`：`group.invite_member` / `group.remove_member` / `group.approve_member` / `group.update_role` / `group.moderate` / `group.update_config` / `session.create` / `session.manage` / `session.invite_guest` / `session.update_shared_state` / `message.redact_any` / `session.mention_all`；`transferOwner` 为 `doc.controller === 本人`）。远端托管群只显示「由托管方管理」。
+- **群资料编辑**：Owner / Admin 在群面板修改群名与简介：`group.apply_config { expected_revision, idempotency_key, patch: { profile: { name, description } } }`，`expected_revision` 取 `GroupInfo.revision`。
+- **成员管理**（群面板成员行菜单）：批准 / 拒绝（`group.approve_member` / `group.reject_member`）、设为 / 取消管理员（`group.update_member_role`，不需要本人同意）、转让群主（`group.transfer_owner` 发起，目标成员在 `owner_transfer` 卡片上 `group.accept_owner_transfer`；群主可 `group.cancel_owner_transfer`）、禁言 1 小时 / 解除 / 封禁（`group.moderate { muted_until_ms | blocked }`）。
+- **邀请链接**：`group.create_invite_link` 返回 token，UI 展示为 `<group_did>?invite=<token>`（`formatInviteLink` / `parseInviteLink`），可 `group.revoke_invite_link`；「新建群聊」对话框底部可粘贴链接 `group.request_join { group_did, invite }`（也接受裸群 DID 按 `join_policy` 申请），结果 `pending_admin_approval` 时提示等待审批。
+- **具名 Session 管理**（会话详情「群会话」一节）：归档 / 删除（`group.archive_session` / `group.delete_session`，带记录 `expected_revision`）、添加成员（`group.update_session { add_members }`）、邀请外部成员（`group.invite_session_guest`，对方在 `session_invite` 卡片上 `group.accept_session_invitation`，不需要 proof）、移出 / 退出（`group.remove_session_member` / `group.leave_session`）。`has_guests` 的 Session 在 Session 列表和详情显示「含外部成员」。
+- **共享状态与昵称**：群会话详情的共享标题 / 说明 / 公告走 `group.get_shared_state` + `group.update_shared_state { session_id?, expected_revision, set, unset, idempotency_key }`，昵称走 `group.get_member_state` + `group.update_member_state`；非群会话仍显示「尚未启用」。
+- **已读回执**：Session 规则 `receipts !== 'hidden'` 时，对本人最新一条群消息查 `group.list_messages` 得到 `session_seq`，再 `group.get_read_markers { session_id?, session_seq }` 显示「N 人已读」（`readers` 规则下附读者名）；标记已读时若已知 seq 则顺带 `group.update_read_marker`（host 也会按 READ 状态推进）。
 - **入口**：实体列表头「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。候选成员为可经 native 连接到达的人和 Agent，排除 `did:msgtunnel:*`、已拉黑者和自己。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。
-- **邀请与通知**：被邀请者在与邀请者的会话（`dm:<inviter>`）中收到 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'` 的通知，渲染为邀请卡（群名取 `group.get_doc`，状态为待加入 / 已加入 / 已失效），接受调用 `group.submit_member_proof`。`pending_approval` / `rejected` / `removed` / `session_invite` 渲染为通知卡。
-- **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案。
+- **邀请与通知**：通知为 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'`，`machine.data = { group_did, action, data }`，投递到与发起者的会话（`dm:<inviter>`），群名取 `group.get_doc`。各 action 的卡片：
+
+  | action | data | 卡片 |
+  |---|---|---|
+  | `invite` | `{ invite_id, role, expires_at_ms, state, member_did? }` | `state = active`（好友邀请已自动接受，或本人已在群目录）显示「已加入」+「打开」，无「接受」；`pending_admin_approval` 显示「已接受，等待审批」；`invited` 显示「加入群聊」→ `group.accept_invitation { group_did, invitation_id }`；过期显示「已失效」。带 `member_did`（邀请的是本人的 Agent）时显示「X 邀请你的 Agent Y 加入」，接受时附 `member_did` |
+  | `pending_approval` | `{ member_did, invited_by? }` | 「X 申请加入」+「批准 / 拒绝」→ `group.approve_member` / `group.reject_member` |
+  | `owner_transfer` | `{ transfer_id, expires_at_ms }` | 「X 想把群主转让给你」+「接受群主转让」→ `group.accept_owner_transfer { group_did, transfer_id }` |
+  | `session_invite` | `{ session_id, title?, profile? }` | 「X 邀请你加入会话」+「接受」→ `group.accept_session_invitation { group_did, session_id }`，成功后可打开 |
+  | `rejected` / `removed` / `session_removed` | 不变 | 只显示文案 |
+
+- **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案（`knownGroupErrors`：`invitation-mismatch`、`transfer-mismatch`、`agent-owner-required`、`invite-required`、`join-not-allowed`、`member-not-pending`、`revision-conflict` 等；未知码原样显示）。
+- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者的编辑内容 + 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send` 的 `group_msg`：气泡菜单提供回复（`thread`）、编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）、回应（`reaction` + `key`）；Composer 的 @ 按钮从群成员中选择并写入结构化 `mentions.dids`，`session.mention_all` 能力下可选 `@all`；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
 - **Session 详情**：群会话提示「群主可以查看本群的所有会话」（v2 §2.3.4）。
 
 已知缺口：
 
-1. **成员 proof 需要本人签名。** `group.create` 只有在 msg-center runtime 持有该用户私钥时才自动构造群主 proof，`group.submit_member_proof` 必须由调用方提交签名。浏览器不持有用户私钥，真实环境中建群会返回 `owner-proof-required`，接受邀请会返回 `member-proof-required`，UI 原样提示。需要后端提供「本 Zone 在用户授权下代签」（v2 §2.4）或客户端签名通道才能闭环。
-2. 远端托管群的成员与管理 RPC 只在 host 上可用。
-3. 转让群主、角色调整、禁言、入群审批、邀请链接、Session Guest 尚无 UI。
+1. 远端托管群的成员与管理 RPC 只在 host 上可用。
+2. Session 参与者没有列表 RPC，会话详情只能添加成员 / 邀请外部成员 / 退出，移出成员的入口依赖本地已知的参与者（mock 可见，真实后端不显示）。
+3. 真实后端的已读回执只覆盖本人最新一条消息；`group.list_messages` 最多向前翻 8 页（2048 条）找序号。
 
 ---
 
@@ -1410,11 +1429,19 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 拉黑 | `contact.block_contact` | |
 | 临时授权 | `contact.grant_temporary_access` | |
 | 会话重新归类 | `msg.update_record_session` | 仅可信后端/Agent 使用，UI 暂不暴露 |
-| 建群 | `group.create` | `{ idempotency_key, profile: { name }, invitations: [{ member_did }] }`；群主 proof 见 3.7 缺口 1 |
-| 邀请 / 移出或撤销邀请 / 退出 / 解散 | `group.invite_member` / `group.remove_member` / `group.leave` / `group.delete` | `{ group_did, member_did?, idempotency_key }` |
-| 新建群会话 | `group.create_session` | `{ group_did, title?, idempotency_key }` |
-| 接受邀请 | `group.submit_member_proof` | `{ group_did, proof }`；proof 必须由成员签名 |
-| 发送群消息 | `msg.post_send` | `to = [group_did]`、`kind = 'group_msg'`、具名 Session 带 `to_session` |
+| 建群 | `group.create` | `{ idempotency_key, profile: { name }, invitations: [{ member_did }] }`；不带 proof，由 token 认证的调用者直接成为 Owner |
+| 修改群资料 | `group.apply_config` | `{ group_did, expected_revision, idempotency_key, patch: { profile: { name, description } } }` |
+| 邀请 / 移出或撤销邀请 / 退出 / 解散 | `group.invite_member` / `group.remove_member` / `group.leave` / `group.delete` | `{ group_did, member_did?, idempotency_key }`；`invite_member` 返回 `{ invite_id, member_did, expires_at_ms, state }` |
+| 审批 / 角色 / 禁言封禁 | `group.approve_member` / `group.reject_member` / `group.update_member_role` / `group.moderate` | `{ group_did, member_did, role? | blocked? | muted_until_ms?, idempotency_key }` |
+| 转让群主 | `group.transfer_owner` → `group.accept_owner_transfer` / `group.cancel_owner_transfer` | 群主 `{ group_did, member_did }` 得 `{ transfer_id, expires_at_ms }`；目标成员 `{ group_did, transfer_id }`；群主取消 `{ group_did }` |
+| 邀请链接 | `group.create_invite_link` / `group.revoke_invite_link` | `{ group_did, expires_at_ms?, max_uses?, require_approval? }` → `{ token }`；`{ group_did, token }` |
+| 接受邀请 | `group.accept_invitation` | `{ group_did, invitation_id, member_did? }`；`member_did` 仅 Agent 的 owner 代为接受时传 |
+| 申请 / 链接入群 | `group.request_join` | `{ group_did, invite? }`；返回成员记录（`state` 为 `active` 或 `pending_admin_approval`） |
+| 新建 / 修改 / 归档 / 删除群会话 | `group.create_session` / `group.update_session` / `group.archive_session` / `group.delete_session` | `{ group_did, title?, idempotency_key }`；其余带 `session_id` 与记录 `expected_revision`，`update_session` 可带 `add_members` |
+| 会话成员 / Guest | `group.remove_session_member` / `group.leave_session` / `group.invite_session_guest` / `group.accept_session_invitation` | `{ group_did, session_id, member_did?, expected_revision?, idempotency_key? }`；接受为 `{ group_did, session_id }` |
+| 共享状态 / 成员状态 | `group.get_shared_state` + `group.update_shared_state` / `group.get_member_state` + `group.update_member_state` | `{ group_did, session_id?, expected_revision, set: { title | description | announcement | nickname }, unset: [...], idempotency_key }` |
+| 已读水位 | `group.list_messages` + `group.get_read_markers` / `group.update_read_marker` | `{ group_did, session_id?, after_seq, limit }`；`{ group_did, session_id?, session_seq }` → `{ count, readers?, visibility? }`；`{ group_did, session_id?, last_read_seq }` |
+| 发送群消息、编辑 / 撤回 / 回应 / 回复、@提及 | `msg.post_send` | `to = [group_did]`、`kind = 'group_msg'`、具名 Session 带 `to_session`；关系消息带 `relates_to { rel, target, key? }`，提及带 `mentions { dids?, all? }` |
 
 所有写动作都校验当前 context；Agent 观察首期禁用整张写入表，而不只是隐藏 Composer。
 

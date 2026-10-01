@@ -30,8 +30,9 @@ export function defaultGroupName(memberNames: string[]): string {
 }
 
 /**
- * People and agents reachable over a native BuckyOS connection: a group only
- * accepts single-entity DIDs that can sign their own membership proof.
+ * People and agents reachable over a native BuckyOS connection. A group only
+ * accepts single-entity DIDs (user, agent, device): nested groups and DID
+ * Collections are deferred (v2 §13), so another group is never a candidate.
  */
 export function groupMemberCandidates(entities: Entity[], ownerDid: string, hasNative: (entity: Entity) => boolean, blocked: (entity: Entity) => boolean = () => false): Entity[] {
   const seen = new Set<string>()
@@ -56,13 +57,22 @@ export function memberCandidates(store: MessageHubStore, context: MessageHubCont
   )
 }
 
-/** A personal group notification (`invite`, `pending_approval`, `rejected`, `removed`, `session_invite`). */
+/** A personal group notification (`invite`, `pending_approval`, `rejected`, `removed`, `owner_transfer`, `session_invite`, `session_removed`). */
 export interface GroupNotice {
   groupDid: string
   action: string
   memberDid?: string
+  invitedBy?: string
   invitation?: GroupInvitation
+  /** `owner_transfer` only. */
+  transferId?: string
+  expiresAt?: number
+  /** `session_invite` / `session_removed` only. */
+  sessionId?: string
+  sessionTitle?: string
 }
+
+const text = (value: unknown) => typeof value === 'string' ? value : undefined
 
 export function parseGroupNotice(message: MessageObject): GroupNotice | null {
   const machine = message.content.machine
@@ -70,10 +80,18 @@ export function parseGroupNotice(message: MessageObject): GroupNotice | null {
   const data = machine.data ?? {}
   const detail = data.data && typeof data.data === 'object' && !Array.isArray(data.data) ? data.data as Record<string, unknown> : {}
   if (typeof data.group_did !== 'string' || typeof data.action !== 'string') return null
-  const notice: GroupNotice = { groupDid: data.group_did, action: data.action, ...(typeof detail.member_did === 'string' ? { memberDid: detail.member_did } : {}) }
+  const notice: GroupNotice = { groupDid: data.group_did, action: data.action }
+  const memberDid = text(detail.member_did), invitedBy = text(detail.invited_by), transferId = text(detail.transfer_id), sessionId = text(detail.session_id), sessionTitle = text(detail.title)
+  if (memberDid) notice.memberDid = memberDid
+  if (invitedBy) notice.invitedBy = invitedBy
+  if (transferId) notice.transferId = transferId
+  if (sessionId) notice.sessionId = sessionId
+  if (sessionTitle) notice.sessionTitle = sessionTitle
+  if (typeof detail.expires_at_ms === 'number') notice.expiresAt = detail.expires_at_ms
   if (data.action === 'invite' && typeof detail.invite_id === 'string') {
     const role = detail.role === 'admin' || detail.role === 'owner' ? detail.role : 'member'
-    notice.invitation = { groupDid: data.group_did, inviteId: detail.invite_id, role, expiresAt: typeof detail.expires_at_ms === 'number' ? detail.expires_at_ms : undefined, inviterDid: message.from }
+    const state = detail.state === 'active' || detail.state === 'pending_admin_approval' || detail.state === 'invited' ? detail.state : undefined
+    notice.invitation = { groupDid: data.group_did, inviteId: detail.invite_id, role, expiresAt: notice.expiresAt, inviterDid: message.from, ...(state ? { state } : {}), ...(memberDid ? { memberDid } : {}) }
   }
   return notice
 }
@@ -82,7 +100,7 @@ export function parseGroupInvitation(message: MessageObject): GroupInvitation | 
   return parseGroupNotice(message)?.invitation ?? null
 }
 
-const knownGroupErrors = new Set(['owner-proof-required', 'member-proof-required', 'signed-member-proof-required', 'capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'proof-invitation-mismatch', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit'])
+const knownGroupErrors = new Set(['capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'controller-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'invitation-mismatch', 'transfer-mismatch', 'owner-transfer-pending', 'agent-owner-required', 'invite-required', 'join-not-allowed', 'member-not-pending', 'use-transfer-owner', 'cannot-moderate-owner', 'revision-conflict', 'invalid-invite-link', 'guests-not-allowed', 'guest-limit', 'not-a-session-guest', 'session-archived', 'post-not-allowed', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit'])
 
 /** User-facing text for a group operation failure; unknown host reasons are shown verbatim. */
 export function groupErrorText(t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string, error: unknown): string {
@@ -90,6 +108,24 @@ export function groupErrorText(t: (key: string, fallback?: string, variables?: R
   const reason = message.replace(/^rejected:\s*/, '').match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? (message === 'agent_observer' ? 'agent_observer' : 'unknown')
   if (reason === 'agent_observer') return t('messagehub.reason.agent_observer')
   return knownGroupErrors.has(reason) ? t(`messagehub.groupError.${reason}`) : t('messagehub.groupError.generic', undefined, { reason })
+}
+
+/** Text of an invite link: the group DID plus the token issued by `group.create_invite_link`. */
+export function formatInviteLink(groupDid: string, token: string): string {
+  return `${groupDid}?invite=${encodeURIComponent(token)}`
+}
+
+/** A pasted invite link (or a bare group DID, which asks to join without a token). */
+export function parseInviteLink(input: string): { groupDid: string; invite?: string } | null {
+  const trimmed = input.trim()
+  const match = trimmed.match(/^(did:[^?\s]+)(?:\?invite=([^&\s]+))?$/)
+  if (!match) return null
+  return match[2] ? { groupDid: match[1], invite: decodeURIComponent(match[2]) } : { groupDid: match[1] }
+}
+
+/** Whether an edit / recall window (`EditRule`) still allows acting on a message sent at `start`. */
+export function withinWindow(windowMs: number | undefined, start: number, now: number): boolean {
+  return windowMs === undefined || (windowMs > 0 && now - start <= windowMs)
 }
 
 /** Canonical MailboxAddress of a group session (`<group_did>[/<encoded session id>]`). */

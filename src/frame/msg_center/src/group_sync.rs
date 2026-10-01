@@ -17,7 +17,6 @@ pub struct JoinedGroupRoute {
     pub host: String,
     pub upstream: String,
     pub authorization: String,
-    pub proof_ids: Vec<String>,
 }
 impl std::fmt::Debug for JoinedGroupRoute {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -40,15 +39,11 @@ impl JoinedGroupRoute {
             || url.password().is_some()
             || !self.authorization.starts_with("Bearer ")
             || http::HeaderValue::from_str(&self.authorization).is_err()
-            || self.proof_ids.is_empty()
         {
             return Err(invalid("invalid-joined-group-route"));
         }
         if ndn_lib::normalize_cyfs_dispatch_target(&self.host, "/inbox").is_err() {
             return Err(invalid("invalid-group-host"));
-        }
-        for proof in &self.proof_ids {
-            ObjId::new(proof).map_err(invalid)?;
         }
         Ok(())
     }
@@ -69,10 +64,6 @@ impl JoinedGroupRoute {
             .header("host", &self.host)
             .header("authorization", &self.authorization)
             .header(CYFS_HEADER_ORIGINAL_USER, self.owner_did.to_string())
-            .header(
-                "cyfs-proofs",
-                serde_json::to_string(&self.proof_ids).unwrap(),
-            )
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -108,10 +99,6 @@ impl JoinedGroupRoute {
             .header("host", &self.host)
             .header("authorization", &self.authorization)
             .header(CYFS_HEADER_ORIGINAL_USER, self.owner_did.to_string())
-            .header(
-                "cyfs-proofs",
-                serde_json::to_string(&self.proof_ids).unwrap(),
-            )
             .timeout(std::time::Duration::from_secs(15))
             .send()
             .await
@@ -163,8 +150,6 @@ pub struct JoinedGroupState {
     pub reported_read_seq: BTreeMap<String, u64>,
     pub stopped: bool,
     #[serde(default)]
-    pub proof_ids: Vec<String>,
-    #[serde(default)]
     pub doc_cache: Option<Value>,
 }
 impl MessageCenter {
@@ -202,14 +187,8 @@ impl MessageCenter {
                 last_read_seq: BTreeMap::new(),
                 reported_read_seq: BTreeMap::new(),
                 stopped: false,
-                proof_ids: route.proof_ids.clone(),
                 doc_cache: None,
             });
-        if state.proof_ids != route.proof_ids {
-            state.proof_ids = route.proof_ids.clone();
-            state.changes_token = None;
-            state.stopped = false;
-        }
         if state.stopped {
             return Ok(json!({"stopped":true}));
         }
@@ -441,7 +420,9 @@ impl MessageCenter {
                 .execute(&mut *tx)
                 .await
                 .map_err(db_error)?;
-            if let Some((msg, _)) = object {
+            // The member's own messages already exist as SENT records; only
+            // other participants' messages are projected into the INBOX.
+            if let Some((msg, _)) = object.as_ref().filter(|(m, _)| m.from != route.owner_did) {
                 let mut record = Self::build_mailbox_record(
                     route.owner_did.clone(),
                     MailboxKind::Inbox,
@@ -637,10 +618,6 @@ impl JoinedGroupRoute {
             .header("host", &self.host)
             .header("authorization", &self.authorization)
             .header(CYFS_HEADER_ORIGINAL_USER, self.owner_did.to_string())
-            .header(
-                "cyfs-proofs",
-                serde_json::to_string(&self.proof_ids).unwrap(),
-            )
             .json(&json!({"session_id":session,"last_read_seq":last_read}))
             .timeout(std::time::Duration::from_secs(10))
             .send()

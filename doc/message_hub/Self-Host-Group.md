@@ -1,6 +1,6 @@
 # Self-Host Group 组件需求
 
-> 本文为 v1 历史设计，已由 [Self-Host Group v2](./Self-Host-Groupv2.md) 取代。旧 GroupMgr、群类型、群表定义和 `group.*` RPC 已删除；v2 尚未实现。
+> 本文为 v1 历史设计，已由 [Self-Host Group v2](./Self-Host-Groupv2.md) 取代。旧 GroupMgr、群类型、群表定义和 `group.*` RPC 已删除；v2 已实现（msg-center 后端 commit a86f839f，MessageHub UI commit 39d6d6f0；2026-10-01 取消成员 proof，改为群与成员双方同意，见 v2 §2.4）。
 
 ## 1. 背景与目标
 

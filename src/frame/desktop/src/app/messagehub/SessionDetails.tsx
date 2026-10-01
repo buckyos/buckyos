@@ -7,8 +7,12 @@ import { useI18n } from '../../i18n/provider'
 import { useWindowDialog } from '../../desktop/windows/dialogs'
 import { useMessageHubStore } from './store'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
-import { memberStateSchema, presentationSchema, sharedStateSchema } from './sessionModel'
-import type { Entity, MessageHubContext, Session, SessionAccess } from './types'
+import { groupSharedStateSchema, memberStateSchema, presentationSchema } from './sessionModel'
+import { confirmGroupAction } from './confirmDialog'
+import { PickMembersForm } from './GroupDialogs'
+import { friendlyDidName } from './api/projection'
+import { groupErrorText, memberCandidates } from './groupModel'
+import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
 
 export function SessionDetails({ session, entity, context, access, showActions, onShowActions, onClose, onManage, onWrite }: { session: Session; entity: Entity; context: MessageHubContext; access: SessionAccess; showActions: boolean; onShowActions: (value: boolean) => Promise<void>; onClose: () => void; onManage: () => void; onWrite: (enabled: boolean) => void }) {
   const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
@@ -36,7 +40,9 @@ export function SessionDetails({ session, entity, context, access, showActions, 
     entity.type === 'group' && session.binding.kind === 'native' ? t('messagehub.group.ownerCanRead') : '',
   ].filter(Boolean)
   const members = Object.entries(session.members)
-  const sharedEditors = <div className="space-y-5"><SharedEditor session={session} context={context} disabled={!access.canEditSharedState} /><MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} /></div>
+  const group = entity.type === 'group' && session.binding.kind === 'native' ? store.group(context, entity.id) : null
+  const groupSession = group ? store.groupSession(context, entity.id, session.id) : null
+  const sharedEditors = <div className="space-y-5"><SharedEditor session={session} context={context} disabled={!access.canEditSharedState} groupSession={groupSession} /><MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} /></div>
   return <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-details">
     <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.sessionDetails')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
     <div className="shell-scrollbar flex-1 space-y-6 overflow-y-auto p-4 text-sm">
@@ -47,8 +53,10 @@ export function SessionDetails({ session, entity, context, access, showActions, 
           {session.lifecycle === 'archived' && <DetailBadge>{t('messagehub.archived')}</DetailBadge>}
           {access.mode !== 'read_write' && <DetailBadge>{t('messagehub.readOnly')}</DetailBadge>}
           {session.binding.kind === 'tunnel' && <DetailBadge>{session.binding.connectionName}</DetailBadge>}
+          {groupSession?.hasGuests && <span className="rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)] px-2 py-0.5 text-xs text-[color:var(--cp-accent)]" data-testid="guest-badge">{t('messagehub.group.hasGuests')}</span>}
         </div>
       </div>
+      {groupSession?.announcement && <div className="rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)] px-3 py-2 text-[13px]" data-testid="session-announcement"><p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.announcement')}</p><p className="whitespace-pre-wrap break-words">{groupSession.announcement}</p></div>}
       {notices.length > 0 && <div className="space-y-1 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-[13px]">{notices.map(notice => <p key={notice}>{notice}</p>)}</div>}
       <DetailSection title={t('messagehub.members')}>
         <ul className="space-y-1.5">{members.map(([did, member]) => <li key={did} className="flex min-w-0 items-baseline gap-2" title={did}><span className="truncate">{did === context.ownerDid ? t('messagehub.you') : member.nickname || (did === entity.id ? entity.name : did)}</span>{did === context.ownerDid && member.nickname ? <span className="truncate text-xs text-[color:var(--cp-muted)]">{member.nickname}</span> : null}</li>)}</ul>
@@ -58,10 +66,11 @@ export function SessionDetails({ session, entity, context, access, showActions, 
         <PresentationEditor session={session} context={context} disabled={!access.canEditPresentation} />
       </DetailSection>
       <DetailSection title={t('messagehub.sharedState')}>
-        {!store.isMock ? <p className="text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.sharedStateUnavailable')}</p>
+        {!store.isMock && !groupSession ? <p className="text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.sharedStateUnavailable')}</p>
           : !access.canEditSharedState && !access.canEditOwnMemberState ? <details><summary className="flex min-h-11 cursor-pointer items-center text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.stateReadOnly')}</summary>{sharedEditors}</details>
           : sharedEditors}
       </DetailSection>
+      {group && groupSession && groupSession.sessionId !== null && <GroupSessionSection session={session} entity={entity} context={context} group={group} groupSession={groupSession} onManaged={onClose} />}
       <div className="flex flex-wrap gap-2">
         {access.canEnableWrite && <button type="button" className={hubButtonClass} onClick={() => void enableWrite()}>{t('messagehub.enableWrite')}</button>}
         {session.binding.kind === 'tunnel' && access.mode === 'read_write' && <button type="button" className={hubButtonClass} onClick={() => onWrite(false)}>{t('messagehub.restoreReadOnly')}</button>}
@@ -92,13 +101,60 @@ function ShowActionsToggle({ value, onChange }: { value: boolean; onChange: (val
   </div>
 }
 
-function SharedEditor({ session, context, disabled }: { session: Session; context: MessageHubContext; disabled: boolean }) {
+/** Archive / delete, membership and guest invitations of a named Group Session (`group.*_session`). */
+function GroupSessionSection({ session, entity, context, group, groupSession, onManaged }: { session: Session; entity: Entity; context: MessageHubContext; group: GroupInfo; groupSession: GroupSessionInfo; onManaged: () => void }) {
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const [pending, setPending] = useState(false), [error, setError] = useState('')
+  const run = async (operation: () => Promise<unknown>) => {
+    if (pending) return
+    setPending(true); setError('')
+    try { await operation() } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
+  }
+  const nameOf = (did: string) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)
+  const title = store.title(context, session)
+  const manage = async (action: 'archive' | 'delete') => {
+    if (!await confirmGroupAction(dialog, t, { title: t(`messagehub.group.session.${action}`), body: t(`messagehub.group.session.${action}Confirm`, undefined, { name: title }), confirm: t(`messagehub.group.session.${action}`) })) return
+    await run(async () => { await store.manageGroupSession(context, entity.id, session.id, action); onManaged() })
+  }
+  const leave = async () => {
+    if (!await confirmGroupAction(dialog, t, { title: t('messagehub.group.session.leave'), body: t('messagehub.group.session.leaveConfirm', undefined, { name: title }), confirm: t('messagehub.group.session.leave') })) return
+    await run(async () => { await store.leaveGroupSession(context, entity.id, session.id); onManaged() })
+  }
+  const pick = (kind: 'members' | 'guest') => {
+    const trigger = document.activeElement
+    const activeMembers = (group.members ?? []).filter(member => member.state === 'active' && member.did !== context.ownerDid).map(member => member.did)
+    const candidates = kind === 'members'
+      ? activeMembers.map(did => store.findEntity(context, did) ?? { id: did, type: 'person' as const, name: nameOf(did), tags: [], unreadCount: 0, lastActiveAt: 0 })
+      : memberCandidates(store, context).filter(candidate => !(group.members ?? []).some(member => member.did === candidate.id && (member.state === 'active' || member.state === 'invited' || member.state === 'pending_admin_approval')))
+    void dialog.open({ title: t(kind === 'members' ? 'messagehub.group.session.addMembers' : 'messagehub.group.session.inviteGuest'), size: 'md', dismissible: false, renderBody: controls => <PickMembersForm context={context} candidates={candidates} title={t(kind === 'members' ? 'messagehub.group.addMembers' : 'messagehub.group.session.guests')} submitLabel={kind === 'members' ? 'messagehub.group.session.addMembers' : 'messagehub.group.session.inviteGuest'} onCancel={() => controls.close()} onSubmit={async dids => {
+      if (kind === 'members') await store.addGroupSessionMembers(context, entity.id, session.id, dids)
+      else for (const did of dids) await store.inviteGroupSessionGuest(context, entity.id, session.id, did)
+      controls.close()
+    }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+  }
+  const can = group.can
+  if (!group.myRole && !groupSession) return null
+  return <DetailSection title={t('messagehub.group.session.title')}>
+    <p className="text-[13px] text-[color:var(--cp-muted)]">{t(`messagehub.group.session.lifecycle.${groupSession.lifecycle}`, groupSession.lifecycle)}{groupSession.hasGuests ? ` · ${t('messagehub.group.hasGuests')}` : ''}</p>
+    <div className="flex flex-wrap gap-2" data-testid="group-session-actions">
+      {can.manageSession && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => pick('members')}>{t('messagehub.group.session.addMembers')}</button>}
+      {can.inviteGuest && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => pick('guest')}>{t('messagehub.group.session.inviteGuest')}</button>}
+      {can.manageSession && groupSession.lifecycle === 'active' && <button type="button" className={hubButtonClass} disabled={pending} onClick={() => void manage('archive')}>{t('messagehub.group.session.archive')}</button>}
+      {can.manageSession && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void manage('delete')}>{t('messagehub.group.session.delete')}</button>}
+      {group.myRole !== 'owner' && <button type="button" className={`${hubButtonClass} text-[color:var(--cp-danger)]`} disabled={pending} onClick={() => void leave()}>{t('messagehub.group.session.leave')}</button>}
+    </div>
+    {error && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{error}</p>}
+  </DetailSection>
+}
+
+function SharedEditor({ session, context, disabled, groupSession }: { session: Session; context: MessageHubContext; disabled: boolean; groupSession: GroupSessionInfo | null }) {
   const { t } = useI18n(), store = useMessageHubStore()
-  const form = useForm<z.infer<typeof sharedStateSchema>>({ resolver: zodResolver(sharedStateSchema), values: { title: session.shared.title, description: session.shared.description } })
+  const form = useForm<z.infer<typeof groupSharedStateSchema>>({ resolver: zodResolver(groupSharedStateSchema), values: { title: groupSession?.title ?? session.shared.title, description: groupSession?.description ?? session.shared.description, ...(groupSession ? { announcement: groupSession.announcement } : {}) } })
   const action = useSaveAction()
-  return <form className="space-y-2" onSubmit={form.handleSubmit(values => action.save(() => store.updateState(context, session.id, 'shared', { title: values.title, description: values.description })))}><fieldset disabled={disabled || action.pending} className="space-y-2 disabled:opacity-60">
+  return <form className="space-y-2" data-testid="shared-state-form" onSubmit={form.handleSubmit(values => action.save(() => store.updateState(context, session.id, 'shared', { title: values.title, description: values.description, ...(groupSession ? { announcement: values.announcement ?? '' } : {}) })))}><fieldset disabled={disabled || action.pending} className="space-y-2 disabled:opacity-60">
     <label className="block">{t('messagehub.sharedTitle')}<input className={hubInputClass} {...form.register('title')} /></label>
     <label className="block">{t('messagehub.description')}<textarea className={hubInputClass} {...form.register('description')} /></label>
+    {groupSession && <label className="block">{t('messagehub.announcement')}<textarea className={hubInputClass} {...form.register('announcement')} /></label>}
     {Object.keys(form.formState.errors).length > 0 && <p role="alert">{t('messagehub.fieldLimit')}</p>}
     <button type="submit" className={hubButtonClass}>{t(action.pending ? 'messagehub.saving' : 'messagehub.save')}</button>
   </fieldset><SaveStatus status={action.status} /></form>

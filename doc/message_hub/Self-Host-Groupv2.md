@@ -1,7 +1,7 @@
 # Self-Host Group 设计 v2
 
-- 版本：v2.0 草案，2026-09-30；同日对照 IM 业界实践评审后修订（序号与同步、消息关系、Session 记录、信任模型等）
-- 状态：目标契约。除 §12「实现现状」明确标注的部分外，本文描述的是目标设计，不代表已经实现。
+- 版本：v2.0 草案，2026-09-30；同日对照 IM 业界实践评审后修订（序号与同步、消息关系、Session 记录、信任模型等）；2026-10-01 取消成员 proof，改为群与成员双方同意（§2.4）
+- 状态：目标契约。默认实现已落地（msg-center 后端 commit a86f839f，MessageHub UI commit 39d6d6f0），实现现状见 §12。
 - 取代：[Self-Host-Group.md](<./Self-Host-Group.md>)（下称 v1）。v1 中与本文冲突的内容以本文为准；从 v1 迁出的主题见 §13。
 - 上游：
   - [BuckyOS Self-host Group 的应用扩展架构设计](<./BuckyOS Self-host Group的应用扩展架构设计.md>)（下称「扩展架构」）
@@ -98,6 +98,7 @@ self-host 的含义是**全听群主的**：
 - 需要强证明时，即证明某条消息确实由 `from` 创建、host 没有伪造或篡改，发送者以 JWT 形式提交 MsgObject（CYFS 标准对象统一的签名方式，见 MsgObject 规范 16.5）。这是协议级能力。签名后的消息任何人都可以独立校验，host 无法伪造或改动；签名不影响 ObjectId。
 - host 收到 JWT 形式的消息必须校验签名，校验失败就拒绝，不能降级为 JSON 形式接受。校验通过的，host 保存 JWT 原文，读取时原样提供（§5.1）。如果读者拿到的只有 JSON 形式，这条消息只由群主背书。
 - 群服务不要求成员签名，因为外部平台成员（shadow endpoint DID）无法签名。
+- 入群同样只看群主一方的记录加双方同意：群一方（Owner / Admin 的邀请或审批）同意，成员一方（本人接受，或其 Zone 按 Contact Mgr 策略代为接受）同意，host 就写入成员记录，不要求成员签名的 proof（§2.4）。校验成员记录的只有 host 自己，而 host 由群主控制，签名约束不了它，也没有第三方会去校验。
 - Action Log 事件由群发布（`from = group_did`），同样由群主背书。
 
 ---
@@ -223,14 +224,14 @@ pub enum SessionMembership {
 
 - 不声明即为 `Inherit`。默认 Session 固定为 `Inherit`，不能修改。
 - 允许 Guest 的 Session（`allow_guests = true`）不能使用 `Inherit`。否则新入群的成员会在不知情时进入一个有外部人员的 Session。
-- 群成员加入 Session 不需要新的签名。成员同意加入群时签署的 `GroupMemberProof` 已经覆盖群内的 Session。
+- 群成员加入 Session 不需要再次同意。成员同意加入群即覆盖群内的 Session。
 
 #### 2.3.2 Session Guest
 
 Guest 不入群，只加入具体的 Session。典型场景是客服工单：客户只被加入自己的工单 Session，看不到群的其它部分。
 
 - Guest 只能加入具名 Session，不能加入默认 Session。Session 是否接受 Guest 由其规则决定（`allow_guests`，§3.2）。
-- 加入需要 Guest 本人同意：Guest 签署作用域为该 Session（或为本次请求新建的 Session）的 proof（§2.4）。
+- 加入需要 Guest 本人同意：Guest 接受该 Session 的邀请，或主动发起请求、由 host 为本次请求新建 Session（§2.4、§6.5）。
 - 加入有两种方式：由群内有权限的人邀请（§6.5.1），或由 Guest 从群公开的入口发起请求、host 为其新建 Session（§6.5.2）。
 - Guest 只能在该 Session 内活动：按 Session 规则读取、发言、回应、编辑和撤回自己的消息，修改自己在该 Session 的昵称，退出该 Session。
 - Guest 没有任何群级能力（§3.3）：
@@ -253,14 +254,13 @@ pub struct SessionMembershipRecord {
     pub kind: SessionParticipantKind,  // GroupMember | Guest
     pub epoch: u32,                    // 见下文
     pub state: SessionParticipation,   // Invited | Included | Left | Removed
-    pub proof_id: Option<ObjId>,       // Guest 必填，指向 Session 作用域的 proof
     pub since_seq: u64,                // 状态生效时的 group_seq
     pub actor: DID,                    // 执行该变化的操作者
 }
 ```
 
 - `epoch`：对 `GroupMember`，是该记录所属的群成员周期（`GroupMemberRecord.epoch`，§2.4）。成员退群后再入群会开始新周期，旧周期的记录全部失效。对 `Guest`，是该 DID 在这个 Session 的第几次 Guest 参与。
-- `Invited` 只用于 Guest，表示正在等待 Guest 提交 proof。
+- `Invited` 只用于 Guest，表示正在等待 Guest 接受邀请。
 - 对群成员（只看当前周期的记录）：
   - 在 `Explicit` Session 中，`Included` 记录定义成员；
   - 在 `Inherit` / `Roles` Session 中，`Left` / `Removed` 记录定义例外。
@@ -287,7 +287,7 @@ host 为群内每个被接受的变化分配 `group_seq`，包括消息写入，
    - `Inherit`：没有周期 e 的 `Left` / `Removed` 记录；
    - `Roles`：角色在列表中，并且没有周期 e 的 `Left` / `Removed` 记录；
    - `Explicit`：有周期 e 的 `Included` 记录。
-2. **Guest 路径**：s 是具名 Session 且允许 Guest，d 有状态为 `Included`、proof 有效的 Guest 记录，并且 d 没有被群封禁。
+2. **Guest 路径**：s 是具名 Session 且允许 Guest，d 有状态为 `Included` 的 Guest 记录，并且 d 没有被群封禁。
 
 由此可以得出：
 
@@ -309,7 +309,7 @@ PendingAdminApproval → Rejected
 ```
 
 - `Left`、`Removed`、`Rejected`、`Expired`、`Revoked` 之后，可以重新被邀请或重新申请，进入新的 `Invited` / `PendingAdminApproval`；被封禁（`blocked`）的 DID 除外。审批只能推进 `PendingAdminApproval`，不能直接复活。
-- `GroupMemberRecord` 增加 `epoch`（每次进入 `Active` 加一）和 `entity_kind`（User / Agent / Device，取自成员的 DID Document）。
+- `GroupMemberRecord` 增加 `epoch`（每次进入 `Active` 加一）、`entity_kind`（User / Agent / Device，在邀请、接受或建群时解析成员的 DID Document 得到；解析不到为 Unknown）和 `invited_by`（邀请人，用于按邀请人区分审批）。
 
 **Session Guest 状态机**记录在 Session 成员表中（§2.3.3）：
 
@@ -322,35 +322,31 @@ Invited → Included → Left / Removed
 - `muted_until_ms`：禁言。期间不能发言，仍然可以读取。
 - `blocked`：封禁。禁止再次申请、被邀请或作为 Guest 加入，直到解除。
 
-**proof。** 群成员和 Session Guest 使用同一种 proof 对象（沿用 v1 §4.3 的 `GroupMemberProof`），按作用域区分：
+**双方同意。** 成为群成员或 Session Guest 不需要成员签名的 proof。host 由群主控制，是成员表的唯一权威，签名约束不了它，也没有第三方会去校验；成员能否收到群消息本来就由成员自己的 Zone 决定。是否建立关系只看两件事：群一方是否同意，成员一方是否同意。
 
-```rust
-pub enum MemberProofScope {
-    Group,                    // 加入群；role 为成员同意接受的群角色上限
-    Session(String),          // 以 Guest 身份加入指定的具名 Session；不带群角色
-    SessionRequest(String),   // 以 Guest 身份加入 host 为本次请求新建的 Session；参数是请求 ID（§6.5.2）
-}
-```
-
-建立关系之前，proof 必须全部通过以下校验：
-
-- `signer` 是 `member_did`，或是 `member_did` 的 DID Document 授权的 key/agent；
-- 签名按签名者的 DID Document 验证；
-- `group_did`、`member_did`、作用域和 `role` 与当前的邀请或申请一致；
-- `nonce` 未被使用过，proof 未过期。
-
-**外部平台用户。** `did:msgtunnel:*` 这类 shadow endpoint DID 无法签名。外部平台用户无论是群成员还是 Guest，其同意都以对应 tunnel 实例给出的接入证据代替签名：记录 `attested_by = transport_did`，以及平台侧的来源事件（例如用户在平台上主动发起会话或接受邀请）。这是签名要求的唯一例外（待确认，§14）。
+- **群一方同意**：
+  - Owner / Admin（准确说：接受时邀请人仍具有 `group.approve_member` 能力）发出的邀请视为群已同意，被邀请者接受后直接 `Active`。
+  - 普通成员发出的邀请（群配置给 Member 加了 `group.invite_member`）在对方接受后进入 `PendingAdminApproval`，需要审批。
+  - 主动申请（`group.request_join`，不带邀请链接）：`join_policy = Open` 直接 `Active`；`RequestAndApprove` 进入 `PendingAdminApproval`；`InviteOnly` 以 `invite-required` 拒绝。
+  - 邀请链接视为管理员事先批准，直接 `Active`，除非链接 `require_approval = true`。
+- **成员一方同意**：
+  - 同 Zone 用户：msg-center 投递邀请时查接收者作用域的 Contact Mgr。邀请人是好友（`target_box = INBOX`）→ 自动接受；陌生人（`REQUEST_BOX`）→ 邀请进入 REQUEST_BOX，等本人在 UI 接受；被屏蔽（`DROP`）→ 不投递、不接受，邀请记录保持 `Invited` 直到过期。
+  - Agent：只自动接受其 owner（AgentDocument.owner）发出的邀请；其他人的邀请投递给 owner 确认（owner 收到的邀请卡带 `member_did = <agent did>`），owner 用 `group.accept_invitation { group_did, invitation_id, member_did }` 代为接受。owner 的好友也不能直接触发 Agent 自动入群。确认只代表 Agent 一方同意，群一方的审批规则不变。
+  - 跨 Zone 成员的自动接受保留 TODO（§4.2）。
+  - 转让群主不自动接受，必须目标成员本人确认（§6.2）。
+- **请求认证**：同 Zone 用登录 token。跨 Zone 沿用 BuckyOS DID Document 的身份与认证授权语义，关系信任和准入由 Contact Mgr 决定，再查群成员表（或 Guest 记录）（§4.2）。
+- **外部平台用户**：`did:msgtunnel:*` 这类 shadow endpoint DID 的同意由对应 tunnel 实例的 transport 身份以独立参数 `attestation` 提交：`{ member_did, source_event: { event_id, user_consent } }`，记录平台侧的来源事件（例如用户在平台上主动发起会话或接受邀请）。host 校验调用者不是远端请求、且是该 tunnel 实例登记的 transport DID，否则返回 `invalid-tunnel-attestation`；通过后操作者替换为 `member_did`。
+- **Session Guest**：同样只看双方同意，不需要 Session 作用域的 proof（§6.5）。
 
 **角色来源。**
 
 - 群角色为 `Owner`、`Admin`、`Member`。v1 的 `Guest` 角色取消，由 Session Guest 取代。
-- 主动申请入群、通过邀请链接入群，都只能得到 `Member`；更高的角色只能通过邀请或 `update_member_role` 授予。
-- proof 中的 `role` 只表示成员同意接受的角色上限，host 不能据此提升成员角色。
+- 角色由邀请决定，接受邀请就是接受邀请中的角色。主动申请入群、通过邀请链接入群，都只能得到 `Member`；更高的角色只能通过邀请或 `update_member_role` 授予。
+- 群主可以直接把成员升为 `Admin`（`group.update_member_role`），不需要本人同意。转让群主是两步流程（§6.2）。
 
 **其它约束。**
 
-- 同 Zone 用户的 proof 可以由本 Zone 在用户授权下自动构造，但必须是真实可验证的签名，不能用占位字符串代替。
-- 第一版的 `member_did` 必须是单体实体 DID，即用户、Agent 或设备。以 Group DID 作为成员（嵌套群）见 §13。
+- 第一版的 `member_did` 必须是单体实体 DID，即用户、Agent 或设备。原因是嵌套群（以 Group DID 作为成员）已后置到 §13，host 需要按单体 DID 的 DID Document 解析 `entity_kind`；与成员能否签名无关。
 
 ### 2.5 群消息的地址语义
 
@@ -575,16 +571,16 @@ group.create(profile, configuration, sessions?, invitations?, idempotency_key)
 
 每个请求按以下顺序判定，任何一步拒绝即结束：
 
-1. **认证**：确定操作者。RPC 请求从 verify-hub token 取得；跨 Zone 的 CYFS 请求通过验证 `cyfs-original-user` 和 `cyfs-proofs` 得到。请求体中自报的 DID 不能作为操作者。
+1. **认证**：确定操作者。RPC 请求从 verify-hub token 取得；跨 Zone 的 CYFS 请求从 host 能验证的 Bearer token 和与之一致的 `cyfs-original-user` 得到（§4.2）。请求体中自报的 DID 不能作为操作者。
 2. **根权限**：与 DID Document 相关的操作只认 controller。
-3. **成员资格**：操作者必须是群的 `Active` 成员；对 Session 内的操作，也可以是该 Session 的有效 Guest。申请入群、提交 proof、Guest 发起请求等少数操作除外。`Removed` 或 `blocked` 一律拒绝。
+3. **成员资格**：操作者必须是群的 `Active` 成员；对 Session 内的操作，也可以是该 Session 的有效 Guest。申请入群、接受邀请、Guest 发起请求等少数操作除外。`Removed` 或 `blocked` 一律拒绝。
 4. **访问路径**：请求经由的客户端是否被群允许（§4.3）。
 5. **能力**：操作者的角色具有该操作所需的能力（§3.3）。Session Guest 只有 §3.3 列出的固定能力。
 6. **Session 规则**：对 Session 内的读写，操作者必须是有效成员，满足 post / react / history / edit 规则、慢速模式，且不在禁言期内。
 7. **频率限制**：按操作者和 Session 计数（§6.7），Agent 单独计数。
 8. **Hook**：如果该 Session 的这项操作绑定了 Hook，按 §7.3 执行。
 
-**不泄露存在性。** 对 Session 的操作，如果操作者不是该 Session 的有效成员，也没有 `group.read_all`，那么无论 Session 是否存在，都返回同一个 `not-found`。只有有效成员才会得到更具体的原因，例如 `session-archived`、`muted`、`post-not-allowed`。按 ObjectId 读取消息、Guest 提交 Session proof 也遵守这一规则。
+**不泄露存在性。** 对 Session 的操作，如果操作者不是该 Session 的有效成员，也没有 `group.read_all`，那么无论 Session 是否存在，都返回同一个 `not-found`。只有有效成员才会得到更具体的原因，例如 `session-archived`、`muted`、`post-not-allowed`。按 ObjectId 读取消息、Guest 接受 Session 邀请也遵守这一规则。
 
 **Hook 不能覆盖的规则：**
 
@@ -600,9 +596,11 @@ Hook 只能在第 5–6 步的原生拒绝之上给出动态许可，并且只�
 
 群成员大多不是本 Zone 用户，因此群访问不能依赖 Zone RBAC 中 `users` 组的授权。分工如下：
 
+- **建群**：Zone RBAC 把 `obj://msg-center/group` 的 `create` 权限同时授予 `users` 和 `admin`（2026-10-01 决定），普通登录用户和 admin 都可以建群。群内操作不经过 RBAC，由群的成员资格、角色与能力控制（§3.3、§4.1）。
 - 群成员（包括外部 DID）的读写，由 Group Service 按 §4.1 判定。
-- 本 Zone 的应用或 Agent 直接访问某个 Session 的 GROUP_INBOX 时（例如应用驱动工单 Session），既需要 RBAC 对精确资源 `obj://msg-center/group_inbox/<group_did>/<sid>` 的授权，也必须经过 §4.1 的判定。RBAC 授权不能替代群授权。
-- 当前 `rbac_config.rs` 给 `users` 组授予了 `group_inbox/*` 的读写权限，需要收窄（§12.2）。
+- 本 Zone 的应用或 Agent 直接访问某个 Session 的 GROUP_INBOX 时（例如应用驱动工单 Session），既需要 RBAC 对精确资源 `obj://msg-center/group_inbox/<group_did>/<sid>` 的授权，也必须经过 §4.1 的判定。RBAC 授权不能替代群授权。`users` / `admin` 对 `obj://msg-center/group_inbox/*` 的默认授权已收窄为只读（§12.2）。
+
+**跨 Zone 认证的方向。** 跨 Zone 认证复用 BuckyOS 基于 DID Document 的身份与认证授权语义，不另起群专用认证协议：DID Document 确认成员身份、代为请求的授权关系和客户端身份；msg-center 的 Contact Mgr 管理好友、陌生人、屏蔽等准入策略；群成员表与 Session 规则决定具体群权限。当前群 HTTP 入口校验的是本 Zone 信任的 verify-hub 签发的 session token，joined 绑定仍携带 host 可验证的 `authorization`。自动发现 host、自动建立 joined 绑定、获取与续期凭据，以及跨 Zone 成员的自动接受，保留为 TODO，不阻塞同 Zone 的建群与入群。
 
 ### 4.3 访问路径限制（L4A）
 
@@ -731,19 +729,19 @@ pub enum AllowedClients {
 
 ### 6.1 创建群
 
-1. 认证，并检查 `group.create` 权限（Zone RBAC）。
+1. 认证，并检查 Zone RBAC 对 `obj://msg-center/group` 的 `create` 权限（`users`、`admin` 默认都有，§4.2）。
 2. 生成或登记 Group DID，写入 DID Document（§2.1）。
 3. 写入以下内容：
    - 配置；
-   - Owner 的成员记录，以及经过真实签名的 proof；
+   - Owner 的成员记录，直接以 token 认证的调用者写入，不需要 proof；
    - 默认 Session，以及声明的具名 Session 记录。
 4. 把 Group DID 登记为本 Zone 的本地收件方，使发往该群的 `post_send` 直接走本地 dispatch。
 5. 发布 `entity.group_created` Action Log。
 
 ### 6.2 邀请与申请
 
-- **邀请**：由具有 `group.invite_member` 能力的操作者发起。成员记录为 `Invited`，带有效期；并向被邀请者的个人 INBOX 发送邀请（`kind = operation`）。邀请到期变为 `Expired`，邀请者可以撤回（`Revoked`）。
-- **邀请的接收**：被邀请者一侧按 Contact Mgr 的 ACL 处理邀请：陌生人发来的邀请进入 REQUEST_BOX，不直接打扰用户。Guest 邀请（§6.5.1）同样如此。
+- **邀请**：由具有 `group.invite_member` 能力的操作者发起。成员记录为 `Invited`，记录 `invited_by`，带有效期；并向被邀请者的个人 INBOX 发送邀请（`kind = operation`）。邀请到期变为 `Expired`，邀请者可以撤回（`Revoked`）。`group.invite_member` 返回 `state`：`invited`（等待本人接受）、`active` / `pending_admin_approval`（同 Zone 成员一方已自动接受）。
+- **邀请的接收**：被邀请者一侧的同意按 §2.4 由 Contact Mgr 决定：邀请人是好友，则由接收者的 Zone 自动接受；陌生人发来的邀请进入 REQUEST_BOX，等本人确认，不直接打扰用户；被屏蔽的邀请人不投递、不接受。Agent 只自动接受其 owner 发出的邀请，其他邀请交给 owner 确认。Guest 邀请（§6.5.1）同样如此。
 - **邀请链接**：具有 `group.invite_member` 能力的操作者可以创建邀请链接：
 
   ```rust
@@ -758,11 +756,13 @@ pub enum AllowedClients {
   }
   ```
 
-  持有者携带 token 提交 proof（§11.1 `join?invite=`），得到 `Member` 角色。链接过期、用尽或被撤销后失效；创建者失去 `group.invite_member` 能力或离开群时，其创建的链接一并失效。`blocked` 的 DID 不能使用链接。
-- **提交 proof**：只有被邀请者本人或其授权 agent 可以提交。校验通过后，如果 `join_policy` 要求审批，进入 `PendingAdminApproval`；否则直接进入 `Active`。
-- **主动申请**：校验 proof 后进入 `PendingAdminApproval`，并向具有审批能力的成员的个人 INBOX 发送待审批通知。`join_policy = Open` 时直接进入 `Active`。
+  持有者携带 token 申请加入（`group.request_join { invite }`，§11.1 `join?invite=`），视为管理员事先批准，直接进入 `Active`（`require_approval = true` 时进入 `PendingAdminApproval`），得到 `Member` 角色。链接过期、用尽或被撤销后失效；创建者失去 `group.invite_member` 能力或离开群时，其创建的链接一并失效。`blocked` 的 DID 不能使用链接。
+- **接受邀请**（`group.accept_invitation { group_did, invitation_id }`）：只有被邀请者本人可以接受（Agent 由其 owner 带 `member_did` 代为接受）。`invitation_id` 必填，防止误接受过期后重新发出的另一份邀请，不匹配返回 `invitation-mismatch`。接受即接受邀请中的角色。审批按邀请人区分：邀请人在接受时仍具有 `group.approve_member` 能力（Owner / Admin），直接进入 `Active`；否则进入 `PendingAdminApproval`，并向具有审批能力的成员发送待审批通知（带 `invited_by`）。
+- **主动申请**（`group.request_join`，不带邀请链接）：`join_policy = Open` 直接进入 `Active`；`RequestAndApprove` 进入 `PendingAdminApproval`，并向具有审批能力的成员的个人 INBOX 发送待审批通知；`InviteOnly` 以 `invite-required` 拒绝。
 - **审批**：只能把 `PendingAdminApproval` 推进到 `Active`。不能复活 `Left` / `Removed` 的成员，也不能绕过 `blocked`。
 - **拒绝**：状态变为 `Rejected`，并通知申请人。
+- **调整角色**：群主用 `group.update_member_role { member_did, role }` 把成员升为 `Admin` 或降回 `Member`，不需要本人同意。
+- **转让群主**：两步。群主调用 `group.transfer_owner { member_did }` 发起，返回 `{ transfer_id, member_did, expires_at_ms }`，目标成员（必须 `Active`）收到 `owner_transfer` 通知；目标成员调用 `group.accept_owner_transfer { group_did, transfer_id }` 明确接受后才生效，不适用好友自动接受，过期或不匹配返回 `transfer-mismatch`；群主可用 `group.cancel_owner_transfer` 取消。
 - **Hook**：`join` Hook 在进入 `Active` 之前执行（§7.3）。
 - 每次进入 `Active`，成员周期 `epoch` 加一（§2.3.3）。
 
@@ -792,8 +792,8 @@ pub enum AllowedClients {
 
 1. 具有 `session.invite_guest` 能力的操作者，向一个 `allow_guests = true` 的具名 Session 邀请 DID d。d 不能是被群封禁的 DID，Session 的 Guest 数不能超过上限（§6.7）。
 2. host 写入一条 `Invited` 状态的 Guest 记录，并向 d 的个人 INBOX 发送邀请（`kind = operation`），邀请中只包含群的公开资料和该 Session 的标题。
-3. d 提交作用域为 `Session(session_id)` 的 proof。外部平台用户以 tunnel 接入证据代替（§2.4）。
-4. host 校验 proof 并执行该 Session 的 `join` Hook（如有），通过后记录变为 `Included`，发布 `session.member_added`。
+3. d 接受邀请（`group.accept_session_invitation { group_did, session_id }`，§11.1 `sessions/<sid>/join`），不需要 proof，只看双方同意。外部平台用户由 tunnel 的 transport 身份附 `attestation` 代为接受（§2.4）。
+4. host 确认邀请记录仍为 `Invited`，执行该 Session 的 `join` Hook（如有），通过后记录变为 `Included`，发布 `session.member_added`。
 5. 从此 d 是该 Session 的有效成员：按 §5.4 获得投影或投递，按 Session 规则读写。
 
 应用也可以代表业务流程发起邀请。此时应用以群内具有相应能力的身份调用接口，客户仍需完成第 3 步的同意。
@@ -802,10 +802,10 @@ pub enum AllowedClients {
 
 客服等场景通常由客户主动发起。群在配置中开启 `membership.guest_entry` 后，接受以下流程：
 
-1. Guest d 选择一个随机的请求 ID，签署作用域为 `SessionRequest(request_id)` 的 proof，提交到 `guest_requests`（§11.1）。外部平台用户由 tunnel 代为提交，并附接入证据（例如用户在平台上主动给业务账号发了消息）。
+1. Guest d 选择一个随机的请求 ID，以 `{ request_id }` 提交到 `guest_requests`（§11.1；RPC 为 `group.submit_guest_request { group_did, request_id }`）。外部平台用户由 tunnel 的 transport 身份代为提交，并附 `attestation`（例如用户在平台上主动给业务账号发了消息）。
 2. host 检查：群开启了 `guest_entry`；d 没有被封禁；d 当前处于 Active 的请求 Session 数不超过 `max_open_per_guest`；频率限制。
 3. 如果模板绑定了 `join` Hook，host 执行它，由应用决定是否受理。
-4. host 用 `guest_entry.session_template` 新建一个 Session（`session_id` 由 host 生成），把 d 以 Guest 身份加入（`proof_id` 指向第 1 步的 proof），发布 `session.created` 与 `session.member_added`，并返回 Session 地址。
+4. host 用 `guest_entry.session_template` 新建一个 Session（`session_id` 由 host 生成），把 d 以 Guest 身份加入（Session 记录保存第 1 步的请求 ID），发布 `session.created` 与 `session.member_added`，并返回 Session 地址。
 5. 应用可以随后用正常接口把具体客服加入 Session，或在模板中用 `Roles` 让某个角色的成员自动成为参与者。
 
 同一个 `(d, request_id)` 重复提交返回同一个 Session。
@@ -958,7 +958,7 @@ pub struct HookBinding {
 群核心数据由默认 Group Service 负责备份与恢复，范围包括：
 
 - Group Configuration，以及各 revision 中必要的历史；
-- 成员记录（含成员周期）、proof、moderation 标记和邀请链接；
+- 成员记录（含成员周期、邀请人）、待接受的群主转让、moderation 标记和邀请链接；
 - Session 记录与墓碑、Session 成员表、可见区间、SessionSharedState / SessionMemberState；
 - GROUP_INBOX 记录（含序号）与 MsgObject（附件只备份引用，附件对象按对象存储的策略备份）；
 - 序号计数器、已读水位、GroupEvent 和待发布的 Action Log；
@@ -983,7 +983,7 @@ pub struct HookBinding {
 1. 操作者只取自认证上下文，不信任请求中的 DID 字段。
 2. 群消息的 `from` 必须等于认证得到的 actor，`to` 必须恰好是群 DID，目标 Session 只由 `to_session` 决定。
 3. 写入、读取、管理全部在 host 上判定。成员 Zone 不能绕过 host 写入其他成员的 INBOX。
-4. 成为群成员或 Session Guest，都必须有经过签名校验的 proof（外部平台用户以 tunnel 接入证据代替），且 proof 只能由本人或其授权方提交。
+4. 成为群成员或 Session Guest，都必须同时有群一方和成员一方的同意（§2.4）：群一方由具有相应能力的邀请人或审批人给出；成员一方只能由本人、其 Zone 按 Contact Mgr 策略代为、或 Agent 的 owner 给出；外部平台用户由 tunnel 的 transport 身份提交 `attestation`。不要求成员签名的 proof。
 5. 角色只能通过邀请或授权变更获得，不能在申请中自报。
 6. Session 是隔离单元：读者无权访问的 Session，其存在、内容和成员都不泄露；对非有效成员，「不存在」与「无权访问」返回同一个 `not-found`；按 ObjectId 读取同样受限。
 7. Session Guest 只能访问自己被加入的 Session，看不到默认 Session、其它 Session 和群成员列表。
@@ -993,7 +993,7 @@ pub struct HookBinding {
 11. `display` 配置不是授权。
 12. 历史投递按写入时的有效成员决定。成员变化不回改历史，也不删除成员已经获得的历史。撤回和删帖是例外：host 删除正文，并尽力传播到成员副本（§2.6）。
 13. 跨 Zone 写入只投递小型 NamedObject，附件只传引用（CYFS No-Push）；获取附件携带 context_path，host 作为源时按 §5.3 判定。
-14. 所有对外对象（MsgObject、proof、GroupDoc、Action Log 消息）都能通过 canonical JSON 重算 ObjectId。以 JWT 形式提交的 MsgObject，host 必须校验签名，并保存、原样提供 JWT 原文。
+14. 所有对外对象（MsgObject、GroupDoc、Action Log 消息）都能通过 canonical JSON 重算 ObjectId。以 JWT 形式提交的 MsgObject，host 必须校验签名，并保存、原样提供 JWT 原文。
 15. 删除群、退出群、退出 Session、删除本地会话历史是四种不同的操作。
 16. 配置、成员和 Session 的变化都有 Action Log；至少群主可以查看完整审计记录。
 17. 排序、同步游标、可见区间和回执只使用 host 分配的序号，不使用 `created_at_ms`。
@@ -1013,8 +1013,8 @@ DID Document     实体类型 group、host、controller、服务路径前缀
 写入
 PUT  cyfs://$host/<group_did>/inbox                          写入默认 Session（MsgObject 不带 to_session）
 PUT  cyfs://$host/<group_did>/sessions/<sid>/inbox           写入具名 Session（<sid> 必须等于 MsgObject.to_session）
-PUT  cyfs://$host/<group_did>/join[?invite=<token>]          提交入群申请或 proof；可附带邀请链接 token
-PUT  cyfs://$host/<group_did>/sessions/<sid>/join            Session Guest 提交 proof
+PUT  cyfs://$host/<group_did>/join[?invite=<token>]          接受邀请或申请入群；可附带邀请链接 token
+PUT  cyfs://$host/<group_did>/sessions/<sid>/join            Session Guest 接受邀请
 PUT  cyfs://$host/<group_did>/guest_requests                 Guest 发起请求，host 为其新建 Session
 PUT  cyfs://$host/<group_did>/read_markers                   上报已读水位
 
@@ -1025,11 +1025,11 @@ GET  cyfs://$host/<group_did>/inbox?after_seq=&limit=
 GET  cyfs://$host/<group_did>/sessions/<sid>/inbox?after_seq=&limit=
 GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束的对象读取（§5.7）
 
-对象   MsgObject（§2.5 的群形态，含 §2.6 的关系消息）、GroupMemberProof、Action Log event
+对象   MsgObject（§2.5 的群形态，含 §2.6 的关系消息）、Action Log event
 ```
 
-- 消息、proof 的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
-- 所有请求都携带 `cyfs-original-user` 和 `cyfs-proofs`。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
+- 消息的 `PUT` body 是 canonical JSON NamedObject；签名的消息用 JWT 形式（`application/cyfs-named-object+jwt`，见 CYFS dispatch）。路径不带 `/@/`，body 不带附件内容。`objects/<obj_id>` 对有 JWT 原文的消息返回 JWT 形式。`join` 的 body 是 `{ "invitation_id"?: "..." }` 或空：带 `invitation_id`，或省略但调用者有待接受的邀请时，按接受邀请处理；否则按主动申请处理。`sessions/<sid>/join` 的 body 为空或 `{}`。`guest_requests` 的 body 是 `{ "request_id": "..." }`。`read_markers` 的 body 是小型 JSON 对象 `{ session, last_read_seq }`，读者取自认证上下文。
+- 所有请求都携带 host 能验证的 Bearer token 和与之一致的 `cyfs-original-user`，没有 `cyfs-proofs` 头；读取只看认证主体与成员表 / Guest 记录。`GET` 返回针对该读者过滤后的结果；对非有效成员按 §4.1 返回 `not-found`。
 - `inbox` 列表按 `session_seq` 返回 `{ items: [{ seq, obj_id, redacted }], next_after_seq, limited }`，每页最多 4096 项。
 - `<sid>` 按 MailboxAddress 规则编码为单个路径段。
 
@@ -1041,9 +1041,9 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 
 | 分类 | 方法 |
 |---|---|
-| 群 | `group.create`、`group.get_doc`、`group.get_config`、`group.apply_config`、`group.archive`、`group.delete`、`group.transfer_owner` |
-| 成员 | `group.invite_member`、`group.revoke_invite`、`group.create_invite_link`、`group.revoke_invite_link`、`group.submit_member_proof`、`group.request_join`、`group.approve_member`、`group.reject_member`、`group.leave`、`group.remove_member`、`group.update_member_role`、`group.moderate`、`group.list_members` |
-| Session | `group.create_session`、`group.update_session`、`group.list_sessions`、`group.invite_session_guest`、`group.submit_session_proof`、`group.submit_guest_request`、`group.remove_session_member`、`group.leave_session`、`group.archive_session`、`group.delete_session` |
+| 群 | `group.create`、`group.get_doc`、`group.get_config`、`group.apply_config`、`group.archive`、`group.delete`、`group.transfer_owner`、`group.accept_owner_transfer`、`group.cancel_owner_transfer` |
+| 成员 | `group.invite_member`、`group.revoke_invite`、`group.create_invite_link`、`group.revoke_invite_link`、`group.accept_invitation`、`group.request_join`、`group.approve_member`、`group.reject_member`、`group.leave`、`group.remove_member`、`group.update_member_role`、`group.moderate`、`group.list_members` |
+| Session | `group.create_session`、`group.update_session`、`group.list_sessions`、`group.invite_session_guest`、`group.accept_session_invitation`、`group.submit_guest_request`、`group.remove_session_member`、`group.leave_session`、`group.archive_session`、`group.delete_session` |
 | 查询 | `group.list_by_member`、`group.check_access(group_did, action, session_id?)`、`group.list_events`、`group.update_read_marker` |
 
 - **读取消息**：成员通过 Message Center 已有的 Session API 读取自己的投影。群主或具有 `group.read_all` 能力的管理者用 `list_box_by_time(mailbox = group_did[/sid], GROUP_INBOX)` 读取，同样经过 §4.1 授权。
@@ -1053,9 +1053,9 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 
 ## 12. 实现现状与迁移
 
-当前状态：v1 的 GroupMgr、共享群类型、六张群表的建表定义、`group.*` RPC，以及前端旧群数据接入已删除，v2 尚未实现。Message Center 的通用消息存储、MailboxAddress、外部群订阅投影、Session API 和 tunnel 链路继续保留。删除不包含对已部署数据库的清表或迁移。
+当前状态：v2 默认实现已落地。msg-center 后端在 commit a86f839f 实现了本文的单 host 默认实现（[group-v2-backend.md](<../../src/frame/msg_center/doc/group-v2-backend.md>)、[group-v2-storage.md](<../../src/frame/msg_center/doc/group-v2-storage.md>)），MessageHub UI 在 commit 39d6d6f0 接入（建群并选择联系人、群成员面板、邀请卡、群会话发送和具名会话）。2026-10-01 取消成员 proof，改为群与成员双方同意（§2.4），相关 RPC 改名（§11.2）。v1 的 GroupMgr、共享群类型、六张群表的建表定义、旧 `group.*` RPC，以及前端旧群数据接入已删除。Message Center 的通用消息存储、MailboxAddress、外部群订阅投影、Session API 和 tunnel 链路继续保留。
 
-以下 §12.1–§12.4 保留为删除前的审查记录，供 v2 实现参考，其中旧群代码、接口和表的描述不再代表当前实现。
+以下 §12.1–§12.4 是 2026-09-30 删除 v1 实现前的审查记录，仅作历史参考：其中描述的旧群代码、接口、表，以及「现状」「迁移」两列都不代表当前实现，所列问题已由 v2 实现处理。
 
 本节依据 2026-09-30 对以下代码的审查：`src/frame/msg_center/src/group_mgr.rs`、`msg_center.rs`、`cyfs_dispatch.rs`、`src/kernel/buckyos-api/src/group_mgr.rs`、`cyfs-ndn/src/ndn-lib/src/msgobj.rs`，以及 Desktop 前端。
 
@@ -1069,14 +1069,14 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 
 ### 12.2 必须优先修复的安全问题
 
-| 问题 | 位置 |
-|---|---|
-| 群消息写入没有发言权限检查，只检查发送者是否被拉黑。任何人都能写入任意托管群，AdminOnly 形同虚设 | `msg_center.rs` dispatch 的群分支；`cyfs_dispatch.rs` 只校验 `from == principal` |
-| group RPC 信任请求中的 `actor_did` / `host_owner`，handler 不使用 RPC 上下文 | `msg_center.rs` 的 `handle_group_*`；`kernel/buckyos-api/src/group_mgr.rs` 的请求类型 |
-| proof 只检查过期时间和 scope，不做签名校验，也不检查是谁提交的 | `group_mgr.rs` 的 `validate_member_proof`、`submit_member_proof` |
-| 主动申请直接采用 proof 中的 role，可以申请到 Owner/Admin | `group_mgr.rs` 的冷申请分支 |
-| `approve_member` 不检查当前状态，可以复活已移除的成员 | `group_mgr.rs` 的 `approve_member` |
-| RBAC 给 `users` 组授予了 `obj://msg-center/group_inbox/*` 的读写权限 | `kernel/buckyos-api/src/rbac_config.rs` |
+| 问题 | 位置 | 处理 |
+|---|---|---|
+| 群消息写入没有发言权限检查，只检查发送者是否被拉黑。任何人都能写入任意托管群，AdminOnly 形同虚设 | `msg_center.rs` dispatch 的群分支；`cyfs_dispatch.rs` 只校验 `from == principal` | 已由 v2 实现修复（§4.1） |
+| group RPC 信任请求中的 `actor_did` / `host_owner`，handler 不使用 RPC 上下文 | `msg_center.rs` 的 `handle_group_*`；`kernel/buckyos-api/src/group_mgr.rs` 的请求类型 | 已由 v2 实现修复（操作者只取自 token） |
+| proof 只检查过期时间和 scope，不做签名校验，也不检查是谁提交的 | `group_mgr.rs` 的 `validate_member_proof`、`submit_member_proof` | 已随取消成员 proof 消失（§2.4） |
+| 主动申请直接采用 proof 中的 role，可以申请到 Owner/Admin | `group_mgr.rs` 的冷申请分支 | 已由 v2 实现修复（申请只得到 `Member`） |
+| `approve_member` 不检查当前状态，可以复活已移除的成员 | `group_mgr.rs` 的 `approve_member` | 已由 v2 实现修复（审批只推进 `PendingAdminApproval`） |
+| RBAC 给 `users` 组授予了 `obj://msg-center/group_inbox/*` 的读写权限 | `kernel/buckyos-api/src/rbac_config.rs` | 已收窄：`users` / `admin` 对 `group_inbox/*` 只读；`obj://msg-center/group` 的 `create` 授予 `users` 和 `admin`（2026-10-01） |
 
 ### 12.3 功能缺口与迁移项
 
@@ -1116,7 +1116,7 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 - 嵌套群展开：`group.expand_members`、`group.list_parents`、`GroupExpansionSnapshot`；
 - 收益归属：`group.update_attribution_policy`；
 - `GroupCollectionPolicy`、`GroupPurpose`；
-- `GroupRole::Guest`，以及 proof 中的 `JoinAsSelf` / `JoinAsCollectionEntity` 作用域（改为 §2.4 的 `MemberProofScope`）；
+- `GroupRole::Guest`，以及 proof 中的 `JoinAsSelf` / `JoinAsCollectionEntity` 作用域（当时改为 `MemberProofScope`；2026-10-01 成员 proof 整体取消，见 §2.4）；
 - subgroup 相关的类型与 RPC。
 
 beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写入一条展开快照的行为也随之消失。
@@ -1126,7 +1126,7 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 ## 13. 迁出与后置
 
 - **DID Collection（嵌套群、递归展开、协作署名与收益归属）**：迁出到独立的 DID Collection 设计，v1 的 §1.1、§2.1、§2.9、§4.7、§6.10、§6.11 作为该设计的输入。在此之前，`member_did` 只接受单体 DID，但字段类型仍保持为通用 DID。
-- **公开成员的双向证明**：proof 照常保存，对外公开成员列表和反向证明查询后置。
+- **公开成员的双向证明**：后置。届时由成员的 Zone 用 Zone 密钥自动签发可验证的成员记录，不需要用户参与，也不恢复成员签名的 proof；对外公开成员列表和反向证明查询一并后置。
 - **多副本**：见 §9.2。
 - **可验证归档**：见 §9.3。
 - **大群模式**：超过 `limits` 群成员上限的群，见 §6.7。
@@ -1139,13 +1139,10 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 
 | # | 问题 | 本文建议 |
 |---|---|---|
-| 1 | 默认 Session 使用裸 `group_did`（session_id 为 NULL），还是沿用当前以 group_did 字符串作为 session_id 的做法 | 使用裸 `group_did`，与「裸 DID 是默认 inbox」一致 |
-| 2 | 成员侧本地 Session 键与 `SessionStateRef.session_key` 的格式 | 都用 Group Session 的规范 MailboxAddress 字符串：`<group_did>` / `<group_did>/<sid>`（§2.2.4、§5.5） |
-| 3 | 跨 Zone 访问时，如何携带并验证客户端（应用）身份 | 与 verify-hub、CYFS proofs 一起设计 |
+| 3 | 跨 Zone 访问时，如何携带并验证客户端（应用）身份 | 与 verify-hub 和 §4.2 的跨 Zone DID Document 认证一起设计 |
 | 4 | Session 列表、变更流和受控对象读取的 CYFS 路径形态 | 见 §11.1 草案 |
 | 5 | 面板上下文是否包含 viewer 身份和短期凭据 | 不包含，面板自行以用户身份认证 |
 | 6 | host 向成员 Zone 发送「变更提示」的对象格式与路径 | 小型 event NamedObject，只含 `group_did`，不含 Session 与消息内容，host 合并后发送 |
-| 7 | 外部平台用户（shadow endpoint DID）无法签名，入群或成为 Guest 时以什么作为同意证据 | 由 tunnel 实例出具接入证据（`attested_by = transport_did` + 平台来源事件），见 §2.4 |
 | 8 | Guest 能看到的 Session 参与者范围 | 显式参与者，加上在该 Session 发过言的参与者；不展开 `Roles` 带来的全部群成员（§3.3） |
 | 9 | context_path 的语法，以及创作者、转发者等非 host 源如何校验 | 由 CYFS 协议定义；host 作为源时按 §5.3 判定（§5.7） |
 | 10 | 规模与频率上限的默认值 | 见 §6.7 表 |
@@ -1153,6 +1150,12 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 
 已确认：
 
+- 默认 Session 使用裸 `group_did`（session_id 为 NULL）；成员侧本地 Session 键与 `SessionStateRef.session_key` 都用 Group Session 的规范 MailboxAddress 字符串 `<group_did>` / `<group_did>/<sid>`（原 #1、#2，已按建议实现，§2.2.4、§5.5）。
+- 建群权限：Zone RBAC 把 `obj://msg-center/group` 的 `create` 同时授予 `users` 和 `admin`，群内操作由成员资格、角色与能力控制（2026-10-01，§4.2）。
+- 取消成员 proof：成为群成员或 Session Guest 只看群一方和成员一方的同意（2026-10-01，§2.4）。
+- 外部平台用户的同意方式：由 tunnel 的 transport 身份提交 `attestation` 参数（`member_did` + 平台来源事件），不再伪装成 proof 对象（原 #7，§2.4）。
+- Agent 入群：只自动接受其 owner 发出的邀请，其他邀请由 owner 确认；owner 的好友也不能直接触发自动入群（2026-10-01，§2.4）。
+- 跨 Zone 认证复用 BuckyOS DID Document 的身份与认证授权语义，关系信任由 Contact Mgr 管理（2026-10-01，§4.2）；自动建立 joined 绑定与凭据续期仍为 TODO。
 - Guest 不入群，以 Session Guest 身份加入具体 Session，Session 成员列表可以是群成员的超集（§2.3.2）。
 - 信任模型：self-host 即全听群主的，消息默认由群主背书；需要强证明时用 MsgObject 的 JWT 签名形式，这是协议级能力（§1.5）。
 - 附件通过 context_path 授权，按创作者、收录者、转发者多源获取（§5.7）。
@@ -1165,10 +1168,10 @@ beta 2.2 不需要兼容，直接删除即可。删除后，dispatch 每次写�
 
 - **cyfs-ndn《CYFS 标准对象》§16**：MsgObject v2 定义（`to_session`、`relates_to`、`mentions`，删除 `proof`，签名用 JWT 形式）。已随本次修订更新。
 - **cyfs-ndn《CYFS Protocol》dispatch**：body 可以是签名 JWT（`application/cyfs-named-object+jwt`）。已随本次修订更新。
-- **Message Center.md**：§2.1 MsgObject 字段说明、§2.3 `sort_key` 规则、§2.3.1 发往具名 Session 的方式已随本次修订更新。§2.3.1 中「群消息的 session 推导为群 DID」需要随 §14#1 的结论更新；§3.2 补充群消息按 Session 写入；§7 中关于回执的引用改为指向本文。
+- **Message Center.md**：§2.1 MsgObject 字段说明、§2.3 `sort_key` 规则、§2.3.1 发往具名 Session 的方式已随本次修订更新。§2.3.1 中「群消息的 session 推导为群 DID」需要随 §14 已确认项（原 #1，默认 Session 使用裸 `group_did`）更新；§3.2 补充群消息按 Session 写入；§7 中关于回执的引用改为指向本文。
 - **Session State and Action Log.md**：Group Session 的 `SessionStateRef` 约定与 §6.4 列出的 Session 级 action 已随本次修订补充。
 - **CYFS Protocol.md**：context_path 的语法与多源校验（§14#9）。
 - **Contact Mgr.md**：说明 `Contact.groups` 只是联系人分组，与群无关；群邀请按 ACL 进入 INBOX 或 REQUEST_BOX。
-- **UI_DATAMODEL.md**：群的 Session 列表改为来自 `group.list_sessions`，去掉 subgroup 作为来源；增加「含外部成员」「群主可查看」标识、撤回占位与回应展示。
+- **UI_DATAMODEL.md**：群的 Session 列表来自 `group.list_sessions`（去掉 subgroup 作为来源）和「群主可查看」标识已完成（commit 39d6d6f0）；「含外部成员」标识、撤回占位与回应展示本次实现。
 - **Self-Host-Group.md（v1）**：在文首标注「已被 v2 取代」。
 - **扩展架构**：本文 §7 是扩展架构 L1–L4 在 Group Service 上的具体落点。

@@ -64,10 +64,21 @@ pub struct MemberRecord {
     pub state: MemberStatus,
     pub epoch: u32,
     pub entity_kind: String,
-    pub proof_id: Option<ObjId>,
     pub invitation_id: Option<String>,
+    /// Who issued the current invitation; decides whether acceptance still
+    /// needs admin approval (member-issued invitations do).
+    #[serde(default)]
+    pub invited_by: Option<DID>,
     pub expires_at_ms: Option<u64>,
     pub since_seq: u64,
+}
+/// An owner transfer offered by the controller and not yet accepted by the
+/// target member.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OwnerTransfer {
+    pub member_did: DID,
+    pub transfer_id: String,
+    pub expires_at_ms: u64,
 }
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Moderation {
@@ -409,7 +420,6 @@ pub struct SessionMembershipRecord {
     pub kind: String,
     pub epoch: u32,
     pub state: String,
-    pub proof_id: Option<ObjId>,
     pub since_seq: u64,
     pub actor: DID,
 }
@@ -472,8 +482,8 @@ pub struct GroupState {
     pub participants: BTreeMap<String, BTreeMap<String, SessionMembershipRecord>>,
     pub intervals: BTreeMap<String, BTreeMap<String, Vec<VisibleInterval>>>,
     pub moderation: BTreeMap<String, Moderation>,
-    pub proofs: BTreeMap<String, Value>,
-    pub nonces: BTreeSet<String>,
+    #[serde(default)]
+    pub pending_owner_transfer: Option<OwnerTransfer>,
     pub invite_links: BTreeMap<String, GroupInviteLink>,
     pub group_seq: u64,
     pub session_seqs: BTreeMap<String, u64>,
@@ -486,8 +496,9 @@ pub struct GroupState {
     pub read_markers: BTreeMap<String, BTreeMap<String, u64>>,
     pub rates: BTreeMap<String, Vec<u64>>,
     pub audit: Vec<Value>,
+    /// DIDs of former participants who may still read the deletion notice.
     #[serde(default)]
-    pub tombstone_readers: BTreeMap<String, BTreeSet<String>>,
+    pub tombstone_readers: BTreeSet<String>,
 }
 impl GroupState {
     pub fn public_doc(&self) -> Result<Value> {
@@ -594,8 +605,7 @@ impl GroupState {
         }
         s.is_some()
             && self.rules(s).is_ok_and(|r| r.allow_guests)
-            && record
-                .is_some_and(|r| r.kind == "guest" && r.state == "included" && r.proof_id.is_some())
+            && record.is_some_and(|r| r.kind == "guest" && r.state == "included")
     }
     pub fn candidates(&self) -> BTreeSet<String> {
         self.members

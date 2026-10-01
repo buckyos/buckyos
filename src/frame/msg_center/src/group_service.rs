@@ -44,11 +44,21 @@ fn expected(v: &Value, current: &str) -> Result<()> {
 fn within(window: Option<u64>, start: u64, now: u64) -> bool {
     window.is_none_or(|w| w > 0 && now.saturating_sub(start) <= w)
 }
-fn proof_scope(v: &Value, kind: &str, id: Option<&str>) -> bool {
-    match id {
-        None => v == kind,
-        Some(id) => v.get(kind).and_then(Value::as_str) == Some(id),
-    }
+const JOIN_METHODS: &[&str] = &[
+    "group.accept_invitation",
+    "group.request_join",
+    "group.accept_session_invitation",
+    "group.submit_guest_request",
+];
+/// How the invited member's own Zone answers an invitation on their behalf.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MemberConsent {
+    /// The member's Zone accepts immediately (friend or agent owner).
+    Accept,
+    /// Deliver the invitation and wait for an explicit acceptance.
+    Ask,
+    /// The inviter is blocked: nothing is delivered.
+    Drop,
 }
 
 impl MessageCenter {
@@ -244,7 +254,9 @@ impl MessageCenter {
                 {
                     return Err(denied("member-list-hidden"));
                 }
-                return Ok(json!({"items":g.members.values().collect::<Vec<_>>()}));
+                return Ok(
+                    json!({"items":g.members.values().collect::<Vec<_>>(),"pending_owner_transfer":g.pending_owner_transfer.as_ref().filter(|t|t.expires_at_ms>Self::now_ms())}),
+                );
             }
             "group.list_events" => {
                 let g = self.groups.load(&group).await?.ok_or_else(missing)?;
@@ -271,64 +283,33 @@ impl MessageCenter {
                 return Ok(saved.result);
             }
         }
-        if matches!(
-            method,
-            "group.submit_member_proof"
-                | "group.request_join"
-                | "group.submit_session_proof"
-                | "group.submit_guest_request"
-        ) {
-            if let Some(input) = p.get("proof") {
-                let claims = if let Some(jwt) = input.as_str().or_else(|| input["proof"].as_str()) {
-                    name_lib::decode_jwt_claim_without_verify(jwt).ok()
-                } else {
-                    Some(input.clone())
-                };
-                if let Some(claims) = claims {
-                    let (id, _) = ndn_lib::build_named_object_by_json("gproof", &claims);
-                    if let Some(saved) = self.groups.load(&group).await?.and_then(|g| {
-                        g.operations
-                            .get(&format!(
-                                "{}|{}|{}",
-                                actor.did.to_string(),
-                                method,
-                                id.to_string()
-                            ))
-                            .cloned()
-                    }) {
-                        if saved.request != p {
-                            return Err(invalid("idempotency-key-reused"));
-                        }
-                        return Ok(saved.result);
+        let mut attestation = None;
+        if JOIN_METHODS.contains(&method) {
+            if let Some(input) = p.get("attestation") {
+                let verified = self.verify_tunnel_attestation(&actor, input)?;
+                actor.did = field(&verified, "member_did")?;
+                attestation = Some(verified);
+            }
+        }
+        if method == "group.accept_invitation" {
+            if let Some(member) = optional::<DID>(&p, "member_did")? {
+                if member != actor.did {
+                    if attestation.is_some() {
+                        return Err(invalid("member-did-conflicts-with-attestation"));
                     }
+                    let owner = self.token_verifier.get().agent_owner(&member).await?;
+                    if owner.as_ref() != Some(&authenticated_did) {
+                        return Err(denied("agent-owner-required"));
+                    }
+                    actor.did = member;
                 }
             }
         }
-        let proof = if matches!(
-            method,
-            "group.submit_member_proof"
-                | "group.request_join"
-                | "group.submit_session_proof"
-                | "group.submit_guest_request"
-        ) {
-            let proof = self
-                .verify_member_proof(
-                    &actor,
-                    p.get("proof")
-                        .ok_or_else(|| invalid("member-proof-required"))?,
-                )
-                .await?;
-            actor.did = field(&proof.1["claims"], "member_did")?;
-            Some(proof)
-        } else {
-            None
-        };
         let mut tx = self.groups.begin(&group).await?;
         if tx.state.lifecycle == "deleted" {
             return Err(missing());
         }
-        let key = optional::<String>(&p, "idempotency_key")?
-            .or_else(|| proof.as_ref().map(|(id, _)| id.to_string()));
+        let key = optional::<String>(&p, "idempotency_key")?;
         if matches!(
             method,
             "group.apply_config" | "group.update_shared_state" | "group.update_member_state"
@@ -346,7 +327,7 @@ impl MessageCenter {
             return Ok(saved.result.clone());
         }
         let result = self
-            .mutate_group(&mut tx, &actor, method, &p, proof)
+            .mutate_group(&mut tx, &actor, method, &p, attestation)
             .await?;
         if let Some(k) = op_key {
             tx.state.operations.insert(
@@ -409,182 +390,124 @@ impl MessageCenter {
         tx.commit().await
     }
 
-    async fn verify_member_proof(&self, a: &GroupActor, input: &Value) -> Result<(ObjId, Value)> {
-        if let Some(member) = input
-            .get("member_did")
-            .and_then(Value::as_str)
-            .and_then(|s| DID::from_str(s).ok())
-            .filter(|d| d.method == "msgtunnel")
+    /// External platform users (`did:msgtunnel:*`) cannot act for themselves;
+    /// the registered tunnel transport submits their consent as an attestation
+    /// carrying the platform-side source event.
+    fn verify_tunnel_attestation(&self, a: &GroupActor, input: &Value) -> Result<Value> {
+        let member: DID = field(input, "member_did")?;
+        if member.method != "msgtunnel" {
+            return Err(denied("invalid-tunnel-attestation"));
+        }
+        let (_, _, instance) = crate::contact_mgr::ContactMgr::parse_msgtunnel_did(&member)
+            .ok_or_else(|| denied("invalid-shadow-endpoint"))?;
+        let route = self
+            .lookup_tunnel_route(&instance)
+            .ok_or_else(|| denied("unknown-tunnel"))?;
+        if a.remote
+            || route.transport_did != a.did
+            || !input["source_event"].is_object()
+            || input["source_event"]["event_id"]
+                .as_str()
+                .is_none_or(|s| s.is_empty())
+            || input["source_event"]["user_consent"] != true
         {
-            let (_, _, instance) = crate::contact_mgr::ContactMgr::parse_msgtunnel_did(&member)
-                .ok_or_else(|| denied("invalid-shadow-endpoint"))?;
-            let route = self
-                .lookup_tunnel_route(&instance)
-                .ok_or_else(|| denied("unknown-tunnel"))?;
-            if a.remote
-                || route.transport_did != a.did
-                || input["attested_by"] != json!(a.did)
-                || !input["source_event"].is_object()
-                || input["source_event"]["event_id"]
-                    .as_str()
-                    .is_none_or(|s| s.is_empty())
-                || input["source_event"]["user_consent"] != true
-            {
-                return Err(denied("invalid-tunnel-attestation"));
-            }
-            if field::<u32>(input, "schema_version")? != 1
-                || input["obj_type"] != "buckyos.group_member_proof"
-                || optional::<u64>(input, "expires_at_ms")?.is_some_and(|t| t <= Self::now_ms())
-                || field::<String>(input, "nonce")?.is_empty()
-            {
-                return Err(denied("invalid-tunnel-attestation"));
-            }
-            let (id, _) = ndn_lib::build_named_object_by_json("gproof", input);
-            return Ok((
-                id,
-                json!({"claims":input,"attested_by":a.did,"entity_kind":"user"}),
-            ));
+            return Err(denied("invalid-tunnel-attestation"));
         }
-        let jwt = input
-            .as_str()
-            .or_else(|| input.get("proof").and_then(Value::as_str))
-            .ok_or_else(|| invalid("signed-member-proof-required"))?;
-        let header = jsonwebtoken::decode_header(jwt).map_err(|_| denied("bad-signature"))?;
-        if header.alg != jsonwebtoken::Algorithm::EdDSA {
-            return Err(denied("bad-signature"));
-        }
-        let kid = header.kid.ok_or_else(|| denied("bad-signature"))?;
-        let unverified =
-            name_lib::decode_jwt_claim_without_verify(jwt).map_err(|_| denied("bad-signature"))?;
-        let member: DID = field(&unverified, "member_did")?;
-        let signer: DID = field(&unverified, "signer")?;
-        let member_document = if member.method == "dev" {
-            None
-        } else {
-            Some(
-                name_client::resolve_did(&member, None)
-                    .await
-                    .map_err(|e| {
-                        kRPC::RPCErrors::ReasonError(format!("member-document-unavailable:{e}"))
-                    })?
-                    .to_json_value()
-                    .map_err(db_error)?,
-            )
-        };
-        let delegated = member_document.as_ref().is_some_and(|doc| {
-            crate::cyfs_dispatch::authorizes_signer(doc, &member, &signer, &kid)
-        });
-        if (member != a.did && signer != a.did)
-            || (signer != member && !delegated)
-            || kid.split('#').next() != Some(&signer.to_string())
-        {
-            return Err(denied("proof-signer-mismatch"));
-        }
-        let key = if signer.method == "dev" {
-            jsonwebtoken::DecodingKey::from_ed_components(&signer.id)
-                .map_err(|_| denied("bad-signature"))?
-        } else {
-            let fragment = kid.split_once('#').map(|(_, f)| format!("#{f}"));
-            name_client::resolve_auth_key(&signer, fragment.as_deref())
-                .await
-                .map_err(|e| kRPC::RPCErrors::ReasonError(format!("proof-key-unavailable:{e}")))?
-        };
-        let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
-        validation.required_spec_claims.clear();
-        validation.validate_exp = false;
-        validation.validate_aud = false;
-        let claims = jsonwebtoken::decode::<Value>(jwt, &key, &validation)
-            .map_err(|_| denied("bad-signature"))?
-            .claims;
-        if let Some(obj) = input.as_object() {
-            let mut expected = Value::Object(obj.clone());
-            expected.as_object_mut().unwrap().remove("proof");
-            if expected != claims {
-                return Err(denied("proof-payload-mismatch"));
-            }
-        }
-        if field::<u32>(&claims, "schema_version")? != 1
-            || field::<String>(&claims, "obj_type")? != "buckyos.group_member_proof"
-        {
-            return Err(invalid("invalid-proof-type"));
-        }
-        let now = Self::now_ms();
-        if optional::<u64>(&claims, "expires_at_ms")?.is_some_and(|t| t <= now)
-            || field::<u64>(&claims, "issued_at_ms")? > now.saturating_add(60_000)
-            || field::<String>(&claims, "nonce")?.is_empty()
-        {
-            return Err(denied("invalid-proof-lifetime"));
-        }
-        let kind = if member.method == "dev" {
-            "device".to_string()
-        } else {
-            let doc = member_document.as_ref().unwrap();
-            let context: Option<name_lib::DIDContext> = doc
-                .get("@context")
-                .cloned()
-                .map(serde_json::from_value)
-                .transpose()
-                .map_err(db_error)?;
-            let declared = doc
-                .get("entity_type")
-                .or_else(|| doc.get("type"))
-                .or_else(|| doc.get("doc_type"))
-                .and_then(Value::as_str);
-            let kind = match declared {
-                Some("user" | "owner") => "user",
-                Some("agent") => "agent",
-                Some("device") => "device",
-                Some(_) => return Err(denied("member-must-be-single-entity")),
-                None if context
-                    .as_ref()
-                    .is_some_and(|c| c.contains("https://buckyos.org/ns/owner/v1")) =>
-                {
-                    "user"
-                }
-                None if context
-                    .as_ref()
-                    .is_some_and(|c| c.contains("https://buckyos.org/ns/agent/v1")) =>
-                {
-                    "agent"
-                }
-                None if context
-                    .as_ref()
-                    .is_some_and(|c| c.contains("https://buckyos.org/ns/device/v1")) =>
-                {
-                    "device"
-                }
-                _ => return Err(denied("member-must-be-single-entity")),
-            };
-            if doc["id"] != json!(member) {
-                return Err(denied("member-document-mismatch"));
-            }
-            kind.to_string()
-        };
-        let (id, _) = ndn_lib::build_named_object_by_json("gproof", &claims);
-        Ok((id, json!({"claims":claims,"jwt":jwt,"entity_kind":kind})))
+        Ok(json!({"member_did":member,"attested_by":a.did,"source_event":input["source_event"]}))
     }
 
-    fn consume_proof(
-        g: &mut GroupState,
-        a: &GroupActor,
-        id: &ObjId,
-        proof: &Value,
-        scope: &str,
-        sid: Option<&str>,
-    ) -> Result<()> {
-        let c = &proof["claims"];
-        if field::<DID>(c, "group_did")? != g.group_did
-            || field::<DID>(c, "member_did")? != a.did
-            || !proof_scope(&c["proof_scope"], scope, sid)
+    /// Entity kind of a member (`user`, `agent`, `device`), taken from its DID
+    /// Document. Shadow endpoints are platform users and `did:dev` keys are
+    /// devices; a document that cannot be fetched right now yields `unknown`
+    /// and is retried when the member becomes active.
+    async fn resolve_entity_kind(&self, d: &DID) -> Result<String> {
+        if d.method == "msgtunnel" {
+            return Ok("user".into());
+        }
+        if self.is_local_recipient(d)
+            && self
+                .token_verifier
+                .get()
+                .is_zone_agent(d)
+                .await
+                .unwrap_or(false)
         {
-            return Err(denied("proof-scope-mismatch"));
+            return Ok("agent".into());
         }
-        let nonce = format!("{}|{}", a.did.to_string(), field::<String>(c, "nonce")?);
-        if !g.nonces.insert(nonce) {
-            return Err(denied("proof-replayed"));
+        if d.method == "dev" {
+            return Ok("device".into());
         }
-        g.proofs.insert(id.to_string(), proof.clone());
-        Ok(())
+        let doc = match name_client::resolve_did(d, None).await {
+            Ok(doc) => doc.to_json_value().map_err(db_error)?,
+            Err(_) => return Ok("unknown".into()),
+        };
+        let context: Option<name_lib::DIDContext> = doc
+            .get("@context")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(db_error)?;
+        let declared = doc
+            .get("entity_type")
+            .or_else(|| doc.get("type"))
+            .or_else(|| doc.get("doc_type"))
+            .and_then(Value::as_str);
+        let kind = match declared {
+            Some("user" | "owner") => "user",
+            Some("agent") => "agent",
+            Some("device") => "device",
+            Some(_) => return Err(denied("member-must-be-single-entity")),
+            None if context
+                .as_ref()
+                .is_some_and(|c| c.contains("https://buckyos.org/ns/owner/v1")) =>
+            {
+                "user"
+            }
+            None if context
+                .as_ref()
+                .is_some_and(|c| c.contains("https://buckyos.org/ns/agent/v1")) =>
+            {
+                "agent"
+            }
+            None if context
+                .as_ref()
+                .is_some_and(|c| c.contains("https://buckyos.org/ns/device/v1")) =>
+            {
+                "device"
+            }
+            _ => return Err(denied("member-must-be-single-entity")),
+        };
+        if doc["id"] != json!(d) {
+            return Err(denied("member-document-mismatch"));
+        }
+        Ok(kind.to_string())
+    }
+
+    /// The invited member's side of the consent: same-Zone users answer by
+    /// their Contact Mgr policy towards the inviter, agents only accept their
+    /// owner's invitations (anyone else's go to the owner for confirmation),
+    /// and remote members still confirm explicitly (cross-Zone auto-accept is
+    /// a TODO). Returns the decision and who receives the invitation notice.
+    async fn member_consent(&self, inviter: &DID, d: &DID) -> Result<(MemberConsent, DID)> {
+        if d.method == "msgtunnel" || !self.is_local_recipient(d) {
+            return Ok((MemberConsent::Ask, d.clone()));
+        }
+        if let Some(owner) = self.token_verifier.get().agent_owner(d).await? {
+            return Ok(if owner == *inviter {
+                (MemberConsent::Accept, d.clone())
+            } else {
+                (MemberConsent::Ask, owner)
+            });
+        }
+        let access = self
+            .contact_mgr
+            .peek_access_permission(inviter, None, Some(d))
+            .await?;
+        Ok(match access.target_box.as_str() {
+            "INBOX" => (MemberConsent::Accept, d.clone()),
+            "DROP" => (MemberConsent::Drop, d.clone()),
+            _ => (MemberConsent::Ask, d.clone()),
+        })
     }
 
     async fn create_group(&self, a: &GroupActor, p: Value) -> Result<Value> {
@@ -628,16 +551,7 @@ impl MessageCenter {
         if let Some(id) = &chosen {
             name_lib::validate_zone_child_label(id).map_err(invalid)?;
         }
-        let proof_did = p
-            .get("proof")
-            .and_then(|p| p.as_str().or_else(|| p["proof"].as_str()))
-            .and_then(|jwt| name_lib::decode_jwt_claim_without_verify(jwt).ok())
-            .and_then(|claims| {
-                claims["group_did"]
-                    .as_str()
-                    .and_then(|s| DID::from_str(s).ok())
-            });
-        let did = match optional::<DID>(&p, "group_did")?.or(proof_did) {
+        let did = match optional::<DID>(&p, "group_did")? {
             Some(did) => did,
             None => name_lib::zone_child_did(
                 &host,
@@ -671,17 +585,7 @@ impl MessageCenter {
             }
             controller
         };
-        let automatic;
-        let proof_input = if let Some(proof) = p.get("proof") {
-            proof
-        } else {
-            automatic = self.automatic_owner_proof(a, &did).await?;
-            &automatic
-        };
-        let proof = self.verify_member_proof(a, proof_input).await?;
-        if proof.1["claims"]["role"] != "owner" {
-            return Err(denied("owner-proof-role-required"));
-        }
+        let entity_kind = self.resolve_entity_kind(&a.did).await?;
         let mut config: Value = p
             .get("configuration")
             .cloned()
@@ -690,11 +594,12 @@ impl MessageCenter {
             config["profile"] = profile.clone();
         }
         let mut c: GroupConfiguration =
-            serde_json::from_value(config.clone()).map_err(|e| invalid(e.to_string()))?;
+            serde_json::from_value(config).map_err(|e| invalid(e.to_string()))?;
         c.revision = revision();
         c.validate()?;
-        config["schema_version"] = json!(1);
-        config["revision"] = json!(c.revision);
+        // Persist the fully populated form: a later partial patch of a map
+        // such as `roles` must not wipe the defaults of the other keys.
+        let config = encoded(&c)?;
         let mut state = GroupState {
             schema_version: 1,
             group_did: did.clone(),
@@ -713,8 +618,7 @@ impl MessageCenter {
             participants: BTreeMap::new(),
             intervals: BTreeMap::new(),
             moderation: BTreeMap::new(),
-            proofs: BTreeMap::new(),
-            nonces: BTreeSet::new(),
+            pending_owner_transfer: None,
             invite_links: BTreeMap::new(),
             group_seq: 0,
             session_seqs: BTreeMap::new(),
@@ -727,10 +631,9 @@ impl MessageCenter {
             read_markers: BTreeMap::new(),
             rates: BTreeMap::new(),
             audit: vec![],
-            tombstone_readers: BTreeMap::new(),
+            tombstone_readers: BTreeSet::new(),
         };
         state.check_client(a)?;
-        Self::consume_proof(&mut state, a, &proof.0, &proof.1, "group", None)?;
         state.members.insert(
             a.did.to_string(),
             MemberRecord {
@@ -738,9 +641,9 @@ impl MessageCenter {
                 role: GroupRole::Owner,
                 state: MemberStatus::Active,
                 epoch: 1,
-                entity_kind: proof.1["entity_kind"].as_str().unwrap().into(),
-                proof_id: Some(proof.0),
+                entity_kind,
                 invitation_id: None,
+                invited_by: None,
                 expires_at_ms: None,
                 since_seq: 1,
             },
@@ -761,6 +664,7 @@ impl MessageCenter {
             tx,
             state,
             store: self.groups.clone(),
+            projections: vec![],
         };
         self.group_event(&mut tx, a, None, "entity.group_created", None, json!({}))
             .await?;
@@ -995,25 +899,31 @@ impl MessageCenter {
                 };
                 tx.delivery(&record).await?;
             } else if self.is_local_recipient(&did) {
-                let mut projection = Self::build_mailbox_record(
-                    did.clone(),
-                    MailboxKind::Inbox,
-                    msg,
-                    RecipientState::Unread,
-                    None,
-                    vec![
-                        format!("group:{}", group.to_string()),
-                        format!("session_seq:{session_seq}"),
-                    ],
-                    "group-projection",
-                )?;
-                projection.session_id = Some(local_key.clone());
-                projection.mailbox =
-                    MailboxAddress::new(did.clone(), projection.session_id.clone())
-                        .map_err(invalid)?;
-                projection.sort_key = accepted_at_ms;
-                projection.to = group.clone();
-                tx.mailbox(&projection, msg).await?;
+                // The local sender already holds the SENT record of their own
+                // group message; projecting it again would double it up in
+                // every client and count as unread.
+                let own = msg.kind == MsgObjKind::GroupMsg && did == msg.from;
+                if !own {
+                    let mut projection = Self::build_mailbox_record(
+                        did.clone(),
+                        MailboxKind::Inbox,
+                        msg,
+                        RecipientState::Unread,
+                        None,
+                        vec![
+                            format!("group:{}", group.to_string()),
+                            format!("session_seq:{session_seq}"),
+                        ],
+                        "group-projection",
+                    )?;
+                    projection.session_id = Some(local_key.clone());
+                    projection.mailbox =
+                        MailboxAddress::new(did.clone(), projection.session_id.clone())
+                            .map_err(invalid)?;
+                    projection.sort_key = accepted_at_ms;
+                    projection.to = group.clone();
+                    tx.mailbox(&projection, msg).await?;
+                }
                 let sql=self.groups.db.render_sql("INSERT INTO owner_sessions(owner,session_id,lifecycle,registered,origin,peer_did,binding_json,created_at_ms,updated_at_ms) VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(owner,session_id) DO NOTHING");
                 let binding = json!({"authority_did":group,"session_key":local_key});
                 sqlx::query(&sql)
@@ -1196,7 +1106,6 @@ impl MessageCenter {
             kind: "group_member".into(),
             epoch: m.epoch,
             state: "included".into(),
-            proof_id: None,
             since_seq: g.group_seq + 1,
             actor: a.did.clone(),
         };
@@ -1238,7 +1147,7 @@ impl MessageCenter {
         if self.is_local_recipient(d) {
             let access = self
                 .contact_mgr
-                .check_access_permission(a.did.clone(), None, Some(d.clone()))
+                .peek_access_permission(&a.did, None, Some(d))
                 .await?;
             if access.target_box == "DROP" {
                 return Ok(());
@@ -1307,6 +1216,10 @@ impl MessageCenter {
             return Err(invalid("member-already-participating"));
         }
         let epoch = old.map(|m| m.epoch).unwrap_or(0);
+        let entity_kind = match old.map(|m| m.entity_kind.as_str()) {
+            Some(kind) if kind != "unknown" => kind.to_string(),
+            _ => self.resolve_entity_kind(&d).await?,
+        };
         let id = revision();
         let expires =
             optional::<u64>(p, "expires_at_ms")?.unwrap_or(Self::now_ms() + 7 * 86400_000);
@@ -1320,9 +1233,9 @@ impl MessageCenter {
                 role,
                 state: MemberStatus::Invited,
                 epoch,
-                entity_kind: "unknown".into(),
-                proof_id: None,
+                entity_kind,
                 invitation_id: Some(id.clone()),
+                invited_by: Some(a.did.clone()),
                 expires_at_ms: Some(expires),
                 since_seq: tx.state.group_seq + 1,
             },
@@ -1336,15 +1249,178 @@ impl MessageCenter {
             json!([]),
         )
         .await?;
-        self.notify_group_member(
-            tx,
-            a,
-            &d,
-            "invite",
-            json!({"invite_id":id,"role":role,"expires_at_ms":expires}),
-        )
-        .await?;
-        Ok(json!({"invite_id":id,"member_did":d,"expires_at_ms":expires}))
+        let (consent, recipient) = self.member_consent(&a.did, &d).await?;
+        if consent == MemberConsent::Accept {
+            let invitee = GroupActor {
+                did: d.clone(),
+                client: None,
+                remote: false,
+            };
+            self.accept_group_invitation(tx, &invitee, &id, true)
+                .await?;
+        }
+        let state = tx.state.members[&d.to_string()].state;
+        if consent != MemberConsent::Drop {
+            let mut data =
+                json!({"invite_id":id,"role":role,"expires_at_ms":expires,"state":state});
+            if recipient != d {
+                data["member_did"] = json!(d);
+            }
+            self.notify_group_member(tx, a, &recipient, "invite", data)
+                .await?;
+        }
+        Ok(json!({"invite_id":id,"member_did":d,"expires_at_ms":expires,"state":state}))
+    }
+    /// Accept the member's pending invitation. The group side has already
+    /// agreed when the inviter can approve members; otherwise the acceptance
+    /// waits for admin approval. `automatic` marks acceptances made by the
+    /// member's own Zone while delivering the invitation.
+    async fn accept_group_invitation(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        a: &GroupActor,
+        invitation_id: &str,
+        automatic: bool,
+    ) -> Result<Value> {
+        if tx.state.blocked(&a.did) {
+            return Err(denied("blocked"));
+        }
+        if !automatic {
+            tx.state.check_client(a)?;
+        }
+        let prior = tx.state.members.get(&a.did.to_string()).cloned();
+        if prior.as_ref().is_some_and(|m| {
+            matches!(
+                m.state,
+                MemberStatus::Active | MemberStatus::PendingAdminApproval
+            )
+        }) {
+            return Err(invalid("member-already-participating"));
+        }
+        let invite = prior
+            .as_ref()
+            .filter(|m| {
+                m.state == MemberStatus::Invited
+                    && m.expires_at_ms.is_none_or(|t| t > Self::now_ms())
+                    && m.invitation_id.as_deref() == Some(invitation_id)
+            })
+            .ok_or_else(|| denied("invitation-mismatch"))?;
+        let approval = !invite
+            .invited_by
+            .as_ref()
+            .is_some_and(|i| tx.state.capability(i, "group.approve_member"));
+        let role = invite.role;
+        let invited_by = invite.invited_by.clone();
+        if !automatic {
+            Self::rate(&mut tx.state, &a.did, "join", false)?;
+        }
+        self.join_group(tx, a, role, approval, invited_by).await
+    }
+    /// Join by own request or by invite link. Links count as prior admin
+    /// approval unless they require it; plain requests follow `join_policy`.
+    async fn request_group_join(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        a: &GroupActor,
+        invite: Option<String>,
+    ) -> Result<Value> {
+        if tx.state.blocked(&a.did) {
+            return Err(denied("blocked"));
+        }
+        tx.state.check_client(a)?;
+        let prior = tx.state.members.get(&a.did.to_string()).cloned();
+        if prior.as_ref().is_some_and(|m| {
+            matches!(
+                m.state,
+                MemberStatus::Active | MemberStatus::PendingAdminApproval
+            )
+        }) {
+            return Err(invalid("member-already-participating"));
+        }
+        let c = tx.state.config()?;
+        let approval = if let Some(token) = invite {
+            let link = tx
+                .state
+                .invite_links
+                .get(&token)
+                .cloned()
+                .ok_or_else(|| denied("invalid-invite-link"))?;
+            if link.revoked
+                || link.expires_at_ms.is_some_and(|t| t <= Self::now_ms())
+                || link.max_uses.is_some_and(|n| link.used >= n)
+                || !tx.state.capability(&link.created_by, "group.invite_member")
+            {
+                return Err(denied("invalid-invite-link"));
+            }
+            tx.state.invite_links.get_mut(&token).unwrap().used += 1;
+            link.require_approval
+        } else if c.membership.join_policy == "invite_only" {
+            return Err(denied("invite-required"));
+        } else {
+            c.membership.join_policy != "open"
+        };
+        Self::rate(&mut tx.state, &a.did, "join", false)?;
+        self.join_group(tx, a, GroupRole::Member, approval, None)
+            .await
+    }
+    async fn join_group(
+        &self,
+        tx: &mut GroupTransaction<'_>,
+        a: &GroupActor,
+        role: GroupRole,
+        approval: bool,
+        invited_by: Option<DID>,
+    ) -> Result<Value> {
+        let prior = tx.state.members.get(&a.did.to_string()).cloned();
+        let entity_kind = match prior.as_ref().map(|m| m.entity_kind.as_str()) {
+            Some(kind) if kind != "unknown" => kind.to_string(),
+            _ => self.resolve_entity_kind(&a.did).await?,
+        };
+        tx.state.members.insert(
+            a.did.to_string(),
+            MemberRecord {
+                member_did: a.did.clone(),
+                role,
+                state: MemberStatus::PendingAdminApproval,
+                epoch: prior.map(|m| m.epoch).unwrap_or(0),
+                entity_kind,
+                invitation_id: None,
+                invited_by: invited_by.clone(),
+                expires_at_ms: None,
+                since_seq: tx.state.group_seq + 1,
+            },
+        );
+        if approval {
+            self.group_event(
+                tx,
+                a,
+                None,
+                "entity.member_requested",
+                Some(a.did.clone()),
+                json!([]),
+            )
+            .await?;
+            let approvers: Vec<_> = tx
+                .state
+                .members
+                .values()
+                .filter(|m| tx.state.capability(&m.member_did, "group.approve_member"))
+                .map(|m| m.member_did.clone())
+                .collect();
+            for d in approvers {
+                self.notify_group_member(
+                    tx,
+                    a,
+                    &d,
+                    "pending_approval",
+                    json!({"member_did":a.did,"invited_by":invited_by}),
+                )
+                .await?;
+            }
+        } else {
+            self.activate_member(tx, a, &a.did).await?;
+        }
+        encoded(tx.state.members.get(&a.did.to_string()).unwrap())
     }
     fn rate(g: &mut GroupState, d: &DID, s: &str, agent: bool) -> Result<()> {
         let c = g.config()?;
@@ -1400,13 +1476,18 @@ impl MessageCenter {
         {
             return Err(denied("join-not-allowed"));
         }
+        let entity_kind = match tx.state.members.get(&d.to_string()) {
+            Some(m) if m.entity_kind != "unknown" => None,
+            Some(_) => Some(self.resolve_entity_kind(d).await?),
+            None => return Err(missing()),
+        };
         let m = tx
             .state
             .members
             .get_mut(&d.to_string())
             .ok_or_else(missing)?;
-        if m.proof_id.is_none() {
-            return Err(denied("member-proof-required"));
+        if let Some(kind) = entity_kind {
+            m.entity_kind = kind;
         }
         m.state = MemberStatus::Active;
         m.epoch += 1;
@@ -1438,9 +1519,12 @@ impl MessageCenter {
         a: &GroupActor,
         method: &str,
         p: &Value,
-        proof: Option<(ObjId, Value)>,
+        attestation: Option<Value>,
     ) -> Result<Value> {
         let s: Option<String> = optional(p, "session_id")?;
+        if let Some(att) = attestation {
+            tx.state.audit.push(json!({"actor":att["attested_by"],"member":att["member_did"],"action":"tunnel-attestation","source_event":att["source_event"],"at_ms":Self::now_ms()}));
+        }
         match method {
             "group.apply_config" => {
                 tx.state.require_cap(a, "group.update_config", None)?;
@@ -1525,37 +1609,31 @@ impl MessageCenter {
                     }
                     tx.delete_session_objects(None).await?;
                     tx.state.lifecycle = "deleted".into();
-                    for member in tx.state.members.values() {
-                        if let Some(id) = &member.proof_id {
+                    let readers: Vec<String> = tx
+                        .state
+                        .members
+                        .keys()
+                        .cloned()
+                        .chain(
                             tx.state
-                                .tombstone_readers
-                                .entry(member.member_did.to_string())
-                                .or_default()
-                                .insert(id.to_string());
-                        }
-                    }
-                    for member in tx.state.participants.values().flat_map(|p| p.values()) {
-                        if let Some(id) = &member.proof_id {
-                            tx.state
-                                .tombstone_readers
-                                .entry(member.member_did.to_string())
-                                .or_default()
-                                .insert(id.to_string());
-                        }
-                    }
+                                .participants
+                                .values()
+                                .flat_map(|p| p.keys().cloned()),
+                        )
+                        .collect();
+                    tx.state.tombstone_readers.extend(readers);
                     tx.state
                         .changes
                         .retain(|c| c.data["action"] == "entity.group_deleted");
                     tx.state.members.clear();
                     tx.state.participants.clear();
-                    tx.state.proofs.clear();
+                    tx.state.pending_owner_transfer = None;
                     tx.state.invite_links.clear();
                     tx.state.configuration = json!({});
                     tx.state.config_history.clear();
                     tx.state.sessions.clear();
                     tx.state.intervals.clear();
                     tx.state.moderation.clear();
-                    tx.state.nonces.clear();
                     tx.state.shared_states.clear();
                     tx.state.member_states.clear();
                     tx.state.rates.clear();
@@ -1573,31 +1651,97 @@ impl MessageCenter {
                 }
                 tx.state.check_client(a)?;
                 let d: DID = field(p, "member_did")?;
-                let m = tx
+                if d == tx.state.owner {
+                    return Err(invalid("already-owner"));
+                }
+                if tx.state.role(&d).is_none() || tx.state.blocked(&d) {
+                    return Err(missing());
+                }
+                let transfer = OwnerTransfer {
+                    member_did: d.clone(),
+                    transfer_id: revision(),
+                    expires_at_ms: optional::<u64>(p, "expires_at_ms")?
+                        .unwrap_or(Self::now_ms() + 7 * 86400_000),
+                };
+                if transfer.expires_at_ms <= Self::now_ms() {
+                    return Err(invalid("transfer-already-expired"));
+                }
+                tx.state.pending_owner_transfer = Some(transfer.clone());
+                self.group_event(
+                    tx,
+                    a,
+                    None,
+                    "entity.owner_transfer_offered",
+                    Some(d.clone()),
+                    json!([]),
+                )
+                .await?;
+                self.notify_group_member(
+                    tx,
+                    a,
+                    &d,
+                    "owner_transfer",
+                    json!({"transfer_id":transfer.transfer_id,"expires_at_ms":transfer.expires_at_ms}),
+                )
+                .await?;
+                Ok(
+                    json!({"transfer_id":transfer.transfer_id,"member_did":d,"expires_at_ms":transfer.expires_at_ms}),
+                )
+            }
+            "group.accept_owner_transfer" => {
+                let id: String = field(p, "transfer_id")?;
+                let transfer = tx
                     .state
-                    .members
-                    .get(&d.to_string())
-                    .filter(|m| m.state == MemberStatus::Active)
-                    .ok_or_else(missing)?;
-                let consent = m
-                    .proof_id
-                    .as_ref()
-                    .and_then(|id| tx.state.proofs.get(&id.to_string()))
-                    .is_some_and(|p| p["claims"]["role"] == "owner");
-                if !consent {
-                    return Err(denied("owner-consent-required"));
+                    .pending_owner_transfer
+                    .clone()
+                    .filter(|t| {
+                        t.transfer_id == id
+                            && t.member_did == a.did
+                            && t.expires_at_ms > Self::now_ms()
+                    })
+                    .ok_or_else(|| denied("transfer-mismatch"))?;
+                if tx.state.role(&a.did).is_none() || tx.state.blocked(&a.did) {
+                    return Err(missing());
+                }
+                tx.state.check_client(a)?;
+                let previous = tx.state.owner.clone();
+                if let Some(m) = tx.state.members.get_mut(&previous.to_string()) {
+                    m.role = GroupRole::Admin;
                 }
                 tx.state
                     .members
-                    .get_mut(&tx.state.owner.to_string())
+                    .get_mut(&transfer.member_did.to_string())
                     .unwrap()
-                    .role = GroupRole::Admin;
-                tx.state.members.get_mut(&d.to_string()).unwrap().role = GroupRole::Owner;
-                tx.state.owner = d.clone();
+                    .role = GroupRole::Owner;
+                tx.state.owner = transfer.member_did.clone();
+                tx.state.pending_owner_transfer = None;
                 tx.state.doc_updated_at_ms = tx.state.doc_updated_at_ms.max(Self::now_ms());
-                self.group_event(tx, a, None, "entity.owner_changed", Some(d), json!([]))
-                    .await?;
+                self.group_event(
+                    tx,
+                    a,
+                    None,
+                    "entity.owner_changed",
+                    Some(transfer.member_did),
+                    json!([]),
+                )
+                .await?;
                 Ok(json!({"owner":tx.state.owner}))
+            }
+            "group.cancel_owner_transfer" => {
+                if tx.state.controller != a.did {
+                    return Err(denied("controller-required"));
+                }
+                let transfer = tx.state.pending_owner_transfer.take().ok_or_else(missing)?;
+                self.group_event(
+                    tx,
+                    a,
+                    None,
+                    "entity.owner_transfer_cancelled",
+                    Some(transfer.member_did),
+                    json!([]),
+                )
+                .await?;
+                Ok(json!({"cancelled":true}))
             }
             "group.invite_member" => self.invite_group_member(tx, a, p).await,
             "group.revoke_invite" => {
@@ -1653,113 +1797,11 @@ impl MessageCenter {
                     .await?;
                 Ok(json!({"revoked":true}))
             }
-            "group.submit_member_proof" | "group.request_join" => {
-                if tx.state.blocked(&a.did) {
-                    return Err(denied("blocked"));
-                }
-                tx.state.check_client(a)?;
-                Self::rate(&mut tx.state, &a.did, "join", false)?;
-                let (id, proof) = proof.unwrap();
-                Self::consume_proof(&mut tx.state, a, &id, &proof, "group", None)?;
-                let c = tx.state.config()?;
-                let prior = tx.state.members.get(&a.did.to_string()).cloned();
-                if prior.as_ref().is_some_and(|m| {
-                    matches!(
-                        m.state,
-                        MemberStatus::Active | MemberStatus::PendingAdminApproval
-                    )
-                }) {
-                    return Err(invalid("member-already-participating"));
-                }
-                let invitation = prior.as_ref().filter(|m| {
-                    m.state == MemberStatus::Invited
-                        && m.expires_at_ms.is_none_or(|t| t > Self::now_ms())
-                });
-                let mut approval = c.membership.join_policy == "request_and_approve";
-                let mut role = GroupRole::Member;
-                if let Some(token) = optional::<String>(p, "invite")? {
-                    let link = tx
-                        .state
-                        .invite_links
-                        .get(&token)
-                        .cloned()
-                        .ok_or_else(|| denied("invalid-invite-link"))?;
-                    if link.revoked
-                        || link.expires_at_ms.is_some_and(|t| t <= Self::now_ms())
-                        || link.max_uses.is_some_and(|n| link.used >= n)
-                        || !tx.state.capability(&link.created_by, "group.invite_member")
-                    {
-                        return Err(denied("invalid-invite-link"));
-                    }
-                    approval |= link.require_approval;
-                    tx.state.invite_links.get_mut(&token).unwrap().used += 1;
-                } else if let Some(invite) = invitation {
-                    if optional::<String>(&proof["claims"], "invite_id")?.as_ref()
-                        != invite.invitation_id.as_ref()
-                    {
-                        return Err(denied("proof-invitation-mismatch"));
-                    }
-                    role = invite.role;
-                } else if c.membership.join_policy == "invite_only" {
-                    return Err(denied("invite-required"));
-                } else {
-                    approval = c.membership.join_policy != "open";
-                }
-                let consent: GroupRole = field(&proof["claims"], "role")?;
-                let rank = |r| match r {
-                    GroupRole::Member => 0,
-                    GroupRole::Admin => 1,
-                    GroupRole::Owner => 2,
-                };
-                if rank(role) > rank(consent) {
-                    return Err(denied("proof-role-mismatch"));
-                }
-                tx.state.members.insert(
-                    a.did.to_string(),
-                    MemberRecord {
-                        member_did: a.did.clone(),
-                        role,
-                        state: MemberStatus::PendingAdminApproval,
-                        epoch: prior.map(|m| m.epoch).unwrap_or(0),
-                        entity_kind: proof["entity_kind"].as_str().unwrap().into(),
-                        proof_id: Some(id),
-                        invitation_id: None,
-                        expires_at_ms: None,
-                        since_seq: tx.state.group_seq + 1,
-                    },
-                );
-                if approval {
-                    self.group_event(
-                        tx,
-                        a,
-                        None,
-                        "entity.member_requested",
-                        Some(a.did.clone()),
-                        json!([]),
-                    )
-                    .await?;
-                    let approvers: Vec<_> = tx
-                        .state
-                        .members
-                        .values()
-                        .filter(|m| tx.state.capability(&m.member_did, "group.approve_member"))
-                        .map(|m| m.member_did.clone())
-                        .collect();
-                    for d in approvers {
-                        self.notify_group_member(
-                            tx,
-                            a,
-                            &d,
-                            "pending_approval",
-                            json!({"member_did":a.did}),
-                        )
-                        .await?;
-                    }
-                } else {
-                    self.activate_member(tx, a, &a.did).await?;
-                }
-                encoded(tx.state.members.get(&a.did.to_string()).unwrap())
+            "group.accept_invitation" => {
+                let id: String = field(p, "invitation_id")?;
+                self.accept_group_invitation(tx, a, &id, false).await
             }
+            "group.request_join" => self.request_group_join(tx, a, optional(p, "invite")?).await,
             "group.approve_member" | "group.reject_member" => {
                 tx.state.require_cap(a, "group.approve_member", None)?;
                 let d: DID = field(p, "member_did")?;
@@ -1837,21 +1879,8 @@ impl MessageCenter {
                 if role == GroupRole::Owner || d == tx.state.owner {
                     return Err(denied("use-transfer-owner"));
                 }
-                let m = tx
-                    .state
-                    .members
-                    .get(&d.to_string())
-                    .filter(|m| m.state == MemberStatus::Active)
-                    .ok_or_else(missing)?;
-                let consent = m
-                    .proof_id
-                    .as_ref()
-                    .and_then(|id| tx.state.proofs.get(&id.to_string()))
-                    .map(|p| &p["claims"]["role"]);
-                if role == GroupRole::Admin
-                    && !consent.is_some_and(|r| r == "admin" || r == "owner")
-                {
-                    return Err(denied("role-consent-required"));
+                if tx.state.role(&d).is_none() || tx.state.blocked(&d) {
+                    return Err(missing());
                 }
                 tx.state.members.get_mut(&d.to_string()).unwrap().role = role;
                 self.group_event(
@@ -2018,15 +2047,8 @@ impl MessageCenter {
                 if deleted {
                     tx.delete_session_objects(Some(sid)).await?;
                     if let Some(participants) = tx.state.participants.get(sid) {
-                        for member in participants.values() {
-                            if let Some(id) = &member.proof_id {
-                                tx.state
-                                    .tombstone_readers
-                                    .entry(member.member_did.to_string())
-                                    .or_default()
-                                    .insert(id.to_string());
-                            }
-                        }
+                        let readers: Vec<String> = participants.keys().cloned().collect();
+                        tx.state.tombstone_readers.extend(readers);
                     }
                     tx.state.participants.remove(sid);
                     tx.state.shared_states.remove(sid);
@@ -2068,7 +2090,6 @@ impl MessageCenter {
                     kind: "guest".into(),
                     epoch,
                     state: "invited".into(),
-                    proof_id: None,
                     since_seq: tx.state.group_seq + 1,
                     actor: a.did.clone(),
                 };
@@ -2082,7 +2103,7 @@ impl MessageCenter {
                 self.notify_group_member(tx,a,&d,"session_invite",json!({"session_id":sid,"profile":tx.state.config()?.profile,"title":tx.state.sessions[sid].shared_state.get("title")})).await?;
                 encoded(r)
             }
-            "group.submit_session_proof" => {
+            "group.accept_session_invitation" => {
                 let sid = s.as_deref().ok_or_else(missing)?;
                 if tx.state.blocked(&a.did)
                     || !tx
@@ -2095,8 +2116,6 @@ impl MessageCenter {
                     return Err(missing());
                 }
                 tx.state.check_client(a)?;
-                let (id, proof) = proof.unwrap();
-                Self::consume_proof(&mut tx.state, a, &id, &proof, "session", Some(sid))?;
                 Self::guest_limit(&tx.state, sid)?;
                 Self::rate(&mut tx.state, &a.did, "join", false)?;
                 if !self
@@ -2114,7 +2133,6 @@ impl MessageCenter {
                     .unwrap();
                 r.state = "included".into();
                 r.epoch += 1;
-                r.proof_id = Some(id);
                 r.since_seq = tx.state.group_seq + 1;
                 self.group_event(
                     tx,
@@ -2138,7 +2156,7 @@ impl MessageCenter {
                     r.guest_request.as_deref() == Some(&request_id) && r.created_by == a.did
                 }) {
                     return Ok(
-                        json!({"session_id":r.session_id,"session":session_key(&tx.state.group_did,Some(&r.session_id))?}),
+                        json!({"group_did":tx.state.group_did,"session_id":r.session_id,"session":session_key(&tx.state.group_did,Some(&r.session_id))?,"revision":r.revision}),
                     );
                 }
                 let entry = tx
@@ -2160,15 +2178,6 @@ impl MessageCenter {
                 if open >= entry.max_open_per_guest {
                     return Err(denied("guest-request-limit"));
                 }
-                let (id, proof) = proof.unwrap();
-                Self::consume_proof(
-                    &mut tx.state,
-                    a,
-                    &id,
-                    &proof,
-                    "session_request",
-                    Some(&request_id),
-                )?;
                 Self::rate(&mut tx.state, &a.did, "join", false)?;
                 let result = self
                     .create_group_session(
@@ -2194,7 +2203,6 @@ impl MessageCenter {
                         kind: "guest".into(),
                         epoch: 1,
                         state: "included".into(),
-                        proof_id: Some(id),
                         since_seq: tx.state.group_seq + 1,
                         actor: a.did.clone(),
                     },
@@ -2242,12 +2250,6 @@ impl MessageCenter {
                     .get(&d.to_string())
                     .map(|m| m.epoch)
                     .unwrap_or_else(|| tx.state.participants[sid][&d.to_string()].epoch);
-                let proof_id = tx
-                    .state
-                    .participants
-                    .get(sid)
-                    .and_then(|p| p.get(&d.to_string()))
-                    .and_then(|r| r.proof_id.clone());
                 let r = SessionMembershipRecord {
                     group_did: tx.state.group_did.clone(),
                     session_id: Some(sid.into()),
@@ -2265,7 +2267,6 @@ impl MessageCenter {
                         "removed"
                     }
                     .into(),
-                    proof_id,
                     since_seq: tx.state.group_seq + 1,
                     actor: a.did.clone(),
                 };
@@ -2605,6 +2606,7 @@ impl MessageCenter {
         }) || g.changes.iter().any(|c| {
             c.data["action"] == "session.deleted" && c.audience.contains(&a.did.to_string())
         }) || g.members.contains_key(&a.did.to_string())
+            || g.tombstone_readers.contains(&a.did.to_string())
             || g.participants
                 .values()
                 .any(|p| p.contains_key(&a.did.to_string()))
@@ -2654,7 +2656,8 @@ impl MessageCenter {
                 items.push(json!({"kind":c.kind,"session":session_key(group,session)?,"session_id":session,"message":{"seq":c.data["message"]["seq"],"obj_id":c.data["message"]["obj_id"],"redacted":meta.is_some_and(|m|m.redacted),"accepted_at_ms":meta.map(|m|m.accepted_at_ms)},"change":c.data["change"],"action":c.data["action"],"subject_did":c.subject}));
             } else if own
                 || (c.data["action"] == "entity.group_deleted"
-                    && c.audience.contains(&a.did.to_string()))
+                    && (c.audience.contains(&a.did.to_string())
+                        || g.tombstone_readers.contains(&a.did.to_string())))
                 || (c.kind == "session"
                     && c.audience.contains(&a.did.to_string())
                     && c.data["action"] == "session.deleted")
@@ -3090,39 +3093,6 @@ impl MessageCenter {
             .refs
             .iter()
             .any(|r| matches!(&r.target,ndn_lib::RefTarget::DataObj{obj_id,..} if obj_id==id))
-    }
-}
-
-impl MessageCenter {
-    async fn automatic_owner_proof(&self, a: &GroupActor, group: &DID) -> Result<Value> {
-        use name_lib::DIDDocumentTrait;
-        let runtime = get_buckyos_api_runtime().map_err(|_| invalid("owner-proof-required"))?;
-        let doc = runtime
-            .user_config
-            .as_ref()
-            .filter(|d| d.id == a.did)
-            .ok_or_else(|| invalid("owner-proof-required"))?;
-        let key = runtime
-            .user_private_key
-            .as_ref()
-            .ok_or_else(|| invalid("owner-proof-required"))?;
-        let kid = doc
-            .get_key_ids_by_scope("authentication")
-            .and_then(|ids| ids.first())
-            .cloned()
-            .unwrap_or_else(|| "#main_key".into());
-        let kid = if kid.starts_with('#') {
-            format!("{}{kid}", a.did.to_string())
-        } else {
-            kid
-        };
-        let now = Self::now_ms();
-        let claims = json!({"obj_type":"buckyos.group_member_proof","schema_version":1,"group_did":group,"member_did":a.did,"signer":a.did,"role":"owner","proof_scope":"group","nonce":revision(),"issued_at_ms":now,"expires_at_ms":now+60_000});
-        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
-        header.kid = Some(kid);
-        jsonwebtoken::encode(&header, &claims, key)
-            .map(|jwt| json!(jwt))
-            .map_err(db_error)
     }
 }
 

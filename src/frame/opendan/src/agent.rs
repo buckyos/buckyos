@@ -1290,21 +1290,25 @@ impl AIAgent {
                 text,
                 ai_message,
             } => {
-                let event_type = if group_id.as_deref().is_some_and(|s| !s.is_empty()) {
-                    "msg.group"
-                } else {
-                    "msg.chat"
-                };
+                let group_id = group_id.filter(|s| !s.trim().is_empty());
+                let is_group = group_id.is_some();
+                let event_type = if is_group { "msg.group" } else { "msg.chat" };
                 let class = self.route_msg(event_type);
                 let kind = self
                     .config
                     .session_class(&class)
                     .map(|c| c.kind)
                     .unwrap_or(SessionKind::Ui);
-                let use_tunnel_binding = self.config.session_class(&class).is_some_and(|cfg| {
-                    matches!(kind, SessionKind::Ui)
-                        && matches!(cfg.session_id_strategy, SessionIdStrategy::PerPeer)
-                });
+                // Group inbounds are keyed by the group's mailbox address
+                // (msg-center sets `record.session_id`), never by the human
+                // sender's `/new`/`/switch` tunnel binding — otherwise a group
+                // message would land in (and re-bind) the sender's private
+                // UI session and the reply would go out as a DM.
+                let use_tunnel_binding = !is_group
+                    && self.config.session_class(&class).is_some_and(|cfg| {
+                        matches!(kind, SessionKind::Ui)
+                            && matches!(cfg.session_id_strategy, SessionIdStrategy::PerPeer)
+                    });
                 let evaluated_session_id = if session_id.is_none() {
                     // Build a tiny shim Inbound so the evaluator can read
                     // from/from_did without re-borrowing the moved fields.
@@ -1343,6 +1347,10 @@ impl AIAgent {
                     .clone()
                     .get_or_create_session(resolved_id.clone(), from.clone(), kind, &class)
                     .await?;
+                if let Some(gid) = group_id.as_deref() {
+                    // Remember the group so replies target it (TODO 4.4).
+                    session.bind_group(gid).await;
+                }
                 // enqueue_pending durably parks the input on the session
                 // and only returns once `.meta/session.json` is on disk.
                 // Once it returns we're safe to ack upstream — a crash from
@@ -1858,7 +1866,12 @@ impl AIAgent {
                         let key = UI_SESSION_STATE_STATUS_LINE_KEY.to_string();
                         let result = match owner {
                             Some(owner) => msg_center
-                                .update_owner_ui_session_state(owner, session_id.clone(), key, value)
+                                .update_owner_ui_session_state(
+                                    owner,
+                                    session_id.clone(),
+                                    key,
+                                    value,
+                                )
                                 .await
                                 .map(|_| ()),
                             None => msg_center
@@ -1866,8 +1879,7 @@ impl AIAgent {
                                 .await
                                 .map(|_| ()),
                         };
-                        if let Err(err) = result
-                        {
+                        if let Err(err) = result {
                             warn!(
                                 "opendan.agent: update AICC progress for session {} failed: {err}",
                                 session_id

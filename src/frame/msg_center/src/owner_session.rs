@@ -52,6 +52,9 @@ pub trait SessionTokenVerifier: Send + Sync {
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors>;
     async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors>;
     async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors>;
+    /// Owner of a zone-hosted agent (`AgentDocument.owner`); `None` when
+    /// `did` is not a live agent of this zone.
+    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors>;
 }
 
 pub struct RuntimeSessionTokenVerifier;
@@ -78,6 +81,10 @@ impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
     }
 
     async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+        Ok(self.agent_owner(did).await?.is_some())
+    }
+
+    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
         let client = get_buckyos_api_runtime()?
             .get_system_config_client()
             .await?;
@@ -100,10 +107,13 @@ impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
                 let settings: Value = serde_json::from_str(&settings.value).map_err(|error| {
                     permission_denied(format!("invalid agent settings: {}", error))
                 })?;
-                return Ok(settings.get("state").and_then(Value::as_str) != Some("deleted"));
+                return Ok(
+                    (settings.get("state").and_then(Value::as_str) != Some("deleted"))
+                        .then(|| doc.owner.clone()),
+                );
             }
         }
-        Ok(false)
+        Ok(None)
     }
 }
 

@@ -155,14 +155,16 @@ p, users,obj://msg-center/objects,read,allow
 p, admin,obj://msg-center/objects,read,allow
 p, users,obj://msg-center/inbox/*,read|write,allow
 p, users,obj://msg-center/sent/*,read|write,allow
-p, users,obj://msg-center/group_inbox/*,read|write,allow
+p, users,obj://msg-center/group_inbox/*,read,allow
 p, users,obj://msg-center/request_box/*,read|write,allow
 p, users,obj://msg-center/owners/*,read|write,allow
+p, users,obj://msg-center/group,create,allow
 p, admin,obj://msg-center/inbox/*,read|write,allow
 p, admin,obj://msg-center/sent/*,read|write,allow
-p, admin,obj://msg-center/group_inbox/*,read|write,allow
+p, admin,obj://msg-center/group_inbox/*,read,allow
 p, admin,obj://msg-center/request_box/*,read|write,allow
 p, admin,obj://msg-center/owners/*,read|write,allow
+p, admin,obj://msg-center/group,create,allow
 p, system:opendan,obj://msg-center/*,all,allow
 p, system:msg-center,obj://msg-center/*,all,allow
 p, agent_runtime,obj://msg-center/*,all,allow
@@ -342,6 +344,22 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
                     .await
                 );
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn zone_users_and_admins_may_create_groups_but_not_write_group_inboxes() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, users\ng, bob, admin"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let group = "obj://msg-center/group";
+        let inbox = "obj://msg-center/group_inbox/did:web:g.example";
+        for user in ["alice", "bob"] {
+            assert!(rbac::enforce(user, "system:control-panel", group, "create", None).await);
+            assert!(rbac::enforce(user, "system:control-panel", inbox, "read", None).await);
+            assert!(!rbac::enforce(user, "system:control-panel", inbox, "write", None).await);
         }
     }
 

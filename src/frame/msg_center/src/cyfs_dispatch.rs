@@ -60,7 +60,7 @@ impl CyfsDispatchSettings {
         &self,
         msg: &MsgObject,
         receiver: &DID,
-    ) -> anyhow::Result<Option<(NativeDispatchRoute, Vec<String>)>> {
+    ) -> anyhow::Result<Option<NativeDispatchRoute>> {
         if msg.kind == MsgObjKind::GroupMsg {
             let binding = self
                 .joined_groups
@@ -78,22 +78,15 @@ impl CyfsDispatchSettings {
                     mailbox.to_string().split_once('/').unwrap().1
                 ),
             };
-            return Ok(Some((
-                NativeDispatchRoute {
-                    target: crate::group_http::group_target(&binding.host, &path)
-                        .map_err(|e| anyhow::anyhow!(e.to_string()))?,
-                    upstream: binding.upstream.clone(),
-                    authorization: binding.authorization.clone(),
-                    timeout_ms: 15_000,
-                },
-                binding.proof_ids.clone(),
-            )));
+            return Ok(Some(NativeDispatchRoute {
+                target: crate::group_http::group_target(&binding.host, &path)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+                upstream: binding.upstream.clone(),
+                authorization: binding.authorization.clone(),
+                timeout_ms: 15_000,
+            }));
         }
-        Ok(self
-            .outgoing
-            .get(&receiver.to_string())
-            .cloned()
-            .map(|r| (r, vec![])))
+        Ok(self.outgoing.get(&receiver.to_string()).cloned())
     }
 
     pub fn parse(settings: &serde_json::Value) -> anyhow::Result<Self> {
@@ -535,16 +528,6 @@ pub(crate) async fn send(
     jwt: Option<&str>,
     expected_id: &ObjId,
 ) -> anyhow::Result<DeliveryReportResult> {
-    send_with_proofs(route, msg, jwt, expected_id, &[]).await
-}
-
-pub(crate) async fn send_with_proofs(
-    route: &NativeDispatchRoute,
-    msg: &MsgObject,
-    jwt: Option<&str>,
-    expected_id: &ObjId,
-    proofs: &[String],
-) -> anyhow::Result<DeliveryReportResult> {
     let (id, json_body) = msg.gen_obj_id();
     if &id != expected_id {
         anyhow::bail!("native delivery body does not match the queued ObjectId");
@@ -566,16 +549,13 @@ pub(crate) async fn send_with_proofs(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let operation = async {
-        let mut request = client
+        let request = client
             .put(url)
             .header("host", target.host_str().unwrap())
             .header("content-type", encoding.content_type())
             .header(CYFS_HEADER_OBJ_ID, id.to_string())
             .header(CYFS_HEADER_ORIGINAL_USER, msg.from.to_string())
             .header("authorization", &route.authorization);
-        if !proofs.is_empty() {
-            request = request.header("cyfs-proofs", serde_json::to_string(proofs)?);
-        }
         let mut response = request.body(body).send().await?;
         let status = response.status();
         let headers = response.headers().clone();

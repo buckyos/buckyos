@@ -5822,6 +5822,29 @@ impl AgentSession {
             .filter(|s| !s.trim().is_empty())
     }
 
+    /// Mark this session as the projection of a group chat. Persisted via
+    /// `flush_meta` so a restart still replies into the group rather than
+    /// DM-ing `peer_did` (messagehub-group-v2 TODO 4.4).
+    pub async fn bind_group(&self, group_id: &str) {
+        let group_id = group_id.trim();
+        if group_id.is_empty() {
+            return;
+        }
+        {
+            let mut meta = self.meta.lock().await;
+            if meta.group_id.as_deref() == Some(group_id) {
+                return;
+            }
+            meta.group_id = Some(group_id.to_string());
+        }
+        if let Err(err) = self.flush_meta().await {
+            warn!(
+                "opendan.session[{}]: flush after group bind failed: {err:#}",
+                self.session_id
+            );
+        }
+    }
+
     /// Stash the latest peer routing info (DID + tunnel) extracted from a
     /// `PendingInput::Msg` batch. Persisted via `flush_meta` so a restart
     /// still knows where to reply to.
@@ -6018,20 +6041,27 @@ impl AgentSession {
         let Ok(msg_center) = self.runtime.msg_center_client().await else {
             return;
         };
-        let peer_did_str = {
+        let (peer_did_str, group_id) = {
             let meta = self.meta.lock().await;
-            meta.peer_did.clone()
+            (meta.peer_did.clone(), meta.group_id.clone())
         };
-        let Some(peer_did_str) = peer_did_str else {
+        let group_id = group_id.filter(|s| !s.trim().is_empty());
+        let peer_did = match peer_did_str {
+            Some(raw) => match name_lib::DID::from_str(&raw) {
+                Ok(did) => Some(did),
+                Err(_) => {
+                    warn!(
+                        "opendan.session[{}]: outbound skipped — unparseable peer_did `{}`",
+                        self.session_id, raw
+                    );
+                    return;
+                }
+            },
+            None => None,
+        };
+        if peer_did.is_none() && group_id.is_none() {
             return;
-        };
-        let Ok(peer_did) = name_lib::DID::from_str(&peer_did_str) else {
-            warn!(
-                "opendan.session[{}]: outbound skipped — unparseable peer_did `{}`",
-                self.session_id, peer_did_str
-            );
-            return;
-        };
+        }
         let agent_did_raw = self.agent_config.toml.identity.agent_did.trim();
         if agent_did_raw.is_empty() {
             warn!(
@@ -6047,33 +6077,28 @@ impl AgentSession {
             );
             return;
         };
-        if agent_did == peer_did {
+        if group_id.is_none() && peer_did.as_ref() == Some(&agent_did) {
             // Don't echo back to ourselves — locally-injected sessions
             // sometimes set peer = owner = agent.
             return;
         }
-        // `peer_did` is the session's stored peer DID — a determined target
-        // (second-level `did:msgtunnel:*` endpoint for tunnel traffic) that
-        // carries its own routing. No preferred_tunnel / route hint needed.
-
-        let mut msg = ndn_lib::MsgObject {
-            from: agent_did.clone(),
-            to: vec![peer_did.clone()],
-            kind: ndn_lib::MsgObjKind::Chat,
-            created_at_ms: now_ms(),
-            content: ndn_lib::MsgContent::default(),
-            ..Default::default()
+        // One-to-one: `peer_did` is the session's stored peer DID — a
+        // determined target (second-level `did:msgtunnel:*` endpoint for
+        // tunnel traffic) that carries its own routing. Group: the reply
+        // goes to the group itself, never as a DM to the human sender.
+        let Some(mut msg) = build_outbound_chat_base_msg(
+            &agent_did,
+            peer_did.as_ref(),
+            group_id.as_deref(),
+            &self.session_id,
+        ) else {
+            warn!(
+                "opendan.session[{}]: outbound skipped — group_id `{}` is not a DID",
+                self.session_id,
+                group_id.as_deref().unwrap_or("-")
+            );
+            return;
         };
-        msg.to_session = Some(self.session_id.clone());
-        msg.thread.correlation_id = Some(self.session_id.clone());
-        msg.meta.insert(
-            "session_id".to_string(),
-            serde_json::Value::String(self.session_id.clone()),
-        );
-        msg.meta.insert(
-            "owner_session_id".to_string(),
-            serde_json::Value::String(self.session_id.clone()),
-        );
         if let Some(turn_nonce) = self.status.nonce_snapshot() {
             msg.meta.insert(
                 "turn_nonce".to_string(),
@@ -7284,6 +7309,74 @@ impl AgentSession {
             }
         }
     }
+}
+
+/// Reply addressing for a UI session's outbound chat message
+/// (messagehub-group-v2 TODO 4.4).
+///
+/// * Group session (`group_id` set): `to=[group_did]`, `kind=GroupMsg`, and
+///   `to_session` is the DECODED raw session id of the group mailbox key the
+///   inbound was projected under (`<group_did>/<encoded sid>`). The bare
+///   `<group_did>` key — or a locally minted id that is not a mailbox key —
+///   means the default session, i.e. `to_session=None`.
+/// * One-to-one: `to=[peer_did]`, `kind=Chat`, `to_session=session_id`.
+///
+/// Returns `None` when there is no addressable target (no peer for a DM, or
+/// an unparseable group DID).
+pub(crate) fn build_outbound_chat_base_msg(
+    agent_did: &name_lib::DID,
+    peer_did: Option<&name_lib::DID>,
+    group_id: Option<&str>,
+    session_id: &str,
+) -> Option<MsgObject> {
+    let (to, kind, to_session) = match group_id.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(group_id) => {
+            let group_did = name_lib::DID::from_str(group_id).ok()?;
+            let to_session = decode_group_session_key(&group_did, session_id);
+            (group_did, MsgObjKind::GroupMsg, to_session)
+        }
+        None => (
+            peer_did?.clone(),
+            MsgObjKind::Chat,
+            Some(session_id.to_string()),
+        ),
+    };
+    let mut msg = MsgObject {
+        from: agent_did.clone(),
+        to: vec![to],
+        kind,
+        created_at_ms: now_ms(),
+        content: MsgContent::default(),
+        ..Default::default()
+    };
+    msg.to_session = to_session;
+    msg.thread.correlation_id = Some(session_id.to_string());
+    msg.meta.insert(
+        "session_id".to_string(),
+        serde_json::Value::String(session_id.to_string()),
+    );
+    msg.meta.insert(
+        "owner_session_id".to_string(),
+        serde_json::Value::String(session_id.to_string()),
+    );
+    Some(msg)
+}
+
+/// msg-center projects group messages into the agent INBOX with
+/// `record.session_id` = the group's canonical `MailboxAddress` string
+/// (`<group_did>` or `<group_did>/<percent-encoded sid>`), which the agent
+/// adopts verbatim as its session id. Decode it back to the raw `to_session`
+/// the group expects. Anything that is not that group's mailbox key (e.g. a
+/// `PerGroup`-minted `<class>-<gid>` id) is the default session.
+pub(crate) fn decode_group_session_key(
+    group_did: &name_lib::DID,
+    session_id: &str,
+) -> Option<String> {
+    let address = buckyos_api::MailboxAddress::try_from(session_id.to_string()).ok()?;
+    if address.owner() != group_did {
+        return None;
+    }
+    address.session_id().map(str::to_string)
 }
 
 fn build_worksession_report_base_msg(
