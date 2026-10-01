@@ -1,6 +1,5 @@
 mod contact_mgr;
 mod cyfs_dispatch;
-mod group_mgr;
 mod message_hub;
 mod msg_box_db;
 mod msg_center;

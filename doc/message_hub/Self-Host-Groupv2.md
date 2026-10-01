@@ -1053,6 +1053,10 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 
 ## 12. 实现现状与迁移
 
+当前状态：v1 的 GroupMgr、共享群类型、六张群表的建表定义、`group.*` RPC，以及前端旧群数据接入已删除，v2 尚未实现。Message Center 的通用消息存储、MailboxAddress、外部群订阅投影、Session API 和 tunnel 链路继续保留。删除不包含对已部署数据库的清表或迁移。
+
+以下 §12.1–§12.4 保留为删除前的审查记录，供 v2 实现参考，其中旧群代码、接口和表的描述不再代表当前实现。
+
 本节依据 2026-09-30 对以下代码的审查：`src/frame/msg_center/src/group_mgr.rs`、`msg_center.rs`、`cyfs_dispatch.rs`、`src/kernel/buckyos-api/src/group_mgr.rs`、`cyfs-ndn/src/ndn-lib/src/msgobj.rs`，以及 Desktop 前端。
 
 ### 12.1 与 v2 一致、可以直接沿用的部分

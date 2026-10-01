@@ -1,5 +1,4 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
-use crate::group_mgr::GroupMgr;
 use crate::msg_box_db::{IdempotencyCommitOutcome, IdempotencyStoredResult, MsgBoxDbMgr};
 use crate::owner_session::TokenVerifierSlot;
 use async_trait::async_trait;
@@ -7,15 +6,8 @@ use buckyos_api::{
     get_buckyos_api_runtime, AccessDecision, AccessGroupLevel, AccountBinding, Contact,
     ContactPatch, ContactQuery, DeliveryEnvelope, DeliveryError, DeliveryRecord,
     DeliveryRecordWithObject, DeliveryReportResult, DeliverySnapshot, DeliveryState,
-    DispatchResult, GrantTemporaryAccessResult, GroupAccessDecision, GroupApproveMemberReq,
-    GroupCheckAccessReq, GroupCreateReq, GroupCreateSubgroupReq, GroupDoc, GroupExpandMembersReq,
-    GroupExpansionSnapshot, GroupGetDocReq, GroupInviteMemberReq, GroupListByMemberReq,
-    GroupListMembersReq, GroupListParentsReq, GroupListSubgroupsReq, GroupMemberRecord,
-    GroupRejectMemberReq, GroupRemoveMemberReq, GroupRequestJoinReq, GroupSubgroup,
-    GroupSubmitMemberProofReq, GroupSummary, GroupUpdateAttributionPolicyReq,
-    GroupUpdateCollectionPolicyReq, GroupUpdateMemberRoleReq, GroupUpdateProfileReq,
-    GroupUpdateSubgroupReq, ImportContactEntry, ImportReport, IngressContext, KEventClient,
-    MailboxAddress, MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject,
+    DispatchResult, GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext,
+    KEventClient, MailboxAddress, MailboxKind, MailboxRecord, MailboxRecordPage, MailboxRecordWithObject,
     MsgCenterCreateSessionReq, MsgCenterHandler, MsgReceiptObj, OwnerSessionState,
     PostSendDelivery, PostSendResult, ReadReceiptState, RecipientState, SessionDeliveryOverall,
     SessionDeliveryTarget, SessionDeliveryView, SessionLifecycle, SessionListLifecycleFilter,
@@ -75,7 +67,6 @@ struct TunnelRegistryEntry {
 pub struct MessageCenter {
     state: Arc<RwLock<MessageCenterState>>,
     contact_mgr: ContactMgr,
-    group_mgr: GroupMgr,
     pub(crate) msg_box_db: MsgBoxDbMgr,
     /// tunnel_instance_id -> (transport_did, platform).
     tunnel_registry: Arc<RwLock<HashMap<String, TunnelRegistryEntry>>>,
@@ -103,11 +94,9 @@ impl MessageCenter {
     /// Build a MessageCenter that reuses an already-opened `MsgBoxDbMgr`.
     pub async fn open_with_db(msg_box_db: MsgBoxDbMgr) -> std::result::Result<Self, RPCErrors> {
         let contact_mgr = ContactMgr::new_with_msg_box(msg_box_db.clone()).await?;
-        let group_mgr = GroupMgr::new_with_msg_box(msg_box_db.clone());
         Ok(Self {
             state: Arc::new(RwLock::new(MessageCenterState::default())),
             contact_mgr,
-            group_mgr,
             msg_box_db,
             tunnel_registry: Arc::new(RwLock::new(HashMap::new())),
             local_recipients: Arc::new(RwLock::new(HashSet::new())),
@@ -205,14 +194,6 @@ impl MessageCenter {
         }
         let target_host = did.to_host_name();
         target_host == zone_host || target_host.ends_with(&format!(".{}", zone_host))
-    }
-
-    /// Read-only accessor for the group manager. Used by tests and by the
-    /// in-process `MsgCenterClient` adapter so callers do not need to lift
-    /// the GroupMgr through every API surface.
-    #[allow(dead_code)]
-    pub fn group_mgr(&self) -> &GroupMgr {
-        &self.group_mgr
     }
 
     pub async fn upsert_zone_user_contacts(
@@ -1283,31 +1264,15 @@ impl MessageCenter {
                 "group-inbox",
             )?);
 
-            // Prefer the authoritative member list from GroupMgr when this
-            // group is hosted locally; fall back to the ContactMgr
-            // subscriber index for joined groups (whose member roster lives
-            // on the remote host Zone).
-            let owner_key_for_group = ingress_contact_mgr_owner
-                .as_ref()
-                .map(|did| did.to_string())
-                .unwrap_or_else(|| "__system__".to_string());
-            let readers = match self
-                .group_mgr
-                .active_singleton_members(&owner_key_for_group, &group_id)
-                .await?
-            {
-                Some(members) => members,
-                None => {
-                    self.contact_mgr
-                        .get_group_subscribers(
-                            group_id.clone(),
-                            None,
-                            None,
-                            ingress_contact_mgr_owner.clone(),
-                        )
-                        .await?
-                }
-            };
+            let readers = self
+                .contact_mgr
+                .get_group_subscribers(
+                    group_id.clone(),
+                    None,
+                    None,
+                    ingress_contact_mgr_owner.clone(),
+                )
+                .await?;
             let readers = Self::dedupe_dids(readers);
             for agent_did in readers.iter() {
                 let tag = format!("group:{}", group_id.to_string());
@@ -3017,169 +2982,5 @@ impl MsgCenterHandler for MessageCenter {
         self.contact_mgr
             .set_group_subscribers(group_id, subscribers, contact_mgr_owner)
             .await
-    }
-
-    // -------------------------------------------------------------------
-    // Self-host group RPC bridge — see `GroupMgr` for behaviour notes.
-    // -------------------------------------------------------------------
-
-    async fn handle_group_create(
-        &self,
-        req: GroupCreateReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupDoc, RPCErrors> {
-        self.group_mgr.create_group(req).await
-    }
-
-    async fn handle_group_get_doc(
-        &self,
-        req: GroupGetDocReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<Option<GroupDoc>, RPCErrors> {
-        self.group_mgr.get_group_doc(req).await
-    }
-
-    async fn handle_group_update_profile(
-        &self,
-        req: GroupUpdateProfileReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupDoc, RPCErrors> {
-        self.group_mgr.update_group_profile(req).await
-    }
-
-    async fn handle_group_invite_member(
-        &self,
-        req: GroupInviteMemberReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.invite_member(req).await
-    }
-
-    async fn handle_group_submit_member_proof(
-        &self,
-        req: GroupSubmitMemberProofReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.submit_member_proof(req).await
-    }
-
-    async fn handle_group_request_join(
-        &self,
-        req: GroupRequestJoinReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.request_join(req).await
-    }
-
-    async fn handle_group_approve_member(
-        &self,
-        req: GroupApproveMemberReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.approve_member(req).await
-    }
-
-    async fn handle_group_reject_member(
-        &self,
-        req: GroupRejectMemberReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.reject_member(req).await
-    }
-
-    async fn handle_group_remove_member(
-        &self,
-        req: GroupRemoveMemberReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.remove_member(req).await
-    }
-
-    async fn handle_group_update_member_role(
-        &self,
-        req: GroupUpdateMemberRoleReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupMemberRecord, RPCErrors> {
-        self.group_mgr.update_member_role(req).await
-    }
-
-    async fn handle_group_list_members(
-        &self,
-        req: GroupListMembersReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<Vec<GroupMemberRecord>, RPCErrors> {
-        self.group_mgr.list_members(req).await
-    }
-
-    async fn handle_group_create_subgroup(
-        &self,
-        req: GroupCreateSubgroupReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupSubgroup, RPCErrors> {
-        self.group_mgr.create_subgroup(req).await
-    }
-
-    async fn handle_group_update_subgroup(
-        &self,
-        req: GroupUpdateSubgroupReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupSubgroup, RPCErrors> {
-        self.group_mgr.update_subgroup(req).await
-    }
-
-    async fn handle_group_list_subgroups(
-        &self,
-        req: GroupListSubgroupsReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<Vec<GroupSubgroup>, RPCErrors> {
-        self.group_mgr.list_subgroups(req).await
-    }
-
-    async fn handle_group_update_collection_policy(
-        &self,
-        req: GroupUpdateCollectionPolicyReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupDoc, RPCErrors> {
-        self.group_mgr.update_collection_policy(req).await
-    }
-
-    async fn handle_group_update_attribution_policy(
-        &self,
-        req: GroupUpdateAttributionPolicyReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupDoc, RPCErrors> {
-        self.group_mgr.update_attribution_policy(req).await
-    }
-
-    async fn handle_group_expand_members(
-        &self,
-        req: GroupExpandMembersReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupExpansionSnapshot, RPCErrors> {
-        self.group_mgr.expand_group_members(req).await
-    }
-
-    async fn handle_group_list_by_member(
-        &self,
-        req: GroupListByMemberReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<Vec<GroupSummary>, RPCErrors> {
-        self.group_mgr.list_groups_by_member(req).await
-    }
-
-    async fn handle_group_list_parents(
-        &self,
-        req: GroupListParentsReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<Vec<GroupSummary>, RPCErrors> {
-        self.group_mgr.list_parent_groups(req).await
-    }
-
-    async fn handle_group_check_access(
-        &self,
-        req: GroupCheckAccessReq,
-        _ctx: RPCContext,
-    ) -> std::result::Result<GroupAccessDecision, RPCErrors> {
-        self.group_mgr.check_group_access(req).await
     }
 }

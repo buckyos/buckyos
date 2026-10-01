@@ -4,7 +4,7 @@
  * in, so the rules are unit-testable with Deno fixtures.
  */
 import type { CreationPolicy, Entity, EntityDetail, MessagePreview, Session, SessionBinding } from '../types'
-import type { Contact, GroupSummary, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
+import type { Contact, MailboxRecordWithObject, SessionSummary } from '../datamodel/sessionApi'
 import type { MessageObject } from '../protocol/msgobj'
 import { isActionMessage, isMessageActivity } from '../sessionModel'
 
@@ -26,7 +26,6 @@ export interface ProjectionInput {
   ownerDid: string
   summaries: SessionSummary[]
   contacts: Contact[]
-  groups: GroupSummary[]
   /** Zone agent DIDs from the control panel (may be empty). */
   agentDids: string[]
   /** Owner-scoped `ui.title` overrides by session id. */
@@ -168,7 +167,6 @@ interface EntitySeed {
   name: string
   domain: 'managed' | 'external'
   contact?: Contact
-  group?: GroupSummary
   sources: Set<string>
 }
 
@@ -213,8 +211,7 @@ function bindingFor(peerDid: string, contacts: readonly Contact[], summary: Sess
 }
 
 export function projectOwner(input: ProjectionInput): ProjectedOwner {
-  const { ownerDid, contacts, groups, labels } = input
-  const groupByDid = new Map(groups.map(group => [group.group_did, group]))
+  const { ownerDid, contacts, labels } = input
   const contactByDid = new Map(contacts.map(contact => [contact.did, contact]))
   const agentSet = new Set(input.agentDids)
   const seeds = new Map<string, EntitySeed>()
@@ -222,17 +219,19 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
 
   const ensureSeed = (did: string, hint?: { isGroup?: boolean; fromName?: string }): EntitySeed => {
     const existing = seeds.get(did)
-    if (existing) return existing
+    if (existing) {
+      if (hint?.isGroup) existing.type = 'group'
+      return existing
+    }
     const contact = contactByDid.get(did)
-    const group = groupByDid.get(did)
     const tunnel = parseTunnelDid(did)
-    const isGroup = Boolean(group) || hint?.isGroup === true || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
+    const isGroup = hint?.isGroup === true || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
     const isZoneUser = contact?.tags?.includes('zone_user') === true
     const isAgent = !isGroup && !isZoneUser && (agentSet.has(did) || contact?.tags?.includes('agent') === true)
     const type: Entity['type'] = isGroup ? 'group' : isAgent ? 'agent' : 'person'
-    const domain: EntitySeed['domain'] = tunnel ? 'external' : group ? (group.is_hosted_by_self ? 'managed' : 'external') : isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
-    const name = contact?.name?.trim() || group?.name?.trim() || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
-    const seed: EntitySeed = { id: did, type, name, domain, contact, group, sources: new Set() }
+    const domain: EntitySeed['domain'] = tunnel ? 'external' : isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
+    const name = contact?.name?.trim() || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
+    const seed: EntitySeed = { id: did, type, name, domain, contact, sources: new Set() }
     if (tunnel) seed.sources.add(platformOfInstance(tunnel.tunnelInstanceId))
     contact?.bindings?.forEach(binding => seed.sources.add(binding.platform))
     if (!tunnel) seed.sources.add('buckyos')
@@ -245,7 +244,6 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     if (contact.did === ownerDid) { names[ownerDid] = contact.name || labels.you; continue }
     ensureSeed(contact.did)
   }
-  for (const group of groups) ensureSeed(group.group_did, { isGroup: true })
   for (const did of input.agentDids) ensureSeed(did)
   names[ownerDid] ??= labels.you
 
@@ -306,8 +304,8 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       id: seed.id,
       type: seed.type,
       name: seed.name,
-      avatar: seed.contact?.avatar ?? seed.group?.avatar,
-      statusText: seed.group ? `${seed.group.member_count} members` : seed.contact?.access_level === 'stranger' ? 'stranger' : undefined,
+      avatar: seed.contact?.avatar,
+      statusText: seed.contact?.access_level === 'stranger' ? 'stranger' : undefined,
       isOnline: undefined,
       isPinned: false,
       isMuted: false,
@@ -325,9 +323,8 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       ...entity,
       bio: seed.contact?.note ?? undefined,
       note: seed.contact?.note ?? undefined,
-      memberCount: seed.group?.member_count,
       bindings: (seed.contact?.bindings ?? []).map(binding => ({ platform: binding.platform, accountId: binding.account_id, displayId: binding.display_id })),
-      createdAt: seed.contact?.created_at ?? seed.group?.updated_at_ms ?? 0,
+      createdAt: seed.contact?.created_at ?? 0,
       accessLevel: seed.contact?.access_level,
       isVerified: seed.contact?.is_verified,
       contactSource: seed.contact?.source,

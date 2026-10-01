@@ -1,9 +1,8 @@
 import { buckyos } from 'buckyos'
-import { mockSelfHostGroups } from '../../../api/self_host_groups.ts'
 import { fetchUserDetail } from '../../../api/user_mgr.ts'
 import type { UserDetail, UserTunnelBinding } from '../../../api/user_mgr.ts'
 import { mockCollections, mockContacts } from '../../users-agents/mock/seed'
-import { toEntityGroupEntity, toSocialAccounts } from '../../users-agents/datamodel/transforms'
+import { toSocialAccounts } from '../../users-agents/datamodel/transforms'
 import type {
   Collection,
   ContactEntity,
@@ -17,8 +16,6 @@ interface AccountInfo {
 interface ChatContactListResponse {
   items?: unknown[]
 }
-
-type GroupListByMemberResponse = unknown[]
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value)
@@ -176,27 +173,6 @@ async function fetchChatContactList(ownerDid?: string): Promise<{
   }
 }
 
-async function fetchGroupListByMember(memberDid?: string): Promise<{
-  data: GroupListByMemberResponse | null
-  error: unknown
-}> {
-  if (!memberDid) {
-    return { data: [], error: null }
-  }
-
-  try {
-    const rpcClient = buckyos.getServiceRpcClient('msg-center')
-    const result = await rpcClient.call('group.list_by_member', {
-      member_did: memberDid,
-      host_owner: memberDid,
-    })
-    return { data: Array.isArray(result) ? result : [], error: null }
-  } catch (error) {
-    console.warn('Failed to load my-network groups from msg-center.', error)
-    return { data: null, error }
-  }
-}
-
 function buildCollections(
   baseCollections: Collection[],
   contacts: ContactEntity[],
@@ -253,14 +229,9 @@ function realBaseCollections(): Collection[] {
 
 export async function fetchMyNetworkSnapshot(): Promise<MyNetworkSnapshot> {
   const ownerDid = await fetchOwnerDid()
-  const [contactsResult, groupsResult] = await Promise.all([
-    fetchChatContactList(ownerDid),
-    fetchGroupListByMember(ownerDid),
-  ])
+  const contactsResult = await fetchChatContactList(ownerDid)
   const contacts = (contactsResult.data?.items ?? []).map(toContactEntity)
-  const entityGroups = (groupsResult.data ?? [])
-    .map(toEntityGroupEntity)
-    .filter((group) => !group.isHostedBySelf)
+  const entityGroups: MyNetworkSnapshot['entityGroups'] = []
 
   return {
     contacts,
@@ -282,9 +253,7 @@ export function createEmptyMyNetworkSnapshot(): MyNetworkSnapshot {
 
 export function createMockMyNetworkSnapshot(): MyNetworkSnapshot {
   const contacts = structuredClone(mockContacts)
-  const entityGroups = mockSelfHostGroups
-    .map(toEntityGroupEntity)
-    .filter((group) => !group.isHostedBySelf)
+  const entityGroups: MyNetworkSnapshot['entityGroups'] = []
 
   return {
     contacts,

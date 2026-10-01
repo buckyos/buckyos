@@ -8,10 +8,8 @@ import type {
   UserTunnelBinding,
   UserType,
 } from '../../../api/user_mgr.ts'
-import type { SelfHostGroupSummary } from '../../../api/self_host_groups.ts'
 import type {
   AgentEntity,
-  EntityGroupEntity,
   LocalUserEntity,
   SelfEntity,
   SocialAccount,
@@ -79,15 +77,6 @@ function numberValue(value: unknown): number | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
-}
-
-function booleanValue(value: unknown): boolean | undefined {
-  if (typeof value === 'boolean') return value
-  if (typeof value !== 'string') return undefined
-  const normalized = value.trim().toLowerCase()
-  if (normalized === 'true') return true
-  if (normalized === 'false') return false
-  return undefined
 }
 
 function isoFromUnix(value: unknown): string | undefined {
@@ -402,34 +391,5 @@ export function toAgentEntity(
     },
     didDocument: Object.keys(raw).length > 0 ? raw : fallback.didDocument,
     runtime: runtimeFromAgentInfo(raw.runtime, status, fallback.runtime),
-  }
-}
-
-export function toEntityGroupEntity(group: SelfHostGroupSummary | unknown): EntityGroupEntity {
-  const raw = asRecord(group)
-  const groupDid = firstString(raw.group_did, raw.groupDid)
-  const groupId = firstString(raw.group_id, raw.groupId, groupDid, raw.id) ?? 'unknown-group'
-  const memberIds = stringArray(raw.member_entity_ids ?? raw.memberEntityIds)
-  const members = Array.isArray(raw.members) ? raw.members : []
-  const ownerName = firstString(raw.owner_name, raw.ownerName, raw.owner, raw.owner_did)
-  const createdAt =
-    firstString(raw.created_at, raw.createdAt) ??
-    isoFromUnix(raw.updated_at_ms ?? raw.updatedAtMs) ??
-    fallbackCreatedAt
-
-  return {
-    id: `eg-${groupId}`,
-    kind: 'entity-group',
-    displayName: firstString(raw.display_name, raw.displayName, raw.name, groupDid, groupId) ?? groupId,
-    avatarUrl: firstString(raw.avatar_url, raw.avatarUrl, raw.avatar),
-    did: groupDid,
-    socialAccounts: [],
-    description: firstString(raw.description),
-    memberCount: numberValue(raw.member_count ?? raw.memberCount) ?? (memberIds.length || members.length),
-    memberIds,
-    ownerName,
-    isHostedBySelf: booleanValue(raw.is_hosted_by_self ?? raw.isHostedBySelf) ?? false,
-    canMessage: booleanValue(raw.can_message ?? raw.canMessage) ?? false,
-    createdAt,
   }
 }

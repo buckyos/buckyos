@@ -14,7 +14,7 @@ const contacts: Contact[] = [
 function equal(actual: unknown, expected: unknown) { if (JSON.stringify(actual) !== JSON.stringify(expected)) throw Error(`Expected ${JSON.stringify(expected)}, received ${JSON.stringify(actual)}`) }
 function chat(from: string, to: string[], text: string, created: number, extra: Partial<MessageObject> = {}): MessageObject { return { from, to, kind: 'chat', created_at_ms: created, content: { format: 'text/plain', content: text }, ...extra } }
 function summary(session_id: string, record: { box_kind: SessionSummary['last_record'] extends undefined ? never : 'INBOX' | 'SENT' | 'GROUP_INBOX' | 'REQUEST_BOX'; from: string; to: string; msg?: MessageObject | null; tags?: string[]; sort_key?: number } | null, extra: Partial<SessionSummary> = {}): SessionSummary {
-  return { session_id, unread_count: 0, updated_at_ms: 10, last_activity_ms: 10, request_count: 0, lifecycle: 'active', last_record: record ? { record: { record_id: `${owner}|${record.box_kind}|m|inbox`, owner, box_kind: record.box_kind, msg_id: 'm', state: 'UNREAD', from: record.from, to: record.to, session_id, sort_key: record.sort_key ?? 10, tags: record.tags, created_at_ms: 10, updated_at_ms: 10 }, msg: record.msg } : undefined, ...extra }
+  return { session_id, unread_count: 0, updated_at_ms: 10, last_activity_ms: 10, request_count: 0, lifecycle: 'active', last_record: record ? { record: { record_id: `${owner}|${record.box_kind}|m|inbox`, owner, mailbox: `${owner}/${encodeURIComponent(session_id)}`, box_kind: record.box_kind, msg_id: 'm', state: 'UNREAD', from: record.from, to: record.to, session_id, sort_key: record.sort_key ?? 10, tags: record.tags, created_at_ms: 10, updated_at_ms: 10 }, msg: record.msg } : undefined, ...extra }
 }
 
 Deno.test('group member INBOX copies attribute to the group, not the owner, in both directions', () => {
@@ -31,11 +31,21 @@ Deno.test('group member INBOX copies attribute to the group, not the owner, in b
   equal(attributeSession(registered, owner), { peerDid: 'did:bns:agent', isGroup: false, evidence: 'registered' })
 })
 
+Deno.test('group history identifies a group already present in contacts without a group service', () => {
+  const group = 'did:bns:team'
+  const contact: Contact = { did: group, name: 'Team', source: 'shared', is_verified: true, access_level: 'friend', created_at: 1, updated_at: 1 }
+  const inbound = summary('team-session', { box_kind: 'INBOX', from: 'did:bns:alice', to: owner, tags: [`group:${group}`], msg: chat('did:bns:alice', [group], 'hi', 10, { kind: 'group_msg' }) })
+  const projected = projectOwner({ ownerDid: owner, summaries: [inbound], contacts: [contact], agentDids: [], personalTitles: {}, policies: {}, labels })
+  equal(projected.entities[0].type, 'group')
+  equal(projected.entities[0].name, 'Team')
+  equal(projected.sessions[0].entityId, group)
+})
+
 Deno.test('tunnel endpoints canonicalize through contact bindings and keep a tunnel binding', () => {
   equal(parseTunnelDid(peerEndpoint), { accountId: '5397330802', accountType: 'user', tunnelInstanceId: 'tg-main-tunnel' })
   equal(canonicalizeDid(peerEndpoint, contacts), peerEndpoint)
   const tg = summary('tg:lzc_jarvis:5397330802', { box_kind: 'REQUEST_BOX', from: peerEndpoint, to: owner, msg: chat(peerEndpoint, [owner], 'hello', 20) }, { request_count: 1, last_activity_ms: 20 })
-  const projected = projectOwner({ ownerDid: owner, summaries: [tg], contacts, groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [tg], contacts, agentDids: [], personalTitles: {}, policies: {}, labels })
   const session = projected.sessions[0]
   equal(session.entityId, peerEndpoint)
   equal(session.binding.kind, 'tunnel')
@@ -56,7 +66,7 @@ Deno.test('zone agents, unassigned sessions and previews follow the data model r
   const dm = summary(`dm:${agent}`, { box_kind: 'INBOX', from: agent, to: owner, msg: chat(agent, [owner], 'line one\nline two', 30) }, { last_activity_ms: 30, unread_count: 2 })
   const orphan = summary('mystery', { box_kind: 'SENT', from: owner, to: 'did:bns:a', msg: chat(owner, ['did:bns:a', 'did:bns:b'], 'x', 12) })
   const empty = summary('uuid-2', null, { last_activity_ms: 0, state: { owner, session_id: 'uuid-2', lifecycle: 'active', registered: true, peer_did: agent, title: 'Plan', created_at_ms: 40, updated_at_ms: 40 } })
-  const projected = projectOwner({ ownerDid: owner, summaries: [dm, orphan, empty], contacts, groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [dm, orphan, empty], contacts, agentDids: [agent], personalTitles: {}, policies: {}, labels })
   const agentEntity = projected.entities.find(item => item.id === agent)!
   equal(agentEntity.type, 'agent')
   equal(agentEntity.unreadCount, 2)
@@ -115,7 +125,7 @@ Deno.test('attachment-only protocol objects survive timeline loading and session
   equal(summarizeMessage({ ...restored, content: { ...restored.content, format: 'image/png' } }, labels), '[Image] photo.png')
   equal(summarizeMessage({ ...restored, content: { ...restored.content, content: '  Caption\nmore text' } }, labels), 'Caption')
   equal(summarizeMessage({ ...restored, content: {} }, labels), '')
-  const projected = projectOwner({ ownerDid: owner, summaries: [summary('photo-session', { box_kind: 'SENT', from: owner, to: peerEndpoint, msg: restored })], contacts, groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [summary('photo-session', { box_kind: 'SENT', from: owner, to: peerEndpoint, msg: restored })], contacts, agentDids: [], personalTitles: {}, policies: {}, labels })
   equal(projected.sessions[0].lastMessage?.text, '[Attachment] photo.png')
 })
 
@@ -124,14 +134,14 @@ Deno.test('web DID zone users are people and unknown local DIDs do not become ag
   const unknown = 'did:web:unregistered.test.buckyos.io'
   const agent = 'did:web:jarvis.test.buckyos.io'
   const userContact: Contact = { ...contacts[1], did: lucy, name: 'Lucy' }
-  const projected = projectOwner({ ownerDid: owner, summaries: [summary('unknown-session', { box_kind: 'SENT', from: owner, to: unknown, msg: chat(owner, [unknown], 'hi', 1) })], contacts: [...contacts, userContact], groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [summary('unknown-session', { box_kind: 'SENT', from: owner, to: unknown, msg: chat(owner, [unknown], 'hi', 1) })], contacts: [...contacts, userContact], agentDids: [agent], personalTitles: {}, policies: {}, labels })
   const entity = projected.entities.find(item => item.id === lucy)!
   equal(entity.type, 'person')
   equal(entity.domain, 'managed')
   equal(creationReason({ viewerDid: owner, ownerDid: owner, mode: 'self' }, entity, 'default', { kind: 'native', targetDid: lucy }), undefined)
   equal(projected.entities.find(item => item.id === agent)?.type, 'agent')
   equal(projected.entities.find(item => item.id === unknown)?.type, 'person')
-  const own = projectOwner({ ownerDid: lucy, summaries: [], contacts: [userContact], groups: [], agentDids: [], personalTitles: {}, policies: {}, labels })
+  const own = projectOwner({ ownerDid: lucy, summaries: [], contacts: [userContact], agentDids: [], personalTitles: {}, policies: {}, labels })
   equal(own.entities.some(item => item.id === lucy), false)
 })
 
@@ -140,7 +150,7 @@ Deno.test('registered tunnel bindings on canonical agent DIDs cannot become nati
   const binding = { kind: 'tunnel', tunnelInstanceId: 'tg-main-tunnel', endpointDid: peerEndpoint, connectionName: 'Telegram', connected: true, canSend: true }
   const registered = summary('registered-tunnel', null, { last_activity_ms: 20, state: { owner, session_id: 'registered-tunnel', lifecycle: 'active', registered: true, peer_did: agent, binding, created_at_ms: 20, updated_at_ms: 20 } })
   const native = summary(`dm:${agent}`, { box_kind: 'INBOX', from: agent, to: owner, msg: chat(agent, [owner], 'hi', 10) })
-  const projected = projectOwner({ ownerDid: owner, summaries: [registered, native], contacts, groups: [], agentDids: [agent], personalTitles: {}, policies: {}, labels })
+  const projected = projectOwner({ ownerDid: owner, summaries: [registered, native], contacts, agentDids: [agent], personalTitles: {}, policies: {}, labels })
   equal(projected.sessions[0].binding.kind, 'tunnel')
   equal(selectDefaultSession(projected.entityById.get(agent)!, projected.sessions)?.id, `dm:${agent}`)
 })

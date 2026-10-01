@@ -1,5 +1,4 @@
 import { fetchAppList } from '../../../api/app_mgr.ts'
-import { mockSelfHostGroups } from '../../../api/self_host_groups.ts'
 import {
   fetchAgentListWithRuntime,
   fetchUserDetail,
@@ -18,12 +17,9 @@ import type {
 import {
   appListTargetUserIds,
   toAgentEntity,
-  toEntityGroupEntity,
   toSelfEntity,
   toVisibleLocalUserEntities,
 } from './transforms'
-
-type GroupListByMemberResponse = unknown[]
 
 interface AccountInfo {
   user_name: string
@@ -47,27 +43,6 @@ function accountDetail(account: AccountInfo): UserDetail {
       display_name: account.user_name || account.user_id,
     },
     allow_password_change: false,
-  }
-}
-
-async function fetchGroupListByMember(memberDid?: string): Promise<{
-  data: GroupListByMemberResponse | null
-  error: unknown
-}> {
-  if (!memberDid) {
-    return { data: [], error: null }
-  }
-
-  try {
-    const rpcClient = buckyos.getServiceRpcClient('msg-center')
-    const result = await rpcClient.call('group.list_by_member', {
-      member_did: memberDid,
-      host_owner: memberDid,
-    })
-    return { data: Array.isArray(result) ? result : [], error: null }
-  } catch (error) {
-    console.warn('Failed to load users-agents groups from msg-center.', error)
-    return { data: null, error }
   }
 }
 
@@ -147,14 +122,9 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
 
 export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
   const core = await fetchUsersAgentsCoreSnapshot()
-  const groupsResult = await fetchGroupListByMember(core.self.did)
-  const entityGroups = (groupsResult.data ?? [])
-    .map(toEntityGroupEntity)
-    .filter((group) => group.isHostedBySelf)
-
   return {
     ...core,
-    entityGroups,
+    entityGroups: [],
   }
 }
 
@@ -206,15 +176,11 @@ export function createEmptyUsersAgentsSnapshot(): UsersAgentsSnapshot {
 }
 
 export function createMockUsersAgentsSnapshot(): UsersAgentsSnapshot {
-  const entityGroups = mockSelfHostGroups
-    .map(toEntityGroupEntity)
-    .filter((group) => group.isHostedBySelf)
-
   return {
     self: structuredClone(mockSelf),
     agent: structuredClone(mockAgent),
     agents: [structuredClone(mockAgent)],
     localUsers: structuredClone(mockLocalUsers),
-    entityGroups,
+    entityGroups: [],
   }
 }

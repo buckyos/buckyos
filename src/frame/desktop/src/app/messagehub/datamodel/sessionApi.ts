@@ -202,27 +202,6 @@ export interface Contact {
   updated_at: number
 }
 
-export interface GroupSummary {
-  group_did: DID
-  name: string
-  avatar?: string
-  host_zone: DID
-  owner: DID
-  purpose: string
-  entity_kind: string
-  member_count: number
-  is_hosted_by_self: boolean
-  can_message: boolean
-  updated_at_ms: number
-}
-
-export interface GroupAccessDecision {
-  action: string
-  allowed: boolean
-  reason?: string
-  effective_role?: string
-}
-
 export interface MailboxRecordPage {
   items?: MailboxRecordWithObject[]
   next_cursor_sort_key?: number
@@ -328,5 +307,3 @@ export const listContacts = (contactMgrOwner?: DID) => call<Contact[] | null>('c
 export const getContact = (did: DID, contactMgrOwner?: DID) => call<Contact | null>('contact.get_contact', contactMgrOwner ? { did, contact_mgr_owner: contactMgrOwner } : { did })
 export const updateContact = (did: DID, patch: Record<string, unknown>, contactMgrOwner?: DID) => call<Contact>('contact.update_contact', contactMgrOwner ? { did, patch, contact_mgr_owner: contactMgrOwner } : { did, patch })
 export const blockContact = (did: DID, contactMgrOwner?: DID, reason?: string) => call<unknown>('contact.block_contact', { did, ...(reason ? { reason } : {}), ...(contactMgrOwner ? { contact_mgr_owner: contactMgrOwner } : {}) })
-export const listGroupsByMember = (memberDid: DID) => call<GroupSummary[] | null>('group.list_by_member', { member_did: memberDid, host_owner: memberDid }).then(list => list ?? [])
-export const checkGroupAccess = (groupDid: DID, actorDid: DID, action: string) => call<GroupAccessDecision>('group.check_access', { group_did: groupDid, actor_did: actorDid, action, host_owner: actorDid })

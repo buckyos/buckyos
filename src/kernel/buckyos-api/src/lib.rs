@@ -6,7 +6,6 @@ use log::{info, warn};
 mod content_mgr_client;
 mod control_panel;
 mod device_identity;
-mod group_mgr;
 mod msg_center_client;
 mod nfs_server_client;
 mod nfs_copy;
@@ -67,7 +66,6 @@ pub use cyfs_gateway_api::{
     SN_DEVICE_TOKEN_DEFAULT_TTL_SECS,
 };
 pub use device_identity::*;
-pub use group_mgr::*;
 pub use msg_center_client::*;
 pub use nfs_server_client::*;
 pub use repo_client::*;

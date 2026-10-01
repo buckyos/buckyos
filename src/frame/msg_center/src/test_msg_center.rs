@@ -52,6 +52,23 @@ fn ctx() -> RPCContext {
 }
 
 #[tokio::test]
+async fn removed_self_host_group_rpc_returns_unknown_method() {
+    use kRPC::{RPCErrors, RPCHandler, RPCRequest};
+
+    let (center, _tmp) = new_center("removed_self_host_group_rpc").await;
+    let server = buckyos_api::MsgCenterServerHandler::new(center);
+    for method in ["group.create", "group.list_by_member", "group.check_access"] {
+        let result = server
+            .handle_rpc_call(
+                RPCRequest::new(method, json!({})),
+                "127.0.0.1".parse().unwrap(),
+            )
+            .await;
+        assert!(matches!(result, Err(RPCErrors::UnknownMethod(name)) if name == method));
+    }
+}
+
+#[tokio::test]
 async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart() {
     let (center, tmp) = new_center("cyfs_dispatch").await;
     let sender = DID::new("bns", "sender");

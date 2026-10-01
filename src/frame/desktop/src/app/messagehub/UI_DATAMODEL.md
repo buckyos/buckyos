@@ -221,7 +221,7 @@ export type EntityDomain = 'managed' | 'external'
 
 | 条件 | type | domain |
 |------|------|--------|
-| DID 命中 `group.list_by_member` / `group.list_subgroups` 返回集 | `group` | `is_hosted_by_self ? 'managed' : 'external'` |
+| 会话的群消息或 `group:<did>` tag 提供群归属证据 | `group` | 沿用 DID / 联系人的域判定；不授予管理权 |
 | DID method 为 `did:msgtunnel:*` 且 `account_type` 为 `group` / `channel` | `group` | `external` |
 | DID method 为 `did:msgtunnel:*` 且 `account_type` 为 `user` / `addr` | `person` | `external` |
 | DID 命中 zone 内 agent 注册（或 `Contact.tags` 含 `agent`） | `agent` | `managed` |
@@ -237,10 +237,11 @@ Entity 是 UI 聚合模型，由以下数据合并派生；新增会话登记 / 
 
 ```text
 contact.list_contacts   → Contact[]        身份、备注、绑定、访问级别
-group.list_by_member    → GroupSummary[]   群名称、成员数、可发消息
 msg.list_sessions       → SessionSummary[] 活跃度、未读、最近一条消息
 会话登记 / 连接能力       → 待实现契约       空会话、稳定绑定、创建与发送能力
 ```
+
+旧 self-host Group 服务及 `group.*` RPC 已删除，当前不加载群目录、成员数和群能力。外部群继续从联系人和会话消息派生；已有原生群会话保留历史展示，发送在 v2 接入前不可用。
 
 ```ts
 export interface Entity {
@@ -339,7 +340,6 @@ export interface MessagePreview {
 
 | 子实体场景 | 后端来源 | childrenMode |
 |---|---|---|
-| 群下具有独立 DID 的 subgroup / topic | `group.list_subgroups` | `inline` |
 | 聚合型服务实体（如 Release Hub）下的房间 / agent / 系统 | 前端配置 + `childrenSections` | `drilldown` |
 
 子实体 **不是** Session（PRD §9.4）：子实体持久存在于实体层级，Session 是实体下的上下文容器。
@@ -501,8 +501,8 @@ Agent 观察则连展示配置、已读、草稿都不能写入。后续代 Agen
 
 以上是目标字段，当前 mock `SessionAccess` 尚无 `canRead/canSend`，且自己的 native Session
 会默认可写、可编辑共享和成员状态；该规则不能沿用到真实接入。native 也可能没有路由或没有群发言权限。
-群能力可复用 `group.check_access` 的对应 action；`GroupSummary.can_message` 用于可通信性展示，
-不能代替当前 actor 的操作授权。`is_hosted_by_self`、`Entity.domain` 和持有本地历史均不授予管理权。
+旧 `group.check_access` 和 `GroupSummary` 已删除；原生群能力等待 v2 服务接入，当前保持只读。
+`Entity.domain` 和持有本地历史均不授予管理权。
 原生目标无路由 / 路由变化、群只读、字段权限未知都须呈现具体原因；发送服务仍在提交时校验。
 `canRead=false` 显示拒绝态；Agent 观察可经授权读取，但以上所有写入能力均为 false。
 

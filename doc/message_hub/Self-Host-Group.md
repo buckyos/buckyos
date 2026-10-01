@@ -1,5 +1,7 @@
 # Self-Host Group 组件需求
 
+> 本文为 v1 历史设计，已由 [Self-Host Group v2](./Self-Host-Groupv2.md) 取代。旧 GroupMgr、群类型、群表定义和 `group.*` RPC 已删除；v2 尚未实现。
+
 ## 1. 背景与目标
 
 本文基于 `Message Center.md` 和 `Contact Mgr.md` 的当前设计，说明 BuckyOS 在现有 MessageHub 框架下支持 **self-host group** 需要补齐的组件能力。

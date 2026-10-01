@@ -4,7 +4,7 @@
 
 Service: `msg-center`
 
-MessageCenter persists mailbox projections, delivery state, contacts, groups,
+MessageCenter persists mailbox projections, delivery state, contacts, group subscriptions,
 idempotency results, tunnel recovery cursors, and UI session state in the
 platform-provided RDB instance. Message objects remain content-addressed in
 named store. The corresponding behavior and RPC model are described in
@@ -21,7 +21,7 @@ named store. The corresponding behavior and RPC model are described in
 | `delivery_records` | Delivery queue state and diagnostic history |
 | `msg_idempotency` | Prevents replay after restart |
 | `msg_tunnel_cursors` | External ingress recovery position |
-| Contact and group tables | User and group configuration/state |
+| `contacts`, `contact_metadata`, `group_subscribers` | Contacts and external-group subscriptions |
 
 ### Disposable Data
 
@@ -80,10 +80,14 @@ the public UI SessionState RPC cannot read or modify it.
 
 ### Existing durable tables
 
-`mailbox_records`, `delivery_records`, `msg_refs`, contact tables, and group
-tables retain their schema defined by `MSG_CENTER_RDB_SCHEMA_SQLITE` and
+`mailbox_records`, `delivery_records`, `msg_refs`, contact tables, and
+`group_subscribers` retain their schema defined by `MSG_CENTER_RDB_SCHEMA_SQLITE` and
 `MSG_CENTER_RDB_SCHEMA_POSTGRES`. Message objects retain their existing named
 store object schema.
+
+The v1 self-host tables (`groups`, `group_members`, `group_member_proofs`,
+`group_subgroups`, `group_events`, `group_expansion_snapshots`) are no longer
+created or used. Self-host Group v2 has no implementation yet.
 
 ### Target logical records: Session state and Action Log (2026-09-06, not implemented)
 
@@ -103,22 +107,24 @@ This supplement does not change DDL or the current schema version.
 Use the existing authority's transaction to commit state, revision, mutation
 result, and pending event together. Named-store publication and mailbox/delivery
 fan-out may occur later through idempotent recovery; they are not part of a
-cross-store atomic transaction. Reuse GroupEvent identity for group changes.
+cross-store atomic transaction. Group event identity will be defined by the v2 implementation.
 External platform writes remain pending until confirmed and cannot join a local
 RDB transaction. A future implementation must define DDL, uniqueness rules,
 query indexes, and a schema-version bump before enabling these records.
 
 ## 5. Schema Version
 
-The shared msg-center RDB instance schema version is `10`, stored in the
+The shared msg-center RDB instance schema version is `12`, stored in the
 scheduler-provided RDB instance spec. Every DDL or frozen-key semantic change
 increments this version.
 
 ## 6. Upgrade Compatibility Strategy
 
-Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 10 service schema;
-there is no in-place migration. Version 10 freezes session-addressed queue and sender-mailbox idempotency semantics
-until the next explicit schema version.
+Beta 2.2 is in no-compat mode. Earlier deployments must adopt the version 12 service schema;
+there is no in-place migration. Version 12 removes the v1 self-host group table
+definitions. Existing database tables are not automatically dropped; this code
+removal does not delete deployed data. Session-addressed queue and sender-mailbox
+idempotency semantics remain unchanged.
 
 ## 7. Extensibility Rules
 

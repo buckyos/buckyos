@@ -18,8 +18,8 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  archiveSession, blockContact, checkGroupAccess, createSession, deleteSession, fetchOwnerDid, listContacts, listGroupsByMember, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, postSendMessage, restoreSession, updateContact, updateRecordState, updateUiSessionState,
-  type Contact, type GroupSummary, type SessionSummary, type UiSessionStateEntry,
+  archiveSession, blockContact, createSession, deleteSession, fetchOwnerDid, listContacts, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, postSendMessage, restoreSession, updateContact, updateRecordState, updateUiSessionState,
+  type Contact, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, memberStateSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
@@ -39,21 +39,13 @@ const RUNTIME_POLL_MS = 5_000
 const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
 const STATUS_LINE_TTL_MS = 10 * 60_000
-const GROUP_POST_ACTION = 'group.post_message'
 const LOCALE_STORAGE_KEY = 'buckyos.prototype.locale.v1'
-
-interface GroupAccessCache {
-  post?: boolean
-  reason?: string
-  pending?: boolean
-}
 
 interface OwnerData {
   status: OwnerStatus
   summaries: SessionSummary[]
   nextCursor?: { value: number; sessionId: string }
   contacts: Contact[]
-  groups: GroupSummary[]
   agentDids: string[]
   prefs: Record<string, { title: string; pinned: boolean; muted: boolean }>
   prefsLoaded: Set<string>
@@ -61,7 +53,6 @@ interface OwnerData {
   projected?: { version: number; value: ProjectedOwner }
   /** Enriched `entities()` per `(viewerDid, mode)`, keyed on owner + local state versions. */
   entitiesCache: Map<string, { version: number; localVersion: number; value: Entity[] }>
-  groupAccess: Record<string, GroupAccessCache>
   histories: Map<string, SessionHistory>
   historyStatus: Map<string, 'idle' | 'loading' | 'ready' | 'error'>
   runtime: Map<string, RuntimeState[]>
@@ -173,7 +164,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], groups: [], agentDids: [], prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), groupAccess: {}, histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -208,11 +199,10 @@ export class MessageHubApiStore implements MessageHubStore {
     data.loading = (async () => {
       try {
         const ownerDid = context.ownerDid
-        const [page, ownerContacts, systemContacts, groups, agents] = await Promise.all([
+        const [page, ownerContacts, systemContacts, agents] = await Promise.all([
           listSessions({ owner: ownerDid, limit: SESSION_PAGE_SIZE, with_object: true, lifecycle: 'all', order_by: 'activity' }),
           listContacts(ownerDid).catch(() => [] as Contact[]),
           ownerDid === this.selfDid ? listContacts(undefined).catch(() => [] as Contact[]) : Promise.resolve([] as Contact[]),
-          listGroupsByMember(ownerDid).catch(() => [] as GroupSummary[]),
           ownerDid === this.selfDid ? fetchAgentList().then(result => result.data?.agents ?? []).catch(() => []) : Promise.resolve([]),
         ])
         if (data.epoch !== epoch) return
@@ -220,7 +210,6 @@ export class MessageHubApiStore implements MessageHubStore {
         for (const contact of systemContacts) merged.set(contact.did, contact)
         for (const contact of ownerContacts) merged.set(contact.did, contact)
         data.contacts = [...merged.values()]
-        data.groups = groups
         data.agentDids = agents.map(agent => {
           const raw = agent as Record<string, unknown>
           return [raw.did, raw.agent_did, raw.id].find(value => typeof value === 'string' && value.startsWith('did:')) as string | undefined
@@ -312,7 +301,6 @@ export class MessageHubApiStore implements MessageHubStore {
       ownerDid: context.ownerDid,
       summaries: data.summaries,
       contacts: data.contacts,
-      groups: data.groups,
       agentDids: data.agentDids,
       personalTitles: Object.fromEntries(Object.entries(data.prefs).map(([id, prefs]) => [id, prefs.title])),
       policies: {},
@@ -551,20 +539,6 @@ export class MessageHubApiStore implements MessageHubStore {
     void this.refreshSummaries(context)
   }
 
-  private async ensureGroupAccess(context: MessageHubContext, groupDid: string) {
-    const data = this.owner(context.ownerDid)
-    const cache = data.groupAccess[groupDid]
-    if (cache && (cache.pending || cache.post !== undefined)) return
-    data.groupAccess[groupDid] = { pending: true }
-    try {
-      const decision = await checkGroupAccess(groupDid, context.ownerDid, GROUP_POST_ACTION)
-      data.groupAccess[groupDid] = { post: decision.allowed, reason: decision.reason }
-    } catch (error) {
-      data.groupAccess[groupDid] = { post: false, reason: error instanceof Error ? error.message : String(error) }
-    }
-    this.bump(data)
-  }
-
   access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
     const own = context.mode === 'self' && context.ownerDid === this.selfDid && context.viewerDid === this.selfDid
     const base: SessionAccess = { mode: 'read_only', canManage: own, canEnableWrite: false, canEditPresentation: own, canEditSharedState: false, canEditOwnMemberState: false }
@@ -576,9 +550,7 @@ export class MessageHubApiStore implements MessageHubStore {
     }
     const entity = this.findEntity(context, session.entityId)
     if (entity?.type === 'group') {
-      const cache = this.owner(context.ownerDid).groupAccess[session.entityId]
-      if (!cache || cache.post === undefined) { void this.ensureGroupAccess(context, session.entityId); return { ...base, readOnlyReason: 'permission_pending' } }
-      return cache.post ? { ...base, mode: 'read_write' } : { ...base, readOnlyReason: 'permission_denied' }
+      return { ...base, readOnlyReason: 'backend_unavailable' }
     }
     return { ...base, mode: 'read_write' }
   }
