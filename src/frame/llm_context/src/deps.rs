@@ -97,7 +97,7 @@ pub trait ToolManager: Send + Sync {
     /// `Ok(Observation::Error)` is a business failure the LLM can react to
     /// (bad arguments, command exited non-zero, tool not found). `Err` is an
     /// infrastructure failure: the waist stops dispatching the remaining
-    /// calls of the round, keeps the results already obtained, and ends the
+    /// calls of the batch, keeps the results already obtained, and ends the
     /// run with `LLMComputeError::ToolRuntime` for the runtime to handle.
     async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
 
@@ -143,10 +143,13 @@ pub trait WorklogSink: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub enum WorkEvent {
+    /// `LLMContext::run()` entered (once per run call, not per inference:
+    /// never use it to count Rounds).
     LLMStarted {
         trace_id: Option<String>,
         model: String,
     },
+    /// `LLMContext::run()` returned an outcome.
     LLMFinished {
         trace_id: Option<String>,
         ok: bool,
@@ -179,7 +182,7 @@ pub enum WorkEvent {
         error: String,
     },
     /// Tool dispatch infrastructure failed (see `ToolDispatchError`). The
-    /// remaining calls of the round were not dispatched.
+    /// remaining calls of the batch / step were not dispatched.
     ToolDispatchFailed {
         trace_id: Option<String>,
         tool: String,
@@ -222,10 +225,13 @@ pub trait Tokenizer: Send + Sync {
     fn count_tokens(&self, text: &str) -> u32;
 }
 
-/// Per-turn hook invoked **before** every LLM inference (§3.12 of the design
-/// doc). The hook receives a read-only view of the current snapshot, so an L4
+/// Synchronous hook invoked **before** every LLM inference, i.e. before every
+/// Round (§3.12 of the design doc) — not at an AgentSession Turn boundary.
+/// The hook receives a read-only view of the current snapshot, so an L4
 /// persistence layer can flush it to disk before the next inference is paid
-/// for.
+/// for. In behavior mode it runs inside the step's inner function call loop
+/// and sees that loop's flattened snapshot; hosts that need the outer
+/// (step-level) snapshot use [`CheckpointHook`].
 ///
 /// Constraints:
 /// - Hook implementations should be fast — the waist blocks the inference
@@ -239,7 +245,7 @@ pub trait Tokenizer: Send + Sync {
 /// - Hooks receive `&LLMContextSnapshot` and must not mutate waist state.
 /// - Runs without a hook are legal; best-effort observers that must never
 ///   block progress should log and return `Ok(())`.
-pub trait TurnHook: Send + Sync {
+pub trait InferenceHook: Send + Sync {
     fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String>;
 }
 
@@ -270,11 +276,11 @@ pub enum InjectionPosition {
 
 /// Async checkpoint / observation hook (§8.7 X4 + X5).
 ///
-/// Called before **every** inference with the *outer* snapshot: in function
-/// call mode after a round of tool results, in behavior mode at every step
-/// boundary (i.e. after each do-action). It is never handed to the inner
-/// per-step contexts of the behavior loop, so it never sees a flattened
-/// snapshot.
+/// Called with the *outer* snapshot: in function call mode before every
+/// inference (after each batch of tool results), in behavior mode only at
+/// step boundaries (after each do-action), not before the inferences inside
+/// a step. It is never handed to the inner per-step contexts of the behavior
+/// loop, so it never sees a flattened snapshot.
 ///
 /// - `Ok(None)`: the snapshot is durably checkpointed; inference may start.
 /// - `Ok(Some(injection))`: the waist applies the injection and calls the
@@ -333,9 +339,9 @@ pub struct LLMContextDeps {
     pub policy: Arc<dyn PolicyEngine>,
     pub worklog: Arc<dyn WorklogSink>,
     pub tokenizer: Arc<dyn Tokenizer>,
-    /// Optional per-turn hook (§3.12). Default `None` — schedulers that do
-    /// not need pre-inference snapshots are unaffected.
-    pub turn_hook: Option<Arc<dyn TurnHook>>,
+    /// Optional per-inference hook (§3.12). Default `None` — schedulers that
+    /// do not need pre-inference snapshots are unaffected.
+    pub inference_hook: Option<Arc<dyn InferenceHook>>,
     /// Behavior Loop: structured parser for LLM responses. `Some` ⇒ Behavior
     /// mode; `None` ⇒ traditional Agent Loop. The two modes are picked at
     /// construction time and never mix at runtime.
@@ -359,7 +365,7 @@ impl LLMContextDeps {
             policy: Arc::new(AllowAllPolicy),
             worklog: Arc::new(NoopWorklogSink),
             tokenizer: Arc::new(ByteHeuristicTokenizer),
-            turn_hook: None,
+            inference_hook: None,
             result_parser: None,
             step_renderer: None,
             step_result_hook: None,
@@ -382,8 +388,8 @@ impl LLMContextDeps {
         self
     }
 
-    pub fn with_turn_hook(mut self, hook: Arc<dyn TurnHook>) -> Self {
-        self.turn_hook = Some(hook);
+    pub fn with_inference_hook(mut self, hook: Arc<dyn InferenceHook>) -> Self {
+        self.inference_hook = Some(hook);
         self
     }
 

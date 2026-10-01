@@ -620,7 +620,7 @@ impl TypedTool for UpdateSessionTopicTool {
                 session_dir: session.session_dir.clone(),
                 topic: args.title,
                 tags: args.tags,
-                current_turn: ctx.session().step_idx,
+                current_turn: ctx.session().tool_call_index,
             })
             .await
             .map_err(map_session_topic_error)?;
@@ -836,7 +836,7 @@ impl TypedTool for TryCreateWorksessionTool {
             }),
             // Let fork_and_run rewrite trace to `<parent>::fork-<n>`.
             trace: Some(None),
-            reset_rounds: true,
+            reset_tool_iterations: true,
             reset_errors: true,
             // Fork sub-ctx must end into its caller — never jump to a sibling
             // behavior. Waist scrubs any `<next_behavior>` the sub-LLM emits.
@@ -1628,7 +1628,7 @@ mod tests {
                 TOOL_TRY_CREATE_WORKSESSION.to_string(),
                 "forward_msg".to_string(),
             ],
-            max_rounds: 24,
+            max_tool_iterations: 24,
             max_calls_per_round: 3,
             ..ToolPolicy::default()
         };
@@ -1666,7 +1666,7 @@ mod tests {
         );
         assert!(matches!(sub.action_mode, ToolMode::None));
         assert!(sub.disable_capabilities.contains(&"web_search".to_string()));
-        assert_eq!(sub.max_rounds, 24);
+        assert_eq!(sub.max_tool_iterations, 24);
         assert_eq!(sub.max_calls_per_round, 3);
     }
 }

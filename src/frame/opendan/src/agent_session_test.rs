@@ -657,7 +657,7 @@ fn append_turn_message_preserves_behavior_step_records() {
         forbid_next_behavior: false,
     };
     let mut state = LLMContextState::from_request(&request, 1);
-    state.rounds_left = 0;
+    state.tool_iterations_left = 0;
     state.steps.push(llm_context::behavior_loop::StepRecord {
         meta: llm_context::behavior_loop::StepMeta {
             behavior_name: "plan".to_string(),
@@ -705,7 +705,7 @@ fn append_turn_message_preserves_behavior_step_records() {
         "cross-behavior inherited steps must not become the new behavior hot tail"
     );
     assert_eq!(out.state.next_step_index, 1);
-    assert_eq!(out.state.rounds_left, out.request.tool_policy.max_rounds);
+    assert_eq!(out.state.tool_iterations_left, out.request.tool_policy.max_tool_iterations);
 }
 
 #[test]

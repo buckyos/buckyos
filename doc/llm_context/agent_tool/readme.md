@@ -9,8 +9,8 @@
 
 当前 OpenDAN Runtime 中的 AgentTool 采用传统模式实现，基于 tool_calls 机制提供基本的 Agent 工具能力。在此基础上，每个 tool 支持两种调用模式：
 
-- **Function 模式**：标准的 function calling，可在 LLM 推理过程中多次调用
-- **Action 模式**：在一次 LLM 调用的末尾执行，决定是否进入下一个 step，通常用于写操作
+- **Function 模式**：标准的 function calling，一个 run 中可多次调用；每次推理（Round）返回的原生 tool calls 组成一个工具批次，结果按 `call_id` 回灌
+- **Action 模式**：Behavior Loop 中在一个 Step 的决策输出之后执行，结果记入该 Step 的 `StepRecord`，供下一个 Step 读取，通常用于写操作
 
 ### 核心假设
 
@@ -115,6 +115,8 @@ AgentTool CLI 可执行文件启动
    - `long_running` → 按 `check_after` 周期 poll
    - `wait_for_install` → 等待外部流程完成
 4. 在后续 loop 中调用 `check_task <task_id>` 获取最终结果
+
+> 当前 xllm / libopendan 宿主以 `allow_deferred = false` 运行，工具返回 `pending` 会结束 run，上述流程尚未接通；宿主侧的调用身份与 Pending 回填规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#调用身份结果归属与-pending-回填)。
 
 ### 状态可流转
 

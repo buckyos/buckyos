@@ -860,7 +860,7 @@ mod tests {
             trace_id: "trace-1".to_string(),
             agent_name: "did:test:jarvis".to_string(),
             behavior: "on_wakeup".to_string(),
-            step_idx: 0,
+            tool_call_index: 0,
             wakeup_id: "wakeup-1".to_string(),
             session_id: session_id.to_string(),
             read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,

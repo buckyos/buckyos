@@ -9,7 +9,7 @@
 //! - [`OpendanToolAdapter`]  → `ToolManager`   (over `agent_tool::AgentToolManager`)
 //! - [`AgentPolicy`]         → `PolicyEngine`  (behavior-driven gate, MVP whitelist + approval)
 //! - [`OpenDanWorklogSink`]  → `WorklogSink`   (over `crate::worklog::WorklogService`)
-//! - [`SessionSnapshotHook`] → `TurnHook`      (writes `LLMContextSnapshot` to disk)
+//! - [`SessionSnapshotHook`] → `InferenceHook` (writes `LLMContextSnapshot` to disk)
 //!
 //! Step 3 (`behavior_cfg`) will plug `LLMResultParser` / `StepRenderer` on
 //! top of [`build_session_deps`] when the Behavior Loop is enabled for a
@@ -34,8 +34,8 @@ use ::agent_tool::{AgentToolManager, AgentToolResult, AgentToolStatus, SessionRu
 use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     deps::{
-        LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine, ToolDispatchError,
-        ToolManager, ToolSpecLite, TurnHook, WorkEvent, WorklogSink,
+        InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine,
+        ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
     },
     error::{LLMComputeError, ProviderFailure},
     observation::Observation,
@@ -326,7 +326,7 @@ impl OpendanToolAdapter {
         ctx: SessionRuntimeContext,
         from_user_did: Option<String>,
     ) -> Self {
-        let step_idx = AtomicU32::new(ctx.step_idx);
+        let step_idx = AtomicU32::new(ctx.tool_call_index);
         Self {
             manager,
             ctx,
@@ -345,7 +345,7 @@ impl OpendanToolAdapter {
 impl ToolManager for OpendanToolAdapter {
     async fn call_tool(&self, mut call: AiToolCall) -> Result<Observation, ToolDispatchError> {
         let mut ctx = self.ctx.clone();
-        ctx.step_idx = self.step_idx.fetch_add(1, Ordering::Relaxed);
+        ctx.tool_call_index = self.step_idx.fetch_add(1, Ordering::Relaxed);
         let call_id = call.call_id.clone();
         // §4.7.2 — overwrite any pre-existing `from_user_did` in args.
         // The LLM has no business setting this field; only the runtime
@@ -894,14 +894,14 @@ impl WorklogSink for OpenDanWorklogSink {
 }
 
 // =====================================================================
-// TurnHook — snapshot persistence
+// InferenceHook — snapshot persistence
 // =====================================================================
 
-/// `TurnHook` that flushes the latest `LLMContextSnapshot` to disk before
+/// `InferenceHook` that flushes the latest `LLMContextSnapshot` to disk before
 /// every LLM inference. Pair with `session/.meta/state.snap`.
 ///
 /// This is the session's critical checkpoint: a failed write is returned to
-/// the waist, which then does not start the inference (see `TurnHook`).
+/// the waist, which then does not start the inference (see `InferenceHook`).
 ///
 /// Sync I/O is intentional — the waist blocks on this hook, and tokio's
 /// `spawn_blocking` would add overhead for a small JSON write. If profiling
@@ -938,7 +938,7 @@ pub(crate) fn write_snapshot_file(
     Ok(())
 }
 
-impl TurnHook for SessionSnapshotHook {
+impl InferenceHook for SessionSnapshotHook {
     fn before_inference(&self, snapshot: &LLMContextSnapshot) -> std::result::Result<(), String> {
         write_snapshot_file(&self.path, snapshot).map_err(|err| {
             warn!("opendan.snapshot: pre-inference checkpoint failed: {err}");
@@ -1112,12 +1112,12 @@ pub fn build_session_deps(runtime: &AgentRuntime, input: SessionDepsInput) -> LL
         one_line_status,
         i18n,
     ));
-    let hook: Arc<dyn TurnHook> = Arc::new(SessionSnapshotHook::new(snapshot_path));
+    let hook: Arc<dyn InferenceHook> = Arc::new(SessionSnapshotHook::new(snapshot_path));
 
     let mut deps = LLMContextDeps::new(llm, tools_adapter)
         .with_policy(policy)
         .with_worklog(worklog)
-        .with_turn_hook(hook);
+        .with_inference_hook(hook);
     if let Some((parser, renderer)) = parser_renderer {
         deps = deps.with_result_parser(parser).with_step_renderer(renderer);
     }

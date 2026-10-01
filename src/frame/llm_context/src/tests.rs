@@ -8,8 +8,8 @@ use buckyos_api::{
 use serde_json::json;
 
 use crate::deps::{
-    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager, ToolSpecLite,
-    TurnHook,
+    InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager,
+    ToolSpecLite,
 };
 use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::observation::{Observation, ToolExecStatus};
@@ -197,7 +197,7 @@ fn base_request() -> LLMContextRequest {
         },
         tool_policy: ToolPolicy {
             mode: ToolMode::All,
-            max_rounds: 4,
+            max_tool_iterations: 4,
             max_calls_per_round: 4,
             ..ToolPolicy::default()
         },
@@ -276,7 +276,7 @@ async fn done_without_tool_calls() {
 }
 
 #[tokio::test]
-async fn one_tool_round_then_done() {
+async fn one_tool_batch_then_done() {
     let mut args: HashMap<String, serde_json::Value> = HashMap::new();
     args.insert("msg".into(), json!("ping"));
     let call = AiToolCall {
@@ -393,7 +393,7 @@ struct CountingHook {
     count: Arc<Mutex<u32>>,
 }
 
-impl TurnHook for CountingHook {
+impl InferenceHook for CountingHook {
     fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
         *self.count.lock().unwrap() += 1;
         Ok(())
@@ -401,13 +401,13 @@ impl TurnHook for CountingHook {
 }
 
 #[tokio::test]
-async fn turn_hook_fires_before_each_inference() {
+async fn inference_hook_fires_before_each_inference() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_response("hello back")]));
     let count = Arc::new(Mutex::new(0));
-    let hook: Arc<dyn TurnHook> = Arc::new(CountingHook {
+    let hook: Arc<dyn InferenceHook> = Arc::new(CountingHook {
         count: count.clone(),
     });
-    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools)).with_turn_hook(hook);
+    let deps = LLMContextDeps::new(llm, Arc::new(EchoTools)).with_inference_hook(hook);
     let mut ctx = LLMContext::new(base_request(), deps);
 
     let _ = ctx.run().await;
@@ -541,7 +541,7 @@ async fn resume_from_mid_run_after_interrupt_replays_inference() {
 }
 
 #[tokio::test]
-async fn tool_rounds_budget_exhausted() {
+async fn tool_iterations_budget_exhausted() {
     let mut args: HashMap<String, serde_json::Value> = HashMap::new();
     args.insert("msg".into(), json!("ping"));
     let make_call = |id: &str| AiToolCall {
@@ -550,21 +550,21 @@ async fn tool_rounds_budget_exhausted() {
         call_id: id.into(),
     };
 
-    // 3 inferences, each demands another tool call. max_rounds = 2 ⇒
-    // after 2 rounds the loop bails out with BudgetExhausted.
+    // 3 inferences, each demands another tool call. max_tool_iterations = 2 ⇒
+    // after 2 tool iterations the loop bails out with BudgetExhausted.
     let llm = Arc::new(ScriptedLlm::new(vec![
         tool_response(None, vec![make_call("c-1")]),
         tool_response(None, vec![make_call("c-2")]),
         tool_response(None, vec![make_call("c-3")]),
     ]));
     let mut req = base_request();
-    req.tool_policy.max_rounds = 2;
+    req.tool_policy.max_tool_iterations = 2;
     let deps = LLMContextDeps::new(llm, Arc::new(EchoTools));
     let mut ctx = LLMContext::new(req, deps);
 
     match ctx.run().await {
         LLMContextOutcome::BudgetExhausted { which, .. } => {
-            assert!(matches!(which, crate::outcome::BudgetKind::ToolRounds));
+            assert!(matches!(which, crate::outcome::BudgetKind::ToolIterations));
         }
         other => panic!("expected BudgetExhausted, got {other:?}"),
     }
@@ -605,7 +605,7 @@ async fn behavior_loop_assigns_step_metadata() {
 }
 
 #[tokio::test]
-async fn behavior_turn_tail_renders_after_inherited_steps_and_clears_after_inference() {
+async fn inner_transcript_renders_after_inherited_steps_and_clears_after_inference() {
     let llm = Arc::new(RecordingLlm::new(text_response(
         "<response><thinking>start do</thinking><next_behavior>END</next_behavior></response>",
     )));
@@ -647,7 +647,7 @@ async fn behavior_turn_tail_renders_after_inherited_steps_and_clears_after_infer
         .with_result_parser(Arc::new(XmlBehaviorParser::new()))
         .with_step_renderer(Arc::new(XmlStepRenderer::new()));
     let mut ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
-        .expect("resume should accept tail-only behavior turn input");
+        .expect("resume should accept an inner-transcript-only behavior input");
 
     let outcome = ctx.run().await;
     assert!(matches!(outcome, LLMContextOutcome::Done { .. }));
@@ -668,7 +668,7 @@ async fn behavior_turn_tail_renders_after_inherited_steps_and_clears_after_infer
         .expect("inherited plan step");
     assert!(
         inherited_idx < continue_idx,
-        "inherited plan step must render before the turn trigger"
+        "inherited plan step must render before the hand-over input"
     );
     assert!(
         messages
@@ -681,7 +681,7 @@ async fn behavior_turn_tail_renders_after_inherited_steps_and_clears_after_infer
     assert_eq!(
         snapshot.state.accumulated.len(),
         snapshot.request.input.len(),
-        "turn tail should be consumed after the first behavior inference"
+        "the inner transcript should be consumed after the first behavior inference"
     );
 }
 
@@ -1292,7 +1292,7 @@ async fn behavior_parse_errors_terminate_on_fourth_failure() {
 }
 
 #[tokio::test]
-async fn multiple_tool_errors_in_one_round_count_as_one_failure() {
+async fn multiple_tool_errors_in_one_batch_count_as_one_failure() {
     let tools = Arc::new(ScriptedTools::new());
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         tool_response(
@@ -1307,7 +1307,7 @@ async fn multiple_tool_errors_in_one_round_count_as_one_failure() {
     let mut ctx = LLMContext::new(req, deps);
 
     let LLMContextOutcome::Done { trace, .. } = ctx.run().await else {
-        panic!("expected Done: three failed calls are one failed round");
+        panic!("expected Done: three failed calls are one failed iteration");
     };
     assert_eq!(tools.calls().len(), 3, "traditional loop runs the whole batch");
     assert_eq!(trace.tool_trace.len(), 3);
@@ -1332,7 +1332,7 @@ async fn successful_inference_does_not_reset_consecutive_errors() {
     let mut ctx = LLMContext::new(base_request(), deps);
 
     let LLMContextOutcome::Error { error, trace, .. } = ctx.run().await else {
-        panic!("expected Error after the 4th consecutive failed round");
+        panic!("expected Error after the 4th consecutive failed iteration");
     };
     assert!(matches!(error, LLMComputeError::ToolFailed { .. }));
     assert_eq!(llm.seen().len(), 4);
@@ -1340,7 +1340,7 @@ async fn successful_inference_does_not_reset_consecutive_errors() {
 }
 
 #[tokio::test]
-async fn clean_tool_round_resets_consecutive_errors() {
+async fn clean_tool_batch_resets_consecutive_errors() {
     let tools = Arc::new(ScriptedTools::new());
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![
         tool_response(None, vec![call("fail:b", "c-1")]),
@@ -1603,16 +1603,16 @@ async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step(
 }
 
 #[tokio::test]
-async fn turn_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
+async fn inference_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
     struct FailingHook;
-    impl TurnHook for FailingHook {
+    impl InferenceHook for FailingHook {
         fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
             Err("disk full".to_string())
         }
     }
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![text_response("hello")]));
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_turn_hook(Arc::new(FailingHook));
+        .with_inference_hook(Arc::new(FailingHook));
     let mut ctx = LLMContext::new(base_request(), deps);
     let before = ctx.snapshot();
 
@@ -1633,7 +1633,7 @@ async fn turn_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
 
     // Once the store is healthy again, only the checkpoint is redone.
     let count = Arc::new(Mutex::new(0));
-    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools)).with_turn_hook(Arc::new(
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools)).with_inference_hook(Arc::new(
         CountingHook {
             count: count.clone(),
         },
@@ -1646,9 +1646,9 @@ async fn turn_hook_failure_blocks_inference_and_keeps_snapshot_resumable() {
 }
 
 #[tokio::test]
-async fn turn_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
+async fn inference_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
     struct FailingHook;
-    impl TurnHook for FailingHook {
+    impl InferenceHook for FailingHook {
         fn before_inference(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
             Err("disk full".to_string())
         }
@@ -1657,7 +1657,7 @@ async fn turn_hook_failure_in_behavior_mode_surfaces_as_checkpoint_error() {
     let mut req = base_request();
     req.behavior_name = "do".into();
     let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
-        .with_turn_hook(Arc::new(FailingHook))
+        .with_inference_hook(Arc::new(FailingHook))
         .with_result_parser(Arc::new(XmlBehaviorParser::new()))
         .with_step_renderer(Arc::new(XmlStepRenderer::new()));
     let mut ctx = LLMContext::new(req, deps);
@@ -1691,15 +1691,16 @@ async fn resume_rejects_history_with_unanswered_tool_calls() {
 }
 
 #[tokio::test]
-async fn behavior_actions_consume_rounds_even_on_business_failure() {
-    for max_rounds in [0, 2] {
+async fn behavior_actions_consume_tool_iterations_even_on_business_failure() {
+    for max_tool_iterations in [0, 2] {
         for fail in [false, true] {
             let response = text_response(
                 "<response><actions><exec_bash>echo action</exec_bash></actions></response>",
             );
             let llm = Arc::new(ScriptedRecordingLlm::new(vec![
                 response;
-                max_rounds as usize + 1
+                max_tool_iterations as usize
+                    + 1
             ]));
             let tools: Arc<dyn ToolManager> = if fail {
                 Arc::new(FailingTools)
@@ -1707,7 +1708,7 @@ async fn behavior_actions_consume_rounds_even_on_business_failure() {
                 Arc::new(EchoTools)
             };
             let mut req = base_request();
-            req.tool_policy.max_rounds = max_rounds;
+            req.tool_policy.max_tool_iterations = max_tool_iterations;
             let deps = LLMContextDeps::new(llm.clone(), tools)
                 .with_result_parser(Arc::new(XmlBehaviorParser::new()))
                 .with_step_renderer(Arc::new(XmlStepRenderer::new()));
@@ -1717,16 +1718,16 @@ async fn behavior_actions_consume_rounds_even_on_business_failure() {
                 matches!(
                     outcome,
                     LLMContextOutcome::BudgetExhausted {
-                        which: BudgetKind::ToolRounds,
+                        which: BudgetKind::ToolIterations,
                         ..
                     }
                 ),
-                "max_rounds={max_rounds}, fail={fail}: {outcome:?}"
+                "max_tool_iterations={max_tool_iterations}, fail={fail}: {outcome:?}"
             );
             let state = ctx.snapshot().state;
-            assert_eq!(state.rounds_left, 0);
+            assert_eq!(state.tool_iterations_left, 0);
             let steps: Vec<_> = state.steps.iter().chain(state.last_step.iter()).collect();
-            assert_eq!(steps.len(), max_rounds as usize);
+            assert_eq!(steps.len(), max_tool_iterations as usize);
             for step in steps {
                 assert_eq!(step.action_results.len(), 1);
                 assert_eq!(
@@ -1734,13 +1735,13 @@ async fn behavior_actions_consume_rounds_even_on_business_failure() {
                     fail
                 );
             }
-            assert_eq!(llm.seen().len(), max_rounds as usize + 1);
+            assert_eq!(llm.seen().len(), max_tool_iterations as usize + 1);
         }
     }
 }
 
 #[tokio::test]
-async fn behavior_action_batch_uses_one_round_and_allows_final_response() {
+async fn behavior_action_batch_uses_one_tool_iteration_and_allows_final_response() {
     for terminal_with_actions in [false, true] {
         let terminal = if terminal_with_actions {
             "<next_behavior>END</next_behavior>"
@@ -1754,7 +1755,7 @@ async fn behavior_action_batch_uses_one_round_and_allows_final_response() {
             text_response("<response><next_behavior>END</next_behavior></response>"),
         ]));
         let mut req = base_request();
-        req.tool_policy.max_rounds = 1;
+        req.tool_policy.max_tool_iterations = 1;
         let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
             .with_result_parser(Arc::new(XmlBehaviorParser::new()))
             .with_step_renderer(Arc::new(XmlStepRenderer::new()));
@@ -1764,13 +1765,13 @@ async fn behavior_action_batch_uses_one_round_and_allows_final_response() {
             panic!("expected Done, got {outcome:?}");
         };
         assert_eq!(trace.tool_trace.len(), 2);
-        assert_eq!(ctx.snapshot().state.rounds_left, 0);
+        assert_eq!(ctx.snapshot().state.tool_iterations_left, 0);
         assert_eq!(llm.seen().len(), if terminal_with_actions { 1 } else { 2 });
     }
 }
 
 #[tokio::test]
-async fn behavior_native_tools_and_actions_share_rounds_across_steps() {
+async fn behavior_native_tools_and_actions_share_tool_iterations_across_steps() {
     let native = tool_response(
         None,
         vec![AiToolCall {
@@ -1781,7 +1782,7 @@ async fn behavior_native_tools_and_actions_share_rounds_across_steps() {
     );
     let action =
         text_response("<response><actions><exec_bash>echo action</exec_bash></actions></response>");
-    for max_rounds in [1, 2, 3, 4] {
+    for max_tool_iterations in [1, 2, 3, 4] {
         let llm = Arc::new(ScriptedRecordingLlm::new(vec![
             native.clone(),
             action.clone(),
@@ -1790,13 +1791,13 @@ async fn behavior_native_tools_and_actions_share_rounds_across_steps() {
             text_response("<response><next_behavior>END</next_behavior></response>"),
         ]));
         let mut req = base_request();
-        req.tool_policy.max_rounds = max_rounds;
+        req.tool_policy.max_tool_iterations = max_tool_iterations;
         let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
             .with_result_parser(Arc::new(XmlBehaviorParser::new()))
             .with_step_renderer(Arc::new(XmlStepRenderer::new()));
         let mut ctx = LLMContext::new(req, deps);
         let outcome = ctx.run().await;
-        if max_rounds == 4 {
+        if max_tool_iterations == 4 {
             let LLMContextOutcome::Done { trace, .. } = outcome else {
                 panic!("expected Done, got {outcome:?}");
             };
@@ -1806,15 +1807,116 @@ async fn behavior_native_tools_and_actions_share_rounds_across_steps() {
                 matches!(
                     outcome,
                     LLMContextOutcome::BudgetExhausted {
-                        which: BudgetKind::ToolRounds,
+                        which: BudgetKind::ToolIterations,
                         ..
                     }
                 ),
-                "max_rounds={max_rounds}: {outcome:?}"
+                "max_tool_iterations={max_tool_iterations}: {outcome:?}"
             );
         }
-        assert_eq!(ctx.snapshot().state.rounds_left, 0);
-        assert_eq!(llm.seen().len(), max_rounds as usize + 1);
+        assert_eq!(ctx.snapshot().state.tool_iterations_left, 0);
+        assert_eq!(llm.seen().len(), max_tool_iterations as usize + 1);
+    }
+}
+
+#[tokio::test]
+async fn function_call_loop_counts_rounds_and_tool_iterations_separately() {
+    let call = |id: &str| AiToolCall {
+        name: "echo".into(),
+        args: HashMap::new(),
+        call_id: id.into(),
+    };
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        tool_response(None, vec![call("c1")]),
+        tool_response(None, vec![call("c2"), call("c3")]),
+        text_response("final answer"),
+    ]));
+    let mut req = base_request();
+    req.tool_policy.max_tool_iterations = 5;
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools));
+    let mut ctx = LLMContext::new(req, deps);
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Done { output, trace, .. } = outcome else {
+        panic!("expected Done, got {outcome:?}");
+    };
+    assert_eq!(
+        output,
+        ContextOutput::Text {
+            content: "final answer".into()
+        }
+    );
+    // 3 Rounds (two tool-call responses + the final answer), 2 tool
+    // iterations (one per batch, whatever its size), no behavior Step.
+    assert_eq!(llm.seen().len(), 3);
+    assert_eq!(trace.tool_trace.len(), 3);
+    let state = ctx.snapshot().state;
+    assert_eq!(state.tool_iterations_left, 3);
+    assert!(state.steps.is_empty() && state.last_step.is_none());
+}
+
+#[tokio::test]
+async fn behavior_step_spans_rounds_and_holds_several_actions() {
+    let llm = Arc::new(ScriptedRecordingLlm::new(vec![
+        // Step 0, Round 1: a native tool call inside the step's inner loop.
+        tool_response(
+            None,
+            vec![AiToolCall {
+                name: "echo".into(),
+                args: HashMap::new(),
+                call_id: "native".into(),
+            }],
+        ),
+        // Step 0, Round 2: the decision with two actions.
+        text_response(
+            "<response><actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions></response>",
+        ),
+        // Step 1, Round 3: terminal decision.
+        text_response("<response><next_behavior>END</next_behavior></response>"),
+    ]));
+    let mut req = base_request();
+    req.tool_policy.max_tool_iterations = 5;
+    let deps = LLMContextDeps::new(llm.clone(), Arc::new(EchoTools))
+        .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+        .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+    let mut ctx = LLMContext::new(req, deps);
+    let outcome = ctx.run().await;
+    let LLMContextOutcome::Done { trace, .. } = outcome else {
+        panic!("expected Done, got {outcome:?}");
+    };
+    assert_eq!(llm.seen().len(), 3, "three Rounds");
+    assert_eq!(trace.tool_trace.len(), 3, "one native call + two actions");
+    let state = ctx.snapshot().state;
+    assert_eq!(state.steps.len(), 2, "two Steps");
+    assert_eq!(state.steps[0].meta.step_index, 0);
+    assert_eq!(state.steps[0].actions.len(), 2, "both actions in one Step");
+    assert_eq!(state.steps[0].action_results.len(), 2);
+    assert!(state.steps[1].actions.is_empty());
+    // One native batch + one action step; the Rounds are not charged.
+    assert_eq!(state.tool_iterations_left, 3);
+}
+
+#[test]
+fn resume_rejects_other_snapshot_versions() {
+    for version in [
+        0,
+        crate::state::SNAPSHOT_FORMAT_VERSION - 1,
+        crate::state::SNAPSHOT_FORMAT_VERSION + 1,
+    ] {
+        let req = base_request();
+        let mut state = LLMContextState::from_request(&req, 0);
+        state.snapshot_version = version;
+        let snapshot = LLMContextSnapshot {
+            request: req,
+            state,
+        };
+        let deps = LLMContextDeps::new(Arc::new(ScriptedLlm::new(vec![])), Arc::new(EchoTools));
+        let err = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps)
+            .err()
+            .expect("an unsupported version is refused");
+        assert!(
+            matches!(err, LLMComputeError::SnapshotCorrupted(_)),
+            "version {version}: {err:?}"
+        );
     }
 }
 

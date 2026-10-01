@@ -2,6 +2,6 @@
 
 - session: `work-fixture-finished`
 - outcome: succeeded
-- rounds: 1
+- turns: 1
 
 done: notes.txt written

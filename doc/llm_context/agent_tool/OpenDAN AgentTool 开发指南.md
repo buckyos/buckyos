@@ -176,7 +176,7 @@ EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES = [
 | `OPENDAN_AGENT_ID` | 从 Agent RootFS identity metadata 或 BuckyOS runtime 推导。 |
 | `OPENDAN_OWNER_USER_ID` / `OPENDAN_AGENT_OWNER` / `BUCKYOS_OWNER_USER_ID` | 从 Agent RootFS identity metadata、`app_instance_config` 或 BuckyOS runtime 推导。 |
 | `OPENDAN_AGENT_TOOL` / `OPENDAN_AGENT_BIN` / `OPENDAN_SESSION_TOOL_PATH` | 由 runtime 根据路径规则计算，并通过 `PATH` 或 generated shell hook 使用，不要求工具进程读取。 |
-| `OPENDAN_BEHAVIOR` / `OPENDAN_STEP_IDX` / `OPENDAN_WAKEUP_ID` | 运行时 step 上下文，写入 session state；需要时由工具按 `OPENDAN_AGENT_ROOT + OPENDAN_SESSION_ID` 读取。 |
+| `OPENDAN_BEHAVIOR` / `OPENDAN_STEP_IDX` / `OPENDAN_WAKEUP_ID` | behavior / wakeup 属运行时上下文，写入 session state；需要时由工具按 `OPENDAN_AGENT_ROOT + OPENDAN_SESSION_ID` 读取。旧 `OPENDAN_STEP_IDX` 传的是工具运行上下文的 `step_idx`，即现在的调用序号 `SessionRuntimeContext.tool_call_index`，不是 Behavior Step 编号，CLI 进程不再获得该值。 |
 | `AGENT_MEMORY_ROOT` / `AGENT_NOTEBOOK_ROOT` | 降级为 dev-only CLI override；生产 AgentTool 从 Agent RootFS 固定路径推导。 |
 | `OPENDAN_WORKFLOW_URL` / `OPENDAN_TASK_MANAGER_URL` 等服务 URL fallback | 降级为 dev-only fallback；生产环境通过 BuckyOS runtime client 发现服务。 |
 
@@ -281,7 +281,7 @@ CallingConventions::ALL
 | Convention | 谁使用 | 说明 |
 |------------|--------|------|
 | `BASH` | `get_bash_cmd()` / `call_tool_from_bash_line()` / bash namespace | 表示工具能从 bash 风格参数解析执行 |
-| `ACTION` | `execute_actions()` | 表示工具可出现在 LLM step 末尾的结构化 action 里 |
+| `ACTION` | `execute_actions()` | 表示工具可出现在 Behavior Step 决策输出的结构化 action 里，结果记入该 Step 的 `action_results`，按 `call_id` 关联 |
 | `LLM` | `list_tool_specs()` / `call_tool()` policy | 表示工具会作为标准 LLM tool call 暴露 |
 
 `AgentToolManager::register_tool_arc()` 要求 `calling()` 非空。注册后只维护一份 `tools` map，具体 namespace 查询通过 `calling()` 过滤：
@@ -570,7 +570,7 @@ OPENDAN_AGENT_ROOT
 | `agent_id` / app id | Agent RootFS identity metadata；缺失时通过 BuckyOS runtime 或 `app_instance_config` 推导 |
 | owner user id | Agent RootFS identity metadata；缺失时通过 BuckyOS runtime 或 `app_instance_config` 推导 |
 | session root | `<agent_root>/sessions/<session_id>/` |
-| behavior / step / wakeup | session state / last step record，不再从进程 env 读取 |
+| behavior / step / wakeup | session state / last step record，不再从进程 env 读取。Step 身份是 `(run_id, step_index)`；`SessionRuntimeContext.tool_call_index` 是宿主为进程内工具调用递增的调用序号（CLI 进程中为 0），不能当作 Step 或 Turn 编号 |
 | tool bin / session tool path | BuckyOS tools 路径规则和 `agent_id + session_id` 计算 |
 | memory / notebook / todo / workspace | Agent RootFS 固定目录规则 |
 

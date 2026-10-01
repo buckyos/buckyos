@@ -43,7 +43,7 @@
           "type": "integer"
         },
         "flushed_epoch": {
-          "description": "History epoch (`HostMeta.history_epoch`) `flushed_step` counts in. A snapshot of a newer epoch starts at zero: its whole history before the rewrite was flushed before the rewrite was published.",
+          "description": "History epoch (`HostMeta.history_epoch`) `flushed_message_count` counts in. A snapshot of a newer epoch starts at zero: its whole history before the rewrite was flushed before the rewrite was published.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -55,9 +55,14 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "flushed_step": {
-          "default": 0,
-          "description": "What of this run is already in the worklog. Function call runs: the number of messages after the prefix; behavior runs: steps with `step_index < flushed_step`.",
+        "flushed_message_count": {
+          "description": "Function call runs: messages after the history prefix (within `flushed_epoch`) already in the worklog.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "flushed_step_index": {
+          "description": "Behavior runs: steps with `step_index <` this are in the worklog (identity high-water mark, not a count: inherited steps of a fork child and steps rewritten away are never written).",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -69,18 +74,63 @@
             "null"
           ]
         },
-        "rounds": {
+        "run_id": {
+          "type": "string"
+        },
+        "turns": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/RoundInputs"
+            "$ref": "#/definitions/TurnInputs"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "run_id"
+      ],
+      "type": "object"
+    },
+    "OpenTurn": {
+      "description": "The logical Turn in progress (one Input → result of the AgentSession).\n\nOpened by the first input batch committed while no Turn is open (bootstrap, msg / event). Behavior switches, fork calls and returns, independent context switches, observation injections, resumable suspensions (interrupt, retryable error, context limit, pending tool), history epoch rewrites and restarts keep it open; inputs consumed while it is open join it. Only the session closes it, when it interprets an outcome as the Turn's result or failure ([`TurnStatus`]).",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "hook": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "index": {
+          "description": "Session-wide Turn number, starting at 1.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "input_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inputs": {
+          "description": "msg / event inputs that make up the Turn's logical input: those of the opening batch, then those consumed while it was open.",
+          "items": {
+            "type": "string"
           },
           "type": "array"
         },
         "run_id": {
+          "description": "Input batch that opened it: `(run_id, input_seq)`.",
           "type": "string"
         }
       },
       "required": [
+        "at_ms",
+        "index",
+        "input_seq",
         "run_id"
       ],
       "type": "object"
@@ -116,8 +166,12 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "flushed_step": {
-          "default": 0,
+        "flushed_message_count": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "flushed_step_index": {
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -125,15 +179,15 @@
         "mode": {
           "$ref": "#/definitions/ProcessMode"
         },
-        "rounds": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/RoundInputs"
-          },
-          "type": "array"
-        },
         "run_id": {
           "type": "string"
+        },
+        "turns": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/TurnInputs"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -156,54 +210,6 @@
         "type": "string"
       },
       "type": "array"
-    },
-    "RoundInputs": {
-      "description": "Inputs consumed by one round of a run (written into `round_started`).",
-      "properties": {
-        "at_ms": {
-          "default": 0,
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "changes": {
-          "description": "Subscription changes, e.g. `s1@16`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "hook": {
-          "description": "Hook point that started the round (`on_init`, `on_wakeup`, ...).",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "input_seq": {
-          "default": 0,
-          "description": "`input_seq` of the receipt that opened the round.",
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
-        "inputs": {
-          "description": "Stable input ids, e.g. `q#121`.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "round": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "round"
-      ],
-      "type": "object"
     },
     "RunState": {
       "enum": [
@@ -284,6 +290,54 @@
       "required": [
         "kind",
         "ref"
+      ],
+      "type": "object"
+    },
+    "TurnInputs": {
+      "description": "Inputs of one logical Turn that entered a run. The input batch that opens the Turn (or the first batch of an already open Turn in this run) starts an entry; later batches of the same Turn (hand-over, observation, supplementary input) extend it, so the list grows with Turns, not with batches.",
+      "properties": {
+        "at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "changes": {
+          "description": "Subscription changes, e.g. `s1@16`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "description": "Hook point of the first batch (`on_init`, `on_wakeup`, `on_behavior_switch`, `observation`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_seq": {
+          "default": 0,
+          "description": "`input_seq` of the first batch of this Turn in the run.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inputs": {
+          "description": "Stable input ids, e.g. `q#121`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "turn"
       ],
       "type": "object"
     },
@@ -405,7 +459,7 @@
       "type": "object"
     },
     "internal_continuation": {
-      "description": "A round to start without new input (behavior switch hand-over).",
+      "description": "An input batch to commit without new input (behavior switch / fork return / independent hand-over); it joins the open Turn.",
       "type": [
         "string",
         "null"
@@ -433,6 +487,17 @@
     "one_line_status": {
       "default": "",
       "type": "string"
+    },
+    "open_turn": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/OpenTurn"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The Turn in progress, if any."
     },
     "outcome": {
       "anyOf": [
@@ -464,7 +529,7 @@
       ]
     },
     "process_result": {
-      "description": "Result of a fork child process, handed to the resumed parent in the next round (`{behavior, result}`)."
+      "description": "Result of a fork child process, handed to the resumed parent in its hand-over batch (`{behavior, result}`)."
     },
     "process_stack": {
       "items": {
@@ -488,12 +553,6 @@
     },
     "result": true,
     "rev": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
-    },
-    "round": {
-      "default": 0,
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
@@ -522,6 +581,20 @@
       "default": {
         "title": ""
       }
+    },
+    "turn_seq": {
+      "default": 0,
+      "description": "Number of the latest Turn opened (0 before the first input batch).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "turns_completed": {
+      "default": 0,
+      "description": "Turns closed with [`TurnStatus::Completed`].",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "updated_at_ms": {
       "default": 0,

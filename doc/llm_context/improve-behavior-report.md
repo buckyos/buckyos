@@ -2,7 +2,7 @@
 
 ## 背景
 
-本记录基于本轮语音讨论和当前实现整理。
+本记录基于一次语音讨论和当前实现整理。其中 `opendan` Session 层的现状、处理流程和 MVP 描述的是旧 opendan Runtime（`src/frame/opendan`），待下一阶段 opendan 按 libopendan 的抽象重构接入；libopendan 已有的对应行为见“libopendan 当前实现”一节。Round / Step / Turn 的定义见 [readme.md](readme.md)。
 
 核心结论：Behavior 模式里的 `<report>` 语义不是"发一条消息给用户"，而是"向上级 report"。谁是上级、如何投递、是否展示给最终 UI，不应该由 `llm_context` 判断，而应该由 Behavior / Session 层定义。
 
@@ -45,6 +45,17 @@
 
 因此目前缺的是反向链路：WorkSession 触发 report 后，Session 层应把 report 作为有 envelope 的事件投给其上级 UI Session。
 
+### libopendan 当前实现
+
+相关代码：`src/frame/lib_opendan/src/runner/drive.rs`（`handle_context_outcome`、`classify_done`、`finish_run`）。
+
+- `handle_context_outcome` 解释 run 的 `Done`：终止 Step 的 `<report>`（`behavior_result.self_report`）优先作为本次结果（answer），没有时取最后的回答文本。`END` / `done`（xllm 解析器把只带 `<report>` 的 Step 判为 `done`）是终止，`WAIT_USER_MSG` 是等待输入，其它 `next_behavior` 是 behavior 切换。
+- fork child：任何 Done（`WAIT_USER_MSG` 除外）都返回调用方，child 的结果进 `state.process_result`，parent run 恢复后在交接批次 `<session_input hook="on_behavior_switch">` 的 `<process_result behavior=…>` 里读到。这是 parent handoff，不上行、不完成 Turn。
+- normal / independent 切换不交接 report；independent process 的 `END` 不弹回上一 process，而是按 Session 的 Done 处理。
+- Turn 完成由 Session 判定：交付了结果的 Done → Turn `completed`；`WAIT_USER_MSG` 只有本 run 有 `<report>`（`last_report`）或最后一个 Step 有 `<sendmsg>` 时才完成 Turn；切换和 fork 返回保持 Turn 打开。
+- Session 结束（`end_condition` 满足）时，`finish_run` 把 answer 写进 `report.md`（`- turns: N` 为已完成的 Turn 数）和 `state.result.answer`。
+- 没有向上级 Session 投递 report envelope 的实现。父 Session 可以通过 `origin.parent_session` 建立的半订阅观察子 Session 的状态，结果回传仍需调用方组合（见 [readme.md](readme.md) 的 AgentSession Tree）。
+
 ## 目标语义
 
 ### 1. `<report>` 的含义由当前 Behavior 定义
@@ -60,9 +71,9 @@
 
 ### 2. Session 层定义"向上级 report"的实际行为
 
-Session 层可以拦截每一轮 LLMContext 的结果，并根据自己的 session 类型和父子关系决定如何处理 report：
+Session 层可以拦截每次 LLMContext run 返回的 Outcome，并根据自己的 session 类型和父子关系决定如何处理 report：
 
-- Fork / Independent 子 process：上级是同一个 WorkSession 内的父 context / parent process，当前实现已经通过 `last_report` 作为 handoff。
+- Fork / Independent 子 process：上级是同一个 WorkSession 内的父 context / parent process，旧 Runtime 已经通过 `last_report` 作为 handoff（libopendan 只有 fork 交回结果，见上文“libopendan 当前实现”）。
 - WorkSession 顶层 context：默认上级是创建它的 UI Session，即 `SessionMeta.owner` 指向的 session。
 - UI Session 顶层 context：已经是 Agent 内的最上层，是否把 report 展示给最终 UI 由 UI 实现决定。
 
@@ -78,7 +89,7 @@ Session 层可以拦截每一轮 LLMContext 的结果，并根据自己的 sessi
    - WorkSession 顶层 context 的 report 才默认向创建它的 UI Session 上行。
    - UI Session 顶层 context 的 report 是否继续展示给用户，是 UI Session / UI 层自己的策略。
 3. **Session 层是当前实现的统一承接点**
-   - 目前父 context 的"处理机会"还没有独立 runtime hook，所有 handoff 都在 `AgentSession` 里完成。
+   - 目前父 context 的"处理机会"还没有独立 runtime hook，所有 handoff 都在 `AgentSession`（libopendan 是 `SessionRunner`）里完成。
    - 因此文档里的"父 context 处理"是语义定义；实现上仍可先由 Session 层读取调用栈和 switch mode 来模拟这个 handoff。
 
 ### 4. switch mode 决定 report 来源和归属
@@ -93,6 +104,8 @@ Session 层可以拦截每一轮 LLMContext 的结果，并根据自己的 sessi
 
 这个规则避免把内部子任务的中间结果泄漏给 UI，同时保留 Session 层观察和审计完整链路的能力。
 
+上表的 `independent` 行是旧 opendan Runtime 的行为（child `END` 时把 `last_report` 作为 `process_return` history input 交给 parent）。libopendan 中只有 fork 有返回语义；independent process 之间靠显式 `next_behavior` 切换，切回时不带 report，`END` 按 Session 的 Done 处理。independent 的 report 归属尚未定，待下一阶段 opendan 重构时确定。
+
 ### 5. WorkSession report 不等同于直接给用户发消息
 
 WorkSession 的 report 应先投递到 UI Session。到达 UI Session 时需要带 envelope，让 UI Session 或前端 UI 有机会决定：
@@ -100,7 +113,7 @@ WorkSession 的 report 应先投递到 UI Session。到达 UI Session 时需要�
 - 忽略阶段性 report；
 - 只关注 WorkSession 结束时的最后一条 report；
 - 将 report 渲染成进度卡片；
-- 将 report 合并进下一轮给用户的回复；
+- 将 report 合并进下一次给用户的回复；
 - 只存入历史，不打扰用户。
 
 默认策略应偏保守：UI Session 通常只关心 WorkSession 完成时的最后一条 report。
@@ -139,6 +152,7 @@ WorkSession -> UI Session 的上行对象建议作为 `PendingInput::Event` 投�
 - `report`：来自 `final_snapshot.state.last_report`，这是唯一权威正文。
 - `phase=checkpoint`：WorkSession 仍会继续工作，UI 默认可以忽略或折叠。
 - `phase=final`：WorkSession 顶层结束时的最后报告，UI 默认应关注。
+- `phase` 表示 WorkSession 是否结束，不等于 Turn 是否完成：libopendan 中 `WAIT_USER_MSG` 且已有 report 时当前 Turn 已 `completed`，但 Session 仍在等待输入，所以仍是 `checkpoint`；`final` 对应 Session 结束。
 - `next_behavior`：来自 `behavior_result.next_behavior`，仅作为调试 / UI 判断辅助。
 - `context_depth`：调用栈深度；只有 `0` 的 report 默认允许向 Session 上级传播。
 - `process_entry` / `parent_process_entry`：用于解释 report 来自哪个 behavior process，以及它原本应交给谁。
@@ -148,9 +162,9 @@ WorkSession -> UI Session 的上行对象建议作为 `PendingInput::Event` 投�
 
 ## Session 层处理流程
 
-### WorkSession 完成一轮 Behavior Context
+### WorkSession 的 Behavior Context run 以 Done 返回
 
-在 `AgentSession::handle_outcome(Done)` 中，拿到：
+在旧 Runtime 的 `AgentSession::handle_outcome(Done)` 中（libopendan 对应 `handle_context_outcome` / `finish_run`），拿到：
 
 - `behavior_result`
 - `response`
@@ -186,7 +200,7 @@ UI Session 收到 `worksession_report` event 后，不需要无条件回用户�
 建议默认 prompt / runtime 约定：
 
 - `phase=checkpoint`：只有用户明确关心该 WorkSession 或 report 要求人类输入时才展示。
-- `phase=final`：把它作为 WorkSession 最终结果处理；可以发给前端，也可以等下一轮 UI 策略合并。
+- `phase=final`：把它作为 WorkSession 最终结果处理；可以发给前端，也可以等下一次 UI 回复时合并。
 - 若最终 UI 协议支持结构化消息，应保留 envelope，而不是把它降级成纯文本。
 
 ### Fork / Independent 子 process
@@ -235,6 +249,13 @@ last_report_delivery: Option<ReportDeliveryState>
 
 二者不能合并，否则会把 LastState 和消息副作用混在一起。
 
+### `<report>`、behavior Done、Turn 完成与 WorkSession 结束
+
+- `<report>`：只更新 `last_report`。中间 report 不结束 behavior，也不完成 Turn。
+- behavior Done：`next_behavior`（`END` / `done` / `WAIT_USER_MSG` / 跳转目标）或什么都没做的收敛 Step 让 `LLMContext::run()` 以 `Done` 返回。它只是一次 `run()` 调用的返回（normal 切换后同一个 run 还会继续），切换和 fork 返回之后 Turn 仍然打开。
+- Turn 完成：只由 Session 判定（规则见上文“libopendan 当前实现”）。单独的 `<sendmsg>` 或中间 report 不完成 Turn。
+- WorkSession 结束（`phase=final`）：Session 按 `end_condition` 结束。一个 Session 可以先完成多个 Turn（`end_condition.type = "max_turns"`）。
+
 ### `last_report` vs `one_line_status`
 
 - `last_report`：面向上级的结构化/半结构化产出正文，可以较长。
@@ -250,7 +271,7 @@ WorkSession -> UI Session 是 Agent 内部 session 路由，不应直接 `msg_ce
 
 ## MVP 修改范围
 
-建议先做最小闭环：
+以下针对旧 opendan Runtime；下一阶段 opendan 基于 libopendan 重构时，需按 `handle_context_outcome` / `finish_run` 和 Turn 规则重新落位。建议先做最小闭环：
 
 1. 在 `AgentSession::handle_outcome(Done)` 的 WorkSession 顶层结束路径中，读取 `final_snapshot.state.last_report`。
 2. 确认当前 context 位于调用栈 0 号位置；若是 child context / child process，只做 parent handoff。

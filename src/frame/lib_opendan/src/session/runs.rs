@@ -98,7 +98,7 @@ impl SessionRuns {
             .store
             .read_record(run_id)
             .map_err(|e| blocked(format!("run record unusable: {e}")))?;
-        if record.version > agent_tool::local_llm_context::RUN_RECORD_VERSION {
+        if record.version != agent_tool::local_llm_context::RUN_RECORD_VERSION {
             return Err(blocked(format!(
                 "run record version {} is not supported",
                 record.version
@@ -332,11 +332,20 @@ impl RunHandle {
         })
     }
 
-    pub fn record_usage(&self, usage: &buckyos_api::AiUsage, llm_requests: u64) -> Result<()> {
-        let usage = usage.clone();
+    /// Record the run's cumulative context usage and add the Rounds
+    /// (`llm_requests`) made since the previous call: run.json
+    /// `usage.llm_requests` sums every executor's calls and is never reset.
+    pub fn record_usage(
+        &self,
+        usage: Option<&buckyos_api::AiUsage>,
+        llm_requests: u64,
+    ) -> Result<()> {
+        let usage = usage.cloned();
         self.update(|r| {
-            r.usage.main = Some(usage);
-            r.usage.llm_requests = llm_requests;
+            if let Some(u) = usage {
+                r.usage.main = Some(u);
+            }
+            r.usage.llm_requests += llm_requests;
         })
     }
 

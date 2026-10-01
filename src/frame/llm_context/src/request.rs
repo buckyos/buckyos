@@ -85,12 +85,21 @@ pub struct ToolPolicy {
     pub whitelist: Vec<String>,
     pub action_mode: ToolMode,
     pub action_whitelist: Vec<String>,
-    /// 0 disables the tool loop (one inference only).
-    pub max_rounds: u32,
+    /// Tool iteration budget. One iteration is one completed native tool
+    /// batch (all provider tool calls of one response, dispatched) or one
+    /// behavior step that dispatches actions; native batches inside a
+    /// behavior step and the step's actions share this budget. It does not
+    /// count inferences (Rounds): the final tool-free answer, a pure
+    /// report / decision step and output-parse corrections consume nothing.
+    /// 0 disables tool dispatch (one inference only).
+    pub max_tool_iterations: u32,
+    /// Native tool calls one model response (one Round) may request; more
+    /// calls reject the whole batch. Does not limit the actions of a
+    /// behavior step.
     pub max_calls_per_round: u32,
     pub max_observation_bytes: u32,
     pub disable_capabilities: Vec<String>,
-    /// Whether tool calls within the same round may run concurrently.
+    /// Whether the tool calls of one response may run concurrently.
     pub parallel: bool,
     /// Whether ToolManager may return `Observation::Pending`, suspending the
     /// run with `Outcome::PendingTool` until the scheduler fills the result.
@@ -107,7 +116,7 @@ impl Default for ToolPolicy {
             whitelist: Vec::new(),
             action_mode: ToolMode::All,
             action_whitelist: Vec::new(),
-            max_rounds: 8,
+            max_tool_iterations: 8,
             max_calls_per_round: 8,
             max_observation_bytes: 32 * 1024,
             disable_capabilities: Vec::new(),
@@ -211,11 +220,11 @@ pub struct HumanPolicy {
 pub struct ErrorPolicy {
     /// LLM-correctable errors (`LLMComputeError::llm_correctable`) are fed
     /// back into the history so the next inference can self-correct. The
-    /// counter increments once per failed logical round (one inference and
-    /// its tool batch, or one behavior step), no matter how many calls in
-    /// that round failed, and resets only after a round completes without
-    /// any correctable error. A successful provider request by itself does
-    /// not reset it.
+    /// counter increments once per failed iteration (one response and its
+    /// tool batch, or one behavior step), no matter how many calls in that
+    /// iteration failed, and resets only after an iteration completes
+    /// without any correctable error. A successful provider request by
+    /// itself does not reset it.
     ///
     /// `N` means at most `N` error feedbacks; the `N+1`-th consecutive
     /// failure ends the run with `Outcome::Error`. `0` disables the cap and

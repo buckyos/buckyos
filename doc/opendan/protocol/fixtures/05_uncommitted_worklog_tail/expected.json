@@ -14,27 +14,29 @@
         "executions": 0,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20260930-024535-5ee610",
+        "run_id": "20261001-042608-fc8fba",
         "run_status": "completed"
       },
       "runs_on_disk": [
-        "20260930-024535-5ee610"
+        "20261001-042608-fc8fba"
       ],
       "session_id": "work-fixture-tail",
       "state": {
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": 1,
         "outcome": null,
         "process_stack": [],
         "rev": 2,
-        "round": 1,
-        "run_state": "running"
+        "run_state": "running",
+        "turn_seq": 1,
+        "turns_completed": 0
       },
       "worklog": {
         "committed_bytes": 131,
         "committed_seq": 1,
-        "file_bytes": 1179,
+        "file_bytes": 1347,
         "uncommitted_tail": true
       }
     }

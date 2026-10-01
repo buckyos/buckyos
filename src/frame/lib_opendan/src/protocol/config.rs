@@ -10,7 +10,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/1";
+/// 2: `end_condition.type = max_turns`, `mechanical_compress.recent_full_responses`.
+pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/2";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -76,7 +77,10 @@ pub struct Origin {
 pub enum EndConditionType {
     LlmDeclaresDone,
     OutputSchema,
-    MaxRounds,
+    /// Finish after `detail.n` (default 1) completed logical Turns; between
+    /// them the session waits for input. Internal hand-overs (behavior
+    /// switch, fork, independent) are not Turns and cost nothing.
+    MaxTurns,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -171,8 +175,12 @@ fn default_class() -> String {
 /// Mechanical compression parameters for rendering worklog history (§4.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MechanicalCompress {
-    #[serde(default = "default_recent_full_steps")]
-    pub recent_full_steps: u32,
+    /// Model responses rendered in full, counted from the newest: the unit
+    /// is one recorded response, i.e. a behavior `step` or a function call
+    /// `assistant_message` (with the entries after it). Older entries are
+    /// cut to `summary_chars`.
+    #[serde(default = "default_recent_full_responses")]
+    pub recent_full_responses: u32,
     #[serde(default = "default_summary_chars")]
     pub summary_chars: u32,
     #[serde(default = "default_max_result_chars")]
@@ -181,7 +189,7 @@ pub struct MechanicalCompress {
     pub drop_kinds: Vec<String>,
 }
 
-fn default_recent_full_steps() -> u32 {
+fn default_recent_full_responses() -> u32 {
     2
 }
 fn default_summary_chars() -> u32 {
@@ -197,13 +205,14 @@ pub fn default_drop_kinds() -> Vec<String> {
         "compaction".to_string(),
         "input_rejected".to_string(),
         "change_dropped".to_string(),
+        "turn_ended".to_string(),
     ]
 }
 
 impl Default for MechanicalCompress {
     fn default() -> Self {
         Self {
-            recent_full_steps: default_recent_full_steps(),
+            recent_full_responses: default_recent_full_responses(),
             summary_chars: default_summary_chars(),
             max_result_chars: default_max_result_chars(),
             drop_kinds: default_drop_kinds(),

@@ -5,6 +5,10 @@
 //! - **Suspended**: `PendingTool` / `ContextLimitReached` / `Interrupted` —
 //!   a `LLMContextSnapshot` is produced and the run is resumable.
 //!
+//! An outcome ends one `run()` call, not a Round (one inference), a Step or
+//! an AgentSession Turn: one run may contain many Rounds and Steps, and the
+//! session decides whether an outcome completes its logical Turn.
+//!
 //! "Waiting for the next human message" is **not** a waist concept — it is a
 //! session-layer state. The behavior loop signals it via
 //! `Done.behavior_result.next_behavior == "WAIT_USER_MSG"` (sentinel
@@ -50,8 +54,8 @@ pub enum ResumeFill {
     /// Replaces `request.input`, `history_summaries`, `steps` and `last_step`;
     /// `steps` / `last_step` may only keep (possibly compacted) steps of the
     /// snapshot, identified by `step_index`. Step / action numbering,
-    /// `history_inputs` and the in-progress turn (messages after
-    /// `request.input` in `accumulated`) are kept. Thinking blocks are
+    /// `history_inputs` and the inner transcript of the step in progress
+    /// (messages after `request.input` in `accumulated`) are kept. Thinking blocks are
     /// dropped as for `RewrittenHistory`. Folding the whole materialized
     /// history into `input` (empty steps, no hot step) is valid.
     RewrittenSteps {
@@ -93,7 +97,9 @@ pub enum BudgetKind {
     Tokens,
     Wallclock,
     CostUnits,
-    ToolRounds,
+    /// `ToolPolicy.max_tool_iterations` (tool batches / action steps, not
+    /// inferences).
+    ToolIterations,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -158,15 +164,15 @@ pub enum LLMContextOutcome {
         trace: ContextRunTrace,
     },
 
-    /// Suspended at an inference boundary (first round, after tool results,
-    /// after injections) because the request about to be sent does not fit;
-    /// nothing was sent. The snapshot is the pre-inference state.
+    /// Suspended at an inference boundary (first inference, after tool
+    /// results, after injections) because the request about to be sent does
+    /// not fit; nothing was sent. The snapshot is the pre-inference state.
     /// `accumulated` is the history the scheduler may rewrite: function call
     /// mode `state.accumulated`; behavior mode the materialized prompt
-    /// (input, rendered step history, hot step) without the in-progress turn,
-    /// which the waist keeps verbatim. Resume with `RewrittenHistory` /
-    /// `RewrittenSteps`; a history that still does not fit yields again
-    /// without inference.
+    /// (input, rendered step history, hot step) without the inner transcript
+    /// of the step in progress, which the waist keeps verbatim. Resume with
+    /// `RewrittenHistory` / `RewrittenSteps`; a history that still does not
+    /// fit yields again without inference.
     ContextLimitReached {
         which: ContextLimitKind,
         usage: AiUsage,

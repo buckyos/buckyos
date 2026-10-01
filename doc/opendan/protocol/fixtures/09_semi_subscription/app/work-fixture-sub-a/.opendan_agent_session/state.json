@@ -1,11 +1,11 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 3,
   "writer": {
-    "runner_id": "rn-bd23ee2b090e48ab",
+    "runner_id": "rn-dd594fe1905b4f7e",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 2701845,
+    "pid": 595447,
     "lock_epoch": 1
   },
   "run_state": "finished",
@@ -15,16 +15,17 @@
     "answer": "answer",
     "answer_ref": "report.md"
   },
-  "round": 1,
+  "turn_seq": 1,
+  "turns_completed": 1,
   "bootstrap_done": true,
   "topic": {
     "title": ""
   },
   "live_run": null,
-  "last_run": "20260930-024535-8aee3f",
+  "last_run": "20261001-042608-e406cb",
   "worklog": {
-    "committed_seq": 5,
-    "committed_bytes": 833
+    "committed_seq": 6,
+    "committed_bytes": 987
   },
   "inputs": {},
   "recent_keys": [],
@@ -39,5 +40,5 @@
   },
   "one_line_status": "finished: answer",
   "stop_requested": false,
-  "updated_at_ms": 1790761535741
+  "updated_at_ms": 1790853968836
 }

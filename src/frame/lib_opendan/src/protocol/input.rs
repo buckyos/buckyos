@@ -245,7 +245,7 @@ impl InputMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MessagePos {
-    /// In `request.input` (first round of a new run).
+    /// In `request.input` (behavior runs before their first step).
     RequestInput { index: u64 },
     /// In `state.accumulated` (function-call runs).
     Accumulated { index: u64 },
@@ -266,6 +266,10 @@ pub struct ChangeReceipt {
     pub cursor: Value,
 }
 
+/// `InputReceipt.hook` of a batch injected at an observation boundary
+/// (inside a run, between Steps / tool batches).
+pub const OBSERVATION_HOOK: &str = "observation";
+
 /// Structured receipt of one batch of inputs that entered the context
 /// (§8.3). Persisted inside the run snapshot together with the message.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -273,10 +277,12 @@ pub struct InputReceipt {
     pub run_id: String,
     /// Monotonic within the run; batch id = (run_id, input_seq).
     pub input_seq: u64,
-    pub round: u64,
-    /// `true` when this batch opened a new round (vs. observation injection).
+    /// Logical Turn the batch belongs to (`SessionState.open_turn`).
+    pub turn: u64,
+    /// `true` when this batch opened the Turn; hand-over, resume,
+    /// supplementary and observation batches join the open Turn.
     #[serde(default)]
-    pub opens_round: bool,
+    pub opens_turn: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -307,7 +313,8 @@ pub struct InputReceipt {
 pub struct HostMeta {
     pub session_id: String,
     /// Number of `request.input` messages assembled by the host before the
-    /// first round (system + history). Messages after it belong to the run.
+    /// run's first input batch (system + history). Messages after it belong
+    /// to the run.
     #[serde(default)]
     pub base_input_len: u64,
     /// Behavior process entry the run belongs to.
@@ -324,9 +331,9 @@ pub struct HostMeta {
     /// worklog, `request.input` is rebuilt from the session history.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub history_epoch: u64,
-    /// Round in effect when the current epoch started.
+    /// Turn in effect when the current epoch started.
     #[serde(default, skip_serializing_if = "is_zero")]
-    pub epoch_round: u64,
+    pub epoch_turn: u64,
     /// Receipts with `input_seq ≤` this belong to earlier epochs: their
     /// message positions no longer apply (their identity still does).
     #[serde(default, skip_serializing_if = "is_zero")]

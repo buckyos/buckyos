@@ -192,6 +192,18 @@ impl StepRecord {
         Self::synthetic_error(format!("policy rejected: {error}"))
     }
 
+    /// `true` for a synthetic step built by [`Self::from_parse_error`] /
+    /// [`Self::from_policy_rejection`]: it records a rejected response fed
+    /// back for self-correction, not a behavior decision. It still takes a
+    /// step index (numbering is allocation order).
+    pub fn is_correction(&self) -> bool {
+        self.actions.is_empty()
+            && matches!(
+                self.action_results.as_slice(),
+                [Observation::Error { call_id, .. }] if call_id.is_empty()
+            )
+    }
+
     fn synthetic_error(message: String) -> Self {
         Self {
             meta: StepMeta::default(),
@@ -357,7 +369,7 @@ pub struct StepResultHookOutput {
 /// as a degradable failure — the loop logs it and renders the default
 /// observation. Implementations therefore must not commit state (consume
 /// inputs, advance cursors) before they can return `Ok`; anything that must
-/// block progress on failure belongs in `TurnHook::before_inference`.
+/// block progress on failure belongs in `InferenceHook::before_inference`.
 #[async_trait]
 pub trait StepResultHook: Send + Sync {
     async fn on_behavior_step_ob(

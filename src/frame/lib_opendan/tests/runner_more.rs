@@ -113,6 +113,20 @@ async fn change_is_injected_at_the_observation_boundary() {
     assert_eq!(users.len(), 2, "{users:?}");
     assert!(users[1].contains("evt2"));
     assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::ChangeDropped { .. })));
+    // The observation joined the Turn: one more user message, no new Turn,
+    // no input_batch marker.
+    let k = kinds(&wl);
+    assert_eq!(count(&k, "turn_started"), 1);
+    assert_eq!(count(&k, "input_batch"), 0);
+    let turns: Vec<u64> = wl
+        .iter()
+        .filter_map(|e| match &e.body {
+            WorklogBody::UserMessage { turn, .. } => Some(*turn),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(turns, vec![1, 1]);
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
 }
 
 #[tokio::test]
@@ -169,11 +183,36 @@ async fn behavior_loop_session_runs_actions() {
         "behavior-77"
     );
     assert!(sd.report().unwrap().contains("out.txt written"));
-    let k = kinds(&read_worklog(&sd));
+    let wl = read_worklog(&sd);
+    let k = kinds(&wl);
     assert_eq!(
         k,
-        vec!["created", "round_started", "user_message", "step", "action_result", "step", "outcome"]
+        vec![
+            "created",
+            "turn_started",
+            "user_message",
+            "step",
+            "action_result",
+            "step",
+            "outcome",
+            "turn_ended"
+        ]
     );
+    // Steps carry their run-local identity.
+    let steps: Vec<(String, u32, u64)> = wl
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Step {
+                run_id,
+                step_index,
+                turn,
+                ..
+            } => Some((run_id, step_index, turn)),
+            _ => None,
+        })
+        .collect();
+    let run_id = sd.state().unwrap().last_run.unwrap();
+    assert_eq!(steps, vec![(run_id.clone(), 0, 1), (run_id, 1, 1)]);
 }
 
 #[tokio::test]
@@ -432,7 +471,29 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
     let steps = step_texts(&sd);
     assert_eq!(steps.iter().filter(|s| s.contains("p1-output")).count(), 1, "{steps:?}");
     assert_eq!(steps.iter().filter(|s| s.contains("r1-output")).count(), 1, "{steps:?}");
-    assert_eq!(count(&k, "round_started"), 3, "{:#?}", read_worklog(&sd));
+    // One logical Turn: the fork call and the return are hand-over batches.
+    assert_eq!(count(&k, "turn_started"), 1, "{:#?}", read_worklog(&sd));
+    assert_eq!(count(&k, "input_batch"), 2, "{:#?}", read_worklog(&sd));
+    assert_eq!(count(&k, "turn_ended"), 1);
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    // 5 Rounds over two runs (parent + child), one Turn.
+    let stats = sd.statistics().unwrap();
+    assert_eq!((stats.rounds, stats.runs, stats.turns), (5, 2, 1));
+    // Step identity is (run_id, step_index): the child's steps continue the
+    // parent's numbering and are not mixed into the parent's.
+    let mut ids: Vec<(String, u32)> = read_worklog(&sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Step {
+                run_id, step_index, ..
+            } => Some((run_id, step_index)),
+            _ => None,
+        })
+        .collect();
+    let all = ids.len();
+    ids.sort();
+    ids.dedup();
+    assert_eq!(ids.len(), all, "each Step written once");
     // Parent run is the last run; the child run was replaced and removed.
     assert_eq!(sd.runs().list().unwrap(), vec![st.last_run.unwrap()]);
     // call ids stay unique across parent and child.
@@ -487,6 +548,13 @@ async fn independent_processes_keep_their_own_runs() {
     let steps = step_texts(&sd);
     assert_eq!(steps.iter().filter(|s| s.contains("plan-1")).count(), 1);
     assert_eq!(steps.iter().filter(|s| s.contains("writer-1")).count(), 1);
+    // Switching contexts is not completing a Turn.
+    let k = kinds(&read_worklog(&sd));
+    assert_eq!(count(&k, "turn_started"), 1);
+    assert_eq!(count(&k, "input_batch"), 2);
+    assert_eq!(count(&k, "turn_ended"), 1);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
 }
 
 #[tokio::test]
@@ -513,12 +581,19 @@ async fn normal_switch_continues_the_same_run() {
     let runs: Vec<String> = read_worklog(&sd)
         .into_iter()
         .filter_map(|e| match e.body {
-            WorklogBody::RoundStarted { run_id, .. } => Some(run_id),
+            WorklogBody::TurnStarted { run_id, .. } | WorklogBody::InputBatch { run_id, .. } => Some(run_id),
             _ => None,
         })
         .collect();
     assert_eq!(runs.len(), 2);
     assert_eq!(runs[0], runs[1]);
+    // Three Rounds, one run, one logical Input → result.
+    let k = kinds(&read_worklog(&sd));
+    assert_eq!(count(&k, "turn_started"), 1);
+    assert_eq!(count(&k, "input_batch"), 1);
+    let stats = sd.statistics().unwrap();
+    assert_eq!((stats.rounds, stats.runs, stats.turns), (3, 1, 1));
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
 }
 
 #[tokio::test]
@@ -564,7 +639,7 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
 }
 
 #[tokio::test]
-async fn semi_change_alone_does_not_start_a_round() {
+async fn semi_change_alone_does_not_make_an_input_batch() {
     let env = Env::new();
     let mut spec = work_spec("wait for messages");
     spec.prompt.llm_context = json!({
@@ -578,7 +653,8 @@ async fn semi_change_alone_does_not_start_a_round() {
         watch: vec![],
     });
     let sd = env.create_work(spec).await;
-    // First round waits for the user.
+    // The first batch waits for the user without a reply: the Turn stays
+    // open.
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text("<response><next_behavior>WAIT_USER_MSG</next_behavior></response>"),
         _ => {
@@ -597,10 +673,18 @@ async fn semi_change_alone_does_not_start_a_round() {
         .unwrap();
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(llm.count(), 1, "semi change must not trigger inference");
-    // A message starts the round; the change rides along.
+    assert_eq!(sd.state().unwrap().open_turn.as_ref().map(|t| t.index), Some(1));
+    // A message makes a batch; the change rides along; it joins the Turn
+    // that is still waiting for its input.
     libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m1", "hello"), APP).await.unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
     assert_eq!(llm.count(), 2);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(st.open_turn.is_none());
+    let k = kinds(&read_worklog(&sd));
+    assert_eq!(count(&k, "turn_started"), 1);
+    assert_eq!(count(&k, "input_batch"), 1);
 }
 
 
@@ -616,13 +700,75 @@ async fn normal_switch_across_drives_runs_the_next_behavior() {
         }
     });
     let deps = env.deps(llm.clone());
-    drive(&sd, &deps, StopWhen::MaxRounds { n: 1 }).await;
+    let r = drive(&sd, &deps, StopWhen::MaxOutcomes { n: 1 }).await;
+    assert!(
+        matches!(r, libopendan::runner::DriveResult::OutcomesHandled { .. }),
+        "{r:?}"
+    );
     let st = sd.state().unwrap();
     let rec = sd.runs().record(&st.live_run.clone().unwrap().run_id).unwrap();
     assert!(!rec.status.is_terminal(), "switched run must not look finished: {:?}", rec.status);
+    // The hand-over did not complete the Turn.
+    assert_eq!(st.open_turn.as_ref().map(|t| t.index), Some(1));
+    assert_eq!(st.turns_completed, 0);
+    // n = 0 only recovers: nothing runs.
+    let r = drive(&sd, &deps, StopWhen::MaxOutcomes { n: 0 }).await;
+    assert!(
+        matches!(r, libopendan::runner::DriveResult::OutcomesHandled { .. }),
+        "{r:?}"
+    );
+    assert_eq!(llm.count(), 1);
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
     assert_eq!(llm.count(), 2, "behavior `do` ran");
     assert!(sd.report().unwrap().contains("both phases done"));
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+}
+
+#[tokio::test]
+async fn max_turns_counts_completed_turns_not_hand_overs() {
+    let env = Env::new();
+    let mut spec = behavior_spec("two requests", json!({}));
+    spec.end_condition = EndCondition {
+        kind: EndConditionType::MaxTurns,
+        detail: json!({ "n": 2 }),
+    };
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, _| {
+        let all = render(&req.messages);
+        if all.contains("second request") {
+            text("<response><report><![CDATA[answer two]]></report></response>")
+        } else if all.contains("behavior_switch to=\"do\"") {
+            text("<response><report><![CDATA[answer one]]></report></response>")
+        } else {
+            text("<response><next_behavior>do</next_behavior></response>")
+        }
+    });
+    let deps = env.deps(llm.clone());
+    // Turn 1: plan hands over to do (same Turn), do answers.
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    assert!(
+        matches!(r, libopendan::runner::DriveResult::Idle { run_state: RunState::Waiting, .. }),
+        "{r:?}"
+    );
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(st.open_turn.is_none());
+    // Turn 2 finishes the session.
+    let agent = env.agent();
+    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m2", "second request"), APP)
+        .await
+        .unwrap();
+    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
+    assert_eq!(llm.count(), 3);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (2, 2));
+    let k = kinds(&read_worklog(&sd));
+    assert_eq!(count(&k, "turn_started"), 2);
+    assert_eq!(count(&k, "input_batch"), 1, "the hand-over joined Turn 1");
+    assert_eq!(count(&k, "turn_ended"), 2);
+    assert!(sd.report().unwrap().contains("- turns: 2"));
+    assert_eq!(sd.statistics().unwrap().turns, 2);
 }
 
 #[tokio::test]

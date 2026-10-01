@@ -22,16 +22,16 @@
     "report_brief": "",
     "activity": {
       "summary": "long command",
-      "heartbeat_ms": 1790761535442
+      "heartbeat_ms": 1790853968536
     },
     "last_runner": {
-      "runner_id": "rn-21b347bdfc414c02",
+      "runner_id": "rn-ae54d104d90d49d1",
       "host": "host:lzc-pve:6b719608768f",
-      "pid": 2702047,
+      "pid": 595635,
       "lock_epoch": 1,
-      "at_ms": 1790761535444
+      "at_ms": 1790853968538
     },
-    "updated_at_ms": 1790761535442
+    "updated_at_ms": 1790853968536
   },
   "location_rev": 0
 }

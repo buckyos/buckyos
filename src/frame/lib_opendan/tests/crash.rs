@@ -194,7 +194,8 @@ async fn post_msg(env: &Env, sd: &SessionDir, key: &str, text: &str) {
         .unwrap();
 }
 
-/// Crash at a commit window of the first round, then recover in-process.
+/// Crash at a commit window of the first input batch, then recover
+/// in-process.
 async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
     let env = Env::new();
     let sd = env.create_work(work_spec("append a line to steps.log")).await;
@@ -206,8 +207,9 @@ async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{fault}: {r:?}");
     assert_worklog_contiguous(&sd);
-    // Exactly one round with exactly one copy of the round message.
-    assert_eq!(count_kind(&sd, "round_started"), 1, "{fault}");
+    // Exactly one Turn with exactly one copy of its input message.
+    assert_eq!(count_kind(&sd, "turn_started"), 1, "{fault}");
+    assert_eq!(count_kind(&sd, "turn_ended"), 1, "{fault}");
     assert_eq!(count_kind(&sd, "user_message"), 1, "{fault}");
     if llm.count() > 0 {
         let transcript = llm.transcript(llm.count() - 1);
@@ -240,18 +242,18 @@ async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
 async fn crash_after_input_checkpoint_of_new_run() {
     // Orphan run (gate set, state never referenced it): removed, the input
     // is fetched again and processed once.
-    let (_env, sd, _llm) = crash_window("begin_round:after_input_checkpoint").await;
+    let (_env, sd, _llm) = crash_window("input_batch:after_input_checkpoint").await;
     assert!(std::fs::read_to_string(sd.path().join("steps.log")).is_ok());
 }
 
 #[tokio::test]
 async fn crash_after_state_commit_before_gate_clear() {
-    crash_window("begin_round:after_state_commit").await;
+    crash_window("input_batch:after_state_commit").await;
 }
 
 #[tokio::test]
 async fn crash_after_gate_clear_before_confirm() {
-    crash_window("begin_round:after_gate_clear").await;
+    crash_window("input_batch:after_gate_clear").await;
 }
 
 #[tokio::test]
@@ -260,7 +262,10 @@ async fn crash_after_flush_before_commit() {
     // once from the kept run.
     let (_env, sd, _) = crash_window("finish_run:after_flush").await;
     assert_eq!(count_kind(&sd, "outcome"), 1);
-    assert_eq!(count_kind(&sd, "step"), 2);
+    assert_eq!(count_kind(&sd, "assistant_message"), 2);
+    assert_eq!(count_kind(&sd, "step"), 0, "function call responses are not Steps");
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
 }
 
 #[tokio::test]
@@ -294,9 +299,9 @@ async fn context_limit_crash(fault: &str) {
         vec!["one", "two"],
         "{fault}"
     );
-    assert_eq!(count_kind(&sd, "round_started"), 1, "{fault}");
+    assert_eq!(count_kind(&sd, "turn_started"), 1, "{fault}");
     assert_eq!(count_kind(&sd, "user_message"), 1, "{fault}");
-    assert_eq!(count_kind(&sd, "step"), 3, "{fault}");
+    assert_eq!(count_kind(&sd, "assistant_message"), 3, "{fault}");
     let results: Vec<String> = read_worklog(&sd)
         .into_iter()
         .filter_map(|e| match e.body {
@@ -384,7 +389,7 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
 async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
     let env = Env::new();
     let sd = env.create_work(work_spec("x")).await;
-    let mut child = spawn_child(&env, &sd, "simple_tool", Some("begin_round:after_gate_clear"));
+    let mut child = spawn_child(&env, &sd, "simple_tool", Some("input_batch:after_gate_clear"));
     wait_exit(&mut child, Duration::from_secs(60));
     let st = sd.state().unwrap();
     let run_id = st.live_run.clone().unwrap().run_id;
@@ -410,7 +415,7 @@ async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
     assert!(after.last_error.is_some());
     assert!(sd.runs().exists(&run_id));
     // Repair → retry works.
-    v["state"]["snapshot_version"] = json!(1);
+    v["state"]["snapshot_version"] = json!(llm_context::SNAPSHOT_FORMAT_VERSION);
     std::fs::write(&snap_path, serde_json::to_vec(&v).unwrap()).unwrap();
     assert!(drive(&sd, &env.deps(llm), StopWhen::Finished).await.is_finished());
 }
@@ -420,7 +425,7 @@ async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
     use agent_tool::local_llm_context::{ResumeLimits, ResumeStart, RunStatus, RunStore, XllmDeps, XllmRun};
     let env = Env::new();
     let sd = env.create_work(work_spec("answer")).await;
-    let mut child = spawn_child(&env, &sd, "answer", Some("begin_round:after_gate_clear"));
+    let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_gate_clear"));
     wait_exit(&mut child, Duration::from_secs(60));
     let run_id = sd.state().unwrap().live_run.unwrap().run_id;
     let store = RunStore::disk(sd.runs_dir());
@@ -448,7 +453,7 @@ async fn xllm_refuses_run_with_pending_host_commit() {
     use agent_tool::local_llm_context::{ResumeLimits, RunStore, XllmDeps, XllmRun};
     let env = Env::new();
     let sd = env.create_work(work_spec("answer")).await;
-    let mut child = spawn_child(&env, &sd, "answer", Some("begin_round:after_input_checkpoint"));
+    let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_input_checkpoint"));
     wait_exit(&mut child, Duration::from_secs(60));
     let runs = sd.runs().list().unwrap();
     assert_eq!(runs.len(), 1);
@@ -498,6 +503,7 @@ async fn crash_after_observation_injection_does_not_reinject() {
         .filter(|e| matches!(e.body, WorklogBody::UserMessage { .. }))
         .count();
     assert_eq!(users, 2);
+    assert_eq!(count_kind(&sd, "turn_started"), 1, "the observation joined Turn 1");
     assert_worklog_contiguous(&sd);
 }
 
@@ -516,7 +522,7 @@ async fn new_input_into_a_resumed_run_survives_a_crash_once() {
     post_msg(&env, &sd, "m-2", "second message").await;
     // The child resumes the same run, injects the message, crashes before
     // committing state.
-    let mut child = spawn_child(&env, &sd, "transient", Some("begin_round:after_input_checkpoint"));
+    let mut child = spawn_child(&env, &sd, "transient", Some("input_batch:after_input_checkpoint"));
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
     assert_eq!(sd.state().unwrap().live_run.unwrap().applied_input_seq, 1);
     let llm = script("transient");
@@ -527,8 +533,19 @@ async fn new_input_into_a_resumed_run_survives_a_crash_once() {
     let st = sd.state().unwrap();
     assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()), "same run continued");
     assert_eq!(st.source("q").acked_index, 1);
-    assert_eq!(count_kind(&sd, "round_started"), 2);
+    // The retryable error kept the Turn open: the second message joined it.
+    assert_eq!(count_kind(&sd, "turn_started"), 1);
+    assert_eq!(count_kind(&sd, "input_batch"), 1);
     assert_eq!(count_kind(&sd, "user_message"), 2);
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    let ended: Vec<String> = read_worklog(&sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::TurnEnded { turn, .. } => Some(format!("ended {turn}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended, vec!["ended 1"]);
     assert_worklog_contiguous(&sd);
 }
 
@@ -549,7 +566,7 @@ async fn active_sessions_on_the_same_workspace_see_each_other() {
         s
     };
     let a = env.create_work(mk("A: wall wrap mode", "ws:snake/src/")).await;
-    let mut child = spawn_child(&env, &a, "answer", Some("begin_round:after_gate_clear"));
+    let mut child = spawn_child(&env, &a, "answer", Some("input_batch:after_gate_clear"));
     wait_exit(&mut child, Duration::from_secs(60));
     assert_eq!(a.state().unwrap().run_state, RunState::Running);
     let b = env.create_work(mk("B: collision tweak", "ws:snake/src/collision.js")).await;
@@ -633,11 +650,11 @@ async fn fork_return_survives_a_crash_after_the_child_finish() {
 }
 
 #[tokio::test]
-async fn crash_while_opening_the_switch_round_does_not_repeat_it() {
+async fn crash_while_committing_the_switch_hand_over_does_not_repeat_it() {
     let env = Env::new();
     let sd = env.create_work(behavior_spec("two phases", json!({}))).await;
-    // Hit #2 = the hand-over round of the normal switch (same run).
-    let mut child = spawn_child(&env, &sd, "switch", Some("begin_round:after_input_checkpoint#2"));
+    // Hit #2 = the hand-over batch of the normal switch (same run, same Turn).
+    let mut child = spawn_child(&env, &sd, "switch", Some("input_batch:after_input_checkpoint#2"));
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
     let llm = script("switch");
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
@@ -645,6 +662,7 @@ async fn crash_while_opening_the_switch_round_does_not_repeat_it() {
     let t = llm.transcript(llm.count() - 1);
     assert_eq!(t.matches("behavior_switch to=\"do\"").count(), 1, "{t}");
     assert!(sd.state().unwrap().internal_continuation.is_none());
-    assert_eq!(count_kind(&sd, "round_started"), 2);
+    assert_eq!(count_kind(&sd, "turn_started"), 1);
+    assert_eq!(count_kind(&sd, "input_batch"), 1);
     assert_worklog_contiguous(&sd);
 }

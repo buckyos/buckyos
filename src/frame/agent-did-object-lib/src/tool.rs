@@ -286,7 +286,7 @@ mod tests {
             trace_id: "trace".to_string(),
             agent_name: "agent".to_string(),
             behavior: "test".to_string(),
-            step_idx: 1,
+            tool_call_index: 1,
             wakeup_id: "wakeup".to_string(),
             session_id: "session".to_string(),
             read_token_limit: DEFAULT_READ_TOKEN_LIMIT,

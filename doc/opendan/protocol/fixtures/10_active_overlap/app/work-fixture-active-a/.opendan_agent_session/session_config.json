@@ -1,12 +1,12 @@
 {
-  "schema": "opendan.session_config/1",
+  "schema": "opendan.session_config/2",
   "config_rev": 1,
   "session": {
     "session_id": "work-fixture-active-a",
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1790761535769,
+    "created_at_ms": 1790853968864,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -35,7 +35,7 @@
       }
     },
     "mechanical_compress": {
-      "recent_full_steps": 2,
+      "recent_full_responses": 2,
       "summary_chars": 280,
       "max_result_chars": 4096,
       "drop_kinds": [
@@ -43,7 +43,8 @@
         "decide",
         "compaction",
         "input_rejected",
-        "change_dropped"
+        "change_dropped",
+        "turn_ended"
       ]
     }
   },

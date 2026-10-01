@@ -105,7 +105,7 @@ pub enum Observation {
     /// The dispatcher produced no result for this call. `effect_unknown =
     /// true`: the infrastructure failed while the call may have been running,
     /// so its side effects cannot be confirmed. `effect_unknown = false`: the
-    /// round was aborted before this call started. Never produced by a
+    /// batch / step was aborted before this call started. Never produced by a
     /// `ToolManager`; the waist records it when a batch is cut short so the
     /// transcript stays paired and auditable. Not an LLM-correctable error.
     Unresolved {
@@ -151,7 +151,7 @@ pub enum ToolExecStatus {
     /// Dispatch infrastructure failed while the call may have been running;
     /// side effects cannot be confirmed.
     Unknown,
-    /// The round was aborted before this call was dispatched.
+    /// The batch / step was aborted before this call was dispatched.
     NotExecuted,
     /// Dispatched and deferred (`Observation::Pending`); the result is filled
     /// by the scheduler through `ResumeFill::ToolResults`.

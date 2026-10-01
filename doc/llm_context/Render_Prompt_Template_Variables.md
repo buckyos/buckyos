@@ -2,7 +2,9 @@
 
 本文档是 `llm_context::PromptRenderEngine` 的实现参考，写给修改 / 扩展模板引擎自身的人。引擎位于 [`src/frame/llm_context/src/prompt_engine.rs`](../../src/frame/llm_context/src/prompt_engine.rs)，类型 `PromptRenderEngine`，是 `llm_context` 的通用能力 —— 不认识 OpenDAN 的 session、workspace、owner、todo 等业务概念。
 
-> OpenDAN 这一侧实际暴露的变量契约、`AgentSessionValueLoader` 的字段映射、`include_roots` 当前设置、behavior 模板可以写什么，全部在 [Agent Enviroment.md](Agent%20Enviroment.md)。本文不重复那一层。
+> 旧 opendan Runtime（`src/frame/opendan/src/prompt_env.rs`）这一侧实际暴露的变量契约、`AgentSessionValueLoader` 的字段映射、`include_roots` 当前设置、behavior 模板可以写什么，全部在 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)，待下一阶段 opendan 重构接入。本文不重复那一层。其中 `current_context.last_step` / `current_context.step_history` 是从 LLMContext 快照取出的 `StepRecord`，没有 Round / Turn 编号变量。
+>
+> libopendan 不经过本引擎：每个输入批次的 user message 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`；Step 历史和动作回响（`<<step_history>>`、`<<last_step_action_results>>`）由 llm_context 的 `XmlStepRenderer` 在每次推理前渲染；Session 历史由 Runner 从 worklog 渲染成 `<session_history>`。这些都不是模板变量。
 
 实际指令名是 `__ENV`、`__INCLUDE`、`__EXEC`、`__VAR`，不是更早设计稿里的 `__OPENDAN_ENV` 等前缀名。
 
@@ -12,7 +14,7 @@
 
 1. **预处理阶段**
    - 处理 `__ENV($expr)__`、`__INCLUDE(path)__`、`__EXEC(cmd)__`、`__VAR(name, $expr)__`。
-   - 预处理最多执行 32 轮，因此 include 进来的内容里也可以继续包含这些指令。
+   - 预处理最多执行 32 遍（`MAX_PREPROCESS_PASSES`），因此 include 进来的内容里也可以继续包含这些指令。
    - 预处理后如果仍存在 `__ENV(`、`__INCLUDE(`、`__EXEC(`、`__VAR(` 或历史 `__OPENDAN_` 指令，会返回语法错误。
 
 2. **upon 渲染阶段**
@@ -177,4 +179,4 @@ __VAR(owner, $owner)__
 - `ValueLoader::load` 的成功 / 软缺失 / 硬错误三态语义不要破坏：调用方依赖 `Ok(None)` 来表达 loader 不持有这个名字。
 - 新增 `EngineConfig` 字段必须给 `Default` 实现，并在本文 §5 表格里补充。
 - 触发 IO / 进程的新指令要带超时 + 字节上限；不要假设调用方已经做了沙箱。
-- 业务变量映射（`$session.*`、`$workspace.*` 等）一律不进引擎，由调用方的 `ValueLoader` 提供 —— OpenDAN 的实现见 [Agent Enviroment.md](Agent%20Enviroment.md)。
+- 业务变量映射（`$session.*`、`$workspace.*` 等）一律不进引擎，由调用方的 `ValueLoader` 提供 —— OpenDAN 的实现见 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)。

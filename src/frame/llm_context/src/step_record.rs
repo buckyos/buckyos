@@ -6,8 +6,8 @@
 //! steps render as stable `(assistant, user)` pairs in append order; inherited
 //! and summary records render into one `<<step_history>>` user message:
 //!
-//! - **Assistant message**: the verbatim hot step text the LLM emitted last
-//!   turn (the parsed XML lives inside `step.assistant_text`).
+//! - **Assistant message**: the verbatim hot step text the LLM emitted in the
+//!   last step (the parsed XML lives inside `step.assistant_text`).
 //! - **User message**: a `<<last_step_action_results>>` wrapper carrying the
 //!   full dispatcher-side action result.
 //!
@@ -44,7 +44,7 @@ pub struct XmlStepRenderer {
     pub max_result_chars: usize,
     /// Render `started_at_ms` / `ended_at_ms` into history records. Hosts that
     /// need a byte-stable history prefix (Agent Session SDK §8.7 X8) turn it
-    /// off; freshness belongs to the per-turn variable section.
+    /// off; freshness belongs to the per-input variable section.
     pub timestamps: bool,
 }
 

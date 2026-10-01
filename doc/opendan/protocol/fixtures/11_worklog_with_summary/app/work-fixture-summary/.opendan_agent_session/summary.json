@@ -1,10 +1,10 @@
 {
-  "schema": "opendan.session_summary/1",
-  "history_summary": "Summary of rounds 0..189.",
+  "schema": "opendan.session_summary/2",
+  "history_summary": "Summary of turns 0..189.",
   "start_seq": 192,
-  "start_offset": 16539,
+  "start_offset": 16349,
   "mechanical": {
-    "recent_full_steps": 2,
+    "recent_full_responses": 2,
     "summary_chars": 280,
     "max_result_chars": 4096,
     "drop_kinds": [
@@ -12,10 +12,11 @@
       "decide",
       "compaction",
       "input_rejected",
-      "change_dropped"
+      "change_dropped",
+      "turn_ended"
     ]
   },
-  "renderer": "libopendan.mechanical/1",
+  "renderer": "libopendan.mechanical/2",
   "made_at_seq": 201,
   "made_by": "manual",
   "updated_at_ms": 0

@@ -138,7 +138,11 @@ pub struct SessionRuntimeContext {
     pub trace_id: String,
     pub agent_name: String,
     pub behavior: String,
-    pub step_idx: u32,
+    /// Sequence number of this tool call within the run, set by the
+    /// dispatcher on every call. Not a behavior Step index
+    /// (`StepRecord.meta.step_index`) and not a Turn number; identify a call
+    /// by its `call_id`.
+    pub tool_call_index: u32,
     pub wakeup_id: String,
     pub session_id: String,
     #[serde(default = "default_read_token_limit")]
@@ -1996,7 +2000,7 @@ impl TypedTool for MCPTool {
             "jsonrpc": "2.0",
             "id": format!(
                 "{}:{}:{}:{}:{}",
-                ctx.trace_id, ctx.wakeup_id, ctx.behavior, ctx.step_idx, self.spec.name
+                ctx.trace_id, ctx.wakeup_id, ctx.behavior, ctx.tool_call_index, self.spec.name
             ),
             "method": "tools/call",
             "params": {
@@ -2374,7 +2378,7 @@ impl AgentToolManager {
             )));
         }
 
-        let call_id = format!("bash-cli-{}-{}", ctx.trace_id, ctx.step_idx);
+        let call_id = format!("bash-cli-{}-{}", ctx.trace_id, ctx.tool_call_index);
         info!(
             "opendan.tool_call: status=start tool={} call_id={} trace_id={} session_id={} source=bash",
             tool_name, call_id, ctx.trace_id, ctx.session_id
@@ -2684,7 +2688,7 @@ mod tests {
             trace_id: "trace-1".to_string(),
             agent_name: "did:opendan:test".to_string(),
             behavior: "plan".to_string(),
-            step_idx: 3,
+            tool_call_index: 3,
             wakeup_id: "wake-1".to_string(),
             session_id: "session-1".to_string(),
             read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,

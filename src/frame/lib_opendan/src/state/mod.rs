@@ -27,7 +27,7 @@ pub use activity::{
 pub use artifacts::{nearest_valid_base, DecideResult};
 pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
 pub use fs_client::{AgentLayout, FsAgentStateClient};
-pub use perception::{round_digest, Backlog, BacklogItem};
+pub use perception::{run_digest, Backlog, BacklogItem};
 
 /// Session registry (session mgr, §6.2). The only entry point to discover
 /// every session of an agent, wherever its directory lives.

@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "`static.json` — statistics (tokens, rounds, time, cost).",
+  "description": "`static.json` — statistics (tokens, Rounds, Turns, runs, time, cost).",
   "properties": {
     "busy_ms": {
       "default": 0,
@@ -19,12 +19,6 @@
       "minimum": 0.0,
       "type": "integer"
     },
-    "llm_requests": {
-      "default": 0,
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
-    },
     "output_tokens": {
       "default": 0,
       "format": "uint64",
@@ -33,12 +27,28 @@
     },
     "rounds": {
       "default": 0,
+      "description": "Rounds: inference attempts the runner made through the run's `LlmClient::infer` (successful, failed and interrupted), added after every outcome. History summarization is not a Round. Inferences of an executor that took the run over (xllm) are only in that run's `run.json` `usage.llm_requests`.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "rounds_failed": {
+      "default": 0,
+      "description": "Rounds that returned an error.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "rounds_interrupted": {
+      "default": 0,
+      "description": "Rounds abandoned in flight (interrupt / provider cancellation).",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
     },
     "runs": {
       "default": 0,
+      "description": "Runs (`LLMContext` executions with their own run directory) ended.",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
@@ -51,6 +61,13 @@
     },
     "total_tokens": {
       "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "turns": {
+      "default": 0,
+      "description": "Logical Turns closed as completed (`SessionState.turns_completed`).",
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"

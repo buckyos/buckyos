@@ -49,22 +49,37 @@ async fn a01_work_session_completes_with_tool_call() {
     assert!(rec.host_commit_pending.is_none());
     assert_eq!(rec.host.as_ref().unwrap().assembled_by, "libopendan");
     assert!(sd.report().unwrap().contains("hello.txt contains hi"));
-    // Worklog: created → round → message → step → result → step → outcome.
+    // Worklog: created → turn → message → response → result → response →
+    // outcome → turn end. Function call responses are not behavior Steps.
     let wl = read_worklog(&sd);
     let k = kinds(&wl);
     assert_eq!(
         k,
         vec![
             "created",
-            "round_started",
+            "turn_started",
             "user_message",
-            "step",
+            "assistant_message",
             "action_result",
-            "step",
-            "outcome"
+            "assistant_message",
+            "outcome",
+            "turn_ended"
         ],
         "{wl:#?}"
     );
+    // 2 Rounds (tool call + final answer), 1 tool iteration, 1 Turn, 1 run.
+    let stats = sd.statistics().unwrap();
+    assert_eq!((stats.rounds, stats.turns, stats.runs), (2, 1, 1));
+    assert_eq!(rec.usage.llm_requests, 2);
+    let (_, snap) = sd.runs().load_checked(&last).unwrap();
+    let snap = snap.unwrap();
+    assert!(snap.state.steps.is_empty());
+    assert_eq!(
+        snap.request.tool_policy.max_tool_iterations - snap.state.tool_iterations_left,
+        1
+    );
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(st.open_turn.is_none());
     assert_eq!(wl.last().unwrap().seq, st.worklog.committed_seq);
     // Registry mirrors the committed state.
     let agent = env.agent();
@@ -72,7 +87,7 @@ async fn a01_work_session_completes_with_tool_call() {
     assert_eq!(e.status.rev, st.rev);
     assert_eq!(e.status.run_state, RunState::Finished);
     assert!(e.status.last_runner.is_some());
-    // Perception: round digest + task outcome.
+    // Perception: run digest + task outcome.
     assert_eq!(agent.perception().last_seq(sd.sid()).await.unwrap(), 2);
     // binding + session bin prepared.
     let b = sd.binding_opt().unwrap().unwrap();

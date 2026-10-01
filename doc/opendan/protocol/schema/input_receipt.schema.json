@@ -50,7 +50,7 @@
       "description": "Where the message of a receipt batch lives inside the snapshot.",
       "oneOf": [
         {
-          "description": "In `request.input` (first round of a new run).",
+          "description": "In `request.input` (behavior runs before their first step).",
           "properties": {
             "index": {
               "format": "uint64",
@@ -191,26 +191,27 @@
     "message_pos": {
       "$ref": "#/definitions/MessagePos"
     },
-    "opens_round": {
+    "opens_turn": {
       "default": false,
-      "description": "`true` when this batch opened a new round (vs. observation injection).",
+      "description": "`true` when this batch opened the Turn; hand-over, resume, supplementary and observation batches join the open Turn.",
       "type": "boolean"
-    },
-    "round": {
-      "format": "uint64",
-      "minimum": 0.0,
-      "type": "integer"
     },
     "run_id": {
       "type": "string"
+    },
+    "turn": {
+      "description": "Logical Turn the batch belongs to (`SessionState.open_turn`).",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     }
   },
   "required": [
     "at_ms",
     "input_seq",
     "message_pos",
-    "round",
-    "run_id"
+    "run_id",
+    "turn"
   ],
   "title": "InputReceipt",
   "type": "object"

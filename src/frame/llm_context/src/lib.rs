@@ -32,9 +32,9 @@ pub use behavior_loop::{
 };
 pub use context_loop::LLMContext;
 pub use deps::{
-    AllowAllPolicy, ByteHeuristicTokenizer, CheckpointHook, Injection, InjectionPosition,
-    LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink, PolicyEngine, Tokenizer,
-    ToolDispatchError, ToolManager, ToolSpecLite, TurnHook, WorkEvent, WorklogSink,
+    AllowAllPolicy, ByteHeuristicTokenizer, CheckpointHook, InferenceHook, Injection,
+    InjectionPosition, LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink,
+    PolicyEngine, Tokenizer, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
     MAX_INJECTIONS_PER_BOUNDARY,
 };
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};

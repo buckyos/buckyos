@@ -362,7 +362,7 @@ impl BehaviorCfg {
             action_mode,
             action_whitelist: self.capabilities.action_whitelist.clone(),
             disable_capabilities: self.capabilities.disable_capabilities.clone(),
-            max_rounds: self.budget.max_rounds,
+            max_tool_iterations: self.budget.max_rounds,
             ..Default::default()
         }
     }

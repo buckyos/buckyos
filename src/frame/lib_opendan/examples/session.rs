@@ -13,7 +13,7 @@
 //!   create  --parent <dir> --objective <text> [--kind work|self_improve] [--key <idem>]
 //!           [--workspace <abs path>] [--artifact <aid>] [--scope <ref>]...
 //!           [--llm-context <json | @file>] [--system <text>] [--tool-plan <name>]
-//!   run     <session_dir> [--until finished|idle|rounds:<n>] [--runtime-id <id>]
+//!   run     <session_dir> [--until finished|idle|outcomes:<n>] [--runtime-id <id>]
 //!   read    <sid> [--worklog <n>] [--report]
 //!   post    <sid> (--text <t> | --stop | --change <key> <text> | --perception <text>) [--key <k>]
 //!   decide  <sid> accept|discard [--note <t>]
@@ -180,8 +180,8 @@ async fn cmd_run(a: &mut Args) -> R<()> {
     let until = match a.get("until").as_deref() {
         None | Some("finished") => StopWhen::Finished,
         Some("idle") => StopWhen::Idle,
-        Some(s) if s.starts_with("rounds:") => StopWhen::MaxRounds {
-            n: s[7..].parse()?,
+        Some(s) if s.starts_with("outcomes:") => StopWhen::MaxOutcomes {
+            n: s[9..].parse()?,
         },
         Some(s) => return Err(format!("bad --until {s}").into()),
     };

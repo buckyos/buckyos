@@ -7,7 +7,7 @@
 //! the whole worklog.
 //!
 //! Rendering is deterministic for a renderer version
-//! (`libopendan.mechanical/1`): same summary.json + worklog → same bytes.
+//! (`libopendan.mechanical/2`): same summary.json + worklog → same bytes.
 
 use std::sync::Arc;
 
@@ -35,14 +35,52 @@ fn trunc(s: &str, max: usize) -> String {
     format!("{t}…")
 }
 
-/// Render one worklog entry. `age` counts `step` entries already rendered
-/// (newest first): entries of the `recent_full_steps` newest steps are full,
-/// older ones are truncated to `summary_chars`.
+fn input_list(inputs: &[InputRef], changes: &[String]) -> String {
+    let ins: Vec<String> = inputs.iter().map(|i| i.id()).collect();
+    format!(
+        "{}{}",
+        if ins.is_empty() {
+            String::new()
+        } else {
+            format!(" inputs: {}", ins.join(","))
+        },
+        if changes.is_empty() {
+            String::new()
+        } else {
+            format!(" changes: {}", changes.join(","))
+        }
+    )
+}
+
+/// `true` for the entries that count as one model response in
+/// `MechanicalCompress.recent_full_responses`.
+fn is_response(body: &WorklogBody) -> bool {
+    matches!(
+        body,
+        WorklogBody::Step { .. } | WorklogBody::AssistantMessage { .. }
+    )
+}
+
+fn render_calls(s: &mut String, calls: &[ActionEntry], limit: impl Fn(&str, u32) -> String) {
+    for a in calls {
+        s.push_str(&format!(
+            "\n  → {}({}) #{}",
+            a.tool,
+            limit(&a.args.to_string(), 400),
+            a.call_id
+        ));
+    }
+}
+
+/// Render one worklog entry. `age` counts model responses (`step` /
+/// `assistant_message`) already rendered, newest first: the
+/// `recent_full_responses` newest responses and the entries after them are
+/// full, older ones are truncated to `summary_chars`.
 pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Option<String> {
     if cfg.drop_kinds.iter().any(|k| k == e.body.kind()) {
         return None;
     }
-    let full = age < cfg.recent_full_steps;
+    let full = age < cfg.recent_full_responses;
     let limit = |s: &str, full_max: u32| -> String {
         if full {
             trunc(s, full_max as usize)
@@ -52,37 +90,57 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
     };
     Some(match &e.body {
         WorklogBody::Created { objective, .. } => format!("[created] {objective}"),
-        WorklogBody::RoundStarted { round, inputs, changes, hook, .. } => {
-            let ins: Vec<String> = inputs.iter().map(|i| i.id()).collect();
-            format!(
-                "── round {round}{}{}{} ──",
-                hook.as_ref().map(|h| format!(" ({h})")).unwrap_or_default(),
-                if ins.is_empty() { String::new() } else { format!(" inputs: {}", ins.join(",")) },
-                if changes.is_empty() { String::new() } else { format!(" changes: {}", changes.join(",")) }
-            )
-        }
+        WorklogBody::TurnStarted {
+            turn,
+            inputs,
+            changes,
+            hook,
+            ..
+        } => format!(
+            "── turn {turn}{}{} ──",
+            hook.as_ref().map(|h| format!(" ({h})")).unwrap_or_default(),
+            input_list(inputs, changes)
+        ),
+        WorklogBody::InputBatch {
+            inputs,
+            changes,
+            hook,
+            ..
+        } => format!(
+            "── {}{} ──",
+            hook.as_deref().unwrap_or("input"),
+            input_list(inputs, changes)
+        ),
         WorklogBody::UserMessage { content, .. } => {
             format!("[input] {}", limit(content, cfg.max_result_chars))
         }
+        WorklogBody::AssistantMessage {
+            assistant,
+            tool_calls,
+            ..
+        } => {
+            let mut s = format!("[assistant] {}", limit(assistant, cfg.max_result_chars));
+            render_calls(&mut s, tool_calls, &limit);
+            s
+        }
         WorklogBody::Step {
+            step_index,
             assistant,
             actions,
             behavior,
+            correction,
             ..
         } => {
             let mut s = format!(
-                "[assistant{}] {}",
-                behavior.as_ref().map(|b| format!(" {b}")).unwrap_or_default(),
+                "[step {step_index}{}{}] {}",
+                behavior
+                    .as_ref()
+                    .map(|b| format!(" {b}"))
+                    .unwrap_or_default(),
+                if *correction { " correction" } else { "" },
                 limit(assistant, cfg.max_result_chars)
             );
-            for a in actions {
-                s.push_str(&format!(
-                    "\n  → {}({}) #{}",
-                    a.tool,
-                    limit(&a.args.to_string(), 400),
-                    a.call_id
-                ));
-            }
+            render_calls(&mut s, actions, &limit);
             s
         }
         WorklogBody::ActionResult {
@@ -110,6 +168,12 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
                 .map(|r| format!(" {}", limit(r, cfg.max_result_chars)))
                 .unwrap_or_default()
         ),
+        WorklogBody::TurnEnded { turn, status, .. } => {
+            format!(
+                "── turn {turn} {} ──",
+                serde_json::to_value(status).ok()?.as_str()?
+            )
+        }
         WorklogBody::Compaction { .. } => return None,
         WorklogBody::Decide { decision, by, .. } => format!("[decide] {decision} by {by}"),
         WorklogBody::InputRejected { input, reason } => {
@@ -172,7 +236,7 @@ pub fn read_window(
         out.oldest_offset = Some(offset);
         out.oldest_seq = Some(e.seq);
         rev.push(text);
-        if matches!(e.body, WorklogBody::Step { .. }) {
+        if is_response(&e.body) {
             pending_age_bump = true;
         }
     }
@@ -275,7 +339,7 @@ pub async fn compact(
     // The only forward read: the bounded range being summarized.
     let segment_entries = session.dir.worklog().read_range(sm.start_offset, cut_offset)?;
     let full = MechanicalCompress {
-        recent_full_steps: u32::MAX,
+        recent_full_responses: u32::MAX,
         ..sm.mechanical.clone()
     };
     let segment: Vec<String> = segment_entries

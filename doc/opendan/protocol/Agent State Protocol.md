@@ -1,6 +1,6 @@
 # Agent State Protocol
 
-版本 1 · 2026-09-29 · 由 `libopendan` 反写（`src/protocol/agent_state.rs`、`src/state/*`）
+版本 2 · 2026-10-01 · 由 `libopendan` 反写（`src/protocol/agent_state.rs`、`src/state/*`）
 
 ## 1. AgentRoot 布局
 
@@ -50,19 +50,19 @@
 - 活跃 = `run_state ∈ {running, waiting}`。`running` 且 `max(heartbeat_ms, updated_at_ms)` 超过 5 分钟 → 标为“可能已中断”；`waiting` 不要求心跳。
 - 声明的引用 = `scope.paths` + `scope.objects` + `status.activity.touching[].ref` + `artifact:<aid>`。两个引用相等或一方是另一方的路径前缀（`ws:snake/src/` 与 `ws:snake/src/collision.js`）即有交集。
 - 关系排序：同一 workspace 或同一产物（`same_target`）> touching 有交集（`overlap`）> 其它；`agent_access = status_only` 的条目只给 one_line_status。
-- activity 来源：创建时 scope（第一轮写入）、`control(activity)`、runner 从写类工具参数推断（`write_file` / `edit_file` 的 path）；run 结束清空 touching，finished 清空整个 activity。
+- activity 来源：创建时 scope（bootstrap 输入批次写入）、`control(activity)`、runner 从写类工具参数推断（`write_file` / `edit_file` 的 path）；run 结束清空 touching，finished 清空整个 activity。
 - 它是**避让提示**，不是锁；冲突裁决属于 workspace。
 
 ## 4. 感知
 
 ```jsonc
 // state/perception/<sid>.jsonl，单写者 = 该 session 的驱动者，seq 严格递增
-{"seq":31,"at_ms":0,"session_id":"…","kind":"round_digest|observation|task_outcome|task_discarded",
+{"seq":31,"at_ms":0,"session_id":"…","kind":"run_digest|observation|task_outcome|task_discarded",
  "source":"session","tags":[],"objects":[],"summary":"…","payload":{…},"refs":{"worklog_seq":316}}
 ```
 
 - 追加幂等：跳过 `seq ≤` 文件最后一条的记录（反向读最后一行得到）。
-- 自动记录：每次 run 结束 `round_digest`；finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。
+- 自动记录：每次 run 结束写 `run_digest`，payload `{run_id, turn, turn_status}`：`turn` 是该 run 结束时所属的 Turn，`turn_status`（`completed | failed | budget_exhausted | stopped`）只在这次 run 结束同时关闭了 Turn 时有值，否则为 null（例如 `WAIT_USER_MSG` 未交付答复、fork 子 process 返回；drive 补发缺失记录时也为 null）。它按 run 结束生成，不代表 Turn 完成；普通切换与 fork / independent 挂起不写。finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。
 - **积压（backlog）**：按文件大小与 `.cursor.json.offsets[sid]` 求区间，跳过以 `.` 开头的文件和 kind 为 `self_improve` 的 session（防自我回声）。
 - **self_improve**：session 的 `extensions.opendan.perception_window` 记录要整理的窗口（幂等键 `si:<窗口摘要>`）；drive 全程持 `self_improve` 锁（拿不到返回 Busy）；session 以 succeeded 结束后先写 `.consolidations.jsonl` 审计，再把游标推进到窗口末尾（不回退，at-least-once）；失败或 stopped 不推进。
 

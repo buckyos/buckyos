@@ -20,19 +20,19 @@
     "outcome": "succeeded",
     "acceptance": "pending",
     "one_line_status": "finished: answer",
-    "report_brief": "# Report — A\n\n- session: `work-fixture-sub-a`\n- outcome: succeeded\n- rounds: 1\n\nanswer\n",
+    "report_brief": "# Report — A\n\n- session: `work-fixture-sub-a`\n- outcome: succeeded\n- turns: 1\n\nanswer\n",
     "activity": {
       "summary": "",
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-bd23ee2b090e48ab",
+      "runner_id": "rn-dd594fe1905b4f7e",
       "host": "host:lzc-pve:6b719608768f",
-      "pid": 2701845,
+      "pid": 595447,
       "lock_epoch": 1,
-      "at_ms": 1790761535745
+      "at_ms": 1790853968840
     },
-    "updated_at_ms": 1790761535741
+    "updated_at_ms": 1790853968836
   },
   "location_rev": 0
 }

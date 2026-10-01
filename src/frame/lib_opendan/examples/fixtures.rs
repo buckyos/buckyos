@@ -234,7 +234,9 @@ fn observe(sd: &SessionDir) -> Value {
             "run_state": st.run_state,
             "outcome": st.outcome,
             "acceptance": st.acceptance,
-            "round": st.round,
+            "turn_seq": st.turn_seq,
+            "open_turn": st.open_turn.as_ref().map(|t| t.index),
+            "turns_completed": st.turns_completed,
             "last_run": st.last_run,
             "process_stack": st.process_stack.iter().map(|f| json!({"entry": f.entry, "mode": f.mode, "run_id": f.run_id})).collect::<Vec<_>>(),
             "inputs": st.inputs,
@@ -306,7 +308,7 @@ async fn gen(out: &Path) -> R<()> {
         write_expected(&d, "new_work_session",
             "Freshly created work session located outside the AgentRoot; registered, queue created, no binding yet.",
             vec![observe(&sd)],
-            json!({ "action": "bind_runtime_then_round", "hook": "on_init", "expect_binding_json": false }));
+            json!({ "action": "bind_runtime_then_input_batch", "hook": "on_init", "expect_binding_json": false }));
         relativize(&d);
     }
     // 2. finished work session
@@ -327,11 +329,11 @@ async fn gen(out: &Path) -> R<()> {
         let env = Env::new(&d);
         let sd = env.create("work-fixture-orphan", work("x")).await;
         env.post(&sd, Input::msg("m-1", "please do it")).await;
-        env.child_wait(&sd, "tool_then_answer", "begin_round:after_input_checkpoint");
+        env.child_wait(&sd, "tool_then_answer", "input_batch:after_input_checkpoint");
         write_expected(&d, "orphan_run_pending_host_commit",
             "Snapshot + run.json(host_commit_pending) were written for a new run, state.json never referenced it.",
             vec![observe(&sd)],
-            json!({ "action": "remove_unreferenced_run_then_new_round", "refetch_inputs": ["q#1"], "xllm_resume": "refuse" }));
+            json!({ "action": "remove_unreferenced_run_then_new_input_batch", "refetch_inputs": ["q#1"], "xllm_resume": "refuse" }));
         relativize(&d);
     }
     // 4. crash after the state commit, before clearing the gate
@@ -340,7 +342,7 @@ async fn gen(out: &Path) -> R<()> {
         let env = Env::new(&d);
         let sd = env.create("work-fixture-gate", work("x")).await;
         env.post(&sd, Input::msg("m-1", "please do it")).await;
-        env.child_wait(&sd, "tool_then_answer", "begin_round:after_state_commit");
+        env.child_wait(&sd, "tool_then_answer", "input_batch:after_state_commit");
         write_expected(&d, "gate_pending_after_state_commit",
             "state.json consumed input q#1 (applied batch 1); run.json still has host_commit_pending=1; ack not confirmed.",
             vec![observe(&sd)],
@@ -394,7 +396,7 @@ async fn gen(out: &Path) -> R<()> {
         let sd = env.create("work-fixture-receipt", work("needs two messages")).await;
         drive(&sd, &env.deps("transient"), StopWhen::Finished).await;
         env.post(&sd, Input::msg("m-2", "second message")).await;
-        env.child_wait(&sd, "transient", "begin_round:after_input_checkpoint");
+        env.child_wait(&sd, "transient", "input_batch:after_input_checkpoint");
         write_expected(&d, "receipt_ahead_of_state",
             "A paused run was resumed with input q#1; the snapshot carries receipt batch 2 (and the message), state.json only applied batch 1.",
             vec![observe(&sd)],
@@ -434,7 +436,7 @@ async fn gen(out: &Path) -> R<()> {
         write_expected(&d, "semi_subscription",
             "B semi-subscribes to A; A is finished (registry status rev > B's cursor, which is empty).",
             vec![observe(&a), observe(&b)],
-            json!({ "action": "inject_change_on_next_round", "session": b.sid(), "change_id_prefix": "sa@", "extra_inference": false }));
+            json!({ "action": "inject_change_on_next_input_batch", "session": b.sid(), "change_id_prefix": "sa@", "extra_inference": false }));
         relativize(&d);
     }
     // 10. two active sessions touching the same workspace
@@ -450,7 +452,7 @@ async fn gen(out: &Path) -> R<()> {
             s
         };
         let a = env.create("work-fixture-active-a", mk("ws:snake/src/")).await;
-        env.child_wait(&a, "answer", "begin_round:after_gate_clear");
+        env.child_wait(&a, "answer", "input_batch:after_gate_clear");
         let b = env.create("work-fixture-active-b", mk("ws:snake/src/collision.js")).await;
         write_expected(&d, "active_overlap",
             "A is running (registry status running, touching ws:snake/src/); B is created on the same workspace.",
@@ -471,11 +473,11 @@ async fn gen(out: &Path) -> R<()> {
         let mut offsets = Vec::new();
         for i in 0..200u64 {
             offsets.push(s.worklog_end());
-            s.append_worklog(&lease, vec![WorklogBody::UserMessage { run_id: "r-old".into(), round: i, content: format!("old message {i}") }])?;
+            s.append_worklog(&lease, vec![WorklogBody::UserMessage { run_id: "r-old".into(), turn: i, content: format!("old message {i}") }])?;
         }
         s.commit_state(&lease)?;
         let mut sm = s.summary()?;
-        sm.history_summary = "Summary of rounds 0..189.".into();
+        sm.history_summary = "Summary of turns 0..189.".into();
         sm.start_offset = offsets[190];
         sm.start_seq = 192;
         sm.made_at_seq = s.state.worklog.committed_seq;
@@ -486,7 +488,7 @@ async fn gen(out: &Path) -> R<()> {
         write_expected(&d, "worklog_with_summary",
             "summary.json start point near the end of a 200 entry worklog.",
             vec![observe(&sd)],
-            json!({ "action": "build_history_reverse_read", "stop_at_offset": offsets[190], "raw_entries": 10, "summary": "Summary of rounds 0..189." }));
+            json!({ "action": "build_history_reverse_read", "stop_at_offset": offsets[190], "raw_entries": 10, "summary": "Summary of turns 0..189." }));
         relativize(&d);
     }
     // 12. fork child running, parent suspended
@@ -498,7 +500,7 @@ async fn gen(out: &Path) -> R<()> {
         spec.prompt.behavior = Some("plan".into());
         spec.extensions.insert("opendan".into(), json!({ "process_modes": { "research": "fork" } }));
         let sd = env.create("work-fixture-fork", spec).await;
-        env.child_wait(&sd, "fork", "begin_round:after_gate_clear#2");
+        env.child_wait(&sd, "fork", "input_batch:after_gate_clear#2");
         write_expected(&d, "fork_child_live",
             "The plan process was suspended into process_stack (fork) and the research child run is live.",
             vec![observe(&sd)],
@@ -510,7 +512,7 @@ async fn gen(out: &Path) -> R<()> {
         let d = scen("13_unsupported_snapshot_version");
         let env = Env::new(&d);
         let sd = env.create("work-fixture-blocked", work("x")).await;
-        env.child_wait(&sd, "tool_then_answer", "begin_round:after_gate_clear");
+        env.child_wait(&sd, "tool_then_answer", "input_batch:after_gate_clear");
         let run_id = sd.state()?.live_run.unwrap().run_id;
         let rec = sd.runs().record(&run_id)?;
         let p = sd.runs_dir().join(&run_id).join("snapshots").join(format!("{:04}.json", rec.latest_snapshot_idx.unwrap()));

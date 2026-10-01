@@ -1,5 +1,11 @@
 //! `drive`: advance one session (§8.2) — lease, recovery, inputs, runtime
-//! binding, rounds, commit order.
+//! binding, input batches, outcomes, logical Turns, commit order.
+//!
+//! Terms: an *input batch* is one receipt `(run_id, input_seq)` committed
+//! into the context; a *Turn* is the session's logical Input → result,
+//! opened by the first batch committed while none is open and closed only
+//! here, when an outcome is interpreted as its result or failure
+//! (`Next.turn_end`); an *outcome* ends one run segment of the drive loop.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -27,9 +33,9 @@ use crate::protocol::*;
 use crate::runtime::{bin_plan_for, bind_or_verify, SessionEnv, SessionEnvCtx};
 use crate::session::runs::RunHandle;
 use crate::session::{Session, SessionDir};
-use crate::state::{round_digest, AgentStateClient};
+use crate::state::{run_digest, AgentStateClient};
 
-use super::assembler::TurnMaterial;
+use super::assembler::InputMaterial;
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::{build_history, compact_for_limit, maybe_compact, LlmSummarizer, Summarizer};
 use super::hook::{check_changes, scope_touching, SessionCheckpointHook};
@@ -37,6 +43,7 @@ use super::receipts::{
     apply_receipt, host_meta_of, position_of, receipts_after, snapshot_host_meta,
     validate_receipts, with_host_meta,
 };
+use super::rounds::{CountingLlm, RoundCounter};
 use super::tools::{RunRegistrar, SessionToolManager};
 use super::{DriveResult, RunnerDeps, StopWhen};
 
@@ -74,11 +81,21 @@ struct LiveCtx {
     ready: bool,
     /// Deps of the context (rebuilding it for a normal behavior switch).
     deps: llm_context::deps::LLMContextDeps,
+    /// Rounds made through `deps.llm` not yet recorded.
+    rounds: Arc<RoundCounter>,
+    /// The run's client without Round counting (history summarization).
+    summary_llm: Arc<dyn LlmClient>,
 }
 
-/// What `commit_round` decided. Persisted in run.json (`host.extra.finish`)
-/// together with a terminal run status, so a finish redone after a crash
-/// reaches the same result.
+/// The run's client for the context: every inference is a counted Round.
+fn counted(llm: Arc<dyn LlmClient>) -> (Arc<dyn LlmClient>, Arc<RoundCounter>) {
+    let counter = Arc::new(RoundCounter::default());
+    (Arc::new(CountingLlm::new(llm, counter.clone())), counter)
+}
+
+/// What `handle_context_outcome` decided. Persisted in run.json
+/// (`host.extra.finish`) together with a terminal run status, so a finish
+/// redone after a crash reaches the same result.
 #[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 struct Next {
@@ -94,6 +111,9 @@ struct Next {
     usage: Option<AiUsage>,
     /// The run was suspended into `process_stack` (not ended, not kept open).
     suspended: bool,
+    /// The open Turn ends with this run end (`None`: it continues — a
+    /// hand-over, a fork child returning, a resumable suspension).
+    turn_end: Option<TurnStatus>,
 }
 
 // ---------------------------------------------------------------------------
@@ -447,15 +467,18 @@ fn side_effects_from_worklog(s: &Session) -> Result<Vec<SideEffectRef>> {
         .worklog()
         .reverse(s.state.worklog.committed_bytes, 0)?;
     while let Some((_, e)) = r.next_json::<WorklogEntry>()? {
-        if let WorklogBody::Step { actions, .. } = e.body {
-            for a in actions {
-                if a.effect != "read_only" {
-                    out.push(SideEffectRef {
-                        call_id: a.call_id,
-                        tool: a.tool.clone(),
-                        note: format!("{} cannot be undone by the session", a.tool),
-                    });
-                }
+        let calls = match e.body {
+            WorklogBody::Step { actions, .. } => actions,
+            WorklogBody::AssistantMessage { tool_calls, .. } => tool_calls,
+            _ => continue,
+        };
+        for a in calls {
+            if a.effect != "read_only" {
+                out.push(SideEffectRef {
+                    call_id: a.call_id,
+                    tool: a.tool.clone(),
+                    note: format!("{} cannot be undone by the session", a.tool),
+                });
             }
         }
     }
@@ -646,14 +669,16 @@ async fn derive_next(
     snapshot: &LLMContextSnapshot,
     behavior: bool,
 ) -> Next {
-    let (cfg, round) = {
+    let (cfg, completed) = {
         let s = sh.session.lock().await;
-        (s.config.clone(), s.state.round)
+        (s.config.clone(), s.state.turns_completed)
     };
     match record.status {
         RunStatus::Completed => {
             let st = &snapshot.state;
             let last_step = st.last_step.as_ref().or(st.steps.last());
+            let replied =
+                has_report(snapshot) || last_step.is_some_and(|s| !s.messages_sent.is_empty());
             let (nb, answer) = if behavior {
                 (
                     last_step.and_then(|s| s.next_behavior.clone()),
@@ -673,13 +698,14 @@ async fn derive_next(
             };
             let answer = answer.or_else(|| record.result.as_ref().map(|r| r.raw.clone()));
             let fork_child = is_fork_child(sh, &record.run_id).await;
-            let mut next = classify_done(&cfg, behavior, nb, answer, fork_child, round);
+            let mut next =
+                classify_done(&cfg, behavior, nb, answer, replied, fork_child, completed);
             if next.kind == "switch" {
                 // The executor ended the run; nothing continues it.
                 next.kind = "done".into();
                 next.run_ended = true;
                 next.next_behavior = None;
-                decide_end(&cfg, &mut next, round);
+                decide_end(&cfg, &mut next, completed + 1);
             }
             next.usage = record.usage.main.clone();
             next
@@ -687,6 +713,7 @@ async fn derive_next(
         RunStatus::Failed => Next {
             run_ended: true,
             kind: "error".into(),
+            turn_end: Some(TurnStatus::Failed),
             usage: record.usage.main.clone(),
             error: Some(json!({
                 "kind": "run_failed",
@@ -697,6 +724,7 @@ async fn derive_next(
         _ => Next {
             run_ended: true,
             kind: "budget".into(),
+            turn_end: Some(TurnStatus::BudgetExhausted),
             usage: record.usage.main.clone(),
             error: Some(json!({
                 "kind": "limit_reached",
@@ -757,7 +785,7 @@ async fn new_run_context(sh: &Arc<Shared>, binding: &Binding, env: &SessionEnv) 
         snap.state.next_step_index = parent_snap.state.next_step_index;
         snap.state.next_action_id = parent_snap.state.next_action_id;
         // A fork child returns to its caller: jump targets it emits are
-        // ignored by `commit_round` (the waist's `forbid_next_behavior`
+        // ignored by `classify_done` (the waist's `forbid_next_behavior`
         // would also scrub xllm's terminal `done` marker).
         let mut meta = snapshot_host_meta(&snap);
         meta.inherited_below = parent_snap.state.next_step_index;
@@ -870,7 +898,8 @@ async fn new_run_context_plain(
         &behavior_name,
         input.clone(),
     );
-    let deps = checkpoint_deps(sh, &run, &config, llm.clone(), tools);
+    let (ctx_llm, rounds) = counted(llm.clone());
+    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools);
     let mut ctx = LLMContext::new(request, deps.clone());
     let meta = HostMeta {
         session_id: sid,
@@ -891,6 +920,8 @@ async fn new_run_context_plain(
         run,
         ready: false,
         deps,
+        rounds,
+        summary_llm: llm,
     })
 }
 
@@ -957,14 +988,15 @@ async fn resume_live_run(
         workdir,
         sh.touched.clone(),
     );
-    let deps = checkpoint_deps(sh, &run, &record.config, llm.clone(), tools);
+    let (ctx_llm, rounds) = counted(llm.clone());
+    let deps = checkpoint_deps(sh, &run, &record.config, ctx_llm, tools);
     let ctx = if matches!(
         snapshot.state.suspended,
         Some(Suspension::ContextLimit { .. })
     ) {
         // Paused at the context limit (compactions exhausted, or the
         // rewrite did not complete): compact again before running on.
-        rewrite_for_limit(sh, &run, snapshot, behavior, &deps, 1).await?
+        rewrite_for_limit(sh, &run, snapshot, behavior, &deps, &llm, 1).await?
     } else {
         LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
             .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?
@@ -977,12 +1009,16 @@ async fn resume_live_run(
         run,
         ready: true,
         deps,
+        rounds,
+        summary_llm: llm,
     })
 }
 
-/// Run the live context. A context-limit suspension is compacted and the run
-/// continues, at most [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one
-/// goes to `commit_round`, which pauses the run.
+/// Run the live context: one run segment of the drive loop, ending in one
+/// outcome. A context-limit suspension is compacted and the context runs on
+/// (another `run()` call in the same segment), at most
+/// [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one goes to
+/// `handle_context_outcome`, which pauses the run.
 async fn run_compacting(sh: &Arc<Shared>, lc: &mut LiveCtx) -> Result<LLMContextOutcome> {
     let mut attempt = 0;
     loop {
@@ -1000,6 +1036,7 @@ async fn run_compacting(sh: &Arc<Shared>, lc: &mut LiveCtx) -> Result<LLMContext
             snapshot.clone(),
             lc.behavior,
             &lc.deps,
+            &lc.summary_llm,
             attempt,
         )
         .await?;
@@ -1022,24 +1059,26 @@ async fn run_compacting(sh: &Arc<Shared>, lc: &mut LiveCtx) -> Result<LLMContext
 /// A crash before 3 leaves the pre-inference snapshot of the old epoch
 /// (already flushed, so nothing is written twice); after 3 the new epoch
 /// counts its messages from zero. Receipts keep their `input_seq`; only
-/// their positions are left behind in the old epoch.
+/// their positions are left behind in the old epoch. The open Turn is not
+/// affected: the rewrite only changes how its history is carried.
 async fn rewrite_for_limit(
     sh: &Arc<Shared>,
     run: &RunHandle,
     snapshot: LLMContextSnapshot,
     behavior: bool,
     deps: &LLMContextDeps,
+    summary_llm: &Arc<dyn LlmClient>,
     attempt: u32,
 ) -> Result<LLMContext> {
     let run_id = run.run_id().to_string();
     let summarizer: Arc<dyn Summarizer> = match &sh.deps.summarizer {
         Some(s) => s.clone(),
         None => Arc::new(LlmSummarizer {
-            llm: deps.llm.clone(),
+            llm: summary_llm.clone(),
             model: run.record().config.model.clone(),
         }),
     };
-    let (history, round) = {
+    let (history, turn) = {
         let mut s = sh.session.lock().await;
         let live = s
             .state
@@ -1047,19 +1086,15 @@ async fn rewrite_for_limit(
             .clone()
             .filter(|l| l.run_id == run_id)
             .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
-        let (mut bodies, marks) = run_history_entries(
-            &run_id,
-            &snapshot,
-            behavior,
-            FlushMarks::of(&live),
-            s.state.round,
-        );
+        let turn = s.state.current_turn();
+        let (mut bodies, marks) =
+            run_history_entries(&run_id, &snapshot, behavior, FlushMarks::of(&live), turn);
         // The boundary is written with the history it closes: a redo after a
         // crash, or another rewrite before anything new ran, adds nothing.
         if !bodies.is_empty() {
             bodies.push(WorklogBody::Outcome {
                 run_id: run_id.clone(),
-                round: s.state.round,
+                turn,
                 kind: "context_rewritten".into(),
                 next_behavior: None,
                 report: None,
@@ -1080,7 +1115,7 @@ async fn rewrite_for_limit(
         let history =
             compact_for_limit(&mut s, &sh.lease, summarizer.as_ref(), budget, keep).await?;
         crate::fault::point("context_limit:after_compact");
-        (history, s.state.round)
+        (history, turn)
     };
     let mut input: Vec<AiMessage> = snapshot
         .request
@@ -1092,7 +1127,7 @@ async fn rewrite_for_limit(
     input.extend(history);
     let mut meta = snapshot_host_meta(&snapshot);
     meta.history_epoch += 1;
-    meta.epoch_round = round;
+    meta.epoch_turn = turn;
     meta.epoch_input_seq = meta
         .input_receipts
         .iter()
@@ -1147,7 +1182,7 @@ async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> Result<LiveC
         snapshot.request.behavior_name = b;
     }
     let mut lc = resume_live_run(sh, run, snapshot, env).await?;
-    lc.ready = false; // resumed on purpose: the next round brings the input
+    lc.ready = false; // resumed on purpose: the hand-over batch brings the input
     Ok(lc)
 }
 
@@ -1169,16 +1204,12 @@ async fn suspend_run(
         .clone()
         .filter(|l| l.run_id == run_id)
         .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
-    let (mut bodies, marks) = run_history_entries(
-        &run_id,
-        snapshot,
-        lc.behavior,
-        FlushMarks::of(&live),
-        s.state.round,
-    );
+    let turn = s.state.current_turn();
+    let (mut bodies, marks) =
+        run_history_entries(&run_id, snapshot, lc.behavior, FlushMarks::of(&live), turn);
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
-        round: s.state.round,
+        turn,
         kind: "suspended".into(),
         next_behavior: Some(next_behavior.to_string()),
         report: None,
@@ -1195,8 +1226,9 @@ async fn suspend_run(
         entry,
         mode,
         run_id: run_id.clone(),
-        rounds: live.rounds,
-        flushed_step: marks.step,
+        turns: live.turns,
+        flushed_message_count: marks.messages,
+        flushed_step_index: marks.step_index,
         flushed_input_seq: marks.input_seq,
         flushed_epoch: marks.epoch,
         applied_input_seq: live.applied_input_seq,
@@ -1215,24 +1247,33 @@ async fn suspend_run(
             .position(|f| f.entry == next_behavior && f.mode == ProcessMode::Independent)
         {
             let f = s.state.process_stack.remove(pos);
-            s.state.live_run = Some(LiveRun {
-                run_id: f.run_id,
-                rounds: f.rounds,
-                applied_input_seq: f.applied_input_seq,
-                flushed_step: f.flushed_step,
-                flushed_input_seq: f.flushed_input_seq,
-                flushed_epoch: f.flushed_epoch,
-                process_entry: Some(f.entry),
-            });
+            s.state.live_run = Some(live_from_frame(f));
         }
     }
     lc.run.set_status(RunStatus::Paused, None)?;
     commit_and_report(sh, &mut s).await
 }
 
-/// §8.3: message + receipt in one snapshot → run.json gate → state.json →
-/// clear gate → confirm inputs. No inference before the gate is clear.
-async fn begin_round(
+/// A suspended process becomes the live run again.
+fn live_from_frame(f: ProcessFrame) -> LiveRun {
+    LiveRun {
+        run_id: f.run_id,
+        turns: f.turns,
+        applied_input_seq: f.applied_input_seq,
+        flushed_message_count: f.flushed_message_count,
+        flushed_step_index: f.flushed_step_index,
+        flushed_input_seq: f.flushed_input_seq,
+        flushed_epoch: f.flushed_epoch,
+        process_entry: Some(f.entry),
+    }
+}
+
+/// Commit one input batch (§8.3): message + receipt in one snapshot →
+/// run.json gate → state.json → clear gate → confirm inputs. No inference
+/// before the gate is clear. The batch opens a new logical Turn when none
+/// is open (D1); otherwise it joins the open one (hand-over, resume,
+/// supplementary input). Committing a batch never completes a Turn.
+async fn commit_input_batch(
     sh: &Arc<Shared>,
     lc: &mut LiveCtx,
     picked: &[InputMessage],
@@ -1257,7 +1298,12 @@ async fn begin_round(
             )));
         }
     }
-    let round = s.state.round + 1;
+    let opens_turn = s.state.open_turn.is_none();
+    let turn = if opens_turn {
+        s.state.turn_seq + 1
+    } else {
+        s.state.current_turn()
+    };
     let mut inputs: Vec<InputRef> = picked.iter().map(|m| m.input_ref()).collect();
     inputs.extend(changes.injected_inputs.iter().cloned());
     let mut extra = std::collections::BTreeMap::new();
@@ -1268,8 +1314,8 @@ async fn begin_round(
     let mut receipt = InputReceipt {
         run_id: run_id.clone(),
         input_seq: applied + 1,
-        round,
-        opens_round: true,
+        turn,
+        opens_turn,
         hook: Some(hook.to_string()),
         inputs,
         changes: changes.receipts.clone(),
@@ -1292,7 +1338,7 @@ async fn begin_round(
     lc.ctx.set_host_meta(Some(host));
     let snap = lc.ctx.snapshot();
     lc.run.publish_input_checkpoint(&snap, receipt.input_seq)?; // ① ②
-    crate::fault::point("begin_round:after_input_checkpoint");
+    crate::fault::point("input_batch:after_input_checkpoint");
     apply_receipt(&mut s.state, &receipt)?;
     if receipt.extra.contains_key("continuation") {
         s.state.internal_continuation = None;
@@ -1307,7 +1353,7 @@ async fn begin_round(
     if s.state.activity.summary.is_empty() {
         s.state.activity.summary = s.config.session.objective.chars().take(160).collect();
     }
-    if round == 1 {
+    if receipt.bootstrap {
         let me = sh.agent().sessions().lookup(s.sid()).await.ok().flatten();
         for t in scope_touching(&s.config, me.as_ref()) {
             s.state.activity.touch(t);
@@ -1324,9 +1370,9 @@ async fn begin_round(
         .collect();
     s.append_worklog(&sh.lease, dropped)?;
     commit_and_report(sh, &mut s).await?; // ③
-    crate::fault::point("begin_round:after_state_commit");
+    crate::fault::point("input_batch:after_state_commit");
     lc.run.complete_host_commit()?; // ④
-    crate::fault::point("begin_round:after_gate_clear");
+    crate::fault::point("input_batch:after_gate_clear");
     confirm_inputs(&sh.sources, &s.state).await; // ⑤
     Ok(())
 }
@@ -1339,14 +1385,16 @@ fn is_retryable_error(e: &LLMComputeError) -> bool {
     }
 }
 
-/// Session end condition after a `Done`.
-fn decide_end(cfg: &SessionConfig, next: &mut Next, round: u64) {
+/// Session end condition after a `Done` that delivers the Turn's result;
+/// `completed` counts the completed Turns including this one.
+fn decide_end(cfg: &SessionConfig, next: &mut Next, completed: u64) {
+    next.turn_end = Some(TurnStatus::Completed);
     match cfg.session.end_condition.kind {
         EndConditionType::LlmDeclaresDone | EndConditionType::OutputSchema => {
             next.finished = true;
             next.outcome = Some(Outcome::Succeeded);
         }
-        EndConditionType::MaxRounds => {
+        EndConditionType::MaxTurns => {
             let n = cfg
                 .session
                 .end_condition
@@ -1354,7 +1402,7 @@ fn decide_end(cfg: &SessionConfig, next: &mut Next, round: u64) {
                 .get("n")
                 .and_then(Value::as_u64)
                 .unwrap_or(1);
-            if round >= n {
+            if completed >= n {
                 next.finished = true;
                 next.outcome = Some(Outcome::Succeeded);
             } else {
@@ -1364,15 +1412,29 @@ fn decide_end(cfg: &SessionConfig, next: &mut Next, round: u64) {
     }
 }
 
+/// The run produced a Self Report (`<report>`).
+fn has_report(snapshot: &LLMContextSnapshot) -> bool {
+    snapshot
+        .state
+        .last_report
+        .as_deref()
+        .is_some_and(|r| !r.trim().is_empty())
+}
+
 /// Session-level meaning of a `Done` outcome (also used to rebuild the
-/// decision of a run another executor finished).
+/// decision of a run another executor finished). `completed` = Turns
+/// completed before this outcome. Hand-overs (switch, fork child return)
+/// keep the Turn open; waiting for input completes it only when a reply
+/// was delivered (`replied`: a report or a sent message, D2), otherwise the
+/// next input joins the same Turn.
 fn classify_done(
     cfg: &SessionConfig,
     behavior: bool,
     next_behavior: Option<String>,
     answer: Option<String>,
+    replied: bool,
     fork_child: bool,
-    round: u64,
+    completed: u64,
 ) -> Next {
     let mut next = Next {
         run_ended: true,
@@ -1388,6 +1450,9 @@ fn classify_done(
         Some(WAIT_USER_MSG) => {
             next.kind = "wait".into();
             next.waiting = true;
+            if replied {
+                next.turn_end = Some(TurnStatus::Completed);
+            }
         }
         // `END` (waist) and `done` (xllm: report without actions) are
         // terminal; anything else hands over to that behavior.
@@ -1400,7 +1465,7 @@ fn classify_done(
             next.next_behavior = Some(b.to_string());
             next.run_ended = false;
         }
-        _ => decide_end(cfg, &mut next, round),
+        _ => decide_end(cfg, &mut next, completed + 1),
     }
     next
 }
@@ -1414,10 +1479,22 @@ async fn is_fork_child(sh: &Shared, run_id: &str) -> bool {
         .unwrap_or(false)
 }
 
-async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOutcome) -> Result<Next> {
-    let (cfg, round, stop) = {
+/// Interpret one `LLMContext` outcome for the session (run status, Turn
+/// end, behavior switch, run end) and commit it. Returning an outcome does
+/// not by itself complete the logical Turn: `Next.turn_end` says whether it
+/// does.
+async fn handle_context_outcome(
+    sh: &Arc<Shared>,
+    lc: &mut LiveCtx,
+    outcome: LLMContextOutcome,
+) -> Result<Next> {
+    let (cfg, completed, stop) = {
         let s = sh.session.lock().await;
-        (s.config.clone(), s.state.round, s.state.stop_requested)
+        (
+            s.config.clone(),
+            s.state.turns_completed,
+            s.state.stop_requested,
+        )
     };
     let mut next = Next::default();
     let mut snapshot = lc.ctx.snapshot();
@@ -1443,8 +1520,20 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
                     text
                 }
             }));
+            let replied = has_report(&snapshot)
+                || behavior_result
+                    .as_ref()
+                    .is_some_and(|b| !b.messages_to_send.is_empty());
             let fork_child = is_fork_child(sh, lc.run.run_id()).await;
-            next = classify_done(&cfg, lc.behavior, nb, answer, fork_child, round);
+            next = classify_done(
+                &cfg,
+                lc.behavior,
+                nb,
+                answer,
+                replied,
+                fork_child,
+                completed,
+            );
             next.usage = Some(usage);
             status = if next.kind == "switch" {
                 // The run continues (normal switch) or is suspended into
@@ -1465,6 +1554,7 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
             next.usage = Some(usage);
             next.run_ended = true;
             next.kind = "budget".into();
+            next.turn_end = Some(TurnStatus::BudgetExhausted);
             status = RunStatus::LimitReached;
             next.error = Some(json!({ "kind": "budget_exhausted", "message": format!("{which:?}") }));
         }
@@ -1478,10 +1568,12 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
                 "recoverable": retry,
             }));
             if retry {
+                // Retryable: the run is kept and the Turn stays open.
                 status = RunStatus::Paused;
             } else {
                 status = RunStatus::Failed;
                 next.run_ended = true;
+                next.turn_end = Some(TurnStatus::Failed);
             }
         }
         LLMContextOutcome::Interrupted {
@@ -1497,6 +1589,7 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
                 next.run_ended = true;
                 next.finished = true;
                 next.outcome = Some(Outcome::Stopped);
+                next.turn_end = Some(TurnStatus::Stopped);
                 status = RunStatus::Interrupted;
             } else {
                 next.kind = "interrupted".into();
@@ -1528,8 +1621,19 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
     } else {
         lc.run.checkpoint_with_results(&snapshot, Some(status))?;
     }
-    if let Some(u) = &next.usage {
-        let _ = lc.run.record_usage(u, 0);
+    // Rounds of this segment: added to run.json (all executors) and to the
+    // session statistics (this runner's attempts).
+    let rounds = lc.rounds.take();
+    if next.usage.is_some() || rounds.attempts > 0 {
+        let _ = lc.run.record_usage(next.usage.as_ref(), rounds.attempts);
+    }
+    if rounds.attempts > 0 {
+        let s = sh.session.lock().await;
+        let _ = s.update_static(&sh.lease, |st| {
+            st.rounds += rounds.attempts;
+            st.rounds_failed += rounds.failed;
+            st.rounds_interrupted += rounds.interrupted;
+        });
     }
     if next.kind == "switch" {
         let b = next.next_behavior.clone().unwrap_or_default();
@@ -1577,7 +1681,8 @@ async fn commit_round(sh: &Arc<Shared>, lc: &mut LiveCtx, outcome: LLMContextOut
     Ok(next)
 }
 
-/// End a run (§8.3 `finish_run`; idempotent when redone by reconcile).
+/// End a run (§8.3 `finish_run`; idempotent when redone by reconcile). When
+/// `next.turn_end` is set the open Turn is closed in the same commit.
 async fn finish_run(
     sh: &Arc<Shared>,
     run: &RunHandle,
@@ -1598,7 +1703,19 @@ async fn finish_run(
         .filter(|l| l.run_id == run_id)
         .map(FlushMarks::of)
         .unwrap_or_default();
-    let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, s.state.round);
+    let turn = s.state.current_turn();
+    let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, turn);
+    // Close the Turn before the report renders the counters.
+    let turn_closed = match (next.turn_end, s.state.open_turn.is_some()) {
+        (Some(status), true) => {
+            s.state.open_turn = None;
+            if status == TurnStatus::Completed {
+                s.state.turns_completed += 1;
+            }
+            Some(status)
+        }
+        _ => None,
+    };
     let mut artifact_ref = None;
     if next.finished {
         if let Some(aid) = s.config.artifact_id.clone() {
@@ -1623,11 +1740,19 @@ async fn finish_run(
     // Flush the run's unwritten history into the worklog.
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
-        round: s.state.round,
+        turn,
         kind: next.kind.clone(),
         next_behavior: next.next_behavior.clone(),
         report: next.answer.clone().map(|a| a.chars().take(2000).collect()),
     });
+    if let Some(status) = turn_closed {
+        bodies.push(WorklogBody::TurnEnded {
+            run_id: run_id.clone(),
+            turn,
+            status,
+            at_ms: crate::now_ms(),
+        });
+    }
     s.append_worklog(&sh.lease, bodies)?;
     crate::fault::point("finish_run:after_flush");
     let prev = s.state.last_run.clone();
@@ -1667,20 +1792,14 @@ async fn finish_run(
     }
     if next.kind == "process_done" {
         // Fork child ended: its caller becomes live again in this same
-        // commit, with the child's result for the next round.
+        // commit, with the child's result for its hand-over batch (same
+        // Turn).
         if let Some(f) = s.state.process_stack.pop() {
-            s.state.live_run = Some(LiveRun {
-                run_id: f.run_id,
-                rounds: f.rounds,
-                applied_input_seq: f.applied_input_seq,
-                flushed_step: f.flushed_step,
-                flushed_input_seq: f.flushed_input_seq,
-                flushed_epoch: f.flushed_epoch,
-                process_entry: Some(f.entry.clone()),
-            });
-            s.state.process_entry = Some(f.entry.clone());
-            s.state.current_behavior = Some(f.entry.clone());
-            s.state.internal_continuation = Some(f.entry);
+            let entry = f.entry.clone();
+            s.state.live_run = Some(live_from_frame(f));
+            s.state.process_entry = Some(entry.clone());
+            s.state.current_behavior = Some(entry.clone());
+            s.state.internal_continuation = Some(entry);
             s.state.process_result = Some(json!({
                 "behavior": child_behavior.unwrap_or_default(),
                 "result": next.answer.clone().unwrap_or_default(),
@@ -1715,9 +1834,10 @@ async fn finish_run(
         }
     }
     let usage = next.usage.clone();
+    let turns = s.state.turns_completed;
     let _ = s.update_static(&sh.lease, |st| {
         st.runs += 1;
-        st.rounds = s.state.round;
+        st.turns = turns;
         if let Some(u) = &usage {
             st.input_tokens += u.input_tokens.unwrap_or(0);
             st.output_tokens += u.output_tokens.unwrap_or(0);
@@ -1726,10 +1846,12 @@ async fn finish_run(
         }
     });
     // After the commit: registry, perception, notification (catch-up later).
-    let mut recs = vec![round_digest(
+    let mut recs = vec![run_digest(
         &sid,
         digest_seq,
-        s.state.round,
+        &run_id,
+        turn,
+        turn_closed,
         &s.state.topic,
         s.config.artifact_id.iter().map(|a| format!("artifact:{a}")).collect(),
         &s.state.one_line_status,
@@ -1801,7 +1923,7 @@ fn one_line(next: &Next) -> String {
 
 fn render_report(s: &Session, answer: &str, next: &Next) -> String {
     format!(
-        "# Report — {}\n\n- session: `{}`\n- outcome: {}\n- rounds: {}\n\n{}\n",
+        "# Report — {}\n\n- session: `{}`\n- outcome: {}\n- turns: {}\n\n{}\n",
         s.config
             .session
             .objective
@@ -1815,7 +1937,7 @@ fn render_report(s: &Session, answer: &str, next: &Next) -> String {
         next.outcome
             .map(|o| format!("{o:?}").to_lowercase())
             .unwrap_or_else(|| next.kind.clone()),
-        s.state.round,
+        s.state.turns_completed,
         answer.trim()
     )
 }
@@ -1841,15 +1963,18 @@ fn register_outputs(
     let mut side_effects = side_effects_from_worklog(s)?;
     // The run being finished is not in the worklog yet.
     for b in unflushed {
-        if let WorklogBody::Step { actions, .. } = b {
-            for a in actions {
-                if a.effect != "read_only" {
-                    side_effects.push(SideEffectRef {
-                        call_id: a.call_id.clone(),
-                        tool: a.tool.clone(),
-                        note: format!("{} cannot be undone by the session", a.tool),
-                    });
-                }
+        let calls = match b {
+            WorklogBody::Step { actions, .. } => actions,
+            WorklogBody::AssistantMessage { tool_calls, .. } => tool_calls,
+            _ => continue,
+        };
+        for a in calls {
+            if a.effect != "read_only" {
+                side_effects.push(SideEffectRef {
+                    call_id: a.call_id.clone(),
+                    tool: a.tool.clone(),
+                    note: format!("{} cannot be undone by the session", a.tool),
+                });
             }
         }
     }
@@ -1989,12 +2114,13 @@ async fn record_error(sh: &Arc<Shared>, e: &OpenDanError) {
 
 async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
     let sid = sh.dir.sid().to_string();
-    let (status, perception_seq, round, topic, summary, wseq, reported) = {
+    let (status, perception_seq, last_run, turn, topic, summary, wseq, reported) = {
         let s = sh.session.lock().await;
         (
             s.status(sh.lease.epoch()),
             s.state.perception_seq,
-            s.state.round,
+            s.state.last_run.clone().unwrap_or_default(),
+            s.state.current_turn(),
             s.state.topic.clone(),
             s.state.one_line_status.clone(),
             s.state.worklog.committed_seq,
@@ -2008,7 +2134,17 @@ async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
     if last < perception_seq {
         let mut recs = Vec::new();
         for seq in last + 1..=perception_seq {
-            recs.push(round_digest(&sid, seq, round, &topic, Vec::new(), &summary, wseq));
+            recs.push(run_digest(
+                &sid,
+                seq,
+                &last_run,
+                turn,
+                None,
+                &topic,
+                Vec::new(),
+                &summary,
+                wseq,
+            ));
         }
         sh.agent().perception().append(&sh.lease, &sid, recs).await?;
     }
@@ -2051,6 +2187,7 @@ async fn stop_session(sh: &Arc<Shared>, live: Option<LiveCtx>, env: &SessionEnv)
         finished: true,
         outcome: Some(Outcome::Stopped),
         kind: "stopped".into(),
+        turn_end: Some(TurnStatus::Stopped),
         ..Default::default()
     };
     // A run state still references (e.g. a parent just resumed after its fork
@@ -2080,17 +2217,23 @@ async fn stop_session(sh: &Arc<Shared>, live: Option<LiveCtx>, env: &SessionEnv)
                 s.state.acceptance = Acceptance::Pending;
             }
             s.state.one_line_status = "stopped".into();
-            let round = s.state.round;
-            s.append_worklog(
-                &sh.lease,
-                vec![WorklogBody::Outcome {
+            let turn = s.state.current_turn();
+            let mut bodies = vec![WorklogBody::Outcome {
+                run_id: String::new(),
+                turn,
+                kind: "stopped".into(),
+                next_behavior: None,
+                report: None,
+            }];
+            if s.state.open_turn.take().is_some() {
+                bodies.push(WorklogBody::TurnEnded {
                     run_id: String::new(),
-                    round,
-                    kind: "stopped".into(),
-                    next_behavior: None,
-                    report: None,
-                }],
-            )?;
+                    turn,
+                    status: TurnStatus::Stopped,
+                    at_ms: crate::now_ms(),
+                });
+            }
+            s.append_worklog(&sh.lease, bodies)?;
             commit_and_report(sh, &mut s).await?;
             Ok(())
         }
@@ -2217,18 +2360,28 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         live = Some(resume_live_run(sh, run, snapshot, &env).await?);
     }
     let started = Instant::now();
-    let mut rounds_done = 0u64;
+    let mut outcomes_handled = 0u64;
     loop {
         sh.lease.check()?;
         if sh.session.lock().await.state.stop_requested {
             stop_session(sh, live.take(), &env).await?;
             return Ok(finished_result(&*sh.session.lock().await));
         }
+        if let StopWhen::MaxOutcomes { n } = until {
+            if outcomes_handled >= n {
+                let s = sh.session.lock().await;
+                return Ok(DriveResult::OutcomesHandled {
+                    rev: s.state.rev,
+                    run_state: s.state.run_state,
+                });
+            }
+        }
         let (cfg, state) = {
             let s = sh.session.lock().await;
             (s.config.clone(), s.state.clone())
         };
-        // Pull policy: msg / event start rounds; changes ride along.
+        // Pull policy: msg / event make an input batch (opening a Turn, or
+        // joining the open one); changes ride along.
         let mut picked = inputs.take(InputKind::Msg);
         picked.extend(inputs.take(InputKind::Event));
         picked.sort_by_key(|m| (m.src.clone(), m.index));
@@ -2282,13 +2435,14 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             .active(me.as_ref(), sh.deps.options.active_sessions_limit)
             .await
             .unwrap_or_default();
-        // The turn renders the active list: the agent has seen this view.
+        // The batch message renders the active list: the agent has seen
+        // this view.
         changes.receipts.push(ChangeReceipt {
-            id: format!("{}@turn", super::hook::ACTIVE_CURSOR),
+            id: format!("{}@input", super::hook::ACTIVE_CURSOR),
             subscription: super::hook::ACTIVE_CURSOR.to_string(),
             cursor: super::hook::active_view(&active),
         });
-        let material = TurnMaterial {
+        let material = InputMaterial {
             hook: hook.to_string(),
             inputs: picked.clone(),
             changes: changes.items.clone(),
@@ -2302,19 +2456,20 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 Vec::new()
             },
         };
-        // Only msg / event inputs (active), the first round and a behavior
-        // hand-over start a round; semi changes ride along (S-15, A-07).
+        // Only msg / event inputs (active), bootstrap and a behavior
+        // hand-over make an input batch; semi changes ride along (S-15,
+        // A-07).
         let triggered = !picked.is_empty()
             || !state.bootstrap_done
             || state.internal_continuation.is_some();
         let mut msg = if triggered {
-            sh.deps.assembler.render_turn(&cfg, &state, &material).await?
+            sh.deps.assembler.render_input(&cfg, &state, &material).await?
         } else {
             None
         };
         if msg.is_none() && state.internal_continuation.is_some() {
             msg = Some(format!(
-                "<turn hook=\"on_behavior_switch\">Continue with behavior `{}`.</turn>",
+                "<session_input hook=\"on_behavior_switch\">Continue with behavior `{}`.</session_input>",
                 state.internal_continuation.clone().unwrap_or_default()
             ));
         }
@@ -2361,8 +2516,8 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             };
             match until {
                 StopWhen::Idle => return Ok(DriveResult::Idle { rev, run_state: rs }),
-                StopWhen::MaxRounds { .. } => {
-                    return Ok(DriveResult::RoundsDone { rev, run_state: rs })
+                StopWhen::MaxOutcomes { .. } => {
+                    return Ok(DriveResult::OutcomesHandled { rev, run_state: rs })
                 }
                 StopWhen::Finished => {
                     if sh.session.lock().await.state.last_error.is_some() {
@@ -2396,12 +2551,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             None => new_run_context(sh, &binding, &env).await?,
         };
         if let Some(text) = msg {
-            begin_round(sh, &mut lc, &picked, &changes, text, hook).await?;
+            commit_input_batch(sh, &mut lc, &picked, &changes, text, hook).await?;
         }
         lc.ready = false;
         let outcome = run_compacting(sh, &mut lc).await?;
-        let next = commit_round(sh, &mut lc, outcome).await?;
-        rounds_done += 1;
+        let next = handle_context_outcome(sh, &mut lc, outcome).await?;
+        outcomes_handled += 1;
         if !next.run_ended && !next.suspended {
             live = Some(lc);
         }
@@ -2414,11 +2569,6 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         }
         if let Some(err) = next.error.clone() {
             return Ok(DriveResult::Error { rev, error: err });
-        }
-        if let StopWhen::MaxRounds { n } = until {
-            if rounds_done >= n {
-                return Ok(DriveResult::RoundsDone { rev, run_state: rs });
-            }
         }
         if next.waiting && until == StopWhen::Idle {
             return Ok(DriveResult::Idle { rev, run_state: rs });

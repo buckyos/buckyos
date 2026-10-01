@@ -105,7 +105,7 @@ async fn execute(&self, ctx: &ToolCtx<'_>, args: Self::Args)
 - 错误用 `AgentToolError`，常用两种：
   - `InvalidArgs(String)` —— 参数/前置条件错误（CLI 里会映射到 usage 退出码）。
   - `ExecFailed(String)` —— 真在执行中炸了（IO、远端等）。
-- `ctx.session()` 是 `SessionRuntimeContext`，做 audit / 拿 cwd / 拿 session id 都从这里走。
+- `ctx.session()` 是 `SessionRuntimeContext`，做 audit / 拿 cwd / 拿 session id 都从这里走。其中 `tool_call_index` 只是宿主在每次工具调用时递增的调用序号（CLI 进程中为 0），不是 Behavior Step 的 `step_index`，也不是 Turn 编号；工具不要拿它做 Step / Turn 归属，调用身份由宿主按 `call_id` 记录。
 
 ### 2.2 元数据三件套：`description` / `calling` / `usage`
 

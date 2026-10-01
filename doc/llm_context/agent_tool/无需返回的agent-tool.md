@@ -1,6 +1,6 @@
 我们现在会发现，有一些 Agent tool 或者说 action 其实是不关心返回过程的。
 
-因为从某些意义上讲，它们表达的是某一种状态。也就是说，这里讨论的“具体需不需要返回值”，其实隐含的意思是：它的结果要不要交给下一个轮次的 LLM 作为输入。
+因为从某些意义上讲，它们表达的是某一种状态。也就是说，这里讨论的“具体需不需要返回值”，其实隐含的意思是：下一条新消息（下一次输入）到来之后，它的结果还要不要交给 LLM 作为输入。同一次输入的工具循环里，后续推理（Round）总能看到它的结果。
 我们希望工具的实现者可以对这个事情进行控制。
 
 最常见的例子，比如我们现在的 update_session_topic 调用：
@@ -8,11 +8,11 @@
 2. 然后通过内部逻辑判断，认为 update_session_topic 的结果是需要大语言模型（LLM）处理的。
 3. 那么它就需要进行返回。
 
-这相当于是一种明确的意图。这个意图说明 agent tool 希望大模型把它的返回结果用到下一轮对话中去。
+这相当于是一种明确的意图。这个意图说明 agent tool 希望大模型把它的返回结果用到后续输入的处理中去。
 
-所谓下一轮对话，就是指一个所谓的 hot tail，即一个 user message 和一个 assistant message 之间。
+这里的单元是 Message Pair，也就是 hot tail 中的单元：一条 user message 到对应的最终 assistant message 之间，中间可以有多次推理（Round）和多次工具调用。它是消息层的单元，不等于 Session Turn。
 
-相当于说，当正常的一轮调用完成之后，如果不希望它的结果作为下一轮 LLM 的输入，那么当下一轮进行输入时，它其实会从消息列表中被删除。
+相当于说，当这个 Message Pair 正常完成之后，如果不希望它的结果继续作为 LLM 的输入，那么在下一条新消息输入时，它其实会从消息列表中被删除。
 
 原本的消息序列可能是：
 - user message
@@ -22,7 +22,7 @@
 - tool result2
 - assistant message
 
-在处理后，中间可能会少掉一些 tool call 和 tool result 的轮次。但这不会影响到对上一轮 user message 和 assistant message 语义的判断。比如变成
+在处理后，中间可能会少掉一些 tool call 和 tool result。但这不会影响到对上一个 Message Pair 中 user message 和 assistant message 语义的判断。比如变成
 - user message
 - tool call1
 - tool result1

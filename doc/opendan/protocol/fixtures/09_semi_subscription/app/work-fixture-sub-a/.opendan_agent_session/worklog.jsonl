@@ -1,5 +1,6 @@
-{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1790761535703}
-{"seq":2,"t":"round_started","run_id":"20260930-024535-8aee3f","round":1,"inputs":[],"changes":["_active_sessions@turn"],"hook":"on_init","at_ms":1790761535720}
-{"seq":3,"t":"user_message","run_id":"20260930-024535-8aee3f","round":1,"content":"<turn hook=\"on_init\" time=\"2026-09-30T02:45:35.717-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"host\":\"host:lzc-pve:6b719608768f\",\"kind\":\"native\",\"os\":\"linux\",\"runtime_id\":\"rt-fixture-native\"}</runtime>\n</turn>"}
-{"seq":4,"t":"step","run_id":"20260930-024535-8aee3f","round":1,"assistant":"answer"}
-{"seq":5,"t":"outcome","run_id":"20260930-024535-8aee3f","round":1,"kind":"done","report":"answer"}
+{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1790853968798}
+{"seq":2,"t":"turn_started","run_id":"20261001-042608-e406cb","turn":1,"input_seq":1,"inputs":[],"changes":["_active_sessions@input"],"hook":"on_init","at_ms":1790853968815}
+{"seq":3,"t":"user_message","run_id":"20261001-042608-e406cb","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-01T04:26:08.812-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"host\":\"host:lzc-pve:6b719608768f\",\"kind\":\"native\",\"os\":\"linux\",\"runtime_id\":\"rt-fixture-native\"}</runtime>\n</session_input>"}
+{"seq":4,"t":"assistant_message","run_id":"20261001-042608-e406cb","turn":1,"assistant":"answer"}
+{"seq":5,"t":"outcome","run_id":"20261001-042608-e406cb","turn":1,"kind":"done","report":"answer"}
+{"seq":6,"t":"turn_ended","run_id":"20261001-042608-e406cb","turn":1,"status":"completed","at_ms":1790853968835}

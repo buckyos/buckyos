@@ -110,7 +110,7 @@ pub struct PerceptionRecord {
     pub seq: u64,
     pub at_ms: u64,
     pub session_id: String,
-    /// `round_digest | observation | task_outcome | task_discarded`.
+    /// `run_digest | observation | task_outcome | task_discarded`.
     pub kind: String,
     /// `session | self`.
     #[serde(default = "session_source")]

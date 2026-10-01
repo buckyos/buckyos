@@ -115,7 +115,7 @@ fn script(name: &'static str) -> Arc<ScriptedLlm> {
 #[tokio::test]
 async fn f01_new_work_session() {
     let (_t, env, e) = load("01_new_work_session");
-    assert_eq!(e["next"]["action"], "bind_runtime_then_round");
+    assert_eq!(e["next"]["action"], "bind_runtime_then_input_batch");
     let sd = session(&env, "work-fixture-new");
     assert!(sd.binding_opt().unwrap().is_none());
     let llm = script("answer");

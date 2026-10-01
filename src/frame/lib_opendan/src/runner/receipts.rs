@@ -67,13 +67,15 @@ pub fn predict_position(snapshot: &LLMContextSnapshot, behavior: bool) -> Messag
 }
 
 /// Apply one receipt to the session state (idempotent: receipts at or below
-/// `live_run.applied_input_seq` are ignored).
+/// `live_run.applied_input_seq` are ignored). A receipt that opens a Turn
+/// makes it the open Turn; any other receipt must belong to the open Turn.
 pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool> {
     let live = state.live_run.get_or_insert_with(|| LiveRun {
         run_id: r.run_id.clone(),
-        rounds: Vec::new(),
+        turns: Vec::new(),
         applied_input_seq: 0,
-        flushed_step: 0,
+        flushed_message_count: 0,
+        flushed_step_index: 0,
         flushed_input_seq: 0,
         flushed_epoch: 0,
         process_entry: None,
@@ -99,22 +101,52 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
             Some(&r.run_id),
         ));
     }
+    let joins = state.open_turn.as_ref().map(|t| t.index);
+    if !r.opens_turn && joins != Some(r.turn) {
+        return Err(OpenDanError::blocked(
+            format!(
+                "receipt batch {} joins turn {} but the open turn is {joins:?}",
+                r.input_seq, r.turn
+            ),
+            Some(&r.run_id),
+        ));
+    }
     live.applied_input_seq = r.input_seq;
     let input_ids: Vec<String> = r.inputs.iter().map(|i| i.id()).collect();
     let change_ids: Vec<String> = r.changes.iter().map(|c| c.id.clone()).collect();
-    if r.opens_round {
-        live.rounds.push(RoundInputs {
-            round: r.round,
+    match live.turns.last_mut() {
+        Some(last) if last.turn == r.turn && !r.opens_turn => {
+            last.inputs.extend(input_ids);
+            last.changes.extend(change_ids);
+        }
+        _ => live.turns.push(TurnInputs {
+            turn: r.turn,
             inputs: input_ids,
             changes: change_ids,
             hook: r.hook.clone(),
             input_seq: r.input_seq,
             at_ms: r.at_ms,
+        }),
+    }
+    // The Turn's logical input: msg / event inputs of every batch.
+    let logical: Vec<String> = r
+        .inputs
+        .iter()
+        .filter(|i| i.kind == "msg" || i.kind == "event")
+        .map(|i| i.id())
+        .collect();
+    if r.opens_turn {
+        state.open_turn = Some(OpenTurn {
+            index: r.turn,
+            run_id: r.run_id.clone(),
+            input_seq: r.input_seq,
+            hook: r.hook.clone(),
+            inputs: logical,
+            at_ms: r.at_ms,
         });
-        state.round = state.round.max(r.round);
-    } else if let Some(last) = live.rounds.last_mut() {
-        last.inputs.extend(input_ids);
-        last.changes.extend(change_ids);
+        state.turn_seq = state.turn_seq.max(r.turn);
+    } else if let Some(t) = state.open_turn.as_mut() {
+        t.inputs.extend(logical);
     }
     for i in r.inputs.iter().chain(r.consumed_only.iter()) {
         state.source_mut(&i.src).mark(i.index);
@@ -130,7 +162,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
     if r.bootstrap {
         state.bootstrap_done = true;
     }
-    if r.opens_round {
+    if r.hook.as_deref() != Some(OBSERVATION_HOOK) {
         state.run_state = RunState::Running;
         state.waiting_for = None;
     }

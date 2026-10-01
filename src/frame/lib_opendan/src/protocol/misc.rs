@@ -48,7 +48,7 @@ impl Binding {
     }
 }
 
-/// `static.json` — statistics (tokens, rounds, time, cost).
+/// `static.json` — statistics (tokens, Rounds, Turns, runs, time, cost).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionStatic {
     #[serde(default)]
@@ -57,12 +57,25 @@ pub struct SessionStatic {
     pub output_tokens: u64,
     #[serde(default)]
     pub total_tokens: u64,
+    /// Rounds: inference attempts the runner made through the run's
+    /// `LlmClient::infer` (successful, failed and interrupted), added after
+    /// every outcome. History summarization is not a Round. Inferences of an
+    /// executor that took the run over (xllm) are only in that run's
+    /// `run.json` `usage.llm_requests`.
     #[serde(default)]
     pub rounds: u64,
+    /// Rounds that returned an error.
+    #[serde(default)]
+    pub rounds_failed: u64,
+    /// Rounds abandoned in flight (interrupt / provider cancellation).
+    #[serde(default)]
+    pub rounds_interrupted: u64,
+    /// Logical Turns closed as completed (`SessionState.turns_completed`).
+    #[serde(default)]
+    pub turns: u64,
+    /// Runs (`LLMContext` executions with their own run directory) ended.
     #[serde(default)]
     pub runs: u64,
-    #[serde(default)]
-    pub llm_requests: u64,
     #[serde(default)]
     pub tool_calls: u64,
     #[serde(default)]

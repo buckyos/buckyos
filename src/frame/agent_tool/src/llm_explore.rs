@@ -53,7 +53,7 @@ use crate::{
 
 const TOOL_NAME: &str = "llm_explore";
 const DEFAULT_MODEL_ALIAS: &str = "llm.summary";
-const DEFAULT_MAX_ROUNDS: u32 = 16;
+const DEFAULT_MAX_TOOL_ITERATIONS: u32 = 16;
 
 /// 钉在每个 llm_explore run 上的 system prompt。
 const SYSTEM_PROMPT: &str = "\
@@ -153,7 +153,7 @@ async fn run(opts: CliOpts) -> (AgentToolResult, i32) {
         ),
         loop_model: Some(LoopModel::FunctionCall),
         tools: Some(true),
-        max_rounds: Some(DEFAULT_MAX_ROUNDS),
+        max_tool_iterations: Some(DEFAULT_MAX_TOOL_ITERATIONS),
         runs_dir: Some(work_dir.clone()),
         ..Default::default()
     };

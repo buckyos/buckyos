@@ -366,7 +366,7 @@ impl BashRunner for TmuxBashRunner {
             "{}-{}-{}-{}",
             now_ms(),
             sanitize_for_id(&ctx.behavior),
-            ctx.step_idx,
+            ctx.tool_call_index,
             EXEC_RUN_SEQ.fetch_add(1, Ordering::Relaxed)
         );
         let stdout_path = self.runtime_dir.join(format!("{run_id}.stdout.log"));
@@ -1173,7 +1173,7 @@ mod tests {
             trace_id: "t".into(),
             agent_name: "a".into(),
             behavior: "b".into(),
-            step_idx: 0,
+            tool_call_index: 0,
             wakeup_id: "w".into(),
             session_id: sid.to_string(),
             read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
@@ -1425,7 +1425,7 @@ mod tests {
             trace_id: "trace-1".into(),
             agent_name: "agent-1".into(),
             behavior: "do".into(),
-            step_idx: 7,
+            tool_call_index: 7,
             wakeup_id: "wake-1".into(),
             session_id: "session-real".into(),
             read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,

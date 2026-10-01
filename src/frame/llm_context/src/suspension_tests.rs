@@ -141,7 +141,7 @@ fn request() -> LLMContextRequest {
         },
         tool_policy: ToolPolicy {
             mode: ToolMode::All,
-            max_rounds: 6,
+            max_tool_iterations: 6,
             max_calls_per_round: 6,
             allow_deferred: true,
             ..ToolPolicy::default()
@@ -381,8 +381,8 @@ async fn tool_results_over_the_threshold_yield_before_the_next_inference_and_rew
         vec!["c1"],
         "the tool result is in the snapshot"
     );
-    let rounds_left = snapshot.state.rounds_left;
-    assert_eq!(rounds_left, 5);
+    let tool_iterations_left = snapshot.state.tool_iterations_left;
+    assert_eq!(tool_iterations_left, 5);
 
     // The scheduler rewrites; the run continues without resetting budgets.
     let snapshot = round_trip(&snapshot);
@@ -413,7 +413,7 @@ async fn tool_results_over_the_threshold_yield_before_the_next_inference_and_rew
         "usage is not reset by the rewrite"
     );
     assert_eq!(llm.seen()[1], rewritten);
-    assert_eq!(ctx.snapshot().state.rounds_left, rounds_left);
+    assert_eq!(ctx.snapshot().state.tool_iterations_left, tool_iterations_left);
     assert_eq!(tools.calls(), vec!["c1"]);
 }
 
@@ -753,8 +753,8 @@ async fn pending_stops_the_batch_and_resume_runs_only_the_rest() {
     assert_eq!(batch.remaining.len(), 1);
     assert_eq!(batch.remaining[0].call_id, "c3");
     assert_eq!(
-        snapshot.state.rounds_left, 6,
-        "the round is counted when the batch completes"
+        snapshot.state.tool_iterations_left, 6,
+        "the tool iteration is charged when the batch completes"
     );
 
     // Another run before the fill is refused and dispatches nothing.
@@ -794,10 +794,10 @@ async fn pending_stops_the_batch_and_resume_runs_only_the_rest() {
         "results in call order, each once"
     );
     let state = ctx.snapshot().state;
-    assert_eq!(state.rounds_left, 5);
+    assert_eq!(state.tool_iterations_left, 5);
     assert_eq!(
         state.consecutive_errors, 1,
-        "c3's failure counts once for the round"
+        "c3's failure counts once for the batch"
     );
     assert!(state.tool_batch.is_none() && state.suspended.is_none());
 }
@@ -867,7 +867,7 @@ async fn two_consecutive_suspensions_keep_state_across_json() {
     assert_eq!(tool_result_ids(&llm.seen()[1]), vec!["p1", "p2"]);
     let state = ctx.snapshot().state;
     assert_eq!(state.host, Some(host));
-    assert_eq!(state.rounds_left, 5);
+    assert_eq!(state.tool_iterations_left, 5);
 }
 
 #[tokio::test]
@@ -978,7 +978,7 @@ async fn out_of_order_results_are_written_in_call_order() {
             .collect(),
         at_ms: 1,
     });
-    req.tool_policy.max_rounds = 2;
+    req.tool_policy.max_tool_iterations = 2;
     let llm = Llm::new(vec![AiResponse::text("done")]);
     let mut ctx = LLMContext::resume(
         LLMContextSnapshot {
@@ -1079,8 +1079,8 @@ async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
     assert_eq!(step.actions.len(), 3);
     assert_eq!(step.action_results.len(), 1);
     assert_eq!(
-        snapshot.state.rounds_left, 5,
-        "the step's round is already counted"
+        snapshot.state.tool_iterations_left, 5,
+        "the step's tool iteration is already charged"
     );
 
     let snapshot = round_trip(&snapshot);
@@ -1116,7 +1116,7 @@ async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
 }
 
 #[tokio::test]
-async fn behavior_inner_native_pending_resumes_the_turn_without_rerunning_tools() {
+async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_tools() {
     let llm = Llm::new(vec![
         xml("<thinking>step 0</thinking><actions><exec_bash>echo a</exec_bash></actions>"),
         tools_response(vec![call("echo", "n1"), call("defer", "n2")]),
@@ -1141,7 +1141,7 @@ async fn behavior_inner_native_pending_resumes_the_turn_without_rerunning_tools(
     assert_eq!(
         tool_result_ids(tail),
         vec!["n1"],
-        "the inner turn is kept as the tail"
+        "the inner transcript is kept"
     );
 
     let mut ctx = LLMContext::resume(
@@ -1333,7 +1333,7 @@ impl LlmClient for InterruptSecond {
 }
 
 #[tokio::test]
-async fn an_interrupted_behavior_turn_keeps_the_native_tools_it_ran() {
+async fn an_interrupted_behavior_step_keeps_the_native_tools_it_ran() {
     let llm = Arc::new(InterruptSecond {
         first: Mutex::new(Some(tools_response(vec![call("echo", "n1")]))),
         handle: Mutex::new(None),
@@ -1351,7 +1351,7 @@ async fn an_interrupted_behavior_turn_keeps_the_native_tools_it_ran() {
     };
     assert_eq!(tools.calls(), vec!["n1"]);
     let tail = &snapshot.state.accumulated[snapshot.request.input.len()..];
-    assert_eq!(tool_result_ids(tail), vec!["n1"], "the turn so far is kept");
+    assert_eq!(tool_result_ids(tail), vec!["n1"], "the inner transcript so far is kept");
 
     let resumed_llm = Llm::new(vec![xml("<next_behavior>END</next_behavior>")]);
     let mut ctx = LLMContext::resume(

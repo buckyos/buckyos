@@ -1,8 +1,10 @@
 //! Every on-disk / on-queue structure of the Agent Session protocol.
 //!
 //! These types are the source for the reverse-written Spec and JSON Schemas
-//! (L6, `doc/opendan/protocol/`). Keep field names stable; additive changes
-//! only, with `#[serde(default)]`.
+//! (L6, `doc/opendan/protocol/`). Within one schema version keep field names
+//! stable and add fields only with `#[serde(default)]`; a rename or a change
+//! of meaning bumps the schema version (beta 2.2: older versions are refused,
+//! no aliases).
 
 pub mod agent_state;
 pub mod config;

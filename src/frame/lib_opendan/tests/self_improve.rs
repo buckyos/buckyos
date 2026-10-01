@@ -12,7 +12,7 @@ use libopendan::state::AgentStateClient;
 async fn self_improve_consolidates_the_backlog_once() {
     let env = Env::new();
     let agent = env.agent();
-    // Two finished work sessions leave round digests + outcomes.
+    // Two finished work sessions leave run digests + outcomes.
     for obj in ["A", "B"] {
         let sd = env.create_work(work_spec(obj)).await;
         assert!(drive(&sd, &env.deps(ScriptedLlm::new(|_, _| text("ok"))), StopWhen::Finished)
@@ -55,7 +55,7 @@ async fn self_improve_consolidates_the_backlog_once() {
     };
     let llm = ScriptedLlm::new(|req, _| {
         let u = last_user_text(req);
-        assert!(u.contains("<perceptions>") && u.contains("round_digest"), "{u}");
+        assert!(u.contains("<perceptions>") && u.contains("run_digest"), "{u}");
         text("kept 2 facts")
     });
     assert!(matches!(

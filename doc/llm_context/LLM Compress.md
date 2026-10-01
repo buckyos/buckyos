@@ -12,7 +12,7 @@
 
 在 OpenDAN 的 Agent Loop 中，一个 LLM Session 会持续积累历史消息。随着消息数量增加，Session 上下文会逐渐接近模型的 context window 上限。若不进行处理，会带来以下问题：
 
-1. 当前轮推理可能因为上下文过长而失败。
+1. 下一次推理（Round）可能因为上下文过长而失败。
 2. Prompt token 成本持续上升。
 3. 旧消息对当前任务的噪声越来越大，降低推理质量。
 4. 频繁改动历史消息又会破坏 prompt cache 的稳定性。
@@ -35,7 +35,7 @@
 1. System Message。
 2. 会话头部若干关键消息，即 Head Keep。
 3. 一个或多个已生成的压缩摘要块，即 Compressed Pair。
-4. 最近若干轮完整消息，即 Hot Tail。
+4. 最近若干个完整 Message Pair，即 Hot Tail。
 
 中间被替换掉的历史消息则进入 Compress Block，由 LLM 或机械规则压缩。
 
@@ -60,7 +60,7 @@
 2. **保留推理连续性**：至少保留最近 2 个完整 Message Pair，避免当前任务状态被破坏。
 3. **保留头部关键意图**：System Message 和早期关键消息通常包含原始任务、约束和初始目标，应支持 Head Keep。
 4. **保持消息边界完整**：尽量以 Message Pair 为单位选择 Compress Block，避免随意截断 tool call 或 assistant response。
-5. **保持 prompt cache 稳定性**：压缩不应频繁发生；一次压缩应释放足够空间，保证后续若干轮不会立刻再次压缩。
+5. **保持 prompt cache 稳定性**：压缩不应频繁发生；一次压缩应释放足够空间，保证后续若干次推理不会立刻再次压缩。
 6. **优先低成本压缩**：如果机械压缩可以达到目标，就不调用 LLM。
 7. **避免重复有损压缩**：已生成的 Compressed Pair 应成为稳定边界，不应在后续压缩中再次被压缩。
 8. **支持通用 prompt 框架**：压缩 LLM 的 system prompt 应由固定基础提示词和调用方附加关注点组成。
@@ -81,7 +81,7 @@
 6. 不把已有 Compressed Pair 再次纳入新的 Compress Block。
 7. 不在第一版实现复杂的压缩质量自动评估闭环。
 8. 不替代后台 Memory Scan / Session Review 等专门整理记忆的流程。
-9. 只使用与标准的llm loop,首个版本不在behavior loop上启用
+9. 只使用与标准的llm loop,首个版本不在behavior loop上启用（当前实现：xllm 的 behavior run 撞到上下文上限时也会调用 `compress` 压缩物化后的历史，但 History Block 折叠不用于 behavior 消息，见 §5.11）
 
 ---
 
@@ -96,13 +96,13 @@ LLM Message 是传给模型的基础消息单元。它通常包含：
 - `id`：唯一 ID。
 - `token_count`：可选的 token 统计。
 - `pair_id`：所属 Message Pair。
-- `turn_index`：所在轮次。
+- `pair_index`：所在 Message Pair 的序号（消息层编号，不是 Session Turn 编号）。
 - `is_compressed`：是否为压缩生成的消息。
 - `compressed_from`：压缩来源范围。
 
 ### 5.2 Message Pair
 
-Message Pair 指一轮用户输入及其对应的 assistant 完整响应。
+Message Pair 指一条用户输入（UserMessage）及其对应的 assistant 完整响应。它是消息层的切分单元，与 Round / Step / Turn 的关系见 §5.11。
 
 在传统聊天中，一个 Message Pair 通常是：
 
@@ -126,13 +126,13 @@ AssistantMessage(final)
 
 ### 5.3 Active Pair
 
-Active Pair 指当前尚未完成的一轮 Message Pair。例如 assistant 已经发起 tool call，但 tool result 或 final answer 尚未完成。
+Active Pair 指当前尚未完成的 Message Pair。例如 assistant 已经发起 tool call，但 tool result 或 final answer 尚未完成。
 
-压缩不应发生在 Active Pair 内部。若当前 Session 正处于 tool loop 中，应等待本轮完成后再判断是否需要压缩。
+压缩不应发生在 Active Pair 内部。若当前 Session 正处于 tool loop 中，应等待该 Pair 完成后再判断是否需要压缩。
 
 ### 5.4 Hot Tail
 
-Hot Tail 指最近若干轮完整 Message Pair。它直接影响当前任务状态，默认不进入 Compress Block。
+Hot Tail 指最近若干个完整 Message Pair。它直接影响当前任务状态，默认不进入 Compress Block。
 
 默认要求：
 
@@ -162,7 +162,7 @@ Head Keep 指会话开头的关键消息。很多 Session 中，最早的几条�
 
 1. 永远保留 System Message。
 2. 可选保留最早 1 到 2 个 Message Pair。
-3. 是否启用 Head Keep、保留几轮，由调用方配置。
+3. 是否启用 Head Keep、保留几个 Pair，由调用方配置。
 
 建议默认值：
 
@@ -208,7 +208,7 @@ UserMessage(is_compressed=true):
 
 ### 5.8 Stable Compressed Boundary
 
-Compressed Pair 是一次有损压缩的结果。后续压缩不应再次把它纳入 Compress Block，否则会出现摘要反复摘要，导致信息逐轮衰减。
+Compressed Pair 是一次有损压缩的结果。后续压缩不应再次把它纳入 Compress Block，否则会出现摘要反复摘要，导致信息逐次衰减。
 
 因此，已生成的 Compressed Pair 应成为 Stable Compressed Boundary。
 
@@ -244,11 +244,36 @@ LLM Compression 指调用专门的摘要模型，对 Compress Block 做语义压
 
 它适合处理：
 
-1. 多轮讨论形成的设计结论。
+1. 跨多个 Message Pair 的讨论形成的设计结论。
 2. 决策过程。
 3. 未完成任务。
 4. 跨消息的上下文关系。
 5. 非结构化自然语言历史。
+
+### 5.11 压缩单元与 Round / Step / Turn
+
+Round / Step / Turn 的定义见 [readme.md](readme.md)。本文的 Message Pair、Active Pair、Hot Tail 都是**消息层**单元：
+
+- 一个 Message Pair 内可以有多次推理（Round）。function call 模式下每条 `AssistantMessage(tool_call)` 都是一次 Round 的输出，其后的 ToolResult 属于同一个工具批次（消耗一次工具迭代）。
+- Message Pair 不等于 Turn。Turn 是 AgentSession 的一次逻辑 Input → result：一个 Turn 可以包含多个输入批次（behavior 切换的 `on_behavior_switch`、fork 返回、处理中加入的补充输入），`WAIT_USER_MSG` 未交付答复时下一条消息也仍属同一 Turn。因此**不能用 UserMessage 条数或 Message Pair 数当作 Turn 数**；需要 Turn 时读取 Session 记录的 `turn`（libopendan worklog 中 run 产生的记录都带 `turn`）。
+- Behavior Loop 的压缩单元是 Step（`StepRecord`，身份为 `(run_id, step_index)`），不是 Message Pair。进行中 Step 的 inner transcript（尚未折叠进 StepRecord 的原生工具循环消息）相当于 Active Pair，不参与压缩。
+
+当前实现中各层的压缩对象：
+
+| 层 | 压缩对象 | 稳定前缀 / 边界 | 状态 |
+| --- | --- | --- | --- |
+| `llm_compress::compress`（agent_tool） | `AiMessage` 序列：按 Message Pair 选 Compress Block，按 AgentToolResult 协议降级 ToolResult，Agent Loop 可折叠为 History Block | System + Head Keep；已有 Compressed Pair 是 Stable Compressed Boundary | 当前实现。xllm 在 `ContextLimitReached` 时经 `LlmSummarizeCompressor` 改写，function call 用 `ResumeFill::RewrittenHistory` 恢复，behavior 用 `ResumeFill::RewrittenSteps` 把整段物化历史折进 `input`；`llm_understand_media` 用它压缩父 history |
+| llm_context behavior 历史 | `StepRecord`：`steps`、`history_summaries`（覆盖 `start_step_index..end_step_index`）、`last_step` | 一个 run 内 Step 历史只追加，渲染器不按新旧自动改写；改写只能由宿主在 `ContextLimitReached` 后经 `RewrittenSteps` 显式进行，Step 编号和 inner transcript 保留 | 当前实现 |
+| libopendan Session 历史 | worklog 记录 + `summary.json`。机械压缩 `MechanicalCompress`：最新 `recent_full_responses`（默认 2）个模型响应（behavior 的 `step` 或 function call 的 `assistant_message`）及其后的记录完整渲染，更早的截断到 `summary_chars`；`drop_kinds` 默认不渲染 `created` / `decide` / `compaction` / `input_rejected` / `change_dropped` / `turn_ended`。LLM 压缩（`compact`）把 `[start_offset, cut_offset)` 摘要进 `summary.json` 并前移起点，worklog 不被改写；摘要推理不计入 Round 统计 | system 段 + `<session_history>`（summary + 原始记录）构成 run 的稳定前缀（`HostMeta.base_input_len` 条消息）；时间、hints 等新鲜值只出现在输入批次消息里 | 当前实现 |
+| 旧 opendan Runtime | `on_llm_message_compress` hook 调用 `llm_compress::compress` | 见 §7.3 的旧键说明 | 旧 Runtime，待下一阶段 opendan 重构接入 |
+
+显式恢复边界（libopendan 当前实现）：waist 只报告 `ContextLimitReached`，改写由宿主完成，顺序固定：
+
+1. 先把该 run 至今的历史写入 worklog（以 `outcome` `context_rewritten` 收尾），并提交 flush 游标；
+2. 再压缩 Session 历史（`summary.json`）并重建 history message；
+3. 以 system + 新 history 作为新的 `request.input` 恢复（`RewrittenHistory` / `RewrittenSteps`），`HostMeta.history_epoch` 加一，同时记录 `epoch_turn`（改写时所在的 Turn）和 `epoch_input_seq`。
+
+flush 游标按模式区分：function call run 用 `flushed_message_count`，即 `flushed_epoch` 内 history 前缀之后已写入的消息条数，新 epoch 从 0 计；behavior run 用 `flushed_step_index`，`step_index` 小于它的 Step 已在 worklog（身份高水位，不是计数）；注入消息按 `flushed_input_seq` 去重。改写既不结束当前 Turn，也不新开 Turn。
 
 ---
 
@@ -294,14 +319,14 @@ Hot Tail Messages
 1. Tool call 和 tool result 通常属于同一个 Message Pair 的内部结构。
 2. 在 tool loop 中间压缩会破坏 pair 边界。
 3. 频繁改写 messages 会破坏 prompt cache 命中。
-4. 压缩本身有成本，不应变成每轮默认操作。
+4. 压缩本身有成本，不应变成每次推理后的默认操作。
 
 因此，推荐在以下时机触发判断：
 
-1. 一轮完整 Message Pair 结束后。
+1. 一个完整 Message Pair 结束后。
 2. Session Manager 发现 context window 使用率达到阈值后。
 3. Behavior Loop 或调用方显式请求压缩。
-4. 预计下一轮输入会使上下文接近或超过上限时。
+4. 预计下一次输入或推理会使上下文接近或超过上限时。
 
 ### 7.2 基于 context window 比例触发
 
@@ -335,7 +360,7 @@ target_ratio = 0.50
 0.45 <= target_ratio <= 0.55
 ```
 
-设计意图是：触发一次压缩后，应释放足够空间，保证后续若干轮不会立刻再次触发压缩。
+设计意图是：触发一次压缩后，应释放足够空间，保证后续若干个 Message Pair 内不会立刻再次触发压缩。
 
 #### 7.2.1 压缩生效线与最低释放量
 
@@ -390,14 +415,16 @@ required_saved_tokens ~= context_window_tokens * 0.45
 为保护 prompt cache 稳定性，建议配置：
 
 ```text
-min_turns_between_compress = 2 或更高
+min_pairs_between_compress = 2 或更高
 ```
 
-含义：距离上一次压缩之后，如果完成的 Message Pair 数太少，即使 token 比例略高，也可以延后压缩，除非已经接近硬上限。
+含义：距离上一次压缩之后，如果完成的 Message Pair 数太少，即使 token 比例略高，也可以延后压缩，除非已经接近硬上限。计数单位是 Message Pair，不是 Session Turn（见 §5.11）。
+
+> 旧 opendan Runtime 的 behavior hook `[on_llm_message_compress]` 现用键名 `min_turns_between_compress`，实际统计的是上次压缩标记之后的 UserMessage 条数，即本节的 Message Pair 数，不是 Turn 数。该键属于旧 Runtime 配置，待下一阶段 opendan 重构接入时按本节改名。
 
 ### 7.4 硬上限保护
 
-当上下文接近模型硬上限时，应允许忽略 `min_turns_between_compress`，强制触发压缩或返回错误。
+当上下文接近模型硬上限时，应允许忽略 `min_pairs_between_compress`，强制触发压缩或返回错误。
 
 建议参数：
 
@@ -448,7 +475,7 @@ else:
 2. 判断是否达到 trigger_ratio。
 3. 如果未达到，返回 changed=false。
 4. 判断当前是否存在 Active Pair。
-5. 如果存在 Active Pair，原则上延后到本轮结束。
+5. 如果存在 Active Pair，原则上延后到该 Pair 结束。
 6. 根据 System / Head Keep / Stable Boundary / Hot Tail 选择 Compress Block。
 7. 如果没有有效 Compress Block，返回 changed=false，并给出 warning。
 8. 估算机械压缩可释放 token。
@@ -660,14 +687,14 @@ target_token_budget = ceil(context_window_tokens * 0.50)
 mechanical_can_apply = mechanical_new_total_tokens <= target_token_budget
 ```
 
-所以在 80% 触发时，机械压缩通常必须至少释放约 30% context window 的 token。这个门槛是为了保证压缩后的历史能稳定运行几轮，而不是每轮都改写历史。
+所以在 80% 触发时，机械压缩通常必须至少释放约 30% context window 的 token。这个门槛是为了保证压缩后的历史能稳定运行若干个 Message Pair，而不是每次推理都改写历史。
 
 机械压缩内部按成本从低到高尝试：
 
 1. **ToolResult 协议分级压缩**：对旧 ToolResult 解析 `AgentToolResult` envelope，并根据位置降级到 `Medium` 或 `Min`。
 2. **Agent Loop History Block 折叠**：当协议分级仍不能达到 `target_token_budget` 时，尝试把多个完整 message pair 合并为一个机械 History 块。
 
-如果第 1 步已经让整体 token 数回到目标线以下，本轮只采用 ToolResult 分级压缩，不再生成 History Block。
+如果第 1 步已经让整体 token 数回到目标线以下，本次压缩只采用 ToolResult 分级压缩，不再生成 History Block。
 
 #### 11.2.1 History Block 生成条件
 
@@ -1004,7 +1031,7 @@ interface CompressTriggerPolicy {
   target_ratio: number;        // 默认 0.50
   hard_limit_ratio?: number;   // 默认 0.95
 
-  min_turns_between_compress?: number;
+  min_pairs_between_compress?: number; // 距上次压缩完成的 Message Pair 数，不是 Turn 数
   preserve_cache_stability: boolean;
 }
 ```
@@ -1072,7 +1099,7 @@ interface LlmMessage {
   created_at?: number;
 
   pair_id?: string;
-  turn_index?: number;
+  pair_index?: number;   // Message Pair 序号，不是 Session Turn
 
   token_count?: number;
 
@@ -1327,7 +1354,7 @@ Dry Run 对调试 UI 和压缩策略调参非常重要。
 
 1. 长 Session 在 80% context window 左右触发压缩。
 2. 压缩后上下文回落到目标比例附近。
-3. 压缩后继续追加多轮消息，不会立刻再次压缩。
+3. 压缩后继续追加多个 Message Pair，不会立刻再次压缩。
 4. 多次压缩后，已有 Compressed Pair 不被再次压缩。
 5. Tool call loop 中间不触发压缩。
 6. 压缩后 Agent 能继续当前任务。
@@ -1431,7 +1458,7 @@ llm_message_compress/
 
 负责：
 
-1. 根据 `pair_id` / `turn_index` / role 推断 Message Pair。
+1. 根据 `pair_id` / `pair_index` / role 推断 Message Pair。
 2. 识别 Active Pair。
 3. 识别 tool call / tool result 所属关系。
 
@@ -1481,7 +1508,7 @@ const defaultCompressPolicy = {
     trigger_ratio: 0.80,
     target_ratio: 0.50,
     hard_limit_ratio: 0.95,
-    min_turns_between_compress: 2,
+    min_pairs_between_compress: 2,
     preserve_cache_stability: true,
   },
   select_policy: {

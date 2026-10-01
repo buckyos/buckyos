@@ -22,8 +22,8 @@
 | `StepRecord { actions, action_results, ... }` | [src/frame/llm_context/src/behavior_loop.rs:72](../src/frame/llm_context/src/behavior_loop.rs) | Behavior 一步的内存结构 |
 | Full / Medium / Min / Mini 分级渲染 | [src/frame/llm_context/src/step_record.rs](../src/frame/llm_context/src/step_record.rs)（`XmlStepRenderer`）+ `AgentToolResult::render_for_level()` ([lib.rs:629](../src/frame/agent_tool/src/lib.rs)) | "越老越狠"的协议侧实现已经存在 |
 | `<<last_step_action_results>>` / `<<step_history>>` 包装 | [step_record.rs](../src/frame/llm_context/src/step_record.rs) | Behavior 模式的 "History 块" 渲染基线 |
-| Session 持久化：`round_history/round_<N>.jsonl` | [src/frame/opendan/src/round_history.rs](../src/frame/opendan/src/round_history.rs) | 每个 round 的 entry 流，包含 `Message` / `Step` / `Event` |
-| `SessionHistoryReader::read_round / read_range` | [round_history.rs:671](../src/frame/opendan/src/round_history.rs) | 在内存外重新拿到原始记录的唯一权威入口 |
+| Session 持久化（当前实现）：libopendan `worklog` + `summary.json` | [src/frame/lib_opendan/src/runner/flush.rs](../../src/frame/lib_opendan/src/runner/flush.rs)、[history.rs](../../src/frame/lib_opendan/src/runner/history.rs) | run 的消息 / Step 按 flush 游标写成 worklog 记录（`assistant_message` / `step` / `action_result` …，每条带 `turn`）；`read_window` 从提交末尾反向读到 `summary.start_offset`，`compact` 摘要 `[start_offset, cut_offset)` |
+| 旧 Runtime 持久化：`round_history/round_<N>.jsonl`、`SessionHistoryReader::read_round / read_range` | [src/frame/opendan/src/round_history.rs](../../src/frame/opendan/src/round_history.rs) | 旧 opendan Runtime 私有落库格式，`round_index` 是旧 Runtime 的会话推进编号（不是推理 Round，也不是 Session Turn）；不作为新抽象的宿主协议，待下一阶段 opendan 重构接入 |
 | LLM 压缩主体（当前实现） | [src/frame/agent_tool/src/llm_compress.rs](../src/frame/agent_tool/src/llm_compress.rs) | 已能跑：System+Head Keep+Hot Tail 选 Compress Block，LLM summary，marker 标 stable boundary |
 
 ### 1.2 目标差距（要做的事）
@@ -51,6 +51,16 @@
    再次机械压缩时，已存在的 History 块可被识别并扩张（吸收更多老 pair）。靠 #3 的 meta 来识别。
 5. **`extra_focus_prompt` / `agent_identity` 注入点**
    `compress()` 现在 system prompt 是硬编码英文（[llm_compress.rs:186-197](../src/frame/agent_tool/src/llm_compress.rs)）。给一个 `extra_focus_prompt: Option<&str>` 参数即可。
+
+### 1.3 压缩单元、稳定前缀与恢复边界
+
+术语见 [readme.md](readme.md)，各层对照表见 [LLM Compress.md §5.11](<LLM Compress.md>)。实现时守住：
+
+- llm_compress 的单元是 `AiMessage`，按 Message Pair（一条 UserMessage 到其最终 assistant 响应）选区间。一个 Pair 内可有多次推理（Round）和多个工具批次；Pair 数 / UserMessage 条数不是 Turn 数，不要拿它们当 Turn 计数或做 Turn 归属。
+- Behavior 的单元是 Step（`StepRecord`），由 llm_context 的 Step 历史和 `<<step_history>>` 承载；进行中 Step 的 inner transcript 不压缩。
+- 稳定前缀：System + Head Keep + 已有 Compressed Pair（Stable Compressed Boundary）。
+- 恢复边界是显式的：waist 只产出 `ContextLimitReached`，调用方压缩后以 `ResumeFill::RewrittenHistory`（function call）或 `ResumeFill::RewrittenSteps`（behavior）恢复，改写结果成为新的稳定基线。xllm 就是这样调用 `LlmSummarizeCompressor` 的。
+- libopendan 不走 llm_compress：它压缩的是 Session worklog（`MechanicalCompress.recent_full_responses` 按模型响应计数，单元是 behavior `step` 或 function call `assistant_message`）和 `summary.json`，并在 run 中途改写时先 flush 再开新的 history epoch；flush 游标是 `flushed_message_count`（function call）/ `flushed_step_index`（behavior）。
 
 ---
 
@@ -94,20 +104,24 @@ Behavior 模式下 ToolManager 已经把 `Observation::Success { tool_result: So
 
 **推荐路线**：第一期走 (A)，因为不动 AiMessage 形状、向前兼容、Chat/Behavior 走同一条解析路径。后续若需要在 prompt 里压掉冗余 JSON 再考虑 (B)。
 
-### 2.3 落库路径（仅诊断 / 跨 round 用）
+### 2.3 落库路径（仅诊断 / 跨 run 用）
 
-`SessionHistoryReader::read_round(round_index, HistoryView::Raw|Full|MsgOnly)` 读 `round_history/round_<N>.jsonl`，能拿到：
+当前实现（libopendan）：Session worklog 只记录 run 已完成的部分，按 flush 游标写入，不重复：
 
-- Chat 模式：`RoundFullPayload::Chat { messages: Vec<AiMessage> }`
-- Behavior 模式：`RoundFullPayload::Behavior { steps: Vec<StepRecord> }` —— 这里的 `step.action_results` 是带 `Option<ToolResultView>` 的 `Observation`，结构化最完整。
+- function call run：每次模型响应（一次 Round）是一条 `assistant_message {run_id, turn, assistant, tool_calls}`，每个工具结果是一条 `action_result {run_id, turn, call_id, status, result}`；不写成 `step`。
+- behavior run：每个 `StepRecord` 是一条 `step {run_id, turn, step_index, behavior, assistant, actions, correction}`，其 action 结果同样是按 `call_id` 关联的 `action_result`。
+- 输入批次是 `turn_started` / `input_batch` 加 `user_message`；每条记录的 `turn` 是所属逻辑 Turn，只用于归属和展示，不用于切分 Message Pair。
+- `action_result.result` 只保存结果文本，不保存 `ToolResultView`；要恢复结构化 envelope，仍按 2.1 从文本反解。
+
+旧 Runtime（待下一阶段 opendan 重构接入）：`SessionHistoryReader::read_round(round_index, HistoryView::Raw|Full|MsgOnly)` 读 `round_history/round_<N>.jsonl`，返回 `RoundFullPayload::Chat { messages }` / `RoundFullPayload::Behavior { steps }`（后者的 `step.action_results` 带 `Option<ToolResultView>`）。`round_index` 是旧 Runtime 的会话推进编号。与新抽象的对应：`Chat { messages }` 对应 function call run 的 `assistant_message` + `action_result` 记录，`Behavior { steps }` 对应 `step` + `action_result` 记录；`RoundFullPayload` 不作为新设计接口。
 
 但 **llm_compress 在线运行时不应走这条路**：
 
 1. 压缩点的 messages 已经在内存里，重新读盘是浪费。
-2. round_history 是 audit trail，不是热路径数据源；引入对它的依赖会让 llm_compress 和 opendan crate 紧耦合（当前它在 agent_tool crate）。
-3. 离线工具 / dev test / 调试场景才用 `SessionHistoryReader`。
+2. worklog / round_history 是 audit trail，不是热路径数据源；引入对它们的依赖会让 llm_compress 和 lib_opendan / opendan crate 紧耦合（当前它在 agent_tool crate）。
+3. 离线工具 / dev test / 调试场景才读落库记录。
 
-**约束**：llm_compress crate 不要 `use opendan::round_history`。需要持久化诊断时，由 caller（agent_session）从 round_history 加载后再喂给 llm_compress。
+**约束**：llm_compress crate 不依赖 `lib_opendan`，也不 `use opendan::round_history`。需要持久化诊断时，由宿主从自己的落库记录加载后再喂给 llm_compress。
 
 ---
 
@@ -136,7 +150,7 @@ Behavior 模式下 ToolManager 已经把 `Observation::Success { tool_result: So
 
 ### 阶段 2：结构化机械压缩 meta
 
-**目标**：让下一轮压缩能识别"这一条已经被机械压缩过 + 当前 level"。
+**目标**：让下一次压缩能识别"这一条已经被机械压缩过 + 当前 level"。
 
 最小落地（不动 AiMessage shape）：
 
@@ -182,7 +196,7 @@ History:
 
 1. Compress Block 选完后，先做阶段 1+2 的协议降级；如果降到 `Min` 还压不下来，触发路径 B：把选中的 pair 们 fold 成上面这种文本。
 2. 产物是 2 条 AiMessage（一对），meta 的 `message_pairs_in_history_block = N`。
-3. 下一轮压缩看到 `message_pairs_in_history_block > 0` 的 assistant message，可以把更老的相邻 pair 继续 fold 进同一个 History 块（"老 block 变长"），靠重新拼字符串实现，不要保留多个 block。
+3. 下一次压缩看到 `message_pairs_in_history_block > 0` 的 assistant message，可以把更老的相邻 pair 继续 fold 进同一个 History 块（"老 block 变长"），靠重新拼字符串实现，不要保留多个 block。
 4. **Behavior 模式不走这套**：复用 `<<step_history>>` + `XmlStepRenderer` 已有路径。llm_compress 检测到当前 messages 是 Behavior 起源（system prompt / behavior 标记）时，直接跳过路径 B，让 Behavior 自己的 history sediment 机制做。
 
 ### 阶段 4：参数注入点
@@ -228,7 +242,7 @@ pub async fn compress(
 
 当前 [`is_compressed_pair_at`](../src/frame/agent_tool/src/llm_compress.rs:414) / [`is_stable_boundary_message`](../src/frame/agent_tool/src/llm_compress.rs:428) 通过 `COMPRESS_META_MARKER` / `COMPRESS_SUMMARY_MARKER` 识别已压缩对。
 
-新增的机械压缩 meta marker (`[LLM_MECHANICAL_COMPRESS_META_V1]`) **不是** stable boundary —— 它只是"这一条已经压过一次"的标记，下一轮可以继续升级压缩等级，也可以被 LLM 压缩吸收。识别函数要区分这两类 marker，不要让机械压缩 meta 错位变成 boundary。
+新增的机械压缩 meta marker (`[LLM_MECHANICAL_COMPRESS_META_V1]`) **不是** stable boundary —— 它只是"这一条已经压过一次"的标记，下一次压缩可以继续升级压缩等级，也可以被 LLM 压缩吸收。识别函数要区分这两类 marker，不要让机械压缩 meta 错位变成 boundary。
 
 ### 4.4 `AiContent::ToolResult.content` 是 `Vec<AiToolResultContent>`
 
@@ -253,16 +267,17 @@ pub async fn compress(
 
 - 单元测试：[`src/frame/agent_tool/src/llm_compress.rs`](../src/frame/agent_tool/src/llm_compress.rs) 末尾 `mod tests`。已有 `mechanical_tool_result_compresses_when_enough` / `existing_compressed_pair_is_stable_boundary` / `over_budget_summarizes_middle` 等，照同一套 `make_deps + msg + compressed_pair` 套路写。
 - 集成测试：`#[ignore]` 的 `dev_compress_real_codex_session_jsonl` 已经从真实 Codex jsonl 加载 history，可以扩展成"加载 → 跑机械压缩 → 验证 level 降档命中"的回归。
-- Round history 相关测试：[round_history.rs:1040+](../src/frame/opendan/src/round_history.rs)。如果做"从落库记录验证 envelope 还原"，在那里加。
+- libopendan Session 历史 / 中途改写（当前实现）：`src/frame/lib_opendan/tests/context_limit.rs`（`function_call_run_continues_after_a_mid_run_rewrite`、`behavior_run_compacts_the_session_history_and_keeps_step_numbering`、`a_run_that_never_fits_is_paused_with_the_limit_and_retried_later`）、`tests/l1.rs::budget_exhaustion_compacts_without_gap`、`tests/crash.rs::crash_after_context_limit_compaction`。它们验证的是 worklog 压缩、history epoch 与 flush 游标，不经过 llm_compress。
+- 旧 Runtime 的 round history 测试（[round_history.rs](../../src/frame/opendan/src/round_history.rs) 末尾 `mod tests`）只覆盖旧落库格式，待下一阶段 opendan 重构接入；"从落库记录验证 envelope 还原"这类新用例不要再加在那里。
 
 ---
 
 ## 6. 不要做的事
 
-1. **不要把 llm_compress 拉去依赖 `opendan` crate**。当前 llm_compress 在 `agent_tool` crate，依赖链：`agent_tool → llm_context → buckyos_api`。要保持。round_history 是 opendan 的，单向引用：opendan 调 llm_compress，不反过来。
+1. **不要把 llm_compress 拉去依赖 `opendan` crate**。当前 llm_compress 在 `agent_tool` crate，依赖链：`agent_tool → llm_context → buckyos_api`。要保持，也不要依赖 `lib_opendan`。单向引用：xllm（`LlmSummarizeCompressor`）、`llm_understand_media` 和旧 opendan Runtime 调 llm_compress，不反过来。
 2. **不要在 llm_compress 里 `match tool_name` 做工具特化**。所有 per-tool 行为都该在工具自己的 `AgentToolResult` 填充上体现。
 3. **不要扩 `AiMessage` 字段（一期）**。结构化 meta 一期靠 marker 行 + JSON inline。等阶段 3 的产物形态稳定下来再讨论是否给 AiMessage 加 `compressed_from`。
-4. **不要让机械压缩流程触发外部 IO**。读盘（round_history）、网络只在 LLM 压缩路径才允许。
+4. **不要让机械压缩流程触发外部 IO**。读盘（worklog / 旧 round_history）、网络只在 LLM 压缩路径才允许。
 5. **不要在 Behavior 模式下启用路径 B**。Behavior 已有 `<<step_history>>` + sediment，重叠会冲突。判断方式：检查 messages 里是否有 `<<step_history>>` 或 `behavior` 命名空间的 system message。
 6. **不要修改 `AGENT_TOOL_PROTOCOL_VERSION` 或 envelope 字段语义**。压缩流程是消费者，不是协议作者。新字段缺失就用 None，不要为压缩需求反推到协议。
 
@@ -273,9 +288,9 @@ pub async fn compress(
 完成后能复述出这些事实，且对应测试都过：
 
 - [ ] 机械压缩**只**通过 `AgentToolResult::render_for_level()` 改写消息（无 envelope 走 fallback 路径）。
-- [ ] 同一条 ToolResult 在第二轮压缩时能从 `Medium` 升级到 `Min`，靠 marker meta 识别。
+- [ ] 同一条 ToolResult 在第二次压缩时能从 `Medium` 升级到 `Min`，靠 marker meta 识别。
 - [ ] Compress Block 选完 → 协议降级若不够 → 触发路径 B（Agent Loop）合并 N 个 pair 成 `[user, assistant History 块]` 对。
-- [ ] 路径 B 产物在再下一轮可被识别，并把更老的相邻 pair 继续 fold 进同一个 History 块（不产生多个并列 block）。
+- [ ] 路径 B 产物在下一次压缩时可被识别，并把更老的相邻 pair 继续 fold 进同一个 History 块（不产生多个并列 block）。
 - [ ] 失败 / pending tool result 不被机械压缩。
 - [ ] Behavior 模式的 messages 不进路径 B（让 `<<step_history>>` 自管）。
 - [ ] `compress()` 多了 `extra_focus_prompt` 参数，注入位置不破坏 base prompt 的前缀（prompt cache 友好）。

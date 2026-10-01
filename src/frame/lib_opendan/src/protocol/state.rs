@@ -10,7 +10,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/1";
+/// 2: logical Turn identity (`turn_seq` / `open_turn` / `turns_completed`)
+/// replaced the input-driven `round` counter; split flush cursors. Earlier
+/// versions are refused.
+pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/2";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;
@@ -82,20 +85,25 @@ pub struct WaitingFor {
     pub deadline_ms: Option<u64>,
 }
 
-/// Inputs consumed by one round of a run (written into `round_started`).
+/// Inputs of one logical Turn that entered a run. The input batch that
+/// opens the Turn (or the first batch of an already open Turn in this run)
+/// starts an entry; later batches of the same Turn (hand-over, observation,
+/// supplementary input) extend it, so the list grows with Turns, not with
+/// batches.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RoundInputs {
-    pub round: u64,
+pub struct TurnInputs {
+    pub turn: u64,
     /// Stable input ids, e.g. `q#121`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
     /// Subscription changes, e.g. `s1@16`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub changes: Vec<String>,
-    /// Hook point that started the round (`on_init`, `on_wakeup`, ...).
+    /// Hook point of the first batch (`on_init`, `on_wakeup`,
+    /// `on_behavior_switch`, `observation`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook: Option<String>,
-    /// `input_seq` of the receipt that opened the round.
+    /// `input_seq` of the first batch of this Turn in the run.
     #[serde(default)]
     pub input_seq: u64,
     #[serde(default)]
@@ -107,22 +115,27 @@ pub struct RoundInputs {
 pub struct LiveRun {
     pub run_id: String,
     #[serde(default)]
-    pub rounds: Vec<RoundInputs>,
+    pub turns: Vec<TurnInputs>,
     /// Receipt batches of this run already applied to state (§8.3).
     #[serde(default)]
     pub applied_input_seq: u64,
-    /// What of this run is already in the worklog. Function call runs: the
-    /// number of messages after the prefix; behavior runs: steps with
-    /// `step_index < flushed_step`.
-    #[serde(default)]
-    pub flushed_step: u64,
+    /// Function call runs: messages after the history prefix (within
+    /// `flushed_epoch`) already in the worklog.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_message_count: u64,
+    /// Behavior runs: steps with `step_index <` this are in the worklog
+    /// (identity high-water mark, not a count: inherited steps of a fork
+    /// child and steps rewritten away are never written).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_step_index: u64,
     /// Behavior runs: receipts (injected messages) with `input_seq ≤` this
     /// are in the worklog.
     #[serde(default)]
     pub flushed_input_seq: u64,
-    /// History epoch (`HostMeta.history_epoch`) `flushed_step` counts in.
-    /// A snapshot of a newer epoch starts at zero: its whole history before
-    /// the rewrite was flushed before the rewrite was published.
+    /// History epoch (`HostMeta.history_epoch`) `flushed_message_count`
+    /// counts in. A snapshot of a newer epoch starts at zero: its whole
+    /// history before the rewrite was flushed before the rewrite was
+    /// published.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flushed_epoch: u64,
     /// Process entry the run belongs to (behavior process ↔ run).
@@ -144,15 +157,58 @@ pub struct ProcessFrame {
     pub mode: ProcessMode,
     pub run_id: String,
     #[serde(default)]
-    pub rounds: Vec<RoundInputs>,
-    #[serde(default)]
-    pub flushed_step: u64,
+    pub turns: Vec<TurnInputs>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_message_count: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub flushed_step_index: u64,
     #[serde(default)]
     pub flushed_input_seq: u64,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub flushed_epoch: u64,
     #[serde(default)]
     pub applied_input_seq: u64,
+}
+
+/// How a logical Turn ended (decided by the session from the outcome and
+/// the hand-over state, never by the waist alone).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStatus {
+    /// A result was delivered (final answer, a reply before waiting for
+    /// input, or the session finished).
+    Completed,
+    /// A non-recoverable error ended the run.
+    Failed,
+    /// The run's budget was exhausted.
+    BudgetExhausted,
+    /// `control(stop)`.
+    Stopped,
+}
+
+/// The logical Turn in progress (one Input → result of the AgentSession).
+///
+/// Opened by the first input batch committed while no Turn is open
+/// (bootstrap, msg / event). Behavior switches, fork calls and returns,
+/// independent context switches, observation injections, resumable
+/// suspensions (interrupt, retryable error, context limit, pending tool),
+/// history epoch rewrites and restarts keep it open; inputs consumed while
+/// it is open join it. Only the session closes it, when it interprets an
+/// outcome as the Turn's result or failure ([`TurnStatus`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OpenTurn {
+    /// Session-wide Turn number, starting at 1.
+    pub index: u64,
+    /// Input batch that opened it: `(run_id, input_seq)`.
+    pub run_id: String,
+    pub input_seq: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hook: Option<String>,
+    /// msg / event inputs that make up the Turn's logical input: those of
+    /// the opening batch, then those consumed while it was open.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inputs: Vec<String>,
+    pub at_ms: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -310,8 +366,15 @@ pub struct SessionState {
     pub acceptance: Acceptance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<Value>,
+    /// Number of the latest Turn opened (0 before the first input batch).
     #[serde(default)]
-    pub round: u64,
+    pub turn_seq: u64,
+    /// The Turn in progress, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_turn: Option<OpenTurn>,
+    /// Turns closed with [`TurnStatus::Completed`].
+    #[serde(default)]
+    pub turns_completed: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_behavior: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -353,11 +416,12 @@ pub struct SessionState {
     /// Stop requested through `control(stop)`; applied at the next safe point.
     #[serde(default)]
     pub stop_requested: bool,
-    /// A round to start without new input (behavior switch hand-over).
+    /// An input batch to commit without new input (behavior switch / fork
+    /// return / independent hand-over); it joins the open Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal_continuation: Option<String>,
-    /// Result of a fork child process, handed to the resumed parent in the
-    /// next round (`{behavior, result}`).
+    /// Result of a fork child process, handed to the resumed parent in its
+    /// hand-over batch (`{behavior, result}`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_result: Option<Value>,
     #[serde(default)]
@@ -375,7 +439,9 @@ impl SessionState {
             outcome: None,
             acceptance: Acceptance::NotApplicable,
             result: None,
-            round: 0,
+            turn_seq: 0,
+            open_turn: None,
+            turns_completed: 0,
             current_behavior: None,
             process_entry: None,
             process_stack: Vec::new(),
@@ -430,6 +496,14 @@ impl SessionState {
 
     pub fn is_finished(&self) -> bool {
         self.run_state == RunState::Finished
+    }
+
+    /// The Turn entries are attributed to: the open one, else the last one.
+    pub fn current_turn(&self) -> u64 {
+        self.open_turn
+            .as_ref()
+            .map(|t| t.index)
+            .unwrap_or(self.turn_seq)
     }
 }
 

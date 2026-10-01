@@ -4,6 +4,8 @@
 >
 > 同时把 `old/opendan/src/behavior/prompt.rs` 里**与模板渲染相关**的合并进来；**所有与 session / workspace / todo / msg-queue / contact 相关的逻辑都不属于引擎**，要么由调用方预渲染成字符串塞进 KV，要么通过 `ValueLoader` trait 注入。
 >
+> **实现状态**：阶段 A（§8）已落地：`llm_context` 的 `prompt_engine` / `prompt_budget` / `prompt_compose`。阶段 B 没有按本文落地：旧 opendan Runtime 的数据源在 `src/frame/opendan/src/prompt_env.rs` 的 `AgentSessionValueLoader`（没有 `prompt_sources.rs` / `OpenDanValueLoader`），只用 `PromptRenderEngine` 渲染 behavior hook 模板（`on_init` / `on_wakeup` / `on_behavior_switch` / `on_behavior_step_ob`），没有接 `prompt_compose`，待下一阶段 opendan 重构接入。libopendan 不经过本引擎（见 §4 末尾）。下文 §4–§8 的 opendan 部分是重构计划，不是当前接口。
+>
 > **为什么放进 `llm_context`**：未来还有别的 LLM 上层（workflow DSL、oneshot 类调度、文档生成 / 报告渲染……）也要构造 prompt 文本。把「模板 → 预算 → 装配成 `Vec<AiMessage>`」这条流水线放在 `llm_context` 里，与已有的 `Tokenizer` / `LLMResultParser` / `StepRenderer` / `prompt_budget` 同住，能让 opendan 与 workflow 共用同一套工具盒，opendan 只剩下「填 ValueLoader + 配 SectionSpec」一层很薄的胶水。
 
 ## 1. 设计原则
@@ -172,6 +174,14 @@ opendan 私有的「数据源」逻辑独立成 `src/frame/opendan/src/prompt_so
 - 顶层 `OpenDanValueLoader: ValueLoader`：把上面这些拼起来响应 `loader.load("history.messages.recent")` 一类查询；agent_session 里调用 `prompt_compose::compose(...)` 时把它作为 loader 传入。
 
 opendan 不再有"composition" 模块——composition 已经下沉。
+
+#### History、Step、动作回响和输入批次的实际来源（当前实现）
+
+这些都不是本引擎的模板变量，Round / Turn 编号也没有作为模板变量暴露：
+
+- **Step 历史与动作回响**：由 llm_context 的 `StepRenderer`（默认 `XmlStepRenderer`）在每次推理前从 `LLMContextState.steps` / `last_step` 渲染：其它 behavior 的 Step 进 `<<step_history>>`，当前 behavior 的 Step 渲染成 assistant 决策 + `<<last_step_action_results>>` 动作回响。旧 opendan Runtime 可以用 behavior 的 `on_behavior_step_ob` 模板经 `StepResultHook` 替换某个 Step 的动作回响，模板里的 `current_context.last_step` / `current_context.step_history` 是从 LLMContext 快照取出的 `StepRecord`（见 [Agent Enviroment.md](../opendan/Agent%20Enviroment.md)）。libopendan / xllm 不挂 `StepResultHook`，动作回响总是默认渲染。
+- **Session 历史**：libopendan Runner 从 worklog 渲染成一条 `<session_history>` user message（`runner/history.rs`，`MechanicalCompress`）；旧 Runtime 的历史加载与格式化见上面的 opendan 私有数据源。
+- **每个输入批次的 user message**：libopendan 由 `SessionAssembler::render_input(cfg, state, &InputMaterial)` 渲染成 `<session_input hook=… time=…>`（默认 `DefaultAssembler`，不经过 `PromptRenderEngine`）；system 段由 `SessionAssembler::system_text` 生成。旧 Runtime 用 `on_wakeup` 等 hook 模板经本引擎渲染。
 
 ### workflow DSL 的复用面
 workflow 那边只需要：

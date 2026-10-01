@@ -6,6 +6,8 @@
 >
 > 目前全部流程只在 mock 模式下验证过。真实 Zone 上建群会被两道检查挡住（第 2 节），其中成员 proof 检查已决定取消（2.2）。部署的 msg-center 也还是旧版本（第 3 节）。
 >
+> 已确认建群权限（2.1）和 Agent 入群策略（4.4）。跨 Zone 认证沿用 DID Document 语义，关系信任由 Contact Mgr 管理；当前尚未形成完整接入流程，自动入群与凭据管理保留为 TODO（4.5），不阻塞同 Zone 落地。
+>
 > 设计依据：[Self-Host-Groupv2.md](../doc/message_hub/Self-Host-Groupv2.md)。
 
 ## 1. 现状
@@ -22,13 +24,15 @@
 
 ## 2. P0：建群与入群的阻塞
 
-### 2.1 RBAC 没有授予建群权限（需要决策）
+### 2.1 RBAC 没有授予建群权限（权限范围已决定）
 
 `group.create` 先检查 `obj://msg-center/group` 的 `create` 权限（[group_service.rs](../src/frame/msg_center/src/group_service.rs) `group_rpc_authenticated`）。默认策略（[rbac_config.rs](../src/kernel/buckyos-api/src/rbac_config.rs)）只有 `kernel`、`root`、`su_admin` 的 `obj://*` 能覆盖它，`users` 和 `admin` 都没有这条规则。因此普通登录的用户（包括 admin 组的 devtest）建群会被拒绝，还走不到 proof 检查。
 
-- [ ] 决定谁可以建群：全部用户，还是只有 admin。
-- [ ] 在默认策略中加入对应规则，例如 `p, users,obj://msg-center/group,create,allow`，并确认已激活 Zone 的 system-config 中的 RBAC 如何更新。
-- [ ] 顺带处理 v2 §12.2 列出的问题：`users` 对 `obj://msg-center/group_inbox/*` 仍有 `read|write` 权限，该规则至今还在。
+**决定（2026-10-01）**：普通登录用户和 admin 都可以建群。Zone RBAC 授予建群权限，群内操作由群的成员资格、角色与能力控制。
+
+- [x] 确认建群权限覆盖普通用户和 admin。
+- [ ] 在默认策略中分别加入 `p, users,obj://msg-center/group,create,allow` 和 `p, admin,obj://msg-center/group,create,allow`，并确认已激活 Zone 的 system-config 中的 RBAC 如何更新。
+- [ ] 顺带处理 v2 §12.2 列出的问题：`users` 和 `admin` 对 `obj://msg-center/group_inbox/*` 仍有 `read|write` 权限，需要收窄；直接访问 GROUP_INBOX 仍须同时满足 RBAC 和群授权。
 
 ### 2.2 取消成员 proof，改为群和成员双方同意（已决定）
 
@@ -41,8 +45,8 @@
 | 项目 | 规则 |
 |---|---|
 | 群一方同意 | Owner 或 Admin 发出的邀请视为群已同意，被邀请者接受后直接成为 `Active`，不再审批。主动申请需要有审批能力的成员批准。邀请链接和 `join_policy = open` 视为管理员事先批准。默认只有 Owner、Admin 有 `group.invite_member`；如果群配置让普通成员也能邀请，他发出的邀请在对方接受后进入 `PendingAdminApproval` |
-| 成员一方同意 | 由成员自己的 Zone 按策略决定：邀请人在成员的联系人中（好友）就自动接受；陌生人的邀请进入 REQUEST_BOX，等本人确认（v2 §6.2 已有这一半）。转让群主不自动接受，必须本人确认 |
-| 请求认证 | 同 Zone 用登录 token。跨 Zone 由 host 验证成员 Zone 携带的用户凭据（即 joined 绑定里的 `authorization`），再查成员表。外部平台（tunnel）用户沿用接入证据，由 tunnel 的 transport 身份代为提交 |
+| 成员一方同意 | 人类成员由自己的 Zone 按 Contact Mgr 策略决定：邀请人是好友就自动接受；陌生人的邀请进入 REQUEST_BOX，等本人确认；被屏蔽的邀请人按 Block 策略拒绝。Agent 按 4.4 的 owner 策略处理。转让群主不自动接受，必须本人确认 |
+| 请求认证 | 同 Zone 用登录 token。跨 Zone 沿用 DID Document 的身份与认证授权语义，关系信任和准入由 Contact Mgr 决定，再查群成员表（或 Guest 记录）；现有 joined 绑定仍携带 host 可验证的 `authorization`，自动获取与续期流程按 4.5 保留 TODO。外部平台（tunnel）用户沿用接入证据，由 tunnel 的 transport 身份代为提交 |
 | 角色 | 角色由邀请决定，接受邀请就是接受邀请中的角色。主动申请和邀请链接只能得到 `Member`。群主可以直接把成员升为 Admin，不需要本人同意 |
 | Session Guest | 同样只看双方同意，不再需要 Session 作用域的 proof（v2 §6.5） |
 
@@ -79,7 +83,7 @@
 
 - [ ] 建群：由 token 认证的调用者直接写入 Owner 记录。
 - [ ] 审批规则按邀请人区分：Owner、Admin 发出的邀请，接受后直接 `Active`；其他人发出的邀请进入 `PendingAdminApproval`。
-- [ ] 成员一方自动接受：同 Zone 由 msg-center 投递邀请时查 Contact Mgr，邀请人是好友就直接接受；跨 Zone 由成员 Zone 收到邀请后自动接受，并建立 joined 绑定（与 4.5 合并）。
+- [ ] 成员一方自动接受：同 Zone 由 msg-center 投递邀请时查接收者作用域的 Contact Mgr，好友邀请直接接受、陌生人邀请进入 REQUEST_BOX、Block 拒绝；Agent 按 4.4 处理。跨 Zone 自动接受与 joined 绑定的建立按 4.5 保留 TODO。
 - [ ] `entity_kind` 改为在邀请或接受时解析成员 DID 文档得到，解析逻辑从 `verify_member_proof` 中抽出来保留。
 - [ ] 跨 Zone 读取改为只看凭据和成员表（或 Guest 记录）。
 - [ ] `tombstone_readers` 改为只记曾参与者的 DID。
@@ -102,7 +106,8 @@
 
 待办（测试与前端）：
 
-- [ ] 新增测试：同 Zone 建群；好友邀请自动入群；陌生人邀请进 REQUEST_BOX，确认后入群；普通成员发出的邀请需要审批；群主直接任命 Admin；跨 Zone 接受邀请后凭据读取与同步；tunnel 用 `attestation` 入群；删除群后曾经的成员仍能读到删除通知。
+- [ ] 新增测试：普通用户和 admin 同 Zone 建群；好友邀请自动入群；陌生人邀请进 REQUEST_BOX，确认后入群；被屏蔽的邀请人不能触发自动入群；普通成员发出的邀请需要审批；群主直接任命 Admin；tunnel 用 `attestation` 入群；删除群后曾经的成员仍能读到删除通知。
+- [ ] 跨 Zone 接受邀请后凭据读取与同步的真实流程测试，待 4.5 落地后补充；本轮仍需验证删除 proof 后现有显式 joined 绑定的读取与同步。
 - [ ] 前端删除 proof 相关实现：
   - `datamodel/sessionApi.ts` 的 `submitGroupMemberProof` 改名并改调 `group.accept_invitation`，传 `invitation_id`。
   - `i18n/messagehub.ts` 删除 `owner-proof-required`、`member-proof-required`、`signed-member-proof-required` 文案，`proof-invitation-mismatch` 换成后端的新错误码。
@@ -141,18 +146,28 @@
 
 - [ ] 收到群变更事件时让缓存失效（依赖 4.1）。
 
-### 4.4 Agent 无法入群
+### 4.4 Agent 无法入群（策略已决定）
 
 成员选择器里可以选 Agent，但 OpenDAN 不处理 `buckyos.group_invitation` 通知，被邀请的 Agent 会一直停在「已邀请」。`msg_center_pump.rs` 已经能识别收到的群消息（`group_id`）。
 
-- [ ] 确定 Agent 自动接受邀请的策略（例如只接受其 owner 或 owner 的好友发出的邀请），按 2.2 由 Agent 所在的 Zone 直接接受，不需要签 proof。
+**决定（2026-10-01）**：Agent 只自动接受其 owner 发出的邀请；其他人的邀请由 owner 确认，owner 的好友也不能直接触发 Agent 自动入群。确认只代表 Agent 一方同意，群一方的审批规则仍按 2.2 执行。
+
+- [x] 确认 Agent 自动接受邀请的范围。
+- [ ] 由 Agent 所在的 Zone 识别邀请人与 Agent owner 的关系，owner 邀请自动接受，其他邀请提供 owner 确认流程；按 2.2 入群，不需要签 proof。
+- [ ] 验证 owner 邀请自动接受、owner 的好友和陌生人邀请均需 owner 确认。
 - [ ] 验证 Agent 在群内回复时使用 `to=[group_did]` 和解码后的 `to_session`，而不是回成私聊。
 
-### 4.5 加入其他 Zone 托管的群
+### 4.5 加入其他 Zone 托管的群（方向已决定，接入流程保留 TODO）
 
 收到远端群的邀请后，需要手工在服务 Settings 中登记 `cyfs_dispatch.joined_groups`（host、upstream、authorization、proof_ids）才能同步，UI 无法完成。按 2.2 取消 proof 后，`proof_ids` 不再需要。后端文档也注明「暂未增加自动 DID endpoint 发现或用户凭据续期」。
 
-- [ ] 设计接受远端邀请后自动建立 joined 绑定和获取凭据的流程。与 2.2 的跨 Zone 自动接受一起做，凭据就是 host 用来认证成员的依据。
+**决定（2026-10-01）**：跨 Zone 认证应复用 BuckyOS 基于 DID Document 的完整身份与认证授权语义，关系信任的核心是 msg-center 中的 Contact Mgr。DID Document 用于确认身份与认证授权关系，Contact Mgr 管理好友、陌生人、屏蔽等准入策略，群成员表和 Session 规则决定具体群权限。
+
+**当前实现核对**：群 HTTP 入口通过 `group_actor` 使用 [RuntimeSessionTokenVerifier](../src/frame/msg_center/src/owner_session.rs)，最终调用 [runtime.rs](../src/kernel/buckyos-api/src/runtime.rs) 的 `verify_trusted_session_token`，校验本 Zone 信任的 verify-hub 签发的 session token。尚未接通基于远端 DID Document 的完整认证、joined 绑定自动建立和凭据续期流程，因此这部分保留为 TODO，不作为同 Zone 建群与入群落地的前置条件。
+
+- [ ] 核对并复用系统通用的 DID Document 跨 Zone 认证流程，包括成员身份、代为请求的授权关系和客户端身份，不另起群专用认证协议。
+- [ ] 将跨 Zone 邀请接入接收者作用域的 Contact Mgr：好友按策略自动接受，陌生人进入 REQUEST_BOX，Block 拒绝；Agent 按 4.4 处理。
+- [ ] 在认证流程形成后，设计接受远端邀请时自动发现 host、建立 joined 绑定、获取和续期 host 可验证凭据的流程，与 2.2 的跨 Zone 自动接受一起落地。
 
 ### 4.6 群资料不能修改
 
@@ -181,6 +196,7 @@ MsgObject v2 已有 `relates_to`（edit / redact / reaction / thread）和 `ment
 
 ## 7. 文档联动
 
+- [ ] 将 2.1 的建群权限、4.4 的 Agent 入群策略、4.5 的 DID Document 认证与 Contact Mgr 信任边界同步到 v2 设计及相关实现文档；跨 Zone 自动接入标为 TODO。
 - [ ] [Self-Host-Groupv2.md](../doc/message_hub/Self-Host-Groupv2.md) §12 仍写着「v2 尚未实现」，需要更新为当前实现状态（后端 a86f839f，UI 本次）。
 - [ ] [Self-Host-Group.md](../doc/message_hub/Self-Host-Group.md)（v1）文首同样写着「v2 尚未实现」。
 - [ ] v2 §14 的第 1、2 项（默认 Session 使用裸 `group_did`；本地 Session 键使用规范 MailboxAddress）已按文中建议实现，确认后移入「已确认」。

@@ -10,7 +10,7 @@
 
 ### 1. 支撑 StepRecord 的分级渲染
 
-Agent Loop 在下一轮 prompt 中消费的不是孤立的工具 stdout，而是 `StepRecord`：一次 LLM intent 加上 dispatcher 执行后的 action results。
+Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 stdout，而是 `StepRecord`：一个 Step 的决策（Step 内可能经过多次推理 Round）加上 dispatcher 执行后的 action results。标准 function call loop 没有 Step，工具结果以按 `call_id` 配对的 tool result 消息回灌（见“调用身份、结果归属与 Pending 回填”）。
 
 `AgentToolResult` 的核心设计目标是让同一个工具结果可以按 StepRecord 所处位置稳定渲染：
 
@@ -127,13 +127,13 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都可以基
 
 ## StepRecord 渲染规则
 
-`AgentToolResult` 的渲染设计首先服务于 StepRecord prompt。单个工具结果的 `Min` / `Medium` / `Full` 规则只是基础；真正进入下一轮 LLM 输入时，它会被包进 StepRecord 历史结构里。
+`AgentToolResult` 的渲染设计首先服务于 StepRecord prompt。单个工具结果的 `Min` / `Medium` / `Full` 规则只是基础；真正进入下一个 Step 的 LLM 输入时，它会被包进 StepRecord 历史结构里。
 
 当前基线实现是 `llm_context::XmlStepRenderer`。本节基于现有实现描述 StepRecord 的渲染基线，并补充目标形态。它使用 XML-like 的边界标记，但渲染文本只给 LLM 消费，不要求是标准 XML 文档。外层 root wrapper 使用 `<<tag_name>>` / `<</tag_name>>`，用于提示 LLM 这是 prompt 协议边界而不是严格 XML；内部字段只在必要位置做转义。
 
 ### Message 序列
 
-一次 Behavior 推理前的理想 message 序列是：
+一个 Behavior Step 开始推理前的理想 message 序列是（Step 内后续的推理还会看到该 Step 的 inner transcript）：
 
 ```text
 system
@@ -157,8 +157,8 @@ user: behavior init / on_behavior_switch UserMessage
 
 一个完整 step 渲染为一组严格相邻的 `(assistant, user)` message：
 
-1. `assistant` message：上一轮 LLM 原始输出，即 `step.assistant_text`。
-2. `user` message：上一轮 action 执行结果，使用 `<<last_step_action_results>>` wrapper。
+1. `assistant` message：该 Step 的 LLM 决策原文，即 `step.assistant_text`。
+2. `user` message：该 Step 的 action 执行结果，使用 `<<last_step_action_results>>` wrapper。
 
 当前 wrapper 名称为复数：`last_step_action_results`。
 
@@ -225,6 +225,7 @@ Run <command>
 | `Error` | `Error: <message>` |
 | `Pending` | `Pending` |
 | `Cancelled` | `Cancelled: <reason>` |
+| `Unresolved` | `Unresolved (result unknown, side effects unconfirmed): <reason>`，未执行时为 `Not executed: <reason>` |
 
 如果结果被截断，在 body 末尾追加：
 
@@ -632,6 +633,27 @@ Agent Tool 的推荐输出：
 - `check_after` 是建议轮询间隔
 - `partial_output` 是阶段性输出
 - 最终完成后，`check_task` 应返回新的 `success` 或 `error` 结果
+
+## 调用身份、结果归属与 Pending 回填
+
+本节说明宿主（llm_context / xllm / libopendan）如何归属一次工具调用的结果。Round / Step / Turn 的定义见 [../readme.md](../readme.md)。
+
+| 对象 | 身份 | 说明 |
+| --- | --- | --- |
+| 一次工具调用 | `call_id` | function call 模式是模型返回的原生 tool call id；behavior 模式由运行时在执行前为每个 action 分配。结果回填、in-flight 记录、Session worklog 的 `action_result` 都按它关联 |
+| Behavior Step | `(run_id, step_index)` | 一个 Step 可以携带多个 action；`step_index` 在 Session 内不全局唯一（independent context 各自编号） |
+| Turn | libopendan Session 的 `turn` | 由 Session 判定开启和完成，工具调用本身不改变它 |
+
+- function call 模式：一次推理（Round）返回的全部原生 tool calls 组成一个工具批次，每个结果以 tool result 消息按 `call_id` 回灌；整批完成消耗一次工具迭代（`ToolPolicy.max_tool_iterations`），单个响应的调用数受 `max_calls_per_round` 限制（它不限制 Step 的 action 数）。
+- behavior 模式：action 结果按序写入当前 Step 的 `action_results`，全部就绪后该 Step 折叠为 `StepRecord`，下一个 Step 通过 `<<last_step_action_results>>` 看到它们；一个分派 action 的 Step 也消耗一次工具迭代。
+- 工具运行上下文 `SessionRuntimeContext.tool_call_index` 是宿主在每次工具调用时递增的调用序号（xllm 由 `XllmToolManager` 维护，只在内存中，run 恢复后重新计数；CLI 进程中为 0），只用于日志和请求 id。它不是 `step_index`，也不是 Turn 编号，不能用来推导 Step 或 Turn。
+- 工具内部再发起的模型调用（如 `llm_understand_media`、`llm_explore` 内部的 xllm run）是这次调用的嵌套推理：有自己的 run 和用量统计，不计入父 run 的 Round，不是父 Step，也不开启、推进或完成 Session Turn。对父循环而言只有一次调用和一个结果。
+- 调用进行中宿主崩溃：libopendan 在调用前登记 in-flight 记录，只有包含结果的 checkpoint 才清除它；恢复时没有已持久化结果的调用被回填为 `Unresolved`（效果未知），不会自动重放。
+
+Pending 回填：`status = pending` 的结果在宿主中映射为 `Observation::Pending`，llm_context 的处理取决于 `ToolPolicy.allow_deferred`：
+
+- `allow_deferred = true`：分派停在该调用，run 以 `PendingTool` 挂起，批次或 Step 中剩余的调用保留在状态里。宿主拿到结果后用 `ResumeFill::ToolResults { results: [(call_id, Observation)] }` 按 `call_id` 回填（缺失、重复或未知的 id 会被拒绝），再继续剩余调用。回填不重新推理已完成的决策、不重放已执行的工具、不重复扣工具迭代，也不新开 Turn；behavior 模式下结果仍属于原来那个 Step。
+- `allow_deferred = false`：`Pending` 视为违约，该调用记为效果未知，run 以 `Internal` 错误结束。当前 xllm 和 libopendan 托管执行都使用 `false`（libopendan 恢复时遇到 `PendingTool` 挂起也会拒绝继续），所以本文 `task_id` + `check_task` 的轮询模型尚未在这两个宿主中接通。
 
 ## Agent 侧消费规则
 

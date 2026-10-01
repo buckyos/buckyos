@@ -1,35 +1,42 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 3,
   "writer": {
-    "runner_id": "rn-d7aa07e2b2ae4a56",
+    "runner_id": "rn-6b396045afe440f0",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 2701845,
+    "pid": 595447,
     "lock_epoch": 1
   },
   "run_state": "ready",
   "acceptance": "n/a",
-  "round": 1,
+  "turn_seq": 1,
+  "open_turn": {
+    "index": 1,
+    "run_id": "20261001-042608-993de0",
+    "input_seq": 1,
+    "hook": "on_init",
+    "at_ms": 1790853968662
+  },
+  "turns_completed": 0,
   "bootstrap_done": true,
   "topic": {
     "title": ""
   },
   "live_run": {
-    "run_id": "20260930-024535-89a79a",
-    "rounds": [
+    "run_id": "20261001-042608-993de0",
+    "turns": [
       {
-        "round": 1,
+        "turn": 1,
         "changes": [
-          "_active_sessions@turn"
+          "_active_sessions@input"
         ],
         "hook": "on_init",
         "input_seq": 1,
-        "at_ms": 1790761535568
+        "at_ms": 1790853968662
       }
     ],
     "applied_input_seq": 1,
-    "flushed_step": 0,
     "flushed_input_seq": 0
   },
   "last_run": null,
@@ -46,7 +53,7 @@
   "reported_rev": 2,
   "activity": {
     "summary": "needs two messages",
-    "heartbeat_ms": 1790761535572
+    "heartbeat_ms": 1790853968666
   },
   "one_line_status": "",
   "last_error": {
@@ -55,5 +62,5 @@
     "recoverable": true
   },
   "stop_requested": false,
-  "updated_at_ms": 1790761535586
+  "updated_at_ms": 1790853968682
 }

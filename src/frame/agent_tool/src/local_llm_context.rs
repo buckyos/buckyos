@@ -30,7 +30,7 @@
 //!   <runs_dir>/
 //!   ├── <run_id>/
 //!   │   ├── run.json              ← RunRecord：状态、输入、有效配置及来源、提示词、结果、错误
-//!   │   ├── snapshots/0001.json   ← waist LLMContextSnapshot（轮前 checkpoint + outcome 边界）
+//!   │   ├── snapshots/0001.json   ← waist LLMContextSnapshot（推理前 checkpoint + outcome 边界）
 //!   │   └── .lock                 ← 该 Run 的执行互斥（flock）
 //!   └── ...
 //!   <lock_dir>/<hash(workdir)>.lock  ← 启用工具的任务在同一工作目录内互斥
@@ -43,11 +43,11 @@
 //! | 状态 | 终态 | 说明 |
 //! | --- | --- | --- |
 //! | `Running` | 否 | 进程持锁执行中；进程消失后由锁判定为“已中断” |
-//! | `Interrupted` | 否 | 用户中断 / 进程退出，保存了轮前快照 |
+//! | `Interrupted` | 否 | 用户中断 / 进程退出，保存了推理前快照 |
 //! | `Paused` | 否 | Provider 超时、限流、临时故障或凭据问题；resume 重试未完成的请求 |
 //! | `Completed` | 是 | 最终响应已保存并按 result_format 提取 |
 //! | `Failed` | 是 | 不可恢复错误 |
-//! | `LimitReached` | 是 | 工具轮数 / 总时长 / token 预算耗尽 |
+//! | `LimitReached` | 是 | 工具迭代额度 / 总时长 / token 预算耗尽 |
 //!
 //! 终态 Run 不会再次执行：`resume` 只返回已保存的结果。
 
@@ -73,8 +73,8 @@ use serde_json::{json, Value};
 
 use llm_context::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord};
 use llm_context::deps::{
-    LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager, ToolSpecLite,
-    TurnHook, WorkEvent, WorklogSink,
+    InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager,
+    ToolSpecLite, WorkEvent, WorklogSink,
 };
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::observation::Observation;
@@ -102,8 +102,8 @@ use crate::{
 
 /// 目录配置文件名。
 pub const LLM_CONTEXT_FILE_NAME: &str = ".llm_context";
-/// 工具轮数默认上限（F08）。
-pub const DEFAULT_MAX_ROUNDS: u32 = 8;
+/// 工具迭代（原生工具批次 / 带动作的 behavior step）默认上限（F08），不是推理次数。
+pub const DEFAULT_MAX_TOOL_ITERATIONS: u32 = 8;
 /// 本次命令总执行时长默认上限，秒（F08）。
 pub const DEFAULT_TIMEOUT_SECS: u64 = 3600;
 /// 单次 LLM 请求默认超时，秒（F08）。
@@ -117,8 +117,8 @@ pub const TOOL_EXEC: &str = "exec";
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
-/// `run.json` 记录格式版本。
-pub const RUN_RECORD_VERSION: u32 = 1;
+/// `run.json` 记录格式版本（2：`limits.max_tool_iterations`，快照格式 3）；resume 只接受当前版本。
+pub const RUN_RECORD_VERSION: u32 = 2;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
@@ -661,7 +661,7 @@ pub struct LlmContextFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rounds: Option<u32>,
+    pub max_tool_iterations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1288,7 +1288,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
             "model",
             "file_model",
             "max_tokens",
-            "max_rounds",
+            "max_tool_iterations",
             "llm_timeout",
             "context_window",
             "timeout",
@@ -1312,7 +1312,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         .get_str("", m, "file_model")?
         .filter(|s| !s.trim().is_empty());
     let max_tokens = ctx.get_u32("", m, "max_tokens")?;
-    let max_rounds = ctx.get_u32("", m, "max_rounds")?;
+    let max_tool_iterations = ctx.get_u32("", m, "max_tool_iterations")?;
     let llm_timeout = ctx.get_u64("", m, "llm_timeout")?;
     let context_window = ctx.get_u32("", m, "context_window")?;
     let timeout = ctx.get_u64("", m, "timeout")?;
@@ -1445,7 +1445,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         model,
         file_model,
         max_tokens,
-        max_rounds,
+        max_tool_iterations,
         llm_timeout,
         context_window,
         timeout,
@@ -1501,7 +1501,7 @@ pub struct MergedConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rounds: Option<u32>,
+    pub max_tool_iterations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub llm_timeout: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1579,7 +1579,7 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         scalar!(model, "model");
         scalar!(file_model, "file_model");
         scalar!(max_tokens, "max_tokens");
-        scalar!(max_rounds, "max_rounds");
+        scalar!(max_tool_iterations, "max_tool_iterations");
         scalar!(llm_timeout, "llm_timeout");
         scalar!(context_window, "context_window");
         scalar!(timeout, "timeout");
@@ -1687,7 +1687,7 @@ pub struct TaskOverrides {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_rounds: Option<u32>,
+    pub max_tool_iterations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_secs: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1956,7 +1956,7 @@ pub fn load_attachments(
 pub struct RunLimits {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<u32>,
-    pub max_rounds: u32,
+    pub max_tool_iterations: u32,
     pub timeout_secs: u64,
     pub llm_timeout_secs: u64,
     /// Model context window in tokens (`context_window`). When set, the run
@@ -2441,7 +2441,7 @@ pub fn build_runtime_protocol(loop_model: LoopModel, tools: &EffectiveTools, jso
             if tools.enabled && !tools.native.is_empty() {
                 s.push_str("\nExecution loop (native function calling):\n");
                 s.push_str("- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n");
-                s.push_str("- A failed tool call is not the end of the task: read the error, adjust, and continue within the round limit.\n");
+                s.push_str("- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n");
                 s.push_str("- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n");
             } else {
                 s.push_str("\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n");
@@ -2461,9 +2461,9 @@ pub fn build_runtime_protocol(loop_model: LoopModel, tools: &EffectiveTools, jso
             s.push_str("  <report><![CDATA[the final result, only when the task is complete]]></report>\n</response>\n");
             s.push_str("Rules:\n");
             if has_actions {
-                s.push_str("- To keep working, put one or more actions inside <actions> and do NOT include <report>; the results come back in the next turn.\n");
+                s.push_str("- To keep working, put one or more actions inside <actions> and do NOT include <report>; the results come back in the next message.\n");
                 s.push_str("- To finish, reply with no <actions> and put the complete final result inside <report>. The <report> content is delivered verbatim to the caller.\n");
-                s.push_str("- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the round limit.\n");
+                s.push_str("- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n");
                 s.push_str("- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\n");
                 s.push_str("Available actions:\n");
                 for t in &tools.actions {
@@ -3503,7 +3503,8 @@ impl XllmDeps {
 pub struct XllmToolManager {
     workdir: PathBuf,
     tools: BTreeMap<String, Arc<dyn AgentTool>>,
-    step_idx: AtomicU32,
+    /// Tool calls dispatched so far (`SessionRuntimeContext.tool_call_index`).
+    tool_call_index: AtomicU32,
     session_template: SessionRuntimeContext,
     artifacts: Mutex<Vec<String>>,
     cancel: Arc<tokio::sync::watch::Sender<bool>>,
@@ -3515,12 +3516,12 @@ impl XllmToolManager {
         Self {
             workdir,
             tools: BTreeMap::new(),
-            step_idx: AtomicU32::new(0),
+            tool_call_index: AtomicU32::new(0),
             session_template: SessionRuntimeContext {
                 trace_id: run_id.to_string(),
                 agent_name: "xllm".to_string(),
                 behavior: loop_model.as_str().to_string(),
-                step_idx: 0,
+                tool_call_index: 0,
                 wakeup_id: String::new(),
                 session_id: run_id.to_string(),
                 read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
@@ -3575,7 +3576,7 @@ impl ToolManager for XllmToolManager {
     async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
         let call_id = call.call_id.clone();
         let mut ctx = self.session_template.clone();
-        ctx.step_idx = self.step_idx.fetch_add(1, Ordering::SeqCst) + 1;
+        ctx.tool_call_index = self.tool_call_index.fetch_add(1, Ordering::SeqCst) + 1;
         let Some(tool) = self.tools.get(&call.name) else {
             return Ok(Observation::Error {
                 call_id,
@@ -3744,7 +3745,7 @@ impl AgentTool for McpRemoteTool {
     ) -> Result<AgentToolResult, AgentToolError> {
         let body = json!({
             "jsonrpc": "2.0",
-            "id": format!("{}:{}:{}", ctx.trace_id, ctx.step_idx, self.spec.name),
+            "id": format!("{}:{}:{}", ctx.trace_id, ctx.tool_call_index, self.spec.name),
             "method": "tools/call",
             "params": { "name": self.remote_name, "arguments": args }
         });
@@ -4932,6 +4933,11 @@ pub struct UsageRecord {
     pub file_model: Option<AiUsage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction: Option<AiUsage>,
+    /// Host `LlmClient::infer` attempts made for this run, added up by every
+    /// executor segment and never reset: xllm adds every call of its run
+    /// client (main-loop Rounds, failed ones included, and its own context
+    /// compaction summaries) plus the file-model stage; a host such as
+    /// libopendan adds its context Rounds (its history summaries excluded).
     #[serde(default)]
     pub llm_requests: u64,
 }
@@ -5048,7 +5054,7 @@ impl RunRecord {
                 loop_model: LoopModel::FunctionCall,
                 limits: RunLimits {
                     max_tokens: None,
-                    max_rounds: DEFAULT_MAX_ROUNDS,
+                    max_tool_iterations: DEFAULT_MAX_TOOL_ITERATIONS,
                     timeout_secs: DEFAULT_TIMEOUT_SECS,
                     llm_timeout_secs: DEFAULT_LLM_TIMEOUT_SECS,
                     context_window_tokens: None,
@@ -5989,11 +5995,11 @@ impl XllmTask {
                 }
                 (None, v) => v,
             },
-            max_rounds: pick_limit!(
-                overrides.max_rounds,
-                merged.max_rounds,
-                DEFAULT_MAX_ROUNDS,
-                "max_rounds"
+            max_tool_iterations: pick_limit!(
+                overrides.max_tool_iterations,
+                merged.max_tool_iterations,
+                DEFAULT_MAX_TOOL_ITERATIONS,
+                "max_tool_iterations"
             ),
             timeout_secs: pick_limit!(
                 overrides.timeout_secs,
@@ -6382,7 +6388,7 @@ impl XllmTask {
         let loop_model = merged.loop_model.unwrap_or(LoopModel::FunctionCall);
         let limits = RunLimits {
             max_tokens: merged.max_tokens,
-            max_rounds: merged.max_rounds.unwrap_or(DEFAULT_MAX_ROUNDS),
+            max_tool_iterations: merged.max_tool_iterations.unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS),
             timeout_secs: merged.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
             llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
             context_window_tokens: merged.context_window,
@@ -6589,8 +6595,8 @@ pub fn hosted_request(
             ToolMode::Whitelist
         },
         action_whitelist: action_names,
-        max_rounds: if cfg.tools.enabled {
-            cfg.limits.max_rounds
+        max_tool_iterations: if cfg.tools.enabled {
+            cfg.limits.max_tool_iterations
         } else {
             0
         },
@@ -6701,7 +6707,7 @@ impl RunOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ResumeLimits {
     pub max_tokens: Option<u32>,
-    pub max_rounds: Option<u32>,
+    pub max_tool_iterations: Option<u32>,
     pub timeout_secs: Option<u64>,
     pub llm_timeout_secs: Option<u64>,
 }
@@ -6779,7 +6785,7 @@ impl SnapshotHook {
     }
 }
 
-impl TurnHook for SnapshotHook {
+impl InferenceHook for SnapshotHook {
     fn before_inference(&self, snapshot: &LLMContextSnapshot) -> Result<(), String> {
         self.commit(snapshot).map(|_| ()).map_err(|e| e.to_string())
     }
@@ -6883,7 +6889,7 @@ impl XllmRun {
         tools: &EffectiveTools,
         deps: &XllmDeps,
     ) -> LLMContextDeps {
-        let hook: Arc<dyn TurnHook> = Arc::new(SnapshotHook {
+        let hook: Arc<dyn InferenceHook> = Arc::new(SnapshotHook {
             store: store.clone(),
             record: record.clone(),
         });
@@ -6897,7 +6903,7 @@ impl XllmRun {
         let llm_dyn: Arc<dyn LlmClient> = llm;
         let mut d = LLMContextDeps::new(llm_dyn, tools_dyn)
             .with_worklog(worklog)
-            .with_turn_hook(hook);
+            .with_inference_hook(hook);
         if loop_model == LoopModel::Behavior {
             d = d
                 .with_result_parser(Arc::new(XllmActionParser::new(&tools.actions)))
@@ -7046,11 +7052,11 @@ impl XllmRun {
                 run_id: record.run_id.clone(),
             });
         }
-        if record.version > RUN_RECORD_VERSION {
+        if record.version != RUN_RECORD_VERSION {
             return Err(XllmError::NotResumable {
                 run_id: record.run_id.clone(),
                 reason: format!(
-                    "run record version {} is not supported by this executor (max {})",
+                    "run record version {} is not supported by this executor (only {})",
                     record.version, RUN_RECORD_VERSION
                 ),
             });
@@ -7143,9 +7149,9 @@ impl XllmRun {
         if let Some(v) = limits.llm_timeout_secs {
             record.config.limits.llm_timeout_secs = v;
         }
-        let old_max_rounds = record.config.limits.max_rounds;
-        if let Some(v) = limits.max_rounds {
-            record.config.limits.max_rounds = v;
+        let old_max_tool_iterations = record.config.limits.max_tool_iterations;
+        if let Some(v) = limits.max_tool_iterations {
+            record.config.limits.max_tool_iterations = v;
         }
         let inner = deps.llm_factory.create(&record.config.provider).await?;
         let llm = Arc::new(TimeoutLlmClient::new(
@@ -7179,15 +7185,15 @@ impl XllmRun {
         let mut ctx = None;
         let mut limit_snapshot = None;
         if let Some(mut snap) = snapshot {
-            // 本次命令的执行时长从恢复启动重新计算；轮数额度沿用已消耗值。
+            // 本次命令的执行时长从恢复启动重新计算；工具迭代额度沿用已消耗值。
             let limits_now = record.lock().expect("record lock").config.limits.clone();
             snap.state.started_at_ms = now_ms();
             snap.request.budget.max_wallclock_ms = Some(limits_now.timeout_secs * 1000);
             snap.request.model_policy.max_completion_tokens = limits_now.max_tokens;
-            if limits_now.max_rounds != old_max_rounds {
-                let consumed = old_max_rounds.saturating_sub(snap.state.rounds_left);
-                snap.state.rounds_left = limits_now.max_rounds.saturating_sub(consumed);
-                snap.request.tool_policy.max_rounds = limits_now.max_rounds;
+            if limits_now.max_tool_iterations != old_max_tool_iterations {
+                let consumed = old_max_tool_iterations.saturating_sub(snap.state.tool_iterations_left);
+                snap.state.tool_iterations_left = limits_now.max_tool_iterations.saturating_sub(consumed);
+                snap.request.tool_policy.max_tool_iterations = limits_now.max_tool_iterations;
             }
             match snap.state.suspended {
                 None => {
@@ -7518,8 +7524,8 @@ impl XllmRun {
                 ToolMode::Whitelist
             },
             action_whitelist: action_names,
-            max_rounds: if cfg.tools.enabled {
-                cfg.limits.max_rounds
+            max_tool_iterations: if cfg.tools.enabled {
+                cfg.limits.max_tool_iterations
             } else {
                 0
             },
@@ -7726,9 +7732,9 @@ impl XllmRun {
                 LLMContextOutcome::BudgetExhausted { which, usage, .. } => {
                     let calls = self.llm.calls();
                     let reason = match which {
-                        BudgetKind::ToolRounds => format!(
-                            "tool round limit ({}) reached",
-                            self.record().config.limits.max_rounds
+                        BudgetKind::ToolIterations => format!(
+                            "tool iteration limit ({}) reached",
+                            self.record().config.limits.max_tool_iterations
                         ),
                         BudgetKind::Wallclock => format!(
                             "total execution time limit ({}s) reached",
@@ -7871,7 +7877,7 @@ impl XllmRun {
             }
         };
         // Behavior runs fold the materialized history into the input; the
-        // turn in progress is kept by the waist.
+        // inner transcript of the step in progress is kept by the waist.
         let fill = if self.waist_deps.result_parser.is_some() {
             ResumeFill::RewrittenSteps {
                 input: rewritten,
@@ -8453,7 +8459,7 @@ mod tests {
 
     const PARENT_CONFIG: &str = r#"
 model: llm.chat
-max_rounds: 3
+max_tool_iterations: 3
 prompt:
   select: review
   groups:
@@ -8625,7 +8631,7 @@ tools:
         let user = user_text(&llm.seen()[0]);
         assert!(user.contains(&format!("Review the code in {}", record.workdir)));
         assert_eq!(record.input.request_source, "group_default");
-        assert_eq!(record.config.limits.max_rounds, 3);
+        assert_eq!(record.config.limits.max_tool_iterations, 3);
         assert!(record
             .prompt
             .template_vars
@@ -9263,7 +9269,7 @@ there]]></write_file>
             Some(&rec.run_id),
             None,
             ResumeLimits {
-                max_rounds: Some(20),
+                max_tool_iterations: Some(20),
                 ..Default::default()
             },
             env.deps(ScriptedLlm::new(vec![])),
@@ -9323,7 +9329,7 @@ there]]></write_file>
     }
 
     #[tokio::test]
-    async fn tool_round_limit_ends_in_limit_reached_and_artifacts_are_tracked() {
+    async fn tool_iteration_limit_ends_in_limit_reached_and_artifacts_are_tracked() {
         let env = Env::new();
         let llm = ScriptedLlm::new(vec![
             tool_call("write_file", json!({"path":"out.txt","content":"x"}), "c1"),
@@ -9332,7 +9338,7 @@ there]]></write_file>
         ]);
         let overrides = TaskOverrides {
             tools: Some(true),
-            max_rounds: Some(1),
+            max_tool_iterations: Some(1),
             ..env.overrides()
         };
         let o = env
@@ -9345,7 +9351,7 @@ there]]></write_file>
             .unwrap();
         assert!(matches!(o, RunOutcome::LimitReached(_)), "{:?}", o.status());
         let rec = o.record();
-        assert!(rec.limit_reason.as_ref().unwrap().contains("round"));
+        assert!(rec.limit_reason.as_ref().unwrap().contains("tool iteration"));
         assert_eq!(rec.artifacts.len(), 1);
         assert!(rec.artifacts[0].ends_with("out.txt"));
         assert_eq!(
@@ -9355,11 +9361,11 @@ there]]></write_file>
         assert_eq!(
             llm.calls(),
             2,
-            "one tool round then the limit stops before the next tool"
+            "one tool iteration then the limit stops before the next tool"
         );
         assert!(
             !llm.seen()[1].allow_tool_calls,
-            "no rounds left => no tools advertised"
+            "no tool iterations left => no tools advertised"
         );
         // 终态：resume 只展示。
         match XllmRun::resume(
@@ -9459,11 +9465,11 @@ there]]></write_file>
     }
 
     #[tokio::test]
-    async fn behavior_file_actions_respect_arguments_and_persist_round_limit() {
+    async fn behavior_file_actions_respect_arguments_and_persist_tool_iteration_limit() {
         let env = Env::new();
         env.write(
             "project/.llm_context",
-            "loop_model: behavior\nmax_rounds: 2\ntools:\n  enabled: true\n  tools2actions: true\n",
+            "loop_model: behavior\nmax_tool_iterations: 2\ntools:\n  enabled: true\n  tools2actions: true\n",
         );
         std::fs::write(env.workdir.join("fixture.txt"), "behavior-fixture-3142").unwrap();
         let llm = ScriptedLlm::new(vec![
@@ -9488,12 +9494,12 @@ there]]></write_file>
         assert!(user_text(&llm.seen()[1]).contains("behavior-fixture-3142"));
         assert!(!env.workdir.join("excess.txt").exists());
         let record = outcome.record();
-        assert!(record.limit_reason.as_ref().unwrap().contains("round"));
+        assert!(record.limit_reason.as_ref().unwrap().contains("tool iteration"));
         let snapshot = env
             .store()
             .get_snapshot(&record.run_id, record.latest_snapshot_idx.unwrap())
             .unwrap();
-        assert_eq!(snapshot.state.rounds_left, 0);
+        assert_eq!(snapshot.state.tool_iterations_left, 0);
         let steps: Vec<_> = snapshot
             .state
             .steps
@@ -9852,7 +9858,7 @@ there]]></write_file>
     }
 
     #[tokio::test]
-    async fn resume_limits_raise_rounds_without_resetting_consumed() {
+    async fn resume_limits_raise_tool_iterations_without_resetting_consumed() {
         for behavior in [false, true] {
             let env = Env::new();
             if behavior {
@@ -9874,7 +9880,7 @@ there]]></write_file>
                     TaskInput::question("q"),
                     TaskOverrides {
                         tools: Some(true),
-                        max_rounds: Some(2),
+                        max_tool_iterations: Some(2),
                         ..env.overrides()
                     },
                     llm,
@@ -9887,13 +9893,13 @@ there]]></write_file>
                 .store()
                 .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
                 .unwrap();
-            assert_eq!(snap.state.rounds_left, 1);
+            assert_eq!(snap.state.tool_iterations_left, 1);
             let ResumeStart::Run(run) = XllmRun::resume(
                 &env.store(),
                 Some(&run_id),
                 None,
                 ResumeLimits {
-                    max_rounds: Some(5),
+                    max_tool_iterations: Some(5),
                     timeout_secs: Some(42),
                     ..Default::default()
                 },
@@ -9904,11 +9910,11 @@ there]]></write_file>
                 panic!()
             };
             let rec = run.record();
-            assert_eq!(rec.config.limits.max_rounds, 5);
+            assert_eq!(rec.config.limits.max_tool_iterations, 5);
             assert_eq!(rec.config.limits.timeout_secs, 42);
             // 新快照会在下一次推理前提交；这里直接检查内存中的上下文状态。
             let s = run.ctx.as_ref().unwrap().snapshot();
-            assert_eq!(s.state.rounds_left, 4, "consumed round is not refunded");
+            assert_eq!(s.state.tool_iterations_left, 4, "consumed tool iteration is not refunded");
             assert_eq!(s.request.budget.max_wallclock_ms, Some(42_000));
         }
     }
@@ -9964,7 +9970,7 @@ there]]></write_file>
         let env = Env::new();
         env.write(
             "project/.llm_context",
-            "model: file-model\nmax_rounds: 4\nllm_timeout: 7\nresult_format: result.report\nrun_logs: warn\n",
+            "model: file-model\nmax_tool_iterations: 4\nllm_timeout: 7\nresult_format: result.report\nrun_logs: warn\n",
         );
         let llm = ScriptedLlm::new(vec![text("{\"report\":\"r\"}")]);
         let o = env
@@ -9984,7 +9990,7 @@ there]]></write_file>
             rec.config.sources.get("model").map(String::as_str),
             Some("cli")
         );
-        assert_eq!(rec.config.limits.max_rounds, 4);
+        assert_eq!(rec.config.limits.max_tool_iterations, 4);
         assert_eq!(rec.config.limits.llm_timeout_secs, 7);
         assert_eq!(rec.config.limits.timeout_secs, DEFAULT_TIMEOUT_SECS);
         assert_eq!(rec.config.run_logs, RunLogLevel::Warn);
@@ -9997,7 +10003,7 @@ there]]></write_file>
         assert!(rec
             .config
             .sources
-            .get("max_rounds")
+            .get("max_tool_iterations")
             .unwrap()
             .ends_with(".llm_context"));
     }

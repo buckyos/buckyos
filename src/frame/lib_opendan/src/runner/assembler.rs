@@ -1,4 +1,5 @@
-//! Prompt assembly (§8.1): system section and per-turn user message.
+//! Prompt assembly (§8.1): system section and the user message of each
+//! input batch (`<session_input>`).
 //!
 //! Fixed order of the system section (the app prompt cannot replace the first
 //! two parts, S-08):
@@ -8,9 +9,9 @@
 //! 4. initial context material (`prompt.context`)
 //! 5. objective / end condition
 //!
-//! Fresh values (time, active sessions, hints, changes) live in the per-turn
-//! message only, so the system section plus the history summary form a
-//! stable prefix (S-20).
+//! Fresh values (time, active sessions, hints, changes) live in the input
+//! batch message only, so the system section plus the history summary form
+//! a stable prefix (S-20).
 
 use std::path::Path;
 
@@ -29,9 +30,11 @@ pub struct ChangeItem {
     pub terminal: bool,
 }
 
-/// Material of one turn.
+/// Material of one input batch (a hook point: `on_init`, `on_wakeup`,
+/// `on_behavior_switch`; or an observation boundary). Whether the batch
+/// opens or joins a logical Turn is decided by the runner, not here.
 #[derive(Debug, Clone, Default)]
-pub struct TurnMaterial {
+pub struct InputMaterial {
     pub hook: String,
     pub inputs: Vec<InputMessage>,
     pub changes: Vec<ChangeItem>,
@@ -48,11 +51,11 @@ pub trait SessionAssembler: Send + Sync {
     /// System text (identity + constraints + app prompt + objective).
     async fn system_text(&self, cfg: &SessionConfig, agent_root: Option<&Path>) -> Result<String>;
     /// The user message of a hook point; `None` = nothing to infer on.
-    async fn render_turn(
+    async fn render_input(
         &self,
         cfg: &SessionConfig,
         state: &SessionState,
-        m: &TurnMaterial,
+        m: &InputMaterial,
     ) -> Result<Option<String>>;
     /// Process mode of a behavior (§4.4): `None` = normal switch (same run);
     /// fork / independent get their own run. Default: read
@@ -65,7 +68,7 @@ pub trait SessionAssembler: Send + Sync {
             .and_then(|v| serde_json::from_value(v.clone()).ok())
     }
     /// Text injected at an observation boundary (changes only).
-    async fn render_observation(&self, m: &TurnMaterial) -> Result<Option<String>> {
+    async fn render_observation(&self, m: &InputMaterial) -> Result<Option<String>> {
         if m.changes.is_empty() {
             return Ok(None);
         }
@@ -137,7 +140,7 @@ impl SessionAssembler for DefaultAssembler {
             EndConditionType::LlmDeclaresDone | EndConditionType::OutputSchema => s.push_str(
                 "- When the objective is complete, stop calling tools and give the final report as your answer.\n",
             ),
-            EndConditionType::MaxRounds => {}
+            EndConditionType::MaxTurns => {}
         }
         for c in &self.extra_constraints {
             s.push_str(&format!("- {c}\n"));
@@ -176,11 +179,11 @@ impl SessionAssembler for DefaultAssembler {
         Ok(s.trim_end().to_string())
     }
 
-    async fn render_turn(
+    async fn render_input(
         &self,
         cfg: &SessionConfig,
         state: &SessionState,
-        m: &TurnMaterial,
+        m: &InputMaterial,
     ) -> Result<Option<String>> {
         let first = !state.bootstrap_done;
         let switch = state.internal_continuation.clone();
@@ -188,7 +191,7 @@ impl SessionAssembler for DefaultAssembler {
             return Ok(None);
         }
         let mut s = format!(
-            "<turn hook=\"{}\" time=\"{}\">\n",
+            "<session_input hook=\"{}\" time=\"{}\">\n",
             esc(&m.hook),
             fmt_time(m.now_ms)
         );
@@ -268,7 +271,7 @@ impl SessionAssembler for DefaultAssembler {
         if !m.runtime_status.is_null() {
             s.push_str(&format!("<runtime>{}</runtime>\n", m.runtime_status));
         }
-        s.push_str("</turn>");
+        s.push_str("</session_input>");
         Ok(Some(s))
     }
 }

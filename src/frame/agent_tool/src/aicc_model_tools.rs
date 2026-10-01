@@ -186,7 +186,7 @@ mod tests {
             trace_id: "trace".into(),
             agent_name: "agent".into(),
             behavior: "behavior".into(),
-            step_idx: 0,
+            tool_call_index: 0,
             wakeup_id: "wakeup".into(),
             session_id: "session".into(),
             read_token_limit: 0,

@@ -2,11 +2,13 @@
   "input_tokens": 20,
   "output_tokens": 10,
   "total_tokens": 30,
-  "rounds": 1,
+  "rounds": 2,
+  "rounds_failed": 0,
+  "rounds_interrupted": 0,
+  "turns": 1,
   "runs": 1,
-  "llm_requests": 0,
   "tool_calls": 0,
   "busy_ms": 0,
   "cost": 0.0,
-  "updated_at_ms": 1790761535248
+  "updated_at_ms": 1790853968338
 }

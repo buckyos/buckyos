@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 
 use super::config::MechanicalCompress;
 
-pub const SESSION_SUMMARY_SCHEMA: &str = "opendan.session_summary/1";
+pub const SESSION_SUMMARY_SCHEMA: &str = "opendan.session_summary/2";
 /// Renderer id + version; determinism is only promised within one version.
-pub const MECHANICAL_RENDERER: &str = "libopendan.mechanical/1";
+/// 2: Turn / input batch / assistant message / step entries.
+pub const MECHANICAL_RENDERER: &str = "libopendan.mechanical/2";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSummary {

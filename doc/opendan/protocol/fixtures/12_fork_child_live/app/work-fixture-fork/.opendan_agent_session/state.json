@@ -1,35 +1,43 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 4,
   "writer": {
-    "runner_id": "rn-e5519e7d6cd442b8",
+    "runner_id": "rn-d1933217ccf1471b",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 2702114,
+    "pid": 595830,
     "lock_epoch": 1
   },
   "run_state": "running",
   "acceptance": "n/a",
-  "round": 2,
+  "turn_seq": 1,
+  "open_turn": {
+    "index": 1,
+    "run_id": "20261001-042609-8bcc97",
+    "input_seq": 1,
+    "hook": "on_init",
+    "at_ms": 1790853969092
+  },
+  "turns_completed": 0,
   "current_behavior": "research",
   "process_entry": "research",
   "process_stack": [
     {
       "entry": "plan",
       "mode": "fork",
-      "run_id": "20260930-024536-95515a",
-      "rounds": [
+      "run_id": "20261001-042609-8bcc97",
+      "turns": [
         {
-          "round": 1,
+          "turn": 1,
           "changes": [
-            "_active_sessions@turn"
+            "_active_sessions@input"
           ],
           "hook": "on_init",
           "input_seq": 1,
-          "at_ms": 1790761536018
+          "at_ms": 1790853969092
         }
       ],
-      "flushed_step": 2,
+      "flushed_step_index": 2,
       "flushed_input_seq": 1,
       "applied_input_seq": 1
     }
@@ -39,26 +47,25 @@
     "title": ""
   },
   "live_run": {
-    "run_id": "20260930-024536-39daf6",
-    "rounds": [
+    "run_id": "20261001-042609-91e4c8",
+    "turns": [
       {
-        "round": 2,
+        "turn": 1,
         "changes": [
-          "_active_sessions@turn"
+          "_active_sessions@input"
         ],
         "hook": "on_behavior_switch",
         "input_seq": 1,
-        "at_ms": 1790761536071
+        "at_ms": 1790853969145
       }
     ],
     "applied_input_seq": 1,
-    "flushed_step": 0,
     "flushed_input_seq": 0
   },
   "last_run": null,
   "worklog": {
     "committed_seq": 7,
-    "committed_bytes": 1336
+    "committed_bytes": 1392
   },
   "inputs": {},
   "recent_keys": [],
@@ -69,9 +76,9 @@
   "reported_rev": 3,
   "activity": {
     "summary": "research then answer",
-    "heartbeat_ms": 1790761536075
+    "heartbeat_ms": 1790853969149
   },
   "one_line_status": "",
   "stop_requested": false,
-  "updated_at_ms": 1790761536075
+  "updated_at_ms": 1790853969149
 }

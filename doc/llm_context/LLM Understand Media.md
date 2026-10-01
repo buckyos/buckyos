@@ -23,7 +23,7 @@
 | 多模态 content block | `AiContent::Image { source: ResourceRef }` / `AiContent::Document { source, title }` | [aicc_client.rs:324](src/kernel/buckyos-api/src/aicc_client.rs:324) |
 | 消息 IR | `AiMessage { role: AiRole, content: Vec<AiContent> }` | [aicc_client.rs:440](src/kernel/buckyos-api/src/aicc_client.rs:440) |
 | LLMContext waist | `LLMContext` / `LLMContextRequest` | [src/frame/llm_context/src/context_loop.rs](src/frame/llm_context/src/context_loop.rs)、[request.rs](src/frame/llm_context/src/request.rs) |
-| L4 OneShot 调度器 + per-turn 持久化 | `OneShotRequest` + `LocalLLMContext` | [src/frame/agent_tool/src/local_llm_context.rs:181](src/frame/agent_tool/src/local_llm_context.rs:181) |
+| L4 调度器 + 推理边界持久化 | `OneShotRequest` + `LocalLLMContext`（当前实现为 xllm run，见表后说明）；每次推理（Round）前提交 `LLMContextSnapshot`，outcome 边界再提交一次 | [src/frame/agent_tool/src/local_llm_context.rs:181](src/frame/agent_tool/src/local_llm_context.rs:181) |
 | 语义哈希（resume 安全性） | `OneShotRequest::semantic_hash()` | [local_llm_context.rs:238](src/frame/agent_tool/src/local_llm_context.rs:238) |
 | 旁路用到的压缩 | `llm_compress::compress` / `LlmSummarizeCompressor` | [src/frame/agent_tool/src/llm_compress.rs:139](src/frame/agent_tool/src/llm_compress.rs:139) |
 | 工具结果信封 | `AgentToolResult`（`status` + `summary` + `details` + `output`） | [src/frame/agent_tool/src/lib.rs:354](src/frame/agent_tool/src/lib.rs:354) |
@@ -32,6 +32,8 @@
 | 模型策略 | `ModelPolicy` 当前只承载 preferred / fallbacks / temperature / max_completion_tokens / provider_options；`Requirements.must_features` 由 AICC adapter 根据 tool/json 输出等能力生成 | [llm_context/src/request.rs](src/frame/llm_context/src/request.rs)、[ai_runtime.rs](src/frame/opendan/src/ai_runtime.rs) |
 | Workflow DSL | `buckyos_api::workflow_dsl::WorkflowDefinition` / `StepDefinition` / `ControlNodeDefinition` | [workflow_dsl.rs](src/kernel/buckyos-api/src/workflow_dsl.rs)、[src/kernel/workflow/src/dsl.rs](src/kernel/workflow/src/dsl.rs) |
 | Workflow executor 表达 | `ExecutorRef` 支持 `service::` / `http::` / `appservice::` / `operator::` / `func::` 与 `/agent/` / `/skill/` / `/tool/` 语义路径 | [workflow_types.rs](src/kernel/buckyos-api/src/workflow_types.rs)、[doc/workflow/executor list.md](doc/workflow/executor%20list.md) |
+
+> 当前实现：模型分析 stage 以 xllm run 执行（`XllmTask::prepare` + `XllmRun::start` / `execute`，run 目录为 `run.json` + `snapshots/`，见 [llm_understand_media.rs](src/frame/agent_tool/src/llm_understand_media.rs)）。代码中已没有 `OneShotRequest` / `semantic_hash()` / `drive_to_terminal`，本文出现这些名称处是早期设计接口，恢复语义以 §5.2 的当前实现说明为准。
 
 > beta2.2 是 breaking-change 版本：`AgentToolResult` / 各 `AiContent` 变体允许直接扩展，不必为旧调用方留兼容层。
 
@@ -43,9 +45,9 @@
 
 在长期运行的 chat session 中，用户输入的图片/媒体若以 `AiContent::Image { source: ResourceRef::Base64 { .. } }` 形式永久驻留在主干 `Vec<AiMessage>` 历史里，会带来持续的成本：
 
-- 每一轮 agent loop 都重新序列化、重新经由 `AiccClient` 上传、重新计入 token 的媒体实体；
+- 每次推理（Round）都重新序列化、重新经由 `AiccClient` 上传、重新计入 token 的媒体实体；
 - `llm_compress`（[llm_compress.rs](src/frame/agent_tool/src/llm_compress.rs)）当前的策略只对 `AiToolResultContent::Text` 做机械折叠，不会替换历史里的 `AiContent::Image` 块——一旦图片以 base64 形式进入 history，它会原样跟到 session 结束；
-- 媒体通常是**一次性消费**的——用户发图提问，agent 看一眼提取信息，之后数十轮都在处理衍生任务，原始像素不再有信息增量；
+- 媒体通常是**一次性消费**的——用户发图提问，agent 看一眼提取信息，之后数十次推理都在处理衍生任务，原始像素不再有信息增量；
 - 把高熵的原始 modality 永久背在 history 上，违反 LLMContext "context 里每个 token 都应持续贡献价值" 的经济学原则。
 
 ### 1.2 设计结论
@@ -61,8 +63,8 @@
 ### 1.3 与既有架构的一致性
 
 - **context purification / side-channel execution**：旁路是一次性认知动作，主干只接收结论不接收过程；
-- **L4-only 压缩纪律**（[llm_compress.rs:1](src/frame/agent_tool/src/llm_compress.rs:1) 的模块 doc）：媒体的 materialize（NDN 对象 → 真正像素）与 compaction（像素 → 结构化报告）都是显式的、发生在特定 turn 边界的事件，不隐式继承；
-- **crash-resume 自相似**：旁路整体以 `OneShotRequest` 形式发起，`semantic_hash()` 覆盖目标 + 输入消息，与 `LocalLLMContext` 的 per-turn 快照模型同构。
+- **L4-only 压缩纪律**（[llm_compress.rs:1](src/frame/agent_tool/src/llm_compress.rs:1) 的模块 doc）：媒体的 materialize（NDN 对象 → 真正像素）与 compaction（像素 → 结构化报告）都是显式的、发生在明确边界（一次工具调用、一次压缩改写）上的事件，不隐式继承；
+- **crash-resume 自相似**（设计目标，当前实现见 §5.2）：旁路整体以 `OneShotRequest` 形式发起，`semantic_hash()` 覆盖目标 + 输入消息，与 `LocalLLMContext` 按推理边界提交快照的模型同构。
 
 ---
 
@@ -149,7 +151,7 @@ struct ObservationItem {
 ### 3.2 第 1 段 — `observations`（你看到了什么）
 
 - 对媒体内容的**客观元素清单**，每项带可寻址 `id`。
-- 作用：为主干后续轮次留下一份**事实底座**。即便旁路已焚毁，主干 history 中仍保有"媒体里客观存在哪些东西"的记录；若后续追问的细节恰好在清单内，agent 无需重新 fork。
+- 作用：为主干后续推理留下一份**事实底座**。即便旁路已焚毁，主干 history 中仍保有"媒体里客观存在哪些东西"的记录；若后续追问的细节恰好在清单内，agent 无需重新 fork。
 - 要求：描述客观元素，不夹带结论。
 
 ### 3.3 第 2 段 — `reasoning`（如何从所见推出结果）
@@ -225,7 +227,8 @@ struct ObservationItem {
 
 - 旁路里那次完整管线执行（含媒体像素、派生 artifact、传统分析中间结果和模型推理）在返回瞬间随 OneShot 工作目录蒸发。主干 history 永远只留一对 `ToolUse` / `ToolResult`。
 - 旁路对主干**无副作用**——除了最终写回的 `tool_result`。
-- 旁路中的模型分析 stage 受 `LocalLLMContext` 的 per-turn 持久化保护；其前面的确定性本地 stage 可在恢复时按 pipeline hash 重算（见 §5）。
+- 旁路中的模型分析 stage 受 xllm run 的推理边界快照保护（每次推理前提交）；其前面的确定性本地 stage 可在恢复时按 pipeline hash 重算（见 §5）。
+- 旁路中的推理（包括 §4.2 压缩父 history 的摘要调用和模型分析 stage）是这次工具调用内部的嵌套模型调用，归属关系见 §5.2。
 
 ### 4.2 父 history 继承策略（提纯投影，非全量拷贝）
 
@@ -241,7 +244,7 @@ struct ObservationItem {
    - 即："history 可见"与"history 里的 media 可见"是两件事，默认只给前者。
 
 2. **快照而非引用式共享**：子 context 的 `input` 是父 history 在 fork 时刻深拷贝出来的 `Vec<AiMessage>`，而非对父 `LLMContext` 的活引用。理由：
-   - 与 `LocalLLMContext` 的 per-turn 快照粒度一致，crash-resume 模型自相似；
+   - 与 `LocalLLMContext` 按推理边界提交的快照一致：旁路 input 是一份确定的数据，可重放；
    - 父 context 可能在旁路执行期间继续推进（并行 agent loop），快照语义明确、可重放；
    - 该快照参与 `OneShotRequest::semantic_hash()`（[local_llm_context.rs:238](src/frame/agent_tool/src/local_llm_context.rs:238)），自动获得 resume 兼容性保护。
 
@@ -571,15 +574,25 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 
 ### 5.2 恢复规则
 
-- 模型分析 stage 的 per-turn 持久化由 `LocalLLMContext` 提供（[local_llm_context.rs](src/frame/agent_tool/src/local_llm_context.rs)）；probe / preprocess / traditional analysis 应保持幂等或在 `pipeline_trace` 中记录不可恢复错误。
-- **从主干视角**：在拿到 `AgentToolResult` 之前，主干**不**把 `ToolUse` / `ToolResult` 落入自己的 turn——这一对消息作为**原子单元** commit。
-- 旁路 fork 期间崩溃 →
-  - 若模型分析 stage 的 `LocalLLMContext` 状态可恢复（`semantic_hash` 一致）→ 自动 resume；
-  - 否则整体丢弃，主干视角等价于"这次 `llm_understand_media` 调用从未开始"，直接重跑。
+下面三个边界彼此独立，不能混为"per-turn 持久化"（术语见 [readme.md](readme.md)）：
+
+- **模型推理 checkpoint**：模型分析 stage 以 xllm run 执行（[local_llm_context.rs](src/frame/agent_tool/src/local_llm_context.rs)），持久化粒度是推理边界：每次推理（Round）开始前由 `InferenceHook` 把 `LLMContextSnapshot` 写入 run 目录的 `snapshots/`，到达 outcome 时再提交一次；不存在"每个 Turn 一份快照"。主干 run 同理：function call 模式在每次推理前 checkpoint，behavior 模式只在 Step 边界 checkpoint（`CheckpointHook`）。probe / preprocess / traditional analysis 应保持幂等或在 `pipeline_trace` 中记录不可恢复错误。
+- **工具结果提交**：对主干而言，整个 `llm_understand_media` 只是一次工具调用，身份是 `call_id`。function call 模式下 `ToolUse` / `ToolResult` 随主干下一次推理前的 checkpoint 一起持久化（与同一响应的其它调用同属一个工具批次，共消耗一次工具迭代）；behavior 模式下结果写入当前 Step 的 `action_results`，随 Step 边界 checkpoint 持久化。libopendan 宿主在调用开始前登记 in-flight 记录，只有包含该结果（或显式 `Unresolved`）的 checkpoint 才清除它；之后 flush 时写成 Session worklog 的 `action_result {call_id}`。
+- **Turn 完成**：工具结果提交不完成 Step（behavior 模式下 Step 要等它的全部 action 结果就绪），更不完成 Turn。Turn 是否完成只由 Session 在 run 结束时判定。
+
+旁路推理的归属：旁路里的推理（模型分析 stage、§4.2 压缩父 history 的摘要调用）使用工具自己的 `LlmClient` 和 run，是这次工具调用内部的嵌套模型调用：
+
+- 不是主干的 Round：不经过主干 run 的 `LlmClient::infer`，不计入主干 `run.json` 的 `usage.llm_requests` 或 libopendan `static.json` 的 `rounds`，只记在旁路自己的 run 记录里；只有经主干主循环发起的推理才是主干的 Round。
+- 不是主干的 Step：主干在 behavior 模式下，这次调用只是当前 Step 的一个 action。
+- 不是 Session Turn：旁路没有 Session 输入，不开启、推进或完成任何 Turn。
+
+崩溃时：
+
+- 主干在调用进行中崩溃 → 当前实现不续跑旁路。libopendan 宿主恢复时把没有已持久化结果的 in-flight 调用显式回填为 `unresolved`（效果未知），由主干模型决定是否重新调用；单独运行的 xllm 主干则从上一次推理前的快照恢复，重新推理。旁路的 run 目录不会被主干接手。"旁路状态可恢复时自动 resume"仍是设计目标，校验与接手规则待定（原设计依赖的 `semantic_hash()` 已不存在）。
 - 旁路内部中间状态不渗透到主干 recovery 模型。
 - 由于 `media` 是 `ResourceRef::NamedObject { obj_id }`、媒体存于 `ndn_lib` NDN 对象，重跑时 media 必然仍可寻址、内容必然未变（`ObjId` 即 content hash），重跑结果语义一致。
 
-> 嵌套 LLMContext 的崩溃恢复因此是**自相似**的：主干按 per-turn 快照恢复，旁路按 `OneShotRequest` 整体（或自身 per-turn）恢复，两层互不渗透。
+> 嵌套 LLMContext 的恢复因此两层互不渗透：主干按自己的推理 / Step 边界快照恢复，旁路有自己的 run 与快照。
 
 ### 5.3 `pending` 状态
 
@@ -635,7 +648,7 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
     ]) 写入主干 history
   → 持久化层对 O1 增引用计数（§6.2）
 
-Agent（第 1 轮）:
+主干推理（第 1 次 Round）:
   → emit AiContent::ToolUse {
         name: "llm_understand_media",
         args: { media: { kind: "named_object", obj_id: "O1" },
@@ -666,8 +679,8 @@ Agent（第 1 轮）:
   → 主干仅新增: ToolUse + ToolResult { content: [Text { text: output }] }
   → 旁路工作目录蒸发，O1 像素不再出现在主干
 
-Agent（第 30 轮）：怀疑"内存泄漏"判断是否成立
-  → 主干 history 中仍有第 1 轮的 tool_result.text（含 reasoning）
+主干推理（第 30 次 Round，可能已在之后的 Turn）：怀疑"内存泄漏"判断是否成立
+  → 主干 history 中仍有第 1 次 Round 发起的那次调用的 tool_result.text（含 reasoning）
   → agent 直接在主干上复核 reasoning，无需重新 fork
   → 仅当需要 observations 之外的新视觉细节时，才再次 fork(O1 仍可寻址，
       因 §6.2 引用计数挂钩，O1 未被 GC)
@@ -690,7 +703,7 @@ Agent（第 30 轮）：怀疑"内存泄漏"判断是否成立
 9. **NDN / Thunk-style 缓存**：所有 `idempotent: true` stage 必须基于 `executor identity + resolved input + stage version` 计算 cache key；命中时直接复用 NDN 中的 JSON output / artifact refs，并在 `pipeline_trace` 标记 `cache_hit`。
 10. **传统分析 provenance**：OCR / ASR / barcode 等传统分析结果若启用，必须作为 `traditional_findings` 进入 `details` 与模型输入，并标明来源 stage / artifact / confidence；最终 report 不得把传统分析结果伪装成模型直接观察。
 11. **native vision / MIME route**：工具在 probe / materialize 阶段解析 MIME，按配置表得到 AICC 逻辑模型名并写入模型分析 stage 的 `OneShotRequest.model_policy.preferred`；target 媒体以原生 `AiContent::Image` 进入旁路，无辅助转文字中间层。当前 `ModelPolicy` 不声明 `features::VISION` requirement，若 AICC 无法处理该逻辑模型下含 image 的 LLM 请求，应返回明确 Error（本期不强制实现辅助降级）。后续能力 requirement 透传属于 `LLMContext` / AICC adapter 边界改造。
-12. **崩溃恢复**：模型分析 stage 的 LocalLLMContext per-turn 持久化生效；主干在 `AgentToolResult` 返回前不 commit 该 turn；模型分析 stage 必须把 `pipeline_id` / `pipeline_version` / `compiled_pipeline_hash` 写入自己的 `OneShotRequest.input`，使 `OneShotRequest::semantic_hash()` 覆盖 (goal, 父 history 快照, obj_id, 管线定义/版本)。
+12. **崩溃恢复**：模型分析 stage 的推理边界快照生效（每次推理前提交）；主干在 `AgentToolResult` 返回前不提交该调用的结果，结果随主干下一个 checkpoint 提交，工具结果提交不等于 Turn 完成（见 §5.2）；模型分析 stage 必须把 `pipeline_id` / `pipeline_version` / `compiled_pipeline_hash` 写入自己的 `OneShotRequest.input`，使 `OneShotRequest::semantic_hash()` 覆盖 (goal, 父 history 快照, obj_id, 管线定义/版本)。
 13. **深度 & 预算**：旁路 `OneShotRequest.tool_policy.allow_tools = false`；本地管线和模型分析 stage 共享父预算剩余额度，不能各自重置 default 无上限；外部扩展 stage 必须有 timeout 和权限约束。
 14. **体积度量**：构造长 session（多次媒体理解）测试，验证主干 history 体积仅随 `tool_result` 文本线性增长，与媒体数量 / 大小解耦。
 

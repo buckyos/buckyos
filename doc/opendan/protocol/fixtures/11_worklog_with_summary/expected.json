@@ -4,8 +4,8 @@
   "next": {
     "action": "build_history_reverse_read",
     "raw_entries": 10,
-    "stop_at_offset": 16539,
-    "summary": "Summary of rounds 0..189."
+    "stop_at_offset": 16349,
+    "summary": "Summary of turns 0..189."
   },
   "scenario": "worklog_with_summary",
   "sessions": [
@@ -17,16 +17,18 @@
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": null,
         "outcome": null,
         "process_stack": [],
         "rev": 2,
-        "round": 0,
-        "run_state": "created"
+        "run_state": "created",
+        "turn_seq": 0,
+        "turns_completed": 0
       },
       "worklog": {
-        "committed_bytes": 17419,
+        "committed_bytes": 17219,
         "committed_seq": 201,
-        "file_bytes": 17419,
+        "file_bytes": 17219,
         "uncommitted_tail": false
       }
     }

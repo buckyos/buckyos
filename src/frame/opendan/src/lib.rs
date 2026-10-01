@@ -2,7 +2,7 @@
 // Module layout follows §9 checklist order: bottom-up dependencies first.
 
 // §9 step 2 — LLMContextDeps assembly (LlmClient / ToolManager / PolicyEngine /
-//             WorklogSink / TurnHook adapters over aicc + agent_tool).
+//             WorklogSink / InferenceHook adapters over aicc + agent_tool).
 pub mod ai_runtime;
 
 // §9 step 3 — config layer.

@@ -1,6 +1,6 @@
 {
   "index": 2,
-  "created_at": 1790761535,
+  "created_at": 1790853968,
   "payload": [
     123,
     34,
@@ -29,9 +29,9 @@
     125
   ],
   "headers": {
-    "at_ms": "1790761535692",
-    "key": "m-late",
+    "at_ms": "1790853968786",
+    "type": "msg",
     "from": "app:app2@alice",
-    "type": "msg"
+    "key": "m-late"
   }
 }

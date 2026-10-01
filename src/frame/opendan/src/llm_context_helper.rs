@@ -96,7 +96,7 @@
 //!        pub output:         Option<OutputSpec>,
 //!
 //!        // 计数器旋钮
-//!        pub reset_rounds:   bool, // 重置 state.rounds_left = new tool_policy.max_rounds
+//!        pub reset_tool_iterations:   bool, // 重置 state.tool_iterations_left = new tool_policy.max_tool_iterations
 //!        pub reset_errors:  bool,  // 清 state.consecutive_errors
 //!
 //!        // Fork 专用硬约束（见下方未决项）
@@ -143,9 +143,9 @@
 //!
 //! ## 旋钮（未决，先给倾向值）
 //!
-//! - **rounds_left**：
+//! - **tool_iterations_left**：
 //!   - switch:      不重置（continue 全局预算）
-//!   - fork:        重置为 new tool_policy.max_rounds（sub 独立预算）
+//!   - fork:        重置为 new tool_policy.max_tool_iterations（sub 独立预算）
 //!   - independent: 重置（每个 behavior 自己的预算）
 //! - **consecutive_errors**：
 //!   - switch:      不清（防 LLM 靠切 behavior 绕错误上限）
@@ -284,7 +284,7 @@ pub async fn run_fork_sub_context(input: ForkSubContextInput<'_>) -> Result<Cont
         trace_id: trace_id.to_string(),
         agent_name: agent_name.to_string(),
         behavior: sub_cfg.meta.name.clone(),
-        step_idx: parent_snap.state.steps.len() as u32,
+        tool_call_index: parent_snap.state.steps.len() as u32,
         wakeup_id: String::new(),
         session_id: session_id.to_string(),
         read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,

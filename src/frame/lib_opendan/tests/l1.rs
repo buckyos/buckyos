@@ -141,7 +141,7 @@ async fn worklog_reverse_read_is_bounded_by_the_start_point() {
             &lease,
             vec![WorklogBody::UserMessage {
                 run_id: "r".into(),
-                round: i,
+                turn: i,
                 content: format!("{i}:{body}"),
             }],
         )
@@ -202,7 +202,7 @@ async fn budget_exhaustion_compacts_without_gap() {
             &lease,
             vec![WorklogBody::UserMessage {
                 run_id: "r".into(),
-                round: i,
+                turn: i,
                 content: format!("message {i} {}", "y".repeat(200)),
             }],
         )

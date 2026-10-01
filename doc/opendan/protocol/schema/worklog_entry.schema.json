@@ -48,8 +48,42 @@
         "src"
       ],
       "type": "object"
+    },
+    "TurnStatus": {
+      "description": "How a logical Turn ended (decided by the session from the outcome and the hand-over state, never by the waist alone).",
+      "oneOf": [
+        {
+          "description": "A result was delivered (final answer, a reply before waiting for input, or the session finished).",
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A non-recoverable error ended the run.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The run's budget was exhausted.",
+          "enum": [
+            "budget_exhausted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`control(stop)`.",
+          "enum": [
+            "stopped"
+          ],
+          "type": "string"
+        }
+      ]
     }
   },
+  "description": "Worklog entry bodies (format of `opendan.session_state/2` sessions).\n\nIdentities: an input batch is `(run_id, input_seq)`, a Turn is `turn` (session-wide), a behavior Step is `(run_id, step_index)`, a tool call / action is its `call_id`. Entries of one run carry the Turn they belong to.",
   "oneOf": [
     {
       "description": "First entry of every session.",
@@ -89,6 +123,7 @@
       "type": "object"
     },
     {
+      "description": "The input batch that opened a logical Turn.",
       "properties": {
         "at_ms": {
           "format": "uint64",
@@ -108,6 +143,11 @@
             "null"
           ]
         },
+        "input_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "inputs": {
           "default": [],
           "items": {
@@ -115,26 +155,84 @@
           },
           "type": "array"
         },
-        "round": {
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "turn_started"
+          ],
+          "type": "string"
+        },
+        "turn": {
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        }
+      },
+      "required": [
+        "at_ms",
+        "input_seq",
+        "run_id",
+        "t",
+        "turn"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "An input batch that joined the open Turn (behavior hand-over, fork return, input consumed while the Turn was in progress). Observation injections are only recorded as their `user_message`.",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "changes": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "hook": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "input_seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "inputs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/InputRef"
+          },
+          "type": "array"
         },
         "run_id": {
           "type": "string"
         },
         "t": {
           "enum": [
-            "round_started"
+            "input_batch"
           ],
           "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
         "at_ms",
-        "round",
+        "input_seq",
         "run_id",
-        "t"
+        "t",
+        "turn"
       ],
       "type": "object"
     },
@@ -142,11 +240,6 @@
       "properties": {
         "content": {
           "type": "string"
-        },
-        "round": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
         },
         "run_id": {
           "type": "string"
@@ -156,17 +249,58 @@
             "user_message"
           ],
           "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
         "content",
-        "round",
         "run_id",
-        "t"
+        "t",
+        "turn"
       ],
       "type": "object"
     },
     {
+      "description": "Function call runs: one assistant response (one Round), with the native tool calls it requested. Not a behavior Step.",
+      "properties": {
+        "assistant": {
+          "default": "",
+          "type": "string"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "t": {
+          "enum": [
+            "assistant_message"
+          ],
+          "type": "string"
+        },
+        "tool_calls": {
+          "items": {
+            "$ref": "#/definitions/ActionEntry"
+          },
+          "type": "array"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "run_id",
+        "t",
+        "turn"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "Behavior runs: one `StepRecord` (decision + actions; results follow as `action_result`).",
       "properties": {
         "actions": {
           "items": {
@@ -184,29 +318,40 @@
             "null"
           ]
         },
-        "round": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
+        "correction": {
+          "description": "A synthetic step recording a rejected response (parse failure / policy rejection) fed back for self-correction, not a decision.",
+          "type": "boolean"
         },
         "run_id": {
           "type": "string"
+        },
+        "step_index": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
         },
         "t": {
           "enum": [
             "step"
           ],
           "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
-        "round",
         "run_id",
-        "t"
+        "step_index",
+        "t",
+        "turn"
       ],
       "type": "object"
     },
     {
+      "description": "Result of a native tool call or a behavior action (`call_id`).",
       "properties": {
         "call_id": {
           "type": "string"
@@ -214,11 +359,6 @@
         "result": {
           "default": "",
           "type": "string"
-        },
-        "round": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
         },
         "run_id": {
           "type": "string"
@@ -232,21 +372,27 @@
             "action_result"
           ],
           "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
         "call_id",
-        "round",
         "run_id",
         "status",
-        "t"
+        "t",
+        "turn"
       ],
       "type": "object"
     },
     {
+      "description": "How the session ended or set aside a run (written with the run's history). Outcomes that keep the run open (pending tool, context limit pause, interrupt, retryable error) write nothing here.",
       "properties": {
         "kind": {
-          "description": "`done | wait | pending_tool | budget | error | interrupted | context_limit | stopped | suspended`, or `context_rewritten`: the run hit the context limit, its history so far is above this entry and it continues from the compacted session history.",
+          "description": "Run ended: `done | wait | process_done | budget | error | stopped`; process suspended into `process_stack`: `suspended`; `context_rewritten`: the run hit the context limit, its history so far is above this entry and it continues from the compacted session history. Not a Turn end: see `turn_ended`.",
           "type": "string"
         },
         "next_behavior": {
@@ -261,11 +407,6 @@
             "null"
           ]
         },
-        "round": {
-          "format": "uint64",
-          "minimum": 0.0,
-          "type": "integer"
-        },
         "run_id": {
           "type": "string"
         },
@@ -274,13 +415,53 @@
             "outcome"
           ],
           "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
         }
       },
       "required": [
         "kind",
-        "round",
         "run_id",
-        "t"
+        "t",
+        "turn"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "The session closed a logical Turn.",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "run_id": {
+          "default": "",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/TurnStatus"
+        },
+        "t": {
+          "enum": [
+            "turn_ended"
+          ],
+          "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "at_ms",
+        "status",
+        "t",
+        "turn"
       ],
       "type": "object"
     },

@@ -20,22 +20,24 @@
         "executions": 0,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20260930-024535-590203",
+        "run_id": "20261001-042608-c267a1",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20260930-024535-590203"
+        "20261001-042608-c267a1"
       ],
       "session_id": "work-fixture-active-a",
       "state": {
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": 1,
         "outcome": null,
         "process_stack": [],
         "rev": 2,
-        "round": 1,
-        "run_state": "running"
+        "run_state": "running",
+        "turn_seq": 1,
+        "turns_completed": 0
       },
       "worklog": {
         "committed_bytes": 138,
@@ -52,11 +54,13 @@
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": null,
         "outcome": null,
         "process_stack": [],
         "rev": 1,
-        "round": 0,
-        "run_state": "created"
+        "run_state": "created",
+        "turn_seq": 0,
+        "turns_completed": 0
       },
       "worklog": {
         "committed_bytes": 138,

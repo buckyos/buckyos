@@ -20,14 +20,16 @@ use crate::request::LLMContextRequest;
 pub struct LLMContextState {
     /// Full message list currently visible to the LLM. Starts as a clone of
     /// `request.input`; the loop appends assistant replies and tool messages
-    /// each round.
+    /// after each inference.
     pub accumulated: Vec<AiMessage>,
 
     /// Aggregate usage across every inference performed so far in this run.
     pub usage: AiUsage,
 
-    /// Tool rounds remaining. Initialised from `tool_policy.max_rounds`.
-    pub rounds_left: u32,
+    /// Tool iterations remaining (see `ToolPolicy.max_tool_iterations`).
+    /// Charged once per completed native batch and once per behavior step
+    /// with actions, never again on resume.
+    pub tool_iterations_left: u32,
 
     /// Wallclock at which `run()` first started, in ms since epoch.
     pub started_at_ms: u64,
@@ -92,8 +94,8 @@ pub struct LLMContextState {
     #[serde(default)]
     pub next_action_id: u32,
 
-    /// Snapshot format version (`0` = written before versioning). `resume`
-    /// refuses versions newer than [`SNAPSHOT_FORMAT_VERSION`].
+    /// Snapshot format version. `resume` refuses any version other than
+    /// [`SNAPSHOT_FORMAT_VERSION`].
     #[serde(default)]
     pub snapshot_version: u32,
 
@@ -105,8 +107,10 @@ pub struct LLMContextState {
 }
 
 /// Current snapshot format version. 2: suspension state (`suspended`,
-/// `tool_batch`, `action_step`) replaced `pending_tool_calls`.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 2;
+/// `tool_batch`, `action_step`) replaced `pending_tool_calls`. 3: tool
+/// budget renamed (`tool_iterations_left`, `ToolBatch.batch_error`).
+/// `resume` accepts only this version.
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
 
 /// Why a context is suspended. Every variant records when it yielded:
 /// suspended time is not charged to `max_wallclock_ms`.
@@ -146,9 +150,9 @@ pub struct ToolBatch {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub remaining: Vec<AiToolCall>,
     /// First LLM-correctable failure of the batch so far; counted once when
-    /// the batch completes.
+    /// the batch completes (one failed iteration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub round_error: Option<LLMComputeError>,
+    pub batch_error: Option<LLMComputeError>,
 }
 
 /// Continuation of a behavior step cut by a deferred action.
@@ -166,7 +170,7 @@ impl LLMContextState {
         Self {
             accumulated: req.input.clone(),
             usage: AiUsage::default(),
-            rounds_left: req.tool_policy.max_rounds,
+            tool_iterations_left: req.tool_policy.max_tool_iterations,
             started_at_ms,
             cost_units: 0,
             consecutive_errors: 0,

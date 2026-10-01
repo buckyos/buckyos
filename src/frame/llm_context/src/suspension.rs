@@ -217,8 +217,8 @@ fn fill_tool_results(
         .any(|(_, o)| matches!(o, Observation::Cancelled { .. }));
     for (call, obs) in filled {
         if let Observation::Error { message, .. } = &obs {
-            if batch.round_error.is_none() {
-                batch.round_error = Some(LLMComputeError::ToolFailed {
+            if batch.batch_error.is_none() {
+                batch.batch_error = Some(LLMComputeError::ToolFailed {
                     tool: call.name.clone(),
                     call_id: call.call_id.clone(),
                     message: message.clone(),
@@ -230,9 +230,9 @@ fn fill_tool_results(
             .push(tool_observation_message(&call.call_id, &obs));
     }
     if cancelled {
-        // A cancelled deferred call winds the round down: the calls after it
+        // A cancelled deferred call winds the batch down: the calls after it
         // never start.
-        let reason = "not executed: an earlier call of this round was cancelled";
+        let reason = "not executed: an earlier call of this batch was cancelled";
         for call in std::mem::take(&mut batch.remaining) {
             let obs = Observation::Unresolved {
                 call_id: call.call_id.clone(),
@@ -319,7 +319,7 @@ fn rewrite_steps(
     for s in steps.iter_mut().chain(last_step.iter_mut()) {
         strip_step_thinking(s);
     }
-    let mut tail = turn_tail(request, state).to_vec();
+    let mut tail = inner_transcript_of(request, state).to_vec();
     strip_thinking(&mut tail);
     request.input = input.clone();
     state.accumulated = input;
@@ -330,10 +330,11 @@ fn rewrite_steps(
     Ok(())
 }
 
-/// Behavior mode: the in-progress turn, i.e. the messages after
-/// `request.input` in `accumulated` (empty when `accumulated` does not
-/// extend `request.input`).
-pub(crate) fn turn_tail<'a>(
+/// Behavior mode: the inner transcript of the step in progress (the native
+/// tool loop messages not yet folded into a `StepRecord`), i.e. the messages
+/// after `request.input` in `accumulated` (empty when `accumulated` does not
+/// extend `request.input`). Not related to an AgentSession Turn.
+pub(crate) fn inner_transcript_of<'a>(
     request: &LLMContextRequest,
     state: &'a LLMContextState,
 ) -> &'a [AiMessage] {

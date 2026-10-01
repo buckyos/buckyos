@@ -25,7 +25,7 @@ use crate::protocol::*;
 use crate::session::runs::RunHandle;
 use crate::state::{declared_refs, render_active_sessions, AgentStateClient};
 
-use super::assembler::{ChangeItem, TurnMaterial};
+use super::assembler::{ChangeItem, InputMaterial};
 use super::drive::{apply_controls, confirm_inputs, fetch_inputs, report, Shared};
 use super::receipts::{apply_receipt, predict_position, snapshot_host_meta, with_host_meta};
 
@@ -180,8 +180,9 @@ pub async fn check_changes(
             Some(m.input_ref()),
         ));
     }
-    // 3. active session set (default semi-subscription, §6.7). A turn
-    //    message renders the full list itself; boundaries inject changes.
+    // 3. active session set (default semi-subscription, §6.7). An input
+    //    batch message renders the full list itself; boundaries inject
+    //    changes.
     let active = if include_active {
         agent.activity().active(me, active_limit).await?
     } else {
@@ -329,8 +330,8 @@ impl SessionCheckpointHook {
         if changes.is_empty() {
             return Ok(None);
         }
-        let material = TurnMaterial {
-            hook: "observation".into(),
+        let material = InputMaterial {
+            hook: OBSERVATION_HOOK.into(),
             changes: changes.items.clone(),
             now_ms: crate::now_ms(),
             ..Default::default()
@@ -346,9 +347,10 @@ impl SessionCheckpointHook {
         let receipt = InputReceipt {
             run_id: self.run.run_id().to_string(),
             input_seq: seq,
-            round: state_snapshot.round,
-            opens_round: false,
-            hook: Some("observation".into()),
+            // Observations join the Turn in progress, never open one.
+            turn: state_snapshot.current_turn(),
+            opens_turn: false,
+            hook: Some(OBSERVATION_HOOK.into()),
             inputs: changes.injected_inputs.clone(),
             changes: changes.receipts.clone(),
             consumed_only: changes.consumed_only.clone(),

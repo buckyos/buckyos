@@ -72,7 +72,7 @@ Model:
   --tools | --no-tools         override every file-level tool switch
 
 Limits:
-  --max-tokens <n>  --max-rounds <n>  --timeout <secs>  --llm-timeout <secs>
+  --max-tokens <n>  --max-tool-iterations <n>  --timeout <secs>  --llm-timeout <secs>
 
 Output:
   --result-format raw|result.<path>   extract from the final response
@@ -162,7 +162,7 @@ struct CliOpts {
     tools: Option<bool>,
     run: Option<String>,
     max_tokens: Option<u32>,
-    max_rounds: Option<u32>,
+    max_tool_iterations: Option<u32>,
     timeout: Option<u64>,
     llm_timeout: Option<u64>,
     run_logs: Option<RunLogLevel>,
@@ -221,7 +221,7 @@ impl CliOpts {
             tools: None,
             run: None,
             max_tokens: None,
-            max_rounds: None,
+            max_tool_iterations: None,
             timeout: None,
             llm_timeout: None,
             run_logs: None,
@@ -333,12 +333,12 @@ impl CliOpts {
                         "--max-tokens",
                     )?;
                 }
-                "--max-rounds" => {
-                    let v = next_value(args, &mut idx, "--max-rounds")?;
+                "--max-tool-iterations" => {
+                    let v = next_value(args, &mut idx, "--max-tool-iterations")?;
                     set_once(
-                        &mut o.max_rounds,
-                        parse_num(&v, "--max-rounds")?,
-                        "--max-rounds",
+                        &mut o.max_tool_iterations,
+                        parse_num(&v, "--max-tool-iterations")?,
+                        "--max-tool-iterations",
                     )?;
                 }
                 "--timeout" => {
@@ -479,7 +479,7 @@ impl CliOpts {
             select: self.select.clone(),
             system: self.system.clone(),
             max_tokens: self.max_tokens,
-            max_rounds: self.max_rounds,
+            max_tool_iterations: self.max_tool_iterations,
             timeout_secs: self.timeout,
             llm_timeout_secs: self.llm_timeout,
             run_logs: self.run_logs,
@@ -494,7 +494,7 @@ impl CliOpts {
     fn resume_limits(&self) -> ResumeLimits {
         ResumeLimits {
             max_tokens: self.max_tokens,
-            max_rounds: self.max_rounds,
+            max_tool_iterations: self.max_tool_iterations,
             timeout_secs: self.timeout,
             llm_timeout_secs: self.llm_timeout,
         }
@@ -1321,8 +1321,8 @@ fn print_status_text(record: &RunRecord, summary: &RunSummary) {
         }
     );
     println!(
-        "limits:         max_rounds={} timeout={}s llm_timeout={}s max_tokens={}",
-        c.limits.max_rounds,
+        "limits:         max_tool_iterations={} timeout={}s llm_timeout={}s max_tokens={}",
+        c.limits.max_tool_iterations,
         c.limits.timeout_secs,
         c.limits.llm_timeout_secs,
         c.limits

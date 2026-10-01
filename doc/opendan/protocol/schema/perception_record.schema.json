@@ -8,7 +8,7 @@
       "type": "integer"
     },
     "kind": {
-      "description": "`round_digest | observation | task_outcome | task_discarded`.",
+      "description": "`run_digest | observation | task_outcome | task_discarded`.",
       "type": "string"
     },
     "objects": {

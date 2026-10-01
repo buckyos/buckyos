@@ -14,8 +14,9 @@
 >
 > - 代码：`src/frame/lib_opendan`（package `libopendan`）；LX 改动在 `llm_context`（`CheckpointHook` / `inject` / 快照 `host` 与 `snapshot_version`）与 `agent_tool`（`exec_tracking`、RunRecord 宿主字段、`prepare_hosted`、resume 检查）。反写的 Spec、JSON Schema 与 fixtures 在 [`protocol/`](protocol/README.md)。
 > - 已完成：L1、L2（native + tmux）、L3（work session；普通 / fork / independent 切换）、L4（感知、self_improve 锁与整理游标、认知门面）、L5（产物登记、decide、discard 报告）、L6；LX 的 X1 ~ X6 与 X8（宿主 run 的 step 渲染不带时间戳）；真实 kmsg 服务的 DV 用例 `tests/dv_kmsg.rs`（`--ignored`，在 DV Test OOD 上以 root 运行）。
-> - 与本文的差异：X4 / X5 合为一个异步 `CheckpointHook`（每次推理前、外层快照、可注入）；`AgentRuntime` 以 `bash_runner(env, registrar)` + `reconcile_execution` 表达执行准备与核对；执行跟踪按环境标记 `OPENDAN_EXECUTION_ID` 扫描 `/proc`（非 Linux 一律 Unknown → RecoveryBlocked）；`recent_keys` 放在 state.json 顶层；state 增加 `stop_requested` / `internal_continuation` / `process_result`，live_run / process_stack 增加 `flushed_input_seq`（behavior run 按身份记录已写入部分）；worklog 增加 `created` / `change_dropped` / `control_applied`。
+> - 与本文的差异：X4 / X5 合为一个异步 `CheckpointHook`（外层快照、可注入；function call 模式在每次推理前调用，behavior 模式只在外层 Step 边界调用）；`AgentRuntime` 以 `bash_runner(env, registrar)` + `reconcile_execution` 表达执行准备与核对；执行跟踪按环境标记 `OPENDAN_EXECUTION_ID` 扫描 `/proc`（非 Linux 一律 Unknown → RecoveryBlocked）；`recent_keys` 放在 state.json 顶层；state 增加 `stop_requested` / `internal_continuation` / `process_result`，live_run / process_stack 增加 `flushed_input_seq`（behavior run 按身份记录已写入部分）；worklog 增加 `created` / `change_dropped` / `control_applied`。
 > - X7（2026-09-30）：waist 能力完成——真正产出 `ContextLimitReached`（阈值 / 已知窗口 / Provider 结构化拒绝）与 `PendingTool`（`allow_deferred`），快照版本 2，传统与 behavior（action、step 内层原生工具）都能挂起后恢复，behavior 用 `RewrittenSteps` 重写；见《LLM Context 设计》§9.5。宿主接入：libopendan 实现上下文上限中途重写（先 flush、压缩 summary.json、新 history epoch，见 Session Directory Protocol §7），PendingTool 仍不接入（`allow_deferred=false`，遇到时 RecoveryBlocked）；xllm 压缩续跑与接手挂起快照；OpenDAN 只做类型适配。
+> - Round / Step / Turn 术语统一（2026-10-01，breaking change，定义见 [LLM Context readme](../llm_context/readme.md)）：Round = 一次宿主推理（`LlmClient::infer`）；Step = behavior 的 `StepRecord`，身份 `(run_id, step_index)`；Turn = Session 的一次逻辑 Input → result。state.json 的 `round` 改为 `turn_seq` / `open_turn` / `turns_completed`：没有进行中的 Turn 时提交的输入批次（`(run_id, input_seq)`）开启 Turn，交接、观察注入、可恢复挂起、history epoch 重写与重启都延续它，只有 session 在 `finish_run` 中写 `turn_ended` 关闭它（§8.3）。`live_run.rounds` → `turns`，receipt 的 `round` / `opens_round` → `turn` / `opens_turn`，`epoch_round` → `epoch_turn`，`flushed_step` 拆为 `flushed_message_count`（function call）与 `flushed_step_index`（behavior）；worklog 改为 `turn_started` / `input_batch` / `assistant_message` / `step`（带 `step_index`）/ `turn_ended`，function call 的 response 不再写成 `step`；`end_condition.type = max_turns`；`StopWhen::MaxOutcomes`；`round_digest` → `run_digest`；`static.json` 的 `rounds` 为推理尝试数（另有 `rounds_failed` / `rounds_interrupted`、`turns`，去掉 `llm_requests`）；`begin_round` / `commit_round` → `commit_input_batch` / `handle_context_outcome`；`TurnHook` → `InferenceHook`；工具额度 `max_rounds` → `max_tool_iterations`。schema 升为 `session_state/2`、`session_config/2`、`session_summary/2`，快照版本 3，旧版本一律拒绝。下文示例与伪代码已同步；opendan 本身只做编译适配，待下一阶段重构。
 > - 未完成：libopendan / xllm 的 deferred 工具（task_mgr）回填、ToolSpec 的 effect 字段与 `ToolUse.args` 规范键序（libopendan 按工具名分类、worklog 内规范化）；OpenDAN `BehaviorAssembler`（behaviors 配置、prompt_env、HintRecallEngine）与 session-aware 工具未移植（用 `DefaultAssembler`、`extensions.opendan.process_modes` 与 `agent-session` CLI 代替）；1 GB worklog 基准（以数 MB 文件验证读取量有界）。UI session、kRPC、DID Object 宿主按本文后移。
 
 > **v0.10 Review 修订**（2026-09-29）
@@ -156,7 +157,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 | V4 文件锁 | 重新设计（§5） |
 | V5 活动 session | 所有 session 的一个重要上下文：系统里有多少 AgentSession 在运行、大概在修改什么，让 Agent 自己避让同时修改同一个东西（§6.7） |
 | V6 Spec | 先实现 AgentSession，再根据实现结果反写协议级 Spec，指导其它语言的实现（L6） |
-| 目录定稿（L0） | ① `lease.json` 兼作锁文件；② `runs/<run_id>/` 完全用 xllm 布局，本 run 各轮输入记在 state.json；③ 选 a：值得保留最后一次 run 的 llm context 状态，被挂起的 process 所在的 run 由 state.json 引用、不删除；④ 统计文件名 `static.json`；⑤ 接受 `.runtime/bin` 随主机绑定；⑥ 附件用相对路径或 NamedStore 对象 id 都可以，由提示词决定（NamedStore 支持 LocalLink）；⑦ activity 的三种来源 |
+| 目录定稿（L0） | ① `lease.json` 兼作锁文件；② `runs/<run_id>/` 完全用 xllm 布局，本 run 消费的输入记在 state.json（2026-10-01 起按 Turn 归并为 `live_run.turns`）；③ 选 a：值得保留最后一次 run 的 llm context 状态，被挂起的 process 所在的 run 由 state.json 引用、不删除；④ 统计文件名 `static.json`；⑤ 接受 `.runtime/bin` 随主机绑定；⑥ 附件用相对路径或 NamedStore 对象 id 都可以，由提示词决定（NamedStore 支持 LocalLink）；⑦ activity 的三种来源 |
 | Review 补充 | sid 全局唯一。目录布局不变；v0.10 补齐输入 receipt、工具执行与 checkpoint 的提交纪律、恢复阻塞、artifact head 锁和 runtime 准备重试；对应验收见 L1 / LX / L2 / L3 / L5 |
 
 ### 1.4 假设
@@ -181,7 +182,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 | kmsg | `create_queue` / `subscribe` 不幂等（已存在时返回字符串错误）；`commit_ack` 直接把游标设为 `index + 1`（可回退、无 fencing）；游标不落盘（D-09），服务重启可能丢订阅；没有权限校验（D-07）；retention 未实现（D-06）；`delete_message_before` 与 post 有竞态，会复用 index 覆盖消息；sub_id 在所有队列间共用一个命名空间 | §4.5 的 kmsg 使用规则 |
 | kevent | 跨节点投递未接线；事件名每段只允许字母、数字和 `_ - .`（DID 不能直接进路径）；TS SDK 没有 publish | wake_event 命名规则；唤醒丢失靠轮询兜底 |
 | msg-center | `did + session_id` inbox **已实现**（`MailboxAddress`、`list_mailboxes`）；记录状态是 `Read`（没有 `Readed`）；`Reading` 没有租约，take 之后崩溃会一直卡住；inbox 的 session_id 取自发送方可控的 `thread.topic`；take 需要 inbox 的写权限，回复还需要 `sent/<did>/<session>` 的写权限 | UI session 后移时一并处理（§4.5） |
-| llm_context | `PendingTool` / `ContextLimitReached` 在 v1 中不产出；`TurnHook` 同步只读，但已有返回错误阻止推理的语义，behavior 模式下拿到的是扁平化的内层快照；没有 ObservationHook；工具没有 effect 分类与幂等键；快照没有版本字段，`AiMessage` 等类型是 `deny_unknown_fields` | §8.7 改进清单 |
+| llm_context | `PendingTool` / `ContextLimitReached` 在 v1 中不产出；`TurnHook`（2026-10-01 改名 `InferenceHook`）同步只读，但已有返回错误阻止推理的语义，behavior 模式下拿到的是扁平化的内层快照；没有 ObservationHook；工具没有 effect 分类与幂等键；快照没有版本字段，`AiMessage` 等类型是 `deny_unknown_fields` | §8.7 改进清单 |
 | xllm | run 目录（`run.json` + `snapshots/` + `.lock`）已经存在；`.lock` 是长期持有的 flock，进程消失即判定为中断；`RunRecord` 没有在途动作字段；写入不 fsync；`RunStore` 没有公开的 create / remove；`.llm_context` 是 YAML、严格键（`loop_model`，`groups` / `sections` 在 `prompt` 下）；没有 TS 版 | §4.2、§4.4、§8.7 |
 | opendan | 若干现有状态在新协议中还没有位置：fork / independent 的 process 快照、topic 权重、命令消息、interrupt 顺序屏障、task_mgr 反馈路径、全局 SQLite worklog 等 | §12、§15.1 |
 
@@ -308,7 +309,7 @@ src/frame/libopendan/
     summary.json                     # 重建 llm context 的核心状态 ①：为 history 压缩准备（历史摘要 + 起点 + 机械压缩配置）
     worklog.jsonl                    # 重建 llm context 的核心状态 ②：严格只追加的工作日志（通常是最大的文件）；
                                      #   每次 llm_context run 结束时批量写入该 run 的历史
-    static.json                      # 统计信息（token、轮数、耗时、费用）
+    static.json                      # 统计信息（token、Round / Turn / run 数、耗时、费用）
     lease.json                       # session 锁文件：驱动者在推进期间一直持有它的排他锁（flock）；
                                      #   内容是持有者信息，只由持有者原地改写，永不替换、永不删除（§5）
     binding.json                     # 首次推进时写入：runtime + workdir（只写一次）
@@ -332,7 +333,7 @@ src/frame/libopendan/
 
 ```jsonc
 {
-  "schema": "opendan.session_config/1",
+  "schema": "opendan.session_config/2",
   "config_rev": 1,                                     // 运行中允许修改的少数字段（动态订阅等）变更时 +1；整文件原子替换
   "session": {
     "session_id": "work-20260929T101500-550e8400e29b41d4a716446655440000",
@@ -346,7 +347,7 @@ src/frame/libopendan/
     "route_key": "msgtunnel:telegram:acc:chat42",      // 仅 UI
     "origin": { "parent_session": "ui-…", "intent_ref": "…", "reason_messages": ["…"] },
     "objective": "…",
-    "end_condition": { "type": "llm_declares_done | output_schema | max_rounds", "detail": {} },
+    "end_condition": { "type": "llm_declares_done | output_schema | max_turns", "detail": {} },   // max_turns：完成 detail.n 个 Turn（默认 1）后结束，其间等待输入；内部交接不算 Turn
     "scope": { "objects": ["artifact:snake-game"], "paths": ["ws:snake/src/"] },   // 可选：本次打算修改什么，作为活动视图的初始声明（§6.7）
     "input_policy": "any | supplement_only | none",
     "acl": { "owner": "did:…", "readers": ["did:…"], "agent_access": "full | status_only" },   // Q10：默认 full
@@ -360,7 +361,7 @@ src/frame/libopendan/
     "behavior": "plan",                                // 以下是 OpenDAN 扩展：behaviors/<name> 引用（BehaviorAssembler）
     "system_prompt": "…",                              // 应用自带的 system prompt（S-05；按 §8.1 的固定顺序合成）
     "context": ["…"],                                  // 应用提供的初始上下文材料
-    "mechanical_compress": { "recent_full_steps": 2, "summary_chars": 280, "max_result_chars": 4096 }   // summary.json 的初始机械压缩配置
+    "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096 }   // summary.json 的初始机械压缩配置
   },
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": ["erp_query"] },   // app_tools：只存在于 runner 进程内的工具，恢复时校验（§7.1）
                "tool_plan": "minimal_safe", "env": { … } },
@@ -402,7 +403,7 @@ session_id 只使用字母、数字和 `_ - .`，这样才能直接作为 kevent
 
 ```jsonc
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 17,                                         // 每次提交 +1；回报与版本比对都用它
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "did:dev:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
@@ -410,16 +411,22 @@ session_id 只使用字母、数字和 `_ - .`，这样才能直接作为 kevent
   "outcome": null,                                   // succeeded | failed | stopped
   "acceptance": "n/a",                               // n/a | pending | accepted | discarded（仅 work）
   "result": null,                                    // finished 时：{ answer_ref, artifact_ref, discard_report }
-  "round": 12, "current_behavior": "do", "process_entry": "plan",
+  "turn_seq": 12, "turns_completed": 11,             // 最近开启的 Turn 编号；以 completed 关闭的 Turn 数（§8.3）
+  "open_turn": { "index": 12, "run_id": "20260929-101500-3f9c2a", "input_seq": 1,   // 进行中的 Turn；null = 没有。(run_id, input_seq) 是开启它的输入批次
+                 "hook": "on_wakeup", "inputs": ["q#121"], "at_ms": 0 },              //   inputs：开启批次及之后并入的 msg / event
+  "current_behavior": "do", "process_entry": "plan",
     "process_stack": [{ "entry": "plan", "mode": "fork | independent", "run_id": "20260929-100200-a1b2c3",
-                        "rounds": [ … ], "flushed_step": 6, "applied_input_seq": 2 }],   // 挂起时保存该 process 的 run 与提交位置（§4.4）
+                        "turns": [ … ], "flushed_step_index": 6, "flushed_input_seq": 2, "applied_input_seq": 2 }],   // 挂起时保存该 process 的 run 与提交位置（§4.4）
   "pending_task_calls": [], "bootstrap_done": true,
   "topic": { "title": "…", "tags": ["snake", "ui"] },
   "live_run": {                                      // 未结束的 run（xllm run 目录）；null = 没有进行中的 llm_context
     "run_id": "20260929-101500-3f9c2a",
-    "rounds": [{ "round": 12, "inputs": ["q#121"], "changes": ["s1@16"] }],   // 本 run 各轮消费的输入；由快照 receipt 幂等补齐，写入 worklog 的 round_started
+    "turns": [{ "turn": 12, "inputs": ["q#121"], "changes": ["s1@16"], "hook": "on_wakeup", "input_seq": 1, "at_ms": 0 }],
+                                                      // 本 run 各 Turn 消费的输入：每个 Turn 一项，同一 Turn 的后续批次并入该项；由快照 receipt 幂等补齐
     "applied_input_seq": 3,                           // 本 run 已并入 state 的连续 receipt 批次；与快照的 input_receipts 对齐（§8.3）
-    "flushed_step": 0                                 // 该 run 已写入 worklog 的位置（挂起时会先写一部分，§4.4）
+    "flushed_message_count": 0,                       // function call run：history 前缀之后已写入 worklog 的消息数（在 flushed_epoch 内计）
+    "flushed_step_index": 0,                          // behavior run：step_index 小于它的 Step 已写入 worklog（身份水位，不是计数）
+    "flushed_input_seq": 0, "flushed_epoch": 0        // 已写入的输入批次；flushed_message_count 所在的 history epoch（挂起时会先写一部分，§4.4）
   },
   "last_run": "20260929-095501-77e0d4",              // 最后一次结束的 run：保留它的 llm context 状态（§4.4）
   "worklog": { "committed_seq": 340, "committed_bytes": 1048576 },   // 已提交边界；其后的尾部视为未提交，恢复时截断
@@ -441,6 +448,7 @@ session_id 只使用字母、数字和 `_ - .`，这样才能直接作为 kevent
 
 - **提交顺序**：同一次提交中的其它内容（worklog 追加、report.md、runs checkpoint）都先于 `state.json` 写入。`commit_state` 总是把 worklog 当前末尾记为 `committed_*`。读者看到新的 rev 时，它引用的内容一定已经存在（S-23）。
 - **其它参与方**获取状态时，默认读登记表的 `status`（§6.2）。
+- **Turn**：`turn_seq` / `open_turn` / `turns_completed` 记录 Session 的逻辑 Turn（一次 Input → result）。输入批次在没有进行中的 Turn 时开启新 Turn，否则并入当前 Turn；只有 session 在 run 结束提交时关闭它（规则见 §8.3）。它们不是推理 Round 数，也不是 run 数。
 
 完成、停止、放弃用三个正交维度表达：
 
@@ -469,36 +477,38 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
 
 写入时机：
 
-- **每次 llm_context run 结束时，批量追加该 run 的全部历史**：round_started、user_message、step、action_result、outcome。这通常是 worklog 最大的一次写入，只做一次 fsync。
+- **每次 llm_context run 结束时，批量追加该 run 的全部历史**：turn_started / input_batch（输入批次）、user_message、assistant_message（function call 的一次 response）或 step（behavior 的一个 `StepRecord`）、action_result、outcome，以及该提交关闭 Turn 时的 turn_ended。这通常是 worklog 最大的一次写入，只做一次 fsync。
 - run 之外的少量条目（decide、input_rejected、compaction）在发生时追加。
 - run 进行中的历史只在 `runs/`。
 - 每次追加之后都要提交一次 state.json 作为确认。
 
 ```jsonc
-{"seq":312,"t":"round_started","run_id":"20260929-101500-3f9c2a","round":12,"inputs":[{"src":"q","index":121,"key":"msg:…"}],"changes":["s1@16"],"hook":"on_wakeup","at_ms":0}
-{"seq":313,"t":"user_message","run_id":"…","round":12,"content":"…"}
-{"seq":314,"t":"step","run_id":"…","round":12,"behavior":"do","assistant":"…","actions":[{"call_id":"c-12-1","tool":"exec_bash","args":{…},"effect":"unknown"}]}
-{"seq":315,"t":"action_result","run_id":"…","round":12,"call_id":"c-12-1","status":"ok","result":"…"}
-{"seq":316,"t":"outcome","run_id":"…","round":12,"kind":"done","next_behavior":null}
-{"seq":317,"t":"compaction","summary_start_seq":301}                  // 生成了新的 summary.json（审计用）
-{"seq":318,"t":"decide","decision":"accept","by":"did:user:alice","report":{…}}
+{"seq":312,"t":"turn_started","run_id":"20260929-101500-3f9c2a","turn":12,"input_seq":1,"inputs":[{"src":"q","index":121,"key":"msg:…","kind":"msg"}],"changes":["s1@16"],"hook":"on_wakeup","at_ms":0}
+{"seq":313,"t":"user_message","run_id":"…","turn":12,"content":"…"}
+{"seq":314,"t":"step","run_id":"…","turn":12,"step_index":0,"behavior":"do","assistant":"…","actions":[{"call_id":"c-12-1","tool":"exec_bash","args":{…},"effect":"unknown"}]}
+                                                                       // function call run 写 {"t":"assistant_message","run_id":"…","turn":12,"assistant":"…","tool_calls":[…]}
+{"seq":315,"t":"action_result","run_id":"…","turn":12,"call_id":"c-12-1","status":"ok","result":"…"}
+{"seq":316,"t":"outcome","run_id":"…","turn":12,"kind":"done","next_behavior":null}
+{"seq":317,"t":"turn_ended","run_id":"…","turn":12,"status":"completed","at_ms":0}   // completed | failed | budget_exhausted | stopped
+{"seq":318,"t":"compaction","summary_start_seq":301}                  // 生成了新的 summary.json（审计用）
+{"seq":319,"t":"decide","decision":"accept","by":"did:user:alice","report":{…}}
 ```
 
 **summary.json** 专门为 session history 压缩准备：用“历史摘要 + 起点 + 机械压缩配置”描述下一次 llm_context 如何由 worklog 构成。
 
 ```jsonc
 {
-  "schema": "opendan.session_summary/1",
+  "schema": "opendan.session_summary/2",
   "history_summary": "…",               // 起点之前全部历史的摘要（LLM 生成）
   "start_seq": 301,                     // 起点：从这条 worklog 开始使用原始记录
   "start_offset": 912384,               // 起点在 worklog 中的字节偏移：反向读取读到这里即停止
   "mechanical": {                       // 机械压缩配置：起点之后的原始记录如何渲染
-    "recent_full_steps": 2,             //   最近 N 步全量
-    "summary_chars": 280,               //   更早步骤的 assistant 文本截断长度
+    "recent_full_responses": 2,         //   最近 N 个模型 response（behavior 的 step 或 function call 的 assistant_message）全量
+    "summary_chars": 280,               //   更早 response 的 assistant 文本截断长度
     "max_result_chars": 4096,           //   单个动作结果上限
-    "drop_kinds": ["decide", "compaction", "input_rejected"]   //   不进入上下文的条目类型
+    "drop_kinds": ["created", "decide", "compaction", "input_rejected", "change_dropped", "turn_ended"]   //   不进入上下文的条目类型
   },
-  "renderer": "libopendan.mechanical/1",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
+  "renderer": "libopendan.mechanical/2",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0
 }
 ```
@@ -509,11 +519,11 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
 
 ```text
 开始：   经 xllm RunStore 建立 runs/<run_id>/ 并持有 run 锁 → 写入带 input_receipts 的 s0 快照（host_commit_pending）
-         → 提交 state.json（live_run 及本轮输入、已消费输入）→ 清除 host_commit_pending → 确认输入源；之后才允许推理
+         → 提交 state.json（live_run、本批次输入及其 Turn 归属、已消费输入）→ 清除 host_commit_pending → 确认输入源；之后才允许推理
 进行中： checkpoint 写入 runs/<run_id>/snapshots/（最细到一次 do-action 之后）；worklog 不写；
          state.json 的 one_line_status / activity 按节流提交并回报登记表，其它参与方由此看到进度（§6.7）
 挂起：   PendingTool 等：保留 run，下一次输入直接 resume
-结束：   ① 从最终快照生成该 run 尚未写入的历史（flushed_step 之后），一次性追加到 worklog（fsync）
+结束：   ① 从最终快照生成该 run 尚未写入的历史（flush 游标之后），一次性追加到 worklog（fsync）
          ② 提交 state.json（live_run = null，last_run = 本 run，worklog.committed_* 前移）   ← 提交点
          ③ 删除 state.json 不再引用的 run（原来的 last_run 等）
 ```
@@ -541,11 +551,11 @@ def next_llm_context(s, lease, deps, env) -> LLMContext:
 ```
 
 - **只反向读、按需停止**：正常情况下，读取量约等于起点之后的记录量，受上下文预算约束，与 worklog 总大小无关。`reverse_lines` 是各语言共用的原语：从指定字节位置向前按块读取，并按 `\n` 切行（§4.7）。
-- **其它读取也用同一策略**：`read_session` 取最近历史、补发 round_digest、统计本 session 的副作用动作，都从末尾反向读。唯一的正向读取是压缩时读取 `[start_offset, cut_offset)` 这个有界区间；全量读取只留给审计 / 导出工具。
-- **确定性**：同一渲染器版本（`summary.json.renderer`）下，相同的 summary.json + worklog 渲染出相同的历史段。时间、天气等需要新鲜的量放在每轮的变量段，不进入历史段（S-20）。system + 摘要在下一次压缩之前保持不变，构成稳定前缀，有利于 KV cache。跨语言只要求语义一致，不要求字节一致。
+- **其它读取也用同一策略**：`read_session` 取最近历史、统计本 session 的副作用动作，都从末尾反向读（补发 run_digest 只读 state.json）。唯一的正向读取是压缩时读取 `[start_offset, cut_offset)` 这个有界区间；全量读取只留给审计 / 导出工具。
+- **确定性**：同一渲染器版本（`summary.json.renderer`）下，相同的 summary.json + worklog 渲染出相同的历史段。时间、天气等需要新鲜的量放在每次输入批次消息（`<session_input>`）的变量段，不进入历史段（S-20）。system + 摘要在下一次压缩之前保持不变，构成稳定前缀，有利于 KV cache。跨语言只要求语义一致，不要求字节一致。
 - **压缩**只产出新的 summary.json（摘要前移、`start_seq` / `start_offset` 后移），不改写 worklog。触发时机沿用现有的两种：
   - run 结束后，按上下文占用比例触发（`maybe_compact`，§8.3）；
-  - run 进行中遇到 `ContextLimitReached` 时（X7，已实现）：先把该 run 已产生的历史写入 worklog 并以 `outcome(context_rewritten)` 收尾，再压缩（只写 summary.json），然后以 system + 重建的历史消息恢复同一 run（function call：`RewrittenHistory`；behavior：`RewrittenSteps`），一次推进内最多 3 轮；仍装不下则 run 暂停在上下文上限，下次推进先重写。run 的历史只经 worklog 重建，不在快照里另行摘要。
+  - run 进行中遇到 `ContextLimitReached` 时（X7，已实现）：先把该 run 已产生的历史写入 worklog 并以 `outcome(context_rewritten)` 收尾，再压缩（只写 summary.json），然后以 system + 重建的历史消息恢复同一 run（function call：`RewrittenHistory`；behavior：`RewrittenSteps`），一次推进内最多连续重写 3 次；仍装不下则 run 暂停在上下文上限，下次推进先重写。重写只改变历史的承载方式，当前 Turn 继续。run 的历史只经 worklog 重建，不在快照里另行摘要。
 
 ```python
 def compact(s, lease, deps, cut_offset) -> Summary:          # 只写 summary.json（外加一条审计条目）
@@ -580,10 +590,11 @@ def reconcile_runs(lease, s, deps):                           # drive 开头、�
 - **normal 切换**：同一个 context，同一个 run。
 - **fork**：子 process 开一个新 run（继承父 process 的 steps）；父 process 的 run 挂起，记入 `state.process_stack`。
 - **independent**：每个 process 各有自己的 run；切走时挂起，重新进入时恢复同一个 run。
-- **挂起**：run 被挂起时，先把它到目前为止尚未写入的历史追加到 worklog 并提交（推进该 run 的 `flushed_step`），worklog 因此保持时间顺序；fork 子 run 只写自己新产生的部分，不重复写继承来的 steps。
+- **Turn 不因切换结束**：三种切换（以及 fork 子 process 返回）都以 `on_behavior_switch` 输入批次（worklog `input_batch`）并入当前 Turn。Step 身份是 `(run_id, step_index)`：fork 子 run 接续父 run 的编号，independent 的各 run 各自编号，step_index 在 session 内不保证全局唯一。
+- **挂起**：run 被挂起时，先把它到目前为止尚未写入的历史追加到 worklog 并提交（推进该 run 的 flush 游标：`flushed_message_count` / `flushed_step_index` / `flushed_input_seq`），worklog 因此保持时间顺序；fork 子 run 只写自己新产生的部分，不重复写继承来的 steps。
 - **保留**：被挂起的 run 由 `state.process_stack` 引用，不会被删除；process 结束出栈后，它按普通结束处理（成为 last_run 或被取代）。
 - **last_run**：保留用于审计、诊断，以及查看最后一次执行现场。下一次 llm_context 的构成规则（D8）不变。
-- **恢复元数据**：挂起与恢复 process 时，连同 `rounds`、`flushed_step`、`applied_input_seq` 保存和恢复该 run 的提交位置；fork 子 run 不继承父 run 的输入 receipt 命名空间。快照中的 receipt 不随历史压缩丢弃（§8.3）。
+- **恢复元数据**：挂起与恢复 process 时，连同 `turns`、flush 游标（含 `flushed_epoch`）、`applied_input_seq` 保存和恢复该 run 的提交位置；fork 子 run 不继承父 run 的输入 receipt 命名空间。快照中的 receipt 不随历史压缩丢弃（§8.3）。
 
 **xllm 接手**（V2）：native runtime 下，未结束的 run 原则上可以交给 xllm 继续跑完：
 
@@ -614,7 +625,7 @@ kmsg 队列中的五类输入：
 | `event` | 事件桥（active 订阅）、timer、task_mgr | 是（active） | 主动订阅的事件 |
 | `change` | 事件桥（semi 订阅的外部对象事件） | **否**，只在观察边界注入 | 半订阅；同 key 在读取时合并，终态用独立 key |
 | `control` | UI session、应用、OpenDAN、runtime 子进程 | 否；drive 开头与每个观察边界直接应用 | subscribe / unsubscribe / stop / decide / activity |
-| `perception` | runtime 子进程（如 `perceive` CLI） | 否 | 持有者在 round 提交时并入感知 |
+| `perception` | runtime 子进程（如 `perceive` CLI） | 否 | 持有者在 drive 开头与每个观察边界并入感知（同 control） |
 
 **消息格式**：payload 是 JSON；headers 固定包含 `type`、`key`（去重键）、`from`（投递方 principal）、`at_ms`，可选 `intent`、`reply_to`。字段级定义在 L6 反写。kRPC 请求体上限 1 MB，payload 又以 JSON 数字数组编码，所以单条 payload 不超过约 250 KB；更大的内容放进 session 目录或 NamedStore，只投递引用。
 
@@ -907,8 +918,9 @@ def report_state(lease, sid, status):                       # 驱动者在每次
 
 ```jsonc
 // state/perception/<sid>.jsonl（单写者 = 本 session 的驱动者，持 session lease；seq 严格单调）
-{"seq":31,"at_ms":0,"session_id":"work-…","kind":"round_digest","round":12,
- "source":"session|self","tags":["snake","ui"],"objects":["artifact:snake-game"],"summary":"<one_line_status>","refs":{"worklog_seq":316}}
+{"seq":31,"at_ms":0,"session_id":"work-…","kind":"run_digest",
+ "source":"session|self","tags":["snake","ui"],"objects":["artifact:snake-game"],"summary":"<one_line_status>",
+ "payload":{"run_id":"…","turn":12,"turn_status":"completed"},"refs":{"worklog_seq":317}}   // turn_status 只在该次 run 结束同时关闭 Turn 时出现
 {"seq":32,"kind":"observation","source":"session","payload":{ /* Discover* 结构：event / object / relationship，含 evidence worklog refs */ }}
 {"seq":33,"kind":"task_outcome","payload":{"outcome":"succeeded","acceptance":"pending","artifact_version":"…"}}
 {"seq":34,"kind":"task_discarded","payload":{"session":"work-…","artifact_version":"…"}}   // S-27：保留来源
@@ -916,7 +928,7 @@ def report_state(lease, sid, status):                       # 驱动者在每次
 
 | 来源 | 时机 | 成本 |
 |---|---|---|
-| `round_digest` | runner 在每个 round 提交后自动写 | 零 LLM |
+| `run_digest` | runner 在每个 run 结束提交后自动写 | 零 LLM |
 | `observation` | LLM 调用 `perceive` 工具，或子进程以 `perception` 类型投递到 kmsg 队列 | 一次工具调用 |
 | `task_outcome` / `task_discarded` | finished / accept / discard 时自动写 | 零 LLM |
 
@@ -935,7 +947,7 @@ def backlog(cursor) -> Backlog:                              # 派生：只用 s
 ```
 
 - `perception/.cursor.json` 按 session 记录字节偏移，只由 `self_improve` lease 的持有者推进。它取代现有的 `already_improved` 字段。
-- 提交后如果追加失败或进程崩溃，下次 drive 开头按 `state.perception_seq` 补发；缺失的 round_digest 从 worklog 末尾反向读来重建。
+- 提交后如果追加失败或进程崩溃，下次 drive 开头按 `state.perception_seq` 补发；缺失的 run_digest 按 state.json 重建（`last_run`、当前 Turn、`one_line_status`、worklog 已提交的 seq）。
 
 ### 6.4 认知管理
 
@@ -1067,15 +1079,15 @@ pub trait AgentStateClient: Send + Sync {
 2. **Agent 自己声明**：通过 CLI（例如 `agent-session activity --touch <ref>`，经 exec_bash）向本 session 的 kmsg 队列投递 `control(activity)`，持有者在观察边界合并。用 CLI 而不是进程内工具，是为了让 xllm 接手的 run 也能声明（§4.4）。
 3. **runner 推断**（尽力而为）：从写类工具调用中能识别出的路径（例如文件写工具的参数）。exec_bash 内部的写入不推断。
 
-**更新时机**：begin_round、run 进行中的 checkpoint（节流）、commit_round。run 结束且没有挂起时清空 touching；session finished 时整个 activity 清空。
+**更新时机**：commit_input_batch、run 进行中的 checkpoint（节流）、handle_context_outcome。run 结束且没有挂起时清空 touching；session finished 时整个 activity 清空。
 
 **活跃判定**：`run_state ∈ {running, waiting}`。`running` 且 `heartbeat_ms` 超过阈值（默认 5 分钟）的条目显示为“可能已中断”；`waiting` 不要求心跳。
 
 **进入上下文**：
 
 - `ActivityView::active(filter)` 返回同一 Agent 下的其它活动 session（按 `agent_access` 过滤），按与本 session 的相关度排序：同一 workspace / artifact 优先，其次 touching 有交集，最后是其它；数量受预算约束。
-- `BehaviorAssembler` 在首轮（on_init）渲染 `<active_sessions>` 段；之后本 session 对“活动 session 集合”默认半订阅，集合或交集变化时在观察边界以 change 注入（§8.4）。与本 session 的 scope / touching **有交集**的条目会被标出。
-- 这些内容属于每轮的变量段（`render_turn`），不进入 system 段，因此不破坏稳定前缀。
+- `BehaviorAssembler` 在首个输入批次（on_init）渲染 `<active_sessions>` 段；之后本 session 对“活动 session 集合”默认半订阅，集合或交集变化时在观察边界以 change 注入（§8.4）。与本 session 的 scope / touching **有交集**的条目会被标出。
+- 这些内容属于输入批次消息的变量段（`render_input` 渲染的 `<session_input>`），不进入 system 段，因此不破坏稳定前缀。
 - 约束段（§8.1 第 2 段）包含避让规则：不要同时修改其它活动 session 正在写的对象；需要时等待（订阅对方状态）、先做其它部分，或在报告中说明冲突。
 
 **边界**：
@@ -1201,8 +1213,9 @@ pub struct RunnerDeps {
 pub trait SessionAssembler: Send + Sync {
     /// 由 session_config.prompt（.llm_context 语义）+ 身份 / 约束段生成 request 的 system 段与策略（历史部分见 §4.4）
     async fn build_request(&self, cfg: &SessionConfig, env: &PromptEnv) -> Result<LLMContextRequest>;
-    /// 每个 hook point：把本轮的 inputs / changes / hints / 活动 session 渲染成 user message；返回 None 表示本轮无需推理
-    async fn render_turn(&self, s: &SessionView, hook: HookPoint, turn: &TurnMaterial) -> Result<Option<AiMessage>>;
+    /// 每个 hook point：把本次输入批次的 inputs / changes / hints / 活动 session 渲染成 user message（`<session_input>`）；
+    /// 返回 None 表示无需推理。批次开启还是并入 Turn 由 runner 决定，不由 assembler 决定
+    async fn render_input(&self, s: &SessionView, hook: HookPoint, m: &InputMaterial) -> Result<Option<AiMessage>>;
 }
 ```
 
@@ -1213,7 +1226,7 @@ pub trait SessionAssembler: Send + Sync {
   3. 应用 system prompt（`prompt.system_prompt`）
   4. hints 段
   5. objective / end_condition
-- **新鲜度**（S-20）：时间、时区等由 PromptEnv 在渲染时求值，放在每轮的变量段。
+- **新鲜度**（S-20）：时间、时区等由 PromptEnv 在渲染时求值，放在输入批次消息的变量段。
 - **渲染无副作用**：现有 prompt_env 在渲染时推进的“上次看到”游标，移植后改为显式写入 state.json，渲染本身保持纯函数（§4.4 的确定性）。
 
 ### 8.2 drive：推进一个 session
@@ -1244,13 +1257,14 @@ async def drive(sd: SessionDir, deps: RunnerDeps, until: StopWhen) -> DriveResul
             return DriveResult.bind_failed(e)
         extra = await acquire_kind_leases(s, deps.agent) # self_improve：拿不到就以 stopped/busy 结束
         ctx = resume_live_run(s, lease, deps, env)       # §8.6：state.live_run 指向未结束的 llm_context 时（先拿 run 锁）直接恢复，否则为 None
+        outcomes = 0                                     # 本次 drive 处理的 Outcome 数（StopWhen.max_outcomes）
 
         while lease.held():
             hook = s.next_hook_point()                   # on_init | on_wakeup | on_behavior_switch（driver 沿用）
             picked = inputs.select(s.driver.pull(hook))  # pull_msg / pull_event（沿用）；change 不在此列
             changes = await check_changes(s, inputs, deps.agent, budget=s.driver.change_budget)   # §8.4（含活动 session 集合的变化）
             hints = await deps.agent.cognition().recall_hints(s.topic()) if s.driver.load_hints(hook) else []
-            msg = await deps.assembler.render_turn(s.view(), hook, TurnMaterial(picked, changes, hints, await deps.runtime.status()))
+            msg = await deps.assembler.render_input(s.view(), hook, InputMaterial(picked, changes, hints, await deps.runtime.status()))
             if msg is None and not s.needs_bootstrap() and not (ctx and ctx.ready_to_run()):  # 已恢复的执行不能被“没有新输入”挡住
                 if until.idle: break
                 await deps.waker.wait(s, until)          # 等 kevent 唤醒或轮询间隔到
@@ -1258,11 +1272,12 @@ async def drive(sd: SessionDir, deps: RunnerDeps, until: StopWhen) -> DriveResul
 
             ctx = ctx or next_llm_context(s, lease, deps, env)   # 先读 summary.json，再反向读 worklog（§4.4）
             if msg is not None or s.needs_bootstrap():
-                await begin_round(s, lease, ctx, picked, changes, msg)   # 消息与 receipt 同快照 → state → 清除提交门槛 → 确认输入
+                await commit_input_batch(s, lease, ctx, picked, changes, msg, hook)   # 开启或并入 Turn；消息与 receipt 同快照 → state → 清除提交门槛 → 确认输入
             outcome = await ctx.run()                            # llm_context；工具经 §8.5 的适配层执行
-            nxt = await commit_round(s, lease, ctx, outcome, deps)
+            nxt = await handle_context_outcome(s, lease, ctx, outcome, deps)   # Outcome 结束一个 run 段，是否结束 Turn 由 nxt.turn_end 决定
+            outcomes += 1
             ctx = None if nxt.run_ended else ctx
-            if nxt.finished or until.satisfied(s): break
+            if nxt.finished or until.satisfied(outcomes): break
             if nxt.waiting and until.idle: break
             inputs = fetch_inputs(s)
 
@@ -1282,21 +1297,22 @@ async def drive(sd: SessionDir, deps: RunnerDeps, until: StopWhen) -> DriveResul
 
 - `idle`：没有输入就退出。用于常驻托管（OpenDAN，或驱动 UI session 的应用）。
 - `finished`：一直推进到 work session 结束。
-- `max_rounds(n)`：最多推进 n 轮。
+- `max_outcomes(n)`（`StopWhen::MaxOutcomes`，CLI `--until outcomes:<n>`；2026-10-01 前名为 `max_rounds`）：drive 主循环处理完 n 个 LLMContext Outcome 后返回（每启动或恢复一个 run 段计一个，不论 done、切换、挂起还是错误）。它不是 Round（推理）数、`run()` 调用数（上下文上限重写会在一段内再次调用 `run()`），也不是 Turn 数。每段开始前检查，`n = 0` 只做恢复与 control；session 结束、出错或无事可做时提前返回。按完成的 Turn 数结束 session 用 `end_condition.type = max_turns`（§4.2）。
 
-### 8.3 round 的提交顺序
+### 8.3 输入批次的提交顺序与 Turn 边界
 
-**输入 receipt 协议**：所有进入上下文的 msg、event、change 和拉取的订阅变化，都带结构化 `input_receipts`，作为 xllm 快照的可选宿主元数据（X2 / X4）。receipt 至少包含 `run_id`、单调 `input_seq`、session round、输入的 source / index 或 record_id / key、订阅版本与游标更新、对应消息位置和 round_started 所需元数据；批次 ID 为 `(run_id, input_seq)`。消息正文与 receipt 必须在同一份快照中，不能靠解析提示词找 key。xllm 续跑、压缩与后续 checkpoint 都保留这些元数据。
+**输入 receipt 协议**：所有进入上下文的 msg、event、change 和拉取的订阅变化，都带结构化 `input_receipts`，作为 xllm 快照的可选宿主元数据（X2 / X4）。receipt 至少包含 `run_id`、单调 `input_seq`、所属 Turn（`turn`）及是否开启它（`opens_turn`）、hook、输入的 source / index 或 record_id / key、订阅版本与游标更新、对应消息位置和 `turn_started` / `input_batch` 所需元数据；批次 ID 为 `(run_id, input_seq)`。消息正文与 receipt 必须在同一份快照中，不能靠解析提示词找 key。xllm 续跑、压缩与后续 checkpoint 都保留这些元数据。
 
-写入顺序固定为：① 快照 fsync；② 原子发布 run.json 的 `latest_snapshot_idx` 与 `host_commit_pending=input_seq`；③ 将该批次的 round / 消费位置 / 订阅游标提交到 state.json；④ 原子清除 run.json 的 `host_commit_pending`；⑤ 确认输入源。在④之前不允许开始新推理或工具调用。`host_commit_pending` 是宿主输入提交门槛，不表示工具动作在途；xllm 遇到它必须拒绝接手，由 libopendan 补交 state 后再接手。
+写入顺序固定为：① 快照 fsync；② 原子发布 run.json 的 `latest_snapshot_idx` 与 `host_commit_pending=input_seq`；③ 将该批次的 Turn 归属（`open_turn` / `turn_seq`、`live_run.turns`）/ 消费位置 / 订阅游标提交到 state.json；④ 原子清除 run.json 的 `host_commit_pending`；⑤ 确认输入源。在④之前不允许开始新推理或工具调用。`host_commit_pending` 是宿主输入提交门槛，不表示工具动作在途；xllm 遇到它必须拒绝接手，由 libopendan 补交 state 后再接手。
 
 ```python
-async def begin_round(s, lease, ctx, picked, changes, msg):
-    n = s.state.round + 1
-    receipt = make_input_receipt(ctx, round=n, picked=picked, changes=changes)   # 稳定批次 ID；含 round 与游标补交所需元数据
-    ctx.append_turn_with_receipt(msg, receipt)
+async def commit_input_batch(s, lease, ctx, picked, changes, msg, hook):   # 开启或并入 Turn；从不结束 Turn
+    opens = s.state.open_turn is None                       # 没有进行中的 Turn：本批次开启新 Turn
+    turn = s.state.turn_seq + 1 if opens else s.state.open_turn.index
+    receipt = make_input_receipt(ctx, turn=turn, opens_turn=opens, hook=hook, picked=picked, changes=changes)   # 稳定批次 ID (run_id, input_seq)；含游标补交所需元数据
+    ctx.inject_with_receipt(msg, receipt)
     prepared = s.runs.prepare_input_checkpoint(lease, ctx.run_id, ctx.snapshot(), receipt.input_seq)   # 新建或续用 run；持 run 锁；fsync 快照与带门槛的 run.json
-    s.state.apply_input_receipt(receipt)                    # 幂等更新 live_run、rounds、applied_input_seq、消费位置、订阅游标、bootstrap_done
+    s.state.apply_input_receipt(receipt)                    # 幂等更新 live_run.turns、applied_input_seq、open_turn / turn_seq、消费位置、订阅游标、bootstrap_done
     s.state.update(run_state="running", activity=refresh_activity(s, picked))
     commit_pop(lease, s, picked + changes.consumed_inputs, prepared)   # state → 清除 host_commit_pending → 确认输入
 
@@ -1311,12 +1327,15 @@ def reconcile_input_receipts(lease, s, cp, record):
         require_state_covers(s.state, record.host_commit_pending)
         s.runs.complete_host_commit(record)                 # state 已提交而门槛未清除时也走这里；输入源确认在 drive 中重试
 
-async def commit_round(s, lease, ctx, outcome, deps) -> Next:
-    nxt = classify(outcome, s)       # 沿用 handle_outcome：Done / WAIT_USER_MSG / next_behavior / END / PendingTool / Budget / Error / Interrupted / ContextLimitReached
+async def handle_context_outcome(s, lease, ctx, outcome, deps) -> Next:   # 返回 Outcome 不等于 Turn 完成
+    nxt = classify(outcome, s)       # 沿用 handle_outcome：Done / WAIT_USER_MSG / next_behavior / END / PendingTool / Budget / Error / Interrupted / ContextLimitReached；
+                                     #   同时给出 nxt.turn_end（completed | failed | budget_exhausted | stopped，或 None = Turn 继续）
     s.runs.checkpoint_with_results(lease, ctx.run_id, ctx.snapshot(), status=nxt.run_status)   # 1. 结果与快照先持久化，再清除已覆盖的 inflight（§8.5）
+    s.runs.record_usage(ctx.run_id, outcome.usage, ctx.rounds.take())      #    本段的推理尝试数累加到 run.json usage.llm_requests 与 static.json rounds
     return finish_run(lease, s, ctx.run_id, ctx.snapshot(), outcome, nxt, deps)
 
 def finish_run(lease, s, run_id, snapshot, outcome, nxt, deps) -> Next:   # reconcile_runs 重做时也调用它（幂等）
+    turn = s.state.current_turn()                                        #    进行中的 Turn，没有则为最近一个；本 run 的条目归属于它
     if nxt.run_ended:
         ensure_previous_execution_stopped(s.runs.record(run_id), deps.runtime)   # 结束前也要核对后台执行，不能只看 shell 的返回值
     if nxt.finished:
@@ -1324,24 +1343,29 @@ def finish_run(lease, s, run_id, snapshot, outcome, nxt, deps) -> Next:   # reco
         fenced(lease, lambda: atomic_replace(s.dir / "report.md", render_report(outcome)))
         s.state.update(result=build_result(outcome, v), acceptance="pending")
     if nxt.run_ended:
-        flush_run(lease, s, run_id, snapshot)                            # 3. 该 run 尚未写入的历史一次性追加到 worklog（§4.4）
+        if nxt.turn_end and s.state.open_turn:                           #    只有 session 关闭 Turn，且与 run 结束同一提交
+            s.state.close_turn(nxt.turn_end)                             #    open_turn = None；completed 时 turns_completed + 1
+        flush_run(lease, s, run_id, snapshot, turn, nxt.turn_end)        # 3. 该 run 尚未写入的历史 + outcome（+ turn_ended）一次性追加到 worklog（§4.4）
         prev = s.state.last_run
         s.state.update(live_run=None, last_run=run_id)                   #    保留最后一次 run 的 llm context 状态
     s.commit_state(lease, **nxt.state_patch())                          # 4. 提交点：state.json 原子替换（rev+1，worklog.committed_* 前移）
     if nxt.run_ended and prev and not s.state.references(prev):
         s.runs.remove_if_safe(lease, prev)                               # 5. 持 run 锁并确认无未核对的执行后清理；失败则保留
     maybe_compact(s, lease, deps)                                        #    按上下文占用比例触发 compact（§4.4）
-    s.static.update(lease, outcome.usage)
+    if nxt.run_ended:
+        s.static.update(lease, outcome.usage, runs=+1, turns=s.state.turns_completed)   # Round（推理尝试）已在 handle_context_outcome 累加
     # ── 以下在提交之后执行；失败或崩溃时，下次 drive 开头补发 ──
     deps.agent.sessions.report_state(lease, s.id, s.status())            # 6. 登记表 status（rev 单调）
-    deps.agent.perception.append(lease, s.id,                            # 7. 感知（seq 单调；包含队列里的 perception 输入）
-        s.fold_perception_inputs(lease) + [round_digest(s, outcome)] + ([task_outcome(s, outcome)] if nxt.finished else []))
+    deps.agent.perception.append(lease, s.id,                            # 7. 感知（seq 单调）：run 结束时写 run_digest，Turn 同时关闭则带 turn_status
+        ([run_digest(s, run_id, turn, nxt.turn_end)] if nxt.run_ended else []) + ([task_outcome(s, outcome)] if nxt.finished else []))
     deps.notifier.session_changed(s.id, s.state.rev)                     # 8. 通知
     if s.is_ui and outcome.has_text and deps.outbound: await deps.outbound.post(s, outcome.text)
     return nxt
 
-def flush_run(lease, s, run_id, final_snapshot) -> WorklogEnd:
-    entries = run_history_entries(run_id, s.state.live_run.rounds, final_snapshot)   # round_started（输入取自 live_run.rounds）/ user_message / step / action_result / outcome
+def flush_run(lease, s, run_id, final_snapshot, turn, turn_end) -> WorklogEnd:
+    entries = run_history_entries(run_id, final_snapshot, flush_marks(s.state.live_run), turn)
+        # turn_started / input_batch（取自快照 receipt）/ user_message / assistant_message（function call）或 step（behavior，带 step_index）/ action_result，
+        # 只写 flush 游标之后的部分；再追加 outcome，turn_end 非空时追加 turn_ended
     s.worklog.truncate_to(lease, s.state.worklog.committed_bytes)   # 截掉上次崩溃遗留的未提交尾部（如果有）
     return s.worklog.append_batch(lease, entries)                   # 一次写入 + fsync
 ```
@@ -1350,10 +1374,15 @@ def flush_run(lease, s, run_id, final_snapshot) -> WorklogEnd:
 - **worklog 写入规则**：每次追加（run 结束时的批量写入、decide、compaction、input_rejected）之后，都要提交一次 state.json 作为确认；未确认的尾部在恢复时截掉。
 - **恢复顺序**：读取新输入之前，先读取 run.json 已发布的 checkpoint，按 receipt 幂等补齐 state，再清除宿主提交门槛、重试输入确认。续用同一 run 时，即使快照领先于 state，也不能重新 render / append 其中已经存在的输入。state 已消费而所需 receipt / 快照缺失则阻塞恢复，不能倒退消费游标重跑。
 - **新 run 的未提交目录**：在 state 首次引用它之前，run 必须带 `host_commit_pending`，任何执行者都不得推理。这个窗口崩溃产生的孤儿 run 只有在确认没有旧执行后才能清理；输入尚未确认，可按原稳定标识重投。
-- **观察钩子和非推理输入**：观察边界注入使用同一协议，`round` 沿用当前轮、`input_seq` 递增，并在下一次推理前完成提交。control / perception 等不进入上下文的输入，由各自的持久效果或 worklog 条目与 state 消费位置建立提交关系，不伪造“已注入”receipt。
+- **观察钩子和非推理输入**：观察边界注入使用同一协议，`turn` 沿用当前 Turn（`opens_turn = false`，hook 为 `observation`）、`input_seq` 递增，并在下一次推理前完成提交；worklog 只记录它的 `user_message`。control / perception 等不进入上下文的输入，由各自的持久效果或 worklog 条目与 state 消费位置建立提交关系，不伪造“已注入”receipt。
 - **保留规则**：receipt 在 run 存续期间保留，历史压缩不能移除它；挂起的 process 同时保存对应 `applied_input_seq`。剪裁旧快照时必须保留最新已发布快照、待补交批次及尚未解决的工具动作所需证据。
 - behavior 切换（normal / fork / independent）与 PendingTool 转 task_mgr，保留在 `classify` 之后。fork / independent 按 §4.4 的“process 与 run 的对应”处理：挂起的 process 就是一个被 `state.process_stack` 引用的 run。
-- `BudgetExhausted` 不带快照，`commit_round` 用 `ctx.snapshot()`；`Interrupted` 在 behavior 模式下目前给出的是内层快照，依赖 §8.7 X4 修正。
+- **Turn 边界**（Turn = Session 的一次逻辑 Input → result；Sub AgentSession 有自己的 Turn，父子不合并）：
+  - **开启**：没有进行中的 Turn 时提交的输入批次（bootstrap 的 `on_init`、msg / event 的 `on_wakeup`）。
+  - **延续**：普通 behavior 切换、fork 调用与子 process 返回、independent 切换（都是 `on_behavior_switch` 批次）、观察注入、可恢复挂起（未要求 stop 的 Interrupted、可重试的 Runtime / 瞬时错误、上下文上限、PendingTool）、history epoch 重写、重启与崩溃恢复。Turn 进行中消费的输入并入当前 Turn（补充输入）。
+  - **关闭**：只由 session 在 `finish_run` 中、与 run 结束同一提交写 `turn_ended`：交付结果的 Done（最终回答 / report，随后按 `end_condition` 判断）→ `completed`；`WAIT_USER_MSG` 只有已经交付回复（本 run 有 `<report>`，或最后一步有 `<sendmsg>`）时才 `completed`，否则 Turn 保持打开，下一条输入并入；不可重试的错误 → `failed`；预算耗尽 → `budget_exhausted`；`control(stop)` → `stopped`。fork 子 process 结束（`process_done`）不关闭 Turn。
+- **统计口径**：`static.json` 的 `rounds` 是本 runner 经该 run 的 `LlmClient::infer` 发起的推理尝试数（含失败与中断，另列 `rounds_failed` / `rounds_interrupted`），每个 Outcome 之后累加；历史摘要的推理不算 Round；`turns` 是以 completed 关闭的 Turn 数，`runs` 是结束的 run 数。xllm 接手 run 之后的推理只计入该 run 的 `run.json usage.llm_requests`（各执行者累加、不覆盖）。report.md 写 `- turns: N`。
+- `BudgetExhausted` 不带快照，`handle_context_outcome` 用 `ctx.snapshot()`；`Interrupted` 在 behavior 模式下给出外层快照，Step 内尚未沉淀为 `StepRecord` 的原生工具 Loop 消息保存在 inner transcript 中，恢复时继续内层 Loop（X4 / X7 已实现）。
 
 ### 8.4 观察边界的变化注入（S-16、A-08）
 
@@ -1377,7 +1406,7 @@ async def check_changes(s, inputs, agent, budget) -> Changes:
   - Agent（传统）模式需要 waist 新增一个可选钩子（§8.7 X5）：
 
 ```rust
-// llm_context 新增（可选；未设置时行为不变）：一轮工具结果都追加完、下一次推理之前调用
+// llm_context 新增（可选；未设置时行为不变）：一批工具结果都追加完、下一次推理之前调用
 #[async_trait] pub trait ObservationHook: Send + Sync {
     async fn after_observations(&self, snap: &LLMContextSnapshot) -> Result<ObservationBatch, String>;   // 注入内容 + input_receipts；空批次不注入
 }
@@ -1433,15 +1462,15 @@ def checkpoint_with_results(run, snapshot, status):        # 步边界、推理�
 
 | checkpoint 时机 | 来源 | 覆盖 |
 |---|---|---|
-| run 启动 / 续用与观察输入注入 | L3（`begin_round` 与观察钩子） | 消息和 receipt 一起持久化；宿主提交门槛阻止提前执行 |
-| 每次推理前 | `TurnHook::before_inference`（已有失败阻止推理的语义，X4 增加异步支持） | Agent 模式：上一轮 do-action 之后；按 §8.5 发布结果 |
+| run 启动 / 续用与观察输入注入 | L3（`commit_input_batch` 与观察钩子） | 消息和 receipt 一起持久化；宿主提交门槛阻止提前执行 |
+| 每次推理前 | 计划为 `TurnHook::before_inference` 增加异步支持（X4）；实现为异步 `CheckpointHook::before_inference`，同步的 `InferenceHook`（原 `TurnHook`）仍在每个 Round 前调用、失败阻止推理 | Agent（function call）模式：上一批工具结果之后；按 §8.5 发布结果 |
 | **每个 step 的 do-action 之后** | **§8.7 X4**：Behavior 模式的步边界 checkpoint（sediment 之后、包含该 step 的外层快照） | Behavior 模式：一次 do-action 之后 |
-| outcome 边界 | L3（`commit_round`） | 挂起态 / 终态；结果先持久化再清除 inflight |
+| outcome 边界 | L3（`handle_context_outcome`） | 挂起态 / 终态；结果先持久化再清除 inflight |
 
 ```python
 def resume_live_run(s, lease, deps, env) -> LLMContext | None:
     lr = s.state.live_run                                      # reconcile_runs 之后，这里只可能是未到终态的 run
-    if lr is None: return None                                 # 没有进行中的 llm_context：下一轮按 §4.4 构成
+    if lr is None: return None                                 # 没有进行中的 llm_context：下一个 run 按 §4.4 构成
     run = lr.run_id
     s.runs.ensure_locked(run)                                 # 复用本次 drive 已持有的 run 锁；否则尝试获取，失败 → RunBusy
     cp, record = s.runs.load_checked(run)                      # 版本不支持 / 损坏 / 缺失 → RecoveryBlocked；不改写或丢弃 run
@@ -1471,8 +1500,8 @@ def resume_live_run(s, lease, deps, env) -> LLMContext | None:
 | X1 | **RunStore 公开 API**：在指定 runs_dir 中 create_run、lock、is_live、list、remove_if_safe、按需裁剪旧快照；快照先 fsync，再原子发布 run.json；读取以已发布的 snapshot 指针为准 | `create_run` 私有；没有删除；写入不 fsync | 建 run、按引用保留与安全回收；提供输入和工具结果的提交原语 |
 | X2 | **宿主装配的 run**：PromptPlan 标注宿主装配，EffectiveConfig 来自 `prompt.llm_context`；保存环境校验信息；快照保留可选 `input_receipts`，RunRecord 增加 `host_commit_pending`；xllm 有未完成宿主提交时拒绝接手，否则保留 request 与 receipt 续跑 | 只支持 xllm 自己装配（`protocol_version = xllm/1`） | 接手不重装配、不丢元数据、不越过宿主输入提交门槛（§4.4、§8.3） |
 | X3 | **格式版本与恢复校验**：快照与 RunRecord 带版本并检查引用完整性；不支持 / 损坏 / 缺失时保留现场并阻塞；持久化类型容忍允许的未知字段，宿主元数据必须保留；`ToolUse.args` 按规范键序序列化 | 快照没有版本；`deny_unknown_fields`；args 是 HashMap | 明确拒绝不支持的格式，不自动 abandon / 新建 context；不要求兼容旧格式 |
-| X4 | **checkpoint 钩子**：增加异步支持并保留失败即停止的语义；behavior 步边界给出含 steps / 连续 call_id / input_receipts 的**外层**快照；各 checkpoint 共用 §8.5 的结果提交顺序 | `TurnHook` 已能返回错误阻止推理，但同步只读；behavior 模式只见内层快照 | 最细到一次 do-action 之后恢复；结果持久化后才清除 inflight |
-| X5 | **观察钩子**：function-call 模式在一轮工具结果之后、下一次推理之前返回注入内容与 receipt；两种模式均传播提交错误，完成 §8.3 提交后才继续 | function-call 没有此钩子；behavior 钩子错误被忽略 | 观察边界的变化注入与 control 检查（§8.4） |
+| X4 | **checkpoint 钩子**：增加异步支持并保留失败即停止的语义；behavior 步边界给出含 steps / 连续 call_id / input_receipts 的**外层**快照；各 checkpoint 共用 §8.5 的结果提交顺序 | `TurnHook`（2026-10-01 改名 `InferenceHook`）已能返回错误阻止推理，但同步只读；behavior 模式只见内层快照 | 最细到一次 do-action 之后恢复；结果持久化后才清除 inflight |
+| X5 | **观察钩子**：function-call 模式在一批工具结果之后、下一次推理之前返回注入内容与 receipt；两种模式均传播提交错误，完成 §8.3 提交后才继续 | function-call 没有此钩子；behavior 钩子错误被忽略 | 观察边界的变化注入与 control 检查（§8.4） |
 | X6 | **effect、在途记录与执行跟踪**：ToolSpec 增加 effect；RunRecord 增加按 call_id 的 inflight 与受管 executions；启动前持久化执行标识，结果 checkpoint 后清除 inflight；resume 先核对旧执行，再注入 Unresolved | 没有 effect / inflight；LocalProcessBashRunner 的 Drop 无法覆盖 runner 被 kill 的情况；xllm resume 清空 pending | S-04 / S-22；与 L2 共同补齐启动握手、后台进程跟踪和停止确认，xllm 同样执行 |
 | X7 | **挂起与上下文上限**：真正产出 `ContextLimitReached`（`context_yield_threshold`）与 `PendingTool`（延迟工具）；behavior 模式的 steps 可以压缩 | 两者都不产出；opendan / xllm 的相应分支是死代码；behavior 模式的 steps 无界增长 | §4.4 的“压缩后续跑”；task_mgr 结果恢复。**2026-09-30**：waist 完成；libopendan 接入上下文上限重写，deferred 工具回填未接入 |
 | X8 | **渲染可确定**：step 渲染可以不带时间戳；时间等新鲜量不进入历史段 | step 渲染带 started / ended 时间戳；xllm 的 system 段带当前时间 | §4.4 的稳定前缀 |
@@ -1587,7 +1616,7 @@ for (;;) await runner.drive(sd, { until: "idle" })                         // �
 app2 进程 P1                session 目录 / 登记表 / kmsg          app2 进程 P2（同一 App 身份）
  │ acquire session:T ─────► lease.json flock，epoch=7
  │ fetch inputs ──────────► kmsg[119..121]
- │ begin_round r3 ────────► s0（含 receipt，持 run 锁，host_commit_pending）→ state.json → 清门槛 → 确认连续消费位置
+ │ commit_input_batch ────► s0（含 receipt、开启 Turn 3，持 run 锁，host_commit_pending）→ state.json → 清门槛 → 确认连续消费位置
  │ do-action c-3-1 ───────► run.json: inflight=c-3-1 + execution 标识 fsync → 放行工具
  ✗ crash（进程退出，session 锁与 run 锁由操作系统立即释放）
                                                              │ acquire session:T ──► epoch=8（driver 身份相同 ✓）
@@ -1653,8 +1682,8 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | 来源（`src/frame/opendan/src/`） | libopendan 模块 | 改造要点 |
 |---|---|---|
 | `session_model.rs` | `protocol::{config, state, summary, input}` | `SessionMeta` 拆分：不可变部分进 session_config，可变部分进 state.json；`pending_inputs` 改为 kmsg / msg-center 输入 + `state.inputs` 游标；去掉 `already_improved` |
-| `agent_session.rs` | `runner` | worker → `drive`；`run_one_round` → begin / commit_round；`flush_meta` / `enqueue_pending` / `persist_snapshot` → state.json 提交、输入源确认、runs；opendan 的消息压缩 → summary.json；`Weak<AIAgent>` → `AgentStateClient`；`post_outbound_*` → `OutboundSink`；`mirror_status_to_task` 不移植 |
-| `round_history.rs`、`session_topic.rs` | `session::worklog`；topic 归入 state.json 的 `topic` | round_logs + 每轮文件 → 单个 `worklog.jsonl`（run 结束时批量写入、反向读取）；条目类型沿用 |
+| `agent_session.rs` | `runner` | worker → `drive`；`run_one_round` → `commit_input_batch` / `handle_context_outcome`；`flush_meta` / `enqueue_pending` / `persist_snapshot` → state.json 提交、输入源确认、runs；opendan 的消息压缩 → summary.json；`Weak<AIAgent>` → `AgentStateClient`；`post_outbound_*` → `OutboundSink`；`mirror_status_to_task` 不移植 |
+| `round_history.rs`、`session_topic.rs` | `session::worklog`；topic 归入 state.json 的 `topic` | round_logs + 每轮文件 → 单个 `worklog.jsonl`（run 结束时批量写入、反向读取）；条目类型按 Turn / 输入批次 / Step 重新定义（§4.4） |
 | `hint_recall.rs` | `state::cognition::recall` | — |
 | `ai_runtime.rs` | `runner::deps` | `SessionToolManager`（结果提交后清除在途标记）；`SessionSnapshotHook` → 带 input_receipts 的 `runs/` checkpoint；`AgentPolicy`；`AiccLlmClient` 按 `who` 的身份调用 |
 | `behavior_cfg.rs`、`behavior_hooks.rs`、`hook_point.rs`、`prompt_env.rs`、`i18n.rs`、`llm_context_helper.rs` | `runner::assembler` | 成为 `BehaviorAssembler`；与 `session_config.prompt`（.llm_context 语义）对齐 |
@@ -1724,7 +1753,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 ### L3 Runner（work session）
 
 - **交付**：
-  - `drive`、begin / commit_round、`finish_run`、`flush_run`、`reconcile_runs` / `reconcile_input_receipts`、`next_llm_context`（summary.json + 反向读 worklog）、`compact` / `maybe_compact`、`resume_live_run`（run 锁、格式与旧执行检查、RecoveryBlocked）、`SessionToolManager`（effect、执行准入、inflight 与结果提交）、`check_changes`（含 control 与活动 session）、`BehaviorAssembler`（含活动 session 段与避让规则）；
+  - `drive`、`commit_input_batch` / `handle_context_outcome`、`finish_run`、`flush_run`、`reconcile_runs` / `reconcile_input_receipts`、`next_llm_context`（summary.json + 反向读 worklog）、`compact` / `maybe_compact`、`resume_live_run`（run 锁、格式与旧执行检查、RecoveryBlocked）、`SessionToolManager`（effect、执行准入、inflight 与结果提交）、`check_changes`（含 control 与活动 session）、`BehaviorAssembler`（含活动 session 段与避让规则）；
   - 从 `agent_session.rs` 移植 outcome、切换、压缩、fork、report 逻辑；
   - 开发 CLI：`cargo run -p libopendan --example session -- create|run|read|post|decide|active|holder`。
 - **验证**：用 OpenAI 兼容的 mock LLM 覆盖：
@@ -1781,7 +1810,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 
 | 需求 | 落点 | 阶段 | 闭环依赖 |
 |---|---|---|---|
-| S-01 Task 充分准备 | session_config（prompt / objective / end_condition / scope / workspace）；首轮装配 | L3 | |
+| S-01 Task 充分准备 | session_config（prompt / objective / end_condition / scope / workspace）；首个输入批次（on_init）装配 | L3 | |
 | S-02 UI 持续反馈 | UI session 原语 | 后移 | msg-center 确认、OpenDAN ✔ |
 | S-03 执行位置与身份解耦 | 位置无关的 session 目录 + `AgentStateClient` + 登记表 | L1 | 跨容器：kRPC 或 DFS ✔ |
 | S-04 创建 / 恢复 / 推进 | create / drive / runs resume（含 xllm 接手）+ 反向读 worklog + 结果提交 / inflight + RecoveryBlocked 保留现场 | L1、LX、L2、L3 | |
@@ -1799,7 +1828,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | S-24 ~ S-26 产物版本、回滚与范围 | 产物列表登记 + session 级 accept / discard + discard report（不可撤销的副作用逐项列出）；workspace 级版本与回滚另行设计 | L5 | workspace ✔ |
 | S-25 并发修改（派生约束） | 活动 Session 视图 + 避让规则（提示，不是互斥） | L1、L3 | workspace ✔ |
 | S-27 任务回滚与 Memory 回滚 | `task_discarded` 感知保留来源；策略待定 | L4 | |
-| S-28 ~ S-30 Memory 默认机制、异步整理、上下文入口 | 自动 round_digest + 游标 + hints / changes 分块 | L4 | 定时 ✔ |
+| S-28 ~ S-30 Memory 默认机制、异步整理、上下文入口 | 自动 run_digest + 游标 + hints / changes 分块 | L4 | 定时 ✔ |
 | A-01 ~ A-03 | §10.1、§10.3（含 xllm 接手） | L3 | |
 | A-14 | §5、§10.3 | L1（单节点）；多节点待 DFS | DFS ✔ |
 | A-04、A-11 | UI 场景 | 后移 | OpenDAN、msg-center ✔ |
@@ -1818,7 +1847,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | # | 问题 | 结论 |
 |---|---|---|
 | 1 | 锁文件 | `lease.json` 兼作 session 锁文件，原地改写、永不替换；不新增 `lease.lock` |
-| 2 | run 目录 | `runs/<run_id>/` 完全采用 xllm 布局（含 `.lock`），libopendan 不加专用文件；本 run 各轮输入记在 `state.live_run.rounds`，快照中的 input_receipts 用于崩溃后补交（v0.10，§8.3） |
+| 2 | run 目录 | `runs/<run_id>/` 完全采用 xllm 布局（含 `.lock`），libopendan 不加专用文件；本 run 消费的输入记在 `state.live_run.turns`（2026-10-01 前为 `rounds`，现按 Turn 归并），快照中的 input_receipts 用于崩溃后补交（v0.10，§8.3） |
 | 3 | process 快照 | 选 a：保留最后一次 run 的 llm context 状态（`state.last_run`）；被挂起的 process 所在的 run 由 `state.process_stack` 引用、不删除（§4.4） |
 | 4 | 统计文件名 | `static.json` |
 | 5 | `.runtime/bin` | 接受随主机绑定 |

@@ -2,6 +2,8 @@
 
 > **文档定位**：描述 OpenDAN Agent 与 MessageCenter 之间消息协议的**当前实际设计**。每一节先写现在代码怎么做，再列出与早期规划的差异。尚未落地的规划和已知缺口统一放在 §7。
 >
+> **实现范围**：`msg_parser` 属于 `llm_context`，是共享的协议边界。OpenDAN 一侧（pump、分发、session 输入组装、出站）描述的是旧 opendan Runtime（`src/frame/opendan`）的代码，待下一阶段 opendan 按 libopendan 的 Session / Turn 抽象重构接入；libopendan 的输入批次与 Turn 规则见 [readme.md](readme.md)。
+>
 > **名词说明**：“Agent Message”不是一种独立的消息类型。系统里只有两个消息模型：`MsgObject`（投递与存储）和 `AiMessage`（推理，LLMContext 直接使用）。本文描述的是二者之间的转换规则，以及 OpenDAN 在转换两侧附加的路由、命令和附件策略。
 >
 > **核对基准**：2026-09-30，buckyos `d551cb7a`。代码位置以函数名为准，行号会漂移，所以不写行号。
@@ -9,7 +11,8 @@
 > **相关文档**：
 
 > - MessageCenter 与 Tunnel：[Message Center.md](<../message_hub/Message Center.md>)、[Message Tunnel Minimal Spec.md](<../message_hub/Message Tunnel Minimal Spec.md>)
-> - Round、Pending Input、Driver：[Agent Context Messages.md](<../opendan/Agent Context Messages.md>)、[Agent配置改进.md](../opendan/Agent配置改进.md)
+> - Pending Input、Driver（旧 opendan Runtime）：[Agent Context Messages.md](<../opendan/Agent Context Messages.md>)、[Agent配置改进.md](../opendan/Agent配置改进.md)。前者的“Round”是“一条输入 → assistant 结束”的旧概念，不是现在的 Round
+> - Round / Step / Turn 的当前定义：[readme.md](readme.md)
 
 ---
 
@@ -31,7 +34,7 @@
 | 入站 pump | `msg_center_pump::run` | `frame/opendan/src/msg_center_pump.rs` |
 | 分发 | `AIAgent::dispatch_inbound` | `frame/opendan/src/agent.rs` |
 | Session 输入队列 | `PendingInput` / `SessionMeta.pending_inputs` | `frame/opendan/src/session_model.rs` |
-| 本轮输入组装 | `compose_turn_message`、`render_on_wakeup_input_text` | `frame/opendan/src/agent_session.rs`、`prompt_env.rs` |
+| 本次输入组装 | `compose_turn_message`、`render_on_wakeup_input_text` | `frame/opendan/src/agent_session.rs`、`prompt_env.rs` |
 | 出站 | `AgentSession::post_outbound_message` | `frame/opendan/src/agent_session.rs` |
 | 出站附件策略 | `WorkspaceAttachmentValidator`、`NamedStoreLocalLinkResolver` | `frame/opendan/src/attachment_policy.rs`、`attachment_resolver.rs` |
 | 命令 | `BUILTIN_COMMANDS`、`run_command` | `frame/opendan/src/command_dispatcher.rs` |
@@ -91,14 +94,14 @@ Telegram update
 
 ---
 
-## 2. 入站：MsgObject → 本轮 user 输入
+## 2. 入站：MsgObject → 本次输入的 user 消息
 
 ### 2.1 Pump
 
 `msg_center_pump` 是一个**纯 fetcher**：
 
 - **订阅**：订阅 kevent `/msg_center/<owner>/{INBOX,GROUP_INBOX,REQUEST_BOX}/**`。kevent 只起加速作用；1 秒超时、reader 失效或未知事件时，都回退到三个 box 的全量扫描。
-- **取记录**：`get_next(mailbox, box_kind, [Unread], lock_on_take=true, with_object=true)`，每个 box 每轮最多取 128 条。
+- **取记录**：`get_next(mailbox, box_kind, [Unread], lock_on_take=true, with_object=true)`，每个 box 每次拉取最多取 128 条。
 - **不 ack**：ack 由 dispatcher 在 session 把输入持久化之后执行。进程在中途崩溃时，记录会停在 `Reading`，由 msg-center 的 lease 恢复机制重新投递。
 - **`from_name`**：优先用 `MailboxRecord.from_name`，缺失时查 `ContactLookup.from_name`。这是一个带缓存的 `get_contact` 查询（命中缓存 300s，未命中缓存 60s）。
 - **`tunnel_did`**：取自 `record.ingress.transport_did`，只用于诊断，不参与回复路由（见 §6）。
@@ -126,9 +129,9 @@ pump 使用的是 `*_structured` 版本：
 - `message_references` 目前只取 `thread.reply_to`，记为 `relation = "reply_to"`。
 - 如果正文只是 `[image]`、`[attachment]` 这类占位符，并且消息带附件，这个占位 `Text` 会被删掉。
 
-### 2.3 本轮 user 消息的组装
+### 2.3 本次输入的 user 消息组装
 
-一次 wakeup 会 drain 当前全部 pending 输入，其中 `pull_msg` 等选项由 driver 配置决定。然后按 behavior 是否配置了 `[prompt].on_wakeup`，走两条路径之一：
+一次 wakeup 会 drain 当前全部 pending 输入，其中 `pull_msg` 等选项由 driver 配置决定。这批输入对应 libopendan 的一个输入批次（`<session_input hook="on_wakeup">`）：它是开启新 Turn 还是并入当前 Turn 由 Session 判断（没有打开的 Turn 才开新 Turn），不能按 user 消息条数或 wakeup 次数计 Turn。旧 Runtime 按 behavior 是否配置了 `[prompt].on_wakeup`，走两条路径之一：
 
 - **配置了 `on_wakeup`**（例如 `chat_route`、`self_check`）：
   - 模板渲染结果整体替换为一条 `AiMessage::text(User, ..)`。
@@ -199,7 +202,7 @@ pump 使用的是 `*_structured` 版本：
 
 调用 `post_outbound_message` 的地方：
 
-- `Done` 结果。
+- `Done` 结果：LLMContext run 每次以 `Done` 返回都会发（它与 Turn 完成的区别见 §3.7）。
 - `BudgetExhausted` 的 partial 输出：`ContextOutput` 只有 `Text` / `Json` 两种，会被包成 `AiMessage::text(Assistant, ..)` 后发送。因为 outcome 类型本身不承载 block，partial 输出里不可能带图片或附件。
 - `post_outbound_error`：把 i18n 文案 `response.failed` 包成 Assistant 文本后发送。
 
@@ -263,6 +266,25 @@ LLM 输出属于不可信输入。OpenDAN 在出站时注入 `WorkspaceAttachmen
 - **保留开关**：agent 级配置 `[runtime] preserve_attachment_tag_in_egress = true` 可以保留原标签。注意这是 **agent 级**，不是 session 级。
 - **不受开关影响的两类**：未转换的标签（只有 url 等）和 rejected 标签始终保留在文本中。
 - **Session History 不受影响**：`MsgObject` 是另外构造的，assistant `AiMessage` 原文（含标签）会原样留在 LLM 历史中。
+
+### 3.7 出站消息与 Step、report、Done、Turn 的边界
+
+出站消息是 Agent 对外说的话，不是推进状态的单位。相关概念的区别如下（Round / Step / Turn 的定义见 [readme.md](readme.md)）：
+
+| 概念 | 是什么 | 谁产生 / 谁判定 |
+|---|---|---|
+| 消息 | 入站 `MsgObject` 转成的 user `AiMessage`；出站的 assistant 文本或 `<sendmsg>` | `msg_parser` 转换；投递由 Session / msg-center 负责 |
+| 决策（Step） | Behavior Loop 中一次 LLM 决策连同动作结果，记为一个 `StepRecord`；内部可以有多个 Round。function_call Loop 没有 Step | llm_context |
+| 动作批次 | 一个 Step 的 `<actions>`，按序派发，带 action 的 Step 扣一次工具迭代额度。`<sendmsg>` 写在 `<actions>` 里，但 llm_context 只把它记进 `messages_sent` 并发出 `WorkEvent::MessageSent`，不负责投递（xllm 把 `sendmsg` 显式配置为 action 时除外） | llm_context |
+| `<report>` | 覆盖 `LLMContextState.last_report`，不投递、不终止 | llm_context 写入；Session 决定如何上交 |
+| behavior Done | `next_behavior` 为 `END` / `done` / `WAIT_USER_MSG` / 跳转目标，或什么都没做的收敛 Step，使 `LLMContext::run()` 以 `Done` 返回；function_call 模式下是最后一个没有 tool call 的 Round | llm_context 返回，含义由 Session 解释 |
+| Turn 完成 | 一次逻辑输入得到结果 | 只由 Session 关闭（libopendan `finish_run`，worklog `turn_ended`） |
+
+要点：
+
+- 发出一条消息（旧 Runtime 的 `post_outbound_message`、Step 里的 `<sendmsg>`）本身不等于 Turn 完成；中间的 `<report>` 也不是。
+- libopendan 的规则：交付了结果的 Done（最终回答 / report）使 Turn `completed`；`WAIT_USER_MSG` 只有在本 run 有 `<report>`（`last_report`）或最后一个 Step 有 `<sendmsg>` 时才完成 Turn，否则 Turn 保持打开，下一条输入并入；behavior 切换和 fork 返回让 Turn 保持打开；不可重试错误、预算耗尽、stop 分别以 `failed` / `budget_exhausted` / `stopped` 关闭 Turn。
+- 旧 opendan Runtime 不按 Turn 收口：UI session 的每次 `Done` 都直接把最终 assistant message 发出站。按 Turn 收口出站待下一阶段 opendan 重构接入。
 
 ---
 
@@ -366,9 +388,9 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 
 | 规则 | 实现 |
 |---|---|
-| 同一 session 同一时刻最多一轮推理 | 每个 session 一个 `run_worker` 串行 worker |
+| 同一 session 同一时刻最多推进一个 run | 每个 session 一个 `run_worker` 串行 worker |
 | 推理进行中到达的消息不丢弃 | 进入 `SessionMeta.pending_inputs`，持久化到 `.meta/session.json`，按 `dedup_key` 去重（`msg:<record_id>` 等） |
-| 当前轮结束后继续处理 | worker 的 drain 循环 |
+| 当前 run 返回后继续处理 | worker 的 drain 循环 |
 | 队列上限 | `MAX_PENDING_INPUTS = 256`，由 `enforce_pending_queue_limit` 执行，**所有 session 都适用**。超限时按以下顺序淘汰：<br>① 最早的 `Event`<br>② 最早的、未 @ 本 agent 的 `Msg`<br>③ 最早的非 `Interrupt` 项（@ 消息也可能在这一步被淘汰）<br>`Interrupt` 永远不会被淘汰。 |
 
 判断“是否 @ 本 agent”的方法：在消息文本中大小写不敏感地查找子串 `@<agent_name>`，其中 `agent_name` 是 `identity.display_name` 或目录名，去掉空白。它不是 Telegram 的 bot username。
@@ -498,7 +520,7 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 | 命令执行与回复 | `command_dispatcher::run_command`、`AIAgent::dispatch_command_reply` |
 | 分发与 session 解析 | `AIAgent::{dispatch_inbound, route_msg, resolve_msg_session_id, get_or_create_session}` |
 | 队列与上限 | `AgentSession::enqueue_pending`、`enforce_pending_queue_limit` |
-| 本轮输入组装 | `AgentSession::render_on_wakeup_input_text`、`compose_turn_message`、`prompt_env::render_ai_message_batch` |
+| 本次输入组装 | `AgentSession::render_on_wakeup_input_text`、`compose_turn_message`、`prompt_env::render_ai_message_batch` |
 | 环境信息 | behavior `[prompt].on_wakeup`、`AgentSession::load_changed_background_hits` |
 | `from_user_did` | `AgentSession::current_from_user_did`、`OpendanToolAdapter::call_tool` |
 | AiMessage → MsgObject | `msg_parser::ai_message_to_msg_object_with_base_validated_async` |

@@ -150,7 +150,7 @@ impl ActivityView for FsActivity {
     }
 }
 
-/// Render the `<active_sessions>` block for the turn variable section.
+/// Render the `<active_sessions>` block for the input batch message.
 pub fn render_active_sessions(list: &[ActiveSession]) -> Option<String> {
     if list.is_empty() {
         return None;

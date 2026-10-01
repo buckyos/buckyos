@@ -1,7 +1,7 @@
 //! X7: a run that hits the context limit is compacted mid-run — its history
 //! goes to the worklog first, the session history is compacted, the run
 //! continues from system + history in a new epoch — and every record stays
-//! in the worklog exactly once, in its round.
+//! in the worklog exactly once, in its Turn.
 
 mod common;
 
@@ -38,7 +38,7 @@ fn results_of(sd: &libopendan::SessionDir) -> Vec<(String, u64)> {
     read_worklog(sd)
         .into_iter()
         .filter_map(|e| match e.body {
-            WorklogBody::ActionResult { call_id, round, .. } => Some((call_id, round)),
+            WorklogBody::ActionResult { call_id, turn, .. } => Some((call_id, turn)),
             _ => None,
         })
         .collect()
@@ -77,7 +77,7 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
     assert_eq!(llm.count(), 4);
 
     // After the rewrite the request is system + session history, carrying
-    // the round's input and the first tool step.
+    // the Turn's input and the first tool call.
     let reqs = llm.requests.lock().unwrap().clone();
     let rewritten = &reqs[2].messages;
     assert_eq!(rewritten.len(), 2, "{}", render(rewritten));
@@ -88,7 +88,7 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
         "{history}"
     );
 
-    // Every record once, all in round 1, in order.
+    // Every record once, all in Turn 1, in order; the Turn ends once.
     assert_eq!(
         results_of(&sd),
         vec![("c1".to_string(), 1), ("c2".to_string(), 1)]
@@ -99,17 +99,21 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
         k,
         vec![
             "created",
-            "round_started",
+            "turn_started",
             "user_message",
-            "step",
+            "assistant_message",
             "action_result",
             "outcome",
-            "step",
+            "assistant_message",
             "action_result",
-            "step",
-            "outcome"
+            "assistant_message",
+            "outcome",
+            "turn_ended"
         ]
     );
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(st.open_turn.is_none());
 
     // The same run went on in epoch 1.
     let st = sd.state().unwrap();
@@ -120,7 +124,7 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
     let meta: HostMeta =
         serde_json::from_value(snap.state.host.as_ref().unwrap()[HOST_META_KEY].clone()).unwrap();
     assert_eq!(meta.history_epoch, 1);
-    assert_eq!(meta.epoch_round, 1);
+    assert_eq!(meta.epoch_turn, 1);
     assert_eq!(meta.epoch_input_seq, 1);
     assert_eq!(snap.request.input.len(), 2);
     assert!(snap.state.suspended.is_none());
@@ -214,7 +218,14 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
     assert_eq!(rewrites(&sd), 1);
     let st = sd.state().unwrap();
     let live = st.live_run.clone().expect("the run is kept");
+    // The pause is resumable: the Turn stays open.
+    assert_eq!(st.open_turn.as_ref().map(|t| t.index), Some(1));
+    assert_eq!(st.turns_completed, 0);
+    // Four Rounds, all refused by the provider.
+    let stats = sd.statistics().unwrap();
+    assert_eq!((stats.rounds, stats.rounds_failed), (4, 4));
     let (rec, snap) = sd.runs().load_checked(&live.run_id).unwrap();
+    assert_eq!(rec.usage.llm_requests, 4);
     assert_eq!(rec.status, agent_tool::local_llm_context::RunStatus::Paused);
     assert!(matches!(
         snap.unwrap().state.suspended,
@@ -234,5 +245,14 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
         .iter()
         .filter(|e| e.body.kind() == "user_message")
         .count();
-    assert_eq!(users, 1, "the round input is written once");
+    assert_eq!(users, 1, "the Turn input is written once");
+    // The context limit, the pause and the later drive are one Turn.
+    let wl = read_worklog(&sd);
+    let k = kinds(&wl);
+    assert_eq!(k.iter().filter(|k| **k == "turn_started").count(), 1);
+    assert_eq!(k.iter().filter(|k| **k == "turn_ended").count(), 1);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    let stats = sd.statistics().unwrap();
+    assert_eq!((stats.rounds, stats.rounds_failed, stats.turns), (5, 4, 1));
 }

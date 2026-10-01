@@ -1,11 +1,11 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 3,
   "writer": {
-    "runner_id": "rn-b56f0a5ba9864ae7",
+    "runner_id": "rn-b52ece6f723c47bd",
     "principal": "app:app2@alice",
     "host": "host:lzc-pve:6b719608768f",
-    "pid": 2701845,
+    "pid": 595447,
     "lock_epoch": 1
   },
   "run_state": "finished",
@@ -15,16 +15,17 @@
     "answer": "done: notes.txt written",
     "answer_ref": "report.md"
   },
-  "round": 1,
+  "turn_seq": 1,
+  "turns_completed": 1,
   "bootstrap_done": true,
   "topic": {
     "title": ""
   },
   "live_run": null,
-  "last_run": "20260930-024535-baa919",
+  "last_run": "20261001-042608-d55a53",
   "worklog": {
-    "committed_seq": 7,
-    "committed_bytes": 1197
+    "committed_seq": 8,
+    "committed_bytes": 1365
   },
   "inputs": {},
   "recent_keys": [],
@@ -39,5 +40,5 @@
   },
   "one_line_status": "finished: done: notes.txt written",
   "stop_requested": false,
-  "updated_at_ms": 1790761535246
+  "updated_at_ms": 1790853968336
 }

@@ -1,8 +1,10 @@
 # LLM Context 支持 Behavior Loop —— 瘦腰式扩展方案
 
+> 状态(2026-10-01):本文是 Behavior Loop 的扩展方案,主体已落地。文中已按当前实现修正挂起/恢复、behavior 切换、工具迭代额度和 hook 的描述;接口细节以 [LLM Context 设计](LLM%20Context%20设计.md) §6 / §9 / §10 和 `src/frame/llm_context` 代码为准。Round / Step / Turn 的定义见 [readme](readme.md)。
+
 ## 0. 一句话
 
-把 `context_loop.rs::run_inner` 当作瘦腰核——传统 Agent Loop 完整在这里。Behavior Loop **不改这个核**,而是新增一个外层入口 `run_behavior`:每个 step iteration 内部启一个内层传统 LLMContext 跑到 Done,拿 response 给 parser 解析,产出一个 StepRecord。外层 loop 只做"沉淀 step / 调度 action / 检查 next_behavior",Function 层细节(多轮 tool 调用)被内层吃掉。
+把 `context_loop.rs::run_inner` 当作瘦腰核——传统 Agent Loop 完整在这里。Behavior Loop **不改这个核**,而是新增一个外层入口 `run_behavior`:每个 Step 内部启一个内层传统 LLMContext 跑到 Done,拿 response 给 parser 解析,产出一个 StepRecord。外层 loop 只做"沉淀 step / 调度 action / 检查 next_behavior",Function 层细节(一个 Step 内多个 Round 的原生 tool 调用)被内层吃掉。
 
 ---
 
@@ -20,11 +22,11 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 
 ## 2. 瘦腰要立得住,先钉住的不变量
 
-- **LLMContext 一次 `run()` 跑到 terminal outcome 出去**。Behavior 切换 = worksession 创建新的 LLMContext,不在 loop 内做内部状态机。
+- **LLMContext 一次 `run()` 调用跑到一个 Outcome(终态或挂起态)返回**,不在 loop 内做 behavior 状态机。切换由上层在 `run()` 返回 `Done{next_behavior}` 之后决定:libopendan 的普通切换继续同一个 context、同一个 run(快照改 `behavior_name` 后 `ResumeFromMidRun`),只有 fork / independent 才使用其它 run(见 [readme](readme.md))。
 - **`run_inner`(传统 Agent Loop)零修改**。Behavior 模式是新增 entry point `run_behavior`,它把 `run_inner` 当子例程调用。
 - **Behavior 模式 vs 传统模式是构造时二选一**,运行时不混用——`LLMContext::new` 里靠 deps 字段组合做断言;两个模式走两个 entry point。
 - **协议解析归 parser,执行归 dispatcher,Behavior 外层 loop 只读"要不要继续 / 调用什么"两个信号**。
-- **嵌套关系映射"Function vs Action 解耦"**:内层 LLMContext 跑 Function 层(多轮 tool 收集信息),内层对象消失 → 内层 accumulated 自然 GC;外层 LLMContext 只看 Action 结果。
+- **嵌套关系映射"Function vs Action 解耦"**:内层 LLMContext 跑 Function 层(多个 Round 的原生 tool 调用收集信息),Step 完成后内层对象消失 → 内层消息(inner transcript)自然 GC;外层 LLMContext 只看 Action 结果。Step 未完成就挂起时,inner transcript 暂存在外层快照里(§7)。
 
 ---
 
@@ -32,13 +34,13 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 
 | # | 决策 | 含义 |
 |---|---|---|
-| D1 | 外层 state 双结构 | `state.steps: Vec<StepRecord>`(历史,可压缩)+ `state.last_step: Option<StepRecord>`(当前热数据,verbatim 渲染);外层 `state.accumulated` 恒空 |
+| D1 | 外层 state 双结构 | `state.steps: Vec<StepRecord>`(历史,run 内只追加,重写只经 `RewrittenSteps`)+ `state.last_step: Option<StepRecord>`(最近沉淀的热 step,verbatim 渲染);外层 `state.accumulated` = `request.input` + 进行中 Step 的 inner transcript(Step 之间为空尾) |
 | D2 | ToolMgr / ActionMgr **同签名**,不引新 trait | Agent Tool 已为 Action 化做好准备;Action 层就是 ToolMgr 实例的另一种装配,Behavior Loop 几乎不配 ToolMgr,而是配一个 action 视图的 ToolMgr |
 | D3 | StepRecord 渲染成 `assistant(意图) + user(结果)` 一对 | 喂给 LLM 的结构是 `system(include user_init target) + [History Steps 经压缩渲染] + LastStep assistant + LastStep user`;严格 user/assistant 交替,贴合 LLM 训练分布,无 provider alternation workaround |
-| D4 | next_behavior 是 terminal 信号 | parser 产出 `next_behavior: Option<String>`,`is_some()` 即 terminal;无单独 `terminal` bool;字符串语义("END" 等)归上层 worksession,loop 不解释——**唯一例外**是字面量 `END`(2026-09-18 修正:`END` 与 `<actions>` 同现时不得静默丢弃,否则模型永远不收敛;见 `doc/opendan/Agent Actions.md` §2.2) |
-| D5 | Snapshot schema 待 Behavior Loop 落定后再冻结 | 研发期间不背向前兼容包袱;但相关结构始终保持 `Serialize`/`Deserialize` derive |
-| D6 | **Behavior step = 一次内层传统 LLMContext run** | 外层每个 step iteration 启一个内层 LLMContext(无 parser/renderer/compressor),内层跑到 Done,Done.response 给外层 parser 解析,产出 StepRecord。Function 层细节(多轮 tool)被内层吃掉;无 tool_mgr 的纯 Action 场景退化为内层单次 inference |
-| D7 | 研发期内层不允许 yield | 内层 WaitInput / PendingTool / ContextLimitReached 一律转 Fatal 上抛外层。Snapshot 嵌套留以后 |
+| D4 | next_behavior 是 terminal 信号 | parser 产出 `next_behavior: Option<String>`,不带 action / sendmsg 的 Step 上 `is_some()` 即 terminal(带 action 时跳转目标被丢弃,结果须先被观察);无单独 `terminal` bool;字符串语义("END" 等)归上层 worksession,loop 不解释——**唯一例外**是字面量 `END`(2026-09-18 修正:`END` 与 `<actions>` 同现时不得静默丢弃,否则模型永远不收敛;见 [Agent Actions](Agent%20Actions.md) §2.2) |
+| D5 | Snapshot schema 版本化 | 当前 `SNAPSHOT_FORMAT_VERSION = 3`,`resume` 只接受这个版本(更旧或更新都 `SnapshotCorrupted`);beta 期 breaking change 直接升版本,不做迁移 |
+| D6 | **Behavior step = 一次内层传统 LLMContext run** | 外层每个 Step 启一个内层 LLMContext(`into_traditional()`:无 parser/renderer/step_result_hook/checkpoint_hook),内层跑到 Done,Done.response 给外层 parser 解析,产出 StepRecord。Function 层细节(一个或多个 Round 的原生 tool 调用)被内层吃掉;无 tool_mgr 的纯 Action 场景退化为内层单次 inference(一个 Round) |
+| D7 | 内层挂起翻译为外层挂起 | 内层 `PendingTool` / `ContextLimitReached` / `Interrupted` 翻译为外层同名 Outcome,携带外层快照;进行中 Step 的 inner transcript 和被截断的 `tool_batch` 留在外层 state,恢复后继续同一个 Step(§6.3、§7)。原方案"研发期内层不允许 yield、一律转 Fatal"已废弃 |
 
 ---
 
@@ -47,21 +49,27 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 全部落在新文件 `src/frame/llm_context/src/behavior_loop.rs`,**不进 `buckyos_api`,不污染瘦腰**。
 
 ```rust
-// 一步的结构化记录(4 段意图 + 1 段动作回响)。Behavior 模式的最小历史单元。
+// 一步的结构化记录(意图槽 + 动作回响)。Behavior 模式的最小历史单元。
+// Step 身份 = (run, meta.step_index);step_index 在解析出 Step 时分配。
 pub struct StepRecord {
+    pub meta: StepMeta,                 // behavior_name / step_index / started_at_ms / ended_at_ms
+
     // —— 来自 LLM 输出(parser 填,执行前完成)——
     pub assistant_text: String,         // LLM 原文,直接作为 assistant message 内容渲染
-    
+    pub assistant_message: Option<AiMessage>,
+
     pub observation: Option<String>,    // "结论"槽:LLM 对上一步动作结果的解读
     pub thought: Option<String>,        // "思考"槽
-    pub action: Option<AiToolCall>,     // "动作"槽:本步意图(name + args)
-    pub next_behavior: Option<String>,  // 显式跳转目标(填了即 terminal)
-    
+    pub actions: Vec<AiToolCall>,       // "动作"槽:一个 Step 可以有多个 action(<actions> 容器)
+    pub next_behavior: Option<String>,  // 显式跳转目标 / END(规则见 §6.2)
+    pub self_report: Option<String>,    // <report>
+    pub messages_sent: Vec<SendMessageRecord>, // <sendmsg>
+
     // —— 来自动作派发(executor 填,执行后完成)——
-    pub action_result: Option<Observation>,
-    // terminal step(next_behavior 填了)的 action_result 可以为 None
-    // —— loop 在它之后直接 finish_done,renderer 不会渲染这条
+    pub action_results: Vec<Observation>,      // 与 actions 按下标对齐
+    pub next_user_message: Option<AiMessage>,  // 覆盖默认的动作结果渲染
 }
+// StepRecord::is_correction():解析失败 / policy 拒绝的合成纠错 Step(占用 step_index,不是行为决策)
 
 // 一次 LLM 推理产物的结构化形式。parser 负责生产。
 pub struct LLMBehaviorResult {
@@ -82,14 +90,18 @@ pub trait LLMResultParser: Send + Sync {
 pub trait StepRenderer: Send + Sync {
     //1个完整的step可以得到2条消息
     fn render(&self, step: &StepRecord) -> (AiMessage,AiMessage);
-    fn render_history(&self,steps: Vec<StepRecord>) -> Vec<AiMessage>;
+    fn render_history(&self, steps: Vec<StepRecord>, current_behavior: &str,
+        summaries: Vec<HistorySummaryRecord>, inputs: Vec<HistoryInputRecord>) -> Vec<AiMessage>;
 }
 
-pub trait HistoryCompressor: Send + Sync {
-    async fn compress(&self, steps: Vec<StepRecord>, budget: CompressBudget)
-        -> Result<Vec<StepRecord>, CompressError>;
+// Step 有动作结果后、沉淀前的扩展点(可覆盖下一条 user 消息)
+pub trait StepResultHook: Send + Sync {
+    async fn on_behavior_step_ob(&self, snapshot: &LLMContextSnapshot, step: &StepRecord)
+        -> Result<StepResultHookOutput, String>;
 }
 ```
+
+> 原方案中的 `HistoryCompressor` 已移除:loop 内不压缩历史,见 §7 与 [append-only history](llm_context_append_only_history.md)。
 
 > 注:`ActionMgr` 不另立 trait。Action 的 dispatch 通过装配一个特殊的 `ToolManager` 实现完成——Agent Tool 已经为这种装配方式做好了准备。
 
@@ -104,8 +116,13 @@ pub trait HistoryCompressor: Send + Sync {
 ```rust
 pub result_parser: Option<Arc<dyn LLMResultParser>>,
 pub step_renderer: Option<Arc<dyn StepRenderer>>,
-pub history_compressor: Option<Arc<dyn HistoryCompressor>>,
+pub step_result_hook: Option<Arc<dyn StepResultHook>>,
 ```
+
+两个推理前 hook 在 behavior 模式下的分工(两者都是通用依赖,不是 Behavior 专属):
+
+- `inference_hook: Option<Arc<dyn InferenceHook>>`:同步,每个 Round(每次推理)前调用。`into_traditional()` 保留它,所以 behavior 模式下它在 Step 内层的每个 Round 前执行,看到扁平化的内层快照。它不是 Session Turn 的钩子。
+- `checkpoint_hook: Option<Arc<dyn CheckpointHook>>`:异步,看外层快照,可以注入消息。behavior 模式只在外层 Step 边界(每个 Step 的 do-action 之后、下一个 Step 的内层推理之前)调用;`into_traditional()` 去掉它,Step 内层的推理前不会调用。
 
 > `tools` 字段保持当前签名(`Arc<dyn ToolManager>`),不改 Option。Behavior 模式装配的是"以 Action 语义对外、内部委派 Function"的 ToolManager 实现,瘦腰看到的还是 ToolManager。
 
@@ -119,13 +136,18 @@ pub history_compressor: Option<Arc<dyn HistoryCompressor>>,
 新增字段:
 
 ```rust
-pub steps: Vec<StepRecord>,             // 已沉淀的历史 step,可走压缩;Behavior 模式专用,传统模式恒空
-pub last_step: Option<StepRecord>,      // 当前最新一步(还热的,verbatim 渲染);沉淀时 push 进 steps,被新 step 替换
+pub steps: Vec<StepRecord>,             // 已沉淀的历史 step;Behavior 模式专用,传统模式恒空
+pub last_step: Option<StepRecord>,      // 最近沉淀的一步(还热的,verbatim 渲染);下一步沉淀时 push 进 steps
+pub action_step: Option<ActionStep>,    // 已解析、action 尚未派发完的 Step(未沉淀)
+pub next_step_index: u32,               // 下一个待分配的 step_index(分配位置,不是已完成 Step 数)
+pub next_action_id: u32,
 ```
 
+共用的预算 / 挂起字段:`tool_iterations_left`(工具迭代额度,原生批次与 action Step 共享)、`suspended`、`tool_batch`(被 deferred 截断的原生批次,含 `batch_error`)。
+
 invariant:
-- 传统模式:`steps.is_empty() && last_step.is_none() && !accumulated.is_empty()`(每轮 push 一对 AiMessage)
-- Behavior 模式:`accumulated.is_empty()`,`steps` / `last_step` 由外层 loop 维护
+- 传统模式:`steps.is_empty() && last_step.is_none() && !accumulated.is_empty()`(每个 Round push assistant message 及其工具结果)
+- Behavior 模式:`accumulated` = `request.input` + 进行中 Step 的 inner transcript,Step 完成后截回 `request.input`;`steps` / `last_step` / `action_step` 由外层 loop 维护
 - 任何时刻不会两种模式痕迹同存
 
 ### `LLMContextOutcome::Done`(`outcome.rs`)
@@ -165,47 +187,63 @@ impl LLMContext {
 ```rust
 async fn run_behavior(&mut self) -> LLMContextOutcome {
     loop {
-        // budget / wallclock 检查(外层 step 维度)
+        // 0. 已解析、action 未派发完的 Step(刚解析,或 deferred action 回填后)先续派
+        if self.state.action_step.is_some() {
+            if let Some(o) = self.run_step_actions().await { return o; }
+            continue;
+        }
+
+        // budget / wallclock 检查(外层 Step 维度)
         if let Some(o) = self.check_wallclock_budget() { return o; }
 
-        // 1. 跑一个内层传统 LLMContext,得到 response
+        // Step 边界:CheckpointHook 以外层快照落盘 / 注入观察。内层原生批次被 deferred
+        // 截断、回填后续跑时不是 Step 边界,不调用。
+        if self.state.tool_batch.is_none() {
+            if let Some(o) = self.run_checkpoint_hook().await { return o; }
+        }
+
+        // 1. 跑一个内层传统 LLMContext(一个或多个 Round),得到 response
         let response = match self.run_inner_for_step().await {
             Ok(resp) => resp,
-            Err(outer_outcome) => return outer_outcome,   // 内层错误 / budget / yield 已被翻译成外层 outcome
+            Err(outer_outcome) => return outer_outcome,   // 内层错误 / budget / 挂起已被翻译成外层 outcome
         };
 
-        // 2. parser 解析得到 LLMBehaviorResult;失败走 FeedAsObservation(包成 error step)
+        // 2. parser 解析得到 LLMBehaviorResult;失败走 FeedAsObservation(包成合成纠错 Step,
+        //    同样分配 step_index)
         let result = match self.deps.result_parser.as_ref().unwrap().parse(&response) {
             Ok(r) => r,
             Err(e) => {
-                let err_step = StepRecord::from_parse_error(&e);
+                let err_step = self.prepare_step(StepRecord::from_parse_error(&e));
                 self.sediment(err_step);
-                if let Some(o) = self.bump_consecutive_errors().await { return o; }
+                if let Some(o) = self.bump_consecutive_errors(..) { return o; }
                 continue;
             }
         };
 
-        // 3. 包成 StepRecord(此时只有意图槽,action_result 还没填)
-        let mut new_step = StepRecord::from_result(result);
+        // 3. 包成 StepRecord,分配 step_index / action call_id(此时 action_results 还没填)
+        let mut new_step = self.prepare_step(StepRecord::from_result(result));
 
-        // 4. terminal 检查:next_behavior 填了就立刻终结,action 不执行
-        if new_step.next_behavior.is_some() {
-            return self.finish_done_behavior(new_step, response).await;
+        // 4. 带 action 的 Step 需要一次工具迭代
+        if !new_step.actions.is_empty() && self.state.tool_iterations_left == 0 {
+            return LLMContextOutcome::BudgetExhausted { which: BudgetKind::ToolIterations, .. };
         }
 
-        // 5. 派发 action(如果有);没有 action 也算终结(纯思考步等价 ReAct 自然收敛)
-        if let Some(action) = new_step.action.clone() {
-            let action_result = self.deps.tools.call_tool(action).await;
-            new_step.action_result = Some(action_result);
-        } else {
-            return self.finish_done_behavior(new_step, response).await;
-        }
+        // 5. report / sendmsg 副作用;action policy gate(拒绝 ⇒ 合成纠错 Step,continue);
+        //    带 action / sendmsg 时跳转目标被丢弃(结果必须先被观察),只保留 END
 
-        // 6. 沉淀:last_step 入 steps,new_step 上位;触发可选压缩
-        self.sediment(new_step);
-        self.maybe_compress().await;
+        // 6. 派发前扣一次工具迭代;Step 进入 action_step,在循环顶部按序派发
+        if !new_step.actions.is_empty() {
+            self.state.tool_iterations_left -= 1;
+        }
+        self.state.action_step = Some(ActionStep { step: new_step, response });
     }
 }
+
+// run_step_actions:按序派发,第一个非成功结果之后的 action 记为 Unresolved;
+//   Pending + allow_deferred ⇒ PendingTool(Step 留在 action_step,不沉淀)。
+// 全部派发 / 跳过后 complete_step:
+//   next_behavior 生效 / 这一步什么都没做 / StepResultHook 要求结束 ⇒ finish_done_behavior
+//   否则 sediment(last_step 入 steps,新 step 成为热 step),有动作错误则 bump,进入下一个 Step
 
 fn sediment(&mut self, new_step: StepRecord) {
     if let Some(prev) = self.state.last_step.replace(new_step) {
@@ -216,77 +254,89 @@ fn sediment(&mut self, new_step: StepRecord) {
 
 ### 6.3 内层调用 `run_inner_for_step`
 
-每个 step 一次 sub-run。内层 deps 复用外层 llm/tools/policy/worklog/tokenizer,**剥掉** parser/renderer/compressor;内层 request 由外层渲染历史得到。
+每个 Step 一次 sub-run。内层 deps 复用外层 llm/tools/policy/worklog/tokenizer/inference_hook,**剥掉** parser/renderer/step_result_hook/checkpoint_hook;内层 request 由外层渲染历史得到。
 
 ```rust
-async fn run_inner_for_step(&mut self) -> Result<AiResponseSummary, LLMContextOutcome> {
-    let inner_deps = self.deps.clone().into_traditional();    // 去掉 result_parser/step_renderer/history_compressor
-    let inner_req = self.build_inner_request();               // 见 6.4
-
-    let mut inner = LLMContext::new(inner_req, inner_deps);
+async fn run_inner_for_step(&mut self) -> Result<AiResponse, LLMContextOutcome> {
+    let inner_req = self.build_inner_request();               // 见 6.4,末尾是 inner transcript
+    let prefix_len = inner_req.input.len() - self.inner_transcript().len();
+    let mut inner = LLMContext::new(inner_req, self.deps.clone().into_traditional());
+    inner.abort = self.abort.clone();                         // 外层 interrupt_handle 能中断内层推理
+    inner.state.usage = self.state.usage.clone();
+    inner.state.started_at_ms = self.state.started_at_ms;
+    inner.state.consecutive_errors = self.state.consecutive_errors;
+    inner.state.tool_iterations_left = self.state.tool_iterations_left;  // 工具迭代内外共享
+    inner.state.tool_batch = self.state.tool_batch.take();              // 被截断的批次先续派
     let outcome = inner.run_inner().await;
 
-    // 内层 outcome 翻译
+    // 无论结果如何都交回 usage / 错误计数 / 剩余工具迭代(tool_trace / llm_task_ids 同样并回)
+    self.state.usage = inner.state.usage.clone();
+    self.state.consecutive_errors = inner.state.consecutive_errors;
+    self.state.tool_iterations_left = inner.state.tool_iterations_left;
+    if !matches!(outcome, LLMContextOutcome::Done { .. }) {
+        // 进行中 Step 的 inner transcript 与被截断的 tool_batch 留在外层 state,
+        // 外层快照恢复时继续这个 Step,不重放已执行的工具
+        self.set_inner_transcript(inner.state.accumulated[prefix_len..].to_vec());
+        self.state.tool_batch = inner.state.tool_batch.take();
+    }
+
     match outcome {
-        LLMContextOutcome::Done { response, usage, .. } => {
-            self.merge_inner_usage(usage);
+        LLMContextOutcome::Done { response, .. } => {
+            self.clear_inner_transcript();
             Ok(response)
         }
-        // 研发期 D7:内层 yield 视为外层 fatal
-        LLMContextOutcome::WaitInput { .. }
-        | LLMContextOutcome::PendingTool { .. }
-        | LLMContextOutcome::ContextLimitReached { .. } => {
-            Err(LLMContextOutcome::Error {
-                error: LLMComputeError::Internal("inner LLMContext yielded; not supported in v1".into()),
-                usage: self.state.usage.clone(),
-            })
+        LLMContextOutcome::PendingTool { pending, .. } => {
+            self.state.suspended = inner.state.suspended.take();
+            Err(LLMContextOutcome::PendingTool { pending, snapshot: self.snapshot(), .. })   // 外层快照
         }
-        LLMContextOutcome::Error { error, .. } => Err(LLMContextOutcome::Error {
-            error,
-            usage: self.state.usage.clone(),
-        }),
-        LLMContextOutcome::BudgetExhausted { which, partial, .. } => Err(LLMContextOutcome::BudgetExhausted {
-            which,
-            partial,
-            usage: self.state.usage.clone(),
-        }),
+        LLMContextOutcome::ContextLimitReached { which, mut accumulated, .. } => {
+            self.state.suspended = inner.state.suspended.take();
+            accumulated.truncate(prefix_len);                 // 可重写的历史不含 inner transcript
+            Err(LLMContextOutcome::ContextLimitReached { which, accumulated, snapshot: self.snapshot(), .. })
+        }
+        LLMContextOutcome::Interrupted { reason, abort, .. } => {
+            Err(LLMContextOutcome::Interrupted { reason, snapshot: self.snapshot(), abort, .. })
+        }
+        LLMContextOutcome::Error { error, .. } => Err(self.finish_error(error)),
+        LLMContextOutcome::BudgetExhausted { which, partial, .. } => {
+            Err(LLMContextOutcome::BudgetExhausted { which, partial, usage: self.state.usage.clone() })
+        }
     }
 }
 ```
 
 ### 6.4 内层 request 装配 `build_inner_request`
 
-外层 step_renderer 在这里被使用——把 `[steps] + last_step` 渲染成 AiMessage 序列,与外层 `request.input` (system + user_init) 拼接,作为内层 input。
+外层 step_renderer 在这里被使用——把 `[steps] + last_step` 渲染成 AiMessage 序列,与外层 `request.input` (system + 输入) 拼接,再接上进行中 Step 的 inner transcript,作为内层 input。
 
 ```rust
 fn build_inner_request(&self) -> LLMContextRequest {
     let renderer = self.deps.step_renderer.as_ref().unwrap();
-    let mut messages = self.request.input.clone();                    // system + user_init
-    messages.extend(renderer.render_history(self.state.steps.clone()));
+    let mut messages = self.request.input.clone();                    // system + 输入
+    messages.extend(renderer.render_history(
+        self.state.steps.clone(),
+        &self.request.behavior_name,
+        self.state.history_summaries.clone(),
+        self.state.history_inputs.clone(),
+    ));
     if let Some(ref last) = self.state.last_step {
         let (assistant_msg, user_msg) = renderer.render(last);
         messages.push(assistant_msg);
         messages.push(user_msg);
     }
+    messages.extend(self.inner_transcript());                        // 进行中 Step 的内层消息
 
-    LLMContextRequest {
-        input: messages,
-        tool_policy: self.request.tool_policy.clone(),                 // 内层照原配
-        output: self.request.output.clone(),                           // OutputSpec::Json + step_schema
-        budget: derive_inner_budget(&self.request.budget),             // 见 6.5
-        error_policy: self.request.error_policy.clone(),
-        // owner / trace / model_policy / human_policy 沿用
-        ..self.request.clone()
-    }
+    // tool_policy / output / budget / error_policy / owner / trace / model_policy 照原配
+    LLMContextRequest { input: messages, ..self.request.clone() }
 }
 ```
 
-最后一条永远是 user(last_step 的 action_result 渲染),内层 inference 自然产 assistant —— alternation 不破。
+Step 开始时最后一条是 user(last_step 的 action_results 渲染),内层 inference 自然产 assistant —— alternation 不破;Step 内续跑时最后一条是 tool result。
 
 ### 6.5 内外层 budget / usage / trace 关系
 
-- **Budget**:外层 BudgetSpec 派生出内层 BudgetSpec(`derive_inner_budget`):剩余 token / wallclock 按当前预估 step 数分摊;或者简单做法——内层 budget 复用外层值,外层每轮自己再 check 一次外层维度 cap。
-- **Usage**:每次内层 Done 把 usage 合并进外层(`merge_inner_usage`)。
+- **Budget**:内层 request 复用外层 BudgetSpec;内层实例以外层的 `usage` / `started_at_ms` / `consecutive_errors` / `tool_iterations_left` 起步,返回后交回,所以按 Step 重建内层不能绕过 token / wallclock 预算、错误上限和工具迭代额度。工具迭代:内层每个完成的原生批次扣一次,外层带 action 的 Step 派发前扣一次,两者共享同一额度;推理(Round)本身不扣。
+- **Usage**:内层 usage 无论结果如何都交回外层。
 - **Trace**:内层 tool_trace 合并进外层 ContextRunTrace。内层 llm_task_ids 同。
 
 ### 6.6 终结
@@ -314,93 +364,82 @@ async fn finish_done_behavior(&mut self, last_step: StepRecord, response: AiResp
 
 ### 压缩
 
-外层 `run_behavior` 每次沉淀完成后调 `maybe_compress`:`state.steps.len()` 或 token 估算超阈值 → 调 `history_compressor.compress(steps, budget)` → 用返回值替换 `state.steps`。**只压缩 `steps`,`last_step` 不动**(热数据保 verbatim)。
+loop 内不压缩历史(原方案的 `maybe_compress` / `HistoryCompressor` 已移除,原因见 [append-only history](llm_context_append_only_history.md)):一次 `run()` 内 `steps` 只追加,已发送的 prefix 保持稳定。需要压缩时由宿主在 `ContextLimitReached` 之后用 `ResumeFill::RewrittenSteps` 显式重写:
 
-这条路径和 `ResumeFill::RewrittenHistory` 是同一套语义(整段历史被替换),只是触发方在外层 loop 内部还是外部 scheduler。
+- 替换 `request.input` / `history_summaries` / `steps` / `last_step`;`steps` 与 `last_step` 只能保留快照中已有的(可压缩的)step,按 `step_index` 识别。摘要以 `HistorySummaryRecord` 放进 `history_summaries`,由 `render_history` 渲染,alternation 不破。
+- 把整个物化历史折叠进 `input`(steps 为空、没有热 step)也合法;libopendan 就是这样做的:先把 steps flush 进 Session worklog,再以 system + 重建的会话历史作为新 input。
+- Step / action 编号、`history_inputs` 和进行中 Step 的 inner transcript 保持不变。
 
-压缩产物**仍是 StepRecord**,渲染形态不变。一条"摘要 step"长这样:
-
-```rust
-StepRecord {
-    assistant_text: "[Steps 1-15 compressed]".into(),
-    action_result: Some(Observation::Success { content: "<summary>".into(), .. }),
-    action: None,
-    ..Default::default()
-}
-```
-
-被 `render_history` 渲染成 `assistant("[Steps 1-15 compressed]") + user("<summary>")` 或 renderer 自行决定的紧凑形态,alternation 不破。
-
-默认提供两个实现:
-
-- **机械压缩**:保留最早 K 条 + 最近 M 条,中间合并为一条 summary StepRecord。完全无 LLM 介入。
-- **LLM 压缩**:复用现有 [llm_compress.rs](src/frame/llm_context/src/llm_compress.rs)。
-
-选择权在 worksession 注入哪个实例。
+压缩策略(机械压缩、LLM 摘要)属于宿主,不是 waist 注入的 trait。
 
 ### Resume
 
-研发期(D7)内层不允许 yield,所以**所有 yield 都来自外层 `run_behavior`**——位置只可能在两次 step iteration 之间(沉淀完成 / 压缩后 / 派发 action 前后)。这把 snapshot 边界简化到只看外层 state:`steps + last_step + usage`。
+behavior 模式的快照总是**外层**快照。挂起点有两类:Step 之间派发 action 时(deferred action),以及 Step 内层(原生工具 deferred、物化 prompt 装不下、推理被中断)。Step 未完成时的恢复状态都在外层 `LLMContextState`:
 
-`ResumeFill` 加一个变体,跟 `RewrittenHistory` 平级:
+- inner transcript:`accumulated` 中 `request.input` 之后的消息,即进行中 Step 的内层原生工具 Loop(tool_use 与已得结果),尚未折叠进 `StepRecord`;
+- `tool_batch`:内层被 deferred 截断的原生批次(未派发的调用与 `batch_error`);
+- `action_step`:已解析、action 尚未派发完的 Step 与它的 response(未沉淀,`step.action_results` 是已得结果);
+- `next_step_index` / `next_action_id`:下一个待分配的编号。step_index 在解析出 Step 时就分配(合成纠错 Step 也占一个),是分配位置,不是已完成 Step 数;`action_step` 里的 Step 已有编号但未完成。
 
-```rust
-ReplaceSteps { steps: Vec<StepRecord> },
-```
+`ResumeFill`(与 function call 模式共用,快照版本 3):
 
-`HumanInput { message }` 在 Behavior 模式下:把 message 包成一条 `StepRecord { assistant_text: "", action_result: Some(Observation::Success { content: text, .. }), .. }`,直接进 `last_step` 槽(模拟"用户回答即上一步的 action_result"语义)。
+| 挂起 | fill | behavior 模式下的语义 |
+|---|---|---|
+| `PendingTool` | `ToolResults` | 内层原生工具:结果写入 inner transcript,批次续派,整批完成才扣一次工具迭代;deferred action:结果写入 `action_step.step.action_results`,续派其后的 action(该 Step 在派发前已扣过工具迭代) |
+| `ContextLimitReached` | `RewrittenSteps` | 见上;inner transcript 原样保留 |
+| 未挂起(`Interrupted` 之后、outcome / checkpoint 边界) | `ResumeFromMidRun` | 有 `action_step` / `tool_batch` 先续派;否则从这次推理前重新推进,同一个 Step 继续 |
 
-`ResumeFromMidRun` 校验语义扩展:
-- 传统模式:`accumulated.is_empty()` 不要求;`pending_tool_calls.is_empty()` 要求。
-- Behavior 模式:`accumulated.is_empty()` 要求;`pending_tool_calls.is_empty()` 要求(因为内层不允许 yield,外层快照点只在 step 边界,这两者必然空)。
+`resume` 在任何推理 / 工具调用之前校验:fill 必须与 `suspended` 对应;`tool_batch` 与 `action_step` 不能同时存在,`action_step` 只能出现在 behavior 模式;`accumulated` 中除 `tool_batch` 尚未派发的调用外不能有未配对的 tool_use;有续派时拒绝重写。不重跑已完成的工具、不重复解析或派发 action、不重复扣工具迭代。
+
+"等待用户输入"不是 waist 挂起态:`WAIT_USER_MSG` 由上层解释;新输入在 Step 边界经 `LLMContext::inject` / `CheckpointHook` 注入,behavior 模式并入热 step 的 `next_user_message`。原方案的 `ReplaceSteps` / `HumanInput` fill 没有采用。
 
 ---
 
 ## 8. worksession 侧的心智模型
 
+当前实现的 worksession 是 libopendan 的 `SessionRunner`(完整伪代码见 [readme](readme.md)):
+
 ```
-behaviors.run("plan")
+SessionRunner 推进 live run(behavior 模式的 LLMContext,deps 含 action 视图的 ToolManager、parser、renderer、checkpoint_hook)
 └─ loop:
-   req = build_request_for(current_behavior)   # system / action whitelist / step_schema
-   deps = base_deps.clone()
-          .with_tools(action_view_tool_mgr(current_behavior))
-          .with_result_parser(step_parser)
-          .with_step_renderer(...)
-          .with_history_compressor(...)
-   ctx = LLMContext::new(req, deps)
-   match ctx.run().await {                     # 走 run_behavior 分支
-       Done { behavior_result: Some(r), .. } => {
-           audit.push(r);
-           match r.next_behavior.as_deref() {
-               None        => break BehaviorResult::End,            # ReAct 自然收敛
-               Some("END") => break BehaviorResult::End,            # 协议级 END(约定,loop 不知道)
-               Some(name)  => current_behavior = name,              # 跳转,新 LLMContext
+   match ctx.run().await {                     # 走 run_behavior 分支;一次 run() 调用 → 一个 Outcome
+       Done { behavior_result: Some(r), .. } => match r.next_behavior.as_deref() {
+           None | Some("END")    => 结束 run,Turn completed;按 end_condition 结束 Session 或等待输入
+           Some("WAIT_USER_MSG") => 结束 run,等待输入;已交付答复才完成 Turn,否则下一条输入并入同一 Turn
+           Some(name) => match process_mode(name) {
+               普通(未声明 mode) => 同一快照改 behavior_name 后 ResumeFromMidRun:
+                                    同一 context、同一 run、同一 Turn,下一次输入批次带 on_behavior_switch
+               fork               => 当前 run 挂起入 process_stack,子 run 继承 steps;
+                                    子 run 结束(任何 next_behavior 都视为返回)后父 run 恢复,Turn 不结束
+               independent        => 当前 run 挂起入栈,恢复或新建目标 behavior 的 run
            }
        }
-       WaitInput { snapshot, .. } => return BehaviorResult::WaitForMsg(snapshot),
-       // ...
+       PendingTool / ContextLimitReached / Interrupted => run 保留(外层快照),处理后 resume,同一 Turn 继续
+       Error / BudgetExhausted => 可重试的错误暂停 run;否则结束 run,Turn 记为 failed / budget_exhausted
    }
 ```
 
-LLMContext 是一次性 run-to-END;状态机在 worksession,不在 loop 内。**两层嵌套结构同构**:worksession 每次起一个 Behavior LLMContext,Behavior LLMContext 每个 step 起一个传统 LLMContext——都遵循"一次 run 一次决策"语义。
+LLMContext 一次 `run()` 只执行一个 behavior,状态机在 worksession,不在 loop 内;但 behavior 切换不等于新建上下文:普通切换从同一快照(只改 `behavior_name`)继续。**两层嵌套结构同构**:worksession 推进 Behavior LLMContext,Behavior LLMContext 每个 Step 起一个传统 LLMContext——都遵循"一次 run() 调用返回一个 Outcome"语义。Outcome 不等于 Turn 结束,Turn 的开始 / 继续 / 结束由 session 判定。
 
 ---
 
 ## 9. 故意不做 / 划在范围外
 
 - **不**改 `run_inner`(传统 Agent Loop)。Behavior Loop 用它当子例程,不动它的代码。
-- **不**在 loop 内做 behavior 切换。一次 run 一个 behavior。
+- **不**在 loop 内做 behavior 切换。一次 `run()` 调用一个 behavior;切换在 `run()` 返回后由上层做(普通切换仍是同一 context、同一 run,§8)。
 - **不**新建 ActionMgr trait。Action 通过 ToolMgr 装配实现。
 - **不**改 `AiMessage` 定义,**不**进 `buckyos_api`。
 - **不**在 `LLMContextOutcome` 加新变体。`Done` 加字段即可。
 - **不**在传统模式路径上加任何额外开销——所有 Behavior 字段是 `Option`,`None` 走老路。
-- **不**支持内层 yield(D7)。Snapshot 嵌套留到后续。
-- **不**冻结 Snapshot schema。研发期允许 breaking。
-- **不**允许一个 step 多 action 并发(v1 限制一个 step 至多一个 action;后续升级 `action_result: Vec<Observation>`)。
+- **不**做 Snapshot 嵌套:内层挂起只把 inner transcript / `tool_batch` 存进外层 state,没有独立的内层快照(D7)。
+- **不**做旧快照迁移:schema 变化直接升 `SNAPSHOT_FORMAT_VERSION`(当前 3),`resume` 只接受当前版本。
+- **不**并发派发一个 Step 的多个 action:v2 协议允许一个 Step 带多个 action(`actions` / `action_results: Vec<_>`),按文档顺序串行派发,第一个非成功结果之后的 action 不执行。
 
 ---
 
-## 10. 实施顺序(参考)
+## 10. 实施顺序(历史记录)
+
+> 以下是原方案的实施顺序,已完成,之后又有演进:`HistoryCompressor` / `maybe_compress` / `MechanicalCompressor` 已移除(压缩上移到宿主,§7);内层挂起改为翻译成外层挂起(D7);`run_inner` 增加了 `tool_batch` 续派、`CheckpointHook` 与 `InferenceHook`。当前接口见 §4–§7。
 
 1. `behavior_loop.rs`:落类型 + trait 签名(`StepRecord` / `LLMBehaviorResult` / `LLMResultParser` / `StepRenderer` / `HistoryCompressor`),无实现。
 2. `deps.rs`:加 3 个 `Option` 字段(`result_parser` / `step_renderer` / `history_compressor`) + `with_xxx` 方法 + `into_traditional()` helper(剥掉 behavior 字段,内层用)。
@@ -414,6 +453,6 @@ LLMContext 是一次性 run-to-END;状态机在 worksession,不在 loop 内。**
 7. 测试:
    - 传统模式回归(无 parser 装配,走 `run_inner`,行为应字节级一致)
    - Behavior 模式基础闭环:dummy parser + dummy renderer + dummy ToolMgr,两 step + 一次 next_behavior 跳转的端到端
-   - 内层 yield → 外层 fatal 翻译路径
+   - 内层挂起 → 外层同名挂起 Outcome + inner transcript 恢复(原计划为转 fatal)
 
 Snapshot/Resume 细节留到 7 之后再敲定。

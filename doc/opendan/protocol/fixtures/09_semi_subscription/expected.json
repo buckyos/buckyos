@@ -2,7 +2,7 @@
   "description": "B semi-subscribes to A; A is finished (registry status rev > B's cursor, which is empty).",
   "generated_by": "libopendan examples/fixtures.rs",
   "next": {
-    "action": "inject_change_on_next_round",
+    "action": "inject_change_on_next_input_batch",
     "change_id_prefix": "sa@",
     "extra_inference": false,
     "session": "work-fixture-sub-b"
@@ -12,23 +12,25 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20260930-024535-8aee3f"
+        "20261001-042608-e406cb"
       ],
       "session_id": "work-fixture-sub-a",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20260930-024535-8aee3f",
+        "last_run": "20261001-042608-e406cb",
+        "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],
         "rev": 3,
-        "round": 1,
-        "run_state": "finished"
+        "run_state": "finished",
+        "turn_seq": 1,
+        "turns_completed": 1
       },
       "worklog": {
-        "committed_bytes": 833,
-        "committed_seq": 5,
-        "file_bytes": 833,
+        "committed_bytes": 987,
+        "committed_seq": 6,
+        "file_bytes": 987,
         "uncommitted_tail": false
       }
     },
@@ -40,11 +42,13 @@
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": null,
         "outcome": null,
         "process_stack": [],
         "rev": 1,
-        "round": 0,
-        "run_state": "created"
+        "run_state": "created",
+        "turn_seq": 0,
+        "turns_completed": 0
       },
       "worklog": {
         "committed_bytes": 144,

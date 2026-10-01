@@ -9,6 +9,7 @@ mod flush;
 pub mod history;
 mod hook;
 mod receipts;
+mod rounds;
 mod tools;
 
 use std::path::PathBuf;
@@ -26,12 +27,13 @@ use crate::runtime::AgentRuntime;
 use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
-pub use assembler::{DefaultAssembler, SessionAssembler, TurnMaterial};
+pub use assembler::{DefaultAssembler, InputMaterial, SessionAssembler};
 pub use drive::drive;
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::{classify_effect, CURRENT_CALL};
 
-/// When `drive` returns.
+/// When `drive` returns (a property of this call, not a session end
+/// condition).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StopWhen {
@@ -39,8 +41,16 @@ pub enum StopWhen {
     Idle,
     /// Advance a work session until it finishes.
     Finished,
-    /// At most `n` rounds in this drive.
-    MaxRounds { n: u64 },
+    /// Return after the drive loop handled `n` `LLMContext` outcomes (one
+    /// per run segment started or resumed by this drive, whatever its kind:
+    /// done, behavior switch, suspension, error). Not a count of Rounds
+    /// (inferences), `run()` calls (a context-limit rewrite runs the context
+    /// again inside one segment) or Turns. Checked before each segment:
+    /// `n = 0` only recovers and applies control inputs. The drive still
+    /// returns earlier when the session finishes (`Finished`), stops on an
+    /// error (`Error`), or has nothing to run (`OutcomesHandled`, which then
+    /// reports the waiting state).
+    MaxOutcomes { n: u64 },
 }
 
 /// Why `drive` returned.
@@ -55,8 +65,8 @@ pub enum DriveResult {
         outcome: Option<Outcome>,
         acceptance: Acceptance,
     },
-    /// `max_rounds` reached.
-    RoundsDone { rev: u64, run_state: RunState },
+    /// `StopWhen::MaxOutcomes` reached, or nothing left to run before it.
+    OutcomesHandled { rev: u64, run_state: RunState },
     /// Another holder advances the session (display info).
     Busy { holder: Option<Value> },
     /// The run is executed by someone else (e.g. xllm took it over).

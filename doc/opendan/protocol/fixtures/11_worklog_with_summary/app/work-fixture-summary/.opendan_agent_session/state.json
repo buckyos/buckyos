@@ -1,9 +1,10 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 2,
   "run_state": "created",
   "acceptance": "n/a",
-  "round": 0,
+  "turn_seq": 0,
+  "turns_completed": 0,
   "bootstrap_done": false,
   "topic": {
     "title": ""
@@ -12,7 +13,7 @@
   "last_run": null,
   "worklog": {
     "committed_seq": 201,
-    "committed_bytes": 17419
+    "committed_bytes": 17219
   },
   "inputs": {},
   "recent_keys": [],
@@ -24,5 +25,5 @@
   },
   "one_line_status": "",
   "stop_requested": false,
-  "updated_at_ms": 1790761535983
+  "updated_at_ms": 1790853969059
 }

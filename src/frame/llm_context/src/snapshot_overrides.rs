@@ -52,10 +52,11 @@ pub struct RequestOverrides {
     pub error_policy: Option<ErrorPolicy>,
     pub output: Option<OutputSpec>,
 
-    /// Reset `state.rounds_left` to the new `tool_policy.max_rounds`. Caller
-    /// sets `true` for fork / independent, leaves `false` for switch (which
-    /// continues the parent budget).
-    pub reset_rounds: bool,
+    /// Reset `state.tool_iterations_left` to the new
+    /// `tool_policy.max_tool_iterations`. Caller sets `true` for fork /
+    /// independent, leaves `false` for switch (which continues the parent
+    /// budget).
+    pub reset_tool_iterations: bool,
     /// Reset `state.consecutive_errors` to 0. Caller sets `true` for fork /
     /// independent — switch keeps the counter so a behavior swap cannot
     /// silently bypass the error cap.
@@ -97,14 +98,14 @@ pub fn apply_overrides_to_snapshot(
     }
 
     if let Some(tp) = ov.tool_policy {
-        if ov.reset_rounds {
-            snap.state.rounds_left = tp.max_rounds;
+        if ov.reset_tool_iterations {
+            snap.state.tool_iterations_left = tp.max_tool_iterations;
         }
         snap.request.tool_policy = tp;
-    } else if ov.reset_rounds {
+    } else if ov.reset_tool_iterations {
         // No new policy supplied but caller asked for reset — reset to the
-        // existing policy's max_rounds.
-        snap.state.rounds_left = snap.request.tool_policy.max_rounds;
+        // existing policy's max_tool_iterations.
+        snap.state.tool_iterations_left = snap.request.tool_policy.max_tool_iterations;
     }
 
     if ov.reset_errors {
@@ -243,7 +244,7 @@ mod tests {
         };
         let mut state = LLMContextState::from_request(&request, 0);
         state.accumulated = accumulated;
-        state.rounds_left = request.tool_policy.max_rounds;
+        state.tool_iterations_left = request.tool_policy.max_tool_iterations;
         LLMContextSnapshot { request, state }
     }
 
@@ -317,7 +318,7 @@ mod tests {
         assert_eq!(out.request.input[1].text_content(), "u");
         assert_eq!(out.state.accumulated[0].text_content(), "sys-new");
         assert_eq!(out.state.accumulated[1].text_content(), "u");
-        // Accumulated tail (assistant from earlier rounds) survives.
+        // Accumulated tail (assistant messages of earlier inferences) survives.
         assert_eq!(out.state.accumulated[2].text_content(), "a-runtime");
     }
 
@@ -345,35 +346,35 @@ mod tests {
     }
 
     #[test]
-    fn apply_overrides_reset_rounds_uses_new_policy() {
+    fn apply_overrides_reset_tool_iterations_uses_new_policy() {
         let snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
         let mut tp = ToolPolicy::default();
         tp.mode = ToolMode::Whitelist;
-        tp.max_rounds = 99;
+        tp.max_tool_iterations = 99;
         let ov = RequestOverrides {
             tool_policy: Some(tp),
-            reset_rounds: true,
+            reset_tool_iterations: true,
             ..Default::default()
         };
         let out = apply_overrides_to_snapshot(snap, ov);
-        assert_eq!(out.state.rounds_left, 99);
-        assert_eq!(out.request.tool_policy.max_rounds, 99);
+        assert_eq!(out.state.tool_iterations_left, 99);
+        assert_eq!(out.request.tool_policy.max_tool_iterations, 99);
     }
 
     #[test]
-    fn apply_overrides_no_reset_keeps_rounds_left() {
+    fn apply_overrides_no_reset_keeps_tool_iterations_left() {
         let mut snap = snap_with(vec![msg(AiRole::User, "u")], vec![msg(AiRole::User, "u")]);
-        snap.state.rounds_left = 3; // mid-run state
+        snap.state.tool_iterations_left = 3; // mid-run state
         let mut tp = ToolPolicy::default();
-        tp.max_rounds = 99;
+        tp.max_tool_iterations = 99;
         let ov = RequestOverrides {
             tool_policy: Some(tp),
-            reset_rounds: false,
+            reset_tool_iterations: false,
             ..Default::default()
         };
         let out = apply_overrides_to_snapshot(snap, ov);
-        assert_eq!(out.state.rounds_left, 3, "switch must not reset budget");
-        assert_eq!(out.request.tool_policy.max_rounds, 99);
+        assert_eq!(out.state.tool_iterations_left, 3, "switch must not reset budget");
+        assert_eq!(out.request.tool_policy.max_tool_iterations, 99);
     }
 
     #[test]

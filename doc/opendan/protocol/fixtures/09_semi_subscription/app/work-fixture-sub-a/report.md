@@ -2,6 +2,6 @@
 
 - session: `work-fixture-sub-a`
 - outcome: succeeded
-- rounds: 1
+- turns: 1
 
 answer

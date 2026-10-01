@@ -34,7 +34,7 @@ pub enum ProviderFailure {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckpointStage {
-    /// `TurnHook::before_inference` refused to commit the pre-inference
+    /// `InferenceHook::before_inference` refused to commit the pre-inference
     /// snapshot; no inference was started.
     BeforeInference,
     /// A runtime above the waist failed to commit the outcome boundary.

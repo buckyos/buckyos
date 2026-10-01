@@ -1,9 +1,10 @@
 {
-  "schema": "opendan.session_state/1",
+  "schema": "opendan.session_state/2",
   "rev": 1,
   "run_state": "created",
   "acceptance": "n/a",
-  "round": 0,
+  "turn_seq": 0,
+  "turns_completed": 0,
   "bootstrap_done": false,
   "topic": {
     "title": ""
@@ -24,5 +25,5 @@
   },
   "one_line_status": "",
   "stop_requested": false,
-  "updated_at_ms": 1790761535263
+  "updated_at_ms": 1790853968354
 }

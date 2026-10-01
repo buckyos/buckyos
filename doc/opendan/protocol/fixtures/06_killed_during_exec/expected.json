@@ -19,22 +19,24 @@
         "inflight": [
           "c1"
         ],
-        "run_id": "20260930-024535-bc55bd",
+        "run_id": "20261001-042608-ac45ab",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20260930-024535-bc55bd"
+        "20261001-042608-ac45ab"
       ],
       "session_id": "work-fixture-kill",
       "state": {
         "acceptance": "n/a",
         "inputs": {},
         "last_run": null,
+        "open_turn": 1,
         "outcome": null,
         "process_stack": [],
         "rev": 2,
-        "round": 1,
-        "run_state": "running"
+        "run_state": "running",
+        "turn_seq": 1,
+        "turns_completed": 0
       },
       "worklog": {
         "committed_bytes": 142,

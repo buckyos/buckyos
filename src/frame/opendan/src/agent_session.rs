@@ -2203,7 +2203,7 @@ impl AgentSession {
             trace_id: trace_id.clone(),
             agent_name: self.agent_name.clone(),
             behavior: behavior.meta.name.clone(),
-            step_idx: snapshot.state.steps.len() as u32,
+            tool_call_index: snapshot.state.steps.len() as u32,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
             read_token_limit: DEFAULT_READ_TOKEN_LIMIT,
@@ -2407,7 +2407,7 @@ impl AgentSession {
 
     /// Graceful interrupt: feed `Observation::Cancelled` for each pending
     /// call via `ResumeFill::ToolResults` and drive the resumed context to
-    /// a terminal outcome. The resumed snapshot has `tool_policy.max_rounds`
+    /// a terminal outcome. The resumed snapshot has `tool_policy.max_tool_iterations`
     /// overridden to 0 so the LLM's wind-down inference cannot launch new
     /// tool calls — any attempt becomes `BudgetExhausted(ToolRounds)` and
     /// the partial assistant text is preserved in `accumulated`.
@@ -2431,12 +2431,12 @@ impl AgentSession {
             .collect();
 
         let mut tp = snapshot.request.tool_policy.clone();
-        tp.max_rounds = 0;
+        tp.max_tool_iterations = 0;
         let snap_winddown = apply_overrides_to_snapshot(
             snapshot,
             RequestOverrides {
                 tool_policy: Some(tp),
-                reset_rounds: true,
+                reset_tool_iterations: true,
                 ..Default::default()
             },
         );
@@ -2448,7 +2448,7 @@ impl AgentSession {
             trace_id,
             agent_name: self.agent_name.clone(),
             behavior: behavior.meta.name.clone(),
-            step_idx: snap_winddown.state.steps.len() as u32,
+            tool_call_index: snap_winddown.state.steps.len() as u32,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
             read_token_limit: DEFAULT_READ_TOKEN_LIMIT,
@@ -2649,7 +2649,7 @@ impl AgentSession {
 
     /// Persist `snapshot` to `state.snap` (atomic). Used by the
     /// PendingTool outcome path so a restart can resume from the freshest
-    /// view — the TurnHook write happens *before* inference, which would
+    /// view — the InferenceHook write happens *before* inference, which would
     /// miss the freshly-populated `pending_tool_calls`.
     async fn persist_snapshot(&self, snapshot: &LLMContextSnapshot) -> Result<()> {
         self.persist_snapshot_to(&self.state_snap_path, snapshot)
@@ -3498,7 +3498,7 @@ impl AgentSession {
                     trace_id,
                     agent_name: self.agent_name.clone(),
                     behavior: behavior.meta.name.clone(),
-                    step_idx: snapshot.state.steps.len() as u32,
+                    tool_call_index: snapshot.state.steps.len() as u32,
                     wakeup_id: String::new(),
                     session_id: self.session_id.clone(),
                     read_token_limit: DEFAULT_READ_TOKEN_LIMIT,
@@ -3744,7 +3744,7 @@ impl AgentSession {
             error_policy: Some(behavior.to_error_policy()),
             output: Some(behavior.to_output_spec()),
             trace: None,
-            reset_rounds: false,
+            reset_tool_iterations: false,
             reset_errors: false,
             reset_behavior_hot_tail: false,
             forbid_next_behavior: false,
@@ -3768,7 +3768,7 @@ impl AgentSession {
             trace_id: trace_id.to_string(),
             agent_name: self.agent_name.clone(),
             behavior: behavior.meta.name.clone(),
-            step_idx: 0,
+            tool_call_index: 0,
             wakeup_id: String::new(),
             session_id: self.session_id.clone(),
             read_token_limit: DEFAULT_READ_TOKEN_LIMIT,
@@ -4352,7 +4352,7 @@ impl AgentSession {
                         // rebuild (`build_or_resume` → `LLMContext::new`
                         // from `state.accumulated + [new_user_msg]`)
                         // continues from the final assistant turn rather
-                        // than the stale pre-inference TurnHook write.
+                        // than the stale pre-inference InferenceHook write.
                         // The worker maps `WaitForMsg` to
                         // `SessionStatus::WaitingInput`, which is what
                         // forward_msg's inbox routing uses to find this
@@ -4431,7 +4431,7 @@ impl AgentSession {
                 pending, snapshot, ..
             } => {
                 // Persist the snapshot first — `pending_tool_calls` is the
-                // load-bearing field for the resume path, and the TurnHook
+                // load-bearing field for the resume path, and the InferenceHook
                 // pre-inference write would have missed it. No task is
                 // dispatched unless this commit succeeds.
                 self.persist_snapshot(&snapshot)
@@ -4509,7 +4509,7 @@ impl AgentSession {
                 // assistant text the LLM had emitted before the budget
                 // gate fired (e.g. token cap mid-stream, or the explicit
                 // wind-down case where a tool attempt is rejected by
-                // `max_rounds=0` but the assistant ack is already there).
+                // `max_tool_iterations=0` but the assistant ack is already there).
                 // Surface that text before discarding the snapshot so it
                 // isn't silently lost.
                 if let Some(message) = partial.as_ref().and_then(output_to_ai_message) {
@@ -5272,7 +5272,7 @@ impl AgentSession {
     /// up and resumes under the new behavior.
     ///
     /// Per the design doc (llm_context_helper.rs §旋钮):
-    /// - rounds_left: NOT reset (continue parent budget)
+    /// - tool_iterations_left: NOT reset (continue parent budget)
     /// - consecutive_errors: NOT cleared (block LLM from bypassing the cap
     ///   by switching behavior)
     async fn apply_switch_normal(
@@ -5293,7 +5293,7 @@ impl AgentSession {
             error_policy: Some(new_cfg.to_error_policy()),
             output: Some(new_cfg.to_output_spec()),
             trace: None,
-            reset_rounds: false,
+            reset_tool_iterations: false,
             reset_errors: false,
             reset_behavior_hot_tail: true,
             forbid_next_behavior: false,
@@ -5354,7 +5354,7 @@ impl AgentSession {
     /// is built fresh. The active `state.snap` always mirrors the top-of-
     /// stack process.
     ///
-    /// Per design旋钮: rounds_left and consecutive_errors are reset on every
+    /// Per design旋钮: tool_iterations_left and consecutive_errors are reset on every
     /// (re-)entry so each process has its own budget / error window.
     async fn apply_switch_independent(
         &self,
@@ -5380,7 +5380,7 @@ impl AgentSession {
             // reset the ephemeral counters so the new "turn under this
             // process" starts with a clean budget.
             let overrides = RequestOverrides {
-                reset_rounds: true,
+                reset_tool_iterations: true,
                 reset_errors: true,
                 behavior_name: Some(new_cfg.meta.name.clone()),
                 reset_behavior_hot_tail: true,
@@ -5522,7 +5522,7 @@ impl AgentSession {
     /// **Fork primitive** (Phase 4 of llm_context_helper.rs design).
     ///
     /// Fork a sub-`LLMContext` from the parent's most recent on-disk
-    /// snapshot (written by `TurnHook` before the current inference), apply
+    /// snapshot (written by `InferenceHook` before the current inference), apply
     /// `overrides`, run the sub-context to a terminal outcome, and return
     /// its `ContextOutput`. The parent session's `state.snap` and step
     /// history are **not** touched — fork is a non-resumable sync sub-task
@@ -5538,7 +5538,7 @@ impl AgentSession {
     ///
     /// Errors:
     /// - No parent snapshot on disk (must be invoked mid-turn, after at
-    ///   least one TurnHook write)
+    ///   least one InferenceHook write)
     /// - Snapshot in suspended state (`pending_tool_calls` non-empty) —
     ///   `rebuild_with_inherit`'s pre-condition fails
     /// - Sub-context produces a suspended outcome (PendingTool

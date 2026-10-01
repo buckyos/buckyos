@@ -1,13 +1,22 @@
 //! Core LLMContext driver — the "process" object that runs one bounded
 //! LLM execution to completion (or to a cooperative yield).
 //!
-//! First version: traditional AiMessage-accumulating loop.
-//! - one LLM inference per round
+//! Terms: a **Round** is one LLM inference; a behavior **Step** is one
+//! decision (with its actions and their results) sedimented as a
+//! `StepRecord`, produced by an inner function call loop that may take
+//! several Rounds; a **tool iteration** is one completed native tool batch
+//! or one behavior step with actions (the unit of
+//! `ToolPolicy.max_tool_iterations`). A `run()` call ends with one outcome;
+//! the AgentSession, not this loop, decides when its logical Turn is done.
+//!
+//! Function call loop (traditional AiMessage-accumulating loop):
+//! - one LLM inference (Round) per iteration of the loop
 //! - if `tool_calls` are produced, policy-gate them, run them through
 //!   `ToolManager`, append the assistant tool-call message + tool result
 //!   messages to `accumulated`, and loop
 //! - terminate with `Done` once the LLM stops requesting tools
-//! - terminate with `BudgetExhausted` on token / wallclock / round caps
+//! - terminate with `BudgetExhausted` on token / wallclock / tool iteration
+//!   caps
 //! - terminate with `Error` on Fatal errors; LLM-correctable errors are
 //!   fed back per `ErrorPolicy`
 //!
@@ -57,7 +66,7 @@ use crate::request::{ErrorClass, LLMContextRequest, OutputSpec, ToolMode};
 use crate::state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
-use crate::suspension::{apply_fill, turn_tail};
+use crate::suspension::{apply_fill, inner_transcript_of};
 
 pub struct LLMContext {
     request: LLMContextRequest,
@@ -135,9 +144,9 @@ impl LLMContext {
             mut state,
         } = snapshot;
 
-        if state.snapshot_version > SNAPSHOT_FORMAT_VERSION {
+        if state.snapshot_version != SNAPSHOT_FORMAT_VERSION {
             return Err(LLMComputeError::SnapshotCorrupted(format!(
-                "unsupported snapshot format version {} (this build supports up to {})",
+                "unsupported snapshot format version {} (this build only supports {})",
                 state.snapshot_version, SNAPSHOT_FORMAT_VERSION
             )));
         }
@@ -255,7 +264,7 @@ impl LLMContext {
                 let at = self.request.input.len();
                 self.request.input.extend(messages.clone());
                 // Keep `accumulated` a prefix-extension of `request.input`
-                // so the behavior turn tail detection stays valid.
+                // so the inner transcript detection stays valid.
                 if self.state.accumulated.len() >= at
                     && self.state.accumulated[..at] == self.request.input[..at]
                 {
@@ -370,10 +379,11 @@ impl LLMContext {
             }
 
             // 1. Pre-inference snapshot (s0). It is the critical checkpoint
-            // handed to the TurnHook (§3.12) and the state returned verbatim
-            // when the inference is preempted (§3.13). Cheap to construct.
+            // handed to the InferenceHook (§3.12) and the state returned
+            // verbatim when the inference is preempted (§3.13). Cheap to
+            // construct.
             let snapshot_before_inference = self.snapshot();
-            if let Some(hook) = &self.deps.turn_hook {
+            if let Some(hook) = &self.deps.inference_hook {
                 if let Err(message) = hook.before_inference(&snapshot_before_inference) {
                     self.deps
                         .worklog
@@ -398,8 +408,8 @@ impl LLMContext {
                 None
             };
 
-            // If the scheduler has already requested interrupt before we even
-            // entered this round, short-circuit without burning an inference.
+            // If the scheduler has already requested interrupt before this
+            // inference started, short-circuit without burning one.
             if let Some(requested_at) = abort_requested_at_ms {
                 return self.finish_interrupted(
                     snapshot_before_inference,
@@ -519,10 +529,10 @@ impl LLMContext {
                 }
             }
 
-            // 3. Tool loop bookkeeping
-            if self.state.rounds_left == 0 {
+            // 3. Tool loop bookkeeping: this batch needs a tool iteration.
+            if self.state.tool_iterations_left == 0 {
                 return LLMContextOutcome::BudgetExhausted {
-                    which: BudgetKind::ToolRounds,
+                    which: BudgetKind::ToolIterations,
                     partial: Some(ContextOutput::Text {
                         content: assistant_text.clone(),
                     }),
@@ -536,7 +546,7 @@ impl LLMContext {
                     tool_calls.len(),
                     self.request.tool_policy.max_calls_per_round
                 );
-                self.reject_tool_round(&response.message, &tool_calls, &reason);
+                self.reject_tool_batch(&response.message, &tool_calls, &reason);
                 if let Some(outcome) = self
                     .handle_error(LLMComputeError::PolicyRejected(reason).into())
                     .await
@@ -547,7 +557,7 @@ impl LLMContext {
             }
 
             // 4. Policy gate. A rejection is answered on every call of the
-            // round so the transcript stays paired, then fed back.
+            // batch so the transcript stays paired, then fed back.
             let gated = match self
                 .deps
                 .policy
@@ -556,7 +566,7 @@ impl LLMContext {
             {
                 Ok(calls) => calls,
                 Err(msg) => {
-                    self.reject_tool_round(
+                    self.reject_tool_batch(
                         &response.message,
                         &tool_calls,
                         &format!("policy rejected: {msg}"),
@@ -577,18 +587,19 @@ impl LLMContext {
             self.state.accumulated.push(response.message.clone());
             self.state.tool_batch = Some(ToolBatch {
                 remaining: gated,
-                round_error: None,
+                batch_error: None,
             });
         }
     }
 
     /// Dispatch `state.tool_batch` (serial). Business errors do not stop the
-    /// batch — the LLM sees every result and corrects the round as a whole.
+    /// batch — the LLM sees every result and corrects the batch as a whole.
     /// Infrastructure failures stop dispatch immediately; the calls that
     /// never ran are answered as `Unresolved` so the transcript and the trace
     /// both show what happened. A deferred call (`Pending`, with
     /// `allow_deferred`) suspends the run; the calls after it stay in the
-    /// batch. `None` once the batch completed and its round was counted.
+    /// batch. `None` once the batch completed and its tool iteration was
+    /// charged.
     async fn run_tool_batch(&mut self) -> Option<LLMContextOutcome> {
         loop {
             let call = match self.state.tool_batch.as_mut() {
@@ -639,7 +650,7 @@ impl LLMContext {
                     let rest = self.take_batch_rest();
                     self.abort_tool_batch(
                         &rest,
-                        "not executed: dispatch of an earlier call in this round failed",
+                        "not executed: dispatch of an earlier call in this batch failed",
                     );
                     return Some(self.finish_error(LLMComputeError::ToolRuntime {
                         tool: call.name.clone(),
@@ -687,8 +698,8 @@ impl LLMContext {
                         })
                         .await;
                     if let Some(batch) = self.state.tool_batch.as_mut() {
-                        if batch.round_error.is_none() {
-                            batch.round_error = Some(LLMComputeError::ToolFailed {
+                        if batch.batch_error.is_none() {
+                            batch.batch_error = Some(LLMComputeError::ToolFailed {
                                 tool: call.name.clone(),
                                 call_id: call.call_id.clone(),
                                 message: message.clone(),
@@ -727,10 +738,10 @@ impl LLMContext {
             }
         }
 
-        // The batch is complete: count the round once, whatever the number
-        // of failed calls.
+        // The batch is complete: one tool iteration, one error count at
+        // most, whatever the number of failed calls.
         let batch = self.state.tool_batch.take().unwrap_or_default();
-        match batch.round_error {
+        match batch.batch_error {
             Some(err) => {
                 if let Some(outcome) = self.bump_consecutive_errors(err) {
                     return Some(outcome);
@@ -738,7 +749,7 @@ impl LLMContext {
             }
             None => self.state.consecutive_errors = 0,
         }
-        self.state.rounds_left = self.state.rounds_left.saturating_sub(1);
+        self.state.tool_iterations_left = self.state.tool_iterations_left.saturating_sub(1);
         None
     }
 
@@ -866,14 +877,14 @@ impl LLMContext {
             .push(tool_observation_message(&call.call_id, &unresolved));
         self.abort_tool_batch(
             rest,
-            "not executed: an earlier call in this round broke the observation contract",
+            "not executed: an earlier call in this batch broke the observation contract",
         );
     }
 
     /// Push the assistant message that requested `calls` and answer each
     /// call with an error observation carrying `reason`, so the next
-    /// inference sees a paired transcript and can correct the round.
-    fn reject_tool_round(&mut self, message: &AiMessage, calls: &[AiToolCall], reason: &str) {
+    /// inference sees a paired transcript and can correct the batch.
+    fn reject_tool_batch(&mut self, message: &AiMessage, calls: &[AiToolCall], reason: &str) {
         self.state.accumulated.push(message.clone());
         for call in calls {
             self.record_tool(
@@ -896,7 +907,7 @@ impl LLMContext {
     fn build_inference_request(&self) -> LlmInferenceRequest {
         let tool_specs = resolve_tool_specs(&self.request.tool_policy, self.deps.tools.as_ref());
         let allow_tool_calls =
-            self.request.tool_policy.mode != ToolMode::None && self.state.rounds_left > 0;
+            self.request.tool_policy.mode != ToolMode::None && self.state.tool_iterations_left > 0;
 
         let (force_json, json_schema) = match &self.request.output {
             OutputSpec::Text => (false, None),
@@ -1097,7 +1108,7 @@ impl LLMContext {
             // with its action results. The host checkpoints the OUTER
             // snapshot here and may inject observations. A step whose inner
             // tool batch was cut by a deferred call is not at a boundary:
-            // its turn continues first.
+            // its inner loop continues first.
             if self.state.tool_batch.is_none() {
                 if let Some(outcome) = self.run_checkpoint_hook().await {
                     return outcome;
@@ -1152,9 +1163,9 @@ impl LLMContext {
                 self.prepare_step(StepRecord::from_result(result), step_started_at_ms);
             new_step.assistant_message = Some(response.message.clone());
 
-            if !new_step.actions.is_empty() && self.state.rounds_left == 0 {
+            if !new_step.actions.is_empty() && self.state.tool_iterations_left == 0 {
                 return LLMContextOutcome::BudgetExhausted {
-                    which: BudgetKind::ToolRounds,
+                    which: BudgetKind::ToolIterations,
                     partial: Some(ContextOutput::Text {
                         content: response.message.text_content(),
                     }),
@@ -1265,9 +1276,10 @@ impl LLMContext {
                 }
             }
 
-            // 6. Dispatch the actions at the top of the loop.
+            // 6. Dispatch the actions at the top of the loop. A step with
+            //    actions is one tool iteration, charged before dispatch.
             if !actions.is_empty() {
-                self.state.rounds_left = self.state.rounds_left.saturating_sub(1);
+                self.state.tool_iterations_left = self.state.tool_iterations_left.saturating_sub(1);
             }
             self.state.action_step = Some(ActionStep {
                 step: new_step,
@@ -1583,7 +1595,7 @@ impl LLMContext {
     /// step never re-runs the native tools it already ran.
     async fn run_inner_for_step(&mut self) -> Result<AiResponse, LLMContextOutcome> {
         let inner_request = self.build_inner_request();
-        let prefix_len = inner_request.input.len() - self.behavior_turn_tail().len();
+        let prefix_len = inner_request.input.len() - self.inner_transcript().len();
         let inner_deps = self.deps.clone().into_traditional();
 
         let mut inner = LLMContext::new(inner_request, inner_deps);
@@ -1595,7 +1607,7 @@ impl LLMContext {
         inner.state.usage = self.state.usage.clone();
         inner.state.started_at_ms = self.state.started_at_ms;
         inner.state.consecutive_errors = self.state.consecutive_errors;
-        inner.state.rounds_left = self.state.rounds_left;
+        inner.state.tool_iterations_left = self.state.tool_iterations_left;
         inner.state.tool_batch = self.state.tool_batch.take();
         let outcome = inner.run_inner().await;
 
@@ -1604,19 +1616,19 @@ impl LLMContext {
         self.tool_trace.append(&mut inner.tool_trace);
         self.state.llm_task_ids.append(&mut inner.state.llm_task_ids);
         self.state.consecutive_errors = inner.state.consecutive_errors;
-        self.state.rounds_left = inner.state.rounds_left;
+        self.state.tool_iterations_left = inner.state.tool_iterations_left;
         self.state.usage = inner.state.usage.clone();
         if !matches!(outcome, LLMContextOutcome::Done { .. }) {
-            // The step's turn so far (native tool calls and their results)
-            // stays in the outer state as the turn tail, so the outer
-            // snapshot resumes the turn instead of replaying it.
+            // The step's inner transcript so far (native tool calls and
+            // their results) stays in the outer state, so the outer
+            // snapshot resumes the inner loop instead of replaying it.
             let tail = inner
                 .state
                 .accumulated
                 .get(prefix_len..)
                 .map(<[AiMessage]>::to_vec)
                 .unwrap_or_default();
-            self.set_behavior_turn_tail(tail);
+            self.set_inner_transcript(tail);
             self.state.tool_batch = inner.state.tool_batch.take();
         }
 
@@ -1625,7 +1637,7 @@ impl LLMContext {
                 response, trace, ..
             } => {
                 self.absorb_trace(trace);
-                self.clear_behavior_turn_tail();
+                self.clear_inner_transcript();
                 Ok(response)
             }
             LLMContextOutcome::PendingTool { pending, trace, .. } => {
@@ -1640,7 +1652,7 @@ impl LLMContext {
                 })
             }
             // Measured on the materialized prompt; the rewritable part is
-            // everything before the turn tail.
+            // everything before the inner transcript.
             LLMContextOutcome::ContextLimitReached {
                 which,
                 accumulated,
@@ -1664,7 +1676,7 @@ impl LLMContext {
             // Inference interrupt propagates straight through — it is a
             // preemptive control-plane event, not an error. The inner
             // snapshot is a flattened prompt; the OUTER snapshot (with the
-            // turn tail taken from the inner pre-inference state) is the
+            // inner transcript taken from the inner pre-inference state) is the
             // resume point for the behavior loop.
             LLMContextOutcome::Interrupted { reason, abort, .. } => {
                 Err(LLMContextOutcome::Interrupted {
@@ -1695,7 +1707,7 @@ impl LLMContext {
 
     /// Assemble the inner request: system + user_init from the outer request,
     /// followed by the rendered step history, the hot `last_step` and the
-    /// in-progress turn.
+    /// inner transcript of the step in progress.
     fn build_inner_request(&self) -> LLMContextRequest {
         let renderer = self
             .deps
@@ -1703,7 +1715,7 @@ impl LLMContext {
             .as_ref()
             .expect("behavior mode requires step_renderer");
         let mut messages = materialize_history(&self.request, &self.state, renderer.as_ref());
-        messages.extend(self.behavior_turn_tail());
+        messages.extend(self.inner_transcript());
 
         let mut inner = self.request.clone();
         inner.input = messages;
@@ -1725,19 +1737,19 @@ impl LLMContext {
         }
     }
 
-    fn behavior_turn_tail(&self) -> Vec<AiMessage> {
-        turn_tail(&self.request, &self.state).to_vec()
+    fn inner_transcript(&self) -> Vec<AiMessage> {
+        inner_transcript_of(&self.request, &self.state).to_vec()
     }
 
-    fn set_behavior_turn_tail(&mut self, tail: Vec<AiMessage>) {
+    fn set_inner_transcript(&mut self, tail: Vec<AiMessage>) {
         let mut accumulated = self.request.input.clone();
         accumulated.extend(tail);
         self.state.accumulated = accumulated;
     }
 
-    fn clear_behavior_turn_tail(&mut self) {
+    fn clear_inner_transcript(&mut self) {
         self.state.history_inputs.clear();
-        if !turn_tail(&self.request, &self.state).is_empty() {
+        if !inner_transcript_of(&self.request, &self.state).is_empty() {
             self.state.accumulated.truncate(self.request.input.len());
         }
     }
@@ -1803,8 +1815,9 @@ impl LLMContext {
         false
     }
 
-    /// Count one failed logical round. Returns `Some(outcome)` when the cap
-    /// is exceeded and the run must end with `err`.
+    /// Count one failed iteration (tool batch, behavior step or output
+    /// correction). Returns `Some(outcome)` when the cap is exceeded and the
+    /// run must end with `err`.
     fn bump_consecutive_errors(&mut self, err: LLMComputeError) -> Option<LLMContextOutcome> {
         self.state.consecutive_errors = self.state.consecutive_errors.saturating_add(1);
         let cap = self.request.error_policy.max_consecutive_errors;
@@ -1841,8 +1854,8 @@ impl LLMContext {
     }
 }
 
-/// Behavior prompt without the in-progress turn: input, rendered step
-/// history and the hot step.
+/// Behavior prompt without the inner transcript of the step in progress:
+/// input, rendered step history and the hot step.
 fn materialize_history(
     request: &LLMContextRequest,
     state: &LLMContextState,

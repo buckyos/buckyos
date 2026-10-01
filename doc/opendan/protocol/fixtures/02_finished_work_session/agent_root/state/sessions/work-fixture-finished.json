@@ -20,19 +20,19 @@
     "outcome": "succeeded",
     "acceptance": "pending",
     "one_line_status": "finished: done: notes.txt written",
-    "report_brief": "# Report — write notes.txt\n\n- session: `work-fixture-finished`\n- outcome: succeeded\n- rounds: 1\n\ndone: notes.txt written\n",
+    "report_brief": "# Report — write notes.txt\n\n- session: `work-fixture-finished`\n- outcome: succeeded\n- turns: 1\n\ndone: notes.txt written\n",
     "activity": {
       "summary": "",
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-b56f0a5ba9864ae7",
+      "runner_id": "rn-b52ece6f723c47bd",
       "host": "host:lzc-pve:6b719608768f",
-      "pid": 2701845,
+      "pid": 595447,
       "lock_epoch": 1,
-      "at_ms": 1790761535251
+      "at_ms": 1790853968340
     },
-    "updated_at_ms": 1790761535246
+    "updated_at_ms": 1790853968336
   },
   "location_rev": 0
 }

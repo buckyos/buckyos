@@ -1,6 +1,6 @@
 # xllm Rust SDK 参考
 
-- 日期：2026-09-18
+- 日期：2026-09-18；2026-10-01 同步工具迭代预算改名、`RunRecord.version = 2` 与快照 v3
 - 实现：`src/frame/agent_tool/src/local_llm_context.rs`（SDK）、`src/frame/agent_tool/src/run_local_llm.rs`（CLI，`agent_tool xllm ...`）
 - 依据：[xllm PRD](../../product/xllm/PRD.md)。本文只记录 Rust 实现落实 PRD 时固定下来的协议决定，供 websdk 的 TS 版本对照；产品行为以 PRD 为准。
 
@@ -45,18 +45,20 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 `context_window`（顶层，token，可选）是模型上下文窗口，记入 `RunLimits.context_window_tokens`。设置后，待发送请求的估算达到窗口的 75% 时 waist 让出上下文压缩，估算加 `max_tokens` 超过窗口的请求从不发送；未设置时只在 Provider 以结构化错误码拒绝（OpenAI 兼容接口的 `context_length_exceeded`）时压缩。压缩用本次模型（`LlmSummarizeCompressor`），function_call 以 `RewrittenHistory`、behavior 以 `RewrittenSteps`（物化历史折叠进 input，编号继续）续跑，压缩后的上下文先保存快照再继续，每个 run 最多 3 次。
 
-`max_rounds` 是原生 tools 与 behavior actions 共用的工具轮数预算：每个实际派发的 action 批次消耗一轮，同一步多个 action 只计一轮，工具业务失败也计入；behavior 各步内的原生工具循环沿用剩余额度。额度耗尽后仍允许模型返回无工具的最终答案，再请求工具或 action 则进入 `limit_reached`，不会执行超额调用。
+`max_tool_iterations`（默认 8；CLI `--max-tool-iterations`，`TaskOverrides` / `RunLimits` / `ResumeLimits` 同名字段）是原生 tools 与 behavior actions 共用的工具预算，映射到 waist `ToolPolicy.max_tool_iterations`。一次工具迭代 = 一批实际派发的原生工具调用（一次 response 的全部调用），或一个派发 action 的 behavior Step（同一 Step 多个 action 只计一次）；工具业务失败也计入，behavior Step 内层的原生工具批次与外层 action 共用剩余额度。额度耗尽后仍允许模型返回无工具的最终答案，再请求工具或 action 则进入 `limit_reached`（`tool iteration limit (N) reached`），不会执行超额调用。`max_calls_per_round = 16` 另限一次 response（一个 Round）的原生调用数，不限制 Step 的 action 数。
+
+工具预算不计推理次数：无工具的最终回答、解析纠错后的重试都是 Round，但不消耗工具迭代。推理尝试数记在 `RunRecord.usage.llm_requests`（§5），xllm 不设推理次数上限。
 
 ## 5. Run 记录
 
 ```
 <runs_dir>/<run_id>/run.json        RunRecord
-<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（轮前 + outcome 边界）
+<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（每次推理前 + outcome 边界；快照 v3）
 <runs_dir>/<run_id>/.lock           该 Run 的执行互斥
 <lock_dir>/<hash(workdir)>.lock     启用工具的任务按工作目录互斥（默认 ~/.xllm/locks）
 ```
 
-`run_id` = `YYYYMMDD-HHMMSS-<6hex>`。`RunRecord` 关键字段：`status`、`workdir`、`input`（请求、来源、附件摘要与 sha256、stdin 角色）、`config`（Provider/模型/loop/限制/result_format/工具展开结果/配置文件与字段来源）、`prompt`（section 渲染结果、runtime_protocol 与版本、最终 system、模板变量）、`file_model_stage`、`pending_input`（首次快照前保留的输入，之后清空）、`latest_snapshot_idx`、`last_error`（phase/kind/message/recoverable/condition）、`result`（raw 原文、按 result_format 的提取值、`--json` 校验结果）、`artifacts`、`usage`（主模型/文件模型分别记录）、`limit_reason`、`interrupt_reason`。
+`run_id` = `YYYYMMDD-HHMMSS-<6hex>`。`RunRecord` 关键字段：`version`（当前 2）、`status`、`workdir`、`input`（请求、来源、附件摘要与 sha256、stdin 角色）、`config`（Provider/模型/loop/限制 `limits: RunLimits {max_tokens, max_tool_iterations, timeout_secs, llm_timeout_secs, context_window_tokens}`/result_format/工具展开结果/配置文件与字段来源）、`prompt`（section 渲染结果、runtime_protocol 与版本、最终 system、模板变量）、`file_model_stage`、`pending_input`（首次快照前保留的输入，之后清空）、`latest_snapshot_idx`、`last_error`（phase/kind/message/recoverable/condition）、`result`（raw 原文、按 result_format 的提取值、`--json` 校验结果）、`artifacts`、`usage`（主模型/文件模型分别记录；`llm_requests` = 本 Run 经宿主 `LlmClient::infer` 发起的推理尝试数，含失败尝试、文件模型阶段以及 xllm 自己执行时的上下文压缩摘要请求，每个执行段只累加、不重置）、`limit_reason`、`interrupt_reason`。
 
 ## 6. 状态机与错误分类
 
@@ -67,9 +69,9 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 | paused | 否 | Provider 超时 / Transient / 疑似凭据问题（Permanent 且信息含 token、401、expired 等）/ 存储 checkpoint 失败 / 工具基础设施失败 |
 | completed | 是 | waist `Done` |
 | failed | 是 | Provider Permanent（非凭据）/ Unknown、输出解析或工具错误连续超限、上下文压缩 3 次仍超限、deferred tool |
-| limit_reached | 是 | 工具轮数 / 总时长（`timeout`，映射为 waist wallclock 预算）/ token 预算 |
+| limit_reached | 是 | 工具迭代（`max_tool_iterations`）/ 总时长（`timeout`，映射为 waist wallclock 预算）/ token 预算 |
 
-resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，轮数额度沿用已消耗值（显式调高只增加差额）。保存于上下文上限挂起态的快照先压缩再续跑；等待 deferred 工具结果的快照报 `NotResumable`（xllm 不提供 deferred 结果）。
+resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，工具迭代沿用已消耗值（`ResumeLimits.max_tool_iterations` 显式调高时剩余 = 新总额 − 已消耗，只增加差额），`usage.llm_requests` 继续累加。`RunRecord.version` 不是 2 或快照版本不是 3 的 Run 不能恢复（不迁移旧格式）。保存于上下文上限挂起态的快照先压缩再续跑；等待 deferred 工具结果的快照报 `NotResumable`（xllm 不提供 deferred 结果）。
 
 ## 7. CLI（`agent_tool xllm`）
 
@@ -107,6 +109,7 @@ libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增�
 - **宿主装配（X2）**：`XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps) -> HostedTask`。宿主给出 `.llm_context` 的 JSON 形式（同 schema、严格键）和自己的 system 文本；xllm 计算有效配置、展开工具，并在宿主文本后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`protocol_version = xllm/1`）。`HostedTask::new_record` / `build_request`、`hosted_request`、`hosted_waist_deps`（behavior 用 `XllmActionParser` + `XmlStepRenderer`）让宿主驱动 waist，而 run 目录保持 xllm 可接手。`rebuild_toolset` / `create_run_llm` 按保存的记录重建工具与 Provider。
 - **RunStore（X1）**：`create_run`、`lock_run`、`remove_run`、`prune_snapshots` 公开；`run.json` 与快照写入先 fsync 再原子发布（目录也 fsync）。
 - **RunRecord 新字段**（均可缺省）：`host`（`assembled_by`、`session_id`、`runtime_kind`、`runtime_id`、`env_check`）、`host_commit_pending`、`inflight[]`、`executions[]`。
-- **resume 检查（X3 / X6）**：`version` 大于支持版本 → 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；`host.runtime_kind` 不是 `native` → 拒绝；取得 run 锁后先确认 `executions[]` 中旧执行已停止（`exec_tracking::stop_execution`，无法确认则拒绝），再把没有持久结果的 `inflight[]` 物化为“结果未知”（`materialize_unresolved`）并落盘，**不重放工具**。
+- **resume 检查（X3 / X6）**：`version` 不等于当前版本（`RUN_RECORD_VERSION = 2`）→ 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；`host.runtime_kind` 不是 `native` → 拒绝；取得 run 锁后先确认 `executions[]` 中旧执行已停止（`exec_tracking::stop_execution`，无法确认则拒绝），再把没有持久结果的 `inflight[]` 物化为“结果未知”（`materialize_unresolved`）并落盘，**不重放工具**。
 - **执行跟踪（X6）**：`agent_tool::exec_tracking`：`TrackedBashRunner`（启动握手：执行标识经 `ExecutionRegistrar` 持久化后才放行命令；子进程继承 `OPENDAN_EXECUTION_ID`）、`probe_execution` / `stop_execution`（按环境标记而不是可复用的 PID 核对，无法核对返回 Unknown）。`XllmDeps.bash_runner` 可注入该 runner；`XllmDeps.skip_workdir_lock` 让宿主自行协调共享 workspace。
+- **用量累加**：宿主驱动时由宿主在每个 outcome 后把本段推理尝试数加到 `usage.llm_requests`（libOpenDAN 如此），xllm 接手后在其上继续累加；任何执行段都不覆盖已有值。
 - 快照版本与宿主元数据见《LLM Context 设计》§9.4；session 协议见 `doc/opendan/protocol/`。
