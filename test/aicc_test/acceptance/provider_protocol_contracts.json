@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-09-29.2",
-  "checked_at": "2026-09-29",
+  "revision": "official-provider-protocols-2026-10-01.1",
+  "checked_at": "2026-10-01",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1821,7 +1821,7 @@
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
       "endpoint_path": "/api/v3",
-      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3"},
+      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/tts"},
       "credential_type": "bearer",
       "instance_fields": {"region": "cn-beijing"},
       "official_first_party_model_ids": {
@@ -1829,6 +1829,7 @@
         "vision.ocr": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "vision.caption": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "embedding.multimodal": ["doubao-embedding-vision-251215"],
+        "audio.tts": ["doubao-seed-tts-2.0"],
         "image.txt2img": ["doubao-seedream-5-0-pro-260628"],
         "image.img2img": ["doubao-seedream-5-0-pro-260628"],
         "video.txt2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
@@ -1846,6 +1847,7 @@
         "vision.ocr": "doubao-seed-2-0-lite-260428",
         "vision.caption": "doubao-seed-2-0-lite-260428",
         "embedding.multimodal": "doubao-embedding-vision-251215",
+        "audio.tts": "doubao-seed-tts-2.0",
         "image.txt2img": "doubao-seedream-5-0-pro-260628",
         "image.img2img": "doubao-seedream-5-0-pro-260628",
         "video.txt2video": "doubao-seedance-2-0-260128",
@@ -1871,6 +1873,29 @@
         "success_fixture": {"created_at": 1780000000, "id": "resp_doubao_standard_mock_1", "model": "doubao-seed-2-0-lite-260428", "object": "response", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": []}], "status": "completed", "id": "msg_mock_1"}], "status": "completed", "store": false, "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
         "official_sources": ["https://www.volcengine.com/docs/82379/1585128", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
         "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
+      }, {
+        "id": "doubao.tts.v3",
+        "protocol_adapter_id": "doubao-responses",
+        "error_fixture_key": "doubao-tts",
+        "api_version": "v3",
+        "api_types": ["audio.tts"],
+        "operation": "tts.unidirectional",
+        "http_method": "POST",
+        "path": "/api/v3/tts/unidirectional",
+        "auth": {"kind": "header", "name": "x-api-key", "prefix": ""},
+        "required_headers": {"x-api-resource-id": "seed-tts-2.0", "x-control-require-usage-tokens-return": "*"},
+        "content_type": "application/json",
+        "required_body_fields": ["req_params"],
+        "allowed_body_fields": ["req_params"],
+        "body_field_types": {"req_params": ["object"]},
+        "success_content_type": "text/plain",
+        "success_chunk_fixtures": [
+          {"code": 0, "message": "", "data": "SUQz"},
+          {"code": 0, "message": "", "data": "BA==", "usage": {"text_words": 5}},
+          {"code": 20000000, "message": "OK", "data": null}
+        ],
+        "official_sources": ["https://www.volcengine.com/docs/6561/1598757?lang=zh", "https://www.volcengine.com/docs/6257/2607681?lang=zh"],
+        "evidence_summary": "Standard Doubao Voice TTS uses X-Api-Key with seed-tts-2.0 against /api/v3/tts/unidirectional; Ark-created IAM API Keys may receive cross-product permissions."
       }, {
         "id": "doubao.translation.responses.v3",
         "protocol_adapter_id": "doubao-responses",

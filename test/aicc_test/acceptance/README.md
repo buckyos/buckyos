@@ -19,6 +19,9 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 - `cloud_update_fixture_service.ts`：启动独立 `cyfs-gateway` `cyfs-dir` NDN 服务，以 process chain 将协议路径绑定到 Named Object，并为 T1/T1.5 发布 index、manifest、catalog 与 tombstone。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
+- `route_exposure_contracts.json`：独立于 AICC metadata 的路由暴露契约。它逐一登记能力基线中的 Provider Profile 和 Model Rule，并把每个 API type 分类为 `logical_routable`、`exact_only`、`excluded` 或 `not_applicable`；缺少分类、未知规则、无理由例外和跨 API logical entrypoint 都会使 preflight 失败。
+
+Preflight 的路由覆盖粒度是 `Provider Profile × Model Rule × API type × Exposure Mode`，而不是“某个 API 在任意 Provider 出现过一次”。契约用 `capability_cells_sha256` 冻结完整 cell 集合，因此即使只给既有 Model Rule 增加一个 API type，也必须显式更新契约。`logical_routable` 的入口允许使用 `{api_type}` 模板；T1 根据运行时 inventory 生成实际 cell 并验证入口闭环。`exact_only` 必须在契约中显式覆盖并给出原因，运行时 inventory 还必须确认该 API 没有 logical mount；不能因为 metadata 缺少 mount 而自动推断为 exact-only。
 
 WP-01 至 WP-17 的模块单测入口与验收职责保持如下映射；T1/T1.5 只覆盖跨模块集成，不替代这些入口：
 

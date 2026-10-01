@@ -41,7 +41,7 @@
       {"when": {"api_type": "video.extend", "operation": "ark.contents.generate"}, "set": {"omni_reference_task_type": "extend"}}
     ]},
     {"id": "doubao-embedding-vision", "operations": {"embedding.multimodal": "ark.embeddings.multimodal"}},
-    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "agent_plan"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
+    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "agent_plan", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
   ],
   "patterns": [
     {

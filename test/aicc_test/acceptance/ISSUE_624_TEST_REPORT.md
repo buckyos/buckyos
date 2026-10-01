@@ -1,5 +1,12 @@
 # Issue #624 / PR #634 Review 修复验证报告
 
+> 2026-10-01 correction: official IAM documentation confirms that an API Key
+> created by Ark can be granted permissions for other Volcengine products.
+> After Doubao Voice is activated for the same project and identity, the
+> standard Provider may therefore use that key with the Voice V3 `X-Api-Key`
+> endpoint. Standard `audio.tts` metadata and protocol coverage were added on
+> that basis; `/api/v3/models` still does not discover speech products.
+
 For the final developer-facing model-by-model verdict merged from every T2 rerun, see [DOUBAO_T2_CONSOLIDATED_REPORT.md](DOUBAO_T2_CONSOLIDATED_REPORT.md).
 
 Test dates: 2026-09-25 through 2026-09-30

@@ -112,9 +112,39 @@ export type ProviderModel = {
 export type ProviderInventory = {
   provider_instance_name: string;
   provider_driver: string;
+  provider_profile_id?: string;
   provider_type?: string;
   inventory_revision?: string | null;
   models: ProviderModel[];
+};
+
+export type RouteExposureMode =
+  | "logical_routable"
+  | "exact_only"
+  | "excluded"
+  | "not_applicable";
+
+export type RouteExposureDeclaration = {
+  mode: RouteExposureMode;
+  logical_entrypoint?: string;
+  reason?: string;
+};
+
+export type RouteExposureContract = {
+  schema_version: number;
+  contract_revision: string;
+  capability_baseline_revision: string;
+  capability_cells_sha256: string;
+  profiles: Array<{
+    provider_driver: string;
+    provider_profile_id: string;
+    covered_model_patterns: string[];
+    default_exposure: RouteExposureDeclaration;
+    overrides: Array<RouteExposureDeclaration & {
+      model_pattern: string;
+      api_type: string;
+    }>;
+  }>;
 };
 
 export type CapabilityRule = {
@@ -282,7 +312,10 @@ export type CaseReport = {
   layer: TestLayer;
   status: ResultStatus;
   provider_driver?: string;
+  provider_profile_id?: string;
   provider_instance?: string;
+  model_rule?: string;
+  exposure_mode?: RouteExposureMode;
   exact_model?: string;
   api_type?: string;
   method: string;
@@ -347,6 +380,20 @@ export type AcceptanceReport = {
     unexecuted_case_ids: string[];
   };
   t1_requirement_coverage?: import("./coverage.ts").T1Coverage;
+  route_exposure_coverage?: {
+    planned: number;
+    passed: number;
+    failed: number;
+    skipped: number;
+    cells: Array<{
+      case_id: string;
+      provider_profile_id: string;
+      model_rule: string;
+      api_type: string;
+      exposure_mode: RouteExposureMode;
+      status: ResultStatus;
+    }>;
+  };
   cleanup: { status: "passed" | "failed"; details: string[] };
 };
 

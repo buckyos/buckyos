@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 7,
+  "revision_seq": 8,
   "required_features": [],
   "models": [
     {
@@ -233,7 +233,7 @@
       "id": "doubao-seed-tts-2.0",
       "parameter_scale": "audio",
       "api_types": ["audio.tts"],
-      "logical_mounts": ["audio.tts.doubao", "audio.tts.{model}"],
+      "logical_mounts": ["audio.tts", "audio.tts.doubao", "audio.tts.{model}"],
       "capabilities": {"streaming": true}
     },
     {

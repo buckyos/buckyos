@@ -154,6 +154,34 @@ T2 为每个获准测试的 Provider instance 枚举全部 active、已配置且
 
 Fal 这类异构端点市场必须把 endpoint 视为协议与能力边界。每个进入 T1.5/T2 的 endpoint 都必须有独立官方 Schema 或官方文档证据；不得把市场中的其他端点视为同一 adapter 的协议兼容模型。
 
+### 4.5 路由暴露契约
+
+能力基线中的每个可执行单元必须按以下粒度拥有独立、显式的路由暴露声明：
+
+```text
+Provider Profile × Model Rule × canonical API type × Exposure Mode
+```
+
+Exposure Mode 只能是：
+
+- `logical_routable`：产品承诺通过一个公开 logical entrypoint 调用。契约必须声明入口；T1 必须验证入口经默认树引用、family path、model logical mount、运行时 inventory、operation 和 adapter 构成完整闭环。
+- `exact_only`：产品只承诺精确模型调用。契约必须给出产品原因；该模型/API 不得挂载任何 logical path，T1 必须验证 exact 数据面调用成功且 logical candidate 集合不包含它。
+- `excluded`：该规则不是可执行 inventory，必须说明排除原因和生命周期依据。
+- `not_applicable`：该 Provider Profile、Model Rule 不支持该 API type，必须由能力基线或继承关系明确说明。
+
+`exact_only` 不能由“当前 metadata 没有 logical mount”推断。路由暴露契约必须独立于 Provider metadata、Model Driver metadata、运行时 inventory 和现有日志维护；否则同一个 metadata 缺陷可能同时删除实现和期望结果，使测试错误通过。新增或修改能力规则时，必须在同一变更中更新路由暴露契约。
+
+Preflight 必须双向验证：
+
+1. 每个 Provider Profile 和每条 Model Rule 都被契约登记，契约中不存在能力基线之外的 profile 或规则。
+2. 每个 active/preview `Model Rule × API type` 恰好得到一个 exposure 分类；未分类数量必须为零。
+3. `logical_routable` 有合法且属于同一 API type 的 logical entrypoint。
+4. `exact_only` 没有 logical entrypoint，并具有非空原因。
+5. `excluded`、`not_applicable` 不能掩盖能力基线中 active/preview 的可执行 API。
+6. 契约 revision 明确绑定能力基线 revision，并冻结完整 `Provider Profile × Model Rule × API type` cell 集合；即使只在既有规则中增加 API type，任一侧单独变化也必须失败。
+
+Preflight 报告必须按 Provider Profile 和 API type 汇总 `logical_routable`、`exact_only`、`excluded`、`not_applicable` 与 `unclassified` 数量，其中 `unclassified` 必须为零。集合级“每个 canonical API 至少出现一次”只能作为值域检查，不能代替上述矩阵完整性检查。
+
 ## 5. 总体分层
 
 | 层级 | 被测主链路 | 模型 | 核心目标 |
@@ -248,6 +276,23 @@ Mock Provider 必须位于 Provider HTTP/远端协议边界，不能只替换 AI
 - 合法但不存在的模型。
 - 非法精确模型名、非法逻辑路径和不存在的 Provider instance。
 - 已禁用、已下线、未挂载和 metadata 损坏的模型。
+
+T1 Runner 必须加载 4.5 节的独立路由暴露契约，并基于 `models.list` 为本轮实际 inventory 生成 `Provider Profile × Model Rule × API type × Exposure Mode` cell。生成过程不得只为每个 API type 挑选一个全局首选模型，也不得以图片、视频、音频或任何单一模态写特化白名单。文生图、文生视频、文生音频、embedding、vision、decision、rerank、LLM 等均由同一参数化规则产生。
+
+对于 `logical_routable` cell，至少验证：
+
+- logical entrypoint 可解析，且 route trace 展示完整引用链；
+- 候选属于目标 Provider Profile、匹配目标 Model Rule 并支持目标 API type；
+- inventory、operation 与 adapter 均存在；
+- 期望路径缺 mount、悬空引用、错误 API operation 或无 adapter 时失败。
+
+对于 `exact_only` cell，至少验证：
+
+- 运行时 inventory 中该 API 没有 logical mount；
+- exact typed method 可到达目标 Provider instance、operation 和 adapter；
+- 使用对应 logical entrypoint 时，该 exact model 不进入候选集合。
+
+运行时出现契约未分类的 model/API、声明之外的 logical mount，或契约期待 logical route 但 inventory 缺少闭环，均按 `baseline_mismatch` 阻断，不得自动降级为 skipped 或 exact-only。
 
 `route.resolve` 只用于逻辑模型解析。精确模型应通过要求 exact model 的数据面接口或现有 exact 调用路径测试，主要验证解析、api_type、capability、instance、adapter 和默认不 fallback。不得把 `route.resolve(exact_model)` 当作正式需求。
 
@@ -855,6 +900,7 @@ run_id
 - planned、passed、failed、provider_restricted、skipped、not_applicable、review 数量。
 - 每次 attempt、耗时、错误码、failure class 和脱敏诊断。
 - T1 路由分支/组合覆盖率。
+- T1 路由暴露矩阵按 Provider Profile、Model Rule、API type 和 Exposure Mode 的 planned/passed/failed 明细，以及 logical/exact-only/excluded/not-applicable/unclassified 汇总。
 - T1.5 按 Provider、adapter/API version、API type 的官方协议请求/响应/错误覆盖率及证据 revision。
 - T1.5 同一 session `source 四元组 x target 四元组` 切换矩阵的 planned/passed/failed/skipped 明细、合并依据和 provider_state 转换证据。
 - T1.5 artifact task-result 回归用例的 planned/passed/failed/skipped 明细，覆盖 Provider driver、API type、资源表示、TaskMgr task 终态和 inline base64 清除证据。
@@ -904,13 +950,14 @@ T2/T3 会访问真实 Provider、真实消息入口或修改运行环境。CodeA
 每次 Provider、模型、metadata、路由或 adapter 变更后，至少执行：
 
 1. 更新官方能力证据和 release baseline。
-2. 更新 AICC metadata、inventory、api_type 和 adapter。
-3. 对比官方能力与 AICC 声明，确保双向一致。
-4. 更新受影响的 T1/T1.5/T2 case manifest。
-5. 执行受影响 case。
-6. 执行该 Provider 的 T1.5 协议回归和受影响的 T2 `ProviderInstance × model × API-Type` 单元。
-7. 执行全量发布验收。
-8. 验证事实配置、运营策略和路由配置的回滚。
+2. 更新独立路由暴露契约，显式声明新增或变化的 logical/exact-only/例外单元。
+3. 更新 AICC metadata、inventory、api_type 和 adapter。
+4. 对比官方能力、路由暴露契约与 AICC 声明，确保三方一致。
+5. 更新受影响的 T1/T1.5/T2 case manifest。
+6. 执行受影响 case。
+7. 执行该 Provider 的 T1.5 协议回归和受影响的 T2 `ProviderInstance × model × API-Type` 单元。
+8. 执行全量发布验收。
+9. 验证事实配置、运营策略和路由配置的回滚。
 
 ## 15. 建议实施里程碑
 
