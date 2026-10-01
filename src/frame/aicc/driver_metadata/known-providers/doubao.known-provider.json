@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 6,
+  "revision_seq": 7,
   "catalog_id": "doubao",
   "providers": [
     {
@@ -20,7 +20,8 @@
         "policy_region": {"mode": "optional", "default_value": "unknown", "allowed_values": ["unknown", "cn", "other"]},
         "operation_base_urls": {
           "ark.images.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3"
+          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3",
+          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
         }
       },
       "ui_hints": {

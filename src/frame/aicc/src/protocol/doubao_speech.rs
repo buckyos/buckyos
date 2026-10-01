@@ -4,16 +4,16 @@ use super::{
     ProtocolError, ProtocolErrorKind, ProtocolExecution, ProtocolOutput, ProtocolResultValue,
 };
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use buckyos_api::{AiArtifact, AiUsage, AiccCall, ApiType, ResourceRef};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, Url};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
     Arc,
+    atomic::{AtomicU64, Ordering},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -93,12 +93,16 @@ impl OperationCodec for DoubaoTtsCodec {
                 "Doubao TTS codec received the wrong canonical request",
             ));
         };
-        if request.speed.is_some() {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Doubao Agent Plan TTS does not expose canonical speed control",
-            ));
-        }
+        let wire_profile = call
+            .input
+            .resolved_parameters
+            .get("doubao_tts_wire_profile")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                ProtocolError::invalid_configuration(
+                    "Doubao TTS wire profile is missing or unsupported",
+                )
+            })?;
         let speaker = call
             .input
             .resolved_parameters
@@ -108,28 +112,71 @@ impl OperationCodec for DoubaoTtsCodec {
             .ok_or_else(|| {
                 ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
-                    "Doubao Agent Plan TTS requires a resolved speaker",
+                    "Doubao TTS requires a resolved speaker",
                 )
             })?;
-        let mut audio = Map::from_iter([
-            ("format".to_owned(), json!("mp3")),
-            ("sample_rate".to_owned(), json!(24000)),
-        ]);
+        let mut format = "mp3";
+        let mut sample_rate = 24000;
         if let Some(output) = &request.output {
             if let Some(media_type) = &output.media_type {
-                audio.insert("format".to_owned(), json!(audio_format(media_type)?));
+                format = audio_format(media_type)?;
+                if format == "ogg_opus" && output.sample_rate.is_none() {
+                    sample_rate = 48000;
+                }
             }
-            if let Some(sample_rate) = output.sample_rate {
-                audio.insert("sample_rate".to_owned(), json!(sample_rate));
+            if let Some(requested_sample_rate) = output.sample_rate {
+                sample_rate = requested_sample_rate;
             }
         }
-        let body = json!({
-            "req_params": {
-                "text": request.text,
-                "speaker": speaker,
-                "audio_params": Value::Object(audio)
+        validate_audio_params(format, sample_rate)?;
+        let mut audio = Map::from_iter([
+            ("format".to_owned(), json!(format)),
+            ("sample_rate".to_owned(), json!(sample_rate)),
+        ]);
+        if let Some(speed) = request.speed {
+            if wire_profile != "standard" {
+                return Err(ProtocolError::new(
+                    ProtocolErrorKind::UnsupportedOperation,
+                    "Doubao Agent Plan TTS does not expose canonical speed control",
+                ));
             }
-        });
+            audio.insert("speech_rate".to_owned(), json!(speech_rate(speed)?));
+        }
+        let mut req_params = Map::from_iter([
+            ("text".to_owned(), json!(request.text)),
+            ("speaker".to_owned(), json!(speaker)),
+            ("audio_params".to_owned(), Value::Object(audio)),
+        ]);
+        if let Some(model) = call
+            .input
+            .resolved_parameters
+            .get("doubao_tts_model")
+            .and_then(Value::as_str)
+        {
+            req_params.insert("model".to_owned(), json!(model));
+        }
+        if wire_profile == "standard" {
+            if let Some(language) = &request.voice.language {
+                let additions = serde_json::to_string(&json!({
+                    "explicit_language": explicit_language(language)?
+                }))
+                .map_err(|_| {
+                    ProtocolError::invalid_configuration(
+                        "Doubao TTS additions could not be serialized",
+                    )
+                })?;
+                req_params.insert("additions".to_owned(), json!(additions));
+            }
+            if let Some(instructions) = request
+                .voice
+                .instructions
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+            {
+                req_params.insert("context_texts".to_owned(), json!([instructions]));
+            }
+        }
+        let body = json!({"req_params": Value::Object(req_params)});
         let mut url = Url::parse(&call.context.base_url)
             .map_err(|_| ProtocolError::invalid_configuration("Doubao TTS base URL is invalid"))?;
         let base = url.path().trim_end_matches('/');
@@ -137,17 +184,20 @@ impl OperationCodec for DoubaoTtsCodec {
         let mut wire = HttpRequest::new(Method::POST, url.to_string());
         wire.headers
             .insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        wire.headers.insert(
-            HeaderName::from_static("x-api-resource-id"),
-            HeaderValue::from_static("seed-tts-2.0"),
-        );
-        match call
+        let resource_id = call
             .input
             .resolved_parameters
-            .get("doubao_tts_wire_profile")
+            .get("doubao_tts_resource_id")
             .and_then(Value::as_str)
-        {
-            Some("standard") => {
+            .unwrap_or("seed-tts-2.0");
+        wire.headers.insert(
+            HeaderName::from_static("x-api-resource-id"),
+            HeaderValue::from_str(resource_id).map_err(|_| {
+                ProtocolError::invalid_configuration("Doubao TTS resource ID is invalid")
+            })?,
+        );
+        match wire_profile {
+            "standard" => {
                 wire.headers.insert(
                     HeaderName::from_static("x-api-request-id"),
                     HeaderValue::from_str(&request_id()).map_err(|_| {
@@ -159,7 +209,7 @@ impl OperationCodec for DoubaoTtsCodec {
                     HeaderValue::from_static("*"),
                 );
             }
-            Some("agent_plan") => {
+            "agent_plan" => {
                 wire.headers.insert(
                     HeaderName::from_static("x-control-request-usage-tokens"),
                     HeaderValue::from_static("true"),
@@ -435,7 +485,68 @@ fn audio_format(media_type: &str) -> ProtocolResultValue<&'static str> {
         "audio/ogg" | "audio/opus" => Ok("ogg_opus"),
         _ => Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "Doubao Agent Plan TTS does not support the requested audio media type",
+            "Doubao TTS does not support the requested audio media type",
+        )),
+    }
+}
+
+fn validate_audio_params(format: &str, sample_rate: u32) -> ProtocolResultValue<()> {
+    const SAMPLE_RATES: [u32; 7] = [8000, 16000, 22050, 24000, 32000, 44100, 48000];
+    if !SAMPLE_RATES.contains(&sample_rate) || (format == "ogg_opus" && sample_rate != 48000) {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Doubao TTS does not support the requested audio sample rate",
+        ));
+    }
+    Ok(())
+}
+
+fn speech_rate(speed: f64) -> ProtocolResultValue<i64> {
+    if !speed.is_finite() || !(0.5..=2.0).contains(&speed) {
+        return Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            "Doubao TTS speed must be between 0.5 and 2.0",
+        ));
+    }
+    Ok(((speed - 1.0) * 100.0).round() as i64)
+}
+
+fn explicit_language(language: &str) -> ProtocolResultValue<&'static str> {
+    match language.to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" => Ok("zh-cn"),
+        "en" | "en-us" | "en-gb" => Ok("en"),
+        "ja" | "ja-jp" => Ok("ja"),
+        "es" | "es-es" => Ok("es-es"),
+        "es-mx" => Ok("es-mx"),
+        "id" | "id-id" => Ok("id"),
+        "pt" | "pt-pt" => Ok("pt"),
+        "pt-br" => Ok("pt-br"),
+        "ko" | "ko-kr" => Ok("ko"),
+        "it" | "it-it" => Ok("it"),
+        "de" | "de-de" => Ok("de"),
+        "fr" | "fr-fr" => Ok("fr"),
+        "th" | "th-th" => Ok("th"),
+        "vi" | "vi-vn" => Ok("vi"),
+        "ru" | "ru-ru" => Ok("ru"),
+        "fil" | "fil-ph" => Ok("fil"),
+        "ms" | "ms-my" => Ok("ms"),
+        "ar" | "ar-sa" => Ok("ar"),
+        "pl" | "pl-pl" => Ok("pl"),
+        "tr" | "tr-tr" => Ok("tr"),
+        "sv" | "sv-se" => Ok("sv"),
+        "nl" | "nl-nl" => Ok("nl"),
+        "no" | "nb-no" | "nn-no" => Ok("no"),
+        "uk" | "uk-ua" => Ok("uk"),
+        "fi" | "fi-fi" => Ok("fi"),
+        "da" | "da-dk" => Ok("da"),
+        "cs" | "cs-cz" => Ok("cs"),
+        "hu" | "hu-hu" => Ok("hu"),
+        "el" | "el-gr" => Ok("el"),
+        "ro" | "ro-ro" => Ok("ro"),
+        "hi" | "hi-in" => Ok("hi"),
+        _ => Err(ProtocolError::new(
+            ProtocolErrorKind::UnsupportedOperation,
+            format!("Doubao TTS does not support language `{language}`"),
         )),
     }
 }
@@ -448,7 +559,7 @@ mod tests {
     };
     use buckyos_api::{AudioTextToSpeechRequest, ProviderStateCoordinate};
     use bytes::Bytes;
-    use reqwest::{header::HeaderMap, StatusCode};
+    use reqwest::{StatusCode, header::HeaderMap};
     use std::collections::BTreeMap;
     use std::time::Duration;
 
@@ -472,19 +583,26 @@ mod tests {
     }
 
     fn input(wire_profile: &str) -> CodecInput {
+        input_with_request(
+            wire_profile,
+            json!({
+                "exact_model": "doubao-seed-tts-2.0@doubao-main",
+                "text": "hello",
+                "voice": {"language": "zh-CN"}
+            }),
+        )
+    }
+
+    fn input_with_request(wire_profile: &str, request: Value) -> CodecInput {
         CodecInput {
             canonical_request: AiccCall::AudioTextToSpeech(
-                AudioTextToSpeechRequest::from_json(json!({
-                    "exact_model": "doubao-seed-tts-2.0@doubao-main",
-                    "text": "hello",
-                    "voice": {"language": "zh-CN"}
-                }))
-                .unwrap(),
+                AudioTextToSpeechRequest::from_json(request).unwrap(),
             ),
             resolved_parameters: BTreeMap::from([
                 ("provider_model_id".to_owned(), json!("doubao-seed-tts-2.0")),
                 ("speaker".to_owned(), json!("zh_female_test")),
                 ("doubao_tts_wire_profile".to_owned(), json!(wire_profile)),
+                ("doubao_tts_resource_id".to_owned(), json!("seed-tts-2.0")),
             ]),
         }
     }
@@ -512,9 +630,11 @@ mod tests {
             "*"
         );
         assert!(standard.headers.contains_key("x-api-request-id"));
-        assert!(!standard
-            .headers
-            .contains_key("x-control-request-usage-tokens"));
+        assert!(
+            !standard
+                .headers
+                .contains_key("x-control-request-usage-tokens")
+        );
 
         let agent_plan = registry
             .encode(
@@ -533,6 +653,56 @@ mod tests {
             "true"
         );
         assert!(!agent_plan.headers.contains_key("x-api-request-id"));
+    }
+
+    #[test]
+    fn standard_tts_lowers_supported_canonical_parameters() {
+        let (descriptor, registration) = doubao_speech_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let request = registry
+            .encode(
+                DOUBAO_SPEECH_ADAPTER_ID,
+                DOUBAO_TTS_OPERATION_ID,
+                ApiType::AudioTextToSpeech,
+                &input_with_request(
+                    "standard",
+                    json!({
+                        "exact_model": "doubao-seed-tts-2.0@doubao-main",
+                        "text": "hello",
+                        "voice": {
+                            "language": "en-US",
+                            "instructions": "Speak calmly"
+                        },
+                        "speed": 1.25,
+                        "output": {"media_type": "audio/ogg", "sample_rate": 48000}
+                    }),
+                ),
+                &context("https://openspeech.bytedance.com/api/v3/tts"),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON request body");
+        };
+        assert_eq!(body["req_params"]["audio_params"]["format"], "ogg_opus");
+        assert_eq!(body["req_params"]["audio_params"]["sample_rate"], 48000);
+        assert_eq!(body["req_params"]["audio_params"]["speech_rate"], 25);
+        assert_eq!(body["req_params"]["context_texts"], json!(["Speak calmly"]));
+        assert_eq!(
+            body["req_params"]["additions"],
+            json!("{\"explicit_language\":\"en\"}")
+        );
+    }
+
+    #[test]
+    fn standard_tts_rejects_unsupported_speed_and_language() {
+        assert!(speech_rate(0.49).is_err());
+        assert!(speech_rate(2.01).is_err());
+        assert!(explicit_language("eo").is_err());
+        assert!(validate_audio_params("mp3", 24000).is_ok());
+        assert!(validate_audio_params("ogg_opus", 48000).is_ok());
+        assert!(validate_audio_params("mp3", 12000).is_err());
+        assert!(validate_audio_params("ogg_opus", 24000).is_err());
     }
 
     #[tokio::test]

@@ -21,6 +21,7 @@ doubao-agent-plan|doubao-responses|video.txt2video|ark.contents.generate
 doubao-agent-plan|doubao-responses|video.video2video|ark.contents.generate
 doubao-agent-plan|doubao-responses|vision.caption|responses.create
 doubao-agent-plan|doubao-responses|vision.ocr|responses.create
+doubao|doubao-responses|audio.tts|tts.unidirectional
 doubao|doubao-responses|embedding.multimodal|ark.embeddings.multimodal
 doubao|doubao-responses|image.img2img|ark.images.generate
 doubao|doubao-responses|image.txt2img|ark.images.generate

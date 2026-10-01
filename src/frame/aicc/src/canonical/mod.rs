@@ -497,14 +497,19 @@ fn resolve_doubao_voice(requirement: &CanonicalFieldRequirement) -> ResolvedCano
     let Some(requested) = parse_voice_spec(requirement) else {
         return unsupported();
     };
-    if requested == VoiceSpec::default() {
-        return resolved_with_options(
-            CanonicalMatchQuality::Exact,
-            requirement.value.clone(),
-            BTreeMap::from([("speaker".to_owned(), json!("zh_female_vv_uranus_bigtts"))]),
-        );
+    if requested.gender.is_some() || requested.style.is_some() {
+        return unsupported();
     }
-    unsupported()
+    let quality = if requested.instructions.is_some() {
+        CanonicalMatchQuality::Prompt
+    } else {
+        CanonicalMatchQuality::Exact
+    };
+    resolved_with_options(
+        quality,
+        requirement.value.clone(),
+        BTreeMap::from([("speaker".to_owned(), json!("zh_female_vv_uranus_bigtts"))]),
+    )
 }
 
 struct GlmVoiceProfile {
@@ -834,6 +839,24 @@ mod tests {
                 .provider_options["voice"],
             "alloy"
         );
+        let doubao = CanonicalFieldMapping {
+            converter: CanonicalFieldConverter::DoubaoTtsVoiceV1,
+            fallback: CanonicalFallback::Default { value: json!({}) },
+        };
+        let doubao_directed = resolve_canonical_field(
+            Some(&doubao),
+            &CanonicalFieldRequirement::new(json!({
+                "language": "zh-CN",
+                "instructions": "用温柔的语气朗读"
+            })),
+        );
+        assert_eq!(doubao_directed.quality, CanonicalMatchQuality::Prompt);
+        assert_eq!(
+            doubao_directed.resolution.unwrap().provider_options["speaker"],
+            "zh_female_vv_uranus_bigtts"
+        );
+        let doubao_style = CanonicalFieldRequirement::strict(json!({"style": "warm"}));
+        assert!(!resolve_canonical_field(Some(&doubao), &doubao_style).satisfies(&doubao_style));
     }
 
     #[test]

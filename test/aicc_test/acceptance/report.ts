@@ -150,6 +150,14 @@ export function validateAcceptanceReport(value: unknown): asserts value is Accep
       requireNonNegativeNumber(value.limits[field], `limits.${field}`);
     }
   }
+  if (value.route_exposure_coverage !== undefined) {
+    if (!isObject(value.route_exposure_coverage) || !Array.isArray(value.route_exposure_coverage.cells)) {
+      throw new Error("route_exposure_coverage must contain cells");
+    }
+    for (const field of ["planned", "passed", "failed", "skipped"] as const) {
+      requireNonNegativeNumber(value.route_exposure_coverage[field], `route_exposure_coverage.${field}`);
+    }
+  }
   if (!isObject(value.finance) || value.finance.currency !== "USD" || !Array.isArray(value.finance.entries)) {
     throw new Error("finance must use the fixed USD report schema");
   }
@@ -200,6 +208,9 @@ function markdown(report: AcceptanceReport): string {
       : []),
     ...(report.t1_requirement_coverage
       ? [`- T1 requirement branches: ${report.t1_requirement_coverage.executed_branches}/${report.t1_requirement_coverage.total_branches} (${(report.t1_requirement_coverage.coverage_rate * 100).toFixed(2)}%); passed=${report.t1_requirement_coverage.passed_branches}, failed=${report.t1_requirement_coverage.failed_branches}, skipped=${report.t1_requirement_coverage.skipped_branches}`]
+      : []),
+    ...(report.route_exposure_coverage
+      ? [`- T1 route exposure: ${report.route_exposure_coverage.passed}/${report.route_exposure_coverage.planned} passed; failed=${report.route_exposure_coverage.failed}, skipped=${report.route_exposure_coverage.skipped}`]
       : []),
     ...(report.targeted_retest_command
       ? ["", "## Targeted retest", "", "Run after fixing the reported defect; repeat `--case` to select additional cases:", "", "```bash", report.targeted_retest_command, "```"]

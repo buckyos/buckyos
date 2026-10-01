@@ -47,7 +47,7 @@ import {
 } from "./usage_audit.ts";
 import { selectSingleProviderInstances } from "./inventory_selection.ts";
 import { assertResponseShape, buildExactRequest } from "./payloads.ts";
-import { manifestCoverage } from "./run_t1_gateway.ts";
+import { manifestCoverage, routeExposureCoverage } from "./run_t1_gateway.ts";
 import {
   applyProviderTokens,
   configuredProviderTokens,
@@ -102,6 +102,13 @@ import {
   MOCK_PROVIDER_SCENARIOS,
   validateMockProviderContract,
 } from "./mock_provider_contract.ts";
+import {
+  assertExactOnlyIsUnmounted,
+  assertRouteExposureCompleteness,
+  buildRouteExposureRuntimeCells,
+  loadRouteExposureContract,
+  validateRouteExposureContract,
+} from "./route_exposure.ts";
 import {
   assertBackgroundRemovalTransparency,
   validateArtifactBytes,
@@ -1125,6 +1132,9 @@ test("preflight covers protocol, providers, and static cases", async () => {
     result.mock_provider_contract_version,
     MOCK_PROVIDER_CONTRACT_VERSION,
   );
+  assert.ok(result.route_exposure.logical_routable > CANONICAL_API_TYPES.length);
+  assert.equal(result.route_exposure.unclassified, 0);
+  assert.ok(Object.keys(result.route_exposure.by_provider_api).length > 10);
   assert.deepEqual(result.provider_drivers, [
     "claude",
     "deepseek",
@@ -1141,6 +1151,118 @@ test("preflight covers protocol, providers, and static cases", async () => {
     "sn-ai-provider",
     "typesafe",
   ]);
+});
+
+test("route exposure contract classifies every Provider Profile x Model Rule x API type", async () => {
+  const providerBaseline = await baseline();
+  const contract = await loadRouteExposureContract();
+  const summary = assertRouteExposureCompleteness(providerBaseline, contract);
+  const expectedCells = providerBaseline.providers.flatMap((provider) =>
+    provider.rules.flatMap((rule) => rule.api_types)
+  ).length;
+  assert.equal(
+    summary.logical_routable + summary.exact_only + summary.excluded + summary.not_applicable,
+    expectedCells,
+  );
+  assert.equal(summary.unclassified, 0);
+});
+
+test("route exposure cell snapshot rejects an API added under an existing model rule", async () => {
+  const providerBaseline = structuredClone(await baseline());
+  const contract = await loadRouteExposureContract();
+  const rule = providerBaseline.providers.find((provider) => provider.provider_driver === "qwen")!.rules[0];
+  rule.api_types.push("vision.caption");
+  rule.methods.push(...methodsForApiType("vision.caption"));
+  assert.throws(
+    () => assertRouteExposureCompleteness(providerBaseline, contract),
+    /capability cell snapshot differs/,
+  );
+});
+
+test("route exposure does not infer exact_only from a missing mount", async () => {
+  const providerBaseline = await baseline();
+  const contract = await loadRouteExposureContract();
+  const openai = providerBaseline.providers.find((provider) => provider.provider_driver === "openai")!;
+  const cells = buildRouteExposureRuntimeCells({
+    baseline: providerBaseline,
+    contract,
+    inventories: [{
+      provider_instance_name: "openai-test",
+      provider_driver: "openai",
+      provider_profile_id: "openai",
+      models: [{
+        exact_model: "gpt-image-2@openai-test",
+        provider_model_id: "gpt-image-2",
+        api_types: ["image.txt2img"],
+        logical_mounts: [],
+      }],
+    }],
+  });
+  assert.equal(openai.provider_profile_id, "openai");
+  assert.equal(cells.length, 1);
+  assert.equal(cells[0].exposure.mode, "logical_routable");
+  assert.equal(cells[0].exposure.logical_entrypoint, "image.txt2img");
+});
+
+test("exact_only exposure must be explicit, justified, and unmounted", async () => {
+  const providerBaseline = structuredClone(await baseline());
+  const raw = structuredClone(await loadRouteExposureContract());
+  const openai = raw.profiles.find((provider) => provider.provider_driver === "openai")!;
+  openai.overrides.push({
+    model_pattern: "gpt-image-*",
+    api_type: "image.txt2img",
+    mode: "exact_only",
+    reason: "Fixture verifies the exact-only exception contract.",
+  });
+  const contract = validateRouteExposureContract(raw);
+  assert.doesNotThrow(() => assertRouteExposureCompleteness(providerBaseline, contract));
+  const [cell] = buildRouteExposureRuntimeCells({
+    baseline: providerBaseline,
+    contract,
+    inventories: [{
+      provider_instance_name: "openai-test",
+      provider_driver: "openai",
+      provider_profile_id: "openai",
+      models: [{
+        exact_model: "gpt-image-2@openai-test",
+        provider_model_id: "gpt-image-2",
+        api_types: ["image.txt2img"],
+        logical_mounts: [],
+      }],
+    }],
+  });
+  assert.doesNotThrow(() => assertExactOnlyIsUnmounted(cell));
+  cell.logical_mounts.push("image.txt2img.openai");
+  assert.throws(() => assertExactOnlyIsUnmounted(cell), /has logical mounts/);
+});
+
+test("T1 report keeps route exposure matrix details separate from static manifest coverage", () => {
+  const coverage = routeExposureCoverage([{
+    run_id: "run",
+    case_id: "t1.route.exposure.doubao.doubao-seedream-.image.txt2img",
+    layer: "T1",
+    status: "failed",
+    provider_driver: "doubao",
+    provider_profile_id: "doubao",
+    provider_instance: "doubao-mock",
+    model_rule: "doubao-seedream-*",
+    exposure_mode: "logical_routable",
+    api_type: "image.txt2img",
+    method: "route.resolve",
+    outbound_message_ids: [],
+    artifact_ids: [],
+    attempts: [],
+  }]);
+  assert.equal(coverage.planned, 1);
+  assert.equal(coverage.failed, 1);
+  assert.deepEqual(coverage.cells[0], {
+    case_id: "t1.route.exposure.doubao.doubao-seedream-.image.txt2img",
+    provider_profile_id: "doubao",
+    model_rule: "doubao-seedream-*",
+    api_type: "image.txt2img",
+    exposure_mode: "logical_routable",
+    status: "failed",
+  });
 });
 
 test("T1 Mock Provider uses a fixed versioned control contract", () => {
@@ -4405,8 +4527,8 @@ test("review media wire regressions reject invalid sizes, duration, missing inpu
     ["qwen", "qwen.dashscope.video_synthesis.v1", { parameters: {duration:5,size:"1280*720"} }, [{parameters:{duration:5.5}}, {parameters:{ratio:"16:9"}}, {input:{}}]],
     ["qwen", "qwen.dashscope.image_synthesis.v1", { parameters:{size:"1024*1024",n:2} }, [{parameters:{size:"1024x1024"}}, {input:{}}]],
     ["qwen", "qwen.dashscope.image_edit.v1", {}, [{input:{messages:[]}}, {input:{messages:[{role:"user",content:[{text:"missing image"}]}]}}]],
-    ["doubao", "doubao.images.plan-v3", {size:"2848x1600"}, [{size:"16:9"}]],
-    ["doubao", "doubao.video-tasks.plan-v3", {duration:5}, [{duration:5.5}, {operation:"extend"}, {continuation_handle:"opaque"}]],
+    ["doubao-agent-plan", "doubao-agent-plan.images.plan-v3", {size:"2848x1600"}, [{size:"16:9"}]],
+    ["doubao-agent-plan", "doubao-agent-plan.video-tasks.plan-v3", {duration:5}, [{duration:5.5}, {operation:"extend"}, {continuation_handle:"opaque"}]],
     ["minimax", "minimax.music-generation.v1", {lyrics:"[Verse]\nhello"}, [{lyrics:""}]],
   ] as Array<[string,string,Record<string,unknown>,Array<Record<string,unknown>>]>) {
     const contract = protocolContract(catalog, provider, id);

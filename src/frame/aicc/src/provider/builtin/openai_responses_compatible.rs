@@ -961,7 +961,7 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 10,
+                    DOUBAO_PROFILE_ID => 11,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 7,
                     QWEN_PROFILE_ID => 4,
                     _ => 3,
@@ -1190,6 +1190,16 @@ mod tests {
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::Llm));
             assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+            if profile_id == DOUBAO_PROFILE_ID {
+                let tts = inventory
+                    .models
+                    .iter()
+                    .find(|model| model.provider_model_id == "doubao-seed-tts-2.0")
+                    .unwrap();
+                assert!(tts.api_types.contains(&ApiType::AudioTextToSpeech));
+                assert_eq!(tts.operations["audio.tts"], "tts.unidirectional");
+                assert!(tts.logical_mounts.iter().any(|mount| mount == "audio.tts"));
+            }
         }
     }
 }

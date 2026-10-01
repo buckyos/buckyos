@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-09-29.1",
-  "checked_at": "2026-09-29",
+  "baseline_revision": "2026-10-01.1",
+  "checked_at": "2026-10-01",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -1527,19 +1527,21 @@
         "https://docs.volcengine.com/docs/82379/2607688?lang=zh",
         "https://www.volcengine.com/docs/82379/1526459",
         "https://docs.volcengine.com/docs/82379/1541523?lang=zh",
-        "https://www.volcengine.com/docs/82379/1820188"
+        "https://www.volcengine.com/docs/82379/1820188",
+        "https://www.volcengine.com/docs/6561/1598757?lang=zh",
+        "https://www.volcengine.com/docs/6257/2607681?lang=zh"
       ],
       "protocol_evidence": {
         "documentation_version": "official documentation and authenticated /api/v3/models checked 2026-09-28",
         "streaming_semantics": "Responses supports documented semantic SSE events for compatible language models.",
         "async_operation_semantics": "Seedance uses /api/v3/contents/generations/tasks with create, poll/result and cancellation lifecycle.",
-        "usage_semantics": "Responses and content-generation task results expose model-specific token usage when returned by Ark.",
-        "input_output_formats": "Responses accepts text and input_image content; Seedance accepts text, image_url and video_url content items according to task type.",
+        "usage_semantics": "Responses and content-generation task results expose model-specific token usage when returned by Ark; standard TTS exposes billed text_words when requested through its control header.",
+        "input_output_formats": "Responses accepts text and input_image content; Seedance accepts text, image_url and video_url content items according to task type; standard TTS accepts text, speaker, language, instructions, speed, audio format and sample rate and returns base64 audio chunks.",
         "item_request_batch_limits": "Request and reference-item limits are model and task specific.",
         "image_audio_video_limits": "Seed 2.0 Lite supports image understanding; Seedance 2.0 and 2.5 use documented 4-second minimum outputs and model-specific resolution/reference limits.",
         "context_output_limits": "Seed 2.0 Lite has a 256k context window; other limits remain model specific.",
         "region_restrictions": "The built-in standard profile uses the cn-beijing /api/v3 endpoint.",
-        "account_tier_restrictions": "Model activation, account balance and media-service activation apply. Standard Ark API keys do not imply access to the project-scoped Doubao Voice data plane.",
+        "account_tier_restrictions": "Model activation, account balance and media-service activation apply. An Ark-created IAM API Key can call Doubao Voice only after the same IAM identity has the required cross-product permission and the project-scoped speech model service is activated.",
         "preview_allowlist": "Only physical model IDs returned by the authenticated /api/v3/models catalog are eligible."
       },
       "coverage_rules": [
@@ -1559,6 +1561,17 @@
         }
       ],
       "rules": [
+        {
+          "model_pattern": "doubao-seed-tts-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": ["audio.tts"],
+          "methods": ["audio.tts"],
+          "input_kinds": ["text"],
+          "output_kinds": ["audio"],
+          "source_urls": ["https://www.volcengine.com/docs/6561/1598757?lang=zh", "https://www.volcengine.com/docs/6257/2607681?lang=zh"],
+          "evidence_summary": "A standard Volcengine account can activate Doubao Voice TTS 2.0 and call the HTTP V3 endpoint with an X-Api-Key; an Ark-created IAM API Key can be granted the additional product permission."
+        },
         {
           "model_pattern": "doubao-embedding-vision-*",
           "status": "active",

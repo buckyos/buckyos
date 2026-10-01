@@ -2046,7 +2046,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 111);
+        assert_eq!(golden.len(), 112);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
@@ -2057,6 +2057,7 @@ mod tests {
         assert!(golden.contains(&"kimi|kimi-chat|vision.caption|chat.completions.create".into()));
         assert!(golden.contains(&"deepseek|deepseek-responses|vision.ocr|responses.create".into()));
         assert!(golden.contains(&"doubao|doubao-responses|vision.caption|responses.create".into()));
+        assert!(golden.contains(&"doubao|doubao-responses|audio.tts|tts.unidirectional".into()));
         assert!(golden.contains(
             &"doubao-agent-plan|doubao-responses|image.txt2img|ark.images.generate".into()
         ));
