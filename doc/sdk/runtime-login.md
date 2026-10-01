@@ -121,7 +121,7 @@ sequenceDiagram
 
 AppClient 面向用户交互程序。它可以有两种方式获得可用 token：
 
-1. 外部直接提供 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，runtime 直接使用。
+1. 外部直接提供 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，runtime 使用 verify-hub 签发的 session token，并解析其 target。应用会话从 `app_instance_id` / `app_owner_user_id` 补齐缺失的 owner；system 会话（如 `control-panel`）使用 system target，不要求 AppInstanceId。token 的 appid 必须与初始化时的 app_id 一致，显式传入的应用 owner 必须与 token 一致。
 2. 从本地 `.buckycli` / `.buckyos` 等目录读取 user config 和 user private key，生成本地登录 JWT，再通过 verify-hub 兑换。
 
 TS/Deno 侧常见写法是：

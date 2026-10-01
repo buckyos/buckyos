@@ -91,7 +91,7 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 
 `ensure_buckyos_runtime` 按顺序选择身份（`BUCKYOS_APP_ID` 可覆盖默认的 `buckycli`）：
 
-1. 设置了 `BUCKYOS_APPCLIENT_SESSION_TOKEN`：AppClient，直接使用该会话（OpenDAN 给工具注入的方式）。
+1. 设置了 `BUCKYOS_APPCLIENT_SESSION_TOKEN`：AppClient，直接使用 verify-hub 签发的 session token（OpenDAN 给工具注入的方式）。`BUCKYOS_APP_ID` 应与 token 的 appid 一致；应用 owner 从 token 的应用实例 claims 补齐，无需额外设置 `BUCKYOS_OWNER_USER_ID`。`control-panel` 等 system 会话使用自己的 system target。
 2. 在 OOD 本机且能读到设备密钥（`/opt/buckyos/security/<device>/authentication.private.pem`）：以 KernelService 语义初始化（服务地址走 127.0.0.1），用设备密钥签 `sub = iss = 设备名` 的登录断言，经 node gateway（默认 3180 端口）上的 verify-hub 换取正式会话后登录。`buckycli` 在 RBAC 中属于 kernel 角色，system-config 与 AICC 均接受。DV Test 环境下 root 直接运行即可，不需要 dev 目录或额外环境变量。
 3. 否则：AppClient，用 `$BUCKYOS_DEV_HOME` / `~/.buckycli` 下的用户私钥签断言，经 verify-hub 换会话；该路径要求所选 app 已安装在 zone 中（否则 verify-hub 返回 `AppAccessDenied`）。
 

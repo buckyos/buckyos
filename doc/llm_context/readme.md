@@ -189,10 +189,11 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 当前三个宿主都没有开启 deferred 工具，PendingTool 的结果回填还没接入。
 
 
-## AgentRuntime 
+## AgentRuntime （感觉这是一个llm_context依赖的的trait)
 
-简单的说，决定了tool的执行环境
-- 在
+- 实现所有的可用的tools,也就是说，所有的tools调用都先进入到Runtime里来再继续的
+- 实现了模版引擎运行所需要的环境，包括宏的执行，以及插入哪些预定的变量
+
 
 
 ## AgentState

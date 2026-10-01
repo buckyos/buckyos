@@ -183,6 +183,7 @@ pub struct BuckyOSRuntime {
     pub app_id: String,
     pub app_host_perfix: String,
     pub runtime_type: BuckyOSRuntimeType,
+    appclient_auth_target: Option<AuthTarget>,
     pub main_service_port: RwLock<u16>,
 
     pub user_id: Option<String>,
@@ -243,6 +244,7 @@ impl BuckyOSRuntime {
             user_id,
             authenticated_user_id: None,
             runtime_type,
+            appclient_auth_target: None,
             session_token: Arc::new(RwLock::new("".to_string())),
             refresh_token: Arc::new(RwLock::new("".to_string())),
             buckyos_root_dir: get_buckyos_root_dir(),
@@ -363,6 +365,9 @@ impl BuckyOSRuntime {
                             BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
                         );
                     } else {
+                        let token = RPCSessionToken::from_string(session_token.as_str())?;
+                        let claims = validate_verify_hub_token_claims(&token, TokenUse::Session)?;
+                        self.resolve_appclient_identity(&claims.target)?;
                         info!(
                             "load AppClient session_token from env var success: {}",
                             BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV
@@ -1347,6 +1352,9 @@ impl BuckyOSRuntime {
                         &authenticated_session_token,
                         TokenUse::Session,
                     )?;
+                    if self.runtime_type == BuckyOSRuntimeType::AppClient {
+                        self.resolve_appclient_identity(&claims.target)?;
+                    }
                     let expected = self.get_auth_target()?;
                     if claims.target != expected {
                         return Err(RPCErrors::InvalidToken(format!(
@@ -1702,7 +1710,56 @@ impl BuckyOSRuntime {
         AppInstanceId::new(app_id, owner_user_id).map_err(RPCErrors::ReasonError)
     }
 
+    fn resolve_appclient_identity(&mut self, target: &AuthTarget) -> Result<()> {
+        if target.appid_claim() != self.app_id {
+            return Err(RPCErrors::InvalidToken(format!(
+                "session token appid {} does not match runtime app_id {}",
+                target.appid_claim(),
+                self.app_id
+            )));
+        }
+        if let Some(expected) = self.appclient_auth_target.as_ref() {
+            if expected != target {
+                return Err(RPCErrors::InvalidToken(format!(
+                    "session token target {} does not match runtime target {}",
+                    target.canonical_key(),
+                    expected.canonical_key()
+                )));
+            }
+        }
+        if let AuthTarget::App { app_instance_id } = target {
+            let owner = app_instance_id.owner_user_id();
+            if self
+                .app_owner_id
+                .as_deref()
+                .is_some_and(|expected| expected != owner)
+            {
+                return Err(RPCErrors::InvalidToken(format!(
+                    "session token owner_user_id {} does not match runtime owner_user_id {}",
+                    owner,
+                    self.app_owner_id.as_deref().unwrap_or_default()
+                )));
+            }
+            self.app_owner_id = Some(owner.to_string());
+            if self.user_id.is_none() {
+                self.user_id = self.app_owner_id.clone();
+            }
+            self.app_host_perfix = format!("{}-{}", self.app_id, owner);
+        } else if self.app_owner_id.is_some() {
+            return Err(RPCErrors::InvalidToken(
+                "system session token does not match runtime application owner".to_string(),
+            ));
+        }
+        self.appclient_auth_target = Some(target.clone());
+        Ok(())
+    }
+
     pub fn get_auth_target(&self) -> Result<AuthTarget> {
+        if self.runtime_type == BuckyOSRuntimeType::AppClient {
+            if let Some(target) = self.appclient_auth_target.as_ref() {
+                return Ok(target.clone());
+            }
+        }
         match self.runtime_type {
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::AppClient => {
                 Ok(AuthTarget::app(self.get_app_instance_id()?))
@@ -2598,6 +2655,229 @@ fn resolve_host_to_ipv4_literal(host: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn appclient_session_token(target: &AuthTarget, token_use: TokenUse) -> String {
+        let (private_pem, _) = generate_ed25519_key_pair();
+        let key = EncodingKey::from_ed_pem(private_pem.as_bytes()).unwrap();
+        let (_, mut token) =
+            RPCSessionToken::generate_jwt_token("bob", target.appid_claim(), None, &key).unwrap();
+        token.iss = Some(VERIFY_HUB_TOKEN_ISSUER.to_string());
+        token
+            .extra
+            .insert("principal_kind".into(), Value::String("user".into()));
+        crate::bind_token_target(&mut token, target, token_use).unwrap();
+        token
+            .generate_jwt(Some(VERIFY_HUB_TOKEN_ISSUER.to_string()), &key)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn appclient_session_login_bootstraps_identity_from_token() {
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        for target in [
+            AuthTarget::app("notes.example.com@alice".parse().unwrap()),
+            AuthTarget::system("control-panel".parse().unwrap()),
+        ] {
+            let (_, public_key) = generate_ed25519_key_pair();
+            let zone_doc = ZoneDocument::new(
+                DID::new("web", "review.invalid"),
+                DID::new("web", "alice.invalid"),
+                serde_json::from_value(public_key).unwrap(),
+            );
+            let zone_config = ZoneConfig::from_zone_document(&zone_doc, None).unwrap();
+            let response_config = serde_json::to_string(&zone_config).unwrap();
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "http://{}/kapi/system_config",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut content_length = None;
+                loop {
+                    let mut line = String::new();
+                    assert!(stream.read_line(&mut line).await.unwrap() > 0);
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some((name, value)) = line.split_once(':') {
+                        if name.eq_ignore_ascii_case("content-length") {
+                            content_length = Some(value.trim().parse::<usize>().unwrap());
+                        }
+                    }
+                }
+                let mut body = vec![0; content_length.unwrap()];
+                stream.read_exact(&mut body).await.unwrap();
+                let request: Value = serde_json::from_slice(&body).unwrap();
+                let response = serde_json::json!({
+                    "sys": [request["sys"][0]],
+                    "result": {"value": response_config, "version": 1},
+                })
+                .to_string();
+                stream.write_all(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(), response
+                ).as_bytes()).await.unwrap();
+                request
+            });
+            let session_token = appclient_session_token(&target, TokenUse::Session);
+            let mut runtime = {
+                let _lock = crate::tests::test_env_lock().lock().unwrap();
+                let previous_token =
+                    crate::tests::set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, &session_token);
+                let previous_zone = crate::tests::set_env_var(
+                    "BUCKYOS_ZONE_CONFIG",
+                    &serde_json::to_string(&zone_config).unwrap(),
+                );
+                let result = crate::init_buckyos_api_runtime(
+                    target.appid_claim(),
+                    None,
+                    BuckyOSRuntimeType::AppClient,
+                )
+                .await;
+                crate::tests::restore_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, previous_token);
+                crate::tests::restore_env_var("BUCKYOS_ZONE_CONFIG", previous_zone);
+                result.unwrap()
+            };
+            assert_eq!(runtime.get_auth_target().unwrap(), target);
+            assert!(runtime.get_authenticated_user_id().is_none());
+            assert!(runtime
+                .system_config_client
+                .set(Arc::new(SystemConfigClient::new(Some(&url), None)))
+                .is_ok());
+
+            let login = tokio::time::timeout(Duration::from_secs(5), runtime.login()).await;
+            if !matches!(&login, Ok(Ok(()))) {
+                server.abort();
+            }
+            login.unwrap().unwrap();
+            let request = tokio::time::timeout(Duration::from_secs(5), server)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(request["method"], "sys_config_get");
+            assert_eq!(request["params"]["key"], "boot/config");
+            assert_eq!(request["sys"][1], session_token);
+            assert_eq!(runtime.get_auth_target().unwrap(), target);
+            assert_eq!(runtime.zone_config.as_ref(), Some(&zone_config));
+            assert_eq!(runtime.get_authenticated_user_id().as_deref(), Some("bob"));
+            match &target {
+                AuthTarget::App { .. } => {
+                    assert_eq!(runtime.app_owner_id.as_deref(), Some("alice"));
+                    assert_eq!(runtime.user_id.as_deref(), Some("alice"));
+                    assert_eq!(runtime.app_host_perfix, "notes.example.com-alice");
+                }
+                AuthTarget::System { .. } => assert!(runtime.app_owner_id.is_none()),
+            }
+            assert!(runtime.device_private_key.is_none());
+            assert!(runtime.user_private_key.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn appclient_session_login_rejects_identity_conflicts_and_refresh_tokens() {
+        let target = AuthTarget::app("notes.example.com@alice".parse().unwrap());
+        for (app_id, owner, token_use, expected_error) in [
+            (
+                "other.example.com",
+                None,
+                TokenUse::Session,
+                "Session token is not valid",
+            ),
+            (
+                "notes.example.com",
+                Some("mallory"),
+                TokenUse::Session,
+                "owner_user_id",
+            ),
+            (
+                "notes.example.com",
+                None,
+                TokenUse::Refresh,
+                "token_use mismatch",
+            ),
+        ] {
+            let mut runtime = BuckyOSRuntime::new(
+                app_id,
+                owner.map(str::to_string),
+                BuckyOSRuntimeType::AppClient,
+            );
+            runtime.zone_id = DID::new("web", "review.invalid");
+            *runtime.session_token.write().await = appclient_session_token(&target, token_use);
+            let error = runtime.login().await.unwrap_err();
+            assert!(error.to_string().contains(expected_error), "{error}");
+            assert!(runtime.system_config_client.get().is_none());
+            assert!(runtime.get_authenticated_user_id().is_none());
+            assert_eq!(runtime.app_owner_id.as_deref(), owner);
+        }
+    }
+
+    #[tokio::test]
+    async fn appclient_session_login_rejects_inconsistent_instance_claims() {
+        let target = AuthTarget::app("notes.example.com@alice".parse().unwrap());
+        let mut token =
+            RPCSessionToken::from_string(&appclient_session_token(&target, TokenUse::Session))
+                .unwrap();
+        token
+            .extra
+            .insert("app_owner_user_id".into(), Value::String("mallory".into()));
+        let mut runtime =
+            BuckyOSRuntime::new("notes.example.com", None, BuckyOSRuntimeType::AppClient);
+        runtime.zone_id = DID::new("web", "review.invalid");
+        *runtime.session_token.write().await = serde_json::to_string(&token).unwrap();
+
+        let error = runtime.login().await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("app_owner_user_id and app_instance_id claims do not match"));
+        assert!(runtime.app_owner_id.is_none());
+        assert!(runtime.system_config_client.get().is_none());
+    }
+
+    #[tokio::test]
+    async fn appclient_session_login_preserves_bound_target() {
+        for (initial, replacement) in [
+            (
+                AuthTarget::app("notes.example.com@alice".parse().unwrap()),
+                AuthTarget::app("notes.example.com@mallory".parse().unwrap()),
+            ),
+            (
+                AuthTarget::system("control-panel".parse().unwrap()),
+                AuthTarget::app("control-panel@alice".parse().unwrap()),
+            ),
+        ] {
+            let mut runtime =
+                BuckyOSRuntime::new(initial.appid_claim(), None, BuckyOSRuntimeType::AppClient);
+            runtime.resolve_appclient_identity(&initial).unwrap();
+            runtime.zone_id = DID::new("web", "review.invalid");
+            *runtime.session_token.write().await =
+                appclient_session_token(&replacement, TokenUse::Session);
+
+            let error = runtime.login().await.unwrap_err();
+            assert!(error.to_string().contains("does not match runtime target"));
+            assert_eq!(runtime.get_auth_target().unwrap(), initial);
+            assert!(runtime.system_config_client.get().is_none());
+        }
+        let mut runtime = BuckyOSRuntime::new(
+            "control-panel",
+            Some("alice".to_string()),
+            BuckyOSRuntimeType::AppClient,
+        );
+        runtime.zone_id = DID::new("web", "review.invalid");
+        *runtime.session_token.write().await = appclient_session_token(
+            &AuthTarget::system("control-panel".parse().unwrap()),
+            TokenUse::Session,
+        );
+        let error = runtime.login().await.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("does not match runtime application owner"));
+        assert_eq!(runtime.app_owner_id.as_deref(), Some("alice"));
+        assert!(runtime.system_config_client.get().is_none());
+    }
 
     #[tokio::test]
     async fn service_instance_reports_use_canonical_runtime_identity() {

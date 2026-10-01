@@ -386,18 +386,18 @@ mod tests {
         BUCKYOS_OWNER_USER_ID_ENV, NODE_EXECUTION_SPEC_SCHEMA_VERSION, OBJ_TYPE_APP_DOC,
     };
 
-    fn test_env_lock() -> &'static Mutex<()> {
+    pub(super) fn test_env_lock() -> &'static Mutex<()> {
         static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_LOCK.get_or_init(|| Mutex::new(()))
     }
 
-    fn set_env_var(key: &str, value: &str) -> Option<String> {
+    pub(super) fn set_env_var(key: &str, value: &str) -> Option<String> {
         let previous = env::var(key).ok();
         env::set_var(key, value);
         previous
     }
 
-    fn restore_env_var(key: &str, previous: Option<String>) {
+    pub(super) fn restore_env_var(key: &str, previous: Option<String>) {
         if let Some(value) = previous {
             env::set_var(key, value);
         } else {
@@ -533,10 +533,22 @@ mod tests {
 
         let prev_root = set_env_var("BUCKYOS_ROOT", temp_root.to_string_lossy().as_ref());
         let prev_dev_home = set_env_var("BUCKYOS_DEV_HOME", dev_home.to_string_lossy().as_ref());
-        let prev_token = set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, "dummy-appclient-token");
+        let session_token = serde_json::json!({
+            "iss": "verify-hub",
+            "appid": "notes.example.com",
+            "sub": "bob",
+            "principal_kind": "user",
+            "token_use": "session",
+            "target_kind": "app",
+            "app_instance_id": "notes.example.com@alice",
+            "app_owner_user_id": "alice",
+        })
+        .to_string();
+        let prev_token = set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, &session_token);
 
         let result =
-            init_buckyos_api_runtime("buckycli", None, BuckyOSRuntimeType::AppClient).await;
+            init_buckyos_api_runtime("notes.example.com", None, BuckyOSRuntimeType::AppClient)
+                .await;
 
         restore_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, prev_token);
         restore_env_var("BUCKYOS_DEV_HOME", prev_dev_home);
@@ -544,13 +556,18 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_root);
 
         let runtime = result.expect("init appclient runtime should load env session token");
-        assert_eq!(runtime.get_app_id(), "buckycli");
+        assert_eq!(runtime.get_app_id(), "notes.example.com");
+        assert_eq!(runtime.get_owner_user_id().as_deref(), Some("alice"));
+        assert_eq!(runtime.user_id.as_deref(), Some("alice"));
+        assert_eq!(runtime.app_host_perfix, "notes.example.com-alice");
+        assert_eq!(runtime.get_authenticated_user_id(), None);
+        assert_eq!(
+            runtime.get_auth_target().unwrap().canonical_key(),
+            "app:notes.example.com@alice"
+        );
         assert!(runtime.device_private_key.is_none());
         assert!(runtime.user_private_key.is_none());
-        assert_eq!(
-            runtime.session_token.read().await.as_str(),
-            "dummy-appclient-token"
-        );
+        assert_eq!(runtime.session_token.read().await.as_str(), session_token);
     }
 }
 
