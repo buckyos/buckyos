@@ -17,8 +17,14 @@ concurrency:
 
 jobs:
   build:
-    name: AIOS amd64 and aarch64
+    name: AIOS contexts and amd64
     runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.context.outputs.version }}
+      revision: ${{ steps.context.outputs.revision }}
+      created: ${{ steps.context.outputs.created }}
+      aarch64_sha256: ${{ steps.context.outputs.aarch64_sha256 }}
+      amd64_digest: ${{ steps.amd64.outputs.digest }}
     env:
       MUSL_TOOLCHAIN_BASE_URL: https://github.com/musl-cc/musl.cc/releases/download/v0.0.1
       MUSL_TOOLCHAIN_SHA512_X86_64: 52abd1a56e670952116e35d1a62e048a9b6160471d988e16fa0e1611923dd108a581d2e00874af5eb04e4968b1ba32e0eb449a1f15c3e4d5240ebe09caf5a9f3
@@ -75,10 +81,6 @@ jobs:
           done
           test "$("$target-linux-musl-g++" -dumpmachine)" = "$target-linux-musl"
         done
-    - name: Setup ARM64 emulation
-      uses: docker/setup-qemu-action@v4
-      with:
-        platforms: arm64
     - name: Setup Docker Buildx
       id: buildx
       uses: docker/setup-buildx-action@v4
@@ -90,6 +92,19 @@ jobs:
         set -euo pipefail
         bash ./build_aios --prepare-context "$AIOS_CONTEXT_DIR" --image paios/aios
         cat "$AIOS_CONTEXT_DIR/metadata.env" >> "$GITHUB_OUTPUT"
+    - name: Archive AIOS aarch64 context
+      run: |
+        set -euo pipefail
+        tar --create --gzip --file="$RUNNER_TEMP/aios-aarch64-context.tar.gz" \
+          --directory="$RUNNER_TEMP/aios-context" aarch64
+    - name: Upload AIOS aarch64 context
+      uses: actions/upload-artifact@v6
+      with:
+        name: aios-aarch64-context
+        path: ${{ runner.temp }}/aios-aarch64-context.tar.gz
+        if-no-files-found: error
+        retention-days: 7
+        compression-level: 0
     - name: Build and push AIOS amd64
       id: amd64
       uses: docker/build-push-action@v7
@@ -107,6 +122,32 @@ jobs:
           SOURCE_REVISION=${{ steps.context.outputs.revision }}
           BUILD_CREATED=${{ steps.context.outputs.created }}
           OPENDAN_SHA256=${{ steps.context.outputs.amd64_sha256 }}
+  build-aarch64:
+    name: AIOS aarch64
+    needs: build
+    runs-on: ubuntu-24.04-arm
+    outputs:
+      digest: ${{ steps.aarch64.outputs.digest }}
+    steps:
+    - name: Download AIOS aarch64 context
+      uses: actions/download-artifact@v6
+      with:
+        name: aios-aarch64-context
+        path: ${{ runner.temp }}
+    - name: Extract AIOS aarch64 context
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/aios-context"
+        tar --extract --gzip --file="$RUNNER_TEMP/aios-aarch64-context.tar.gz" \
+          --directory="$RUNNER_TEMP/aios-context" --no-same-owner
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Setup Docker Buildx
+      id: buildx
+      uses: docker/setup-buildx-action@v4
     - name: Build and push AIOS aarch64
       id: aarch64
       uses: docker/build-push-action@v7
@@ -116,19 +157,31 @@ jobs:
         platforms: linux/arm64
         push: true
         tags: |
-          paios/aios:${{ steps.context.outputs.version }}-aarch64
+          paios/aios:${{ needs.build.outputs.version }}-aarch64
           paios/aios:latest-aarch64
         build-args: |
           TARGET_ARCH=aarch64
-          IMAGE_VERSION=${{ steps.context.outputs.version }}
-          SOURCE_REVISION=${{ steps.context.outputs.revision }}
-          BUILD_CREATED=${{ steps.context.outputs.created }}
-          OPENDAN_SHA256=${{ steps.context.outputs.aarch64_sha256 }}
+          IMAGE_VERSION=${{ needs.build.outputs.version }}
+          SOURCE_REVISION=${{ needs.build.outputs.revision }}
+          BUILD_CREATED=${{ needs.build.outputs.created }}
+          OPENDAN_SHA256=${{ needs.build.outputs.aarch64_sha256 }}
+  publish-manifests:
+    name: AIOS multi-arch manifests
+    needs: [build, build-aarch64]
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Login to Docker Hub
+      uses: docker/login-action@v4
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+    - name: Setup Docker Buildx
+      uses: docker/setup-buildx-action@v4
     - name: Publish AIOS multi-arch manifests
       env:
-        VERSION: ${{ steps.context.outputs.version }}
-        AMD64_DIGEST: ${{ steps.amd64.outputs.digest }}
-        AARCH64_DIGEST: ${{ steps.aarch64.outputs.digest }}
+        VERSION: ${{ needs.build.outputs.version }}
+        AMD64_DIGEST: ${{ needs.build.outputs.amd64_digest }}
+        AARCH64_DIGEST: ${{ needs.build-aarch64.outputs.digest }}
       run: |
         set -euo pipefail
         docker buildx imagetools create \

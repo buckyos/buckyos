@@ -18,7 +18,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
@@ -160,6 +160,7 @@ async function hashKey(input: string): Promise<string> {
 export class MessageHubApiStore implements MessageHubStore {
   readonly isMock = false
   private selfDid = ''
+  private selfUsername = ''
   private owners = new Map<string, OwnerData>()
   private listeners = new Set<() => void>()
   private timeListeners = new Set<() => void>()
@@ -207,6 +208,7 @@ export class MessageHubApiStore implements MessageHubStore {
     const selfDid = await fetchOwnerDid()
     if (!selfDid) throw new MessageHubApiError('not logged in', 'permission_denied')
     this.selfDid = selfDid
+    this.selfUsername = await fetchAccountUsername().catch(() => '')
     registerObjectAccess(apiObjectAccess)
     await this.ensureOwner(this.defaultContext())
     this.notify()
@@ -386,6 +388,7 @@ export class MessageHubApiStore implements MessageHubStore {
       groupSessionTitles: data.groupSessionTitles,
       policies: {},
       labels: labels(),
+      hiddenAccounts: { dids: [this.selfDid], usernames: [this.selfUsername] },
     })
     data.projected = { version: data.version, value }
     return value

@@ -2,6 +2,7 @@ FROM ubuntu:24.04
 
 ARG TARGET_ARCH
 ARG OPENDAN_SHA256=
+ARG DENO_VERSION=v2.9.2
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -41,7 +42,8 @@ ENV PATH="/root/.local/bin:${PATH}"
 RUN uv python install 3.12
 
 # Deno — TypeScript runtime (used by script apps and the Worker layer)
-RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh
+RUN curl -fsSL https://deno.land/install.sh | DENO_INSTALL=/usr/local sh -s -- "${DENO_VERSION}" && \
+    deno --version
 
 # BuckyOS root + canonical directory skeleton (see §9 of the container spec).
 ENV BUCKYOS_ROOT=/opt/buckyos
@@ -59,7 +61,7 @@ RUN chmod 755 /usr/local/bin/aicc-tool && \
     deno check \
       --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
       /opt/buckyos/bin/opendan/buckyos-agent/aicc-tool.ts && \
-    (cd /opt/buckyos/bin/opendan/buckyos-agent && deno task gen_image --help >/dev/null 2>&1) && \
+    (cd /opt/buckyos/bin/opendan/buckyos-agent && deno task gen_image --help >/dev/null) && \
     printf '%s\n' \
       'import { teardown } from "/opt/buckyos/bin/opendan/buckyos-agent/lib/runtime.ts";' \
       'teardown();' > /tmp/buckyos-agent-compose-smoke.ts && \
@@ -72,9 +74,9 @@ RUN chmod 755 /usr/local/bin/aicc-tool && \
     command -v aicc-tool >/dev/null && \
     command -v gen_image >/dev/null && \
     command -v edit_image >/dev/null && \
-    aicc-tool --help >/dev/null 2>&1 && \
-    gen_image --help >/dev/null 2>&1 && \
-    edit_image --help >/dev/null 2>&1
+    aicc-tool --help >/dev/null && \
+    gen_image --help >/dev/null && \
+    edit_image --help >/dev/null
 
 # ExtTool Volume mount point — kept empty in the Worker image. Real payload
 # ships in the separate paios/exttool image and lands in the buckyos-exttool

@@ -14,6 +14,7 @@ import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
 import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './store'
 import { creationReason, viewerSessionKey } from './sessionModel'
+import { usePaneResizer } from './paneResize'
 import { WindowDialogProvider, useWindowDialog } from '../../desktop/windows/dialogs'
 import { SessionDetails } from './SessionDetails'
 import { CreateSessionForm, ManageSessionForm, hubButtonClass, hubIconButtonClass } from './SessionDialogs'
@@ -158,22 +159,12 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   const [entityListWidth, setEntityListWidth] = useState(ENTITY_LIST_DEFAULT_WIDTH)
   const [sessionSidebarWidth, setSessionSidebarWidth] = useState(SESSION_SIDEBAR_DEFAULT_WIDTH)
   const [isEntityListCollapsed, setIsEntityListCollapsed] = useState(false)
-  const [isResizingEntityList, setIsResizingEntityList] = useState(false)
-  const [isResizingSessionSidebar, setIsResizingSessionSidebar] = useState(false)
   const [layoutWidth, setLayoutWidth] = useState(0)
   const desktopLayoutRef = useRef<HTMLDivElement>(null)
+  const entityListPaneRef = useRef<HTMLDivElement>(null)
+  const sessionSidebarPaneRef = useRef<HTMLDivElement>(null)
   const entityListWidthRef = useRef(ENTITY_LIST_DEFAULT_WIDTH)
   const sessionSidebarWidthRef = useRef(SESSION_SIDEBAR_DEFAULT_WIDTH)
-  const entityListResizeRef = useRef<{
-    pointerId: number
-    startX: number
-    startWidth: number
-  } | null>(null)
-  const sessionSidebarResizeRef = useRef<{
-    pointerId: number
-    startX: number
-    startWidth: number
-  } | null>(null)
 
   const clampEntityListWidth = useCallback((width: number) => (
     Math.min(Math.max(width, ENTITY_LIST_MIN_WIDTH), ENTITY_LIST_MAX_WIDTH)
@@ -314,8 +305,6 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
 
   const handleCollapseEntityList = useCallback(() => {
     setIsEntityListCollapsed(true)
-    setIsResizingEntityList(false)
-    entityListResizeRef.current = null
   }, [])
 
   const handleExpandEntityList = useCallback(() => {
@@ -323,85 +312,27 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     setEntityListWidth(clampEntityListWidth(entityListWidthRef.current))
   }, [clampEntityListWidth])
 
-  const handleEntityListSplitterPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (isEntityListCollapsed) {
-      return
-    }
-
-    entityListResizeRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: entityListWidthRef.current,
-    }
-    setIsResizingEntityList(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
-  }, [isEntityListCollapsed])
-
-  const handleEntityListSplitterPointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (
-      !entityListResizeRef.current ||
-      entityListResizeRef.current.pointerId !== event.pointerId
-    ) {
-      return
-    }
-
-    const deltaX = event.clientX - entityListResizeRef.current.startX
-    const nextWidth = clampEntityListWidth(entityListResizeRef.current.startWidth + deltaX)
-    entityListWidthRef.current = nextWidth
-    setEntityListWidth(nextWidth)
-  }, [clampEntityListWidth])
-
-  const handleEntityListSplitterPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (
-      !entityListResizeRef.current ||
-      entityListResizeRef.current.pointerId !== event.pointerId
-    ) {
-      return
-    }
-
-    entityListResizeRef.current = null
-    setIsResizingEntityList(false)
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }, [])
-
-  const handleSessionSidebarSplitterPointerDown = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    sessionSidebarResizeRef.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startWidth: sessionSidebarWidthRef.current,
-    }
-    setIsResizingSessionSidebar(true)
-    event.currentTarget.setPointerCapture(event.pointerId)
-    event.preventDefault()
-  }, [])
-
-  const handleSessionSidebarSplitterPointerMove = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (
-      !sessionSidebarResizeRef.current ||
-      sessionSidebarResizeRef.current.pointerId !== event.pointerId
-    ) {
-      return
-    }
-
-    const deltaX = event.clientX - sessionSidebarResizeRef.current.startX
-    const nextWidth = clampSessionSidebarWidth(sessionSidebarResizeRef.current.startWidth + deltaX)
-    sessionSidebarWidthRef.current = nextWidth
-    setSessionSidebarWidth(nextWidth)
-  }, [clampSessionSidebarWidth])
-
-  const handleSessionSidebarSplitterPointerUp = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (
-      !sessionSidebarResizeRef.current ||
-      sessionSidebarResizeRef.current.pointerId !== event.pointerId
-    ) {
-      return
-    }
-
-    sessionSidebarResizeRef.current = null
-    setIsResizingSessionSidebar(false)
-    event.currentTarget.releasePointerCapture(event.pointerId)
-  }, [])
+  // While dragging, the pane width is written straight to the DOM once per
+  // frame; React state (and the layout decisions derived from it) only change
+  // when the drag ends, so the rest of the view does not re-render per move.
+  const entityListResizer = usePaneResizer({
+    getWidth: () => entityListWidthRef.current,
+    clamp: clampEntityListWidth,
+    preview: (width: number) => { const element = entityListPaneRef.current; if (element) element.style.width = `${width}px` },
+    commit: setEntityListWidth,
+    disabled: isEntityListCollapsed,
+  })
+  // The session list stays inline while it is dragged: a width that would
+  // turn it into an overlay drawer mid-drag is not reachable by dragging.
+  const sessionSidebarDragMax = Math.max(SESSION_SIDEBAR_MIN_WIDTH, Math.min(SESSION_SIDEBAR_MAX_WIDTH, layoutWidth - (isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth) - CONVERSATION_MIN_READING_WIDTH))
+  const sessionSidebarResizer = usePaneResizer({
+    getWidth: () => sessionSidebarWidthRef.current,
+    clamp: (width: number) => Math.min(clampSessionSidebarWidth(width), sessionSidebarDragMax),
+    preview: (width: number) => { const element = sessionSidebarPaneRef.current; if (element) element.style.width = `${width}px` },
+    commit: setSessionSidebarWidth,
+  })
+  const isResizingEntityList = entityListResizer.active
+  const isResizingSessionSidebar = sessionSidebarResizer.active
 
   const handleSendMessage = async (payload: ConversationComposerSubmitPayload) => {
     if (!activeSession || !selectedEntityId) throw Error('session_missing')
@@ -470,6 +401,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   ) : showSessionSidebar ? (
     <>
       <div
+        ref={sessionSidebarPaneRef}
         className="h-full flex-shrink-0"
         style={{
           width: sessionSidebarWidth,
@@ -489,41 +421,16 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
         />
       </div>
 
-      <button
-        type="button"
-        className="group relative h-full flex-shrink-0"
-        onPointerDown={handleSessionSidebarSplitterPointerDown}
-        onPointerMove={handleSessionSidebarSplitterPointerMove}
-        onPointerUp={handleSessionSidebarSplitterPointerUp}
-        onPointerCancel={handleSessionSidebarSplitterPointerUp}
-        title={t('messagehub.resizeSessionList', 'Resize session list')}
-        style={{
-          width: PANEL_SPLITTER_WIDTH,
-          marginLeft: -(PANEL_SPLITTER_WIDTH / 2),
-          marginRight: -(PANEL_SPLITTER_WIDTH / 2),
-          cursor: 'col-resize',
-          background: isResizingSessionSidebar
-            ? 'color-mix(in srgb, var(--cp-accent) 8%, transparent)'
-            : 'transparent',
-          zIndex: 10,
-          touchAction: 'none',
-        }}
-      >
-        <span
-          className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
-          style={{
-            width: isResizingSessionSidebar ? 3 : 1,
-            top: 18,
-            bottom: 18,
-            background: isResizingSessionSidebar
-              ? 'var(--cp-accent)'
-              : 'color-mix(in srgb, var(--cp-border) 92%, transparent)',
-            boxShadow: isResizingSessionSidebar
-              ? '0 0 0 4px color-mix(in srgb, var(--cp-accent) 12%, transparent)'
-              : 'none',
-          }}
-        />
-      </button>
+      <PaneSplitter
+        label={t('messagehub.resizeSessionList', 'Resize session list')}
+        active={isResizingSessionSidebar}
+        value={sessionSidebarWidth}
+        min={SESSION_SIDEBAR_MIN_WIDTH}
+        max={sessionSidebarDragMax}
+        onPointerDown={sessionSidebarResizer.onPointerDown}
+        onKeyDown={sessionSidebarResizer.onKeyDown}
+        testId="session-sidebar-splitter"
+      />
     </>
   ) : null
 
@@ -609,6 +516,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
       }}
     >
       <div
+        ref={entityListPaneRef}
         className="h-full flex-shrink-0"
         style={{
           width: isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth,
@@ -679,44 +587,17 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
         )}
       </div>
 
-      <button
-        type="button"
+      <PaneSplitter
+        label={t('messagehub.resizeEntityList', 'Resize entity list')}
+        active={isResizingEntityList}
         disabled={isEntityListCollapsed}
-        className="group relative h-full flex-shrink-0"
-        onPointerDown={handleEntityListSplitterPointerDown}
-        onPointerMove={handleEntityListSplitterPointerMove}
-        onPointerUp={handleEntityListSplitterPointerUp}
-        onPointerCancel={handleEntityListSplitterPointerUp}
-        aria-hidden={isEntityListCollapsed}
-        tabIndex={isEntityListCollapsed ? -1 : 0}
-        title={t('messagehub.resizeEntityList', 'Resize entity list')}
-        style={{
-          width: PANEL_SPLITTER_WIDTH,
-          marginLeft: -(PANEL_SPLITTER_WIDTH / 2),
-          marginRight: -(PANEL_SPLITTER_WIDTH / 2),
-          cursor: isEntityListCollapsed ? 'default' : 'col-resize',
-          background: isResizingEntityList
-            ? 'color-mix(in srgb, var(--cp-accent) 8%, transparent)'
-            : 'transparent',
-          zIndex: 10,
-          touchAction: 'none',
-        }}
-      >
-        <span
-          className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
-          style={{
-            width: isResizingEntityList ? 3 : 1,
-            top: 18,
-            bottom: 18,
-            background: isResizingEntityList
-              ? 'var(--cp-accent)'
-              : 'color-mix(in srgb, var(--cp-border) 92%, transparent)',
-            boxShadow: isResizingEntityList
-              ? '0 0 0 4px color-mix(in srgb, var(--cp-accent) 12%, transparent)'
-              : 'none',
-          }}
-        />
-      </button>
+        value={entityListWidth}
+        min={ENTITY_LIST_MIN_WIDTH}
+        max={ENTITY_LIST_MAX_WIDTH}
+        onPointerDown={entityListResizer.onPointerDown}
+        onKeyDown={entityListResizer.onKeyDown}
+        testId="entity-list-splitter"
+      />
 
       <div className="h-full min-w-0 flex-1">
         {selectedEntity ? (
@@ -803,5 +684,59 @@ function MediaSettingsButton() {
     >
       <ImagePlay size={17} />
     </button>
+  )
+}
+
+/** The draggable vertical splitter next to a resizable pane (a `separator`, not a button, so clicking it does not steal focus). */
+function PaneSplitter({ label, active, disabled = false, value, min, max, onPointerDown, onKeyDown, testId }: {
+  label: string
+  active: boolean
+  disabled?: boolean
+  value: number
+  min: number
+  max: number
+  onPointerDown: (event: React.PointerEvent<HTMLElement>) => void
+  onKeyDown: (event: React.KeyboardEvent<HTMLElement>) => void
+  testId: string
+}) {
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuenow={Math.round(value)}
+      aria-valuemin={Math.round(min)}
+      aria-valuemax={Math.round(max)}
+      aria-disabled={disabled || undefined}
+      aria-hidden={disabled || undefined}
+      tabIndex={disabled ? -1 : 0}
+      title={disabled ? undefined : label}
+      className="group relative h-full flex-shrink-0 outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--cp-accent)]"
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+      data-testid={testId}
+      data-active={active || undefined}
+      style={{
+        width: PANEL_SPLITTER_WIDTH,
+        marginLeft: -(PANEL_SPLITTER_WIDTH / 2),
+        marginRight: -(PANEL_SPLITTER_WIDTH / 2),
+        cursor: disabled ? 'default' : 'col-resize',
+        pointerEvents: disabled ? 'none' : undefined,
+        background: active ? 'color-mix(in srgb, var(--cp-accent) 8%, transparent)' : 'transparent',
+        zIndex: 10,
+        touchAction: 'none',
+      }}
+    >
+      <span
+        className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
+        style={{
+          width: active ? 3 : 1,
+          top: 18,
+          bottom: 18,
+          background: active ? 'var(--cp-accent)' : 'color-mix(in srgb, var(--cp-border) 92%, transparent)',
+          boxShadow: active ? '0 0 0 4px color-mix(in srgb, var(--cp-accent) 12%, transparent)' : 'none',
+        }}
+      />
+    </div>
   )
 }

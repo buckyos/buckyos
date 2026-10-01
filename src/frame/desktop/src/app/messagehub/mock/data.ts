@@ -571,7 +571,7 @@ export function createOutgoingMockMessage({
   })
 }
 
-const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
+export const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
   'session-coder-1': [
     createChatMessage({
       id: 'msg-c1-1',
@@ -1032,7 +1032,12 @@ function normalizeEntity(entity: Entity): Entity {
   }
 }
 
-export const mockEntities = [...seedEntities.map(normalizeEntity), { id: 'did:bns:assistant.alice', type: 'agent' as const, name: 'Bucky Assistant', tags: ['agent'], unreadCount: 0, lastActiveAt: 0 }]
+export const mockEntities = [
+  ...seedEntities.map(normalizeEntity),
+  { id: 'did:bns:assistant.alice', type: 'agent' as const, name: 'Bucky Assistant', tags: ['agent'], unreadCount: 0, lastActiveAt: 0 },
+  // The zone's `root` account is a contact like any zone user but never listed (buckyos#638).
+  { id: 'did:bns:root', type: 'person' as const, name: 'root', tags: ['zone_user'], unreadCount: 0, lastActiveAt: 0, source: 'buckyos', sources: ['buckyos'], domain: 'managed' as const },
+]
 export const mockEntityDetails = Object.fromEntries(Object.entries(seedEntityDetails).map(([id, detail]) => [getMockEntityDid(id), { ...detail, ...normalizeEntity(detail) }]))
 export const mockSessions: Record<string, Session[]> = Object.fromEntries(Object.entries(seedSessions).map(([id, sessions]) => [getMockEntityDid(id), sessions.map(session => ({
   ...session,

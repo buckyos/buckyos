@@ -136,3 +136,92 @@
 .mh-filter-strip[data-fade='both'] {
   mask-image: linear-gradient(to right, transparent, #000 36px, #000 calc(100% - 36px), transparent);
 }
+
+/* Message hover bar (quick reactions + actions), Discord-style: shown while the
+   bubble is hovered or holds focus on pointer devices; touch devices use the
+   footer menu instead. */
+.mh-bubble {
+  position: relative;
+}
+
+.mh-hover-bar {
+  position: absolute;
+  top: -16px;
+  z-index: 5;
+  display: none;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: var(--cp-panel-shadow, 0 4px 14px rgba(15, 23, 42, 0.12));
+  color: var(--cp-text);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.mh-hover-bar[data-side="peer"] {
+  left: 8px;
+}
+
+.mh-hover-bar[data-side="self"] {
+  right: 8px;
+}
+
+@media (hover: hover) {
+  .mh-hover-bar {
+    display: flex;
+  }
+
+  .mh-bubble:hover > .mh-hover-bar,
+  .mh-bubble:focus-within > .mh-hover-bar,
+  .mh-hover-bar[data-open="true"] {
+    opacity: 1;
+  }
+
+  .mh-footer-actions {
+    display: none;
+  }
+}
+
+.mh-hover-bar button {
+  display: flex;
+  height: 28px;
+  min-width: 28px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.mh-hover-bar button:hover,
+.mh-hover-bar button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-reaction-picker {
+  display: grid;
+  grid-template-columns: repeat(8, 32px);
+  gap: 2px;
+  padding: 6px;
+}
+
+.mh-reaction-picker button {
+  display: flex;
+  height: 32px;
+  width: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.mh-reaction-picker button:hover,
+.mh-reaction-picker button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}

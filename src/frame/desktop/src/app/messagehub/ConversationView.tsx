@@ -24,7 +24,7 @@ import {
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
-import { messageObjId } from './conversation/history/relations'
+import { messageObjId, ownReactionId } from './conversation/history/relations'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import { ConversationMediaScopeContext } from './conversation/media/context'
 import type { DID, MessageObject } from './protocol/msgobj'
@@ -131,8 +131,7 @@ export function ConversationView({
       const parsed = parseGroupNotice(message)
       return parsed ? operation(parsed) : Promise.reject(Error('not-found'))
     }
-    const sendRelation = (message: MessageObject, rel: 'redact' | 'reaction', key?: string) => {
-      const target = messageObjId(message)
+    const sendRelation = (target: string | undefined, rel: 'redact' | 'reaction', key?: string) => {
       if (!target || !canSend) return Promise.reject(Error('permission_denied'))
       return Promise.resolve(onSendMessage({ attachments: [], content: key ?? '', relatesTo: { rel, target, ...(key ? { key } : {}) } }))
     }
@@ -150,17 +149,20 @@ export function ConversationView({
       acceptOwnerTransfer: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.transferId ? store.acceptGroupOwnerTransfer(context, parsed.groupDid, parsed.transferId) : Promise.reject(Error('transfer-mismatch'))) : undefined,
       acceptSessionInvitation: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.sessionId ? store.acceptGroupSessionInvitation(context, parsed.groupDid, parsed.sessionId) : Promise.reject(Error('not-found'))) : undefined,
       openEntity: onOpenEntity,
-      relations: isGroup && isOwner && sessionId ? {
+      // Relations are plain messages with `relates_to`, so a direct session
+      // offers reactions and replies too; edits and recalls follow group rules.
+      relations: isOwner && sessionId ? {
         capabilities: (message: MessageObject) => {
           const own = message.from === context.ownerDid, now = store.now()
-          const edit = canSend && own && withinWindow(group?.messageRules.editWindowMs, message.created_at_ms, now)
-          const redact = canSend && (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false)
+          const edit = isGroup && canSend && own && withinWindow(group?.messageRules.editWindowMs, message.created_at_ms, now)
+          const redact = isGroup && canSend && (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false)
           return { reply: canSend, react: canSend, edit, redact }
         },
         reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),
         edit: (message: MessageObject) => setRelation({ kind: 'edit', message }),
-        redact: (message: MessageObject) => sendRelation(message, 'redact'),
-        react: (message: MessageObject, key: string) => sendRelation(message, 'reaction', key),
+        redact: (message: MessageObject) => sendRelation(messageObjId(message), 'redact'),
+        react: (message: MessageObject, key: string) => sendRelation(messageObjId(message), 'reaction', key),
+        unreact: (message: MessageObject, key: string) => sendRelation(ownReactionId(message, context.ownerDid, key), 'redact'),
       } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
     }

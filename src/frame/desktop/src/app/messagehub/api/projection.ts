@@ -38,6 +38,30 @@ export interface ProjectionInput {
   groupSessionTitles: Record<string, string>
   policies: Record<string, CreationPolicy>
   labels: ProjectionLabels
+  /** Accounts kept out of the entity list on top of the owner (buckyos#638): the logged-in user and `root`. */
+  hiddenAccounts?: HiddenAccounts
+}
+
+export interface HiddenAccounts {
+  dids?: string[]
+  /** Zone usernames; `root` is always hidden. */
+  usernames?: string[]
+}
+
+const ALWAYS_HIDDEN_USERNAMES = ['root']
+
+/**
+ * Whether an account stays out of the entity list: the owner, the DIDs in
+ * `hidden.dids`, and zone users (`did:bns:` / `did:web:` label or a
+ * `zone_user` contact name) called `root` or one of `hidden.usernames`.
+ * Sessions with such an account stay reachable through `entityById`.
+ */
+export function isHiddenAccount(account: { did: string; name?: string; tags?: readonly string[] }, ownerDid: string, hidden: HiddenAccounts = {}): boolean {
+  const { did } = account
+  if (did === ownerDid || hidden.dids?.includes(did)) return true
+  const usernames = [...ALWAYS_HIDDEN_USERNAMES, ...(hidden.usernames ?? []).map(name => name.trim()).filter(Boolean)]
+  if (/^did:(web|bns):/.test(did) && usernames.includes(shortDid(did).split('.')[0] ?? '')) return true
+  return account.tags?.includes('zone_user') === true && usernames.includes(account.name?.trim() ?? '')
 }
 
 export interface ProjectedOwner {
@@ -341,7 +365,12 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     }
     return entity
   }
-  for (const seed of seeds.values()) entities.push(toEntity(seed))
+  const hiddenEntities: Entity[] = []
+  for (const seed of seeds.values()) {
+    const entity = toEntity(seed)
+    if (isHiddenAccount({ did: seed.id, name: seed.name, tags: seed.contact?.tags }, ownerDid, input.hiddenAccounts)) hiddenEntities.push(entity)
+    else entities.push(entity)
+  }
   const unassigned = sessionsByEntity.get(UNASSIGNED_ENTITY_ID) ?? []
   if (unassigned.length > 0) {
     const latest = [...unassigned].sort((a, b) => b.lastActiveAt - a.lastActiveAt)[0]
@@ -365,5 +394,5 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     names[UNASSIGNED_ENTITY_ID] = container.name
   }
   entities.sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.name.localeCompare(b.name))
-  return { entities, sessions, details, names, entityById: new Map(entities.map(entity => [entity.id, entity])), sessionsByEntity }
+  return { entities, sessions, details, names, entityById: new Map([...entities, ...hiddenEntities].map(entity => [entity.id, entity])), sessionsByEntity }
 }

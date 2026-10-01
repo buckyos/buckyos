@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -802,7 +802,7 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
   | `rejected` / `removed` / `session_removed` | 不变 | 只显示文案 |
 
 - **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案（`knownGroupErrors`：`invitation-mismatch`、`transfer-mismatch`、`agent-owner-required`、`invite-required`、`join-not-allowed`、`member-not-pending`、`revision-conflict` 等；未知码原样显示）。
-- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者的编辑内容 + 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send` 的 `group_msg`：气泡菜单提供回复（`thread`）、编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）、回应（`reaction` + `key`）；Composer 的 @ 按钮从群成员中选择并写入结构化 `mentions.dids`，`session.mention_all` 能力下可选 `@all`；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
+- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者的编辑内容 + 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数 `reactions[{ key, dids, messages: { did → 回应消息 ObjId } }]`；目标为回应消息的 `redact` 是取消回应，从计数中移除该人，见 v2 §2.6「取消回应就是撤回这条回应消息」），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send`（群会话 `group_msg`，直聊 `chat`）：回复（`thread`）和回应（`reaction` + `key`）在任何本人可写的会话都可用，编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）仅群会话。回应入口（buckyos#638，参考飞书 / Discord）：指针设备上气泡顶部悬停栏（`.mh-hover-bar`，`@media (hover: hover)`）给出 4 个快捷表情、「添加回应」表情面板（`REACTION_PALETTE`）和「…」菜单；触屏设备用页脚「…」菜单（含快捷表情与表情面板）。回应 chip 高亮本人已回应项（`aria-pressed`），点击切换：未回应则发 `reaction`，已回应则 `unreact` = 对 `ownReactionId` 的回应消息发 `redact`；同一 `(from, target, key)` 重复发送是 no-op。回应 / 撤回不计入会话活动预览（`isMessageActivity`）。Composer 的 @ 按钮从群成员中选择并写入结构化 `mentions.dids`，`session.mention_all` 能力下可选 `@all`；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
 - **Session 详情**：群会话提示「群主可以查看本群的所有会话」（v2 §2.3.4）。
 
 已知缺口：
@@ -835,6 +835,11 @@ export const entityListQuerySchema = z.object({
 export type EntityFilter = z.infer<typeof entityFilterSchema>
 export type EntityListQuery = z.infer<typeof entityListQuerySchema>
 ```
+
+实体列表的输入 `Entity[]` 已经不含 owner 本人、当前登录账号和 zone 的 `root`
+账号（buckyos#638；`api/projection.ts` 的 `isHiddenAccount`：owner DID、登录用户 DID，
+以及 `did:bns:` / `did:web:` 首段或 `zone_user` 联系人名字等于 `root` / 登录用户名者；
+mock store 同规则）。这些账号的会话仍可经 `entityById` / launch context 打开，只是不在列表里。
 
 匹配语义（`EntityList.tsx` 已实现）：
 
@@ -1166,7 +1171,13 @@ export interface MessageHubLayoutState {
 布局常量定义在 `layout.ts`，是 UI DataModel 的一部分（会被持久化），不是纯样式常量。
 
 `isResizingEntityList` / `isResizingSessionSidebar` 属于拖拽过程中的瞬时交互状态，
-**不进入** `MessageHubViewState`，留在组件内部 ref/state。
+**不进入** `MessageHubViewState`，留在组件内部 ref/state。拖动由 `paneResize.ts` 的
+`usePaneResizer` 驱动（buckyos#638）：拖动中每帧直接写面板 DOM 宽度，`entityListWidth` /
+`sessionSidebarWidth` 只在拖动结束时提交一次（随之才重新判定会话列表 / 详情是否转为抽屉；
+会话列表拖动宽度被限制在不会转为抽屉的范围内）；pointer 事件挂在 `window` 上，pointerup /
+pointercancel / 失去 pointer capture / 窗口 blur / 页面隐藏都会结束拖动并恢复 body 的
+cursor 与 user-select，Escape 恢复拖动前宽度；分隔条是 `role="separator"`（非 button，
+pointerdown 已 preventDefault，不抢焦点），支持 ←/→ 键盘调整。
 
 ---
 

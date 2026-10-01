@@ -1,5 +1,5 @@
 import { formatInviteLink, groupErrorText, parseGroupNotice, parseInviteLink, withinWindow } from '../../src/app/messagehub/groupModel.ts'
-import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations } from '../../src/app/messagehub/conversation/history/relations.ts'
+import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations, ownReactionId } from '../../src/app/messagehub/conversation/history/relations.ts'
 import { collectMentions } from '../../src/app/messagehub/conversation/input/mentions.ts'
 import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 
@@ -60,7 +60,9 @@ Deno.test('relation messages fold into their targets: latest own edit, redaction
   const orphan = msg('m4', ME, 'reply to nothing', { relates_to: { rel: 'thread', target: 'missing' } }, now + 10)
   const folded = foldMessageRelations([original, edit1, edit2, foreignEdit, react1, react2, react3, reply, other, redact, orphan])
   equal(folded.map(item => item.ui_message_id), ['m1', 'm2', 'm3', 'm4'])
-  equal(messageRelations(folded[0]), { edited: { content: 'hello again', at: now + 2 }, reactions: [{ key: '👍', dids: [BOB, ME] }] })
+  equal(messageRelations(folded[0]), { edited: { content: 'hello again', at: now + 2 }, reactions: [{ key: '👍', dids: [BOB, ME], messages: { [BOB]: 'r1', [ME]: 'r2' } }] })
+  equal(ownReactionId(folded[0], ME, '👍'), 'r2')
+  equal(ownReactionId(folded[0], ME, '❤️'), undefined)
   equal(displayedContent(folded[0]), 'hello again')
   equal(messageRelations(folded[1])?.replyTo, { id: 'obj-1', from: ME, senderName: ME, content: 'hello again', found: true })
   equal(messageRelations(folded[2])?.redacted, { by: BOB, at: now + 9 })
@@ -69,6 +71,25 @@ Deno.test('relation messages fold into their targets: latest own edit, redaction
   equal(messageObjId(original), 'obj-1')
   equal(messageObjId(msg('local', ME, 'x', { ui_sent_msg_id: 'obj-9' })), 'obj-9')
   equal(foldMessageRelations([other]), [other])
+})
+
+Deno.test('cancelling a reaction is a redact of the reaction message; reacting again afterwards counts anew', () => {
+  const original = msg('m1', BOB, 'hello', { ui_record: { msgId: 'obj-1' } })
+  const mine = msg('r1', ME, '👍', { relates_to: { rel: 'reaction', target: 'obj-1', key: '👍' } }, now + 1)
+  const bobs = msg('r2', BOB, '👍', { relates_to: { rel: 'reaction', target: 'obj-1', key: '👍' } }, now + 2)
+  const heart = msg('r3', ME, '❤️', { relates_to: { rel: 'reaction', target: 'obj-1', key: '❤️' } }, now + 3)
+  const cancelMine = msg('x1', ME, '', { relates_to: { rel: 'redact', target: 'r1' } }, now + 4)
+  const cancelHeart = msg('x2', ME, '', { relates_to: { rel: 'redact', target: 'r3' } }, now + 5)
+  const foreignCancel = msg('x3', BOB, '', { relates_to: { rel: 'redact', target: 'r2' } }, now + 6)
+  const again = msg('r4', ME, '👍', { relates_to: { rel: 'reaction', target: 'obj-1', key: '👍' } }, now + 7)
+  const [afterCancel] = foldMessageRelations([original, mine, bobs, heart, cancelMine, cancelHeart])
+  equal(messageRelations(afterCancel), { reactions: [{ key: '👍', dids: [BOB], messages: { [BOB]: 'r2' } }] })
+  equal(ownReactionId(afterCancel, ME, '👍'), undefined)
+  const [afterAll] = foldMessageRelations([original, mine, bobs, heart, cancelMine, cancelHeart, foreignCancel])
+  equal(messageRelations(afterAll), undefined)
+  equal(messageRelations(foldMessageRelations([original, mine, cancelMine, again])[0]), { reactions: [{ key: '👍', dids: [ME], messages: { [ME]: 'r4' } }] })
+  // The redact of a reaction never counts as a redaction of the target.
+  equal(messageRelations(afterAll)?.redacted, undefined)
 })
 
 Deno.test('mentions are structured, never empty, and only count names still in the text', () => {

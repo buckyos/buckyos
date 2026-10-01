@@ -36,6 +36,8 @@ export interface ConversationMessageActions {
     edit: (message: MessageObject) => void
     redact: (message: MessageObject) => Promise<void>
     react: (message: MessageObject, key: string) => Promise<void>
+    /** Cancels the viewer's own reaction with `key` (a `redact` of the reaction message). */
+    unreact: (message: MessageObject, key: string) => Promise<void>
   }
   /** Read receipt of an own group message, when the session shows receipts. */
   readReceipt?: (message: MessageObject) => ReadReceipt | null

@@ -146,6 +146,8 @@ Step5 的下一个 Round 输出决策后，Step5 才完成并沉淀为 `StepReco
 
 ### behavior 切换
 
+TODO: 切换模式由target behavvior的配置决定，而不是由当前session决定？
+
 ```text
 # 普通切换：同一 context、同一 run、同一 Turn
 AgentSession.handle_context_outcome(Done{next_behavior: B}):
@@ -196,4 +198,8 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 
 
 
-## AgentState
+## AgentState (RootFS)
+
+- SessionMgr / WorkspaceMgr等
+- 基于behavior name 构造LLM Context时，可能最要通过AgentState
+- 为Runtime的一些Agent相关状态tool提供实现 （尤其是Memory相关）

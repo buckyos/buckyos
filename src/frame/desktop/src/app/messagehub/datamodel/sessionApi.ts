@@ -258,6 +258,13 @@ export async function fetchOwnerDid(): Promise<string | null> {
   return did
 }
 
+/** The logged-in zone username (`user_id` of the account info), or '' when unknown. */
+export async function fetchAccountUsername(): Promise<string> {
+  const accountInfo = await buckyos.getAccountInfo()
+  const userId = accountInfo?.user_id
+  return typeof userId === 'string' ? userId.trim() : ''
+}
+
 export async function currentSessionToken(): Promise<string | null> {
   const token = rpc().getSessionToken()
   if (token) return token

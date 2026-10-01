@@ -4,6 +4,8 @@ import type { MessageObject, MsgRelation } from '../../protocol/msgobj'
 export interface MessageReaction {
   key: string
   dids: string[]
+  /** ObjId of each reactor's reaction message: cancelling a reaction is a `redact` of that message. */
+  messages: Record<string, string>
 }
 
 /** What the relation messages of a timeline say about one target message (`ui_relations`). */
@@ -56,8 +58,10 @@ export function mentionsViewer(message: MessageObject, viewerDid: string): boole
  * Apply `relates_to` of a timeline (oldest first): relation messages vanish,
  * their targets carry the latest edit, a redaction and reaction counts under
  * `ui_relations`; a `thread` message keeps its row and quotes its target. An
- * edit only counts when its author is the target's author; the host enforces
- * the rest and rejects anything else before it reaches a timeline.
+ * edit only counts when its author is the target's author; a `redact` whose
+ * target is a reaction message cancels that reaction (§16.3: "取消回应就是撤回
+ * 这条回应消息"); the host enforces the rest and rejects anything else before
+ * it reaches a timeline.
  */
 export function foldMessageRelations(messages: readonly MessageObject[]): MessageObject[] {
   const indexById = new Map<string, number>()
@@ -70,9 +74,24 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
   }
   const views = new Map<number, MessageRelationsView>()
   const viewOf = (index: number) => { const view = views.get(index) ?? {}; views.set(index, view); return view }
+  /** Reaction message id → where it was counted, so a later redact of it can be undone. */
+  const reactionsById = new Map<string, { targetIndex: number; key: string; from: string }>()
   for (const message of messages) {
     const relation = messageRelation(message)
     if (!relation || relation.rel === 'thread') continue
+    if (relation.rel === 'redact') {
+      const reaction = reactionsById.get(relation.target)
+      if (reaction) {
+        const reactions = views.get(reaction.targetIndex)?.reactions
+        const entry = reactions?.find(item => item.key === reaction.key)
+        if (entry && entry.messages[reaction.from] === relation.target) {
+          entry.dids = entry.dids.filter(did => did !== reaction.from)
+          delete entry.messages[reaction.from]
+          if (entry.dids.length === 0 && reactions) reactions.splice(reactions.indexOf(entry), 1)
+        }
+        continue
+      }
+    }
     const targetIndex = indexById.get(relation.target)
     const target = targetIndex === undefined ? undefined : visible[targetIndex]
     if (targetIndex === undefined || !target) continue
@@ -86,8 +105,12 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
       const key = relation.key ?? message.content.content ?? ''
       if (!key) continue
       const reactions = view.reactions ?? (view.reactions = [])
-      const entry = reactions.find(item => item.key === key) ?? (reactions[reactions.push({ key, dids: [] }) - 1])
+      const entry = reactions.find(item => item.key === key) ?? (reactions[reactions.push({ key, dids: [], messages: {} }) - 1])
       if (!entry.dids.includes(message.from)) entry.dids.push(message.from)
+      const id = messageObjId(message)
+      // The same (from, target, key) counts once; the first message is the one a redact must target.
+      if (id) { entry.messages[message.from] ??= id; reactionsById.set(id, { targetIndex, key, from: message.from }) }
+      for (const alias of messageIds(message)) if (!reactionsById.has(alias)) reactionsById.set(alias, { targetIndex, key, from: message.from })
     }
   }
   // Quotes are resolved last so they reflect the target's final edit / redaction.
@@ -101,8 +124,17 @@ export function foldMessageRelations(messages: readonly MessageObject[]): Messag
       ? { id: relation.target, from: target.from, senderName: typeof target.ui_sender_name === 'string' ? target.ui_sender_name : undefined, content: targetView?.redacted ? '' : (targetView?.edited?.content ?? target.content.content ?? ''), found: true }
       : { id: relation.target, from: '', content: '', found: false }
   })
+  for (const [index, view] of views) {
+    if (view.reactions && view.reactions.length === 0) delete view.reactions
+    if (Object.keys(view).length === 0) views.delete(index)
+  }
   if (views.size === 0) return visible
   return visible.map((message, index) => views.has(index) ? { ...message, ui_relations: views.get(index) } : message)
+}
+
+/** The viewer's own reaction message for `key` on a folded message, if any. */
+export function ownReactionId(message: MessageObject, viewerDid: string, key: string): string | undefined {
+  return messageRelations(message)?.reactions?.find(item => item.key === key)?.messages[viewerDid]
 }
 
 /** The text a bubble shows: the latest edit when there is one. */

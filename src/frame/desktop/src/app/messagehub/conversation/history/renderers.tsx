@@ -1,7 +1,7 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
 import { groupErrorText, parseGroupNotice } from '../../groupModel'
-import { memo, useContext, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   AtSign,
@@ -9,6 +9,7 @@ import {
   CheckCheck,
   Clock,
   MoreHorizontal,
+  SmilePlus,
   Users,
 } from 'lucide-react'
 import {
@@ -25,10 +26,12 @@ import { attachmentOfRef, isHttpUri } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
-import { displayedContent, mentionsViewer, messageRelations } from './relations'
+import { displayedContent, mentionsViewer, messageRelations, ownReactionId } from './relations'
 import type { ConversationListItem } from './types'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
+/** The emoji picker behind "Add reaction"; the quick ones come first. */
+const REACTION_PALETTE = [...QUICK_REACTIONS, '👎', '😮', '😢', '😡', '🔥', '👏', '🙏', '✅', '❌', '👀', '💯', '🤔', '😅', '😍', '🥳', '🚀', '⭐', '💡', '🙌', '😎', '🤝', '☕', '🎯', '📌', '⏳', '❓', '❗', '🫡']
 
 interface RecordContext {
   boxKind?: string
@@ -164,7 +167,7 @@ function renderTextMessage(
       key={`${message.from}:${message.created_at_ms}`}
     >
       <div
-        className={`${bubbleWidthClass} min-w-[80px]`}
+        className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`}
         style={bubbleStyle(isSelf, continued)}
         data-testid="message-bubble"
       >
@@ -202,46 +205,138 @@ function ReplyQuote({ message }: { message: MessageObject }) {
   </blockquote>
 }
 
-/** Reaction counts under a bubble; clicking one adds the viewer's reaction with that key. */
-function ReactionChips({ message, isSelf }: { message: MessageObject; isSelf: boolean }) {
+/** Closes a popover on an outside pointer down or Escape. */
+function useDismiss(open: boolean, root: React.RefObject<HTMLElement | null>, close: () => void) {
+  useEffect(() => {
+    if (!open) return
+    const onPointer = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) close() }
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') close() }
+    document.addEventListener('pointerdown', onPointer)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('pointerdown', onPointer); document.removeEventListener('keydown', onKey) }
+  }, [open, root, close])
+}
+
+/** Runs one relation action and keeps the failure text of the last one. */
+function useRelationRunner() {
+  const { t } = useI18n()
+  const [error, setError] = useState('')
+  const run = useCallback((operation: () => Promise<void> | void) => {
+    setError('')
+    void Promise.resolve(operation()).catch(failure => setError(groupErrorText(t, failure)))
+  }, [t])
+  return { run, error }
+}
+
+const popoverStyle: React.CSSProperties = { background: 'var(--cp-surface-opaque, var(--cp-surface))', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }
+
+/** One emoji button that adds the viewer's reaction, or removes it when it is already theirs. */
+function ReactionToggle({ message, selfDid, reactionKey, className, role, run, onDone }: { message: MessageObject; selfDid?: string; reactionKey: string; className?: string; role?: 'menuitem'; run: (operation: () => Promise<void> | void) => void; onDone?: () => void }) {
+  const { t } = useI18n()
+  const { relations } = useContext(ConversationMessageActionsContext)
+  const own = !!selfDid && !!ownReactionId(message, selfDid, reactionKey)
+  const label = t(own ? 'messagehub.message.removeReaction' : 'messagehub.message.reactWith', undefined, { key: reactionKey })
+  return <button type="button" role={role} className={className} aria-label={label} title={label} aria-pressed={own} data-reaction={reactionKey} onClick={() => { onDone?.(); run(() => own ? relations?.unreact(message, reactionKey) : relations?.react(message, reactionKey)) }}>{reactionKey}</button>
+}
+
+/** The emoji grid behind "Add reaction". */
+function ReactionPicker({ message, selfDid, run, onDone }: { message: MessageObject; selfDid?: string; run: (operation: () => Promise<void> | void) => void; onDone: () => void }) {
+  const { t } = useI18n()
+  return <div role="menu" className="mh-reaction-picker" aria-label={t('messagehub.message.addReaction')} data-testid="reaction-picker">
+    {REACTION_PALETTE.map(key => <ReactionToggle key={key} message={message} selfDid={selfDid} reactionKey={key} role="menuitem" run={run} onDone={onDone} />)}
+  </div>
+}
+
+/** Reaction counts under a bubble; the viewer's own are highlighted and a click toggles theirs. */
+function ReactionChips({ message, isSelf, selfDid }: { message: MessageObject; isSelf: boolean; selfDid?: string }) {
   const { t } = useI18n()
   const { relations, displayName } = useContext(ConversationMessageActionsContext)
+  const { run, error } = useRelationRunner()
   const reactions = messageRelations(message)?.reactions ?? []
   if (reactions.length === 0) return null
   const canReact = relations?.capabilities(message).react ?? false
-  return <ul className="mt-1.5 flex flex-wrap gap-1" data-testid="reactions" aria-label={t('messagehub.message.reactions')}>
-    {reactions.map(reaction => <li key={reaction.key}>
-      <button type="button" disabled={!canReact} title={reaction.dids.map(did => displayName?.(did) ?? did).join(', ')} onClick={() => void relations?.react(message, reaction.key)} className="min-h-7 rounded-full px-2 text-[12px] tabular-nums disabled:cursor-default" style={{ background: isSelf ? 'color-mix(in srgb, var(--cp-message-self-text) 14%, transparent)' : 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }} data-reaction={reaction.key}>{reaction.key} {reaction.dids.length}</button>
-    </li>)}
-  </ul>
+  const baseBg = isSelf ? 'color-mix(in srgb, var(--cp-message-self-text) 14%, transparent)' : 'color-mix(in srgb, var(--cp-text) 7%, transparent)'
+  const ownBg = isSelf ? 'color-mix(in srgb, var(--cp-message-self-text) 28%, transparent)' : 'color-mix(in srgb, var(--cp-accent) 14%, transparent)'
+  return <>
+    <ul className="mt-1.5 flex flex-wrap gap-1" data-testid="reactions" aria-label={t('messagehub.message.reactions')}>
+      {reactions.map(reaction => {
+        const own = !!selfDid && !!reaction.messages[selfDid]
+        const names = reaction.dids.map(did => displayName?.(did) ?? did).join(', ')
+        return <li key={reaction.key}>
+          <button type="button" disabled={!canReact} aria-pressed={own} title={t('messagehub.message.reactedBy', undefined, { names, key: reaction.key })} aria-label={`${reaction.key} ${reaction.dids.length} · ${names}`} onClick={() => run(() => own ? relations?.unreact(message, reaction.key) : relations?.react(message, reaction.key))} className="min-h-7 rounded-full px-2 text-[12px] tabular-nums disabled:cursor-default" style={{ background: own ? ownBg : baseBg, boxShadow: own ? `inset 0 0 0 1px ${isSelf ? 'var(--cp-message-self-text)' : 'var(--cp-accent)'}` : 'none' }} data-reaction={reaction.key} data-own={own || undefined}>{reaction.key} {reaction.dids.length}</button>
+        </li>
+      })}
+    </ul>
+    {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+  </>
 }
 
-/** The in-bubble menu with the relation actions the viewer may take on a message. */
-function MessageActionsMenu({ message, isSelf }: { message: MessageObject; isSelf: boolean }) {
+/**
+ * Discord-style bar on the bubble's top edge (pointer devices only, see
+ * `messagehub.css`): quick reactions, the emoji picker and the actions menu.
+ */
+function MessageHoverBar({ message, isSelf, selfDid }: { message: MessageObject; isSelf: boolean; selfDid?: string }) {
   const { t } = useI18n()
   const { relations } = useContext(ConversationMessageActionsContext)
-  const [open, setOpen] = useState(false)
-  const [error, setError] = useState('')
+  const [open, setOpen] = useState<'picker' | 'menu' | null>(null)
+  const close = useCallback(() => setOpen(null), [])
   const root = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const close = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false) }
-    document.addEventListener('pointerdown', close)
-    return () => document.removeEventListener('pointerdown', close)
-  }, [open])
+  useDismiss(open !== null, root, close)
+  const { run, error } = useRelationRunner()
+  if (!relations) return null
+  const can = relations.capabilities(message)
+  const hasMenu = can.reply || can.edit || can.redact
+  if (!can.react && !hasMenu) return null
+  const popoverClass = `absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`
+  return <>
+    <div ref={root} className="mh-hover-bar" data-side={isSelf ? 'self' : 'peer'} data-open={open !== null || undefined} data-testid="message-hover-bar" role="toolbar" aria-label={t('messagehub.message.actions')}>
+      {can.react ? QUICK_REACTIONS.map(key => <ReactionToggle key={key} message={message} selfDid={selfDid} reactionKey={key} run={run} />) : null}
+      {can.react ? <button type="button" aria-haspopup="menu" aria-expanded={open === 'picker'} aria-label={t('messagehub.message.addReaction')} title={t('messagehub.message.addReaction')} onClick={() => setOpen(value => value === 'picker' ? null : 'picker')} data-testid="add-reaction"><SmilePlus size={16} /></button> : null}
+      {hasMenu ? <button type="button" aria-haspopup="menu" aria-expanded={open === 'menu'} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => value === 'menu' ? null : 'menu')} data-testid="message-actions"><MoreHorizontal size={16} /></button> : null}
+      {open === 'picker' ? <div className={popoverClass} style={popoverStyle}><ReactionPicker message={message} selfDid={selfDid} run={run} onDone={close} /></div> : null}
+      {open === 'menu' ? <div className={`${popoverClass} w-44 py-1`} style={popoverStyle} data-testid="message-actions-menu"><RelationMenuItems message={message} isSelf={isSelf} run={run} onDone={close} /></div> : null}
+    </div>
+    {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+  </>
+}
+
+/** Reply / edit / recall / delete entries shared by the hover bar and the footer menu. */
+function RelationMenuItems({ message, isSelf, run, onDone }: { message: MessageObject; isSelf: boolean; run: (operation: () => Promise<void> | void) => void; onDone: () => void }) {
+  const { t } = useI18n()
+  const { relations } = useContext(ConversationMessageActionsContext)
+  if (!relations) return null
+  const can = relations.capabilities(message)
+  const itemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
+  const go = (operation: () => Promise<void> | void) => { onDone(); run(operation) }
+  return <>
+    {can.reply ? <button type="button" role="menuitem" className={itemClass} onClick={() => go(() => relations.reply(message))}>{t('messagehub.message.reply')}</button> : null}
+    {can.edit ? <button type="button" role="menuitem" className={itemClass} onClick={() => go(() => relations.edit(message))}>{t('messagehub.message.edit')}</button> : null}
+    {can.redact ? <button type="button" role="menuitem" className={`${itemClass} text-[color:var(--cp-danger)]`} onClick={() => go(() => relations.redact(message))}>{t(isSelf ? 'messagehub.message.recall' : 'messagehub.message.delete')}</button> : null}
+  </>
+}
+
+/** The footer menu for touch devices (no hover): quick reactions, the picker and the relation actions. */
+function MessageActionsMenu({ message, isSelf, selfDid }: { message: MessageObject; isSelf: boolean; selfDid?: string }) {
+  const { t } = useI18n()
+  const { relations } = useContext(ConversationMessageActionsContext)
+  const [open, setOpen] = useState<'menu' | 'picker' | null>(null)
+  const close = useCallback(() => setOpen(null), [])
+  const root = useRef<HTMLDivElement>(null)
+  useDismiss(open !== null, root, close)
+  const { run, error } = useRelationRunner()
   if (!relations) return null
   const can = relations.capabilities(message)
   if (!can.reply && !can.react && !can.edit && !can.redact) return null
-  const run = (operation: () => Promise<void> | void) => { setOpen(false); setError(''); void Promise.resolve(operation()).catch(failure => setError(groupErrorText(t, failure))) }
   const itemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
-  return <div ref={root} className="relative" onKeyDown={event => { if (event.key === 'Escape') setOpen(false) }}>
-    <button type="button" aria-haspopup="menu" aria-expanded={open} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => !value)} className="flex h-6 w-6 items-center justify-center rounded-full opacity-70 hover:opacity-100" style={{ color: isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }} data-testid="message-actions"><MoreHorizontal size={14} /></button>
-    {open ? <div role="menu" className={`absolute bottom-full z-30 mb-1 w-44 overflow-hidden rounded-xl py-1 shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={{ background: 'var(--cp-surface-opaque, var(--cp-surface))', border: '1px solid var(--cp-border)', color: 'var(--cp-text)' }} data-testid="message-actions-menu">
-      {can.react ? <div className="flex items-center justify-around px-1 pb-1" role="group" aria-label={t('messagehub.message.react')}>{QUICK_REACTIONS.map(key => <button key={key} type="button" role="menuitem" className="flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]" aria-label={`${t('messagehub.message.react')} ${key}`} onClick={() => run(() => relations.react(message, key))}>{key}</button>)}</div> : null}
-      {can.reply ? <button type="button" role="menuitem" className={itemClass} onClick={() => run(() => relations.reply(message))}>{t('messagehub.message.reply')}</button> : null}
-      {can.edit ? <button type="button" role="menuitem" className={itemClass} onClick={() => run(() => relations.edit(message))}>{t('messagehub.message.edit')}</button> : null}
-      {can.redact ? <button type="button" role="menuitem" className={`${itemClass} text-[color:var(--cp-danger)]`} onClick={() => run(() => relations.redact(message))}>{t(isSelf ? 'messagehub.message.recall' : 'messagehub.message.delete')}</button> : null}
+  const quickClass = 'flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] aria-pressed:bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)]'
+  return <div ref={root} className="mh-footer-actions relative" data-testid="message-actions-touch">
+    <button type="button" aria-haspopup="menu" aria-expanded={open !== null} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => value ? null : 'menu')} className="flex h-6 w-6 items-center justify-center rounded-full opacity-70 hover:opacity-100" style={{ color: isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }}><MoreHorizontal size={14} /></button>
+    {open === 'menu' ? <div role="menu" className={`absolute bottom-full z-30 mb-1 w-44 overflow-hidden rounded-xl py-1 shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={popoverStyle}>
+      {can.react ? <div className="flex items-center justify-around px-1 pb-1" role="group" aria-label={t('messagehub.message.react')}>{QUICK_REACTIONS.map(key => <ReactionToggle key={key} message={message} selfDid={selfDid} reactionKey={key} className={quickClass} role="menuitem" run={run} onDone={close} />)}</div> : null}
+      {can.react ? <button type="button" role="menuitem" className={itemClass} onClick={() => setOpen('picker')}>{t('messagehub.message.addReaction')}…</button> : null}
+      <RelationMenuItems message={message} isSelf={isSelf} run={run} onDone={close} />
     </div> : null}
+    {open === 'picker' ? <div className={`absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={popoverStyle}><ReactionPicker message={message} selfDid={selfDid} run={run} onDone={close} /></div> : null}
     {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
   </div>
 }
@@ -273,11 +368,12 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid }: { message: 
   const mentioned = !isSelf && !!selfDid && mentionsViewer(message, selfDid)
   return (
     <>
-      <ReactionChips message={message} isSelf={isSelf} />
+      {!relations?.redacted ? <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} /> : null}
+      <ReactionChips message={message} isSelf={isSelf} selfDid={selfDid} />
       <div className="mt-1 flex items-center justify-end gap-1">
         {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}
         {mentioned ? <span className="mr-auto flex items-center gap-0.5 rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="mention-badge" style={{ background: 'color-mix(in srgb, var(--cp-accent) 14%, transparent)', color: 'var(--cp-accent)' }}><AtSign size={11} aria-hidden />{t('messagehub.message.mentionsYou')}</span> : null}
-        {!relations?.redacted ? <MessageActionsMenu message={message} isSelf={isSelf} /> : null}
+        {!relations?.redacted ? <MessageActionsMenu message={message} isSelf={isSelf} selfDid={selfDid} /> : null}
         {relations?.edited ? <span className="text-[11px]" data-testid="edited-marker" style={{ color: metaColor }} title={new Date(relations.edited.at).toLocaleString()}>{t('messagehub.message.edited')}</span> : null}
         <span
           className="text-[11px] tabular-nums"

@@ -10,7 +10,8 @@ import { createSessionSchema, creationReason, defaultPreferences, groupSharedSta
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
-import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockSessions } from './data'
+import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
+import { isHiddenAccount } from '../api/projection'
 import { mockObjectAccess } from './objects'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
@@ -314,7 +315,7 @@ export class MessageHubMockStore implements MessageHubStore {
       return { ...entity, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
     }
     const dynamic = Object.keys(this.snapshot.groups).filter(id => !findEntity(id)).map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
-    return [...mockEntities.map(entity => this.lookup(entity.id) ?? entity), ...dynamic].map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
+    return [...mockEntities.map(entity => this.lookup(entity.id) ?? entity), ...dynamic].filter(entity => !isHiddenAccount({ did: entity.id, name: entity.name, tags: entity.tags }, context.ownerDid, { dids: [MOCK_SELF_DID] })).map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
   defaultSession(context: MessageHubContext, entityId: string) {
     const entity = this.findEntity(context, entityId)
@@ -343,7 +344,12 @@ export class MessageHubMockStore implements MessageHubStore {
     const exists = this.snapshot.sessions[key]
     const base = exists && context.ownerDid === MOCK_SELF_DID && !this.snapshot.withoutSeed[key] ? this.seeds[id] : undefined
     const raw = this.snapshot.messages[key] ?? []
-    const delta = foldMessageRelations(raw)
+    // Relations in the appended messages may target seeded ones (a reaction to
+    // Bob's seeded message), so seeds from `mockMessageSeeds` fold with them.
+    const seedMessages = base && base === mockMessageReaders[id] ? mockMessageSeeds[id] : undefined
+    const folded = foldMessageRelations([...(seedMessages ?? []), ...raw])
+    const seededRows = seedMessages ? folded.slice(0, seedMessages.length) : undefined
+    const delta = seedMessages ? folded.slice(seedMessages.length) : folded
     const baseCount = base?.totalCount ?? 0
     // Folded relations change rows without changing the row count, so the
     // raw message count serves as the reader revision the history pane watches.
@@ -354,7 +360,7 @@ export class MessageHubMockStore implements MessageHubStore {
       readRange: async (start, count) => {
         if (!this.canView(context) || !this.snapshot.sessions[key] || this.snapshot.withoutSeed[key] !== withoutSeed || this.snapshot.deleted[key]?.at !== deletedAt) return []
         const from = Math.max(0, start)
-        const seeded = base && from < baseCount ? await base.readRange(from, Math.min(count, baseCount - from)) : []
+        const seeded = base && from < baseCount ? (seededRows ? seededRows.slice(from, from + Math.min(count, baseCount - from)) : await base.readRange(from, Math.min(count, baseCount - from))) : []
         return [...seeded, ...delta.slice(Math.max(0, from - baseCount), Math.max(0, from + count - baseCount))].map((message, offset) => { const status = delivery[getMessageStableId(message, from + offset)]; return status ? { ...message, ui_delivery_status: status } : message })
       },
     }
@@ -455,12 +461,21 @@ export class MessageHubMockStore implements MessageHubStore {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const message = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: buildOutgoingDraftContent(payload), createdAtMs: this.now() })
     if (payload.relatesTo) {
+      const { rel, target: targetId, key } = payload.relatesTo
       const group = session ? this.snapshot.groups[session.entityId] : undefined
-      const target = (this.snapshot.messages[sessionKey(context.ownerDid, id)] ?? []).find(item => messageObjId(item) === payload.relatesTo!.target)
-      if (!group || !target) throw Error('rejected: relation-target-not-found')
+      const timeline = this.timeline(context.ownerDid, id)
+      const target = timeline.find(item => messageObjId(item) === targetId)
+      if (!target) throw Error('rejected: relation-target-not-found')
       const own = target.from === context.ownerDid
-      if (payload.relatesTo.rel === 'edit' && (!own || !withinWindow(EDIT_WINDOW_MS, target.created_at_ms, this.now()))) throw Error('rejected: edit-window-expired')
-      if (payload.relatesTo.rel === 'redact' && !(own ? withinWindow(RECALL_WINDOW_MS, target.created_at_ms, this.now()) : this.groupInfo(group, context.ownerDid).can.redactAny)) throw Error('rejected: capability-denied')
+      // Edits and recalls follow the group rules (`Self-Host-Groupv2.md` §2.6);
+      // reactions, replies and cancelling an own reaction work in any session.
+      if (rel === 'edit' && (!group || !own || !withinWindow(EDIT_WINDOW_MS, target.created_at_ms, this.now()))) throw Error('rejected: edit-window-expired')
+      if (rel === 'redact' && !(own ? withinWindow(RECALL_WINDOW_MS, target.created_at_ms, this.now()) : !!group && this.groupInfo(group, context.ownerDid).can.redactAny)) throw Error('rejected: capability-denied')
+      if (rel === 'reaction') {
+        // The same (from, target, key) counts once: the host answers a repeat with the existing message.
+        const redacted = new Set(timeline.filter(item => item.relates_to?.rel === 'redact').map(item => item.relates_to!.target))
+        if (timeline.some(item => item.from === context.ownerDid && item.relates_to?.rel === 'reaction' && item.relates_to.target === targetId && item.relates_to.key === key && !redacted.has(messageObjId(item) ?? ''))) return Promise.resolve()
+      }
       message.relates_to = payload.relatesTo
     }
     if (payload.mentions && (payload.mentions.all || payload.mentions.dids?.length)) {
@@ -469,6 +484,12 @@ export class MessageHubMockStore implements MessageHubStore {
       message.mentions = payload.mentions
     }
     return this.sendMessage(context, id, message, confirmation)
+  }
+  /** Seeded plus appended raw messages of a session (relation targets may be seeded). */
+  private timeline(ownerDid: string, id: string): MessageObject[] {
+    const key = sessionKey(ownerDid, id)
+    const seeded = ownerDid === MOCK_SELF_DID && !this.snapshot.withoutSeed[key] && this.seeds[id] === mockMessageReaders[id] ? mockMessageSeeds[id] ?? [] : []
+    return [...seeded, ...(this.snapshot.messages[key] ?? [])]
   }
   resend(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]

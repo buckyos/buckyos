@@ -1,4 +1,4 @@
-import { attributeSession, canonicalizeDid, parseTunnelDid, projectOwner, summarizeMessage, UNASSIGNED_ENTITY_ID, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
+import { attributeSession, canonicalizeDid, isHiddenAccount, parseTunnelDid, projectOwner, summarizeMessage, UNASSIGNED_ENTITY_ID, type ProjectionLabels } from '../../src/app/messagehub/api/projection.ts'
 import { itemToMessage, recordMeta, removeMessage, upsertMessages, emptyHistory } from '../../src/app/messagehub/api/reader.ts'
 import { creationReason, selectDefaultSession } from '../../src/app/messagehub/sessionModel.ts'
 import { groupSessionId, groupSessionKey, parseGroupInvitation } from '../../src/app/messagehub/groupModel.ts'
@@ -179,4 +179,19 @@ Deno.test('group invitations parse only the invite notification', () => {
   equal(parseGroupInvitation(invite), { groupDid: 'did:web:g1.test.buckyos.io', inviteId: 'i1', role: 'admin', expiresAt: 99, inviterDid: 'did:bns:alice' })
   equal(parseGroupInvitation({ ...invite, content: { ...invite.content, machine: { intent: 'buckyos.group_invitation', data: { group_did: 'did:web:g1.test.buckyos.io', action: 'rejected', data: {} } } } }), null)
   equal(parseGroupInvitation(chat('did:bns:alice', [owner], 'hi', 1)), null)
+})
+
+Deno.test('root and the logged-in account stay out of the entity list but their sessions remain addressable', () => {
+  const zoneUser = (did: string, name: string): Contact => ({ did, name, source: 'shared', is_verified: true, access_level: 'friend', created_at: 1, updated_at: 1, tags: ['zone_user'] })
+  const all = [zoneUser('did:bns:root', 'root'), zoneUser('did:bns:devtest', 'Dev Test'), zoneUser('did:bns:alice', 'Alice'), zoneUser('did:bns:ops', 'root'), zoneUser('did:web:me.example.com', 'Me')]
+  const hidden = { dids: ['did:web:me.example.com'], usernames: ['devtest'] }
+  equal(all.map(contact => isHiddenAccount(contact, owner, hidden)), [true, true, false, true, true])
+  // Only zone users are matched by name; an external contact called root is a contact like any other.
+  equal(isHiddenAccount({ did: 'did:msgtunnel:1.user.tg', name: 'root' }, owner, hidden), false)
+  equal(isHiddenAccount({ did: 'did:bns:root.zone.example' }, owner), true)
+  const rootDm = summary('maintenance', { box_kind: 'INBOX', from: 'did:bns:root', to: owner, msg: chat('did:bns:root', [owner], 'maintenance', 10) })
+  const projected = projectOwner({ ownerDid: owner, summaries: [rootDm], contacts: all, agentDids: [], personalTitles: {}, groups: {}, groupSessionTitles: {}, policies: {}, labels, hiddenAccounts: hidden })
+  equal(projected.entities.map(entity => entity.id), ['did:bns:alice'])
+  equal(projected.entityById.get('did:bns:root')?.sessionCount, 1)
+  equal(projected.sessionsByEntity.get('did:bns:root')?.map(session => session.id), ['maintenance'])
 })

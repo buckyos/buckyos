@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { MessageObject } from './protocol/msgobj'
+import { isHiddenRelationMessage } from './conversation/history/relations'
 import type { Entity, MessageHubContext, Session, SessionAccess, SessionBinding, SessionPreferences } from './types'
 
 export const createSessionSchema = z.object({ entityId: z.string().min(1), title: z.string().trim().max(64), connection: z.string().min(1) })
@@ -13,7 +14,7 @@ export const sessionKey = (ownerDid: string, sessionId: string) => JSON.stringif
 export const viewerSessionKey = (context: MessageHubContext, sessionId: string) => JSON.stringify([context.viewerDid, context.ownerDid, sessionId])
 export const isActionMessage = (message: MessageObject) => message.kind === 'event' && message.content.machine?.intent === 'buckyos.action_log'
 export function isMessageActivity(message: MessageObject) {
-  if (isActionMessage(message) || message.ui_item_kind === 'status') return false
+  if (isActionMessage(message) || message.ui_item_kind === 'status' || isHiddenRelationMessage(message)) return false
   return message.kind === 'chat' || message.kind === 'group_msg' || (message.kind === 'deliver' && Boolean(message.content.content?.trim() || message.content.refs?.some(ref => ref.role === 'output')))
 }
 export function relativeActivity(time: number | undefined, now: number, justNow: string) {

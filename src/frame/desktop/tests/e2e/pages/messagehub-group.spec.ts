@@ -275,9 +275,9 @@ test('message relations: edit, reaction, reply, recall, admin delete, mentions a
   await expect(bubble('Draft two').getByTestId('edited-marker')).toHaveText('edited')
   await expect(history.getByText('Draft one', { exact: true })).toHaveCount(0)
 
-  await bubble('Draft two').getByTestId('message-actions').click()
-  await page.getByRole('menuitem', { name: 'React 👍' }).click()
+  await bubble('Draft two').getByRole('button', { name: 'React with 👍' }).click()
   await expect(bubble('Draft two').getByTestId('reactions')).toContainText('👍 1')
+  await expect(bubble('Draft two').getByTestId('reactions').getByRole('button', { pressed: true })).toHaveCount(1)
   const targetId = await page.evaluate(async ({ context, id }) => (await window.__messageHubMock.reader(context, id).readRange(0, 500)).find(message => message.content.content === 'Draft one')?.ui_message_id, { context: OWN, id: SESSION })
   expect(targetId).toBeTruthy()
   await page.evaluate(({ owner, id, target }) => window.__messageHubMock.injectRelation(owner, id, 'did:buckyos:person:bob', target!, { rel: 'reaction', key: '👍' }, '👍'), { owner: SELF, id: SESSION, target: targetId as string })
