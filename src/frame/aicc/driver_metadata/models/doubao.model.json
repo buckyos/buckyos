@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 6,
+  "revision_seq": 7,
   "required_features": [],
   "models": [
     {
@@ -114,70 +114,70 @@
       "id": "doubao-seedream-5.0-lite",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedream-5-0-pro",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedance-2.0",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.0-fast",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.0-mini",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2.5",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2-0-260128",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2-0-fast-260128",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2-0-mini-260615",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
       "id": "doubao-seedance-2-5-260628",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}", "video.video2video.doubao", "video.video2video.{model}", "video.extend.doubao", "video.extend.{model}"],
       "capabilities": {}
     },
     {
@@ -212,21 +212,21 @@
       "id": "doubao-seedream-4.0",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedream-5.0",
       "parameter_scale": "image",
       "api_types": ["image.txt2img", "image.img2img"],
-      "logical_mounts": ["image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.doubao", "image.img2img.{model}"],
+      "logical_mounts": ["image.txt2img.seedream", "image.txt2img.doubao", "image.txt2img.{model}", "image.img2img.seedream", "image.img2img.doubao", "image.img2img.{model}"],
       "capabilities": {"image_generation": true}
     },
     {
       "id": "doubao-seedance-1.0-pro-fast",
       "parameter_scale": "video",
       "api_types": ["video.txt2video", "video.img2video"],
-      "logical_mounts": ["video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.doubao", "video.img2video.{model}"],
+      "logical_mounts": ["video.txt2video.seedance", "video.txt2video.doubao", "video.txt2video.{model}", "video.img2video.seedance", "video.img2video.doubao", "video.img2video.{model}"],
       "capabilities": {}
     },
     {

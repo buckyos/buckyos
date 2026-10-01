@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 9,
+  "revision_seq": 10,
   "provider_profile_id": "doubao",
   "static_inventory_models": [],
   "supplemental_inventory_api_types": [],
@@ -71,6 +71,7 @@
     {"model_driver": "glm", "variant": "reasoning-max", "match": {"origin_model_id": ["glm-5.2", "glm-5.3-flash"], "variant": "reasoning-max"}, "provider_options": {"reasoning": {"effort": "max"}}}
   ],
   "model_pricing": [
+    {"match": {"provider_model_id": ["doubao-seedream-4-0-250828", "doubao-seedream-4-0-20260415"]}, "pricing": {"source_url": "https://docs.volcengine.com/docs/ark/model-pricing?lang=zh", "verified_at": "2026-09-30", "currency": "CNY", "unit": "image", "amount": 0.2}},
     {"match": {"provider_model_id": "doubao-seed-2-0-lite*"}, "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "tiers": {"dimension": "input_tokens", "mode": "volume", "steps": [{"up_to": 32768, "input_token": 0.0000006, "output_token": 0.0000036, "cache_input_token": 0.00000012}, {"up_to": 131072, "input_token": 0.0000009, "output_token": 0.0000054, "cache_input_token": 0.00000012}, {"input_token": 0.0000018, "output_token": 0.0000108, "cache_input_token": 0.00000012}]}}},
     {"id": "doubao-seed-2-1-turbo-260628", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "input_token": 0.000003, "output_token": 0.000015, "cache_input_token": 0.0000006}},
     {"id": "doubao-seedance-2-0-260128", "pricing": {"source_url": "https://ark.volcengine.com/docs/82379/1099320", "verified_at": "2026-09-28", "currency": "CNY", "output_token": 0.000028}},
