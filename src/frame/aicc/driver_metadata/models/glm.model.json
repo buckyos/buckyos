@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "glm",
-  "revision_seq": 5,
+  "revision_seq": 6,
   "required_features": [],
   "models": [
     {
@@ -285,27 +285,27 @@
     {
       "id": "viduq1-image",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
     },
     {
       "id": "viduq1-start-end",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
     },
     {
       "id": "vidu2-image",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
     },
     {
       "id": "vidu2-start-end",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
     },
     {
       "id": "vidu2-reference",
       "api_types": ["video.img2video"],
-      "logical_mounts": ["video.img2video.glm", "video.img2video.{model}"]
+      "logical_mounts": ["video.img2video.vidu", "video.img2video.glm", "video.img2video.{model}"]
     },
     {
       "id": "glm-5.1",

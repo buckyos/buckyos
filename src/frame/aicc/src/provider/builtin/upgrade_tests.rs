@@ -3,6 +3,7 @@ use crate::catalog::{
     CatalogBuildOptions, CatalogSnapshot, ModelIdentity, ModelMatchFailure, ProviderModelMatch,
 };
 use crate::protocol::*;
+use crate::provider::inventory::ModelIdentitySource;
 use crate::provider::*;
 use crate::settings::{load_builtin_metadata, MetadataSources};
 use async_trait::async_trait;
@@ -830,12 +831,98 @@ fn domestic_prices_do_not_fill_global_regions() {
 }
 
 #[test]
+fn builtin_media_models_mount_their_default_families() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (provider_id, discovered_id, expected_origin_id, mount, api_type, operation) in [
+        (
+            "doubao",
+            "doubao-seedream-4-0-20260415",
+            "doubao-seedream-4.0",
+            "image.txt2img.seedream",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao-agent-plan",
+            "doubao-seedream-5.0-lite",
+            "doubao-seedream-5.0-lite",
+            "image.txt2img.seedream",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao",
+            "doubao-seedance-2-5-260628",
+            "doubao-seedance-2-5-260628",
+            "video.txt2video.seedance",
+            "video.txt2video",
+            "ark.contents.generate",
+        ),
+        (
+            "doubao-agent-plan",
+            "doubao-seedance-2.5",
+            "doubao-seedance-2.5",
+            "video.img2video.seedance",
+            "video.img2video",
+            "ark.contents.generate",
+        ),
+        (
+            "minimax",
+            "MiniMax-H3",
+            "MiniMax-H3",
+            "video.txt2video.minimax_h3",
+            "video.txt2video",
+            "video_generation.v2.create",
+        ),
+        (
+            "glm",
+            "vidu2-image",
+            "vidu2-image",
+            "video.img2video.vidu",
+            "video.img2video",
+            "videos.generate",
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|profile| profile.provider_profile_id == provider_id)
+            .unwrap();
+        let inventory = InventoryBuilder::build(
+            profile,
+            &instance(profile, provider_id),
+            discovery(&[discovered_id]),
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == discovered_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, expected_origin_id);
+        assert!(model.logical_mounts.contains(&mount.to_owned()));
+        assert_eq!(
+            model.operations.get(api_type).map(String::as_str),
+            Some(operation)
+        );
+        if provider_id == "doubao-agent-plan" {
+            assert!(matches!(
+                model.identity_source,
+                ModelIdentitySource::Catalog
+            ));
+        }
+    }
+}
+
+#[test]
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
         ("claude", 12),
         ("deepseek", 3),
-        ("doubao", 11),
+        ("doubao", 12),
         ("doubao-agent-plan", 0),
         ("fal", 4),
         ("gemini", 29),
@@ -909,7 +996,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 304);
+    assert_eq!(pricing_count, 308);
 }
 
 #[test]
@@ -919,6 +1006,16 @@ fn corrected_provider_prices_match_official_billing_dimensions() {
     let agent_plan = catalog.provider_rules("doubao-agent-plan").unwrap();
     assert!(agent_plan.model_pricing.is_empty());
 
+    let seedream = catalog
+        .resolve_provider_rule(
+            "doubao",
+            "doubao-seedream-4-0-20260415",
+            &Default::default(),
+        )
+        .unwrap();
+    let seedream = seedream.unwrap().action.pricing.unwrap();
+    assert_eq!(seedream.unit, Some(crate::catalog::PricingUnit::Image));
+    assert_eq!(seedream.amount, Some(0.2));
     let doubao = catalog.provider_rules("doubao").unwrap();
     assert!(doubao
         .model_pricing
@@ -1019,9 +1116,12 @@ fn domestic_currency_never_matches_global_and_minimax_vision_matches_contract() 
 fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_validated() {
     let catalog = catalog();
     let registry = builtin_provider_registry(&catalog).unwrap();
+    // TTS moved onto its own profile: the standard `doubao` profile now only
+    // serves the Ark inference endpoints, and `doubao-agent-plan` is the Ark
+    // card that still declares the openspeech TTS endpoint next to them.
     let binding = registry
         .resolve(BuiltinProviderRequest {
-            provider_profile_id: "doubao",
+            provider_profile_id: "doubao-agent-plan",
             protocol_adapter_id: "doubao-responses",
             auth_mode: ProviderAuthMode::ApiKey,
             credential_kind: None,
@@ -1228,8 +1328,15 @@ fn routable_builtin_unit_prices_match_operation_usage_dimensions() {
             }
         }
     }
+    // The standard `doubao` profile discovers its inventory dynamically and the
+    // `doubao-agent-plan` profile is a prepaid plan whose per-request pricing the
+    // schema cannot express, so neither contributes unit-priced dimensions to
+    // this sweep. The floor is what the remaining providers provide plus the four
+    // statically declared `doubao-speech` models (two character-priced TTS
+    // voices, two audio-second-priced ASR endpoints) across the four probed
+    // regions.
     assert!(
-        checked >= 39,
+        checked >= 35,
         "pricing coverage unexpectedly shrank: {checked}"
     );
 }
