@@ -52,11 +52,14 @@ fn ctx() -> RPCContext {
 }
 
 #[tokio::test]
-async fn removed_self_host_group_rpc_returns_unknown_method() {
+async fn group_rpc_requires_authentication_at_the_service_boundary() {
     use kRPC::{RPCErrors, RPCHandler, RPCRequest};
 
     let (center, _tmp) = new_center("removed_self_host_group_rpc").await;
-    let server = buckyos_api::MsgCenterServerHandler::new(center);
+    let server = crate::MsgCenterHttpServer::new(
+        center,
+        std::sync::Arc::new(crate::msg_tunnel::DeliveryExecutorMgr::new()),
+    );
     for method in ["group.create", "group.list_by_member", "group.check_access"] {
         let result = server
             .handle_rpc_call(
@@ -64,7 +67,7 @@ async fn removed_self_host_group_rpc_returns_unknown_method() {
                 "127.0.0.1".parse().unwrap(),
             )
             .await;
-        assert!(matches!(result, Err(RPCErrors::UnknownMethod(name)) if name == method));
+        assert!(matches!(result, Err(RPCErrors::NoPermission(_))));
     }
 }
 
@@ -343,74 +346,20 @@ async fn dispatch_stranger_goes_to_request_box() {
 }
 
 #[tokio::test]
-async fn dispatch_group_message_creates_group_and_agent_views() {
-    let (center, _tmp) = new_center("dispatch_group").await;
-    let group_id = DID::new("bns", "group-a");
-    let author = DID::new("bns", "author-a");
-    let agent_1 = DID::new("bns", "agent-a1");
-    let agent_2 = DID::new("bns", "agent-a2");
-
+async fn contact_subscribers_do_not_create_or_authorize_hosted_groups() {
+    let (center, _tmp) = new_center("unregistered_group").await;
+    let group = DID::new("bns", "group-a");
+    let reader = DID::new("bns", "reader");
     center
-        .handle_set_group_subscribers(
-            group_id.clone(),
-            vec![agent_1.clone(), agent_2.clone(), agent_2.clone()],
-            None,
-            ctx(),
-        )
+        .handle_set_group_subscribers(group.clone(), vec![reader.clone()], None, ctx())
         .await
         .unwrap();
-
-    let msg = make_msg(author, vec![group_id.clone()], MsgObjKind::GroupMsg);
-    let dispatch = center
-        .handle_dispatch(msg, None, None, ctx())
-        .await
-        .unwrap();
-    assert_eq!(dispatch.delivered_group, Some(group_id.clone()));
-    assert_eq!(dispatch.delivered_agents.len(), 2);
-
-    let group_box = center
-        .handle_peek_box(
-            buckyos_api::MailboxAddress::new(group_id.clone(), Some(group_id.to_string())).unwrap(),
-            MailboxKind::GroupInbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(group_box.len(), 1);
-    // Group records key their session on the group DID.
-    assert_eq!(
-        group_box[0].record.session_id.as_deref(),
-        Some(group_id.to_string().as_str())
-    );
-
-    let agent1_box = center
-        .handle_peek_box(
-            buckyos_api::MailboxAddress::new(agent_1, Some(group_id.to_string())).unwrap(),
-            MailboxKind::Inbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(agent1_box.len(), 1);
-
-    let agent2_box = center
-        .handle_peek_box(
-            buckyos_api::MailboxAddress::new(agent_2, Some(group_id.to_string())).unwrap(),
-            MailboxKind::Inbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(agent2_box.len(), 1);
+    let msg = make_msg(reader, vec![group.clone()], MsgObjKind::GroupMsg);
+    assert!(matches!(
+        center.handle_dispatch(msg, None, None, ctx()).await,
+        Err(kRPC::RPCErrors::NoPermission(_))
+    ));
+    assert!(center.groups.load(&group).await.unwrap().is_none());
 }
 
 #[tokio::test]
@@ -426,72 +375,23 @@ async fn dispatch_group_message_without_group_target_fails() {
 }
 
 #[tokio::test]
-async fn group_message_routes_by_to_session_and_rejects_topic_only() {
-    let (center, _tmp) = new_center("dispatch_group_to_session").await;
-    let group_id = DID::new("bns", "group-v2");
-    let author = DID::new("bns", "author-v2");
-    let agent = DID::new("bns", "agent-v2");
-    center
-        .handle_set_group_subscribers(group_id.clone(), vec![agent.clone()], None, ctx())
+async fn unregistered_group_sessions_and_topic_only_group_messages_are_rejected() {
+    let (center, _tmp) = new_center("group_routes").await;
+    let mut msg = make_msg(
+        DID::new("bns", "sender"),
+        vec![DID::new("bns", "unknown-group")],
+        MsgObjKind::GroupMsg,
+    );
+    msg.to_session = Some("private".into());
+    assert!(center
+        .handle_dispatch(msg.clone(), None, None, ctx())
         .await
-        .unwrap();
-
-    // to_session selects the named session; topic is only a hint.
-    let mut msg = make_msg(author.clone(), vec![group_id.clone()], MsgObjKind::GroupMsg);
-    msg.to_session = Some("release".into());
-    msg.thread.topic = Some("发布准备".into());
-    let dispatch = center
-        .handle_dispatch(msg, None, None, ctx())
-        .await
-        .unwrap();
-    assert_eq!(dispatch.delivered_group, Some(group_id.clone()));
-    let agent_box = center
-        .handle_peek_box(
-            buckyos_api::MailboxAddress::new(agent.clone(), Some("release".into())).unwrap(),
-            MailboxKind::Inbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(agent_box.len(), 1);
-    assert_eq!(agent_box[0].record.session_id.as_deref(), Some("release"));
-
-    // Transition rule: a group message with topic but no to_session is
-    // rejected instead of falling into the default session.
-    let mut legacy = make_msg(author.clone(), vec![group_id.clone()], MsgObjKind::GroupMsg);
-    legacy.thread.topic = Some("release".into());
-    let err = center
-        .handle_dispatch(legacy.clone(), None, None, ctx())
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("missing-to-session"), "{err}");
-    let err = center
-        .handle_post_send(legacy, None, ctx())
-        .await
-        .unwrap_err();
-    assert!(err.to_string().contains("missing-to-session"), "{err}");
-
-    // Without topic or to_session the message goes to the default session.
-    let plain = make_msg(author, vec![group_id.clone()], MsgObjKind::GroupMsg);
-    center
-        .handle_dispatch(plain, None, None, ctx())
-        .await
-        .unwrap();
-    let default_box = center
-        .handle_peek_box(
-            buckyos_api::MailboxAddress::new(agent, Some(group_id.to_string())).unwrap(),
-            MailboxKind::Inbox,
-            None,
-            None,
-            None,
-            ctx(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(default_box.len(), 1);
+        .is_err());
+    msg.to_session = None;
+    msg.thread.topic = Some("private".into());
+    assert!(
+        matches!(center.handle_dispatch(msg, None, None, ctx()).await, Err(kRPC::RPCErrors::ParseRequestError(reason)) if reason.contains("missing-to-session"))
+    );
 }
 
 #[tokio::test]
@@ -556,7 +456,10 @@ async fn invalid_v2_message_objects_are_rejected_at_ingress() {
     // `proof` was removed in v2 and is a reserved key.
     let mut proof = make_msg(sender.clone(), vec![a.clone()], MsgObjKind::Chat);
     proof.meta.insert("proof".into(), json!("proof-001"));
-    assert!(center.handle_post_send(proof.clone(), None, ctx()).await.is_err());
+    assert!(center
+        .handle_post_send(proof.clone(), None, ctx())
+        .await
+        .is_err());
     assert!(center
         .handle_dispatch(proof, None, None, ctx())
         .await
@@ -589,14 +492,14 @@ async fn cyfs_dispatch_verifies_and_keeps_the_jwt_original_of_a_signed_message()
         .to_jwt(&key, &format!("{}#main_key", sender.to_string()))
         .unwrap();
 
-    let signed = crate::cyfs_dispatch::verify_signed_message(&jwt).await.unwrap();
+    let signed = crate::cyfs_dispatch::verify_signed_message(&jwt)
+        .await
+        .unwrap();
     assert_eq!(signed.obj_id, id);
     assert_eq!(signed.msg, msg);
 
     // The kid must name a key of `from`.
-    let forged = msg
-        .to_jwt(&key, "did:bns:someone-else#main_key")
-        .unwrap();
+    let forged = msg.to_jwt(&key, "did:bns:someone-else#main_key").unwrap();
     assert_eq!(
         crate::cyfs_dispatch::verify_signed_message(&forged)
             .await
@@ -1449,12 +1352,12 @@ async fn session_projection_merges_directions_and_aggregates_delivery() {
 }
 
 #[tokio::test]
-async fn read_receipt_can_be_set_and_queried() {
+async fn direct_message_receipt_can_be_set_and_queried() {
     let (center, _tmp) = new_center("read_receipt").await;
     let group = DID::new("bns", "group-b");
     let author = DID::new("bns", "author-b");
     let reader = DID::new("bns", "reader-b");
-    let msg = make_msg(author, vec![group.clone()], MsgObjKind::GroupMsg);
+    let msg = make_msg(author, vec![group.clone()], MsgObjKind::Chat);
     let msg_id = msg.gen_obj_id().0;
 
     center
@@ -3217,17 +3120,32 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         // A sender that only reached the request box has no contact record;
         // accepting it creates one and later messages are admitted.
         let before = center
-            .handle_check_access_permission(sender.clone(), None, Some(alice.clone()), user_ctx("alice"))
+            .handle_check_access_permission(
+                sender.clone(),
+                None,
+                Some(alice.clone()),
+                user_ctx("alice"),
+            )
             .await
             .unwrap();
         assert!(!before.allow_delivery || before.level != buckyos_api::AccessGroupLevel::Friend);
         let contact = center
-            .handle_update_contact(sender.clone(), accept.clone(), Some(alice.clone()), user_ctx("alice"))
+            .handle_update_contact(
+                sender.clone(),
+                accept.clone(),
+                Some(alice.clone()),
+                user_ctx("alice"),
+            )
             .await
             .unwrap();
         assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
         let after = center
-            .handle_check_access_permission(sender.clone(), None, Some(alice.clone()), user_ctx("alice"))
+            .handle_check_access_permission(
+                sender.clone(),
+                None,
+                Some(alice.clone()),
+                user_ctx("alice"),
+            )
             .await
             .unwrap();
         assert_eq!(after.level, buckyos_api::AccessGroupLevel::Friend);
@@ -3239,14 +3157,24 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             ..Default::default()
         };
         assert!(center
-            .handle_update_contact(DID::new("web", "dave.zone.example"), rename, Some(alice.clone()), user_ctx("alice"))
+            .handle_update_contact(
+                DID::new("web", "dave.zone.example"),
+                rename,
+                Some(alice.clone()),
+                user_ctx("alice")
+            )
             .await
             .is_err());
 
         // A user changes only their own store; the system scope is service only.
         assert!(is_denied(
             center
-                .handle_update_contact(sender.clone(), accept.clone(), Some(bob.clone()), user_ctx("alice"))
+                .handle_update_contact(
+                    sender.clone(),
+                    accept.clone(),
+                    Some(bob.clone()),
+                    user_ctx("alice")
+                )
                 .await
         ));
         assert!(is_denied(

@@ -175,23 +175,38 @@ pub(crate) async fn serve(center: &MessageCenter, req: &Request<Body>) -> Option
         return Some(text_response(StatusCode::FORBIDDEN, "object access denied"));
     }
 
+    if let Ok(Some((_, body, jwt))) = center.groups.object(&obj_id).await {
+        if center.authorize_message(&ctx, &obj_id).await.is_err() {
+            return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
+        }
+        let (mime, body) = match jwt {
+            Some(jwt) => (ndn_lib::CYFS_CONTENT_TYPE_NAMED_OBJECT_JWT, Some(jwt)),
+            None => (ndn_lib::CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON, body),
+        };
+        return Some(match body {
+            Some(body) => bytes_response(StatusCode::OK, mime, body.into_bytes()),
+            None => text_response(StatusCode::NOT_FOUND, "not-found"),
+        });
+    }
+    let context = query_param(req.uri().query().unwrap_or(""), "context_path");
+    if center
+        .authorize_attachment(&ctx, &obj_id, context.as_deref())
+        .await
+        .is_err()
+    {
+        return Some(text_response(StatusCode::NOT_FOUND, "not-found"));
+    }
+    Some(fetch_authorized_object(&obj_id, want_content).await)
+}
+
+pub(crate) async fn fetch_authorized_object(obj_id: &ObjId, want_content: bool) -> Response<Body> {
     let runtime = match get_buckyos_api_runtime() {
         Ok(runtime) => runtime,
-        Err(_) => {
-            return Some(text_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "named store unavailable",
-            ))
-        }
+        Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
     };
     let named_store = match runtime.get_named_store().await {
         Ok(store) => store,
-        Err(_) => {
-            return Some(text_response(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "named store unavailable",
-            ))
-        }
+        Err(_) => return text_response(StatusCode::SERVICE_UNAVAILABLE, "named store unavailable"),
     };
     let obj_str = match named_store.get_object(&obj_id).await {
         Ok(value) => value,
@@ -202,69 +217,56 @@ pub(crate) async fn serve(center: &MessageCenter, req: &Request<Body>) -> Option
             } else {
                 StatusCode::BAD_GATEWAY
             };
-            return Some(text_response(status, "object unavailable"));
+            return text_response(status, "object unavailable");
         }
     };
 
     if !want_content {
-        return Some(bytes_response(
+        return bytes_response(
             StatusCode::OK,
             "application/json; charset=utf-8",
             obj_str.into_bytes(),
-        ));
+        );
     }
 
     if !obj_id.is_file_object() {
-        return Some(text_response(
+        return text_response(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
             "object has no downloadable content",
-        ));
+        );
     }
     let file_obj: FileObject = match load_named_obj(&obj_str) {
         Ok(value) => value,
-        Err(_) => {
-            return Some(text_response(
-                StatusCode::BAD_GATEWAY,
-                "invalid file object",
-            ))
-        }
+        Err(_) => return text_response(StatusCode::BAD_GATEWAY, "invalid file object"),
     };
     if file_obj.size > MAX_CONTENT_BYTES {
-        return Some(text_response(
+        return text_response(
             StatusCode::PAYLOAD_TOO_LARGE,
             "file is too large for inline download",
-        ));
+        );
     }
     let chunk_id = match ChunkId::new(file_obj.content.trim()) {
         Ok(id) => id,
         Err(_) => {
-            return Some(text_response(
+            return text_response(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
                 "file content is not a single chunk",
-            ))
+            )
         }
     };
     let (mut reader, len) = match named_store.open_chunk_reader(&chunk_id, 0).await {
         Ok(value) => value,
-        Err(_) => {
-            return Some(text_response(
-                StatusCode::NOT_FOUND,
-                "file content unavailable",
-            ))
-        }
+        Err(_) => return text_response(StatusCode::NOT_FOUND, "file content unavailable"),
     };
     if len > MAX_CONTENT_BYTES {
-        return Some(text_response(
+        return text_response(
             StatusCode::PAYLOAD_TOO_LARGE,
             "file is too large for inline download",
-        ));
+        );
     }
     let mut data = Vec::with_capacity(len as usize);
     if reader.read_to_end(&mut data).await.is_err() {
-        return Some(text_response(
-            StatusCode::BAD_GATEWAY,
-            "read file content failed",
-        ));
+        return text_response(StatusCode::BAD_GATEWAY, "read file content failed");
     }
     let name = file_obj.content_obj.name.clone();
     let mime = file_obj
@@ -285,5 +287,5 @@ pub(crate) async fn serve(center: &MessageCenter, req: &Request<Body>) -> Option
     )) {
         response.headers_mut().insert("content-disposition", value);
     }
-    Some(response)
+    response
 }

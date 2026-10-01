@@ -1,5 +1,11 @@
 mod contact_mgr;
 mod cyfs_dispatch;
+mod group_http;
+mod group_publication;
+mod group_service;
+mod group_store;
+mod group_sync;
+mod group_types;
 mod message_hub;
 mod msg_box_db;
 mod msg_center;
@@ -7,6 +13,8 @@ mod msg_tunnel;
 mod object_access;
 mod owner_session;
 mod owner_session_db;
+#[cfg(test)]
+mod test_group_service;
 #[cfg(test)]
 mod test_msg_center;
 mod tg_tunnel;
@@ -202,6 +210,22 @@ impl RPCHandler for MsgCenterHttpServer {
                 trace_id: req.trace_id,
             });
         }
+        if req.token.is_none() {
+            return Err(RPCErrors::NoPermission("authentication-required".into()));
+        }
+        if req.method.starts_with("group.") {
+            let ctx = RPCContext::from_request(&req, ip_from);
+            let value = self
+                .rpc_handler
+                .0
+                .group_rpc(&req.method, req.params.clone(), ctx)
+                .await?;
+            return Ok(RPCResponse {
+                result: RPCResult::Success(value),
+                seq: req.seq,
+                trace_id: req.trace_id,
+            });
+        }
         self.rpc_handler.handle_rpc_call(req, ip_from).await
     }
 }
@@ -210,9 +234,12 @@ impl RPCHandler for MsgCenterHttpServer {
 impl HttpServer for MsgCenterHttpServer {
     async fn serve_request(
         &self,
-        req: http::Request<BoxBody<Bytes, ServerError>>,
+        mut req: http::Request<BoxBody<Bytes, ServerError>>,
         info: StreamInfo,
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
+        if let Some(response) = group_http::serve(&self.rpc_handler.0, &mut req).await {
+            return Ok(response);
+        }
         if let Some(response) = object_access::serve(&self.rpc_handler.0, &req).await {
             return Ok(response);
         }
@@ -1118,6 +1145,7 @@ pub async fn start_msg_center_service() -> Result<()> {
         .map_err(|err| anyhow::anyhow!("create message center failed: {:?}", err))?;
     *center.cyfs_dispatch.write().unwrap() = cyfs_dispatch::CyfsDispatchSettings::parse(&settings)?;
     center.start_idempotency_sweep();
+    center.start_group_sync();
 
     let executor_mgr = Arc::new(DeliveryExecutorMgr::new());
     register_message_hub(&center, executor_mgr.as_ref()).await?;

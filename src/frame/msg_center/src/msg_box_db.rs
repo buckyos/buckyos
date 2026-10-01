@@ -288,7 +288,7 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
         Ok(())
     }
 
-    async fn upsert_record_with_msg_tx(
+    pub(crate) async fn upsert_record_with_msg_tx(
         &self,
         tx: &mut Transaction<'_, Any>,
         record: &MailboxRecord,
@@ -299,7 +299,7 @@ ON CONFLICT(owner, record_id) DO UPDATE SET
             .await
     }
 
-    async fn create_delivery_if_absent_tx(
+    pub(crate) async fn create_delivery_if_absent_tx(
         &self,
         tx: &mut Transaction<'_, Any>,
         record: &DeliveryRecord,

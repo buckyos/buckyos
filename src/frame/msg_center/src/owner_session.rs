@@ -116,7 +116,7 @@ impl TokenVerifierSlot {
         Self(RwLock::new(verifier))
     }
 
-    fn get(&self) -> Arc<dyn SessionTokenVerifier> {
+    pub(crate) fn get(&self) -> Arc<dyn SessionTokenVerifier> {
         self.0.read().unwrap().clone()
     }
 
@@ -396,6 +396,16 @@ impl MessageCenter {
         kind: MailboxKind,
         action: &str,
     ) -> std::result::Result<(), RPCErrors> {
+        if kind == MailboxKind::GroupInbox {
+            let actor = self.group_actor(ctx).await?;
+            self.authorize_group_mailbox(&actor, mailbox).await?;
+            if action != "read" {
+                return Err(crate::group_types::denied("group-inbox-is-authoritative"));
+            }
+            self.authorize_resource(ctx, &mailbox.resource(kind), action)
+                .await?;
+            return Ok(());
+        }
         if action == "read" {
             self.authorize_owner_read_identity(ctx, mailbox.owner())
                 .await?;
@@ -429,6 +439,10 @@ impl MessageCenter {
             .ok_or_else(|| permission_denied("mailbox record unavailable"))?;
         self.authorize_mailbox(ctx, &record.mailbox, record.box_kind, action)
             .await?;
+        if record.box_kind == MailboxKind::GroupInbox {
+            self.authorize_group_message(&self.group_actor(ctx).await?, &record.msg_id)
+                .await?;
+        }
         Ok(record)
     }
 
@@ -438,9 +452,30 @@ impl MessageCenter {
         msg_id: &ndn_lib::ObjId,
     ) -> std::result::Result<(), RPCErrors> {
         if self.caller_identity(ctx).await?.is_none() {
+            if self.groups.object(msg_id).await?.is_some() {
+                return Err(crate::group_types::denied("authentication-required"));
+            }
             return Ok(());
         }
+        if self
+            .groups
+            .object(msg_id)
+            .await?
+            .is_some_and(|(_, body, _)| body.is_none())
+        {
+            return Err(crate::group_types::missing());
+        }
         for record in self.msg_box_db.list_message_records(msg_id).await? {
+            if record.box_kind == MailboxKind::GroupInbox {
+                if self
+                    .authorize_group_message(&self.group_actor(ctx).await?, msg_id)
+                    .await
+                    .is_ok()
+                {
+                    return Ok(());
+                }
+                continue;
+            }
             if self
                 .authorize_mailbox(ctx, &record.mailbox, record.box_kind, "read")
                 .await
@@ -799,9 +834,10 @@ impl MessageCenter {
                 .into_iter()
                 .next();
             let last_record = match last_record {
-                Some(record) => {
-                    Some(Self::build_record_view(record, Some(with_object.unwrap_or(false))).await?)
-                }
+                Some(record) => Some(
+                    self.build_record_view(record, Some(with_object.unwrap_or(false)))
+                        .await?,
+                ),
                 None => None,
             };
             items.push(SessionSummary {

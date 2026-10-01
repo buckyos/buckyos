@@ -165,10 +165,20 @@ impl DeliveryExecutor for MessageHubExecutor {
                 .cyfs_dispatch
                 .read()
                 .unwrap()
-                .outgoing
-                .get(&envelope.target_did.to_string())
-                .cloned();
-            if let Some(route) = route {
+                .message_route(&msg, &envelope.target_did);
+            let route = match route {
+                Ok(route) => route,
+                Err(e) => {
+                    return Ok(DeliveryReportResult {
+                        ok: false,
+                        error_code: Some("native-route-not-configured".into()),
+                        error_message: Some(e.to_string()),
+                        retryable: Some(false),
+                        ..Default::default()
+                    })
+                }
+            };
+            if let Some((route, proofs)) = route {
                 let snapshot = envelope.address.as_ref().and_then(|a| a.address.as_deref());
                 if snapshot != Some(route.target.as_str()) {
                     return Ok(DeliveryReportResult {
@@ -187,8 +197,18 @@ impl DeliveryExecutor for MessageHubExecutor {
                     .get_msg_jwt(&envelope.msg_id)
                     .await
                     .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
-                return crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id)
-                    .await;
+                return if proofs.is_empty() {
+                    crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id).await
+                } else {
+                    crate::cyfs_dispatch::send_with_proofs(
+                        &route,
+                        &msg,
+                        jwt.as_deref(),
+                        &envelope.msg_id,
+                        &proofs,
+                    )
+                    .await
+                };
             }
             warn!(
                 "message hub has no configured native route: delivery_id={} target={}",

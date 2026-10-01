@@ -37,6 +37,8 @@ pub(crate) struct CyfsDispatchSettings {
     pub principal_dids: HashMap<String, DID>,
     pub outgoing: HashMap<String, NativeDispatchRoute>,
     pub max_object_bytes: usize,
+    pub joined_groups: Vec<crate::group_sync::JoinedGroupRoute>,
+    pub group_hook_authorization: Option<String>,
 }
 
 impl Default for CyfsDispatchSettings {
@@ -47,11 +49,53 @@ impl Default for CyfsDispatchSettings {
             principal_dids: HashMap::new(),
             outgoing: HashMap::new(),
             max_object_bytes: default_max_bytes(),
+            joined_groups: Vec::new(),
+            group_hook_authorization: None,
         }
     }
 }
 
 impl CyfsDispatchSettings {
+    pub(crate) fn message_route(
+        &self,
+        msg: &MsgObject,
+        receiver: &DID,
+    ) -> anyhow::Result<Option<(NativeDispatchRoute, Vec<String>)>> {
+        if msg.kind == MsgObjKind::GroupMsg {
+            let binding = self
+                .joined_groups
+                .iter()
+                .find(|r| r.owner_did == msg.from && &r.group_did == receiver)
+                .ok_or_else(|| anyhow::anyhow!("joined-group-route-not-configured"))?;
+            let mailbox =
+                buckyos_api::MailboxAddress::new(receiver.clone(), msg.to_session.clone())
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            let path = match msg.to_session.as_ref() {
+                None => format!("/{}/inbox", receiver.to_string()),
+                Some(_) => format!(
+                    "/{}/sessions/{}/inbox",
+                    receiver.to_string(),
+                    mailbox.to_string().split_once('/').unwrap().1
+                ),
+            };
+            return Ok(Some((
+                NativeDispatchRoute {
+                    target: crate::group_http::group_target(&binding.host, &path)
+                        .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+                    upstream: binding.upstream.clone(),
+                    authorization: binding.authorization.clone(),
+                    timeout_ms: 15_000,
+                },
+                binding.proof_ids.clone(),
+            )));
+        }
+        Ok(self
+            .outgoing
+            .get(&receiver.to_string())
+            .cloned()
+            .map(|r| (r, vec![])))
+    }
+
     pub fn parse(settings: &serde_json::Value) -> anyhow::Result<Self> {
         let mut config: Self = settings
             .get("cyfs_dispatch")
@@ -78,6 +122,22 @@ impl CyfsDispatchSettings {
                 }
             }
             config.accepted_paths = paths;
+        }
+        if config
+            .group_hook_authorization
+            .as_ref()
+            .is_some_and(|v| !v.starts_with("Bearer ") || http::HeaderValue::from_str(v).is_err())
+        {
+            anyhow::bail!("invalid group hook authorization");
+        }
+        let mut joined_keys = std::collections::HashSet::new();
+        for route in &config.joined_groups {
+            route
+                .validate()
+                .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+            if !joined_keys.insert((route.owner_did.to_string(), route.group_did.to_string())) {
+                anyhow::bail!("duplicate joined group reader binding");
+            }
         }
         for (did, route) in &config.outgoing {
             DID::from_str(did).map_err(|e| anyhow::anyhow!("invalid native recipient: {e}"))?;
@@ -377,18 +437,45 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
     }
 }
 
-/// Verify a MsgObject received in JWT form. The signing key must be listed in
-/// the DID Document of `from` (the `kid` DID equals `from`); keys that `from`
-/// delegates to devices or agents are not resolved yet and are rejected.
+pub(crate) fn authorizes_signer(
+    doc: &serde_json::Value,
+    author: &DID,
+    signer: &DID,
+    kid: &str,
+) -> bool {
+    if doc["id"] != serde_json::json!(author) {
+        return false;
+    }
+    let signer = signer.to_string();
+    doc["authentication"].as_array().is_some_and(|keys| {
+        keys.iter()
+            .filter_map(|key| key.as_str().or_else(|| key["id"].as_str()))
+            .any(|id| id == kid || id == signer)
+    })
+}
+
 pub(crate) async fn verify_signed_message(
     jwt: &str,
 ) -> std::result::Result<MsgObjectJwt, (StatusCode, &'static str)> {
     let decoded =
         decode_msg_object_jwt(jwt).map_err(|_| (StatusCode::BAD_REQUEST, "invalid-message"))?;
-    if decoded.kid_did().as_ref() != Some(&decoded.msg.from) {
-        return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+    let signer = decoded
+        .kid_did()
+        .ok_or((StatusCode::FORBIDDEN, "signer-mismatch"))?;
+    if signer != decoded.msg.from {
+        if decoded.msg.from.method == "dev" {
+            return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+        }
+        let doc = name_client::resolve_did(&decoded.msg.from, None)
+            .await
+            .map_err(|_| (StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable"))?
+            .to_json_value()
+            .map_err(|_| (StatusCode::FORBIDDEN, "signer-mismatch"))?;
+        if !authorizes_signer(&doc, &decoded.msg.from, &signer, &decoded.kid) {
+            return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+        }
     }
-    let from = &decoded.msg.from;
+    let from = &signer;
     let key = if from.method == "dev" {
         jsonwebtoken::DecodingKey::from_ed_components(&from.id)
             .map_err(|_| (StatusCode::FORBIDDEN, "unknown-signing-key"))?
@@ -448,6 +535,16 @@ pub(crate) async fn send(
     jwt: Option<&str>,
     expected_id: &ObjId,
 ) -> anyhow::Result<DeliveryReportResult> {
+    send_with_proofs(route, msg, jwt, expected_id, &[]).await
+}
+
+pub(crate) async fn send_with_proofs(
+    route: &NativeDispatchRoute,
+    msg: &MsgObject,
+    jwt: Option<&str>,
+    expected_id: &ObjId,
+    proofs: &[String],
+) -> anyhow::Result<DeliveryReportResult> {
     let (id, json_body) = msg.gen_obj_id();
     if &id != expected_id {
         anyhow::bail!("native delivery body does not match the queued ObjectId");
@@ -469,16 +566,17 @@ pub(crate) async fn send(
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let operation = async {
-        let mut response = client
+        let mut request = client
             .put(url)
             .header("host", target.host_str().unwrap())
             .header("content-type", encoding.content_type())
             .header(CYFS_HEADER_OBJ_ID, id.to_string())
             .header(CYFS_HEADER_ORIGINAL_USER, msg.from.to_string())
-            .header("authorization", &route.authorization)
-            .body(body)
-            .send()
-            .await?;
+            .header("authorization", &route.authorization);
+        if !proofs.is_empty() {
+            request = request.header("cyfs-proofs", serde_json::to_string(proofs)?);
+        }
+        let mut response = request.body(body).send().await?;
         let status = response.status();
         let headers = response.headers().clone();
         let mut bytes = Vec::new();
