@@ -138,7 +138,7 @@ try {
   assert(bad.ok === false && typeof bad.reason === "string", "unroutable target returns ok:false with reason");
   console.log(`  ✓ ok:false reason: ${bad.reason}`);
   const key = `mh-ok-${Date.now()}`;
-  const outgoing = { from: selfDid, to: [agentDid], kind: "chat", thread: { topic: String(first.session_id) }, created_at_ms: Date.now(), content: { format: "text/plain", content: "MessageHub 集成验收测试消息（可忽略）" } };
+  const outgoing = { from: selfDid, to: [agentDid], kind: "chat", to_session: String(first.session_id), created_at_ms: Date.now(), nonce: Math.floor(Math.random() * Number.MAX_SAFE_INTEGER), content: { format: "text/plain", content: "MessageHub 集成验收测试消息（可忽略）" } };
   const sent = asRecord(await msg("msg.post_send", { msg: outgoing, idempotency_key: key }), "post_send");
   assert(sent.ok === true && typeof sent.msg_id === "string" && Array.isArray(sent.deliveries), "post_send ok with deliveries");
   const replay = asRecord(await msg("msg.post_send", { msg: outgoing, idempotency_key: key }), "post_send(replay)");

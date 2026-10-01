@@ -6064,7 +6064,7 @@ impl AgentSession {
             content: ndn_lib::MsgContent::default(),
             ..Default::default()
         };
-        msg.thread.topic = Some(self.session_id.clone());
+        msg.to_session = Some(self.session_id.clone());
         msg.thread.correlation_id = Some(self.session_id.clone());
         msg.meta.insert(
             "session_id".to_string(),
@@ -7305,7 +7305,7 @@ fn build_worksession_report_base_msg(
         content: MsgContent::default(),
         ..MsgObject::default()
     };
-    msg.thread.topic = Some(target_session_id.to_string());
+    msg.to_session = Some(target_session_id.to_string());
     msg.thread.correlation_id = Some(source_session_id.clone());
     msg.meta.insert(
         "llm_role".to_string(),

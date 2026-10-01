@@ -1338,7 +1338,8 @@ fn worksession_report_msg_carries_source_metadata() {
         "WorkSession report: build demo"
     );
     assert!(msg.content.content.is_empty());
-    assert_eq!(msg.thread.topic.as_deref(), Some("ui-1"));
+    assert_eq!(msg.to_session.as_deref(), Some("ui-1"));
+    assert_eq!(msg.thread.topic, None);
     assert_eq!(msg.thread.correlation_id.as_deref(), Some("work-1"));
     assert_eq!(
         msg.meta.get("message_type").and_then(|v| v.as_str()),

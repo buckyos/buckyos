@@ -1,916 +1,579 @@
-# run_local_llm SDK 化：目录与命令行协议基线
+# xllm：本地任务、Run 目录与命令行协议
 
-> **2026-09-18 更新**：Rust `LocalLLMContext` 已按 [xllm PRD](../../product/xllm/PRD.md) 重写为 xllm SDK 核心（`src/frame/agent_tool/src/local_llm_context.rs`），命令行入口改为 `agent_tool xllm ...`（旧 `run_local_llm` 命令名已移除），Run 目录格式、请求、结果与退出码均已重新定义，不兼容本文第 2–12 节描述的旧格式。新实现的协议摘要见 [xllm Rust SDK 参考](xllm_rust_sdk.md)。本文第 1–13 节仍作为旧实现的基线与设计参考保留。
->
-> **2026-09-30（llm_context X7）**：共享快照升到版本 2，`pending_tool_calls` 由 `suspended` / `tool_batch` / `action_step` 取代；`context_yield_threshold` 现在真正执行（Ratio 需要 `context_window_tokens`），`ContextLimitReached` / `PendingTool` 会被产出。下文涉及这两处的描述（§4.4 阈值“仅被保存”、快照字段表）已过时，以 [LLM Context 设计](../opendan/LLM%20Context%20设计.md) §9.5 为准。
+本文描述当前 Rust xllm 的已实现行为，供 CLI 使用者、SDK 调用方及需要读写 Run 目录的宿主参考。
 
-> **2026-09-29 更新**：Agent Session 的 `runs/` 直接采用 xllm 的 run 目录，run 目录因此成为 session 协议的一部分（见 `doc/opendan/protocol/Session Directory Protocol.md` §7）。“TS 版不绑定 Rust 格式”这一条改为：TS 版需要接手 Rust 建立的 run 时，按版本规则对齐——`RunRecord.version` 与快照 `snapshot_version` 不认识的版本必须拒绝，已认识的版本内只做加法、必须保留宿主元数据。
+- 核对日期：2026-09-30；仓库 HEAD：`ad8440fd91cdc705555684b1a25b1a6d860a8895`。
+- CLI 入口：`agent_tool xllm ...`。源码模块仍名为 `run_local_llm.rs`，旧的 `agent_tool run_local_llm` 命令已移除。
+- 当前版本：`RunRecord.version = 1`、`prompt.protocol_version = "xllm/1"`、快照 `state.snapshot_version = 2`。三个版本分别管理 Run 记录、提示词运行协议和底层上下文快照。
+- 本文替换原 2026-09-17 的旧工具基线，不再把旧目录格式、请求哈希或 TS SDK 设计建议描述为现行协议。产品目标见 [xllm PRD](../../product/xllm/PRD.md)，SDK 概览见 [xllm Rust SDK 参考](xllm_rust_sdk.md)；实现细节以本文列出的源码为准。
 
-> **通用配置入口**：[xllm PRD §4.9](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 提供适用于当前 `agent_tool xllm` 的 `.llm_context` 模板，可用于代码、文档、文件和命令行任务。
+## 1. 范围与 SDK 入口
 
+xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，按需执行工具，保存进度并交付最终结果。普通调用始终建立新 Run，不自动继承前一次历史；恢复必须显式使用 `--resume`。本地指工作目录和工具执行位置，模型既可以通过 BuckyOS AICC 调用，也可以使用 OpenAI 兼容接口。
 
-本轮目标是以 `run_local_llm` 工具为起点，将 OpenDAN 的任务执行能力 SDK 化，并通过新的 TypeScript agent tools 提供命令行入口。SDK 提供可编程接口，CLI 封装 SDK；新设计可以重新定义目录协议、请求、结果及命令行参数。
+| 层次 | 当前入口 | 职责 |
+| --- | --- | --- |
+| 配置 | `discover_config_files` / `load_config_layers` / `merge_config_layers` | 查找、解析、合并 `.llm_context`，记录字段来源 |
+| 准备 | `XllmTask::prepare(workdir, TaskInput, TaskOverrides, &XllmDeps)` | 展开工具、读取附件、组装提示词，返回 `PreparedTask`；不建立 Run |
+| 执行 | `XllmRun::start(prepared, deps)` → `execute()` | 分配 run_id、加锁、建立记录，驱动到底层上下文停止点 |
+| 恢复 | `XllmRun::resume(store, run_id?, workdir_filter?, ResumeLimits, deps)` | 返回 `ResumeStart::Terminal(record)` 或可执行的 `ResumeStart::Run` |
+| 查询 / 导出 | `list_runs` / `latest_run` / `load_run` / `export_result` / `build_result_view` | 读取记录、提取已保存结果，不调用模型 |
+| 宿主装配 | `XllmTask::prepare_hosted` / `HostedTask` | 接收宿主配置和 system 文本，供宿主直接驱动底层 `LLMContext` |
 
-本文记录当前 Rust 工具依赖的目录数据、命令行输入输出和运行生命周期，作为设计参考。第 2–12 节是现状说明，不是新 TS SDK 必须遵守的兼容规范；旧实现的缺陷和偶然行为不作为新设计约束。
+`XllmDeps` 注入 `LlmClientFactory`、`host_tools`、`RunObserver`、锁目录及可选 `BashRunner`。SDK 可用 `with_llm` 注入模型客户端，不必经过 CLI 初始化。`skip_workdir_lock` 供自行协调共享工作目录的宿主使用。
 
-基线日期：2026-09-17。核对仓库 HEAD：`ffbfa5fa79c77bb375a19eece28ab37fb34750e0`。文档依据当前源码的执行逻辑，源码注释与逻辑冲突时以逻辑为准。
+`RunOutcome` 包含 `Completed`、`Paused`、`Interrupted`、`Failed`、`LimitReached`，每个分支携带 `RunRecord`。配置、输入、存储或恢复错误也可能通过 `Result::Err(XllmError)` 返回；调用方必须同时处理两层结果。
 
-本文的“当前行为”描述已经存在的 Rust 行为；“TS 建议”明确表示重实现时的修订建议，不代表 Rust 已经实现。按照仓库当前开发规则，不默认要求新实现兼容旧 CLI 或接管 Rust 历史运行目录。Rust `LocalLLMContext` 库的修改，以及已有调用方的迁移，是独立工作，不是本轮工具 SDK 化的前置条件。
+主要源码：
 
-## 1. 范围与入口
+- [local_llm_context.rs](../../src/frame/agent_tool/src/local_llm_context.rs)：配置、提示词、Provider、工具装配、RunStore 和生命周期。
+- [run_local_llm.rs](../../src/frame/agent_tool/src/run_local_llm.rs)：CLI 参数、stdin、查询、结果交付和退出码。
+- [agent_tool_cli_dev/src/lib.rs](../../src/frame/agent_tool_cli_dev/src/lib.rs)：`agent_tool xllm` 子命令分发。
+- [request.rs](../../src/frame/llm_context/src/request.rs)、[state.rs](../../src/frame/llm_context/src/state.rs)、[outcome.rs](../../src/frame/llm_context/src/outcome.rs)：底层请求、快照、outcome 与恢复输入。
+- [context_loop.rs](../../src/frame/llm_context/src/context_loop.rs)、[context_window.rs](../../src/frame/llm_context/src/context_window.rs)、[suspension.rs](../../src/frame/llm_context/src/suspension.rs)：循环、容量检查、挂起和续跑校验。
+- [exec_tracking.rs](../../src/frame/agent_tool/src/exec_tracking.rs)：宿主执行跟踪与未确认工具结果处理。
+- [aicc_client.rs](../../src/kernel/buckyos-api/src/aicc_client.rs)：`AiMessage`、资源和 AICC 请求类型。
 
-### 1.1 本轮 SDK 化的职责边界
+## 2. `.llm_context` 配置协议
 
-| 层次 | 本轮设计职责 |
+### 2.1 查找与合并
+
+配置文件为 YAML。从规范化后的工作目录向上查找到文件系统根目录，按“最远祖先 → 工作目录”合并。不是只取最近一份，也不以 Git 仓库根目录作为停止点。
+
+- 普通标量：后层显式声明覆盖前层；CLI / `TaskOverrides` 的显式值再覆盖文件配置。
+- `provider`：按字段合并；切换 Provider 类型时清理前一种类型的接入配置。
+- `tools` 对象：按字段合并；其中 `tools`、`actions`、`bash_tools` 列表整体替换，显式空列表清空继承值。
+- `prompt.groups`：按组名合并，组内 section 按行号覆盖；`prompt.sections` 同样按行号覆盖。
+- 配置解析检查未知键、类型、section 别名与行号冲突，错误包含文件、字段和原因。不要把任意扩展字段写进 `.llm_context`。
+- 配置中的相对路径相对于声明文件；`~` / `~/...` 展开为主目录。`prompt.groups.<name>` 为字符串时表示外部组文件，其根节点直接是组对象。
+
+### 2.2 顶层字段与默认值
+
+| 字段 | 默认值 / 形状 | 含义 |
+| --- | --- | --- |
+| `provider` | `type: buckyos` | 见 §4；另一类型为 `openai` |
+| `model` | buckyos 为 `llm.chat`；openai 必须提供 | 主模型选择器 |
+| `file_model` | 未设置 | 有显式图片附件时，先由此模型分析图片 |
+| `max_tokens` | 未设置 | 单次模型请求的最大输出 token 数，不是 Run 总 token 预算 |
+| `max_rounds` | `8` | 原生工具与 behavior actions 共用的工具轮数上限 |
+| `timeout` | `3600`，秒 | 执行时长额度；恢复时重新计时，具体边界见 §9 |
+| `llm_timeout` | `600`，秒 | 单次模型请求超时；客户端实际至少使用 1 秒 |
+| `context_window` | 未设置 | 模型上下文窗口 token 数；启用本地容量检查与 75% 提前压缩阈值 |
+| `runs_dir` | `~/.xllm/runs` | Run 存储目录；YAML `none` 或 `null` 表示内存模式 |
+| `loop_model` | `function_call` | 另一值为 `behavior` |
+| `run_logs` | `info` | `debug` / `info` / `warn` / `result` |
+| `result_format` | `raw` | 原文或 `result.<path>` 提取路径 |
+| `tools` | 默认关闭 | 布尔开关或工具配置对象 |
+| `prompt` | standard 模式 | `mode`、`select`、`groups`、`sections`、`tools`、`system` |
+
+`context_window` 当前没有 CLI flag，也不是 `TaskOverrides` 字段。`--json` 属于本次任务覆盖项，不能写成顶层 YAML `json`。SDK 另可设置 `json_schema` 和 `disable_capabilities`；CLI 没有对应参数。
+
+### 2.3 工具配置优先级
+
+工具配置按以下顺序覆盖：
+
+```text
+默认值 → 合并后的顶层 tools → 选中组的 tools → prompt.tools → --tools / --no-tools
+```
+
+custom 模式和结构化输入不选组，因此不应用组内工具配置。工具对象支持：
+
+| 字段 | 含义 |
 | --- | --- |
-| TS SDK 调用接口 | 让程序直接提交结构化任务、配置执行策略、接收结构化结果和错误，无需拼接 shell 命令或解析 stdout |
-| TS SDK 执行能力 | 组织任务生命周期、工作目录、持久化和恢复；由新的协议明确支持范围 |
-| 依赖接入 | 在 SDK 边界表达 LLM 访问、工具执行和本地环境依赖，不把必要能力藏在 CLI 的全局初始化中 |
-| TS agent tools CLI | 将 argv/stdin 转为 SDK 请求，将 SDK 结果映射为 stdout/stderr 和退出码，不另写一套执行逻辑 |
+| `enabled` | 是否启用，默认 false |
+| `filesystem_policy` | `workspace`（默认）或 `unrestricted` |
+| `tools2actions` | behavior 模式把原生 tools 转为 actions，默认 false |
+| `tools` / `actions` | 来源列表，每项恰好包含 `groupname`、`mcp`、`name` 中的一个 |
+| `bash_tools` | 命令手册条目，含 `name`、`description`、`command`、可选 `usage` |
 
-当前 Rust 库已被 `llm_understand_media` 和 `llm_explore` 复用，其中附件理解工具接入了 OpenDAN/Jarvis。这个事实只约束将来替换或修改 Rust 库时的影响范围，不要求本轮 TS SDK 迁移这些调用方，也不要求复刻 Rust 的内部 API。
+来源例子：`{groupname: bash}`、`{mcp: "http://localhost:8080/mcp"}`、`{name: host_tool}`。具名工具必须由 SDK 宿主注入；普通 CLI 默认没有宿主工具。MCP 当前通过 HTTP JSON-RPC `tools/list` 和 `tools/call` 接入，发现超时参数为 30 秒、调用为 120 秒。工具名称冲突、未知组或发现失败在准备阶段报错。
 
-本轮从单次本地 LLM 任务执行能力开始。完整 Agent Runtime、behavior 调度和现有 Rust 调用链的改造分别处理，不随这个工具自动纳入。
+仅启用工具但未声明 `tools` 列表时，使用内置 `bash` 组；`tools: []` 不补回默认组。function_call 模式拒绝 `tools2actions: true` 和非空 `actions`。behavior 模式可以同时使用原生 tools 与 actions；启用 `tools2actions` 后原生列表置空，转换结果与显式 actions 合并。
 
-### 1.2 当前 Rust 实现的三个对象
+## 3. 输入与提示词
 
-以下对象用于理解现有实现：
+### 3.1 `TaskInput` 与路径
 
-| 对象 | 职责 | 对外入口 |
-| --- | --- | --- |
-| `LocalLLMContext` | 将本地目录、请求和模型客户端组合成一次可落盘的 LLM 任务；驱动 outcome，组织恢复 | Rust 库 API |
-| `LLMContext` | 推理、工具调用、消息历史、预算与结果处理的底层循环 | 由 LocalLLMContext 调用 |
-| `run_local_llm` | 组装请求、接入 AICC、选择启动方式、输出结果 | `agent_tool run_local_llm ...` |
+`TaskInput` 包含 `user`、有序 `attachments`、`stdin`、`structured` 和可选 `base_dir`。CLI 的映射及路径规则如下：
 
-这里的“local”指执行目录和工具在本地，**模型调用仍通过 AICC**，不表示本机部署模型。
+| 输入 | 当前语义 |
+| --- | --- |
+| 位置参数 / `--user` | 单个任务要求，互斥；问题中有空格时作为一个 argv 传入 |
+| `--dir` | 已存在的工作目录，默认进程 cwd；不会创建旧协议的 `workspace/` |
+| `--file` | UTF-8 文本材料，每个最多 8 MiB |
+| `--image` | PNG / JPEG / WebP 本地文件，每张最多 20 MiB；或 HTTP(S) URL |
+| `--input-file` | `Vec<AiMessage>` 的 JSON 文件 |
+| stdin | 新任务自动检测 FIFO / 普通文件重定向并读到 EOF |
+| `--runs-dir` | 覆盖 Run 存储目录；这是路径参数，字符串 `none` 不等于 YAML 的内存模式 |
+| `--output` | 结果输出路径，见 §10 |
 
-一个 context 根目录可以保存多次 run，所有 run 共用 `workspace/` 和 `bin/`。一次 run 可以包含多次模型推理和工具调用；一次 CLI 进程通常驱动一个 run。`--append` 是从上一 run 的历史构造一个新 run。
+相对 `--dir`、附件、`--input-file`、`--runs-dir`、`--output` 均以 CLI 启动 cwd 为基准；`--dir` 不改变其余 argv 路径的基准。SDK 附件及 runs_dir 覆盖值使用 `TaskInput.base_dir`，缺省取进程 cwd。配置路径解析会展开 `~`，附件、`--dir` 和直接读写的输入/输出路径不统一提供这种展开；示例优先使用绝对路径或让 shell 展开。
 
-该入口使用传统的 function/tool-call loop。`build_deps` 没有配置 behavior parser/renderer，因此不解析 XML behavior、不切换行为状态、不维护长期记忆，也不自动投递消息。
+本地图片以 base64 进入消息；URL 图片保存为资源引用，准备阶段不下载、不计算摘要。附件记录保留顺序、标签、类型及可获得的路径、MIME、字节数、SHA-256。
 
-主要源码入口：
+### 3.2 任务要求与材料顺序
 
-- [local_llm_context.rs](../../src/frame/agent_tool/src/local_llm_context.rs)：目录、状态、请求、恢复、工具装配。
-- [run_local_llm.rs](../../src/frame/agent_tool/src/run_local_llm.rs)：CLI、AICC 适配、KeepTail 压缩。
-- [agent_tool_cli_dev/src/lib.rs](../../src/frame/agent_tool_cli_dev/src/lib.rs)：子命令分发。
-- [request.rs](../../src/frame/llm_context/src/request.rs)、[state.rs](../../src/frame/llm_context/src/state.rs)、[outcome.rs](../../src/frame/llm_context/src/outcome.rs)：落盘共享类型。
-- [context_loop.rs](../../src/frame/llm_context/src/context_loop.rs)、[deps.rs](../../src/frame/llm_context/src/deps.rs)：字段实际执行语义。
-- [aicc_client.rs](../../src/kernel/buckyos-api/src/aicc_client.rs)：消息、资源、模型响应类型。
+任务要求优先级是：显式问题 / `--user` → 选中组的 `default_user` → stdin。已有任务要求时，stdin 是补充材料。只有附件且没有任何任务要求会报错。
 
-## 2. 目录协议
+主模型 user 消息顺序：任务要求 → 按命令行顺序排列的文本 / 图片附件 → stdin 材料。文本包装为 `<material name="...">`；图片带编号标签和图片块；补充 stdin 包装为 `<stdin>`。
 
-### 2.1 布局与所有权
+配置 `file_model` 且存在显式图片附件时，先进行无工具的图片分析。主模型收到文本材料及 `<image_analysis model="...">`，不再收到原图片；分析成功后结果保存在 `file_model_stage`，恢复不重复已完成的分析阶段。
 
-```text
-<dir>/
-├── .lock
-├── workspace/
-├── bin/
-└── runs/
-    └── <run_id>/
-        ├── request.json
-        ├── state.json
-        ├── snapshots/
-        │   ├── 0001.snap.json
-        │   ├── 0002.snap.json
-        │   └── ...
-        └── outcomes/
-            └── final.json
-```
+Unix 下终端、socket、`/dev/null` 不自动读取。空白 FIFO 报输入错误；空白普通文件重定向视为无 stdin。`--input-file` 路径分支直接读取 JSON，不再读取 stdin。
 
-| 路径 | 内容与责任方 | 创建/更新时机 |
-| --- | --- | --- |
-| `<dir>` | 一组本地任务的持久化根目录 | 创建 context 时按需创建 |
-| `workspace/` | 用户文件、输入材料和工具生成的文件；默认 shell cwd、文件工具 root | 初始化创建；跨 run 保留 |
-| `bin/` | 用户放置的可执行脚本，作为 shell PATH overlay | 初始化仅创建空目录，不生成脚本、不自动 chmod |
-| `.lock` | OS 排他锁的载体，无 PID/租约/JSON 内容协议 | 获取目录锁时创建或打开 |
-| `runs/<run_id>/request.json` | 原始 `OneShotRequest`，审计和 follow-up 配置来源 | 新 run 写一次 |
-| `runs/<run_id>/state.json` | `RunMetaState`，run 发现与恢复入口 | 初始化、outcome 边界、压缩恢复后更新 |
-| `snapshots/<idx>.snap.json` | 完整 `LLMContextSnapshot` | 启动前、推理前、outcome 后、压缩 resume 前 |
-| `outcomes/final.json` | 终态 `LLMContextOutcome` | `Done`、`Error`、`BudgetExhausted` 时写入 |
+### 3.3 结构化消息
 
-当前没有 root manifest、schema version、`latest` 链接、独立配置文件或目录清理策略。`worklog.jsonl` 只存在于旧注释中的布局示意，实际使用 `NoopWorklogSink`，**不会生成 worklog 文件**。文件写审计也是 no-op。
+结构化输入与问题、附件、SDK stdin、`--select`、`--system` 互斥。它跳过组默认输入与业务 section 组装，但仍在消息前增加 xllm 的 capabilities 和 runtime_protocol system 消息。
 
-目录本身不保存模型客户端、认证 token、连接配置、工具进程或锁句柄。恢复时由当前进程重新建立这些依赖。
-
-### 2.2 路径解释
-
-- CLI 的 `--dir`、`--input-file`、`--output` 都直接构造路径，相对路径基于 CLI 启动 cwd；`--input-file` 和 `--output` 不相对于 `workspace/`。
-- CLI 不执行 `~`、环境变量或 glob 展开；这些只有调用方 shell 在传参前展开才生效。
-- 工具的相对文件路径基于 `<dir>/workspace`；`exec_bash` 默认 cwd 也是这个目录。
-- `--dir` 不自动成为 prompt 内容；`bin/` 内的命令也不自动生成 tool spec 或使用说明。需要让模型知道的材料、命令用法由调用方写进 input。
-- 当前代码允许使用已有目录、文件和符号链接，不会重置 workspace，也不会在新 run 时复制 workspace。
-
-建议调用方传绝对 `--dir`。当前 `bin/` overlay 保存的是原始拼接路径：相对 `--dir` 会使 PATH 中的相对项按子 shell 的 cwd 再解析，可能无法命中预期的 `bin/`。文件工具的路径检查也未统一正规化 root。
-
-### 2.3 run_id
-
-当前格式为 `YYYYMMDD-HHMMSS-xxxx`，例如 `20260917-103045-a7f3`。
-
-- 前半部分是创建时的**本地时间**，不是 UTC。
-- `xxxx` 是四位小写十六进制，来自 Unix 毫秒时间的计算：`(now_ms & 0xffff) XOR ((now_ms >> 16) & 0xffff)`。
-- 后缀不是随机数，不是四字节随机标识，也没有冲突重试；同一毫秒创建可能冲突。
-- run 选择依据 `last_updated_unix_ms`，不按目录名或创建时间排序。
-
-消费方应将 run_id 当作不透明字符串。TS 新实现应保证唯一性，不需要复刻当前时间后缀算法。
-
-### 2.4 JSON 通则
-
-- 正式文件是 UTF-8 JSON，Rust 使用 pretty serialization；键顺序和缩进不应作为消费者的判断依据。旧语义哈希涉及序列化字节，是特殊例外，见 §3.3。
-- 没有统一的顶层 `version` 或 `agent_tool_protocol` 字段。
-- `state.json.status` 使用 PascalCase 字符串；outcome 使用小写 `kind`；消息 content 使用小写 `type`。三者不能混用。
-- `u32` 范围是 `0..4294967295`；`u64` 范围是 `0..18446744073709551615`。时间戳单位为 Unix 毫秒，token/次数为整数。
-- 下文 `T?` 表示字段可以缺省或为 null；具体 Rust 写出时是否省略，按相应表说明。一个字段“有默认值”不意味着显式 null 对非 Option 类型也合法。
-- 当前 serde 类型没有 `deny_unknown_fields`；普通结构体的未知字段会被忽略，重新写出时也不会保留。枚举的未知 variant 不能读取。
-
-## 3. state.json 与请求身份
-
-### 3.1 RunMetaState
-
-| 字段 | JSON 类型 | 含义 |
-| --- | --- | --- |
-| `run_id` | string，必需 | 该 run 的标识，也是子目录名 |
-| `created_at_unix_ms` | u64，必需 | run 创建时间 |
-| `last_updated_unix_ms` | u64，必需 | 最近一次元数据刷新时间，不是心跳 |
-| `request_semantic_hash` | u64，必需 | 对新传入请求进行 auto-resume 校验的旧 Rust 哈希 |
-| `status` | string，必需 | `Running` / `Suspended` / `Completed` |
-| `latest_snapshot_idx` | u32? | 恢复所读取的快照序号；初稿为 null |
-| `last_suspend_kind` | string? | `PendingTool` / `ContextLimitReached` / `Interrupted` |
-
-示例是字段形状示例，哈希和序号必须由实际运行生成：
-
-```json
-{
-  "run_id": "20260917-103045-a7f3",
-  "created_at_unix_ms": 1789666245000,
-  "last_updated_unix_ms": 1789666245100,
-  "request_semantic_hash": 12345678901234567890,
-  "status": "Running",
-  "latest_snapshot_idx": 1,
-  "last_suspend_kind": null
-}
-```
-
-Rust 正常写出全部七个字段，包括值为 null 的两个 Option 字段。`Completed` 表示已经到终态，不等于任务成功；成功必须看 `final.json.kind == "done"`。
-
-### 3.2 run 发现规则
-
-扫描 `runs/*/state.json`。不存在 state 的条目，以及读取失败或 JSON/类型解析失败的 state，会被静默跳过；目录枚举本身失败则报错。
-
-- 自动恢复/新建检查：先筛选 `status == "Running"`，再取 `last_updated_unix_ms` 最大者。
-- append：先在**所有状态**中取时间最大者，再要求它是 `Completed`；不会跳过最新的未完成 run 去找更早的 Completed。
-- 多个 Running 只选择最新者；源码注释提到的 warning 实际未输出。
-- 时间相同时没有额外的稳定排序规则，选择结果依赖目录枚举顺序。
-- 当前不校验 state 内的 run_id 与被扫描目录名一致；后续读文件使用 state 内的 run_id。
-
-### 3.3 request_semantic_hash
-
-实际算法等价于：
-
-```text
-h = Rust DefaultHasher::new()
-Hash(objective: String, h)
-Hash(serde_json::to_vec(input): Vec<u8>, h)
-return h.finish(): u64
-```
-
-只包含 `objective` 和 `input`。以下全部不参与：`model_policy`、`tool_policy`、`output`、`budget`、`human_policy`、`error_policy`。
-
-因此改变 model、温度、工具开关或输出模式，仍可能命中旧 Running run；恢复后使用旧快照，**新传入的这些配置不会生效**。反之，仅修改不进入 prompt 的 objective，也会导致哈希不匹配。
-
-这是 Rust 实现细节，不是稳定的跨语言摘要标准：
-
-- 算法依赖 Rust `DefaultHasher` 和 `Hash` 编码，不能直接替换为“JSON 字符串 SHA-256”并声称兼容。
-- `AiContent.tool_use.args` 是 HashMap，序列化字节顺序不是规范化 JSON；相同语义未必跨进程得到相同字节。
-- 哈希是 JSON number，但可能超过 JS `Number.MAX_SAFE_INTEGER`。若读取旧目录，普通 `JSON.parse` 可能已经损失精度，之后转 BigInt 也无法补救。
-- 比较的是 state 中的哈希和调用方新请求的哈希；不会另行验证 `request.json`、snapshot.request 与 state 彼此一致。
-
-TS 新格式建议使用明确版本、规范化输入和字符串摘要；未增加迁移机制前，不用新算法直接接管 Rust Running run。
-
-## 4. request.json 协议
-
-### 4.1 OneShotRequest
-
-| 字段 | 类型 | 缺省/null 时的 lowering 结果 |
-| --- | --- | --- |
-| `objective` | string，必需 | 无默认值；用于标识/审计，**不加入 prompt** |
-| `input` | `AiMessage[]`，必需 | 无默认值；调用方已经准备好的完整初始消息历史 |
-| `model_policy` | ModelPolicy? | 使用 §4.2 默认值 |
-| `tool_policy` | ToolPolicy? | 使用 §4.3 默认值 |
-| `output` | OutputSpec? | `{"kind":"text"}` |
-| `budget` | BudgetSpec? | 使用 §4.4 默认值，并补 context 阈值 |
-| `human_policy` | HumanPolicy? | `{"approval_required":[]}` |
-| `error_policy` | ErrorPolicy? | `{"max_consecutive_errors":3}` |
-
-Rust 写出时，六个未设置的覆盖字段会写为 null；文件读入时也允许省略这些 Option 字段。库构造函数不要求 objective/input 非空；CLI 会拒绝组装后消息数为零的 input。
-
-```json
-{
-  "objective": "整理 workspace 中的文件",
-  "input": [
-    {
-      "role": "user",
-      "content": [{"type": "text", "text": "列出当前目录文件，并简要说明。"}]
-    }
-  ],
-  "model_policy": {
-    "preferred": "default-llm",
-    "fallbacks": [],
-    "temperature": null,
-    "max_completion_tokens": null,
-    "provider_options": null
-  },
-  "tool_policy": null,
-  "output": null,
-  "budget": null,
-  "human_policy": null,
-  "error_policy": null
-}
-```
-
-`request.json` 是运行记录；CLI 没有“读取完整 OneShotRequest”的参数。`--input-file` 读取的仅是 AiMessage 数组。手工编辑 request.json 也不会覆盖恢复时 snapshot.request 中的策略。
-
-### 4.2 ModelPolicy
-
-| 字段 | 类型 | 默认值 |
-| --- | --- | --- |
-| `preferred` | string | `""` |
-| `fallbacks` | string[] | `[]` |
-| `temperature` | f32? | null |
-| `max_completion_tokens` | u32? | null |
-| `provider_options` | 任意 JSON? | null |
-
-这些非 Option 字段允许缺省并填默认值。`fallbacks` 会保存到快照，但当前 AICC CLI 适配器不使用 fallback 列表。CLI 的 `--max-tokens` 对应此处的 `max_completion_tokens`。
-
-### 4.3 ToolPolicy
-
-| 字段 | 类型 | 默认值 | 当前本地路径的作用 |
-| --- | --- | --- | --- |
-| `mode` | `none` / `whitelist` / `all` | `all` | 控制工具声明；`none` 时不派发工具 |
-| `whitelist` | string[] | `[]` | whitelist 模式下过滤向模型声明的工具 |
-| `action_mode` | 同 mode | `all` | behavior action 策略；本入口无 behavior parser |
-| `action_whitelist` | string[] | `[]` | 同上 |
-| `max_rounds` | u32 | 8 | 工具轮数额度；不是模型调用总次数 |
-| `max_calls_per_round` | u32 | 8 | 一轮模型返回的工具调用数上限 |
-| `max_observation_bytes` | u32 | 32768 | 当前传统循环未按此值截断 observation |
-| `disable_capabilities` | string[] | `[]` | 传给 AICC requirements.extra |
-| `parallel` | boolean | false | 当前传统循环始终串行执行工具 |
-| `allow_deferred` | boolean | false | Pending 路径见 §8.5；设 true 也尚未实现等待 |
-
-当前装配的是 `AllowAllPolicy`。whitelist 的声明过滤不等于派发阶段权限校验，`human_policy.approval_required` 也不会触发审批流程。
-
-### 4.4 BudgetSpec、HumanPolicy、ErrorPolicy
-
-| BudgetSpec 字段 | 类型 | 默认值 |
-| --- | --- | --- |
-| `max_total_tokens` | u32? | null |
-| `max_completion_tokens` | u32? | null |
-| `max_wallclock_ms` | u64? | null |
-| `max_cost_units` | u32? | null |
-| `on_exhausted` | `fail` / `return_partial` / `escalate_human` | `fail` |
-| `context_yield_threshold` | ContextThreshold? | request 原值为 null；lowering 后补 `{"kind":"ratio","value":0.75}` |
-
-ContextThreshold 只有两种形状：`{"kind":"ratio","value":0.75}` 和 `{"kind":"absolute_tokens","value":32000}`。即便提供了自定义 budget，只要阈值为空，LocalLLMContext 仍补默认 ratio；无法通过 null 在这一层禁用阈值。
-
-当前实际执行限制：
-
-- wallclock 在每次推理前检查，已用时间 **大于** 上限时退出；起点在 LLMContext 创建时设定，恢复保留原起点，停机时间计入。它不是对 in-flight 推理的定时取消。
-- total tokens 在收到响应并累计 usage 后检查，累计 **大于** 上限才退出；只用 provider 返回的 total_tokens，不由 input/output_tokens 自动推算。
-- `budget.max_completion_tokens`、`max_cost_units`、`on_exhausted` 没有在当前传统循环中实现对应控制分支。单次输出 token 限制由 `model_policy.max_completion_tokens` 下发。
-- **context 阈值目前仅被保存，没有执行检查；当前循环没有产生 ContextLimitReached 的路径。** 默认 75% 不构成已生效的自动压缩保证。
-
-HumanPolicy 为 `{"approval_required": string[]}`，默认空数组。ErrorPolicy 只有 `max_consecutive_errors: u32`，默认 3，没有旧注释提到的 `mode: Suspend` 字段。只有 LLM 可纠正的错误（`output_parse`、`policy_rejected`、`tool_failed`）参与计数：按逻辑轮计数，同一轮多个工具错误只计 1，最多反馈 N 次，连续第 N+1 次终止，即默认第 4 次触发；0 关闭上限。整轮无可纠正错误才清零，推理请求成功本身不清零。输出协议错误回灌为 user 消息，工具 / Policy 错误按 call_id 回灌为 tool_result。Provider、运行时、快照、内部错误不计数，直接结束 run。
-
-## 5. AiMessage 输入与历史格式
-
-消息不是 OpenAI 风格的 `{"role":"user","content":"text"}`，而是：
+最小输入文件：
 
 ```json
 [
   {
-    "role": "system",
-    "content": [{"type": "text", "text": "你负责整理当前工作目录。"}]
-  },
-  {
     "role": "user",
-    "content": [{"type": "text", "text": "先列出文件。"}]
+    "content": [{"type": "text", "text": "用一句话解释这个任务。"}]
   }
 ]
 ```
 
-`role` 必需，枚举为 `system`、`user`、`assistant`、`tool`、`developer`；`content` 必需，是有序 block 数组。CLI 的文本参数各自构造一个 text block，不解析其中的 JSON、XML 或模板。
+`AiMessage` 只有 `role` 和 `content`；role 为 `system`、`user`、`assistant`、`tool` 或 `developer`。内容块包括 `text`、`image`、`document`、`tool_use`、`tool_result`、`thinking`、`provider_state`，精确形状见 `aicc_client.rs`。工具调用与回执放在 content 块中，通过 `call_id` 配对，不能使用旧的顶层 `tool_calls` / `tool_call_id`。消息与内容块会拒绝未知字段；这与普通 Run 记录结构的 serde 行为不同。
 
-| block.type | 其它字段 | 含义 |
+### 3.4 section、custom 与模板
+
+standard 模式按“系统默认 → 选中组 section → `prompt.sections`”组装，再按行号升序输出非空段落。section 可使用数字键或固定别名：
+
+| 别名 | 行号 | 系统追加内容 |
 | --- | --- | --- |
-| `text` | `text: string` | 文本 |
-| `image` | `source: ResourceRef` | 图片引用 |
-| `document` | `source: ResourceRef`，`title: string?` | 文档引用 |
-| `tool_use` | `call_id: string`，`name: string`，`args: object`，args 默认 `{}` | assistant 工具调用 |
-| `tool_result` | `call_id: string`，`content: AiToolResultContent[]`，`is_error: boolean` 默认 false | 工具响应；is_error=false 时省略 |
-| `thinking` | `summary: string?`，`text: string?`，`provider_metadata: JSON?` | 推理/思考信息 |
-| `provider_state` | `provider: string`，`value: JSON` | provider 特有状态，需保留其原始值 |
+| `role` | 10 | 无 |
+| `contexts` / `env` | 20 | 未在模板中引用的时间、时区、OS、工作目录 |
+| `rules` | 30 | 实际可用 tools / actions，或无工具说明 |
+| `cmd_manual` | 40 | exec 和 `bash_tools` 手册；exec 未启用时整段省略 |
+| `output_format` | 100 | 无 |
 
-AiToolResultContent 只允许 `text`、`image`、`document` 三种 block，字段与上表对应，不允许嵌套 tool_use/tool_result/thinking。
+section 可用字符串或 `{name, text}` 对象；`text: ""` 清空用户文本，不移除必要的系统说明。同层同一行号不能同时使用数字键和别名；`name` 不能冒用其它固定行号的别名。
 
-ResourceRef 使用 `kind`：
+`--system` 或 `prompt.mode: custom` 使用整段业务 system，保留自动追加的能力、命令说明和 runtime_protocol。`--system` 与 `--select` 互斥；文件同层 `mode: custom` 与 `select` / `sections` 冲突。进入 custom 模式会清掉继承的选择与 section 覆盖；子层显式选择组或声明 section 可切回 standard。
 
-| kind | 字段 |
-| --- | --- |
-| `url` | `url: string`，`mime_hint: string?` |
-| `base64` | `mime: string`，`data_base64: string` |
-| `named_object` | `obj_id: ObjId`，沿用公共 NDN ObjId 序列化 |
+模板用于业务 system、section 文本和组的 `default_user`：支持 `{{runtime.current_time}}`、`{{runtime.timezone}}`、`{{runtime.os}}`、`{{runtime.cwd}}`、`{{env.NAME}}`。`\{{` 输出字面 `{{`；替换值不递归展开；缺失变量报错。显式任务正文、附件和 stdin 不做同样的模板渲染。渲染结果及引用变量值随 Run 保存，恢复直接复用。
 
-消息角色与 block 的组合还受公共 AiMessage 校验规则约束，例如 tool role 应携带恰好一个 tool_result。当前 `--input-file` 仅反序列化，没有单独调用消息语义 validate；不要把“能读入文件”视为 provider 一定接受。TS 应复用公共消息协议，不能丢弃非文本 block 或将所有 content 扁平化成字符串。
+## 4. Provider 与模型选择
 
-## 6. 快照协议
-
-### 6.1 文件名与选择
-
-`snapshots/<idx>.snap.json` 中 idx 为 u32，正式写出从 1 开始，**至少四位**十进制补零；10000 对应 `10000.snap.json`，不是截为四位。
-
-- 分配下一序号：扫描所有文件名，接受能够去掉 `.snap.json` 后解析为 u32 的名称，取最大值 + 1。
-- 扫描只看名称，不验证该项是否是有效快照文件，也不要求名称已经补零。
-- 恢复和 append：读取 `state.latest_snapshot_idx` 对应的**规范补零文件名**，不扫描并选择最大的快照。
-- 缺失、损坏、索引为空均不自动回退到其它快照。`.tmp` 文件不参与序号扫描。
-
-### 6.2 LLMContextSnapshot
-
-顶层恰为两个主要字段：`request: LLMContextRequest` 和 `state: LLMContextState`。没有序号、版本、校验和、外部依赖句柄。
-
-snapshot.request 是补齐默认值的请求，与原始 request.json 不同：
-
-| 字段 | 本地 lowering 结果 |
-| --- | --- |
-| `owner` | `{"kind":"one_shot","id":"<run_id>"}` |
-| `trace` | run_id |
-| `objective`、`input` | 原请求内容 |
-| `model_policy`、`tool_policy`、`output`、`budget`、`human_policy`、`error_policy` | 全部补齐，使用 §4 的默认值 |
-| `behavior_name` | 空字符串，序列化时省略 |
-| `forbid_next_behavior` | false，正常写出 |
-
-snapshot.state 字段：
-
-| 字段 | 类型 | 初始值/说明 |
+| Provider | 接入方式 | 配置 |
 | --- | --- | --- |
-| `accumulated` | AiMessage[] | 初始克隆 request.input；随后累积 assistant/tool/错误消息 |
-| `usage` | AiUsage | 初始 `{}`；没有值的统计项省略 |
-| `rounds_left` | u32 | 初始 tool_policy.max_rounds |
-| `started_at_ms` | u64 | LLMContext 创建时的 Unix 毫秒时间 |
-| `cost_units` | u32 | 初始 0；本路径未累计成本 |
-| `consecutive_errors` | u32 | 初始 0 |
-| `pending_tool_calls` | PendingToolCall[] | 缺省为空，空时省略 |
-| `llm_task_ids` | string[] | provider_task_ref 集合；空时省略 |
-| `steps` | StepRecord[] | behavior 历史；本地正常运行为空，空时省略 |
-| `history_summaries` | HistorySummaryRecord[] | 本地正常运行为空，空时省略 |
-| `history_inputs` | HistoryInputRecord[] | 本地正常运行为空，空时省略 |
-| `last_step` | StepRecord? | 本地正常运行为空，空时省略 |
-| `last_report` | string? | 本地正常运行为空，空时省略 |
-| `next_step_index` | u32 | 缺省/初始 0，正常写出 |
-| `next_action_id` | u32 | 缺省/初始 0，正常写出 |
+| `buckyos` | 复用 / 初始化 BuckyOS runtime，通过 AICC SDK 调用 | 可选 `provider.session_token`；默认当前身份 |
+| `openai` | OpenAI 兼容 Chat Completions，POST `<base_url>/chat/completions` | `base_url`、`api_key` 或 `api_key_env`、`headers`；必须给出 model |
 
-共享 behavior 类型的精确定义见 [behavior_loop.rs](../../src/frame/llm_context/src/behavior_loop.rs)。这些字段是底层共享快照的组成部分，不表示本工具启用了 behavior 执行；TS 本地执行无需实现另一套 behavior scheduler。如果实现通用快照导入，应保留它们或明确拒绝不支持的快照。
+`openai` 默认 base_url 为 `https://api.openai.com/v1`，未配置凭据引用时尝试 `OPENAI_API_KEY`。这里描述的是仓库 adapter 的实现，不代表所有兼容服务都支持同一能力。
 
-AiUsage 的四个字段均为可省略 u64：`input_tokens`、`output_tokens`、`total_tokens`、`request_units`。本地累计使用饱和加法，不把未知值当成已测得的零。
+buckyos 的 `model` / `file_model` 支持两类选择器：
 
-PendingToolCall 形状为 `{call: {name, args, call_id}, eta_ms?: u64}`；args 是 JSON object。
+- `llm.chat`、`llm.vision` 等逻辑名：走 `helper.llm_chat`，带工具 / JSON 能力需求。
+- `model@provider` 或 `model:variant@provider`：走 `chat.completions.create`，精确保留模型、variant 和 Provider，不做逻辑路由或 fallback。
 
-### 6.3 实际写入顺序与原子性
+AICC 请求采用 `execution_mode: immediate`，传入消息、实际允许的工具、response_format 和 max_output_tokens。返回 `Succeeded` 必须有 message；`Failed` 转 Provider Unknown 错误；`Running` 视为不支持的异步任务，不轮询。当前 adapter 不使用 fallbacks / provider_options，也不实现远端任务取消；`disable_capabilities` 经逻辑 helper 的 `disable` 传递，精确选择器不走此字段。
 
-| 时机 | 实际顺序 |
-| --- | --- |
-| 新 run | 写 request.json → 写 Running 且索引为空的 state → 构造依赖/上下文 → 写初始 snapshot → 写带索引的 state |
-| 每次推理前 | hook 写下一 snapshot → 写带新索引的 state。任一步失败 ⇒ 不发起推理，`step()` 返回 `RuntimeFailure`，上下文留在内存 |
-| 每次 outcome 返回后 | 写 ctx.snapshot → （终态）写 final.json → 按 outcome 写 state。任一步失败 ⇒ `CommitFailed{stage}`，outcome 与快照留在 `pending_outcome()`，`retry_commit()` 只补写未完成阶段 |
-| 压缩 resume | 写压缩后的 snapshot 并提交索引 → 以 rewritten history resume → 清 last_suspend_kind 并写 state |
+`ensure_buckyos_runtime` 优先复用现有 runtime。新初始化时，按环境中的 AppClient session token、OOD 本机设备私钥、开发目录用户私钥选择登录方式；默认 app id 为 `buckycli`，可用 `BUCKYOS_APP_ID` 覆盖。具体登录流程见 [SDK 参考 §8](xllm_rust_sdk.md#8-buckyos-provider-的登录方式)。
 
-state 和 final 使用“临时文件 + 同目录 rename”：临时名分别是 `state.json.tmp`、`final.json.tmp`。snapshot 使用 `path.with_extension("snap.json.tmp")`，实际临时名为 **`0001.snap.snap.json.tmp`**。request.json 直接写入，没有临时文件。CLI `--output` 文件也直接覆盖写入。
+`api_key` / `session_token` 保存为 `SecretRef` 的文件字段引用，`api_key_env` 保存为环境变量引用；恢复时重新解析，所以修复同一个凭据来源后可以重试。`headers` 及提示词引用的 `env.*` 值按普通配置 / 文本保存，不属于凭据引用机制。
 
-rename 保证单文件替换的崩溃一致性；没有 fsync，不保证断电持久性；没有跨文件事务。仍可能出现：
+## 5. 目录、锁与持久化
 
-- final.json 已写、state 仍为 Running：`resume_or_new` 识别后只补齐 state（索引指向最新快照、Completed），不重跑推理。
-- 进程在工具副作用完成后、下一个推理前检查点提交前退出，恢复会重复该段推理或工具调用。
-
-因此当前实现**不保证 exactly-once，也不保证不重复扣费**。检查点应解释为“可能重放的恢复位置”，不能作为外部副作用提交凭证；工具幂等性属于 adapter。
-
-## 7. outcome 与 final.json 协议
-
-### 7.1 顶层 union
-
-CLI 输出和 `outcomes/final.json` 使用相同的 `LLMContextOutcome` JSON，没有 AgentToolResult 外层封装。
-
-| kind | 字段 | 是否归档 final.json |
-| --- | --- | --- |
-| `done` | `output`、`usage`、`response`、`trace`；可选 `reason`、`behavior_result` | 是 |
-| `error` | `error: LLMComputeError`、`usage`、`trace` | 是 |
-| `budget_exhausted` | `which`、`usage`；可选 `partial: ContextOutput` | 是 |
-| `pending_tool` | `pending: PendingToolCall[]`、`snapshot`；可选 `deadline_ms` | 否 |
-| `context_limit_reached` | `which`、`usage`、`accumulated`、`snapshot`；可选 `deadline_ms` | 否，driver 收到后尝试压缩 |
-| `interrupted` | `reason`、`usage`、`snapshot`、`abort` | 否 |
-
-`budget_exhausted.which`：`tokens` / `wallclock` / `cost_units` / `tool_rounds`。
-
-`context_limit_reached.which`：`approaching_window` / `hard_limit` / `provider_refused`。
-
-完整 union 的存在不代表每个 variant 都可由当前 CLI 产生；实际支持边界见 §8.5。
-
-### 7.2 ContextOutput、AiResponse、trace
-
-ContextOutput：
-
-```json
-{"kind":"text","content":"完成"}
-```
-
-或：
-
-```json
-{"kind":"json","content":{"answer":"完成"}}
-```
-
-JSON output 的 content 可以是任意合法 JSON 值，不强制 object。`--json` 设置 `strict=false`：模型正文 JSON 解析失败时，仍返回 `done`，output 降级为 text，CLI 仍退出 0。它不会让 CLI 只输出模型正文。
-
-AiResponse 的必需字段为 `message: AiMessage`；可省略字段为 `usage: AiUsage`、`cost: {amount: number, currency: string}`、`finish_reason: string`、`provider_task_ref: string`、`extra: JSON`。outcome.usage 是 run 累计统计，response.usage 通常是最后一次响应统计。
-
-trace 字段：
-
-- `trace_id: string`，通常为 run_id。
-- `latency_ms: u64`，从 state.started_at_ms 到完成的耗时，恢复停机时间计入。
-- `tool_trace?: ToolExecRecord[]`，非空时写出。每条为 `tool_name: string`、`call_id: string`、`status: "succeeded" | "failed" | "unknown" | "not_executed"`、`duration_ms: u64`、可选 `error: string`。`unknown` 表示派发基础设施在调用可能已开始后失败，`not_executed` 表示批次中止或被 Policy 拒绝而未派发。`error` outcome 同样携带 `trace`。
-- `llm_task_ids?: string[]`，非空时写出。finish_done 会从 state 中取走此列表，因此 Done 后另存的 snapshot.state 不再带该列表。
-
-恢复时 tool_trace 和 last_response 重新初始化，没有完整历史恢复；不能把最终 trace 当成所有恢复阶段的完整审计日志。
-
-成功示例：
-
-```json
-{
-  "kind": "done",
-  "output": {"kind": "text", "content": "工作完成。"},
-  "usage": {"input_tokens": 120, "output_tokens": 15, "total_tokens": 135},
-  "response": {
-    "message": {
-      "role": "assistant",
-      "content": [{"type": "text", "text": "工作完成。"}]
-    },
-    "usage": {"input_tokens": 120, "output_tokens": 15, "total_tokens": 135}
-  },
-  "trace": {"trace_id": "20260917-103045-a7f3", "latency_ms": 1200}
-}
-```
-
-本入口的 `behavior_result` 为空并省略。其共享类型定义也在 behavior_loop.rs，不能将它误作 TS 本地工具的调度指令。
-
-### 7.3 LLMComputeError
-
-| error.kind | 附加字段 | 来源 | 是否曾喂回 LLM |
-| --- | --- | --- | --- |
-| `timeout` | 无 | provider | 否 |
-| `cancelled` | 无 | provider | 否 |
-| `provider` | `failure: "transient" \| "permanent" \| "unknown"`、`message: string` | provider | 否 |
-| `output_parse` | `message: string` | llm_output | 是（自纠正上限耗尽） |
-| `policy_rejected` | `message: string` | tool | 是 |
-| `tool_failed` | `tool: string`、`call_id: string`、`message: string` | tool | 是 |
-| `tool_runtime` | `tool`、`call_id`、`message`、`effect_unknown: boolean` | runtime | 否 |
-| `checkpoint` | `stage: "before_inference" \| "outcome_boundary"`、`message: string` | runtime | 否 |
-| `snapshot_corrupted` | `message: string` | snapshot | 否 |
-| `internal` | `message: string` | internal | 否 |
-
-`failure` 只有 `transient` 表示上层可以安全重跑；`unknown` 不等于可重试。`tool_runtime` / `checkpoint` 不会进入 final.json：`step()` 把它们转成 `RuntimeFailure` 并保留内存上下文（见 §8.4）。
-
-```json
-{
-  "kind": "error",
-  "error": {"kind": "provider", "failure": "transient", "message": "aicc llm.chat failed"},
-  "usage": {},
-  "trace": {"trace_id": "20260510-103045-a7f3", "latency_ms": 12}
-}
-```
-
-目录 IO、锁失败、CLI 参数错误等 `LocalLLMContextError`/驱动异常不自动转换为这个 JSON。它们通过 stderr 和退出码报告，可能没有 outcome 输出。
-
-### 7.4 Interrupted.abort
-
-字段为 `reason: string`、`requested_at_ms: u64`、`observed_at_ms: u64`、`provider_cancel_supported: boolean`（读入缺省为 true）、可选 `provider_task_ref: string`。
-
-Interrupted 的 snapshot 是推理开始前的状态，不包含部分 assistant 输出。但当前 CLI 没有中断接口，LocalLLMContext 也未公开底层 interrupt handle；不要将收到 OS 信号直接等同于已落盘的 interrupted outcome。当前 AICC 适配器没有远端 cancel 能力。
-
-## 8. 生命周期、恢复与追加
-
-### 8.1 目录锁
-
-创建或恢复前，先确保 runs/workspace/bin 存在，再对 `.lock` 调用非阻塞排他 flock；被其它进程持有时立即报 LockFailed。
-
-同进程用 canonicalized 根目录作为 registry key，重复获取直接成功；文件句柄保存在静态 registry，直到进程退出才释放。`drop(LocalLLMContext)` 不释放它，`.lock` 文件保留也不表示仍有活进程。
-
-这不是同进程多 context 的并发调度器。同进程并发写同一目录没有额外保护；快照的“扫描最大值 + 1”也不是线程安全的序号分配。当前支持的使用方式是每个目录一个串行 driver。
-
-### 8.2 三种启动方式
-
-| 方式 | 选择逻辑 | 已有记录的处理 |
-| --- | --- | --- |
-| `new_run` / CLI `--new` | 发现任意 Running 即报错，否则新建 | 不覆盖、不删除旧 run；Suspended 不阻止新建 |
-| `resume_or_new` / CLI 默认 | 没有 Running 则新建；有则比较 semantic_hash | 不匹配即拒绝；匹配进入 do_resume |
-| `--append` | 从最近 run 生成 follow-up，再调用 new_run | 最近 run 必须 Completed；不复用其 run_id |
-
-`--new` 的“force”仅表示不走自动恢复，**不表示能强制覆盖 Running run**。如果目录只有 Completed 或 Suspended，默认调用会新建 run。默认调用也不会自动复用 Completed 的历史，只有 append 会继承。
-
-### 8.3 自动恢复算法
+### 5.1 布局
 
 ```text
-ensure_layout(dir)
-acquire_lock(dir)
-meta = latest Running run by last_updated_unix_ms
-if no meta:
-    new_run(dir, incoming_request)
-else:
-    require incoming_request.semantic_hash == meta.request_semantic_hash
-    stored_request = read request.json
-    require meta.latest_snapshot_idx exists
-    snapshot = read snapshots[meta.latest_snapshot_idx]
-    require meta.last_suspend_kind == null
-    rebuild tools/client/deps
-    LLMContext.resume(snapshot, ResumeFromMidRun, deps)
+<workdir>/                       已有工作目录，工具直接在这里工作
+└── .llm_context                 可选；也可继承祖先目录配置
+
+<runs_dir>/                     默认 ~/.xllm/runs
+└── <run_id>/
+    ├── run.json                 RunRecord
+    ├── snapshots/
+    │   ├── 0001.json            LLMContextSnapshot
+    │   ├── 0002.json
+    │   └── ...
+    └── .lock                   该 Run 的执行锁
+
+<lock_dir>/                     默认 ~/.xllm/locks
+└── <hash(workdir)>.lock         启用工具的任务按工作目录互斥
 ```
 
-read request.json 的结果供 LocalLLMContext 保留和压缩配置使用；实际恢复执行的 request/state 来自 snapshot。没有使用 incoming_request 重写它们，也没有重新 lower stored_request。
+不再生成旧协议的 `request.json`、`state.json`、`outcomes/final.json` 或 `*.snap.json`。xllm 不创建共享 `workspace/` / `bin/`，也不自动给 PATH 增加工作目录中的 bin。进度事件由 `RunObserver` 接收，CLI 输出到 stderr；默认不落成 `worklog.jsonl`。
 
-`ResumeFromMidRun` 要求 snapshot.state.pending_tool_calls 为空。挂起标记非空会返回 `CrashedInSuspended`。没有 `--resume <run_id>`、`--force-resume`、`--resume-fill` 或“忽略 hash”选项。
+YAML `runs_dir: none` / `null` 使用内存 RunStore。本次 SDK 仍可读取同一个内存 store 的记录，但新 CLI 进程无法查询或恢复；没有磁盘 Run 锁。工具工作目录锁仍生效，除非宿主设置 `skip_workdir_lock`。
 
-### 8.4 outcome 到元数据的状态转换
+### 5.2 标识与锁
 
-| outcome | state.status | last_suspend_kind | driver 后续动作 |
-| --- | --- | --- | --- |
-| Done | Completed | null | 写 final，返回 |
-| Error | Completed | null | 写 final，返回 |
-| BudgetExhausted | Completed | null | 写 final，返回 |
-| PendingTool | Suspended | PendingTool | 返回给调用方 |
-| ContextLimitReached | 保持原状态，通常 Running | ContextLimitReached | 调 compressor；成功后清标记并继续 |
-| Interrupted | Suspended | Interrupted | 返回给调用方 |
+run_id 格式为 `YYYYMMDD-HHMMSS-<6hex>`，前缀使用本地时间；后缀由纳秒时间、PID、进程内计数经 BLAKE3 生成，不是旧的四位时间后缀。磁盘创建使用 `create_dir`，冲突最多尝试 8 次。消费方应将 ID 当作不透明字符串。
 
-`step()` 每次消耗持有的底层 ctx；返回后不能直接再次 step，除非 driver 内部已完成压缩 resume。再次误调得到 NoActiveContext。`drive_to_terminal` 名称虽然含 terminal，也可以返回挂起态。
+Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。工作目录锁文件名取规范化 workdir 字符串的 BLAKE3 前 24 个十六进制字符，与 runs_dir 无关。启用工具的任务即使使用不同 runs_dir，在同一默认锁目录下仍互斥。锁文件内容用于诊断，是否活跃以持锁情况为准，不能靠 PID 或删除锁文件判断 / 解除占用。
 
-`step()` 的两类失败返回不在上表内：
+### 5.3 提交边界
 
-| 情况 | 返回 | 目录状态 | 恢复入口 |
-| --- | --- | --- | --- |
-| waist 返回 `error.kind ∈ {checkpoint, tool_runtime}` | `Err(RuntimeFailure { error })` | 不写任何文件，state 仍 Running | 上下文留在内存；修复后再次 `step()`。checkpoint 情况只重做保存再推理，不重放已执行工具 |
-| outcome 已算出，snapshot / final / state 任一阶段写失败 | `Err(CommitFailed { stage })` | 已完成的阶段保留 | `pending_outcome()` 读取结果；`retry_commit()` 只补写剩余阶段，不重新 `run()`；期间 `step()` 返回 `CommitPending` |
+`start` 在首次模型调用前写 `run.json`，其中 `pending_input` 保存完整初始输入与文件模型计划。进入主模型阶段后先提交初始快照，再清除 `pending_input`。每次主循环推理前、outcome 边界和压缩续跑前也提交快照。
 
-压缩失败、目录 IO 失败不自动写 Error outcome，不自动将 run 标为 Completed。
+快照提交顺序为：写新的 `snapshots/NNNN.json` → 更新 `run.json.latest_snapshot_idx`；终态结果随后写入 `run.json.result` 和状态。单个文件使用临时文件、fsync、rename，并同步目录；多个文件之间不构成一个事务。恢复读取记录指向的编号，不扫描更大编号来代替它；未被记录引用的快照不代表已提交结果。
 
-### 8.5 已定义接口与实际支持边界
+`run.json` 为 UTF-8 pretty JSON，快照为 UTF-8 JSON；缩进和键序不是协议。时间戳单位均为 Unix 毫秒，计数为非负整数。普通结构体没有通用未知字段透传能力；跨语言执行者应保留已定义的宿主字段，不能靠 serde 忽略未知字段来实现无损读写。
 
-1. **PendingTool**：LocalLLMContext 有落盘分支，但底层传统循环尚未生成该 outcome。工具返回 Pending 时，allow_deferred=false 报内部错误；即使 true，也报 `deferred tool path not yet implemented`。
-2. **ContextLimitReached**：类型、driver 分支和 Compressor 都存在，但当前循环没有检查 context 阈值，也没有把 provider 超窗错误专门转换为这一 outcome。因此 CLI 的自动压缩路径目前没有正常触发来源。
-3. **Interrupted**：底层支持；本地 CLI 没有对外控制入口。即使获得了 Suspended/Interrupted 目录，resume_or_new 也不扫描 Suspended，因此不会自动续跑它。
-4. **ResumeFill**：底层类型支持 `{"kind":"resume_from_mid_run"}`、`{"kind":"rewritten_history","history":[...]}`、`{"kind":"tool_results","results":[["call_id", observation], ...]}`。ToolResults 要求与 pending 的数量和顺序逐一一致。LocalLLMContext/CLI 未公开通用 fill 接口，不能把底层能力当作 CLI 已有参数。
+## 6. `run.json` 与查询视图
 
-### 8.6 append 算法与覆盖优先级
+### 6.1 `RunRecord`
 
-1. 不持锁地寻找最近 run；必须 Completed，且存在索引指向的有效 snapshot。
-2. 读取该 run 的 request.json。
-3. 新 input = snapshot.state.accumulated + 一条来自 `--append` 的 user/text 消息。
-4. 继承 objective、model_policy、tool_policy、output、budget、human_policy、error_policy。
-5. 应用下表 CLI 覆盖，然后初始化 AICC runtime，获取目录锁，执行 new_run。
-
-| 配置 | append 时 CLI 行为 |
+| 字段 | 含义 |
 | --- | --- |
-| objective | 未给 `--objective` 则继承；给了则覆盖 |
-| model_policy | 未给 `--model` 则整体继承；给了则整体重建 |
-| temperature / max_tokens | 只有同时给 `--model` 才应用；否则即使单独指定也被忽略 |
-| fallbacks / provider_options | 给 `--model` 后分别重置为 `[]` / null |
-| tool_policy | **总是整体重建**；默认 All、max_rounds=8，其它字段为默认值，不保留原自定义策略 |
-| output | `--json` 覆盖为 JSON 非 strict；未给则继承，无法用 CLI 显式切回 text |
-| budget / human_policy / error_policy | 继承，CLI 无对应覆盖参数 |
+| `version` / `run_id` | Run 记录版本与目录标识 |
+| `status` | snake_case 状态，见 §8 |
+| `workdir` / `runs_dir` | 原工作目录和存储位置；内存模式省略 runs_dir |
+| `created_at_ms` / `updated_at_ms` | 创建 / 最近记录更新时间；不是心跳 |
+| `summary` | 任务要求首行摘要 |
+| `input` | request、request_source、附件记录、stdin_role / stdin_chars、structured_messages |
+| `config` | 实际 Provider / 模型 / loop / limits / 工具 / 输出策略，以及 config_files / sources |
+| `prompt` | mode、group、渲染后的 sections / custom_system、最终 system_prompt、runtime_protocol / protocol_version、任务要求、模板及 runtime 变量 |
+| `file_model_stage` | 成功的图片分析、模型、usage、response_model 和完成时间，可省略 |
+| `pending_input` | 首次快照前的 initial_messages、main_user_parts、file_stage，可省略 |
+| `latest_snapshot_idx` | 恢复入口的快照编号，可省略 |
+| `last_error` | phase、kind、message、recoverable、condition、at_ms，可省略 |
+| `result` | raw、extracted、extract_error、json_valid、json_error、response_model，可省略 |
+| `artifacts` | 已追踪的 write_file / edit_file 成功写入路径；不是工作目录全量变化清单 |
+| `usage` | main、file_model、compaction、llm_requests；各阶段 usage 可缺省 |
+| `limit_reason` / `interrupt_reason` | 停止原因，可省略 |
+| `compactions` / `pid` | 已完成压缩次数 / 最近执行者 PID |
+| `host` / `host_commit_pending` / `inflight` / `executions` | 宿主装配、输入提交门槛及执行跟踪，见 §11 |
 
-Completed 不限 Done：上一次 Error 或 BudgetExhausted 也允许 append。append 不读取 final.json，继承的是 snapshot 中实际存在的历史，不能假定失败时最后一份 provider response 已入历史。
+`EffectiveConfig` 中的 `limits` 使用 `timeout_secs`、`llm_timeout_secs`、`context_window_tokens`，不同于 YAML 的 `timeout`、`llm_timeout`、`context_window`。Provider 的已解析类型字段为 `kind`，不同于 YAML `type`。`result_format` 在记录里是 `{"kind":"raw"}` 或 `{"kind":"path","segments":[...]}`，在 CLI 视图中才是字符串。
 
-新 run 重置 usage、rounds_left、started_at_ms 等运行计数；旧历史和 workspace 保留。没有 `parent_run_id` 字段或显式谱系记录。
+`config.tools` 保存 `enabled`、`filesystem_policy`、`tools2actions`、原始来源列表 `tool_sources` / `action_sources`、展开的 `native` / `actions`、`bash_tools`、`exec_enabled` 和来源信息。恢复按保存的来源重新构建工具，MCP 仍需可连接；记录不保存工具进程或模型连接。
 
-当前 follow-up 的读取发生在 new_run 加锁之前，存在与其它进程更新目录竞争的窗口。新实现若要消除该窗口，应将“选前序、读取、创建新 run”置于同一锁内。
+### 6.2 查询选择
 
-### 8.7 压缩策略
+`list_runs` 按 `updated_at_ms` 倒序排列，CLI 默认只列当前工作目录，最多 20 条。`status` / `result` 不给 `--run` 时选择当前工作目录最近一条；`--resume` 不给 `--run` 时选择最近的非终态记录。显式 run_id 在所选 RunStore 中直接查找，不受当前 workdir 过滤，但真正恢复使用记录中的原工作目录。
 
-| 调用入口 | 策略 |
+扫描列表时跳过缺失 / 不可解析的 run.json；按 ID 读取时返回明确错误。`run.json.status = running` 但没有进程持 Run 锁时，`RunSummary` / `XllmResult` 显示 `interrupted`，且 `RunSummary.stale_running = true`。查询不会为此重写持久状态；锁探测可能创建锁文件。
+
+查询的 `resumable` 只根据状态与活跃锁推导，不代表版本、宿主提交、工具依赖和快照检查已经通过。
+
+## 7. 快照 v2 与底层恢复
+
+### 7.1 快照字段
+
+快照顶层只有 `request` 和 `state`。request 为 `LLMContextRequest`，包括 owner、trace、objective、behavior_name、input、model_policy、tool_policy、output、budget、human_policy、error_policy、forbid_next_behavior；这是已编译的底层请求，不是 `.llm_context` 或旧 `OneShotRequest`。
+
+| `state` 字段 | 含义 |
 | --- | --- |
-| CLI / `drive_to_terminal(KeepTailCompressor)` | 保留所有 system 消息，按原相对顺序放在前面，再保留最后 8 **条**非 system 消息；developer 属于非 system |
-| 库 `drive_to_terminal(compressor)` | 使用调用方注入的策略 |
-| 库 `drive_to_terminal_auto()` | 使用 LlmSummarizeCompressor，与主任务共享 llm client，模型取原请求 model_policy.preferred；为空则报错 |
+| `snapshot_version` | 当前为 2，缺省读取为 0 |
+| `accumulated` | 当前消息历史 |
+| `usage` / `rounds_left` | 累积模型用量 / 剩余工具轮数 |
+| `started_at_ms` / `cost_units` / `consecutive_errors` | 计时起点、成本计数、连续可纠正错误计数 |
+| `suspended` | 挂起原因：`pending_tool` 或 `context_limit`；无挂起时省略 |
+| `tool_batch` | 尚未派发的原生工具调用 remaining 及本批 round_error |
+| `action_step` | 尚未完成的 behavior step 及其模型 response |
+| `llm_task_ids` | Provider 任务追踪 ID |
+| `steps` / `history_summaries` / `history_inputs` / `last_step` / `last_report` | behavior 历史、最新 step 与 report |
+| `next_step_index` / `next_action_id` | 后续编号 |
+| `host` | 不透明宿主 JSON；底层循环原样携带 |
 
-auto 的 target token：优先取 budget.max_total_tokens 的 60%；否则取 AbsoluteTokens 阈值的 60%；两者均向下取整且最低 8192；没有绝对信号时为 32768。Ratio 不参与计算。小预算也会被抬到 8192，不能将这个公式理解为一定小于原预算。
+v2 用 `suspended` / `tool_batch` / `action_step` 取代旧 `pending_tool_calls`，不得只保存一个 pending call 列表后猜测如何续跑。
 
-KeepTail 不调用 LLM，不按 token 裁剪、不按完整 tool-use/result 对分组，也不保证压缩后一定更短。当前没有连续无效压缩次数上限。LlmSummarizeCompressor 细节见 [LLM Compress](../opendan/LLM%20Compress.md) 与 [llm_compress.rs](../../src/frame/agent_tool/src/llm_compress.rs)。
+### 7.2 `ResumeFill` 匹配规则
 
-## 9. 命令行协议
-
-### 9.1 命令形态
-
-```text
-agent_tool run_local_llm --dir <path> --model <alias> [input flags] [tuning flags] [--new] [--output <path>]
-agent_tool run_local_llm --dir <path> --append <text> [--model <alias>] [tuning flags] [--output <path>]
-agent_tool run_local_llm --help
-```
-
-当前可执行文件来自 `agent_tool_cli_dev` 包中的 `agent_tool` binary。分发依据 argv[1] 精确等于 `run_local_llm`；此命令不经普通 AgentTool dispatcher。
-
-只支持下表参数，没有位置参数、短参数组合、`--flag=value` 或 `--` 终止选项语法。带值参数紧跟的一个 argv 被直接当作值，即使它以 `--` 开头。多次出现同一带值参数时最后一次覆盖，不会累积多条 system/user 消息；布尔 flag 重复仍为 true。
-
-### 9.2 完整参数表
-
-| 参数 | 值 | 必需/默认 | 作用 |
-| --- | --- | --- | --- |
-| `--dir` | path | 除 help 外必需 | context 根目录 |
-| `--model` | alias | 非 append 必需 | AICC 模型别名；append 可继承 |
-| `--objective` | text | 新请求默认 `run_local_llm dev test` | 设置审计目标，不进入 prompt |
-| `--system` | text | 可选 | 一条 system 消息 |
-| `--user` | text | 可选 | 一条 user 消息 |
-| `--input-file` | path | 可选 | 从 UTF-8 JSON 文件读取 AiMessage[] |
-| `--input-stdin` | 无 | false | 读取 stdin 至 EOF，作为一条 user/text |
-| `--append` | text | 可选 | 从前一个 Completed run 派生新请求 |
-| `--temperature` | f32 | 未设置 | 采样温度，无 0..2 范围验证 |
-| `--max-tokens` | u32 | 未设置 | model_policy.max_completion_tokens |
-| `--max-rounds` | u32 | 8 | 工具轮数，0 时不向模型提供可调用工具 |
-| `--no-tools` | 无 | false | tool_policy.mode=none |
-| `--json` | 无 | false | output=Json(schema=None, strict=false) |
-| `--new` | 无 | false | 调用 new_run；已有 Running 仍报错 |
-| `--output` | path | 未设置 | 将完整 outcome 写到指定文件，替代 stdout JSON |
-| `-h` / `--help` | 无 | 无 | 打印帮助到 stdout，退出 0 |
-
-u32 参数的 0 是有效输入，负数、溢出或非整数是解析错误。temperature 按 Rust f32 解析，没有有限值和业务范围的额外检查；新实现不应依赖 NaN/Infinity 等值的可用性。空字符串的 dir/model/objective/system/user/append 没有统一非空验证。
-
-help 在解析器遇到时立即返回，忽略此前已收集的配置和之后的参数；如果更早遇到未知 flag 或无效数字则先报错，若 `--help` 被前一个带值参数消费则只是该参数的值。
-
-### 9.3 输入组合顺序
-
-非 append 路径始终按以下顺序组装，与 flag 的书写顺序无关：
-
-```text
-1. --system 的一条消息（如果有）
-2. --input-file 数组中的全部消息，保留原顺序
-3. --user 的一条消息（如果有）
-4. --input-stdin 的一条消息（仅 stdin 字节内容非空）
-```
-
-stdin 是纯文本，不是 JSON；保留换行和空白，不 trim。零字节 stdin 不产生消息；全为空格或换行的 stdin 仍产生消息。`--system ""` 和 `--user ""` 也会产生空 text 消息，因此通过“至少一条消息”的检查。input-file 为 `[]` 且没有其它消息则失败。
-
-`--append` 与 `--system`、`--user`、`--input-file`、`--input-stdin`、`--new` 互斥。该检查发生在执行阶段，退出码为 **1**，不是 2。`--objective` 和 tuning 参数可以与 append 同用。
-
-### 9.4 输出、stderr 与退出码
-
-| 情况 | stdout | stderr | 退出码 |
-| --- | --- | --- | --- |
-| help | 帮助文本 | 通常为空 | 0 |
-| 参数解析失败 | 无 outcome | `error: ...` 加帮助文本 | 2 |
-| 成功 Done，未指定 output | pretty outcome JSON，末尾换行 | run 信息 | 0 |
-| 非 Done outcome，未指定 output | **仍先输出该 outcome JSON** | run 信息；`run_local_llm failed: non-done outcome: <kind>` | 1 |
-| 指定 output 且写成功 | 不输出 outcome JSON | run 信息；`outcome written to <path>`；非 Done 时再输出失败行 | Done 为 0，其它为 1 |
-| outcome 已算出但目录提交失败 | 仍输出 / 写出该 outcome JSON | `run_local_llm: outcome computed but not committed: ...` | 3 |
-| 轮前 checkpoint 或工具派发基础设施失败 | 无 outcome | `run_local_llm: runtime failure, run kept resumable: ...`；run 仍为 Running，可 resume | 4 |
-| 输入读取、初始化、锁、恢复、压缩或写文件失败 | 不保证有 outcome | `run_local_llm failed: ...` | 1 |
-
-run 创建/恢复成功后，stderr 输出 `run_local_llm: dir=<path> run_id=<id>`。初始化失败可能发生在创建 run 前，因此不一定有这条日志。依赖自身也可能输出日志，stderr 不是机器结构化协议。
-
-`--output` 直接覆盖目标，不创建父目录，不加结尾换行，不做原子 rename。归档 final.json 不受它是否指定影响；如果额外 output 写失败，run 可能已经 Completed 且 final.json 已存在，但进程仍返回 1。
-
-读取结果的推荐条件为：**退出码 0 且 outcome.kind 为 done**。不能只判断文件存在，也不能把 Completed 当作成功。
-
-目录/驱动层错误没有 JSON 错误码，Rust 类型及触发条件如下。除 `CommitFailed`（退出 3）和 `RuntimeFailure`（退出 4）外，CLI 将它们的 Display 文本放在 `run_local_llm failed: ` 后，退出 1；消费者不应依赖底层 OS 错误文本完全一致。
-
-| Rust 错误类型 | 典型触发条件 |
-| --- | --- |
-| `Io` | 创建、读取、写入、枚举或 rename 失败 |
-| `SnapshotMissing` | state 索引指向的快照文件不存在 |
-| `RuntimeFailure` | waist 因轮前 checkpoint 或工具派发基础设施失败停下，上下文保留在内存 |
-| `CommitFailed` | outcome 已算出，snapshot / final / state 提交失败；`retry_commit()` 补写 |
-| `CommitPending` / `NoPendingCommit` | 有未提交 outcome 时调用 `step()`，或无未提交 outcome 时调用 `retry_commit()` |
-| `Serialization` | request/state/snapshot/outcome 序列化或实际读取对象的反序列化失败；扫描 state 时的失败另按 §3.2 跳过 |
-| `RunningRunExists` | new_run 发现已有 Running |
-| `SemanticHashMismatch` | incoming_request 与选中 Running 的 state 哈希不同 |
-| `CorruptedRun` | 缺少必需快照索引，或底层 resume 验证失败 |
-| `CrashedInSuspended` | do_resume 发现 last_suspend_kind 非空 |
-| `NoActiveContext` | 当前对象没有可执行底层 ctx 却再次 step |
-| `CompressorFailed` | 默认 LLM 压缩适配器失败；自定义 compressor 也可返回其它本地错误 |
-| `NoCompletedRunToAppend` | 没有前序 run，或最近 run 不是 Completed |
-| `LockFailed` | 目录 flock 获取失败，或进程锁 registry 异常 |
-| `ToolWiringFailed` | 工具注册失败，或自动压缩所需模型别名为空 |
-
-### 9.5 与 AgentToolResult 的区别
-
-`run_local_llm` 没有 `agent_tool_protocol`、`status`、`summary` 外层，也不使用通用工具的 pending 退出码。`--json` 控制模型输出契约，CLI 自身在普通执行时一直输出 JSON outcome。
-
-新的 SDK/CLI 可以重新定义返回协议，包括是否接入统一 AgentToolResult 封装，但应在新协议中明确 SDK 结果和 CLI 输出的映射，不将这种变化描述为与旧入口兼容。当前 `bin/` 里被 exec_bash 调用的普通 AgentTool 则仍可使用 [AgentToolResult 协议](agent_tool_result_protocol.md)。
-
-## 10. 工具与执行环境
-
-### 10.1 注册工具
-
-本地 ToolManager **只注册三个工具**，工具声明顺序不是协议：
-
-| 名称 | 入参 | 核心行为 |
+| 快照状态 | 底层允许的恢复输入 | xllm 行为 |
 | --- | --- | --- |
-| `write_file` | `path: string`，`content: string`，可选 `mode: string` | 写入 UTF-8 文本，创建父目录；默认覆盖 |
-| `edit_file` | `path: string`，`old_string: string`，`new_string: string` | old_string 必须非空且精确匹配一次；new_string 可为空但必须不同；执行替换 |
-| `exec_bash` | `command: string`，可选 `target`、`timeout_ms`、`cwd`、`env` | 本地启动 `/bin/bash -c <command>` |
+| 未挂起 | `ResumeFromMidRun` | 从提交点续跑 |
+| `suspended.kind = context_limit`，function_call | `RewrittenHistory` | 先压缩消息，再恢复 |
+| `suspended.kind = context_limit`，behavior | `RewrittenSteps` | 物化历史折入 input，再恢复；底层保留进行中的状态及编号 |
+| `suspended.kind = pending_tool` | `ToolResults` | 底层支持回填；xllm 无回填入口，拒绝接手 |
 
-没有独立注册 read/read_file/glob/grep，也不扫描 bin 并逐一注册函数；读文件、搜索文件通过 exec_bash 或 PATH 命令完成。
+挂起时间不计入底层 wallclock。恢复会校验 fill 与挂起态匹配、工具调用 / 回执配对和 continuation 状态；不合法的组合返回 `SnapshotCorrupted`。宿主自行回填后，应先持久化新的快照再继续，因为 continuation 可能先执行尚未派发的工具。
 
-write_file.mode：`new`/`create` 要求目标不存在，`append` 追加原内容，`write`/`overwrite`/空字符串表示覆盖；不区分大小写，先 trim，缺省为 write。append 不自动补换行，不存在时允许创建。文件配置允许创建，没有有限的写入大小和 diff 行数上限。
+当前 Rust 对非终态的恢复检查拒绝 `RunRecord.version > 1`、`state.snapshot_version > 2`，并要求运行协议精确等于 `xllm/1`；不是对所有旧版本做自动迁移。旧快照能否恢复仍取决于字段和状态校验，读取到较小版本号不等于旧工具目录兼容。`LLMContext::snapshot()` 写出时使用当前快照版本。
 
-文件工具读取旧文本使用 UTF-8 lossy 转换，再写回文本；不构成二进制编辑协议。文件写入不是事务写，也没有 OS 级沙箱。
+## 8. 生命周期、中断与恢复
 
-### 10.2 exec_bash
+### 8.1 状态映射
 
-| 项目 | 实际行为 |
+| `status` | 终态 | 触发条件 |
+| --- | --- | --- |
+| `running` | 否 | 持锁执行中；遗留 running 的展示规则见 §6.2 |
+| `interrupted` | 否 | 用户中断，或查询发现执行进程已退出 |
+| `paused` | 否 | Provider 超时 / transient / 可识别的凭据错误、checkpoint 失败、工具基础设施失败 |
+| `completed` | 是 | 底层 `Done`，最终原文已保存；提取或 JSON 校验可能仍失败 |
+| `failed` | 是 | 不可恢复 Provider / 内部错误、连续可纠正错误超限、压缩失败或重复超限等 |
+| `limit_reached` | 是 | 工具轮数、wallclock 等底层预算耗尽 |
+
+Provider Permanent 错误中包含 token、401、403、auth、expired、permission 等线索时，当前实现将其归为可恢复的 `credentials`；其它 Permanent 和 Unknown 为失败。此处是错误文本分类，不是自动刷新任意凭据的保证。可恢复故障停止为 paused，由调用方显式 resume；不在同一次 CLI 中无限重试。
+
+### 8.2 恢复流程
+
+1. 按显式 ID 或当前工作目录最新非终态记录选择 Run。若指定终态，返回保存的记录，不再次执行；同时给执行额度参数会报 `RunTerminal`。
+2. 非终态检查运行锁、记录版本、`host_commit_pending`、宿主 runtime_kind、运行协议及原工作目录。
+3. 取得 Run / 工作目录锁后重读记录，确认宿主输入已提交；核对旧受管执行并处理 inflight，见 §11。
+4. 使用保存的配置与工具来源重建工具 / Provider，重新读取凭据引用；不重新合并 `.llm_context`、重选组或重渲染提示词。
+5. 使用 `latest_snapshot_idx` 指向的快照恢复；尚未有快照时使用 `pending_input`。两者都没有则拒绝恢复。
+6. 重置本次 wallclock 起点；保留用量和已消费的工具轮数。`ResumeLimits` 可覆盖 max_tokens、max_rounds、timeout_secs、llm_timeout_secs；调整 max_rounds 时以新总额度减去已消费额度计算剩余值。
+7. 未挂起快照直接续跑；上下文上限快照先压缩；等待 deferred 工具结果的快照拒绝接手。
+
+CLI resume 只将四种额度参数传入 `ResumeLimits`。模型、Provider、工具、loop 等使用原记录；不要用 `--resume --model ...` 期望切换模型。`--run-logs` 和交付格式可影响本次展示，`--result-format` 可影响导出，不改变原任务语义。
+
+没有请求语义哈希、自动匹配相同输入或 `--append`。新任务使用新的上下文和 run_id；要把前次输出作为新材料，可使用管道或结构化消息。
+
+### 8.3 中断与故障边界
+
+CLI 第一次 Ctrl-C 请求协作中断并保存进度；第二次 Ctrl-C 杀掉仍受管理的本地 bash 进程组并立即以 4 退出，不等待新的提交。SDK 使用 `XllmInterrupter::interrupt(reason)`。
+
+保存点之间仍可能发生模型重试或工具副作用重放。普通 xllm 默认不自动填充宿主的 inflight / executions，也没有 exactly-once 执行保证。宿主提供的执行跟踪可以将已登记而结果未提交的动作变成“结果未知”，但不能恢复丢失的外部结果。强制杀进程不等价于完成一次 checkpoint。
+
+若 outcome 已算出但提交失败，xllm 尝试记录 paused/storage；磁盘完全不可写时，这条暂停记录也可能无法落盘。恢复基于最后成功提交的记录，不能把内存里的 outcome 当成已经持久化。
+
+## 9. 工具与限制的执行语义
+
+### 9.1 内置 `bash` 组
+
+| 名称 | 入参 | 行为 |
+| --- | --- | --- |
+| `read_file` | `path`，可选 `range`、`first_chunk` | 读取文件内容 / 指定范围，具体选择规则由文件工具定义 |
+| `write_file` | `path`、`content`，可选 `mode` | 写 UTF-8 文本；默认覆盖，支持 create/new、append 等模式 |
+| `edit_file` | `path`、`old_string`、`new_string` | old_string 非空且精确匹配一次，执行文本替换 |
+| `exec` | `command`，可选 `target`、`timeout_ms`、`cwd`、`env` | 本地 `/bin/bash -c`；env 由执行器接受，当前 schema 未展示该字段 |
+
+这里的工具名是 `exec`，不是旧目录工具的 `exec_bash`。默认 cwd 为 workdir；相对 cwd 和文件路径基于 workdir。exec 只支持本地 target，继承进程环境，可覆盖 env；stdin 为 EOF，每次调用启动新的 shell，不保留上次 shell 的 cwd / 变量。`bash_tools` 只生成命令手册，不安装程序、不注册函数、不修改 PATH。
+
+exec 默认超时 1,800,000 ms（30 分钟），最大 3,600,000 ms（1 小时），过大的有效值 clamp 到上限。输出限制为 64 KiB，保留头部 1/4 和尾部 3/4。命令在独立进程组中运行，超时、取消或总时长限制触发时杀掉受管理的进程组；超时 Error 含已有输出、`timed_out` 和重试提示。非零退出的错误 observation 同时包含摘要及输出。
+
+`filesystem_policy: workspace` 限制内置文件工具的路径和 exec 的初始 cwd；`unrestricted` 清空文件读写 root 白名单，允许 cwd 指向其它目录，相对路径基准不变。策略随 Run 保存并在恢复时复用，仅作用于内置组。workspace 的路径约束不是 OS 沙箱，不能隔离 shell 命令自身的绝对路径、cd 或符号链接访问；MCP / 宿主工具自行决定执行策略。
+
+Success observation 优先取非空 output，其次 summary，最后 details JSON；Error observation 包含 summary 和可用的 output。普通工具业务错误供模型纠正；连续可纠正错误上限为 3。`artifacts` 只追踪已观察到成功的 write_file / edit_file 路径，exec 产生的文件不会自动枚举登记。
+
+### 9.2 轮数、时间与 deferred
+
+xllm 设置串行工具策略（`parallel: false`），原生工具每批最多 16 次调用。`max_rounds` 是实际派发的工具 / action 批次预算；同一批多个调用只消耗一轮，业务失败也消耗额度，behavior 内的原生工具循环沿用剩余额度。额度为零时仍允许模型给出无工具的最终答案；再次要求工具则进入 `limit_reached`，不执行超额调用。behavior actions 按顺序执行，首个业务失败后本 step 的后续动作跳过并反馈给模型。
+
+`timeout` 映射到底层 `max_wallclock_ms`，同时在 `execute()` 为正在运行的工具设置 deadline。`llm_timeout` 包装单次模型请求。文件模型阶段和压缩请求也使用请求超时，但总时长检查不是覆盖所有准备 / 网络阶段的统一硬 deadline；运行中的模型请求仍受自己的超时边界约束。恢复重新获得本次时长额度。
+
+`max_tokens` 传入模型输出上限；xllm 构造的普通请求没有 `max_total_tokens` / `max_cost_units` 总额度。底层支持的预算种类不能都当成现行 CLI 开关。
+
+底层 v2 已能产出 `PendingTool` 并接受 `ToolResults`，但 xllm 配置 `allow_deferred: false`。工具返回 Pending 会按违约 / 未知副作用处理，不应把它当作可继续轮询的 CLI pending 状态；如果执行路径收到 `PendingTool` outcome，xllm 将其记为 `failed` / `deferred_tool`。没有 `--fill` 或通用异步工具回填命令。
+
+### 9.3 上下文容量与压缩
+
+设置 `context_window` 后，xllm 设置 `context_yield_threshold = Ratio(0.75)`。底层估算将要发送的消息、工具声明和输出 schema：
+
+- 估算输入达到窗口的 75% 时，产出 `ContextLimitReached`（`approaching_window`）。
+- 估算输入加 `max_tokens` 的输出预留超过窗口时，产出 `hard_limit`，该请求不发送。
+- 未配置窗口时，不自动查询模型窗口；依赖 Provider 的结构化 `ContextLimit` 拒绝。OpenAI 兼容 adapter 识别 `/error/code = context_length_exceeded`。
+
+Ratio 必须有窗口；窗口必须大于零，输出预留必须小于窗口。估算是本地近似值，媒体使用固定费用，并非 Provider 精确 tokenizer 的容量保证；不是按累计 usage 触发压缩。
+
+xllm 使用本次主模型和 `LlmSummarizeCompressor`，目标 token 参数为 32768。function_call 使用 `RewrittenHistory`，behavior 使用 `RewrittenSteps` 把物化历史折入 input；压缩后的上下文先提交快照再继续。`compactions` 随 Run 保存，最多完成 3 次；再次超限进入 failed/context_capacity，压缩调用失败进入 failed/context_compaction。
+
+## 10. CLI、结果与退出码
+
+### 10.1 参数面
+
+```text
+agent_tool xllm "任务要求" [options]
+agent_tool xllm --select <group> ["任务要求"]
+agent_tool xllm --resume [--run <id>] [limits/output options]
+agent_tool xllm list [--limit N]
+agent_tool xllm status [--run <id>]
+agent_tool xllm result [--run <id>]
+```
+
+| 分类 | 参数 |
 | --- | --- |
-| target | 缺省、空字符串、`local`、`localhost`、`.` 为本地，别名比较忽略大小写；其它值拒绝 |
-| command | 必需非空字符串，trim 后执行 |
-| cwd | 缺省 workspace；相对 cwd 基于 workspace，要求路径存在且词法上仍在 workspace 内 |
-| timeout_ms | 默认 30000，上限 120000；接受正整数或可解析为 u64 的字符串；0/非法值拒绝，过大值 clamp |
-| env | 继承父进程环境，再应用传入对象；键符合 `[A-Za-z_][A-Za-z0-9_]*`；值允许 string/number/bool/null，null 转空串 |
-| stdin | null/EOF，不继承 CLI stdin |
-| shell | `/bin/bash -c`，不是 login shell，不持久化 shell 会话 |
-| PATH | 一般为 `<dir>/bin:<传入 env.PATH 或进程 PATH>` |
-| 输出 | 收集 stdout/stderr 后，将 stdout + 必要的一个换行 + stderr 拼接；不是按发生时间交错合并 |
-| 输出上限 | 拼接展示 output 截为 262144 字节，UTF-8 lossy 解码；detail 中原 stdout/stderr 未按此上限截断 |
-| 退出 | 正常退出码；Unix 信号映射为 128+signal；超时返回工具错误 |
+| 输入 | `--user`、`--system`、`--select`、可重复 `--file` / `--image`、`--input-file` |
+| 目录 | `--dir`、`--runs-dir` |
+| 模型 / 工具 | `--provider buckyos\|openai`、`--model`、`--file-model`、`--loop-model function_call\|behavior`、`--tools` / `--no-tools` |
+| 额度 | `--max-tokens`、`--max-rounds`、`--timeout`、`--llm-timeout` |
+| 交付 | `--result-format raw\|result.<path>`、`--json`、`--format text\|json`、`--output` |
+| 查询 / 日志 | `--run`、`--limit`、`--run-logs debug\|info\|warn\|result`、`--help`、`--version` |
 
-PATH 去重逻辑只要发现 `<dir>/bin` 已位于原 PATH 任意位置，就不再次 prepend，因此此时不保证它优先于系统命令。子 shell 的 `cd`、变量赋值不会成为下一次工具调用的持久状态；文件副作用会保留。
+未知 flag、缺值、无效数字或互斥输入返回 2；大多数单值参数重复也报错，附件按出现顺序保留。`--resume` 不接受新问题、system、select、structured input 或附件。`--run` 不能用于创建新任务。旧 `--objective`、`--new`、`--append`、`--input-stdin` 等不属于当前入口。
 
-向模型展示的 exec_bash schema 目前只列 command、target、timeout_ms，未展示 cwd/env；schema timeout 上限还是通用的 600000，usage 中默认值也是通用的 60000。**本地真实运行限制以 30000/120000 为准。**
+CLI 帮助、状态标签、进度和诊断使用英文；用户输入、模型输出和工具正文按原文保留。info/debug 在 stderr 列出参与合并的配置文件；resume 列出原 Run 保存的来源。exec 日志显示实际 command，控制字符转义为单行；warn/result 隐藏常规进度。stdout 应按所选交付格式读取，stderr 不是结构化 API。
 
-工具结果转发：对于通过现有简单命令检测、且 stdout 能整体解析为 AgentToolResult 的命令，exec_bash 直接转发该结构；Pending 必须带 task_id，否则回退普通 bash 结果。未引用的管道、分号、与号、重定向或换行会禁用转发。转发时内部 status 为准，必要时补非零 return_code；普通 bash 结果则以 exit_code 是否为 0 判 success/error。
+### 10.2 三种结果控制
 
-这只描述结果识别，不是可靠的完整 shell AST 判定或命令权限检查。实现细节见 [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs)。
-
-### 10.3 工具结果到 LLM observation
-
-| AgentToolResult 状态 | Observation |
+| 选项 | 控制对象 |
 | --- | --- |
-| Success | `kind=success`；content 为非空白 output，否则 summary；bytes 为所选文本 UTF-8 字节数；truncated=false |
-| Error | `kind=error`；message 优先非空白 summary，其次 trim 后非空 output，否则 `tool error` |
-| Pending | `kind=pending`；保留 call_id |
-| manager 自身抛错 | `kind=error`；message 为错误文本，无 tool_result |
+| `--result-format` | 从最终原文提取什么 |
+| `--json` | 提取结果必须能解析成合法 JSON |
+| `--format json` | CLI 输出 `XllmResult` 包装，而非单独答案 |
 
-前三类均附上结构化 `tool_result` 视图。Success.content 不是旧注释所说的 detail JSON。传统 loop 再将 success/error 转为 tool role 的 tool_result 文本供模型读取。
+`raw` 保留最终原文。`result.<path>` 先剥离代码围栏，再按 JSON 对象字段 / 数组下标，或 XML 根节点之下的唯一子元素路径提取。`result` 是路径前缀，不是要求模型输出一个名为 result 的外层字段。例如 `result.answer` 从 `{"answer":42}` 提取 42，`result.report` 从 `<response><report>...</report></response>` 提取 report。
 
-session 模板：`agent_name=oneshot`、`behavior=oneshot`、`trace_id=session_id=run_id`、`wakeup_id=""`；每次工具调用增加 step_idx。恢复或重新 build_deps 会重置工具管理器的 step_idx，不是 run 内持久化序号。
+JSON 字符串和 XML 文本叶节点导出为 Text；JSON 对象、数组、数值等导出为 Json；含子元素的 XML 节点导出其内部 XML。路径缺失、重复 XML 匹配或格式不符报提取错误，不自动回退 raw。`ExtractedValue` 的保存形状分别为 `{"kind":"text","text":...}`、`{"kind":"json","value":...}`、`{"kind":"xml","xml":...}`。
 
-### 10.4 路径限制的实际含义
+function_call 的 `--json` 会向模型提出 JSON 输出要求；本地仍对提取结果做 JSON 语法校验。SDK `json_schema` 转发给 Provider，不进行本地 schema 校验。behavior 的原始响应是 XML，因此 `behavior + raw + --json` 在准备阶段拒绝，通常应配置 `result.report`。behavior 完成的判据是无 action 且有非空 report；默认 `raw` 仍交付完整最终 XML，不自动只交付 report。
 
-文件工具使用词法路径前缀检查；并未全面解引用符号链接进行 root 限制。exec_bash 只校验初始 cwd，命令本身仍可 `cd`、访问绝对路径或通过符号链接访问其它位置。
+`completed` 表示模型阶段完成且原文已保存。即使提取 / JSON 校验失败，记录仍为 completed，CLI 返回 6；之后用 `result` 重新导出，不需要再次调用模型，也不改写原结果记录。
 
-因此 workspace 是工具的默认工作根，不是进程隔离边界。TS 重实现可以补充明确的执行隔离，但不能从当前注释推导出已经具备文件系统沙箱。
+### 10.3 结构化视图与输出文件
 
-## 11. AICC 接入协议
+`XllmResult` 包含：
 
-CLI 先复用已初始化 BuckyOS API runtime；没有时调用 `init_buckyos_api_runtime("buckycli", None, AppClient)` 并设置全局 runtime。这里不是旧注释所说的 FrameService。
-
-CLI 本身没有 `--api-key`、`--endpoint` 或专属环境变量协议，认证和服务发现沿用 BuckyOS runtime。具体环境配置不应从本地目录推断。
-
-每次推理调用 `get_aicc_client().call_method(LLM_CHAT, request)`，method 为 `llm.chat`：
-
-| 输入 | AICC 映射 |
+| 字段组 | 字段 |
 | --- | --- |
-| 模型 | `ModelSpec.alias = model_policy.preferred`，provider_model_hint 为空 |
-| 能力 | capability=Llm |
-| 历史 | payload.messages；text/input_json 为空，resources 为空 |
-| 工具 | allow_tool_calls 为 true 才传 tool_specs；否则空数组；args_schema 作为 object，output_schema 为 `{}` |
-| 温度/输出 token | payload.options.temperature / max_tokens |
-| JSON schema | force_json 且 schema 存在时，options.response_schema |
-| provider_options | 对象时覆盖合并进 options；其它 JSON 值放 options.provider_options |
-| 必需特性 | 有工具时 `tool_calling`；force_json 时 `json_output` |
-| 响应格式 | force_json 时 Json，否则 Text |
-| disable_capabilities | 非空时写入 requirements.extra.disable_capabilities |
+| 身份 / 状态 | `run_id`、`status`、`status_label`、`is_terminal`、`resumable` |
+| 答案 / 失败 | 可选 `answer`、`answer_kind`、`extract_error`、`json_error`、`error`、`limit_reason`、`interrupt_reason` |
+| 产物 / 用量 | `artifacts`、可选 `usage`、`usage_detail` |
+| 执行配置 | `provider`、`model`、可选 `file_model` / `response_model`、`loop_model`、字符串 `result_format` |
+| 定位 / 来源 | `workdir`、可选 `runs_dir` / `resume_command`、`config_files`、`created_at_ms`、`updated_at_ms` |
 
-AICC `Succeeded` 必须带 result；`Failed` 转 `provider{failure=unknown}`；`Running` 转 `provider{failure=permanent}`，**不轮询 task**。kRPC 传输错误按变体归类：`S2sTransientError` ⇒ transient；token / 权限 / 服务无效等 ⇒ permanent；其余 ⇒ unknown。fallbacks 参数被忽略。任何 provider 错误都直接结束 run，不喂回模型，也不由 waist 重试。
+`list --format json` 输出 `RunSummary[]`；`status --format json` 输出 `{result: XllmResult, input, config, prompt}`；新任务和 `result --format json` 输出 `XllmResult`。它们不使用通用 `AgentToolResult` 的 status/summary 外层，也不直接输出底层 `LLMContextOutcome`。
 
-上下文恢复重新连接 AICC，不恢复旧 HTTP/RPC 请求或远端生成任务；当前 adapter 没有远端取消实现。
+默认 text 格式输出提取后的答案；stdout 不以换行结尾时会补一个换行。已完成结果的 `--output` 直接覆盖指定文件，不创建父目录、不使用 RunStore 的原子提交，文件内容不自动补换行，成功时 stdout 不再输出答案。输出文件写失败不撤销 completed 状态，可稍后重新导出。
+
+当前实现的分支差异：paused/interrupted/failed/limit_reached 的 `--format json` 直接写 stdout，不经 `--output`；list/status 也直接输出。对已失败 / 达到限制的终态显式 resume，只展示保存状态并返回 0，且当前 `--format json` 分支先打印文本状态再打印 JSON；需要纯结构化查询应使用 `status --format json`。`resume_command` 保存为 `xllm --resume --run <id>`，通过 agent_tool 调用时需补入口前缀，并按原存储位置提供 `--runs-dir`。
+
+### 10.4 退出码
+
+| 退出码 | 含义 |
+| --- | --- |
+| 0 | 完成且交付有效，或查询 / 终态展示成功 |
+| 1 | 本次执行 failed / limit_reached，目标不存在、不可恢复 / 损坏记录，或一般存储 / 执行错误 |
+| 2 | 参数、配置、输入、能力、模板、工具准备错误，或 Run / 工作目录正被占用 |
+| 3 | 可恢复暂停 paused |
+| 4 | 用户中断 interrupted |
+| 5 | 已完成结果的 `--output` 写入失败 |
+| 6 | 结果提取或 JSON 校验失败，原文已保留 |
+
+脚本应同时检查命令类型、退出码和结构化状态 / 错误，不能只判断记录存在或 status 为 completed。退出 2 通常发生在可执行 Run 建立前，但 `start` 的目录分配早于加锁及 Provider 初始化，预检失败不保证没有留下空目录。
+
+## 11. 宿主装配的 Run 与接手边界
+
+libOpenDAN 的 Agent Session 直接使用 xllm Run 目录。目录关系及宿主提交规则见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) 和 [LLM Context 设计](LLM%20Context%20设计.md)。
+
+`prepare_hosted(workdir, llm_context_json, origin, host_system, deps)` 解析宿主提供的单份 `.llm_context` JSON，使用同一严格 schema，不向上发现目录配置。xllm 在宿主 system 后追加能力、命令手册和 runtime_protocol；`HostedTask::new_record` / `build_request` 供宿主建立记录与底层请求，`hosted_waist_deps` 为 behavior 装配 xllm parser 和不带时间戳的 step renderer。`rebuild_toolset` / `create_run_llm` 根据保存记录重建依赖。
+
+| Run 字段 | 协议意义 |
+| --- | --- |
+| `host` | `assembled_by`、session_id、runtime_kind、runtime_id、env_check、extra |
+| `host_commit_pending` | 已写入快照但宿主尚未提交消费状态的输入批次序号；非空时 xllm 拒绝执行 |
+| `inflight[]` | 已派发但结果尚未持久化的动作：call_id、tool、args、effect、idempotency_key、execution_ids、step_index、started_at_ms |
+| `executions[]` | 待确认停止的受管执行：execution_id、kind、call_id、runtime_id、host、boot_id、pgid、leader_start_ticks、command、started_at_ms |
+
+宿主字段不是普通 CLI 自动生成的执行审计。`TrackedBashRunner` 可通过 `XllmDeps.bash_runner` 注入：执行标识先由 `ExecutionRegistrar` 持久化，再放行命令，子进程继承 `OPENDAN_EXECUTION_ID`。探测 / 停止通过环境标记等执行事实核对，不能仅信任可复用的 PID。
+
+接手时仅允许 `runtime_kind` 缺省或为 `native`。取得 Run 锁后，先通过 `stop_execution` 确认 executions 中的旧执行已停止，无法确认则拒绝；再把 inflight 中没有持久结果的动作经 `materialize_unresolved` 写入快照为“结果未知”，提交新索引后清除 inflight，不自动重放这些已登记动作。
+
+快照的 `state.host` 与 Run 的 `host` 是不同层的元数据，续跑必须保留。`host.env_check` 当前只是保存的数据，`XllmRun::resume` 没有通用 PATH / 环境检查器；不能把声明的环境要求描述为已经自动验证。工作目录并发协调、输入消费提交以及其它宿主恢复条件仍由宿主负责。
 
 ## 12. 使用示例
 
-示例模型别名需要在所用 AICC 环境中存在。
+### 12.1 最小目录配置
 
-```bash
-# 新目录：首次运行会创建 runs、workspace 和 bin
-agent_tool run_local_llm \
-  --dir /tmp/local-llm-demo \
-  --model default-llm \
-  --objective '整理本地工作目录' \
-  --system '你负责检查和整理当前工作目录。' \
-  --user '列出当前目录文件，并给出简短说明。'
+以下 `.llm_context` 使用当前 BuckyOS 身份，模型逻辑名需在 AICC 环境可用。先创建工作目录，将文件放在该目录下：
 
-# 崩溃恢复：重用相同 dir、objective 和最终组装后的 input
-# 若目录已经没有 Running，这条相同命令会开启新 run
-agent_tool run_local_llm \
-  --dir /tmp/local-llm-demo \
-  --model default-llm \
-  --objective '整理本地工作目录' \
-  --system '你负责检查和整理当前工作目录。' \
-  --user '列出当前目录文件，并给出简短说明。'
-
-# 追加对话：最新 run 必须 Completed；生成新的 run_id
-agent_tool run_local_llm \
-  --dir /tmp/local-llm-demo \
-  --append '把上一步的结论整理成三条建议。'
-
-# JSON 消息文件：文件内容是第 5 节所示的数组
-agent_tool run_local_llm \
-  --dir /tmp/local-llm-file-demo \
-  --model default-llm \
-  --input-file /tmp/messages.json \
-  --output /tmp/local-llm-outcome.json
-
-# stdin 作为文本消息；--json 不改变外层 outcome 格式
-printf '%s\n' '返回一个 JSON 对象，其中 answer 为 42。' |
-  agent_tool run_local_llm \
-    --dir /tmp/local-llm-json-demo \
-    --model default-llm --input-stdin --no-tools --json
+```yaml
+provider:
+  type: buckyos
+model: llm.chat
+runs_dir: ./runs
+loop_model: function_call
+max_rounds: 8
+timeout: 3600
+llm_timeout: 600
+result_format: raw
+run_logs: info
+tools:
+  enabled: false
+  filesystem_policy: workspace
+prompt:
+  select: default
+  groups:
+    default:
+      default_user: 请概括本次任务的目标。
+      sections:
+        role: 你负责执行一次独立任务，并给出简短、可核对的结果。
+        contexts: '工作目录：{{runtime.cwd}}'
 ```
 
-用户脚本投放示例：
-
 ```bash
-mkdir -p /tmp/local-llm-demo/bin
-cat > /tmp/local-llm-demo/bin/hello-local <<'SH'
-#!/bin/bash
-printf '%s\n' 'hello from local bin'
-SH
-chmod +x /tmp/local-llm-demo/bin/hello-local
+# 全新独立任务；--tools 覆盖文件中的 enabled: false，启用内置 bash 组
+agent_tool xllm --dir /tmp/xllm-demo --tools '列出当前目录文件，并给出简短说明。'
 
-agent_tool run_local_llm \
-  --dir /tmp/local-llm-demo \
-  --model default-llm \
-  --user '通过 exec_bash 执行 hello-local，报告输出。'
+# 查询当前工作目录的 Run
+agent_tool xllm list --dir /tmp/xllm-demo --limit 10
+agent_tool xllm status --dir /tmp/xllm-demo --format json
+
+# 恢复该目录最近一个非终态 Run，不传入新任务正文
+agent_tool xllm --dir /tmp/xllm-demo --resume
+
+# 指定 Run 与实际存储位置；提高非终态 Run 的总工具轮数额度
+agent_tool xllm --resume --run '<run_id>' --runs-dir /tmp/xllm-demo/runs --max-rounds 16
+
+# 重新导出已保存原文，不调用模型
+agent_tool xllm result --run '<run_id>' --runs-dir /tmp/xllm-demo/runs \
+  --result-format raw --output /tmp/xllm-result.txt
 ```
 
-上例要求没有 Running run；若有，使用同一请求恢复或换一个目录。脚本可以输出普通文本，不要求 AgentToolResult JSON。
+### 12.2 管道、附件与结构化结果
 
-## 13. SDK 化范围与 TS 设计参考
+```bash
+# stdin 在已有任务要求时作为补充材料
+printf '%s\n' '第一条记录：完成接口调整。' |
+  agent_tool xllm --no-tools '把输入材料整理成一条摘要。'
 
-### 13.1 可复用的能力与可重新定义的协议
+# 附件使用启动 cwd 的相对路径；与 --dir 指向的位置无关
+agent_tool xllm --file ./notes.txt --image ./diagram.png '结合材料解释这张图。'
 
-可作为新 SDK 功能参考的能力包括：工作目录绑定、单次任务执行、模型和工具策略、结构化输入输出、持久化、恢复、追加对话，以及 CLI 调用。这些能力的具体接口和支持范围由新设计确定。
+# 原生 function_call 的 JSON 输出要求与 CLI JSON 包装是两个开关
+agent_tool xllm --loop-model function_call --no-tools \
+  --result-format raw --json --format json '返回 JSON 对象，其中 answer 为 42。'
 
-目录名、文件结构、状态命名、请求哈希、默认值、CLI 参数、覆盖优先级和退出码均可重新设计。Rust 的 OneShotRequest、LLMContextSnapshot 和 outcome 是理解现有功能的参考，不自动成为 TS 的公共类型。
+# /tmp/messages.json 的内容为 §3.3 所示的 AiMessage 数组
+agent_tool xllm --input-file /tmp/messages.json --no-tools --format json
+```
 
-本轮不要求 TS 使用 Rust crate，不要求 SDK 通过旧 CLI 子进程实现能力，也不默认提供旧目录或旧命令行兼容层。Rust 库及其现有调用方的迁移不列入本轮验收。
+如需 behavior，把配置调整为：
 
-### 13.2 不应当成已实现保证的内容
+```yaml
+loop_model: behavior
+result_format: result.report
+tools:
+  enabled: true
+  tools2actions: true
+  tools:
+    - groupname: bash
+```
 
-| 项目 | Rust 当前事实 | TS 建议 |
-| --- | --- | --- |
-| 轮前恢复 | 轮前快照与索引一起提交，恢复定位到最近一次已提交的轮前快照；工具执行后到下一次提交前仍是重放窗口 | 保持同样的提交流程，明确工具幂等责任 |
-| final 提交 | 顺序为 snapshot → final → state；Completed 必有 final；final 存在而 state 为 Running 的半提交由 resume_or_new 补齐 | 保持同样的顺序和半提交修复规则 |
-| request hash | Rust 专用 u64，非规范化序列化 | 定义版本化、可跨语言计算的字符串摘要 |
-| run_id | 时间派生后缀，无冲突检测 | 使用抗冲突 ID，并保证新建不能覆盖已有目录 |
-| context limit | 保存阈值，没有实际触发分支 | 明确 token/window 来源，实现触发与压缩无进展退出 |
-| Pending/resume | deferred 尚未实现，无通用 CLI fill | 需要长任务时设计完整回填入口；未支持时明确报错 |
-| Interrupted/resume | CLI 无控制入口；Suspended 被自动恢复忽略 | 明确是否支持中断和显式恢复，不把 Ctrl-C 等价为保存成功 |
-| 同进程锁 | registry 重入，未串行化多个 driver | 按根目录统一串行化，明确锁释放生命周期 |
-| append 原子性 | 读取前序时无锁 | 在同一目录锁内读取前序并创建新 run |
-| 路径/overlay | 相对路径和 PATH 去重有偏差 | 统一绝对 root；明确 overlay 优先级 |
-| sandbox/approval | 词法检查、AllowAllPolicy | 如产品需要权限隔离，另行实现明确的执行策略 |
-| 策略字段 | 部分字段只是持久化，未执行 | 标明支持能力；不把声明字段等同于已生效限制 |
-| append tuning | tool_policy 总重建，单独温度参数可能被忽略 | 若改变覆盖逻辑，明确记录为 CLI 行为修订 |
-| worklog | 未生成 | 需要审计时定义事件 schema 和写入保证，不继承虚构文件协议 |
+模型动作示例为 `<read_file path="notes.txt"/>` 或 `<read_file><![CDATA[notes.txt]]></read_file>`，正文直接承载参数值，不加 `path:` 前缀。最终回复使用 `<response><report><![CDATA[最终结果]]></report></response>`；上面的 result_format 只导出 report 文本。
 
-这些建议面向新的 TS SDK，不要求同步修改 Rust，也不自动扩展为完整 Agent Runtime。新目录格式应能与旧格式明确区分；将来若需要旧目录迁移，应作为有边界的导入任务处理，不能靠猜测字段后直接续跑。
+### 12.3 Rust SDK
 
-### 13.3 Rust 行为对照用例
+在已有 tokio async 上下文中调用：
 
-以下用于复核现状或比较新旧设计，不是新 TS SDK 必须通过的兼容性验收，也不是已运行的 TS 测试：
+```rust
+use std::path::Path;
+use agent_tool::local_llm_context::{TaskInput, TaskOverrides, XllmDeps, XllmRun, XllmTask};
 
-| 场景 | 基线应观察到的结果 |
-| --- | --- |
-| 空目录运行 Done | 创建目录与 request/state/snapshot；Completed；final.kind=done；退出 0 |
-| Error/BudgetExhausted | Completed 但 final.kind 非 done；先输出 outcome，再退出 1 |
-| 同请求的 Running | 按 state 指定快照恢复，保留原 run_id、usage 和运行起点 |
-| 仅改变 model 的 Running | 哈希仍可相同，恢复执行旧配置 |
-| 改变 objective/input 的 Running | 拒绝自动恢复；不偷偷创建替代 run |
-| `--new` 遇 Running | 报错，旧记录保留 |
-| 只有 Completed/Suspended，普通调用 | 新建 run，不继承旧历史 |
-| 最新 Completed 后 append | 新 run、新计数；继承 snapshot 历史并追加一条 user 消息 |
-| 最新 run 非 Completed 后 append | 拒绝，不跳过最新 run |
-| append 单独给 temperature | 原 model_policy 保持；给 model 才应用温度 |
-| 输入 flags 换顺序/重复 | 消息按 system/file/user/stdin 排列；重复值取最后一个 |
-| 缺必需参数/未知 flag/非法 u32 | stderr 加帮助，退出 2 |
-| append 互斥/空消息数组 | 执行错误，退出 1 |
-| `--json` 遇非 JSON 正文 | 非 strict 下 Done+Text，退出 0 |
-| `--output` 成功 | stdout 无 outcome；文件为完整 outcome；内部 final 仍归档 |
-| `--output` 写失败 | 退出 1；内部 run 可能已经 Completed |
-| 另一进程占有目录锁 | 立即失败；不能以删除 .lock 文件规避 |
-| state 索引之后另有快照 | 当前基线仍读取 state 索引；TS 若修正应另设修订验收 |
-| bin 中有可执行脚本 | 在绝对 root、无重复 PATH 项的情况下可由 exec_bash 命中 |
-| shell Pending/超时/非零退出 | 按工具及底层循环规则报告，不误报 CLI 成功 |
-| 大于 JS 安全整数的旧哈希 | 读取旧格式时不能丢精度；不支持迁移时明确拒绝 |
+async fn run_task() -> Result<(), Box<dyn std::error::Error>> {
+    let deps = XllmDeps::default();
+    let prepared = XllmTask::prepare(
+        Path::new("/tmp/xllm-demo"),
+        TaskInput::question("用一句话说明本次任务目标。"),
+        TaskOverrides { tools: Some(false), ..Default::default() },
+        &deps,
+    ).await?;
+    let mut run = XllmRun::start(prepared, deps).await?;
+    let outcome = run.execute().await?;
+    println!("{}: {}", outcome.record().run_id, outcome.status());
+    Ok(())
+}
+```
 
-### 13.4 SDK 化验收方向
+调用方按 `RunOutcome` 分支处理暂停、中断与失败；成功交付还需检查 result 的提取 / JSON 校验结果。SDK 不需要解析 stdout 或进程退出码。
 
-- 程序能直接调用 SDK 执行任务，获得结构化结果和错误；不依赖 CLI 参数解析、stdout 或 process exit。
-- CLI 调用同一 SDK 执行路径；同一请求的行为不因调用入口不同而分叉。
-- SDK 请求、运行状态、持久化数据和 CLI 输出之间的关系有明确协议，分别说明哪些字段由调用方提供、哪些由运行时生成。
-- LLM 客户端、工具执行和工作目录的接入方式适合在宿主程序中使用，不能只有 CLI main 才能初始化。
-- 新设计明确承诺的恢复、压缩、锁和异步能力有相应的正常与故障场景验收；未纳入的能力明确说明，避免只声明字段却不执行。
-- 旧格式兼容、Rust 库修改和现有调用方迁移不作为本轮完成条件。
+## 13. 核对与实现边界
 
-具体 TS API、包组织、新目录格式和 CLI 协议应在新设计中定义；本现状文档不替代这些设计决定。
+与本协议直接相关的已有测试可在 `src/` 目录运行：
+
+```bash
+cargo test -p agent_tool --lib local_llm_context -- --test-threads=1
+cargo test -p agent_tool --lib run_local_llm -- --test-threads=1
+cargo test -p llm_context --lib suspension -- --test-threads=1
+```
+
+这些测试覆盖配置继承、组与模板、工具优先级、输入顺序、Run 落盘、Provider 分类、暂停 / 中断 / 恢复、轮数额度、工具取消、文件模型、结果提取、上下文压缩及快照挂起回填。它们使用脚本化模型或本地 mock，不替代真实 AICC / MCP 环境的联调。
+
+跨语言或宿主实现接手 Run 时，应对齐已支持的记录版本、运行协议、快照语义和锁 / 提交边界，并保留宿主元数据。当前没有旧 run_local_llm 目录自动迁移、跨 Run 记忆 / append、通用 deferred 回填、MCP 完整会话管理或 exactly-once 外部副作用保证；不得从共享类型中存在某个字段推导出 CLI 已实现对应能力。

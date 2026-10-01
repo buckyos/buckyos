@@ -3,7 +3,7 @@
 - 版本：v0.1，2026-09-06
 - 范围：数据层目标契约；本次只定义模型、权限、持久化与消息映射，不修改原型、Rust / TS 协议实现或数据库 DDL。
 - 上游：[MessageHub PRD](../../product/message_hub/MessageHub_Web_UI_PRD.md)、[Message Center](<./Message Center.md>)。
-- 关联：[UI DataModel](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)、[Tunnel Design](<./Message Tunnel Design.md>)、[Self-Host-Group](<./Self-Host-Group.md>)。
+- 关联：[UI DataModel](../../src/frame/desktop/src/app/messagehub/UI_DATAMODEL.md)、[Tunnel Design](<./Message Tunnel Design.md>)、[Self-Host-Group v2](<./Self-Host-Groupv2.md>)。
 
 ## 1. 状态分类
 
@@ -37,6 +37,9 @@ type SessionStateRef = { authority_did: DID; session_key: string }
   可以使用不同 Session ID，但引用相同权威状态。不得为每个观察者产生一份可独立修改的“共享标题”。
 - 原生会话由创建 / 托管方明确状态权威；UI 和成员不能因为持有本地记录就成为权威。
   跨 Zone 写入向该权威请求，本地只保存确认后的副本。
+- Group Session（[Self-Host-Groupv2 §2.2.4](<./Self-Host-Groupv2.md>)）：`authority_did = group_did`，
+  `session_key` 是该 Session 的规范 MailboxAddress 字符串，即默认 Session 为 `group_did`，
+  具名 Session 为 `group_did/<编码后的 session_id>`。不使用 `_default` 一类保留值；成员侧本地 Session 键与它相同。
 - 外部会话的平台是业务权威，指定 tunnel 作为本 Zone 的可信来源代理，用其 `transport_did`
   标识代理权威，`session_key` 绑定具体实例、端点与远端上下文。不同 tunnel 不自动合并状态。
 - `viewer` 是实际操作者，`owner` 是当前历史所属身份，`member_did` 是被修改状态的成员。
@@ -198,6 +201,18 @@ interface ActionLogData {
 | `entity.member_left` | 群 entity | 自愿退出时 actor = subject | “Bob 退出群聊” |
 | `entity.member_removed` | 群 entity | actor = 管理员；subject = 被移除者 | “Alice 将 Bob 移出群聊”，不能伪装成主动退出 |
 | `entity.profile_changed` | entity | actor = 修改者 | 群名 / 实体全局名称变化，不改各 Session 标题 |
+| `entity.group_created` | 群 entity | actor = 创建者 | “Alice 创建了群” |
+| `entity.config_changed` | 群 entity | actor = 修改者 | 公开配置字段的 before/after，按可见性过滤 |
+| `entity.group_deleted` | 群 entity | actor = 群主 | “群已解散” |
+| `session.created` | session | actor = 创建者 | “Alice 创建了会话”；Guest 主动请求创建时 actor = Guest |
+| `session.member_added` | session | actor = 操作者；subject = 加入者 | changes 中用 `participant_kind` 标明群成员或 Guest；“Alice 邀请客户 Carol 加入” |
+| `session.member_removed` | session | actor = 操作者；subject = 被移出者 | 不能伪装成主动退出 |
+| `session.member_left` | session | actor = subject | “Carol 退出了会话” |
+| `session.rules_changed` | session | actor = 修改者 | 发言、历史可见范围等规则变化 |
+| `session.archived` | session | actor = 操作者 | 归档后不再接受新消息 |
+| `session.deleted` | session | actor = 操作者 | 只发给该 Session 的参与者，不进入默认 Session |
+
+Group Session 的 action 由 Group Service 发布（`from = group_did`），细节见 [Self-Host-Groupv2 §6.4](<./Self-Host-Groupv2.md>)。
 
 一次提交同时改多个共享字段时产生一个 `session.shared_state_changed`，不再为 title 重复发第二条；
 仅修改 title 使用 `session.title_changed`。action 可扩展，未知 action 保留结构与摘要，禁止作为可执行指令。

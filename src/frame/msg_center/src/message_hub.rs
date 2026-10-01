@@ -124,7 +124,7 @@ impl DeliveryExecutor for MessageHubExecutor {
             });
             let dispatch = self
                 .center
-                .dispatch_to_receiver(msg, envelope.target_did.clone(), target)
+                .dispatch_to_receiver(msg, None, envelope.target_did.clone(), target)
                 .await
                 .map_err(|error| anyhow!("hub local dispatch failed: {}", error))?;
             // Judge the outcome for *this* target: a dispatch can succeed
@@ -181,7 +181,14 @@ impl DeliveryExecutor for MessageHubExecutor {
                         ..Default::default()
                     });
                 }
-                return crate::cyfs_dispatch::send(&route, &msg, &envelope.msg_id).await;
+                let jwt = self
+                    .center
+                    .msg_box_db
+                    .get_msg_jwt(&envelope.msg_id)
+                    .await
+                    .map_err(|error| anyhow!("load message jwt failed: {}", error))?;
+                return crate::cyfs_dispatch::send(&route, &msg, jwt.as_deref(), &envelope.msg_id)
+                    .await;
             }
             warn!(
                 "message hub has no configured native route: delivery_id={} target={}",

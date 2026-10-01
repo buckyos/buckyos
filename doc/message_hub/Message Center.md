@@ -68,19 +68,22 @@ Email 没有做好而 BuckyOS 升级的部分：DID 原生身份与签名、群�
 
 ### 2.1 MsgObject：不可变消息本体
 
-定义见 `ndn_lib::MsgObject`。`MsgObject` 只保存**不可变语义**，一经创建永不修改（内容寻址，改一个字节就是另一条消息）：
+定义见 `ndn_lib::MsgObject`，协议定义见 cyfs-ndn《CYFS 标准对象》§16（MsgObject v2，2026-09-30 breaking change，ndn-lib 已实现）。`MsgObject` 只保存**不可变语义**，一经创建永不修改（内容寻址，改一个字节就是另一条消息）：
 
 - `from` / `to`：消息参与方 DID。入站消息 `from` 保持来源 endpoint DID 原样（见 §3.3）。
+- `to_session`（v2）：目标实体下的具名会话，即 MailboxAddress 的 session 部分；只能用于单目标消息。
 - `content`：`MsgContent`，含 `title/format/content/machine/refs`。大对象放对象存储，用 `refs` 引用。
-- `proof`：来源签名/证明。
-- `thread`：`topic / reply_to / correlation_id` 语义线索。
-- `kind` / `created_at_ms` / `expires_at_ms` / `nonce` / `meta`。
+- `relates_to`（v2）：对另一条消息的编辑、撤回、回应或话题归属；`mentions`（v2）：结构化提及。
+- 签名：v2 删除 `proof` 字段。需要签名时，与其它标准对象一样以 JWT 形式传输（claims 为 MsgObject，ObjId 由 claims 计算、与签名无关）；收到 JWT 形式的一方应保留原文。MessageCenter 的实现见 §4.5。
+- 入口校验：`dispatch` / `post_send` / CYFS 接收都先调用 `MsgObject::validate()`（`to_session` 取值与单目标、`mentions` 非空、`relates_to`、`meta` 保留键含 `proof`），不合法即拒绝。已存储的旧记录仍可读出。
+- `thread`：`topic / reply_to / correlation_id` 语义线索，不参与路由。
+- `kind` / `created_at_ms` / `expires_at_ms` / `nonce` / `meta`。`created_at_ms` 是发送方声明的时间，只用于展示，不作为排序或游标的权威依据。
 
-**永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类。
-本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；回执由 `MsgReceiptObj` 单独表达。
+**永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类、接收方分配的序号。
+本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；投递回执由 `ReceiptObj`（`cyrece`）单独表达。
 会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。
 
-> 注：`thread.tunnel_id` 是历史遗留字段，冻结设计中删除（transport 信息属于 DeliveryEnvelope 层，不属于消息语义）。`thread.topic` 是消息携带的**语义 hint**，与本地 `session_id` 的关系见 §5.4。
+> 注：`thread.tunnel_id` 是历史遗留字段，冻结设计中删除（transport 信息属于 DeliveryEnvelope 层，不属于消息语义）。`thread.topic` 是消息携带的**语义 hint**，与本地 `session_id` 的关系见 §5.4；发往具名会话使用 `to_session`。
 
 ### 2.2 DeliveryEnvelope：一次确定投递的信封
 
@@ -116,7 +119,7 @@ pub struct MailboxRecord {
     pub msg_id: ObjId,           // 指向不可变 MsgObject（只存引用，不复制内容）
     pub state: RecipientState,   // 见 §2.5
     pub session_id: Option<String>, // inbox 分区及本地会话投影 key；None 是默认 inbox
-    pub sort_key: u64,           // 排序，通常 = msg.created_at_ms
+    pub sort_key: u64,           // 排序；普通记录通常 = msg.created_at_ms，群记录见下
     pub tags: Vec<String>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
@@ -129,6 +132,8 @@ pub enum MailboxKind {
     REQUEST_BOX,  // 低信任消息暂存：owner 是收件人，待用户确认
 }
 ```
+
+群记录的排序（目标设计，见 [Self-Host-Groupv2 §5.1](<./Self-Host-Groupv2.md>)）：GROUP_INBOX 记录以及由群消息生成的成员投影记录，`sort_key` 取 host 接受消息的时间（单调不减），并另外记录 host 分配的 `group_seq` / `session_seq`；不使用发送方的 `created_at_ms`。跨 Zone 同步按序号分页，晚到的消息不会落在已同步的游标之前。
 
 同一条 `MsgObject` 可以被多个 `MailboxRecord`（和多个 `DeliveryRecord`）引用，但消息内容全系统只存一份。
 
@@ -154,7 +159,7 @@ pub enum MailboxKind {
 
 查询在 SQL 中精确限定 `owner + session_id + box_kind`。`get_next` 默认取 `UNREAD`，领取使用原子条件更新；`lock_on_take=false` 只要求 `read`，领取和状态修改要求 `write`。裸 DID 与任意具名会话互不读取。
 
-投递沿用 §5.4 的现有 session 推导：显式 topic / correlation / session hint 优先，否则私聊为 `dm:<peer DID>`、群消息为群 DID。因此旧的“按 DID 扫描全部消息”调用必须改写；省略消息 topic 不保证投到默认 inbox。向特定 UI session 发送消息时，把其 session ID 放入 `thread.topic`。
+投递按 §5.4 的 session 推导：`to_session` 优先；群消息没有 `to_session` 时为群 DID；私聊再依次取 correlation / meta 中的 session hint，最后为 `dm:<peer DID>`。`thread.topic` 不参与推导。因此旧的“按 DID 扫描全部消息”调用必须改写；省略 `to_session` 的私聊不保证投到默认 inbox。向特定 UI session 发送消息时，把其 session ID 放入 `to_session`（Desktop、OpenDAN 回复、Telegram tunnel 入站均已改用）。群消息以 `to_session` 为准，host 不用 topic 推导 Session；带 `thread.topic` 却没有 `to_session` 的群消息被拒绝（`missing-to-session`，Self-Host-Groupv2 §2.5 过渡规则）。
 
 `msg.list_mailboxes(owner, box_kind)` 返回存在 `UNREAD` 记录的精确地址（包括默认 inbox），需要 owner 集合的读取权限，供 OpenDAN 等总收件路由器扫描。归档、删除 UI 投影不阻止待消费队列被发现。只获授权某个 session 的消费者直接调用 `get_next(mailbox, ...)`。
 
@@ -384,6 +389,12 @@ def report_delivery(delivery_id, result):
 
 Gateway 排空按“取出但暂不删 → 投 upstream → accepted 后删除”执行；临时失败或无响应时尽力保留，永久拒绝可以清理。故障、过期清理或重建导致缓存丢失是允许的。发送方重试和 Gateway 排空可能重复或并发发生，接收适配必须按 `(target_zone, semantic_path, obj_id)` 幂等处理，并且只确认路径指定的本地接收点，不能因 MsgObject 带多个 to 就确认其他目标。
 
+CYFS 接收同时接受 `application/cyfs-named-object+json` 与 `application/cyfs-named-object+jwt`。JWT 形式的 MsgObject（`cyfs_dispatch.rs::verify_signed_message`）：
+
+- 要求 `kid` 的 DID 部分等于 `from`，公钥用 name-client `resolve_auth_key(from, #fragment)` 解析（`did:dev` 直接取 DID 内嵌公钥）。`from` 的 DID Document 授权给设备或 Agent 的密钥尚未支持，按 `signer-mismatch` 拒绝。
+- 签名无效返回 `invalid-signature`，未知密钥返回 `unknown-signing-key`，均为不可重试拒绝；解析服务不可用返回可重试的 `signing-key-unavailable`。签名无效时不降级为 JSON 形式接受。
+- 验证通过后，canonical JSON 照常写入 named store，JWT 原文写入 `msg_jwt_originals`（schema v11，按 msg_id，先到者保留）。原生 dispatch 转投该消息时发送 JWT 原文；读取 JWT 原文的 RPC 尚未提供。
+
 当前 `cyfs_dispatch.rs::delivery_report` 已把 accepted 映射为 ok=true，把 cached 映射为
 ok=false、error_code=`cyfs-cached`、retryable=true、retry_after_ms=30000，交由既有投递重试机制处理。
 因此 cached 仍待接收确认；UI 应保留该提示，不能提前标成 delivered/read，也不能将其显示为永久拒绝。
@@ -455,7 +466,10 @@ msg.list_session(owner, session_id, cursor_sort_key?, cursor_record_id?, limit?,
 
 MessageCenter 可以在确定的 owner、对端与连接范围内建立 `thread.topic → session_id` 的映射，
 但不能跨连接仅凭 topic 同名合并，也**不能修改 MsgObject**。同一条消息在不同 owner 的视图中可以有不同 `session_id`。
-当前 `derive_session_id` 优先直接取 topic 的实现尚不满足这一隔离要求。
+
+`MsgObject.to_session`（v2）与 topic 不同，它是发送方指定的目标会话：托管会话的接收方（例如群 host）必须按它路由，会话不存在时拒绝；个人收件方可以把它映射为自己的本地 `session_id`。topic 始终只是 hint。
+
+当前 `derive_session_id`：`to_session` 原样作为本地 `session_id`（发送方 SENT 记录与接收方记录相同）；群消息没有 `to_session` 时为群 DID；私聊再取 correlation / meta 中的 session hint，最后为 `dm:<peer DID>`。`thread.topic` 不再参与。尚未实现的部分：群 host 校验 `to_session` 指向已存在的 Session（Session 记录未实现，见 Self-Host-Groupv2 §12.3），以及按 owner、对端、连接隔离的本地映射。
 
 ### 5.5 会话登记与连接隔离（2026-09-06 目标契约，待实现）
 

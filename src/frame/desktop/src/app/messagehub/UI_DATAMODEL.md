@@ -169,13 +169,14 @@ interface SessionMessageItem {
 
 `msg_center.rs::derive_session_id` 的优先级：
 
-1. `msg.thread.topic`
-2. `msg.thread.correlation_id` / `meta.session_id` / `meta.owner_session_id` / 若干 payload 指针
-3. 群消息：`msg.to[0]`（即 group DID）
+1. `msg.to_session`（MsgObject v2）
+2. 群消息：`msg.to[0]`（即 group DID，群的默认会话）；群消息只按 `to_session` 路由，不使用第 3 条的线索
+3. `msg.thread.correlation_id` / `meta.session_id` / `meta.owner_session_id` / 若干 payload 指针
 4. 直接消息：`SENT` 箱用 `dm:{msg.to[0]}`，收件箱用 `dm:{msg.from}`
 
-这是当前实现的推导规则，不是完整的目标会话身份契约。`thread.topic` 优先于其它上下文，
-不同 tunnel 的同名 topic 可能碰撞；`MailboxRecord.session_id` 目前仍可为空。
+这是当前实现的推导规则，不是完整的目标会话身份契约。`to_session` 优先于其它上下文；`thread.topic`
+只是语义 hint，不参与推导（带 `thread.topic` 但没有 `to_session` 的群消息被拒绝：`missing-to-session`）。
+不同 tunnel 的同名会话可能碰撞；`MailboxRecord.session_id` 目前仍可为空。
 目标要求后端保存稳定的 owner / 对端 / 连接 / 远端上下文绑定（§3.3.2），不得依赖标题或最近一条消息决定路由。
 在绑定接口补齐前，§3.2.1 只作展示归类，不能据此确认空会话身份、开启写入或合并 Session。
 
@@ -320,8 +321,8 @@ export interface MessagePreview {
 | `session_id` 形态 | 后端来源 | 实体 DID |
 |---|---|---|
 | `dm:<did>` | `derive_session_id` 分支 4 | `contact.resolve_canonical_did(<did>)` |
-| 可在群集合中命中的 DID | 分支 3 | 该 group DID |
-| 其他任意字符串（topic / correlation_id） | 分支 1、2 | 群消息从 `last_record.msg.to` 识别群目标；普通单目标消息从原始 `msg.from/to` 识别相对 owner 的对端，再 `resolve_canonical_did`；对象或归属证据不足时进入未归类分组 |
+| 可在群集合中命中的 DID | 分支 2 | 该 group DID |
+| 其他任意字符串（to_session / correlation_id） | 分支 1、3 | 群消息从 `last_record.msg.to` 识别群目标；普通单目标消息从原始 `msg.from/to` 识别相对 owner 的对端，再 `resolve_canonical_did`；对象或归属证据不足时进入未归类分组 |
 | 无 `last_record` 且不匹配上述任一形态 | — | 归入 `unassigned` 桶，见下 |
 
 无法归属的 Session 不得丢弃：令 `entityId = null`，在实体列表旁的“未归类会话”分组呈现。
@@ -332,7 +333,7 @@ export interface MessagePreview {
 `MailboxRecord.to` 是本地投递引用：所有入站箱均写 owner，`SENT` 只保存原始 `msg.to` 的第一项。
 因此它不能恢复完整收件人集合；群消息复制到成员 `INBOX` 后也不能用它识别群。
 当前后端还会通过 `group:<did>` tag 标注成员副本，但原始消息与标签只能提供展示归属证据，
-不能代替稳定发送绑定。验收须覆盖同一 topic 会话最后一条消息由出站变入站，实体归属保持不变。
+不能代替稳定发送绑定。验收须覆盖同一具名会话最后一条消息由出站变入站，实体归属保持不变。
 
 #### 3.2.2 子实体来源
 
@@ -854,13 +855,15 @@ function buildOutgoingMessage(draft: ComposerDraft, ctx: OutgoingContext): MsgOb
 |---|---|
 | `content`（trim 后） | `content.content`，`content.format = 'text/plain'` |
 | 每个附件 | 先上传到 named_store 得到 `obj_id`，再追加一项 `content.refs[]`：`{ role: 'input', target: { type: 'data_obj', obj_id, uri_hint }, label: relativePath ?? file.name }` |
-| 会话归属 | 当前原生无 topic 路径使用 `thread.correlation_id = session.id`；目标连接 / 远端上下文映射见下 |
+| 会话归属 | 原生具名会话使用 `to_session = session.id`（MsgObject v2）；默认会话（`dm:*`、与实体同 id 的会话）省略 `to_session`；`thread.topic` 不承载会话；目标连接 / 远端上下文映射见下 |
 | 发送者 | 首期仅自己的可写 Session：`from = context.sessionOwnerDid = context.viewerDid`；Agent 观察模式禁止构造出站消息 |
 | 目标 | `to` 使用当前 Session 的稳定 `binding.targetDid` / `binding.endpointDid`；群指向群 DID，不能自动选择联系人其它绑定 |
 | 幂等 | `msg.post_send` 的 `idempotency_key`，由 `{ownerDid}:{sessionId}:{clientNonce}` 无歧义编码生成，重发不产生重复消息 |
+| 去重 | 每条消息填随机 `nonce`（小于 2^53，保持 JS 安全整数），内容相同的两条消息不会合并为同一 ObjId |
 
-上表会话归属仅适用于当前原生无 topic 的构造路径：`thread.topic` 优先级更高，不能复制一个展示标题后
-声称 `correlation_id` 保证归属。目标后端须将选中的本地 Session 与远端上下文稳定映射，
+上表会话归属仅适用于原生绑定：`to_session` 只能在 `to` 恰有一个 DID 时使用，取值不合法（1–200 字符、
+无首尾空白与控制字符、不是 `.` / `..`）时本地拒绝发送；不能把展示标题写进 `thread.topic` 后声称它决定归属。
+目标后端须将选中的本地 Session 与远端上下文稳定映射，
 尤其 tunnel 回复不能把本地 Session ID 当成外部 thread ID；映射未明确时不开放发送（§9.3）。
 提交前检查 `session.access.mode === 'read_write'`、当前身份与 Session owner 一致、绑定仍有效；
 键盘快捷键、附件上传、失败重试与普通发送使用同一能力门禁。
@@ -932,7 +935,7 @@ export type UiSessionStateKey = keyof z.infer<typeof uiSessionStateSchema>
   （owner 维度已实现：`ui_session.*` 带 `owner` 时读写 `owner_ui_session_states`，个人偏好均走该路径。）
 - 运行态（`typing` / `active` / `status_line`，2026-09-30，MH2U-5）：只有 Agent 产生，OpenDAN 以自身 DID 为 owner
   写入 `(agentDid, agent 侧 sessionId, key)`。UI 仅对 Agent 会话轮询，读 `owner = agentDid`；
-  原生 DM 的 agent 侧 session id 为 `dm:<viewerDid>`，topic 会话两侧同 id；观察模式直接读被观察 owner。
+  原生 DM 的 agent 侧 session id 为 `dm:<viewerDid>`，具名（`to_session`）会话两侧同 id；观察模式直接读被观察 owner。
   人类之间的会话不轮询运行态；无 owner 的旧 `obj://msg-center/ui-state` 路径普通用户无权读取，UI 不再调用，
   若某会话读取被拒绝则本页不再重试。
 - `binding`、实体创建策略、授权能力不是此 KV 的展示键；tunnel 风险确认按 §3.3.4 仅保存在页面内存。
@@ -1269,14 +1272,15 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `from` / `to` / `kind` / `created_at_ms` | Frozen | 协议字段 |
 | `content.content` / `content.format` | Frozen | |
 | `content.refs` | Frozen | 附件与图片的唯一承载位 |
-| `thread.correlation_id` | Frozen | 出站消息的会话归属依据 |
+| `to_session` | Frozen | 出站消息的会话归属依据（MsgObject v2） |
+| `thread.topic` | Extensible | 只作标题提示（3.3.1），不作会话键 |
 | `ui_message_id` / `ui_session_id` | Frozen | |
 | `ui_sender_name` | Extensible | |
 | `ui_delivery_status` | Extensible | `read` 态待接 read_receipts |
 | `ui_item_kind` / `ui_status_type` | Volatile | 状态消息规范未定稿（PRD §18.7） |
 | `content.title` | 未消费 | 协议已定义，当前通用渲染未读取 |
 | `content.machine` | Extensible | Action renderer 已读取 intent/data，未知动作或版本保留摘要 |
-| `workspace` / `expires_at_ms` / `nonce` / `proof` | 未消费 | |
+| `workspace` / `expires_at_ms` / `nonce` / `relates_to` / `mentions` | 未消费 | `nonce` 由发送方随机填写；v2 已删除 `proof`（签名改用 JWT 形式），它是保留键，不能出现在对象中 |
 
 ### EntityDetail
 
@@ -1410,7 +1414,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 7. **稳定会话登记与空会话。** 当前列表从 mailbox 索引派生，没有手工创建 / 连接创建的空 Session 契约。
    需支持幂等登记、重启恢复、首条消息沿用 ID，并显式返回 owner、对端、连接及远端上下文绑定。
    消息时间线继续由 mailbox 重建；登记元数据不能伪装成消息，也不能只藏在可重建的索引或 UI KV 中。
-8. **跨 tunnel 隔离与发送上下文。** 当前 `derive_session_id` 直接优先使用 topic，未按连接隔离。
+8. **跨 tunnel 隔离与发送上下文。** 当前 `derive_session_id` 直接优先使用 `to_session`（v1 为 topic），未按连接隔离。
    需保证不同实例 / 端点 / 远端上下文独立，同一连接双向一致，且每条持久消息都有归属。
    本地 Session 选择与外部 thread 回复之间的显式映射尚无完整契约；不得把本地 ID 塞入远端 thread 字段。
 9. **创建策略与写入能力。** 需提供 `(owner, entity)` 创建策略存储、tunnel 多会话 / 远端创建能力、

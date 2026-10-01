@@ -1,7 +1,7 @@
 import { creationReason, defaultPreferences, isActionMessage, isMessageActivity, relativeActivity, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../../src/app/messagehub/sessionModel.ts'
 import { ensureDefaultSession } from '../../src/app/messagehub/store/defaultSession.ts'
 import type { Entity, MessageHubContext, Session } from '../../src/app/messagehub/types.ts'
-import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
+import { isValidMsgSessionId, MSG_SESSION_ID_MAX_CHARS, randomMsgNonce, type MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 
 const context: MessageHubContext = { viewerDid: 'did:user:me', ownerDid: 'did:user:me', mode: 'self' }
 const now = 1_780_000_000_000
@@ -142,4 +142,12 @@ Deno.test('concurrent default creation is deduplicated, failed requests can retr
   equal(state.creates, 3)
   equal(await ensureDefaultSession(store, { ...context, ownerDid: 'did:agent:observed', mode: 'observe' }, entity.id), null)
   equal(state.creates, 3)
+})
+
+Deno.test('to_session values follow the MsgObject v2 rule and nonces stay safe integers', () => {
+  for (const ok of ['release', 'dm:did:bns:alice', '3f2b6c1e-9a4d-4b7e-8c21-0d5e6f7a8b9c', '会'.repeat(MSG_SESSION_ID_MAX_CHARS)]) equal([ok.slice(0, 16), isValidMsgSessionId(ok)], [ok.slice(0, 16), true])
+  for (const bad of ['', '.', '..', ' release', 'release ', 'a\u0000b', 'a\u0085b', '会'.repeat(MSG_SESSION_ID_MAX_CHARS + 1)]) equal([bad.slice(0, 16), isValidMsgSessionId(bad)], [bad.slice(0, 16), false])
+  const nonces = Array.from({ length: 64 }, () => randomMsgNonce())
+  equal(nonces.every(nonce => Number.isSafeInteger(nonce) && nonce >= 0), true)
+  equal(new Set(nonces).size > 1, true)
 })

@@ -495,6 +495,23 @@ impl MessageCenter {
         msg.kind == MsgObjKind::GroupMsg
     }
 
+    /// MsgObject v2 ingress rules (`CYFS 标准对象` §16): object-level validity,
+    /// plus the transition rule of Self-Host-Groupv2 §2.5: a group message that
+    /// carries `thread.topic` without `to_session` is rejected, so an old client
+    /// cannot write a message meant for a named session into the default one.
+    fn validate_ingress_message(msg: &MsgObject) -> std::result::Result<(), RPCErrors> {
+        msg.validate().map_err(|error| {
+            RPCErrors::ParseRequestError(format!("invalid MsgObject: {}", error))
+        })?;
+        if Self::is_group_message(msg) && msg.to_session.is_none() && msg.thread.topic.is_some() {
+            return Err(RPCErrors::ParseRequestError(
+                "missing-to-session: group message carries thread.topic but no to_session"
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Group messages carry `from = actor, to = group`; a group message
     /// without a group target is malformed (the legacy `from` fallback for old
     /// persisted records was removed in beta2.2).
@@ -544,14 +561,14 @@ impl MessageCenter {
                 .or_else(|| ctx.transport_did.as_ref().map(|did| did.to_string()))
                 .unwrap_or_else(|| "unknown".to_string());
             let session = Self::normalize_non_empty(ctx.chat_id.as_deref())
-                .or_else(|| Self::normalize_non_empty(msg.thread.topic.as_deref()))
+                .or_else(|| Self::normalize_non_empty(msg.to_session.as_deref()))
                 .or_else(|| Self::normalize_non_empty(ctx.context_id.as_deref()))
                 .unwrap_or_else(|| "unknown".to_string());
             return format!("dispatch:{}:{}:{}", platform, tunnel_account, session);
         }
 
-        if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
-            return format!("dispatch:thread:{}", topic);
+        if let Some(session) = Self::normalize_non_empty(msg.to_session.as_deref()) {
+            return format!("dispatch:session:{}", session);
         }
         if Self::is_group_message(msg) {
             return msg
@@ -596,8 +613,8 @@ impl MessageCenter {
     }
 
     fn post_send_idempotency_retention_key(msg: &MsgObject) -> String {
-        if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
-            return format!("post_send:{}:{}", msg.from.to_string(), topic);
+        if let Some(session) = Self::normalize_non_empty(msg.to_session.as_deref()) {
+            return format!("post_send:{}:{}", msg.from.to_string(), session);
         }
         format!("post_send:{}", msg.from.to_string())
     }
@@ -625,7 +642,6 @@ impl MessageCenter {
             "/msg/thread_key",
             "/meta/thread_key",
             "/thread/correlation_id",
-            "/thread/topic",
             "/content/machine/data/session_id",
             "/content/machine/data/owner_session_id",
         ] {
@@ -661,18 +677,21 @@ impl MessageCenter {
     }
 
     /// Local session projection key of one record (`Message Center.md` §5.4):
-    /// the message's semantic hint (`thread.topic` / correlation id) wins;
-    /// otherwise group messages key on the group DID and direct messages key
-    /// on the peer DID, so both directions of a DM land in the same session.
+    /// the sender-declared `to_session` (MsgObject v2) wins, for both the
+    /// sender's SENT record and the recipient's records. Group messages are
+    /// routed by `to_session` only, defaulting to the group DID. `thread.topic`
+    /// is a semantic hint and never a session key. Direct messages without
+    /// `to_session` fall back to the legacy session hints, then to the peer
+    /// DID, so both directions of a DM land in the same session.
     fn derive_session_id(box_kind: &MailboxKind, msg: &MsgObject) -> Option<String> {
-        if let Some(topic) = Self::normalize_non_empty(msg.thread.topic.as_deref()) {
-            return Some(topic);
-        }
-        if let Some(session_id) = Self::extract_record_session_id(msg) {
-            return Some(session_id);
+        if let Some(session) = Self::normalize_non_empty(msg.to_session.as_deref()) {
+            return Some(session);
         }
         if Self::is_group_message(msg) {
             return msg.to.first().map(|group| group.to_string());
+        }
+        if let Some(session_id) = Self::extract_record_session_id(msg) {
+            return Some(session_id);
         }
         match box_kind {
             MailboxKind::Sent => msg
@@ -1051,9 +1070,12 @@ impl MessageCenter {
         })
     }
 
+    /// CYFS dispatch receive. `jwt` is the verified JWT original when the
+    /// message arrived in signed form; it is kept next to the canonical JSON.
     pub(crate) async fn dispatch_to_receiver(
         &self,
         msg: MsgObject,
+        jwt: Option<String>,
         receiver: DID,
         target: String,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
@@ -1065,9 +1087,20 @@ impl MessageCenter {
                 "not a local message receiver".into(),
             ));
         }
-        let id = msg.gen_obj_id().0.to_string();
-        self.dispatch_internal(msg, None, Some(id), Some((receiver, target)))
-            .await
+        let msg_id = msg.gen_obj_id().0;
+        if let Some(jwt) = jwt.as_deref() {
+            Self::validate_ingress_message(&msg)?;
+            self.msg_box_db
+                .put_msg_jwt(&msg_id, jwt, Self::now_ms())
+                .await?;
+        }
+        self.dispatch_internal(
+            msg,
+            None,
+            Some(msg_id.to_string()),
+            Some((receiver, target)),
+        )
+        .await
     }
 
     pub(crate) async fn query_cyfs_dispatch(
@@ -1090,6 +1123,7 @@ impl MessageCenter {
         idempotency_key: Option<String>,
         receiver: Option<(DID, String)>,
     ) -> std::result::Result<DispatchResult, RPCErrors> {
+        Self::validate_ingress_message(&msg)?;
         let idempotency_owner_scope = match &receiver {
             Some((_, target)) => format!("cyfs:{}:{}", msg.from.to_string(), target),
             None => Self::dispatch_idempotency_owner_scope(&msg, ingress_ctx.as_ref()),
@@ -1415,6 +1449,7 @@ impl MessageCenter {
                 "post_send requires at least one target in msg.to".to_string(),
             ));
         }
+        Self::validate_ingress_message(&msg)?;
 
         let idempotency_owner_scope = Self::post_send_idempotency_owner_scope(&msg)?;
 

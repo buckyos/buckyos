@@ -20,7 +20,7 @@ pub const MSG_CENTER_SERVICE_PORT: u16 = 4050;
 pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
-pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 10;
+pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 11;
 pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
 pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
@@ -154,6 +154,12 @@ CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
     value_json    TEXT NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     PRIMARY KEY (tunnel_key, cursor_key)
+);
+
+CREATE TABLE IF NOT EXISTS msg_jwt_originals (
+    msg_id        TEXT PRIMARY KEY,
+    jwt           TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
@@ -372,6 +378,12 @@ CREATE TABLE IF NOT EXISTS msg_tunnel_cursors (
     value_json    TEXT NOT NULL,
     updated_at_ms BIGINT NOT NULL,
     PRIMARY KEY (tunnel_key, cursor_key)
+);
+
+CREATE TABLE IF NOT EXISTS msg_jwt_originals (
+    msg_id        TEXT PRIMARY KEY,
+    jwt           TEXT NOT NULL,
+    created_at_ms BIGINT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS contact_metadata (
@@ -5353,8 +5365,8 @@ mod tests {
     }
 
     #[test]
-    fn schema_v10_scopes_inboxes_and_has_owner_sessions() {
-        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 10);
+    fn schema_v11_scopes_inboxes_and_has_owner_sessions() {
+        assert_eq!(MSG_CENTER_RDB_SCHEMA_VERSION, 11);
         for schema in [MSG_CENTER_RDB_SCHEMA_SQLITE, MSG_CENTER_RDB_SCHEMA_POSTGRES] {
             assert!(schema.contains("owner_scope     TEXT NOT NULL"));
             assert!(schema.contains("PRIMARY KEY (scope, owner_scope, idempotency_key)"));
@@ -5362,6 +5374,7 @@ mod tests {
             assert!(schema.contains("PRIMARY KEY (tunnel_key, cursor_key)"));
             assert!(schema.contains("CREATE TABLE IF NOT EXISTS owner_sessions"));
             assert!(schema.contains("PRIMARY KEY (owner, session_id, state_key)"));
+            assert!(schema.contains("CREATE TABLE IF NOT EXISTS msg_jwt_originals"));
         }
     }
 }

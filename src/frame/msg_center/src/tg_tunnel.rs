@@ -647,7 +647,7 @@ impl TgMessageConverter {
         let payload = json!({
             "msg_content": &msg.content,
             "msg_meta": &msg.meta,
-            "thread_key": msg.thread.topic,
+            "thread_key": msg.to_session,
             "attachments": attachments
                 .iter()
                 .map(Self::attachment_to_payload_json)
@@ -1005,7 +1005,7 @@ impl TgMessageConverter {
                     .or_else(|| attachment_ref.file_name.clone()),
             });
         }
-        msg.thread.topic = Some(build_telegram_ui_session_id(bot_account_id, chat_id));
+        msg.to_session = Some(build_telegram_ui_session_id(bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
             transport_did,
@@ -1566,7 +1566,7 @@ impl GrammersTgGateway {
             converted.ingress_ctx.chat_id.as_deref().unwrap_or(""),
             message.id()
         );
-        let ui_session_id = converted.msg.thread.topic.clone();
+        let ui_session_id = converted.msg.to_session.clone();
         let chat_id = converted.ingress_ctx.chat_id.clone();
 
         let dispatch_result = dispatcher
@@ -2983,7 +2983,7 @@ impl BotApiTgGateway {
                     .or_else(|| attachment_ref.file_name.clone()),
             });
         }
-        msg.thread.topic = Some(build_telegram_ui_session_id(&bot_account_id, chat_id));
+        msg.to_session = Some(build_telegram_ui_session_id(&bot_account_id, chat_id));
 
         let ingress_ctx = IngressContext {
             transport_did,
@@ -3005,7 +3005,7 @@ impl BotApiTgGateway {
             chat_id,
             message.message_id
         );
-        let ui_session_id = msg.thread.topic.clone();
+        let ui_session_id = msg.to_session.clone();
         let ui_session_chat_id = chat_id.to_string();
 
         let dispatch_result = dispatcher
@@ -4379,7 +4379,7 @@ impl DeliveryExecutor for TgTunnel {
         if record.msg.is_none() {
             record.msg = Some(msg.clone());
         }
-        let ui_session_id = msg.thread.topic.clone();
+        let ui_session_id = msg.to_session.clone();
         let msg_turn_nonce = Self::msg_turn_nonce(&msg);
         let sender_did = Self::resolve_sender_did(&msg);
         let binding = self.get_binding(&sender_did)?.ok_or_else(|| {
@@ -4824,7 +4824,7 @@ mod tests {
             created_at_ms: 1,
             ..Default::default()
         };
-        msg.thread.topic = Some("thread-a".to_string());
+        msg.to_session = Some("thread-a".to_string());
         let msg_id = msg.gen_obj_id().0;
 
         let target_did = msg.to.first().cloned().unwrap_or_else(|| msg.from.clone());
@@ -4970,7 +4970,7 @@ mod tests {
             MsgObjKind::GroupMsg,
             Some("route-chat-1"),
         );
-        let session_id = record.msg.as_ref().unwrap().thread.topic.clone().unwrap();
+        let session_id = record.msg.as_ref().unwrap().to_session.clone().unwrap();
         let report = tunnel.execute_delivery(record).await.unwrap();
         assert!(report.ok);
 
@@ -5325,8 +5325,7 @@ mod tests {
             .msg
             .as_ref()
             .unwrap()
-            .thread
-            .topic
+            .to_session
             .clone()
             .unwrap();
         final_record

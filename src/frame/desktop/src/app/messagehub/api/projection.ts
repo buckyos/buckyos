@@ -263,6 +263,8 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
       ? { senderName: attribution.isGroup && msg ? (msg.from === ownerDid ? labels.you : names[canonicalizeDid(msg.from, contacts)] ?? shortDid(msg.from)) : undefined, text: summarizeMessage(msg, labels), timestamp: summary.last_record.record.sort_key }
       : undefined
     const registeredTitle = summary.state?.registered ? summary.state.title?.trim() ?? '' : ''
+    // `thread.topic` is a display hint only; the session key is always the
+    // server-side `session_id` (derived from `to_session` since MsgObject v2).
     const topic = msg?.thread?.topic?.trim()
     const derivedTitle = topic && topic !== summary.session_id && !summary.session_id.startsWith('dm:') ? topic
       : summary.session_id.startsWith('dm:') ? labels.direct

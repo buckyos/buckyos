@@ -248,20 +248,22 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
     if req.uri().query().is_some() {
         return rejected(StatusCode::BAD_REQUEST, &target, None, "invalid-query");
     }
-    if !req
+    let encoding = match req
         .headers()
         .get("content-type")
         .and_then(|v| v.to_str().ok())
-        .is_some_and(is_cyfs_named_object_content_type)
-        || req.headers().contains_key("content-encoding")
+        .and_then(CyfsNamedObjectEncoding::from_content_type)
     {
-        return rejected(
-            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            &target,
-            None,
-            "unsupported-content-type",
-        );
-    }
+        Some(encoding) if !req.headers().contains_key("content-encoding") => encoding,
+        _ => {
+            return rejected(
+                StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                &target,
+                None,
+                "unsupported-content-type",
+            )
+        }
+    };
     let claimed = req
         .headers()
         .get(CYFS_HEADER_OBJ_ID)
@@ -299,22 +301,38 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
             Err(_) => return rejected(StatusCode::BAD_REQUEST, &target, None, "body-read-failed"),
         }
     }
-    let id = match validate_cyfs_dispatch_object(&body, claimed.as_deref()) {
+    let id = match validate_cyfs_dispatch_body(encoding, &body, claimed.as_deref()) {
         Ok(id) => id,
         Err(_) => return rejected(StatusCode::BAD_REQUEST, &target, None, "invalid-object"),
     };
-    let msg: MsgObject = match serde_json::from_slice(&body) {
-        Ok(msg) => msg,
-        Err(_) => {
-            return rejected(
-                StatusCode::BAD_REQUEST,
-                &target,
-                Some(id),
-                "invalid-message",
-            )
+    let (msg, msg_id, jwt) = match encoding {
+        CyfsNamedObjectEncoding::Json => {
+            let parsed = serde_json::from_slice(&body)
+                .map_err(|error| NdnError::DecodeError(error.to_string()))
+                .and_then(MsgObject::from_json_value_checked);
+            match parsed {
+                Ok((msg, msg_id)) => (msg, msg_id, None),
+                Err(_) => {
+                    return rejected(
+                        StatusCode::BAD_REQUEST,
+                        &target,
+                        Some(id),
+                        "invalid-message",
+                    )
+                }
+            }
+        }
+        // A signed message must verify; it is never downgraded to the JSON
+        // form (CYFS 标准对象 §16.5).
+        CyfsNamedObjectEncoding::Jwt => {
+            let jwt = String::from_utf8(body).unwrap_or_default();
+            match verify_signed_message(&jwt).await {
+                Ok(signed) => (signed.msg, signed.obj_id, Some(jwt)),
+                Err((code, reason)) => return rejected(code, &target, Some(id), reason),
+            }
         }
     };
-    if msg.gen_obj_id().0 != id {
+    if msg_id != id {
         return rejected(
             StatusCode::BAD_REQUEST,
             &target,
@@ -331,7 +349,7 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
         );
     }
     match center
-        .dispatch_to_receiver(msg, receiver.clone(), target.clone())
+        .dispatch_to_receiver(msg, jwt, receiver.clone(), target.clone())
         .await
     {
         Ok(result) => {
@@ -359,6 +377,44 @@ pub(crate) async fn serve(center: &MessageCenter, mut req: Request<Body>) -> Res
     }
 }
 
+/// Verify a MsgObject received in JWT form. The signing key must be listed in
+/// the DID Document of `from` (the `kid` DID equals `from`); keys that `from`
+/// delegates to devices or agents are not resolved yet and are rejected.
+pub(crate) async fn verify_signed_message(
+    jwt: &str,
+) -> std::result::Result<MsgObjectJwt, (StatusCode, &'static str)> {
+    let decoded =
+        decode_msg_object_jwt(jwt).map_err(|_| (StatusCode::BAD_REQUEST, "invalid-message"))?;
+    if decoded.kid_did().as_ref() != Some(&decoded.msg.from) {
+        return Err((StatusCode::FORBIDDEN, "signer-mismatch"));
+    }
+    let from = &decoded.msg.from;
+    let key = if from.method == "dev" {
+        jsonwebtoken::DecodingKey::from_ed_components(&from.id)
+            .map_err(|_| (StatusCode::FORBIDDEN, "unknown-signing-key"))?
+    } else {
+        let fragment = decoded
+            .kid
+            .split_once('#')
+            .map(|(_, fragment)| format!("#{}", fragment));
+        match name_client::resolve_auth_key(from, fragment.as_deref()).await {
+            Ok(key) => key,
+            Err(name_lib::NSError::NotFound(_)) => {
+                return Err((StatusCode::FORBIDDEN, "unknown-signing-key"))
+            }
+            Err(error) => {
+                log::warn!(
+                    "resolve signing key of {} failed: {}",
+                    from.to_string(),
+                    error
+                );
+                return Err((StatusCode::SERVICE_UNAVAILABLE, "signing-key-unavailable"));
+            }
+        }
+    };
+    verify_msg_object_jwt(jwt, &key).map_err(|_| (StatusCode::FORBIDDEN, "invalid-signature"))
+}
+
 pub(crate) fn delivery_report(result: CyfsDispatchResult) -> DeliveryReportResult {
     match result.status {
         CyfsDispatchStatus::Accepted => DeliveryReportResult {
@@ -384,15 +440,27 @@ pub(crate) fn delivery_report(result: CyfsDispatchResult) -> DeliveryReportResul
     }
 }
 
+/// Send one queued message. When the message was received in signed form, the
+/// JWT original is sent so the signature reaches the receiver.
 pub(crate) async fn send(
     route: &NativeDispatchRoute,
     msg: &MsgObject,
+    jwt: Option<&str>,
     expected_id: &ObjId,
 ) -> anyhow::Result<DeliveryReportResult> {
-    let (id, body) = msg.gen_obj_id();
+    let (id, json_body) = msg.gen_obj_id();
     if &id != expected_id {
         anyhow::bail!("native delivery body does not match the queued ObjectId");
     }
+    let (encoding, body) = match jwt {
+        Some(jwt) => {
+            if build_named_object_by_jwt(OBJ_TYPE_MSG, jwt)?.0 != id {
+                anyhow::bail!("stored message JWT does not match the queued ObjectId");
+            }
+            (CyfsNamedObjectEncoding::Jwt, jwt.to_string())
+        }
+        None => (CyfsNamedObjectEncoding::Json, json_body),
+    };
     let target = reqwest::Url::parse(&route.target)?;
     let mut url = reqwest::Url::parse(&route.upstream)?;
     url.set_path(target.path());
@@ -404,7 +472,7 @@ pub(crate) async fn send(
         let mut response = client
             .put(url)
             .header("host", target.host_str().unwrap())
-            .header("content-type", CYFS_CONTENT_TYPE_NAMED_OBJECT_JSON)
+            .header("content-type", encoding.content_type())
             .header(CYFS_HEADER_OBJ_ID, id.to_string())
             .header(CYFS_HEADER_ORIGINAL_USER, msg.from.to_string())
             .header("authorization", &route.authorization)
@@ -490,17 +558,86 @@ mod tests {
                 socket.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let pending = send(&route, &msg, &id).await.unwrap();
+        let pending = send(&route, &msg, None, &id).await.unwrap();
         assert!(!pending.ok);
         assert_eq!(pending.retryable, Some(true));
         assert_eq!(pending.error_code.as_deref(), Some("cyfs-cached"));
-        let accepted = send(&route, &msg, &id).await.unwrap();
+        let accepted = send(&route, &msg, None, &id).await.unwrap();
         assert!(accepted.ok);
         assert_eq!(
             accepted.external_msg_id.as_deref(),
             Some(id.to_string().as_str())
         );
         task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cyfs_dispatch_sender_replays_the_jwt_form_when_kept() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let route = NativeDispatchRoute {
+            target: "cyfs://alice.example/inbox".into(),
+            upstream: format!("http://{}", listener.local_addr().unwrap()),
+            authorization: "Bearer original-token".into(),
+            timeout_ms: 1000,
+        };
+        let msg = MsgObject {
+            from: DID::new("dev", "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8"),
+            to: vec![DID::new("bns", "alice")],
+            to_session: Some("s".into()),
+            created_at_ms: 1,
+            ..Default::default()
+        };
+        let key = jsonwebtoken::EncodingKey::from_ed_pem(
+            b"-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----\n",
+        )
+        .unwrap();
+        let jwt = msg
+            .to_jwt(&key, &format!("{}#main_key", msg.from.to_string()))
+            .unwrap();
+        let id = msg.gen_obj_id().0;
+        let server_id = id.clone();
+        let expected_body = jwt.clone();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            loop {
+                let mut chunk = [0u8; 4096];
+                let size = socket.read(&mut chunk).await.unwrap();
+                assert!(size > 0);
+                request.extend_from_slice(&chunk[..size]);
+                if let Some(split) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                    if request.len() >= split + 4 + expected_body.len() {
+                        let headers = std::str::from_utf8(&request[..split])
+                            .unwrap()
+                            .to_ascii_lowercase();
+                        assert!(headers.contains("content-type: application/cyfs-named-object+jwt"));
+                        assert!(
+                            headers.contains(&format!("cyfs-obj-id: {}", server_id.to_string()))
+                        );
+                        assert_eq!(&request[split + 4..], expected_body.as_bytes());
+                        break;
+                    }
+                }
+            }
+            let result = CyfsDispatchResult::new(
+                Some(server_id.clone()),
+                "cyfs://alice.example/inbox".into(),
+                CyfsDispatchStatus::Accepted,
+            );
+            let body = serde_json::to_string(&result).unwrap();
+            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\ncyfs-dispatch-status: accepted\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+        let accepted = send(&route, &msg, Some(&jwt), &id).await.unwrap();
+        assert!(accepted.ok);
+        task.await.unwrap();
+
+        // A kept JWT that does not belong to the queued message is refused.
+        let mut other = msg.clone();
+        other.created_at_ms = 2;
+        assert!(send(&route, &other, Some(&jwt), &other.gen_obj_id().0)
+            .await
+            .is_err());
     }
 
     #[test]

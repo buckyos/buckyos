@@ -66,14 +66,14 @@ async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart()
     let id = msg.gen_obj_id().0;
     let target = "cyfs://alice.example/inbox";
     let first = center
-        .dispatch_to_receiver(msg.clone(), alice.clone(), target.into())
+        .dispatch_to_receiver(msg.clone(), None, alice.clone(), target.into())
         .await
         .unwrap();
     assert_eq!(first.msg_id, id);
     assert_eq!(first.delivered_recipients, vec![alice.clone()]);
     assert!(!first.delivered_recipients.contains(&bob));
     let duplicate = center
-        .dispatch_to_receiver(msg.clone(), alice.clone(), target.into())
+        .dispatch_to_receiver(msg.clone(), None, alice.clone(), target.into())
         .await
         .unwrap();
     assert_eq!(duplicate.delivered_recipients, first.delivered_recipients);
@@ -105,7 +105,7 @@ async fn cyfs_dispatch_confirms_only_the_current_receiver_and_survives_restart()
         id
     );
     let second = center
-        .dispatch_to_receiver(msg, bob.clone(), "cyfs://alice.example/second".into())
+        .dispatch_to_receiver(msg, None, bob.clone(), "cyfs://alice.example/second".into())
         .await
         .unwrap();
     assert_eq!(second.delivered_recipients, vec![bob]);
@@ -406,6 +406,230 @@ async fn dispatch_group_message_without_group_target_fails() {
 
     let err = center.handle_dispatch(msg, None, None, ctx()).await;
     assert!(err.is_err());
+}
+
+#[tokio::test]
+async fn group_message_routes_by_to_session_and_rejects_topic_only() {
+    let (center, _tmp) = new_center("dispatch_group_to_session").await;
+    let group_id = DID::new("bns", "group-v2");
+    let author = DID::new("bns", "author-v2");
+    let agent = DID::new("bns", "agent-v2");
+    center
+        .handle_set_group_subscribers(group_id.clone(), vec![agent.clone()], None, ctx())
+        .await
+        .unwrap();
+
+    // to_session selects the named session; topic is only a hint.
+    let mut msg = make_msg(author.clone(), vec![group_id.clone()], MsgObjKind::GroupMsg);
+    msg.to_session = Some("release".into());
+    msg.thread.topic = Some("发布准备".into());
+    let dispatch = center
+        .handle_dispatch(msg, None, None, ctx())
+        .await
+        .unwrap();
+    assert_eq!(dispatch.delivered_group, Some(group_id.clone()));
+    let agent_box = center
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(agent.clone(), Some("release".into())).unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(agent_box.len(), 1);
+    assert_eq!(agent_box[0].record.session_id.as_deref(), Some("release"));
+
+    // Transition rule: a group message with topic but no to_session is
+    // rejected instead of falling into the default session.
+    let mut legacy = make_msg(author.clone(), vec![group_id.clone()], MsgObjKind::GroupMsg);
+    legacy.thread.topic = Some("release".into());
+    let err = center
+        .handle_dispatch(legacy.clone(), None, None, ctx())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("missing-to-session"), "{err}");
+    let err = center
+        .handle_post_send(legacy, None, ctx())
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("missing-to-session"), "{err}");
+
+    // Without topic or to_session the message goes to the default session.
+    let plain = make_msg(author, vec![group_id.clone()], MsgObjKind::GroupMsg);
+    center
+        .handle_dispatch(plain, None, None, ctx())
+        .await
+        .unwrap();
+    let default_box = center
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(agent, Some(group_id.to_string())).unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(default_box.len(), 1);
+}
+
+#[tokio::test]
+async fn direct_message_topic_is_only_a_hint() {
+    let (center, _tmp) = new_center("dm_topic_hint").await;
+    let sender = DID::new("bns", "hint-sender");
+    let recipient = DID::new("bns", "hint-recipient");
+    center
+        .handle_grant_temporary_access(
+            vec![sender.clone()],
+            "ctx-hint".to_string(),
+            60,
+            Some(recipient.clone()),
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let mut msg = make_msg(sender.clone(), vec![recipient.clone()], MsgObjKind::Chat);
+    msg.thread.topic = Some("not-a-session".into());
+    center
+        .handle_dispatch(
+            msg,
+            Some(IngressContext {
+                context_id: Some("ctx-hint".to_string()),
+                ..Default::default()
+            }),
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    let dm = center
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap(),
+            MailboxKind::Inbox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dm.len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_v2_message_objects_are_rejected_at_ingress() {
+    let (center, _tmp) = new_center("v2_invalid").await;
+    center.set_message_hub_did(DID::new("bns", "hub"));
+    let sender = DID::new("bns", "v2-sender");
+    let a = DID::new("bns", "v2-a");
+    let b = DID::new("bns", "v2-b");
+
+    let mut multi = make_msg(sender.clone(), vec![a.clone(), b.clone()], MsgObjKind::Chat);
+    multi.to_session = Some("s".into());
+    assert!(center.handle_post_send(multi, None, ctx()).await.is_err());
+
+    // `proof` was removed in v2 and is a reserved key.
+    let mut proof = make_msg(sender.clone(), vec![a.clone()], MsgObjKind::Chat);
+    proof.meta.insert("proof".into(), json!("proof-001"));
+    assert!(center.handle_post_send(proof.clone(), None, ctx()).await.is_err());
+    assert!(center
+        .handle_dispatch(proof, None, None, ctx())
+        .await
+        .is_err());
+
+    let mut empty_mentions = make_msg(sender, vec![a], MsgObjKind::Chat);
+    empty_mentions.mentions = Some(ndn_lib::MsgMentions::default());
+    assert!(center
+        .handle_post_send(empty_mentions, None, ctx())
+        .await
+        .is_err());
+}
+
+const JWT_TEST_PRIVATE_KEY: &str = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr\n-----END PRIVATE KEY-----\n";
+const JWT_TEST_PUBLIC_X: &str = "T4Quc1L6Ogu4N2tTKOvneV1yYnBcmhP89B_RsuFsJZ8";
+
+#[tokio::test]
+async fn cyfs_dispatch_verifies_and_keeps_the_jwt_original_of_a_signed_message() {
+    let (center, _tmp) = new_center("cyfs_jwt").await;
+    // did:dev embeds its Ed25519 key, so no name resolver is needed.
+    let sender = DID::new("dev", JWT_TEST_PUBLIC_X);
+    let alice = DID::new("bns", "jwt-alice");
+    center.register_local_recipients([alice.clone()]);
+    let mut msg = make_msg(sender.clone(), vec![alice.clone()], MsgObjKind::Chat);
+    msg.to_session = Some("signed".into());
+    msg.nonce = Some(42);
+    let id = msg.gen_obj_id().0;
+    let key = jsonwebtoken::EncodingKey::from_ed_pem(JWT_TEST_PRIVATE_KEY.as_bytes()).unwrap();
+    let jwt = msg
+        .to_jwt(&key, &format!("{}#main_key", sender.to_string()))
+        .unwrap();
+
+    let signed = crate::cyfs_dispatch::verify_signed_message(&jwt).await.unwrap();
+    assert_eq!(signed.obj_id, id);
+    assert_eq!(signed.msg, msg);
+
+    // The kid must name a key of `from`.
+    let forged = msg
+        .to_jwt(&key, "did:bns:someone-else#main_key")
+        .unwrap();
+    assert_eq!(
+        crate::cyfs_dispatch::verify_signed_message(&forged)
+            .await
+            .unwrap_err()
+            .1,
+        "signer-mismatch"
+    );
+    // A JWT signed by another key does not verify.
+    let mut other = msg.clone();
+    other.from = DID::new("dev", "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo");
+    other.to_session = Some("signed".into());
+    let wrong_key = other
+        .to_jwt(&key, &format!("{}#main_key", other.from.to_string()))
+        .unwrap();
+    assert_eq!(
+        crate::cyfs_dispatch::verify_signed_message(&wrong_key)
+            .await
+            .unwrap_err()
+            .1,
+        "invalid-signature"
+    );
+
+    let result = center
+        .dispatch_to_receiver(
+            signed.msg,
+            Some(jwt.clone()),
+            alice.clone(),
+            "cyfs://alice.example/inbox".into(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.msg_id, id);
+    assert_eq!(result.delivered_recipients, vec![alice.clone()]);
+    assert_eq!(
+        center.msg_box_db.get_msg_jwt(&id).await.unwrap().as_deref(),
+        Some(jwt.as_str())
+    );
+    // An unknown sender lands in the request box, keyed on to_session.
+    let requests = center
+        .handle_peek_box(
+            buckyos_api::MailboxAddress::new(alice, Some("signed".into())).unwrap(),
+            MailboxKind::RequestBox,
+            None,
+            None,
+            None,
+            ctx(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(requests.len(), 1);
 }
 
 #[tokio::test]
@@ -1712,7 +1936,7 @@ mod owner_session_tests {
         .is_empty());
         let mut event = chat_at(&peer, vec![owner.clone()], "log", 2_000_500);
         event.kind = MsgObjKind::Event;
-        event.thread.topic = Some(session_id.clone());
+        event.to_session = Some(session_id.clone());
         inbound(&center, event, "lc", "lc-event").await;
         assert!(list(
             &center,
@@ -1815,9 +2039,9 @@ mod owner_session_tests {
         grant(&center, &peer, &owner, "act").await;
 
         let mut s1 = chat_at(&peer, vec![owner.clone()], "s1", 3_000_000);
-        s1.thread.topic = Some("s1".to_string());
+        s1.to_session = Some("s1".to_string());
         let mut s2 = chat_at(&peer, vec![owner.clone()], "s2", 3_000_100);
-        s2.thread.topic = Some("s2".to_string());
+        s2.to_session = Some("s2".to_string());
         inbound(&center, s1, "act", "act-1").await;
         inbound(&center, s2, "act", "act-2").await;
 
@@ -1895,7 +2119,7 @@ mod owner_session_tests {
         // An event (action log) in s1 does not move it either.
         let mut event = chat_at(&peer, vec![owner.clone()], "log", 3_000_200);
         event.kind = MsgObjKind::Event;
-        event.thread.topic = Some("s1".to_string());
+        event.to_session = Some("s1".to_string());
         inbound(&center, event, "act", "act-3").await;
         let page = list(
             &center,
@@ -1915,7 +2139,7 @@ mod owner_session_tests {
 
         // A new chat in s1 moves it first; paging with limit 1 is stable.
         let mut chat = chat_at(&peer, vec![owner.clone()], "s1 again", 3_000_300);
-        chat.thread.topic = Some("s1".to_string());
+        chat.to_session = Some("s1".to_string());
         inbound(&center, chat, "act", "act-4").await;
         let first = list(
             &center,
@@ -2009,9 +2233,9 @@ mod owner_session_tests {
             .await
             .is_err());
 
-        // The first message uses the session id as topic and lands there.
+        // The first message targets the session via to_session and lands there.
         let mut msg = chat_at(&owner, vec![agent.clone()], "hello", 4_000_000);
-        msg.thread.topic = Some(first.session_id.clone());
+        msg.to_session = Some(first.session_id.clone());
         let post = center.handle_post_send(msg, None, ctx()).await.unwrap();
         assert!(post.ok, "{:?}", post.reason);
         assert_eq!(timeline_len(&center, &owner, &first.session_id).await, 1);
@@ -2211,7 +2435,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         grant(&center, &peer, &owner, "scoped").await;
         for session in ["a", "b", "default-source"] {
             let mut msg = make_msg(peer.clone(), vec![owner.clone()], MsgObjKind::Chat);
-            msg.thread.topic = Some(session.into());
+            msg.to_session = Some(session.into());
             inbound(&center, msg, "scoped", session).await;
         }
         let seed =
@@ -2495,7 +2719,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             buckyos_api::MailboxAddress::new(agent.clone(), Some("approval/1".into())).unwrap();
         grant(&center, &user, &agent, "delegate").await;
         let mut msg = make_msg(user.clone(), vec![agent.clone()], MsgObjKind::Chat);
-        msg.thread.topic = Some("approval/1".into());
+        msg.to_session = Some("approval/1".into());
         inbound(&center, msg, "delegate", "delegate").await;
         let install_grant = |write| {
             center.set_token_verifier(Arc::new(ScopedVerifier {
@@ -2596,7 +2820,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         center.register_local_recipients([devtest.clone(), lucy.clone(), group.clone()]);
         center.set_message_hub_did(DID::new("web", "msg-hub.test.buckyos.io"));
         let mut message = chat_at(&devtest, vec![lucy.clone()], "Hello Lucy", 7_000_000);
-        message.thread.topic = Some("lucy-session".into());
+        message.to_session = Some("lucy-session".into());
         let message_id = message.gen_obj_id().0;
         inbound(&center, message, "lucy-session", "hello-lucy").await;
 
@@ -2698,7 +2922,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         ));
 
         let mut reply = chat_at(&lucy, vec![devtest.clone()], "Hello devtest", 7_000_100);
-        reply.thread.topic = Some(session_id.clone());
+        reply.to_session = Some(session_id.clone());
         assert!(
             center
                 .handle_post_send(reply.clone(), None, user_ctx("lucy"))
@@ -3051,7 +3275,7 @@ async fn concurrent_consumers_take_each_record_once_and_moves_survive_restart() 
         .await
         .unwrap();
     let mut msg = make_msg(peer, vec![owner.clone()], MsgObjKind::Chat);
-    msg.thread.topic = Some("work".into());
+    msg.to_session = Some("work".into());
     center
         .handle_dispatch(
             msg.clone(),
@@ -3116,7 +3340,7 @@ async fn post_send_idempotency_key_is_scoped_to_the_sender_session() {
     let mut results = Vec::new();
     for session in ["session-a", "session-b"] {
         let mut msg = make_msg(owner.clone(), vec![peer.clone()], MsgObjKind::Chat);
-        msg.thread.topic = Some(session.into());
+        msg.to_session = Some(session.into());
         let expected = msg.gen_obj_id().0;
         let first = center
             .handle_post_send(msg.clone(), Some("same-key".into()), ctx())

@@ -73,6 +73,8 @@ type MsgObject = {
   source?: string;
   to: string[];
   kind: string;
+  /** MsgObject v2: named session under `to[0]`; omitted = default session. */
+  to_session?: string;
   thread?: { topic?: string; reply_to?: string; correlation_id?: string };
   created_at_ms: number;
   content: {
@@ -982,7 +984,8 @@ function stepAssetKeys(step: ScenarioStep): AssetKey[] {
 function makeMessage(input: {
   userDid: string;
   targetDid: string;
-  topic: string;
+  /** Named target session (`to_session`); omit for the target's default session. */
+  toSession?: string;
   prompt: string;
   traceId: string;
   kind?: "chat" | "group_msg";
@@ -998,8 +1001,8 @@ function makeMessage(input: {
     ...(input.sourceDid ? { source: input.sourceDid } : {}),
     to: [input.targetDid],
     kind: input.kind ?? "chat",
+    ...(input.toSession ? { to_session: input.toSession } : {}),
     thread: {
-      topic: input.topic,
       correlation_id: input.traceId,
       ...(input.replyTo ? { reply_to: input.replyTo } : {}),
     },
@@ -1726,7 +1729,7 @@ async function runMsgCenter(
       const beforeClean = await listSession(msgCenter, userDid, commandReplyTopic);
       await postMessage(
         msgCenter,
-        makeMessage({ userDid, targetDid: jarvisDid, topic: cleanTopic, prompt: "/clean", traceId: cleanTrace }),
+        makeMessage({ userDid, targetDid: jarvisDid, toSession: cleanTopic, prompt: "/clean", traceId: cleanTrace }),
         cleanTrace,
       );
       const cleanReply = await waitForReply({
@@ -1846,7 +1849,9 @@ async function runMsgCenter(
       const outboundMessage = makeMessage({
         userDid,
         targetDid: scenario.requiresGroup ? options.groupDid! : jarvisDid,
-        topic,
+        // A group scenario uses the group's default session (its DID); a
+        // named `to_session` must already exist in the group.
+        toSession: scenario.requiresGroup ? undefined : topic,
         prompt: step.prompt,
         traceId,
         kind: step.messageKind,

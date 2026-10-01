@@ -22,6 +22,8 @@ buckyos-http-server = { workspace = true }
 
 kRPC = { workspace = true }
 name-lib = { workspace = true }
+name-client = { workspace = true }
+jsonwebtoken = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 ndn-lib = { workspace = true }

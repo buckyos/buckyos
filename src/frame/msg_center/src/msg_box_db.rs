@@ -1513,6 +1513,60 @@ LIMIT 1
         Ok(row.is_some())
     }
 
+    /// Keep the JWT original of a MsgObject received in signed form (CYFS 标准对象
+    /// §16.5) in `msg_jwt_originals`. The named store holds the canonical JSON,
+    /// which has the same ObjId; the JWT is kept for later readers and replayed
+    /// on native dispatch. The first stored JWT wins.
+    pub async fn put_msg_jwt(
+        &self,
+        msg_id: &ObjId,
+        jwt: &str,
+        created_at_ms: u64,
+    ) -> std::result::Result<(), RPCErrors> {
+        let sql = self.render_sql(
+            "INSERT INTO msg_jwt_originals(msg_id, jwt, created_at_ms)
+             VALUES(?, ?, ?)
+             ON CONFLICT(msg_id) DO NOTHING",
+        );
+        sqlx::query(&sql)
+            .bind(msg_id.to_string())
+            .bind(jwt.to_string())
+            .bind(to_sql_i64(created_at_ms))
+            .execute(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to store jwt original of message {}: {}",
+                    msg_id.to_string(),
+                    error
+                ))
+            })?;
+        Ok(())
+    }
+
+    pub async fn get_msg_jwt(
+        &self,
+        msg_id: &ObjId,
+    ) -> std::result::Result<Option<String>, RPCErrors> {
+        let sql = self.render_sql("SELECT jwt FROM msg_jwt_originals WHERE msg_id = ?");
+        let row = sqlx::query(&sql)
+            .bind(msg_id.to_string())
+            .fetch_optional(self.pool())
+            .await
+            .map_err(|error| {
+                RPCErrors::ReasonError(format!(
+                    "failed to query jwt original of message {}: {}",
+                    msg_id.to_string(),
+                    error
+                ))
+            })?;
+        row.map(|row| {
+            row.try_get("jwt")
+                .map_err(|error| decode_err("jwt", &error))
+        })
+        .transpose()
+    }
+
     pub async fn upsert_tunnel_cursor(
         &self,
         tunnel_key: &str,

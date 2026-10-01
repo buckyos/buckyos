@@ -21,7 +21,7 @@ import {
   archiveSession, blockContact, checkGroupAccess, createSession, deleteSession, fetchOwnerDid, listContacts, listGroupsByMember, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, postSendMessage, restoreSession, updateContact, updateRecordState, updateUiSessionState,
   type Contact, type GroupSummary, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
-import type { MessageObject, MsgObject, RefItem } from '../protocol/msgobj'
+import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, memberStateSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
 import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
@@ -703,13 +703,21 @@ export class MessageHubApiStore implements MessageHubStore {
     throw new Error('backend_unavailable')
   }
 
-  private sendTarget(session: Session): { to: string; topic?: string; kind: MsgObject['kind'] } {
+  /**
+   * Native named sessions are addressed by `to_session` (MsgObject v2); the
+   * default session (`dm:*`, or the session named after the entity) omits it.
+   * `thread.topic` is a semantic hint only and never carries the session id.
+   */
+  private sendTarget(session: Session): { to: string; toSession?: string; kind: MsgObject['kind'] } {
     const binding = session.binding as SessionBinding
     if (binding.kind === 'tunnel') return { to: binding.endpointDid, kind: 'chat' }
     if (binding.kind !== 'native') throw new Error('binding_unknown')
     const isGroup = this.projected({ viewerDid: this.selfDid, ownerDid: session.ownerDid, mode: 'self' }).entityById.get(session.entityId)?.type === 'group'
-    const keepsTopic = !session.id.startsWith('dm:') && session.id !== session.entityId
-    return { to: binding.targetDid, kind: isGroup ? 'group_msg' : 'chat', topic: keepsTopic || isUuid(session.id) ? session.id : undefined }
+    const isNamedSession = !session.id.startsWith('dm:') && session.id !== session.entityId
+    const toSession = isNamedSession || isUuid(session.id) ? session.id : undefined
+    // The backend rejects an invalid `to_session`; fail before the optimistic bubble.
+    if (toSession !== undefined && !isValidMsgSessionId(toSession)) throw new Error('rejected: invalid-to-session')
+    return { to: binding.targetDid, kind: isGroup ? 'group_msg' : 'chat', toSession }
   }
 
   private writableSession(context: MessageHubContext, sessionId: string, confirmation: string | undefined): Session {
@@ -748,13 +756,16 @@ export class MessageHubApiStore implements MessageHubStore {
     const data = this.owner(context.ownerDid)
     const sessionId = session.id
     const target = this.sendTarget(session)
+    // A resend is a new message: fresh created_at_ms and nonce. A retry of an
+    // unknown outcome reuses the idempotency key, which the backend dedupes on.
     const message: MsgObject = {
       from: context.ownerDid,
       to: [target.to],
       kind: target.kind,
+      ...(target.toSession !== undefined ? { to_session: target.toSession } : {}),
       created_at_ms: this.now(),
+      nonce: randomMsgNonce(),
       content,
-      ...(target.topic ? { thread: { topic: target.topic } } : {}),
     }
     const key = viewerSessionKey(context, sessionId)
     const optimisticId = `local:${idempotencyKey}`
