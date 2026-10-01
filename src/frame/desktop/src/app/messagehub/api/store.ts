@@ -18,7 +18,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import {
-  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
+  acceptGroupInvitation, acceptGroupOwnerTransfer, acceptGroupSessionInvitation, applyGroupConfig, approveGroupMember, archiveGroupSession, archiveSession, blockContact, cancelGroupOwnerTransfer, checkGroupAccess, createGroup, createGroupInviteLink, createGroupSession, createSession, deleteGroup, deleteGroupSession, deleteSession, fetchAccountUsername, fetchOwnerDid, getGroupConfig, getGroupDoc, getGroupMemberState, getGroupReadMarkers, getGroupSharedState, groupErrorReason, inviteGroupMember, inviteGroupSessionGuest, leaveGroup, leaveGroupSession, listContacts, listGroupMembers, listGroupMessages, listGroupsByMember, listGroupSessionMembers, listGroupSessions, listSessionMessages, listSessions, listUiSessionState, MessageHubApiError, moderateGroupMember, postSendMessage, rejectGroupMember, removeGroupMember, removeGroupSessionMember, requestGroupJoin, restoreSession, revokeGroupInviteLink, transferGroupOwner, updateContact, updateGroupMemberRole, updateGroupMemberState, updateGroupReadMarker, updateGroupSession, updateGroupSharedState, updateRecordState, updateUiSessionState,
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
@@ -26,7 +26,7 @@ import { messageObjId } from '../conversation/history/relations'
 import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
@@ -66,6 +66,8 @@ interface OwnerData {
   postAccess: Map<string, { allowed: boolean; reason?: string } | 'pending'>
   /** Read receipts of own group messages per local group session key. */
   receipts: Map<string, ReceiptState>
+  /** `group.list_session_members` per local group session key; `value` stays undefined when the host refuses. */
+  sessionMembers: Map<string, { groupDid: string; loaded: boolean; value?: GroupSessionParticipants; loading?: Promise<void> }>
   invitationNames: Map<string, string | null>
   /** Group DIDs of local group sessions already looked up in `group.list_by_member`. */
   groupLookups: Set<string>
@@ -221,7 +223,7 @@ export class MessageHubApiStore implements MessageHubStore {
   private owner(ownerDid: string): OwnerData {
     let data = this.owners.get(ownerDid)
     if (!data) {
-      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), invitationNames: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
+      data = { status: { phase: 'idle' }, summaries: [], contacts: [], agentDids: [], groups: {}, groupInfo: new Map(), groupSessionTitles: {}, postAccess: new Map(), receipts: new Map(), sessionMembers: new Map(), invitationNames: new Map(), groupLookups: new Set(), prefs: {}, prefsLoaded: new Set(), version: 0, entitiesCache: new Map(), histories: new Map(), historyStatus: new Map(), runtime: new Map(), epoch: 0 }
       this.owners.set(ownerDid, data)
     }
     return data
@@ -1105,6 +1107,8 @@ export class MessageHubApiStore implements MessageHubStore {
           pendingTransfer: transfer ? { memberDid: transfer.member_did, transferId: transfer.transfer_id, expiresAt: transfer.expires_at_ms } : previous?.pendingTransfer && previous.ownerDid === entry.ownerDid ? previous.pendingTransfer : undefined,
         },
       })
+      // Membership may have changed with whatever made the group reload.
+      for (const [sessionId, entry] of data.sessionMembers) if (entry.groupDid === groupDid && entry.loaded) void this.ensureGroupSessionMembers(context, groupDid, sessionId, true)
     } catch (error) {
       const reason = groupErrorReason(error)
       const previous = data.groupInfo.get(groupDid)?.value
@@ -1279,6 +1283,31 @@ export class MessageHubApiStore implements MessageHubStore {
   groupSession(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionInfo | null {
     if (!this.own(context)) return null
     return this.owner(context.ownerDid).groupInfo.get(groupDid)?.value?.sessions.find(session => session.key === sessionId) ?? null
+  }
+
+  groupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionParticipants | null {
+    if (!this.own(context)) return null
+    const entry = this.owner(context.ownerDid).sessionMembers.get(sessionId)
+    return entry?.groupDid === groupDid ? entry.value ?? null : null
+  }
+
+  ensureGroupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string, refresh = false): Promise<void> {
+    if (!this.own(context)) return Promise.resolve()
+    const data = this.owner(context.ownerDid)
+    if (!data.groups[groupDid]?.hosted) return Promise.resolve()
+    const current = data.sessionMembers.get(sessionId)
+    // A refresh asked for while a load is in flight may follow a change that load predates.
+    if (current?.loading) return refresh ? current.loading.then(() => this.ensureGroupSessionMembers(context, groupDid, sessionId, true)) : current.loading
+    if (current?.loaded && !refresh) return Promise.resolve()
+    const loading = listGroupSessionMembers(groupDid, groupSessionId(groupDid, sessionId)).then(
+      result => ({ items: result.items.map(item => ({ did: item.member_did, kind: item.kind === 'guest' ? 'guest' as const : 'group_member' as const, ...(item.role ? { role: item.role } : {}), state: item.state === 'invited' ? 'invited' as const : 'included' as const })), complete: result.complete }),
+      () => undefined,
+    ).then(value => {
+      data.sessionMembers.set(sessionId, { groupDid, loaded: true, value })
+      this.bump(data)
+    })
+    data.sessionMembers.set(sessionId, { groupDid, loaded: current?.loaded ?? false, value: current?.value, loading })
+    return loading
   }
 
   private namedSession(context: MessageHubContext, groupDid: string, sessionId: string): { sid: string; revision: string } {

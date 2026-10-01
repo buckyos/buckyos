@@ -9,7 +9,7 @@ import { foldMessageRelations, messageObjId } from '../conversation/history/rela
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupInfo, type GroupInvitation, type GroupMemberState, type GroupRole, type GroupSessionInfo, type GroupSessionParticipant, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
 import { isHiddenAccount } from '../api/projection'
 import { mockObjectAccess } from './objects'
@@ -164,6 +164,8 @@ export class MessageHubMockStore implements MessageHubStore {
   private delayMs = 0
   private failure?: string
   private revokedOwners = new Set<string>()
+  /** `groupSessionMembers` results per snapshot, so components see stable values between changes. */
+  private sessionMemberLists = new WeakMap<Snapshot, Map<string, GroupSessionParticipants | null>>()
   constructor() {
     if (import.meta.env.DEV && typeof window !== 'undefined') Object.assign(window, { __messageHubMock: this })
   }
@@ -595,6 +597,39 @@ export class MessageHubMockStore implements MessageHubStore {
   groupSession(context: MessageHubContext, groupDid: string, sessionId: string) {
     return this.group(context, groupDid)?.sessions.find(session => session.key === sessionId) ?? null
   }
+  groupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionParticipants | null {
+    const snapshot = this.snapshot
+    let lists = this.sessionMemberLists.get(snapshot)
+    if (!lists) { lists = new Map(); this.sessionMemberLists.set(snapshot, lists) }
+    const key = `${context.ownerDid}\n${groupDid}\n${sessionId}`
+    if (!lists.has(key)) lists.set(key, this.listSessionMembers(snapshot, context, groupDid, sessionId))
+    return lists.get(key) ?? null
+  }
+  ensureGroupSessionMembers() { return this.initialize() }
+  /**
+   * Mock named sessions inherit the group's members plus their explicit
+   * participants. A guest sees only explicit participants and those who
+   * posted (`complete: false`), like the host.
+   */
+  private listSessionMembers(snapshot: Snapshot, context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionParticipants | null {
+    const group = snapshot.groups[groupDid]
+    if (!group || group.lifecycle === 'deleted' || !this.canView(context) || context.mode !== 'self') return null
+    const sid = groupSessionId(groupDid, sessionId), session = sid === undefined ? undefined : group.sessions[sid]
+    if (sid !== undefined && (!session || session.lifecycle === 'deleted')) return null
+    const participants = session?.participants ?? {}
+    const roleOf = (did: string) => group.members[did]?.state === 'active' && !group.members[did].blocked ? group.members[did].role : undefined
+    const effective = (did: string) => participants[did] !== 'removed' && (roleOf(did) !== undefined || participants[did] === 'guest')
+    if (!effective(context.ownerDid)) return null
+    const complete = roleOf(context.ownerDid) !== undefined
+    const posters = (snapshot.messages[sessionKey(context.ownerDid, sessionId)] ?? []).map(message => message.from)
+    const candidates = complete ? [...Object.keys(group.members), ...Object.keys(participants)] : [...Object.keys(participants).filter(did => participants[did] === 'member' || participants[did] === 'guest'), ...posters, context.ownerDid]
+    const items: GroupSessionParticipant[] = [...new Set(candidates)].filter(effective).map(did => {
+      const role = roleOf(did)
+      return role ? { did, kind: 'group_member', role, state: 'included' } : { did, kind: 'guest', state: 'included' }
+    })
+    if (sid !== undefined && this.groupInfo(group, context.ownerDid).can.inviteGuest) for (const did of Object.keys(participants)) if (participants[did] === 'invited_guest') items.push({ did, kind: 'guest', state: 'invited' })
+    return { items, complete }
+  }
   private requireGroup(next: Snapshot, context: MessageHubContext, groupDid: string) {
     this.requireOwn(context)
     const group = next.groups[groupDid]
@@ -845,9 +880,12 @@ export class MessageHubMockStore implements MessageHubStore {
       const group = this.requireGroup(next, context, groupDid)
       const session = this.requireNamedSession(group, sessionId)
       this.requireCapability(group, context.ownerDid, group.members[memberDid] ? 'manageSession' : 'inviteGuest')
-      if (!session.participants[memberDid]) throw Error('not-found')
+      const state = session.participants[memberDid]
+      if (state === 'removed' || state === 'invited_guest' || (!state && group.members[memberDid]?.state !== 'active')) throw Error('not-found')
       session.participants[memberDid] = 'removed'
       session.revision = crypto.randomUUID()
+      const local = next.sessions[sessionKey(context.ownerDid, sessionId)]
+      if (local) this.append(next, local, { ...groupEvent(group, 'session.member_removed', context.ownerDid, this.now(), memberDid), ui_session_id: local.id }, false)
     })
   }
   leaveGroupSession(context: MessageHubContext, groupDid: string, sessionId: string) {

@@ -108,7 +108,7 @@
 - [x] 禁言 / 封禁 `group.moderate`。
 - [x] 入群审批 `group.approve_member` / `reject_member`：`pending_approval` 卡和成员列表均可操作。
 - [x] 邀请链接 `group.create_invite_link` / `revoke_invite_link`（群面板生成、复制、撤销，格式 `<group_did>?invite=<token>`），建群对话框可用链接加入（`group.request_join`）。
-- [x] 具名会话管理：归档、删除、增加成员（`update_session` / `archive_session` / `delete_session`）、退出会话；移出会话成员的 store 方法已有但没有 UI 入口（后端没有列出 Session 参与者的 RPC）。
+- [x] 具名会话管理：归档、删除、增加成员（`update_session` / `archive_session` / `delete_session`）、退出会话；会话详情列出 Session 参与者（新 RPC `group.list_session_members`，Guest 只见显式参与者与发言者）并可移出成员 / Guest（2026-10-01）。
 - [x] Session Guest 的邀请与接受（`invite_session_guest` / `accept_session_invitation`），会话列表按 `has_guests` 显示「含外部成员」。
 - [x] 已读水位与群回执：`receipts` 非 hidden 时在本人最新一条消息下显示「已读 N」及读者（真实后端只覆盖本人最新一条，seq 来自 `group.list_messages`）；`update_read_marker` 随标记已读调用。
 - [x] 会话共享状态与成员昵称（`update_shared_state` / `update_member_state`），真实后端的会话详情不再显示「尚未启用」。
@@ -116,7 +116,7 @@
 ## 6. P2：消息关系与提及（已完成，mock 验证）
 
 - [x] 渲染：编辑后内容（「已编辑」标记）、撤回占位、回应汇总、回复引用、@提及标记（`conversation/history/relations.ts` 折叠 `relates_to`）。
-- [x] 发送：编辑、撤回、管理员删帖（`message.redact_any`）、回应、@成员与 @all（`session.mention_all`），都是带 `relates_to` / `mentions` 的 `post_send`；提及用按钮选择器（无 `@` 自动补全）。关系操作只在群会话提供。
+- [x] 发送：编辑、撤回、管理员删帖（`message.redact_any`）、回应、@成员与 @all（`session.mention_all`），都是带 `relates_to` / `mentions` 的 `post_send`；提及在输入 `@` 时自动补全（候选为 Session 参与者，键盘可选），@ 按钮打开同一列表（2026-10-01）。关系操作只在群会话提供。
 
 ## 7. 文档联动（已完成）
 

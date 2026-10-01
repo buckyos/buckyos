@@ -211,6 +211,26 @@ export interface GroupSessionInfo {
   receipts: 'hidden' | 'count' | 'readers'
 }
 
+/** One participant of a Group Session (`group.list_session_members`). */
+export interface GroupSessionParticipant {
+  did: string
+  kind: 'group_member' | 'guest'
+  /** Group role of a member; absent for a guest. */
+  role?: GroupRole
+  /** `invited`: a guest invitation not accepted yet (listed only for those who may invite guests). */
+  state: 'included' | 'invited'
+}
+
+/**
+ * The participants of a Group Session the viewer may see. `complete` is false
+ * for a guest, or a member the member list is hidden from: they see only the
+ * explicit participants and those who posted (v2 §3.3).
+ */
+export interface GroupSessionParticipants {
+  items: GroupSessionParticipant[]
+  complete: boolean
+}
+
 /** The viewer's view of one group: hosted by this zone, or joined on a remote host. */
 export interface GroupInfo {
   did: string

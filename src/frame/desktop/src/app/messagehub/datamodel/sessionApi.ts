@@ -406,6 +406,16 @@ export const getGroupConfig = (groupDid: DID) => call<GroupConfig>('group.get_co
 export const listGroupMembers = (groupDid: DID) => call<{ items?: GroupMemberRecord[]; pending_owner_transfer?: GroupOwnerTransfer | null } | null>('group.list_members', { group_did: groupDid }).then(result => ({ items: result?.items ?? [], pendingTransfer: result?.pending_owner_transfer ?? null }))
 export interface GroupOwnerTransfer { member_did: DID; transfer_id: string; expires_at_ms: number }
 export const listGroupSessions = (groupDid: DID) => call<{ items?: GroupSessionItem[] } | null>('group.list_sessions', { group_did: groupDid }).then(result => result?.items ?? [])
+/** One participant of a Group Session (`group.list_session_members`); `invited` guests are listed only for callers who may invite guests. */
+export interface GroupSessionMemberRecord {
+  member_did: DID
+  kind: 'group_member' | 'guest'
+  role?: GroupMemberRecord['role'] | null
+  entity_kind?: string | null
+  state: 'included' | 'invited'
+}
+/** `complete` is false for a guest, or a member the member list is hidden from: only explicit participants and those who posted are listed. */
+export const listGroupSessionMembers = (groupDid: DID, sessionId?: string) => call<{ items?: GroupSessionMemberRecord[]; complete?: boolean; revision?: string } | null>('group.list_session_members', { group_did: groupDid, ...session(sessionId) }).then(result => ({ items: result?.items ?? [], complete: result?.complete === true, revision: result?.revision ?? '' }))
 export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...session(sessionId) })
 export const createGroup = (input: { idempotency_key: string; profile: { name: string }; invitations: Array<{ member_did: DID }> }) => call<{ group_did: DID; revision: string }>('group.create', input as unknown as Record<string, unknown>)
 /** `patch` is deep-merged into the configuration (`{ profile: { name, description } }` edits the profile). */

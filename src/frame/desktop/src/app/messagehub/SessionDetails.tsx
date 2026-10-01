@@ -1,5 +1,5 @@
-import { useRef, useState, type ReactNode } from 'react'
-import { X } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Bot, Crown, Shield, User, UserMinus, X } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import type { z } from 'zod'
@@ -11,7 +11,7 @@ import { groupSharedStateSchema, memberStateSchema, presentationSchema } from '.
 import { confirmGroupAction } from './confirmDialog'
 import { PickMembersForm } from './GroupDialogs'
 import { friendlyDidName } from './api/projection'
-import { groupErrorText, memberCandidates } from './groupModel'
+import { groupErrorText, groupSessionId, memberCandidates, sortSessionParticipants } from './groupModel'
 import type { Entity, GroupInfo, GroupSessionInfo, MessageHubContext, Session, SessionAccess } from './types'
 
 export function SessionDetails({ session, entity, context, access, showActions, onShowActions, onClose, onManage, onWrite }: { session: Session; entity: Entity; context: MessageHubContext; access: SessionAccess; showActions: boolean; onShowActions: (value: boolean) => Promise<void>; onClose: () => void; onManage: () => void; onWrite: (enabled: boolean) => void }) {
@@ -42,6 +42,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
   const members = Object.entries(session.members)
   const group = entity.type === 'group' && session.binding.kind === 'native' ? store.group(context, entity.id) : null
   const groupSession = group ? store.groupSession(context, entity.id, session.id) : null
+  const localMembers = <ul className="space-y-1.5">{members.map(([did, member]) => <li key={did} className="flex min-w-0 items-baseline gap-2" title={did}><span className="truncate">{did === context.ownerDid ? t('messagehub.you') : member.nickname || (did === entity.id ? entity.name : did)}</span>{did === context.ownerDid && member.nickname ? <span className="truncate text-xs text-[color:var(--cp-muted)]">{member.nickname}</span> : null}</li>)}</ul>
   const sharedEditors = <div className="space-y-5"><SharedEditor session={session} context={context} disabled={!access.canEditSharedState} groupSession={groupSession} /><MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} /></div>
   return <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="session-details">
     <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.sessionDetails')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
@@ -59,7 +60,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
       {groupSession?.announcement && <div className="rounded-xl bg-[color:color-mix(in_srgb,var(--cp-accent)_8%,transparent)] px-3 py-2 text-[13px]" data-testid="session-announcement"><p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.announcement')}</p><p className="whitespace-pre-wrap break-words">{groupSession.announcement}</p></div>}
       {notices.length > 0 && <div className="space-y-1 rounded-xl bg-[color:color-mix(in_srgb,var(--cp-warning)_10%,transparent)] px-3 py-2 text-[13px]">{notices.map(notice => <p key={notice}>{notice}</p>)}</div>}
       <DetailSection title={t('messagehub.members')}>
-        <ul className="space-y-1.5">{members.map(([did, member]) => <li key={did} className="flex min-w-0 items-baseline gap-2" title={did}><span className="truncate">{did === context.ownerDid ? t('messagehub.you') : member.nickname || (did === entity.id ? entity.name : did)}</span>{did === context.ownerDid && member.nickname ? <span className="truncate text-xs text-[color:var(--cp-muted)]">{member.nickname}</span> : null}</li>)}</ul>
+        {group?.hosted ? <GroupSessionParticipantList session={session} context={context} group={group} fallback={localMembers} /> : localMembers}
       </DetailSection>
       <DetailSection title={t('messagehub.preferences')}>
         <ShowActionsToggle value={showActions} onChange={onShowActions} />
@@ -145,6 +146,51 @@ function GroupSessionSection({ session, entity, context, group, groupSession, on
     </div>
     {error && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{error}</p>}
   </DetailSection>
+}
+
+/**
+ * Participants of a Group Session (`group.list_session_members`). In a named
+ * session, those who manage it remove members (`session.manage`) and guests
+ * (`session.invite_guest`); the default session's members are managed in the
+ * group panel. `fallback` shows until the host lists them.
+ */
+function GroupSessionParticipantList({ session, context, group, fallback }: { session: Session; context: MessageHubContext; group: GroupInfo; fallback: ReactNode }) {
+  const { t } = useI18n(), store = useMessageHubStore(), dialog = useWindowDialog()
+  const [pending, setPending] = useState(false), [error, setError] = useState('')
+  useEffect(() => { void store.ensureGroupSessionMembers(context, group.did, session.id) }, [store, context.ownerDid, context.viewerDid, context.mode, group.did, session.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  const list = store.groupSessionMembers(context, group.did, session.id)
+  if (!list) return fallback
+  const named = groupSessionId(group.did, session.id) !== undefined
+  const nameOf = (did: string) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)
+  const title = store.title(context, session)
+  const remove = async (did: string) => {
+    const name = nameOf(did)
+    if (pending || !await confirmGroupAction(dialog, t, { title: t('messagehub.group.session.removeMember'), body: t('messagehub.group.session.removeMemberConfirm', undefined, { name, session: title }), confirm: t('messagehub.group.session.removeMember') })) return
+    setPending(true); setError('')
+    try { await store.removeGroupSessionMember(context, group.did, session.id, did) } catch (failure) { setError(groupErrorText(t, failure)) } finally { setPending(false) }
+  }
+  return <div className="space-y-1">
+    <ul className="divide-y divide-[color:color-mix(in_srgb,var(--cp-border)_70%,transparent)]" data-testid="session-participants">
+      {sortSessionParticipants(list.items).map(item => {
+        const type = store.findEntity(context, item.did)?.type
+        const nickname = session.members[item.did]?.nickname
+        const removable = named && item.state === 'included' && item.did !== context.ownerDid && item.role !== 'owner' && (item.kind === 'guest' ? group.can.inviteGuest : group.can.manageSession)
+        return <li key={item.did} className="flex min-h-11 items-center gap-2.5 py-1" data-member-did={item.did} data-kind={item.kind} data-state={item.state} title={item.did}>
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full" style={{ background: `color-mix(in srgb, ${type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)'} 16%, transparent)`, color: type === 'agent' ? 'var(--cp-success)' : 'var(--cp-accent)' }} aria-hidden>{type === 'agent' ? <Bot size={15} /> : <User size={15} />}</span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate">{nameOf(item.did)}</span>
+            {item.state === 'invited' ? <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{t('messagehub.group.session.guestInvited')}</span>
+              : nickname && nickname !== nameOf(item.did) ? <span className="block truncate text-[11px] text-[color:var(--cp-muted)]">{nickname}</span> : null}
+          </span>
+          {item.kind === 'guest' ? <span className="shrink-0 rounded-full bg-[color:color-mix(in_srgb,var(--cp-accent)_12%,transparent)] px-2 py-0.5 text-[11px] text-[color:var(--cp-accent)]">{t('messagehub.group.session.guest')}</span>
+            : item.role && item.role !== 'member' ? <span className="flex shrink-0 items-center gap-1 rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,transparent)] px-2 py-0.5 text-[11px] text-[color:color-mix(in_srgb,var(--cp-warning)_70%,var(--cp-text))]">{item.role === 'owner' ? <Crown size={11} aria-hidden /> : <Shield size={11} aria-hidden />}{t(`messagehub.group.role.${item.role}`)}</span> : null}
+          {removable && <button type="button" disabled={pending} onClick={() => void remove(item.did)} aria-label={`${t('messagehub.group.session.removeMember')}: ${nameOf(item.did)}`} title={t('messagehub.group.session.removeMember')} className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-[color:var(--cp-muted)] hover:text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-8 md:min-w-8"><UserMinus size={15} /></button>}
+        </li>
+      })}
+    </ul>
+    {!list.complete && <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.group.session.partialMembers')}</p>}
+    {error && <p role="alert" className="text-xs text-[color:var(--cp-danger)]">{error}</p>}
+  </div>
 }
 
 function SharedEditor({ session, context, disabled, groupSession }: { session: Session; context: MessageHubContext; disabled: boolean; groupSession: GroupSessionInfo | null }) {

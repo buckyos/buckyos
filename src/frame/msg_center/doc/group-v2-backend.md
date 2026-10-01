@@ -37,6 +37,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.update_session | session_id、expected_revision、template?、membership?、rule_overrides?、add_members? |
 | group.archive_session / delete_session | session_id、expected_revision；默认 Session 不可删除 |
 | group.list_sessions | 返回读者可访问的 Session、共享状态、state_ref、has_guests、规则和 revision |
+| group.list_session_members | session_id?；读者须能读取该 Session。能看群成员列表的成员（或有 group.read_all）得到全部有效参与者，complete=true；Guest 或成员列表对其隐藏的成员只得到显式参与者（Included 记录）、在该 Session 发过言者与本人，complete=false（v2 §3.3）。条目为 member_did、kind（group_member / guest）、role、entity_kind、state；有 session.invite_guest 的读者另见 state=invited 的待接受 Guest。结果带 Session 记录 revision（默认 Session 为配置 revision），供 remove_session_member 的 expected_revision |
 | group.invite_session_guest | session_id、member_did |
 | group.accept_session_invitation | session_id、attestation?；Guest 接受 Session 邀请 |
 | group.submit_guest_request | request_id、attestation?；按 guest_entry 模板原子创建，重复请求复用结果 |

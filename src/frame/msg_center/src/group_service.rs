@@ -182,6 +182,15 @@ impl MessageCenter {
                 return Ok(g.configuration);
             }
             "group.list_sessions" => return self.group_sessions(&actor, &group).await,
+            "group.list_session_members" => {
+                return self
+                    .group_session_members(
+                        &actor,
+                        &group,
+                        optional::<String>(&p, "session_id")?.as_deref(),
+                    )
+                    .await
+            }
             "group.list_messages" => {
                 return self
                     .group_inbox(
@@ -2557,6 +2566,76 @@ impl MessageCenter {
             None
         };
         Ok(json!({"items":items,"group_doc":doc}))
+    }
+    /// Participants of one Session as the reader may see them (v2 §3.3): a
+    /// reader who may see the group's member list gets every effective
+    /// participant (`complete`); a Session Guest, or a member while the list is
+    /// hidden from them, gets only the explicit participants and those who
+    /// have posted in the Session, never the members a `Roles` / `Inherit`
+    /// rule brings in. Pending guest invitations are listed for whoever may
+    /// invite guests.
+    pub(crate) async fn group_session_members(
+        &self,
+        a: &GroupActor,
+        group: &DID,
+        s: Option<&str>,
+    ) -> Result<Value> {
+        let g = self
+            .groups
+            .load(group)
+            .await?
+            .filter(|g| g.lifecycle != "deleted")
+            .ok_or_else(missing)?;
+        g.require_session(a, s, true)?;
+        if !self.run_group_hooks(&g, a, s, "read", true, None).await? {
+            return Err(denied("read-not-allowed"));
+        }
+        let records = g.participants.get(s.unwrap_or(""));
+        let complete = g.capability(&a.did, "group.read_all")
+            || (g.role(&a.did).is_some()
+                && (g.config()?.membership.member_list_visibility != "admins_only"
+                    || g.capability(&a.did, "group.approve_member")));
+        let shown = if complete {
+            g.audience(s)
+        } else {
+            let mut known: BTreeSet<String> = records
+                .into_iter()
+                .flatten()
+                .filter(|(_, r)| r.state == "included")
+                .map(|(d, _)| d.clone())
+                .collect();
+            known.extend(
+                g.messages
+                    .values()
+                    .filter(|m| m.session_id.as_deref() == s && !m.redacted)
+                    .map(|m| m.from.to_string()),
+            );
+            known.insert(a.did.to_string());
+            known
+                .into_iter()
+                .filter(|d| DID::from_str(d).is_ok_and(|d| g.effective(s, &d)))
+                .collect()
+        };
+        let mut items = vec![];
+        for d in shown {
+            let member = g
+                .members
+                .get(&d)
+                .filter(|m| m.state == MemberStatus::Active);
+            items.push(json!({"member_did":d,"kind":if member.is_some(){"group_member"}else{"guest"},"role":member.map(|m|m.role),"entity_kind":member.map(|m|&m.entity_kind),"state":"included"}));
+        }
+        if s.is_some() && g.require_cap(a, "session.invite_guest", s).is_ok() {
+            for (d, r) in records.into_iter().flatten() {
+                if r.kind == "guest" && r.state == "invited" && !g.blocked(&r.member_did) {
+                    items.push(json!({"member_did":d,"kind":"guest","role":null,"entity_kind":null,"state":"invited"}));
+                }
+            }
+        }
+        let revision = match s {
+            Some(s) => g.sessions[s].revision.clone(),
+            None => g.config()?.revision,
+        };
+        Ok(json!({"items":items,"complete":complete,"revision":revision}))
     }
     pub(crate) async fn group_inbox(
         &self,

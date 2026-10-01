@@ -1043,7 +1043,7 @@ GET  cyfs://$host/<group_did>/objects/<obj_id>?context_path=  受群 ACL 约束�
 |---|---|
 | 群 | `group.create`、`group.get_doc`、`group.get_config`、`group.apply_config`、`group.archive`、`group.delete`、`group.transfer_owner`、`group.accept_owner_transfer`、`group.cancel_owner_transfer` |
 | 成员 | `group.invite_member`、`group.revoke_invite`、`group.create_invite_link`、`group.revoke_invite_link`、`group.accept_invitation`、`group.request_join`、`group.approve_member`、`group.reject_member`、`group.leave`、`group.remove_member`、`group.update_member_role`、`group.moderate`、`group.list_members` |
-| Session | `group.create_session`、`group.update_session`、`group.list_sessions`、`group.invite_session_guest`、`group.accept_session_invitation`、`group.submit_guest_request`、`group.remove_session_member`、`group.leave_session`、`group.archive_session`、`group.delete_session` |
+| Session | `group.create_session`、`group.update_session`、`group.list_sessions`、`group.list_session_members`、`group.invite_session_guest`、`group.accept_session_invitation`、`group.submit_guest_request`、`group.remove_session_member`、`group.leave_session`、`group.archive_session`、`group.delete_session` |
 | 查询 | `group.list_by_member`、`group.check_access(group_did, action, session_id?)`、`group.list_events`、`group.update_read_marker` |
 
 - **读取消息**：成员通过 Message Center 已有的 Session API 读取自己的投影。群主或具有 `group.read_all` 能力的管理者用 `list_box_by_time(mailbox = group_did[/sid], GROUP_INBOX)` 读取，同样经过 §4.1 授权。

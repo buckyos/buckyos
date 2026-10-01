@@ -2146,3 +2146,155 @@ async fn http_join_accepts_the_pending_invitation_and_reads_need_no_proofs() {
         StatusCode::OK
     );
 }
+
+fn listed(result: &Value, state: &str) -> Vec<String> {
+    let mut dids: Vec<String> = result["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["state"] == state)
+        .map(|item| item["member_did"].as_str().unwrap().to_string())
+        .collect();
+    dids.sort();
+    dids
+}
+fn sorted(dids: &[DID]) -> Vec<String> {
+    let mut dids: Vec<String> = dids.iter().map(|d| d.to_string()).collect();
+    dids.sort();
+    dids
+}
+
+#[tokio::test]
+async fn session_member_lists_respect_reader_scope_and_back_removal() {
+    let (c, _tmp, _) = center().await;
+    create(&c, json!({})).await;
+    join(&c, &member()).await;
+    let agent_invite = call(
+        &c,
+        &owner(),
+        "group.invite_member",
+        json!({"member_did":agent()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(agent_invite["state"], "active");
+    call(&c,&owner(),"group.create_session",json!({"session_id":"desk","membership":"explicit","rule_overrides":{"allow_guests":true},"members":[member()]})).await.unwrap();
+    let list = |d: DID, sid: Option<&'static str>| {
+        let c = c.clone();
+        async move {
+            call(
+                &c,
+                &d,
+                "group.list_session_members",
+                json!({"session_id":sid}),
+            )
+            .await
+        }
+    };
+
+    let main = list(owner(), None).await.unwrap();
+    assert_eq!(main["complete"], true);
+    assert_eq!(
+        listed(&main, "included"),
+        sorted(&[owner(), member(), agent()])
+    );
+    let desk = list(owner(), Some("desk")).await.unwrap();
+    assert_eq!(listed(&desk, "included"), sorted(&[owner(), member()]));
+    let me = desk["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["member_did"] == json!(owner()))
+        .unwrap();
+    assert_eq!(me["kind"], "group_member");
+    assert_eq!(me["role"], "owner");
+    assert!(list(agent(), Some("desk")).await.is_err());
+
+    call(
+        &c,
+        &owner(),
+        "group.invite_session_guest",
+        json!({"session_id":"desk","member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    let desk = list(owner(), Some("desk")).await.unwrap();
+    assert_eq!(listed(&desk, "invited"), sorted(&[guest()]));
+    let by_member = list(member(), Some("desk")).await.unwrap();
+    assert_eq!(by_member["complete"], true);
+    assert!(listed(&by_member, "invited").is_empty());
+    assert!(list(guest(), Some("desk")).await.is_err());
+    call(
+        &c,
+        &guest(),
+        "group.accept_session_invitation",
+        json!({"session_id":"desk"}),
+    )
+    .await
+    .unwrap();
+    let by_guest = list(guest(), Some("desk")).await.unwrap();
+    assert_eq!(by_guest["complete"], false);
+    assert_eq!(
+        listed(&by_guest, "included"),
+        sorted(&[owner(), member(), guest()])
+    );
+    let guest_item = by_guest["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["member_did"] == json!(guest()))
+        .unwrap();
+    assert_eq!(guest_item["kind"], "guest");
+    assert!(guest_item["role"].is_null());
+    assert!(list(guest(), None).await.is_err());
+
+    // A guest sees who was added explicitly or has posted, not everyone a
+    // `Roles` rule brings in.
+    call(&c,&owner(),"group.create_session",json!({"session_id":"tickets","membership":{"roles":["owner","admin"]},"rule_overrides":{"allow_guests":true}})).await.unwrap();
+    call(
+        &c,
+        &owner(),
+        "group.invite_session_guest",
+        json!({"session_id":"tickets","member_did":guest()}),
+    )
+    .await
+    .unwrap();
+    call(
+        &c,
+        &guest(),
+        "group.accept_session_invitation",
+        json!({"session_id":"tickets"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(&list(guest(), Some("tickets")).await.unwrap(), "included"),
+        sorted(&[guest()])
+    );
+    send(&c, &owner(), Some("tickets"), "how can we help?", 1).await;
+    assert_eq!(
+        listed(&list(guest(), Some("tickets")).await.unwrap(), "included"),
+        sorted(&[owner(), guest()])
+    );
+    assert_eq!(
+        listed(&list(owner(), Some("tickets")).await.unwrap(), "included"),
+        sorted(&[owner(), guest()])
+    );
+
+    // The listed revision is what removal expects; the removed member drops
+    // out of the list and can no longer read it.
+    let desk = list(owner(), Some("desk")).await.unwrap();
+    call(
+        &c,
+        &owner(),
+        "group.remove_session_member",
+        json!({"session_id":"desk","member_did":member(),"expected_revision":desk["revision"]}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        listed(&list(owner(), Some("desk")).await.unwrap(), "included"),
+        sorted(&[owner(), guest()])
+    );
+    assert!(list(member(), Some("desk")).await.is_err());
+}

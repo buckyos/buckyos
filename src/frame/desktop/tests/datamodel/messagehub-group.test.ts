@@ -1,6 +1,6 @@
-import { formatInviteLink, groupErrorText, parseGroupNotice, parseInviteLink, withinWindow } from '../../src/app/messagehub/groupModel.ts'
+import { formatInviteLink, groupErrorText, parseGroupNotice, parseInviteLink, sortSessionParticipants, withinWindow } from '../../src/app/messagehub/groupModel.ts'
 import { displayedContent, foldMessageRelations, isHiddenRelationMessage, mentionsViewer, messageObjId, messageRelations, ownReactionId } from '../../src/app/messagehub/conversation/history/relations.ts'
-import { collectMentions } from '../../src/app/messagehub/conversation/input/mentions.ts'
+import { applyMention, collectMentions, matchMentionCandidates, mentionQueryAt } from '../../src/app/messagehub/conversation/input/mentions.ts'
 import type { MessageObject } from '../../src/app/messagehub/protocol/msgobj.ts'
 
 const GROUP = 'did:buckyos:group:team'
@@ -102,4 +102,46 @@ Deno.test('mentions are structured, never empty, and only count names still in t
   equal(mentionsViewer(msg('m', BOB, 'x', { mentions: { all: true } }), ME), true)
   equal(mentionsViewer(msg('m', BOB, 'x', { mentions: { dids: [BOB] } }), ME), false)
   equal(mentionsViewer(msg('m', BOB, 'x'), ME), false)
+})
+
+Deno.test('typing @ looks up a mention at the caret, never inside a word', () => {
+  equal(mentionQueryAt('hi @bo', 6), { start: 3, end: 6, query: 'bo' })
+  equal(mentionQueryAt('@', 1), { start: 0, end: 1, query: '' })
+  // The caret inside a word: the query stops at the caret, the replacement covers the word.
+  equal(mentionQueryAt('hi @bob there', 5), { start: 3, end: 7, query: 'b' })
+  equal(mentionQueryAt('（@张', 3), { start: 1, end: 3, query: '张' })
+  equal(mentionQueryAt('mail@example.com', 8), null)
+  equal(mentionQueryAt('hi @bob there', 13), null)
+  equal(mentionQueryAt('no mention', 10), null)
+})
+
+Deno.test('mention suggestions rank prefix, word and substring matches, with @all first while it matches', () => {
+  const people = [{ did: 'a', name: 'Alice Chen' }, { did: 'b', name: 'Bob Zhang' }, { did: 'c', name: 'Cathy' }, { did: 'z', name: '张三' }]
+  const ids = (query: string, all: boolean) => matchMentionCandidates(people, query, all).map(option => option === 'all' ? 'all' : option.did)
+  equal(ids('', true), ['all', 'a', 'b', 'c', 'z'])
+  equal(ids('', false), ['a', 'b', 'c', 'z'])
+  equal(ids('A', true), ['all', 'a', 'b', 'c'])
+  equal(ids('ch', true), ['a'])
+  equal(ids('张', true), ['z'])
+  equal(ids('xyz', true), [])
+  equal(matchMentionCandidates(Array.from({ length: 12 }, (_, index) => ({ did: `${index}`, name: `Member ${index}` })), 'm', false).length, 8)
+})
+
+Deno.test('a picked mention replaces the typed @word and leaves the caret after one space', () => {
+  const bob = { did: BOB, name: 'Bob Zhang' }
+  equal(applyMention('hi @bo', { start: 3, end: 6, query: 'bo' }, bob), { text: 'hi @Bob Zhang ', caret: 14 })
+  equal(applyMention('@b there', { start: 0, end: 2, query: 'b' }, bob), { text: '@Bob Zhang there', caret: 11 })
+  equal(applyMention('@bob x', { start: 0, end: 4, query: 'bo' }, bob), { text: '@Bob Zhang x', caret: 11 })
+  equal(applyMention('@a', { start: 0, end: 2, query: 'a' }, 'all'), { text: '@all ', caret: 5 })
+})
+
+Deno.test('session participants list the owner first and pending guests last', () => {
+  const sorted = sortSessionParticipants([
+    { did: 'g-invited', kind: 'guest', state: 'invited' },
+    { did: 'guest', kind: 'guest', state: 'included' },
+    { did: 'member', kind: 'group_member', role: 'member', state: 'included' },
+    { did: 'owner', kind: 'group_member', role: 'owner', state: 'included' },
+    { did: 'admin', kind: 'group_member', role: 'admin', state: 'included' },
+  ])
+  equal(sorted.map(item => item.did), ['owner', 'admin', 'member', 'guest', 'g-invited'])
 })

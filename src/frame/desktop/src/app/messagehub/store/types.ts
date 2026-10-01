@@ -4,7 +4,7 @@ import type { ConversationMessageReader } from '../conversation/history/types'
 import type { MessageObject, MsgMentions, MsgRelation } from '../protocol/msgobj'
 import type { createSessionSchema } from '../sessionModel'
 import type { createGroupSchema } from '../groupModel'
-import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, GroupSessionInfo, GroupSessionParticipants, MessageHubContext, ReadReceipt, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 
 /**
  * What the composer hands to the store: text plus the raw browser files, and
@@ -132,6 +132,10 @@ export interface MessageHubStore {
   acceptGroupInvitation(context: MessageHubContext, invitation: GroupInvitation): Promise<void>
   /** The Group Session behind a local group session id, once the group is loaded. */
   groupSession(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionInfo | null
+  /** Participants of a Group Session (the default one included) as the viewer may see them; null while unknown or unavailable. */
+  groupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string): GroupSessionParticipants | null
+  /** Loads `groupSessionMembers` once (`refresh` reloads); hosted groups only. */
+  ensureGroupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string, refresh?: boolean): Promise<void>
   manageGroupSession(context: MessageHubContext, groupDid: string, sessionId: string, action: 'archive' | 'delete'): Promise<void>
   addGroupSessionMembers(context: MessageHubContext, groupDid: string, sessionId: string, memberDids: string[]): Promise<void>
   removeGroupSessionMember(context: MessageHubContext, groupDid: string, sessionId: string, memberDid: string): Promise<void>

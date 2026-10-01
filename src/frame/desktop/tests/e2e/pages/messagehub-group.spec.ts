@@ -313,3 +313,67 @@ test('message relations: edit, reaction, reply, recall, admin delete, mentions a
   await expect(history.getByTestId('message-redacted').filter({ hasText: 'Message recalled' })).toBeVisible()
   await expect(history.getByText('Draft two', { exact: true })).toHaveCount(0)
 })
+
+test('typing @ suggests the session members and picks one with the keyboard', async ({ page }) => {
+  await openHub(page, TEAM)
+  const input = page.locator('textarea')
+  const picker = page.getByTestId('mention-picker')
+  await input.click()
+  await input.pressSequentially('mail@example.com and ')
+  await expect(picker).toHaveCount(0)
+  await input.pressSequentially('@bo')
+  await expect(picker.getByRole('option')).toHaveText(['Bob Zhang'])
+  await expect(input).toHaveAttribute('aria-activedescendant', /option-0$/)
+  await page.keyboard.press('Enter')
+  await expect(input).toHaveValue('mail@example.com and @Bob Zhang ')
+  await expect(picker).toHaveCount(0)
+
+  await input.pressSequentially('and @')
+  await expect(picker.getByRole('option')).toHaveText([/@all/, 'Alice Chen', 'Bob Zhang', 'Dave Li', 'CodeAssistant'])
+  await page.keyboard.press('ArrowDown')
+  await expect(picker.getByRole('option', { name: 'Alice Chen' })).toHaveAttribute('aria-selected', 'true')
+  await page.screenshot({ path: 'test-results/messagehub-mention-autocomplete.png' })
+  await page.keyboard.press('Tab')
+  await expect(input).toHaveValue('mail@example.com and @Bob Zhang and @Alice Chen ')
+
+  // Escape closes the suggestions without leaving the draft; Enter then sends.
+  await input.pressSequentially('@da')
+  await expect(picker.getByRole('option')).toHaveText(['Dave Li'])
+  await page.keyboard.press('Escape')
+  await expect(picker).toHaveCount(0)
+  await page.keyboard.press('Enter')
+  const content = 'mail@example.com and @Bob Zhang and @Alice Chen @da'
+  await expect(page.getByTestId('conversation-history').getByText(content)).toBeVisible()
+  const sent = await page.evaluate(async ({ context, id, content }) => (await window.__messageHubMock.reader(context, id).readRange(0, 500)).find(message => message.content.content === content), { context: OWN, id: 'session-team-1', content })
+  expect(sent?.mentions).toEqual({ dids: [BOB, 'did:buckyos:person:alice'] })
+})
+
+test('the participants of a named group session are listed and can be removed', async ({ page }) => {
+  await openHub(page, TEAM)
+  await page.getByRole('button', { name: 'Sessions', exact: true }).click()
+  await page.locator('[data-testid="session-row"]', { hasText: 'Design review' }).getByRole('button', { name: /Design review/ }).first().click()
+  await page.getByRole('button', { name: 'Session details' }).last().click()
+  const participants = page.getByTestId('session-details').getByTestId('session-participants')
+  await expect(participants.locator('li')).toHaveCount(6)
+  await expect(participants.locator('li').first()).toHaveAttribute('data-member-did', 'did:buckyos:person:alice')
+  await expect(participants.locator('li').first()).toContainText('Owner')
+  await expect(participants.locator('li[data-kind="guest"]')).toContainText('Guest')
+  // Neither the owner nor the viewer is offered for removal.
+  await expect(participants.locator('li[data-member-did="did:buckyos:person:alice"]').getByRole('button')).toHaveCount(0)
+  await expect(participants.locator(`li[data-member-did="${SELF}"]`).getByRole('button')).toHaveCount(0)
+  await page.screenshot({ path: 'test-results/messagehub-session-participants.png' })
+
+  await participants.getByRole('button', { name: 'Remove from session: Bob Zhang' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove from session' }).click()
+  await expect(participants.locator(`li[data-member-did="${BOB}"]`)).toHaveCount(0)
+  await expect(page.getByTestId('action-message').last()).toHaveText('You removed Bob Zhang from this session')
+  expect(await page.evaluate(group => window.__messageHubMock.getSnapshot().groups[group].sessions['design-review'].participants['did:buckyos:person:bob'], TEAM)).toBe('removed')
+
+  // Mentions follow the session's participants.
+  await page.getByTestId('session-details').getByRole('button', { name: 'Close' }).click()
+  const input = page.getByTestId('message-composer').locator('textarea')
+  await input.click()
+  await input.pressSequentially('@')
+  await expect(page.getByTestId('mention-picker').getByRole('option', { name: 'Bob Zhang' })).toHaveCount(0)
+  await expect(page.getByTestId('mention-picker').getByRole('option', { name: 'Dave Li' })).toBeVisible()
+})

@@ -3,8 +3,10 @@ import {
   memo,
   useCallback,
   useEffect,
+  useId,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from 'react'
@@ -20,7 +22,7 @@ import {
 import { useI18n } from '../../../../i18n/provider'
 import { displayedContent, messageObjId } from '../history/relations'
 import { getMessageSenderName, type MessageObject, type MsgMentions, type MsgRelation } from '../../protocol/msgobj'
-import { collectMentions, MENTION_ALL, type MentionCandidate } from './mentions'
+import { applyMention, collectMentions, matchMentionCandidates, mentionQueryAt, type MentionCandidate, type MentionQuery } from './mentions'
 import {
   createAttachmentItem,
   extractTransferFiles,
@@ -75,7 +77,7 @@ interface ConversationComposerProps {
   onDraftChange?: (value: string) => Promise<void> | undefined
   relation?: ComposerRelation | null
   onCancelRelation?: () => void
-  /** Members offered by the mention picker (group sessions only). */
+  /** Members offered while typing `@` and by the @ button (group sessions only). */
   mentionCandidates?: MentionCandidate[]
   canMentionAll?: boolean
 }
@@ -91,7 +93,12 @@ const ConversationComposerInner = forwardRef<
   const { t } = useI18n()
   const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>(() => initialAttachments.map(createAttachmentItem))
   const [inputValue, setInputValue] = useState(initialDraft)
-  const [mentionOpen, setMentionOpen] = useState(false)
+  // The `@word` at the caret drives the suggestions; Escape dismisses them
+  // for that `@` until the caret leaves it.
+  const [mentionQuery, setMentionQuery] = useState<MentionQuery | null>(null)
+  const [dismissedMention, setDismissedMention] = useState<number | null>(null)
+  const [activeMention, setActiveMention] = useState({ key: '', index: 0 })
+  const mentionListId = useId()
   const [picked, setPicked] = useState<MentionCandidate[]>([])
   const [mentionAll, setMentionAll] = useState(false)
   const [pendingSends, setPendingSends] = useState(0)
@@ -151,6 +158,7 @@ const ConversationComposerInner = forwardRef<
   const [draftBeforeEdit, setDraftBeforeEdit] = useState<string | null>(null)
   if (relation !== appliedRelation) {
     setAppliedRelation(relation)
+    setMentionQuery(null)
     if (relation?.kind === 'edit') {
       if (draftBeforeEdit === null) setDraftBeforeEdit(inputValue)
       setInputValue(displayedContent(relation.message))
@@ -200,6 +208,22 @@ const ConversationComposerInner = forwardRef<
     }
   }, [])
 
+  const mentionOptions = useMemo(() => mentionQuery ? matchMentionCandidates(mentionCandidates, mentionQuery.query, canMentionAll) : [], [mentionQuery, mentionCandidates, canMentionAll])
+  const mentionOpen = mentionQuery !== null && mentionQuery.start !== dismissedMention && mentionOptions.length > 0
+  const mentionKey = mentionQuery ? `${mentionQuery.start}:${mentionQuery.query}` : ''
+  const activeMentionIndex = activeMention.key === mentionKey ? Math.min(activeMention.index, mentionOptions.length - 1) : 0
+  const mentionOptionId = (index: number) => `${mentionListId}-option-${index}`
+
+  const trackMention = useCallback((text: string, element: HTMLTextAreaElement) => {
+    const next = element.selectionStart === element.selectionEnd ? mentionQueryAt(text, element.selectionStart) : null
+    setMentionQuery(previous => previous?.start === next?.start && previous?.end === next?.end && previous?.query === next?.query ? previous : next)
+    if (!next) setDismissedMention(null)
+  }, [])
+
+  useEffect(() => {
+    if (mentionOpen) document.getElementById(mentionOptionId(activeMentionIndex))?.scrollIntoView({ block: 'nearest' })
+  }, [mentionOpen, activeMentionIndex]) // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (!pickerOpen && !mentionOpen) {
       return
@@ -208,7 +232,7 @@ const ConversationComposerInner = forwardRef<
     const handlePointerDown = (event: MouseEvent) => {
       if (!composerRef.current?.contains(event.target as Node)) {
         setPickerOpen(false)
-        setMentionOpen(false)
+        setMentionQuery(null)
       }
     }
 
@@ -330,7 +354,7 @@ const ConversationComposerInner = forwardRef<
     const mentions = collectMentions(text, picked, mentionAll)
     sendQueue.current.push({ attachments: relation?.kind === 'edit' ? [] : attachments, content: text, ...(relatesTo ? { relatesTo } : {}), ...(mentions ? { mentions } : {}) })
     if (relation) onCancelRelation?.()
-    setPicked([]); setMentionAll(false)
+    setPicked([]); setMentionAll(false); setMentionQuery(null)
     setPendingSends(sendQueue.current.length)
     setSendError(false)
     setOversizeNames([])
@@ -342,15 +366,57 @@ const ConversationComposerInner = forwardRef<
     void drainSendQueue()
   }, [attachments, drainSendQueue, flushDraft, inputValue, relation, onCancelRelation, picked, mentionAll])
 
-  const insertMention = useCallback((candidate: MentionCandidate | 'all') => {
-    const text = candidate === 'all' ? `${MENTION_ALL} ` : `@${candidate.name} `
-    if (candidate === 'all') setMentionAll(true)
-    else setPicked(previous => previous.some(item => item.did === candidate.did) ? previous : [...previous, candidate])
-    insertTextAtSelection(text, inputValue, setInputValue, inputRef.current)
-    setMentionOpen(false)
-  }, [inputValue])
+  /** Replaces the `@word` at the caret with the picked mention. */
+  const pickMention = useCallback((option: MentionCandidate | 'all') => {
+    if (!mentionQuery) return
+    const { text, caret } = applyMention(inputValue, mentionQuery, option)
+    if (option === 'all') setMentionAll(true)
+    else setPicked(previous => previous.some(item => item.did === option.did) ? previous : [...previous, option])
+    setInputValue(text)
+    setMentionQuery(null)
+    placeCaret(inputRef.current, text, caret)
+  }, [inputValue, mentionQuery])
+
+  /** The @ button starts a mention at the caret, or closes the open suggestions. */
+  const toggleMentions = useCallback(() => {
+    const textarea = inputRef.current
+    if (mentionQuery && mentionOptions.length > 0) {
+      setDismissedMention(mentionOpen ? mentionQuery.start : null)
+      textarea?.focus()
+      return
+    }
+    const start = textarea?.selectionStart ?? inputValue.length
+    const end = textarea?.selectionEnd ?? inputValue.length
+    const marker = start > 0 && !/\s/.test(inputValue[start - 1]) ? ' @' : '@'
+    const text = `${inputValue.slice(0, start)}${marker}${inputValue.slice(end)}`
+    const caret = start + marker.length
+    setInputValue(text)
+    setDismissedMention(null)
+    setMentionQuery(mentionQueryAt(text, caret))
+    placeCaret(textarea, text, caret)
+  }, [inputValue, mentionOpen, mentionOptions.length, mentionQuery])
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (mentionOpen && mentionQuery && !event.nativeEvent.isComposing) {
+      const count = mentionOptions.length
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault()
+        setActiveMention({ key: mentionKey, index: (activeMentionIndex + (event.key === 'ArrowDown' ? 1 : count - 1)) % count })
+        return
+      }
+      if ((event.key === 'Enter' && !event.shiftKey) || event.key === 'Tab') {
+        event.preventDefault()
+        pickMention(mentionOptions[activeMentionIndex])
+        return
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        setDismissedMention(mentionQuery.start)
+        return
+      }
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
       if (!event.nativeEvent.isComposing) handleSend()
@@ -358,7 +424,6 @@ const ConversationComposerInner = forwardRef<
 
     if (event.key === 'Escape') {
       setPickerOpen(false)
-      setMentionOpen(false)
       if (relation) onCancelRelation?.()
     }
   }
@@ -410,7 +475,7 @@ const ConversationComposerInner = forwardRef<
       ref={composerRef}
       data-testid="message-composer"
       aria-busy={pendingSends > 0}
-      onKeyDown={(event) => { if (event.key === 'Escape') { setPickerOpen(false); setMentionOpen(false) } }}
+      onKeyDown={(event) => { if (event.key === 'Escape') setPickerOpen(false) }}
       className="relative z-20 flex min-h-0 flex-shrink-0 flex-col"
       style={{
         borderTop: '1px solid var(--cp-border)',
@@ -468,9 +533,26 @@ const ConversationComposerInner = forwardRef<
       ) : null}
 
       {mentionOpen ? (
-        <div role="listbox" aria-label={t('messagehub.mention.pick')} data-testid="mention-picker" className="shell-scrollbar absolute bottom-full left-4 z-40 mb-2 max-h-56 w-56 overflow-y-auto rounded-2xl p-1.5 shadow-lg" style={{ background: 'color-mix(in srgb, var(--cp-surface) 96%, white)', border: '1px solid var(--cp-border)' }}>
-          {canMentionAll ? <button type="button" role="option" aria-selected={false} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium" style={{ color: 'var(--cp-text)' }} onClick={() => insertMention('all')}><AtSign size={14} />{t('messagehub.mention.all')}</button> : null}
-          {mentionCandidates.map(candidate => <button key={candidate.did} type="button" role="option" aria-selected={false} className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-sm" style={{ color: 'var(--cp-text)' }} onClick={() => insertMention(candidate)}><span className="truncate">{candidate.name}</span></button>)}
+        <div id={mentionListId} role="listbox" aria-label={t('messagehub.mention.pick')} data-testid="mention-picker" className="shell-scrollbar absolute bottom-full left-4 z-40 mb-2 max-h-56 w-60 max-w-[calc(100%-2rem)] overflow-y-auto rounded-2xl p-1.5 shadow-lg" style={{ background: 'color-mix(in srgb, var(--cp-surface) 96%, white)', border: '1px solid var(--cp-border)' }}>
+          {mentionOptions.map((option, index) => {
+            const active = index === activeMentionIndex
+            return (
+              <div
+                key={option === 'all' ? 'all' : option.did}
+                id={mentionOptionId(index)}
+                role="option"
+                aria-selected={active}
+                className={`flex min-h-10 w-full cursor-pointer items-center gap-2 rounded-xl px-3 text-left text-sm ${option === 'all' ? 'font-medium' : ''}`}
+                style={{ color: 'var(--cp-text)', background: active ? 'color-mix(in srgb, var(--cp-accent) 12%, transparent)' : undefined }}
+                // Keep the caret in the input: picking replaces the `@word` around it.
+                onMouseDown={(event) => event.preventDefault()}
+                onMouseEnter={() => setActiveMention({ key: mentionKey, index })}
+                onClick={() => pickMention(option)}
+              >
+                {option === 'all' ? <><AtSign size={14} aria-hidden />{t('messagehub.mention.all')}</> : <span className="truncate">{option.name}</span>}
+              </div>
+            )
+          })}
         </div>
       ) : null}
 
@@ -504,7 +586,8 @@ const ConversationComposerInner = forwardRef<
             <button
               className="flex min-h-11 min-w-11 flex-shrink-0 items-center justify-center rounded-full"
               style={{ color: mentionOpen ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
-              onClick={() => setMentionOpen((previous) => !previous)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={toggleMentions}
               type="button"
               aria-label={t('messagehub.mention.add')}
               aria-haspopup="listbox"
@@ -519,7 +602,8 @@ const ConversationComposerInner = forwardRef<
           <textarea
             ref={inputRef}
             value={inputValue}
-            onChange={(event) => setInputValue(event.target.value)}
+            onChange={(event) => { setInputValue(event.target.value); trackMention(event.target.value, event.target) }}
+            onSelect={(event) => trackMention(event.currentTarget.value, event.currentTarget)}
             onKeyDown={handleKeyDown}
             onPaste={(event) => {
               void handlePaste(event)
@@ -527,6 +611,9 @@ const ConversationComposerInner = forwardRef<
             placeholder={placeholder}
             rows={1}
             aria-label={placeholder}
+            aria-autocomplete={showMentions ? 'list' : undefined}
+            aria-controls={mentionOpen ? mentionListId : undefined}
+            aria-activedescendant={mentionOpen ? mentionOptionId(activeMentionIndex) : undefined}
             className="block min-h-11 min-w-0 flex-1 resize-none border-none bg-transparent px-1 py-[10px] text-[16px] leading-6 outline-none md:text-[15px]"
             style={{
               color: 'var(--cp-text)',
@@ -749,6 +836,15 @@ function getFileExtension(filename: string): string {
   }
 
   return parts.at(-1)?.slice(0, 4).toUpperCase() || 'FILE'
+}
+
+/** Moves the caret once React has rendered `text`, unless typing has changed it since. */
+function placeCaret(textarea: HTMLTextAreaElement | null, text: string, caret: number) {
+  requestAnimationFrame(() => {
+    if (!textarea || textarea.value !== text) return
+    textarea.focus()
+    textarea.setSelectionRange(caret, caret)
+  })
 }
 
 function insertTextAtSelection(

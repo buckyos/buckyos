@@ -98,3 +98,4 @@ src/rootfs/bin/workflow/workflow
 *.codex
 src/deno.lock
 /doc/ai-canvas/e2e/runs/
+src/frame/desktop/test-results/

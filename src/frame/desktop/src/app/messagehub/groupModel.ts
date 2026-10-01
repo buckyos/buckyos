@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import type { MessageObject } from './protocol/msgobj'
 import type { MessageHubStore } from './store/types'
-import type { Entity, GroupInvitation, GroupMember, GroupRole, MessageHubContext } from './types'
+import type { Entity, GroupInvitation, GroupMember, GroupRole, GroupSessionParticipant, MessageHubContext } from './types'
 
 export const GROUP_INVITATION_INTENT = 'buckyos.group_invitation'
 export const GROUP_MEMBER_LIMIT = 100
@@ -19,6 +19,12 @@ const stateRank: Record<string, number> = { active: 0, pending_admin_approval: 1
 
 export function sortGroupMembers(members: GroupMember[]): GroupMember[] {
   return [...members].sort((a, b) => (stateRank[a.state] ?? 3) - (stateRank[b.state] ?? 3) || roleRank[a.role] - roleRank[b.role] || a.did.localeCompare(b.did))
+}
+
+/** Session participants in display order: owner, admins, members, guests, then pending guest invitations. */
+export function sortSessionParticipants(items: GroupSessionParticipant[]): GroupSessionParticipant[] {
+  const rank = (item: GroupSessionParticipant) => item.state === 'invited' ? 4 : item.role ? roleRank[item.role] : 3
+  return [...items].sort((a, b) => rank(a) - rank(b) || a.did.localeCompare(b.did))
 }
 
 /** Name used when the creator leaves the group name empty. */

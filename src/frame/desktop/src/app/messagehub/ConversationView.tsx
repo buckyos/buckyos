@@ -125,7 +125,15 @@ export function ConversationView({
   const sessionId = session?.id
   const group = isGroup ? store.group(context, entity.id) : null
   const groupMembers = group?.members
-  const mentionCandidates = useMemo(() => (groupMembers ?? []).filter(member => member.state === 'active' && member.did !== context.ownerDid).map(member => ({ did: member.did, name: store.findEntity(context, member.did)?.name ?? friendlyDidName(member.did, false) })), [groupMembers, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  const groupHosted = group?.hosted === true
+  useEffect(() => { if (groupHosted && sessionId) void store.ensureGroupSessionMembers(context, entity.id, sessionId) }, [store, groupHosted, entity.id, sessionId, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Mentions go to the session's participants (guests included); the group's
+  // members stand in until those are known.
+  const sessionMembers = isGroup && sessionId ? store.groupSessionMembers(context, entity.id, sessionId) : null
+  const mentionCandidates = useMemo(() => {
+    const dids = sessionMembers ? sessionMembers.items.filter(item => item.state === 'included').map(item => item.did) : (groupMembers ?? []).filter(member => member.state === 'active').map(member => member.did)
+    return dids.filter(did => did !== context.ownerDid).map(did => ({ did, name: store.findEntity(context, did)?.name ?? friendlyDidName(did, false) }))
+  }, [sessionMembers, groupMembers, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
   const messageActions = useMemo(() => {
     const notice = (message: MessageObject, operation: (notice: NonNullable<ReturnType<typeof parseGroupNotice>>) => Promise<void>) => {
       const parsed = parseGroupNotice(message)

@@ -191,11 +191,11 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 当前三个宿主都没有开启 deferred 工具，PendingTool 的结果回填还没接入。
 
 
-## AgentRuntime （感觉这是一个llm_context依赖的的trait)
+## AgentRuntime （感觉这是一个llm_context依赖的的trait，这样要叫llm_context_runtimie?)
 
 - 实现所有的可用的tools,也就是说，所有的tools调用都先进入到Runtime里来再继续的
 - 实现了模版引擎运行所需要的环境，包括宏的执行，以及插入哪些预定的变量
-
+  - 因为每个round都有编入context信息的机会，所以AgentRuntime里也包含了对半订阅状态的管理
 
 
 ## AgentState (RootFS)
@@ -203,3 +203,8 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 - SessionMgr / WorkspaceMgr等
 - 基于behavior name 构造LLM Context时，可能最要通过AgentState
 - 为Runtime的一些Agent相关状态tool提供实现 （尤其是Memory相关）
+
+
+## 命令行工具
+- xllm 加载(创建) local_llm_context,并运行到一个Step结束
+- xagent 加载（创建）AgentSession，并运行(到turn结束)。xagent拉起的也可以是一个持续获取input不断执行TurnLoop的AgentSession
