@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -241,7 +241,7 @@ msg.list_sessions       → SessionSummary[] 活跃度、未读、最近一条�
 会话登记 / 连接能力       → 待实现契约       空会话、稳定绑定、创建与发送能力
 ```
 
-旧 self-host Group 服务及 `group.*` RPC 已删除，当前不加载群目录、成员数和群能力。外部群继续从联系人和会话消息派生；已有原生群会话保留历史展示，发送在 v2 接入前不可用。
+Self-host Group v2 的群目录、成员与能力按 §3.7 加载（`group.list_by_member` 等，仅 self 视角）。外部群继续从联系人和会话消息派生。
 
 ```ts
 export interface Entity {
@@ -316,7 +316,7 @@ export interface MessagePreview {
 
 `resolveEntityDid(summary: SessionSummary, ownerDid: DID): EntityId | null`：
 
-目标优先使用后端会话登记的对端 / 群 DID，再通过当前 owner 的联系人关系归一展示身份；
+目标优先使用后端会话登记的对端 / 群 DID（群 host 写入的登记行 `origin = 'group'`，`peer_did` 为群 DID），再通过当前 owner 的联系人关系归一展示身份；
 这不改变原始消息 DID、Session ID 或绑定的发送目标。当前没有登记时才使用下表：
 
 | `session_id` 形态 | 后端来源 | 实体 DID |
@@ -413,7 +413,7 @@ export type SessionTitleSource =
 2. 权威 `SessionSharedState.title` → `'shared'`
 3. `last_record.msg.thread.topic` → `'topic'`
 4. `session_id` 形如 `dm:*` → i18n `messagehub.session.direct`（"Direct Message"）→ `'direct'`
-5. 群 session → 群名 → `'group'`
+5. 群的默认 Session（id 为群 DID）→ i18n `messagehub.session.groupMain`；具名 Group Session → `group.list_sessions` 的共享标题，未知时群名 → `'group'`
 6. 有来源平台 → 平台展示名 → `'platform'`
 7. 其余（含新建空会话）→ i18n `messagehub.session.untitled`（“未命名会话”）→ `'fallback'`
 
@@ -501,7 +501,7 @@ Agent 观察则连展示配置、已读、草稿都不能写入。后续代 Agen
 
 以上是目标字段，当前 mock `SessionAccess` 尚无 `canRead/canSend`，且自己的 native Session
 会默认可写、可编辑共享和成员状态；该规则不能沿用到真实接入。native 也可能没有路由或没有群发言权限。
-旧 `group.check_access` 和 `GroupSummary` 已删除；原生群能力等待 v2 服务接入，当前保持只读。
+群会话发言能力按 §3.7 由 `group.check_access(session.post)` 判定，结果未知时只读。
 `Entity.domain` 和持有本地历史均不授予管理权。
 原生目标无路由 / 路由变化、群只读、字段权限未知都须呈现具体原因；发送服务仍在提交时校验。
 `canRead=false` 显示拒绝态；Agent 观察可经授权读取，但以上所有写入能力均为 false。
@@ -533,7 +533,7 @@ export interface EntityDetail extends Entity {
   note?: string
   /** 协议账号绑定。 */
   bindings: AccountBinding[]
-  /** 群成员数，仅 type === 'group' 时有值。来自 GroupSummary.member_count（GroupDoc 不含该字段）。 */
+  /** 群成员数，仅 type === 'group' 时有值。v2 群的成员由 §3.7 的群面板（`group.list_members`）展示。 */
   memberCount?: number
   /** 访问级别，决定详情页的权限区块与「拉黑 / 临时授权」动作。 */
   accessLevel: AccessGroupLevel
@@ -694,7 +694,7 @@ Session / 实体状态变更复用标准已有的 `MsgObject.kind = 'event'` 与
 
 Action Log 是已确认变化的历史记录，按普通持久消息进入 Session API；
 不映射成 `ui_item_kind='status'`，不使用 `ConversationStatusType` 代替业务动作。
-原型由 mock 生成日志；后端 `GroupMgr` 的事件目前存于 `group_events`，尚未发布成统一 Action Log 消息。
+原型由 mock 生成日志；Self-host Group v2 的群事件由 host 以 `from = group_did` 的 Action Log 消息写入成员投影，UI 按 action 本地化并把 actor / subject 显示为联系人名（§3.7）。
 普通消息提交或历史重放不触发状态写入；更新状态与发布日志由权威服务负责。
 
 后续特殊展示与过滤都以 `kind === 'event' && content.machine?.intent === 'buckyos.action_log'`
@@ -768,6 +768,29 @@ Reader 的三种实现：
 
 当前原型以 `readerKey` 变化触发重建、`totalCount` 增长触发追加。真实接入还必须通知同数量记录的状态更新、
 删除和重新归类；仅有 append / totalCount 不能覆盖这些变化，扩展要求见 §6.6。
+
+### 3.7 Self-host Group v2（2026-10-01 接入）
+
+依据 `doc/message_hub/Self-Host-Groupv2.md` 与 `src/frame/msg_center/doc/group-v2-backend.md`。纯规则在 `groupModel.ts`，
+store 接口为 `group / groupStatus / ensureGroup / createGroup / inviteGroupMembers / removeGroupMember / leaveGroup / deleteGroup / groupInvitation / acceptGroupInvitation`。
+
+- **群目录**：self 视角加载 `group.list_by_member`（`items` 为本 Zone 托管，`joined` 为远端托管且未停止的群），`GroupDoc.profile.name` 作为群名。Agent 观察不加载，也不做任何群写入。
+- **会话键**：host 为本地成员写入登记行（`registered`、`origin = 'group'`、`peer_did = group DID`），`session_id` 是规范 MailboxAddress：默认 Session 为裸群 DID，具名 Session 为 `<group_did>/<编码后的 session_id>`。`groupSessionKey / groupSessionId` 负责互转。
+- **发送**：`to = [group_did]`、`kind = 'group_msg'`，`to_session` 取解码后的原始 Session ID，默认 Session 不带；键无法解析的群会话只读（`binding_unknown`）。
+- **默认会话**：群实体固定选择 id 为群 DID 的会话，缺失时不自动创建；在群实体上「新建会话」调用 `group.create_session`（具名 Group Session，成员默认继承）。
+- **发言能力**：托管群按会话调用 `group.check_access(session.post)` 并缓存，结果未知时只读（`permission_pending`）；远端托管群由 host 在提交时判定；不在群目录或已解散为 `group_not_member`，已归档为 `group_archived`，规则不允许为 `group_post_denied`。打开群面板或群操作后重新查询。
+- **本人消息去重**：host 把本人的群消息同时写入 SENT 和本人 INBOX（UNREAD）。时间线只保留 SENT 一侧，INBOX 副本在 self 视角下自动标为已读，避免重复气泡和虚增未读。
+- **群资料 `GroupInfo`**：`group.get_doc` + `group.list_members`（不可见时 `members = null`）+ `group.list_sessions`（具名 Session 共享标题）+ `group.check_access`（`group.invite_member` / `group.remove_member` / `session.create`）。远端托管群只显示「由托管方管理」。
+- **入口**：实体列表头「新建群聊」、Groups 过滤器首行、空会话页、个人 / Agent 详情「和 X 建群」（预选该联系人）。候选成员为可经 native 连接到达的人和 Agent，排除 `did:msgtunnel:*`、已拉黑者和自己。创建调用 `group.create({ profile: { name }, invitations })`；名称留空时用所选成员名生成。
+- **邀请与通知**：被邀请者在与邀请者的会话（`dm:<inviter>`）中收到 `kind = 'operation'`、`machine.intent = 'buckyos.group_invitation'` 的通知，渲染为邀请卡（群名取 `group.get_doc`，状态为待加入 / 已加入 / 已失效），接受调用 `group.submit_member_proof`。`pending_approval` / `rejected` / `removed` / `session_invite` 渲染为通知卡。
+- **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案。
+- **Session 详情**：群会话提示「群主可以查看本群的所有会话」（v2 §2.3.4）。
+
+已知缺口：
+
+1. **成员 proof 需要本人签名。** `group.create` 只有在 msg-center runtime 持有该用户私钥时才自动构造群主 proof，`group.submit_member_proof` 必须由调用方提交签名。浏览器不持有用户私钥，真实环境中建群会返回 `owner-proof-required`，接受邀请会返回 `member-proof-required`，UI 原样提示。需要后端提供「本 Zone 在用户授权下代签」（v2 §2.4）或客户端签名通道才能闭环。
+2. 远端托管群的成员与管理 RPC 只在 host 上可用。
+3. 转让群主、角色调整、禁言、入群审批、邀请链接、Session Guest 尚无 UI。
 
 ---
 
@@ -1350,12 +1373,11 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 
 | UI DataModel | KRPC 方法 | 变换 |
 |---|---|---|
-| `Entity[]` | `msg.list_sessions` + `contact.list_contacts` + `group.list_by_member` | 目标三路合并；还需会话登记 / 能力，见 3.2 |
+| `Entity[]` | `msg.list_sessions` + `contact.list_contacts` + `group.list_by_member` | 三路合并；群名取 `GroupDoc.profile.name`，见 3.2 / 3.7 |
 | `Entity.id` | `contact.resolve_canonical_did` | 别名 DID 归一 |
 | `Entity.unreadCount` | `SessionSummary.unread_count` | Σ 聚合 |
 | `Entity.lastMessage` | `SessionSummary.last_record.msg` | 见 3.5.2 摘要规则 |
 | `Entity.lastActiveAt` | 独立的有效消息活动时间（后端待补齐） | max(session.lastActiveAt)，不含状态 / Action Log |
-| `Entity.children`（群） | `group.list_subgroups` | `GroupSubgroup` → `Entity` |
 | `EntitySession[]` | `msg.list_sessions(owner=context.sessionOwnerDid)` | 按 3.2.1 分组；空 Session、绑定与能力需补齐登记契约 |
 | `EntitySession.title` | `ui_session.get_state('ui.title')` / 待实现共享状态读取 / `msg.thread.topic` | 见 3.3.1 |
 | `EntitySession.isPinned/isMuted` | `ui_session.get_state` | KV 反序列化 + schema 校验 |
@@ -1366,11 +1388,11 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `ui_delivery_status` | `SessionMessageItem.delivery.overall` | 枚举映射，见 3.5 |
 | `ui_sender_name` | `MailboxRecord.from_name` | 缺失时回落 DID |
 | `EntityDetail` | `contact.get_contact` / `group.get_doc` | `Contact` / `GroupDoc` → `EntityDetail` |
-| `EntityDetail.memberCount` | `group.list_by_member` 的 `GroupSummary.member_count` | `group.get_doc` 不返回成员数 |
+| `GroupInfo` | `group.get_doc` / `group.list_members` / `group.list_sessions` / `group.check_access` | 见 3.7 |
 | `AccountBinding.endpointDid` | `Contact.bindings[].endpoint_did` | 直接 |
 | `EntityDetail.accessLevel` | `Contact.access_level` | `SCREAMING`→`snake` 已由 serde 处理 |
 | 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；请求处理状态与跨页计数待补齐 |
-| 群操作能力 | `group.check_access` | 按 actor 和 action 查询，不由 native / 本地托管推断 |
+| 群操作能力 | `group.check_access` | 按 actor 和 action（`session.post` 带 session_id）查询，不由 native / 本地托管推断 |
 | 回执详情 | `msg.list_read_receipts` | 独立于 mailbox 与 delivery；当前持久性限制见 6.5 |
 
 ### 9.2 写入路径
@@ -1388,6 +1410,11 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 拉黑 | `contact.block_contact` | |
 | 临时授权 | `contact.grant_temporary_access` | |
 | 会话重新归类 | `msg.update_record_session` | 仅可信后端/Agent 使用，UI 暂不暴露 |
+| 建群 | `group.create` | `{ idempotency_key, profile: { name }, invitations: [{ member_did }] }`；群主 proof 见 3.7 缺口 1 |
+| 邀请 / 移出或撤销邀请 / 退出 / 解散 | `group.invite_member` / `group.remove_member` / `group.leave` / `group.delete` | `{ group_did, member_did?, idempotency_key }` |
+| 新建群会话 | `group.create_session` | `{ group_did, title?, idempotency_key }` |
+| 接受邀请 | `group.submit_member_proof` | `{ group_did, proof }`；proof 必须由成员签名 |
+| 发送群消息 | `msg.post_send` | `to = [group_did]`、`kind = 'group_msg'`、具名 Session 带 `to_session` |
 
 所有写动作都校验当前 context；Agent 观察首期禁用整张写入表，而不只是隐藏 Composer。
 

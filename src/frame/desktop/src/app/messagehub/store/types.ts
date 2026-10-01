@@ -3,7 +3,8 @@ import type { ComposerAttachmentInput } from '../conversation/input/attachmentDr
 import type { ConversationMessageReader } from '../conversation/history/types'
 import type { MessageObject } from '../protocol/msgobj'
 import type { createSessionSchema } from '../sessionModel'
-import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import type { createGroupSchema } from '../groupModel'
+import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupInvitationView, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 
 /** What the composer hands to the store: text plus the raw browser files. */
 export interface OutgoingPayload {
@@ -91,4 +92,20 @@ export interface MessageHubStore {
   runtimeFor(context: MessageHubContext, sessionId: string): RuntimeState[]
   clearTransient(ownerDid: string): void
   title(context: MessageHubContext, session: Session): string
+  /**
+   * Self-host groups (`Self-Host-Groupv2.md`). Group operations reject with
+   * the host's reason code (`capability-denied`, `owner-proof-required`, …).
+   */
+  group(context: MessageHubContext, groupDid: string): GroupInfo | null
+  groupStatus(context: MessageHubContext, groupDid: string): 'idle' | 'loading' | 'ready' | 'error'
+  ensureGroup(context: MessageHubContext, groupDid: string, refresh?: boolean): Promise<void>
+  /** Creates the group and invites the members; resolves to the group DID (its entity id). */
+  createGroup(context: MessageHubContext, input: z.infer<typeof createGroupSchema>): Promise<string>
+  /** Invites each DID; resolves to the DIDs whose invitation failed, with the reason. */
+  inviteGroupMembers(context: MessageHubContext, groupDid: string, memberDids: string[]): Promise<Array<{ did: string; reason: string }>>
+  removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string): Promise<void>
+  leaveGroup(context: MessageHubContext, groupDid: string): Promise<void>
+  deleteGroup(context: MessageHubContext, groupDid: string): Promise<void>
+  groupInvitation(context: MessageHubContext, invitation: GroupInvitation): GroupInvitationView
+  acceptGroupInvitation(context: MessageHubContext, invitation: GroupInvitation): Promise<void>
 }

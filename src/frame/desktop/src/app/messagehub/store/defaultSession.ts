@@ -27,7 +27,7 @@ async function resolveDefaultSession(store: DefaultSessionStore, context: Messag
   }
   if (session) return session
   const entity = store.findEntity(context, entityId)
-  if (!entity) return null
+  if (!entity || entity.type === 'group') return null
   const choices = store.connections(context, entityId)
     .filter(choice => entity.type !== 'agent' || choice.binding.kind === 'native')
     .filter(choice => !creationReason(context, entity, store.policy(context, entityId), choice.binding))

@@ -4,6 +4,8 @@ import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useMessageHubStore } from './store'
 import { hubButtonClass, hubInputClass } from './SessionDialogs'
+import { memberCandidates } from './groupModel'
+import { GroupPanel } from './GroupPanel'
 import {
   X,
   Bot,
@@ -16,6 +18,7 @@ import {
   Tag,
   Link2,
   Edit3,
+  UsersRound,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import type { EntityDetail, MessageHubContext } from './types'
@@ -24,6 +27,8 @@ interface EntityDetailsProps {
   entity: EntityDetail
   context?: MessageHubContext
   onClose: () => void
+  /** Opens the new-group dialog with these members preselected. */
+  onCreateGroup?: (members: string[]) => void
 }
 
 function DetailAvatar({ entity }: { entity: EntityDetail }) {
@@ -81,8 +86,11 @@ function InfoRow({
   )
 }
 
-export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) {
+export function EntityDetails({ entity, context, onClose, onCreateGroup }: EntityDetailsProps) {
   const { t } = useI18n()
+  const store = useMessageHubStore()
+  const groupInfo = context && entity.type === 'group' ? store.group(context, entity.id) : null
+  const canStartGroup = Boolean(onCreateGroup && context?.mode === 'self' && context.ownerDid === context.viewerDid && memberCandidates(store, context).some(candidate => candidate.id === entity.id))
 
   const typeLabels: Record<string, string> = {
     person: t('messagehub.entityType.person', 'Person'),
@@ -190,6 +198,8 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
           </div>
         )}
 
+        {context && entity.type === 'group' && <GroupPanel key={`group:${entity.id}`} entity={entity} context={context} />}
+
         {/* Info section */}
         <div
           className="rounded-xl px-3 mb-4"
@@ -198,7 +208,7 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
               'color-mix(in srgb, var(--cp-text) 4%, transparent)',
           }}
         >
-          {entity.memberCount !== undefined && (
+          {entity.memberCount !== undefined && !groupInfo && (
             <InfoRow
               label={t('messagehub.members', 'Members')}
               value={`${entity.memberCount}`}
@@ -253,6 +263,19 @@ export function EntityDetails({ entity, context, onClose }: EntityDetailsProps) 
               />
             ))}
           </div>
+        )}
+
+        {canStartGroup && (
+          <button
+            type="button"
+            onClick={() => onCreateGroup?.([entity.id])}
+            className="mb-4 flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium"
+            style={{ background: 'color-mix(in srgb, var(--cp-accent) 10%, transparent)', color: 'var(--cp-accent)' }}
+            data-testid="entity-create-group"
+          >
+            <UsersRound size={16} aria-hidden />
+            {t('messagehub.group.createWith', undefined, { name: entity.name })}
+          </button>
         )}
 
         {/* Actions */}

@@ -13,6 +13,8 @@ export const UNASSIGNED_ENTITY_ID = 'messagehub:unassigned'
 
 export interface ProjectionLabels {
   direct: string
+  /** Title of a group's default session. */
+  groupMain: string
   untitled: string
   unassigned: string
   unassignedDescription: string
@@ -30,6 +32,10 @@ export interface ProjectionInput {
   agentDids: string[]
   /** Owner-scoped `ui.title` overrides by session id. */
   personalTitles: Record<string, string>
+  /** Self-host groups the owner participates in, by group DID. */
+  groups: Record<string, { name: string }>
+  /** Shared titles of named group sessions, by local session key. */
+  groupSessionTitles: Record<string, string>
   policies: Record<string, CreationPolicy>
   labels: ProjectionLabels
 }
@@ -110,7 +116,7 @@ function groupTag(record: MailboxRecordWithObject | undefined): string | null {
  */
 export function attributeSession(summary: SessionSummary, ownerDid: string): SessionAttribution {
   const registeredPeer = summary.state?.peer_did
-  if (summary.state?.registered && registeredPeer) return { peerDid: registeredPeer, isGroup: false, evidence: 'registered' }
+  if (summary.state?.registered && registeredPeer) return { peerDid: registeredPeer, isGroup: summary.state.origin === 'group', evidence: 'registered' }
   const record = summary.last_record
   const tagged = groupTag(record)
   if (tagged) return { peerDid: tagged, isGroup: true, evidence: 'group_tag' }
@@ -225,12 +231,13 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     }
     const contact = contactByDid.get(did)
     const tunnel = parseTunnelDid(did)
-    const isGroup = hint?.isGroup === true || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
+    const group = input.groups[did]
+    const isGroup = hint?.isGroup === true || !!group || tunnel?.accountType === 'group' || tunnel?.accountType === 'channel'
     const isZoneUser = contact?.tags?.includes('zone_user') === true
     const isAgent = !isGroup && !isZoneUser && (agentSet.has(did) || contact?.tags?.includes('agent') === true)
     const type: Entity['type'] = isGroup ? 'group' : isAgent ? 'agent' : 'person'
-    const domain: EntitySeed['domain'] = tunnel ? 'external' : isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
-    const name = contact?.name?.trim() || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
+    const domain: EntitySeed['domain'] = tunnel ? 'external' : group || isZoneUser || did.startsWith('did:bns:') || isAgent ? 'managed' : 'external'
+    const name = contact?.name?.trim() || group?.name || hint?.fromName?.trim() || friendlyDidName(did, isAgent)
     const seed: EntitySeed = { id: did, type, name, domain, contact, sources: new Set() }
     if (tunnel) seed.sources.add(platformOfInstance(tunnel.tunnelInstanceId))
     contact?.bindings?.forEach(binding => seed.sources.add(binding.platform))
@@ -245,6 +252,7 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     ensureSeed(contact.did)
   }
   for (const did of input.agentDids) ensureSeed(did)
+  for (const did of Object.keys(input.groups)) ensureSeed(did, { isGroup: true })
   names[ownerDid] ??= labels.you
 
   const sessions: Session[] = []
@@ -260,12 +268,14 @@ export function projectOwner(input: ProjectionInput): ProjectedOwner {
     const lastMessage: MessagePreview | undefined = summary.last_record
       ? { senderName: attribution.isGroup && msg ? (msg.from === ownerDid ? labels.you : names[canonicalizeDid(msg.from, contacts)] ?? shortDid(msg.from)) : undefined, text: summarizeMessage(msg, labels), timestamp: summary.last_record.record.sort_key }
       : undefined
-    const registeredTitle = summary.state?.registered ? summary.state.title?.trim() ?? '' : ''
+    const registeredTitle = summary.state?.registered ? summary.state.title?.trim() || input.groupSessionTitles[summary.session_id] || '' : ''
     // `thread.topic` is a display hint only; the session key is always the
     // server-side `session_id` (derived from `to_session` since MsgObject v2).
     const topic = msg?.thread?.topic?.trim()
     const derivedTitle = topic && topic !== summary.session_id && !summary.session_id.startsWith('dm:') ? topic
       : summary.session_id.startsWith('dm:') ? labels.direct
+      : attribution.isGroup && peerDid && summary.session_id === peerDid ? labels.groupMain
+      : attribution.isGroup && peerDid && summary.state?.origin === 'group' ? labels.untitled
       : attribution.isGroup && peerDid ? names[peerDid] ?? shortDid(peerDid)
       : binding.kind === 'tunnel' ? `${binding.connectionName}`
       : peerDid ? labels.direct : labels.untitled

@@ -307,3 +307,65 @@ export const listContacts = (contactMgrOwner?: DID) => call<Contact[] | null>('c
 export const getContact = (did: DID, contactMgrOwner?: DID) => call<Contact | null>('contact.get_contact', contactMgrOwner ? { did, contact_mgr_owner: contactMgrOwner } : { did })
 export const updateContact = (did: DID, patch: Record<string, unknown>, contactMgrOwner?: DID) => call<Contact>('contact.update_contact', contactMgrOwner ? { did, patch, contact_mgr_owner: contactMgrOwner } : { did, patch })
 export const blockContact = (did: DID, contactMgrOwner?: DID, reason?: string) => call<unknown>('contact.block_contact', { did, ...(reason ? { reason } : {}), ...(contactMgrOwner ? { contact_mgr_owner: contactMgrOwner } : {}) })
+
+/* ── Self-host Group v2 (msg_center/doc/group-v2-backend.md) ── */
+
+export interface GroupDoc {
+  id: DID
+  owner: DID
+  controller: DID
+  host: DID
+  profile?: { name?: unknown; description?: unknown } | null
+  join_policy?: string
+  revision: string
+  lifecycle: 'active' | 'archived' | 'deleted'
+}
+
+export interface GroupDocEnvelope {
+  obj_id: string
+  doc: GroupDoc
+}
+
+export interface JoinedGroupSummary {
+  group_did: DID
+  stopped?: boolean
+  doc_cache?: GroupDocEnvelope | GroupDoc | null
+}
+
+export interface GroupMemberRecord {
+  member_did: DID
+  role: 'owner' | 'admin' | 'member'
+  state: 'invited' | 'pending_admin_approval' | 'active' | 'left' | 'removed' | 'rejected' | 'expired' | 'revoked'
+  entity_kind: string
+  invitation_id?: string | null
+  expires_at_ms?: number | null
+}
+
+export interface GroupSessionItem {
+  session_id: string | null
+  session: string
+  shared_state?: { title?: string; description?: string } | null
+  lifecycle: string
+  revision: string
+  has_guests: boolean
+}
+
+export const listGroupsByMember = () => call<{ items?: GroupDocEnvelope[]; joined?: JoinedGroupSummary[] } | null>('group.list_by_member', {}).then(result => result ?? {})
+export const getGroupDoc = (groupDid: DID) => call<GroupDocEnvelope>('group.get_doc', { group_did: groupDid })
+export const listGroupMembers = (groupDid: DID) => call<{ items?: GroupMemberRecord[] } | null>('group.list_members', { group_did: groupDid }).then(result => result?.items ?? [])
+export const listGroupSessions = (groupDid: DID) => call<{ items?: GroupSessionItem[] } | null>('group.list_sessions', { group_did: groupDid }).then(result => result?.items ?? [])
+export const checkGroupAccess = (groupDid: DID, action: string, sessionId?: string) => call<{ allowed: boolean; reason?: string | null }>('group.check_access', { group_did: groupDid, action, ...(sessionId !== undefined ? { session_id: sessionId } : {}) })
+export const createGroup = (input: { idempotency_key: string; profile: { name: string }; invitations: Array<{ member_did: DID }> }) => call<{ group_did: DID; revision: string }>('group.create', input as unknown as Record<string, unknown>)
+export const inviteGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<{ invite_id: string; member_did: DID; expires_at_ms: number }>('group.invite_member', { group_did: groupDid, member_did: memberDid, idempotency_key: idempotencyKey })
+export const removeGroupMember = (groupDid: DID, memberDid: DID, idempotencyKey: string) => call<unknown>('group.remove_member', { group_did: groupDid, member_did: memberDid, idempotency_key: idempotencyKey })
+export const leaveGroup = (groupDid: DID, idempotencyKey: string) => call<unknown>('group.leave', { group_did: groupDid, idempotency_key: idempotencyKey })
+export const deleteGroup = (groupDid: DID, idempotencyKey: string) => call<{ lifecycle: string }>('group.delete', { group_did: groupDid, idempotency_key: idempotencyKey })
+export const createGroupSession = (groupDid: DID, input: { title?: string; idempotency_key: string }) => call<{ group_did: DID; session_id: string; session: string; revision: string }>('group.create_session', { group_did: groupDid, ...input })
+/** Accepting an invitation requires the member's signed proof (`buckyos.group_member_proof`); the host rejects a request without one. */
+export const submitGroupMemberProof = (groupDid: DID, proof?: unknown) => call<GroupMemberRecord>('group.submit_member_proof', { group_did: groupDid, ...(proof !== undefined ? { proof } : {}) })
+
+/** The host's reason code (`owner-proof-required`, `capability-denied`, …) carried in an RPC error. */
+export function groupErrorReason(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? 'unknown'
+}

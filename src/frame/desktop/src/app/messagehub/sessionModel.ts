@@ -25,6 +25,8 @@ export function sortSessions(sessions: Session[], preferences: (id: string) => S
 export function selectDefaultSession(entity: Entity, sessions: Session[]): Session | null {
   const active = sessions.filter(session => session.entityId === entity.id && session.lifecycle === 'active')
   const candidates = entity.type === 'agent' ? active.filter(session => session.binding.kind === 'native') : active
+  const main = entity.type === 'group' ? candidates.find(session => session.id === entity.id) : undefined
+  if (main) return main
   return [...candidates].sort((a, b) => b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))[0] ?? null
 }
 export function sessionTitle(session: Session, preferences: SessionPreferences) {

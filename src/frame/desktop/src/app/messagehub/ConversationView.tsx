@@ -28,6 +28,8 @@ import { ConversationMediaScopeContext } from './conversation/media/context'
 import type { DID, MessageObject } from './protocol/msgobj'
 import type { Entity, Session, SessionAccess, MessageHubContext } from './types'
 import { useMessageHubRuntime, useMessageHubStore, type EntityAdmission } from './store'
+import { friendlyDidName } from './api/projection'
+import { parseGroupNotice } from './groupModel'
 
 interface ConversationViewProps {
   entity: Entity
@@ -61,6 +63,7 @@ interface ConversationViewProps {
   onVisibleMessages?: (recordIds: string[]) => void
   admission?: EntityAdmission | null
   onAdmission?: (action: 'accept' | 'block') => Promise<void>
+  onOpenEntity?: (id: string) => void
 }
 
 const MIN_HISTORY_PANE_HEIGHT = 180
@@ -84,6 +87,7 @@ export function ConversationView({
   onVisibleMessages,
   admission = null,
   onAdmission,
+  onOpenEntity,
 }: ConversationViewProps) {
   const { t } = useI18n()
   const store = useMessageHubStore()
@@ -113,7 +117,22 @@ export function ConversationView({
   const [isDropActive, setIsDropActive] = useState(false)
   const [composerMaxHeight, setComposerMaxHeight] = useState<number | undefined>(undefined)
   const mediaScope = useMemo(() => ({ reader: messageReader, hostContext: session?.id }), [messageReader, session?.id])
-  const messageActions = useMemo(() => ({ resend: canSend ? onResend : undefined }), [canSend, onResend])
+  const snapshot = store.getSnapshot()
+  const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
+  const messageActions = useMemo(() => ({
+    resend: canSend ? onResend : undefined,
+    displayName: (did: DID) => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false),
+    groupNotice: (message: MessageObject) => {
+      const notice = parseGroupNotice(message)
+      if (!notice) return null
+      return notice.invitation ? store.groupInvitation(context, notice.invitation) : { groupName: store.findEntity(context, notice.groupDid)?.name ?? friendlyDidName(notice.groupDid, false) }
+    },
+    joinGroup: isOwner ? (message: MessageObject) => {
+      const invitation = parseGroupNotice(message)?.invitation
+      return invitation ? store.acceptGroupInvitation(context, invitation) : Promise.reject(Error('not-found'))
+    } : undefined,
+    openEntity: onOpenEntity,
+  }), [canSend, onResend, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, onOpenEntity, t]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {

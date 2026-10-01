@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
-import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare, SquarePen } from 'lucide-react'
+import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare, SquarePen, Users } from 'lucide-react'
 import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
@@ -10,6 +10,7 @@ import { MessageMediaHost } from './conversation/media/MessageMediaHost'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
 import { EntityList } from './EntityList'
+import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
 import { useMessageHubStore, useMessageHubReady, useMessageHubRuntime } from './store'
 import { creationReason, viewerSessionKey } from './sessionModel'
@@ -229,6 +230,8 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   const canManage = context.mode === 'self' && context.viewerDid === context.ownerDid
   const activeSessionId = activeSession?.id ?? null
   useEffect(() => store.startSync(context, activeSessionId), [store, context.ownerDid, context.mode, context.viewerDid, activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
+  const selectedGroupId = selectedEntity?.type === 'group' ? selectedEntity.id : null
+  useEffect(() => { if (selectedGroupId) void store.ensureGroup(context, selectedGroupId) }, [store, context.ownerDid, context.mode, context.viewerDid, selectedGroupId]) // eslint-disable-line react-hooks/exhaustive-deps
   const createReason = selectedEntity ? (() => {
     const choices = store.connections(context, selectedEntity.id)
     return choices.some(choice => !creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choice.binding)) ? undefined : creationReason(context, selectedEntity, store.policy(context, selectedEntity.id), choices[0]?.binding)
@@ -272,6 +275,16 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
       }
     }
   )
+
+  const openCreateGroup = (members: string[] = []) => {
+    const trigger = document.activeElement
+    void dialog.open({ title: t('messagehub.group.create'), size: 'md', dismissible: false, renderBody: controls => <CreateGroupForm context={context} initialMembers={members} onCancel={() => controls.close()} onCreated={groupDid => {
+      controls.close()
+      setSearchQuery('')
+      setFilter(current => current === 'groups' || current === 'all' ? current : 'all')
+      handleSelectEntity(groupDid)
+    }} /> }).then(() => { if (trigger instanceof HTMLElement && trigger.isConnected) trigger.focus() })
+  }
 
   const handleBack = useCallback(() => {
     setMobileView('entity-list')
@@ -407,6 +420,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     onVisibleMessages: (recordIds: string[]) => { if (activeSession) void store.markRead(context, activeSession.id, recordIds) },
     admission: selectedEntityId ? store.admission(context, selectedEntityId) : null,
     onAdmission: (action: 'accept' | 'block') => selectedEntityId ? store.setAdmission(context, selectedEntityId, action) : Promise.resolve(),
+    onOpenEntity: handleSelectEntity,
     onOpenSessionDetails: () => handleOpenDetails('session'), onOpenDetails: () => handleOpenDetails('entity'),
     draft: activeSession ? store.draft(context, activeSession.id) : '',
     draftAttachments: activeSession ? store.attachments(context, activeSession.id) : [],
@@ -414,10 +428,12 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }
-  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} /> : null
-  const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context) }
+  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
+  const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context), onCreateGroup: canManage ? () => openCreateGroup() : undefined }
   const newSessionLabel = t('messagehub.newSession')
   const newSessionButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreate(null)} aria-label={newSessionLabel} title={newSessionLabel}><SquarePen size={17} /></button>
+  const newGroupLabel = t('messagehub.group.create')
+  const newGroupButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreateGroup()} aria-label={newGroupLabel} title={newGroupLabel} data-testid="new-group"><Users size={17} /></button>
   const conversationSpace = layoutWidth - (isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth)
   const sessionSidebarInline = conversationSpace - sessionSidebarWidth >= CONVERSATION_MIN_READING_WIDTH
   const detailsInline = conversationSpace - (showSessionSidebar && sessionSidebarInline ? sessionSidebarWidth : 0) - DETAILS_PANEL_WIDTH >= CONVERSATION_MIN_READING_WIDTH
@@ -519,7 +535,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             selectedEntityId={selectedEntityId}
             filter={filter}
             searchQuery={searchQuery}
-            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}<MediaSettingsButton /></>}
+            headerActions={<>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}{newGroupButton}<MediaSettingsButton /></>}
             enableDrilldownNavigation
             useCompactInlineChildren
             childNavigationTrigger="icon"
@@ -644,7 +660,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             enableDrilldownNavigation
             useCompactInlineChildren
             headerActions={(
-              <>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}<MediaSettingsButton /><button
+              <>{onHome ? <HomeButton onHome={onHome} /> : null}{newSessionButton}{newGroupButton}<MediaSettingsButton /><button
                 type="button"
                 onClick={handleCollapseEntityList}
                 className={hubIconButtonClass}
@@ -718,7 +734,7 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
             isSessionSidebarOpen={showSessionSidebar}
           />
         ) : (
-          <EmptyConversation action={<button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreate(null)}><SquarePen size={16} />{newSessionLabel}</button>} />
+          <EmptyConversation action={<div className="flex flex-wrap justify-center gap-2"><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreate(null)}><SquarePen size={16} />{newSessionLabel}</button><button className={`${hubButtonClass} flex items-center gap-2`} type="button" disabled={!canManage} onClick={() => openCreateGroup()}><Users size={16} />{newGroupLabel}</button></div>} />
         )}
       </div>
 

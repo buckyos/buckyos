@@ -7,6 +7,7 @@ import {
   Bot,
   ChevronRight,
   Pin,
+  Plus,
   Search,
   SlidersHorizontal,
   User,
@@ -37,6 +38,8 @@ interface EntityListProps {
   /** More sessions exist on the backend beyond the loaded page. */
   hasMore?: boolean
   onLoadMore?: () => Promise<void>
+  /** Shown as the first row of the Groups filter. */
+  onCreateGroup?: () => void
 }
 
 const filters: { key: EntityFilter; labelKey: string }[] = [
@@ -774,6 +777,7 @@ export function EntityList({
   onSearchChange,
   hasMore = false,
   onLoadMore,
+  onCreateGroup,
 }: EntityListProps) {
   const { t } = useI18n()
   const [loadingMore, setLoadingMore] = useState(false)
@@ -908,6 +912,26 @@ export function EntityList({
           <FilterStrip filter={filter} onFilterChange={onFilterChange} />
 
           <div className="flex-1 overflow-y-auto pb-2 pt-1 shell-scrollbar">
+            {filter === 'groups' && onCreateGroup ? (
+              <button
+                type="button"
+                onClick={onCreateGroup}
+                className="mb-1 flex w-full items-center gap-2.5 px-3 py-2.5 text-left"
+                data-testid="entity-list-create-group"
+              >
+                <span
+                  className="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full border border-dashed"
+                  style={{ borderColor: 'color-mix(in srgb, var(--cp-accent) 55%, transparent)', color: 'var(--cp-accent)' }}
+                  aria-hidden
+                >
+                  <Plus size={20} />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-[15px] font-semibold" style={{ color: 'var(--cp-accent)' }}>{t('messagehub.group.create', 'New group')}</span>
+                  <span className="block truncate text-[13px]" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.createHint', 'Pick contacts and start a group chat')}</span>
+                </span>
+              </button>
+            ) : null}
             {filtered.length === 0 ? (
               <div className="flex h-32 items-center justify-center" role="status">
                 <p className="text-sm" style={{ color: 'var(--cp-muted)' }}>

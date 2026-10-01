@@ -1558,3 +1558,143 @@ async fn invitation_expiration_is_persisted_once_and_can_be_reinvited() {
         1
     );
 }
+
+#[tokio::test]
+async fn message_hub_group_ui_contract() {
+    let (c, _tmp, _) = center().await;
+    let created = call(&c,&owner(),"group.create",json!({"idempotency_key":"ui","profile":{"name":"Launch crew"},"invitations":[{"member_did":member()}],"proof":proof(&owner(),Some("owner"),json!("group"),None)})).await.unwrap();
+    assert_eq!(created["group_did"], json!(group()));
+    let mine = c
+        .group_rpc("group.list_by_member", json!({}), context(&owner()))
+        .await
+        .unwrap();
+    assert_eq!(mine["items"][0]["doc"]["id"], json!(group()));
+    assert_eq!(mine["items"][0]["doc"]["profile"]["name"], "Launch crew");
+    assert_eq!(mine["items"][0]["doc"]["owner"], json!(owner()));
+    let sessions = serde_json::to_value(
+        c.list_sessions_scoped(owner(), Some(50), None, None, Some(true), None, None)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let main = sessions["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == json!(group().to_string()))
+        .unwrap();
+    assert_eq!(main["state"]["origin"], "group");
+    assert_eq!(main["state"]["registered"], true);
+    assert_eq!(main["state"]["peer_did"], json!(group()));
+
+    let member_sessions = serde_json::to_value(
+        c.list_sessions_scoped(member(), Some(50), None, None, Some(true), None, None)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let notice = member_sessions["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| {
+            s["last_record"]["msg"]["content"]["machine"]["intent"] == "buckyos.group_invitation"
+        })
+        .unwrap();
+    assert_eq!(
+        notice["session_id"],
+        json!(format!("dm:{}", owner().to_string()))
+    );
+    let invite = &notice["last_record"]["msg"];
+    assert_eq!(invite["from"], json!(owner()));
+    assert_eq!(invite["content"]["machine"]["data"]["action"], "invite");
+    assert_eq!(
+        invite["content"]["machine"]["data"]["group_did"],
+        json!(group())
+    );
+    let invite_id = invite["content"]["machine"]["data"]["data"]["invite_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let access = call(
+        &c,
+        &member(),
+        "group.check_access",
+        json!({"action":"session.post"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(access["allowed"], false);
+    call(
+        &c,
+        &member(),
+        "group.submit_member_proof",
+        json!({"proof":proof(&member(),Some("member"),json!("group"),Some(invite_id))}),
+    )
+    .await
+    .unwrap();
+    let access = call(
+        &c,
+        &member(),
+        "group.check_access",
+        json!({"action":"session.post"}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(access["allowed"], true);
+    let members = call(&c, &owner(), "group.list_members", json!({}))
+        .await
+        .unwrap();
+    assert_eq!(members["items"].as_array().unwrap().len(), 2);
+
+    let topic = call(
+        &c,
+        &owner(),
+        "group.create_session",
+        json!({"title":"Design","idempotency_key":"s1"}),
+    )
+    .await
+    .unwrap();
+    let key = topic["session"].as_str().unwrap().to_string();
+    assert!(key.starts_with(&format!("{}/", group().to_string())));
+    let listed = call(&c, &member(), "group.list_sessions", json!({}))
+        .await
+        .unwrap();
+    assert!(listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|s| s["session"] == json!(key) && s["shared_state"]["title"] == "Design"));
+
+    send(&c, &owner(), None, "hello", 1).await;
+    let timeline = serde_json::to_value(
+        c.list_session_scoped(
+            owner(),
+            group().to_string(),
+            Some(50),
+            None,
+            None,
+            Some(true),
+            Some(true),
+        )
+        .await
+        .unwrap(),
+    )
+    .unwrap();
+    let own: Vec<_> = timeline["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["msg"]["content"]["content"] == "hello")
+        .map(|i| {
+            (
+                i["direction"].as_str().unwrap().to_string(),
+                i["from"].clone(),
+            )
+        })
+        .collect();
+    assert!(
+        own.contains(&("out".to_string(), json!(owner()))),
+        "{own:?}"
+    );
+}

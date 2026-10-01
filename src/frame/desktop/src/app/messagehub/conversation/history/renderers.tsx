@@ -1,11 +1,13 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
+import { groupErrorText, parseGroupNotice } from '../../groupModel'
 import { memo, useContext, useState } from 'react'
 import {
   AlertCircle,
   Check,
   CheckCheck,
   Clock,
+  Users,
 } from 'lucide-react'
 import {
   getMessageDeliveryStatus,
@@ -71,6 +73,7 @@ type MessageRenderer = (
 const messageRenderers: readonly MessageRenderer[] = [
   message => isActionMessage(message) ? <ActionMessage message={message} /> : null,
   message => message.ui_unavailable === true ? <UnavailableMessage message={message} /> : null,
+  (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
   (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
   renderTextMessage,
   renderFallbackMessage,
@@ -385,15 +388,69 @@ function formatDateSeparator(date: Date): string {
   })
 }
 
+const knownActions = new Set([
+  'entity.member_joined', 'entity.member_left', 'entity.member_removed', 'session.title_changed', 'session.member_state_changed', 'session.shared_state_changed',
+  'entity.group_created', 'entity.member_invited', 'entity.invite_revoked', 'entity.invite_expired', 'entity.member_requested', 'entity.member_rejected', 'entity.member_role_changed',
+  'entity.owner_changed', 'entity.group_archived', 'entity.group_deleted', 'entity.config_changed', 'session.created', 'session.archived', 'session.deleted',
+])
+
 function ActionMessage({ message }: { message: MessageObject }) {
   const { t } = useI18n()
+  const { displayName } = useContext(ConversationMessageActionsContext)
   const data = message.content.machine?.data
   let summary = message.content.content || t('messagehub.action.unknown')
   if (data?.schema_version === 1 && typeof data.action === 'string') {
-    const actor = typeof data.actor_did === 'string' ? data.actor_did : t('messagehub.action.unknownActor')
-    const subject = typeof data.subject_did === 'string' ? data.subject_did : t('messagehub.action.unknownMember')
-    const actions = ['entity.member_joined', 'entity.member_left', 'entity.member_removed', 'session.title_changed', 'session.member_state_changed', 'session.shared_state_changed']
-    if (actions.includes(data.action)) summary = t(`messagehub.action.${data.action}`, undefined, { actor, subject })
+    const actor = typeof data.actor_did === 'string' ? displayName?.(data.actor_did) ?? data.actor_did : t('messagehub.action.unknownActor')
+    const subject = typeof data.subject_did === 'string' ? displayName?.(data.subject_did) ?? data.subject_did : t('messagehub.action.unknownMember')
+    if (knownActions.has(data.action)) summary = t(`messagehub.action.${data.action}`, undefined, { actor, subject })
   } else if (data?.schema_version !== 1) summary = `${t('messagehub.action.unsupported')} · ${summary}`
   return <div data-testid="action-message" className="mx-auto my-2 max-w-xl rounded-lg bg-[color:color-mix(in_srgb,var(--cp-text)_5%,transparent)] px-3 py-2 text-center text-xs text-[color:var(--cp-muted)] break-words">{summary}</div>
+}
+
+function GroupNoticeMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
+  const { t } = useI18n()
+  const actions = useContext(ConversationMessageActionsContext)
+  const [state, setState] = useState<'idle' | 'pending'>('idle')
+  const [error, setError] = useState('')
+  const notice = parseGroupNotice(message)
+  const view = notice ? actions.groupNotice?.(message) : null
+  if (!notice || !view) return renderFallbackMessage(message, context)
+  const inviter = actions.displayName?.(message.from) ?? message.from
+  const invitation = notice.invitation
+  const join = () => {
+    if (!actions.joinGroup || state === 'pending') return
+    setState('pending'); setError('')
+    void actions.joinGroup(message).then(() => setState('idle'), failure => { setState('idle'); setError(groupErrorText(t, failure)) })
+  }
+  const line = invitation ? t('messagehub.group.invitedBy', undefined, { name: inviter })
+    : notice.action === 'pending_approval' ? t('messagehub.group.notice.pending_approval', undefined, { name: notice.memberDid ? actions.displayName?.(notice.memberDid) ?? notice.memberDid : inviter })
+    : notice.action === 'rejected' || notice.action === 'removed' || notice.action === 'session_invite' ? t(`messagehub.group.notice.${notice.action}`, undefined, { name: inviter })
+    : notice.action
+  return (
+    <div className={rowClass(false, context.continued)}>
+      <div className={`${bubbleWidthClass} w-72 min-w-[220px]`} style={{ ...bubbleStyle(false, context.continued), padding: 12 }} data-testid="group-notice" data-action={notice.action} data-state={view.state}>
+        <div className="flex items-center gap-2.5">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full" style={{ background: 'color-mix(in srgb, var(--cp-warning) 18%, transparent)', color: 'var(--cp-warning)' }} aria-hidden><Users size={17} /></span>
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-xs" style={{ color: 'var(--cp-muted)' }}>{line}</p>
+            <p className="truncate text-[15px] font-semibold" title={notice.groupDid}>{view.groupName}</p>
+          </div>
+        </div>
+        {invitation && invitation.role !== 'member' ? <p className="mt-2 text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.invitedAs', undefined, { role: t(`messagehub.group.role.${invitation.role}`) })}</p> : null}
+        {invitation ? (
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {view.state === 'pending' && actions.joinGroup ? <button type="button" className="min-h-11 rounded-lg px-3 text-sm font-semibold text-white disabled:opacity-50 md:min-h-9" style={{ background: 'var(--cp-accent)' }} disabled={state === 'pending'} onClick={join}>{t(state === 'pending' ? 'messagehub.group.joining' : 'messagehub.group.join')}</button> : null}
+            {view.state === 'joined' ? <>
+              <span className="text-xs font-medium" style={{ color: 'var(--cp-success)' }}>{t('messagehub.group.joined')}</span>
+              {actions.openEntity ? <button type="button" className="min-h-11 rounded-lg border px-3 text-sm md:min-h-9" style={{ borderColor: 'var(--cp-border)' }} onClick={() => actions.openEntity?.(notice.groupDid)}>{t('messagehub.group.open')}</button> : null}
+            </> : null}
+            {view.state === 'expired' ? <span className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.invitationExpired')}</span> : null}
+            {view.state === 'pending' && invitation.expiresAt ? <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('messagehub.group.expiresAt', undefined, { time: new Date(invitation.expiresAt).toLocaleDateString() })}</span> : null}
+          </div>
+        ) : null}
+        {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+        <MessageFooter message={message} isSelf={false} />
+      </div>
+    </div>
+  )
 }

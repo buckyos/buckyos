@@ -33,6 +33,7 @@ export function SessionDetails({ session, entity, context, access, showActions, 
     access.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : '',
     !access.canManage ? t('messagehub.reason.agent_observer') : '',
     (session.requestCount ?? 0) > 0 ? t('messagehub.requestBanner', undefined, { count: session.requestCount ?? 0 }) : '',
+    entity.type === 'group' && session.binding.kind === 'native' ? t('messagehub.group.ownerCanRead') : '',
   ].filter(Boolean)
   const members = Object.entries(session.members)
   const sharedEditors = <div className="space-y-5"><SharedEditor session={session} context={context} disabled={!access.canEditSharedState} /><MemberEditor session={session} context={context} disabled={!access.canEditOwnMemberState} /></div>

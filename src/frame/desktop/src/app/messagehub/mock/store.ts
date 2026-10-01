@@ -6,13 +6,24 @@ import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, isMessageActivity, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createGroupSchema, GROUP_INVITATION_INTENT, participating } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
-import type { CreationPolicy, Entity, EntityDetail, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
+import type { CreationPolicy, Entity, EntityDetail, GroupInfo, GroupInvitation, GroupMemberState, GroupRole, MessageHubContext, RuntimeState, Session, SessionAccess, SessionBinding, SessionPreferences } from '../types'
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockSessions } from './data'
 import { mockObjectAccess } from './objects'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
+interface MockGroup {
+  did: string
+  name: string
+  ownerDid: string
+  lifecycle: GroupInfo['lifecycle']
+  createdAt: number
+  members: Record<string, { role: GroupRole; state: GroupMemberState; inviteId?: string; expiresAt?: number }>
+}
+
 type Snapshot = {
+  groups: Record<string, MockGroup>
   sessions: Record<string, Session>
   deleted: Record<string, { at: number; session: Session }>
   withoutSeed: Record<string, boolean>
@@ -26,6 +37,9 @@ type Snapshot = {
 const allEntities = (entities: Entity[]): Entity[] => entities.flatMap(entity => [entity, ...allEntities(entity.children ?? [])])
 export const findEntity = (id: string) => allEntities(mockEntities).find(entity => entity.id === id)
 export const MOCK_AGENT_OWNER = getMockEntityDid('agent-coder')
+export const MOCK_PRODUCT_TEAM = getMockEntityDid('group-team')
+export const MOCK_HIKING_GROUP = 'did:buckyos:group:weekend-hiking'
+const INVITE_TTL_MS = 7 * 86400_000
 export const defaultContext: MessageHubContext = { viewerDid: MOCK_SELF_DID, ownerDid: MOCK_SELF_DID, mode: 'self' }
 
 function seedSnapshot(now: number): Snapshot {
@@ -45,7 +59,28 @@ function seedSnapshot(now: number): Snapshot {
     const observed = { ...structuredClone(original), ownerDid, entityId: alice, title: 'Agent inbox', shared: { title: 'Agent inbox', description: '', updatedAt: now }, members: { [ownerDid]: { nickname: 'Agent', updatedAt: now }, [alice]: { nickname: 'Alice', updatedAt: now } }, binding: { kind: 'native' as const, targetDid: alice }, unreadCount: 7 }
     sessions[sessionKey(ownerDid, observed.id)] = observed
   }
-  return { sessions, deleted: {}, withoutSeed: {}, messages: {}, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {} }
+  const bob = getMockEntityDid('person-bob')
+  const groups: Record<string, MockGroup> = {
+    [MOCK_PRODUCT_TEAM]: { did: MOCK_PRODUCT_TEAM, name: 'Product Team', ownerDid: alice, lifecycle: 'active', createdAt: now - 90 * 86400000, members: {
+      [alice]: { role: 'owner', state: 'active' }, [MOCK_SELF_DID]: { role: 'admin', state: 'active' }, [bob]: { role: 'member', state: 'active' },
+      [getMockEntityDid('person-dave')]: { role: 'member', state: 'active' }, [MOCK_AGENT_OWNER]: { role: 'member', state: 'active' },
+      [getMockEntityDid('agent-writer')]: { role: 'member', state: 'invited', inviteId: 'invite-writer', expiresAt: now + INVITE_TTL_MS },
+    } },
+    [MOCK_HIKING_GROUP]: { did: MOCK_HIKING_GROUP, name: 'Weekend Hiking', ownerDid: bob, lifecycle: 'active', createdAt: now - 86400000, members: {
+      [bob]: { role: 'owner', state: 'active' }, [alice]: { role: 'member', state: 'active' },
+      [MOCK_SELF_DID]: { role: 'member', state: 'invited', inviteId: 'invite-hiking', expiresAt: now + INVITE_TTL_MS },
+    } },
+  }
+  const invitation: MessageObject = {
+    from: bob, to: [MOCK_SELF_DID], kind: 'operation', created_at_ms: now - 50 * 60000, ui_message_id: 'msg-invite-hiking', ui_session_id: 'session-bob-1',
+    content: { format: 'text/plain', content: 'invite', machine: { intent: GROUP_INVITATION_INTENT, data: { group_did: MOCK_HIKING_GROUP, action: 'invite', data: { invite_id: 'invite-hiking', role: 'member', expires_at_ms: now + INVITE_TTL_MS } } } },
+  }
+  return { groups, sessions, deleted: {}, withoutSeed: {}, messages: { [sessionKey(MOCK_SELF_DID, 'session-bob-1')]: [invitation] }, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {} }
+}
+
+function groupEvent(group: MockGroup, action: string, actorDid: string, at: number, subjectDid?: string): MessageObject {
+  const eventId = crypto.randomUUID()
+  return { kind: 'event', from: group.did, to: [group.did], created_at_ms: at, ui_message_id: eventId, ui_session_id: group.did, content: { format: 'text/plain', content: action, machine: { intent: 'buckyos.action_log', data: { schema_version: 1, event_id: eventId, action, actor_did: actorDid, ...(subjectDid ? { subject_did: subjectDid } : {}), target: { kind: 'entity', entity_did: group.did }, occurred_at_ms: at, changes: [], source: { kind: 'native', producer_did: group.did } } } } }
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -83,7 +118,15 @@ export class MessageHubMockStore implements MessageHubStore {
   ownerStatus(context: MessageHubContext): OwnerStatus { return this.canView(context) ? { phase: 'ready' } : { phase: 'denied' } }
   ensureOwner() { return this.initialize() }
   startSync() { return () => {} }
-  findEntity(_context: MessageHubContext, id: string) { return findEntity(id) }
+  findEntity(_context: MessageHubContext, id: string) { return this.lookup(id) }
+  /** Seeded entities, plus self-host groups created or joined in this mock. */
+  private lookup(id: string): Entity | undefined {
+    const seeded = findEntity(id)
+    if (seeded) return seeded
+    const group = this.snapshot.groups[id]
+    if (!group || (group.members[MOCK_SELF_DID]?.state !== 'active' && !Object.values(this.snapshot.sessions).some(session => session.entityId === id))) return undefined
+    return { id, type: 'group', name: group.name, tags: ['group'], unreadCount: 0, lastActiveAt: group.createdAt, source: 'buckyos', sources: ['buckyos'], domain: 'managed' }
+  }
   hasMoreEntities() { return false }
   async loadMoreEntities() {}
   entityDetail(context: MessageHubContext, id: string): EntityDetail | null {
@@ -96,7 +139,13 @@ export class MessageHubMockStore implements MessageHubStore {
   hasOlder() { return false }
   async loadOlder() { return false }
   async markRead() {}
-  access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess { return sessionAccess(context, session, confirmed) }
+  access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
+    const access = sessionAccess(context, session, confirmed)
+    const group = this.snapshot.groups[session.entityId]
+    if (!group || access.mode !== 'read_write') return access
+    const reason = group.lifecycle === 'archived' ? 'group_archived' : group.lifecycle !== 'active' || group.members[context.ownerDid]?.state !== 'active' ? 'group_not_member' : undefined
+    return reason ? { ...access, mode: 'read_only', canEditSharedState: false, canEditOwnMemberState: false, readOnlyReason: reason } : access
+  }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   getSnapshot = () => this.snapshot
   subscribeTime = (listener: () => void) => { this.timeListeners.add(listener); return () => { this.timeListeners.delete(listener) } }
@@ -137,6 +186,11 @@ export class MessageHubMockStore implements MessageHubStore {
         })
       }
       this.seedIds.set(id, ids)
+    }
+    if (stored && !stored.groups) {
+      const seeded = seedSnapshot(this.now())
+      stored.groups = seeded.groups
+      Object.assign(stored.messages, seeded.messages, stored.messages)
     }
     if (stored) this.snapshot = stored
     else await this.persist(this.snapshot)
@@ -200,7 +254,8 @@ export class MessageHubMockStore implements MessageHubStore {
       const reason = choices.some(choice => !creationReason(context, entity, policy, choice.binding)) ? undefined : creationReason(context, entity, policy, choices[0]?.binding)
       return { ...entity, unreadCount: sessions.reduce((sum, session) => sum + session.unreadCount, 0), lastActiveAt: latest?.lastActiveAt ?? 0, lastMessage: latest?.lastMessage, sessionCreation: { policy, canCreate: !reason, unavailableReason: reason }, children: entity.children?.map(project) }
     }
-    return mockEntities.map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
+    const dynamic = Object.keys(this.snapshot.groups).filter(id => !findEntity(id)).map(id => this.lookup(id)).filter((entity): entity is Entity => Boolean(entity))
+    return [...mockEntities, ...dynamic].map(project).sort((a, b) => Number(!!b.isPinned) - Number(!!a.isPinned) || b.lastActiveAt - a.lastActiveAt || a.id.localeCompare(b.id))
   }
   defaultSession(context: MessageHubContext, entityId: string) {
     const entity = this.findEntity(context, entityId)
@@ -208,7 +263,7 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   ensureDefaultSession(context: MessageHubContext, entityId: string) { return ensureDefaultSession(this, context, entityId) }
   connections(context: MessageHubContext, entityId: string): ConnectionChoice[] {
-    const entity = findEntity(entityId)
+    const entity = this.lookup(entityId)
     const choices = new Map<string, ConnectionChoice>()
     const known = [...Object.values(this.snapshot.sessions), ...Object.values(this.snapshot.deleted).map(deleted => deleted.session)].filter(session => session.ownerDid === context.ownerDid && session.entityId === entityId)
     if (entity && (entity.type === 'agent' || entity.source === 'buckyos' || entity.domain === 'managed' || known.some(session => session.binding.kind === 'native'))) choices.set('native', { id: 'native', binding: { kind: 'native', targetDid: entityId }, label: 'BuckyOS' })
@@ -252,14 +307,16 @@ export class MessageHubMockStore implements MessageHubStore {
     return this.mutate(next => { this.requireOwn(context); this.requireSession(next, context, id); next.drafts[viewerSessionKey(context, id)] = value }, false)
   }
   setPolicy(context: MessageHubContext, entityId: string, policy: CreationPolicy) {
-    return this.mutate(next => { this.requireOwn(context); if (!findEntity(entityId)) throw Error('binding_unknown'); next.policies[sessionKey(context.ownerDid, entityId)] = policy })
+    return this.mutate(next => { this.requireOwn(context); if (!this.lookup(entityId)) throw Error('binding_unknown'); next.policies[sessionKey(context.ownerDid, entityId)] = policy })
   }
   create(context: MessageHubContext, input: z.infer<typeof createSessionSchema>) {
     return this.mutate(next => {
       this.requireOwn(context)
       const values = createSessionSchema.parse(input)
-      const entity = findEntity(values.entityId)
+      const entity = this.lookup(values.entityId)
       if (!entity) throw Error('binding_unknown')
+      const group = next.groups[entity.id]
+      if (group && !this.groupInfo(group, context.ownerDid).can.createSession) throw Error('rejected: capability-denied')
       const binding = this.connections(context, entity.id).find(choice => choice.id === values.connection)?.binding
       const reason = creationReason(context, entity, this.policy(context, entity.id), binding)
       if (reason || !binding) throw Error(reason)
@@ -274,7 +331,7 @@ export class MessageHubMockStore implements MessageHubStore {
       this.requireOwn(context)
       const session = this.requireSession(next, context, id), key = sessionKey(context.ownerDid, id)
       if (action !== 'delete') { session.lifecycle = action === 'archive' ? 'archived' : 'active'; return }
-      next.deleted[key] = { at: this.now(), session: { ...session, title: findEntity(session.entityId)?.name ?? '', shared: { title: '', description: '', updatedAt: this.now() }, members: {}, lastMessage: undefined, unreadCount: 0 } }
+      next.deleted[key] = { at: this.now(), session: { ...session, title: this.lookup(session.entityId)?.name ?? '', shared: { title: '', description: '', updatedAt: this.now() }, members: {}, lastMessage: undefined, unreadCount: 0 } }
       next.withoutSeed[key] = true
       delete next.sessions[key]; delete next.messages[key]; delete next.delivery[key]
       for (const collection of [next.preferences, next.drafts, next.draftAttachments]) for (const prefKey of Object.keys(collection)) {
@@ -338,9 +395,9 @@ export class MessageHubMockStore implements MessageHubStore {
     return this.mutate(next => {
       this.requireOwn(context)
       const session = this.requireSession(next, context, id)
-      if (sessionAccess(context, session, confirmation === JSON.stringify(session.binding)).mode !== 'read_write') throw Error('permission_denied')
+      if (this.access(context, session, confirmation === JSON.stringify(session.binding)).mode !== 'read_write') throw Error('permission_denied')
       const to = session.binding.kind === 'native' ? session.binding.targetDid : session.binding.kind === 'tunnel' ? session.binding.endpointDid : ''
-      this.append(next, session, { ...message, from: context.ownerDid, to: [to], ui_session_id: id, ui_binding: session.binding }, false)
+      this.append(next, session, { ...message, ...(this.lookup(session.entityId)?.type === 'group' && session.binding.kind === 'native' ? { kind: 'group_msg' as const } : {}), from: context.ownerDid, to: [to], ui_session_id: id, ui_binding: session.binding }, false)
     })
   }
   runtimeFor(context: MessageHubContext, id: string) { return (this.runtime.get(sessionKey(context.ownerDid, id)) ?? []).filter(state => state.expiresAt > this.now()) }
@@ -397,7 +454,7 @@ export class MessageHubMockStore implements MessageHubStore {
     const id = `connection:${binding.tunnelInstanceId}:${binding.endpointDid}:${binding.remoteContextId ?? ''}`, key = sessionKey(owner, id)
     if (next.sessions[key] || next.deleted[key]) return id
     const now = this.now()
-    next.sessions[key] = { id, ownerDid: owner, entityId, title: findEntity(entityId)?.name ?? binding.connectionName, type: 'chat', source: binding.connectionName.split(' · ')[0].toLowerCase(), binding, origin: 'connection', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: '', description: '', updatedAt: now }, members: {} }
+    next.sessions[key] = { id, ownerDid: owner, entityId, title: this.lookup(entityId)?.name ?? binding.connectionName, type: 'chat', source: binding.connectionName.split(' · ')[0].toLowerCase(), binding, origin: 'connection', lifecycle: 'active', createdAt: now, lastActiveAt: now, unreadCount: 0, shared: { title: '', description: '', updatedAt: now }, members: {} }
     return id
   })
   setConnection = (owner: string, id: string, patch: { connected?: boolean; canSend?: boolean }) => this.mutate(next => {
@@ -406,6 +463,125 @@ export class MessageHubMockStore implements MessageHubStore {
   })
   denyOwner = (owner: string) => { this.revokedOwners.add(owner); this.snapshot = { ...this.snapshot }; this.listeners.forEach(listener => listener()) }
   title(context: MessageHubContext, session: Session) { return sessionTitle(session, this.preferences(context, session.id)) }
+
+  private groupInfo(group: MockGroup, viewerDid: string): GroupInfo {
+    const me = group.members[viewerDid]
+    const myRole = me?.state === 'active' && group.lifecycle !== 'deleted' ? me.role : undefined
+    const manager = myRole === 'owner' || myRole === 'admin'
+    const members = group.lifecycle === 'deleted' || !myRole ? null : Object.entries(group.members).map(([did, member]) => ({ did, role: member.role, state: member.state, expiresAt: member.expiresAt }))
+    return { did: group.did, name: group.name, description: '', ownerDid: group.ownerDid, hosted: true, lifecycle: group.lifecycle, myRole, members, can: { invite: manager && group.lifecycle === 'active', remove: manager && group.lifecycle === 'active', createSession: manager && group.lifecycle === 'active' } }
+  }
+  group(context: MessageHubContext, groupDid: string) {
+    const group = this.snapshot.groups[groupDid]
+    return group && this.canView(context) && context.mode === 'self' ? this.groupInfo(group, context.ownerDid) : null
+  }
+  groupStatus(context: MessageHubContext, groupDid: string) { return this.group(context, groupDid) ? 'ready' as const : 'error' as const }
+  ensureGroup() { return this.initialize() }
+  private requireGroup(next: Snapshot, context: MessageHubContext, groupDid: string) {
+    this.requireOwn(context)
+    const group = next.groups[groupDid]
+    if (!group || group.lifecycle === 'deleted') throw Error('not-found')
+    return group
+  }
+  private groupSession(next: Snapshot, group: MockGroup, at: number): Session {
+    return next.sessions[sessionKey(MOCK_SELF_DID, group.did)] ??= { id: group.did, ownerDid: MOCK_SELF_DID, entityId: group.did, title: 'Group chat', type: 'chat', source: 'buckyos', binding: { kind: 'native', targetDid: group.did }, origin: 'remote_context', lifecycle: 'active', createdAt: at, lastActiveAt: at, unreadCount: 0, shared: { title: '', description: '', updatedAt: at }, members: {} }
+  }
+  /** Group events go to the group's main session (the seeded Product Team keeps its legacy session ids). */
+  private groupLog(next: Snapshot, group: MockGroup, action: string, actorDid: string, subjectDid?: string) {
+    const sessions = Object.values(next.sessions).filter(item => item.ownerDid === MOCK_SELF_DID && item.entityId === group.did)
+    const session = sessions.find(item => item.id === group.did) ?? sessions[0]
+    if (session) this.append(next, session, { ...groupEvent(group, action, actorDid, this.now(), subjectDid), ui_session_id: session.id }, false)
+  }
+  createGroup(context: MessageHubContext, input: { name: string; members: string[] }) {
+    return this.mutate(next => {
+      this.requireOwn(context)
+      const values = createGroupSchema.parse(input)
+      if (!values.name) throw Error('invalid-group-name')
+      const members = [...new Set(values.members)].filter(did => did !== context.ownerDid)
+      for (const did of members) {
+        const entity = this.lookup(did)
+        if (!entity || (entity.type !== 'person' && entity.type !== 'agent')) throw Error('member-must-be-single-entity')
+      }
+      const now = this.now(), did = `did:buckyos:group:${crypto.randomUUID().slice(0, 8)}`
+      const group: MockGroup = { did, name: values.name, ownerDid: context.ownerDid, lifecycle: 'active', createdAt: now, members: { [context.ownerDid]: { role: 'owner', state: 'active' } } }
+      for (const member of members) group.members[member] = { role: 'member', state: 'invited', inviteId: crypto.randomUUID(), expiresAt: now + INVITE_TTL_MS }
+      next.groups[did] = group
+      this.groupSession(next, group, now)
+      this.groupLog(next, group, 'entity.group_created', context.ownerDid)
+      for (const member of members) this.groupLog(next, group, 'entity.member_invited', context.ownerDid, member)
+      return did
+    })
+  }
+  inviteGroupMembers(context: MessageHubContext, groupDid: string, memberDids: string[]) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, groupDid)
+      if (!this.groupInfo(group, context.ownerDid).can.invite) throw Error('capability-denied')
+      const failed: Array<{ did: string; reason: string }> = []
+      for (const did of [...new Set(memberDids)]) {
+        const entity = this.lookup(did)
+        if (!entity || (entity.type !== 'person' && entity.type !== 'agent')) { failed.push({ did, reason: 'member-must-be-single-entity' }); continue }
+        const current = group.members[did]
+        if (current && participating({ did, ...current })) { failed.push({ did, reason: 'member-already-participating' }); continue }
+        group.members[did] = { role: 'member', state: 'invited', inviteId: crypto.randomUUID(), expiresAt: this.now() + INVITE_TTL_MS }
+        this.groupLog(next, group, 'entity.member_invited', context.ownerDid, did)
+      }
+      return failed
+    })
+  }
+  removeGroupMember(context: MessageHubContext, groupDid: string, memberDid: string) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, groupDid)
+      if (!this.groupInfo(group, context.ownerDid).can.remove) throw Error('capability-denied')
+      const member = group.members[memberDid]
+      if (!member || !participating({ did: memberDid, ...member })) throw Error('not-found')
+      if (member.role === 'owner' || memberDid === context.ownerDid) throw Error('role-not-allowed')
+      member.state = member.state === 'active' ? 'removed' : 'revoked'
+      this.groupLog(next, group, member.state === 'removed' ? 'entity.member_removed' : 'entity.invite_revoked', context.ownerDid, memberDid)
+    })
+  }
+  leaveGroup(context: MessageHubContext, groupDid: string) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, groupDid)
+      const me = group.members[context.ownerDid]
+      if (me?.state !== 'active') throw Error('not-found')
+      if (me.role === 'owner') throw Error('owner-must-transfer-first')
+      this.groupLog(next, group, 'entity.member_left', context.ownerDid, context.ownerDid)
+      me.state = 'left'
+    })
+  }
+  deleteGroup(context: MessageHubContext, groupDid: string) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, groupDid)
+      if (group.ownerDid !== context.ownerDid) throw Error('owner-required')
+      this.groupLog(next, group, 'entity.group_deleted', context.ownerDid)
+      group.lifecycle = 'deleted'
+    })
+  }
+  groupInvitation(context: MessageHubContext, invitation: GroupInvitation) {
+    const group = this.snapshot.groups[invitation.groupDid]
+    const me = group?.members[context.ownerDid]
+    const state = me?.state === 'active' ? 'joined' as const : (invitation.expiresAt !== undefined && invitation.expiresAt <= this.now()) || group?.lifecycle !== 'active' || me?.inviteId !== invitation.inviteId ? 'expired' as const : 'pending' as const
+    return { groupName: group?.name ?? invitation.groupDid, state }
+  }
+  acceptGroupInvitation(context: MessageHubContext, invitation: GroupInvitation) {
+    return this.mutate(next => {
+      const group = this.requireGroup(next, context, invitation.groupDid)
+      const me = group.members[context.ownerDid]
+      if (me?.state === 'active') throw Error('member-already-participating')
+      if (me?.state !== 'invited' || me.inviteId !== invitation.inviteId) throw Error('proof-invitation-mismatch')
+      if (me.expiresAt !== undefined && me.expiresAt <= this.now()) throw Error('invite-expired')
+      me.state = 'active'
+      this.groupSession(next, group, this.now())
+      this.groupLog(next, group, 'entity.member_joined', context.ownerDid, context.ownerDid)
+    })
+  }
+  /** Test hook: an invited member accepts. */
+  simulateJoin = (groupDid: string, memberDid: string) => this.mutate(next => {
+    const group = next.groups[groupDid], member = group?.members[memberDid]
+    if (!group || member?.state !== 'invited') return
+    member.state = 'active'
+    this.groupLog(next, group, 'entity.member_joined', memberDid, memberDid)
+  })
 }
 
 function buildOutgoingDraftContent({ attachments, content }: OutgoingPayload): string {

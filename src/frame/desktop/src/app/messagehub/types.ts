@@ -159,3 +159,43 @@ export interface RuntimeState {
   statusLine?: string
   expiresAt: number
 }
+
+/* ── Self-host Group v2 ── */
+
+export type GroupRole = 'owner' | 'admin' | 'member'
+export type GroupMemberState = 'invited' | 'pending_admin_approval' | 'active' | 'left' | 'removed' | 'rejected' | 'expired' | 'revoked'
+
+export interface GroupMember {
+  did: string
+  role: GroupRole
+  state: GroupMemberState
+  expiresAt?: number
+}
+
+/** The viewer's view of one group: hosted by this zone, or joined on a remote host. */
+export interface GroupInfo {
+  did: string
+  name: string
+  description: string
+  ownerDid: string
+  hosted: boolean
+  lifecycle: 'active' | 'archived' | 'deleted'
+  myRole?: GroupRole
+  /** null when the member list is hidden from the viewer or managed by a remote host. */
+  members: GroupMember[] | null
+  can: { invite: boolean; remove: boolean; createSession: boolean }
+}
+
+/** `buckyos.group_invitation` notification sent to an invited DID. */
+export interface GroupInvitation {
+  groupDid: string
+  inviteId: string
+  role: GroupRole
+  expiresAt?: number
+  inviterDid: string
+}
+
+export interface GroupInvitationView {
+  groupName: string
+  state: 'pending' | 'joined' | 'expired'
+}
