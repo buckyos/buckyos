@@ -191,12 +191,13 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 当前三个宿主都没有开启 deferred 工具，PendingTool 的结果回填还没接入。
 
 
-## AgentRuntime （感觉这是一个llm_context依赖的的trait，这样要叫llm_context_runtimie?)
+## AgentRuntime
 
-- 实现所有的可用的tools,也就是说，所有的tools调用都先进入到Runtime里来再继续的
-- 实现了模版引擎运行所需要的环境，包括宏的执行，以及插入哪些预定的变量
-  - 因为每个round都有编入context信息的机会，所以AgentRuntime里也包含了对半订阅状态的管理
+共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 构造 native、tmux、remote_ssh，AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 exec、文件读写编辑、注入 PromptExec 的模板执行使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。
 
+RuntimeInfo 提供实际执行侧的 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone，供提示词引用；Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
+
+执行记录在用户命令放行前持久化，恢复先核验保存的目标与旧执行是否停止，不重放结果未知的副作用。native/tmux 不提供 OS 隔离；SSH 目标需 Linux/bash/SFTP，远端 Session helper 未部署时报 Capability。policy、grant、approval 与其它执行体留到后续阶段。接口、配置示例与恢复规则见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
 
 ## AgentState (RootFS)
 

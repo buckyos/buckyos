@@ -10,6 +10,9 @@
 //! Absolute paths inside the fixtures are rewritten to `${FIXTURE_ROOT}` (the
 //! scenario directory); a consumer substitutes its own copy location.
 
+#[path = "support/fixture_paths.rs"]
+mod fixture_paths;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -49,7 +52,9 @@ fn render(msgs: &[AiMessage]) -> String {
         for c in &m.content {
             match c {
                 AiContent::Text { text } => s.push_str(text),
-                AiContent::ToolResult { call_id, .. } => s.push_str(&format!("<tool_result {call_id}>")),
+                AiContent::ToolResult { call_id, .. } => {
+                    s.push_str(&format!("<tool_result {call_id}>"))
+                }
                 _ => {}
             }
         }
@@ -59,8 +64,16 @@ fn render(msgs: &[AiMessage]) -> String {
 }
 
 fn tool(call_id: &str, name: &str, args: Value) -> AiResponse {
-    let map = args.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    AiResponse::new(AiMessage::new(AiRole::Assistant, vec![AiContent::tool_use(call_id, name, map)]))
+    let map = args
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    AiResponse::new(AiMessage::new(
+        AiRole::Assistant,
+        vec![AiContent::tool_use(call_id, name, map)],
+    ))
 }
 
 fn text(t: &str) -> AiResponse {
@@ -84,7 +97,11 @@ impl LlmClient for Script {
                 if all.contains("<tool_result c1>") {
                     text("recovered")
                 } else {
-                    tool("c1", "exec", json!({ "command": "echo start >> marker; sleep 60; echo done >> marker" }))
+                    tool(
+                        "c1",
+                        "exec",
+                        json!({ "command": "echo start >> marker; sleep 60; echo done >> marker" }),
+                    )
                 }
             }
             "transient" => {
@@ -135,7 +152,9 @@ impl Env {
         for d in ["agent_root", "app", "kmsg"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Self { root: root.to_path_buf() }
+        Self {
+            root: root.to_path_buf(),
+        }
     }
     fn channels(&self) -> Arc<KmsgChannels> {
         Arc::new(KmsgChannels::dir(self.root.join("kmsg")).unwrap())
@@ -175,13 +194,21 @@ impl Env {
         if spec.prompt.llm_context.is_null() {
             spec.prompt.llm_context = json!({ "tools": { "enabled": true } });
         }
-        create_session(&self.root.join("app"), spec, self.agent().as_ref(), APP, self.channels().as_ref())
-            .await
-            .unwrap()
+        create_session(
+            &self.root.join("app"),
+            spec,
+            self.agent().as_ref(),
+            APP,
+            self.channels().as_ref(),
+        )
+        .await
+        .unwrap()
     }
     async fn post(&self, sd: &SessionDir, input: Input) {
         let q = sd.config().unwrap().channels.kmsg().unwrap().1.to_string();
-        post_to_queue(&self.channels().client(), &q, &input, APP).await.unwrap();
+        post_to_queue(&self.channels().client(), &q, &input, APP)
+            .await
+            .unwrap();
     }
     /// Drive in a child process (optionally dying at a fault point).
     fn child(&self, sd: &SessionDir, script: &str, fault: Option<&str>) -> std::process::Child {
@@ -214,7 +241,9 @@ fn work(obj: &str) -> SessionSpec {
 
 fn observe(sd: &SessionDir) -> Value {
     let st = sd.state().unwrap();
-    let wl_len = std::fs::metadata(sd.worklog().path()).map(|m| m.len()).unwrap_or(0);
+    let wl_len = std::fs::metadata(sd.worklog().path())
+        .map(|m| m.len())
+        .unwrap_or(0);
     let runs = sd.runs().list().unwrap();
     let live = st.live_run.as_ref().map(|l| {
         let rec = sd.runs().record(&l.run_id).ok();
@@ -252,7 +281,13 @@ fn observe(sd: &SessionDir) -> Value {
     })
 }
 
-fn write_expected(dir: &Path, scenario: &str, description: &str, sessions: Vec<Value>, next: Value) {
+fn write_expected(
+    dir: &Path,
+    scenario: &str,
+    description: &str,
+    sessions: Vec<Value>,
+    next: Value,
+) {
     let v = json!({
         "scenario": scenario,
         "description": description,
@@ -260,27 +295,36 @@ fn write_expected(dir: &Path, scenario: &str, description: &str, sessions: Vec<V
         "sessions": sessions,
         "next": next,
     });
-    std::fs::write(dir.join("expected.json"), serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+    std::fs::write(
+        dir.join("expected.json"),
+        serde_json::to_vec_pretty(&v).unwrap(),
+    )
+    .unwrap();
 }
 
 /// Replace absolute paths of the scenario with `${FIXTURE_ROOT}`.
 fn relativize(dir: &Path) {
     let root = dir.display().to_string();
-    let canon = dir.canonicalize().map(|p| p.display().to_string()).unwrap_or(root.clone());
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if let Ok(s) = std::fs::read_to_string(&p) {
-                if s.contains(&canon) || s.contains(&root) {
-                    let r = s.replace(&canon, "${FIXTURE_ROOT}").replace(&root, "${FIXTURE_ROOT}");
-                    std::fs::write(&p, r).unwrap();
-                }
-            }
-        }
-    }
+    let canon = dir
+        .canonicalize()
+        .map(|p| p.display().to_string())
+        .unwrap_or(root.clone());
+    let host = libopendan::runtime::native_host_id();
+    let uid = fixture_paths::uid();
+    let hostname = fixture_paths::hostname();
+    fixture_paths::rewrite(
+        dir,
+        &[
+            (&canon, "${FIXTURE_ROOT}"),
+            (&root, "${FIXTURE_ROOT}"),
+            (&host, "${FIXTURE_HOST}"),
+            (
+                &format!("\"uid\": \"{uid}\""),
+                "\"uid\": \"${FIXTURE_UID}\"",
+            ),
+            (&hostname, "${FIXTURE_HOSTNAME}"),
+        ],
+    );
     // kmsg lock file is runtime only.
     let _ = std::fs::remove_file(dir.join("kmsg").join(".lock"));
 }
@@ -291,6 +335,7 @@ fn relativize(dir: &Path) {
 
 async fn gen(out: &Path) -> R<()> {
     std::fs::create_dir_all(out)?;
+    let out = out.canonicalize()?;
     let scen = |name: &str| {
         let d = out.join(name);
         let _ = std::fs::remove_dir_all(&d);
@@ -303,7 +348,10 @@ async fn gen(out: &Path) -> R<()> {
         let d = scen("01_new_work_session");
         let env = Env::new(&d);
         let mut spec = work("write notes.txt");
-        spec.scope = Some(Scope { paths: vec!["ws:notes.txt".into()], objects: vec![] });
+        spec.scope = Some(Scope {
+            paths: vec!["ws:notes.txt".into()],
+            objects: vec![],
+        });
         let sd = env.create("work-fixture-new", spec).await;
         write_expected(&d, "new_work_session",
             "Freshly created work session located outside the AgentRoot; registered, queue created, no binding yet.",
@@ -315,7 +363,9 @@ async fn gen(out: &Path) -> R<()> {
     {
         let d = scen("02_finished_work_session");
         let env = Env::new(&d);
-        let sd = env.create("work-fixture-finished", work("write notes.txt")).await;
+        let sd = env
+            .create("work-fixture-finished", work("write notes.txt"))
+            .await;
         drive(&sd, &env.deps("tool_then_answer"), StopWhen::Finished).await;
         write_expected(&d, "finished_work_session",
             "One run with an exec call, finished (acceptance pending). last_run kept, report.md written.",
@@ -329,7 +379,11 @@ async fn gen(out: &Path) -> R<()> {
         let env = Env::new(&d);
         let sd = env.create("work-fixture-orphan", work("x")).await;
         env.post(&sd, Input::msg("m-1", "please do it")).await;
-        env.child_wait(&sd, "tool_then_answer", "input_batch:after_input_checkpoint");
+        env.child_wait(
+            &sd,
+            "tool_then_answer",
+            "input_batch:after_input_checkpoint",
+        );
         write_expected(&d, "orphan_run_pending_host_commit",
             "Snapshot + run.json(host_commit_pending) were written for a new run, state.json never referenced it.",
             vec![observe(&sd)],
@@ -368,7 +422,10 @@ async fn gen(out: &Path) -> R<()> {
         let sd = env.create("work-fixture-kill", work("long command")).await;
         let mut ch = env.child(&sd, "long_exec", None);
         let start = Instant::now();
-        while !std::fs::read_to_string(sd.path().join("marker")).unwrap_or_default().contains("start") {
+        while !std::fs::read_to_string(sd.path().join("marker"))
+            .unwrap_or_default()
+            .contains("start")
+        {
             if start.elapsed() > Duration::from_secs(60) {
                 return Err("exec never started".into());
             }
@@ -380,7 +437,8 @@ async fn gen(out: &Path) -> R<()> {
         let st = sd.state()?;
         let rec = sd.runs().record(&st.live_run.clone().unwrap().run_id)?;
         for e in &rec.executions {
-            let _ = agent_tool::exec_tracking::stop_execution(e, None, Duration::from_secs(5)).await;
+            let _ =
+                agent_tool::exec_tracking::stop_execution(e, None, Duration::from_secs(5)).await;
         }
         write_expected(&d, "killed_during_exec",
             "The runner was killed while `exec` ran: run.json holds the in-flight call c1 and its execution identity; the latest snapshot has no result for c1.",
@@ -393,7 +451,9 @@ async fn gen(out: &Path) -> R<()> {
     {
         let d = scen("07_receipt_ahead_of_state");
         let env = Env::new(&d);
-        let sd = env.create("work-fixture-receipt", work("needs two messages")).await;
+        let sd = env
+            .create("work-fixture-receipt", work("needs two messages"))
+            .await;
         drive(&sd, &env.deps("transient"), StopWhen::Finished).await;
         env.post(&sd, Input::msg("m-2", "second message")).await;
         env.child_wait(&sd, "transient", "input_batch:after_input_checkpoint");
@@ -411,7 +471,18 @@ async fn gen(out: &Path) -> R<()> {
         spec.artifact_id = Some("demo".into());
         let sd = env.create("work-fixture-decide", spec).await;
         drive(&sd, &env.deps("tool_then_answer"), StopWhen::Finished).await;
-        env.post(&sd, Input::control("d-1", &ControlCommand::Decide { decision: "accept".into(), by: "did:user:alice".into(), note: None })).await;
+        env.post(
+            &sd,
+            Input::control(
+                "d-1",
+                &ControlCommand::Decide {
+                    decision: "accept".into(),
+                    by: "did:user:alice".into(),
+                    note: None,
+                },
+            ),
+        )
+        .await;
         env.post(&sd, Input::msg("m-late", "one more thing")).await;
         write_expected(&d, "finished_with_decide",
             "Finished work session (artifact demo, version produced) with control(decide: accept) and a late msg in the queue.",
@@ -429,7 +500,9 @@ async fn gen(out: &Path) -> R<()> {
         spec.subscriptions.push(Subscription {
             id: "sa".into(),
             mode: SubscriptionMode::Semi,
-            source: SubscriptionSource::Session { session_ref: a.sid().into() },
+            source: SubscriptionSource::Session {
+                session_ref: a.sid().into(),
+            },
             watch: vec!["run_state".into(), "outcome".into()],
         });
         let b = env.create("work-fixture-sub-b", spec).await;
@@ -447,13 +520,22 @@ async fn gen(out: &Path) -> R<()> {
         std::fs::create_dir_all(&ws)?;
         let mk = |p: &str| {
             let mut s = work("edit");
-            s.workspace = Some(WorkspaceRef::External { path: ws.display().to_string() });
-            s.scope = Some(Scope { paths: vec![p.into()], objects: vec![] });
+            s.workspace = Some(WorkspaceRef::External {
+                path: ws.display().to_string(),
+            });
+            s.scope = Some(Scope {
+                paths: vec![p.into()],
+                objects: vec![],
+            });
             s
         };
-        let a = env.create("work-fixture-active-a", mk("ws:snake/src/")).await;
+        let a = env
+            .create("work-fixture-active-a", mk("ws:snake/src/"))
+            .await;
         env.child_wait(&a, "answer", "input_batch:after_gate_clear");
-        let b = env.create("work-fixture-active-b", mk("ws:snake/src/collision.js")).await;
+        let b = env
+            .create("work-fixture-active-b", mk("ws:snake/src/collision.js"))
+            .await;
         write_expected(&d, "active_overlap",
             "A is running (registry status running, touching ws:snake/src/); B is created on the same workspace.",
             vec![observe(&a), observe(&b)],
@@ -464,7 +546,9 @@ async fn gen(out: &Path) -> R<()> {
     {
         let d = scen("11_worklog_with_summary");
         let env = Env::new(&d);
-        let sd = env.create("work-fixture-summary", work("long history")).await;
+        let sd = env
+            .create("work-fixture-summary", work("long history"))
+            .await;
         let lease = match sd.acquire(env.deps("answer").holder())? {
             libopendan::lock::Acquire::Acquired(l) => l,
             _ => return Err("busy".into()),
@@ -473,7 +557,14 @@ async fn gen(out: &Path) -> R<()> {
         let mut offsets = Vec::new();
         for i in 0..200u64 {
             offsets.push(s.worklog_end());
-            s.append_worklog(&lease, vec![WorklogBody::UserMessage { run_id: "r-old".into(), turn: i, content: format!("old message {i}") }])?;
+            s.append_worklog(
+                &lease,
+                vec![WorklogBody::UserMessage {
+                    run_id: "r-old".into(),
+                    turn: i,
+                    content: format!("old message {i}"),
+                }],
+            )?;
         }
         s.commit_state(&lease)?;
         let mut sm = s.summary()?;
@@ -485,10 +576,13 @@ async fn gen(out: &Path) -> R<()> {
         s.write_summary(&lease, &sm)?;
         drop(s);
         lease.release();
-        write_expected(&d, "worklog_with_summary",
+        write_expected(
+            &d,
+            "worklog_with_summary",
             "summary.json start point near the end of a 200 entry worklog.",
             vec![observe(&sd)],
-            json!({ "action": "build_history_reverse_read", "stop_at_offset": offsets[190], "raw_entries": 10, "summary": "Summary of turns 0..189." }));
+            json!({ "action": "build_history_reverse_read", "stop_at_offset": offsets[190], "raw_entries": 10, "summary": "Summary of turns 0..189." }),
+        );
         relativize(&d);
     }
     // 12. fork child running, parent suspended
@@ -498,7 +592,10 @@ async fn gen(out: &Path) -> R<()> {
         let mut spec = work("research then answer");
         spec.prompt.llm_context = json!({ "loop_model": "behavior", "tools": { "enabled": true, "tools2actions": true } });
         spec.prompt.behavior = Some("plan".into());
-        spec.extensions.insert("opendan".into(), json!({ "process_modes": { "research": "fork" } }));
+        spec.extensions.insert(
+            "opendan".into(),
+            json!({ "process_modes": { "research": "fork" } }),
+        );
         let sd = env.create("work-fixture-fork", spec).await;
         env.child_wait(&sd, "fork", "input_batch:after_gate_clear#2");
         write_expected(&d, "fork_child_live",
@@ -515,21 +612,31 @@ async fn gen(out: &Path) -> R<()> {
         env.child_wait(&sd, "tool_then_answer", "input_batch:after_gate_clear");
         let run_id = sd.state()?.live_run.unwrap().run_id;
         let rec = sd.runs().record(&run_id)?;
-        let p = sd.runs_dir().join(&run_id).join("snapshots").join(format!("{:04}.json", rec.latest_snapshot_idx.unwrap()));
+        let p = sd
+            .runs_dir()
+            .join(&run_id)
+            .join("snapshots")
+            .join(format!("{:04}.json", rec.latest_snapshot_idx.unwrap()));
         let mut v: Value = serde_json::from_slice(&std::fs::read(&p)?)?;
         v["state"]["snapshot_version"] = json!(99);
         std::fs::write(&p, serde_json::to_vec(&v)?)?;
-        write_expected(&d, "unsupported_snapshot_version",
+        write_expected(
+            &d,
+            "unsupported_snapshot_version",
             "The published snapshot of the live run has snapshot_version 99.",
             vec![observe(&sd)],
-            json!({ "action": "recovery_blocked", "keep": ["live_run", "run directory", "consumption"], "infer": false }));
+            json!({ "action": "recovery_blocked", "keep": ["live_run", "run directory", "consumption"], "infer": false }),
+        );
         relativize(&d);
     }
     // JSON Schemas next to the fixtures.
     let schema_dir = out.join("..").join("schema");
     std::fs::create_dir_all(&schema_dir)?;
     for (name, s) in libopendan::protocol::json_schemas() {
-        std::fs::write(schema_dir.join(format!("{name}.schema.json")), serde_json::to_vec_pretty(&s)?)?;
+        std::fs::write(
+            schema_dir.join(format!("{name}.schema.json")),
+            serde_json::to_vec_pretty(&s)?,
+        )?;
     }
     println!("fixtures written to {}", out.display());
     Ok(())

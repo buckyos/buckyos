@@ -1,6 +1,6 @@
-{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1790853968798}
-{"seq":2,"t":"turn_started","run_id":"20261001-042608-e406cb","turn":1,"input_seq":1,"inputs":[],"changes":["_active_sessions@input"],"hook":"on_init","at_ms":1790853968815}
-{"seq":3,"t":"user_message","run_id":"20261001-042608-e406cb","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-01T04:26:08.812-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"host\":\"host:lzc-pve:6b719608768f\",\"kind\":\"native\",\"os\":\"linux\",\"runtime_id\":\"rt-fixture-native\"}</runtime>\n</session_input>"}
-{"seq":4,"t":"assistant_message","run_id":"20261001-042608-e406cb","turn":1,"assistant":"answer"}
-{"seq":5,"t":"outcome","run_id":"20261001-042608-e406cb","turn":1,"kind":"done","report":"answer"}
-{"seq":6,"t":"turn_ended","run_id":"20261001-042608-e406cb","turn":1,"status":"completed","at_ms":1790853968835}
+{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1790960718874}
+{"seq":2,"t":"turn_started","run_id":"20261002-100518-3f7b20","turn":1,"input_seq":1,"inputs":[],"changes":["_active_sessions@input"],"hook":"on_init","at_ms":1790960718957}
+{"seq":3,"t":"user_message","run_id":"20261002-100518-3f7b20","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-02T10:05:18.941-07:00\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"current_time\":\"2026-10-02T10:05:18-0700\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-sub-a\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"shell\":\"/usr/bin/bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"0\"},\"timezone\":\"PDT-0700\",\"tools\":[\"bash\",\"setsid\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
+{"seq":4,"t":"assistant_message","run_id":"20261002-100518-3f7b20","turn":1,"assistant":"answer"}
+{"seq":5,"t":"outcome","run_id":"20261002-100518-3f7b20","turn":1,"kind":"done","report":"answer"}
+{"seq":6,"t":"turn_ended","run_id":"20261002-100518-3f7b20","turn":1,"status":"completed","at_ms":1790960718993}

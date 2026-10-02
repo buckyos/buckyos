@@ -1,29 +1,29 @@
 {
-  "schema": "opendan.session_state/2",
+  "acceptance": "n/a",
+  "activity": {
+    "heartbeat_ms": 0,
+    "summary": ""
+  },
+  "bootstrap_done": false,
+  "inputs": {},
+  "last_run": null,
+  "live_run": null,
+  "one_line_status": "",
+  "perception_seq": 0,
+  "recent_keys": [],
+  "reported_rev": 0,
   "rev": 1,
   "run_state": "created",
-  "acceptance": "n/a",
-  "turn_seq": 0,
-  "turns_completed": 0,
-  "bootstrap_done": false,
+  "schema": "opendan.session_state/3",
+  "stop_requested": false,
   "topic": {
     "title": ""
   },
-  "live_run": null,
-  "last_run": null,
+  "turn_seq": 0,
+  "turns_completed": 0,
+  "updated_at_ms": 1790960717805,
   "worklog": {
-    "committed_seq": 1,
-    "committed_bytes": 133
-  },
-  "inputs": {},
-  "recent_keys": [],
-  "perception_seq": 0,
-  "reported_rev": 0,
-  "activity": {
-    "summary": "",
-    "heartbeat_ms": 0
-  },
-  "one_line_status": "",
-  "stop_requested": false,
-  "updated_at_ms": 1790853968354
+    "committed_bytes": 133,
+    "committed_seq": 1
+  }
 }

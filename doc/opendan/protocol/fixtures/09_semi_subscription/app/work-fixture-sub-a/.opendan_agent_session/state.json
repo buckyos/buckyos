@@ -1,44 +1,44 @@
 {
-  "schema": "opendan.session_state/2",
-  "rev": 3,
-  "writer": {
-    "runner_id": "rn-dd594fe1905b4f7e",
-    "principal": "app:app2@alice",
-    "host": "host:lzc-pve:6b719608768f",
-    "pid": 595447,
-    "lock_epoch": 1
-  },
-  "run_state": "finished",
-  "outcome": "succeeded",
   "acceptance": "pending",
+  "activity": {
+    "heartbeat_ms": 0,
+    "summary": ""
+  },
+  "bootstrap_done": true,
+  "inputs": {},
+  "last_run": "20261002-100518-3f7b20",
+  "live_run": null,
+  "one_line_status": "finished: answer",
+  "outcome": "succeeded",
+  "perception_seq": 2,
+  "recent_keys": [],
+  "reported_rev": 2,
   "result": {
     "answer": "answer",
     "answer_ref": "report.md"
   },
-  "turn_seq": 1,
-  "turns_completed": 1,
-  "bootstrap_done": true,
-  "topic": {
-    "title": ""
-  },
-  "live_run": null,
-  "last_run": "20261001-042608-e406cb",
-  "worklog": {
-    "committed_seq": 6,
-    "committed_bytes": 987
-  },
-  "inputs": {},
-  "recent_keys": [],
+  "rev": 3,
+  "run_state": "finished",
+  "schema": "opendan.session_state/3",
+  "stop_requested": false,
   "subscription_cursors": {
     "_active_sessions": []
   },
-  "perception_seq": 2,
-  "reported_rev": 2,
-  "activity": {
-    "summary": "",
-    "heartbeat_ms": 0
+  "topic": {
+    "title": ""
   },
-  "one_line_status": "finished: answer",
-  "stop_requested": false,
-  "updated_at_ms": 1790853968836
+  "turn_seq": 1,
+  "turns_completed": 1,
+  "updated_at_ms": 1790960718994,
+  "worklog": {
+    "committed_bytes": 1260,
+    "committed_seq": 6
+  },
+  "writer": {
+    "host": "${FIXTURE_HOST}",
+    "lock_epoch": 1,
+    "pid": 3002232,
+    "principal": "app:app2@alice",
+    "runner_id": "rn-9df10346328642a6"
+  }
 }

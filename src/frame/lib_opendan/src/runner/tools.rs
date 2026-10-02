@@ -11,7 +11,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_tool::exec_tracking::{ExecutionRecord, ExecutionRegistrar, InflightAction};
-use agent_tool::xllm::{XllmToolManager, TOOL_EXEC};
+use agent_tool::runtime::Sandbox;
+use agent_tool::xllm::TOOL_EXEC;
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::deps::{ToolDispatchError, ToolManager, ToolSpecLite};
@@ -68,7 +69,7 @@ impl ExecutionRegistrar for RunRegistrar {
 
 /// Session-aware tool manager wrapping xllm's tool set.
 pub struct SessionToolManager {
-    inner: Arc<XllmToolManager>,
+    inner: Arc<dyn Sandbox>,
     run: RunHandle,
     lease: Arc<Lease>,
     workdir: PathBuf,
@@ -79,7 +80,7 @@ pub struct SessionToolManager {
 
 impl SessionToolManager {
     pub fn new(
-        inner: Arc<XllmToolManager>,
+        inner: Arc<dyn Sandbox>,
         run: RunHandle,
         lease: Arc<Lease>,
         workdir: PathBuf,
@@ -163,6 +164,6 @@ impl ToolManager for SessionToolManager {
     }
 
     fn has_tool(&self, name: &str) -> bool {
-        self.inner.has(name)
+        self.inner.has_tool(name)
     }
 }

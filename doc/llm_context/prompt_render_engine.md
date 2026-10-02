@@ -37,11 +37,19 @@ pub struct EngineConfig {
     pub exec_timeout: Duration,
     /// 是否允许 __EXEC__ 指令。默认 false（沙箱友好）。
     pub allow_exec: bool,
+    pub executor: Option<Arc<dyn PromptExec>>,
     /// __INCLUDE__ 的根目录白名单；空则禁用文件包含。
     pub include_roots: Vec<PathBuf>,
     /// 单次渲染的总递归深度（防止 __INCLUDE__ 循环引用）。默认 8。
     pub max_recursion_depth: u8,
 }
+
+#[async_trait]
+pub trait PromptExec: Send + Sync + std::fmt::Debug {
+    async fn execute(&self, request: PromptExecRequest) -> Result<PromptExecOutput, String>;
+}
+// PromptExecRequest: command, timeout: Duration, max_output_bytes
+// PromptExecOutput: exit_code, stdout, stderr, timed_out
 
 impl Default for EngineConfig { /* 见默认值 */ }
 
@@ -118,6 +126,10 @@ pub enum RenderError {
 - `ValueLoader` 是异步 trait，能接外面任意能算字符串的东西（数据库、session 状态、远程 API…）。引擎对调用方一无所知。
 - `EngineConfig` 把所有沙箱开关收敛在一处，方便不安全路径单测。
 
+`executor` 默认 `None`。启用 `__EXEC__` 但未注入执行器时返回 `RenderError::Loader`，模板引擎不自行启动本地 shell。`llm_context` 只定义执行接口，`agent_tool::runtime::SandboxPromptExec` 把请求交给同一 Sandbox，沿用启动握手、记录与目标侧终止；适配器记录命令与耗时。调用方应在执行前装好 registrar。
+
+`RuntimeValueLoader` 为 `__ENV($runtime.*)__` 提供执行体信息。核心键包括 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone；SSH 时在远端探测。Session system 使用稳定字段，新鲜时间放输入批次；xllm 一次性任务可在 system 使用打开时的时间。`__INCLUDE__` 的来源与 include_roots 仍是控制侧模板素材。
+
 ## 3. 模板语法（保留 + 重命名）
 
 四个指令 + 一个 `{name}` 占位符。**旧的 `__OPENDAN_*` 前缀全部去掉**（beta2.2 的破坏性 rename，干净利落）。
@@ -126,7 +138,7 @@ pub enum RenderError {
 |--------|--------|------|
 | `__OPENDAN_ENV(expr)__` | `__ENV(expr)__` | 从 `RenderVars.env` 取值。`expr` 是单个 key（`session_id`）或点路径（`owner.name`）。 |
 | `__OPENDAN_CONTENT(path)__` | `__INCLUDE(path)__` | 加载文件。`path` 必须在 `EngineConfig.include_roots` 白名单下；支持 `~` / `$HOME` 展开；硬上限 `max_include_bytes`。 |
-| `__OPENDAN_EXEC(cmd)__` | `__EXEC(cmd)__` | 执行 shell；仅当 `allow_exec=true` 时启用，超时按 `exec_timeout`，stdout 作为返回值，stderr 仅日志。 |
+| `__OPENDAN_EXEC(cmd)__` | `__EXEC(cmd)__` | 通过注入的 `PromptExec` 执行；仅当 `allow_exec=true` 时启用，超时按 `exec_timeout`，stdout 作为返回值，stderr 仅日志。 |
 | `__OPENDAN_VAR(name, $expr)` | `__VAR(name, $expr)__` | 注册一个动态变量：渲染时调用 `loader.load("$expr")` 拿值，绑定到 `vars[name]`，供后续 `{name}` 引用。 |
 | `{var}` | `{var}` | 静态/动态变量替换（内部仍走 `upon`）。字面 `{` `}` 用 `{{` `}}` 转义。 |
 

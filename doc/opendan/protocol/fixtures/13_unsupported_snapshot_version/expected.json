@@ -18,11 +18,11 @@
         "executions": 0,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261001-042609-088a22",
+        "run_id": "20261002-100519-e07608",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261001-042609-088a22"
+        "20261002-100519-e07608"
       ],
       "session_id": "work-fixture-blocked",
       "state": {

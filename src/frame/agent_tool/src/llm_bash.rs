@@ -21,9 +21,7 @@ use serde_json::{json, Map as JsonMap, Value as Json};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::time::{timeout as tokio_timeout, Duration};
 
-use crate::path_utils::{
-    normalize_abs_path, resolve_path_from_root, resolve_path_under_root, to_abs_path,
-};
+use crate::path_utils::to_abs_path;
 use crate::tool::CallingConventions;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult, AgentToolStatus,
@@ -236,6 +234,34 @@ pub struct BashRunOutput {
 
 #[async_trait]
 pub trait BashRunner: Send + Sync {
+    async fn cancel(&self) -> Result<(), AgentToolError> {
+        Ok(())
+    }
+    async fn resolve_cwd(
+        &self,
+        root: &std::path::Path,
+        raw: Option<&str>,
+        restricted: bool,
+    ) -> Result<PathBuf, AgentToolError> {
+        use crate::runtime::files::{FileBackend, LocalFileBackend};
+        let root = to_abs_path(root)?;
+        let allowed = if restricted {
+            vec![root.clone()]
+        } else {
+            Vec::new()
+        };
+        let path = LocalFileBackend
+            .resolve(&root, raw.unwrap_or("."), &allowed)
+            .await?;
+        if !path.is_dir() {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "cwd does not exist: {}",
+                path.display()
+            )));
+        }
+        Ok(path)
+    }
+
     async fn run(
         &self,
         ctx: &SessionRuntimeContext,
@@ -654,25 +680,10 @@ impl ExecBashTool {
         self.config.tool_name.as_str()
     }
 
-    fn resolve_cwd(&self, raw: Option<&str>) -> Result<PathBuf, AgentToolError> {
-        let workspace = to_abs_path(&self.config.workspace)?;
-        match raw.map(str::trim).filter(|s| !s.is_empty()) {
-            Some(value) => {
-                let resolved = if self.config.restrict_cwd {
-                    resolve_path_under_root(&workspace, value)?
-                } else {
-                    resolve_path_from_root(&workspace, value)?
-                };
-                if !resolved.exists() {
-                    return Err(AgentToolError::InvalidArgs(format!(
-                        "cwd does not exist: {}",
-                        resolved.display()
-                    )));
-                }
-                Ok(resolved)
-            }
-            None => Ok(normalize_abs_path(&workspace)),
-        }
+    async fn resolve_cwd(&self, raw: Option<&str>) -> Result<PathBuf, AgentToolError> {
+        self.runner
+            .resolve_cwd(&self.config.workspace, raw, self.config.restrict_cwd)
+            .await
     }
 
     fn resolve_timeout(&self, raw: Option<u64>) -> u64 {
@@ -918,7 +929,7 @@ impl AgentTool for ExecBashTool {
             .to_string();
 
         let raw_cwd = map.get("cwd").and_then(Json::as_str);
-        let cwd = self.resolve_cwd(raw_cwd)?;
+        let cwd = self.resolve_cwd(raw_cwd).await?;
 
         let timeout_ms = self.parse_timeout(map.get("timeout_ms"))?;
 

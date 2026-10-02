@@ -68,6 +68,7 @@ Input:
 Model:
   --provider buckyos|openai    --model <name>    --file-model <name>
   buckyos model names: llm.chat (logical) or model[:variant]@provider (exact)
+  --runtime native|tmux|remote_ssh    execution mechanism (connection fields from config)
   --loop-model function_call|behavior
   --tools | --no-tools         override every file-level tool switch
 
@@ -159,6 +160,7 @@ struct CliOpts {
     model: Option<String>,
     file_model: Option<String>,
     loop_model: Option<LoopModel>,
+    runtime: Option<String>,
     tools: Option<bool>,
     run: Option<String>,
     max_tokens: Option<u32>,
@@ -218,6 +220,7 @@ impl CliOpts {
             model: None,
             file_model: None,
             loop_model: None,
+            runtime: None,
             tools: None,
             run: None,
             max_tokens: None,
@@ -286,6 +289,10 @@ impl CliOpts {
                         ParseError::Bad(format!("--provider must be buckyos or openai, got `{v}`"))
                     })?;
                     set_once(&mut o.provider, k, "--provider")?;
+                }
+                "--runtime" => {
+                    let v = next_value(args, &mut idx, "--runtime")?;
+                    set_once(&mut o.runtime, v, "--runtime")?;
                 }
                 "--model" => {
                     let v = next_value(args, &mut idx, "--model")?;
@@ -416,6 +423,11 @@ impl CliOpts {
                 "--select and --system are mutually exclusive".into(),
             ));
         }
+        if o.command != Command::New && o.runtime.is_some() {
+            return Err(ParseError::Bad(
+                "--runtime only applies to new tasks; resume uses the saved target".into(),
+            ));
+        }
         match o.command {
             Command::New => {
                 if o.run.is_some() {
@@ -471,6 +483,13 @@ impl CliOpts {
 
     fn overrides(&self) -> TaskOverrides {
         TaskOverrides {
+            runtime: self
+                .runtime
+                .as_ref()
+                .map(|kind| crate::runtime::RuntimeConfig {
+                    kind: Some(kind.clone()),
+                    ..Default::default()
+                }),
             provider: self.provider,
             model: self.model.clone(),
             file_model: self.file_model.clone(),
@@ -706,7 +725,10 @@ fn exit_code_for_error(err: &XllmError) -> i32 {
         XllmError::RunBusy { .. } | XllmError::WorkdirBusy { .. } => EXIT_USAGE,
         XllmError::Storage(_) | XllmError::Io(_) => EXIT_TASK_FAILED,
         XllmError::Extract(_) => EXIT_RESULT_INVALID,
-        XllmError::Compressor(_) | XllmError::Other(_) => EXIT_TASK_FAILED,
+        XllmError::Compressor(_)
+        | XllmError::Other(_)
+        | XllmError::RuntimeMismatch(_)
+        | XllmError::RecoveryBlocked(_) => EXIT_TASK_FAILED,
     }
 }
 
@@ -724,10 +746,7 @@ fn store_for(opts: &CliOpts, workdir: &Path) -> RunStore {
     match merged.runs_dir {
         Some(crate::xllm::RunsDirSetting::Path { path }) => RunStore::disk(path),
         Some(crate::xllm::RunsDirSetting::Disabled) => RunStore::memory(),
-        None => RunStore::disk(crate::xllm::resolve_config_path(
-            DEFAULT_RUNS_DIR,
-            workdir,
-        )),
+        None => RunStore::disk(crate::xllm::resolve_config_path(DEFAULT_RUNS_DIR, workdir)),
     }
 }
 
@@ -1253,17 +1272,15 @@ async fn run_list(opts: &CliOpts) -> i32 {
 fn select_record(opts: &CliOpts, store: &RunStore, workdir: &Path) -> Result<RunRecord, XllmError> {
     match &opts.run {
         Some(id) => store.read_record(id),
-        None => {
-            crate::xllm::latest_run(store, Some(workdir), false)?.ok_or_else(|| {
-                XllmError::RunNotFound {
-                    run_id: "(latest)".into(),
-                    runs_dir: store
-                        .runs_dir()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_else(|| "(memory)".into()),
-                }
-            })
-        }
+        None => crate::xllm::latest_run(store, Some(workdir), false)?.ok_or_else(|| {
+            XllmError::RunNotFound {
+                run_id: "(latest)".into(),
+                runs_dir: store
+                    .runs_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "(memory)".into()),
+            }
+        }),
     }
 }
 
@@ -1285,6 +1302,28 @@ fn print_status_text(record: &RunRecord, summary: &RunSummary) {
     );
     println!("summary:        {}", record.summary);
     println!("workdir:        {}", record.workdir);
+    println!(
+        "runtime:        {} / {}",
+        record.config.runtime_descriptor.runtime_id, record.config.runtime_descriptor.kind
+    );
+    println!(
+        "target:         {}",
+        record.config.runtime_descriptor.target
+    );
+    println!(
+        "runtime cwd:    {}",
+        record.config.runtime_descriptor.workdir
+    );
+    println!(
+        "env_check:      {}",
+        record
+            .host
+            .as_ref()
+            .map(|h| h.env_check.to_string())
+            .unwrap_or_else(
+                || serde_json::to_string(&record.config.runtime_descriptor).unwrap_or_default()
+            )
+    );
     println!(
         "runs dir:       {}",
         record.runs_dir.as_deref().unwrap_or("(memory)")

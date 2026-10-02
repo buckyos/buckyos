@@ -84,7 +84,7 @@ async fn drive_locked(
     session.set_writer(WriterInfo {
         runner_id: deps.runner_id.clone(),
         principal: deps.who.clone(),
-        host: Some(deps.runtime.host_id().to_string()),
+        host: Some(crate::runtime::native_host_id()),
         pid: std::process::id(),
         lock_epoch: lease.epoch(),
     });
@@ -94,12 +94,87 @@ async fn drive_locked(
             let a = std::path::Path::new(&e.location)
                 .canonicalize()
                 .unwrap_or_else(|_| PathBuf::from(&e.location));
-            let b = sd.path().canonicalize().unwrap_or_else(|_| sd.path().to_path_buf());
+            let b = sd
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|_| sd.path().to_path_buf());
             if a != b {
                 return DriveResult::Unregistered;
             }
         }
         _ => return DriveResult::Unregistered,
+    }
+    let mut deps = deps.clone();
+    let mut config = deps.runtime.config();
+    let declared = session.config.prompt.llm_context.get("runtime").cloned();
+    if let Some(value) = declared {
+        let parsed = agent_tool::xllm::parse_llm_context_file(
+            &sd.path().join("session_config.json"),
+            &serde_json::json!({"runtime":value}).to_string(),
+        );
+        match parsed {
+            Ok(file) => {
+                if let Some(r) = file.runtime {
+                    let original = config.clone();
+                    config.merge_over(&r);
+                    if original.kind() != config.kind()
+                        || original
+                            .id
+                            .as_ref()
+                            .is_some_and(|id| config.id.as_ref() != Some(id))
+                        || original
+                            .workdir
+                            .as_ref()
+                            .is_some_and(|cwd| config.workdir.as_ref() != Some(cwd))
+                        || original
+                            .remote_ssh
+                            .as_ref()
+                            .is_some_and(|ssh| config.remote_ssh.as_ref() != Some(ssh))
+                        || original
+                            .env
+                            .iter()
+                            .any(|(k, v)| config.env.get(k) != Some(v))
+                        || original.tmux.as_ref().is_some_and(|tmux| {
+                            config.tmux.as_ref().is_none_or(|new| {
+                                tmux.session
+                                    .as_ref()
+                                    .is_some_and(|v| new.session.as_ref() != Some(v))
+                                    || tmux
+                                        .socket
+                                        .as_ref()
+                                        .is_some_and(|v| new.socket.as_ref() != Some(v))
+                                    || tmux.mode.is_some_and(|v| new.mode != Some(v))
+                            })
+                        })
+                    {
+                        return DriveResult::BindFailed {
+                            error: serde_json::json!({"kind":"RuntimeMismatch","reason":"provided runtime differs from prompt.llm_context.runtime"}),
+                        };
+                    }
+                }
+            }
+            Err(e) => {
+                return DriveResult::BindFailed {
+                    error: serde_json::json!({"kind":"Config","reason":e.to_string()}),
+                }
+            }
+        }
+    }
+    if config.workdir.is_none() {
+        match crate::runtime::resolve_workdir(sd, &session.config, deps.agent.agent_root()) {
+            Ok(p) => config.workdir = Some(p.display().to_string()),
+            Err(e) => return DriveResult::BindFailed { error: e.to_json() },
+        }
+    }
+    if config != deps.runtime.config() {
+        match agent_tool::runtime::RuntimeRegistry::from_config(&config) {
+            Ok(r) => deps.runtime = r,
+            Err(e) => {
+                return DriveResult::BindFailed {
+                    error: serde_json::json!({"reason":e.to_string()}),
+                }
+            }
+        }
     }
     let sources = match deps.inputs.open(&session.config).await {
         Ok(s) => s,
@@ -192,7 +267,10 @@ async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
                 wseq,
             ));
         }
-        sh.agent().perception().append(&sh.lease, &sid, recs).await?;
+        sh.agent()
+            .perception()
+            .append(&sh.lease, &sid, recs)
+            .await?;
     }
     Ok(())
 }
@@ -226,7 +304,8 @@ async fn stop_session(sh: &Arc<Shared>, live: Option<LiveCtx>, env: &SessionEnv)
     match live {
         Some(lc) => {
             let snap = lc.ctx.snapshot();
-            lc.run.checkpoint_with_results(&snap, Some(RunStatus::Interrupted))?;
+            lc.run
+                .checkpoint_with_results(&snap, Some(RunStatus::Interrupted))?;
             finish_run(sh, &lc.run, &snap, lc.behavior, next).await
         }
         None => {
@@ -268,7 +347,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     // Kind leases: one consolidation at a time for the whole agent.
     let kind = sh.session.lock().await.config.session.kind;
     let _kind_lease = if kind == SessionKind::SelfImprove {
-        match sh.agent().locks().acquire("self_improve", sh.deps.holder())? {
+        match sh
+            .agent()
+            .locks()
+            .acquire("self_improve", sh.deps.holder())?
+        {
             Acquire::Acquired(l) => Some(Arc::new(l)),
             Acquire::Busy(info) => {
                 return Ok(DriveResult::Busy {
@@ -280,38 +363,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         None
     };
     *sh.kind_lease.lock().expect("kind lease") = _kind_lease.clone();
-    // Recovery: runs, receipts, executions — before reading any new input.
-    let mut live: Option<LiveCtx> = None;
-    let reconciled = reconcile_runs(sh).await?;
-    {
-        let s = sh.session.lock().await;
-        confirm_inputs(&sh.sources, &s.state).await;
-    }
-    if let Err(e) = catch_up(sh).await {
-        log::warn!("catch-up of {}: {e}", sh.dir.sid());
-    }
-    let mut inputs = fetch_inputs(sh).await?;
-    apply_controls(sh, &mut inputs, false).await?;
-    {
-        let s = sh.session.lock().await;
-        if s.state.is_finished() {
-            drop(s);
-            reject_leftovers(sh, &mut inputs).await?;
-            return Ok(finished_result(&*sh.session.lock().await));
-        }
-    }
     // Runtime binding happens before any inference (Q3).
     let (binding, env) = {
         let cfg = sh.session.lock().await.config.clone();
-        let layers: Vec<PathBuf> = sh
-            .deps
-            .runtime
-            .descriptor()
-            .path_layers
-            .iter()
-            .map(PathBuf::from)
-            .collect();
-        let plan = bin_plan_for(&cfg, sh.agent_root.as_deref(), sh.deps.session_cli.clone(), &layers)?;
+        let plan = bin_plan_for(
+            &cfg,
+            sh.agent_root.as_deref(),
+            sh.deps.session_cli.clone(),
+            &[],
+        )?;
         let bound = bind_or_verify(
             &sh.dir,
             &sh.lease,
@@ -351,17 +411,29 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     .collect(),
             }
         };
-        let env = match sh.deps.runtime.open_session_env(&binding, &ctx).await {
-            Ok(e) => e,
-            Err(e) => {
-                let mut s = sh.session.lock().await;
-                s.state.last_error = Some(e.to_json());
-                commit_and_report(sh, &mut s).await?;
-                return Ok(DriveResult::BindFailed { error: e.to_json() });
-            }
-        };
+        let env = crate::runtime::open_session_env(&binding, &ctx);
         (binding, env)
     };
+    // Recovery: runs, receipts, executions — before reading any new input.
+    let mut live: Option<LiveCtx> = None;
+    let reconciled = reconcile_runs(sh).await?;
+    {
+        let s = sh.session.lock().await;
+        confirm_inputs(&sh.sources, &s.state).await;
+    }
+    if let Err(e) = catch_up(sh).await {
+        log::warn!("catch-up of {}: {e}", sh.dir.sid());
+    }
+    let mut inputs = fetch_inputs(sh).await?;
+    apply_controls(sh, &mut inputs, false).await?;
+    {
+        let s = sh.session.lock().await;
+        if s.state.is_finished() {
+            drop(s);
+            reject_leftovers(sh, &mut inputs).await?;
+            return Ok(finished_result(&*sh.session.lock().await));
+        }
+    }
     if let Reconciled::Resume(run, snapshot) = reconciled {
         live = Some(resume_live_run(sh, run, snapshot, &env).await?);
     }
@@ -454,7 +526,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             changes: changes.items.clone(),
             hints,
             active,
-            runtime_status: sh.deps.runtime.status().await,
+            runtime_status: serde_json::to_value(sh.deps.runtime.info().await?).unwrap_or_default(),
             now_ms: crate::now_ms(),
             perceptions: if !state.bootstrap_done && cfg.session.kind == SessionKind::SelfImprove {
                 perception_window_records(sh, &cfg).await?
@@ -465,11 +537,13 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         // Only msg / event inputs (active), bootstrap and a behavior
         // hand-over make an input batch; semi changes ride along (S-15,
         // A-07).
-        let triggered = !picked.is_empty()
-            || !state.bootstrap_done
-            || state.internal_continuation.is_some();
+        let triggered =
+            !picked.is_empty() || !state.bootstrap_done || state.internal_continuation.is_some();
         let mut msg = if triggered {
-            sh.deps.assembler.render_input(&cfg, &state, &material).await?
+            sh.deps
+                .assembler
+                .render_input(&cfg, &state, &material)
+                .await?
         } else {
             None
         };

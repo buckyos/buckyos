@@ -50,7 +50,7 @@ fenced(lease, write): held() 为真才执行受保护的写入与副作用
 
 文件锁只保证协作 runner 之间状态写入互斥。runner 被 `kill -9` 时锁立即释放，但它启动的工具进程可能仍在运行。因此**接管方在启动新推理或工具之前**必须确认旧执行已停止：
 
-1. **执行标识先持久化**：受管执行（native / tmux runtime 的 `exec`）在用户命令获准运行之前，把 `ExecutionRecord` 写入 run.json 的 `executions[]`（fsync）。native：启动包装进程（独立进程组），在收到 `go` 行之前不 `exec` 用户命令；登记失败或 runner 在放行前退出，管道关闭，命令不会执行。tmux：`send-keys` 之前登记。
+1. **执行标识先持久化**：受管执行（native / tmux runtime 的 `exec`）在用户命令获准运行之前，把 `ExecutionRecord` 写入 run.json 的 `executions[]`（fsync）。native：启动包装进程（独立进程组），在收到 `go` 行之前不 `exec` 用户命令；登记失败或 runner 在放行前退出，管道关闭，命令不会执行。tmux：在专用 pane 启动等待 go 文件的包装进程，取得 PID/start ticks 后登记，登记成功才放行用户命令。
 2. **标识**：`execution_id` 以环境变量 `OPENDAN_EXECUTION_ID` 注入命令（子进程继承），另记 `host`、`boot_id`、`pgid`、进程组长的 `start_ticks`。不得只凭可能复用的 PID / PGID 杀进程。
 3. **探测**：boot_id 不同 → 已停止；host 不同 / 没有 `/proc` / 同进程组内有无法验证身份的进程 → **Unknown**；环境变量带该标记的存活进程 → **Alive**；否则 Stopped。
 4. **停止**：Alive → 逐个终止已验证的进程并等待消失；超时或 Unknown → `RecoveryBlocked`，保留现场，不自动继续。
@@ -68,3 +68,5 @@ xllm 接手未结束的 run 时执行同样的检查（`XllmRun::resume`：先�
 | 无需锁 | 向 session 的 kmsg 队列投递 |
 | self_improve 锁 | `state/perception/.cursor.json`、`state/perception/.consolidations.jsonl`（`memory/` 与 `notebook/` 由 agent_tool 自身的锁串行） |
 | artifact 锁（改自己的版本时还须持 session 锁） | `state/artifacts/<aid>/artifact.json` 与版本有效性变更 |
+
+共享 AgentRuntime 在恢复前核验保存目标；remote_ssh 在目标 Linux 上核验执行标记、boot_id 与进程身份，无法证明已停止则 RecoveryBlocked。没有持久结果的调用保持结果未知，不重放副作用。SSH 暂用于独立 xllm；Session 的远端 helper 未部署时明确报 Capability。

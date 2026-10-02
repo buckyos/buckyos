@@ -1,6 +1,6 @@
 # Agent Session 协议（反写 Spec）
 
-- 版本：2（对应 `opendan.session_config/2`、`opendan.session_state/2`、`opendan.session_summary/2`、渲染器 `libopendan.mechanical/2`、快照 `snapshot_version = 3`、xllm `RunRecord.version = 2`）。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
+- 版本：3（session_config、session_state、binding 为 /3，xllm RunRecord.version = 3；summary 与机械渲染保持 /2，快照 snapshot_version = 3）。版本 3 引入共享 Runtime 的有效配置与实际目标绑定，不改变 worklog 形状。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
 - 日期：2026-09-29；2026-10-01 按 Round / Step / Turn 术语统一更新
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。
@@ -51,8 +51,8 @@
 
 ## 4. 版本规则
 
-- 各 JSON 文件带 `schema` 字段（`opendan.<name>/<major>`）。读者遇到不认识的主版本必须拒绝（恢复时返回 RecoveryBlocked），不得猜测。当前实现加载 session 时要求 `state.json` / `session_config.json` 的 schema 精确等于 `/2`，更旧的主版本同样以 RecoveryBlocked 拒绝。
+- 各 JSON 文件带 `schema` 字段（`opendan.<name>/<major>`）。读者遇到不认识的主版本必须拒绝（恢复时返回 RecoveryBlocked），不得猜测。当前实现加载 session 时要求 `state.json` / `session_config.json` 的 schema 精确等于 `/3`，更旧的主版本同样以 RecoveryBlocked 拒绝。
 - 同一主版本内只做**加法**：新增字段都有默认值；读者必须容忍未知字段，写者必须保留自己不理解的宿主元数据（如快照的 `state.host`）。
 - 主版本升级是 breaking change（beta 2.2）：不提供 serde 别名、不双读双写、不迁移旧目录；版本 1 的 session 与 run 只能保留现场，不能被版本 2 的 runner 推进。
 - 快照：`LLMContextState.snapshot_version` 当前为 3（v3 把工具预算字段改为 `tool_iterations_left` / `tool_batch.batch_error`）。`LLMContext::resume` 只接受当前版本，更旧或更新的快照都拒绝恢复（RecoveryBlocked）。
-- xllm run 记录：`RunRecord.version` 当前为 2（`config.limits.max_tool_iterations`）；不等于当前版本时 xllm 拒绝接手，libopendan 返回 RecoveryBlocked。
+- xllm run 记录：`RunRecord.version` 当前为 3（有效 runtime 与 runtime_descriptor）；不等于当前版本时 xllm 拒绝接手，libopendan 返回 RecoveryBlocked。

@@ -75,7 +75,7 @@ pub struct ExecutionRecord {
     pub execution_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
-    /// `native` (tracked through /proc) — other kinds are reported Unknown.
+    /// `native` uses local /proc; `remote_ssh` is reconciled on the saved target.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
@@ -101,7 +101,7 @@ pub struct HostRunInfo {
     pub assembled_by: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
-    /// `native | tmux` — xllm only takes over native runs.
+    /// `native | tmux | remote_ssh`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -396,6 +396,13 @@ impl TrackedBashRunner {
             .rev()
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.clone())
+            .or_else(|| {
+                self.extra_env
+                    .iter()
+                    .rev()
+                    .find(|(k, _)| k == "PATH")
+                    .map(|(_, v)| v.clone())
+            })
             .or_else(|| std::env::var("PATH").ok())
             .unwrap_or_else(|| "/usr/local/bin:/usr/bin:/bin".to_string());
         let mut parts: Vec<String> = self
@@ -436,6 +443,30 @@ const LAUNCH_WRAPPER: &str = "IFS= read -r __od_go || exit 125; [ \"$__od_go\" =
 
 #[async_trait]
 impl BashRunner for TrackedBashRunner {
+    async fn cancel(&self) -> Result<(), AgentToolError> {
+        let records = self
+            .pending
+            .lock()
+            .expect("pending")
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for rec in records {
+            stop_execution(&rec, self.host.as_deref(), Duration::from_secs(5))
+                .await
+                .map_err(|message| AgentToolError::Transport {
+                    message,
+                    effect_unknown: true,
+                })?;
+            self.pending
+                .lock()
+                .expect("pending")
+                .remove(&rec.execution_id);
+            self.registrar.completed(&rec.execution_id).await;
+        }
+        Ok(())
+    }
+
     async fn run(
         &self,
         _ctx: &SessionRuntimeContext,
@@ -468,9 +499,10 @@ impl BashRunner for TrackedBashRunner {
         cmd.env("PATH", self.build_path(&req.env));
         cmd.env(EXECUTION_ENV, &execution_id);
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|err| AgentToolError::ExecFailed(format!("spawn bash failed: {err}")))?;
+        let mut child = cmd.spawn().map_err(|err| AgentToolError::Transport {
+            message: format!("spawn bash failed: {err}"),
+            effect_unknown: false,
+        })?;
         let pgid = child.id();
         let mut guard = ProcessGroupGuard::new(pgid);
         let rec = ExecutionRecord {
@@ -490,18 +522,26 @@ impl BashRunner for TrackedBashRunner {
             drop(child.stdin.take());
             guard.kill();
             let _ = child.kill().await;
-            return Err(AgentToolError::ExecFailed(format!(
-                "execution tracking could not be persisted; command not started: {e}"
-            )));
+            return Err(AgentToolError::Transport {
+                message: format!(
+                    "execution tracking could not be persisted; command not started: {e}"
+                ),
+                effect_unknown: false,
+            });
         }
+        self.pending
+            .lock()
+            .expect("pending")
+            .insert(execution_id.clone(), rec.clone());
         // Release the command.
         if let Some(mut stdin) = child.stdin.take() {
             if let Err(e) = stdin.write_all(b"go\n").await {
                 guard.kill();
                 let _ = child.kill().await;
-                return Err(AgentToolError::ExecFailed(format!(
-                    "failed to release command: {e}"
-                )));
+                return Err(AgentToolError::Transport {
+                    message: format!("failed to release command: {e}"),
+                    effect_unknown: true,
+                });
             }
             let _ = stdin.flush().await;
             drop(stdin);
@@ -527,11 +567,20 @@ impl BashRunner for TrackedBashRunner {
                 Some(status)
             }
             Ok(Err(err)) => {
-                return Err(AgentToolError::ExecFailed(format!("wait bash failed: {err}")));
+                return Err(AgentToolError::Transport {
+                    message: format!("wait bash failed: {err}"),
+                    effect_unknown: true,
+                });
             }
             Err(_) => {
                 guard.kill();
                 let _ = child.kill().await;
+                stop_execution(&rec, self.host.as_deref(), Duration::from_secs(5))
+                    .await
+                    .map_err(|message| AgentToolError::Transport {
+                        message,
+                        effect_unknown: true,
+                    })?;
                 None
             }
         };
@@ -554,7 +603,10 @@ impl BashRunner for TrackedBashRunner {
         // The shell returned; background children may keep the execution
         // alive. Only a verified stop releases the record.
         match probe_execution(&rec, self.host.as_deref()) {
-            ExecutionProbe::Stopped => self.registrar.completed(&execution_id).await,
+            ExecutionProbe::Stopped => {
+                self.pending.lock().expect("pending").remove(&execution_id);
+                self.registrar.completed(&execution_id).await;
+            }
             _ => {
                 self.pending
                     .lock()
@@ -650,7 +702,10 @@ mod tests {
         let reg = Arc::new(MemoryRegistrar::default());
         let runner = TrackedBashRunner::new(reg.clone());
         let out = runner
-            .run(&ctx(), req("echo hi; echo $OPENDAN_EXECUTION_ID", dir.path()))
+            .run(
+                &ctx(),
+                req("echo hi; echo $OPENDAN_EXECUTION_ID", dir.path()),
+            )
             .await
             .unwrap();
         assert_eq!(out.exit_code, 0);
@@ -672,7 +727,10 @@ mod tests {
         let err = runner.run(&ctx(), req(&cmd, dir.path())).await;
         assert!(err.is_err());
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(!marker.exists(), "command must not run without registration");
+        assert!(
+            !marker.exists(),
+            "command must not run without registration"
+        );
     }
 
     #[tokio::test]
@@ -720,7 +778,10 @@ mod tests {
             probe_execution(&rec, Some("did:dev:b")),
             ExecutionProbe::Unknown { .. }
         ));
-        assert_eq!(probe_execution(&rec, Some("did:dev:a")), ExecutionProbe::Stopped);
+        assert_eq!(
+            probe_execution(&rec, Some("did:dev:a")),
+            ExecutionProbe::Stopped
+        );
     }
 }
 
@@ -749,9 +810,9 @@ fn args_map(v: &Value) -> HashMap<String, Value> {
 
 fn fc_has_result(snapshot: &LLMContextSnapshot, call_id: &str) -> bool {
     snapshot.state.accumulated.iter().any(|m| {
-        m.content.iter().any(|c| {
-            matches!(c, AiContent::ToolResult { call_id: id, .. } if id == call_id)
-        })
+        m.content
+            .iter()
+            .any(|c| matches!(c, AiContent::ToolResult { call_id: id, .. } if id == call_id))
     })
 }
 

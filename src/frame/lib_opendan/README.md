@@ -11,7 +11,7 @@
 | `session` | `SessionDir`（读取、创建发布）、`Session`（持锁提交 state.json）、worklog、`runs/`（xllm RunStore 封装） |
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
 | `state` | `AgentStateClient` 与文件实现：登记表、活动视图、感知、认知门面、产物列表、Agent 级锁 |
-| `runtime` | `NativeRuntime`、`TmuxRuntime`、`.runtime/bin`、绑定与环境核验 |
+| `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
 | `runner` | `drive`：恢复、输入批次提交（开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭、观察边界、process 切换、压缩、Round 统计 |
 | `api` | `create_session` / `read_session` / `post_input` / `create_self_improve_session` |
 
@@ -28,7 +28,9 @@ let result = SessionRunner::new(deps).drive(&sd, StopWhen::Finished).await;
 
 LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 JSON 形式）决定，工具预算键为 `max_tool_iterations`。`StopWhen::MaxOutcomes { n }` 让 drive 处理 n 个 `LLMContext` outcome（每个启动或恢复的 run 段一个，任何种类）后返回 `DriveResult::OutcomesHandled`；它不是 Round（推理）数、`run()` 调用数，也不是 Turn 数。Session 的结束条件另由 `end_condition`（如 `max_turns`）按已完成的 Turn 计。Round / Step / Turn 的定义见 [LLM Context readme](../../../doc/llm_context/readme.md)。
 
-持久格式为协议版本 2（`opendan.session_state/2`、`opendan.session_config/2`、xllm `RunRecord.version = 2`、快照版本 3）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked。
+持久格式为协议版本 3（session_state/session_config/binding 均为 /3，xllm RunRecord.version = 3；summary 与机械渲染保持 /2，快照版本 3）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked。
+
+RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runtime 是构造配置，session_config.runtime.requirement 是绑定要求。binding 保存实际 target 和执行 cwd，推理与旧执行恢复前先核验。SessionToolManager 保留协议纪律，内部调用 Sandbox。Session 的 .runtime/bin 与 Agent tools 作为宿主环境注入；独立 xllm 接管校验保存的 PATH、manifest、helper 与凭据环境引用。远端 Session helper 未部署时明确报 Capability；remote_ssh 可独立用于 xllm。
 
 ## 开发 CLI
 

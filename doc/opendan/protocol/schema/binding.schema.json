@@ -17,6 +17,10 @@
     "runtime_id": {
       "type": "string"
     },
+    "schema": {
+      "type": "string"
+    },
+    "target": true,
     "workdir": {
       "description": "Absolute workdir for exec (the only place absolute paths are allowed besides `runs/`).",
       "type": "string"
@@ -27,6 +31,8 @@
     "bound_by",
     "kind",
     "runtime_id",
+    "schema",
+    "target",
     "workdir"
   ],
   "title": "Binding",

@@ -105,7 +105,7 @@ __EXEC(tree -L 2 $paths.workspace_root)__
 规则：
 
 - 默认关闭：`EngineConfig.allow_exec = false`。关闭时输出失败标记，不执行命令。
-- 开启后通过 `sh -lc <cmd>` 执行。
+- 开启后通过 `EngineConfig.executor: Option<Arc<dyn PromptExec>>` 执行。未注入执行器返回 `RenderError::Loader`；不自动启动本地 shell。`SandboxPromptExec` 与 exec 工具共用 Runtime 和执行跟踪。
 - 命令参数可以用一层单引号或双引号包裹；不匹配的引号会报错。
 - 命令中的 `$expr` 会按动态表达式解析；未命中的 `$expr` 保留原文本。动态 token 可包含 ASCII 字母、数字、`_`、`.`、`/`、`-`，因此 `$paths.workspace_root/subdir` 同样会被整体当作一个表达式。
 - 超时由 `EngineConfig.exec_timeout` 控制，默认 10 秒。
@@ -137,6 +137,8 @@ __VAR(owner, $owner)__
 - `\{{` 渲染为 `{{`
 - `\}}` 渲染为 `}}`
 
+`agent_tool::runtime::RuntimeValueLoader` 支持 `__ENV($runtime.hostname)__` 等表达式，值来自执行体。`{{runtime.*}}` 可使用 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone（宿主负责把 RuntimeInfo 放入 RenderVars）。Session 的 system 只放稳定字段，时间和时区进入输入批次；一次性 xllm 可在 system 使用打开时的值。cwd 是工具执行处路径；模板和 INCLUDE 路径仍在控制侧。
+
 ## 5. EngineConfig 默认值
 
 | 字段 | 默认值 | 说明 |
@@ -145,6 +147,7 @@ __VAR(owner, $owner)__
 | `max_total_bytes` | 256 KiB | 最终渲染结果上限 |
 | `exec_timeout` | 10 秒 | 单条 `__EXEC` 超时 |
 | `allow_exec` | `false` | 是否允许 `__EXEC` |
+| `executor` | `None` | 注入的 PromptExec 执行器 |
 | `include_roots` | 空 | 为空时 `__INCLUDE` 全部失败 |
 | `max_recursion_depth` | 8 | include 嵌套预处理深度 |
 

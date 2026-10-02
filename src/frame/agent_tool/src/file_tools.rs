@@ -1,16 +1,18 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::runtime::files::{FileBackend, LocalFileBackend};
 use async_trait::async_trait;
 use log::warn;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
+#[cfg(test)]
 use tokio::fs;
 
 use crate::{
-    resolve_path_from_root, rewrite_path_with_shell_cwd, u64_to_usize_arg, AgentToolError,
-    CallingConventions, CliInvocation, ContentInput, SessionRuntimeContext, ToolCtx, TypedTool,
+    rewrite_path_with_shell_cwd, u64_to_usize_arg, AgentToolError, CallingConventions,
+    CliInvocation, ContentInput, SessionRuntimeContext, ToolCtx, TypedTool,
 };
 
 pub const TOOL_EDIT_FILE: &str = "edit_file";
@@ -23,6 +25,7 @@ const READ_FILE_PREVIEW_MAX_LINES: usize = 200;
 #[derive(Clone, Debug)]
 pub struct FileToolConfig {
     pub root_dir: PathBuf,
+    pub backend: Arc<dyn FileBackend>,
     pub allowed_read_roots: Vec<PathBuf>,
     pub allowed_write_roots: Vec<PathBuf>,
     pub allow_create: bool,
@@ -40,39 +43,8 @@ impl FileToolConfig {
             max_write_bytes: usize::MAX,
             max_diff_lines: usize::MAX,
             root_dir,
+            backend: Arc::new(LocalFileBackend),
         }
-    }
-
-    fn ensure_read_path_allowed(
-        &self,
-        abs_path: &Path,
-        raw_path: &str,
-    ) -> Result<(), AgentToolError> {
-        if self.allowed_read_roots.is_empty() {
-            return Ok(());
-        }
-        if is_path_under_any(abs_path, &self.allowed_read_roots) {
-            return Ok(());
-        }
-        Err(AgentToolError::InvalidArgs(format!(
-            "read path not allowed by policy: {raw_path}"
-        )))
-    }
-
-    fn ensure_write_path_allowed(
-        &self,
-        abs_path: &Path,
-        raw_path: &str,
-    ) -> Result<(), AgentToolError> {
-        if self.allowed_write_roots.is_empty() {
-            return Ok(());
-        }
-        if is_path_under_any(abs_path, &self.allowed_write_roots) {
-            return Ok(());
-        }
-        Err(AgentToolError::InvalidArgs(format!(
-            "write path not allowed by policy: {raw_path}"
-        )))
     }
 
     fn ensure_create_allowed(&self, raw_path: &str) -> Result<(), AgentToolError> {
@@ -264,10 +236,18 @@ impl TypedTool for EditFileTool {
                 "`new_string` must be different from `old_string`".to_string(),
             ));
         }
-        let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
-        self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
+        let abs_path = self
+            .cfg
+            .backend
+            .resolve(
+                &self.cfg.root_dir,
+                &file_path,
+                &self.cfg.allowed_write_roots,
+            )
+            .await?;
 
-        let original_content = read_text_file_lossy(&abs_path).await?;
+        let original_content =
+            String::from_utf8_lossy(&self.cfg.backend.read(&abs_path).await?).to_string();
         let matches: Vec<usize> = original_content
             .match_indices(old_string.as_str())
             .map(|(pos, _)| pos)
@@ -296,14 +276,10 @@ impl TypedTool for EditFileTool {
         if changed {
             self.cfg
                 .ensure_write_size_allowed(&file_path, updated_content.len())?;
-            if let Some(parent) = abs_path.parent() {
-                fs::create_dir_all(parent).await.map_err(|err| {
-                    AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
-                })?;
-            }
-            fs::write(&abs_path, updated_content.as_bytes())
-                .await
-                .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
+            self.cfg
+                .backend
+                .write(&abs_path, updated_content.as_bytes())
+                .await?;
         }
 
         let (diff, diff_truncated) = build_simple_diff(
@@ -470,10 +446,17 @@ impl TypedTool for WriteFileTool {
         }
         let content = args.content;
         let mode = normalize_write_mode(args.mode.as_deref())?;
-        let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
-        self.cfg.ensure_write_path_allowed(&abs_path, &file_path)?;
+        let abs_path = self
+            .cfg
+            .backend
+            .resolve(
+                &self.cfg.root_dir,
+                &file_path,
+                &self.cfg.allowed_write_roots,
+            )
+            .await?;
 
-        let exists = fs::metadata(&abs_path).await.is_ok();
+        let exists = self.cfg.backend.exists(&abs_path).await?;
         if mode == "new" && exists {
             return Err(AgentToolError::InvalidArgs(format!(
                 "write mode `new` requires target file not exist: {file_path}"
@@ -481,7 +464,7 @@ impl TypedTool for WriteFileTool {
         }
 
         let original_content = if exists {
-            read_text_file_lossy(&abs_path).await?
+            String::from_utf8_lossy(&self.cfg.backend.read(&abs_path).await?).to_string()
         } else {
             String::new()
         };
@@ -506,14 +489,10 @@ impl TypedTool for WriteFileTool {
         self.cfg
             .ensure_write_size_allowed(&file_path, updated_content.len())?;
 
-        if let Some(parent) = abs_path.parent() {
-            fs::create_dir_all(parent).await.map_err(|err| {
-                AgentToolError::ExecFailed(format!("create parent dir failed: {err}"))
-            })?;
-        }
-        fs::write(&abs_path, updated_content.as_bytes())
-            .await
-            .map_err(|err| AgentToolError::ExecFailed(format!("write file failed: {err}")))?;
+        self.cfg
+            .backend
+            .write(&abs_path, updated_content.as_bytes())
+            .await?;
 
         let changed = original_content != updated_content;
         let (diff, diff_truncated) = build_simple_diff(
@@ -719,10 +698,14 @@ impl TypedTool for ReadFileTool {
                 "missing required arg `path`".to_string(),
             ));
         }
-        let abs_path = resolve_path_from_root(&self.cfg.root_dir, &file_path)?;
-        self.cfg.ensure_read_path_allowed(&abs_path, &file_path)?;
+        let abs_path = self
+            .cfg
+            .backend
+            .resolve(&self.cfg.root_dir, &file_path, &self.cfg.allowed_read_roots)
+            .await?;
 
-        let full_content = read_text_file_lossy(&abs_path).await?;
+        let full_content =
+            String::from_utf8_lossy(&self.cfg.backend.read(&abs_path).await?).to_string();
         let first_chunk = args.first_chunk.clone();
         let (chunk_content, matched, chunk_start_line) =
             if let Some(first_chunk) = first_chunk.as_deref() {
@@ -1197,13 +1180,6 @@ fn resolve_line_marker(marker: LineMarker, total_lines: i64) -> i64 {
     }
 }
 
-async fn read_text_file_lossy(path: &Path) -> Result<String, AgentToolError> {
-    let bytes = fs::read(path)
-        .await
-        .map_err(|err| AgentToolError::ExecFailed(format!("read file failed: {err}")))?;
-    Ok(String::from_utf8_lossy(&bytes).to_string())
-}
-
 fn compact_cmd_param_preview(raw: &str) -> String {
     let escaped = raw
         .replace('\\', "\\\\")
@@ -1394,10 +1370,6 @@ fn build_simple_diff(
         return (diff.join("\n"), true);
     }
     (diff.join("\n"), false)
-}
-
-fn is_path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
-    roots.iter().any(|root| path.starts_with(root))
 }
 
 /// Shared shape for the `write_file` and `edit_file` CLI parsers — the

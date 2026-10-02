@@ -94,7 +94,18 @@ impl SessionDir {
     }
 
     pub fn binding_opt(&self) -> Result<Option<Binding>> {
-        fsutil::read_json_opt(&self.file(BINDING_FILE))
+        let value: Option<serde_json::Value> = fsutil::read_json_opt(&self.file(BINDING_FILE))?;
+        if value
+            .as_ref()
+            .is_some_and(|v| v["schema"] != "opendan.binding/3")
+        {
+            return Err(OpenDanError::blocked("unsupported binding format", None));
+        }
+        let binding: Option<Binding> = value
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|e| OpenDanError::json(&self.file(BINDING_FILE), e.to_string()))?;
+        Ok(binding)
     }
 
     pub fn statistics(&self) -> Result<SessionStatic> {
@@ -157,7 +168,11 @@ impl SessionDir {
         crate::ids::validate_session_id(&sid)?;
         std::fs::create_dir_all(parent).map_err(|e| OpenDanError::io(parent, e))?;
         let final_dir = parent.join(&sid);
-        if final_dir.join(STATE_DIR).join(SESSION_CONFIG_FILE).is_file() {
+        if final_dir
+            .join(STATE_DIR)
+            .join(SESSION_CONFIG_FILE)
+            .is_file()
+        {
             return Ok((SessionDir::open(&final_dir)?, Publish::AlreadyExists));
         }
         let tmp = parent.join(format!(".tmp-{}", uuid::Uuid::new_v4().simple()));

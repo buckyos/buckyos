@@ -31,6 +31,8 @@ pub struct HolderInfo {
 /// `binding.json` — written once on the first drive (§7.1).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Binding {
+    pub schema: String,
+    pub target: serde_json::Value,
     pub runtime_id: String,
     /// `native | tmux`.
     pub kind: String,
@@ -44,7 +46,11 @@ pub struct Binding {
 impl Binding {
     /// Identity comparison: `bound_at_ms` / `bound_by` do not matter.
     pub fn same_binding(&self, other: &Binding) -> bool {
-        self.runtime_id == other.runtime_id && self.kind == other.kind && self.workdir == other.workdir
+        self.schema == other.schema
+            && self.runtime_id == other.runtime_id
+            && self.kind == other.kind
+            && self.target == other.target
+            && self.workdir == other.workdir
     }
 }
 

@@ -13,7 +13,7 @@ use serde_json::Value;
 /// 2: logical Turn identity (`turn_seq` / `open_turn` / `turns_completed`)
 /// replaced the input-driven `round` counter; split flush cursors. Earlier
 /// versions are refused.
-pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/2";
+pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/3";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;

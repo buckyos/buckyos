@@ -1,14 +1,13 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
   "definitions": {
     "Capabilities": {
       "properties": {
         "network": {
-          "default": false,
           "type": "boolean"
         },
         "os": {
-          "default": "",
           "type": "string"
         },
         "tools": {
@@ -18,52 +17,17 @@
           "type": "object"
         }
       },
-      "type": "object"
-    },
-    "FsView": {
-      "properties": {
-        "agent_root": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "extra": {
-          "description": "Extra roots the runtime can see (e.g. an app data directory).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "workspace_root": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
+      "required": [
+        "network",
+        "os",
+        "tools"
+      ],
       "type": "object"
     }
   },
   "properties": {
     "capabilities": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/Capabilities"
-        }
-      ],
-      "default": {
-        "network": false,
-        "os": ""
-      }
-    },
-    "fs_view": {
-      "allOf": [
-        {
-          "$ref": "#/definitions/FsView"
-        }
-      ],
-      "default": {}
+      "$ref": "#/definitions/Capabilities"
     },
     "host": {
       "type": [
@@ -72,28 +36,22 @@
       ]
     },
     "kind": {
-      "description": "`native | tmux`.",
-      "type": "string"
-    },
-    "path_layers": {
-      "description": "PATH layers in front of the inherited PATH (`<sid>/.runtime/bin` first).",
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
-    },
-    "provider": {
-      "default": "",
-      "description": "`opendan | app:<app_id>`.",
       "type": "string"
     },
     "runtime_id": {
       "type": "string"
+    },
+    "target": true,
+    "workdir": {
+      "type": "string"
     }
   },
   "required": [
+    "capabilities",
     "kind",
-    "runtime_id"
+    "runtime_id",
+    "target",
+    "workdir"
   ],
   "title": "RuntimeDescriptor",
   "type": "object"

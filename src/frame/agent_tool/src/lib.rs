@@ -36,6 +36,7 @@ pub mod llm_tool_carft;
 pub mod llm_understand_media;
 pub mod path_utils;
 pub mod run_local_llm;
+pub mod runtime;
 pub mod runtime_context;
 pub mod skills_mgr;
 pub mod todo_tools;
@@ -118,19 +119,19 @@ pub fn now_ms() -> u64 {
 }
 pub use llm_compress::{compress, LlmSummarizeCompressor};
 pub use llm_understand_media::{LlmUnderstandMediaTool, TOOL_LLM_UNDERSTAND_MEDIA};
-pub use xllm::{
-    AiccLlmClient, Attachment, DefaultLlmClientFactory, EffectiveConfig, EffectiveTools,
-    ExtractedValue, LlmClientFactory, LoopModel, OpenAiLlmClient, ProviderKind, ResultFormat,
-    ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome, RunPhase,
-    RunRecord, RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps, XllmError,
-    XllmResult, XllmRun, XllmTask, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
-};
 pub use workspace::{
     ExternalWorkspaceBinding, ExternalWorkspaceRuntimeBackend, ExternalWorkspaceServiceConfig,
     LocalWorkspaceLock, LocalWorkspaceSessionBinding, ManagedExternalWorkspaceBackend,
     ManagedWorkspaceRecord, ManagedWorkspaceToolBackend, SessionWorkspaceBindingView,
     WorkspaceErrorSummary, WorkspaceOwner, WorkspaceRecordView, WorkspaceRuntimeBackend,
     WorkspaceStatus, WorkspaceType,
+};
+pub use xllm::{
+    AiccLlmClient, Attachment, DefaultLlmClientFactory, EffectiveConfig, EffectiveTools,
+    ExtractedValue, LlmClientFactory, LoopModel, OpenAiLlmClient, ProviderKind, ResultFormat,
+    ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome, RunPhase, RunRecord,
+    RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps, XllmError, XllmResult,
+    XllmRun, XllmTask, DEFAULT_CONTEXT_YIELD_RATIO, DEFAULT_MAX_CONSECUTIVE_ERRORS,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -352,6 +353,11 @@ pub enum AgentToolError {
     ExecFailed(String),
     #[error("timeout")]
     Timeout,
+    #[error("runtime transport: {message}")]
+    Transport {
+        message: String,
+        effect_unknown: bool,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -1055,7 +1061,8 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
         AgentToolError::InvalidArgs(_) | AgentToolError::NotFound(_) => CLI_EXIT_USAGE,
         AgentToolError::AlreadyExists(_)
         | AgentToolError::ExecFailed(_)
-        | AgentToolError::Timeout => CLI_EXIT_ERROR,
+        | AgentToolError::Timeout
+        | AgentToolError::Transport { .. } => CLI_EXIT_ERROR,
     }
 }
 

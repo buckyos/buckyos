@@ -509,6 +509,8 @@ timeout: 3600
 runs_dir: "~/.xllm/runs"
 run_logs: info
 result_format: raw
+runtime:
+  kind: native
 
 prompt:
   mode: standard
@@ -525,8 +527,11 @@ prompt:
           text: |
             Current time: {{runtime.current_time}}
             Timezone: {{runtime.timezone}}
-            Operating system: {{runtime.os}}
+            Runtime: {{runtime.id}} ({{runtime.kind}})
+            Operating system: {{runtime.os}} / {{runtime.arch}}
+            Host: {{runtime.hostname}}; shell: {{runtime.shell}}
             Working directory: {{runtime.cwd}}
+            Tools: {{runtime.tools}}
             Resolve relative paths from this run's working directory.
             Do not assume there is an additional workspace subdirectory.
         rules:
@@ -614,6 +619,26 @@ provider:
   api_key_env: XLLM_API_KEY
 model: "your-tool-capable-model"
 ```
+
+执行环境由顶层 runtime 选择，不配置即 native。runtime 支持 kind、id、workdir、env 及 kind 对应的 tmux/remote_ssh 连接块；同 kind 按字段覆盖，env 按键覆盖，切换 kind 重置整段。id 是身份而非 profile 名。未知字段和无关连接块报配置错误；container、container_host、remote_node、http_proxy_runtime 仅规划，选择时报能力错误。runtime 不配置 fs_view、path_layers、limits。
+
+远端示例（替换模板的 runtime）：
+
+```yaml
+runtime:
+  kind: remote_ssh
+  workdir: /srv/project
+  remote_ssh:
+    host: review-host
+    user: alice
+    identity_file: ~/.ssh/review_key
+```
+
+SSH 使用本机 OpenSSH 配置、agent/key 与 known_hosts，非交互连接；远端需 Linux、bash、SFTP。工具 exec、文件读写编辑与模板 EXEC 使用同一目标 cwd，环境信息在目标探测；MCP 服务与宿主进程内工具保留原执行位置。native/tmux 工作目录、tmux.socket 和 identity_file 相对其声明配置文件；SSH workdir 必须显式绝对路径。tmux 连接块要求 session，mode 为 create/attach/create_or_attach，命令在专用 pane 串行执行。
+
+配置、日志、run.json、快照与 INCLUDE 素材在控制侧，runtime.workdir 是执行侧路径。workspace 文件策略在目标侧核验真实路径，不能限制 shell 自身 I/O。恢复使用保存的有效 runtime 与 descriptor，核验 kind/id/目标/cwd；SSH alias 重定向不得改变旧 run 的执行体。超时、取消和接管须核验目标侧停止，结果未知的副作用不重放。SSH 无跨 Runner 的工作目录锁，宿主协调并发。
+
+RuntimeInfo 的核心键为 id/kind/os/arch/hostname/shell/cwd/tools/current_time/timezone；一次性 xllm 使用打开时环境，Session system 使用稳定信息并在输入批次更新时间。新任务可用 --runtime 覆盖 kind，恢复/查询不接受；status 显示实际目标与环境检查。
 
 #### 4.9.3 同构的 behavior loop 示例
 

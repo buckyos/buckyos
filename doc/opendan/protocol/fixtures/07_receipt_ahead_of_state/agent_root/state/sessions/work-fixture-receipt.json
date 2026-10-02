@@ -22,21 +22,21 @@
     "report_brief": "",
     "activity": {
       "summary": "needs two messages",
-      "heartbeat_ms": 1790853968666
+      "heartbeat_ms": 1790960718544
     },
     "last_runner": {
-      "runner_id": "rn-6b396045afe440f0",
-      "host": "host:lzc-pve:6b719608768f",
-      "pid": 595447,
+      "runner_id": "rn-6edbc419670446a4",
+      "host": "${FIXTURE_HOST}",
+      "pid": 3002232,
       "lock_epoch": 1,
-      "at_ms": 1790853968684
+      "at_ms": 1790960718574
     },
     "last_error": {
       "kind": "provider",
       "message": "llm provider failed (Transient): busy",
       "recoverable": true
     },
-    "updated_at_ms": 1790853968682
+    "updated_at_ms": 1790960718571
   },
   "location_rev": 0
 }

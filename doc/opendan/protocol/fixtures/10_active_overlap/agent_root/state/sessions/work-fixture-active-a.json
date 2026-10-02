@@ -36,19 +36,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1790853968890
+          "since_ms": 1790960719136
         }
       ],
-      "heartbeat_ms": 1790853968890
+      "heartbeat_ms": 1790960719136
     },
     "last_runner": {
-      "runner_id": "rn-279c40850a234ead",
-      "host": "host:lzc-pve:6b719608768f",
-      "pid": 595768,
+      "runner_id": "rn-e45aeab9c9e54a64",
+      "host": "${FIXTURE_HOST}",
+      "pid": 3004554,
       "lock_epoch": 1,
-      "at_ms": 1790853968891
+      "at_ms": 1790960719139
     },
-    "updated_at_ms": 1790853968890
+    "updated_at_ms": 1790960719136
   },
   "location_rev": 0
 }

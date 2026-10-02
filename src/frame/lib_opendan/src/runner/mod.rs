@@ -25,7 +25,7 @@ use agent_tool::xllm::XllmDeps;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::channel::{InputChannelFactory, Notifier, NoopNotifier, PollWaker, Waker};
+use crate::channel::{InputChannelFactory, NoopNotifier, Notifier, PollWaker, Waker};
 use crate::error::RecoveryBlocked;
 use crate::protocol::*;
 use crate::runtime::AgentRuntime;
@@ -63,7 +63,10 @@ pub enum StopWhen {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DriveResult {
     /// Nothing more to do right now (idle / waiting for input).
-    Idle { rev: u64, run_state: RunState },
+    Idle {
+        rev: u64,
+        run_state: RunState,
+    },
     /// The session is finished (`finished` state).
     Finished {
         rev: u64,
@@ -71,18 +74,32 @@ pub enum DriveResult {
         acceptance: Acceptance,
     },
     /// `StopWhen::MaxOutcomes` reached, or nothing left to run before it.
-    OutcomesHandled { rev: u64, run_state: RunState },
+    OutcomesHandled {
+        rev: u64,
+        run_state: RunState,
+    },
     /// Another holder advances the session (display info).
-    Busy { holder: Option<Value> },
+    Busy {
+        holder: Option<Value>,
+    },
     /// The run is executed by someone else (e.g. xllm took it over).
-    RunBusy { run_id: String },
-    NotDriver { driver: String },
+    RunBusy {
+        run_id: String,
+    },
+    NotDriver {
+        driver: String,
+    },
     Unregistered,
-    BindFailed { error: Value },
+    BindFailed {
+        error: Value,
+    },
     RecoveryBlocked(RecoveryBlocked),
     LeaseLost,
     /// The run stopped on an error; state carries `last_error`.
-    Error { rev: u64, error: Value },
+    Error {
+        rev: u64,
+        error: Value,
+    },
 }
 
 impl DriveResult {
@@ -210,7 +227,7 @@ impl RunnerDeps {
         HolderInfo {
             runner_id: self.runner_id.clone(),
             principal: self.who.clone(),
-            host: Some(self.runtime.host_id().to_string()),
+            host: Some(crate::runtime::native_host_id()),
             pid: std::process::id(),
             runtime_id: Some(self.runtime.descriptor().runtime_id.clone()),
         }

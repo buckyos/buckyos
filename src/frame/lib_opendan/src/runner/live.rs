@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use agent_tool::exec_tracking::{materialize_unresolved, ExecutionRecord, ExecutionRegistrar, HostRunInfo};
+use agent_tool::exec_tracking::{
+    materialize_unresolved, ExecutionRecord, ExecutionRegistrar, HostRunInfo,
+};
 use agent_tool::xllm::{
     create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel, RunStatus,
     XllmTask,
@@ -67,13 +69,16 @@ impl ExecutionRegistrar for LateRegistrar {
 
 pub(super) async fn stop_executions(sh: &Shared, run: &RunHandle) -> Result<()> {
     for exec in run.executions() {
-        sh.deps.runtime.reconcile_execution(&exec).await.map_err(|e| match e {
-            OpenDanError::RecoveryBlocked(mut b) => {
-                b.run_id = Some(run.run_id().to_string());
-                OpenDanError::RecoveryBlocked(b)
-            }
-            other => other,
-        })?;
+        sh.deps
+            .runtime
+            .reconcile_execution(&exec)
+            .await
+            .map_err(|e| match e {
+                agent_tool::xllm::XllmError::RecoveryBlocked(reason) => {
+                    OpenDanError::blocked(reason, Some(run.run_id()))
+                }
+                other => OpenDanError::Llm(other.to_string()),
+            })?;
         run.complete_execution(&exec.execution_id)?;
     }
     Ok(())
@@ -112,9 +117,16 @@ fn default_llm_context() -> Value {
     json!({ "tools": { "enabled": true } })
 }
 
-async fn xllm_deps_for(sh: &Arc<Shared>, env: &SessionEnv, registrar: Arc<dyn ExecutionRegistrar>) -> agent_tool::xllm::XllmDeps {
+async fn xllm_deps_for(
+    sh: &Arc<Shared>,
+    env: &SessionEnv,
+    registrar: Arc<dyn ExecutionRegistrar>,
+) -> agent_tool::xllm::XllmDeps {
     let mut x = sh.deps.xllm.clone();
-    x.bash_runner = Some(sh.deps.runtime.bash_runner(env, registrar));
+    x.runtime = Some(sh.deps.runtime.clone());
+    x.execution_registrar = Some(registrar);
+    x.runtime_env = env.env.iter().cloned().collect();
+    x.runtime_path_prefix = env.path_layers.clone();
     x.skip_workdir_lock = true;
     x
 }
@@ -127,12 +139,20 @@ fn checkpoint_deps(
     tools: SessionToolManager,
 ) -> llm_context::deps::LLMContextDeps {
     let behavior = cfg.loop_model == LoopModel::Behavior;
-    let hook = Arc::new(SessionCheckpointHook::new(sh.clone(), run.clone(), behavior));
+    let hook = Arc::new(SessionCheckpointHook::new(
+        sh.clone(),
+        run.clone(),
+        behavior,
+    ));
     hosted_waist_deps(cfg, llm, Arc::new(tools)).with_checkpoint_hook(hook)
 }
 
 /// A fresh llm_context: system + summary + reverse-read worklog (§4.4).
-pub(super) async fn new_run_context(sh: &Arc<Shared>, binding: &Binding, env: &SessionEnv) -> Result<LiveCtx> {
+pub(super) async fn new_run_context(
+    sh: &Arc<Shared>,
+    binding: &Binding,
+    env: &SessionEnv,
+) -> Result<LiveCtx> {
     let fork_parent = {
         let s = sh.session.lock().await;
         s.state
@@ -170,6 +190,31 @@ pub(super) async fn new_run_context(sh: &Arc<Shared>, binding: &Binding, env: &S
     Ok(lc)
 }
 
+fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
+    let mut values = std::collections::BTreeMap::new();
+    let mut refs = Vec::new();
+    for (key, value) in &env.env {
+        let upper = key.to_ascii_uppercase();
+        if ["TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY"]
+            .iter()
+            .any(|word| upper.contains(word))
+        {
+            refs.push(key.clone());
+        } else {
+            values.insert(key.clone(), value.clone());
+        }
+    }
+    let manifest_path = sh
+        .dir
+        .runtime_bin_dir()
+        .join(crate::runtime::bin_overlay::MANIFEST);
+    let manifest: Value = crate::fsutil::read_json(&manifest_path)?;
+    Ok(
+        json!({"runtime": sh.deps.runtime.descriptor(), "env": values, "env_refs": refs,
+        "path_prefix": env.path_layers, "bin_dir": sh.dir.runtime_bin_dir(), "bin_manifest": manifest}),
+    )
+}
+
 async fn new_run_context_plain(
     sh: &Arc<Shared>,
     binding: &Binding,
@@ -188,15 +233,20 @@ async fn new_run_context_plain(
         run: Mutex::new(None),
     });
     let xdeps = xllm_deps_for(sh, env, registrar.clone()).await;
-    let llm_ctx = if cfg.prompt.llm_context.is_null() {
+    let mut llm_ctx = if cfg.prompt.llm_context.is_null() {
         default_llm_context()
     } else {
         cfg.prompt.llm_context.clone()
     };
+    llm_ctx["runtime"] = serde_json::to_value(sh.deps.runtime.config()).unwrap();
     let hosted = XllmTask::prepare_hosted(
-        std::path::Path::new(&binding.workdir),
+        sh.dir.path(),
         &llm_ctx,
-        "session_config.json#prompt.llm_context",
+        &sh.dir
+            .path()
+            .join("session_config.json")
+            .display()
+            .to_string(),
         &system,
         &xdeps,
     )
@@ -231,7 +281,7 @@ async fn new_run_context_plain(
             session_id: Some(sid.clone()),
             runtime_kind: Some(binding.kind.clone()),
             runtime_id: Some(binding.runtime_id.clone()),
-            env_check: json!({ "workdir": binding.workdir }),
+            env_check: session_env_check(sh, env)?,
             extra: Value::Null,
         },
     );
@@ -336,7 +386,10 @@ pub(super) async fn resume_live_run(
     if behavior {
         let (current, returned) = {
             let s = sh.session.lock().await;
-            (s.state.current_behavior.clone(), s.state.process_result.clone())
+            (
+                s.state.current_behavior.clone(),
+                s.state.process_result.clone(),
+            )
         };
         // A normal switch changes the behavior of the same run; the last
         // published snapshot may predate it.
@@ -392,7 +445,10 @@ pub(super) async fn resume_live_run(
 /// (another `run()` call in the same segment), at most
 /// [`MAX_LIMIT_COMPACTIONS`] times in a row; the last one goes to
 /// `handle_context_outcome`, which pauses the run.
-pub(super) async fn run_compacting(sh: &Arc<Shared>, lc: &mut LiveCtx) -> Result<LLMContextOutcome> {
+pub(super) async fn run_compacting(
+    sh: &Arc<Shared>,
+    lc: &mut LiveCtx,
+) -> Result<LLMContextOutcome> {
     let mut attempt = 0;
     loop {
         let outcome = lc.ctx.run().await;

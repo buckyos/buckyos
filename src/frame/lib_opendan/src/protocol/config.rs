@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// 2: `end_condition.type = max_turns`, `mechanical_compress.recent_full_responses`.
-pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/2";
+pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/3";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]

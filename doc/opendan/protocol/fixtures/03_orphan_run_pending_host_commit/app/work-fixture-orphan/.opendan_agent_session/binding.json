@@ -1,7 +1,12 @@
 {
+  "schema": "opendan.binding/3",
+  "target": {
+    "host": "${FIXTURE_HOST}",
+    "uid": "${FIXTURE_UID}"
+  },
   "runtime_id": "rt-fixture-native",
   "kind": "native",
   "workdir": "${FIXTURE_ROOT}/app/work-fixture-orphan",
-  "bound_at_ms": 1790853968370,
-  "bound_by": "rn-1e460b4037c640cb"
+  "bound_at_ms": 1790960717847,
+  "bound_by": "rn-30ea6f76e353474d"
 }

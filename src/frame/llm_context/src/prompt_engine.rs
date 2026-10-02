@@ -7,14 +7,13 @@
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use log::warn;
 use serde_json::{Map, Value as Json};
 use tokio::fs;
-use tokio::process::Command;
-use tokio::time::timeout;
 use upon::Engine;
 
 const ESCAPED_OPEN_SENTINEL: &str = "\u{001f}ESCAPED_OPEN_BRACE\u{001f}";
@@ -76,6 +75,26 @@ impl ValueLoader for NullValueLoader {
 }
 
 #[derive(Clone, Debug)]
+pub struct PromptExecRequest {
+    pub command: String,
+    pub timeout: Duration,
+    pub max_output_bytes: usize,
+}
+
+#[derive(Clone, Debug)]
+pub struct PromptExecOutput {
+    pub exit_code: i32,
+    pub stdout: String,
+    pub stderr: String,
+    pub timed_out: bool,
+}
+
+#[async_trait]
+pub trait PromptExec: Send + Sync + std::fmt::Debug {
+    async fn exec(&self, request: PromptExecRequest) -> Result<PromptExecOutput, String>;
+}
+
+#[derive(Clone, Debug)]
 pub struct EngineConfig {
     /// Per-`__INCLUDE__` byte cap. Default 64 KiB.
     pub max_include_bytes: usize,
@@ -85,6 +104,7 @@ pub struct EngineConfig {
     pub exec_timeout: Duration,
     /// `__EXEC__` master gate. Default `false` (sandbox-friendly).
     pub allow_exec: bool,
+    pub executor: Option<Arc<dyn PromptExec>>,
     /// Virtual root for `__INCLUDE__` paths that start with `/`.
     /// When set, `/foo.md` resolves to `<include_root>/foo.md`.
     pub include_root: Option<PathBuf>,
@@ -105,6 +125,7 @@ impl Default for EngineConfig {
             max_total_bytes: 256 * 1024,
             exec_timeout: Duration::from_secs(10),
             allow_exec: false,
+            executor: None,
             include_root: None,
             template_dir: None,
             include_roots: Vec::new(),
@@ -375,6 +396,11 @@ impl PromptRenderEngine {
                         stats.exec_failed = stats.exec_failed.saturating_add(1);
                         output.push_str(&failed_marker("exec", "disabled by config"));
                     } else {
+                        if self.config.executor.is_none() {
+                            return Err(RenderError::Loader(
+                                "__EXEC__ enabled without an executor".into(),
+                            ));
+                        }
                         match self.run_exec(raw_arg, vars, loader).await {
                             Ok(text) => {
                                 stats.exec_run = stats.exec_run.saturating_add(1);
@@ -515,38 +541,31 @@ impl PromptRenderEngine {
         let expanded = expand_exec_command_dynamic_values(command, vars, loader)
             .await
             .map_err(|err| format!("expand $expr failed: {err}"))?;
-        let result = timeout(
-            self.config.exec_timeout,
-            Command::new("sh")
-                .arg("-lc")
-                .arg(expanded.as_str())
-                .output(),
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "timed out after {}ms: `{}`",
-                self.config.exec_timeout.as_millis(),
-                truncate_chars(expanded.as_str(), 160)
-            )
-        })?
-        .map_err(|err| format!("spawn failed: {err}"))?;
-
-        if !result.status.success() {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            let stderr = truncate_chars(stderr.trim(), 200);
-            let exit_code = result.status.code().unwrap_or_default();
+        let result = self
+            .config
+            .executor
+            .as_ref()
+            .ok_or_else(|| "__EXEC__ enabled without an executor".to_string())?
+            .exec(PromptExecRequest {
+                command: expanded,
+                timeout: self.config.exec_timeout,
+                max_output_bytes: self.config.max_total_bytes,
+            })
+            .await?;
+        if result.timed_out {
             return Err(format!(
-                "exit_code={} stderr={}",
-                exit_code,
-                if stderr.is_empty() {
-                    "<empty>"
-                } else {
-                    stderr.as_str()
-                }
+                "timed out after {}ms",
+                self.config.exec_timeout.as_millis()
             ));
         }
-        let stdout = String::from_utf8_lossy(&result.stdout);
+        if result.exit_code != 0 {
+            return Err(format!(
+                "exit_code={} stderr={}",
+                result.exit_code,
+                truncate_chars(result.stderr.trim(), 200)
+            ));
+        }
+        let stdout = result.stdout;
         Ok(truncate_utf8(
             stdout.as_ref(),
             self.config.max_include_bytes,
@@ -1334,10 +1353,43 @@ mod tests {
         assert!(result.rendered.contains("disabled by config"));
     }
 
+    #[derive(Debug)]
+    struct TestExecutor;
+    #[async_trait]
+    impl PromptExec for TestExecutor {
+        async fn exec(&self, req: PromptExecRequest) -> Result<PromptExecOutput, String> {
+            Ok(PromptExecOutput {
+                exit_code: 0,
+                stdout: if req.command == "printf hi" {
+                    "hi".into()
+                } else {
+                    String::new()
+                },
+                stderr: String::new(),
+                timed_out: req.command == "sleep 1",
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn exec_requires_injected_executor() {
+        let engine = PromptRenderEngine::new(EngineConfig {
+            allow_exec: true,
+            ..Default::default()
+        });
+        assert!(engine
+            .render("__EXEC(echo hi)__", &RenderVars::new(), &NullValueLoader)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("without an executor"));
+    }
+
     #[tokio::test]
     async fn exec_runs_when_enabled() {
         let cfg = EngineConfig {
             allow_exec: true,
+            executor: Some(Arc::new(TestExecutor)),
             ..EngineConfig::default()
         };
         let engine = PromptRenderEngine::new(cfg);
@@ -1358,6 +1410,7 @@ mod tests {
         let cfg = EngineConfig {
             allow_exec: true,
             exec_timeout: Duration::from_millis(50),
+            executor: Some(Arc::new(TestExecutor)),
             ..EngineConfig::default()
         };
         let engine = PromptRenderEngine::new(cfg);

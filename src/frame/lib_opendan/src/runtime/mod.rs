@@ -1,140 +1,66 @@
-//! Agent Runtime (§7): the execution environment of `exec` (host, file
-//! system view, PATH layers, native vs tmux). Bound on the first drive and
-//! never changed afterwards.
-
 pub mod bin_overlay;
-mod native;
-pub mod tmux;
+pub use agent_tool::runtime::tmux;
+pub use agent_tool::runtime::{native_host_id, AgentRuntime, NativeRuntime, TmuxRuntime};
+pub use bin_overlay::{BinPlan, ToolPlan};
 
+use crate::error::{OpenDanError, Result};
+use crate::protocol::*;
+use crate::session::SessionDir;
+use agent_tool::exec_tracking::MemoryRegistrar;
+use agent_tool::runtime::RuntimeOpenCtx;
+use agent_tool::xllm::{LoopModel, ToolsConfig};
+use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_tool::exec_tracking::{ExecutionRecord, ExecutionRegistrar};
-use agent_tool::llm_bash::BashRunner;
-use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-
-use crate::error::{OpenDanError, Result};
-use crate::fsutil;
-use crate::protocol::*;
-use crate::session::SessionDir;
-
-pub use bin_overlay::{BinPlan, ToolPlan};
-pub use native::{local_host_id as native_host_id, NativeRuntime};
-pub use tmux::TmuxRuntime;
-
-/// What the environment of one session looks like (§7.3).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionEnvCtx {
     pub session_id: String,
     pub session_dir: PathBuf,
     pub agent_did: String,
-    #[serde(default)]
     pub agent_root: Option<PathBuf>,
-    #[serde(default)]
     pub input_queue: Option<String>,
-    #[serde(default)]
     pub trace_id: String,
-    /// `session_config.runtime.env`.
-    #[serde(default)]
     pub extra_env: Vec<(String, String)>,
 }
-
-/// An opened execution view.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionEnv {
     pub runtime_id: String,
     pub kind: String,
     pub workdir: PathBuf,
-    /// PATH layers, `.runtime/bin` first.
     pub path_layers: Vec<PathBuf>,
     pub env: Vec<(String, String)>,
 }
 
-#[async_trait]
-pub trait AgentRuntime: Send + Sync {
-    fn descriptor(&self) -> &RuntimeDescriptor;
-    /// Host id recorded in execution records.
-    fn host_id(&self) -> &str;
-    /// Where exec runs for this session: the workspace when one is declared,
-    /// else the session directory.
-    fn resolve_workdir(
-        &self,
-        sd: &SessionDir,
-        workspace: Option<&WorkspaceRef>,
-        agent_root: Option<&Path>,
-    ) -> Result<PathBuf>;
-    fn can_access(&self, path: &Path) -> bool;
-    /// Executables available in this runtime (for `requirement.tools`).
-    fn has_tool(&self, name: &str) -> bool;
-    /// Idempotently repair `<sid>/.runtime/bin` (tombstones, helpers).
-    async fn prepare_session_bin(&self, sd: &SessionDir, plan: &BinPlan) -> Result<()>;
-    /// Verify cwd / PATH / tools / tombstones before any command runs.
-    async fn verify_session_env(&self, sd: &SessionDir, binding: &Binding, plan: &BinPlan)
-        -> Result<()>;
-    async fn open_session_env(&self, binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv>;
-    /// The `exec` runner: launch handshake + execution identities persisted
-    /// through `registrar` before the command runs.
-    fn bash_runner(&self, env: &SessionEnv, registrar: Arc<dyn ExecutionRegistrar>)
-        -> Arc<dyn BashRunner>;
-    /// Confirm an old execution stopped (terminate verified leftovers and
-    /// wait). Unverifiable → `RecoveryBlocked`.
-    async fn reconcile_execution(&self, rec: &ExecutionRecord) -> Result<()>;
-    /// For the prompt environment (`runtime.status`).
-    async fn status(&self) -> Value;
-    async fn close_session_env(&self, _env: SessionEnv) -> Result<()> {
-        Ok(())
-    }
-}
-
-/// Check `runtime.requirement` against the runtime (every drive).
-pub fn check_requirement(
-    req: &RuntimeRequirement,
-    rt: &dyn AgentRuntime,
-    app_tools: &[String],
-) -> Result<()> {
-    if let Some(id) = &req.runtime_id {
-        if id != &rt.descriptor().runtime_id {
-            return Err(OpenDanError::RuntimeMismatch {
-                bound: id.clone(),
-                provided: rt.descriptor().runtime_id.clone(),
-            });
+pub fn resolve_workdir(
+    sd: &SessionDir,
+    cfg: &SessionConfig,
+    agent_root: Option<&Path>,
+) -> Result<PathBuf> {
+    let p = match &cfg.workspace {
+        None => sd.path().to_path_buf(),
+        Some(WorkspaceRef::External { path }) => {
+            let p = PathBuf::from(path);
+            if !p.is_absolute() {
+                return Err(OpenDanError::Bind(
+                    "external workspace must be absolute".into(),
+                ));
+            }
+            p
         }
-    }
-    let missing: Vec<&String> = req.tools.iter().filter(|t| !rt.has_tool(t)).collect();
-    if !missing.is_empty() {
-        return Err(OpenDanError::Bind(format!(
-            "runtime {} lacks required tools: {}",
-            rt.descriptor().runtime_id,
-            missing
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
-    let missing_app: Vec<&String> = req
-        .app_tools
-        .iter()
-        .filter(|t| !app_tools.contains(t))
-        .collect();
-    if !missing_app.is_empty() {
-        return Err(OpenDanError::Bind(format!(
-            "runner does not provide required app tools: {}",
-            missing_app
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(", ")
-        )));
-    }
-    Ok(())
+        Some(WorkspaceRef::Agent { id }) => {
+            crate::ids::validate_session_id(id)?;
+            let p = agent_root
+                .ok_or_else(|| OpenDanError::Bind("agent workspace needs AgentRoot".into()))?
+                .join("workspace")
+                .join(id);
+            std::fs::create_dir_all(&p).map_err(|e| OpenDanError::io(&p, e))?;
+            p
+        }
+    };
+    Ok(p.canonicalize().unwrap_or(p))
 }
 
-/// Bind on first drive, verify on every later drive (§7.1). Failures happen
-/// before any inference (Q3). `binding.json` only proves the identity; the
-/// environment is repaired and verified every time.
 pub async fn bind_or_verify(
     sd: &SessionDir,
     lease: &crate::lock::Lease,
@@ -145,59 +71,147 @@ pub async fn bind_or_verify(
     plan: &BinPlan,
     runner_id: &str,
 ) -> Result<Binding> {
-    let existing = sd.binding_opt()?;
+    if rt.config().kind() == "remote_ssh" {
+        return Err(OpenDanError::Bind("Capability: remote Session helpers are not deployed; use SSH runtime with xllm independently".into()));
+    }
+    let fallback = resolve_workdir(sd, cfg, agent_root)?;
+    let mut open = RuntimeOpenCtx::new(&fallback, sd.sid(), LoopModel::FunctionCall);
+    open.registrar = Arc::new(MemoryRegistrar::default());
+    let _ = rt
+        .open(
+            &open,
+            &ToolsConfig {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
     let desc = rt.descriptor();
-    let binding = match &existing {
-        Some(b) => {
-            if b.runtime_id != desc.runtime_id {
-                return Err(OpenDanError::RuntimeMismatch {
-                    bound: b.runtime_id.clone(),
-                    provided: desc.runtime_id.clone(),
-                });
-            }
-            b.clone()
-        }
-        None => {
-            let workdir = rt.resolve_workdir(sd, cfg.workspace.as_ref(), agent_root)?;
-            Binding {
-                runtime_id: desc.runtime_id.clone(),
-                kind: desc.kind.clone(),
-                workdir: workdir.display().to_string(),
-                bound_at_ms: crate::now_ms(),
-                bound_by: runner_id.to_string(),
-            }
-        }
+    let existing = sd.binding_opt()?;
+    let binding = Binding {
+        schema: "opendan.binding/3".into(),
+        runtime_id: desc.runtime_id.clone(),
+        kind: desc.kind.clone(),
+        target: desc.target.clone(),
+        workdir: desc.workdir.clone(),
+        bound_at_ms: crate::now_ms(),
+        bound_by: runner_id.into(),
     };
-    check_requirement(&cfg.runtime.requirement, rt, app_tools)?;
-    if !rt.can_access(Path::new(&binding.workdir)) {
+    if let Some(b) = &existing {
+        if !b.same_binding(&binding) {
+            return Err(OpenDanError::RuntimeMismatch {
+                bound: format!("{} {} {} {}", b.runtime_id, b.kind, b.target, b.workdir),
+                provided: format!(
+                    "{} {} {} {}",
+                    binding.runtime_id, binding.kind, binding.target, binding.workdir
+                ),
+            });
+        }
+    }
+    if let Some(id) = &cfg.runtime.requirement.runtime_id {
+        if id != &binding.runtime_id {
+            return Err(OpenDanError::RuntimeMismatch {
+                bound: id.clone(),
+                provided: binding.runtime_id.clone(),
+            });
+        }
+    }
+    let missing_app = cfg
+        .runtime
+        .requirement
+        .app_tools
+        .iter()
+        .filter(|n| !app_tools.contains(n))
+        .collect::<Vec<_>>();
+    if !missing_app.is_empty() {
         return Err(OpenDanError::Bind(format!(
-            "runtime {} cannot access workdir {}",
-            desc.runtime_id, binding.workdir
+            "runner lacks app tools: {missing_app:?}"
         )));
     }
+    bin_overlay::prepare(&sd.runtime_bin_dir(), plan)?;
+    bin_overlay::verify(&sd.runtime_bin_dir(), plan)?;
+    open.path_prefix.push(sd.runtime_bin_dir());
+    if let Some(root) = agent_root {
+        if root.join("tools").is_dir() {
+            open.path_prefix.push(root.join("tools"));
+        }
+    }
+    let (_, sandbox) = rt
+        .open(
+            &open,
+            &ToolsConfig {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            Vec::new(),
+        )
+        .await
+        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+    for name in &cfg.runtime.requirement.tools {
+        let result = agent_tool::runtime::Sandbox::exec(
+            &sandbox,
+            agent_tool::llm_bash::BashRunRequest {
+                command: format!("command -v {}", agent_tool::runtime::shell_quote(name)),
+                cwd: binding.workdir.clone().into(),
+                timeout_ms: 5000,
+                max_output_bytes: 4096,
+                env: Vec::new(),
+                target: agent_tool::llm_bash::BashTarget::Local,
+            },
+            &agent_tool::SessionRuntimeContext {
+                trace_id: sd.sid().into(),
+                agent_name: "libopendan".into(),
+                behavior: "runtime_probe".into(),
+                tool_call_index: 0,
+                wakeup_id: String::new(),
+                session_id: sd.sid().into(),
+                read_token_limit: agent_tool::DEFAULT_READ_TOKEN_LIMIT,
+            },
+        )
+        .await
+        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+        if result.exit_code != 0 {
+            return Err(OpenDanError::Bind(format!(
+                "runtime lacks required tool {name}"
+            )));
+        }
+    }
     if existing.is_none() {
-        let published = lease.fenced(|| {
-            fsutil::publish_noreplace_json(&sd.file(BINDING_FILE), &binding)
-        })?;
+        let published = lease
+            .fenced(|| crate::fsutil::publish_noreplace_json(&sd.file(BINDING_FILE), &binding))?;
         if !published {
-            let cur = sd
+            let current = sd
                 .binding_opt()?
-                .ok_or_else(|| OpenDanError::Bind("binding.json vanished".into()))?;
-            if !cur.same_binding(&binding) {
+                .ok_or_else(|| OpenDanError::Bind("binding vanished".into()))?;
+            if !current.same_binding(&binding) {
                 return Err(OpenDanError::RuntimeMismatch {
-                    bound: cur.runtime_id,
+                    bound: current.runtime_id,
                     provided: binding.runtime_id,
                 });
             }
         }
     }
-    let binding = sd.binding_opt()?.unwrap_or(binding);
-    rt.prepare_session_bin(sd, plan).await?;
-    rt.verify_session_env(sd, &binding, plan).await?;
-    Ok(binding)
+    Ok(existing.unwrap_or(binding))
 }
 
-/// Build the Session Bin plan for a session (tool plan + helper CLI).
+pub fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> SessionEnv {
+    let mut layers = vec![ctx.session_dir.join(RUNTIME_DIR).join("bin")];
+    if let Some(root) = &ctx.agent_root {
+        if root.join("tools").is_dir() {
+            layers.push(root.join("tools"));
+        }
+    }
+    SessionEnv {
+        runtime_id: binding.runtime_id.clone(),
+        kind: binding.kind.clone(),
+        workdir: binding.workdir.clone().into(),
+        path_layers: layers,
+        env: session_env_vars(ctx, &binding.runtime_id),
+    }
+}
+
 pub fn bin_plan_for(
     cfg: &SessionConfig,
     agent_root: Option<&Path>,

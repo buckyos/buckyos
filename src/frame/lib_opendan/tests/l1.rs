@@ -42,7 +42,8 @@ fn lease_epoch_monotonic_and_lock_file_never_replaced() {
     let mut epochs = Vec::new();
     let mut ino = None;
     for i in 0..3 {
-        let Acquire::Acquired(l) = Lease::acquire("session:x", &p, holder(&i.to_string())).unwrap() else {
+        let Acquire::Acquired(l) = Lease::acquire("session:x", &p, holder(&i.to_string())).unwrap()
+        else {
             panic!()
         };
         // Second acquisition while held (another descriptor) is busy.
@@ -83,7 +84,9 @@ fn lock_holder_child() {
     let Ok(p) = std::env::var("LIBOPENDAN_TEST_LOCK") else {
         return;
     };
-    let Acquire::Acquired(_l) = Lease::acquire("session:x", Path::new(&p), holder("child")).unwrap() else {
+    let Acquire::Acquired(_l) =
+        Lease::acquire("session:x", Path::new(&p), holder("child")).unwrap()
+    else {
         panic!("child could not lock")
     };
     std::thread::sleep(Duration::from_secs(60));
@@ -94,7 +97,12 @@ fn kill_9_of_holder_releases_the_lease_immediately() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("lease.json");
     let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "lock_holder_child", "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            "lock_holder_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env("LIBOPENDAN_TEST_LOCK", &p)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -107,7 +115,10 @@ fn kill_9_of_holder_releases_the_lease_immediately() {
                 break;
             }
         }
-        assert!(start.elapsed() < Duration::from_secs(30), "child never locked");
+        assert!(
+            start.elapsed() < Duration::from_secs(30),
+            "child never locked"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(matches!(
@@ -209,8 +220,13 @@ async fn budget_exhaustion_compacts_without_gap() {
         .unwrap();
     }
     s.commit_state(&lease).unwrap();
-    let (msg, w) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000).await.unwrap();
-    assert!(w.reached_start, "after compaction the window reaches the start");
+    let (msg, w) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000)
+        .await
+        .unwrap();
+    assert!(
+        w.reached_start,
+        "after compaction the window reaches the start"
+    );
     let sm = sd.summary_opt().unwrap().expect("summary.json written");
     assert!(sm.history_summary.contains("lines"));
     // No gap: the oldest rendered entry is exactly the new start.
@@ -219,7 +235,9 @@ async fn budget_exhaustion_compacts_without_gap() {
     assert!(text.contains("message 199"));
     assert!(!text.contains("message 0 "));
     // Deterministic rendering for the same inputs.
-    let (msg2, _) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000).await.unwrap();
+    let (msg2, _) = build_history(&mut s, &lease, Some(&FakeSummarizer), 2_000)
+        .await
+        .unwrap();
     assert_eq!(text, msg2.unwrap().text_content());
     assert_eq!(read_worklog(&sd).last().unwrap().body.kind(), "compaction");
 }
@@ -227,23 +245,42 @@ async fn budget_exhaustion_compacts_without_gap() {
 async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {
     use libopendan::channel::kmsg::*;
     // create / subscribe twice: "already exists" is success.
-    let q1 = ensure_queue(&client, "opendan.session.s1", "app2", "alice").await.unwrap();
-    let q2 = ensure_queue(&client, "opendan.session.s1", "app2", "alice").await.unwrap();
+    let q1 = ensure_queue(&client, "opendan.session.s1", "app2", "alice")
+        .await
+        .unwrap();
+    let q2 = ensure_queue(&client, "opendan.session.s1", "app2", "alice")
+        .await
+        .unwrap();
     assert_eq!(q1, q2);
     for _ in 0..2 {
-        ensure_subscription(&client, &q1, "opendan.jarvis.s1", "alice", "app2", buckyos_api::msg_queue::SubPosition::Earliest)
-            .await
-            .unwrap();
+        ensure_subscription(
+            &client,
+            &q1,
+            "opendan.jarvis.s1",
+            "alice",
+            "app2",
+            buckyos_api::msg_queue::SubPosition::Earliest,
+        )
+        .await
+        .unwrap();
     }
     for i in 1..=5 {
-        post_to_queue(&client, &q1, &Input::msg(format!("k{i}"), format!("m{i}")), APP)
-            .await
-            .unwrap();
+        post_to_queue(
+            &client,
+            &q1,
+            &Input::msg(format!("k{i}"), format!("m{i}")),
+            APP,
+        )
+        .await
+        .unwrap();
     }
     let input = KmsgInput::new("q", &q1, "opendan.jarvis.s1", APP, client.clone());
     let mut p = SourceProgress::default();
     let got = input.fetch(&p, 100).await.unwrap();
-    assert_eq!(got.iter().map(|m| m.index).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(
+        got.iter().map(|m| m.index).collect::<Vec<_>>(),
+        vec![1, 2, 3, 4, 5]
+    );
     // Selective consumption: 1,2,4 consumed → ack stays at 2, 3 is kept.
     p.mark(1);
     p.mark(2);
@@ -283,12 +320,23 @@ async fn lost_subscription_is_recreated_at_the_acked_position() {
     let dq = DirMsgQueue::new(dir.path()).unwrap();
     let client = Arc::new(DirMsgQueue::client(dir.path()).unwrap());
     use libopendan::channel::kmsg::*;
-    let q = ensure_queue(&client, "opendan.session.s", "app2", "alice").await.unwrap();
-    ensure_subscription(&client, &q, "sub-s", "alice", "app2", buckyos_api::msg_queue::SubPosition::Earliest)
+    let q = ensure_queue(&client, "opendan.session.s", "app2", "alice")
         .await
         .unwrap();
+    ensure_subscription(
+        &client,
+        &q,
+        "sub-s",
+        "alice",
+        "app2",
+        buckyos_api::msg_queue::SubPosition::Earliest,
+    )
+    .await
+    .unwrap();
     for i in 1..=3 {
-        post_to_queue(&client, &q, &Input::msg(format!("k{i}"), "m"), APP).await.unwrap();
+        post_to_queue(&client, &q, &Input::msg(format!("k{i}"), "m"), APP)
+            .await
+            .unwrap();
     }
     let input = KmsgInput::new("q", &q, "sub-s", APP, client.clone());
     let mut p = SourceProgress::default();
@@ -325,9 +373,13 @@ async fn session_moves_with_its_directory() {
         .await
         .unwrap();
     drop(lease);
-    assert!(drive(&moved, &env.deps(llm), StopWhen::Finished).await.is_finished());
+    assert!(drive(&moved, &env.deps(llm), StopWhen::Finished)
+        .await
+        .is_finished());
     // Nothing in the protocol files depends on the old location.
-    let v = libopendan::read_session(agent.as_ref(), moved.sid(), true, true, 3).await.unwrap();
+    let v = libopendan::read_session(agent.as_ref(), moved.sid(), true, true, 3)
+        .await
+        .unwrap();
     assert!(v.state.unwrap().is_finished());
 }
 
@@ -354,15 +406,25 @@ async fn create_session_is_idempotent_per_creator_and_key() {
     assert_eq!(std::fs::read_dir(&env.app_dir).unwrap().count(), 1);
     let agent = env.agent();
     let ch = env.channels();
-    let other = libopendan::create_session(&env.app_dir, spec, agent.as_ref(), "app:app3@alice", ch.as_ref())
-        .await
-        .unwrap();
+    let other = libopendan::create_session(
+        &env.app_dir,
+        spec,
+        agent.as_ref(),
+        "app:app3@alice",
+        ch.as_ref(),
+    )
+    .await
+    .unwrap();
     assert_ne!(other.sid(), a.sid());
     // An explicit sid that exists with another identity conflicts.
     let mut clash = work_spec("clash");
     clash.session_id = Some(a.sid().to_string());
-    let err = libopendan::create_session(&env.app_dir, clash, agent.as_ref(), APP, ch.as_ref()).await;
-    assert!(matches!(err, Err(libopendan::OpenDanError::SessionIdConflict(_))));
+    let err =
+        libopendan::create_session(&env.app_dir, clash, agent.as_ref(), APP, ch.as_ref()).await;
+    assert!(matches!(
+        err,
+        Err(libopendan::OpenDanError::SessionIdConflict(_))
+    ));
 }
 
 #[tokio::test]
@@ -380,9 +442,13 @@ async fn missing_tool_or_runtime_mismatch_fails_before_inference() {
     assert!(sd.state().unwrap().last_error.is_some());
     // A bound session refuses another runtime id.
     let sd2 = env.create_work(work_spec("y")).await;
-    assert!(drive(&sd2, &env.deps(ScriptedLlm::new(|_, _| text("ok"))), StopWhen::Finished)
-        .await
-        .is_finished());
+    assert!(drive(
+        &sd2,
+        &env.deps(ScriptedLlm::new(|_, _| text("ok"))),
+        StopWhen::Finished
+    )
+    .await
+    .is_finished());
     let sd3 = env.create_work(work_spec("z")).await;
     let lease = match sd3.acquire(holder("b")).unwrap() {
         Acquire::Acquired(l) => l,
@@ -391,6 +457,8 @@ async fn missing_tool_or_runtime_mismatch_fails_before_inference() {
     fsutil::publish_noreplace_json(
         &sd3.file(BINDING_FILE),
         &Binding {
+            schema: "opendan.binding/3".into(),
+            target: serde_json::Value::Null,
             runtime_id: "rt-other-host".into(),
             kind: "native".into(),
             workdir: sd3.path().display().to_string(),
@@ -417,7 +485,8 @@ async fn tool_plan_tombstones_are_repaired_before_running() {
     std::fs::write(tools.join("rm-all"), "#!/bin/sh\necho boom\n").unwrap();
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(tools.join("rm-all"), std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::set_permissions(tools.join("rm-all"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
     }
     std::fs::create_dir_all(env.agent_root.join("tool_plans")).unwrap();
     std::fs::write(
@@ -437,17 +506,15 @@ async fn tool_plan_tombstones_are_repaired_before_running() {
     });
     // First drive prepares; then simulate a crash half-way through a later
     // preparation (tombstone gone, manifest stale).
-    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     let bin = sd.runtime_bin_dir();
     assert!(bin.join("rm-all").exists());
     std::fs::remove_file(bin.join("rm-all")).unwrap();
-    let plan = libopendan::runtime::bin_plan_for(
-        &sd.config().unwrap(),
-        Some(&env.agent_root),
-        None,
-        &[],
-    )
-    .unwrap();
+    let plan =
+        libopendan::runtime::bin_plan_for(&sd.config().unwrap(), Some(&env.agent_root), None, &[])
+            .unwrap();
     assert!(libopendan::runtime::bin_overlay::verify(&bin, &plan).is_err());
     libopendan::runtime::bin_overlay::prepare(&bin, &plan).unwrap();
     libopendan::runtime::bin_overlay::verify(&bin, &plan).unwrap();
@@ -467,18 +534,30 @@ async fn stale_running_session_is_flagged_in_the_activity_view() {
     e.status.run_state = RunState::Running;
     e.status.updated_at_ms = 1;
     e.status.activity.heartbeat_ms = 1;
-    agent.sessions().report_state(&lease, sd.sid(), e.status.clone()).await.unwrap();
+    agent
+        .sessions()
+        .report_state(&lease, sd.sid(), e.status.clone())
+        .await
+        .unwrap();
     let list = agent.activity().active(None, 10).await.unwrap();
     assert_eq!(list.len(), 1);
     assert!(list[0].possibly_interrupted);
     // Waiting sessions need no heartbeat.
     e.status.rev = 6;
     e.status.run_state = RunState::Waiting;
-    agent.sessions().report_state(&lease, sd.sid(), e.status.clone()).await.unwrap();
+    agent
+        .sessions()
+        .report_state(&lease, sd.sid(), e.status.clone())
+        .await
+        .unwrap();
     assert!(!agent.activity().active(None, 10).await.unwrap()[0].possibly_interrupted);
     // Older revs are ignored.
     e.status.rev = 4;
-    assert!(!agent.sessions().report_state(&lease, sd.sid(), e.status).await.unwrap());
+    assert!(!agent
+        .sessions()
+        .report_state(&lease, sd.sid(), e.status)
+        .await
+        .unwrap());
 }
 
 #[test]
@@ -503,5 +582,8 @@ async fn kevent_waker_wakes_before_the_poll_timeout() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     waker.notify(&ev, json!({ "sid": "work-x" })).await;
     h.await.unwrap();
-    assert!(started.elapsed() < Duration::from_secs(5), "woken by kevent, not by timeout");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "woken by kevent, not by timeout"
+    );
 }

@@ -2,6 +2,8 @@
 //! (the same check other language runners run against the fixtures).
 
 mod common;
+#[path = "../examples/support/fixture_paths.rs"]
+mod fixture_paths;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -23,19 +25,18 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     let dst = tmp.path().join(name);
     copy_dir(&fixtures_dir().join(name), &dst);
     let root = dst.display().to_string();
-    let mut stack = vec![dst.clone()];
-    while let Some(d) = stack.pop() {
-        for e in std::fs::read_dir(&d).unwrap().flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                stack.push(p);
-            } else if let Ok(s) = std::fs::read_to_string(&p) {
-                if s.contains("${FIXTURE_ROOT}") {
-                    std::fs::write(&p, s.replace("${FIXTURE_ROOT}", &root)).unwrap();
-                }
-            }
-        }
-    }
+    let host = libopendan::runtime::native_host_id();
+    let uid = fixture_paths::uid();
+    let hostname = fixture_paths::hostname();
+    fixture_paths::rewrite(
+        &dst,
+        &[
+            ("${FIXTURE_ROOT}", &root),
+            ("${FIXTURE_HOST}", &host),
+            ("${FIXTURE_UID}", &uid),
+            ("${FIXTURE_HOSTNAME}", &hostname),
+        ],
+    );
     let expected: Value =
         serde_json::from_slice(&std::fs::read(dst.join("expected.json")).unwrap()).unwrap();
     let env = Env {
@@ -130,7 +131,9 @@ async fn f02_finished_work_session() {
     let (_t, env, _) = load("02_finished_work_session");
     let sd = session(&env, "work-fixture-finished");
     let llm = script("answer");
-    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Idle).await.is_finished());
+    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Idle)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 0);
 }
 
@@ -140,10 +143,23 @@ async fn f03_orphan_run() {
     let sd = session(&env, "work-fixture-orphan");
     let orphan = sd.runs().list().unwrap();
     assert_eq!(orphan.len(), 1);
-    assert!(drive(&sd, &fdeps(&env, script("tool_then_answer")), StopWhen::Finished).await.is_finished());
+    assert!(drive(
+        &sd,
+        &fdeps(&env, script("tool_then_answer")),
+        StopWhen::Finished
+    )
+    .await
+    .is_finished());
     let st = sd.state().unwrap();
-    assert_eq!(sd.runs().list().unwrap(), vec![st.last_run.clone().unwrap()]);
-    assert_ne!(st.last_run.clone().unwrap(), orphan[0], "orphan removed, new run used");
+    assert_eq!(
+        sd.runs().list().unwrap(),
+        vec![st.last_run.clone().unwrap()]
+    );
+    assert_ne!(
+        st.last_run.clone().unwrap(),
+        orphan[0],
+        "orphan removed, new run used"
+    );
     assert_eq!(st.source("q").acked_index, 1);
 }
 
@@ -152,11 +168,24 @@ async fn f04_gate_pending() {
     let (_t, env, _) = load("04_gate_pending_after_state_commit");
     let sd = session(&env, "work-fixture-gate");
     let run_id = sd.state().unwrap().live_run.unwrap().run_id;
-    assert!(drive(&sd, &fdeps(&env, script("tool_then_answer")), StopWhen::Finished).await.is_finished());
+    assert!(drive(
+        &sd,
+        &fdeps(&env, script("tool_then_answer")),
+        StopWhen::Finished
+    )
+    .await
+    .is_finished());
     let st = sd.state().unwrap();
-    assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()), "same run resumed");
+    assert_eq!(
+        st.last_run.as_deref(),
+        Some(run_id.as_str()),
+        "same run resumed"
+    );
     assert_eq!(st.source("q").acked_index, 1);
-    let users = read_worklog(&sd).iter().filter(|e| e.body.kind() == "user_message").count();
+    let users = read_worklog(&sd)
+        .iter()
+        .filter(|e| e.body.kind() == "user_message")
+        .count();
     assert_eq!(users, 1);
 }
 
@@ -165,9 +194,14 @@ async fn f05_uncommitted_tail() {
     let (_t, env, _) = load("05_uncommitted_worklog_tail");
     let sd = session(&env, "work-fixture-tail");
     let llm = script("tool_then_answer");
-    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 0, "finish redone from the terminal record");
-    let outcomes = read_worklog(&sd).iter().filter(|e| e.body.kind() == "outcome").count();
+    let outcomes = read_worklog(&sd)
+        .iter()
+        .filter(|e| e.body.kind() == "outcome")
+        .count();
     assert_eq!(outcomes, 1);
 }
 
@@ -176,7 +210,9 @@ async fn f06_killed_during_exec() {
     let (_t, env, _) = load("06_killed_during_exec");
     let sd = session(&env, "work-fixture-kill");
     let llm = script("long_exec");
-    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     let marker = std::fs::read_to_string(sd.path().join("marker")).unwrap();
     assert_eq!(marker.matches("start").count(), 1, "tool not re-run");
 }
@@ -186,7 +222,9 @@ async fn f07_receipt_ahead_of_state() {
     let (_t, env, _) = load("07_receipt_ahead_of_state");
     let sd = session(&env, "work-fixture-receipt");
     let llm = script("transient");
-    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &fdeps(&env, llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 1);
 }
 
@@ -194,11 +232,19 @@ async fn f07_receipt_ahead_of_state() {
 async fn f08_finished_with_decide() {
     let (_t, env, e) = load("08_finished_with_decide");
     let sd = session(&env, "work-fixture-decide");
-    assert!(drive(&sd, &fdeps(&env, script("answer")), StopWhen::Idle).await.is_finished());
+    assert!(drive(&sd, &fdeps(&env, script("answer")), StopWhen::Idle)
+        .await
+        .is_finished());
     assert_eq!(sd.state().unwrap().acceptance, Acceptance::Accepted);
     let head = env.agent().artifacts().head("demo").await.unwrap().unwrap();
-    assert_eq!(head.head.as_deref(), e["next"]["artifact_head_after"].as_str());
-    assert_eq!(read_worklog(&sd).last().unwrap().body.kind(), "input_rejected");
+    assert_eq!(
+        head.head.as_deref(),
+        e["next"]["artifact_head_after"].as_str()
+    );
+    assert_eq!(
+        read_worklog(&sd).last().unwrap().body.kind(),
+        "input_rejected"
+    );
 }
 
 #[tokio::test]
@@ -210,7 +256,9 @@ async fn f09_semi_subscription() {
         assert!(u.contains("work-fixture-sub-a is finished"), "{u}");
         text("seen")
     });
-    assert!(drive(&b, &fdeps(&env, llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&b, &fdeps(&env, llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 1);
 }
 
@@ -220,10 +268,15 @@ async fn f10_active_overlap() {
     let b = session(&env, "work-fixture-active-b");
     let llm = ScriptedLlm::new(|req, _| {
         let u = last_user_text(req);
-        assert!(u.contains("work-fixture-active-a") && u.contains("same_target"), "{u}");
+        assert!(
+            u.contains("work-fixture-active-a") && u.contains("same_target"),
+            "{u}"
+        );
         text("avoid")
     });
-    assert!(drive(&b, &fdeps(&env, llm), StopWhen::Finished).await.is_finished());
+    assert!(drive(&b, &fdeps(&env, llm), StopWhen::Finished)
+        .await
+        .is_finished());
 }
 
 #[tokio::test]
@@ -236,10 +289,16 @@ async fn f11_worklog_with_summary() {
     };
     let s = sd.load(&lease).unwrap();
     let sm = s.summary().unwrap();
-    assert_eq!(sm.start_offset, e["next"]["stop_at_offset"].as_u64().unwrap());
+    assert_eq!(
+        sm.start_offset,
+        e["next"]["stop_at_offset"].as_u64().unwrap()
+    );
     let w = libopendan::runner::history::read_window(&s, &sm, 100_000).unwrap();
     assert!(w.reached_start);
-    assert_eq!(w.lines.len() as u64, e["next"]["raw_entries"].as_u64().unwrap());
+    assert_eq!(
+        w.lines.len() as u64,
+        e["next"]["raw_entries"].as_u64().unwrap()
+    );
 }
 
 #[tokio::test]

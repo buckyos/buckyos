@@ -62,10 +62,10 @@ use ::kRPC::RPCErrors;
 use async_trait::async_trait;
 use base64::{engine::general_purpose, Engine as _};
 use buckyos_api::{
-    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AiContent,
-    AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage, AiccClient,
-    AiccExecutionMode, BuckyOSRuntimeType, HelperModelRequirement, LlmChatHelperRequest,
-    LlmChatInvokeRequest, LlmResponseFormat, ModelDisable, ResourceRef,
+    ai_methods, get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime,
+    AiContent, AiMessage, AiMethodStatus, AiResponse, AiRole, AiToolCall, AiToolSpec, AiUsage,
+    AiccClient, AiccExecutionMode, BuckyOSRuntimeType, HelperModelRequirement,
+    LlmChatHelperRequest, LlmChatInvokeRequest, LlmResponseFormat, ModelDisable, ResourceRef,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -86,9 +86,17 @@ use llm_context::request::{
 use llm_context::state::{LLMContextSnapshot, Suspension};
 use llm_context::{LLMContext, LLMContextInterruptHandle, XmlStepRenderer};
 
+use crate::exec_tracking::ExecutionRegistrar;
 use crate::exec_tracking::{ExecutionRecord, HostRunInfo, InflightAction};
 use crate::llm_bash::BashRunner;
 use crate::llm_compress::LlmSummarizeCompressor;
+use crate::runtime::files::FileBackend;
+#[cfg(test)]
+use crate::runtime::files::LocalFileBackend;
+use crate::runtime::{
+    AgentRuntime, RuntimeConfig, RuntimeDescriptor, RuntimeInfo, RuntimeOpenCtx, Sandbox,
+    SwitchRegistrar,
+};
 use crate::tool::TypedToolHandle;
 use crate::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
@@ -117,8 +125,8 @@ pub const TOOL_EXEC: &str = "exec";
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
-/// `run.json` 记录格式版本（2：`limits.max_tool_iterations`，快照格式 3）；resume 只接受当前版本。
-pub const RUN_RECORD_VERSION: u32 = 2;
+/// `run.json` 记录格式版本（3：有效 runtime 配置与执行目标，快照格式 3）；resume 只接受当前版本。
+pub const RUN_RECORD_VERSION: u32 = 3;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
@@ -178,6 +186,10 @@ pub enum XllmError {
     #[error("capability error: {0}")]
     Capability(String),
     /// 工具来源、名称冲突、MCP 发现失败等。
+    #[error("runtime mismatch: {0}")]
+    RuntimeMismatch(String),
+    #[error("RecoveryBlocked: {0}")]
+    RecoveryBlocked(String),
     #[error("tools error: {0}")]
     Tools(String),
     /// 模板变量缺失或语法错误。
@@ -652,6 +664,8 @@ pub enum RunsDirSetting {
 /// 外部组已展开，section 键已归一到行号）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct LlmContextFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1285,6 +1299,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         m,
         &[
             "provider",
+            "runtime",
             "model",
             "file_model",
             "max_tokens",
@@ -1301,6 +1316,30 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
         ],
     )?;
 
+    let runtime = match m.get("runtime") {
+        None | Some(Yaml::Null) => None,
+        Some(v) => {
+            if v.get("kind").and_then(Yaml::as_str).is_some_and(|k| {
+                matches!(
+                    k,
+                    "container" | "container_host" | "remote_node" | "http_proxy_runtime"
+                )
+            }) {
+                return Err(XllmError::Capability(format!(
+                    "runtime `{}` is planned but not implemented",
+                    v.get("kind").and_then(Yaml::as_str).unwrap()
+                )));
+            }
+            let mut r: RuntimeConfig =
+                serde_yaml::from_value(v.clone()).map_err(|e| ctx.err("runtime", e.to_string()))?;
+            r.validate(false).map_err(|e| match e {
+                XllmError::Config { reason, .. } => ctx.err("runtime", reason),
+                e => e,
+            })?;
+            r.resolve_paths(&base_dir);
+            Some(r)
+        }
+    };
     let provider = match m.get("provider") {
         None | Some(Yaml::Null) => None,
         Some(v) => Some(parse_provider(&ctx, "provider", v)?),
@@ -1441,6 +1480,7 @@ pub fn parse_llm_context_file(path: &Path, raw: &str) -> Result<LlmContextFile, 
     };
 
     Ok(LlmContextFile {
+        runtime,
         provider,
         model,
         file_model,
@@ -1493,6 +1533,8 @@ pub fn load_config_layers(workdir: &Path) -> Result<Vec<ConfigLayer>, XllmError>
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MergedConfig {
     #[serde(default)]
+    pub runtime: RuntimeConfig,
+    #[serde(default)]
     pub provider: ProviderConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
@@ -1536,6 +1578,17 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
         let src = layer.path.display().to_string();
         merged.files.push(src.clone());
         let f = &layer.file;
+        if let Some(runtime) = &f.runtime {
+            merged.runtime.merge_over(runtime);
+            if runtime.workdir.is_some() && merged.runtime.kind() != "remote_ssh" {
+                let base = layer.path.parent().unwrap_or(Path::new("."));
+                merged.runtime.workdir = runtime
+                    .workdir
+                    .as_ref()
+                    .map(|p| resolve_config_path(p, base).display().to_string());
+            }
+            merged.sources.insert("runtime".into(), src.clone());
+        }
         if let Some(p) = &f.provider {
             // Provider 类型切换时不继承另一类型的专属字段。
             if p.kind.is_some() && p.kind != merged.provider.kind && merged.provider.kind.is_some()
@@ -1667,6 +1720,8 @@ pub fn merge_config_layers(layers: &[ConfigLayer]) -> Result<MergedConfig, XllmE
 /// 显式 CLI / SDK 参数。`None` 表示未传入，不覆盖文件配置（F10）。
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskOverrides {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RuntimeConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderKind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2017,6 +2072,8 @@ impl EffectiveTools {
 /// 本次 Run 的有效执行配置（随 Run 保存，resume 时不重新计算）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveConfig {
+    pub runtime: RuntimeConfig,
+    pub runtime_descriptor: RuntimeDescriptor,
     pub provider: ProviderConfig,
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2142,26 +2199,9 @@ pub struct TemplateEnv {
 }
 
 impl TemplateEnv {
-    /// 为一次新 Run 生成本次时间、时区、操作系统、工作目录。
-    pub fn for_new_run(workdir: &Path) -> Self {
-        let now = chrono::Local::now();
-        let mut runtime = BTreeMap::new();
-        runtime.insert(
-            "current_time".into(),
-            now.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        );
-        let tz = std::env::var("TZ")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| now.format("UTC%:z").to_string());
-        runtime.insert("timezone".into(), tz);
-        runtime.insert(
-            "os".into(),
-            format!("{} ({})", std::env::consts::OS, std::env::consts::ARCH),
-        );
-        runtime.insert("cwd".into(), workdir.display().to_string());
+    pub fn for_new_run(info: &RuntimeInfo) -> Self {
         Self {
-            runtime,
+            runtime: info.template_values(),
             used: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -2567,6 +2607,12 @@ fn build_contexts_system_text(
         ("timezone", "Timezone"),
         ("os", "Operating system"),
         ("cwd", "Working directory"),
+        ("id", "Runtime"),
+        ("kind", "Execution mechanism"),
+        ("arch", "Architecture"),
+        ("hostname", "Hostname"),
+        ("shell", "Shell"),
+        ("tools", "Available tools"),
     ] {
         if referenced.contains_key(&format!("runtime.{key}")) {
             continue;
@@ -3445,7 +3491,10 @@ pub struct XllmDeps {
     pub lock_dir: Option<PathBuf>,
     /// 内置 `exec` 使用的执行器（默认 `LocalProcessBashRunner`）。宿主可注入
     /// 带执行跟踪的 runner（`exec_tracking::TrackedBashRunner`）。
-    pub bash_runner: Option<Arc<dyn BashRunner>>,
+    pub runtime: Option<Arc<dyn AgentRuntime>>,
+    pub execution_registrar: Option<Arc<dyn ExecutionRegistrar>>,
+    pub runtime_env: BTreeMap<String, String>,
+    pub runtime_path_prefix: Vec<PathBuf>,
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
     /// 多个 session 共享 workspace，由活动视图避让）。
     pub skip_workdir_lock: bool,
@@ -3458,7 +3507,10 @@ impl Default for XllmDeps {
             host_tools: HashMap::new(),
             observer: Arc::new(NoopRunObserver),
             lock_dir: None,
-            bash_runner: None,
+            runtime: None,
+            execution_registrar: None,
+            runtime_env: BTreeMap::new(),
+            runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
         }
     }
@@ -3487,8 +3539,8 @@ impl XllmDeps {
         self
     }
 
-    pub fn with_bash_runner(mut self, runner: Arc<dyn BashRunner>) -> Self {
-        self.bash_runner = Some(runner);
+    pub fn with_runtime(mut self, runtime: Arc<dyn AgentRuntime>) -> Self {
+        self.runtime = Some(runtime);
         self
     }
 
@@ -3502,6 +3554,11 @@ impl XllmDeps {
 /// 把 waist 的 ToolManager 接到一组 `AgentTool` 上；同时记录产物路径。
 pub struct XllmToolManager {
     workdir: PathBuf,
+    runner: Option<Arc<dyn BashRunner>>,
+    descriptor: Option<RuntimeDescriptor>,
+    info: Option<RuntimeInfo>,
+    registrar: Option<Arc<SwitchRegistrar>>,
+    tracking: Option<Arc<RunTracking>>,
     tools: BTreeMap<String, Arc<dyn AgentTool>>,
     /// Tool calls dispatched so far (`SessionRuntimeContext.tool_call_index`).
     tool_call_index: AtomicU32,
@@ -3515,6 +3572,11 @@ impl XllmToolManager {
     pub fn new(workdir: PathBuf, run_id: &str, loop_model: LoopModel) -> Self {
         Self {
             workdir,
+            runner: None,
+            descriptor: None,
+            info: None,
+            registrar: None,
+            tracking: None,
             tools: BTreeMap::new(),
             tool_call_index: AtomicU32::new(0),
             session_template: SessionRuntimeContext {
@@ -3594,11 +3656,17 @@ impl ToolManager for XllmToolManager {
             .and_then(Value::as_str)
             .map(str::to_string);
         let args = Value::Object(call.args.into_iter().collect());
+        if let Some(tracking) = &self.tracking {
+            tracking
+                .inflight(&call_id, &call.name, &args)
+                .map_err(ToolDispatchError::not_started)?;
+        }
         let deadline = *self.deadline.lock().expect("deadline lock");
         let mut cancel_rx = self.cancel.subscribe();
         let result = tokio::select! {
-            result = tool.call(&ctx, args) => result,
-            _ = cancel_rx.wait_for(|cancelled| *cancelled) => {
+            result = crate::runtime::CURRENT_TOOL_CALL.scope(call_id.clone(), tool.call(&ctx, args)) => result,
+            _ = async { let _ = cancel_rx.wait_for(|cancelled| *cancelled).await; } => {
+                if let Some(runner) = &self.runner { runner.cancel().await.map_err(|e| ToolDispatchError::effect_unknown(e.to_string()))?; }
                 return Ok(Observation::Error {
                     call_id,
                     message: format!("tool `{}` was cancelled: run interrupted", call.name),
@@ -3611,6 +3679,7 @@ impl ToolManager for XllmToolManager {
                     None => std::future::pending::<()>().await,
                 }
             } => {
+                if let Some(runner) = &self.runner { runner.cancel().await.map_err(|e| ToolDispatchError::effect_unknown(e.to_string()))?; }
                 return Ok(Observation::Error {
                     call_id,
                     message: format!(
@@ -3641,6 +3710,15 @@ impl ToolManager for XllmToolManager {
                     }
                 }
                 map_result_to_observation(call_id, res)
+            }
+            Err(AgentToolError::Transport {
+                message,
+                effect_unknown,
+            }) => {
+                return Err(ToolDispatchError {
+                    message,
+                    effect_unknown,
+                })
             }
             Err(e) => Observation::Error {
                 call_id,
@@ -3912,8 +3990,10 @@ fn builtin_bash_group(
     workdir: &Path,
     filesystem_policy: FilesystemPolicy,
     bash_runner: Option<Arc<dyn BashRunner>>,
+    files: Arc<dyn FileBackend>,
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut cfg = FileToolConfig::new(workdir.to_path_buf());
+    cfg.backend = files;
     let restrict_cwd = filesystem_policy == FilesystemPolicy::Workspace;
     if !restrict_cwd {
         cfg.allowed_read_roots.clear();
@@ -3952,6 +4032,8 @@ async fn expand_tool_sources(
     filesystem_policy: FilesystemPolicy,
     deps: &XllmDeps,
     manager: &mut XllmToolManager,
+    runner: Arc<dyn BashRunner>,
+    files: Arc<dyn FileBackend>,
 ) -> Result<Vec<ResolvedTool>, XllmError> {
     let mut out = Vec::new();
     for src in sources {
@@ -3963,7 +4045,12 @@ async fn expand_tool_sources(
                         "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH})"
                     )));
                 }
-                for t in builtin_bash_group(workdir, filesystem_policy, deps.bash_runner.clone()) {
+                for t in builtin_bash_group(
+                    workdir,
+                    filesystem_policy,
+                    Some(runner.clone()),
+                    files.clone(),
+                ) {
                     out.push(manager.register(t, &desc)?);
                 }
             }
@@ -4004,13 +4091,15 @@ async fn expand_tool_sources(
 }
 
 /// 依据工具配置展开来源并做 loop 校验，得到最终工具集与派发器。
-pub async fn build_toolset(
+pub(crate) async fn build_runtime_toolset(
     cfg: &ToolsConfig,
     sources: BTreeMap<String, String>,
     loop_model: LoopModel,
     workdir: &Path,
     run_id: &str,
     deps: &XllmDeps,
+    runner: Arc<dyn BashRunner>,
+    files: Arc<dyn FileBackend>,
 ) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
     let enabled = cfg.enabled.unwrap_or(false);
     let filesystem_policy = cfg.filesystem_policy.unwrap_or_default();
@@ -4057,6 +4146,8 @@ pub async fn build_toolset(
         filesystem_policy,
         deps,
         &mut manager,
+        runner.clone(),
+        files.clone(),
     )
     .await?;
     let explicit_actions = expand_tool_sources(
@@ -4065,6 +4156,8 @@ pub async fn build_toolset(
         filesystem_policy,
         deps,
         &mut manager,
+        runner.clone(),
+        files.clone(),
     )
     .await?;
     match loop_model {
@@ -4086,6 +4179,31 @@ pub async fn build_toolset(
         && (eff.native.iter().any(|t| t.name == TOOL_EXEC)
             || eff.actions.iter().any(|t| t.name == TOOL_EXEC));
     Ok((eff, manager))
+}
+
+pub async fn build_toolset(
+    cfg: &ToolsConfig,
+    sources: BTreeMap<String, String>,
+    loop_model: LoopModel,
+    workdir: &Path,
+    run_id: &str,
+    deps: &XllmDeps,
+) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
+    let mut ctx = RuntimeOpenCtx::new(workdir, run_id, loop_model);
+    ctx.sources = sources;
+    ctx.env = deps.runtime_env.clone();
+    ctx.path_prefix = deps.runtime_path_prefix.clone();
+    ctx.registrar = deps
+        .execution_registrar
+        .clone()
+        .unwrap_or_else(|| Arc::new(crate::exec_tracking::MemoryRegistrar::default()));
+    let cfg_runtime = deps
+        .runtime
+        .as_ref()
+        .map(|r| r.config())
+        .unwrap_or_default();
+    let (_, tools, manager) = crate::runtime::open_runtime(&cfg_runtime, &ctx, cfg, deps).await?;
+    Ok((tools, manager))
 }
 
 // =========================================================================
@@ -5048,6 +5166,18 @@ impl RunRecord {
                 ..Default::default()
             },
             config: EffectiveConfig {
+                runtime: RuntimeConfig {
+                    workdir: Some(workdir.display().to_string()),
+                    ..Default::default()
+                },
+                runtime_descriptor: RuntimeDescriptor {
+                    runtime_id: String::new(),
+                    kind: "native".into(),
+                    host: Some(crate::runtime::native_host_id()),
+                    target: Value::Null,
+                    workdir: workdir.display().to_string(),
+                    capabilities: Default::default(),
+                },
                 provider: ProviderConfig::default(),
                 model: "llm.chat".into(),
                 file_model: None,
@@ -5282,6 +5412,17 @@ impl RunStore {
                         return Err(XllmError::Storage(format!("read {}: {e}", path.display())))
                     }
                 };
+                let value: Value =
+                    serde_json::from_slice(&bytes).map_err(|e| XllmError::CorruptedRun {
+                        run_id: run_id.into(),
+                        reason: e.to_string(),
+                    })?;
+                if value.get("version").and_then(Value::as_u64) != Some(RUN_RECORD_VERSION as u64) {
+                    return Err(XllmError::NotResumable {
+                        run_id: run_id.into(),
+                        reason: "unsupported run record version".into(),
+                    });
+                }
                 serde_json::from_slice::<RunRecord>(&bytes).map_err(|e| XllmError::CorruptedRun {
                     run_id: run_id.to_string(),
                     reason: format!("run.json unreadable: {e}"),
@@ -5443,10 +5584,7 @@ impl RunStore {
                     Ok(()) => {}
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => {
-                        return Err(XllmError::Storage(format!(
-                            "remove {}: {e}",
-                            dir.display()
-                        )))
+                        return Err(XllmError::Storage(format!("remove {}: {e}", dir.display())))
                     }
                 }
                 let _ = sync_dir(runs_dir);
@@ -6083,18 +6221,33 @@ impl XllmTask {
         // ---- 工具 ----
         let (tools_cfg, tool_sources) =
             compute_tools_config(&merged, group.as_ref(), overrides.tools, group.is_some());
-        let (tools, manager) = build_toolset(
-            &tools_cfg,
-            tool_sources,
-            loop_model,
-            &workdir,
-            "pending",
-            deps,
-        )
-        .await?;
+        let mut runtime_config = merged.runtime.clone();
+        if let Some(r) = &overrides.runtime {
+            runtime_config.merge_over(r);
+        }
+        let mut open = RuntimeOpenCtx::new(&workdir, "pending", loop_model);
+        open.sources = tool_sources;
+        open.env = deps.runtime_env.clone();
+        open.path_prefix = deps.runtime_path_prefix.clone();
+        let registrar = Arc::new(SwitchRegistrar::default());
+        open.registrar = deps
+            .execution_registrar
+            .clone()
+            .unwrap_or_else(|| registrar.clone());
+        let (runtime, tools, mut manager) =
+            crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
+        if deps.execution_registrar.is_none() {
+            manager.registrar = Some(registrar);
+        }
+        let runtime_config = runtime.config();
+        let runtime_descriptor = runtime.descriptor().clone();
 
         // ---- 提示词 ----
-        let env = TemplateEnv::for_new_run(&workdir);
+        let env = TemplateEnv::for_new_run(
+            manager
+                .runtime_info()
+                .ok_or_else(|| XllmError::Capability("runtime info unavailable".into()))?,
+        );
         let prompt = if structured {
             let runtime_protocol = build_runtime_protocol(loop_model, &tools, overrides.json);
             PromptPlan {
@@ -6273,6 +6426,8 @@ impl XllmTask {
         prompt.user_request_source = request_source.clone();
 
         let config = EffectiveConfig {
+            runtime: runtime_config,
+            runtime_descriptor,
             provider,
             model,
             file_model,
@@ -6388,7 +6543,9 @@ impl XllmTask {
         let loop_model = merged.loop_model.unwrap_or(LoopModel::FunctionCall);
         let limits = RunLimits {
             max_tokens: merged.max_tokens,
-            max_tool_iterations: merged.max_tool_iterations.unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS),
+            max_tool_iterations: merged
+                .max_tool_iterations
+                .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS),
             timeout_secs: merged.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS),
             llm_timeout_secs: merged.llm_timeout.unwrap_or(DEFAULT_LLM_TIMEOUT_SECS),
             context_window_tokens: merged.context_window,
@@ -6401,17 +6558,33 @@ impl XllmTask {
             .cloned();
         let (tools_cfg, tool_sources) =
             compute_tools_config(&merged, group.as_ref(), None, group.is_some());
-        let (tools, manager) = build_toolset(
-            &tools_cfg,
-            tool_sources,
-            loop_model,
-            &workdir,
-            "pending",
-            deps,
-        )
-        .await?;
+        let runtime_config = merged.runtime.clone();
+        let mut open = RuntimeOpenCtx::new(&workdir, "pending", loop_model);
+        open.sources = tool_sources;
+        open.env = deps.runtime_env.clone();
+        open.path_prefix = deps.runtime_path_prefix.clone();
+        let registrar = Arc::new(SwitchRegistrar::default());
+        open.registrar = deps
+            .execution_registrar
+            .clone()
+            .unwrap_or_else(|| registrar.clone());
+        let (runtime, tools, mut manager) =
+            crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
+        if deps.execution_registrar.is_none() {
+            manager.registrar = Some(registrar);
+        }
+        let runtime_config = runtime.config();
+        let runtime_descriptor = runtime.descriptor().clone();
         let runtime_protocol = build_runtime_protocol(loop_model, &tools, false);
-        let mut system = host_system.trim_end().to_string();
+        let mut template_env = TemplateEnv::for_new_run(
+            manager
+                .runtime_info()
+                .ok_or_else(|| XllmError::Capability("runtime info unavailable".into()))?,
+        );
+        template_env.runtime.remove("current_time");
+        template_env.runtime.remove("timezone");
+        let rendered_host_system = template_env.render(host_system, &format!("host:{origin}"))?;
+        let mut system = rendered_host_system.trim_end().to_string();
         if !system.is_empty() {
             system.push_str("\n\n");
         }
@@ -6431,17 +6604,22 @@ impl XllmTask {
             group: None,
             loop_model,
             sections: Vec::new(),
-            custom_system: Some(host_system.to_string()),
+            custom_system: Some(rendered_host_system),
             custom_system_source: Some(format!("host:{origin}")),
             runtime_protocol,
             protocol_version: RUNTIME_PROTOCOL_VERSION.into(),
             system_prompt: system,
             user_request: None,
             user_request_source: "structured".into(),
-            template_vars: BTreeMap::new(),
-            runtime_vars: BTreeMap::new(),
+            template_vars: template_env.used_vars(),
+            runtime_vars: manager
+                .runtime_info()
+                .ok_or_else(|| XllmError::Capability("runtime info unavailable".into()))?
+                .template_values(),
         };
         let config = EffectiveConfig {
+            runtime: runtime_config,
+            runtime_descriptor,
             provider,
             model,
             file_model: merged.file_model.clone(),
@@ -6546,17 +6724,127 @@ pub async fn rebuild_toolset(
         actions: Some(record.config.tools.action_sources.clone()),
         bash_tools: Some(record.config.tools.bash_tools.clone()),
     };
-    let (_eff, mut manager) = build_toolset(
-        &tools_cfg,
-        record.config.tools.sources.clone(),
-        record.config.loop_model,
-        &workdir,
-        &record.run_id,
-        deps,
-    )
-    .await?;
+    let mut open = RuntimeOpenCtx::new(&workdir, &record.run_id, record.config.loop_model);
+    open.sources = record.config.tools.sources.clone();
+    open.env = deps.runtime_env.clone();
+    open.path_prefix = deps.runtime_path_prefix.clone();
+    restore_host_environment(record, &mut open)?;
+    let registrar = Arc::new(SwitchRegistrar::default());
+    open.registrar = deps
+        .execution_registrar
+        .clone()
+        .unwrap_or_else(|| registrar.clone());
+    let (runtime, _eff, mut manager) =
+        crate::runtime::open_runtime(&record.config.runtime, &open, &tools_cfg, deps).await?;
+    if runtime.descriptor() != &record.config.runtime_descriptor {
+        return Err(XllmError::RuntimeMismatch(
+            "saved runtime target or workdir changed".into(),
+        ));
+    }
+    if deps.execution_registrar.is_none() {
+        manager.registrar = Some(registrar);
+    }
     manager.bind_run(&record.run_id);
     Ok(manager)
+}
+
+fn restore_host_environment(
+    record: &RunRecord,
+    open: &mut RuntimeOpenCtx,
+) -> Result<(), XllmError> {
+    let Some(host) = record
+        .host
+        .as_ref()
+        .filter(|h| h.assembled_by == "libopendan")
+    else {
+        return Ok(());
+    };
+    let blocked = |reason: String| XllmError::RecoveryBlocked(reason);
+    let check = &host.env_check;
+    let descriptor: RuntimeDescriptor = serde_json::from_value(check["runtime"].clone())
+        .map_err(|e| blocked(format!("saved Session runtime check is invalid: {e}")))?;
+    if descriptor != record.config.runtime_descriptor {
+        return Err(blocked(
+            "Session runtime check differs from saved target".into(),
+        ));
+    }
+    let saved_env: std::collections::BTreeMap<String, String> =
+        serde_json::from_value(check["env"].clone()).map_err(|e| blocked(e.to_string()))?;
+    for (key, value) in saved_env {
+        if open.env.get(&key).is_some_and(|v| v != &value) {
+            return Err(blocked(format!("Session environment {key} changed")));
+        }
+        open.env.insert(key, value);
+    }
+    let refs: Vec<String> =
+        serde_json::from_value(check["env_refs"].clone()).map_err(|e| blocked(e.to_string()))?;
+    for key in refs {
+        if !open.env.contains_key(&key) {
+            let value = std::env::var(&key).map_err(|_| {
+                blocked(format!(
+                    "Session credential environment {key} is unavailable"
+                ))
+            })?;
+            open.env.insert(key, value);
+        }
+    }
+    let paths: Vec<PathBuf> =
+        serde_json::from_value(check["path_prefix"].clone()).map_err(|e| blocked(e.to_string()))?;
+    if !open.path_prefix.is_empty() && open.path_prefix != paths {
+        return Err(blocked("Session tool paths changed".into()));
+    }
+    for path in &paths {
+        if !path.is_absolute() || !path.is_dir() {
+            return Err(blocked(format!(
+                "Session tool directory {} is unavailable",
+                path.display()
+            )));
+        }
+    }
+    let bin: PathBuf =
+        serde_json::from_value(check["bin_dir"].clone()).map_err(|e| blocked(e.to_string()))?;
+    if paths.first() != Some(&bin) {
+        return Err(blocked("Session bin path check differs from PATH".into()));
+    }
+    let manifest: Value = serde_json::from_slice(
+        &std::fs::read(bin.join(".manifest.json"))
+            .map_err(|e| blocked(format!("Session bin manifest unavailable: {e}")))?,
+    )
+    .map_err(|e| blocked(e.to_string()))?;
+    if manifest["entries"] != check["bin_manifest"]["entries"]
+        || manifest["tool_plan"] != check["bin_manifest"]["tool_plan"]
+    {
+        return Err(blocked("Session bin manifest changed".into()));
+    }
+    let entries = manifest["entries"]
+        .as_object()
+        .ok_or_else(|| blocked("Session bin manifest entries missing".into()))?;
+    for (name, digest) in entries {
+        if name.contains('/') || name == "." || name == ".." {
+            return Err(blocked("invalid Session bin entry".into()));
+        }
+        let path = bin.join(name);
+        let content = std::fs::read(&path)
+            .map_err(|e| blocked(format!("Session helper {name} unavailable: {e}")))?;
+        if digest.as_str() != Some(sha256_hex(&content).as_str()) {
+            return Err(blocked(format!("Session helper {name} changed")));
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if std::fs::metadata(&path)
+                .map_err(|e| blocked(e.to_string()))?
+                .permissions()
+                .mode()
+                & 0o111
+                == 0
+            {
+                return Err(blocked(format!("Session helper {name} is not executable")));
+            }
+        }
+    }
+    open.path_prefix = paths;
+    Ok(())
 }
 
 /// Provider client of a saved run (credentials re-resolved from references).
@@ -6779,6 +7067,8 @@ impl SnapshotHook {
         let idx = self.store.put_snapshot(&run_id, snapshot)?;
         let mut rec = self.record.lock().expect("record lock");
         rec.latest_snapshot_idx = Some(idx);
+        let covered = crate::exec_tracking::persisted_outcome_ids(snapshot);
+        rec.inflight.retain(|a| !covered.contains(&a.call_id));
         rec.updated_at_ms = now_ms();
         self.store.write_record(&rec)?;
         Ok(idx)
@@ -6859,7 +7149,13 @@ impl XllmRun {
             },
             None => None,
         };
-        let workdir_lock = if tools_enabled && !deps.skip_workdir_lock {
+        let workdir_lock = if tools_enabled
+            && !deps.skip_workdir_lock
+            && !deps
+                .runtime
+                .as_ref()
+                .is_some_and(|r| r.config().kind() == "remote_ssh")
+        {
             let path = workdir_lock_path(&deps.effective_lock_dir(), workdir);
             match FileLock::try_acquire(&path)? {
                 Some(l) => {
@@ -6931,8 +7227,14 @@ impl XllmRun {
         store.ensure_writable()?;
         let run_id = store.create_run()?;
         manager.bind_run(&run_id);
-        let (run_lock, workdir_lock) =
-            Self::acquire_locks(&store, &run_id, &workdir, tools.enabled, &deps).await?;
+        let (run_lock, workdir_lock) = Self::acquire_locks(
+            &store,
+            &run_id,
+            Path::new(&config.runtime_descriptor.workdir),
+            tools.enabled,
+            &deps,
+        )
+        .await?;
         let inner = deps.llm_factory.create(&config.provider).await?;
         let llm = Arc::new(TimeoutLlmClient::new(
             inner,
@@ -6973,6 +7275,7 @@ impl XllmRun {
         };
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
+        manager.attach_tracking(store.clone(), record.clone());
         let manager = Arc::new(manager);
         let tool_cancel = manager.cancel.clone();
         let waist_deps = Self::build_waist_deps(
@@ -7069,18 +7372,6 @@ impl XllmRun {
                 ),
             });
         }
-        if let Some(host) = &record.host {
-            if host.runtime_kind.as_deref().unwrap_or("native") != "native" {
-                return Err(XllmError::NotResumable {
-                    run_id: record.run_id.clone(),
-                    reason: format!(
-                        "run was assembled by {} for a `{}` runtime; only native runs can be continued by xllm",
-                        host.assembled_by,
-                        host.runtime_kind.as_deref().unwrap_or("?")
-                    ),
-                });
-            }
-        }
         if record.prompt.protocol_version != RUNTIME_PROTOCOL_VERSION {
             return Err(XllmError::NotResumable {
                 run_id: record.run_id.clone(),
@@ -7104,8 +7395,8 @@ impl XllmRun {
         let (run_lock, workdir_lock) = Self::acquire_locks(
             store,
             &run_id_s,
-            &workdir,
-            record.config.tools.enabled,
+            Path::new(&record.config.runtime_descriptor.workdir),
+            record.config.tools.enabled && record.config.runtime.kind() != "remote_ssh",
             &deps,
         )
         .await?;
@@ -7118,27 +7409,15 @@ impl XllmRun {
                 reason: "host input batch is not committed yet".into(),
             });
         }
-        Self::settle_previous_executor(store, &mut record).await?;
-
-        // 重新展开工具（同一来源），重新连接 Provider（重新解析凭据引用）。
-        let tools_cfg = ToolsConfig {
-            enabled: Some(record.config.tools.enabled),
-            filesystem_policy: Some(record.config.tools.filesystem_policy),
-            tools2actions: Some(record.config.tools.tools2actions),
-            tools: Some(record.config.tools.tool_sources.clone()),
-            actions: Some(record.config.tools.action_sources.clone()),
-            bash_tools: Some(record.config.tools.bash_tools.clone()),
+        let runtime = match &deps.runtime {
+            Some(r) => r.clone(),
+            None => crate::runtime::RuntimeRegistry::from_config(&record.config.runtime)?,
         };
-        let (_rebuilt, mut manager) = build_toolset(
-            &tools_cfg,
-            record.config.tools.sources.clone(),
-            record.config.loop_model,
-            &workdir,
-            &run_id_s,
-            &deps,
-        )
-        .await?;
-        manager.bind_run(&run_id_s);
+        let mut runtime_deps = deps.clone();
+        runtime_deps.runtime = Some(runtime.clone());
+        let mut manager = rebuild_toolset(&record, &runtime_deps).await?;
+        Self::settle_previous_executor(store, &mut record, runtime.as_ref()).await?;
+
         let mut record = record;
         if let Some(v) = limits.max_tokens {
             record.config.limits.max_tokens = Some(v);
@@ -7171,6 +7450,7 @@ impl XllmRun {
         record.updated_at_ms = now_ms();
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
+        manager.attach_tracking(store.clone(), record.clone());
         let manager = Arc::new(manager);
         let waist_deps = Self::build_waist_deps(
             store,
@@ -7191,8 +7471,10 @@ impl XllmRun {
             snap.request.budget.max_wallclock_ms = Some(limits_now.timeout_secs * 1000);
             snap.request.model_policy.max_completion_tokens = limits_now.max_tokens;
             if limits_now.max_tool_iterations != old_max_tool_iterations {
-                let consumed = old_max_tool_iterations.saturating_sub(snap.state.tool_iterations_left);
-                snap.state.tool_iterations_left = limits_now.max_tool_iterations.saturating_sub(consumed);
+                let consumed =
+                    old_max_tool_iterations.saturating_sub(snap.state.tool_iterations_left);
+                snap.state.tool_iterations_left =
+                    limits_now.max_tool_iterations.saturating_sub(consumed);
                 snap.request.tool_policy.max_tool_iterations = limits_now.max_tool_iterations;
             }
             match snap.state.suspended {
@@ -7269,10 +7551,11 @@ impl XllmRun {
     async fn settle_previous_executor(
         store: &RunStore,
         record: &mut RunRecord,
+        runtime: &dyn AgentRuntime,
     ) -> Result<(), XllmError> {
         if !record.executions.is_empty() {
             for exec in record.executions.clone() {
-                crate::exec_tracking::stop_execution(&exec, None, Duration::from_secs(10))
+                runtime.reconcile_execution(&exec)
                     .await
                     .map_err(|reason| XllmError::NotResumable {
                         run_id: record.run_id.clone(),
@@ -8737,7 +9020,10 @@ tools:
             "no run created"
         );
 
-        let tenv = TemplateEnv::for_new_run(Path::new("/w"));
+        let tenv = TemplateEnv::for_new_run(&RuntimeInfo {
+            cwd: "/w".into(),
+            ..Default::default()
+        });
         assert_eq!(tenv.render("a \\{{b}} c", "t").unwrap(), "a {{b}} c");
         assert_eq!(tenv.render("cwd={{ runtime.cwd }}", "t").unwrap(), "cwd=/w");
         assert!(tenv.render("{{runtime.nope}}", "t").is_err());
@@ -9351,7 +9637,11 @@ there]]></write_file>
             .unwrap();
         assert!(matches!(o, RunOutcome::LimitReached(_)), "{:?}", o.status());
         let rec = o.record();
-        assert!(rec.limit_reason.as_ref().unwrap().contains("tool iteration"));
+        assert!(rec
+            .limit_reason
+            .as_ref()
+            .unwrap()
+            .contains("tool iteration"));
         assert_eq!(rec.artifacts.len(), 1);
         assert!(rec.artifacts[0].ends_with("out.txt"));
         assert_eq!(
@@ -9494,7 +9784,11 @@ there]]></write_file>
         assert!(user_text(&llm.seen()[1]).contains("behavior-fixture-3142"));
         assert!(!env.workdir.join("excess.txt").exists());
         let record = outcome.record();
-        assert!(record.limit_reason.as_ref().unwrap().contains("tool iteration"));
+        assert!(record
+            .limit_reason
+            .as_ref()
+            .unwrap()
+            .contains("tool iteration"));
         let snapshot = env
             .store()
             .get_snapshot(&record.run_id, record.latest_snapshot_idx.unwrap())
@@ -9869,7 +10163,9 @@ there]]></write_file>
             }
             let llm = ScriptedLlm::new(vec![
                 if behavior {
-                    text("<response><actions><exec><![CDATA[echo one]]></exec></actions></response>")
+                    text(
+                        "<response><actions><exec><![CDATA[echo one]]></exec></actions></response>",
+                    )
                 } else {
                     tool_call("exec", json!({"command":"echo one"}), "c1")
                 },
@@ -9914,7 +10210,10 @@ there]]></write_file>
             assert_eq!(rec.config.limits.timeout_secs, 42);
             // 新快照会在下一次推理前提交；这里直接检查内存中的上下文状态。
             let s = run.ctx.as_ref().unwrap().snapshot();
-            assert_eq!(s.state.tool_iterations_left, 4, "consumed tool iteration is not refunded");
+            assert_eq!(
+                s.state.tool_iterations_left, 4,
+                "consumed tool iteration is not refunded"
+            );
             assert_eq!(s.request.budget.max_wallclock_ms, Some(42_000));
         }
     }
@@ -10267,7 +10566,12 @@ there]]></write_file>
     fn exec_manager(workdir: &Path) -> XllmToolManager {
         let mut manager =
             XllmToolManager::new(workdir.to_path_buf(), "run-test", LoopModel::FunctionCall);
-        for t in builtin_bash_group(workdir, FilesystemPolicy::Workspace, None) {
+        for t in builtin_bash_group(
+            workdir,
+            FilesystemPolicy::Workspace,
+            None,
+            Arc::new(LocalFileBackend),
+        ) {
             manager.register(t, "groupname:bash").expect("register");
         }
         manager
@@ -10640,5 +10944,102 @@ there]]></write_file>
             ),
             "{err:?}"
         );
+    }
+}
+
+impl XllmToolManager {
+    pub(crate) fn set_runtime(
+        &mut self,
+        runner: Arc<dyn BashRunner>,
+        descriptor: RuntimeDescriptor,
+        info: RuntimeInfo,
+    ) {
+        self.runner = Some(runner);
+        self.descriptor = Some(descriptor);
+        self.info = Some(info);
+    }
+    pub fn runtime_info(&self) -> Option<&RuntimeInfo> {
+        self.info.as_ref()
+    }
+    fn attach_tracking(&mut self, store: RunStore, record: Arc<Mutex<RunRecord>>) {
+        if let Some(registrar) = &self.registrar {
+            let tracking = Arc::new(RunTracking { store, record });
+            registrar.set(tracking.clone());
+            self.tracking = Some(tracking);
+        }
+    }
+}
+
+#[async_trait]
+impl Sandbox for XllmToolManager {
+    fn workdir(&self) -> &str {
+        self.descriptor
+            .as_ref()
+            .map(|d| d.workdir.as_str())
+            .unwrap_or("")
+    }
+    fn env_check(&self) -> Value {
+        serde_json::to_value(&self.descriptor).unwrap_or(Value::Null)
+    }
+    async fn exec(
+        &self,
+        req: crate::llm_bash::BashRunRequest,
+        ctx: &SessionRuntimeContext,
+    ) -> Result<crate::llm_bash::BashRunOutput, AgentToolError> {
+        self.runner
+            .as_ref()
+            .ok_or_else(|| AgentToolError::ExecFailed("runtime not opened".into()))?
+            .run(ctx, req)
+            .await
+    }
+}
+
+struct RunTracking {
+    store: RunStore,
+    record: Arc<Mutex<RunRecord>>,
+}
+impl RunTracking {
+    fn inflight(&self, call_id: &str, name: &str, args: &Value) -> Result<(), String> {
+        if name == "read_file" {
+            return Ok(());
+        }
+        let mut rec = self.record.lock().expect("record");
+        rec.inflight.push(InflightAction {
+            call_id: call_id.into(),
+            tool: name.into(),
+            args: args.clone(),
+            effect: "unknown".into(),
+            idempotency_key: None,
+            execution_ids: Vec::new(),
+            step_index: None,
+            started_at_ms: now_ms(),
+        });
+        self.store.write_record(&rec).map_err(|e| e.to_string())
+    }
+}
+#[async_trait]
+impl ExecutionRegistrar for RunTracking {
+    async fn register(&self, exec: &ExecutionRecord) -> Result<(), String> {
+        let mut rec = self.record.lock().expect("record");
+        let mut exec = exec.clone();
+        exec.call_id = crate::runtime::CURRENT_TOOL_CALL
+            .try_with(|c| c.clone())
+            .ok();
+        if let Some(action) = rec
+            .inflight
+            .iter_mut()
+            .find(|a| Some(&a.call_id) == exec.call_id.as_ref())
+        {
+            action.execution_ids.push(exec.execution_id.clone());
+        }
+        rec.executions.push(exec);
+        self.store.write_record(&rec).map_err(|e| e.to_string())
+    }
+    async fn completed(&self, id: &str) {
+        let mut rec = self.record.lock().expect("record");
+        rec.executions.retain(|e| e.execution_id != id);
+        if let Err(e) = self.store.write_record(&rec) {
+            log::warn!("execution completion: {e}");
+        }
     }
 }

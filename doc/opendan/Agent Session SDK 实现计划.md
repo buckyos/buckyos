@@ -1100,6 +1100,8 @@ pub trait AgentStateClient: Send + Sync {
 
 ## 7. Agent Runtime（libOpenDAN::runtime）
 
+> 2026-10-02 实施更新：Runtime 已下移到 agent_tool::runtime，共享 native/tmux/remote_ssh 配置、工具入口、目标侧文件后端与 RuntimeInfo。Session 层保留 bin/helper、binding 与协议纪律；本节早期 API 由 [xllm Rust SDK §10](../llm_context/xllm_rust_sdk.md#10-共享-agentruntime) 和 [xAgent §5](xAgent.md#5-runtimeagent-的-sandbox) 的当前接口替代。binding/session_config/session_state 与 run 升至 3；summary、机械渲染及 worklog 形状保持原协议。远端 Session helper 未部署时 Capability 错误；policy/grant/approval 仍为后续阶段。
+
 ### 7.1 逻辑 runtime 与绑定
 
 **Runtime** 是为 `exec_bash` 提供执行环境的**逻辑身份**：在哪台主机上执行、看到什么文件系统视图、PATH 上有哪些工具、用 native 还是 tmux 执行。它不是一个进程；tmux server 或容器重启后，仍是同一个 runtime。

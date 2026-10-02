@@ -48,7 +48,7 @@ Schema：`schema/session_config.schema.json`。要点：
 
 ```jsonc
 {
-  "schema": "opendan.session_config/2",
+  "schema": "opendan.session_config/3",
   "config_rev": 1,                    // 运行中可改的字段（订阅）变化时 +1
   "session": {
     "session_id": "...", "agent_did": "did:bns:jarvis.alice",
@@ -100,7 +100,7 @@ Schema：`schema/session_state.schema.json`。
 
 ```jsonc
 {
-  "schema": "opendan.session_state/2",
+  "schema": "opendan.session_state/3",
   "rev": 17,                                   // 每次提交 +1
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "host:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
@@ -208,7 +208,7 @@ Schema：`schema/session_state.schema.json`。
 ## 7. runs/（xllm run 目录）
 
 ```text
-runs/<run_id>/run.json            xllm RunRecord（version 2）
+runs/<run_id>/run.json            xllm RunRecord（version 3）
 runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 3；先 fsync 再发布）
 runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 ```
@@ -217,7 +217,7 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 
 | 字段 | 含义 |
 |---|---|
-| `host` | `{assembled_by:"libopendan", session_id, runtime_kind:"native|tmux", runtime_id, env_check}`；xllm 只接手 `native` |
+| `host` | `{assembled_by:"libopendan", session_id, runtime_kind, runtime_id, env_check}`；xllm 按保存的实际 runtime/target/cwd 接手，核验 Session PATH、环境、bin manifest/helper 内容；凭据只保存环境引用 |
 | `host_commit_pending` | 宿主输入提交门槛（批次号）。非空时任何执行者都不得推理或调用工具，xllm 拒绝接手 |
 | `inflight[]` | 已派发、结果尚未随快照持久化的动作：`{call_id, tool, args, effect, execution_ids, started_at_ms}` |
 | `executions[]` | 尚未确认停止的受管进程执行：`{execution_id, call_id, kind, runtime_id, host, boot_id, pgid, leader_start_ticks, command, started_at_ms}` |
@@ -275,23 +275,25 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 ## 9. binding.json 与 .runtime/bin
 
 ```jsonc
-{ "runtime_id": "rt-…", "kind": "native | tmux", "workdir": "/abs", "bound_at_ms": 0, "bound_by": "rn-…" }
+{ "schema": "opendan.binding/3", "runtime_id": "rt-…", "kind": "native | tmux", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
 - 首次推进时用不覆盖发布写入（`link` / `renameat2(NOREPLACE)`），之后不变；runtime_id 不同必须拒绝（RuntimeMismatch），发生在任何推理之前。
-- workdir：有 workspace 用 workspace（agent 内部 workspace 为 `<agent_root>/workspace/<id>`），否则为 session 目录。
-- binding.json 只证明身份；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
+- workdir：显式 runtime.workdir 优先；否则有 workspace 用 workspace（agent 内部 workspace 为 `<agent_root>/workspace/<id>`），无 workspace 为 session 目录。
+- binding.json 核验打开后的 runtime_id、kind、target、workdir，不只比较声明的 kind；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
 - 墓碑：`#!/bin/sh` 输出 `{"blocked_by":"tool_plan",...}` 与人读说明到 stderr，`exit 127`。
+
+共享 Runtime 来自 agent_tool::runtime，执行实现不再保留在 Session 层；Session 仅装配 bin/helper 与通用环境。prompt.llm_context.runtime 是构造配置，runtime.requirement 是绑定要求；推理、工具及旧执行恢复前先核验 binding。control workdir（run.json.workdir）与执行 cwd（config.runtime.workdir）分开保存。Session helper 未部署到远端时 remote_ssh 报 Capability，不把本地 bin 路径放进远端 PATH。
 
 ## 10. 恢复顺序（drive 开头）
 
-1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` / `session_config.json` 必须是 `/2`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
+1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` / `session_config.json` 必须是 `/3`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。
-4. 删除未被引用的 run（持锁、核对执行；无法核对则保留）。
-5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 2` 或快照 `snapshot_version ≠ 3` → RecoveryBlocked，保留现场）；确认旧执行已停止；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
+4. 打开 runtime 并核验完整 binding 与 bin/helper 环境（先于旧执行核对）；删除未被引用的 run（持锁、核对执行；无法核对则保留）。
+5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 3` 或快照 `snapshot_version ≠ 3` → RecoveryBlocked，保留现场）；确认旧执行已停止；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
-8. 绑定 / 核验 runtime；恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在等待 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。
+8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在等待 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。
 
 RecoveryBlocked 时只在 `state.last_error` 记录原因并回报，保留 live_run、run 目录、消费位置与执行证据，不自动放弃。

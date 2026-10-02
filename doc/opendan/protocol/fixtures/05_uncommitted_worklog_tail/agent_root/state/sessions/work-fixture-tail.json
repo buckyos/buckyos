@@ -22,16 +22,16 @@
     "report_brief": "",
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1790853968457
+      "heartbeat_ms": 1790960718135
     },
     "last_runner": {
-      "runner_id": "rn-b06c4270947a4ddf",
-      "host": "host:lzc-pve:6b719608768f",
-      "pid": 595593,
+      "runner_id": "rn-83539fc8d6124174",
+      "host": "${FIXTURE_HOST}",
+      "pid": 3004095,
       "lock_epoch": 1,
-      "at_ms": 1790853968459
+      "at_ms": 1790960718137
     },
-    "updated_at_ms": 1790853968457
+    "updated_at_ms": 1790960718135
   },
   "location_rev": 0
 }

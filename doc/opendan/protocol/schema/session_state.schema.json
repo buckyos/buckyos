@@ -352,8 +352,7 @@
           ]
         },
         "kind": {
-          "description": "`input | tool | event | children`.",
-          "type": "string"
+          "$ref": "#/definitions/WaitingKind"
         },
         "refs": {
           "items": {
@@ -366,6 +365,16 @@
         "kind"
       ],
       "type": "object"
+    },
+    "WaitingKind": {
+      "description": "What a waiting session waits for (`waiting_for.kind`).",
+      "enum": [
+        "input",
+        "tool",
+        "event",
+        "children"
+      ],
+      "type": "string"
     },
     "WorklogBoundary": {
       "properties": {

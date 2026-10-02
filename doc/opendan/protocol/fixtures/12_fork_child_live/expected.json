@@ -14,12 +14,12 @@
         "executions": 0,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261001-042609-91e4c8",
+        "run_id": "20261002-100519-1e4ac4",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261001-042609-8bcc97",
-        "20261001-042609-91e4c8"
+        "20261002-100519-1e4ac4",
+        "20261002-100519-ef43b0"
       ],
       "session_id": "work-fixture-fork",
       "state": {
@@ -32,7 +32,7 @@
           {
             "entry": "plan",
             "mode": "fork",
-            "run_id": "20261001-042609-8bcc97"
+            "run_id": "20261002-100519-ef43b0"
           }
         ],
         "rev": 4,
@@ -41,9 +41,9 @@
         "turns_completed": 0
       },
       "worklog": {
-        "committed_bytes": 1392,
+        "committed_bytes": 1664,
         "committed_seq": 7,
-        "file_bytes": 1392,
+        "file_bytes": 1664,
         "uncommitted_tail": false
       }
     }

@@ -19,7 +19,12 @@ async fn stop_takes_effect_after_one_do_action() {
             post_blocking(
                 &qd,
                 &q,
-                Input::control("stop-1", &ControlCommand::Stop { reason: Some("user".into()) }),
+                Input::control(
+                    "stop-1",
+                    &ControlCommand::Stop {
+                        reason: Some("user".into()),
+                    },
+                ),
             );
             tool_call("c1", "exec", json!({ "command": "echo one >> log" }))
         } else {
@@ -35,8 +40,12 @@ async fn stop_takes_effect_after_one_do_action() {
     assert_eq!(st.outcome, Some(Outcome::Stopped));
     assert!(!st.stop_requested);
     let wl = read_worklog(&sd);
-    assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::ControlApplied { command, .. } if command == "stop")));
-    assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::Outcome { kind, .. } if kind == "stopped")));
+    assert!(wl.iter().any(
+        |e| matches!(&e.body, WorklogBody::ControlApplied { command, .. } if command == "stop")
+    ));
+    assert!(wl
+        .iter()
+        .any(|e| matches!(&e.body, WorklogBody::Outcome { kind, .. } if kind == "stopped")));
     assert_eq!(st.source("q").acked_index, 1);
 }
 
@@ -54,7 +63,9 @@ async fn stop_before_any_run_finishes_without_inference() {
     .await
     .unwrap();
     let llm = ScriptedLlm::new(|_, _| text("never"));
-    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 0);
     assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
 }
@@ -100,7 +111,11 @@ async fn change_is_injected_at_the_observation_boundary() {
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(llm.count(), 2);
     let st = sd.state().unwrap();
-    assert_eq!(st.source("q").acked_index, 2, "both change deliveries consumed");
+    assert_eq!(
+        st.source("q").acked_index,
+        2,
+        "both change deliveries consumed"
+    );
     assert_eq!(st.subscription_cursors["s2"]["version"], json!("evt2"));
     let wl = read_worklog(&sd);
     let users: Vec<String> = wl
@@ -112,7 +127,9 @@ async fn change_is_injected_at_the_observation_boundary() {
         .collect();
     assert_eq!(users.len(), 2, "{users:?}");
     assert!(users[1].contains("evt2"));
-    assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::ChangeDropped { .. })));
+    assert!(wl
+        .iter()
+        .any(|e| matches!(&e.body, WorklogBody::ChangeDropped { .. })));
     // The observation joined the Turn: one more user message, no new Turn,
     // no input_batch marker.
     let k = kinds(&wl);
@@ -134,9 +151,13 @@ async fn semi_subscribed_session_change_is_pulled_by_rev() {
     let env = Env::new();
     // A finishes first.
     let a = env.create_work(work_spec("task A")).await;
-    assert!(drive(&a, &env.deps(ScriptedLlm::new(|_, _| text("A done"))), StopWhen::Finished)
-        .await
-        .is_finished());
+    assert!(drive(
+        &a,
+        &env.deps(ScriptedLlm::new(|_, _| text("A done"))),
+        StopWhen::Finished
+    )
+    .await
+    .is_finished());
     let mut spec = work_spec("task B waits for A");
     spec.subscriptions.push(Subscription {
         id: "sa".into(),
@@ -153,8 +174,14 @@ async fn semi_subscribed_session_change_is_pulled_by_rev() {
         assert!(u.contains(&a_sid) && u.contains("finished"), "{u}");
         text("B done")
     });
-    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
-    assert_eq!(llm.count(), 1, "semi changes ride along, no extra inference");
+    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
+    assert_eq!(
+        llm.count(),
+        1,
+        "semi changes ride along, no extra inference"
+    );
     let cur = &b.state().unwrap().subscription_cursors["sa"];
     assert!(cur["rev"].as_u64().unwrap() >= 1);
 }
@@ -168,18 +195,22 @@ async fn behavior_loop_session_runs_actions() {
         "tools": { "enabled": true, "tools2actions": true }
     });
     let sd = env.create_work(spec).await;
-    let llm = ScriptedLlm::new(|req, n| match n {
+    let llm = ScriptedLlm::new(|req, n| {
+        match n {
         0 => text("<response><thinking>go</thinking><actions><exec><![CDATA[echo behavior-77 > out.txt; cat out.txt]]></exec></actions></response>"),
         _ => {
             let u = last_user_text(req);
             assert!(u.contains("behavior-77"), "{u}");
             text("<response><report><![CDATA[out.txt written]]></report></response>")
         }
+    }
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(
-        std::fs::read_to_string(sd.path().join("out.txt")).unwrap().trim(),
+        std::fs::read_to_string(sd.path().join("out.txt"))
+            .unwrap()
+            .trim(),
         "behavior-77"
     );
     assert!(sd.report().unwrap().contains("out.txt written"));
@@ -247,48 +278,101 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
     };
     // A: finish, accept → head = A.
     let a = env.create_work(mk("A")).await;
-    assert!(drive(&a, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&a, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     let va = format!("v-{}", a.sid());
     assert_eq!(
-        agent.artifacts().version("snake-game", &va).await.unwrap().unwrap().state,
+        agent
+            .artifacts()
+            .version("snake-game", &va)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
         VersionState::Produced
     );
-    libopendan::post_input(agent.as_ref(), a.sid(), &decide("accept"), APP).await.unwrap();
-    assert!(drive(&a, &env.deps(llm.clone()), StopWhen::Idle).await.is_finished());
+    libopendan::post_input(agent.as_ref(), a.sid(), &decide("accept"), APP)
+        .await
+        .unwrap();
+    assert!(drive(&a, &env.deps(llm.clone()), StopWhen::Idle)
+        .await
+        .is_finished());
     assert_eq!(a.state().unwrap().acceptance, Acceptance::Accepted);
     assert_eq!(
-        agent.artifacts().head("snake-game").await.unwrap().unwrap().head,
+        agent
+            .artifacts()
+            .head("snake-game")
+            .await
+            .unwrap()
+            .unwrap()
+            .head,
         Some(va.clone())
     );
     // B inherits A as base; accept → head = B.
     let b = env.create_work(mk("B")).await;
-    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     let vb = format!("v-{}", b.sid());
     assert_eq!(
-        agent.artifacts().version("snake-game", &vb).await.unwrap().unwrap().base,
+        agent
+            .artifacts()
+            .version("snake-game", &vb)
+            .await
+            .unwrap()
+            .unwrap()
+            .base,
         Some(va.clone())
     );
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP)
+        .await
+        .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
     assert_eq!(
-        agent.artifacts().head("snake-game").await.unwrap().unwrap().head,
+        agent
+            .artifacts()
+            .head("snake-game")
+            .await
+            .unwrap()
+            .unwrap()
+            .head,
         Some(vb.clone())
     );
     // Discarding A later does not override B's head.
-    libopendan::post_input(agent.as_ref(), a.sid(), &decide("discard"), APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), a.sid(), &decide("discard"), APP)
+        .await
+        .unwrap();
     drive(&a, &env.deps(llm.clone()), StopWhen::Idle).await;
     assert_eq!(a.state().unwrap().acceptance, Acceptance::Discarded);
     assert_eq!(
-        agent.artifacts().head("snake-game").await.unwrap().unwrap().head,
+        agent
+            .artifacts()
+            .head("snake-game")
+            .await
+            .unwrap()
+            .unwrap()
+            .head,
         Some(vb.clone())
     );
     let rep = &a.state().unwrap().result.unwrap()["discard_report"];
     assert_eq!(rep["workspace"], json!("unsupported"));
     assert!(!rep["unsupported"].as_array().unwrap().is_empty(), "{rep}");
     // Discarding B: its base A is discarded → no valid ancestor → null.
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("discard"), APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), b.sid(), &decide("discard"), APP)
+        .await
+        .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
-    assert_eq!(agent.artifacts().head("snake-game").await.unwrap().unwrap().head, None);
+    assert_eq!(
+        agent
+            .artifacts()
+            .head("snake-game")
+            .await
+            .unwrap()
+            .unwrap()
+            .head,
+        None
+    );
     // Perception carries task_discarded with its source.
     let backlog = agent
         .perception()
@@ -301,9 +385,15 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             kinds.push(r.kind);
         }
     }
-    assert_eq!(kinds.iter().filter(|k| *k == "task_discarded").count(), 2, "{kinds:?}");
+    assert_eq!(
+        kinds.iter().filter(|k| *k == "task_discarded").count(),
+        2,
+        "{kinds:?}"
+    );
     // Re-posting the same dedup key is dropped silently…
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP)
+        .await
+        .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
     assert_eq!(read_worklog(&b).last().unwrap().body.kind(), "decide");
     // …a new accept after discard is rejected (logged), not applied.
@@ -315,10 +405,15 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             note: None,
         },
     );
-    libopendan::post_input(agent.as_ref(), b.sid(), &again, APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), b.sid(), &again, APP)
+        .await
+        .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
     assert_eq!(b.state().unwrap().acceptance, Acceptance::Discarded);
-    assert_eq!(read_worklog(&b).last().unwrap().body.kind(), "input_rejected");
+    assert_eq!(
+        read_worklog(&b).last().unwrap().body.kind(),
+        "input_rejected"
+    );
 }
 
 #[tokio::test]
@@ -342,13 +437,23 @@ async fn decide_before_finish_waits_as_pending_decision() {
     )
     .await
     .unwrap();
-    let r = drive(&sd, &env.deps(ScriptedLlm::new(|_, _| text("ok"))), StopWhen::Finished).await;
+    let r = drive(
+        &sd,
+        &env.deps(ScriptedLlm::new(|_, _| text("ok"))),
+        StopWhen::Finished,
+    )
+    .await;
     assert!(r.is_finished());
     let st = sd.state().unwrap();
     assert_eq!(st.acceptance, Acceptance::Pending);
     assert!(st.pending_decision.is_some());
     // The next drive applies it.
-    drive(&sd, &env.deps(ScriptedLlm::new(|_, _| text("ok"))), StopWhen::Idle).await;
+    drive(
+        &sd,
+        &env.deps(ScriptedLlm::new(|_, _| text("ok"))),
+        StopWhen::Idle,
+    )
+    .await;
     let st = sd.state().unwrap();
     assert_eq!(st.acceptance, Acceptance::Accepted);
     assert!(st.pending_decision.is_none());
@@ -383,9 +488,16 @@ async fn activity_control_and_perception_inputs_are_applied() {
             post_blocking(
                 &qd,
                 &q,
-                Input::perception("p-1", json!({ "kind": "observation", "summary": "the door is red", "tags": ["door"] })),
+                Input::perception(
+                    "p-1",
+                    json!({ "kind": "observation", "summary": "the door is red", "tags": ["door"] }),
+                ),
             );
-            tool_call("c1", "write_file", json!({ "path": "notes.md", "content": "n" }))
+            tool_call(
+                "c1",
+                "write_file",
+                json!({ "path": "notes.md", "content": "n" }),
+            )
         } else {
             text("done")
         }
@@ -395,11 +507,19 @@ async fn activity_control_and_perception_inputs_are_applied() {
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     assert!(r.is_finished());
     let wl = read_worklog(&sd);
-    assert!(wl.iter().any(|e| matches!(&e.body, WorklogBody::ControlApplied { command, .. } if command == "activity")));
+    assert!(wl.iter().any(
+        |e| matches!(&e.body, WorklogBody::ControlApplied { command, .. } if command == "activity")
+    ));
     let agent = env.agent();
-    let backlog = agent.perception().backlog(&PerceptionCursor::default()).await.unwrap();
+    let backlog = agent
+        .perception()
+        .backlog(&PerceptionCursor::default())
+        .await
+        .unwrap();
     let recs = agent.perception().read(&backlog.items[0]).await.unwrap();
-    assert!(recs.iter().any(|r| r.kind == "observation" && r.summary == "the door is red"));
+    assert!(recs
+        .iter()
+        .any(|r| r.kind == "observation" && r.summary == "the door is red"));
     let seqs: Vec<u64> = recs.iter().map(|r| r.seq).collect();
     let mut sorted = seqs.clone();
     sorted.sort();
@@ -432,7 +552,12 @@ fn step_texts(sd: &libopendan::SessionDir) -> Vec<String> {
 #[tokio::test]
 async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
     let env = Env::new();
-    let sd = env.create_work(behavior_spec("research then answer", json!({ "research": "fork" }))).await;
+    let sd = env
+        .create_work(behavior_spec(
+            "research then answer",
+            json!({ "research": "fork" }),
+        ))
+        .await;
     let llm = ScriptedLlm::new(|req, n| {
         let all = render(&req.messages);
         match n {
@@ -469,8 +594,16 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
         .collect();
     assert_eq!(outcomes, vec!["suspended", "process_done", "done"], "{k:?}");
     let steps = step_texts(&sd);
-    assert_eq!(steps.iter().filter(|s| s.contains("p1-output")).count(), 1, "{steps:?}");
-    assert_eq!(steps.iter().filter(|s| s.contains("r1-output")).count(), 1, "{steps:?}");
+    assert_eq!(
+        steps.iter().filter(|s| s.contains("p1-output")).count(),
+        1,
+        "{steps:?}"
+    );
+    assert_eq!(
+        steps.iter().filter(|s| s.contains("r1-output")).count(),
+        1,
+        "{steps:?}"
+    );
     // One logical Turn: the fork call and the return are hand-over batches.
     assert_eq!(count(&k, "turn_started"), 1, "{:#?}", read_worklog(&sd));
     assert_eq!(count(&k, "input_batch"), 2, "{:#?}", read_worklog(&sd));
@@ -526,11 +659,16 @@ async fn independent_processes_keep_their_own_runs() {
     let llm = ScriptedLlm::new(|req, n| {
         let all = render(&req.messages);
         match n {
-            0 => text("<response><actions><exec><![CDATA[echo plan-1]]></exec></actions></response>"),
+            0 => {
+                text("<response><actions><exec><![CDATA[echo plan-1]]></exec></actions></response>")
+            }
             1 => text("<response><next_behavior>writer</next_behavior></response>"),
             2 => {
                 // Session history (worklog) is shared; live steps are not.
-                assert!(!all.contains("step_record behavior=\"plan\""), "no step inheritance\n{all}");
+                assert!(
+                    !all.contains("step_record behavior=\"plan\""),
+                    "no step inheritance\n{all}"
+                );
                 text("<response><actions><exec><![CDATA[echo writer-1]]></exec></actions></response>")
             }
             3 => text("<response><next_behavior>plan</next_behavior></response>"),
@@ -560,14 +698,21 @@ async fn independent_processes_keep_their_own_runs() {
 #[tokio::test]
 async fn normal_switch_continues_the_same_run() {
     let env = Env::new();
-    let sd = env.create_work(behavior_spec("two phases", json!({}))).await;
+    let sd = env
+        .create_work(behavior_spec("two phases", json!({})))
+        .await;
     let llm = ScriptedLlm::new(|req, n| {
         let all = render(&req.messages);
         match n {
-            0 => text("<response><actions><exec><![CDATA[echo phase-1]]></exec></actions></response>"),
+            0 => text(
+                "<response><actions><exec><![CDATA[echo phase-1]]></exec></actions></response>",
+            ),
             1 => text("<response><next_behavior>do</next_behavior></response>"),
             2 => {
-                assert!(all.contains("phase-1") && all.contains("behavior_switch to=\"do\""), "{all}");
+                assert!(
+                    all.contains("phase-1") && all.contains("behavior_switch to=\"do\""),
+                    "{all}"
+                );
                 text("<response><report><![CDATA[both phases done]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
@@ -581,7 +726,9 @@ async fn normal_switch_continues_the_same_run() {
     let runs: Vec<String> = read_worklog(&sd)
         .into_iter()
         .filter_map(|e| match e.body {
-            WorklogBody::TurnStarted { run_id, .. } | WorklogBody::InputBatch { run_id, .. } => Some(run_id),
+            WorklogBody::TurnStarted { run_id, .. } | WorklogBody::InputBatch { run_id, .. } => {
+                Some(run_id)
+            }
             _ => None,
         })
         .collect();
@@ -616,10 +763,16 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
         ),
     });
     let mut deps = env.deps(llm.clone());
-    let rt = std::sync::Arc::new(libopendan::runtime::TmuxRuntime::new(
-        "rt-test-tmux",
-        "app:app2",
-        env.root.join("tmux-instance"),
+    let rt = std::sync::Arc::new(libopendan::runtime::TmuxRuntime::from_config(
+        agent_tool::runtime::RuntimeConfig {
+            kind: Some("tmux".into()),
+            id: Some("rt-test-tmux".into()),
+            tmux: Some(agent_tool::runtime::TmuxConfig {
+                session: Some(libopendan::runtime::tmux::tmux_session_name(sd.sid())),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
     ));
     deps.runtime = rt;
     let r = drive(&sd, &deps, StopWhen::Finished).await;
@@ -632,7 +785,9 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
         .status()
         .unwrap();
     assert!(has.success(), "tmux session kept for audit");
-    let _ = std::process::Command::new("tmux").args(["kill-session", "-t", &name]).status();
+    let _ = std::process::Command::new("tmux")
+        .args(["kill-session", "-t", &name])
+        .status();
     // The run record holds no unconfirmed executions.
     let last = sd.state().unwrap().last_run.unwrap();
     assert!(sd.runs().record(&last).unwrap().executions.is_empty());
@@ -649,7 +804,10 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     spec.subscriptions.push(Subscription {
         id: "s2".into(),
         mode: SubscriptionMode::Semi,
-        source: SubscriptionSource::ObjectEvent { object: "o".into(), event: "e".into() },
+        source: SubscriptionSource::ObjectEvent {
+            object: "o".into(),
+            event: "e".into(),
+        },
         watch: vec![],
     });
     let sd = env.create_work(spec).await;
@@ -665,18 +823,37 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     });
     let deps = env.deps(llm.clone());
     let r = drive(&sd, &deps, StopWhen::Idle).await;
-    assert!(matches!(r, libopendan::runner::DriveResult::Idle { run_state: RunState::Waiting, .. }), "{r:?}");
+    assert!(
+        matches!(
+            r,
+            libopendan::runner::DriveResult::Idle {
+                run_state: RunState::Waiting,
+                ..
+            }
+        ),
+        "{r:?}"
+    );
     // A semi change alone: no inference.
     let agent = env.agent();
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::change("door", json!({"text": "door opened", "subscription": "s2"})), APP)
-        .await
-        .unwrap();
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &Input::change("door", json!({"text": "door opened", "subscription": "s2"})),
+        APP,
+    )
+    .await
+    .unwrap();
     drive(&sd, &deps, StopWhen::Idle).await;
     assert_eq!(llm.count(), 1, "semi change must not trigger inference");
-    assert_eq!(sd.state().unwrap().open_turn.as_ref().map(|t| t.index), Some(1));
+    assert_eq!(
+        sd.state().unwrap().open_turn.as_ref().map(|t| t.index),
+        Some(1)
+    );
     // A message makes a batch; the change rides along; it joins the Turn
     // that is still waiting for its input.
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m1", "hello"), APP).await.unwrap();
+    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m1", "hello"), APP)
+        .await
+        .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
     assert_eq!(llm.count(), 2);
     let st = sd.state().unwrap();
@@ -687,11 +864,12 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     assert_eq!(count(&k, "input_batch"), 1);
 }
 
-
 #[tokio::test]
 async fn normal_switch_across_drives_runs_the_next_behavior() {
     let env = Env::new();
-    let sd = env.create_work(behavior_spec("two phases", json!({}))).await;
+    let sd = env
+        .create_work(behavior_spec("two phases", json!({})))
+        .await;
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text("<response><next_behavior>do</next_behavior></response>"),
         _ => {
@@ -706,8 +884,15 @@ async fn normal_switch_across_drives_runs_the_next_behavior() {
         "{r:?}"
     );
     let st = sd.state().unwrap();
-    let rec = sd.runs().record(&st.live_run.clone().unwrap().run_id).unwrap();
-    assert!(!rec.status.is_terminal(), "switched run must not look finished: {:?}", rec.status);
+    let rec = sd
+        .runs()
+        .record(&st.live_run.clone().unwrap().run_id)
+        .unwrap();
+    assert!(
+        !rec.status.is_terminal(),
+        "switched run must not look finished: {:?}",
+        rec.status
+    );
     // The hand-over did not complete the Turn.
     assert_eq!(st.open_turn.as_ref().map(|t| t.index), Some(1));
     assert_eq!(st.turns_completed, 0);
@@ -748,7 +933,13 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
     // Turn 1: plan hands over to do (same Turn), do answers.
     let r = drive(&sd, &deps, StopWhen::Idle).await;
     assert!(
-        matches!(r, libopendan::runner::DriveResult::Idle { run_state: RunState::Waiting, .. }),
+        matches!(
+            r,
+            libopendan::runner::DriveResult::Idle {
+                run_state: RunState::Waiting,
+                ..
+            }
+        ),
         "{r:?}"
     );
     let st = sd.state().unwrap();
@@ -756,9 +947,14 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
     assert!(st.open_turn.is_none());
     // Turn 2 finishes the session.
     let agent = env.agent();
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m2", "second request"), APP)
-        .await
-        .unwrap();
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &Input::msg("m2", "second request"),
+        APP,
+    )
+    .await
+    .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
     assert_eq!(llm.count(), 3);
     let st = sd.state().unwrap();
@@ -775,7 +971,10 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
 async fn stop_right_after_a_fork_return_closes_the_parent_run() {
     let env = Env::new();
     let sd = env
-        .create_work(behavior_spec("research then answer", json!({ "research": "fork" })))
+        .create_work(behavior_spec(
+            "research then answer",
+            json!({ "research": "fork" }),
+        ))
         .await;
     let (qd, q) = (env.queue_dir.clone(), queue_of(&sd));
     let llm = ScriptedLlm::new(move |req, _| {
@@ -783,7 +982,11 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
         if all.contains("research result X") {
             text("<response><report><![CDATA[final answer]]></report></response>")
         } else if all.contains("behavior_switch to=\"research\"") {
-            post_blocking(&qd, &q, Input::control("stop-1", &ControlCommand::Stop { reason: None }));
+            post_blocking(
+                &qd,
+                &q,
+                Input::control("stop-1", &ControlCommand::Stop { reason: None }),
+            );
             text("<response><report><![CDATA[research result X]]></report></response>")
         } else {
             text("<response><next_behavior>research</next_behavior></response>")
@@ -802,16 +1005,22 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
 #[tokio::test]
 async fn call_ids_stay_unique_after_a_fork_return() {
     let env = Env::new();
-    let sd = env.create_work(behavior_spec("fork and act", json!({ "research": "fork" }))).await;
+    let sd = env
+        .create_work(behavior_spec("fork and act", json!({ "research": "fork" })))
+        .await;
     let llm = ScriptedLlm::new(|_, n| match n {
         0 => text("<response><actions><exec><![CDATA[echo p1]]></exec></actions></response>"),
         1 => text("<response><next_behavior>research</next_behavior></response>"),
         2 => text("<response><actions><exec><![CDATA[echo r1]]></exec></actions></response>"),
         3 => text("<response><report><![CDATA[research result X]]></report></response>"),
-        4 => text("<response><actions><exec><![CDATA[echo after-return]]></exec></actions></response>"),
+        4 => text(
+            "<response><actions><exec><![CDATA[echo after-return]]></exec></actions></response>",
+        ),
         _ => text("<response><report><![CDATA[final]]></report></response>"),
     });
-    assert!(drive(&sd, &env.deps(llm), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &env.deps(llm), StopWhen::Finished)
+        .await
+        .is_finished());
     let ids: Vec<String> = read_worklog(&sd)
         .into_iter()
         .filter_map(|e| match e.body {

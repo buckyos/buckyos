@@ -63,16 +63,18 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                 tool_call("c1", "exec", json!({ "command": "echo step >> steps.log" }))
             }
         }),
-        "exec_sleep" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
-            match has_tool_result(req, "c1") {
-                Some(r) => text(&format!("recovered: {r}")),
-                None => tool_call(
-                    "c1",
-                    "exec",
-                    json!({ "command": "echo start >> marker; sleep 30; echo done >> marker" }),
-                ),
-            }
-        }),
+        "exec_sleep" => {
+            ScriptedLlm::new(
+                |req: &LlmInferenceRequest, _| match has_tool_result(req, "c1") {
+                    Some(r) => text(&format!("recovered: {r}")),
+                    None => tool_call(
+                        "c1",
+                        "exec",
+                        json!({ "command": "echo start >> marker; sleep 30; echo done >> marker" }),
+                    ),
+                },
+            )
+        }
         "context_limit" => ScriptedLlm::fallible(|req: &LlmInferenceRequest, _| {
             let all = render(&req.messages);
             if has_tool_result(req, "c2").is_some() {
@@ -133,7 +135,10 @@ async fn child_driver() {
     };
     let env = Env::at(Path::new(&root));
     let sd = SessionDir::open(&session).unwrap();
-    let deps = env.deps(script_for(&scenario, Some((env.queue_dir.clone(), queue_of(&sd)))));
+    let deps = env.deps(script_for(
+        &scenario,
+        Some((env.queue_dir.clone(), queue_of(&sd))),
+    ));
     let r = drive(&sd, &deps, StopWhen::Finished).await;
     eprintln!("child drive result: {r:?}");
 }
@@ -183,7 +188,10 @@ fn assert_worklog_contiguous(sd: &SessionDir) {
 }
 
 fn count_kind(sd: &SessionDir, kind: &str) -> usize {
-    read_worklog(sd).iter().filter(|e| e.body.kind() == kind).count()
+    read_worklog(sd)
+        .iter()
+        .filter(|e| e.body.kind() == kind)
+        .count()
 }
 
 async fn post_msg(env: &Env, sd: &SessionDir, key: &str, text: &str) {
@@ -198,7 +206,9 @@ async fn post_msg(env: &Env, sd: &SessionDir, key: &str, text: &str) {
 /// in-process.
 async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
     let env = Env::new();
-    let sd = env.create_work(work_spec("append a line to steps.log")).await;
+    let sd = env
+        .create_work(work_spec("append a line to steps.log"))
+        .await;
     post_msg(&env, &sd, "m-1", "please do it").await;
     let mut child = spawn_child(&env, &sd, "simple_tool", Some(fault));
     let st = wait_exit(&mut child, Duration::from_secs(60));
@@ -213,7 +223,11 @@ async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
     assert_eq!(count_kind(&sd, "user_message"), 1, "{fault}");
     if llm.count() > 0 {
         let transcript = llm.transcript(llm.count() - 1);
-        assert_eq!(transcript.matches("please do it").count(), 1, "{fault}: {transcript}");
+        assert_eq!(
+            transcript.matches("please do it").count(),
+            1,
+            "{fault}: {transcript}"
+        );
     }
     let msg = read_worklog(&sd)
         .into_iter()
@@ -263,7 +277,11 @@ async fn crash_after_flush_before_commit() {
     let (_env, sd, _) = crash_window("finish_run:after_flush").await;
     assert_eq!(count_kind(&sd, "outcome"), 1);
     assert_eq!(count_kind(&sd, "assistant_message"), 2);
-    assert_eq!(count_kind(&sd, "step"), 0, "function call responses are not Steps");
+    assert_eq!(
+        count_kind(&sd, "step"),
+        0,
+        "function call responses are not Steps"
+    );
     let st = sd.state().unwrap();
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
 }
@@ -348,8 +366,14 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
     // Wait until the command started.
     let marker = sd.path().join("marker");
     let start = Instant::now();
-    while !std::fs::read_to_string(&marker).unwrap_or_default().contains("start") {
-        assert!(start.elapsed() < Duration::from_secs(60), "tool never started");
+    while !std::fs::read_to_string(&marker)
+        .unwrap_or_default()
+        .contains("start")
+    {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "tool never started"
+        );
         std::thread::sleep(Duration::from_millis(20));
     }
     unsafe {
@@ -360,10 +384,17 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
     let st = sd.state().unwrap();
     let live = st.live_run.clone().expect("live run");
     let rec = sd.runs().record(&live.run_id).unwrap();
-    assert_eq!(rec.inflight.len(), 1, "inflight persisted before the tool ran");
+    assert_eq!(
+        rec.inflight.len(),
+        1,
+        "inflight persisted before the tool ran"
+    );
     assert_eq!(rec.executions.len(), 1, "execution identity persisted");
     let exec = rec.executions[0].clone();
-    assert!(matches!(probe_execution(&exec, None), ExecutionProbe::Alive { .. }));
+    assert!(matches!(
+        probe_execution(&exec, None),
+        ExecutionProbe::Alive { .. }
+    ));
     // Same identity, other process: takes over after stopping the old tool.
     let llm = script("exec_sleep");
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
@@ -389,7 +420,12 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
 async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
     let env = Env::new();
     let sd = env.create_work(work_spec("x")).await;
-    let mut child = spawn_child(&env, &sd, "simple_tool", Some("input_batch:after_gate_clear"));
+    let mut child = spawn_child(
+        &env,
+        &sd,
+        "simple_tool",
+        Some("input_batch:after_gate_clear"),
+    );
     wait_exit(&mut child, Duration::from_secs(60));
     let st = sd.state().unwrap();
     let run_id = st.live_run.clone().unwrap().run_id;
@@ -400,7 +436,8 @@ async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
         .join(&run_id)
         .join("snapshots")
         .join(format!("{idx:04}.json"));
-    let mut v: serde_json::Value = serde_json::from_slice(&std::fs::read(&snap_path).unwrap()).unwrap();
+    let mut v: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&snap_path).unwrap()).unwrap();
     v["state"]["snapshot_version"] = json!(99);
     std::fs::write(&snap_path, serde_json::to_vec(&v).unwrap()).unwrap();
     let llm = script("simple_tool");
@@ -417,7 +454,9 @@ async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
     // Repair → retry works.
     v["state"]["snapshot_version"] = json!(llm_context::SNAPSHOT_FORMAT_VERSION);
     std::fs::write(&snap_path, serde_json::to_vec(&v).unwrap()).unwrap();
-    assert!(drive(&sd, &env.deps(llm), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &env.deps(llm), StopWhen::Finished)
+        .await
+        .is_finished());
 }
 
 #[tokio::test]
@@ -429,16 +468,49 @@ async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
     wait_exit(&mut child, Duration::from_secs(60));
     let run_id = sd.state().unwrap().live_run.unwrap().run_id;
     let store = RunStore::disk(sd.runs_dir());
-    let llm = script("answer");
+    let llm = ScriptedLlm::new(|req, _| {
+        if let Some(result) = has_tool_result(req, "helper-check") {
+            assert!(result.contains("runtime-bin"), "{result}");
+            assert!(!result.contains("missing"), "{result}");
+            text("plain answer")
+        } else {
+            tool_call(
+                "helper-check",
+                "exec",
+                json!({"command": r#"case $PATH in *"$OPENDAN_SESSION_DIR/.runtime/bin"*) echo runtime-bin;; *) echo missing; exit 1;; esac; test -n "$OPENDAN_RUNTIME_ID""#}),
+            )
+        }
+    });
+    let manifest_path = sd.runtime_bin_dir().join(".manifest.json");
+    let manifest = std::fs::read(&manifest_path).unwrap();
+    let mut changed: serde_json::Value = serde_json::from_slice(&manifest).unwrap();
+    changed["entries"]["changed-helper"] = json!("bad");
+    std::fs::write(&manifest_path, serde_json::to_vec(&changed).unwrap()).unwrap();
     let deps = XllmDeps::default().with_llm(llm.clone());
+    let rejected = XllmRun::resume(
+        &store,
+        Some(&run_id),
+        None,
+        ResumeLimits::default(),
+        deps.clone(),
+    )
+    .await;
+    assert!(matches!(
+        rejected,
+        Err(agent_tool::xllm::XllmError::RecoveryBlocked(_))
+    ));
+    assert_eq!(llm.count(), 0);
+    std::fs::write(&manifest_path, manifest).unwrap();
     let started = XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps)
         .await
         .unwrap();
-    let ResumeStart::Run(mut run) = started else { panic!("terminal?") };
+    let ResumeStart::Run(mut run) = started else {
+        panic!("terminal?")
+    };
     let out = run.execute().await.unwrap();
     assert_eq!(out.status(), RunStatus::Completed);
     drop(run);
-    assert_eq!(llm.count(), 1);
+    assert_eq!(llm.count(), 2);
     // xllm never touched state.json / worklog.
     assert!(sd.state().unwrap().live_run.is_some());
     let r = drive(&sd, &env.deps(script("answer")), StopWhen::Finished).await;
@@ -453,7 +525,12 @@ async fn xllm_refuses_run_with_pending_host_commit() {
     use agent_tool::xllm::{ResumeLimits, RunStore, XllmDeps, XllmRun};
     let env = Env::new();
     let sd = env.create_work(work_spec("answer")).await;
-    let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_input_checkpoint"));
+    let mut child = spawn_child(
+        &env,
+        &sd,
+        "answer",
+        Some("input_batch:after_input_checkpoint"),
+    );
     wait_exit(&mut child, Duration::from_secs(60));
     let runs = sd.runs().list().unwrap();
     assert_eq!(runs.len(), 1);
@@ -503,7 +580,11 @@ async fn crash_after_observation_injection_does_not_reinject() {
         .filter(|e| matches!(e.body, WorklogBody::UserMessage { .. }))
         .count();
     assert_eq!(users, 2);
-    assert_eq!(count_kind(&sd, "turn_started"), 1, "the observation joined Turn 1");
+    assert_eq!(
+        count_kind(&sd, "turn_started"),
+        1,
+        "the observation joined Turn 1"
+    );
     assert_worklog_contiguous(&sd);
 }
 
@@ -522,7 +603,12 @@ async fn new_input_into_a_resumed_run_survives_a_crash_once() {
     post_msg(&env, &sd, "m-2", "second message").await;
     // The child resumes the same run, injects the message, crashes before
     // committing state.
-    let mut child = spawn_child(&env, &sd, "transient", Some("input_batch:after_input_checkpoint"));
+    let mut child = spawn_child(
+        &env,
+        &sd,
+        "transient",
+        Some("input_batch:after_input_checkpoint"),
+    );
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
     assert_eq!(sd.state().unwrap().live_run.unwrap().applied_input_seq, 1);
     let llm = script("transient");
@@ -531,7 +617,11 @@ async fn new_input_into_a_resumed_run_survives_a_crash_once() {
     let t = llm.transcript(llm.count() - 1);
     assert_eq!(t.matches("second message").count(), 1, "{t}");
     let st = sd.state().unwrap();
-    assert_eq!(st.last_run.as_deref(), Some(run_id.as_str()), "same run continued");
+    assert_eq!(
+        st.last_run.as_deref(),
+        Some(run_id.as_str()),
+        "same run continued"
+    );
     assert_eq!(st.source("q").acked_index, 1);
     // The retryable error kept the Turn open: the second message joined it.
     assert_eq!(count_kind(&sd, "turn_started"), 1);
@@ -565,11 +655,15 @@ async fn active_sessions_on_the_same_workspace_see_each_other() {
         });
         s
     };
-    let a = env.create_work(mk("A: wall wrap mode", "ws:snake/src/")).await;
+    let a = env
+        .create_work(mk("A: wall wrap mode", "ws:snake/src/"))
+        .await;
     let mut child = spawn_child(&env, &a, "answer", Some("input_batch:after_gate_clear"));
     wait_exit(&mut child, Duration::from_secs(60));
     assert_eq!(a.state().unwrap().run_state, RunState::Running);
-    let b = env.create_work(mk("B: collision tweak", "ws:snake/src/collision.js")).await;
+    let b = env
+        .create_work(mk("B: collision tweak", "ws:snake/src/collision.js"))
+        .await;
     let a_sid = a.sid().to_string();
     let llm = ScriptedLlm::new(move |req, _| {
         let u = last_user_text(req);
@@ -591,7 +685,8 @@ fn behavior_spec(obj: &str, modes: serde_json::Value) -> libopendan::api::Sessio
         "tools": { "enabled": true, "tools2actions": true }
     });
     spec.prompt.behavior = Some("plan".into());
-    spec.extensions.insert("opendan".into(), json!({ "process_modes": modes }));
+    spec.extensions
+        .insert("opendan".into(), json!({ "process_modes": modes }));
     spec
 }
 
@@ -605,7 +700,9 @@ async fn redo_of_finish_keeps_the_answer() {
     let mut child = spawn_child(&env, &sd, "answer", Some("finish_run:after_flush"));
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
     let llm = script("answer");
-    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await.is_finished());
+    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
     assert_eq!(llm.count(), 0);
     assert!(sd.report().unwrap().contains("plain answer"));
     let st = sd.state().unwrap();
@@ -633,7 +730,10 @@ async fn redo_of_finish_keeps_waiting() {
 async fn fork_return_survives_a_crash_after_the_child_finish() {
     let env = Env::new();
     let sd = env
-        .create_work(behavior_spec("research then answer", json!({ "research": "fork" })))
+        .create_work(behavior_spec(
+            "research then answer",
+            json!({ "research": "fork" }),
+        ))
         .await;
     let mut child = spawn_child(&env, &sd, "fork", Some("finish_run:after_commit"));
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
@@ -652,9 +752,16 @@ async fn fork_return_survives_a_crash_after_the_child_finish() {
 #[tokio::test]
 async fn crash_while_committing_the_switch_hand_over_does_not_repeat_it() {
     let env = Env::new();
-    let sd = env.create_work(behavior_spec("two phases", json!({}))).await;
+    let sd = env
+        .create_work(behavior_spec("two phases", json!({})))
+        .await;
     // Hit #2 = the hand-over batch of the normal switch (same run, same Turn).
-    let mut child = spawn_child(&env, &sd, "switch", Some("input_batch:after_input_checkpoint#2"));
+    let mut child = spawn_child(
+        &env,
+        &sd,
+        "switch",
+        Some("input_batch:after_input_checkpoint#2"),
+    );
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
     let llm = script("switch");
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
