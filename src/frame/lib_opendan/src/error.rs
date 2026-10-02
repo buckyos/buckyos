@@ -139,8 +139,8 @@ impl OpenDanError {
     }
 }
 
-impl From<agent_tool::local_llm_context::XllmError> for OpenDanError {
-    fn from(e: agent_tool::local_llm_context::XllmError) -> Self {
+impl From<agent_tool::xllm::XllmError> for OpenDanError {
+    fn from(e: agent_tool::xllm::XllmError) -> Self {
         OpenDanError::Xllm(e.to_string())
     }
 }

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_tool::local_llm_context::XllmDeps;
+use agent_tool::xllm::XllmDeps;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

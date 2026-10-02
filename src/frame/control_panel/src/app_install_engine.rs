@@ -14,15 +14,16 @@ use buckyos_api::{
     AppInstallDisplayProgress, AppInstallProgressEnvelope, AppInstallStatusSnapshot,
     AppInstallTaskData, AppInstallTerminalOutput, InstallApproval, InstallError, InstallErrorCode,
     InstallInspection, InstallPlanStatus, InstallReadiness, InstallStage, InstallTaskResult,
-    InstallTransactionState, InstallUserAction, PreparedDeployment, TaskDataProgress, TaskExecutor,
-    TaskOutcome, TaskPhase, TaskWaitReason, TaskWaitReasonKind, APP_INSTALL_SCHEMA_VERSION,
-    TASK_DATA_TYPE_APP_INSTALL, TASK_DATA_TYPE_APP_UPDATE,
+    InstallTransactionState, InstallUserAction, PreparedDeployment, TaskControlAction,
+    TaskControlRequest, TaskDataProgress, TaskExecutor, TaskOutcome, TaskPhase, TaskWaitReason,
+    TaskWaitReasonKind, APP_INSTALL_SCHEMA_VERSION, TASK_DATA_TYPE_APP_INSTALL,
+    TASK_DATA_TYPE_APP_UPDATE,
 };
 use buckyos_kit::buckyos_get_unix_timestamp;
 use log::{info, warn};
 use serde_json::Value;
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, Weak};
 
 // ---------------------------------------------------------------------------
 // store 抽象（生产 = TaskManagerClient；测试 = 内存实现）
@@ -91,8 +92,15 @@ pub struct InstallTaskView {
     pub phase: TaskPhase,
     pub outcome: Option<TaskOutcome>,
     pub wait_reason: Option<TaskWaitReason>,
+    pub pending_control: Option<TaskControlRequest>,
     pub display: Option<AppInstallDisplayProgress>,
     pub updated_at: u64,
+}
+
+pub(crate) fn has_pending_cancel(view: &InstallTaskView) -> bool {
+    view.pending_control
+        .as_ref()
+        .is_some_and(|request| request.action == TaskControlAction::Cancel)
 }
 
 #[async_trait]
@@ -127,6 +135,9 @@ pub trait InstallTaskStore: Send + Sync {
     ) -> Result<(), InstallError> {
         Ok(())
     }
+    async fn reject_cancel(&self, _task_id: &str, _reason: &str) -> Result<(), InstallError> {
+        Ok(())
+    }
     /// 本 runner 名下全部非终态 install/update 任务。
     async fn list_active(&self) -> Result<Vec<InstallTaskView>, InstallError>;
 }
@@ -150,6 +161,13 @@ pub type ActivateOutcome = InstallTaskResult;
 /// 等价结果（引擎在恢复/重试时会重复调用）。
 #[async_trait]
 pub trait InstallStageDriver: Send + Sync {
+    async fn ensure_mutation(
+        &self,
+        _view: &InstallTaskView,
+        _data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        Ok(())
+    }
     async fn resolve(
         &self,
         view: &InstallTaskView,
@@ -206,6 +224,21 @@ pub trait InstallStageDriver: Send + Sync {
     ) -> Result<(), InstallError> {
         Ok(())
     }
+    async fn release_mutation(
+        &self,
+        _view: &InstallTaskView,
+        _data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        Ok(())
+    }
+    async fn reconcile_cleanup(&self) -> Result<(), InstallError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct InstallCancelOutcome {
+    pub cleanup_pending: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -245,6 +278,7 @@ pub struct InstallEngine {
     /// 进程内单任务执行守卫（防同进程重复推进；跨进程由 TaskManager 状态收敛）。
     running: Mutex<HashSet<String>>,
     canceling: Mutex<HashSet<String>>,
+    controls: Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>,
 }
 
 struct RunGuard<'a> {
@@ -265,11 +299,23 @@ impl InstallEngine {
             driver,
             running: Mutex::new(HashSet::new()),
             canceling: Mutex::new(HashSet::new()),
+            controls: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn store(&self) -> &Arc<dyn InstallTaskStore> {
         &self.store
+    }
+
+    fn task_control(&self, task_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut controls = self.controls.lock().unwrap();
+        controls.retain(|_, control| control.strong_count() > 0);
+        if let Some(control) = controls.get(task_id).and_then(Weak::upgrade) {
+            return control;
+        }
+        let control = Arc::new(tokio::sync::Mutex::new(()));
+        controls.insert(task_id.to_string(), Arc::downgrade(&control));
+        control
     }
 
     /// Side-effect-free Resolve + Inspect path used by Tool fetch/dry-run.
@@ -306,6 +352,7 @@ impl InstallEngine {
             phase: TaskPhase::Accepted,
             outcome: None,
             wait_reason: None,
+            pending_control: None,
             display: None,
             updated_at: buckyos_get_unix_timestamp(),
         };
@@ -544,6 +591,11 @@ impl InstallEngine {
         if view.status.is_terminal() {
             return Ok(RunOutcome::NotRun);
         }
+        if has_pending_cancel(&view) {
+            if self.apply_pending_cancel(task_id).await? {
+                return Ok(RunOutcome::NotRun);
+            }
+        }
         if matches!(
             view.status,
             InstallTaskStatus::WaitingForApproval | InstallTaskStatus::Paused
@@ -576,6 +628,8 @@ impl InstallEngine {
                     Some("App installed".to_string()),
                 )
                 .await?;
+            self.driver.release_mutation(&view, &data).await?;
+            let _ = self.driver.release_staging(&view, &data).await;
             return Ok(RunOutcome::Completed);
         }
         if data.state.stage.is_none() {
@@ -587,9 +641,21 @@ impl InstallEngine {
             .await;
 
         loop {
-            if self.canceling.lock().unwrap().contains(&task_id)
-                || self.store.load(&task_id).await?.status.is_terminal()
-            {
+            if self.canceling.lock().unwrap().contains(&task_id) {
+                return Ok(RunOutcome::NotRun);
+            }
+            let current = self.store.load(&task_id).await?;
+            if current.status.is_terminal() {
+                return Ok(RunOutcome::NotRun);
+            }
+            if has_pending_cancel(&current) {
+                if self.apply_pending_cancel(&task_id).await? {
+                    return Ok(RunOutcome::NotRun);
+                }
+            }
+            self.driver.ensure_mutation(&view, &data).await?;
+            if self.store.load(&task_id).await?.status.is_terminal() {
+                self.driver.release_mutation(&view, &data).await?;
                 return Ok(RunOutcome::NotRun);
             }
             let stage = data
@@ -827,9 +893,6 @@ impl InstallEngine {
                     data.state.result = Some(result);
                     data.state.mark_stage_completed(InstallStage::Activate);
                     self.persist(&task_id, &mut data).await?;
-                    if let Err(error) = self.driver.release_staging(&view, &data).await {
-                        warn!("release staging after completed installation: {error}");
-                    }
                     self.store
                         .set_status(
                             &task_id,
@@ -838,6 +901,10 @@ impl InstallEngine {
                             Some("App installed".to_string()),
                         )
                         .await?;
+                    self.driver.release_mutation(&view, &data).await?;
+                    if let Err(error) = self.driver.release_staging(&view, &data).await {
+                        warn!("release staging after completed installation: {error}");
+                    }
                     info!("install task {task_id} completed");
                     return Ok(RunOutcome::Completed);
                 }
@@ -859,8 +926,16 @@ impl InstallEngine {
         approver_is_admin: bool,
         plan_fingerprint: &str,
     ) -> Result<(), InstallError> {
+        let control = self.task_control(task_id);
+        let _control = control.lock().await;
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, approved_by, approver_is_admin)?;
+        if has_pending_cancel(&view) {
+            return Err(internal_error(
+                InstallStage::Inspect,
+                "installation cancellation is pending",
+            ));
+        }
         if view.status != InstallTaskStatus::WaitingForApproval {
             return Err(InstallError::new(
                 InstallStage::Inspect,
@@ -943,8 +1018,16 @@ impl InstallEngine {
         requester_app_id: &str,
         idempotency_key: &str,
     ) -> Result<String, InstallError> {
+        let control = self.task_control(task_id);
+        let _control = control.lock().await;
         let view = self.store.load(task_id).await?;
         self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
+        if has_pending_cancel(&view) {
+            return Err(internal_error(
+                InstallStage::Resolve,
+                "installation cancellation is pending",
+            ));
+        }
         let current_data = self.parse_data(&view)?;
         if view.status == InstallTaskStatus::Running
             && current_data
@@ -1037,7 +1120,62 @@ impl InstallEngine {
         requested_by: &str,
         requester_app_id: &str,
         requester_is_admin: bool,
-    ) -> Result<(), InstallError> {
+        force: bool,
+    ) -> Result<InstallCancelOutcome, InstallError> {
+        let control = self.task_control(task_id);
+        let _control = control.lock().await;
+        let view = self.store.load(task_id).await?;
+        self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
+        if view.status == InstallTaskStatus::Canceled {
+            return self
+                .finish_cancel_cleanup(&view, &self.parse_data(&view)?, force)
+                .await;
+        }
+        if view.status.is_terminal() {
+            return Err(InstallError::new(
+                InstallStage::Resolve,
+                InstallErrorCode::Conflict,
+                false,
+                format!("task {task_id} already terminal"),
+            ));
+        }
+        self.store
+            .request_cancel(task_id, requested_by, requester_app_id)
+            .await?;
+        self.apply_cancel(task_id, requested_by, force).await
+    }
+
+    pub async fn reconcile_cleanup(&self) -> Result<(), InstallError> {
+        self.driver.reconcile_cleanup().await
+    }
+
+    async fn apply_pending_cancel(&self, task_id: &str) -> Result<bool, InstallError> {
+        let control = self.task_control(task_id);
+        let _control = control.lock().await;
+        let view = self.store.load(task_id).await?;
+        if view.status.is_terminal() || !has_pending_cancel(&view) {
+            return Ok(view.status.is_terminal());
+        }
+        let requested_by = view
+            .pending_control
+            .as_ref()
+            .unwrap()
+            .requested_by
+            .user_id
+            .clone();
+        match self.apply_cancel(task_id, &requested_by, false).await {
+            Ok(_) => Ok(true),
+            Err(error) if !error.retryable => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn apply_cancel(
+        &self,
+        task_id: &str,
+        requested_by: &str,
+        force: bool,
+    ) -> Result<InstallCancelOutcome, InstallError> {
         {
             if !self.canceling.lock().unwrap().insert(task_id.to_string()) {
                 return Err(InstallError::new(
@@ -1053,7 +1191,11 @@ impl InstallEngine {
             task_id: task_id.to_string(),
         };
         let view = self.store.load(task_id).await?;
-        self.ensure_task_owner(&view, requested_by, requester_is_admin)?;
+        if view.status == InstallTaskStatus::Canceled {
+            return self
+                .finish_cancel_cleanup(&view, &self.parse_data(&view)?, force)
+                .await;
+        }
         if view.status.is_terminal() {
             return Err(InstallError::new(
                 InstallStage::Resolve,
@@ -1063,30 +1205,99 @@ impl InstallEngine {
             ));
         }
         let mut data = self.parse_data(&view)?;
-        if data.state.plan.is_some() {
-            self.driver.rollback_deploy(&view, &data).await?;
+        if data.state.plan.is_some()
+            && (!matches!(
+                view.status,
+                InstallTaskStatus::Paused | InstallTaskStatus::WaitingForApproval
+            ) || data
+                .state
+                .stage
+                .is_some_and(|stage| stage >= InstallStage::Prepare))
+        {
+            if let Err(error) = self.driver.rollback_deploy(&view, &data).await {
+                if !error.retryable {
+                    self.store.reject_cancel(task_id, &error.message).await?;
+                }
+                return Err(error);
+            }
         }
-        self.store
-            .request_cancel(task_id, requested_by, requester_app_id)
-            .await?;
+        let message = format!(
+            "{}canceled by {requested_by}",
+            if force { "force " } else { "" }
+        );
         let error = InstallError::new(
             data.state.stage.unwrap_or(InstallStage::Resolve),
             InstallErrorCode::Canceled,
             false,
-            format!("canceled by {requested_by}"),
+            message.clone(),
         );
         data.state.last_error = Some(error);
         self.persist(&task_id, &mut data).await?;
-        self.driver.release_staging(&view, &data).await?;
-        self.store
-            .set_status(
-                &task_id,
-                InstallTaskStatus::Canceled,
-                None,
-                Some(format!("canceled by {requested_by}")),
+        if !force {
+            let cleanup = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.driver.release_staging(&view, &data),
             )
+            .await
+            .unwrap_or_else(|_| {
+                Err(internal_error(
+                    InstallStage::Resolve,
+                    "installation staging cleanup timed out",
+                ))
+            });
+            if let Err(error) = cleanup {
+                data.state.last_error = Some(error.clone());
+                self.persist(task_id, &mut data).await?;
+                self.store
+                    .set_status(
+                        task_id,
+                        InstallTaskStatus::Failed,
+                        None,
+                        Some(error.to_string()),
+                    )
+                    .await?;
+                self.driver.release_mutation(&view, &data).await?;
+                return Err(error);
+            }
+        }
+        self.store
+            .set_status(&task_id, InstallTaskStatus::Canceled, None, Some(message))
             .await?;
-        Ok(())
+        self.finish_cancel_cleanup(&view, &data, force).await
+    }
+
+    async fn finish_cancel_cleanup(
+        &self,
+        view: &InstallTaskView,
+        data: &AppInstallTaskData,
+        force: bool,
+    ) -> Result<InstallCancelOutcome, InstallError> {
+        self.driver.release_mutation(view, data).await?;
+        let cleanup_pending = if force || view.status == InstallTaskStatus::Canceled {
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                self.driver.release_staging(view, data),
+            )
+            .await
+            {
+                Ok(Ok(())) => false,
+                Ok(Err(error)) if !force => return Err(error),
+                Ok(Err(error)) => {
+                    warn!("deferred install staging cleanup for {}: {error}", view.id);
+                    true
+                }
+                Err(_) if !force => {
+                    return Err(internal_error(
+                        InstallStage::Resolve,
+                        "installation staging cleanup timed out",
+                    ))
+                }
+                Err(_) => true,
+            }
+        } else {
+            false
+        };
+        Ok(InstallCancelOutcome { cleanup_pending })
     }
 
     // -------------------- 内部 --------------------
@@ -1149,7 +1360,10 @@ impl InstallEngine {
         let Ok(view) = self.store.load(task_id).await else {
             return;
         };
-        if view.status.is_terminal() || self.canceling.lock().unwrap().contains(task_id) {
+        if view.status.is_terminal()
+            || has_pending_cancel(&view)
+            || self.canceling.lock().unwrap().contains(task_id)
+        {
             return;
         }
         let Ok(mut data) = self.parse_data(&view) else {
@@ -1178,9 +1392,6 @@ impl InstallEngine {
         } else {
             InstallTaskStatus::Failed
         };
-        if !recovering {
-            let _ = self.driver.release_staging(&view, &data).await;
-        }
         let message = if recovering {
             format!("Waiting for installation recovery: {error}")
         } else {
@@ -1190,6 +1401,17 @@ impl InstallEngine {
             .store
             .set_status(task_id, target_status, None, Some(message))
             .await;
+        if !recovering {
+            if self
+                .store
+                .load(task_id)
+                .await
+                .is_ok_and(|task| task.status.is_terminal())
+            {
+                let _ = self.driver.release_mutation(&view, &data).await;
+                let _ = self.driver.release_staging(&view, &data).await;
+            }
+        }
         warn!("install task {task_id}: {error}");
     }
 
@@ -1434,6 +1656,7 @@ impl TaskMgrInstallStore {
             phase: task.phase,
             outcome: task.outcome,
             wait_reason: task.wait_reason,
+            pending_control: task.pending_control,
             display,
             updated_at: task.updated_at,
         })
@@ -1647,8 +1870,24 @@ impl InstallTaskStore for TaskMgrInstallStore {
                 .await
                 .map(|_| ()),
             InstallTaskStatus::Canceled => match client.get_task(task_id).await {
-                Ok(task) if task.phase.is_terminal() => Ok(()),
-                Ok(task) if task.pending_control.is_some() => {
+                Ok(task) if task.phase.is_terminal() => {
+                    if task.outcome == Some(TaskOutcome::Canceled) {
+                        Ok(())
+                    } else {
+                        return Err(InstallError::new(
+                            InstallStage::Resolve,
+                            InstallErrorCode::Conflict,
+                            false,
+                            format!("task {task_id} finished before cancellation"),
+                        ));
+                    }
+                }
+                Ok(task)
+                    if task
+                        .pending_control
+                        .as_ref()
+                        .is_some_and(|pending| pending.action == TaskControlAction::Cancel) =>
+                {
                     let request_id = task
                         .pending_control
                         .as_ref()
@@ -1708,6 +1947,30 @@ impl InstallTaskStore for TaskMgrInstallStore {
             })
             .await
             .map_err(|err| Self::map_err("persist cancel request", err))?;
+        Ok(())
+    }
+
+    async fn reject_cancel(&self, task_id: &str, reason: &str) -> Result<(), InstallError> {
+        let client = Self::client().await?;
+        let task = client
+            .get_task(task_id)
+            .await
+            .map_err(|err| Self::map_err("get cancel request", err))?;
+        if let Some(pending) = task
+            .pending_control
+            .as_ref()
+            .filter(|pending| pending.action == TaskControlAction::Cancel)
+        {
+            client
+                .ack_control(buckyos_api::AckControlReq {
+                    envelope: Self::runner_envelope(&task),
+                    request_id: pending.request_id.clone(),
+                    applied: false,
+                    reject_reason: Some(reason.to_string()),
+                })
+                .await
+                .map_err(|err| Self::map_err("reject cancel request", err))?;
+        }
         Ok(())
     }
 

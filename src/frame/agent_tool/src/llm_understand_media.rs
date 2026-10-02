@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-use crate::local_llm_context::{
+use crate::xllm::{
     ensure_buckyos_runtime, AiccLlmClient, LoopModel, RunOutcome, TaskInput, TaskOverrides,
     XllmDeps, XllmRun, XllmTask,
 };
@@ -2271,12 +2271,12 @@ mod tests {
         ));
         let run_id = "20260524-234831-test";
         let raw = "{\n  \"observations\": [";
-        let mut record = crate::local_llm_context::RunRecord::synthetic(
+        let mut record = crate::xllm::RunRecord::synthetic(
             run_id,
             &work_dir,
-            crate::local_llm_context::RunStatus::Completed,
+            crate::xllm::RunStatus::Completed,
         );
-        record.result = Some(crate::local_llm_context::RunResultRecord {
+        record.result = Some(crate::xllm::RunResultRecord {
             raw: raw.to_string(),
             extracted: None,
             extract_error: None,

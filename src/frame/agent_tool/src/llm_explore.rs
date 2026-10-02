@@ -6,7 +6,7 @@
 //! - `--description` (objective): 写进 worklog,不进 prompt。
 //! - `--prompt`     (user content): 实际给 LLM 看的任务说明。
 //!
-//! 我们在一个本地目录上起一个 xllm Run（`local_llm_context`）,预装好 bash 工具组 /
+//! 我们在一个本地目录上起一个 xllm Run（`xllm`）,预装好 bash 工具组 /
 //! Grep / exec_bash 等只读 / 读写工具,把这套 system prompt 钉在第一条
 //! 消息上,然后 `drive_to_terminal`,把最终的助手输出整理成
 //! `AgentToolResult` 写到 stdout。
@@ -42,7 +42,7 @@ use buckyos_api::{AiMessage, AiRole};
 use llm_context::LlmClient;
 use serde_json::{json, Value};
 
-use crate::local_llm_context::{
+use crate::xllm::{
     ensure_buckyos_runtime, AiccLlmClient, LoopModel, RunOutcome, TaskInput, TaskOverrides,
     XllmDeps, XllmRun, XllmTask,
 };

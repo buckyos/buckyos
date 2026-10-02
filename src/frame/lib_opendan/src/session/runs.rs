@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_tool::exec_tracking::{persisted_outcome_ids, ExecutionRecord, InflightAction};
-use agent_tool::local_llm_context::{FileLock as RunLockFile, RunRecord, RunStatus, RunStore};
+use agent_tool::xllm::{FileLock as RunLockFile, RunRecord, RunStatus, RunStore};
 use llm_context::state::LLMContextSnapshot;
 
 use crate::error::{OpenDanError, RecoveryBlocked, Result};
@@ -98,7 +98,7 @@ impl SessionRuns {
             .store
             .read_record(run_id)
             .map_err(|e| blocked(format!("run record unusable: {e}")))?;
-        if record.version != agent_tool::local_llm_context::RUN_RECORD_VERSION {
+        if record.version != agent_tool::xllm::RUN_RECORD_VERSION {
             return Err(blocked(format!(
                 "run record version {} is not supported",
                 record.version
@@ -322,7 +322,7 @@ impl RunHandle {
     pub fn set_status(
         &self,
         status: RunStatus,
-        last_error: Option<agent_tool::local_llm_context::RunErrorRecord>,
+        last_error: Option<agent_tool::xllm::RunErrorRecord>,
     ) -> Result<()> {
         self.update(|r| {
             r.status = status;

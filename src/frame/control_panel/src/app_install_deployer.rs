@@ -208,7 +208,9 @@ impl ProductionInstallDriver {
                 stage_error(
                     InstallStage::Prepare,
                     InstallErrorCode::Conflict,
-                    true,
+                    !error
+                        .to_string()
+                        .contains("cannot be canceled after desired-state commit"),
                     error.to_string(),
                 )
             })?;

@@ -89,7 +89,7 @@ impl SchedulerHandler for TestScheduler {
             .is_some_and(|record| record.commit_point.is_committed())
         {
             return Err(RPCErrors::ReasonError(
-                "desired state already committed".into(),
+                "InstallPlan cannot be canceled after desired-state commit".into(),
             ));
         }
         let record = current.get_or_insert_with(|| InstallPlanExecutionRecord::new(plan));
@@ -188,7 +188,7 @@ async fn superseded_or_mismatched_execution_is_not_retried() {
     }
 }
 
-struct MemoryStore(Mutex<InstallTaskView>);
+struct MemoryStore(Mutex<InstallTaskView>, AtomicBool);
 
 impl MemoryStore {
     fn new() -> Arc<Self> {
@@ -218,22 +218,26 @@ impl MemoryStore {
                 ..Default::default()
             },
         };
-        Arc::new(Self(Mutex::new(InstallTaskView {
-            id: "install-1".into(),
-            planning_task_id: "install-1".into(),
-            parent_id: None,
-            root_id: "install-1".into(),
-            task_type: TASK_DATA_TYPE_APP_INSTALL.into(),
-            status: InstallTaskStatus::Running,
-            user_id: "alice".into(),
-            app_id: "control-panel".into(),
-            data: serde_json::to_value(data).unwrap(),
-            phase: TaskPhase::Running,
-            outcome: None,
-            wait_reason: None,
-            display: None,
-            updated_at: 1,
-        })))
+        Arc::new(Self(
+            Mutex::new(InstallTaskView {
+                id: "install-1".into(),
+                planning_task_id: "install-1".into(),
+                parent_id: None,
+                root_id: "install-1".into(),
+                task_type: TASK_DATA_TYPE_APP_INSTALL.into(),
+                status: InstallTaskStatus::Running,
+                user_id: "alice".into(),
+                app_id: "control-panel".into(),
+                data: serde_json::to_value(data).unwrap(),
+                phase: TaskPhase::Running,
+                outcome: None,
+                wait_reason: None,
+                pending_control: None,
+                display: None,
+                updated_at: 1,
+            }),
+            AtomicBool::new(false),
+        ))
     }
 }
 
@@ -255,7 +259,44 @@ impl InstallTaskStore for MemoryStore {
         _: Option<f32>,
         _: Option<String>,
     ) -> Result<(), InstallError> {
-        self.0.lock().unwrap().status = status;
+        let mut task = self.0.lock().unwrap();
+        task.status = status;
+        if status.is_terminal() {
+            task.phase = TaskPhase::Terminal;
+            task.outcome = Some(match status {
+                InstallTaskStatus::Canceled => buckyos_api::TaskOutcome::Canceled,
+                InstallTaskStatus::Completed => buckyos_api::TaskOutcome::Succeeded,
+                _ => buckyos_api::TaskOutcome::Failed,
+            });
+            task.pending_control = None;
+        }
+        Ok(())
+    }
+    async fn request_cancel(&self, _: &str, user: &str, app: &str) -> Result<(), InstallError> {
+        let mut view = self.0.lock().unwrap();
+        if self.1.swap(false, Ordering::SeqCst) {
+            view.status = InstallTaskStatus::Completed;
+            view.phase = TaskPhase::Terminal;
+            view.outcome = Some(buckyos_api::TaskOutcome::Succeeded);
+            view.pending_control = None;
+            return Ok(());
+        }
+        if view
+            .pending_control
+            .as_ref()
+            .is_none_or(|request| request.action != buckyos_api::TaskControlAction::Cancel)
+        {
+            view.pending_control = Some(buckyos_api::TaskControlRequest {
+                request_id: "cancel-1".into(),
+                action: buckyos_api::TaskControlAction::Cancel,
+                requested_by: buckyos_api::ActorRef::new(user, app),
+                requested_at: 1,
+            });
+        }
+        Ok(())
+    }
+    async fn reject_cancel(&self, _: &str, _: &str) -> Result<(), InstallError> {
+        self.0.lock().unwrap().pending_control = None;
         Ok(())
     }
     async fn list_active(&self) -> Result<Vec<InstallTaskView>, InstallError> {
@@ -280,6 +321,9 @@ impl InstallTaskStore for MemoryStore {
 struct RecoveryDriver {
     scheduler: Arc<SchedulerState>,
     released: AtomicUsize,
+    mutations_released: AtomicUsize,
+    cleanup_fails: AtomicBool,
+    observe_store: Option<Arc<MemoryStore>>,
     prepare_gate: Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>,
 }
 
@@ -362,7 +406,9 @@ impl InstallStageDriver for RecoveryDriver {
                 stage_error(
                     InstallStage::Prepare,
                     InstallErrorCode::Conflict,
-                    true,
+                    !error
+                        .to_string()
+                        .contains("cannot be canceled after desired-state commit"),
                     error.to_string(),
                 )
             })?;
@@ -374,8 +420,271 @@ impl InstallStageDriver for RecoveryDriver {
         _: &AppInstallTaskData,
     ) -> Result<(), InstallError> {
         self.released.fetch_add(1, Ordering::SeqCst);
+        if self.cleanup_fails.load(Ordering::SeqCst) {
+            return Err(stage_error(
+                InstallStage::Resolve,
+                InstallErrorCode::Internal,
+                true,
+                "staging unavailable",
+            ));
+        }
         Ok(())
     }
+    async fn release_mutation(
+        &self,
+        _: &InstallTaskView,
+        _: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        if let Some(store) = &self.observe_store {
+            assert!(
+                store.0.lock().unwrap().status.is_terminal(),
+                "release must follow terminal acknowledgement"
+            );
+        }
+        self.mutations_released.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn waiting_fixture(
+    status: InstallTaskStatus,
+    inspected: bool,
+) -> (Arc<MemoryStore>, Arc<RecoveryDriver>) {
+    let store = MemoryStore::new();
+    {
+        let mut view = store.0.lock().unwrap();
+        let mut data: AppInstallTaskData = serde_json::from_value(view.data.clone()).unwrap();
+        data.request.submitted_plan = data.state.plan.clone();
+        data.state.stage = Some(if inspected {
+            InstallStage::Acquire
+        } else {
+            InstallStage::Inspect
+        });
+        data.state.completed_stages = vec![InstallStage::Resolve];
+        if !inspected {
+            data.state.plan = None;
+        }
+        view.data = serde_json::to_value(data).unwrap();
+        view.status = status;
+        view.phase = TaskPhase::Waiting;
+    }
+    let driver = Arc::new(RecoveryDriver {
+        scheduler: Arc::new(SchedulerState::default()),
+        released: AtomicUsize::new(0),
+        mutations_released: AtomicUsize::new(0),
+        cleanup_fails: AtomicBool::new(false),
+        observe_store: Some(store.clone()),
+        prepare_gate: None,
+    });
+    (store, driver)
+}
+
+#[tokio::test]
+async fn cancellation_cannot_report_a_completed_task_as_canceled() {
+    for force in [false, true] {
+        let (store, driver) = waiting_fixture(InstallTaskStatus::Paused, false);
+        store.1.store(true, Ordering::SeqCst);
+        let engine = InstallEngine::new(store.clone(), driver.clone());
+        let error = engine
+            .cancel("install-1", "alice", "desktop", false, force)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, InstallErrorCode::Conflict);
+        assert!(!error.retryable);
+        assert_eq!(store.0.lock().unwrap().status, InstallTaskStatus::Completed);
+        assert_eq!(driver.released.load(Ordering::SeqCst), 0);
+        assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn persisted_cancel_is_consumed_after_waiting_runner_restart() {
+    for status in [
+        InstallTaskStatus::Paused,
+        InstallTaskStatus::WaitingForApproval,
+    ] {
+        for inspected in [false, true] {
+            let (store, driver) = waiting_fixture(status, inspected);
+            store
+                .request_cancel("install-1", "admin", "desktop")
+                .await
+                .unwrap();
+            let restarted = Arc::new(InstallEngine::new(store.clone(), driver.clone()));
+            crate::app_install_runner::InstallRunner::new(restarted).start();
+            tokio::task::yield_now().await;
+            let view = store.load("install-1").await.unwrap();
+            assert_eq!(view.status, InstallTaskStatus::Canceled);
+            assert!(view.pending_control.is_none());
+            assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 1);
+            assert_eq!(driver.scheduler.cancels.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+#[tokio::test]
+async fn parked_tasks_without_cancel_are_not_executed() {
+    for action in [
+        None,
+        Some(TaskControlAction::Pause),
+        Some(TaskControlAction::Resume),
+    ] {
+        let (store, driver) = waiting_fixture(InstallTaskStatus::WaitingForApproval, true);
+        if let Some(action) = action {
+            store
+                .request_cancel("install-1", "alice", "desktop")
+                .await
+                .unwrap();
+            store
+                .0
+                .lock()
+                .unwrap()
+                .pending_control
+                .as_mut()
+                .unwrap()
+                .action = action;
+        }
+        let engine = InstallEngine::new(store.clone(), driver.clone());
+        assert_eq!(
+            engine.run_task("install-1").await.unwrap(),
+            RunOutcome::NotRun
+        );
+        assert_eq!(
+            store.load("install-1").await.unwrap().status,
+            InstallTaskStatus::WaitingForApproval
+        );
+        assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn force_cancel_releases_mutation_when_staging_cleanup_fails() {
+    let (store, driver) = waiting_fixture(InstallTaskStatus::Paused, false);
+    driver.cleanup_fails.store(true, Ordering::SeqCst);
+    let engine = InstallEngine::new(store.clone(), driver.clone());
+    let outcome = engine
+        .cancel("install-1", "alice", "desktop", false, true)
+        .await
+        .unwrap();
+    assert!(outcome.cleanup_pending);
+    let view = store.load("install-1").await.unwrap();
+    assert_eq!(view.status, InstallTaskStatus::Canceled);
+    let data: AppInstallTaskData = serde_json::from_value(view.data).unwrap();
+    assert_eq!(
+        crate::app_mutation::installation_target(&data),
+        data.request
+            .submitted_plan
+            .as_ref()
+            .map(|plan| &plan.app_instance_id)
+    );
+    assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 1);
+    driver.cleanup_fails.store(false, Ordering::SeqCst);
+    assert!(
+        !engine
+            .cancel("install-1", "alice", "desktop", false, true)
+            .await
+            .unwrap()
+            .cleanup_pending
+    );
+}
+
+#[tokio::test]
+async fn normal_cancel_cleanup_failure_reports_failed_and_unlocks() {
+    let (store, driver) = waiting_fixture(InstallTaskStatus::Paused, false);
+    driver.cleanup_fails.store(true, Ordering::SeqCst);
+    let engine = InstallEngine::new(store.clone(), driver.clone());
+    assert!(engine
+        .cancel("install-1", "alice", "desktop", false, false)
+        .await
+        .is_err());
+    assert_eq!(
+        store.load("install-1").await.unwrap().status,
+        InstallTaskStatus::Failed
+    );
+    assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn confirm_and_retry_do_not_resume_a_task_with_pending_cancel() {
+    let (store, driver) = waiting_fixture(InstallTaskStatus::WaitingForApproval, true);
+    store
+        .request_cancel("install-1", "alice", "desktop")
+        .await
+        .unwrap();
+    let engine = InstallEngine::new(store.clone(), driver.clone());
+    assert!(engine
+        .confirm("install-1", "alice", false, "fingerprint")
+        .await
+        .is_err());
+    store.0.lock().unwrap().status = InstallTaskStatus::Paused;
+    assert!(engine
+        .retry("install-1", "alice", false, "desktop", "retry-1")
+        .await
+        .is_err());
+    engine.run_task("install-1").await.unwrap();
+    assert_eq!(
+        store.load("install-1").await.unwrap().status,
+        InstallTaskStatus::Canceled
+    );
+}
+
+#[tokio::test]
+async fn force_cancel_requires_task_owner_or_admin() {
+    let (store, driver) = waiting_fixture(InstallTaskStatus::Paused, false);
+    let engine = InstallEngine::new(store.clone(), driver.clone());
+    assert!(engine
+        .cancel("install-1", "mallory", "desktop", false, true)
+        .await
+        .is_err());
+    assert!(store
+        .load("install-1")
+        .await
+        .unwrap()
+        .pending_control
+        .is_none());
+    assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 0);
+    engine
+        .cancel("install-1", "admin", "desktop", true, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        store.load("install-1").await.unwrap().status,
+        InstallTaskStatus::Canceled
+    );
+}
+
+#[tokio::test]
+async fn force_cancel_does_not_cross_scheduler_commit_boundary() {
+    let store = MemoryStore::new();
+    let mut record = InstallPlanExecutionRecord::new(fixture::plan());
+    record.commit_point = InstallPlanCommitPoint::DesiredStateCommitted;
+    let driver = Arc::new(RecoveryDriver {
+        scheduler: Arc::new(SchedulerState {
+            record: Mutex::new(Some(record)),
+            ..Default::default()
+        }),
+        released: AtomicUsize::new(0),
+        mutations_released: AtomicUsize::new(0),
+        cleanup_fails: AtomicBool::new(false),
+        observe_store: Some(store.clone()),
+        prepare_gate: None,
+    });
+    let engine = InstallEngine::new(store.clone(), driver.clone());
+    let error = engine
+        .cancel("install-1", "alice", "desktop", false, true)
+        .await
+        .unwrap_err();
+    assert!(!error.retryable);
+    assert_eq!(
+        store.load("install-1").await.unwrap().status,
+        InstallTaskStatus::Running
+    );
+    assert!(store
+        .load("install-1")
+        .await
+        .unwrap()
+        .pending_control
+        .is_none());
+    assert_eq!(driver.mutations_released.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -385,6 +694,9 @@ async fn unavailable_scheduler_keeps_task_recoverable_across_runner_restart() {
     let driver = Arc::new(RecoveryDriver {
         scheduler: scheduler.clone(),
         released: AtomicUsize::new(0),
+        mutations_released: AtomicUsize::new(0),
+        cleanup_fails: AtomicBool::new(false),
+        observe_store: None,
         prepare_gate: None,
     });
     let store = MemoryStore::new();
@@ -430,12 +742,15 @@ async fn prepare_cancellation_uses_scheduler_commit_point() {
         let driver = Arc::new(RecoveryDriver {
             scheduler: scheduler.clone(),
             released: AtomicUsize::new(0),
+            mutations_released: AtomicUsize::new(0),
+            cleanup_fails: AtomicBool::new(false),
+            observe_store: None,
             prepare_gate: None,
         });
         let store = MemoryStore::new();
         let engine = InstallEngine::new(store.clone(), driver);
         let result = engine
-            .cancel("install-1", "alice", "control-panel", false)
+            .cancel("install-1", "alice", "control-panel", false, false)
             .await;
         assert_eq!(result.is_err(), committed);
         assert_eq!(scheduler.cancels.load(Ordering::SeqCst), 1);
@@ -458,6 +773,9 @@ async fn cancel_during_prepare_cannot_be_overwritten_by_late_runner() {
     let driver = Arc::new(RecoveryDriver {
         scheduler: scheduler.clone(),
         released: AtomicUsize::new(0),
+        mutations_released: AtomicUsize::new(0),
+        cleanup_fails: AtomicBool::new(false),
+        observe_store: None,
         prepare_gate: Some((entered.clone(), resume.clone())),
     });
     let store = MemoryStore::new();
@@ -466,7 +784,7 @@ async fn cancel_during_prepare_cannot_be_overwritten_by_late_runner() {
     let running = tokio::spawn(async move { runner.run_task("install-1").await });
     entered.notified().await;
     engine
-        .cancel("install-1", "alice", "control-panel", false)
+        .cancel("install-1", "alice", "control-panel", false, false)
         .await
         .unwrap();
     resume.notify_one();

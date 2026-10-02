@@ -475,6 +475,8 @@ pub struct TaskControlRequest {
 
 控制流程是：
 
+Control Panel 安装 runner 在启动扫描与周期 sweep 中消费 Waiting 状态的 Cancel，并在阶段边界检查 Running 任务的 Cancel。TaskMgr 的 request_control 成功表示控制请求已持久化；最终状态仍以 runner ack 为准。等待任务的取消不需要重新执行其业务阶段。
+
 ```text
 Controller request
     -> TaskMgr 鉴权并原子记录 pending_control

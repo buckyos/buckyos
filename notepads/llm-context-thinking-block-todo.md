@@ -44,7 +44,7 @@
 4. **AgentSession 跨 user message 换模型**：session 生命周期很长，传统上允许每次处理 user message 时换模型。
 5. **AgentSession 的压缩入口**：`llm_message_compress`、context-limit rewrite、手动 `/compress`。
 6. **`redacted_thinking`** 被 decode 成 `ProviderState { source: unbound }`（`claude_messages.rs:946`）。回放时 Claude encode 对非 native ProviderState 会报错；需要确认 execution 层会不会补上坐标绑定。5.x 模型基本不再返回它。
-7. **OneShot 本地直连路径**（`agent_tool/src/local_llm_context.rs:4508`）丢弃 Thinking，影响 Qwen3 这类需要回传 `reasoning_content` 的本地推理模型。
+7. **OneShot 本地直连路径**（`agent_tool/src/xllm.rs:4508`）丢弃 Thinking，影响 Qwen3 这类需要回传 `reasoning_content` 的本地推理模型。
 
 ## 3. 现在做：LLMContext（+ AICC Thinking 来源绑定）
 
@@ -130,5 +130,5 @@
 - `src/frame/aicc/src/protocol/claude_messages.rs`、`openai_responses.rs`、`chat_completions_dialects.rs`、`provider_state.rs`
 - `src/frame/aicc/src/execution/mod.rs`（runtime_failover）
 - `src/frame/opendan/src/agent_session.rs`、`llm_context_helper.rs`
-- `src/frame/agent_tool/src/local_llm_context.rs`
+- `src/frame/agent_tool/src/xllm.rs`
 - `notepads/llm_context_append_only_history.md`

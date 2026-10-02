@@ -90,7 +90,7 @@
 
 本节是接入 X7 的必要联动，不要求把 lib_opendan 的历史逻辑放进 llm_context，也不扩大为整个 AgentSession 的重构。
 
-- [x] 复核 `agent_tool::local_llm_context`、`opendan::AgentSession`、`lib_opendan::SessionRunner` 的所有 Outcome／ResumeFill 分支。阈值开始生效后，已有配置会触发过去未执行的路径；支持范围必须逐一确认。
+- [x] 复核 `agent_tool::xllm`、`opendan::AgentSession`、`lib_opendan::SessionRunner` 的所有 Outcome／ResumeFill 分支。阈值开始生效后，已有配置会触发过去未执行的路径；支持范围必须逐一确认。
 - [x] 对尚未完成恢复的宿主保留明确的保存并暂停／报错行为，不丢 run、不盲目重新执行；具备能力的宿主分别接入压缩回填和异步结果回填。（压缩回填：xllm、libopendan 已接入；异步结果回填：没有宿主启用 `allow_deferred`，见 9.4）
 - [x] 单独确定 lib_opendan 的中途重写协议：现有 receipt 的 `message_pos` 和 flush 游标依赖数组布局；`input_seq`／输入身份不等于数组下标，不能一起重置或丢弃。
 - [x] 在启用 lib_opendan 中途压缩前，验证“旧历史先完整提交、改写边界可恢复、后续新增历史准确定位”的方案。评估稳定记录标识或显式重写边界等最小方案，不在本 TODO 中预设新的通用日志系统。
@@ -150,7 +150,7 @@ cargo test -p libopendan -- --test-threads=1
 
 | 宿主 | ContextLimitReached | PendingTool |
 |---|---|---|
-| xllm（`agent_tool::local_llm_context`） | `.llm_context` 新增 `context_window`（`RunLimits.context_window_tokens`），有窗口才设 Ratio 0.75；压缩后 function_call 用 `RewrittenHistory`、behavior 用 `RewrittenSteps`（物化历史折叠进 input），先提交压缩后快照再续跑，每 run 最多 3 次；`--resume` 遇到 ContextLimit 挂起快照先压缩；OpenAI 兼容 adapter 把 `error.code=context_length_exceeded` 归一化为 `ContextLimit`（不看文本） | `allow_deferred=false`；遇到仍 failed；resume 遇到 PendingTool 快照 `NotResumable` |
+| xllm（`agent_tool::xllm`） | `.llm_context` 新增 `context_window`（`RunLimits.context_window_tokens`），有窗口才设 Ratio 0.75；压缩后 function_call 用 `RewrittenHistory`、behavior 用 `RewrittenSteps`（物化历史折叠进 input），先提交压缩后快照再续跑，每 run 最多 3 次；`--resume` 遇到 ContextLimit 挂起快照先压缩；OpenAI 兼容 adapter 把 `error.code=context_length_exceeded` 归一化为 `ContextLimit`（不看文本） | `allow_deferred=false`；遇到仍 failed；resume 遇到 PendingTool 快照 `NotResumable` |
 | libopendan | 中途重写：先 flush 本 run 历史并以 `outcome(context_rewritten)` 收尾（与 flush 标记同一次提交，无新历史不写），压缩 summary.json（保留原始记录 `history_budget >> 第几次`），以 system + 历史消息恢复同一 run，HostMeta 进入新 `history_epoch`（`epoch_round` / `epoch_input_seq`），先发布快照再推理；一次推进最多 3 次，仍超限则 paused + `last_error.kind=context_limit` 保留挂起快照，下次推进先重写。function call 的 flush 计数按 epoch（`LiveRun/ProcessFrame.flushed_epoch`），receipt 的 `input_seq` 与消费位置不变 | `allow_deferred=false`；恢复遇到 PendingTool 快照 → RecoveryBlocked |
 | OpenDAN `AgentSession` | 不配置阈值 / 窗口，只可能来自 Provider 结构化拒绝（其 AICC adapter 目前不产生）；压缩循环改为按模式选 fill、先 resume 再持久化；启发式压缩不再留下孤立 tool_result | 休眠路径（task_dispatch）改用 `pending_calls()` / 清除挂起状态，未启用 |
 

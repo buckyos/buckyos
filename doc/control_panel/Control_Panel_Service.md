@@ -174,7 +174,7 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 | `apps.install.status` | `AppInstallStatusSnapshot` | 按 `task_id` 返回 typed stage、inspection、approval、verification、error、actions 与 terminal result，不暴露 Task 内部 JSON |
 | `apps.install.confirm` | `{task_id}` | 只接受 `{task_id, plan_fingerprint}`；不得在 confirm 同时改 target/params |
 | `apps.install.retry` | `{task_id, retry_of}` | 接受旧 `task_id` 与新的 `idempotency_key`；Failed task 保持 Terminal，新建带 `retry_of`/parent 关系的 task |
-| `apps.install.cancel` | `{task_id}` | 先持久化 TaskMgr cancel intent；runner 在安全边界 ack，Deploy 后先完成回滚/收敛 |
+| `apps.install.cancel` | `{task_id, task_phase, task_outcome, mutation_released, cleanup_pending}` | 接受 `{task_id, force?: boolean}`，先持久化 TaskMgr cancel intent；普通取消清理失败报告 Failed，force 允许 staging 清理延后。成功返回 Terminal/Canceled 与已释放 mutation；部署已提交时拒绝取消 |
 | `apps.update.check` / `apps.upgrade.check` | typed batch availability | 有 selector 时检查单项，无 selector 时检查当前调用方可管理的全部 Catalog 安装 |
 | `apps.upgrade` | batch root task | 无 selector，要求 `idempotency_key`；创建 `app.update_batch/v1` root，仅为 `UpdateAvailable` 项创建 child，结果保留 satisfied/blocked/failed/succeeded |
 | `apps.start/stop/restart` | lifecycle task | 接受统一 selector 与 `idempotency_key`；持久 runner 可恢复。restart 当前只支持默认 `recreate`，`rolling` 稳定拒绝 |
@@ -251,7 +251,11 @@ identifier / staging handle
 
 ### 5.2 Runner 与恢复
 
-安装任务只能由 Control Panel 已鉴权的 `apps.*` 业务接口创建。TaskManager 成功持久 delegated task 后，RPC 路径立即启动本地 runner；Control Panel 启动扫描与 30s sweep 分页恢复本 runner 的 Accepted/Running task。WaitingForApproval/Paused/Terminal 不会被 sweep 自动执行，进程内 task-id guard 合并重复扫描。正确性不依赖 KMSG、runner inbox、`task_ready` 或 KEvent；revision + runner epoch fencing 拒绝过期执行体写回。
+安装任务只能由 Control Panel 已鉴权的 `apps.*` 业务接口创建。TaskManager 成功持久 delegated task 后，RPC 路径立即启动本地 runner；Control Panel 启动扫描与 60s sweep 分页恢复本 runner 的 Accepted/Running task，并消费 WaitingForApproval/Paused 的 pending Cancel。没有 Cancel 的等待任务仍只由 confirm/retry 唤醒，进程内 task-id guard 合并重复扫描。confirm/retry 与取消按 task_id 串行化；已持久化 Cancel 时禁止恢复安装。正确性不依赖 KMSG、runner inbox、`task_ready` 或 KEvent；revision + runner epoch fencing 拒绝过期执行体写回。
+
+取消先确认 scheduler 尚未提交 desired state，再确认任务终态并条件释放 mutation；等待且尚未进入 Prepare 的任务无需访问 scheduler。mutation key 的释放独立于 staging，早期任务从 submitted_plan 获取 AppInstanceId，并通过 task_id 所有权检查与 KV 版本 CAS 防止旧任务删除新锁。活跃任务即使超过 expires_at 也不能被接管；任务已终态或 TaskMgr 明确返回 task_not_found 时可以回收，网络与权限错误保留锁。task_id 尚未绑定的预约有 300 秒创建窗口，绑定时复核预约所有者。
+
+启动和 sweep 同时回收终态任务的 mutation key 和 staging 租约。force 清理失败时现有持久 staging 租约就是恢复依据，无需新增队列；Interrupt 取消不承诺临时文件已经删除。已取消任务的重复取消幂等，成功响应包含 task_id、task_phase、task_outcome、mutation_released、cleanup_pending。
 
 ### 5.3 升级 / 卸载
 

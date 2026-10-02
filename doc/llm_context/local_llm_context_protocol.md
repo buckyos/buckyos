@@ -27,7 +27,7 @@ xllm 执行一次独立任务（Run）：准备配置和输入，调用模型，
 
 主要源码：
 
-- [local_llm_context.rs](../../src/frame/agent_tool/src/local_llm_context.rs)：配置、提示词、Provider、工具装配、RunStore 和生命周期。
+- [xllm.rs](../../src/frame/agent_tool/src/xllm.rs)：配置、提示词、Provider、工具装配、RunStore 和生命周期。
 - [run_local_llm.rs](../../src/frame/agent_tool/src/run_local_llm.rs)：CLI 参数、stdin、查询、结果交付和退出码。
 - [agent_tool_cli_dev/src/lib.rs](../../src/frame/agent_tool_cli_dev/src/lib.rs)：`agent_tool xllm` 子命令分发。
 - [request.rs](../../src/frame/llm_context/src/request.rs)、[state.rs](../../src/frame/llm_context/src/state.rs)、[outcome.rs](../../src/frame/llm_context/src/outcome.rs)：底层请求、快照、outcome 与恢复输入。
@@ -552,7 +552,7 @@ tools:
 
 ```rust
 use std::path::Path;
-use agent_tool::local_llm_context::{TaskInput, TaskOverrides, XllmDeps, XllmRun, XllmTask};
+use agent_tool::xllm::{TaskInput, TaskOverrides, XllmDeps, XllmRun, XllmTask};
 
 async fn run_task() -> Result<(), Box<dyn std::error::Error>> {
     let deps = XllmDeps::default();
@@ -576,7 +576,7 @@ async fn run_task() -> Result<(), Box<dyn std::error::Error>> {
 与本协议直接相关的已有测试可在 `src/` 目录运行：
 
 ```bash
-cargo test -p agent_tool --lib local_llm_context -- --test-threads=1
+cargo test -p agent_tool --lib xllm -- --test-threads=1
 cargo test -p agent_tool --lib run_local_llm -- --test-threads=1
 cargo test -p llm_context --lib suspension -- --test-threads=1
 ```

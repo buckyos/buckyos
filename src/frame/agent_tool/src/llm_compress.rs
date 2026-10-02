@@ -47,7 +47,7 @@
 //! 调用方在 `LLMContext::run` 的 `ContextLimitReached` 分支里调它，然后用
 //! `ResumeFill::RewrittenHistory { history }` 喂回 `LLMContext::resume`。
 //! 本模块还提供 [`LlmSummarizeCompressor`]——把上面那个自由函数包成
-//! `local_llm_context::Compressor` 实现，可直接喂给
+//! `xllm::Compressor` 实现，可直接喂给
 //! `LocalLLMContext::drive_to_terminal`。
 //!
 //! ## 实现注意事项
@@ -73,7 +73,7 @@ use sha2::{Digest, Sha256};
 use llm_context::deps::{LLMContextDeps, LlmInferenceRequest};
 use llm_context::error::LLMComputeError;
 
-use crate::local_llm_context::{Compressor, XllmError};
+use crate::xllm::{Compressor, XllmError};
 use crate::{AgentHistoryShowLevel, AgentToolResult, AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION};
 
 pub const DEFAULT_HEAD_KEEP_PAIRS: usize = 1;

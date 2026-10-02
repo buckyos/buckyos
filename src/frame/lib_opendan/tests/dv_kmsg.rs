@@ -19,7 +19,7 @@ use libopendan::runner::{drive, StopWhen};
 use serde_json::json;
 
 async fn real_kmsg() -> Arc<MsgQueueClient> {
-    agent_tool::local_llm_context::ensure_buckyos_runtime()
+    agent_tool::xllm::ensure_buckyos_runtime()
         .await
         .expect("login to the local zone");
     let rt = buckyos_api::get_buckyos_api_runtime().expect("runtime");

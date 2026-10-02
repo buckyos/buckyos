@@ -1,4 +1,4 @@
-//! `LocalLLMContext` — the `xllm` SDK core (see `product/xllm/PRD.md`).
+//! The `xllm` SDK core (see `product/xllm/PRD.md`).
 //!
 //! 这个模块把 PRD 定义的“一次独立任务（Run）”落成可编程接口：
 //!

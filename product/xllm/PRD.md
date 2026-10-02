@@ -492,7 +492,7 @@ mode: custom 不同时声明 select 或 sections；工具按顶层 tools、promp
 
 本节提供适用于当前 xllm 的通用 `.llm_context` 配置模板。适用于日常问答、阅读项目、修改代码、整理文档和执行本地命令；同一份配置通过每次传入的任务要求复用。
 
-提示词结构参考 pi-mono 的 [system-prompt.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/system-prompt.ts)：简短角色说明、实际可用工具、操作规则、项目上下文与工作目录；文件操作参考其 [read](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts)、[edit](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)、[write](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts) 的职责划分。下面按 xllm 的工具名称和单次任务语义改写，配置字段以当前 [Rust SDK 实现](../../src/frame/agent_tool/src/local_llm_context.rs) 为准。
+提示词结构参考 pi-mono 的 [system-prompt.ts](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/system-prompt.ts)：简短角色说明、实际可用工具、操作规则、项目上下文与工作目录；文件操作参考其 [read](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/read.ts)、[edit](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/edit.ts)、[write](https://github.com/badlogic/pi-mono/blob/main/packages/coding-agent/src/core/tools/write.ts) 的职责划分。下面按 xllm 的工具名称和单次任务语义改写，配置字段以当前 [Rust SDK 实现](../../src/frame/agent_tool/src/xllm.rs) 为准。
 
 #### 4.9.1 可直接复用的 `.llm_context`
 

@@ -1,7 +1,7 @@
 //! `xllm` 命令行入口（`agent_tool xllm ...`）。
 //!
 //! 这是 `product/xllm/PRD.md` 命令面的 Rust 参考实现：所有任务语义都由
-//! [`crate::local_llm_context`] 提供，这里只做 argv / stdin → SDK 请求，
+//! [`crate::xllm`] 提供，这里只做 argv / stdin → SDK 请求，
 //! SDK 结果 → stdout / stderr / 退出码 的映射。
 //!
 //! ## 退出码
@@ -24,13 +24,13 @@ use std::time::{Duration, UNIX_EPOCH};
 use buckyos_api::{LlmResponseFormat, TaskError};
 use serde_json::Value;
 
-use crate::local_llm_context::{
+use crate::xllm::{
     build_result_view, export_result, list_runs, load_run, ExtractedValue, LoopModel, ProviderKind,
     ResultFormat, ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome,
     RunPhase, RunRecord, RunStatus, RunStore, RunSummary, TaskInput, TaskOverrides, XllmDeps,
     XllmError, XllmRun, XllmTask, DEFAULT_RUNS_DIR,
 };
-pub use crate::local_llm_context::{ensure_buckyos_runtime, AiccLlmClient};
+pub use crate::xllm::{ensure_buckyos_runtime, AiccLlmClient};
 
 pub const EXIT_OK: i32 = 0;
 pub const EXIT_TASK_FAILED: i32 = 1;
@@ -151,7 +151,7 @@ struct CliOpts {
     select: Option<String>,
     files: Vec<PathBuf>,
     images: Vec<String>,
-    attachments: Vec<crate::local_llm_context::Attachment>,
+    attachments: Vec<crate::xllm::Attachment>,
     input_file: Option<PathBuf>,
     dir: Option<PathBuf>,
     runs_dir: Option<PathBuf>,
@@ -201,7 +201,7 @@ fn set_once<T>(slot: &mut Option<T>, value: T, flag: &str) -> Result<(), ParseEr
 
 impl CliOpts {
     fn parse(args: &[String]) -> Result<Self, ParseError> {
-        use crate::local_llm_context::Attachment;
+        use crate::xllm::Attachment;
         let mut o = CliOpts {
             command: Command::New,
             question: None,
@@ -713,18 +713,18 @@ fn exit_code_for_error(err: &XllmError) -> i32 {
 fn store_for(opts: &CliOpts, workdir: &Path) -> RunStore {
     if let Some(p) = &opts.runs_dir {
         let base = std::env::current_dir().unwrap_or_else(|_| workdir.to_path_buf());
-        return RunStore::disk(crate::local_llm_context::resolve_config_path(
+        return RunStore::disk(crate::xllm::resolve_config_path(
             &p.display().to_string(),
             &base,
         ));
     }
     // 只读命令沿用目录配置里的 runs_dir，否则默认位置。
-    let layers = crate::local_llm_context::load_config_layers(workdir).unwrap_or_default();
-    let merged = crate::local_llm_context::merge_config_layers(&layers).unwrap_or_default();
+    let layers = crate::xllm::load_config_layers(workdir).unwrap_or_default();
+    let merged = crate::xllm::merge_config_layers(&layers).unwrap_or_default();
     match merged.runs_dir {
-        Some(crate::local_llm_context::RunsDirSetting::Path { path }) => RunStore::disk(path),
-        Some(crate::local_llm_context::RunsDirSetting::Disabled) => RunStore::memory(),
-        None => RunStore::disk(crate::local_llm_context::resolve_config_path(
+        Some(crate::xllm::RunsDirSetting::Path { path }) => RunStore::disk(path),
+        Some(crate::xllm::RunsDirSetting::Disabled) => RunStore::memory(),
+        None => RunStore::disk(crate::xllm::resolve_config_path(
             DEFAULT_RUNS_DIR,
             workdir,
         )),
@@ -1254,7 +1254,7 @@ fn select_record(opts: &CliOpts, store: &RunStore, workdir: &Path) -> Result<Run
     match &opts.run {
         Some(id) => store.read_record(id),
         None => {
-            crate::local_llm_context::latest_run(store, Some(workdir), false)?.ok_or_else(|| {
+            crate::xllm::latest_run(store, Some(workdir), false)?.ok_or_else(|| {
                 XllmError::RunNotFound {
                     run_id: "(latest)".into(),
                     runs_dir: store
@@ -1500,7 +1500,7 @@ mod tests {
 
     #[test]
     fn attachments_keep_command_order() {
-        use crate::local_llm_context::Attachment;
+        use crate::xllm::Attachment;
         let o = parse(&[
             "--image", "a.png", "--file", "b.txt", "--image", "c.png", "q",
         ])

@@ -1,3 +1,4 @@
+use crate::app_mutation::{self, AppMutationLease};
 use buckyos_api::{
     app_availability_audit_key, app_availability_policy_key, get_buckyos_api_runtime, AgentSpec,
     AppAvailabilityPolicy, AppDataDisposition, AppDeletionManifest, AppDoc, AppId, AppInstanceId,
@@ -2970,12 +2971,12 @@ impl ControlPanelServer {
         }
     }
 
-    async fn acquire_app_mutation(
+    pub(crate) async fn acquire_app_mutation(
         app_instance_id: &buckyos_api::AppInstanceId,
         creator_user_id: &str,
         creator_app_id: &str,
         idempotency_key: &str,
-    ) -> Result<String, RPCErrors> {
+    ) -> Result<AppMutationLease, RPCErrors> {
         let key = format!("services/control_panel/app_mutations/{app_instance_id}");
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
@@ -2989,13 +2990,13 @@ impl ControlPanelServer {
             "task_id": null,
             "created_at": now,
             "expires_at": now + 24 * 60 * 60,
-        })
-        .to_string();
+        });
         let mut actions = HashMap::new();
-        actions.insert(key.clone(), KVAction::Create(value.clone()));
+        actions.insert(key.clone(), KVAction::Create(value.to_string()));
         if client.exec_tx(actions, None).await.is_ok() {
-            return Ok(key);
+            return Ok(AppMutationLease { key, owner: value });
         }
+        client.invalidate_cache(&key).await;
         let current = client.get(&key).await.map_err(|error| {
             RPCErrors::ReasonError(format!("read app mutation owner failed: {error}"))
         })?;
@@ -3008,22 +3009,21 @@ impl ControlPanelServer {
             && current_value.get("idempotency_key").and_then(Value::as_str)
                 == Some(idempotency_key);
         if same_request {
-            return Ok(key);
+            return Ok(AppMutationLease {
+                key,
+                owner: current_value,
+            });
         }
-        let expired = current_value
-            .get("expires_at")
-            .and_then(Value::as_u64)
-            .map(|expires_at| expires_at <= now)
-            .unwrap_or(false);
-        if expired {
+        let tasks = runtime.get_task_mgr_client().await?;
+        if app_mutation::reclaimable(&current_value, &tasks).await? {
             let mut actions = HashMap::new();
-            actions.insert(key.clone(), KVAction::Update(value));
+            actions.insert(key.clone(), KVAction::Update(value.to_string()));
             if client
                 .exec_tx(actions, Some((key.clone(), current.version)))
                 .await
                 .is_ok()
             {
-                return Ok(key);
+                return Ok(AppMutationLease { key, owner: value });
             }
         }
         Err(Self::install_error_to_rpc(buckyos_api::InstallError::new(
@@ -3034,15 +3034,33 @@ impl ControlPanelServer {
         )))
     }
 
-    async fn bind_app_mutation_task(mutation_key: &str, task_id: &str) -> Result<(), RPCErrors> {
+    pub(crate) async fn bind_app_mutation_task(
+        lease: &AppMutationLease,
+        task_id: &str,
+    ) -> Result<(), RPCErrors> {
+        let mutation_key = lease.key.as_str();
         let runtime = get_buckyos_api_runtime()?;
         let client = runtime.get_system_config_client().await?;
+        client.invalidate_cache(mutation_key).await;
         let current = client.get(mutation_key).await.map_err(|error| {
             RPCErrors::ReasonError(format!("read app mutation owner failed: {error}"))
         })?;
         let mut value: Value = serde_json::from_str(&current.value).map_err(|error| {
             RPCErrors::ReasonError(format!("invalid app mutation owner: {error}"))
         })?;
+        if !app_mutation::same_owner(&value, &lease.owner)
+            || value
+                .get("task_id")
+                .and_then(Value::as_str)
+                .is_some_and(|existing| existing != task_id)
+        {
+            return Err(RPCErrors::ReasonError(
+                "app mutation reservation was replaced".to_string(),
+            ));
+        }
+        if value.get("task_id").and_then(Value::as_str) == Some(task_id) {
+            return Ok(());
+        }
         value["task_id"] = Value::String(task_id.to_string());
         let mut actions = HashMap::new();
         actions.insert(
@@ -3058,16 +3076,26 @@ impl ControlPanelServer {
         Ok(())
     }
 
-    async fn release_app_mutation_key(mutation_key: &str) {
+    async fn release_app_mutation_key(lease: &AppMutationLease) {
+        let mutation_key = lease.key.as_str();
         let Ok(runtime) = get_buckyos_api_runtime() else {
             return;
         };
         let Ok(client) = runtime.get_system_config_client().await else {
             return;
         };
+        client.invalidate_cache(mutation_key).await;
         let Ok(current) = client.get(mutation_key).await else {
             return;
         };
+        let Ok(value) = serde_json::from_str::<Value>(&current.value) else {
+            return;
+        };
+        if !app_mutation::same_owner(&value, &lease.owner)
+            || value.get("task_id").and_then(Value::as_str).is_some()
+        {
+            return;
+        }
         let mut actions = HashMap::new();
         actions.insert(mutation_key.to_string(), KVAction::Remove);
         let _ = client
@@ -3850,17 +3878,30 @@ impl ControlPanelServer {
     ) -> Result<RPCResponse, RPCErrors> {
         let principal = Self::require_rpc_principal(principal)?;
         let task_id = Self::parse_task_id(&req)?;
-        self.install_engine
+        let force = match req.params.get("force") {
+            None => false,
+            Some(Value::Bool(force)) => *force,
+            Some(_) => {
+                return Err(RPCErrors::ParseRequestError(
+                    "force must be a boolean".to_string(),
+                ))
+            }
+        };
+        let outcome = self
+            .install_engine
             .cancel(
                 &task_id,
                 principal.username.as_str(),
                 principal.authenticated_app_id.as_str(),
                 Self::principal_is_admin(principal),
+                force,
             )
             .await
             .map_err(Self::install_error_to_rpc)?;
         Ok(RPCResponse::new(
-            RPCResult::Success(serde_json::json!({ "task_id": task_id.to_string() })),
+            RPCResult::Success(
+                serde_json::json!({ "task_id": task_id, "task_phase": "Terminal", "task_outcome": "Canceled", "mutation_released": true, "cleanup_pending": outcome.cleanup_pending }),
+            ),
             req.seq,
         ))
     }

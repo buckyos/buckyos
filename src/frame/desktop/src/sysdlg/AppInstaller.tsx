@@ -27,6 +27,8 @@ import type {
 } from '../app/app-service/types'
 import { DetailPage } from '../app/app-service/pages/DetailPage'
 import { RuntimeSummary } from '../app/app-service/components/RuntimeSummary'
+import { isMockRuntime } from '../runtime'
+import { cancelInstallTask, getInstallTaskStatus, type InstallTaskSnapshot } from '../api/app_install'
 
 const targetSchema = z
   .object({
@@ -914,6 +916,117 @@ function PlanStep({
     </div>
   )
 }
+function LiveInstallTask(
+  { taskId, onBackground }: { taskId: string; onBackground: () => void },
+) {
+  const { t } = useI18n()
+  const [snapshot, setSnapshot] = useState<InstallTaskSnapshot | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const busyRef = useRef(false)
+  const [refresh, setRefresh] = useState(0)
+  const [cleanupPending, setCleanupPending] = useState(false)
+  useEffect(() => {
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async () => {
+      let terminal = false
+      try {
+        const status = await getInstallTaskStatus(taskId)
+        if (!active) return
+        setSnapshot(status)
+        setError(null)
+        terminal = status.task_phase === 'Terminal'
+      } catch (cause) {
+        if (active) {
+          setError(cause instanceof Error ? cause.message : String(cause))
+        }
+      }
+      if (active && !terminal) timer = setTimeout(() => void load(), 5000)
+    }
+    void load()
+    return () => {
+      active = false
+      clearTimeout(timer)
+    }
+  }, [taskId, refresh])
+  const cancel = async (force: boolean) => {
+    if (busyRef.current) return
+    busyRef.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await cancelInstallTask(taskId, force)
+      setCleanupPending(result.cleanup_pending)
+      setRefresh((value) => value + 1)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      busyRef.current = false
+      setBusy(false)
+    }
+  }
+  return (
+    <div className='space-y-5' data-testid='app-installer-live-task'>
+      <h2 className='text-lg font-semibold'>
+        {t(
+          snapshot?.task_outcome === 'Canceled'
+            ? 'app22.installCanceled'
+            : snapshot?.task_outcome === 'Succeeded'
+            ? 'app22.installComplete'
+            : snapshot?.task_outcome === 'Failed'
+            ? 'app22.installFailed'
+            : snapshot?.task_phase === 'Waiting'
+            ? 'app22.installWaiting'
+            : 'app22.executing',
+        )}
+      </h2>
+      <p data-testid='app-installer-task-id' className='break-all text-xs'>
+        {taskId}
+      </p>
+      {snapshot
+        ? (
+          <section role='status'>
+            <p>{snapshot.app_name} {snapshot.app_version}</p>
+            <p>
+              {snapshot.progress?.message ?? (snapshot.stage
+                ? t(`app22.stage.${snapshot.stage}`, snapshot.stage)
+                : snapshot.task_phase)}
+            </p>
+          </section>
+        )
+        : <Loader2 className='animate-spin' size={24} />}
+      {error && <p role='alert' className='break-all text-sm'>{error}</p>}
+      {snapshot?.error && snapshot.task_outcome !== 'Canceled' && (
+        <p role='alert' className='break-all text-sm'>
+          {snapshot.error.message}
+        </p>
+      )}
+      {cleanupPending && <p role='status'>{t('app22.cleanupPending')}</p>}
+      <footer className='flex flex-wrap gap-2 border-t border-[var(--cp-border)] pt-4'>
+        {snapshot?.available_actions?.includes('cancel') &&
+          snapshot.task_phase !== 'Terminal' && (
+          <>
+            <Button disabled={busy} onClick={() => void cancel(false)}>
+              {t('app22.cancelTask')}
+            </Button>
+            <Button disabled={busy} onClick={() => void cancel(true)}>
+              {t('app22.forceCancelTask')}
+            </Button>
+          </>
+        )}
+        <Button
+          disabled={busy}
+          onClick={() => setRefresh((value) => value + 1)}
+        >
+          {t('app22.recheck')}
+        </Button>
+        <Button onClick={onBackground}>{t('app22.background')}</Button>
+      </footer>
+    </div>
+  )
+}
+
 function TaskStep({
   task,
   onFollowTask,
@@ -1278,6 +1391,7 @@ function InstallerContent({
   }, [launchKey, scopeKey, store])
   const draft = state.draft_id ? store.getDraft(state.draft_id) : null
   const task = state.task_id ? store.getTask(state.task_id) : null
+  const liveTaskId = !isMockRuntime() ? state.task_id : undefined
   const exit = (callback: () => void) => {
     if (draft) store.releaseDraft(draft.draft_id)
     callback()
@@ -1288,7 +1402,7 @@ function InstallerContent({
   }
   const error =
     state.error ??
-    (state.task_id && !task
+    (state.task_id && !task && !liveTaskId
       ? store.taskReadError(state.task_id)
       : state.draft_id && !draft
         ? 'DRAFT_NOT_FOUND'
@@ -1304,7 +1418,7 @@ function InstallerContent({
             {t('app22.title')}
           </h1>
           <p className="mt-1 text-xs text-[var(--cp-muted)]">
-            {t(task ? 'app22.taskHint' : 'app22.draftHint')}
+            {t(state.task_id ? 'app22.taskHint' : 'app22.draftHint')}
           </p>
         </div>
         <button
@@ -1325,6 +1439,8 @@ function InstallerContent({
               <Button onClick={() => exit(onClose)}>{t('common.close')}</Button>
             </div>
           </div>
+        ) : liveTaskId ? (
+          <LiveInstallTask key={liveTaskId} taskId={liveTaskId} onBackground={onBackground} />
         ) : task ? (
           <TaskStep
             key={task.task_id}

@@ -31,7 +31,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use agent_tool::local_llm_context::XllmDeps;
+use agent_tool::xllm::XllmDeps;
 use libopendan::api::{create_session, SessionSpec};
 use libopendan::channel::{KmsgChannels, PollWaker};
 use libopendan::protocol::*;

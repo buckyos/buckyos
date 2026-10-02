@@ -584,12 +584,12 @@ impl ProductionInstallDriver {
         })?;
         if let Some(handle) = handle {
             self.staging_store
-                .release(
+                .release_task_lease(
                     handle,
                     data.request.creator_user_id.as_str(),
                     data.request.creator_app_id.as_str(),
                     &runtime.zone_id,
-                    Some(view.id.as_str()),
+                    view.id.as_str(),
                 )
                 .await
                 .map_err(|error| {
@@ -601,43 +601,39 @@ impl ProductionInstallDriver {
                     )
                 })?;
         }
-        if let Some(plan) = data.state.plan.as_ref() {
-            let key = format!(
-                "services/control_panel/app_mutations/{}",
-                plan.app_instance_id
-            );
-            let client = runtime.get_system_config_client().await.map_err(|error| {
-                InstallError::new(
-                    InstallStage::Resolve,
-                    InstallErrorCode::Internal,
-                    true,
-                    format!("get system config for mutation release failed: {error}"),
-                )
-            })?;
-            if let Ok(current) = client.get(&key).await {
-                let owned = serde_json::from_str::<Value>(&current.value)
-                    .ok()
-                    .and_then(|value| {
-                        value
-                            .get("task_id")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    })
-                    .as_deref()
-                    == Some(view.id.as_str());
-                if owned {
-                    let mut actions = std::collections::HashMap::new();
-                    actions.insert(key.clone(), buckyos_kit::KVAction::Remove);
-                    let _ = client.exec_tx(actions, Some((key, current.version))).await;
-                }
-            }
-        }
         Ok(())
     }
 }
 
 #[async_trait]
 impl InstallStageDriver for ProductionInstallDriver {
+    async fn ensure_mutation(
+        &self,
+        view: &InstallTaskView,
+        data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        let Some(target) = crate::app_mutation::installation_target(data) else {
+            return Ok(());
+        };
+        let lease = crate::ControlPanelServer::acquire_app_mutation(
+            target,
+            &data.request.creator_user_id,
+            &data.request.creator_app_id,
+            &data.request.idempotency_key,
+        )
+        .await
+        .map_err(|error| {
+            InstallError::new(
+                InstallStage::Inspect,
+                InstallErrorCode::AppMutationInProgress,
+                true,
+                error.to_string(),
+            )
+        })?;
+        crate::ControlPanelServer::bind_app_mutation_task(&lease, &view.id)
+            .await
+            .map_err(|error| cleanup_error(error.to_string()))
+    }
     async fn resolve(
         &self,
         view: &InstallTaskView,
@@ -1335,6 +1331,57 @@ impl InstallStageDriver for ProductionInstallDriver {
     ) -> Result<(), InstallError> {
         self.release_candidate_staging(view, data).await
     }
+
+    async fn release_mutation(
+        &self,
+        view: &InstallTaskView,
+        data: &AppInstallTaskData,
+    ) -> Result<(), InstallError> {
+        let Some(target) = crate::app_mutation::installation_target(data) else {
+            return Ok(());
+        };
+        let runtime =
+            get_buckyos_api_runtime().map_err(|error| cleanup_error(error.to_string()))?;
+        let client = runtime
+            .get_system_config_client()
+            .await
+            .map_err(|error| cleanup_error(error.to_string()))?;
+        crate::app_mutation::release_owned(
+            &client,
+            &format!("{}/{}", crate::app_mutation::MUTATION_PREFIX, target),
+            &view.id,
+        )
+        .await
+        .map_err(|error| cleanup_error(error.to_string()))
+    }
+
+    async fn reconcile_cleanup(&self) -> Result<(), InstallError> {
+        let runtime =
+            get_buckyos_api_runtime().map_err(|error| cleanup_error(error.to_string()))?;
+        let client = runtime
+            .get_system_config_client()
+            .await
+            .map_err(|error| cleanup_error(error.to_string()))?;
+        let tasks = runtime
+            .get_task_mgr_client()
+            .await
+            .map_err(|error| cleanup_error(error.to_string()))?;
+        let mutations = crate::app_mutation::reconcile(&client, &tasks).await;
+        self.staging_store
+            .reconcile_task_leases(&tasks)
+            .await
+            .map_err(|error| cleanup_error(error.to_string()))?;
+        mutations.map_err(|error| cleanup_error(error.to_string()))
+    }
+}
+
+fn cleanup_error(message: String) -> InstallError {
+    InstallError::new(
+        InstallStage::Resolve,
+        InstallErrorCode::Internal,
+        true,
+        message,
+    )
 }
 
 pub(crate) async fn store_pikg_payload(

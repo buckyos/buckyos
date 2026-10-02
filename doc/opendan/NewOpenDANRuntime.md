@@ -1191,7 +1191,7 @@ forward_msg { target_worksession_id: String }
 **本批次新增完成（[snapshot_overrides.rs](src/frame/llm_context/src/snapshot_overrides.rs) / [agent_session.rs](src/frame/opendan/src/agent_session.rs) / [worksession_tools.rs](src/frame/opendan/src/worksession_tools.rs)）：**
 
 - **Task 1 — waist `forbid_next_behavior` flag + `RequestOverrides` 下沉**：
-  - [request.rs](src/frame/llm_context/src/request.rs) `LLMContextRequest` 加 `forbid_next_behavior: bool`（`#[serde(default)]` 老 JSON 兼容），所有 caller（opendan / agent_tool::local_llm_context / llm_context tests）回填字段
+  - [request.rs](src/frame/llm_context/src/request.rs) `LLMContextRequest` 加 `forbid_next_behavior: bool`（`#[serde(default)]` 老 JSON 兼容），所有 caller（opendan / agent_tool::xllm / llm_context tests）回填字段
   - [behavior_loop run_behavior](src/frame/llm_context/src/context_loop.rs:624) 解析完 `StepRecord` 后看 flag，命中则 `new_step.next_behavior.take()` + `log::warn`，让 sub-ctx 走到自然 End；`assistant_text` 不动（LLM 思考过程保留）
   - 新文件 [snapshot_overrides.rs](src/frame/llm_context/src/snapshot_overrides.rs)：`RequestOverrides` / `apply_overrides_to_snapshot` / `rebuild_with_inherit` / `build_fresh` 从 opendan helper 整体搬过来，`apply_overrides_to_snapshot` 现在真把 `RequestOverrides.forbid_next_behavior` 写到 `snap.request.forbid_next_behavior`（sticky flag — 子 fork 嵌套自动继承）
   - opendan helper 退化为薄 `pub use` shim（保留设计文档），全 9 项单测（含新 `apply_overrides_forbid_next_behavior_sets_request_flag`）跟随类型搬到 llm_context

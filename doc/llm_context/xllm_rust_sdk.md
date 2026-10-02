@@ -1,7 +1,7 @@
 # xllm Rust SDK 参考
 
 - 日期：2026-09-18；2026-10-01 同步工具迭代预算改名、`RunRecord.version = 2` 与快照 v3
-- 实现：`src/frame/agent_tool/src/local_llm_context.rs`（SDK）、`src/frame/agent_tool/src/run_local_llm.rs`（CLI，`agent_tool xllm ...`）
+- 实现：`src/frame/agent_tool/src/xllm.rs`（SDK）、`src/frame/agent_tool/src/run_local_llm.rs`（CLI，`agent_tool xllm ...`）
 - 依据：[xllm PRD](../../product/xllm/PRD.md)。本文只记录 Rust 实现落实 PRD 时固定下来的协议决定，供 websdk 的 TS 版本对照；产品行为以 PRD 为准。
 
 ## 1. 分层与入口
@@ -97,7 +97,7 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 
 ## 9. 验证
 
-- `cargo test -p agent_tool --lib local_llm_context`（SDK，ScriptedLlm 驱动，覆盖配置合并、section 组装、工具优先级、behavior/function_call 循环、暂停与恢复、锁、文件模型阶段等）。
+- `cargo test -p agent_tool --lib xllm`（SDK，ScriptedLlm 驱动，覆盖配置合并、section 组装、工具优先级、behavior/function_call 循环、暂停与恢复、锁、文件模型阶段等）。
 - `cargo test -p agent_tool --lib run_local_llm`（CLI 参数规则）。
 - 真实环境：在 DV Test 的 OOD 上以 root 运行 `agent_tool xllm "问题"`，即走上面第 2 种登录方式。
 - 端到端（无 BuckyOS）：用一个 OpenAI 兼容的 mock HTTP 服务（返回 `choices[0].message` 与可选 `tool_calls`），在 `.llm_context` 里配置 `provider.type: openai`、`base_url`、`api_key_env`，即可跑通新任务、管道串联、工具循环、`--json`、暂停/resume、`--output`、list/status/result。

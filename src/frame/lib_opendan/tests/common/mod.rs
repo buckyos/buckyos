@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use agent_tool::local_llm_context::XllmDeps;
+use agent_tool::xllm::XllmDeps;
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiUsage};
 use libopendan::api::{create_session, SessionSpec};

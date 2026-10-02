@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_tool::exec_tracking::{materialize_unresolved, ExecutionRecord, ExecutionRegistrar, HostRunInfo};
-use agent_tool::local_llm_context::{
+use agent_tool::xllm::{
     create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel,
     RunRecord, RunStatus, XllmTask,
 };
@@ -739,7 +739,7 @@ fn default_llm_context() -> Value {
     json!({ "tools": { "enabled": true } })
 }
 
-async fn xllm_deps_for(sh: &Arc<Shared>, env: &SessionEnv, registrar: Arc<dyn ExecutionRegistrar>) -> agent_tool::local_llm_context::XllmDeps {
+async fn xllm_deps_for(sh: &Arc<Shared>, env: &SessionEnv, registrar: Arc<dyn ExecutionRegistrar>) -> agent_tool::xllm::XllmDeps {
     let mut x = sh.deps.xllm.clone();
     x.bash_runner = Some(sh.deps.runtime.bash_runner(env, registrar));
     x.skip_workdir_lock = true;
@@ -888,7 +888,7 @@ async fn new_run_context_plain(
             .or_else(|| cfg.prompt.behavior.clone())
             .unwrap_or_default()
     };
-    let request = agent_tool::local_llm_context::hosted_request(
+    let request = agent_tool::xllm::hosted_request(
         &config,
         ContextOwnerRef::Agent {
             session_id: sid.clone(),

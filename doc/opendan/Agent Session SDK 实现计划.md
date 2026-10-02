@@ -1692,7 +1692,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 | `local_workspace.rs` | 只移植 workspace 的引用与解析 | workspace 版本化另行设计（Q13） |
 | `buildin_tool.rs`、`worksession_tools.rs`、`attachment_*.rs`、`task_util.rs` | `runner::tools` | 改为调用 AgentState 与输入通道 API |
 | `msg_center_pump.rs` 的记录翻译部分（后移） | `channel::MsgCenterInput` / `MsgCenterOutbound` | 供获准的应用直接驱动 UI session（Q14）；随 UI session 实施 |
-| `agent_tool::local_llm_context`（xllm） | 复用 `RunStore` / `RunRecord` 与 `.llm_context` 配置解析 | `runs/` 就是 xllm run 目录；`session_config.prompt.llm_context` 与 `.llm_context` 同一 schema；所需改进见 §8.7 |
+| `agent_tool::xllm`（xllm） | 复用 `RunStore` / `RunRecord` 与 `.llm_context` 配置解析 | `runs/` 就是 xllm run 目录；`session_config.prompt.llm_context` 与 `.llm_context` 同一 schema；所需改进见 §8.7 |
 | 不移植：`agent.rs`、`main.rs`、`dispatch*.rs`、`command_dispatcher.rs`、pump 的路由部分、`contact.rs`、`agent_task_executor.rs`、`task_dispatch.rs`、`worklog.rs` 的存储部分 | — | 属于托管职责，见附录 A |
 
 **现有状态在新协议中的落位**（§1.5 核对；先列 work session 相关的）：

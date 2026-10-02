@@ -283,7 +283,7 @@ AppDoc v1 输入预检样本：
 | PlanReadiness | InstallInspection.status、resolution_status | 把分维度 ready 与未知映射到 UI；补文档/签名/owner 展示证据 |
 | InstallInput | InstallParams + InstallTarget + policy/offline | 服务、权限、三类 mount、bash_envs/auto_start 精确映射；未支持字段不假装保存 |
 | submit | apps.submit 要求批准 fingerprint 与幂等键，可 satisfied/null | 前端确认与后端 sudo 强制校验闭环；返回身份是唯一任务依据 |
-| retry/cancel/status | apps.install.retry/cancel/status | retry_of/返回 ID、commit boundary 动作；不要照搬所有非终态 Cancel |
+| retry/cancel/status | apps.install.retry/cancel/status | retry_of/返回 ID、commit boundary 动作；不要照搬所有非终态 Cancel。真实 task_id 安装页读取公开 status snapshot，并调用 cancel `{task_id, force}`；取消后重新读取服务端状态，cleanup_pending 表示临时文件待自动清理 |
 | InstallTask 恢复 | status 已有阶段/readiness/错误摘要；TaskManager 有 input/progress/result | 补完整 Plan/AppDoc 展示投影、结果、commit point、尝试关联及访问权限 |
 | InstallRecord/Registry | Scheduler 安装记录与应用投影 | 暴露只读分配结果、当前 deployment；Completed 不证明 node 就绪 |
 | RuntimeView | 当前安装 status 不提供完整独立运行结果 | 聚合 node report、deployment 一致性、时效、离线、超时及类型诊断 |

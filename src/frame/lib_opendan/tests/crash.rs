@@ -422,7 +422,7 @@ async fn unsupported_snapshot_version_blocks_recovery_and_keeps_everything() {
 
 #[tokio::test]
 async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
-    use agent_tool::local_llm_context::{ResumeLimits, ResumeStart, RunStatus, RunStore, XllmDeps, XllmRun};
+    use agent_tool::xllm::{ResumeLimits, ResumeStart, RunStatus, RunStore, XllmDeps, XllmRun};
     let env = Env::new();
     let sd = env.create_work(work_spec("answer")).await;
     let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_gate_clear"));
@@ -450,7 +450,7 @@ async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
 
 #[tokio::test]
 async fn xllm_refuses_run_with_pending_host_commit() {
-    use agent_tool::local_llm_context::{ResumeLimits, RunStore, XllmDeps, XllmRun};
+    use agent_tool::xllm::{ResumeLimits, RunStore, XllmDeps, XllmRun};
     let env = Env::new();
     let sd = env.create_work(work_spec("answer")).await;
     let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_input_checkpoint"));

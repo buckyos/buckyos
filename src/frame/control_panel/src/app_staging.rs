@@ -611,6 +611,63 @@ impl PikgStagingStore {
         Ok(metadata)
     }
 
+    pub async fn release_task_lease(
+        &self,
+        raw_handle: &str,
+        owner_user_id: &str,
+        owner_app_id: &str,
+        zone_did: &DID,
+        task_id: &str,
+    ) -> Result<(), RPCErrors> {
+        let handle = StagingHandle::parse(raw_handle).map_err(RPCErrors::ParseRequestError)?;
+        let _guard = self.lock.lock().await;
+        let raw = match tokio::fs::read_to_string(self.metadata_path(&handle)).await {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(Self::error(error.to_string())),
+        };
+        let mut metadata: PikgStagingMetadata =
+            serde_json::from_str(&raw).map_err(|error| Self::error(error.to_string()))?;
+        if metadata.owner_user_id != owner_user_id
+            || metadata.owner_app_id != owner_app_id
+            || metadata.zone_did != *zone_did
+        {
+            return Err(RPCErrors::NoPermission(
+                "staging handle is not owned by this principal and zone".to_string(),
+            ));
+        }
+        metadata.leases.retain(|lease| lease != task_id);
+        if metadata.leases.is_empty() {
+            metadata.expires_at = buckyos_get_unix_timestamp();
+        }
+        self.write_metadata(&metadata).await
+    }
+
+    pub async fn reconcile_task_leases(
+        &self,
+        tasks: &buckyos_api::TaskManagerClient,
+    ) -> Result<(), RPCErrors> {
+        let _guard = self.lock.lock().await;
+        for mut metadata in self.list_metadata().await? {
+            let mut finished = Vec::new();
+            for lease in &metadata.leases {
+                if crate::app_mutation::task_is_finished(
+                    tasks.get_task(lease).await.map(|task| task.phase),
+                )? {
+                    finished.push(lease.clone());
+                }
+            }
+            if !finished.is_empty() {
+                metadata.leases.retain(|lease| !finished.contains(lease));
+                if metadata.leases.is_empty() {
+                    metadata.expires_at = buckyos_get_unix_timestamp();
+                }
+                self.write_metadata(&metadata).await?;
+            }
+        }
+        self.gc_locked(buckyos_get_unix_timestamp(), None).await
+    }
+
     pub async fn status(
         &self,
         raw_handle: &str,
@@ -968,6 +1025,106 @@ mod tests {
             )
             .await
             .is_err());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cleanup_after_restart_releases_only_finished_task_leases() {
+        let root = temp_root();
+        let store = PikgStagingStore::with_root(root.clone());
+        let mut metadata = seed(&store, true).await;
+        metadata.leases = vec![
+            "waiting".to_string(),
+            "canceled".to_string(),
+            "missing".to_string(),
+        ];
+        store.write_metadata(&metadata).await.unwrap();
+        let tasks = buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            crate::app_mutation::tests::TestTasks {
+                states: HashMap::from([
+                    ("waiting".to_string(), buckyos_api::TaskPhase::Waiting),
+                    ("canceled".to_string(), buckyos_api::TaskPhase::Terminal),
+                ]),
+                ..Default::default()
+            },
+        ));
+        store.reconcile_task_leases(&tasks).await.unwrap();
+        let remaining =
+            PikgStagingStore::read_metadata_path(&store.metadata_path(&metadata.handle))
+                .await
+                .unwrap();
+        assert_eq!(remaining.leases, vec!["waiting".to_string()]);
+        assert!(store.content_path(&metadata.pikg_digest).exists());
+        let unavailable = buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            crate::app_mutation::tests::TestTasks {
+                fail_reads: true,
+                ..Default::default()
+            },
+        ));
+        assert!(store.reconcile_task_leases(&unavailable).await.is_err());
+        assert_eq!(
+            PikgStagingStore::read_metadata_path(&store.metadata_path(&metadata.handle))
+                .await
+                .unwrap()
+                .leases,
+            vec!["waiting".to_string()]
+        );
+        let restarted = PikgStagingStore::with_root(root.clone());
+        let done = buckyos_api::TaskManagerClient::new_in_process(Box::new(
+            crate::app_mutation::tests::TestTasks::default(),
+        ));
+        restarted.reconcile_task_leases(&done).await.unwrap();
+        assert!(!restarted.content_path(&metadata.pikg_digest).exists());
+        tokio::fs::remove_dir_all(root).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn task_lease_release_is_idempotent_and_preserves_other_tasks() {
+        let root = temp_root();
+        let store = PikgStagingStore::with_root(root.clone());
+        let mut metadata = seed(&store, false).await;
+        metadata.leases = vec!["old".to_string(), "new".to_string()];
+        store.write_metadata(&metadata).await.unwrap();
+        for _ in 0..2 {
+            store
+                .release_task_lease(
+                    metadata.handle.as_str(),
+                    "alice",
+                    "buckyos-tool",
+                    &metadata.zone_did,
+                    "old",
+                )
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            PikgStagingStore::read_metadata_path(&store.metadata_path(&metadata.handle))
+                .await
+                .unwrap()
+                .leases,
+            vec!["new".to_string()]
+        );
+        store
+            .release_task_lease(
+                metadata.handle.as_str(),
+                "alice",
+                "buckyos-tool",
+                &metadata.zone_did,
+                "new",
+            )
+            .await
+            .unwrap();
+        store.gc().await.unwrap();
+        store
+            .release_task_lease(
+                metadata.handle.as_str(),
+                "alice",
+                "buckyos-tool",
+                &metadata.zone_did,
+                "old",
+            )
+            .await
+            .unwrap();
         tokio::fs::remove_dir_all(root).await.unwrap();
     }
 

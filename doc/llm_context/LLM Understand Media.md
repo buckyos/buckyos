@@ -23,8 +23,8 @@
 | 多模态 content block | `AiContent::Image { source: ResourceRef }` / `AiContent::Document { source, title }` | [aicc_client.rs:324](src/kernel/buckyos-api/src/aicc_client.rs:324) |
 | 消息 IR | `AiMessage { role: AiRole, content: Vec<AiContent> }` | [aicc_client.rs:440](src/kernel/buckyos-api/src/aicc_client.rs:440) |
 | LLMContext waist | `LLMContext` / `LLMContextRequest` | [src/frame/llm_context/src/context_loop.rs](src/frame/llm_context/src/context_loop.rs)、[request.rs](src/frame/llm_context/src/request.rs) |
-| L4 调度器 + 推理边界持久化 | `OneShotRequest` + `LocalLLMContext`（当前实现为 xllm run，见表后说明）；每次推理（Round）前提交 `LLMContextSnapshot`，outcome 边界再提交一次 | [src/frame/agent_tool/src/local_llm_context.rs:181](src/frame/agent_tool/src/local_llm_context.rs:181) |
-| 语义哈希（resume 安全性） | `OneShotRequest::semantic_hash()` | [local_llm_context.rs:238](src/frame/agent_tool/src/local_llm_context.rs:238) |
+| L4 调度器 + 推理边界持久化 | `OneShotRequest` + `LocalLLMContext`（当前实现为 xllm run，见表后说明）；每次推理（Round）前提交 `LLMContextSnapshot`，outcome 边界再提交一次 | [src/frame/agent_tool/src/xllm.rs:181](src/frame/agent_tool/src/xllm.rs:181) |
+| 语义哈希（resume 安全性） | `OneShotRequest::semantic_hash()` | [xllm.rs:238](src/frame/agent_tool/src/xllm.rs:238) |
 | 旁路用到的压缩 | `llm_compress::compress` / `LlmSummarizeCompressor` | [src/frame/agent_tool/src/llm_compress.rs:139](src/frame/agent_tool/src/llm_compress.rs:139) |
 | 工具结果信封 | `AgentToolResult`（`status` + `summary` + `details` + `output`） | [src/frame/agent_tool/src/lib.rs:354](src/frame/agent_tool/src/lib.rs:354) |
 | Pending 状态 | `AgentToolStatus::Pending` + `AgentToolPendingReason` | [lib.rs:336](src/frame/agent_tool/src/lib.rs:336) |
@@ -197,7 +197,7 @@ struct ObservationItem {
    │  }
    ▼
 ┌──────────────────────────────────────────────────────────────┐
-│  旁路 = OneShotRequest（agent_tool::local_llm_context）       │
+│  旁路 = OneShotRequest（agent_tool::xllm）       │
 │    objective = goal                                          │
 │    input = [                                                 │
 │      AiMessage::text(System, BUILT_IN_PROMPT_V1),            │
@@ -246,7 +246,7 @@ struct ObservationItem {
 2. **快照而非引用式共享**：子 context 的 `input` 是父 history 在 fork 时刻深拷贝出来的 `Vec<AiMessage>`，而非对父 `LLMContext` 的活引用。理由：
    - 与 `LocalLLMContext` 按推理边界提交的快照一致：旁路 input 是一份确定的数据，可重放；
    - 父 context 可能在旁路执行期间继续推进（并行 agent loop），快照语义明确、可重放；
-   - 该快照参与 `OneShotRequest::semantic_hash()`（[local_llm_context.rs:238](src/frame/agent_tool/src/local_llm_context.rs:238)），自动获得 resume 兼容性保护。
+   - 该快照参与 `OneShotRequest::semantic_hash()`（[xllm.rs:238](src/frame/agent_tool/src/xllm.rs:238)），自动获得 resume 兼容性保护。
 
 3. **超长父 history → 走 `llm_compress`**：本工具构造旁路 input 前，**应**调用 `llm_compress::compress`（[llm_compress.rs:139](src/frame/agent_tool/src/llm_compress.rs:139)）把降级后的快照压到目标预算内，再喂给 OneShot。这复用 OneShot 自身的 graceful-degrade 策略，不引入新逻辑。压缩边界与 head-keep / hot-tail 规则全部沿用 `llm_compress` 已有约定。
 
@@ -576,7 +576,7 @@ v0 实现可以先内置等价的 Rust plan，不必立刻把 JSON DSL 暴露为
 
 下面三个边界彼此独立，不能混为"per-turn 持久化"（术语见 [readme.md](readme.md)）：
 
-- **模型推理 checkpoint**：模型分析 stage 以 xllm run 执行（[local_llm_context.rs](src/frame/agent_tool/src/local_llm_context.rs)），持久化粒度是推理边界：每次推理（Round）开始前由 `InferenceHook` 把 `LLMContextSnapshot` 写入 run 目录的 `snapshots/`，到达 outcome 时再提交一次；不存在"每个 Turn 一份快照"。主干 run 同理：function call 模式在每次推理前 checkpoint，behavior 模式只在 Step 边界 checkpoint（`CheckpointHook`）。probe / preprocess / traditional analysis 应保持幂等或在 `pipeline_trace` 中记录不可恢复错误。
+- **模型推理 checkpoint**：模型分析 stage 以 xllm run 执行（[xllm.rs](src/frame/agent_tool/src/xllm.rs)），持久化粒度是推理边界：每次推理（Round）开始前由 `InferenceHook` 把 `LLMContextSnapshot` 写入 run 目录的 `snapshots/`，到达 outcome 时再提交一次；不存在"每个 Turn 一份快照"。主干 run 同理：function call 模式在每次推理前 checkpoint，behavior 模式只在 Step 边界 checkpoint（`CheckpointHook`）。probe / preprocess / traditional analysis 应保持幂等或在 `pipeline_trace` 中记录不可恢复错误。
 - **工具结果提交**：对主干而言，整个 `llm_understand_media` 只是一次工具调用，身份是 `call_id`。function call 模式下 `ToolUse` / `ToolResult` 随主干下一次推理前的 checkpoint 一起持久化（与同一响应的其它调用同属一个工具批次，共消耗一次工具迭代）；behavior 模式下结果写入当前 Step 的 `action_results`，随 Step 边界 checkpoint 持久化。libopendan 宿主在调用开始前登记 in-flight 记录，只有包含该结果（或显式 `Unresolved`）的 checkpoint 才清除它；之后 flush 时写成 Session worklog 的 `action_result {call_id}`。
 - **Turn 完成**：工具结果提交不完成 Step（behavior 模式下 Step 要等它的全部 action 结果就绪），更不完成 Turn。Turn 是否完成只由 Session 在 run 结束时判定。
 

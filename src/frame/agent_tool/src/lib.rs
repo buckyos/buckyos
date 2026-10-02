@@ -34,7 +34,6 @@ pub mod llm_compress;
 pub mod llm_explore;
 pub mod llm_tool_carft;
 pub mod llm_understand_media;
-pub mod local_llm_context;
 pub mod path_utils;
 pub mod run_local_llm;
 pub mod runtime_context;
@@ -42,6 +41,7 @@ pub mod skills_mgr;
 pub mod todo_tools;
 pub mod tool;
 pub mod workspace;
+pub mod xllm;
 
 pub use tool::{
     BasicToolHost, CallingConventions, CliInvocation, ContentInput, NullToolHost, ToolCtx,
@@ -118,7 +118,7 @@ pub fn now_ms() -> u64 {
 }
 pub use llm_compress::{compress, LlmSummarizeCompressor};
 pub use llm_understand_media::{LlmUnderstandMediaTool, TOOL_LLM_UNDERSTAND_MEDIA};
-pub use local_llm_context::{
+pub use xllm::{
     AiccLlmClient, Attachment, DefaultLlmClientFactory, EffectiveConfig, EffectiveTools,
     ExtractedValue, LlmClientFactory, LoopModel, OpenAiLlmClient, ProviderKind, ResultFormat,
     ResumeLimits, ResumeStart, RunEvent, RunLogLevel, RunObserver, RunOutcome, RunPhase,

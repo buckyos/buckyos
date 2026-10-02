@@ -5,8 +5,8 @@
 //! 持久真相源；创建、确认和重试后立即本地执行，启动扫描和低频 sweep
 //! 从持久状态恢复遗漏，不另建业务队列。
 
-use crate::app_install_engine::InstallEngine;
 use crate::app_install_engine::InstallTaskStatus;
+use crate::app_install_engine::{has_pending_cancel, InstallEngine};
 use log::{info, warn};
 use std::sync::Arc;
 use std::time::Duration;
@@ -51,18 +51,21 @@ impl InstallRunner {
     }
 
     /// 启动恢复：TaskManager 真相扫描，Pending/Running 恢复执行；
-    /// WaitingForApproval 等确认、Paused 等 retry，都不动。
+    /// 等待任务有 Cancel 时收尾，否则等待 confirm/retry。
     async fn startup_scan(self: &Arc<Self>) {
         match self.engine.store().list_active().await {
             Ok(tasks) => {
                 for task in tasks {
-                    if should_resume(task.status) {
+                    if should_resume(task.status) || has_pending_cancel(&task) {
                         info!("recover install task {} ({:?})", task.id, task.status);
                         self.spawn_run(task.id.clone());
                     }
                 }
             }
             Err(err) => warn!("startup install task scan failed: {err}"),
+        }
+        if let Err(error) = self.engine.reconcile_cleanup().await {
+            warn!("install cleanup reconciliation failed: {error}");
         }
     }
 
@@ -75,12 +78,15 @@ impl InstallRunner {
             match self.engine.store().list_active().await {
                 Ok(tasks) => {
                     for task in tasks {
-                        if should_resume(task.status) {
+                        if should_resume(task.status) || has_pending_cancel(&task) {
                             self.spawn_run(task.id.clone());
                         }
                     }
                 }
                 Err(err) => warn!("install sweep failed: {err}"),
+            }
+            if let Err(error) = self.engine.reconcile_cleanup().await {
+                warn!("install cleanup reconciliation failed: {error}");
             }
         }
     }

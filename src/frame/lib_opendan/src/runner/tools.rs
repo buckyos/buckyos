@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_tool::exec_tracking::{ExecutionRecord, ExecutionRegistrar, InflightAction};
-use agent_tool::local_llm_context::{XllmToolManager, TOOL_EXEC};
+use agent_tool::xllm::{XllmToolManager, TOOL_EXEC};
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::deps::{ToolDispatchError, ToolManager, ToolSpecLite};

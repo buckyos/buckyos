@@ -226,7 +226,7 @@ async fn a_run_that_never_fits_is_paused_with_the_limit_and_retried_later() {
     assert_eq!((stats.rounds, stats.rounds_failed), (4, 4));
     let (rec, snap) = sd.runs().load_checked(&live.run_id).unwrap();
     assert_eq!(rec.usage.llm_requests, 4);
-    assert_eq!(rec.status, agent_tool::local_llm_context::RunStatus::Paused);
+    assert_eq!(rec.status, agent_tool::xllm::RunStatus::Paused);
     assert!(matches!(
         snap.unwrap().state.suspended,
         Some(llm_context::Suspension::ContextLimit { .. })

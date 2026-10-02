@@ -27,7 +27,7 @@ llm_context 的 Behavior Loop 分层基本符合设计：`run_inner_for_step` �
 
 - [lib_opendan Runner](../src/frame/lib_opendan/src/runner/drive.rs)：新 Session 目录协议及参考 Runner。
 - `src/frame/lib_opendan/src/protocol`、`session/runs.rs`、`state/perception.rs`、Runner history/flush，以及 `examples` / `tests`。
-- `src/frame/llm_context` 的 request/state/outcome、两种 Loop、hook、snapshot overrides、挂起恢复、renderer 和测试；xllm / `agent_tool` 联动入口为 `local_llm_context.rs` 与工具运行上下文。
+- `src/frame/llm_context` 的 request/state/outcome、两种 Loop、hook、snapshot overrides、挂起恢复、renderer 和测试；xllm / `agent_tool` 联动入口为 `xllm.rs` 与工具运行上下文。
 - 文档同步覆盖整个 `doc/llm_context`，以及 libopendan 的 README、Session SDK 文档和 `doc/opendan/protocol` 生成材料。此次搜索未在 desktop 或相邻 `buckyos-websdk` 源码中发现上述 Session 历史字段的直接消费者；实施时仍需复查。
 
 ## 2. P0：Session 的 round 不能直接批量改成 turn
@@ -71,7 +71,7 @@ llm_context 的 Behavior Loop 分层基本符合设计：`run_inner_for_step` �
 
 - [x] 在 llm_context 与 libopendan 中统一工具额度命名，建议 `ToolPolicy.max_tool_iterations`、`LLMContextState.tool_iterations_left`、`BudgetKind::ToolIterations`，同步配置说明、报告和错误文案。一次 iteration 是一个原生工具批次，或一个带 action 的 Behavior Step，不是 Round，也不是所有 Step 的计数。最终名称及是否拆分预算见 D3。
 - [x] 同步修改 [snapshot_overrides.rs](../src/frame/llm_context/src/snapshot_overrides.rs) 的 `reset_rounds`，并审查 libopendan fork / normal / independent 调用链的继承／重置；术语修改保持现有额度消费策略。
-- [x] 联动 [local_llm_context.rs](../src/frame/agent_tool/src/local_llm_context.rs) 的配置字段、严格键校验、override、`RunLimits`、`ResumeLimits`、请求转换和持久 `RunRecord.config`，使 `prompt.llm_context` 与 hosted 执行采用一致的新名称。resume 调整总额度时仍应扣掉已经消费的额度。
+- [x] 联动 [xllm.rs](../src/frame/agent_tool/src/xllm.rs) 的配置字段、严格键校验、override、`RunLimits`、`ResumeLimits`、请求转换和持久 `RunRecord.config`，使 `prompt.llm_context` 与 hosted 执行采用一致的新名称。resume 调整总额度时仍应扣掉已经消费的额度。
 - [x] 同步 llm_context / xllm / libopendan 的示例、测试、协议文档和 fixtures；代码及文档使用同一组新字段，不新增重复配置或兼容别名。
 - [x] `max_calls_per_round` 当前限制单次模型 response 的原生 tool calls 数量，符合 Round 定义；应补清楚其适用范围，不必随工具预算一起机械改名，也不要用它表示一个 Behavior Step 的 action 数量。
 - [x] 仅在确实需要限制推理总次数时另行定义推理预算。本次术语统一不自动新增一个行为不同的 `max_rounds` 限制，更不能把现有配置值直接迁移为推理上限。
@@ -101,7 +101,7 @@ llm_context 的 Behavior Loop 分层基本符合设计：`run_inner_for_step` �
 
 ### 5.2 xllm 的工具调用编号不等于 Behavior Step
 
-证据：[local_llm_context.rs](../src/frame/agent_tool/src/local_llm_context.rs) `XllmToolManager` 的 `step_idx` 在每次工具调用时增长；它是 libopendan hosted 工具执行链的依赖。该值不是 `StepRecord.meta.step_index`，也不是 Session Turn 编号。
+证据：[xllm.rs](../src/frame/agent_tool/src/xllm.rs) `XllmToolManager` 的 `step_idx` 在每次工具调用时增长；它是 libopendan hosted 工具执行链的依赖。该值不是 `StepRecord.meta.step_index`，也不是 Session Turn 编号。
 
 - [x] libopendan 日志、结果归属和恢复定位使用各自真实身份：工具用 `call_id`，Behavior Step 用 `(run_id, step_index)`，Turn 用 Session 的逻辑 Turn 身份。不能从 [agent_tool/lib.rs](../src/frame/agent_tool/src/lib.rs) 的 `SessionRuntimeContext.step_idx` 推导 Step／Turn 数。
 - [x] 将这条调用链按工具调用增长的 `step_idx` 改为 `tool_call_index`，同步工具运行上下文、xllm 派发及调用点，避免新抽象继续混用调用编号和 Behavior Step。现有 opendan 的 Topic/Recall 或历史工具的业务重构留到下一阶段。
