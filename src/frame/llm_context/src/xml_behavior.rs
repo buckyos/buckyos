@@ -63,6 +63,7 @@ use buckyos_api::{AiResponse, AiToolCall};
 use serde_json::Value;
 
 use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord};
+use crate::xml_util::{parse_attrs, xml_unescape};
 
 /// Prompt snippet that teaches an LLM to emit the XML Behavior v2 result
 /// format accepted by [`XmlBehaviorParser`].
@@ -396,7 +397,13 @@ fn scan_known_tags(input: &str, tags: &'static [&'static str]) -> Vec<RawActionT
         } else {
             opening_inner
         };
-        let attrs = parse_attrs(attrs_str);
+        // The attributes follow the tag name.
+        let attrs = parse_attrs(
+            attrs_str
+                .trim_start()
+                .split_once(char::is_whitespace)
+                .map_or("", |(_, rest)| rest),
+        );
 
         if self_closing {
             out.push(RawActionTag {
@@ -606,126 +613,6 @@ pub(crate) fn extract_tag_body(input: &str, tag: &str) -> Option<String> {
         .unwrap_or(input.len());
 
     Some(input[body_start..body_end].to_string())
-}
-
-/// Parse an XML attribute string like `tag attr="x" path='y' flag` into a
-/// key→string map. Leading tag name is discarded. Quotes optional; unquoted
-/// values terminate at the next whitespace. Flag attributes (no `=`) bind
-/// to the empty string.
-fn parse_attrs(input: &str) -> HashMap<String, String> {
-    let mut out: HashMap<String, String> = HashMap::new();
-    let bytes = input.as_bytes();
-    let mut i = 0;
-
-    // Skip leading tag-name token.
-    while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() {
-            break;
-        }
-
-        let key_start = i;
-        while i < bytes.len() && bytes[i] != b'=' && !bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if key_start == i {
-            i += 1;
-            continue;
-        }
-        let key = input[key_start..i].to_ascii_lowercase();
-
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() || bytes[i] != b'=' {
-            out.insert(key, String::new());
-            continue;
-        }
-        i += 1;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-
-        let value = if i < bytes.len() && (bytes[i] == b'"' || bytes[i] == b'\'') {
-            let quote = bytes[i];
-            i += 1;
-            let v_start = i;
-            while i < bytes.len() && bytes[i] != quote {
-                i += 1;
-            }
-            let v = &input[v_start..i];
-            if i < bytes.len() {
-                i += 1;
-            }
-            xml_unescape(v)
-        } else {
-            let v_start = i;
-            while i < bytes.len() && !bytes[i].is_ascii_whitespace() {
-                i += 1;
-            }
-            xml_unescape(&input[v_start..i])
-        };
-
-        out.insert(key, value);
-    }
-
-    out
-}
-
-/// Decode the five baseline XML entities. Unknown entities pass through.
-pub(crate) fn xml_unescape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut rest = input;
-    while let Some(amp_idx) = rest.find('&') {
-        out.push_str(&rest[..amp_idx]);
-        let tail = &rest[amp_idx..];
-        match tail.find(';') {
-            Some(end) => {
-                let entity = &tail[1..end];
-                let decoded = match entity {
-                    "amp" => Some('&'),
-                    "lt" => Some('<'),
-                    "gt" => Some('>'),
-                    "quot" => Some('"'),
-                    "apos" => Some('\''),
-                    _ => None,
-                };
-                match decoded {
-                    Some(c) => out.push(c),
-                    None => out.push_str(&tail[..=end]),
-                }
-                rest = &tail[end + 1..];
-            }
-            None => {
-                out.push_str(tail);
-                return out;
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-/// Escape the five baseline XML entities. Used by the renderer.
-pub(crate) fn xml_escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 // =========================================================================

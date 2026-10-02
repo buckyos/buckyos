@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::behavior_loop::{HistoryInputRecord, HistorySummaryRecord, StepRecord, StepRenderer};
 use crate::observation::{Observation, ToolResultStatusView, ToolResultView};
-use crate::xml_behavior::xml_escape;
+use crate::xml_util::xml_escape;
 
 /// Default renderer for the XML behavior protocol. Stateless beyond the
 /// truncation knobs; share a single `Arc<XmlStepRenderer>` across sessions.

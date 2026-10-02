@@ -48,8 +48,14 @@
 //! This file should remain free of OpenDAN session policy. It only translates
 //! protocol shapes; routing, authorization, command execution and reply policy
 //! belong to the caller.
+//!
+//! Only the structured ingress (`parse_msg_object_structured`,
+//! `msg_object_to_ai_message_structured`) and the validated async egress
+//! (`ai_message_to_msg_object_with_base_validated_async`) are re-exported at
+//! the crate root; the plain-text and synchronous variants below have no
+//! caller outside this module.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use buckyos_api::{AiContent, AiMessage, AiRole, ResourceRef};
 use name_lib::DID;
@@ -59,6 +65,8 @@ use ndn_lib::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+use crate::xml_util::{parse_attrs, xml_escape};
 
 const PROVIDER_MSG_MACHINE: &str = "buckyos.msg.machine";
 const PROVIDER_MSG_SERVICE_REF: &str = "buckyos.msg.ref.service_did";
@@ -175,7 +183,7 @@ pub fn msg_object_to_ai_message_structured(msg: &MsgObject) -> AiMessage {
     msg_object_to_ai_message_with_role_structured(msg, AiRole::User)
 }
 
-pub fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMessage {
+pub(crate) fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMessage {
     let mut blocks = Vec::new();
     let text = msg.content.content.trim();
     if !text.is_empty() {
@@ -204,7 +212,7 @@ pub fn msg_object_to_ai_message_with_role(msg: &MsgObject, role: AiRole) -> AiMe
     AiMessage::new(role, blocks)
 }
 
-pub fn msg_object_to_ai_message_with_role_structured(msg: &MsgObject, role: AiRole) -> AiMessage {
+pub(crate) fn msg_object_to_ai_message_with_role_structured(msg: &MsgObject, role: AiRole) -> AiMessage {
     let mut message = msg_object_to_ai_message_with_role(msg, role);
     let text = msg.content.content.trim();
     let generic_attachment_text = matches!(
@@ -443,7 +451,7 @@ fn assemble_msg_object(
     base
 }
 
-pub fn msg_object_control_command(
+pub(crate) fn msg_object_control_command(
     msg: &MsgObject,
     registered_commands: &[&str],
 ) -> Option<SystemControlCommand> {
@@ -757,11 +765,11 @@ fn collect_resource_ref(
         ResourceRef::Base64 { mime, data_base64 } => {
             text_parts.push(format!(
                 "<attachment kind=\"{}\" source=\"base64\" mime=\"{}\" data_base64=\"{}\"{} />",
-                escape_attr(kind),
-                escape_attr(mime),
-                escape_attr(data_base64),
+                xml_escape(kind),
+                xml_escape(mime),
+                xml_escape(data_base64),
                 title
-                    .map(|s| format!(" title=\"{}\"", escape_attr(s)))
+                    .map(|s| format!(" title=\"{}\"", xml_escape(s)))
                     .unwrap_or_default()
             ));
         }
@@ -1012,75 +1020,26 @@ fn attachment_body_looks_like_obj_id(body: &str) -> bool {
     ObjId::new(body).is_ok()
 }
 
-fn parse_attrs(raw: &str) -> HashMap<String, String> {
-    let bytes = raw.as_bytes();
-    let mut i = 0usize;
-    let mut out = HashMap::new();
-    while i < bytes.len() {
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let key_start = i;
-        while i < bytes.len()
-            && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'-'))
-        {
-            i += 1;
-        }
-        if i == key_start {
-            break;
-        }
-        let key = &raw[key_start..i];
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() || bytes[i] != b'=' {
-            continue;
-        }
-        i += 1;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if i >= bytes.len() || !matches!(bytes[i], b'"' | b'\'') {
-            continue;
-        }
-        let quote = bytes[i];
-        i += 1;
-        let value_start = i;
-        while i < bytes.len() && bytes[i] != quote {
-            i += 1;
-        }
-        if i > value_start {
-            out.insert(key.to_string(), unescape_attr(&raw[value_start..i]));
-        } else {
-            out.insert(key.to_string(), String::new());
-        }
-        if i < bytes.len() {
-            i += 1;
-        }
-    }
-    out
-}
-
 fn render_attachment_tag(tag: &AttachmentTag) -> String {
-    let mut attrs = vec![format!("kind=\"{}\"", escape_attr(&tag.kind))];
+    let mut attrs = vec![format!("kind=\"{}\"", xml_escape(&tag.kind))];
     if let Some(obj_id) = &tag.obj_id {
-        attrs.push(format!("obj_id=\"{}\"", escape_attr(obj_id)));
+        attrs.push(format!("obj_id=\"{}\"", xml_escape(obj_id)));
     }
     if let Some(url) = &tag.url {
         attrs.push(format!("source=\"url\""));
-        attrs.push(format!("url=\"{}\"", escape_attr(url)));
+        attrs.push(format!("url=\"{}\"", xml_escape(url)));
     }
     if let Some(path) = &tag.path {
-        attrs.push(format!("path=\"{}\"", escape_attr(path)));
+        attrs.push(format!("path=\"{}\"", xml_escape(path)));
     }
     if let Some(mime) = &tag.mime {
-        attrs.push(format!("mime=\"{}\"", escape_attr(mime)));
+        attrs.push(format!("mime=\"{}\"", xml_escape(mime)));
     }
     if let Some(title) = &tag.title {
-        attrs.push(format!("title=\"{}\"", escape_attr(title)));
+        attrs.push(format!("title=\"{}\"", xml_escape(title)));
     }
     if let Some(label) = &tag.label {
-        attrs.push(format!("label=\"{}\"", escape_attr(label)));
+        attrs.push(format!("label=\"{}\"", xml_escape(label)));
     }
     format!("<attachment {} />", attrs.join(" "))
 }
@@ -1095,22 +1054,6 @@ fn render_attachment_rejection(tag: &AttachmentTag, reason: &str) -> String {
         reason,
         render_attachment_tag(tag)
     )
-}
-
-fn escape_attr(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn unescape_attr(value: &str) -> String {
-    value
-        .replace("&quot;", "\"")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
 }
 
 fn machine_payloads_to_machine(payloads: Vec<Value>) -> Option<MachineContent> {

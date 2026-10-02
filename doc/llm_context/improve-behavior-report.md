@@ -47,7 +47,7 @@
 
 ### libopendan 当前实现
 
-相关代码：`src/frame/lib_opendan/src/runner/drive.rs`（`handle_context_outcome`、`classify_done`、`finish_run`）。
+相关代码：`src/frame/lib_opendan/src/runner/outcome.rs`（`handle_context_outcome`、`classify_done`、`finish_run`）。
 
 - `handle_context_outcome` 解释 run 的 `Done`：终止 Step 的 `<report>`（`behavior_result.self_report`）优先作为本次结果（answer），没有时取最后的回答文本。`END` / `done`（xllm 解析器把只带 `<report>` 的 Step 判为 `done`）是终止，`WAIT_USER_MSG` 是等待输入，其它 `next_behavior` 是 behavior 切换。
 - fork child：任何 Done（`WAIT_USER_MSG` 除外）都返回调用方，child 的结果进 `state.process_result`，parent run 恢复后在交接批次 `<session_input hook="on_behavior_switch">` 的 `<process_result behavior=…>` 里读到。这是 parent handoff，不上行、不完成 Turn。

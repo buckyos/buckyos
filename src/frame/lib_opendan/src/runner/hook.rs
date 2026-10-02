@@ -26,8 +26,9 @@ use crate::session::runs::RunHandle;
 use crate::state::{declared_refs, render_active_sessions, AgentStateClient};
 
 use super::assembler::{ChangeItem, InputMaterial};
-use super::drive::{apply_controls, confirm_inputs, fetch_inputs, report, Shared};
+use super::inputs::{apply_controls, confirm_inputs, fetch_inputs};
 use super::receipts::{apply_receipt, predict_position, snapshot_host_meta, with_host_meta};
+use super::shared::{report, Shared};
 
 /// Cursor key of the active-session set subscription.
 pub const ACTIVE_CURSOR: &str = "_active_sessions";
