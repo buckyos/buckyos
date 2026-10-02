@@ -59,7 +59,7 @@ pub const BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV: &str = "BUCKYOS_APPCLIENT_SESSION
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BuckyOSRuntimeType {
-    AppClient,     //运行在所有设备上，通常不在容器里（唯一可能加载user private key的类型)
+    AppClient,     //运行在所有设备上，也可以在容器里（唯一可能加载user private key的类型)
     AppService,    //R3 运行在Node上，指定用户，可能在容器里
     FrameService,  //R2 运行在Node上，通常在容器里（未启用）
     KernelService, //R1 由node-daemon启动的的系统基础服务
@@ -2031,6 +2031,9 @@ impl BuckyOSRuntime {
 
     fn resolve_local_service_host(&self) -> String {
         match self.runtime_type {
+            BuckyOSRuntimeType::AppClient => self
+                .resolve_appclient_gateway_host()
+                .unwrap_or_else(|| "127.0.0.1".to_string()),
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
                 let configured_host = env::var(BUCKYOS_HOST_GATEWAY_ENV).ok();
                 resolve_container_gateway_host(configured_host.as_deref())
@@ -2039,46 +2042,59 @@ impl BuckyOSRuntime {
         }
     }
 
+    fn resolve_appclient_gateway_host(&self) -> Option<String> {
+        env::var(BUCKYOS_HOST_GATEWAY_ENV)
+            .ok()
+            .filter(|host| !host.trim().is_empty())
+            .map(|host| resolve_container_gateway_host(Some(host.as_str())))
+    }
+
+    fn get_appclient_service_url(&self, service_name: &str, https_only: bool) -> String {
+        if let Some(host) = self.resolve_appclient_gateway_host() {
+            return format!(
+                "http://{}:{}/kapi/{}",
+                host, self.node_gateway_port, service_name
+            );
+        }
+        format!(
+            "{}://{}/kapi/{}",
+            if https_only { "https" } else { "http" },
+            self.zone_id.to_host_name(),
+            service_name
+        )
+    }
+
     /// Compute the URL used to reach the zone's `system_config` service for
     /// the current runtime type. Exposed so that callers (e.g. control_panel
     /// handlers that want to forward the caller's RPC session token) can
     /// construct a fresh `SystemConfigClient` with their own auth token.
     pub fn get_system_config_url(&self) -> String {
-        let mut url = format!(
-            "http://{}:3200/kapi/system_config",
-            self.resolve_local_service_host()
-        );
-        let mut schema = "http";
-        if self.force_https {
-            schema = "https";
-        }
-        let zone_host = self.zone_id.to_host_name();
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                if !self.is_ood() {
-                    url = format!("{}://{}/kapi/system_config", schema, zone_host);
-                }
+                self.get_appclient_service_url("system_config", self.force_https)
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
-                url = format!(
+                format!(
                     "http://{}:{}/kapi/system_config",
                     self.resolve_local_service_host(),
                     DEFAULT_NODE_GATEWAY_PORT
-                );
+                )
             }
             BuckyOSRuntimeType::Kernel | BuckyOSRuntimeType::KernelService => {
                 // 非 OOD Kernel（ZoneGateway / 普通 Node）本机不跑 system_config 服务，
                 // 必须通过本机 cyfs-gateway 转发到 OOD。
-                if !self.is_ood() {
-                    url = format!(
-                        "http://{}:{}/kapi/system_config",
-                        self.resolve_local_service_host(),
-                        DEFAULT_NODE_GATEWAY_PORT
-                    );
-                }
+                let port = if self.is_ood() {
+                    3200
+                } else {
+                    DEFAULT_NODE_GATEWAY_PORT
+                };
+                format!(
+                    "http://{}:{}/kapi/system_config",
+                    self.resolve_local_service_host(),
+                    port
+                )
             }
         }
-        url
     }
 
     pub async fn get_system_config_client(&self) -> Result<Arc<SystemConfigClient>> {
@@ -2476,22 +2492,9 @@ impl BuckyOSRuntime {
         service_name: &str,
         https_only: bool,
     ) -> Result<String> {
-        let mut schema = "http";
-        if https_only {
-            schema = "https";
-        }
-
         match self.runtime_type {
             BuckyOSRuntimeType::AppClient => {
-                //通过Zone Host Name 访问Service总是可以成功的，理论上有SDK的环境不应该使用这种方式。
-                //TODO：如果约束为有SDK的环境，必然有node_gateway,那么这个分支就不必要存在
-                //
-                // kRPC `/kapi/<service>` 一律打到 zone 的裸 host —— `app_host_perfix.<zone_host>`
-                // 这种二级域名只属于 WebUI 静态资源路由，service 维度的 RPC 不走那条路径。
-                // (例：DV test 环境里 `test.buckyos.io` 有 DNS / cert，
-                // `buckycli.test.buckyos.io` 没有。)
-                let host_name = self.zone_id.to_host_name();
-                return Ok(format!("{}://{}/kapi/{}", schema, host_name, service_name));
+                return Ok(self.get_appclient_service_url(service_name, https_only));
             }
             BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
                 let (result_url, _is_local) = self.get_kernel_service_url(service_name).await?;
@@ -2689,13 +2692,13 @@ mod tests {
             let zone_config = ZoneConfig::from_zone_document(&zone_doc, None).unwrap();
             let response_config = serde_json::to_string(&zone_config).unwrap();
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let url = format!(
-                "http://{}/kapi/system_config",
-                listener.local_addr().unwrap()
-            );
+            let gateway_port = listener.local_addr().unwrap().port();
             let server = tokio::spawn(async move {
                 let (stream, _) = listener.accept().await.unwrap();
                 let mut stream = BufReader::new(stream);
+                let mut request_line = String::new();
+                stream.read_line(&mut request_line).await.unwrap();
+                assert!(request_line.starts_with("POST /kapi/system_config "));
                 let mut content_length = None;
                 loop {
                     let mut line = String::new();
@@ -2724,13 +2727,21 @@ mod tests {
                 request
             });
             let session_token = appclient_session_token(&target, TokenUse::Session);
+            let _lock = crate::tests::test_env_lock().lock().unwrap();
+            let previous_gateway =
+                crate::tests::set_env_var(BUCKYOS_HOST_GATEWAY_ENV, " localhost ");
             let mut runtime = {
-                let _lock = crate::tests::test_env_lock().lock().unwrap();
                 let previous_token =
                     crate::tests::set_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, &session_token);
                 let previous_zone = crate::tests::set_env_var(
                     "BUCKYOS_ZONE_CONFIG",
                     &serde_json::to_string(&zone_config).unwrap(),
+                );
+                let mut device_doc = DeviceDocument::new("ood1", "test-key".to_string());
+                device_doc.device_type = "ood".to_string();
+                let previous_device = crate::tests::set_env_var(
+                    "BUCKYOS_THIS_DEVICE",
+                    &serde_json::to_string(&device_doc).unwrap(),
                 );
                 let result = crate::init_buckyos_api_runtime(
                     target.appid_claim(),
@@ -2740,16 +2751,17 @@ mod tests {
                 .await;
                 crate::tests::restore_env_var(BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV, previous_token);
                 crate::tests::restore_env_var("BUCKYOS_ZONE_CONFIG", previous_zone);
+                crate::tests::restore_env_var("BUCKYOS_THIS_DEVICE", previous_device);
                 result.unwrap()
             };
+            runtime.node_gateway_port = gateway_port;
             assert_eq!(runtime.get_auth_target().unwrap(), target);
             assert!(runtime.get_authenticated_user_id().is_none());
-            assert!(runtime
-                .system_config_client
-                .set(Arc::new(SystemConfigClient::new(Some(&url), None)))
-                .is_ok());
+            assert!(runtime.is_ood());
+            assert!(runtime.system_config_client.get().is_none());
 
             let login = tokio::time::timeout(Duration::from_secs(5), runtime.login()).await;
+            crate::tests::restore_env_var(BUCKYOS_HOST_GATEWAY_ENV, previous_gateway);
             if !matches!(&login, Ok(Ok(()))) {
                 server.abort();
             }
@@ -3133,6 +3145,101 @@ mod tests {
             resolve_container_gateway_host(Some("localhost")),
             "127.0.0.1"
         );
+    }
+
+    #[tokio::test]
+    async fn appclient_service_urls_use_explicit_gateway_or_zone() {
+        let _lock = crate::tests::test_env_lock().lock().unwrap();
+        for (configured_host, expected_host) in [
+            (None, None),
+            (Some(""), None),
+            (Some(" \t "), None),
+            (Some(" 192.0.2.20 "), Some("192.0.2.20")),
+            (Some("localhost"), Some("127.0.0.1")),
+        ] {
+            let previous_gateway = env::var(BUCKYOS_HOST_GATEWAY_ENV).ok();
+            match configured_host {
+                Some(host) => env::set_var(BUCKYOS_HOST_GATEWAY_ENV, host),
+                None => env::remove_var(BUCKYOS_HOST_GATEWAY_ENV),
+            }
+            for device_type in [None, Some("ood"), Some("node")] {
+                for https_only in [false, true] {
+                    for gateway_port in [DEFAULT_NODE_GATEWAY_PORT, 43180] {
+                        let mut runtime = BuckyOSRuntime::new(
+                            "notes.example.com",
+                            Some("alice".to_string()),
+                            BuckyOSRuntimeType::AppClient,
+                        );
+                        runtime.zone_id = DID::new("web", "review.invalid");
+                        runtime.force_https = https_only;
+                        runtime.node_gateway_port = gateway_port;
+                        runtime.device_config = device_type.map(|device_type| {
+                            let mut device_doc =
+                                DeviceDocument::new("node1", "test-key".to_string());
+                            device_doc.device_type = device_type.to_string();
+                            device_doc
+                        });
+                        assert_eq!(
+                            runtime.resolve_local_service_host(),
+                            expected_host.unwrap_or("127.0.0.1")
+                        );
+                        for service_name in ["system_config", "aicc", "verify-hub"] {
+                            let expected_url = match expected_host {
+                                Some(host) => format!(
+                                    "http://{}:{}/kapi/{}",
+                                    host, gateway_port, service_name
+                                ),
+                                None => format!(
+                                    "{}://review.invalid/kapi/{}",
+                                    if https_only { "https" } else { "http" },
+                                    service_name
+                                ),
+                            };
+                            assert_eq!(
+                                runtime
+                                    .get_zone_service_url(service_name, https_only)
+                                    .await
+                                    .unwrap(),
+                                expected_url,
+                                "gateway={configured_host:?}, device={device_type:?}"
+                            );
+                            if service_name == "system_config" {
+                                assert_eq!(runtime.get_system_config_url(), expected_url);
+                            }
+                        }
+                    }
+                }
+            }
+            crate::tests::restore_env_var(BUCKYOS_HOST_GATEWAY_ENV, previous_gateway);
+        }
+    }
+
+    #[test]
+    fn service_runtime_system_config_routes_are_unchanged() {
+        let _lock = crate::tests::test_env_lock().lock().unwrap();
+        let previous_gateway = crate::tests::set_env_var(BUCKYOS_HOST_GATEWAY_ENV, "192.0.2.20");
+        for runtime_type in [
+            BuckyOSRuntimeType::AppService,
+            BuckyOSRuntimeType::FrameService,
+            BuckyOSRuntimeType::Kernel,
+            BuckyOSRuntimeType::KernelService,
+        ] {
+            for device_type in ["ood", "node"] {
+                let mut runtime = BuckyOSRuntime::new("demo", None, runtime_type.clone());
+                let mut device_doc = DeviceDocument::new("node1", "test-key".to_string());
+                device_doc.device_type = device_type.to_string();
+                runtime.device_config = Some(device_doc);
+                let expected_url = match runtime_type {
+                    BuckyOSRuntimeType::AppService | BuckyOSRuntimeType::FrameService => {
+                        "http://192.0.2.20:3180/kapi/system_config"
+                    }
+                    _ if device_type == "ood" => "http://127.0.0.1:3200/kapi/system_config",
+                    _ => "http://127.0.0.1:3180/kapi/system_config",
+                };
+                assert_eq!(runtime.get_system_config_url(), expected_url);
+            }
+        }
+        crate::tests::restore_env_var(BUCKYOS_HOST_GATEWAY_ENV, previous_gateway);
     }
 
     #[test]

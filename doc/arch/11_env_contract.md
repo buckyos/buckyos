@@ -65,7 +65,7 @@ node-daemon 的 `AppLoader` 是 app/agent worker 环境变量的权威注入者�
 | `BUCKYOS_EXTTOOL_DIR` | node-daemon/aios 默认值 | aios entrypoint | 节点共享 ExtTool 只读卷，aios 默认 `/opt/buckyos/tools`。entrypoint 会把其 `bin` 放到 `PATH` 前面。 |
 | `BUCKYOS_SAFE_MODE` | node-daemon/aios 默认值 | aios entrypoint | `1` 时重置 package 工作副本和 sync metadata；默认 `0`。 |
 | `BUCKYOS_SERVICE_PORT` | node-daemon | agent/service | app/agent 暴露服务端口。agent 未注入时 aios 入口默认 `4060`。 |
-| `BUCKYOS_HOST_GATEWAY` | node-daemon | `buckyos-api` runtime | 容器访问 host 本地服务的 host 名。runtime 会把 app/frame service 的本地 system service URL 解析到该 host。 |
+| `BUCKYOS_HOST_GATEWAY` | node-daemon、AppClient 调用方 | `buckyos-api` runtime | 容器访问 host 本地服务的 host 名。runtime 会把 app/frame service 的本地 system service URL 解析到该 host；Rust AppClient 在该变量非空时也通过该 host 的 NodeGateway 访问 system-config 和其它 kRPC 服务，默认端口 `3180`。 |
 | `BUCKYOS_KEVENT_DAEMON_ADDR` | node-daemon | `buckyos-api` runtime（App/Agent Worker，包括 OpenDAN） | KEvent daemon bridge endpoint，格式为 `host:port`。node-daemon 默认注入 `host.docker.internal:3183`；未设置时 runtime 回退到 `BUCKYOS_HOST_GATEWAY` 指定的 host 和端口 `3183`。 |
 
 同时注入的内部变量：
@@ -101,6 +101,8 @@ aios entrypoint 派生或兼容变量：
 | `OPENDAN_AGENT_ROOT` | AgentTool runner | AgentTool runtime context | Agent RootFS 根目录。新的 AgentTool 最小契约之一。 |
 | `OPENDAN_SESSION_ID` | AgentTool runner | AgentTool runtime context | 当前 agent session id。 |
 | `OPENDAN_TRACE_ID` | AgentTool runner | AgentTool runtime context | 可选 trace id。 |
+
+Rust AppClient 的网络路径独立于设备角色和 token 来源：`BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白时，system-config 和其它 kRPC 服务都走 Zone host，协议由 runtime 的 HTTPS 策略决定。该变量非空时，复用 app/frame service 的宿主机地址解析逻辑，通过 HTTP 访问 NodeGateway；网关端口取 `BuckyOSRuntime.node_gateway_port`，默认 `3180`。容器内 AppClient 子进程应继承 `BUCKYOS_HOST_GATEWAY` 和 `BUCKYOS_THIS_DEVICE`，不需要删除设备文档。宿主机 AppClient 需要本机路径时显式设置 `BUCKYOS_HOST_GATEWAY=127.0.0.1`。
 
 AgentTool 新实现目标是只依赖 `OPENDAN_AGENT_ROOT`、`OPENDAN_SESSION_ID`、`BUCKYOS_APPCLIENT_SESSION_TOKEN` 和可选 `OPENDAN_TRACE_ID`；其它 `OPENDAN_*` 应从 Agent RootFS、session state 或 BuckyOS runtime 推导。
 

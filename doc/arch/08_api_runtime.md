@@ -28,11 +28,12 @@ buckyos-api-runtime 的定位是“每个进程自己的调用运行时”：
 notepads 给出的分层在代码里对应为：优先兼容，逐步提速（`new_doc/ref/notepads/buckyos-api-runtime.md`）。
 
 1) 公网/通用：`https://$zone_host/kapi/<service_name>`
-- 典型场景：AppClient（本机没有 NodeGateway）。
-- 代码路径：`src/kernel/buckyos-api/src/runtime.rs` 的 `BuckyOSRuntime::get_zone_service_url()`，`BuckyOSRuntimeType::AppClient` 分支直接返回 `https?://{zone_id.to_host_name()}/kapi/<service>`。
+- 典型场景：AppClient 未显式配置 NodeGateway。
+- 代码路径：`src/kernel/buckyos-api/src/runtime.rs` 的 `BuckyOSRuntime::get_zone_service_url()`，`BuckyOSRuntimeType::AppClient` 在 `BUCKYOS_HOST_GATEWAY` 缺失、为空或只有空白时返回 `https?://{zone_id.to_host_name()}/kapi/<service>`。`get_system_config_url()` 使用相同规则，不根据设备是否为 OOD 推断当前进程的网络路径。
 
 2) 最大兼容：`http://127.0.0.1:3180/kapi/<service_name>`（NodeGateway）
 - 典型场景：AppService 运行在节点上，本机一定有 cyfs-gateway / NodeGateway。
+- AppClient 显式设置 `BUCKYOS_HOST_GATEWAY` 时，通过该 host 的 NodeGateway 访问 system-config 和其它 kRPC 服务；容器内可以继承 node-daemon 注入的网关地址，宿主机可设置为 `127.0.0.1`。
 - 常量锚点：`DEFAULT_NODE_GATEWAY_PORT: u16 = 3180`（`src/kernel/buckyos-api/src/runtime.rs`）。
 - 运行时字段：`BuckyOSRuntime.node_gateway_port`（默认为 3180，可被配置覆盖）。
 
@@ -122,6 +123,8 @@ token 环境变量规则（`src/kernel/buckyos-api/src/lib.rs`）：
 ```text
 get_zone_service_url(service):
   if runtime_type == AppClient:
+    if BUCKYOS_HOST_GATEWAY is nonempty after trimming:
+      return http://<resolved_host_gateway>:<node_gateway_port>/kapi/<service>
     return https?://<zone_host>/kapi/<service>
 
   if runtime_type in {AppService, FrameService}:
