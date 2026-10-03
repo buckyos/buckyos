@@ -10796,8 +10796,14 @@ there]]></write_file>
                         "edit_file",
                         json!({"path": "../fixture.txt", "old_string": "outside-original", "new_string": "outside-edited"}),
                     ),
-                    (TOOL_EXEC, json!({"command": if cfg!(windows) { "pwd -W" } else { "pwd" }, "cwd": outside})),
-                    (TOOL_EXEC, json!({"command": if cfg!(windows) { "pwd -W" } else { "pwd" }, "cwd": ".."})),
+                    (
+                        TOOL_EXEC,
+                        json!({"command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" }, "cwd": outside}),
+                    ),
+                    (
+                        TOOL_EXEC,
+                        json!({"command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" }, "cwd": ".."}),
+                    ),
                 ];
                 for (name, args) in calls {
                     let obs = manager
@@ -10817,7 +10823,12 @@ there]]></write_file>
                             assert!(content.contains("outside-original"), "{content}");
                         }
                         if name == TOOL_EXEC {
-                            assert!(content.contains(&outside.to_string_lossy().replace('\\', "/")), "{content}");
+                            assert!(
+                                content
+                                    .replace('\\', "/")
+                                    .contains(&outside.to_string_lossy().replace('\\', "/")),
+                                "{content}"
+                            );
                         }
                     } else {
                         let Observation::Error { message, .. } = obs else {
@@ -10854,12 +10865,27 @@ there]]></write_file>
                     std::fs::read_to_string(env.workdir.join("local.txt")).unwrap(),
                     "local"
                 );
-                let obs = manager.call_tool(exec_call(if cfg!(windows) { "pwd -W" } else { "pwd" }), ToolCallCtx::noop()).await.unwrap();
+                let obs = manager
+                    .call_tool(
+                        exec_call(if cfg!(windows) {
+                            "[Console]::Write((Get-Location).ProviderPath)"
+                        } else {
+                            "pwd"
+                        }),
+                        ToolCallCtx::noop(),
+                    )
+                    .await
+                    .unwrap();
                 let Observation::Success { content, .. } = obs else {
                     panic!("{obs:?}")
                 };
                 let content = content.as_str().expect("text observation");
-                assert!(content.contains(&env.workdir.to_string_lossy().replace('\\', "/")), "{content}");
+                assert!(
+                    content
+                        .replace('\\', "/")
+                        .contains(&env.workdir.to_string_lossy().replace('\\', "/")),
+                    "{content}"
+                );
             }
         }
     }
@@ -10935,7 +10961,7 @@ there]]></write_file>
             ),
             tool_call(
                 TOOL_EXEC,
-                json!({"command": if cfg!(windows) { "pwd -W > resumed-cwd.txt" } else { "pwd > resumed-cwd.txt" }, "cwd": ".."}),
+                json!({"command": if cfg!(windows) { "[IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'resumed-cwd.txt'), (Get-Location).ProviderPath)" } else { "pwd > resumed-cwd.txt" }, "cwd": ".."}),
                 "exec",
             ),
             text("done"),
@@ -11146,7 +11172,11 @@ there]]></write_file>
         let manager = exec_manager(dir.path());
         let obs = manager
             .call_tool(
-                exec_call("echo compile error: missing semicolon >&2; exit 2"),
+                exec_call(if cfg!(windows) {
+                    "[Console]::Error.WriteLine('compile error: missing semicolon'); exit 2"
+                } else {
+                    "echo compile error: missing semicolon >&2; exit 2"
+                }),
                 ToolCallCtx::noop(),
             )
             .await

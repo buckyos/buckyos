@@ -188,7 +188,11 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
     );
     let mut req = request(
         manager.workdir(),
-        "printf '%s' \"$LLM_RUNTIME_TEST\"; cat \"quote ' 中文.txt\"",
+        if cfg!(windows) {
+            "[Console]::Write($env:LLM_RUNTIME_TEST); [Console]::Write((Get-Content -LiteralPath \"quote ' 中文.txt\" -Raw -Encoding UTF8))"
+        } else {
+            "printf '%s' \"$LLM_RUNTIME_TEST\"; cat \"quote ' 中文.txt\""
+        },
     );
     req.env.push(("LLM_RUNTIME_TEST".into(), "once".into()));
     let output = manager.exec(req, &context()).await.unwrap();
@@ -217,6 +221,15 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
     .await
     .is_err());
     let info = rt.info().await.unwrap();
+    if cfg!(windows) {
+        assert_eq!(info.os, "windows");
+        assert!(
+            info.shell.ends_with("pwsh.exe") || info.shell.ends_with("powershell.exe"),
+            "{}",
+            info.shell
+        );
+        assert!(info.tools.iter().any(|tool| tool == "Get-Content"));
+    }
     let adapter = Arc::new(SandboxPromptExec {
         sandbox: manager.clone(),
         context: context(),
@@ -228,14 +241,14 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
     });
     let rendered = engine
         .render(
-            "__ENV($runtime.hostname)__|__EXEC(uname -n)__",
+            if cfg!(windows) { "__ENV($runtime.hostname)__|__EXEC([Console]::WriteLine([Environment]::MachineName))__" } else { "__ENV($runtime.hostname)__|__EXEC(uname -n)__" },
             &RenderVars::new(),
             &RuntimeValueLoader(info.clone()),
         )
         .await
         .unwrap();
     assert_eq!(
-        rendered.rendered,
+        rendered.rendered.replace("\r\n", "\n"),
         format!("{}|{}\n", info.hostname, info.hostname)
     );
     // Crash recovery wording (§3.2): a finished command's exit and output

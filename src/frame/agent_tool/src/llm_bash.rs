@@ -127,6 +127,10 @@ impl ShellRuntimeNote {
         }
     }
 
+    fn powershell(&self) -> bool {
+        cfg!(windows) && self.kind == "native"
+    }
+
     fn lifecycle_sentence(&self) -> String {
         match self.kind.as_str() {
             "tmux" => format!(
@@ -137,7 +141,7 @@ impl ShellRuntimeNote {
                 "The command runs on the remote host `{}`; it keeps running if this executor is interrupted or exits.",
                 self.target
             ),
-            _ => format!("The command is a child process of this executor: an interrupt or a timeout ends {}; processes it leaves behind after returning are not managed.", if cfg!(unix) { "its process group" } else { "the direct child process" }),
+            _ => "The command is a child process of this executor: an interrupt or a timeout ends its process group; processes it leaves behind after returning are not managed.".into(),
         }
     }
 }
@@ -515,6 +519,14 @@ pub fn prepare_overlay_env(
     overlay: &BinOverlayConfig,
     user_env: &[(String, String)],
 ) -> Vec<(String, String)> {
+    prepare_shell_env(overlay, user_env, cfg!(windows))
+}
+
+fn prepare_shell_env(
+    overlay: &BinOverlayConfig,
+    user_env: &[(String, String)],
+    powershell: bool,
+) -> Vec<(String, String)> {
     let mut merged = BTreeMap::<String, String>::new();
     for (key, value) in user_env {
         merged.insert(key.clone(), value.clone());
@@ -525,13 +537,13 @@ pub fn prepare_overlay_env(
         .cloned()
         .or_else(|| std::env::var("PATH").ok())
         .unwrap_or_default();
-    let mut path = ensure_system_path_entries(&native_shell_path_list(&base_path));
+    let mut path = ensure_system_path_entries(&base_path, powershell);
 
     let active = overlay.active_layers();
     if !active.is_empty() {
         for layer in active.iter().rev() {
-            let entry = native_shell_path(layer);
-            path = prepend_path_entry(&entry, &path);
+            let entry = layer.display().to_string();
+            path = prepend_path_entry(&entry, &path, powershell);
         }
     }
     merged.insert("PATH".to_string(), path);
@@ -539,7 +551,7 @@ pub fn prepare_overlay_env(
     merged.into_iter().collect()
 }
 
-fn ensure_system_path_entries(base_path: &str) -> String {
+fn ensure_system_path_entries(base_path: &str, powershell: bool) -> String {
     const SYSTEM_PATH_ENTRIES: [&str; 6] = [
         "/usr/local/sbin",
         "/usr/local/bin",
@@ -550,13 +562,25 @@ fn ensure_system_path_entries(base_path: &str) -> String {
     ];
 
     let mut path = base_path.trim().to_string();
-    for entry in SYSTEM_PATH_ENTRIES {
-        path = append_path_entry(entry, &path);
+    if powershell {
+        let root =
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()));
+        for entry in [
+            root.join("System32"),
+            root.clone(),
+            root.join("System32/WindowsPowerShell/v1.0"),
+        ] {
+            path = append_path_entry(&entry.display().to_string(), &path, true);
+        }
+    } else {
+        for entry in SYSTEM_PATH_ENTRIES {
+            path = append_path_entry(entry, &path, false);
+        }
     }
     path
 }
 
-fn append_path_entry(entry: &str, base_path: &str) -> String {
+fn append_path_entry(entry: &str, base_path: &str, powershell: bool) -> String {
     let entry = entry.trim();
     if entry.is_empty() {
         return base_path.to_string();
@@ -564,13 +588,14 @@ fn append_path_entry(entry: &str, base_path: &str) -> String {
     if base_path.is_empty() {
         return entry.to_string();
     }
-    if base_path.split(':').any(|item| item == entry) {
+    let separator = if powershell { ';' } else { ':' };
+    if base_path.split(separator).any(|item| item == entry) {
         return base_path.to_string();
     }
-    format!("{base_path}:{entry}")
+    format!("{base_path}{separator}{entry}")
 }
 
-fn prepend_path_entry(entry: &str, base_path: &str) -> String {
+fn prepend_path_entry(entry: &str, base_path: &str, powershell: bool) -> String {
     let entry = entry.trim();
     if entry.is_empty() {
         return base_path.to_string();
@@ -578,10 +603,11 @@ fn prepend_path_entry(entry: &str, base_path: &str) -> String {
     if base_path.is_empty() {
         return entry.to_string();
     }
-    if base_path.split(':').any(|item| item == entry) {
+    let separator = if powershell { ';' } else { ':' };
+    if base_path.split(separator).any(|item| item == entry) {
         return base_path.to_string();
     }
-    format!("{entry}:{base_path}")
+    format!("{entry}{separator}{base_path}")
 }
 
 /// Bounded output buffer keeping the head and the tail of a stream; the
@@ -729,6 +755,16 @@ pub(crate) fn kill_process_group(pgid: u32) {
 /// second Ctrl-C). Commands handed to the task manager are not owned any
 /// more and are left alone.
 pub fn kill_running_bash_process_groups() {
+    #[cfg(windows)]
+    for job in windows_process_groups()
+        .lock()
+        .expect("process group lock")
+        .iter()
+    {
+        unsafe {
+            TerminateJobObject(*job as _, TIMEOUT_EXIT_CODE as u32);
+        }
+    }
     let groups: Vec<u32> = live_process_groups()
         .lock()
         .expect("process group lock")
@@ -745,6 +781,28 @@ pub fn kill_running_bash_process_groups() {
 /// bash exits or the command is detached into a task.
 pub(crate) struct ProcessGroupGuard {
     pgid: Option<u32>,
+    #[cfg(windows)]
+    job: Option<usize>,
+    #[cfg(windows)]
+    kill_on_drop: bool,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateJobObjectW(
+        attributes: *const std::ffi::c_void,
+        name: *const u16,
+    ) -> *mut std::ffi::c_void;
+    fn AssignProcessToJobObject(job: *mut std::ffi::c_void, process: *mut std::ffi::c_void) -> i32;
+    fn TerminateJobObject(job: *mut std::ffi::c_void, exit_code: u32) -> i32;
+    fn CloseHandle(handle: *mut std::ffi::c_void) -> i32;
+}
+
+#[cfg(windows)]
+fn windows_process_groups() -> &'static Mutex<std::collections::BTreeSet<usize>> {
+    static JOBS: OnceLock<Mutex<std::collections::BTreeSet<usize>>> = OnceLock::new();
+    JOBS.get_or_init(|| Mutex::new(std::collections::BTreeSet::new()))
 }
 
 impl ProcessGroupGuard {
@@ -755,10 +813,53 @@ impl ProcessGroupGuard {
                 .expect("process group lock")
                 .insert(id);
         }
-        Self { pgid }
+        Self {
+            pgid,
+            #[cfg(windows)]
+            job: None,
+            #[cfg(windows)]
+            kill_on_drop: true,
+        }
+    }
+
+    #[cfg(windows)]
+    fn attach(&mut self, child: &tokio::process::Child) -> std::io::Result<()> {
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if job.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        let process = child
+            .raw_handle()
+            .ok_or_else(|| std::io::Error::other("shell exited before job assignment"));
+        let result = process.and_then(|process| {
+            if unsafe { AssignProcessToJobObject(job, process) } == 0 {
+                Err(std::io::Error::last_os_error())
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(err) = result {
+            unsafe {
+                CloseHandle(job);
+            }
+            return Err(err);
+        }
+        self.job = Some(job as usize);
+        windows_process_groups()
+            .lock()
+            .expect("process group lock")
+            .insert(job as usize);
+        Ok(())
     }
 
     pub(crate) fn kill(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job {
+            unsafe {
+                TerminateJobObject(job as _, TIMEOUT_EXIT_CODE as u32);
+            }
+            self.disarm();
+        }
         if let Some(id) = self.pgid.take() {
             kill_process_group(id);
             live_process_groups()
@@ -769,6 +870,16 @@ impl ProcessGroupGuard {
     }
 
     pub(crate) fn disarm(&mut self) {
+        #[cfg(windows)]
+        if let Some(job) = self.job.take() {
+            windows_process_groups()
+                .lock()
+                .expect("process group lock")
+                .remove(&job);
+            unsafe {
+                CloseHandle(job as _);
+            }
+        }
         if let Some(id) = self.pgid.take() {
             live_process_groups()
                 .lock()
@@ -776,10 +887,26 @@ impl ProcessGroupGuard {
                 .remove(&id);
         }
     }
+
+    #[cfg(windows)]
+    fn detach(&mut self) {
+        self.kill_on_drop = false;
+        if let Some(job) = self.job {
+            windows_process_groups()
+                .lock()
+                .expect("process group lock")
+                .remove(&job);
+        }
+    }
 }
 
 impl Drop for ProcessGroupGuard {
     fn drop(&mut self) {
+        #[cfg(windows)]
+        if !self.kill_on_drop {
+            self.disarm();
+            return;
+        }
         self.kill();
     }
 }
@@ -798,51 +925,118 @@ fn is_valid_shell_env_key(key: &str) -> bool {
 /// Wrapper run as `bash -c WRAPPER <command> <exec_dir>`: the command's
 /// output goes to files, its exit code to `exit`, so the command outlives
 /// this executor without SIGPIPE and its result survives a crash.
+#[cfg(not(windows))]
 const NATIVE_WRAPPER: &str = r#"if [ "$#" -ge 2 ]; then export PATH="$2"; fi
 printf '%s\n' "$0" > "$1/command"
 "$BASH" -c "$0" </dev/null >"$1/stdout" 2>"$1/stderr"
 __llm_ec=$?
-printf '%s\n' "$__llm_ec" > "$1/exit.tmp" && mv -f "$1/exit.tmp" "$1/exit"
+printf '%s\n' "$__llm_ec" > "$1/exit.tmp" && command -p mv -f "$1/exit.tmp" "$1/exit"
 exit $__llm_ec"#;
+
+#[cfg(windows)]
+const NATIVE_WRAPPER: &str = r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = $utf8
+$dir = $env:XLLM_EXEC_DIR
+$stderr = Join-Path $dir 'stderr'
+try {
+    $script = Join-Path $dir 'script.ps1'
+    $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -OutputFormat Text -File "' + $script + '"'
+    $process = Start-Process -FilePath $env:XLLM_EXEC_SHELL -ArgumentList $arguments -WorkingDirectory $env:XLLM_EXEC_CWD -NoNewWindow -PassThru -RedirectStandardOutput (Join-Path $dir 'stdout') -RedirectStandardError $stderr
+    $null = $process.Handle
+    $process.WaitForExit()
+    $code = $process.ExitCode
+} catch {
+    [System.IO.File]::WriteAllText($stderr, $_.ToString(), $utf8)
+    $code = 1
+}
+$tmp = Join-Path $dir 'exit.tmp'
+[System.IO.File]::WriteAllText($tmp, [string]$code, $utf8)
+[System.IO.File]::Move($tmp, (Join-Path $dir 'exit'))
+exit $code"#;
+
+#[cfg(windows)]
+const POWERSHELL_SCRIPT_PREFIX: &str = r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$utf8 = [System.Text.UTF8Encoding]::new($false)
+[Console]::InputEncoding = $utf8
+[Console]::OutputEncoding = $utf8
+$OutputEncoding = $utf8
+$global:LASTEXITCODE = 0
+try {
+    & {
+"#;
+
+#[cfg(windows)]
+const POWERSHELL_SCRIPT_SUFFIX: &str = r#"
+    }
+    exit $LASTEXITCODE
+} catch {
+    [Console]::Error.WriteLine($_.ToString())
+    exit 1
+}
+"#;
 
 pub(crate) fn native_shell_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     #[cfg(windows)]
     {
-        let path = path.strip_prefix(r"\\?\").unwrap_or(&path).replace('\\', "/");
-        if let Some(unc) = path.strip_prefix("UNC/") {
-            return format!("//{unc}");
-        }
-        if path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic() {
-            return format!("/{}{}", path[..1].to_ascii_lowercase(), &path[2..]);
-        }
-        path
+        let path = path.strip_prefix(r"\\?\").unwrap_or(&path);
+        path.strip_prefix(r"UNC\")
+            .map(|unc| format!(r"\\{unc}"))
+            .unwrap_or_else(|| path.to_string())
     }
     #[cfg(not(windows))]
     path.into_owned()
 }
 
-pub(crate) fn native_bash_executable() -> PathBuf {
+pub(crate) fn native_shell_executable() -> PathBuf {
     #[cfg(windows)]
     if let Some(path) = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
-            .map(|dir| dir.join("bash.exe"))
+            .map(|dir| dir.join("pwsh.exe"))
             .find(|file| file.is_file())
     }) {
         return path;
     }
-    PathBuf::from(if cfg!(windows) { "bash" } else { "/bin/bash" })
+    #[cfg(windows)]
+    {
+        return PathBuf::from(
+            std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()),
+        )
+        .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    }
+    #[cfg(not(windows))]
+    PathBuf::from("/bin/bash")
 }
 
-fn native_shell_path_list(path: &str) -> String {
+pub(crate) fn native_shell_command(script: &str) -> tokio::process::Command {
+    let mut command = tokio::process::Command::new(native_shell_executable());
     #[cfg(windows)]
-    if path.contains(';') || Path::new(path).is_absolute() {
-        return std::env::split_paths(path)
-            .map(|p| native_shell_path(&p))
-            .collect::<Vec<_>>()
-            .join(":");
+    {
+        use base64::Engine;
+        let bytes: Vec<u8> = script
+            .encode_utf16()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect();
+        command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-OutputFormat",
+                "Text",
+                "-EncodedCommand",
+            ])
+            .arg(base64::engine::general_purpose::STANDARD.encode(bytes))
+            .creation_flags(0x08000000);
     }
-    path.to_string()
+    #[cfg(not(windows))]
+    command.arg("-c").arg(script);
+    command
 }
 
 /// Default [`BashRunner`]: spawns `/bin/bash` in its own process group (Unix)
@@ -900,13 +1094,13 @@ impl LocalProcessBashRunner {
             .iter()
             .map(|p| native_shell_path(p))
             .collect();
-        let base = native_shell_path_list(&base);
-        for p in base.split(':') {
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        for p in base.split(separator) {
             if !p.is_empty() && !parts.iter().any(|x| x == p) {
                 parts.push(p.to_string());
             }
         }
-        Some(parts.join(":"))
+        Some(parts.join(&separator.to_string()))
     }
 
     fn exec_dir(&self, call_id: Option<&str>) -> (PathBuf, bool) {
@@ -959,11 +1153,25 @@ impl BashRunner for LocalProcessBashRunner {
 
         // `-c` rather than `-lc`: a login shell sources profile files which
         // would reorder PATH under the overlay.
-        let mut cmd = tokio::process::Command::new(native_bash_executable());
-        cmd.arg("-c")
-            .arg(NATIVE_WRAPPER)
-            .arg(&req.command)
-            .arg(native_shell_path(&dir));
+        #[cfg(windows)]
+        {
+            std::fs::write(dir.join("command"), &req.command)
+                .and_then(|_| {
+                    std::fs::write(
+                        dir.join("script.ps1"),
+                        format!(
+                            "\u{feff}{POWERSHELL_SCRIPT_PREFIX}{}{POWERSHELL_SCRIPT_SUFFIX}",
+                            req.command
+                        ),
+                    )
+                })
+                .map_err(|err| {
+                    AgentToolError::ExecFailed(format!("write shell script failed: {err}"))
+                })?;
+        }
+        let mut cmd = native_shell_command(NATIVE_WRAPPER);
+        #[cfg(not(windows))]
+        cmd.arg(&req.command).arg(native_shell_path(&dir));
         cmd.current_dir(&req.cwd);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
@@ -984,26 +1192,27 @@ impl BashRunner for LocalProcessBashRunner {
         }
         #[cfg(windows)]
         {
-            let path = path
-                .or_else(|| {
-                    req.env
-                        .iter()
-                        .rev()
-                        .find(|(key, _)| key == "PATH")
-                        .map(|(_, value)| value.clone())
-                })
-                .or_else(|| std::env::var("PATH").ok())
-                .unwrap_or_default();
-            cmd.arg(ensure_system_path_entries(&native_shell_path_list(&path)));
+            cmd.env("XLLM_EXEC_DIR", native_shell_path(&dir))
+                .env("XLLM_EXEC_CWD", native_shell_path(&req.cwd))
+                .env("XLLM_EXEC_SHELL", native_shell_executable());
         }
 
         let child = cmd
             .spawn()
-            .map_err(|err| AgentToolError::ExecFailed(format!("spawn bash failed: {err}")))?;
+            .map_err(|err| AgentToolError::ExecFailed(format!("spawn shell failed: {err}")))?;
         let pgid = if cfg!(unix) { child.id() } else { None };
+        let guard = ProcessGroupGuard::new(pgid);
+        #[cfg(windows)]
+        let guard = {
+            let mut guard = guard;
+            guard.attach(&child).map_err(|err| {
+                AgentToolError::ExecFailed(format!("assign shell process group failed: {err}"))
+            })?;
+            guard
+        };
         Ok(Box::new(LocalCommand {
             child: Some(child),
-            guard: ProcessGroupGuard::new(pgid),
+            guard,
             dir,
             temp,
             started: Instant::now(),
@@ -1078,7 +1287,7 @@ impl CommandHandle for LocalCommand {
                 Ok(Some(out))
             }
             Ok(Err(err)) => Err(AgentToolError::ExecFailed(format!(
-                "wait bash failed: {err}"
+                "wait shell failed: {err}"
             ))),
             Err(_) => Ok(None),
         }
@@ -1107,6 +1316,9 @@ impl CommandHandle for LocalCommand {
     }
 
     fn detach(&mut self) {
+        #[cfg(windows)]
+        self.guard.detach();
+        #[cfg(not(windows))]
         self.guard.disarm();
     }
 
@@ -1307,18 +1519,14 @@ impl ShellTool {
         }
         let summary = if output.timed_out {
             format!(
-                "timed out after {}ms (timeout_ms={timeout_ms}); {}. Retry with a larger timeout_ms{}, or start a long-lived service with nohup / setsid and return at once.",
+                "timed out after {}ms (timeout_ms={timeout_ms}); the command was stopped. Retry with a larger timeout_ms{}, or start a long-lived service with {} and return at once.",
                 output.duration_ms,
-                if cfg!(windows) && self.config.runtime.kind == "native" {
-                    "the direct child was stopped; its descendants may still be running"
-                } else {
-                    "the command was stopped"
-                },
                 if self.config.max_timeout_ms == 0 {
                     String::new()
                 } else {
                     format!(" (max {})", self.config.max_timeout_ms)
-                }
+                },
+                if self.config.runtime.powershell() { "Start-Process -WindowStyle Hidden without -Wait" } else { "nohup / setsid" }
             )
         } else if output.exit_code == 0 {
             format!("exit=0 in {}ms", output.duration_ms)
@@ -1367,11 +1575,7 @@ impl ShellTool {
                 Ok(out) => AgentToolError::Cancelled {
                     message: format!(
                         "shell ({runtime}): {} after {}ms because {}. It may have had partial side effects; check before repeating it.{tail}",
-                        if cfg!(windows) && runtime == "native" {
-                            format!("the direct child for `{command}` was stopped; its descendants may still be running")
-                        } else {
-                            format!("`{command}` was stopped")
-                        },
+                        format!("`{command}` was stopped"),
                         out.duration_ms,
                         cause_text(cause)
                     ),
@@ -1512,9 +1716,15 @@ impl AgentTool for ShellTool {
         let default_timeout_ms = self.config.default_timeout_ms;
         let max_timeout_ms = self.config.max_timeout_ms;
         let default_wait_ms = self.config.default_wait_ms;
+        let language = if self.config.runtime.powershell() {
+            "PowerShell"
+        } else {
+            "bash"
+        };
         let mut description = format!(
-            "Run a command in this run's runtime ({}) with bash syntax. {} ",
+            "Run a command in this run's runtime ({}) with {} syntax. {} ",
             self.config.runtime.kind,
+            language,
             self.config.runtime.lifecycle_sentence()
         );
         match mode {
@@ -1533,11 +1743,15 @@ impl AgentTool for ShellTool {
                 MAX_AUTO_WAIT_MS / 60_000
             )),
         }
-        description.push_str("Start a long-lived service with nohup / setsid and return at once; on Unix, processes started with `&` / nohup in the foreground command's process group also end when that command is interrupted or times out. Long output keeps its beginning and end.");
+        if self.config.runtime.powershell() {
+            description.push_str("Use Windows paths, $env:NAME for environment variables, Get-Content for reading files, and Start-Sleep for delays. Start a long-lived service with Start-Process -WindowStyle Hidden and return without -Wait. Long output keeps its beginning and end.");
+        } else {
+            description.push_str("Start a long-lived service with nohup / setsid and return at once; on Unix, processes started with `&` / nohup in the foreground command's process group also end when that command is interrupted or times out. Long output keeps its beginning and end.");
+        }
         let mut properties = json!({
             "command": {
                 "type": "string",
-                "description": "bash command to execute"
+                "description": format!("{language} command to execute")
             },
             "cwd": {
                 "type": "string",
@@ -1641,7 +1855,18 @@ impl AgentTool for ShellTool {
                 "unsupported shell target `{value}` (only local is supported)"
             )));
         }
-        let env = prepare_overlay_env(&self.config.overlay, &user_env);
+        let env = if self.config.runtime.kind != "native"
+            && self.config.overlay.active_layers().is_empty()
+            && !user_env.iter().any(|(key, _)| key == "PATH")
+        {
+            user_env
+        } else {
+            prepare_shell_env(
+                &self.config.overlay,
+                &user_env,
+                self.config.runtime.powershell(),
+            )
+        };
         let mode = self.config.effective_mode();
         let timeout_ms = self.parse_timeout(map.get("timeout_ms"))?;
         let wait_ms = self.parse_wait(map.get("wait_ms"))?;
@@ -1716,6 +1941,17 @@ mod tests {
         (dir, workspace)
     }
 
+    #[cfg(windows)]
+    fn powershell_child(script: &str) -> String {
+        use base64::Engine;
+        let bytes: Vec<u8> = script
+            .encode_utf16()
+            .flat_map(|unit| unit.to_le_bytes())
+            .collect();
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        format!("Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList '-NoLogo -NoProfile -NonInteractive -EncodedCommand {encoded}' -WindowStyle Hidden -PassThru")
+    }
+
     #[cfg(unix)]
     fn write_shim(path: &Path, stdout: &str, exit_code: i32) {
         let script = format!(
@@ -1742,7 +1978,7 @@ mod tests {
         let tool = ShellTool::local_workspace(workspace.clone());
 
         let result = tool
-            .call(&ctx(), json!({ "command": if cfg!(windows) { "pwd -W" } else { "pwd" } }))
+            .call(&ctx(), json!({ "command": if cfg!(windows) { "[Console]::Write((Get-Location).ProviderPath)" } else { "pwd" } }))
             .await
             .expect("call ok");
 
@@ -1762,8 +1998,20 @@ mod tests {
         let bin_dir = dir.path().join("bin 中文 ' space");
         fs::create_dir_all(&bin_dir).expect("mkdir bin");
 
-        let unique_path = bin_dir.join("llm_bash_overlay_probe");
-        fs::write(&unique_path, "#!/bin/sh\necho UNIQUE_HIT\n").expect("write unique shim");
+        let unique_path = bin_dir.join(if cfg!(windows) {
+            "llm_bash_overlay_probe.ps1"
+        } else {
+            "llm_bash_overlay_probe"
+        });
+        fs::write(
+            &unique_path,
+            if cfg!(windows) {
+                "Write-Output UNIQUE_HIT\n"
+            } else {
+                "#!/bin/sh\necho UNIQUE_HIT\n"
+            },
+        )
+        .expect("write unique shim");
         #[cfg(unix)]
         {
             let mut perms = fs::metadata(&unique_path).expect("meta").permissions();
@@ -1771,8 +2019,16 @@ mod tests {
             fs::set_permissions(&unique_path, perms).expect("chmod");
         }
 
-        let cat_shim = bin_dir.join("cat");
-        fs::write(&cat_shim, "#!/bin/sh\necho SHIM_CAT_WINS\n").expect("write cat shim");
+        let cat_shim = bin_dir.join(if cfg!(windows) { "whoami.ps1" } else { "cat" });
+        fs::write(
+            &cat_shim,
+            if cfg!(windows) {
+                "Write-Output SHIM_CAT_WINS\n"
+            } else {
+                "#!/bin/sh\necho SHIM_CAT_WINS\n"
+            },
+        )
+        .expect("write cat shim");
         #[cfg(unix)]
         {
             let mut perms = fs::metadata(&cat_shim).expect("meta").permissions();
@@ -1795,7 +2051,10 @@ mod tests {
         );
 
         let shadow_result = tool
-            .call(&ctx(), json!({ "command": "cat /dev/null" }))
+            .call(
+                &ctx(),
+                json!({ "command": if cfg!(windows) { "whoami" } else { "cat /dev/null" } }),
+            )
             .await
             .expect("call ok");
         let shadow_stdout = shadow_result.details["stdout"].as_str().unwrap();
@@ -2024,26 +2283,36 @@ mod tests {
         let (_dir, workspace) = ws();
         let tool = ShellTool::local_workspace(workspace);
 
-        let result = tool
-            .call(&ctx(), json!({ "command": "exit 7" }))
-            .await
-            .expect("call ok despite non-zero exit");
-        assert_eq!(result.status, AgentToolStatus::Error);
-        assert_eq!(result.details["exit_code"], 7);
-        assert_eq!(result.return_code, Some(7));
-        assert!(
-            result.title.contains("=> error"),
-            "failed command title must not say success: {}",
-            result.title
-        );
+        let commands = if cfg!(windows) {
+            vec![
+                "exit 7",
+                "& powershell.exe -NoLogo -NoProfile -NonInteractive -Command 'exit 7'",
+            ]
+        } else {
+            vec!["exit 7"]
+        };
+        for command in commands {
+            let result = tool
+                .call(&ctx(), json!({ "command": command }))
+                .await
+                .expect("call ok despite non-zero exit");
+            assert_eq!(result.status, AgentToolStatus::Error);
+            assert_eq!(result.details["exit_code"], 7);
+            assert_eq!(result.return_code, Some(7));
+            assert!(
+                result.title.contains("=> error"),
+                "failed command title must not say success: {}",
+                result.title
+            );
+        }
     }
 
     #[tokio::test]
     async fn timeout_returns_error_with_partial_output() {
         let (_dir, workspace) = ws();
         let cfg = LlmBashConfig::local_workspace(workspace)
-            .with_default_timeout_ms(300)
-            .with_max_timeout_ms(500);
+            .with_default_timeout_ms(if cfg!(windows) { 2500 } else { 300 })
+            .with_max_timeout_ms(if cfg!(windows) { 3000 } else { 500 });
         let tool = ShellTool::new(cfg);
 
         let started = Instant::now();
@@ -2051,7 +2320,7 @@ mod tests {
             .call(&ctx(), json!({ "command": "echo started; sleep 5" }))
             .await
             .expect("timeout is reported as a tool result");
-        assert!(started.elapsed() < Duration::from_secs(4));
+        assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(result.status, AgentToolStatus::Error);
         assert_eq!(result.details["timed_out"], true);
         assert_eq!(result.return_code, Some(TIMEOUT_EXIT_CODE));
@@ -2059,48 +2328,64 @@ mod tests {
         assert!(result.output.as_deref().unwrap_or("").contains("started"));
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn timeout_kills_child_processes() {
         let (_dir, workspace) = ws();
         let marker = workspace.join("survived");
         let cfg = LlmBashConfig::local_workspace(workspace.clone())
-            .with_default_timeout_ms(300)
-            .with_max_timeout_ms(500);
+            .with_default_timeout_ms(if cfg!(windows) { 2500 } else { 300 })
+            .with_max_timeout_ms(if cfg!(windows) { 3000 } else { 500 });
         let tool = ShellTool::new(cfg);
 
-        let command = format!("(sleep 1; touch {}) & wait", marker.display());
+        #[cfg(not(windows))]
+        let command = "(sleep 1; touch survived) & wait".to_string();
+        #[cfg(windows)]
+        let command = format!("$child = {}; $child.WaitForExit()", powershell_child("Start-Sleep -Seconds 4; [IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'survived'), 'yes')"));
         let result = tool
             .call(&ctx(), json!({ "command": command }))
             .await
             .expect("call ok");
         assert_eq!(result.details["timed_out"], true);
-        tokio::time::sleep(Duration::from_millis(1500)).await;
+        tokio::time::sleep(Duration::from_millis(if cfg!(windows) {
+            4500
+        } else {
+            1500
+        }))
+        .await;
         assert!(!marker.exists(), "child of timed-out command kept running");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn background_job_does_not_block_and_survives_the_call() {
         let (_dir, workspace) = ws();
         let marker = workspace.join("bg-done");
         let cfg = LlmBashConfig::local_workspace(workspace.clone()).with_default_timeout_ms(20_000);
         let tool = ShellTool::new(cfg);
+        #[cfg(not(windows))]
+        let command =
+            "echo hi; nohup \"$BASH\" -c 'sleep 1; touch bg-done' >/dev/null 2>&1 &".to_string();
+        #[cfg(windows)]
+        let command = format!("$null = {}; Write-Output hi", powershell_child("Start-Sleep -Seconds 1; [IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'bg-done'), 'yes')"));
 
         let started = Instant::now();
         let result = tool
-            .call(
-                &ctx(),
-                json!({ "command": format!("echo hi; nohup bash -c {} >/dev/null 2>&1 &", crate::runtime::shell_quote(&format!("sleep 1; touch {}", crate::runtime::shell_quote(&native_shell_path(&marker))))) }),
-            )
+            .call(&ctx(), json!({ "command": command }))
             .await
             .expect("call ok");
         assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(result.status, AgentToolStatus::Success);
         assert_eq!(result.details["timed_out"], false);
         assert!(result.output.as_deref().unwrap_or("").contains("hi"));
-        tokio::time::sleep(Duration::from_millis(1800)).await;
-        assert!(marker.exists(), "a process the command left behind is not killed");
+        tokio::time::sleep(Duration::from_millis(if cfg!(windows) {
+            3000
+        } else {
+            1800
+        }))
+        .await;
+        assert!(
+            marker.exists(),
+            "a process the command left behind is not killed"
+        );
     }
 
     #[test]
@@ -2142,6 +2427,11 @@ mod tests {
         );
         assert!(spec.args_schema["properties"]["wait_ms"].is_null());
         assert!(spec.description.contains("child process of this executor"));
+        if cfg!(windows) {
+            assert!(spec.description.contains("PowerShell"));
+            assert!(spec.description.contains("Start-Process"));
+            assert!(!spec.description.contains("nohup"));
+        }
 
         let cfg = LlmBashConfig::local_workspace(workspace)
             .with_default_timeout_ms(90_000)
@@ -2153,6 +2443,7 @@ mod tests {
         let spec = ShellTool::new(cfg).spec();
         assert!(spec.description.contains("Default timeout 90s, max 120s"));
         assert!(spec.description.contains("tmux session `od_x`"));
+        assert!(spec.description.contains("bash"));
         assert!(spec.usage.unwrap_or_default().contains("timeout_ms=90000"));
     }
 
@@ -2165,7 +2456,7 @@ mod tests {
         let result = tool
             .call(
                 &ctx(),
-                json!({ "command": "for i in $(seq 1 200); do echo -n abcdefghij; done" }),
+                json!({ "command": if cfg!(windows) { "[Console]::Write(('abcdefghij' * 200))" } else { "for i in $(seq 1 200); do echo -n abcdefghij; done" } }),
             )
             .await
             .expect("call ok");
@@ -2188,7 +2479,7 @@ mod tests {
         let result = tool
             .call(
                 &ctx(),
-                json!({ "command": "echo BEGIN; seq 1 2000; echo FINAL_LINE" }),
+                json!({ "command": if cfg!(windows) { "Write-Output BEGIN; 1..2000; Write-Output FINAL_LINE" } else { "echo BEGIN; seq 1 2000; echo FINAL_LINE" } }),
             )
             .await
             .expect("call ok");
@@ -2214,9 +2505,10 @@ mod tests {
     #[test]
     fn overlay_env_prepends_bin_dir() {
         let overlay = BinOverlayConfig::local("/tmp/llm_bash_overlay");
-        let env = prepare_overlay_env(
+        let env = prepare_shell_env(
             &overlay,
             &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+            false,
         );
         let path = env
             .iter()
@@ -2228,9 +2520,10 @@ mod tests {
             "got PATH={path}"
         );
 
-        let env_disabled = prepare_overlay_env(
+        let env_disabled = prepare_shell_env(
             &BinOverlayConfig::disabled(),
             &[("PATH".into(), "/p".into())],
+            false,
         );
         let path2 = env_disabled
             .iter()
@@ -2247,9 +2540,10 @@ mod tests {
     fn overlay_env_stacks_multiple_layers_in_priority_order() {
         let overlay =
             BinOverlayConfig::layered(["/a/session", "/a/agent", "/a/runtime", "/a/system"]);
-        let env = prepare_overlay_env(
+        let env = prepare_shell_env(
             &overlay,
             &[("PATH".to_string(), "/usr/bin:/bin".to_string())],
+            false,
         );
         let path = env
             .iter()
@@ -2270,10 +2564,19 @@ mod tests {
             .find(|(k, _)| k == "PATH")
             .map(|(_, v)| v.as_str())
             .unwrap_or_default();
-        assert!(
-            path.split(':').any(|entry| entry == "/usr/bin"),
-            "got PATH={path}"
-        );
+        if cfg!(windows) {
+            let root = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+            assert!(
+                path.split(';')
+                    .any(|entry| Path::new(entry) == root.join("System32")),
+                "got PATH={path}"
+            );
+        } else {
+            assert!(
+                path.split(':').any(|entry| entry == "/usr/bin"),
+                "got PATH={path}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -2287,19 +2590,37 @@ mod tests {
         });
         let runner = Arc::new(LocalProcessBashRunner::new().with_run_binding(slot));
         let tool = ShellTool::with_runner(LlmBashConfig::local_workspace(workspace), runner);
+        let command = if cfg!(windows) {
+            "[Console]::WriteLine('out'); [Console]::Error.WriteLine('err'); exit 3"
+        } else {
+            "echo out; echo err >&2; exit 3"
+        };
         let result = crate::runtime::CURRENT_TOOL_CALL
             .scope(
                 "call-7".into(),
-                tool.call(&ctx(), json!({ "command": "echo out; echo err >&2; exit 3" })),
+                tool.call(&ctx(), json!({ "command": command })),
             )
             .await
             .unwrap();
         assert_eq!(result.details["exit_code"], 3);
         let exec = run_dir.join("exec").join("call-7");
         assert_eq!(fs::read_to_string(exec.join("exit")).unwrap().trim(), "3");
-        assert_eq!(fs::read_to_string(exec.join("stdout")).unwrap(), "out\n");
-        assert_eq!(fs::read_to_string(exec.join("stderr")).unwrap(), "err\n");
-        assert!(fs::read_to_string(exec.join("command")).unwrap().contains("echo out"));
+        assert_eq!(
+            fs::read_to_string(exec.join("stdout"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "out\n"
+        );
+        assert_eq!(
+            fs::read_to_string(exec.join("stderr"))
+                .unwrap()
+                .replace("\r\n", "\n"),
+            "err\n"
+        );
+        assert_eq!(
+            fs::read_to_string(exec.join("command")).unwrap().trim(),
+            command
+        );
         assert_eq!(read_exit_file(&exec), Some(3));
     }
 }

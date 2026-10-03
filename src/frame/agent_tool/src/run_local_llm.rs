@@ -679,7 +679,17 @@ fn read_piped_stdin() -> Result<Option<String>, String> {
             Err(_) => (false, false),
         }
     };
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let (is_fifo, is_file) = {
+        use std::os::windows::io::AsRawHandle;
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetFileType(handle: *mut std::ffi::c_void) -> u32;
+        }
+        let kind = unsafe { GetFileType(stdin.as_raw_handle()) };
+        (kind == 3, kind == 1)
+    };
+    #[cfg(not(any(unix, windows)))]
     let (is_fifo, is_file) = (true, false);
     if !is_fifo && !is_file {
         return Ok(None);
@@ -1546,6 +1556,60 @@ mod tests {
         .unwrap();
         assert_eq!(o.attachments.len(), 3);
         assert!(matches!(&o.attachments[1], Attachment::File { path } if path.ends_with("b.txt")));
+    }
+
+    #[test]
+    fn stdin_distinguishes_pipe_file_and_null() {
+        use std::process::{Command, Stdio};
+
+        if let Ok(case) = std::env::var("XLLM_TEST_STDIN") {
+            let result = read_piped_stdin();
+            match case.as_str() {
+                "pipe" | "file" => assert_eq!(result.unwrap().as_deref(), Some("material 中文")),
+                "empty_pipe" => assert!(result.unwrap_err().contains("stdin pipe")),
+                "empty_file" | "null" => assert_eq!(result.unwrap(), None),
+                _ => panic!("unknown stdin case {case}"),
+            }
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("material.txt");
+        let empty = dir.path().join("empty.txt");
+        std::fs::write(&file, "material 中文").unwrap();
+        std::fs::write(&empty, "").unwrap();
+        for case in ["pipe", "file", "empty_pipe", "empty_file", "null"] {
+            let stdin = match case {
+                "pipe" | "empty_pipe" => Stdio::piped(),
+                "file" => Stdio::from(std::fs::File::open(&file).unwrap()),
+                "empty_file" => Stdio::from(std::fs::File::open(&empty).unwrap()),
+                _ => Stdio::null(),
+            };
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "run_local_llm::tests::stdin_distinguishes_pipe_file_and_null",
+                    "--nocapture",
+                ])
+                .env("XLLM_TEST_STDIN", case)
+                .stdin(stdin)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            if let Some(mut pipe) = child.stdin.take() {
+                if case == "pipe" {
+                    pipe.write_all("material 中文".as_bytes()).unwrap();
+                }
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{case}: {}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

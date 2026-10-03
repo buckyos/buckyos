@@ -671,7 +671,12 @@ impl AgentRuntime for Runtime {
                 .cloned()
                 .unwrap_or_else(|| s.base_path.clone()),
         );
-        env.insert("PATH".into(), path.join(":"));
+        let separator = if cfg!(windows) && s.config.kind() == "native" {
+            ";"
+        } else {
+            ":"
+        };
+        env.insert("PATH".into(), path.join(separator));
         let runner: Arc<dyn BashRunner> = if let Some(ssh) = &s.ssh {
             if !ctx.path_prefix.is_empty() {
                 return Err(XllmError::Capability(

@@ -103,9 +103,6 @@ impl ShellTask {
                 self.command, out.exit_code, out.duration_ms, self.runtime
             )
         };
-        if cancelled && cfg!(windows) && self.runtime == "native" {
-            text.push_str(" Only the direct child was stopped; its descendants may still be running.");
-        }
         if !out.output.trim().is_empty() {
             text.push_str("\n--- output ---\n");
             text.push_str(out.output.trim_end());
@@ -866,7 +863,18 @@ mod tests {
         });
         let runner = LocalProcessBashRunner::new().with_run_binding(slot.clone());
         let mut handle = runner
-            .start(&sctx(), req("sleep 0.4; echo finished", dir.path(), "c1"))
+            .start(
+                &sctx(),
+                req(
+                    if cfg!(windows) {
+                        "Start-Sleep -Milliseconds 400; Write-Output finished"
+                    } else {
+                        "sleep 0.4; echo finished"
+                    },
+                    dir.path(),
+                    "c1",
+                ),
+            )
             .await
             .unwrap();
         assert!(handle
@@ -940,6 +948,42 @@ mod tests {
         assert!(!resolver.can_resolve("bucky:123"));
         assert!(resolver.can_resolve("local:x:1"));
         assert!(resolver.cancel("bucky:123").await.is_err());
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn detached_shell_task_cancel_stops_the_running_script() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = LocalProcessBashRunner::new();
+        let command = "[IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'started'), 'yes'); Start-Sleep -Seconds 4; [IO.File]::WriteAllText((Join-Path (Get-Location).ProviderPath 'survived'), 'yes')";
+        let mut handle = runner
+            .start(&sctx(), req(command, dir.path(), "cancel-tree"))
+            .await
+            .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while !dir.path().join("started").exists() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "script did not start"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        handle.detach();
+        let tasks = InProcessTaskManager::new();
+        let id = tasks.register_shell(
+            Some("cancel-tree"),
+            ShellTask::new(command, handle, "native"),
+        );
+        let resolver = CompositeTaskResolver::new(tasks, new_run_binding_slot());
+        assert!(matches!(
+            resolver.cancel(&id).await.unwrap(),
+            TaskState::Finished(_)
+        ));
+        tokio::time::sleep(Duration::from_millis(4500)).await;
+        assert!(
+            !dir.path().join("survived").exists(),
+            "cancelled script kept running"
+        );
     }
 
     #[tokio::test]

@@ -102,14 +102,28 @@ printf '%s\0' "$machine_id" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]
 for tool in bash realpath base64; do if command -v "$tool" >/dev/null; then printf '%s\0' "$tool"; fi; done
 "#;
 
+#[cfg(windows)]
+const POWERSHELL_PROBE: &str = r#"$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$hostname = [Environment]::MachineName
+$machine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction SilentlyContinue).MachineGuid
+if (-not $machine) { $machine = $hostname }
+$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$arch = $env:PROCESSOR_ARCHITECTURE.ToLowerInvariant()
+if ($arch -eq 'amd64') { $arch = 'x86_64' }
+$shell = (Get-Process -Id $PID).Path
+$fields = @($machine, $hostname, $identity, 'windows', $arch, $shell, (Get-Location).ProviderPath, $env:PATH, [DateTimeOffset]::Now.ToString('o'), [TimeZoneInfo]::Local.Id, [System.IO.Path]::GetFileNameWithoutExtension($shell), 'Get-Content', 'Set-Content', 'Get-ChildItem', 'Select-String', 'Start-Process')
+[Console]::Write(($fields -join [char]0) + [char]0)
+"#;
+
 pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<Probe, XllmError> {
-    let mut command = Command::new(crate::llm_bash::native_bash_executable());
-    command
-        .arg("-c")
-        .arg(LOCAL_PROBE)
-        .current_dir(cwd)
-        .envs(env)
-        .kill_on_drop(true);
+    #[cfg(windows)]
+    let script = POWERSHELL_PROBE;
+    #[cfg(not(windows))]
+    let script = LOCAL_PROBE;
+    let mut command = crate::llm_bash::native_shell_command(script);
+    command.current_dir(cwd).envs(env).kill_on_drop(true);
     let o = tokio::time::timeout(Duration::from_secs(10), command.output())
         .await
         .map_err(capability)?
@@ -124,16 +138,11 @@ pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<P
     #[cfg(windows)]
     let probe = {
         let mut probe = probe;
-        if !["mingw", "msys", "cygwin"]
-            .iter()
-            .any(|os| probe.info.os.starts_with(os))
-        {
-            return Err(capability(
-                "native Windows runtime requires a Windows bash (e.g. Git Bash) on PATH",
-            ));
-        }
-        probe.info.cwd = cwd.canonicalize().map_err(capability)?.display().to_string();
-        probe.info.os = "windows".into();
+        probe.info.cwd = cwd
+            .canonicalize()
+            .map_err(capability)?
+            .display()
+            .to_string();
         probe
     };
     Ok(probe)
