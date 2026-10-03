@@ -585,7 +585,7 @@ pub trait AgentRuntime: Send + Sync {
     fn config(&self) -> RuntimeConfig;
     async fn info(&self) -> Result<RuntimeInfo>;
     async fn open(&self, ctx: &RuntimeOpenCtx, tools: &ToolsConfig,
-                  host_tools: Vec<Arc<dyn AgentTool>>)
+                  deps: &XllmDeps)
         -> Result<(EffectiveTools, XllmToolManager)>;
     async fn reconcile_execution(&self, rec: &ExecutionRecord) -> Result<()>;
 }

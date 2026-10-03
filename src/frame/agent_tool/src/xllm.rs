@@ -7410,13 +7410,7 @@ impl XllmRun {
             },
             None => None,
         };
-        let workdir_lock = if tools_enabled
-            && !deps.skip_workdir_lock
-            && !deps
-                .runtime
-                .as_ref()
-                .is_some_and(|r| r.config().kind() == "remote_ssh")
-        {
+        let workdir_lock = if tools_enabled && !deps.skip_workdir_lock {
             let path = workdir_lock_path(&deps.effective_lock_dir(), workdir);
             match FileLock::try_acquire(&path)? {
                 Some(l) => {
@@ -7494,7 +7488,7 @@ impl XllmRun {
             &store,
             &run_id,
             Path::new(&config.runtime_descriptor.workdir),
-            tools.enabled,
+            tools.enabled && config.runtime.kind() != "remote_ssh",
             &deps,
         )
         .await?;
@@ -8963,6 +8957,76 @@ mod tests {
 
     fn text(s: &str) -> Result<AiResponse, LLMComputeError> {
         Ok(AiResponse::text(s))
+    }
+
+    struct ExternalTasks;
+
+    #[async_trait]
+    impl RunningTaskResolver for ExternalTasks {
+        async fn state(&self, task_id: &str) -> llm_context::tasks::TaskState {
+            assert_eq!(task_id, "bucky:42");
+            llm_context::tasks::TaskState::Finished(llm_context::tasks::TaskResult {
+                success: true,
+                output: "external task completed".into(),
+                tool_result: None,
+            })
+        }
+
+        async fn wait(&self, task_id: &str, _: Option<u64>) -> llm_context::tasks::TaskState {
+            self.state(task_id).await
+        }
+
+        async fn cancel(
+            &self,
+            task_id: &str,
+        ) -> Result<llm_context::tasks::TaskState, llm_context::tasks::CancelUnsupported> {
+            Ok(self.state(task_id).await)
+        }
+
+        async fn active(&self) -> Vec<llm_context::tasks::TaskBrief> {
+            Vec::new()
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_preserves_host_task_resolver() {
+        let env = Env::new();
+        let mut deps = env.deps(ScriptedLlm::new(vec![]));
+        deps.buckyos_tasks = Some(Arc::new(ExternalTasks));
+        let prepared = XllmTask::prepare(
+            &env.workdir,
+            TaskInput::question("q"),
+            TaskOverrides {
+                tools: Some(true),
+                ..env.overrides()
+            },
+            &deps,
+        )
+        .await
+        .unwrap();
+        assert!(prepared.manager.resolver().can_resolve("bucky:42"));
+        for name in [
+            crate::tasks::TOOL_GET_TASK_STATE,
+            crate::tasks::TOOL_WAIT_TASK,
+            crate::tasks::TOOL_CANCEL_TASK,
+        ] {
+            let obs = prepared
+                .manager
+                .call_tool(
+                    AiToolCall {
+                        name: name.into(),
+                        call_id: name.into(),
+                        args: HashMap::from([("task_id".into(), json!("bucky:42"))]),
+                    },
+                    ToolCallCtx::noop(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                format!("{obs:?}").contains("external task completed"),
+                "{obs:?}"
+            );
+        }
     }
 
     fn tool_call(name: &str, args: Value, id: &str) -> Result<AiResponse, LLMComputeError> {
@@ -11288,6 +11352,24 @@ there]]></write_file>
         .err()
         .expect("a run waiting on an unreachable task manager is not resumable");
         assert!(err.to_string().contains("cannot reach"), "{err}");
+
+        let llm = ScriptedLlm::new(vec![text("continued external task")]);
+        let mut deps = env.deps(llm.clone());
+        deps.buckyos_tasks = Some(Arc::new(ExternalTasks));
+        let start = XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps)
+            .await
+            .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run, got {start:?}")
+        };
+        let outcome = run.execute().await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Completed(_)));
+        assert!(format!("{:?}", llm.seen()[0].messages).contains("external task completed"));
+        drop(run);
+        let mut rec = store.read_record(&run_id).unwrap();
+        rec.status = RunStatus::Paused;
+        rec.result = None;
+        store.write_record(&rec).unwrap();
 
         // Saved while waiting for an in-process task this executor did not
         // start: filled with the task's state (unknown) and continued.

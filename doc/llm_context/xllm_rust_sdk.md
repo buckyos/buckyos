@@ -116,7 +116,7 @@ libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增�
 
 ## 10. 共享 AgentRuntime
 
-`agent_tool::runtime` 提供 `RuntimeConfig`、`RuntimeRegistry::from_config(&cfg)`、`AgentRuntime` 与 `Sandbox: ToolManager`。`prepare` / `prepare_hosted` 调用 `runtime.open(ctx, tools_cfg, host_tools)`，返回 `(EffectiveTools, XllmToolManager)`；后者实现 Sandbox，接受未展开工具配置并复用既有工具解析。`RuntimeOpenCtx` 只接收控制侧 workdir、run_id、LoopModel、工具来源、registrar 和宿主环境，不依赖 Session 类型。Runtime 的 `descriptor()` 在打开后才表示实际目标；`info()` 更新执行处时间与时区。
+`agent_tool::runtime` 提供 `RuntimeConfig`、`RuntimeRegistry::from_config(&cfg)`、`AgentRuntime` 与 `Sandbox: ToolManager`。`prepare` / `prepare_hosted` 调用 `runtime.open(ctx, tools_cfg, deps)`，返回 `(EffectiveTools, XllmToolManager)`；后者实现 Sandbox，接受未展开工具配置并复用既有工具解析；`deps` 中的宿主工具和 `buckyos_tasks` 解析器贯穿装配与恢复。`RuntimeOpenCtx` 只接收控制侧 workdir、run_id、LoopModel、工具来源、registrar 和宿主环境，不依赖 Session 类型。Runtime 的 `descriptor()` 在打开后才表示实际目标；`info()` 更新执行处时间与时区。
 
 `.llm_context` 顶层 runtime 默认 native：
 

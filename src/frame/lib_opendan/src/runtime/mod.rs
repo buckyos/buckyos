@@ -81,7 +81,7 @@ pub async fn bind_or_verify(
                 enabled: Some(false),
                 ..Default::default()
             },
-            Vec::new(),
+            &agent_tool::xllm::XllmDeps::default(),
         )
         .await
         .map_err(|e| OpenDanError::Bind(e.to_string()))?;
@@ -142,7 +142,7 @@ pub async fn bind_or_verify(
                 enabled: Some(false),
                 ..Default::default()
             },
-            Vec::new(),
+            &agent_tool::xllm::XllmDeps::default(),
         )
         .await
         .map_err(|e| OpenDanError::Bind(e.to_string()))?;

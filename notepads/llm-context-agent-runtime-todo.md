@@ -115,7 +115,7 @@ BuckyOS Node 的命令执行接口不能直接假定具有完整文件工具能�
           &self,
           ctx: &RuntimeOpenCtx,
           tools: &ToolsConfig,
-          host_tools: Vec<Arc<dyn AgentTool>>,
+          deps: &XllmDeps,
       ) -> Result<(EffectiveTools, Arc<dyn Sandbox>)>;
       async fn reconcile_execution(&self, rec: &ExecutionRecord) -> Result<()>;
   }

@@ -23,7 +23,7 @@ fn fixtures_dir() -> PathBuf {
 fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     let tmp = tempfile::tempdir().unwrap();
     let dst = tmp.path().join(name);
-    copy_dir(&fixtures_dir().join(name), &dst);
+    copy_dir(&fixtures_dir().join(name), &dst, libopendan::now_ms());
     let root = dst.display().to_string();
     let host = libopendan::runtime::native_host_id();
     let uid = fixture_paths::uid();
@@ -49,15 +49,23 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     (tmp, env, expected)
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
+fn copy_dir(src: &Path, dst: &Path, started_at_ms: u64) {
     std::fs::create_dir_all(dst).unwrap();
     for e in std::fs::read_dir(src).unwrap().flatten() {
         let p = e.path();
         let t = dst.join(e.file_name());
         if p.is_dir() {
-            copy_dir(&p, &t);
+            copy_dir(&p, &t, started_at_ms);
         } else {
             std::fs::copy(&p, &t).unwrap();
+            if src.file_name().is_some_and(|n| n == "snapshots")
+                && p.extension().is_some_and(|n| n == "json")
+            {
+                let mut snapshot: Value =
+                    serde_json::from_slice(&std::fs::read(&t).unwrap()).unwrap();
+                snapshot["state"]["started_at_ms"] = started_at_ms.into();
+                std::fs::write(&t, serde_json::to_vec(&snapshot).unwrap()).unwrap();
+            }
             #[cfg(unix)]
             {
                 let mode = std::fs::metadata(&p).unwrap().permissions();

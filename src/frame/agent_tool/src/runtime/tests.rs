@@ -83,7 +83,7 @@ async fn open(
                 filesystem_policy: Some(policy),
                 ..Default::default()
             },
-            Vec::new(),
+            &XllmDeps::default(),
         )
         .await
         .unwrap();
@@ -298,7 +298,7 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
     let r = RuntimeRegistry::from_config(&cfg).unwrap();
     let ctx = RuntimeOpenCtx::new(dir.path(), "test", LoopModel::FunctionCall);
     assert!(r
-        .open(&ctx, &ToolsConfig::default(), Vec::new())
+        .open(&ctx, &ToolsConfig::default(), &XllmDeps::default())
         .await
         .is_err());
     let mut cfg = cfg;
@@ -327,7 +327,7 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
     assert_eq!(original, CommandOutput::pane(&socket, "runtime-test:0.0"));
     let bad = RuntimeRegistry::from_config(&cfg).unwrap();
     assert!(bad
-        .open(&ctx, &ToolsConfig::default(), Vec::new())
+        .open(&ctx, &ToolsConfig::default(), &XllmDeps::default())
         .await
         .is_err());
     cfg.tmux.as_mut().unwrap().mode = Some(TmuxMode::CreateOrAttach);
@@ -351,6 +351,16 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
 }
 struct CommandOutput;
 impl CommandOutput {
+    fn tmux(socket: &str, args: &[&str]) -> String {
+        let output = std::process::Command::new("tmux")
+            .args(["-S", socket])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    }
+
     fn pane(socket: &str, pane: &str) -> Vec<u8> {
         std::process::Command::new("tmux")
             .args(["-S", socket, "capture-pane", "-p", "-t", pane])
@@ -358,6 +368,156 @@ impl CommandOutput {
             .unwrap()
             .stdout
     }
+}
+
+#[tokio::test]
+async fn tmux_duplicate_window_names_cancel_only_the_requested_run() {
+    if !Runtime::available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("socket").display().to_string();
+    let target = Arc::new(
+        tmux::TmuxTarget::open(
+            &TmuxConfig {
+                session: Some("duplicates".into()),
+                socket: Some(socket.clone()),
+                mode: Some(TmuxMode::Create),
+            },
+            dir.path(),
+        )
+        .await
+        .unwrap(),
+    );
+    let mut handles = Vec::new();
+    for run_id in ["first", "second"] {
+        let slot = new_run_binding_slot();
+        *slot.lock().unwrap() = Some(RunBinding {
+            run_id: run_id.into(),
+            run_dir: Some(dir.path().join(run_id)),
+        });
+        let runner = tmux::TmuxBashRunner::new(target.clone(), BTreeMap::new(), slot);
+        let mut req = request(dir.path().to_str().unwrap(), "sleep 30");
+        req.call_id = Some("duplicate".into());
+        handles.push(runner.start(&context(), req).await.unwrap());
+    }
+    let windows = || {
+        CommandOutput::tmux(
+            &socket,
+            &[
+                "list-windows",
+                "-t",
+                "=duplicates",
+                "-F",
+                "#{window_id} #{window_name}",
+            ],
+        )
+        .lines()
+        .filter(|line| line.ends_with(" llm-duplicate"))
+        .map(str::to_string)
+        .collect::<Vec<_>>()
+    };
+    let original = windows();
+    assert_eq!(original.len(), 2);
+    assert!(handles[0]
+        .locator()
+        .contains(original[0].split_once(' ').unwrap().0));
+    assert!(handles[1]
+        .locator()
+        .contains(original[1].split_once(' ').unwrap().0));
+    assert!(handles[0].kill().await.unwrap().timed_out);
+    assert_eq!(windows(), vec![original[1].clone()]);
+    assert!(handles[1]
+        .wait(Duration::from_millis(50))
+        .await
+        .unwrap()
+        .is_none());
+    assert!(handles[1].kill().await.unwrap().timed_out);
+    assert!(windows().is_empty());
+    CommandOutput::tmux(&socket, &["kill-server"]);
+}
+
+#[tokio::test]
+async fn tmux_info_and_shell_use_the_session_environment() {
+    if !Runtime::available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("socket").display().to_string();
+    let tmux_cfg = TmuxConfig {
+        session: Some("environment".into()),
+        socket: Some(socket.clone()),
+        mode: Some(TmuxMode::Create),
+    };
+    tmux::TmuxTarget::open(&tmux_cfg, dir.path()).await.unwrap();
+    let path = format!(
+        "{}:{}",
+        dir.path().join("session-bin").display(),
+        std::env::var("PATH").unwrap()
+    );
+    let bash_env = dir.path().join("bash-env");
+    std::fs::write(
+        &bash_env,
+        format!("export PATH={}\nunset BASH_ENV\n", shell_quote(&path)),
+    )
+    .unwrap();
+    CommandOutput::tmux(
+        &socket,
+        &[
+            "set-environment",
+            "-t",
+            "=environment",
+            "BASH_ENV",
+            bash_env.to_str().unwrap(),
+        ],
+    );
+    CommandOutput::tmux(
+        &socket,
+        &["set-environment", "-t", "=environment", "TZ", "HST10"],
+    );
+    let config = RuntimeConfig {
+        kind: Some("tmux".into()),
+        tmux: Some(TmuxConfig {
+            mode: Some(TmuxMode::Attach),
+            ..tmux_cfg
+        }),
+        ..Default::default()
+    };
+    let (rt, manager, _) = open(
+        config.clone(),
+        dir.path(),
+        crate::xllm::FilesystemPolicy::Workspace,
+    )
+    .await;
+    assert_eq!(manager.runtime_info().unwrap().timezone, "HST-1000");
+    let out = manager
+        .exec(
+            request(manager.workdir(), "date +%Z%z; printf '%s' \"$PATH\""),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.stdout, format!("HST-1000\n{path}"));
+    CommandOutput::tmux(
+        &socket,
+        &["set-environment", "-t", "=environment", "TZ", "JST-9"],
+    );
+    assert_eq!(rt.info().await.unwrap().timezone, "JST+0900");
+    let mut override_config = config;
+    override_config.env.insert("TZ".into(), "UTC0".into());
+    let (rt, manager, _) = open(
+        override_config,
+        dir.path(),
+        crate::xllm::FilesystemPolicy::Workspace,
+    )
+    .await;
+    assert_eq!(rt.info().await.unwrap().timezone, "UTC+0000");
+    let out = manager
+        .exec(request(manager.workdir(), "date +%Z%z"), &context())
+        .await
+        .unwrap();
+    assert_eq!(out.stdout, "UTC+0000\n");
+    CommandOutput::tmux(&socket, &["kill-server"]);
 }
 
 fn ssh_config() -> RuntimeConfig {
@@ -396,6 +556,47 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
         !matches!(obs, llm_context::observation::Observation::Error { .. }),
         "{obs:?}"
     );
+    let setup = m
+        .exec(
+            request(
+                m.workdir(),
+                "printf untouched > victim; printf original > 'victim
+second'; ln -sfn 'victim
+second' newline-link",
+            ),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(setup.exit_code, 0);
+    for bad_path in ["victim\nsecond", "newline-link", "new\rname"] {
+        for tool_call in [
+            call("write_file", json!({"path":bad_path,"content":"corrupted"})),
+            call("read_file", json!({"path":bad_path})),
+            call(
+                "edit_file",
+                json!({"path":bad_path,"old_string":"original","new_string":"corrupted"}),
+            ),
+        ] {
+            let obs = m.call_tool_t(tool_call).await.unwrap();
+            assert!(
+                matches!(obs, llm_context::observation::Observation::Error { .. }),
+                "{bad_path:?}: {obs:?}"
+            );
+        }
+    }
+    let out = m
+        .exec(
+            request(
+                m.workdir(),
+                "cat victim; printf '|'; cat 'victim
+second'",
+            ),
+            &context(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(out.stdout, "untouched|original");
     let obs = m
         .call_tool_t(call(
             "edit_file",
@@ -486,6 +687,53 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
         !matches!(obs, llm_context::observation::Observation::Error { .. }),
         "{obs:?}"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn ssh_configured_runs_do_not_acquire_local_workdir_locks() {
+    use crate::xllm::{TaskInput, TaskOverrides, XllmRun, XllmTask};
+
+    let local = tempfile::tempdir().unwrap();
+    let cfg = ssh_config();
+    std::fs::write(
+        local.path().join(".llm_context"),
+        json!({
+            "runtime": cfg,
+            "tools": {"enabled": true},
+            "provider": {"type": "openai", "base_url": "http://127.0.0.1:1/v1", "api_key": "test"},
+            "model": "test"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let deps = XllmDeps::default().with_lock_dir(local.path().join("locks"));
+    let overrides = TaskOverrides {
+        runs_dir: Some(local.path().join("runs")),
+        ..Default::default()
+    };
+    let first = XllmTask::prepare(
+        local.path(),
+        TaskInput::question("first"),
+        overrides.clone(),
+        &deps,
+    )
+    .await
+    .unwrap();
+    assert_eq!(first.config.runtime.kind(), "remote_ssh");
+    assert!(deps.runtime.is_none());
+    let first = XllmRun::start(first, deps.clone()).await.unwrap();
+    let second = XllmTask::prepare(
+        local.path(),
+        TaskInput::question("second"),
+        overrides,
+        &deps,
+    )
+    .await
+    .unwrap();
+    let second = XllmRun::start(second, deps).await.unwrap();
+    assert_ne!(first.run_id(), second.run_id());
+    assert!(!local.path().join("locks").exists());
 }
 
 #[tokio::test]

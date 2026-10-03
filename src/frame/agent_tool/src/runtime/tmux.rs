@@ -137,19 +137,20 @@ impl TmuxTarget {
             })
     }
 
-    /// Start `script` in a new window named `window`; returns once the
-    /// window exists.
     async fn new_window(
         &self,
         window: &str,
         cwd: &Path,
         script: &str,
-    ) -> Result<(), AgentToolError> {
+    ) -> Result<String, AgentToolError> {
         let target = format!("={}", self.session);
         let out = self
             .tmux(&[
                 "new-window",
                 "-d",
+                "-P",
+                "-F",
+                "#{window_id}",
                 "-t",
                 &target,
                 "-n",
@@ -168,16 +169,25 @@ impl TmuxTarget {
                 effect_unknown: false,
             });
         }
-        Ok(())
+        let window_id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !window_id
+            .strip_prefix('@')
+            .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+        {
+            return Err(AgentToolError::Transport {
+                message: format!("tmux returned invalid window id: {window_id:?}"),
+                effect_unknown: true,
+            });
+        }
+        Ok(window_id)
     }
 
-    async fn kill_window(&self, window: &str) -> Result<(), AgentToolError> {
-        let target = format!("={}:={window}", self.session);
-        let out = self.tmux(&["kill-window", "-t", &target]).await?;
+    async fn kill_window(&self, window_id: &str) -> Result<(), AgentToolError> {
+        let out = self.tmux(&["kill-window", "-t", window_id]).await?;
         // A window that already closed (command ended) is not an error.
         if !out.status.success() {
             let err = String::from_utf8_lossy(&out.stderr);
-            if !err.contains("can't find") {
+            if err.trim() != format!("can't find window: {window_id}") {
                 return Err(AgentToolError::Transport {
                     message: format!("tmux kill-window failed: {err}"),
                     effect_unknown: true,
@@ -185,6 +195,47 @@ impl TmuxTarget {
             }
         }
         Ok(())
+    }
+
+    pub async fn probe(
+        self: &Arc<Self>,
+        cwd: &Path,
+        env: &BTreeMap<String, String>,
+    ) -> Result<super::ssh::Probe, XllmError> {
+        let runner = TmuxBashRunner::new(
+            self.clone(),
+            env.clone(),
+            crate::llm_bash::new_run_binding_slot(),
+        );
+        let mut command = runner
+            .start_command(BashRunRequest {
+                command: super::ssh::LOCAL_PROBE.into(),
+                cwd: cwd.into(),
+                timeout_ms: 10_000,
+                max_output_bytes: 64 * 1024,
+                env: Vec::new(),
+                target: BashTarget::Local,
+                call_id: None,
+            })
+            .await
+            .map_err(|e| XllmError::Capability(e.to_string()))?;
+        let result = match command.wait(Duration::from_secs(10)).await {
+            Ok(Some(out)) if out.exit_code == 0 && !out.output_truncated => {
+                super::ssh::parse_probe(out.stdout.as_bytes())
+            }
+            Ok(Some(out)) => Err(XllmError::Capability(format!(
+                "tmux capability probe failed: {}",
+                out.stderr
+            ))),
+            other => {
+                let killed = command.kill().await;
+                Err(XllmError::Capability(format!(
+                    "tmux capability probe did not complete: {other:?}; cancellation: {killed:?}"
+                )))
+            }
+        };
+        let _ = tokio::fs::remove_dir_all(&command.dir).await;
+        result
     }
 }
 
@@ -240,6 +291,12 @@ impl BashRunner for TmuxBashRunner {
         _ctx: &SessionRuntimeContext,
         req: BashRunRequest,
     ) -> Result<Box<dyn CommandHandle>, AgentToolError> {
+        Ok(Box::new(self.start_command(req).await?))
+    }
+}
+
+impl TmuxBashRunner {
+    async fn start_command(&self, req: BashRunRequest) -> Result<TmuxCommand, AgentToolError> {
         if let BashTarget::Unsupported(t) = &req.target {
             return Err(AgentToolError::InvalidArgs(format!(
                 "unsupported target {t}"
@@ -278,24 +335,25 @@ impl BashRunner for TmuxBashRunner {
                 .map(sanitize_call_id)
                 .unwrap_or_else(|| crate::tasks::next_local_seq().to_string())
         );
-        self.target
+        let window_id = self
+            .target
             .new_window(&window, &req.cwd, &window_script(&dir))
             .await?;
-        Ok(Box::new(TmuxCommand {
+        Ok(TmuxCommand {
             target: self.target.clone(),
-            window,
+            window_id,
             dir,
             started: Instant::now(),
             max_output: req.max_output_bytes,
             cwd: req.cwd,
             finished: None,
-        }))
+        })
     }
 }
 
 pub struct TmuxCommand {
     target: Arc<TmuxTarget>,
-    window: String,
+    window_id: String,
     dir: PathBuf,
     started: Instant,
     max_output: usize,
@@ -348,7 +406,7 @@ impl CommandHandle for TmuxCommand {
         if let Some(done) = &self.finished {
             return Ok(done.clone());
         }
-        self.target.kill_window(&self.window).await?;
+        self.target.kill_window(&self.window_id).await?;
         let code = read_exit_file(&self.dir).unwrap_or(TIMEOUT_EXIT_CODE);
         let out = self.output(code, true);
         self.finished = Some(out.clone());
@@ -365,7 +423,7 @@ impl CommandHandle for TmuxCommand {
         format!(
             "tmux session `{}` window `{}`; output and `exit` file in {}",
             self.target.session(),
-            self.window,
+            self.window_id,
             self.dir.display()
         )
     }

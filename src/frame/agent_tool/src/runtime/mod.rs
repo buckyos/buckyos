@@ -9,7 +9,7 @@ use crate::llm_bash::{
     OUTPUT_TAIL_BYTES, TOOL_SHELL,
 };
 use crate::xllm::{EffectiveTools, LoopModel, ToolsConfig, XllmDeps, XllmError, XllmToolManager};
-use crate::{AgentTool, AgentToolError, SessionRuntimeContext};
+use crate::{AgentToolError, SessionRuntimeContext};
 use async_trait::async_trait;
 use files::{FileBackend, LocalFileBackend};
 use llm_context::deps::{ToolCallCtx, ToolManager};
@@ -327,7 +327,7 @@ pub trait AgentRuntime: Send + Sync {
         &self,
         ctx: &RuntimeOpenCtx,
         tools: &ToolsConfig,
-        host_tools: Vec<Arc<dyn AgentTool>>,
+        deps: &XllmDeps,
     ) -> Result<(EffectiveTools, XllmToolManager)>;
 
     /// The text a previous executor's in-flight `action` is answered with
@@ -534,17 +534,23 @@ impl Runtime {
                             "runtime workdir must be a directory".into(),
                         ));
                     }
-                    let probe = ssh::local_probe(&cwd, &config.env).await?;
-                    let mut target = json!({ "host": native_host_id(), "uid": probe.identity.uid });
                     let tmux = if kind == "tmux" {
                         let t = Arc::new(
                             tmux::TmuxTarget::open(config.tmux.as_ref().unwrap(), &cwd).await?,
                         );
-                        target["tmux"] = t.identity();
                         Some(t)
                     } else {
                         None
                     };
+                    let probe = if let Some(t) = &tmux {
+                        t.probe(&cwd, &config.env).await?
+                    } else {
+                        ssh::local_probe(&cwd, &config.env).await?
+                    };
+                    let mut target = json!({ "host": native_host_id(), "uid": probe.identity.uid });
+                    if let Some(t) = &tmux {
+                        target["tmux"] = t.identity();
+                    }
                     (
                         probe.info,
                         target,
@@ -620,6 +626,9 @@ impl AgentRuntime for Runtime {
         let state = self.initialize(&std::env::current_dir()?).await?;
         let probe = if let Some(ssh) = &state.ssh {
             ssh.probe(&state.info.cwd, &state.config.env).await?
+        } else if let Some(tmux) = &state.tmux {
+            tmux.probe(Path::new(&state.info.cwd), &state.config.env)
+                .await?
         } else {
             ssh::local_probe(Path::new(&state.info.cwd), &state.config.env).await?
         };
@@ -636,7 +645,7 @@ impl AgentRuntime for Runtime {
         &self,
         ctx: &RuntimeOpenCtx,
         tools: &ToolsConfig,
-        host_tools: Vec<Arc<dyn AgentTool>>,
+        deps: &XllmDeps,
     ) -> Result<(EffectiveTools, XllmToolManager)> {
         RuntimeConfig {
             env: ctx.env.clone(),
@@ -674,17 +683,13 @@ impl AgentRuntime for Runtime {
                     .with_run_binding(ctx.run.clone()),
             )
         };
-        let deps = XllmDeps {
-            host_tools: host_tools.into_iter().map(|t| (t.spec().name, t)).collect(),
-            ..Default::default()
-        };
         let (effective, mut manager) = crate::xllm::build_runtime_toolset(
             tools,
             ctx.sources.clone(),
             ctx.loop_model,
             Path::new(&s.info.cwd),
             &ctx.run_id,
-            &deps,
+            deps,
             runner.clone(),
             s.files.clone(),
             &s.descriptor,
@@ -764,9 +769,7 @@ pub async fn open_runtime(
             ));
         }
     }
-    let (tools, manager) = runtime
-        .open(ctx, tools, deps.host_tools.values().cloned().collect())
-        .await?;
+    let (tools, manager) = runtime.open(ctx, tools, deps).await?;
     Ok((runtime, tools, manager))
 }
 

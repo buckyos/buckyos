@@ -61,7 +61,7 @@ fn probe_script(cwd: &str, env: &BTreeMap<String, String>) -> String {
     s.push_str(PROBE);
     s
 }
-fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
+pub(super) fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
     let p = bytes
         .split(|b| *b == 0)
         .filter(|p| !p.is_empty())
@@ -93,13 +93,20 @@ fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
     })
 }
 
-pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<Probe, XllmError> {
-    let mut command = Command::new("bash");
-    command.arg("-c").arg(r#"set -e
+pub(super) const LOCAL_PROBE: &str = r#"set -e
 command -v bash >/dev/null
 printf '%s\0' "$(cat /etc/machine-id 2>/dev/null || hostname)" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Z%z)"
 for tool in bash realpath base64; do if command -v "$tool" >/dev/null; then printf '%s\0' "$tool"; fi; done
-"#).current_dir(cwd).envs(env).kill_on_drop(true);
+"#;
+
+pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<Probe, XllmError> {
+    let mut command = Command::new("bash");
+    command
+        .arg("-c")
+        .arg(LOCAL_PROBE)
+        .current_dir(cwd)
+        .envs(env)
+        .kill_on_drop(true);
     let o = tokio::time::timeout(Duration::from_secs(10), command.output())
         .await
         .map_err(capability)?
@@ -399,24 +406,30 @@ impl FileBackend for SshTransport {
         } else {
             format!("{}/{raw}", root.display())
         };
-        let mut script = format!("realpath -m -- {}\n", shell_quote(&candidate));
+        sftp_quote(&candidate)?;
+        let mut script = format!("set -e\nrealpath -m -z -- {}\n", shell_quote(&candidate));
         for r in allowed {
             script.push_str(&format!(
-                "realpath -m -- {}\n",
+                "realpath -m -z -- {}\n",
                 shell_quote(&r.display().to_string())
             ));
         }
         let bytes = self.script(&script, false).await?;
         let s = String::from_utf8(bytes).map_err(|e| transport(e.to_string(), false))?;
-        let mut lines = s.lines();
-        let path = PathBuf::from(
-            lines
-                .next()
-                .ok_or_else(|| transport("realpath returned no path", false))?,
-        );
-        let roots = lines.map(PathBuf::from).collect::<Vec<_>>();
+        let paths = s
+            .strip_suffix('\0')
+            .ok_or_else(|| transport("realpath returned unterminated paths", false))?
+            .split('\0')
+            .collect::<Vec<_>>();
+        if paths.len() != allowed.len() + 1 || paths.iter().any(|p| p.is_empty()) {
+            return Err(transport("realpath returned incomplete paths", false));
+        }
+        for p in &paths {
+            sftp_quote(p)?;
+        }
+        let path = PathBuf::from(paths[0]);
+        let roots = paths[1..].iter().map(PathBuf::from).collect::<Vec<_>>();
         check_allowed(&path, &roots)?;
-        sftp_quote(&path.display().to_string())?;
         Ok(path)
     }
     async fn exists(&self, path: &Path) -> ToolResult<bool> {
