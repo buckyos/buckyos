@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "doubao",
-  "revision_seq": 8,
+  "revision_seq": 9,
   "required_features": [],
   "models": [
     {
@@ -245,11 +245,17 @@
     },
     {
       "id": "doubao-seed-asr-2.0",
-      "exclude": true,
       "parameter_scale": "audio",
       "api_types": ["audio.asr"],
       "logical_mounts": ["audio.asr.doubao", "audio.asr.{model}"],
-      "capabilities": {"streaming": true}
+      "capabilities": {}
+    },
+    {
+      "id": "doubao-seed-asr-2.0-fast",
+      "parameter_scale": "audio",
+      "api_types": ["audio.asr"],
+      "logical_mounts": ["audio.asr.doubao", "audio.asr.{model}"],
+      "capabilities": {}
     }
   ],
   "patterns": [],

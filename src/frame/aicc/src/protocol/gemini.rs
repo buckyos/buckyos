@@ -219,6 +219,10 @@ impl GeminiInteractionCodec {
 
 #[async_trait]
 impl OperationCodec for GeminiInteractionCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -1198,6 +1202,13 @@ fn encode_resource(
     kind: &str,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(source) {
+        let mime = context.materialized_resource(source)?.mime.clone();
+        return Ok(json!({"type":kind, "uri":url, "mime_type":mime}));
+    }
     match source {
         ResourceRef::Url { url, mime_hint } => {
             Ok(json!({"type":kind, "uri":url, "mime_type":mime_hint}))
@@ -1270,6 +1281,10 @@ impl GeminiEmbeddingCodec {
 
 #[async_trait]
 impl OperationCodec for GeminiEmbeddingCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -1388,6 +1403,13 @@ fn embedding_resource_part(
     resource: &ResourceRef,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(resource) {
+        let mime = context.materialized_resource(resource)?.mime.clone();
+        return Ok(json!({"fileData":{"fileUri":url,"mimeType":mime}}));
+    }
     match resource {
         ResourceRef::Url { url, mime_hint } => {
             Ok(json!({"fileData":{"fileUri":url,"mimeType":mime_hint}}))
@@ -2068,6 +2090,13 @@ impl GeminiVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for GeminiVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // The long-running predict API takes media as `{"uri":…,"mimeType":…}`,
+        // which `video_resource` fills with the URL when materialization
+        // supplied one.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -2254,6 +2283,13 @@ fn video_extend_instance(
 }
 
 fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`). The object's own MIME is used
+    // as the label, since the request carries no payload to sniff.
+    if let Some(url) = context.materialized_url(resource) {
+        let mime = context.materialized_resource(resource)?.mime.clone();
+        return Ok(json!({"uri":url,"mimeType":mime}));
+    }
     match resource {
         ResourceRef::Url { url, mime_hint } => Ok(json!({"uri":url,"mimeType":mime_hint})),
         ResourceRef::Base64 { mime, data_base64 } => {

@@ -96,6 +96,11 @@
 | `l1_provider_protocol_gemini_*` | P0 | Interactions 与 `generateContent` 分 Adapter contract、无隐式 fallback |
 | `l1_provider_protocol_fal_*` | P1 | fal submit/poll、artifact URL、operation timeout |
 | `l1_resource_ref_*` | P0 | `url`、`base64`、`named_object`、FileObject meta 推导 |
+| `l1_resource_input_form_*` | P0 | 三档矩阵（`UrlOrBytes`/`UrlOnly`/`BytesOnly`）：`Url` 透传不下载、`Base64` 内联或入库转对象 URL、`NamedObject` 优先对外 NDN URL 否则读字节；`UrlOnly` 拿不到对象 URL 时 fail-closed |
+| `l1_resource_input_form_native_*` | P0 | native task codec 自带形态声明，且形态按**已解析执行模式**取值：缓冲 codec 与 native codec 同绑定时各取各的；视频/图像编辑类 native 操作声明 `UrlOrBytes` 后不再预下载，multipart 上传类（如 OpenAI video-to-video）保持 `BytesOnly`；单个 codec 服务多种 wire grammar 时形态随 `api_type` 变化（MiniMax ASR `BytesOnly` / 图像编辑 `UrlOrBytes`） |
+| `l1_provider_artifact_cache_*` | P1 | Provider artifact 缓存是**单表两种键**（`aicc_provider_artifact`，由原先两张同构表改名替换而成）：`content_digest` 键标识内容本身、`obj_id` 键标识对象身份，两列互斥（`CHECK` 恰好一列非空）。对象形态入参先按 obj_id 查，命中直接给 Provider handle（零字节读），未命中给对外 NDN URL 且**不回退** digest 查询；字节形态入参按 digest 查。键按 provider instance + origin + **tenant** 隔离，跨租户不得命中；到期即失效；Provider 返回 404 时按完整主键 + artifact ID 精确删除。Provider 只回 URL 的产物在用户下载、摘要补全时以 digest 键登记（沿用原创建/过期时间） |
+| `l1_provider_artifact_rename_*` | P1 | 表集不参与版本化：`SCHEMA` 全是幂等 `CREATE ... IF NOT EXISTS` 且每次打开都重新应用。已停在 version `2`、只有旧表 `aicc_provider_artifact_id` 的 RDB 重新打开后**新表出现且立即可用**（两列约束生效），**旧表原样残存、不 `DROP`、不再访问**；全新 RDB 只得到新表；`MIGRATIONS` 不新增条目，`STORAGE_SCHEMA_VERSION` 仍为 `2`；schema 版本高于当前值时 error-and-stop |
+| `l1_provider_protocol_doubao_speech_*` | P0 | 豆包语音把同一个 `audio.asr` 绑到两个 operation：极速版 `asr.recognize.flash`（Immediate、`UrlOrBytes`，`audio.url` 与 `audio.data` 二选一）与标准版 `asr.recognize.submit`（NativeTask、**`UrlOnly`**）。标准版走 `submit`→`query` 轮询：`X-Api-Sequence` 只在 submit 出现，任务 ID 由调用方自选并经 `X-Api-Request-Id` 传递、在 submit 空响应体上回收；`ResourceRef::Base64` 先发布成本地 NDN 对象再把对外 URL 交给豆包，取不到对象 URL 时 fail-closed。业务码以 `X-Api-Status-Code` 响应头为准（HTTP 仍可为 200），`20000001`/`20000002` 分别映射 Running/Queued，`20000000` 才解码结果；WS-only 的流式识别仍置 `exclude` |
 | `l1_task_lifecycle_*` | P0 | immediate、async running、final succeeded、failed、cancel |
 | `l1_usage_log_*` | P0 | 成功写 usage、幂等去重、缺 usage 报错、查询聚合 |
 | `l1_method_api_type_canonical_*` | P0 | `api_type=llm` 与 `method=chat.completions.create` 的边界、非正式 api_type 拒绝 |

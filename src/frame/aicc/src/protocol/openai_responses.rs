@@ -306,6 +306,10 @@ impl OpenAiResponsesCodec {
 
 #[async_trait]
 impl OperationCodec for OpenAiResponsesCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -1815,6 +1819,16 @@ fn encode_input_file(
     title: Option<&str>,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = call.context.materialized_url(source) {
+        return Ok(json!({
+            "type": "input_file",
+            "file_url": url,
+            "filename": title
+        }));
+    }
     match source {
         PublicResourceRef::Url { url, .. } => Ok(json!({
             "type": "input_file",
@@ -1833,6 +1847,12 @@ fn resource_data_or_url(
     source: &PublicResourceRef,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = call.context.materialized_url(source) {
+        return Ok(url.to_string());
+    }
     match source {
         PublicResourceRef::Url { url, .. } => Ok(url.clone()),
         PublicResourceRef::Base64 { mime, data_base64 } => {

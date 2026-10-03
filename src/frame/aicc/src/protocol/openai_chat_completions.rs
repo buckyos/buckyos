@@ -285,6 +285,10 @@ impl Default for OpenAiChatCompletionsCodec {
 
 #[async_trait]
 impl OperationCodec for OpenAiChatCompletionsCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -519,6 +523,12 @@ fn encode_user_content(
 }
 
 fn encode_image_url(source: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(source) {
+        return Ok(url.to_string());
+    }
     match source {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {

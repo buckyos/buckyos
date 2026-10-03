@@ -28,7 +28,15 @@ const MAX_LIMIT: usize = 1_000;
 static INSTALL_DRIVERS: Once = Once::new();
 
 const SCHEMA_META: &str = "CREATE TABLE IF NOT EXISTS aicc_schema_meta (schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL)";
-const MIGRATIONS: &[(i64, &str)] = &[(1, SCHEMA), (2, ROUTE_TRACE_FILTER_COLUMNS)];
+/// Versioned steps that can only be expressed as row rewrites.
+///
+/// The table set itself is deliberately *not* versioned: `SCHEMA` is re-applied
+/// on every open (see `migrate`), so a table that has been added or renamed is
+/// created for both new and already-provisioned databases without a migration.
+/// A table that a newer `SCHEMA` no longer declares is left behind unused rather
+/// than dropped — it holds nothing a Provider round trip cannot rebuild, and
+/// leaving it costs nothing.
+const MIGRATIONS: &[(i64, &str)] = &[(2, ROUTE_TRACE_FILTER_COLUMNS)];
 
 const ROUTE_TRACE_FILTER_COLUMNS: &str = r#"
 ALTER TABLE aicc_route_trace_event ADD COLUMN fallback_applied INTEGER NOT NULL DEFAULT 0;
@@ -42,6 +50,12 @@ CREATE INDEX idx_aicc_route_trace_event_fallback_time ON aicc_route_trace_event(
 CREATE INDEX idx_aicc_route_trace_event_warning_time ON aicc_route_trace_event(tenant_id, warning_count, created_at_ms);
 "#;
 
+/// The current table set, applied in full on every open.
+///
+/// Every statement is additive and idempotent (`CREATE ... IF NOT EXISTS`), so
+/// applying it to an existing database creates only what is missing. That is
+/// what carries a renamed table to an already-provisioned database without a
+/// versioned migration, and why no statement here drops anything.
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS aicc_schema_meta (
  schema_key TEXT PRIMARY KEY, schema_version BIGINT NOT NULL, updated_at_ms BIGINT NOT NULL);
@@ -103,13 +117,14 @@ CREATE TABLE IF NOT EXISTS aicc_artifact_url_source (
  request_id TEXT NOT NULL, created_at_ms BIGINT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_tenant ON aicc_artifact_url_source(tenant_id, created_at_ms);
 CREATE INDEX IF NOT EXISTS idx_aicc_artifact_url_source_provider ON aicc_artifact_url_source(provider_instance_name, created_at_ms);
-CREATE TABLE IF NOT EXISTS aicc_provider_artifact_id (
- content_digest TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
- origin_provider TEXT NOT NULL, artifact_id TEXT NOT NULL,
- expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
- PRIMARY KEY (content_digest, provider_instance_name, origin_provider));
-CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_id_provider
- ON aicc_provider_artifact_id(provider_instance_name, origin_provider, created_at_ms);
+CREATE TABLE IF NOT EXISTS aicc_provider_artifact (
+ content_digest TEXT NOT NULL, obj_id TEXT NOT NULL,
+ provider_instance_name TEXT NOT NULL, origin_provider TEXT NOT NULL, tenant_id TEXT NOT NULL,
+ artifact_id TEXT NOT NULL, expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
+ CHECK ((content_digest='') <> (obj_id='')),
+ PRIMARY KEY (content_digest, obj_id, provider_instance_name, origin_provider, tenant_id));
+CREATE INDEX IF NOT EXISTS idx_aicc_provider_artifact_provider
+ ON aicc_provider_artifact(provider_instance_name, origin_provider, created_at_ms);
 CREATE TABLE IF NOT EXISTS aicc_audit_event (
  audit_id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, caller_app_id TEXT, event_type TEXT NOT NULL,
  trace_id TEXT, request_id TEXT, task_id TEXT, route_id TEXT, provider_trace_id TEXT,
@@ -213,11 +228,53 @@ pub(crate) struct ArtifactUrlSourceRecord {
     pub created_at_ms: i64,
 }
 
+/// Which of the two mutually exclusive key columns a Provider artifact cache
+/// row is filed under.
+///
+/// The two kinds are not interchangeable:
+///
+/// - [`Self::ContentDigest`] identifies the payload, so it survives the same
+///   bytes being stored under a different object name — but computing it
+///   requires reading those bytes.
+/// - [`Self::ObjectId`] is the object's own identity. It arrives with a
+///   `ResourceRef::NamedObject` for free and can be looked up without reading
+///   the payload, but it *includes* the object's name and attributes, so the
+///   same bytes under a different name hash to a different object id.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProviderArtifactIdRecord {
-    pub content_digest: String,
+pub(crate) enum ProviderArtifactKey {
+    ContentDigest(String),
+    ObjectId(String),
+}
+
+impl ProviderArtifactKey {
+    /// The two key columns, exactly one of which is non-empty.
+    fn columns(&self) -> (String, String) {
+        match self {
+            Self::ContentDigest(digest) => (digest.clone(), String::new()),
+            Self::ObjectId(obj_id) => (String::new(), obj_id.clone()),
+        }
+    }
+
+    fn validate(&self) -> bool {
+        match self {
+            Self::ContentDigest(digest) => valid_content_digest(digest),
+            Self::ObjectId(obj_id) => valid_obj_id(obj_id),
+        }
+    }
+}
+
+/// A Provider's handle for a payload it has already accepted from this zone.
+///
+/// This is a cache, not a source of truth: dropping a row only costs an extra
+/// payload transfer on the next call. Rows are scoped by instance, origin
+/// *and* tenant, because the handle belongs to the Provider account that
+/// accepted it and must not be reusable by another tenant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderArtifactRecord {
+    pub key: ProviderArtifactKey,
     pub provider_instance_name: String,
     pub origin_provider: String,
+    pub tenant_id: String,
     pub artifact_id: String,
     pub expires_at_ms: Option<i64>,
     pub created_at_ms: i64,
@@ -336,6 +393,12 @@ impl AiccStorage {
                 "unsupported AICC storage schema version {version}; latest supported is {STORAGE_SCHEMA_VERSION}"
             )));
         }
+        // Apply the table set before the versioned steps. It is entirely
+        // idempotent, so this is what keeps an already-provisioned database
+        // current when a table is added or renamed: the missing table is created
+        // here and the one it replaced stays behind. It runs first so the
+        // versioned steps still see every table they expect.
+        self.apply_script(SCHEMA).await?;
         for (target, schema) in MIGRATIONS {
             if *target <= version {
                 continue;
@@ -364,6 +427,20 @@ impl AiccStorage {
                 "incomplete AICC storage migration at version {version}"
             )));
         }
+        Ok(())
+    }
+
+    /// Runs a semicolon-separated DDL script inside a single transaction.
+    async fn apply_script(&self, script: &str) -> StorageResult<()> {
+        let mut transaction = self.pool.begin().await?;
+        for statement in script
+            .split(';')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            transaction.execute(statement).await?;
+        }
+        transaction.commit().await?;
         Ok(())
     }
 
@@ -584,26 +661,30 @@ impl AiccStorage {
         }))
     }
 
-    pub(crate) async fn remember_provider_artifact_id(
+    /// Record that `artifact_id` is this Provider's handle for the payload the
+    /// key identifies, so a later call carrying the same payload can be answered
+    /// with the handle instead of the payload itself.
+    pub(crate) async fn remember_provider_artifact(
         &self,
-        record: &ProviderArtifactIdRecord,
+        record: &ProviderArtifactRecord,
     ) -> StorageResult<()> {
+        let (content_digest, obj_id) = record.key.columns();
         if [
-            record.content_digest.as_str(),
             record.provider_instance_name.as_str(),
             record.origin_provider.as_str(),
+            record.tenant_id.as_str(),
             record.artifact_id.as_str(),
         ]
         .iter()
         .any(|value| value.trim().is_empty())
-            || !valid_content_digest(&record.content_digest)
+            || !record.key.validate()
             || record
                 .expires_at_ms
                 .is_some_and(|expires_at_ms| expires_at_ms < 0)
             || record.created_at_ms < 0
         {
             return Err(StorageError::InvalidRecord(
-                "Provider artifact ID fields are invalid".into(),
+                "Provider artifact fields are invalid".into(),
             ));
         }
         if record
@@ -611,26 +692,31 @@ impl AiccStorage {
             .is_some_and(|expires_at_ms| expires_at_ms <= record.created_at_ms)
         {
             return self
-                .forget_provider_artifact_id(
-                    &record.content_digest,
+                .forget_provider_artifact(
+                    &record.key,
                     &record.provider_instance_name,
                     &record.origin_provider,
+                    &record.tenant_id,
                     &record.artifact_id,
                 )
                 .await;
         }
         let sql = self.sql(
-            "INSERT INTO aicc_provider_artifact_id
-             (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
-             VALUES (?,?,?,?,?,?)
-             ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+            "INSERT INTO aicc_provider_artifact
+             (content_digest,obj_id,provider_instance_name,origin_provider,tenant_id,
+              artifact_id,expires_at_ms,created_at_ms)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(content_digest,obj_id,provider_instance_name,origin_provider,tenant_id)
+             DO UPDATE SET
               artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
               created_at_ms=excluded.created_at_ms",
         );
         sqlx::query(&sql)
-            .bind(&record.content_digest)
+            .bind(&content_digest)
+            .bind(&obj_id)
             .bind(&record.provider_instance_name)
             .bind(&record.origin_provider)
+            .bind(&record.tenant_id)
             .bind(&record.artifact_id)
             .bind(record.expires_at_ms)
             .bind(record.created_at_ms)
@@ -639,80 +725,100 @@ impl AiccStorage {
         Ok(())
     }
 
-    pub(crate) async fn provider_artifact_id(
+    /// Look up the Provider handle previously recorded for this key.
+    ///
+    /// A miss is not an error: the caller transfers the payload instead. Expired
+    /// rows are reaped first so a handle the Provider has already dropped never
+    /// comes back.
+    pub(crate) async fn provider_artifact(
         &self,
-        content_digest: &str,
+        key: &ProviderArtifactKey,
         provider_instance_name: &str,
         origin_provider: &str,
+        tenant_id: &str,
         now_ms: i64,
     ) -> StorageResult<Option<String>> {
-        if [content_digest, provider_instance_name, origin_provider]
+        let (content_digest, obj_id) = key.columns();
+        if [provider_instance_name, origin_provider, tenant_id]
             .iter()
             .any(|value| value.trim().is_empty())
-            || !valid_content_digest(content_digest)
+            || !key.validate()
             || now_ms < 0
         {
             return Err(StorageError::InvalidRecord(
-                "Provider artifact ID lookup fields are invalid".into(),
+                "Provider artifact lookup fields are invalid".into(),
             ));
         }
         let mut tx = self.pool.begin().await?;
         let delete = self.sql(
-            "DELETE FROM aicc_provider_artifact_id
-             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
-               AND expires_at_ms IS NOT NULL AND expires_at_ms<=?",
+            "DELETE FROM aicc_provider_artifact
+             WHERE content_digest=? AND obj_id=? AND provider_instance_name=? AND origin_provider=?
+               AND tenant_id=? AND expires_at_ms IS NOT NULL AND expires_at_ms<=?",
         );
         sqlx::query(&delete)
-            .bind(content_digest)
+            .bind(&content_digest)
+            .bind(&obj_id)
             .bind(provider_instance_name)
             .bind(origin_provider)
+            .bind(tenant_id)
             .bind(now_ms)
             .execute(&mut *tx)
             .await?;
         let select = self.sql(
-            "SELECT artifact_id FROM aicc_provider_artifact_id
-             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?",
+            "SELECT artifact_id FROM aicc_provider_artifact
+             WHERE content_digest=? AND obj_id=? AND provider_instance_name=? AND origin_provider=?
+               AND tenant_id=?",
         );
         let artifact_id = sqlx::query_scalar(&select)
-            .bind(content_digest)
+            .bind(&content_digest)
+            .bind(&obj_id)
             .bind(provider_instance_name)
             .bind(origin_provider)
+            .bind(tenant_id)
             .fetch_optional(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(artifact_id)
     }
 
-    pub(crate) async fn forget_provider_artifact_id(
+    /// Drop the handle only if it is still the one that was read.
+    ///
+    /// The `artifact_id` guard keeps a slow expiry from deleting a handle that a
+    /// concurrent call already refreshed.
+    pub(crate) async fn forget_provider_artifact(
         &self,
-        content_digest: &str,
+        key: &ProviderArtifactKey,
         provider_instance_name: &str,
         origin_provider: &str,
+        tenant_id: &str,
         artifact_id: &str,
     ) -> StorageResult<()> {
+        let (content_digest, obj_id) = key.columns();
         if [
-            content_digest,
             provider_instance_name,
             origin_provider,
+            tenant_id,
             artifact_id,
         ]
         .iter()
         .any(|value| value.trim().is_empty())
-            || !valid_content_digest(content_digest)
+            || !key.validate()
         {
             return Err(StorageError::InvalidRecord(
-                "Provider artifact ID invalidation fields are invalid".into(),
+                "Provider artifact invalidation fields are invalid".into(),
             ));
         }
         let sql = self.sql(
-            "DELETE FROM aicc_provider_artifact_id
-             WHERE content_digest=? AND provider_instance_name=? AND origin_provider=?
-               AND artifact_id=?",
+            "DELETE FROM aicc_provider_artifact
+             WHERE content_digest=? AND obj_id=? AND provider_instance_name=? AND origin_provider=?
+               AND tenant_id=? AND artifact_id=?",
         );
         sqlx::query(&sql)
-            .bind(content_digest)
+            .bind(&content_digest)
+            .bind(&obj_id)
             .bind(provider_instance_name)
             .bind(origin_provider)
+            .bind(tenant_id)
             .bind(artifact_id)
             .execute(&self.pool)
             .await?;
@@ -746,18 +852,26 @@ impl AiccStorage {
                 .expires_at_ms
                 .is_some_and(|expires_at_ms| expires_at_ms <= completed_at_ms)
         }) {
+            // Reading the artifact back is what produced this digest, so the
+            // handle can now also be filed under the digest key. A later call
+            // carrying the same payload — including as a *different* object —
+            // can then be answered with the handle instead of a transfer.
             let insert = self.sql(
-                "INSERT INTO aicc_provider_artifact_id
-                 (content_digest,provider_instance_name,origin_provider,artifact_id,expires_at_ms,created_at_ms)
-                 VALUES (?,?,?,?,?,?)
-                 ON CONFLICT(content_digest,provider_instance_name,origin_provider) DO UPDATE SET
+                "INSERT INTO aicc_provider_artifact
+                 (content_digest,obj_id,provider_instance_name,origin_provider,tenant_id,
+                  artifact_id,expires_at_ms,created_at_ms)
+                 VALUES (?,?,?,?,?,?,?,?)
+                 ON CONFLICT(content_digest,obj_id,provider_instance_name,origin_provider,tenant_id)
+                 DO UPDATE SET
                   artifact_id=excluded.artifact_id,expires_at_ms=excluded.expires_at_ms,
                   created_at_ms=excluded.created_at_ms",
             );
             sqlx::query(&insert)
                 .bind(content_digest)
+                .bind("")
                 .bind(&source.provider_instance_name)
                 .bind(&source.origin_provider)
+                .bind(&source.tenant_id)
                 .bind(artifact_id)
                 .bind(source.expires_at_ms)
                 .bind(source.created_at_ms)
@@ -2081,6 +2195,22 @@ fn valid_content_digest(value: &str) -> bool {
                 .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
     })
 }
+/// The `ObjId` rendered form (`{type}:{body}`, e.g. `cyfile:87bd36e2…`).
+///
+/// Kept deliberately loose — the object type prefix is open-ended upstream, so
+/// this only rejects values that could not be an object id at all rather than
+/// enumerating the prefixes that currently exist.
+fn valid_obj_id(value: &str) -> bool {
+    let Some((kind, body)) = value.split_once(':') else {
+        return false;
+    };
+    !kind.is_empty()
+        && !body.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'-' | b'.'))
+}
 fn to_i64(value: u64) -> StorageResult<i64> {
     i64::try_from(value).map_err(|_| StorageError::InvalidRecord("integer overflow".into()))
 }
@@ -2148,6 +2278,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_database_gains_the_merged_table_and_keeps_the_obsolete_one() {
+        let storage = db().await;
+        // Simulate a database provisioned by an older build: an obsolete
+        // single-key table is present, the recorded version is already current,
+        // and the merged table does not exist. No versioned step can run here,
+        // so the merged table can only appear because the table set is applied
+        // on every open.
+        sqlx::query("UPDATE aicc_schema_meta SET schema_version=2 WHERE schema_key='aicc'")
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE aicc_provider_artifact")
+            .execute(&storage.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE aicc_provider_artifact_id (
+             content_digest TEXT NOT NULL, provider_instance_name TEXT NOT NULL,
+             origin_provider TEXT NOT NULL, artifact_id TEXT NOT NULL,
+             expires_at_ms BIGINT, created_at_ms BIGINT NOT NULL,
+             PRIMARY KEY (content_digest, provider_instance_name, origin_provider))",
+        )
+        .execute(&storage.pool)
+        .await
+        .unwrap();
+        storage.migrate().await.unwrap();
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type='table'
+               AND name LIKE 'aicc_provider_artifact%' ORDER BY name",
+        )
+        .fetch_all(&storage.pool)
+        .await
+        .unwrap();
+        // The merged table is created; the obsolete one is left untouched.
+        assert_eq!(
+            tables,
+            vec![
+                "aicc_provider_artifact".to_string(),
+                "aicc_provider_artifact_id".to_string()
+            ]
+        );
+        // The merged table is usable straight after it is created.
+        let key = ProviderArtifactKey::ObjectId(format!("cyfile:{}", "ab".repeat(32)));
+        storage
+            .remember_provider_artifact(&ProviderArtifactRecord {
+                key: key.clone(),
+                provider_instance_name: "aggregator-primary".into(),
+                origin_provider: "gemini".into(),
+                tenant_id: "tenant-a".into(),
+                artifact_id: "files/abc123".into(),
+                expires_at_ms: None,
+                created_at_ms: 10,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            storage
+                .provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("files/abc123")
+        );
+    }
+
+    #[tokio::test]
     async fn artifact_url_source_round_trips_exact_url_and_scope() {
         let db = db().await;
         let record = ArtifactUrlSourceRecord {
@@ -2194,111 +2390,111 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_artifact_ids_are_shared_and_scoped_by_instance_and_origin() {
+    async fn provider_artifacts_are_shared_and_scoped_by_instance_origin_and_tenant() {
         let db = db().await;
-        let record = ProviderArtifactIdRecord {
-            content_digest: format!("sha256:{}", "ab".repeat(32)),
+        let key = ProviderArtifactKey::ContentDigest(format!("sha256:{}", "ab".repeat(32)));
+        let record = ProviderArtifactRecord {
+            key: key.clone(),
             provider_instance_name: "aggregator-primary".into(),
             origin_provider: "openai".into(),
+            tenant_id: "tenant-a".into(),
             artifact_id: "video_123".into(),
             expires_at_ms: None,
             created_at_ms: 10,
         };
-        db.remember_provider_artifact_id(&record).await.unwrap();
+        db.remember_provider_artifact(&record).await.unwrap();
         assert_eq!(
-            db.provider_artifact_id(
-                &record.content_digest,
-                &record.provider_instance_name,
-                &record.origin_provider,
-                10,
-            )
-            .await
-            .unwrap()
-            .as_deref(),
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("video_123")
         );
+        // The handle belongs to one Provider account, so it is scoped by origin,
+        // by Provider instance and by tenant.
         assert_eq!(
-            db.provider_artifact_id(
-                &record.content_digest,
-                &record.provider_instance_name,
-                "gemini",
-                10,
-            )
-            .await
-            .unwrap(),
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "another-aggregator", "openai", "tenant-a", 10)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-b", 10)
+                .await
+                .unwrap(),
             None
         );
 
-        let stale = ProviderArtifactIdRecord {
+        // A record that is already expired on arrival deletes the entry instead
+        // of writing it.
+        let stale = ProviderArtifactRecord {
             artifact_id: "stale-video".into(),
             expires_at_ms: Some(9),
             ..record.clone()
         };
-        db.remember_provider_artifact_id(&stale).await.unwrap();
+        db.remember_provider_artifact(&stale).await.unwrap();
         assert_eq!(
-            db.provider_artifact_id(
-                &record.content_digest,
-                &record.provider_instance_name,
-                &record.origin_provider,
-                10,
-            )
-            .await
-            .unwrap()
-            .as_deref(),
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
             Some("video_123")
         );
 
-        db.forget_provider_artifact_id(
-            &record.content_digest,
-            &record.provider_instance_name,
-            &record.origin_provider,
+        // Forgetting is guarded by the handle that was read, so a stale expiry
+        // cannot drop a handle a concurrent call already refreshed.
+        db.forget_provider_artifact(
+            &key,
+            "aggregator-primary",
+            "openai",
+            "tenant-a",
             "different-id",
         )
         .await
         .unwrap();
         assert!(db
-            .provider_artifact_id(
-                &record.content_digest,
-                &record.provider_instance_name,
-                &record.origin_provider,
-                10,
-            )
+            .provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 10)
             .await
             .unwrap()
             .is_some());
-        db.forget_provider_artifact_id(
-            &record.content_digest,
-            &record.provider_instance_name,
-            &record.origin_provider,
-            &record.artifact_id,
+        db.forget_provider_artifact(
+            &key,
+            "aggregator-primary",
+            "openai",
+            "tenant-a",
+            "video_123",
         )
         .await
         .unwrap();
         assert_eq!(
-            db.provider_artifact_id(
-                &record.content_digest,
-                &record.provider_instance_name,
-                &record.origin_provider,
-                10,
-            )
-            .await
-            .unwrap(),
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 10)
+                .await
+                .unwrap(),
             None
         );
 
-        let expiring = ProviderArtifactIdRecord {
-            content_digest: format!("sha256:{}", "ef".repeat(32)),
+        let expiring_key =
+            ProviderArtifactKey::ContentDigest(format!("sha256:{}", "ef".repeat(32)));
+        let expiring = ProviderArtifactRecord {
+            key: expiring_key.clone(),
             artifact_id: "video_expiring".into(),
             expires_at_ms: Some(20),
             ..record.clone()
         };
-        db.remember_provider_artifact_id(&expiring).await.unwrap();
+        db.remember_provider_artifact(&expiring).await.unwrap();
         assert_eq!(
-            db.provider_artifact_id(
-                &expiring.content_digest,
-                &expiring.provider_instance_name,
-                &expiring.origin_provider,
-                19,
+            db.provider_artifact(
+                &expiring_key,
+                "aggregator-primary",
+                "openai",
+                "tenant-a",
+                19
             )
             .await
             .unwrap()
@@ -2306,33 +2502,37 @@ mod tests {
             Some("video_expiring")
         );
         assert_eq!(
-            db.provider_artifact_id(
-                &expiring.content_digest,
-                &expiring.provider_instance_name,
-                &expiring.origin_provider,
-                20,
-            )
-            .await
-            .unwrap(),
-            None
-        );
-        assert_eq!(
-            db.provider_artifact_id(
-                &record.content_digest,
-                "another-aggregator",
-                &record.origin_provider,
-                10,
+            db.provider_artifact(
+                &expiring_key,
+                "aggregator-primary",
+                "openai",
+                "tenant-a",
+                20
             )
             .await
             .unwrap(),
             None
         );
 
+        // A key that is not a content digest is rejected rather than silently
+        // stored under an unusable key.
+        assert!(db
+            .remember_provider_artifact(&ProviderArtifactRecord {
+                key: ProviderArtifactKey::ContentDigest("not-a-digest".into()),
+                ..record.clone()
+            })
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn completing_a_downloaded_artifact_digest_files_the_handle_under_the_digest_key() {
+        let db = db().await;
         let mut pending = ArtifactUrlSourceRecord {
             url: "https://provider.example/files/generated".into(),
-            provider_instance_name: record.provider_instance_name.clone(),
+            provider_instance_name: "aggregator-primary".into(),
             protocol_adapter_id: "aggregator-adapter".into(),
-            origin_provider: record.origin_provider.clone(),
+            origin_provider: "openai".into(),
             artifact_id: Some("video_456".into()),
             content_digest: None,
             expires_at_ms: Some(100),
@@ -2352,18 +2552,176 @@ mod tests {
             db.artifact_url_source(&pending.url, 12).await.unwrap(),
             Some(pending)
         );
+        // Reading the artifact back is what produced the digest, so the handle
+        // becomes reachable by digest too — for the owning tenant only.
+        let key = ProviderArtifactKey::ContentDigest(downloaded_digest);
         assert_eq!(
-            db.provider_artifact_id(
-                &downloaded_digest,
-                &record.provider_instance_name,
-                &record.origin_provider,
-                12,
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-b", 12)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("video_456")
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 12)
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_artifacts_are_keyed_by_object_id_without_a_digest() {
+        let db = db().await;
+        let key = ProviderArtifactKey::ObjectId(format!("cyfile:{}", "ab".repeat(32)));
+        let record = ProviderArtifactRecord {
+            key: key.clone(),
+            provider_instance_name: "aggregator-primary".into(),
+            origin_provider: "gemini".into(),
+            tenant_id: "tenant-a".into(),
+            artifact_id: "files/abc123".into(),
+            expires_at_ms: None,
+            created_at_ms: 10,
+        };
+        // No content digest is available anywhere in this record: the whole
+        // point of the object key is that the entry is usable without ever
+        // having read the payload.
+        db.remember_provider_artifact(&record).await.unwrap();
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("files/abc123")
+        );
+        // Scoped by Provider instance, origin and tenant, exactly like the
+        // digest key — both key kinds share one table.
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "openai", "tenant-a", 10)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "another-aggregator", "gemini", "tenant-a", 10)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-b", 10)
+                .await
+                .unwrap(),
+            None
+        );
+
+        // The two key columns never collide: the same text filed under the other
+        // kind stays a separate row.
+        let digest_key = ProviderArtifactKey::ContentDigest(format!("sha256:{}", "cd".repeat(32)));
+        db.remember_provider_artifact(&ProviderArtifactRecord {
+            key: digest_key.clone(),
+            artifact_id: "video_456".into(),
+            origin_provider: "gemini".into(),
+            ..record.clone()
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            db.provider_artifact(&digest_key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("video_456")
+        );
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("files/abc123")
+        );
+        db.forget_provider_artifact(
+            &digest_key,
+            "aggregator-primary",
+            "gemini",
+            "tenant-a",
+            "video_456",
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            db.provider_artifact(&digest_key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap(),
+            None
+        );
+        // Dropping the digest row left the object row alone.
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("files/abc123")
+        );
+
+        // A record that is already expired on arrival deletes the entry instead
+        // of writing it.
+        let stale = ProviderArtifactRecord {
+            artifact_id: "files/stale".into(),
+            expires_at_ms: Some(9),
+            ..record.clone()
+        };
+        db.remember_provider_artifact(&stale).await.unwrap();
+        assert_eq!(
+            db.provider_artifact(&key, "aggregator-primary", "gemini", "tenant-a", 10)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("files/abc123")
+        );
+
+        let expiring = ProviderArtifactRecord {
+            key: ProviderArtifactKey::ObjectId(format!("cyfile:{}", "ef".repeat(32))),
+            artifact_id: "files/expiring".into(),
+            expires_at_ms: Some(20),
+            ..record.clone()
+        };
+        db.remember_provider_artifact(&expiring).await.unwrap();
+        assert_eq!(
+            db.provider_artifact(
+                &expiring.key,
+                "aggregator-primary",
+                "gemini",
+                "tenant-a",
+                19
             )
             .await
             .unwrap()
             .as_deref(),
-            Some("video_456")
+            Some("files/expiring")
         );
+        assert_eq!(
+            db.provider_artifact(
+                &expiring.key,
+                "aggregator-primary",
+                "gemini",
+                "tenant-a",
+                20
+            )
+            .await
+            .unwrap(),
+            None
+        );
+
+        // A key that is not an object id is rejected rather than silently stored
+        // under an unusable key.
+        assert!(db
+            .remember_provider_artifact(&ProviderArtifactRecord {
+                key: ProviderArtifactKey::ObjectId("not-an-object-id".into()),
+                ..record.clone()
+            })
+            .await
+            .is_err());
     }
 
     #[tokio::test]

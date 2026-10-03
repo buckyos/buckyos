@@ -223,11 +223,11 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 
 ### 3.4 无模型发现接口的渠道与库存白名单
 
-部分渠道只提供推理端点，没有 `/models` 之类的发现接口（例如火山引擎豆包语音的 `openspeech.bytedance.com`）。这类 Profile 必须用 `discovery_behavior_id: catalog-only` 声明，并把渠道确实支持的模型显式写进 `static_inventory_models`，同时用 `supplemental_inventory_api_types` 声明允许静态补充的 API 集合（如 `audio.tts`）。库存因此完全来自元数据，不从 Model Driver 全量定义推导。
+部分渠道只提供推理端点，没有 `/models` 之类的发现接口（例如火山引擎豆包语音的 `openspeech.bytedance.com`）。这类 Profile 必须用 `discovery_behavior_id: catalog-only` 声明，并把渠道确实支持的模型显式写进 `static_inventory_models`，同时用 `supplemental_inventory_api_types` 声明允许静态补充的 API 集合（如 `audio.tts`、`audio.asr`）。库存因此完全来自元数据，不从 Model Driver 全量定义推导。
 
 该模式下无法探测账号实际开通了哪些模型，所以 Known Provider 用 `ui_hints.selectable_inventory_models` 把候选清单交给 UI —— 有序的 `[{"id","label"}]` 数组。管理 UI 据此让用户勾选，默认全选；用户的选择按实例持久化为 `instance_rules.enabled_inventory_models`。二者关系是：**Provider Rules 声明"渠道能提供什么"，实例规则声明"这个账号开通了什么"**。
 
-同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`）、`doubao-agent-plan` 三个 Profile，共用 `doubao-responses` Adapter 与同一个 setup group。
+同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`/`audio.asr`）、`doubao-agent-plan` 三个 Profile，共用 `doubao-responses` Adapter 与同一个 setup group。
 
 ## 4. Custom Provider 的最小规则
 

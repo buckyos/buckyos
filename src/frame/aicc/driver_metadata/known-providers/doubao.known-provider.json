@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 8,
+  "revision_seq": 9,
   "catalog_id": "doubao",
   "providers": [
     {
@@ -55,7 +55,9 @@
         "workspace": {"mode": "unsupported"},
         "account": {"mode": "unsupported"},
         "operation_base_urls": {
-          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts",
+          "asr.recognize.submit": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
+          "asr.recognize.flash": "https://openspeech.bytedance.com/api/v3/auc/bigmodel"
         }
       },
       "ui_hints": {
@@ -76,7 +78,9 @@
         },
         "selectable_inventory_models": [
           {"id": "doubao-seed-tts-2.0", "label": "Doubao Speech Synthesis 2.0"},
-          {"id": "doubao-seed-icl-2.0", "label": "Doubao Voice Clone 2.0"}
+          {"id": "doubao-seed-icl-2.0", "label": "Doubao Voice Clone 2.0"},
+          {"id": "doubao-seed-asr-2.0", "label": "Doubao Speech Recognition 2.0"},
+          {"id": "doubao-seed-asr-2.0-fast", "label": "Doubao Speech Recognition 2.0 (Flash)"}
         ]
       }
     },
