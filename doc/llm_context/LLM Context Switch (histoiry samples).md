@@ -2,7 +2,7 @@
 
 说明 LLMContext + AgentSession 如何构造、切换和恢复典型的 Message List。Round / Step / Turn 的定义与 [readme](readme.md) 一致；Context 调度采用本次 review 和[提示词方式图解](<../opendan/几种典型的提示词方式图解.drawio>)确定的新语义。
 
-本文区分**已确定的目标设计**、**当前源码行为**和**待定建议**。切换模式由目标 behavior 决定；普通切换废弃；原 independent 称为 `SWITCH_CONTEXT`（TODO 中的 `SWITCH_CONTEXTG` 按此拼写统一）；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。这些是设计约定，尚未全部落地；实施项见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md)。旧 Runtime 与当前代码中的同名字段不能直接视为新语义的实现。
+本文区分**已实现的行为**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8；Stop 后补充输入与 `report` 显式结果提交仍是待定建议，见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。旧 opendan Runtime 中的同名字段不是这些语义的实现。
 
 ## Round、Step、Turn 与 run
 
@@ -124,24 +124,32 @@ WorkSession 围绕明确 objective 工作，objective 达成后关闭，是产�
 
 WorkSession 与 Workspace 分离：Session 承载一次任务，Workspace 承载持续可修改的状态。新 Session 可以按需要读取产物和已有记录，但不必原样继承上一个 Session 的完整消息序列。
 
-### function_call WorkSession 的显式结束（建议，待定）
+### 传统 Loop 的 report：显式结果提交（方向确定，参数与默认策略待定）
 
-**建议提供 Session 层的 `end_session` 工具，用于需要多次交互才完成 objective 的 function_call WorkSession。** 这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，前者声明整个 Session 的目标已完成。一次普通 assistant 回答可以只完成 Turn，不必等同于任务完成。
+**传统 function_call Loop 通过显式调用 Session 层的 `report` 工具提交报告和产物，assistant 正文保持自由。** 报告可以是阶段性结果，也可以是最终交付；可选的 `is_end` 表达结束意图。这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，`report(is_end=true)` 才声明整个 Session 的目标已完成。宿主不从 assistant 正文里提取控制指令，也不要求正文符合统一 schema；XML Behavior Loop 保持自己的 `<report>` / `<next_behavior>` 协议。报告的归属、展示与产物投递的分层见 [Agent Actions](<Agent Actions.md>) 与 [Agent Message](<Agent Message.md>)。
 
-当前 `EndConditionType` 只有 `LlmDeclaresDone`、`OutputSchema`、`MaxTurns`；function_call 的 `Done` 会按该配置收尾，默认 `LlmDeclaresDone` 会结束 Session。当前没有专门的 `end_session` 工具，也没有“必须显式声明才结束”的策略。单次输出型 WorkSession 可以继续使用现有结束条件，不要求所有 Session 增加这次调用。
+参数草案（定稿前可能调整）：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物引用，宿主校验并保存稳定引用）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，建议缺省 false）。
 
-采用显式结束策略后的示例（参数形状为建议）：
+当前 `EndConditionType` 只有 `LlmDeclaresDone`、`OutputSchema`、`MaxTurns`；function_call 的 `Done` 会按该配置收尾，默认 `LlmDeclaresDone` 会结束 Session。`report` 工具与“必须显式声明才结束”的完成策略**尚未实现**。单次输出型 WorkSession 可以继续使用现有结束条件，不要求所有 Session 增加这次调用。
+
+采用显式完成策略后的示例：
 
 ```text
 Turn1：[user:先给我方案] … [assistant:方案，请确认] → Done → Turn1 completed，Session 等待
 Turn2：[user:按方案执行] … [assistant:tool_calls(执行)] [tool:执行结果]
-       [assistant:tool_call(end_session, {report:完成说明})]
-       [tool:end_session 已接受] → 宿主提交最终结果 → Turn2 completed，Session finished
+       [assistant:tool_call(report, {report:阶段性发现, artifacts:[…]})]
+       [tool:report 已记录] → 继续执行，不结束 Turn / Session
+       … [assistant:tool_call(report, {report:完成说明, artifacts:[…], is_end:true})]
+       [tool:report 已接受] → 宿主校验并持久化 → 生成最终交付消息并收尾，无额外推理
+       → Turn2 completed，Session finished
 ```
 
-工具只登记完成意图和最终 report，由宿主在工具结果已配对、快照和 worklog 已持久化之后关闭 Session；不需要为协议配对虚构一条 assistant 回答。接受完成意图后不再派发后续工具，同批未派发调用明确记为未执行；不能在工具函数中直接销毁仍在运行的 Session。
+- 普通 `report` 只登记报告与产物，不截断同批其它调用，也不等同于向用户发送消息；接收方、展示与产物投递由宿主决定。
+- 接受 `is_end=true` 时登记独立、持久化的完成意图：工具结果配对、快照和 worklog 提交之后由宿主关闭 Turn / Session，不再推理一次去生成报告或确认。此后同批未派发的调用明确记为未执行，已经执行的不回滚；参数、产物或权限校验拒绝时返回工具错误，Session 保持可修正状态。
+- 最终交付由 Session 根据已提交的 report 与产物引用**机械生成**一条 assistant message（关联来源 `call_id`，不新增 Round），与 report 文件、UI 展示使用同一份结果；原始工具调用 / 回执保留，普通阶段性 report 不生成交付消息。
+- 提交可重做：重复的 `call_id` / 提交请求不重复登记产物、生成最终消息或关闭 Turn；历史重建不重执行 `report`，也不把同一份最终交付渲染两遍。
 
-该能力属于 Session 控制面：LLMContext 不判断 objective 是否完成，独立 xllm 不暴露此工具。子 context 的完成默认只返回父 context，不得因为继承了工具表而意外关闭整个 Session。显式结束策略、调用权限、最终 report 校验与幂等提交列入实施清单 H4；本节建议尚未作为已确定的产品规则。
+该能力属于 Session 控制面：LLMContext 不解释 report / result 的业务内容，独立 xllm 不暴露此工具。子 context 的报告默认交给父 context，不得因为继承了工具表而关闭整个 Session。参数最终形态、`is_end` 缺省值、哪些 Session 采用显式完成策略、与未完成子调用 / task / 人工验收的关系列入实施清单 H4，尚未作为已确定的产品规则。
 
 ## 打断、平滑结束与恢复
 
@@ -260,7 +268,7 @@ AgentSession 管理多个 context / run，同一时刻只推进一个当前 run�
 | `create-sub-context` | 使用子任务 / 目标 behavior 的 system | 子任务参数及显式选择的共享状态 / 历史摘要 | 每次新建子 run；完成后交回父 context |
 | `fork` | 保留父 system | 完整复制父在分叉点的有效历史 | 每次新建分支；完成后只把结果交回父 context |
 
-这里的名称是设计语义，配置字段和枚举拼写需随实现统一；旧 `ProcessMode::Fork / Independent` 不是可直接重命名完成的迁移。`SWITCH_CONTEXT` 用于目标 behavior 间交接；两种子 context 还可以由工具调用触发，function_call Loop 不需要借用 `next_behavior`。
+配置拼写为 `extensions.opendan.behaviors.<B>.mode = switch_context | create_sub_context | fork`（libopendan `ContextMode`）；旧 `ProcessMode::Fork / Independent` 与 Session 级的 `process_modes` 表已删除。`SWITCH_CONTEXT` 用于目标 behavior 间交接；两种子 context 还可以由工具调用触发，function_call Loop 不需要借用 `next_behavior`。
 
 ### 普通切换：废弃的模式
 
@@ -272,7 +280,7 @@ AgentSession 管理多个 context / run，同一时刻只推进一个当前 run�
       或以 CHECK system 新建子任务 context（create-sub-context），完成后返回 DO
 ```
 
-当前源码仍有普通切换分支：`libopendan::handle_context_outcome` 只改 `behavior_name`，没有换 system / 工具；旧 opendan 及 xAgent 草案另有在同一 run 中替换配置的方案。这些是现状和旧计划，均不能作为保留普通切换的理由。需要删除该调度路径，并取消“run 中途换成目标配置”的实施项；缺失 / 非法的目标进入模式应在配置校验时报错，不能回退为 normal。
+libopendan 已删除这条调度路径（原 `handle_context_outcome` 只改 `behavior_name`、不换 system / 工具），“run 中途换成目标配置”的实施项也已取消。目标 behavior 的进入模式写在 `extensions.opendan.behaviors.<name>.mode`；表在推进开始时校验，交接到没有进入模式的 behavior 是配置错误（Turn 以 `failed` 结束，子 context 内则作为失败结果交回调用方），不会回退为 normal。旧 opendan Runtime 的同 run 替换配置是另一套实现，不是保留普通切换的理由。
 
 ### SWITCH_CONTEXT：在多个各自保有历史的 context 间切换
 
@@ -304,7 +312,7 @@ run_CHECK / system_CHECK：恢复原快照 → on_behavior_switch → 更多 CHE
 
 交接输入由 Session 根据共享状态构造，不必搬运 DO 的全部历史。共享状态不会自动进入 LLM：宿主仍须把所需事实渲染为输入或提供读取工具。context 自己的 system 和既有历史随恢复保持一致，不在每次切换时改写成另一套配置。
 
-当前 `independent` 已有保存 / 恢复目标 run 的基础能力，但首次新建仍会装配 Session 共享 worklog。因此现状不是完全的信息隔离；实施时应明确新 context 的历史装配范围，不能把其它 context 的原始历史自动并进已有目标 context。
+新建目标 context 的历史装配范围由目标的 `inherit` 决定：缺省 `none`，只有 system 与交接输入；`recent_dialogue` 才带入宿主渲染的 `<session_history>`（摘要 + 近期 worklog 记录，是筛选视图）。其它 context 的快照与原始历史从不自动并进目标 context；恢复已有目标时只用它自己的快照。
 
 切换不完成 Turn。`END` 由 Session 根据执行位置与结束条件解释：普通目标 context 完成可结束当前 Turn；处于子调用内则返回调用方。SWITCH_CONTEXT 本身不隐含“每次切入都是调用、END 自动返回上一 behavior”。
 
@@ -338,7 +346,7 @@ PLAN / system_PLAN
 
 这些历史作为子任务的参考材料。即使选择完整 StepRecord，只要换了 system，就仍称为 create-sub-context。父在工具调用中途挂起时，进行中的 `action_step` 不能伪装成已完成 Step；已执行动作的结果如对子任务有用，应显式作为输入材料提供。
 
-当前代码名为 `fork` 的 behavior 子 run 会手工复制父 `steps` / `last_step` / summaries；它没有实现新版 fork 对 system 与完整有效历史的保证。落地时需按实际构造方式拆分，不能只改标签。
+实现上由 `llm_context::derive_child(parent, child_request, InheritHistory)` 构造：`None` 只用子请求，`Material` 接收宿主渲染的材料，`Steps` 复制父已完成的 steps / summaries（要求双方都是 behavior loop）。libopendan 的 `inherit: none | recent_dialogue | steps` 对应这三种粒度。旧代码里名为 `fork`、实际“换 behavior 名并复制父 steps”的做法属于这里的 `steps` 继承，不是 fork。
 
 ## fork：保留 system 与完整有效历史的子分支
 
@@ -368,7 +376,7 @@ H = [system:S] + 分叉点之前的完整、已配对历史
 父：H [assistant:tool_calls(fork_task, other)] [tool:fork_task结果] [tool:other结果] → 继续
 ```
 
-触发批次不属于子分支继承前缀，父快照完整保留它；同批先前已完成调用的结果仍在父和 worklog 中，子若需要则作为明确输入附带。分叉点必须记录，不能任意丢掉较早历史却仍声称“完整继承”。这一边界处理属于待实现的 fork 原语，不能通过伪造“已完成”的 assistant / tool 回答填补。
+触发批次不属于子分支继承前缀，父快照完整保留它；同批先前已完成调用的结果仍在父和 worklog 中，子若需要则作为明确输入附带。分叉点必须记录，不能任意丢掉较早历史却仍声称“完整继承”。这一边界由 `llm_context::fork_snapshot` 处理并随派生结果返回（`ForkPoint`）：function call 取触发批次的 assistant 消息之前的前缀，behavior 取进行中 Step 之前的已完成 steps / 热 Step；前缀里仍有未配对调用时拒绝 fork。不能通过伪造“已完成”的 assistant / tool 回答填补。
 
 ## 两种子 context 的调用、返回与历史归属
 
@@ -398,7 +406,7 @@ Behavior 交接返回示例：
 
 子 run 需要保存到 `runs/`，支持停止、挂起和崩溃恢复；不能依赖工具函数里的临时内存上下文。子新增 steps / messages 不进入父 context 的推理主干，但会进入 **Session worklog**。图中的“不会进入 parent session history”在此指父 context 的 Message List，不指 Session 审计记录；宿主后来重建历史时还须按记录归属筛选，避免又把子过程完整内容塞回父输入。
 
-子任务正常完成只返回父 context，不关闭父 Turn。当前代码对子 `WAIT_USER_MSG` 仍走等待输入分支，任意嵌套和工具子任务的完整返回协议也尚未落地；这些与新建子 context 的能力一起在实施清单 H2 收口，不能宣称当前已有完整支持。
+子任务无论以什么结束都只返回父 context，不关闭父 Turn，返回时带状态：正常完成 `ok`；`WAIT_USER_MSG` 返回 `needs_user_input`（子 context 不直接等待用户，也不消费父的输入队列，由父去询问）；不可重试错误、预算耗尽、交接到没有进入模式的 behavior 返回 `failed`。工具触发的调用由 `call_behavior({behavior, task})` 发起，父挂起在 `PendingTool`（task id `subctx:<call_id>`），子结果按 `call_id` 回填后续派同批余下的调用。子 context 可以再调用子 context（最多 4 层），但不做 SWITCH_CONTEXT：交接到 `switch_context` 目标等同于返回。
 
 ### 三种方式的边界对照
 

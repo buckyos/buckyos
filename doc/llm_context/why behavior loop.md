@@ -127,61 +127,92 @@ user:      Step Action Results
 
 ## 五、Behavior switch 的三种模式
 
-`next_behavior` 不是普通的提示词变化,而是状态机边界。LLM 只在 Step 输出里声明"我要去哪个 behavior";具体怎么切换由 Session 决定。当前实现(libopendan Runner,`SessionAssembler::process_mode`)读 `session_config.extensions.opendan.process_modes.<behavior>`:取值 `"fork"` / `"independent"`,未配置就是 `normal`。
+`next_behavior` 不是普通的提示词变化,而是状态机边界。LLM 只在 Step 输出里声明"我要去哪个 behavior";具体怎么进入由**目标 behavior 的进入配置**决定,不由 Session 统一指定。当前实现(libopendan Runner,`SessionAssembler::behavior_entry` / `SessionConfig::behavior_entry`)读 `session_config.extensions.opendan.behaviors.<behavior>`:
 
-| 模式 | 心智模型 | context / run | 是否继承上一个 behavior 的 Step | 结束语义 |
+```json
+"behaviors": {
+  "do":       { "mode": "create_sub_context", "system_prompt": "…", "llm_context": { … }, "inherit": "steps" },
+  "research": { "mode": "fork" },
+  "writer":   { "mode": "switch_context", "system_prompt": "…", "inherit": "recent_dialogue" }
+}
+```
+
+- `mode`:`switch_context` / `create_sub_context` / `fork`(`ContextMode`),没有默认值。交接到没有条目的 behavior 不回退:Turn 以 `behavior_config` 错误失败;发生在子 context 内则作为失败结果返回调用方。Session 的初始 behavior(`prompt.behavior`)没有自己的条目时,隐含为使用基础配置的 `switch_context` 目标(`inherit` 为 `recent_dialogue`)。
+- `system_prompt` 替换 `prompt.system_prompt`;`llm_context` 的顶层键替换 `prompt.llm_context` 的同名键(模型、工具、限制等)。
+- `inherit`(`InheritMode`,默认 `none`):`recent_dialogue` = 宿主渲染的 `<session_history>`;`steps` = 调用方已完成的 StepRecord,只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
+- behavior 表在 drive 启动时校验;旧的 `extensions.opendan.process_modes` 被拒绝。"在同一个 run 里只换 `behavior_name` / system、沿用原历史"的普通切换已移除。
+
+| 模式 | 心智模型 | context / run | system 与历史 | 结束语义 |
 | --- | --- | --- | --- | --- |
-| `normal` | 带历史的跳转 | 同一个 context、同一个 run,只换 `behavior_name` | 继承:上一个 behavior 的 StepRecord 降为 `<<step_history>>` 里的 `<step_record>` | `END` / `done` 是 Session 的 Done |
-| `fork` | 带历史的调用,结束后返回 | 当前 run 挂起进 `process_stack`;child 新建 run | 继承:child run 复制 parent 的 `steps`、`history_summaries`、`next_step_index` | child 的 Done(`WAIT_USER_MSG` 除外)一律是返回调用方(`process_done`),结果进 parent 的交接输入批次 |
-| `independent` | 切到另一个独立历史流 | 当前 run 挂起进 `process_stack`;目标有挂起的 run 就恢复,否则新建 | 不继承 Step;新建的 run 仍会装配 Session 共享 worklog 的 `<session_history>` | 回到原 process 要显式 `next_behavior` 切回;`END` / `done` 与 `normal` 相同,不会自动弹回 |
+| `switch_context` | 切到另一个各自保有历史的 context | 当前 run 挂起进 `process_stack`(`FrameRole::Parked`);目标有自己挂起的 run 就恢复,否则新建 | 目标自己的 system / 工具 / 模型;新建时的历史只按 `inherit`;其它 context 的快照 / 历史不会接上来 | 回到原 context 要显式 `next_behavior`;`END` / `done` 按 Session 结束条件处理,不会自动弹回 |
+| `create_sub_context` | 换 system 的子任务调用,结束后返回 | 调用方作为 `FrameRole::Caller` 帧入栈;每次调用新建子 run | 目标自己的 system 和配置 + 任务输入 + `inherit` 选择的调用方历史(`derive_child`) | 子 context 无论以什么结束都返回调用方(`process_done`),只交回结果 |
+| `fork` | 保留 system 和完整历史的分支,结束后返回 | 同上 | 调用方的 system、配置和分叉点之前的完整有效历史(`fork_snapshot`) | 同上 |
 
-三种切换都不结束 Session Turn:切换和 fork 返回都是并入当前 Turn 的交接输入批次(hook `on_behavior_switch`),Turn 只由 Session 在 `finish_run` 中关闭(见 [readme.md](readme.md))。
+三种方式都不结束 Session Turn:交接和子 context 返回都并入当前 Turn(hook `on_behavior_switch` 的交接输入批次,或工具结果回填),Turn 只由 Session 在 `finish_run` 中关闭(见 [readme.md](readme.md))。
 
-设计上,切换 Behavior 会同时更换 Work Session 的"头"和"尾":
+切换 Behavior 会同时更换 Work Session 的"头"和"尾":
 
 - 头部更换:新的 system prompt、生效的 process rules、Action 视图和 skills
 - 尾部重置:新的 Behavior 只把自己的 Step 渲染成完整的 assistant/user pair
 
-当前 libopendan 只实现了"尾":`XmlStepRenderer` 按 `behavior_name` 区分,当前 behavior 的 Step 渲染成完整 pair,其它 behavior 的 Step 渲染成 `<<step_history>>` 里的 `<step_record>`。system prompt 和工具 / Action 视图来自 Session 配置,不随 behavior 变化;按 behavior 配置 prompt 和 Action 视图(OpenDAN `BehaviorAssembler`)待下一阶段 opendan 重构接入。
+libopendan 用"换 run"实现这两点:`switch_context` / `create_sub_context` 的目标 run 按 behavior 条目装配自己的 system 和 `llm_context`(工具 / Action 视图、模型);一个 run 的 system 和 `behavior_name` 自始至终不变,交接从不在已有历史上替换 system。"尾"由 `XmlStepRenderer` 按 `behavior_name` 区分:当前 behavior 的 Step 渲染成完整 pair,其它 behavior 的 Step(`create_sub_context` 以 `inherit: steps` 继承来的)渲染成 `<<step_history>>` 里的 `<step_record>`。`fork` 是例外:它两头都不换,目的就是保持与调用方相同的前缀。
 
 因此跨 behavior 继承的历史只能作为系统解释过的 history record 进入新 behavior,不能继续占用新 behavior 的 hot tail。
 
-### `normal`:同一历史流里的跳转
+### `switch_context`:各自保有历史的 context
 
-`normal` 是最直接的状态机跳转。`handle_context_outcome` 收到 `Done{next_behavior: B}` 后:
+`switch_context` 让每个目标 behavior 拥有自己的 run 和 Step 流。`handle_context_outcome` 收到 `Done{next_behavior: B}` 且 B 是 `switch_context` 目标时:
 
-- 用同一个 snapshot `LLMContext::resume(.., ResumeFromMidRun)`,只把 `request.behavior_name` 改成 B;run 保持 Running,没有新 run。
-- 保留同一 run 的 `steps`、`history_summaries`、`next_step_index`、`last_report`,`tool_iterations_left` 和 `consecutive_errors` 也不重置,防止 LLM 靠切 behavior 绕过预算和错误上限。
-- 带 `next_behavior` 的那个 Step 在 Done 时已经沉淀进 `steps`,切换后和旧 behavior 的其它 Step 一起渲染成 `<step_record>`,新 behavior 没有继承的 hot pair。
-- 下一次 drive 循环在同一个 run 上提交 `on_behavior_switch` 输入批次,`<session_input hook="on_behavior_switch">` 里带 `<behavior_switch to="B"/>`。
-- 没有"返回调用方"概念。
-
-如果从 `plan` normal 切到 `do`,那么 `plan` 的 StepRecord 会进入 `do` 的 `<<step_history>>`;`do` 自己随后产生的 Step 才作为 `assistant/user` pair 出现在尾部。
-
-### `fork`:继承 history 的子调用
-
-`fork` 是 fork-join 模型:
-
-- `suspend_run` 先把 parent run 到目前为止的历史 flush 进 worklog(outcome `suspended`),run 进 `process_stack`(`ProcessFrame { mode: fork }`),状态 Paused。
-- `new_run_context` 为 child 新建 run:system 和 `<session_history>` 照常装配(里面已有 parent flush 的记录),再复制 parent 的 `steps`(含 `last_step`)、`history_summaries`、`next_step_index`、`next_action_id`。`HostMeta.inherited_below` 标出继承的 Step,flush 时不重复写入 worklog。
-- child 只有自己的 hot tail;parent 的 Step 在 child 里是 `<step_record>`,不会作为 child 的 hot pair。
-- child 的 Done(`WAIT_USER_MSG` 除外)都当作返回:它声明的跳转目标被忽略,`finish_run` 写 outcome `process_done`、出栈让 parent run 重新成为 live run,并把 child 的结果(终止 Step 的 `<report>`,没有就取最后的回答文本)放进 `state.process_result`。
-- 下一次 drive 循环在 parent run 上提交交接批次:`<session_input hook="on_behavior_switch">` 里带 `<behavior_switch to="<parent>"/>` 和 `<process_result behavior="<child>">…</process_result>`。parent 从 fork 点之后继续推理。
-- child 的 Step 不写回 parent 的 context;Session worklog 记录 child 的过程,Step 身份是 `(child_run_id, step_index)`。
-
-因此 `fork` 和 `normal` 的共同点是"子/目标 behavior 能理解之前发生了什么";区别是 `fork` 有调用栈和返回点,且返回时只把子分支结果汇入 parent,不把 child 的全部执行历史并入 parent 的 context。
-
-### `independent`:独立历史流
-
-`independent` 让每个 process entry 拥有自己的 run 和 Step 流。切换时:
-
-- `suspend_run` 同 fork,frame 标为 independent。
-- 栈里有目标 behavior 的 independent 挂起 run 时,恢复它作为 live run:用它自己的 snapshot,`tool_iterations_left` 和错误计数沿用它自己的剩余值,不重置;没有就新建 run(按配置拿到完整额度)。
-- 不把 parent 的 `steps`、`history_summaries` 或 hot tail 复制给 target;但新建 run 的 `<session_history>` 来自 Session 共享 worklog,并非完全隔离。
+- `suspend_run` 先把当前 run 到目前为止的历史 flush 进 worklog(outcome `suspended`),run 进 `process_stack`(`ProcessFrame { role: Parked }`)。
+- 栈里有 B 自己的 Parked run 时,恢复它作为 live run,用它自己的 snapshot;没有就新建 run:B 的 system / 工具 / 模型,历史只按 `inherit`(`recent_dialogue` 时装配 `<session_history>`,它来自 Session 共享 worklog,是宿主筛选过的视图)。
+- 不把前一个 context 的 `steps`、`history_summaries` 或 hot tail 复制给 B,也不把别的 context 的快照接到 B 已有的 run 上。
 - 每个 run 的 `step_index` 各自编号,在 Session 内不全局唯一。
-- 回到原 process 需要 LLM 显式 `next_behavior` 切回;`END` / `done` 按 Session 的 Done 处理(Turn completed,再按 `end_condition` 结束 Session 或等待输入),不会自动弹回上一 process。
+- 下一次 drive 循环在 B 的 run 上提交 `on_behavior_switch` 输入批次,`<session_input hook="on_behavior_switch">` 里带 `<behavior_switch to="B"/>`。
+- 回到原 context 需要 LLM 显式 `next_behavior` 切回;`END` / `done` 按 Session 结束条件处理(Turn completed,再按 `end_condition` 结束 Session 或等待输入),不会自动弹回上一个 context。
 
-所以 `independent` 适合长期并列的独立工作流,不是"带上下文的分支执行"。
+所以 `switch_context` 适合长期并列的独立工作流,不是"带上下文的分支执行"。
+
+### `create_sub_context`:换 system 的子任务调用
+
+- 调用方 run 的历史先 flush 进 worklog,run 作为 `ProcessFrame { role: Caller, call: ChildCall { mode, behavior, trigger, task } }` 入栈。
+- `new_run_context` 为 child 新建 run(存在 `runs/` 下,可停止、挂起、崩溃恢复):request 用目标自己的 system 和配置,再用 `llm_context::derive_child(parent_snapshot, child_request, InheritHistory)` 派生初始快照。`inherit: none` 只有 system + 任务输入;`recent_dialogue` 多一条 `<session_history>`;`steps` 带入调用方已完成的 StepRecord 和 summaries(仍在派发 action 的 `action_step` 不算已完成,不带)。
+- child 延续调用方的 step / action 编号;`HostMeta.inherited_below` 标出继承的 Step,flush 时不重复写入 worklog。继承来的 Step 在 child 里是 `<step_record>`,不是 child 的 hot pair。
+- child 的交接批次(`on_behavior_switch`)带 `<behavior_switch to="<child>"/>` 和 `<sub_task mode="create_sub_context">…</sub_task>`(任务文本 + "结果返回调用方,不要向用户提问")。
+
+### `fork`:保留 system 与完整历史的分支
+
+调用 / 返回与 `create_sub_context` 完全相同,区别只在 child 的构造:`llm_context::fork_snapshot(parent_snapshot, ForkOptions)` 保留调用方的 request(system、`behavior_name`、模型、输出)和分叉点之前的完整有效历史,因此继承的历史在 child 里的渲染与调用方一致;child 的 run 记录沿用调用方的配置。
+
+- 分叉点是最后一个合法前缀:调用方没有未完成调用时是全部历史;有未完成的工具批次(function_call)或进行中的 Step(behavior)时取在该批次 / Step 之前,这个批次、它已有的部分结果和尚未派发的调用都留给调用方,分支不会执行它们。分叉点记录在 `InheritBoundary.fork_point`。
+- behavior 模式保留 `request.input`、`steps`、`last_step`、`history_summaries`、`history_inputs`;function_call 模式下继承的历史成为 child 的 `request.input`。
+- `ForkOptions.expect_system` 与调用方 system 不同则拒绝(要换 system 应使用 `create_sub_context`)。
+- child 的交接批次带 `<sub_task mode="fork">…</sub_task>`。
+
+`derive_child` / `fork_snapshot` 都是纯函数:不修改父快照,不带走父的挂起状态、待派发调用、usage、错误计数和宿主元数据,返回 `InheritBoundary {messages, steps_below, next_action_id, fork_point}`。
+
+### 子 context 的触发与返回
+
+创建方式决定 system 与历史如何构造,触发方式决定结果从哪里返回,两者独立:
+
+| 触发 | 调用方停在 | 结果返回 |
+| --- | --- | --- |
+| behavior 的 `next_behavior=B`(`CallTrigger::Behavior`) | 完整 Step 的 Done | 调用方交接批次里的 `<process_result behavior="B" status="…">…</process_result>` |
+| 工具 / action `call_behavior({behavior, task})`(`CallTrigger::Tool{call_id, task_id}`) | `PendingTool`:工具返回 `Pending{task_id="subctx:<call_id>"}`,未完成的批次 / Step 原样保留 | `ResumeFill::ToolResults` 按 `call_id` 回填,然后继续批次余下的调用;不产生输入批次 |
+
+子 context 无论以什么结束都返回调用方(`finish_run` 写 outcome `process_done`、出栈让调用方 run 重新成为 live run,结果放进 `state.process_result`):
+
+- `END` / 只带 `<report>` 的终止 Step → `status=ok`,结果是终止 Step 的 `<report>`,没有就取最后的回答文本;
+- `WAIT_USER_MSG` → `status=needs_user_input`:子 context 从不消费调用方的输入队列,由调用方决定是否去问用户;
+- 不可重试错误、预算耗尽、交接到未配置的 behavior → `status=failed`;
+- 在子 context 内交接到 `switch_context` 目标也只是返回(子 context 不离开自己的调用)。
+
+工具触发时,`failed` 回填为工具错误,`needs_user_input` 回填为结构化 JSON,其余是结果文本。子 context 可以再调用子 context,最深 4 层(`MAX_CALL_DEPTH`)。只有 `call_behavior` 可以让 run 以 deferred 方式挂起,其它工具的 `allow_deferred` 被屏蔽;xllm 不能接手挂起在子 context 上的 run。
+
+child 的 Step 不写回调用方的 context;Session worklog 记录 child 的过程,Step 身份是 `(child_run_id, step_index)`。child 返回后,重建 `<session_history>` 和压缩输入时这些记录被排除,只渲染它的 `process_done` 结果(`runner/history.rs`),避免子过程的完整内容又混进其它 context。
+
+交接点(run.json 的 `handover`)随快照先落盘,再提交 state;崩溃后 reconcile(`runner/reconcile.rs::redo_transfer`)恰好补交一次,state 用 `LiveRun.handover_at_ms` / `ProcessFrame.handover_at_ms` 记住已提交的交接。
+
+尚未实现:UI Stop 后补充输入(H3)、`report` 工具与显式完成策略(H4)。
 
 > 旧 opendan Runtime(`src/frame/opendan/src/agent_session.rs` 的 `switch_behavior` / `apply_switch_*` / `handle_process_end`)是另一套实现:按 session class 的 `switch_mode` 切换,用 `apply_overrides_to_snapshot` 替换 request 侧(system prompt、tool policy 等),挂起的 process 快照存成 `.meta/behavior_<entry>.snap`,child `END` 时把 report 写成 parent `step_history` 里的 `<history_input source="process_return:...">`,independent 再入时 `reset_tool_iterations` / `reset_errors`,`END` 弹回上一 process、栈空才结束。这些是旧 Runtime 的私有 helper 和磁盘布局,不是新设计接口,待下一阶段 opendan 按 libopendan 的抽象重构接入。
 
@@ -190,8 +221,8 @@ user:      Step Action Results
 Behavior Loop 每次推理的输入不是简单 append chat transcript,而是由 `LLMContext::build_inner_request` 现场拼出:request 头部(`request.input`)、`<<step_history>>`、当前 behavior 的 Step pair,以及进行中 Step 的 inner transcript。当前实现(llm_context + libopendan)的 message 序列是:
 
 ```text
-system: Session system text(libopendan:身份 + 约束 + 应用 prompt + 初始 context + objective,不随 behavior 变化)
-optional user: <session_history> ... </session_history>      (libopendan:Session worklog 的摘要 + 最近记录)
+system: run 的 system text(libopendan:身份 + 约束 + 应用 prompt + 初始 context + objective;应用 prompt 可由 behavior 条目的 system_prompt 替换,一个 run 内不变)
+optional user: <session_history> ... </session_history>      (libopendan:Session worklog 的摘要 + 最近记录;按 behavior 条目的 inherit 装配)
 user: <session_input hook="…" time="…"> ... </session_input>  (注入时最近一个 Step 不属于当前 behavior 的输入批次,留在 request.input)
 optional user: <<step_history>> ... <</step_history>>
 assistant: current behavior step decision
@@ -204,7 +235,7 @@ assistant/tool: 进行中 Step 的 inner transcript(Step 内原生工具 loop �
 `step_history` 是一条 user message,承载已经不该占 hot tail 的历史语义。`XmlStepRenderer::render_history` 按下面的顺序把它们拼进同一个 wrapper:
 
 - 压缩后的 `<history_summary>`
-- 其它 behavior 的 `<step_record>`(跨 behavior 继承)
+- 其它 behavior 的 `<step_record>`(跨 behavior 继承:`create_sub_context` 以 `inherit: steps` 带入的调用方 Step)
 - runtime 生成的 `<history_input>`(来自 `StepResultHook` 返回的 `history_inputs`;旧 opendan Runtime 用它承载 fork join handoff,libopendan / xllm 不挂这个 hook)
 
 示例(默认 `XmlStepRenderer` 带时间戳;libopendan / xllm 用 `without_timestamps()`,没有 `started_at_ms` / `ended_at_ms`):
@@ -225,11 +256,11 @@ Created T01.
 <</step_history>>
 ````
 
-输入批次(包括 `on_behavior_switch` 交接批次)是 synthetic UserMessage,不属于 `step_history`。它的位置由 `LLMContext::inject` 决定:最近一个 Step 属于当前 behavior 时,并入这个 Step 的 user message,接在 `<</last_step_action_results>>` 之后;否则(run 的第一个批次、刚做完 normal 切换、fork child 刚启动)追加到 `request.input`,因此渲染在 `<<step_history>>` 之前:
+输入批次(包括 `on_behavior_switch` 交接批次)是 synthetic UserMessage,不属于 `step_history`。它的位置由 `LLMContext::inject` 决定:最近一个 Step 属于当前 behavior 时,并入这个 Step 的 user message,接在 `<</last_step_action_results>>` 之后;否则(run 的第一个批次,包括 `switch_context` 目标首次进入和 `create_sub_context` child 刚启动)追加到 `request.input`,因此渲染在 `<<step_history>>` 之前(下例是 `inherit: steps` 的 `create_sub_context` child):
 
 ```text
 user:
-<session_input hook="on_behavior_switch" time="..."><behavior_switch to="do"/></session_input>
+<session_input hook="on_behavior_switch" time="..."><behavior_switch to="do"/><sub_task mode="create_sub_context">…</sub_task></session_input>
 
 user:
 <<step_history>>
@@ -253,7 +284,7 @@ AgentToolResult.output | AgentToolResult.detail
 <</last_step_action_results>>
 ````
 
-完整 pair 只属于当前 behavior:当前 behavior 的所有 Step 按追加顺序都渲染成完整 pair,渲染器不按新旧自动压缩,以保持前缀稳定;压缩只通过显式重写历史发生(例如 `ContextLimitReached` 后 `ResumeFill::RewrittenSteps`)。一旦切到另一个 behavior,这些 Step 在新 behavior 里渲染成 `step_history` 里的 `<step_record>`,并携带至少这些元数据:
+完整 pair 只属于当前 behavior:当前 behavior 的所有 Step 按追加顺序都渲染成完整 pair,渲染器不按新旧自动压缩,以保持前缀稳定;压缩只通过显式重写历史发生(例如 `ContextLimitReached` 后 `ResumeFill::RewrittenSteps`)。这些 Step 被另一个 behavior 的子 context 继承(`create_sub_context` + `inherit: steps`)时,在那个 context 里渲染成 `step_history` 里的 `<step_record>`,并携带至少这些元数据:
 
 ```text
 behavior_name
@@ -262,18 +293,19 @@ started_at / ended_at(可关闭)
 compression_level
 ```
 
-随后推理产生新 behavior 的第一个 Step 决策(`step_index` 接着编号,不从 0 开始);系统执行它的 actions 后得到 Action Results,这个 Step 成为当前 behavior 的 hot tail。如果之后再发生 Behavior 切换,它会以 `step_record` 或 summary 的形式被继承,而不是继续作为新 Behavior 的完整 assistant/user pair。
+随后推理产生子 context 的第一个 Step 决策(`step_index` 接着调用方编号,不从 0 开始);系统执行它的 actions 后得到 Action Results,这个 Step 成为当前 behavior 的 hot tail。它如果再被别的 behavior 继承,也只会以 `step_record` 或 summary 的形式出现,而不是继续作为新 Behavior 的完整 assistant/user pair。
 
-## 七、交接输入、fork 返回和真实用户输入的区别
+## 七、交接输入、子 context 返回和真实用户输入的区别
 
 当前实现(libopendan)里,进入 context 的输入都以输入批次提交:`SessionAssembler::render_input`(默认 `DefaultAssembler`)按 `InputMaterial` 渲染一条 `<session_input hook=… time=…>` user message,`commit_input_batch` 把它注入 context 并写 receipt `(run_id, input_seq)`。批次按来源区分:
 
 - 真实用户 / peer message、业务 event:hook `on_wakeup`(Session 的第一个批次是 `on_init`),消息放在 `<inputs>` 里,同一批次还可以带 `<changes>`、`<hints>`、`<active_sessions>`、`<runtime>`。没有打开的 Turn 时它开启新 Turn,否则并入当前 Turn。
-- behavior 切换:hook `on_behavior_switch`,带 `<behavior_switch to="…"/>`。它不是用户真实发来的消息,并入当前 Turn。
-- fork child 返回:同样是 `on_behavior_switch` 批次,在 parent run 上提交,带 `<process_result behavior="…">…</process_result>`。它是输入批次,不进 `<<step_history>>`。
+- behavior 交接:hook `on_behavior_switch`,带 `<behavior_switch to="…"/>`;进入的是子 context 时还带 `<sub_task mode="create_sub_context | fork">…</sub_task>`。它不是用户真实发来的消息,并入当前 Turn。
+- 子 context 返回(`next_behavior` 触发):同样是 `on_behavior_switch` 批次,在调用方 run 上提交,带 `<process_result behavior="…" status="ok | failed | needs_user_input">…</process_result>`。它是输入批次,不进 `<<step_history>>`。
+- 子 context 返回(`call_behavior` 触发):不是输入批次,结果作为该调用的工具结果回填(`ResumeFill::ToolResults`)。
 - 观察边界的半订阅变化:`CheckpointHook` 在 Step 边界注入 `<changes>`(receipt hook `observation`),不开 Turn。
 
-同一次 drive 循环里既有交接又有新消息时,它们渲染进同一条 `<session_input>`(`<behavior_switch>` / `<process_result>` 在前,`<inputs>` 在后),provider message list 里只有一个交接锚点。
+同一次 drive 循环里既有交接又有新消息时,它们渲染进同一条 `<session_input>`(`<behavior_switch>` / `<process_result>` / `<sub_task>` 在前,`<inputs>` 在后),provider message list 里只有一个交接锚点。
 
 旧 opendan Runtime 的做法不同:真实输入作为本次输入的 tail,`on_behavior_switch` 由 behavior 配置的模板渲染成 synthetic UserMessage 排在 `step_history` 后面,fork child `END` 把 report / join marker 渲染为 `HistoryInputRecord` 进入 parent 的 `step_history`。这些属于旧 Runtime,待下一阶段 opendan 重构接入。
 
@@ -295,9 +327,9 @@ Behavior Loop 的 Runtime 状态不是 provider message list 本身。message li
 | inner transcript | 进行中 Step 的原生工具 loop 消息(`accumulated` 中 `request.input` 之后的部分) | 原样接在最后 |
 | `history_inputs` | `StepResultHook` 返回的历史输入(旧 Runtime 用于 fork join handoff) | `step_history` 内的 `history_input` |
 | 输入批次 | libopendan 由 InputSource 队列取输入、`commit_input_batch` 注入,身份是 receipt `(run_id, input_seq)`;不在 `LLMContextState` 里(旧 Runtime 是 `SessionMeta.pending_inputs`) | 一条 `<session_input>` user message,位置见第六节 |
-| `process_stack` | fork / independent 挂起的 process(libopendan `SessionState.process_stack`,每帧是一个挂起的 run) | 不直接渲染,决定切回哪个 run |
+| `process_stack` | 挂起的 context(libopendan `SessionState.process_stack`,每帧是一个挂起的 run:`Parked` = 经 `switch_context` 离开的 context,`Caller` = 等待子 context 返回的调用方,带 `ChildCall`) | 不直接渲染,决定恢复哪个 run、子结果返回给谁 |
 
-`step_index` 是一个 run 的 Step 流里按分配顺序递增的序号(解析失败 / 策略拒绝产生的合成纠错 Step,即 `StepRecord::is_correction()`,也占一个号),不是每个 Turn 或每个 behavior 从 0 重开。`fork` child 继承 parent 的 `next_step_index`,所以 child 产生的第一条新 step 不从 0 开始;independent 新建的 run 从 0 编号。Step 身份是 `(run_id, step_index)`,`step_index` 在 Session 内不全局唯一。
+`step_index` 是一个 run 的 Step 流里按分配顺序递增的序号(解析失败 / 策略拒绝产生的合成纠错 Step,即 `StepRecord::is_correction()`,也占一个号),不是每个 Turn 或每个 behavior 从 0 重开。子 context(`create_sub_context` / `fork`)延续调用方的 `next_step_index` / `next_action_id`,所以 child 产生的第一条新 step 不从 0 开始,调用方恢复后再接着 child 的编号;`switch_context` 新建的 run 从 0 编号。Step 身份是 `(run_id, step_index)`,`step_index` 在 Session 内不全局唯一。
 
 ### 8.2 Step 的生命周期
 
@@ -324,7 +356,7 @@ user:
   <</last_step_action_results>>
 ```
 
-这个空 block 表示"step 3 的 actions 已经观察完毕,结果为空",不是用户输入,也不是 fork/on_behavior_switch 的载体。真实用户补充不应该塞进这个 block:当前实现把之后注入的输入批次作为同一条 user message 的后续 content,接在 `<</last_step_action_results>>` 之后。
+这个空 block 表示"step 3 的 actions 已经观察完毕,结果为空",不是用户输入,也不是子 context 返回 / on_behavior_switch 的载体。真实用户补充不应该塞进这个 block:当前实现把之后注入的输入批次作为同一条 user message 的后续 content,接在 `<</last_step_action_results>>` 之后。
 
 ### 8.3 输入来源分类
 
@@ -338,7 +370,7 @@ user:
 | `external_user` | 用户消息、forwarded usermsg | 新事实 / 新约束 / 人类补充 | 本次输入批次的 tail,或嵌入 runtime tail 的补充小节 |
 | `external_event` | kevent / msg event | 外部事件唤醒 | 本次输入批次的 tail |
 
-libopendan 当前的对应:`runtime_step_result` 相同;`runtime_history_input` 不出现(libopendan 不挂 `StepResultHook`,不产生 `history_inputs`),fork 返回改为输入批次里的 `<process_result>`;`runtime_auto_user` 是 `<session_input hook="on_init" | "on_behavior_switch">` 里的 `<task>` / `<behavior_switch>`;`external_user` / `external_event` 是同一条 `<session_input>` 里的 `<inputs>`;半订阅变化在 Step 边界以 `<changes>` 注入。
+libopendan 当前的对应:`runtime_step_result` 相同;`runtime_history_input` 不出现(libopendan 不挂 `StepResultHook`,不产生 `history_inputs`),子 context 返回改为输入批次里的 `<process_result>`(`call_behavior` 触发时是工具结果);`runtime_auto_user` 是 `<session_input hook="on_init" | "on_behavior_switch">` 里的 `<task>` / `<behavior_switch>` / `<sub_task>`;`external_user` / `external_event` 是同一条 `<session_input>` 里的 `<inputs>`;半订阅变化在 Step 边界以 `<changes>` 注入。
 
 这几个类别不能互相混用。尤其是:
 
@@ -377,7 +409,7 @@ Continue from PROCESS_RULES.
 
 这样 provider message list 仍然只有一个明确的 tail instruction:先吸收补充事实,再按当前 behavior 的 process rules 继续。Session worklog 仍应记录原始输入(libopendan:`turn_started` / `input_batch` 记输入引用,`user_message` 记渲染后的批次内容;旧 Runtime 是 `.meta/round_logs.jsonl`),因为它是审计日志,不是 provider prompt 的规范化形态。
 
-libopendan 的 `DefaultAssembler` 天然满足"一个锚点":同一批次的交接和输入渲染进同一条 `<session_input>`,顺序是 `<behavior_switch>`、`<process_result>`、`<task>` / `<scope>`(仅首个批次)、`<inputs>`、`<changes>`、`<perceptions>`、`<hints>`、`<active_sessions>`、`<runtime>`。
+libopendan 的 `DefaultAssembler` 天然满足"一个锚点":同一批次的交接和输入渲染进同一条 `<session_input>`,顺序是 `<behavior_switch>`、`<process_result>`、`<sub_task>`、`<task>` / `<scope>`(仅首个批次)、`<inputs>`、`<changes>`、`<perceptions>`、`<hints>`、`<active_sessions>`、`<runtime>`。
 
 如果 `external_user` 含有图片、文档或其它非纯文本 block,Runtime 不应把它嵌入补充小节,以免破坏结构化内容;此时保留为独立 user message。
 
@@ -387,7 +419,7 @@ libopendan 的 `DefaultAssembler` 天然满足"一个锚点":同一批次的交�
 
 ```text
 system:
-  run 的 system(libopendan:Session system text)
+  run 的 system(libopendan:Session system text,应用 prompt 按 behavior 条目)
 
 optional user:
   <session_history>(libopendan)
@@ -413,39 +445,84 @@ optional:
 不满足这条序列的典型错误包括:
 
 - 跨 behavior 的旧 step 仍作为 assistant/user hot pair 出现在新 behavior 里。
-- fork child 的完整 step stream 被合并回 parent 的 context。
+- 子 context 的完整 step stream 被合并回调用方的 context。
+- 在已有历史上替换 system 或 `behavior_name` 后继续同一个 run。
 - 用户补充被放进 `last_step_action_results` block 内部。
 - 同一次交接的用户补充和交接锚点被拆成两条 user message,导致模型先读到一个无结构事实,再读到真正的 continue anchor。
 
 ## 九、三种切换模式的典型 message list
 
-下面的例子是当前实现(libopendan Runner + llm_context `XmlStepRenderer` + xllm 的 behavior 解析器)的形状,只展示 Behavior 切换边界附近的 messages,省略模型供应商协议里的 `content[]` 细节,`<session_input>` 省略 `time` 属性。三种模式共享同一条渲染路径(`SessionAssembler::render_input` 渲染输入批次,`LLMContext::inject` 决定位置,`XmlStepRenderer::render_history` 渲染 Step),差别只在三件事:
+下面的例子是当前实现(libopendan Runner + llm_context `XmlStepRenderer` + xllm 的 behavior 解析器)的形状,只展示 Behavior 切换边界附近的 messages,省略模型供应商协议里的 `content[]` 细节,`<session_input>` 省略 `time` 属性。三种模式共享同一条渲染路径(`SessionAssembler::render_input` 渲染输入批次,`LLMContext::inject` 决定位置,`XmlStepRenderer::render_history` 渲染 Step),差别只在这几件事:
 
-- 切换后在哪个 run 上推理(同一个 run、新建 run,还是恢复挂起的 run)
-- `step_history` 里有没有上一个 behavior 的 `<step_record>`
+- 交接后在哪个 run 上推理(恢复目标自己挂起的 run,还是新建 run),以及它的 system 是谁的
+- 新 run 以什么历史开头(无 / `<session_history>` / 调用方的 `<step_record>` / 调用方的完整历史)
+- 目标结束后是否返回调用方,结果从哪里回来(交接批次里的 `<process_result>`,或工具结果)
 - 交接批次落在 `request.input`(最近一个 Step 不属于当前 behavior),还是并入当前 behavior 最近那个 Step 的 user message
 
-system 在三种模式下都是同一段 Session system text,下面写成 `system: <Session system text>`。和 [Agent Context Messages.md](../opendan/Agent%20Context%20Messages.md) 对照时注意,那篇按旧 opendan Runtime 描述。
+下面把各 context 的 system 写成 `system: <plan 的 system text>` 等。和 [Agent Context Messages.md](../opendan/Agent%20Context%20Messages.md) 对照时注意,那篇按旧 opendan Runtime 描述;它标为"理论上反模式"的普通切换(同一历史流里只换 behavior)在 libopendan 中已移除。
 
-### `normal`:同一历史流里的轻量跳转
+### `switch_context`:各自保有历史的 context
 
-场景:`plan` 完成任务拆解,最后一个 Step 输出 `<next_behavior>do</next_behavior>`;`do` 没有配置 `process_modes`,按 normal 切换。
+场景:`plan` 正在处理用户请求,中途切到长期存在的 `writer`(`behaviors.writer = { mode: "switch_context", system_prompt: … }`,`inherit` 缺省为 `none`),做完一段 `writer` 工作后再切回 `plan`(`plan` 是 Session 的初始 behavior,隐含为 `switch_context` 目标)。
 
-行为:`handle_context_outcome` 在同一个 run 上把 `behavior_name` 改成 `do`;`steps` / `history_summaries` / `next_step_index` / `next_action_id` / `last_report` 全部保留,`tool_iterations_left` 和 `consecutive_errors` 不重置。下一次 drive 循环提交 `on_behavior_switch` 批次;此时最近的 Step 属于 `plan`,批次追加到 `request.input`。
+行为:`suspend_run` 把 `plan` 的 run(run_A)挂起进 `process_stack`(Parked)。栈里没有 `writer` 的 Parked run,于是新建 run_C:`writer` 自己的 system / 工具 / 模型,不复制任何 Step;`inherit: none` 时也不装配 `<session_history>`。
 
-切到 `do` 后的下一次推理:
+`writer` 首次进入:
 
 ```text
-system: <Session system text>
+system: <writer 的 system text>
 
 user:
-  <session_history>…</session_history>                       (有历史时)
+  <session_input hook="on_behavior_switch"><behavior_switch to="writer"/></session_input>
+
+assistant:
+  <response><actions>…</actions></response>
 
 user:
-  <session_input hook="on_init"><task>Start working on the objective of this session.</task>…</session_input>
+  <<last_step_action_results behavior="writer" step="0">> … <</last_step_action_results>>
+```
+
+注意没有 `<<step_history>>`:run_C 从 step 0 开始编号,`plan` 的 step 不以 `<step_record>` 出现。`writer` 需要了解之前发生了什么时,配置 `inherit: recent_dialogue`,system 之后会多一条 `<session_history>`(含 `plan` 已 flush 的记录,是宿主筛选的视图);更细的共享状态靠工作区产物或读取工具。
+
+`writer` 输出 `<next_behavior>plan</next_behavior>` 后,run_C 挂起进栈(Parked);栈里有 `plan` 的 Parked run,于是恢复 run_A。恢复后的下一次推理看起来就像 `plan` 自己从中断点醒来:
+
+```text
+system: <plan 的 system text>
 
 user:
-  <session_input hook="on_behavior_switch"><behavior_switch to="do"/></session_input>
+  <session_history>…(run_A 创建时装配的历史)</session_history>
+
+user:
+  <session_input hook="on_init">…</session_input>
+
+assistant / user:
+  plan 自己的 step 0 … step 1(next_behavior=writer)
+
+user:
+  <<last_step_action_results behavior="plan" step="1">>
+
+  <</last_step_action_results>>
+  <session_input hook="on_behavior_switch"><behavior_switch to="plan"/></session_input>
+```
+
+唯一表明刚才发生过切出的痕迹,是并入 step 1 的交接批次。**`writer` 的 step stream 不会被合并进 `plan` 的 context**;`switch_context` 不交回 report,`writer` 的结果要靠 worklog / 工作区里的产物才能看到。
+
+如果之后再切入 `writer`,会恢复 run_C,看到的是它自己越来越长的 Step 流。多条历史流并行存在,只通过交接批次衔接。`writer` 或 `plan` 输出 `END` / `done` 时按 Session 结束条件处理(Turn completed,再按 `end_condition` 结束 Session 或等待输入),不会自动弹回另一个 context;Session 结束时 `process_stack` 被清空。
+
+### `create_sub_context`:换 system 的子任务
+
+场景:`plan` 完成任务拆解,最后一个 Step 输出 `<next_behavior>do</next_behavior>`;`behaviors.do = { mode: "create_sub_context", system_prompt: …, inherit: "steps" }`。
+
+行为:`suspend_run` 把 `plan` 的 run(run_A)的历史 flush 进 worklog,run_A 作为 Caller 帧入栈(`ChildCall { mode: create_sub_context, behavior: do, trigger: Behavior }`)。`new_run_context` 新建 run_B:`do` 的 system 和配置,`derive_child(.., InheritHistory::Steps)` 带入 run_A 已完成的 Step 和 summaries,编号接着 run_A。
+
+child 启动后的 message list:
+
+```text
+system: <do 的 system text>
+
+user:
+  <session_input hook="on_behavior_switch"><behavior_switch to="do"/><sub_task mode="create_sub_context">Continue the work handed over to this behavior.
+  Your result returns to the caller: finish with your report; do not ask the user.</sub_task></session_input>
 
 user:
   <<step_history>>
@@ -472,60 +549,21 @@ user:
   <<last_step_action_results behavior="do" step="2">>
   - #2 …
   <</last_step_action_results>>
+
+assistant:
+  <response><report><![CDATA[edit done: X]]></report></response>
 ```
 
 关键点:
 
-- `plan` 的全部 step(包括最后一条带 `next_behavior=do` 的 step)以 `<step_record>` 形式进入 `do` 的 `step_history`,**不**作为 `do` 的 hot pair。`<step_record>` 只有 observation / thought / actions 三个槽位(没有 `<thinking>` 时 thought 回退为原始回复文本),没有单独的 `<report>` / `<next_behavior>` 字段。
-- `do` 的第一个 Step 编号接着 `plan`(这里是 2),不从 0 开始。
-- 没有 `process_stack` push,没有新 run;Session worklog 写一条 `input_batch`(hook `on_behavior_switch`),Turn 不变。
+- `plan` 的 step(包括最后一条带 `next_behavior=do` 的 step)以 `<step_record>` 形式进入 `do` 的 `step_history`,**不**作为 `do` 的 hot pair。`<step_record>` 只有 observation / thought / actions 三个槽位(没有 `<thinking>` 时 thought 回退为原始回复文本),没有单独的 `<report>` / `<next_behavior>` 字段。**不**要在 prompt / template 层人为造出跨 behavior 的 hot pair。
+- `do` 的第一个 Step 编号接着 `plan`(这里是 2),不从 0 开始;继承的 step 不由 run_B 重复写入 worklog。
+- `inherit: none` 时没有 `<<step_history>>`,child 只有 system + 交接批次;`recent_dialogue` 时 system 之后是 `<session_history>`。由 `next_behavior` 触发时 `<sub_task>` 是固定文本,任务要靠继承的历史或共享状态理解;由 `call_behavior` 触发时是调用的 `task` 参数。
 
-[Agent Context Messages.md](../opendan/Agent%20Context%20Messages.md#状态机切换仅限-behavior-loop) 把普通切换标为"理论上反模式",担心的形状是:`plan` 的最后一条 step 作为 hot pair 暴露在 `do` 的尾部,形成跨 behavior 的 `[assistant: next_behavior=do → user: do.on_switch]` 边界 pair。当前渲染器按 `behavior_name` 把其它 behavior 的 Step 一律降为 `<step_record>`,正好回避了这个形状,所以 `normal` 在实现里是"看似反模式但被规范化掉的可用模式",**不**要在 prompt / template 层再人为造出那种跨边界 hot pair。
-
-### `fork`:带历史的子调用
-
-场景:parent behavior `plan` 发现一个子任务可以交给 child behavior `research`(`process_modes.research = "fork"`),child 完成后把结果交回 parent。
-
-行为:`suspend_run` 把 parent run(run_A)的历史 flush 进 worklog,run_A 进 `process_stack` 并 Paused;`new_run_context` 新建 run_B,复制 run_A 的 `steps`(含 `last_step`)、`history_summaries`、`next_step_index`、`next_action_id`。run_B 的 `<session_history>` 是新装配的,已经包含 run_A flush 的记录。
-
-child 启动时的典型 message list:
+最后一个 Step 只有 `<report>`,xllm 的 behavior 解析器把它判为终止(`done`)。`finish_run(run_B)` 写 outcome `process_done`,出栈让 run_A 重新成为 live run,`state.process_result` 记下 child 的结果和 `status`。下一次 drive 循环在 run_A 上提交交接批次;它并入 `plan` 最近那个 Step(带 `next_behavior=do` 的 step 1)的 user message。parent 恢复后的下一次推理:
 
 ```text
-system: <Session system text>
-
-user:
-  <session_history>
-  …
-  [step 0 plan] …
-  [step 1 plan] …
-  [outcome suspended → research]
-  </session_history>
-
-user:
-  <session_input hook="on_behavior_switch"><behavior_switch to="research"/></session_input>
-
-user:
-  <<step_history>>
-  <step_record behavior="plan" index="0" compression="full">…</step_record>
-  <step_record behavior="plan" index="1" compression="full">…</step_record>
-  <</step_history>>
-
-assistant:
-  <response><thinking>Run the research actions.</thinking><actions>…</actions></response>
-
-user:
-  <<last_step_action_results behavior="research" step="2">>
-  - #2 …
-  <</last_step_action_results>>
-
-assistant:
-  <response><report><![CDATA[research result X]]></report></response>
-```
-
-最后一个 Step 只有 `<report>`,xllm 的 behavior 解析器把它判为终止(`done`);child 的任何 Done(`WAIT_USER_MSG` 除外)都返回调用方。`finish_run(run_B)` 写 outcome `process_done`,出栈让 run_A 重新成为 live run,`state.process_result` 记下 child 的结果。下一次 drive 循环在 run_A 上提交交接批次;`plan` 已经有 Step,批次并入它最近那个 Step(带 `next_behavior=research` 的 step 1)的 user message。parent 恢复后的下一次推理:
-
-```text
-system: <Session system text>
+system: <plan 的 system text>
 
 user:
   <session_history>…(run_A 创建时装配的历史)</session_history>
@@ -540,62 +578,29 @@ user:
   <<last_step_action_results behavior="plan" step="0">> … <</last_step_action_results>>
 
 assistant:
-  <response><thinking>need research</thinking><next_behavior>research</next_behavior></response>   (plan step 1)
+  <response><thinking>start doing</thinking><next_behavior>do</next_behavior></response>   (plan step 1)
 
 user:
   <<last_step_action_results behavior="plan" step="1">>
 
   <</last_step_action_results>>
-  <session_input hook="on_behavior_switch"><behavior_switch to="plan"/><process_result behavior="research">research result X</process_result></session_input>
+  <session_input hook="on_behavior_switch"><behavior_switch to="plan"/><process_result behavior="do" status="ok">edit done: X</process_result></session_input>
 ```
 
-child 的中间 step 不会出现在 run_A 的 prompt 中,只通过 `<process_result>` 交回结果;Session worklog 保留 run_B 的 step(身份 `(run_B, step_index)`,继承来的 step 不重复写入)。run_A 继续使用 child 返回的 `next_step_index` / `next_action_id`,编号不和 child 冲突。整个过程是同一个 Turn:一条 `turn_started` 加两条 `input_batch`。
+child 的中间 step 不会出现在 run_A 的 prompt 中,只通过 `<process_result>` 交回结果;Session worklog 保留 run_B 的 step(身份 `(run_B, step_index)`),但之后重建的 `<session_history>` 只渲染 run_B 的 `process_done` 结果。run_A 继续使用 child 返回的 `next_step_index` / `next_action_id`,编号不和 child 冲突。整个过程是同一个 Turn:一条 `turn_started` 加两条 `input_batch`。
 
-**继承粒度**:child 看到的 `<step_record>` 字段不是 0/1。设计上 fork 可以选择只继承到上一次 behavior 边界、只继承 `thought + next_behavior` 骨架、只继承每段的 `self_report`,甚至完全不继承(只靠交接批次传共享状态)。粒度越薄,child 的 context window 越轻;粒度越厚,child 越能理解 parent "为什么走到这一步"。当前 libopendan 固定复制 parent 的全部 Step,粒度选项未实现。
+child 以 `WAIT_USER_MSG` 结束时 `status="needs_user_input"`(结果是它的问题),出错或预算耗尽时 `status="failed"`;都由 `plan` 决定下一步,child 不会直接等用户输入。
 
-**隔离边界**:fork 的 invariant 只在 message list 一层 —— child 的 step 不进 parent 的 context。文件系统、worklog、对外发出的消息、session 全局状态,**统统不隔离**。fork 不是沙箱,如果要 dry-run,得在 child 的 system prompt / Action 视图层自己造隔离,Runtime 不负责。
+### `fork`:保留 system 与完整历史的分支
 
-**和 independent 首次进入的形状对照**:
+场景:`plan` 发现一个子任务适合在"同样的上下文"里分支完成,输出 `<next_behavior>research</next_behavior>`;`behaviors.research = { mode: "fork" }`。
 
-|  | fork child 入口 | independent 首次进入 |
-| --- | --- | --- |
-| 形状 | `[system] [<session_history>] [<session_input on_behavior_switch>] [<<step_history>> 继承 parent step]` | `[system] [<session_history>] [<session_input on_behavior_switch>]` |
-| `step_history` 是否含 parent step | 是 | 否(parent 的过程只以 worklog 记录出现在 `<session_history>` 里) |
-| child 的 step 流向 | 写进 worklog;返回后 child run 结束,不再进入 | 留在自己挂起的 run 里,可再入 |
-| 再次进入 | 每次都是新 run | 恢复自己上次挂起的 run |
+行为:入栈与返回同上(`ChildCall { mode: fork, … }`)。run_B 由 `fork_snapshot` 派生:request(system、`behavior_name`、模型)和 `request.input`、`steps`、`last_step`、summaries 都与 run_A 在分叉点时相同,run 记录沿用 run_A 的配置。
 
-结构相近,所有权完全不同。
-
-### `independent`:独立历史流
-
-场景:`plan` 正在处理用户请求,中途切到长期存在的 `writer` process(`plan`、`writer` 都配置为 `independent`),做完一段 `writer` 工作后再切回 `plan`。
-
-行为:`suspend_run` 把 `plan` 的 run(run_A)挂起进 `process_stack`。栈里没有 `writer` 的挂起 run,于是新建 run_C:不复制任何 Step,只装配 system 和当前的 `<session_history>`。
-
-`writer` 首次进入:
+child 启动时的 message list 以 run_A 的完整前缀开头,其后才是分支任务:
 
 ```text
-system: <Session system text>
-
-user:
-  <session_history>…(含 plan 已 flush 的记录)</session_history>
-
-user:
-  <session_input hook="on_behavior_switch"><behavior_switch to="writer"/></session_input>
-
-assistant:
-  <response><actions>…</actions></response>
-
-user:
-  <<last_step_action_results behavior="writer" step="0">> … <</last_step_action_results>>
-```
-
-注意没有 `<<step_history>>`:run_C 从 step 0 开始编号,`plan` 的 step 不以 `<step_record>` 出现。
-
-`writer` 输出 `<next_behavior>plan</next_behavior>` 后,run_C 挂起进栈;栈里有 `plan` 的 independent 挂起 run,于是恢复 run_A。恢复后的下一次推理看起来就像 `plan` 自己从中断点醒来:
-
-```text
-system: <Session system text>
+system: <plan 的 system text>
 
 user:
   <session_history>…(run_A 创建时装配的历史)</session_history>
@@ -604,18 +609,51 @@ user:
   <session_input hook="on_init">…</session_input>
 
 assistant / user:
-  plan 自己的 step 0 … step 1(next_behavior=writer)
+  plan 的 step 0 … step 1(next_behavior=research),与 run_A 中的渲染相同
 
 user:
   <<last_step_action_results behavior="plan" step="1">>
 
   <</last_step_action_results>>
-  <session_input hook="on_behavior_switch"><behavior_switch to="plan"/></session_input>
+  <session_input hook="on_behavior_switch"><behavior_switch to="research"/><sub_task mode="fork">Continue the work handed over to this behavior.
+  Your result returns to the caller: finish with your report; do not ask the user.</sub_task></session_input>
+
+assistant:
+  <response><thinking>Run the research actions.</thinking><actions>…</actions></response>   (分支的 step 2)
+…
+assistant:
+  <response><report><![CDATA[research result X]]></report></response>
 ```
 
-唯一表明刚才发生过切出的痕迹,是并入 step 1 的交接批次。**`writer` 的 step stream 不会被合并进 `plan` 的 context**;independent 切换不交回 report,`writer` 的结果要靠 worklog / 工作区里的产物,或 `plan` 下次新建 run 时的 `<session_history>` 才能看到。
+返回 run_A 的形状与 `create_sub_context` 相同(`<process_result behavior="research" status="ok">research result X</process_result>` 并入 step 1 的 user message)。
 
-如果之后再切入 `writer`,会恢复 run_C,看到的是它自己越来越长的 Step 流。多条历史流并行存在,只通过交接批次衔接。`writer` 或 `plan` 输出 `END` / `done` 时按 Session 的 Done 处理(Turn completed,再按 `end_condition` 结束 Session 或等待输入),不会自动弹回另一个 process;Session 结束时 `process_stack` 被清空。
+**完整历史**:指分叉点的有效 LLM history,包括当时已有的摘要和成对的工具消息;不恢复已经压缩掉的原始历史,也不含未提交的半截输出。只取部分历史、换 system 或重渲染为摘要,都属于 `create_sub_context` 的输入构造。
+
+**隔离边界**:子 context 的 invariant 只在 message list 一层 —— child 的 step 不进调用方的 context。文件系统、worklog、对外发出的消息、session 全局状态,**统统不隔离**。fork 不是沙箱,如果要 dry-run,得在工具 / Runtime 层限制副作用。缓存是否命中取决于实际请求前缀与模型 / 工具定义,模式名称不保证命中。
+
+### 工具触发的子 context(`call_behavior`)
+
+Session 声明了子 context behavior 时,run 的工具集里有 `call_behavior({behavior, task})`(function_call 的原生工具或 behavior 的 action 都可以)。它对 `create_sub_context` / `fork` 目标都成立:
+
+```text
+调用方: … [assistant:tool_calls(call_behavior{behavior: research, task}, other)]
+        call_behavior → Pending{task_id: "subctx:<call_id>"} → run 以 PendingTool 挂起,整个未完成批次留在快照里
+        入栈:Caller + ChildCall { trigger: Tool{call_id, task_id}, task }
+child:  按目标模式构造(fork 的分叉点在这个工具批次 / Step 之前) → <sub_task mode="…">task</sub_task> → 推理 → 结果
+调用方: … [assistant:tool_calls(call_behavior, other)] [tool:子结果] [tool:other 结果] → 下一 Round,原 Turn 继续
+```
+
+子结果用 `ResumeFill::ToolResults` 按 `call_id` 回填(`failed` → 工具错误;`needs_user_input` → 结构化 JSON,提示调用方自己去问用户再重新调用),回填后先发布快照,再继续批次里尚未派发的调用;不产生输入批次。
+
+**三种方式的对照**:
+
+|  | `switch_context` | `create_sub_context` | `fork` |
+| --- | --- | --- | --- |
+| system | 目标自己的 | 目标自己的 | 与调用方相同 |
+| 入口形状 | `[system:B] [<session_history>(inherit: recent_dialogue)] [<session_input on_behavior_switch>]` | `[system:B] [<session_history>(recent_dialogue)] [<session_input … <sub_task>>] [<<step_history>> 调用方 step(inherit: steps)]` | `[调用方在分叉点的完整前缀] [<session_input … <sub_task>>]` |
+| 调用方历史 | 不复制 | 显式选择,可不继承 | 分叉点的完整有效历史 |
+| 再次进入 | 恢复目标自己挂起的 run | 每次都是新 run | 每次都是新 run |
+| 结束 | Session 结束条件,或显式切换 | 结果返回调用方 | 结果返回调用方 |
 
 旧 opendan Runtime 的同名例子(`apply_switch_*`、`.meta/behavior_<entry>.snap`、`<history_input source="process_return:...">`、`END` 弹回上一 process)见第五节末尾的说明,待下一阶段 opendan 重构接入。
 

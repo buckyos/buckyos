@@ -1,6 +1,6 @@
 # LLM Context 支持 Behavior Loop —— 瘦腰式扩展方案
 
-> 状态(2026-10-01):本文是 Behavior Loop 的扩展方案,主体已落地。文中已按当前实现修正挂起/恢复、behavior 切换、工具迭代额度和 hook 的描述;接口细节以 [LLM Context 设计](LLM%20Context%20设计.md) §6 / §9 / §10 和 `src/frame/llm_context` 代码为准。Round / Step / Turn 的定义见 [readme](readme.md)。
+> 状态(2026-10-03):本文是 Behavior Loop 的扩展方案,主体已落地。文中已按当前实现修正挂起/恢复、behavior 切换(由目标 behavior 的进入模式决定,普通切换已移除)、工具迭代额度和 hook 的描述;接口细节以 [LLM Context 设计](LLM%20Context%20设计.md) §6 / §9 / §10 和 `src/frame/llm_context` 代码为准。Round / Step / Turn 的定义见 [readme](readme.md)。
 
 ## 0. 一句话
 
@@ -22,7 +22,7 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 
 ## 2. 瘦腰要立得住,先钉住的不变量
 
-- **LLMContext 一次 `run()` 调用跑到一个 Outcome(终态或挂起态)返回**,不在 loop 内做 behavior 状态机。切换由上层在 `run()` 返回 `Done{next_behavior}` 之后决定:libopendan 的普通切换继续同一个 context、同一个 run(快照改 `behavior_name` 后 `ResumeFromMidRun`),只有 fork / independent 才使用其它 run(见 [readme](readme.md))。
+- **LLMContext 一次 `run()` 调用跑到一个 Outcome(终态或挂起态)返回**,不在 loop 内做 behavior 状态机。切换由上层在 `run()` 返回 `Done{next_behavior}` 之后决定:libopendan 按目标 behavior 的进入模式(`extensions.opendan.behaviors.<name>.mode`)调度——`switch_context` 进入目标自己的 run,`create_sub_context` / `fork` 新建子 run 并在结束后返回调用方;交接从不在同一个 run 里改 `behavior_name` 或 system(见 [readme](readme.md))。
 - **`run_inner`(传统 Agent Loop)零修改**。Behavior 模式是新增 entry point `run_behavior`,它把 `run_inner` 当子例程调用。
 - **Behavior 模式 vs 传统模式是构造时二选一**,运行时不混用——`LLMContext::new` 里靠 deps 字段组合做断言;两个模式走两个 entry point。
 - **协议解析归 parser,执行归 dispatcher,Behavior 外层 loop 只读"要不要继续 / 调用什么"两个信号**。
@@ -406,27 +406,31 @@ SessionRunner 推进 live run(behavior 模式的 LLMContext,deps 含 action 视�
        Done { behavior_result: Some(r), .. } => match r.next_behavior.as_deref() {
            None | Some("END")    => 结束 run,Turn completed;按 end_condition 结束 Session 或等待输入
            Some("WAIT_USER_MSG") => 结束 run,等待输入;已交付答复才完成 Turn,否则下一条输入并入同一 Turn
-           Some(name) => match process_mode(name) {
-               普通(未声明 mode) => 同一快照改 behavior_name 后 ResumeFromMidRun:
-                                    同一 context、同一 run、同一 Turn,下一次输入批次带 on_behavior_switch
-               fork               => 当前 run 挂起入 process_stack,子 run 继承 steps;
-                                    子 run 结束(任何 next_behavior 都视为返回)后父 run 恢复,Turn 不结束
-               independent        => 当前 run 挂起入栈,恢复或新建目标 behavior 的 run
+           Some(name) => match behavior_entry(name).mode {   # 目标 behavior 的进入配置,没有默认模式
+               没有条目           => Turn failed(behavior_config);在子 context 内则以 failed 返回调用方
+               switch_context     => 当前 run 挂起入 process_stack(Parked),恢复目标自己挂起的 run,
+                                    否则按目标自己的 system / 工具 / 模型新建;下一次输入批次带 on_behavior_switch
+               create_sub_context => 当前 run 作为 Caller 帧入栈,derive_child 新建子 run(目标的 system + inherit 选择的历史)
+               fork               => 当前 run 作为 Caller 帧入栈,fork_snapshot 新建子 run(调用方的 system + 完整有效历史)
+                                    子 run 无论以什么结束都返回调用方(<process_result behavior status>),Turn 不结束
            }
        }
+       # 当前 run 是子 context 时,END / WAIT_USER_MSG / 交接到 switch_context 目标 / 不可重试错误 / 预算耗尽都改为返回调用方(ok / needs_user_input / failed)
+       PendingTool(call_behavior 的 task "subctx:<call_id>") => 调用方保留未完成的批次 / Step 入栈(Caller),
+                                    子 run 结束后用 ToolResults 按 call_id 回填,同一 Turn 继续
        PendingTool / ContextLimitReached / Interrupted => run 保留(外层快照),处理后 resume,同一 Turn 继续
        Error / BudgetExhausted => 可重试的错误暂停 run;否则结束 run,Turn 记为 failed / budget_exhausted
    }
 ```
 
-LLMContext 一次 `run()` 只执行一个 behavior,状态机在 worksession,不在 loop 内;但 behavior 切换不等于新建上下文:普通切换从同一快照(只改 `behavior_name`)继续。**两层嵌套结构同构**:worksession 推进 Behavior LLMContext,Behavior LLMContext 每个 Step 起一个传统 LLMContext——都遵循"一次 run() 调用返回一个 Outcome"语义。Outcome 不等于 Turn 结束,Turn 的开始 / 继续 / 结束由 session 判定。
+LLMContext 一次 `run()` 只执行一个 behavior,状态机在 worksession,不在 loop 内;一个 run 的 `behavior_name` 和 system 自始至终不变,behavior 交接总是换到另一个 run(目标自己的,或新建的子 run)。子 context 的快照由 `llm_context::context_derive` 的 `derive_child` / `fork_snapshot` 从调用方快照派生,调用方快照不被修改。**两层嵌套结构同构**:worksession 推进 Behavior LLMContext,Behavior LLMContext 每个 Step 起一个传统 LLMContext——都遵循"一次 run() 调用返回一个 Outcome"语义。Outcome 不等于 Turn 结束,Turn 的开始 / 继续 / 结束由 session 判定。
 
 ---
 
 ## 9. 故意不做 / 划在范围外
 
 - **不**改 `run_inner`(传统 Agent Loop)。Behavior Loop 用它当子例程,不动它的代码。
-- **不**在 loop 内做 behavior 切换。一次 `run()` 调用一个 behavior;切换在 `run()` 返回后由上层做(普通切换仍是同一 context、同一 run,§8)。
+- **不**在 loop 内做 behavior 切换。一次 `run()` 调用一个 behavior;切换在 `run()` 返回后由上层做,且总是换到另一个 run(§8)。
 - **不**新建 ActionMgr trait。Action 通过 ToolMgr 装配实现。
 - **不**改 `AiMessage` 定义,**不**进 `buckyos_api`。
 - **不**在 `LLMContextOutcome` 加新变体。`Done` 加字段即可。

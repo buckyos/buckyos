@@ -44,7 +44,7 @@
 | 09_semi_subscription | 半订阅按登记表 rev 拉取变化，随下一个输入批次注入，不额外推理 |
 | 10_active_overlap | 两个活动 session 同一 workspace：渲染对方 activity 并标出交集 |
 | 11_worklog_with_summary | 反向读 worklog 在 summary 起点停止 |
-| 12_fork_child_live | fork 子 run 在跑、父 run 挂起在 process_stack；父子 run 同属仍打开的 Turn 1 |
+| 12_fork_child_live | fork 子 context 的 run 在跑、调用方的 run 作为 `caller` 帧挂起在 process_stack；两个 run 同属仍打开的 Turn 1 |
 | 13_unsupported_snapshot_version | 快照版本不支持：RecoveryBlocked，保留现场 |
 
 其余 §11 场景（选择性消费、订阅丢失重建、ack 不回退、持有者退出后接管、非驱动者被拒、binding 准备中断后修复、discard 与 accept 并发、历史段确定性、跨 Agent/App/owner 的 sid）由 `src/frame/lib_opendan/tests/` 的用例覆盖。

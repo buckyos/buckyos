@@ -21,7 +21,7 @@ LLMContext run 的返回包括完成 (`Done`，Behavior 模式通过 `next_behav
 | 输入批次 | `(run_id, input_seq)` | snapshot 里的 receipt；worklog `turn_started`（开启 Turn）或 `input_batch`（并入当前 Turn） |
 | 工具调用 | `call_id` | worklog `action_result`；工具运行上下文的 `tool_call_index` 只是调用序号，不是 Step 或 Turn |
 
-Turn 的规则：没有打开的 Turn 时提交的输入批次开启新 Turn（bootstrap、msg/event）；普通切换、fork 调用与返回、independent 切换、观察阶段注入、可恢复挂起（中断、可重试错误、context limit、PendingTool）、history epoch 重写和重启都继续当前 Turn，期间消费的新输入并入当前 Turn。只有 AgentSession 在 run 结束时关闭 Turn：交付结果为 `completed`；`WAIT_USER_MSG` 只有已经交付答复（`<report>` 或 `<sendmsg>`）才算 `completed`，否则 Turn 保持打开；不可恢复错误、预算耗尽、stop 分别记为 `failed`、`budget_exhausted`、`stopped`。fork 子 run 结束不关闭 Turn。Session 结束条件 `max_turns` 只统计 `completed` 的 Turn。
+Turn 的规则：没有打开的 Turn 时提交的输入批次开启新 Turn（bootstrap、msg/event）；`switch_context` 切换、子 context（`create_sub_context` / `fork`）的调用与返回、观察阶段注入、可恢复挂起（中断、可重试错误、context limit、PendingTool）、history epoch 重写和重启都继续当前 Turn，期间消费的新输入并入当前 Turn。只有 AgentSession 在 run 结束时关闭 Turn：交付结果为 `completed`；`WAIT_USER_MSG` 只有已经交付答复（`<report>` 或 `<sendmsg>`）才算 `completed`，否则 Turn 保持打开；不可恢复错误、预算耗尽、stop 分别记为 `failed`、`budget_exhausted`、`stopped`。子 context 的 run 结束只返回调用方，不关闭 Turn。Session 结束条件 `max_turns` 只统计 `completed` 的 Turn。
 
 
 ## 在AgentSession中的LLM Context 的状态机切换
@@ -30,22 +30,49 @@ AgentSession 构造/管理 多个LLM Context，同一时刻只有一个当前 LL
 AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LLMContext 不直接持有或自动看到 Session 的全部状态。
 
 
-### Fork
+切换方式由**目标 behavior 的进入配置**决定，不由 Session 统一指定，也没有默认模式（libopendan `protocol/config.rs`：`ContextMode`、`InheritMode`、`BehaviorEntry`）：
 
-基于 parent LLMContext 的历史快照创建子 context，并提供子任务的 user message/工具；parent 挂起，子 context 结束后恢复 parent，结果通过 `process_result` 进入 parent 的交接输入批次（仍属同一 Turn），子 context 的完整 steps 不合并到 parent 的主干 history。
+```json
+"extensions": { "opendan": { "behaviors": {
+    "<name>": { "mode": "switch_context | create_sub_context | fork",
+                "system_prompt": "…", "llm_context": { … }, "inherit": "none | recent_dialogue | steps" }
+} } }
+```
 
-缓存是否命中取决于模型、system prompt、工具定义及历史渲染是否保持相同前缀，Fork 本身不保证命中；它隔离的是推理历史，文件修改等工具副作用仍然存在，Session 的 worklog 也会记录子过程。
+- `system_prompt` 替换 `prompt.system_prompt`；`llm_context` 的顶层键替换 `prompt.llm_context` 的同名键（模型、工具、限制等）。
+- `inherit`（默认 `none`）：`recent_dialogue` 装配宿主渲染的 `<session_history>`；`steps` 只用于 `create_sub_context`。`fork` 条目不能声明 `system_prompt` / `llm_context` / `inherit`。
+- Session 的初始 behavior（`prompt.behavior`）没有自己的条目时，隐含为使用基础配置的 `switch_context` 目标（`inherit` 为 `recent_dialogue`；没有声明任何 behavior 的 Session 同样装配 `<session_history>`）。交接到其它没有条目的 behavior 不回退：Turn 以 `behavior_config` 错误失败；发生在子 context 内则作为失败结果返回调用方。
+- behavior 表在 drive 启动时校验；`extensions.opendan.process_modes` 被拒绝。“在同一个 run 里换 behavior / system、沿用原历史”的普通切换已移除。
 
-### CreateSubContext
+三种方式都不结束 Turn，也都不隔离文件系统、Session 状态、worklog 和对外消息；缓存是否命中取决于模型、system prompt、工具定义及历史渲染是否保持相同前缀。
 
-设计上，按新的 system prompt、工具和初始输入创建子 context，并在结束后向 parent 交接结果；当前 libopendan 尚未提供这种独立子 context 的完整调用/返回 helper，llm_context 的 `build_fresh` / `rebuild_with_inherit` 只提供底层构造能力。
+### ContextSwitch（`switch_context`）
 
-### ContextSwitch
+目标拥有自己的 context（system、工具、模型、历史、run）。current run 挂起进 `process_stack`（`FrameRole::Parked`）；栈里有 target 自己挂起的 run 就恢复它的快照，否则按 target 自己的配置新建 run，并通过 `on_behavior_switch` 输入继续推进。
+新建时的历史只按 `inherit` 装配，其它 context 的快照 / 历史不会被接到 target 上。这类 context 的 `END` 按 Session 结束条件处理，不会自动返回上一个 context；回去要显式 `next_behavior`。
 
-若 target 使用 `independent` 模式，current run 入栈挂起，target 有挂起的 run 就恢复，否则新建，并通过 `on_behavior_switch` 输入继续推进。
-相当于 AgentSession 内多个 context 各自保存 steps/snapshot，轮流运行；首次新建仍会装配 Session 共享 worklog 的历史，并非完全隔离。
+### CreateSubContext（`create_sub_context`）
 
-默认的普通 behavior switch 则继续使用同一个 context、同一个 run 和历史，只更新 behavior 并注入 `on_behavior_switch` 输入，不会自动创建独立 history。
+每次调用新建子 run：使用 target 自己的 system、工具和任务输入，只带入 `inherit` 选择的调用方历史（`steps` = 调用方已完成的 StepRecord 与 summaries）。调用方作为 `FrameRole::Caller` 帧入栈，子 context 结束后恢复调用方并交回结果，子 context 的 steps / messages 不并入调用方的推理历史。底层构造是 llm_context 的 `derive_child(parent_snapshot, child_request, InheritHistory::{None | Material(msgs) | Steps})`。
+
+### Fork（`fork`）
+
+每次调用新建分支 run：保留调用方的 system、配置和**分叉点之前的完整有效历史**，在其后追加分支任务；调用返回方式与 create_sub_context 相同。底层构造是 `fork_snapshot(parent_snapshot, ForkOptions)`：调用方有未完成的工具批次 / behavior Step 时，分叉点取在该批次 / Step 之前（它留给调用方）；`expect_system` 与调用方 system 不同则拒绝；function_call 模式下继承的历史成为子 run 的 `request.input`。
+
+`derive_child` / `fork_snapshot`（`llm_context/src/context_derive.rs`）都是纯函数：不修改父快照，不带走父的挂起状态、待派发调用、usage、错误计数和宿主元数据，延续父的 step / action 编号，并返回 `InheritBoundary {messages, steps_below, next_action_id, fork_point}`，宿主据此只把子 run 新增的部分写入 worklog。`snapshot_overrides`（`rebuild_with_inherit`）只用于从**同一个 run** 自己的快照改 request 侧参数重建，不用于 context 之间的交接：交接从不在已有历史上替换 system。
+
+### 子 context 的触发与返回
+
+| 触发 | 调用方停在 | 结果返回 |
+|---|---|---|
+| behavior 的 `next_behavior=B` | 完整 Step 的 Done | 调用方 `on_behavior_switch` 批次里的 `<process_result behavior status>` |
+| 工具 / action `call_behavior({behavior, task})` | `PendingTool`（工具返回 `Pending{task_id="subctx:<call_id>"}`），保留未完成的批次 / Step | `ResumeFill::ToolResults` 按 `call_id` 回填，批次余下的调用继续；不产生输入批次 |
+
+子 context 无论以什么结束都返回调用方：`END` / report → `status=ok`；`WAIT_USER_MSG` → `status=needs_user_input`（子 context 从不消费调用方的输入队列）；不可重试错误、预算耗尽、未知交接目标 → `status=failed`；在子 context 内交接到 `switch_context` 目标也只是返回。工具触发时 failed 回填为工具错误，needs_user_input 回填为结构化 JSON。子 context 可以继续调用子 context，最深 4 层（`MAX_CALL_DEPTH`）。只有 `call_behavior` 可以 deferred，其它工具的 `allow_deferred` 被屏蔽。
+
+交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 和压缩输入时只渲染它的 `process_done` 结果（`runner/history.rs`）。
+
+未实现：UI Stop 后补充输入（H3）、`report` 工具与显式完成策略（H4）。
 
 
 ## AgentSession Tree
@@ -146,36 +173,44 @@ Step5 的下一个 Round 输出决策后，Step5 才完成并沉淀为 `StepReco
 
 ### behavior 切换
 
-TODO: 切换模式由target behavvior的配置决定，而不是由当前session决定？
+切换方式由 target behavior 的进入配置决定（`extensions.opendan.behaviors.<B>.mode`），没有默认模式。
 
 ```text
-# 普通切换：同一 context、同一 run、同一 Turn
-AgentSession.handle_context_outcome(Done{next_behavior: B}):
-    ctx = LLMContext.resume(snapshot{behavior: B}, ResumeFromMidRun)
-    # 下一圈 commit_input_batch 注入 <session_input hook=on_behavior_switch><behavior_switch to=B/>（worklog: input_batch）
-    # A 的 step 降为 <<step_history>> 里的继承记录，B 的 step 完整呈现
+AgentSession.handle_context_outcome(Done{next_behavior: B}):     # classify_done 读取 B 的 BehaviorEntry
+    B 没有条目 -> Turn failed（behavior_config）；在子 context 内 -> 以 failed 返回调用方
 
-# Fork：B 被配置为 fork
-AgentSession.suspend_run(run_A, Fork)          # run_A 入 process_stack，Paused
-AgentSession.new_run_context()                 # run_B：复制 run_A 的 steps 作为继承历史
-... run_B 推进到 Done                           # 任何 next_behavior 都视为返回调用方
-AgentSession.finish_run(run_B)                 # 出栈，run_A 重新成为 live run，state.process_result = 结果；Turn 不结束
-# 下一圈 commit_input_batch 把 <process_result> 注入 run_A
+# switch_context：B 有自己的 context
+AgentSession.suspend_run(run_A, Parked)        # run_A 入 process_stack（FrameRole::Parked），交接点已先写入 run.json
+run_B = 栈里 B 自己挂起的 run ?? AgentSession.new_run_context()   # 新建：B 的 system / 工具 / 模型，历史只按 inherit
+# 下一圈 commit_input_batch 注入 <session_input hook=on_behavior_switch><behavior_switch to=B/>（worklog: input_batch）
+# B 的 END 按 Session 结束条件处理，不自动回到 A
 
-# Independent：B 被配置为 independent
-AgentSession.suspend_run(run_A, Independent)   # run_A 入栈
-run_B = 栈里 B 的挂起 run ?? AgentSession.new_run_context()
+# create_sub_context / fork：B 是子 context（触发 a：next_behavior）
+AgentSession.suspend_run(run_A, Caller{ChildCall{mode, behavior: B, trigger: Behavior}})
+AgentSession.new_run_context()                 # run_B：derive_child（B 的 system + inherit）| fork_snapshot（A 的 system + 完整历史）
+# run_B 的交接批次：<behavior_switch to=B/><sub_task mode="…">…</sub_task>
+... run_B 推进到结束                             # END / WAIT_USER_MSG / 错误 / 其它交接都视为返回调用方
+AgentSession.finish_run(run_B)                 # outcome process_done；出栈，run_A 重新成为 live run；Turn 不结束
+# 下一圈 commit_input_batch 把 <process_result behavior=B status=ok|failed|needs_user_input> 注入 run_A
+
+# create_sub_context / fork（触发 b：工具 / action call_behavior({behavior: B, task})）
+ToolManager.call_tool(call_behavior) -> Pending{task_id: "subctx:<call_id>"}    # run_A 以 PendingTool 挂起，批次 / Step 未完成
+AgentSession.suspend_run(run_A, Caller{ChildCall{mode, behavior: B, trigger: Tool{call_id, task_id}, task}})
+... run_B 同上推进到结束
+LLMContext.resume(run_A 快照, ToolResults{call_id: 子结果})     # 不产生输入批次，批次余下的调用继续
 ```
 
-Fork 前后的消息：
+create_sub_context（`next_behavior` 触发）前后的消息：
 
 ```text
-run_A: [system] [<session_history>] [<session_input>] … [assistant:A 决策 next_behavior=B]                → Paused
-run_B: [system] [<session_history>] [<session_input on_behavior_switch>] [<<step_history>> A 的 step] … B 的 steps → Done
-run_A: … [assistant:A 决策 next_behavior=B] [user:A 该 Step 的结果 + <session_input on_behavior_switch><process_result behavior=B>…]   → 继续
+run_A: [system:A] [<session_history>] [<session_input>] … [assistant:A 决策 next_behavior=B]                → 入栈（Caller）
+run_B: [system:B] [<session_input on_behavior_switch><sub_task mode=create_sub_context>] [<<step_history>> A 的 step（inherit: steps 时）] … B 的 steps → 结束
+run_A: … [assistant:A 决策 next_behavior=B] [user:A 该 Step 的结果 + <session_input on_behavior_switch><process_result behavior=B status=ok>…]   → 继续
 ```
 
-返回时的交接批次并入 run_A 最后一个 Step 的 user 消息（`InjectionPosition::Step`）；普通切换时最后一个 Step 属于另一个 behavior，交接批次追加到 `request.input`，渲染在 `<<step_history>>` 之前。run_B 的 steps 不并入 run_A 的 history；Session worklog 仍记录 run_B 的过程（Step 身份 `(run_B, step_index)`，继承的 step 不重复写入）。三个 run 段都属于同一个 Turn。
+fork 的 run_B 则以 run_A 的 system 和分叉点之前的完整历史开头（渲染与 run_A 相同），其后才是带 `<sub_task mode="fork">` 的交接批次。
+
+返回时的交接批次并入 run_A 最后一个 Step 的 user 消息（`InjectionPosition::Step`）。run_B 的 steps 不并入 run_A 的 history；Session worklog 仍记录 run_B 的过程（Step 身份 `(run_B, step_index)`，继承的 step 不重复写入），run_B 返回后重建的 `<session_history>` 只渲染它的 `process_done` 结果。各个 run 段都属于同一个 Turn。
 
 ### 挂起与恢复
 
@@ -188,7 +223,7 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 
 这些挂起都不结束 Step 或 Turn；恢复时不重扣已扣的工具迭代额度。Interrupted 只有真实发起过的推理才计入 Round。
 
-当前宿主都没有开启 deferred 工具（`allow_deferred = false`）：工具返回 `pending` 时派发器在调用内等 task（最长 30 分钟），PendingTool 的结果回填还没接入宿主。
+deferred 工具只有一种：libopendan 的 `call_behavior`（子 context 调用），run 以 `PendingTool` 挂起，子 context 返回后由 Session 用 `ToolResults` 回填。其它工具的 `allow_deferred` 被屏蔽（xllm 自己的 run 始终关闭）：工具返回 `pending` 时派发器在调用内等 task（最长 30 分钟）。xllm 不能接手挂起在子 context 上的 run，也不能 resume 停在交接点（run.json `handover`）的宿主 run。
 
 
 ## AgentRuntime

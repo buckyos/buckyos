@@ -84,14 +84,22 @@ Schema：`schema/session_config.schema.json`。要点：
     "outbound": null,
     "wake_event": "/opendan/<agent_id>/session/<sid>/input"
   },
-  "extensions": { "<app_id>": {} , "opendan": { "process_modes": { "research": "fork" }, "perception_window": {...} } }
+  "extensions": { "<app_id>": {} , "opendan": { "behaviors": { "check": { "mode": "switch_context", "system_prompt": "…" },
+                                                           "research": { "mode": "fork" } },
+                                            "perception_window": {...} } }
 }
 ```
 
 - `prompt.llm_context` 为 `null` 时，参考实现使用 `{"tools":{"enabled":true}}`（buckyos Provider、`llm.chat`、function_call、内置 bash 工具组）。工具预算键为 `max_tool_iterations`（工具迭代，不是推理次数），见 [xllm 协议](../../llm_context/local_llm_context_protocol.md) §9.2。
-- `end_condition`：`llm_declares_done` / `output_schema` 在 `Done` 交付最终结果时 finished。`max_turns` 按**已完成**的 Turn（`turns_completed`）计：`Done` 交付最终结果时，算上本 Turn 已完成 `detail.n`（缺省 1）个则 finished，否则本 Turn 记为完成、session 等待下一输入。behavior 切换、fork、independent 等内部交接不是 Turn，不占额度。
+- `end_condition`：`llm_declares_done` / `output_schema` 在 `Done` 交付最终结果时 finished。`max_turns` 按**已完成**的 Turn（`turns_completed`）计：`Done` 交付最终结果时，算上本 Turn 已完成 `detail.n`（缺省 1）个则 finished，否则本 Turn 记为完成、session 等待下一输入。context 切换、子 context 的调用与返回等内部交接不是 Turn，不占额度。
 - `mechanical_compress.recent_full_responses`：从最新往前，完整渲染的模型 response 个数；单位是一条记录下来的 response，即 behavior 的 `step` 或 function call 的 `assistant_message`（连同其后的条目），更早的条目截到 `summary_chars`。
-- `extensions.opendan.process_modes`：behavior 名 → `fork | independent`（§8）；未列出的 behavior 为普通切换。
+- `extensions.opendan.behaviors.<name>`：目标 behavior 的进入配置（§8，schema `behavior_entry`）。进入模式由**目标**决定，没有缺省模式，也没有“同一 run 换 behavior”的普通切换：
+  - `mode`（必填）：`switch_context | create_sub_context | fork`。
+  - `system_prompt`：该 context 的应用 system prompt（替换 `prompt.system_prompt`）；`llm_context`：按顶层键替换 `prompt.llm_context`（模型、工具、限额）。`fork` 不允许声明这两项（fork 保持调用方的 system 与配置）。
+  - `inherit`：新 context 的历史来源，`none`（缺省）| `recent_dialogue`（宿主渲染的 `<session_history>`：摘要 + 近期 worklog 记录）| `steps`（调用方已完成的 Step，按结构化记录继承；仅 `create_sub_context`，且双方都是 behavior loop）。`fork` 总是继承分叉点的完整有效历史，不接受 `inherit`。
+  - 会话的初始 behavior（`prompt.behavior`）没有自己的条目时，视为使用会话基础配置的 `switch_context` 目标。交接到其它没有条目的 behavior 是配置错误：当前 Turn 以 `failed` 结束（`last_error.kind = behavior_config`）；发生在子 context 内时作为失败结果交回调用方。
+  - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
+- 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
 - `extensions.opendan.perception_window`：self_improve session 要整理的感知窗口（见 Agent State Protocol §4）。
 
 ## 4. state.json（提交点）
@@ -100,7 +108,7 @@ Schema：`schema/session_state.schema.json`。
 
 ```jsonc
 {
-  "schema": "opendan.session_state/3",
+  "schema": "opendan.session_state/4",
   "rev": 17,                                   // 每次提交 +1
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "host:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
@@ -113,16 +121,21 @@ Schema：`schema/session_state.schema.json`。
                         "inputs": ["q#121"], "at_ms": 0 },   // 进行中的 Turn；(run_id, input_seq) = 打开它的输入批次
   "turns_completed": 4,                        // 以 completed 关闭的 Turn 数
   "current_behavior": "plan", "process_entry": "plan",
-  "process_stack": [ { "entry": "plan", "mode": "fork | independent", "run_id": "…",
+  "process_stack": [ { "entry": "plan", "role": "parked | caller", "run_id": "…",
+                       // role = caller 时：它等待的子 context
+                       "call": { "mode": "create_sub_context | fork", "behavior": "research",
+                                 "trigger": { "kind": "behavior" } | { "kind": "tool", "call_id": "…", "task_id": "subctx:…" },
+                                 "task": "…" },
                        "turns": [...], "flushed_message_count": 0, "flushed_step_index": 3,
-                       "flushed_input_seq": 1, "flushed_epoch": 0, "applied_input_seq": 1 } ],
+                       "flushed_input_seq": 1, "flushed_epoch": 0, "applied_input_seq": 1,
+                       "handover_at_ms": 0 } ],
   "bootstrap_done": true,
   "topic": { "title": "", "tags": [] },
   "live_run": null | { "run_id": "…", "turns": [ { "turn": 5, "inputs": ["q#121"], "changes": ["s1@16"],
                                                    "hook": "on_wakeup", "input_seq": 3, "at_ms": 0 } ],
                        "applied_input_seq": 3, "flushed_message_count": 0, "flushed_step_index": 0,
-                       "flushed_input_seq": 0, "flushed_epoch": 0, "process_entry": null },
-                       // flushed_message_count / flushed_step_index / flushed_epoch 为 0 时省略
+                       "flushed_input_seq": 0, "flushed_epoch": 0, "process_entry": null, "handover_at_ms": 0 },
+                       // flushed_message_count / flushed_step_index / flushed_epoch / handover_at_ms 为 0 时省略
   "last_run": "…",
   "worklog": { "committed_seq": 340, "committed_bytes": 1048576 },
   "inputs": { "q": { "acked_index": 118, "consumed_above": [121], "reading": [] } },
@@ -142,6 +155,9 @@ Schema：`schema/session_state.schema.json`。
 
 - 同一次提交的其它内容（worklog 追加、report.md、run 快照、static）都**先于** state.json 写入；state.json 用原子替换发布。读者看到新的 `rev` 时，它引用的内容一定已存在。
 - `worklog.committed_*` 总是等于提交时 worklog 的末尾；其后的内容是未提交尾部。
+- `process_stack`：`parked` 帧是经 SWITCH_CONTEXT 离开、等待再次进入的 context；`caller` 帧是子 context 的调用方，子 context 返回时出栈。子 context 不做 SWITCH_CONTEXT，所以栈的形状总是若干 `parked` 帧之后跟调用链上的 `caller` 帧；最后一帧是 `caller` 时，`live_run`（或即将新建的 run）就是它的子 context。`caller` 帧最多 4 层。
+- `process_result`：子 context 交回调用方的结果 `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`；工具触发的调用另带 `call_id`（§8）。
+- `handover_at_ms`：本 state 已提交的交接记录（run.json `handover.at_ms`）的时间戳；带相同时间戳的记录不是待办的转移（§7、§8）。
 - `live_run` = 未结束的 run；`last_run` = 最后一次结束的 run（保留其 llm context 状态）；`process_stack[].run_id` = 挂起的 process 的 run。三者之外的 run 目录可以删除（§7）。
 - `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。stop / decide 只能由驱动者执行，其它参与方投递 control。
 
@@ -150,7 +166,7 @@ Schema：`schema/session_state.schema.json`。
 | 规则 | 行为 |
 |---|---|
 | 打开 | 没有打开的 Turn 时提交的输入批次打开新 Turn（`turn_seq + 1`，receipt `opens_turn = true`）：bootstrap 的 `on_init`、msg / event 的 `on_wakeup` |
-| 继续 | 普通 behavior 切换、fork 调用与子 process 返回、independent 切换（这些交接都是 `on_behavior_switch` 输入批次）、观察注入、可恢复挂起（未要求 stop 的 Interrupted、可重试的 Runtime / 暂时性错误使 run paused、ContextLimitReached、PendingTool）、上下文上限的 history epoch 重写、重启与崩溃恢复都不改变 `open_turn`；Turn 打开期间消费的 msg / event 加入它（`open_turn.inputs` 追加） |
+| 继续 | SWITCH_CONTEXT、子 context 的调用与返回（behavior 触发的交接是 `on_behavior_switch` 输入批次；工具触发的返回是该调用的工具结果，没有输入批次）、观察注入、可恢复挂起（未要求 stop 的 Interrupted、可重试的 Runtime / 暂时性错误使 run paused、ContextLimitReached、PendingTool）、上下文上限的 history epoch 重写、重启与崩溃恢复都不改变 `open_turn`；Turn 打开期间消费的 msg / event 加入它（`open_turn.inputs` 追加） |
 | 关闭 | 只由 session 决定（run 结束时的 `finish_run`，或 stop），与 `open_turn = null`、worklog `turn_ended` 同一次提交：`Done` 交付结果 → `completed`（再按 `end_condition` 判定是否 finished）；`WAIT_USER_MSG` 只在本 run 已交付答复（快照 `last_report` 非空，或最后一个 Step 带 `<sendmsg>`）时 `completed`，否则 Turn 保持打开，下一条输入加入它；不可重试错误 → `failed`；预算耗尽 → `budget_exhausted`；`control(stop)` → `stopped`。fork 子 process 结束（`process_done`）不关闭 Turn |
 
 - 条目归属的 Turn：有 `open_turn` 时为其 `index`，否则为 `turn_seq`。`turns_completed` 只计 `completed`。
@@ -222,6 +238,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 | `host_commit_pending` | 宿主输入提交门槛（批次号）。非空时任何执行者都不得推理或调用工具，xllm 拒绝接手 |
 | `inflight[]` | 已派发、结果尚未随快照持久化的动作：`{call_id, tool, args, effect, started_at_ms}`。没有进程身份：恢复时不核验、不停止进程，按 runtime 从执行目录读到什么就说什么（长命令 TODO §3.2） |
 | `host.extra.finish` | 宿主的结束决定：与终态 `status` 在**同一次** run.json 写入中记录（`{kind: done|wait|process_done|budget|error|stopped, finished, outcome, waiting, answer, error, usage, turn_end}`；`turn_end` 为本次结束关闭 Turn 的状态，空表示 Turn 继续）。结束流程中途崩溃时，恢复按它重做，而不是重新推断 |
+| `handover` | run 停在 behavior 交接点：`{next_behavior, at_ms}`，与让出时的快照、`status = paused` 在**同一次** run.json 写入中记录（run.json 版本 5）。非空时任何执行者都不得在该 run 上继续推理：xllm 遇到宿主 run 的 `Done{next_behavior=B}` 只记录它（不记 `completed`），`xllm --resume` 拒绝接手；由会话读取 B 的进入模式并提交转移。会话重新打开该 run 执行（status 回到 `running`）时清除 |
 | `usage.llm_requests` | 本 run 的推理尝试数：libopendan 在每个 outcome 后加上本段经 run 的 `LlmClient::infer` 发起的 Round 数（含失败 / 中断），xllm 接手后在其上继续累加；任何执行者都不重置或覆盖 |
 
 快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?}`，各执行者必须原样保留。后三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。
@@ -239,11 +256,13 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
          快照 fsync → run.json 发布指针并只清除快照已覆盖的 inflight
 结束：   ① 结果快照 + run.json（终态 status 与 host.extra.finish 同一次写入）
          → ② 生成 worklog 条目追加（fsync；关闭 Turn 时末尾为 turn_ended）→ ③ state.json（live_run=null、
-         last_run=本 run；关闭 Turn 时 open_turn=null 并更新 turns_completed；fork 子 process 结束时
-         同一次提交里父 run 重新成为 live_run）→ ④ 删除不再被引用的旧 run（持其锁、确认无未核对执行）
-切换：   普通切换 run 继续，status 保持 running；fork / independent 挂起时 status 为 paused。
-         终态 status 只表示 run 已结束。
-挂起：   （fork / independent，§8）先追加已产生的历史，run 由 process_stack 引用
+         last_run=本 run；关闭 Turn 时 open_turn=null 并更新 turns_completed；子 context 结束时
+         同一次提交里调用方的 run 重新成为 live_run）→ ④ 删除不再被引用的旧 run（持其锁、确认无未核对执行）
+交接：   （§8）① 快照 + run.json（status paused；next_behavior 交接同时写 handover，工具触发的调用
+         快照本身停在 PendingTool）→ ② 追加该 run 已产生的历史与 outcome(suspended) → ③ state.json
+         （run 入 process_stack、目标成为当前 behavior、internal_continuation）。③ 是提交点：之前崩溃，
+         恢复时由 handover 记录 / 挂起的调用重做同一次转移，不重新推理；之后 run 不再是 live_run，
+         不会重复进入目标。终态 status 只表示 run 已结束。
 重写：   （上下文上限，见下）① 追加本 run 未写入的历史 + outcome(context_rewritten) 并提交 flush 标记
          → ② 压缩 summary.json → ③ 以 system + 会话历史重建的上下文发布快照（history_epoch + 1）
 ```
@@ -260,17 +279,33 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 
 ## 8. behavior process 与 run
 
-| 切换 | run |
-|---|---|
-| 普通（未声明 mode） | 同一 context、同一 run；`current_behavior` 更新，下一个输入批次为 `on_behavior_switch` |
-| fork | 父 run 挂起入 `process_stack`；子 process 开新 run，继承父的 steps（`HostMeta.inherited_below` 之下的 step 不由子 run 写入 worklog）；子 process 结束（任何 next_behavior 都视为返回）时，**在子 run 结束的同一次提交里**出栈、父 run 成为 live_run，子结果作为 `process_result`（`{behavior, result, next_action_id, next_step_index}`）进入父 run 的下一个 `on_behavior_switch` 输入批次；父 run 恢复时 action / step 编号不小于子 run 的，保证 call_id 唯一 |
-| independent | 当前 process 挂起入栈；目标 process 有挂起的 run 就恢复它，否则开新 run（不继承 steps，step 编号独立） |
+同一时刻只推进一个 run。模型用 `next_behavior = B`（behavior Step）或 `call_behavior({behavior: B, task})`（工具 / action）指定目标，会话读取 **B 的进入模式**（§4.2 `extensions.opendan.behaviors`）决定如何调度：
 
-三种切换都是同一 Turn 内的交接：交接批次（`input_batch`，receipt `opens_turn = false`）加入打开的 Turn，fork 子 process 结束（`process_done`）也不关闭它。
+| 进入模式 | 当前 run | 目标 run |
+|---|---|---|
+| `switch_context` | 挂起为 `parked` 帧 | B 有 `parked` 的 run 就恢复它（它自己的 system、工具、历史、编号与剩余预算）；否则按 B 的配置新建：B 自己的 system / 工具 / 模型，历史只按 `inherit` 装配，不带入其它 context 的快照。B 的 `END` 按会话结束条件处理，不会自动回到上一个 behavior |
+| `create_sub_context` | 挂起为 `caller` 帧 | 每次新建子 run：B 自己的 system 与配置 + 任务输入，父历史按 `inherit` 显式选择（`llm_context::derive_child`）；结束后结果交回调用方 |
+| `fork` | 挂起为 `caller` 帧 | 每次新建子 run：调用方的配置、system 与分叉点的完整有效历史（`llm_context::fork_snapshot`），再追加任务输入；结束后结果交回调用方 |
+
+没有“同一个 run 换 behavior / system”的切换。`switch_context` 只能由 `next_behavior` 触发；两种子 context 可以由 `next_behavior` 或 `call_behavior` 触发：
+
+| 触发 | 调用方的停止点 | 子结果返回 |
+|---|---|---|
+| `next_behavior = B` | 完整 Step 的 `Done` | `process_result` 渲染进调用方的下一个 `on_behavior_switch` 输入批次（`<process_result behavior status>`） |
+| `call_behavior` | `PendingTool`（task id `subctx:<call_id>`），未完成的批次 / Step 留在调用方快照 | 调用方的 run 被打开时用 `ResumeFill::ToolResults` 按 `call_id` 回填，然后续派同批余下的调用；不产生输入批次。`failed` 回填为工具错误，`needs_user_input` 回填为结构化结果 |
+
+子 context 的规则：
+
+- 子 run 写入 `runs/`，进入时的交接批次（`on_behavior_switch`）带 `<sub_task mode="…">任务</sub_task>`；它继承的部分不由它写入 worklog（function call：`request.input` 即继承的前缀；behavior：`HostMeta.inherited_below` 之下的 step），step / action 编号接着调用方的，调用方恢复时编号不小于子 run 的，保证 `(run_id, step_index)` 与 `call_id` 唯一。预算、用量、错误计数与输入 receipt 独立；调用方恢复时不重置自己的预算。
+- fork 的分叉点：调用方没有未完成调用时是它的全部历史；工具触发时是触发批次（function call）/ 进行中的 Step（behavior）之前的最后一个已配对前缀，触发批次只留在调用方。
+- 子 context 无论以什么结束都返回调用方，**在子 run 结束的同一次提交里**出栈、调用方的 run 成为 `live_run`、写入 `process_result`：`END` / 交付结果 → `ok`；`WAIT_USER_MSG` → `needs_user_input`（子 context 不消费调用方的输入队列，由调用方去问用户）；不可重试错误、预算耗尽、交接到没有进入模式的 behavior → `failed`（不结束 Turn）；交接到 `switch_context` 目标也只是返回。子 context 可以再调用子 context，`caller` 帧最多 4 层，超出时调用失败。
+- 子 run 新增的记录进入 worklog 供审计，但不进入调用方的上下文：为其它 context 重建会话历史（§6）或压缩时，已返回的子 run（有 `process_done` outcome）只渲染这条 outcome（即交回的结果），不渲染它的过程。
+
+交接都发生在同一 Turn 内：交接批次（`input_batch`，receipt `opens_turn = false`）加入打开的 Turn，子 context 结束（`process_done`）也不关闭它。
 
 挂起时先写入该 run 已产生而未写入的历史（`flushed_message_count` 或 `flushed_step_index`，以及 `flushed_input_seq` 前移），worklog 因此保持时间顺序。
 
-**flush 标记**（`live_run` / `process_stack[]` 中，两种 run 各用一个游标）：function call run 以位置计数（`flushed_message_count` = prefix 之后已写入的消息数，只在 `flushed_epoch == HostMeta.history_epoch` 时有效；快照的 epoch 更新时从 0 计，且只用 `input_seq > epoch_input_seq` 的 receipt 定位消息）；behavior run 以身份计：`step_index < flushed_step_index` 的 step（身份高水位，不是数量：fork 子 run 继承的 step 不由它写入）与 `input_seq ≤ flushed_input_seq` 的注入消息已写入，不受中途重写影响。只有已完成的 Step（`steps` / `last_step`）会写入，仍在派发 action 的 `action_step` 完成后才写。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
+**flush 标记**（`live_run` / `process_stack[]` 中，两种 run 各用一个游标）：function call run 以位置计数（`flushed_message_count` = prefix 之后已写入的消息数，只在 `flushed_epoch == HostMeta.history_epoch` 时有效；快照的 epoch 更新时从 0 计，且只用 `input_seq > epoch_input_seq` 的 receipt 定位消息）；behavior run 以身份计：`step_index < flushed_step_index` 的 step（身份高水位，不是数量：子 run 继承的 step 不由它写入）与 `input_seq ≤ flushed_input_seq` 的注入消息已写入，不受中途重写影响。只有已完成的 Step（`steps` / `last_step`）会写入，仍在派发 action 的 `action_step` 完成后才写。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
 
 ## 9. binding.json 与 .runtime/bin
 
@@ -287,13 +322,13 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 
 ## 10. 恢复顺序（drive 开头）
 
-1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` / `session_config.json` 必须是 `/3`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
+1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` 必须是 `/4`、`session_config.json` 必须是 `/3`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。
 4. 打开 runtime 并核验完整 binding 与 bin/helper 环境；删除未被引用的 run（持锁；记录不可读则保留）。命令留下的进程不归 run 管，不核对也不停止。
-5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 4` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
+5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 5` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。 run 停在未提交的交接点（run.json `handover.at_ms ≠ live_run.handover_at_ms`，或快照挂起在 `call_behavior` 而 state 还没有它的结果）→ 按 §8 提交这次转移（挂起入栈 / 子 context 返回），不在该 run 上推理。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
-8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在等待 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。
+8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在子 context 调用上且 `process_result` 带着它的 `call_id` → 回填工具结果、发布快照、清除 `process_result` 后继续（回填后崩溃：快照已不再挂起，只清除 `process_result`）；挂起在其它 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。
 
 RecoveryBlocked 时只在 `state.last_error` 记录原因并回报，保留 live_run、run 目录、消费位置与执行证据，不自动放弃。
