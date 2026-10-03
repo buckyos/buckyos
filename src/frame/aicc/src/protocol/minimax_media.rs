@@ -140,6 +140,24 @@ struct MiniMaxImmediateCodec {
 
 #[async_trait]
 impl OperationCodec for MiniMaxImmediateCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // One struct serves several operations with different wire grammars, so
+        // the form has to follow the api type rather than the codec. Deciding it
+        // per codec would force the whole struct to the strictest member — the
+        // multipart speech-to-text upload — and an image-edit caller would keep
+        // downloading a payload the protocol could have taken as a URL.
+        match self.api_type {
+            // Speech-to-text posts the audio as a multipart file.
+            ApiType::AudioSpeechRecognition => crate::resource::ResourceInputForm::BytesOnly,
+            // Image-to-image addresses its subject image with `resource_string`,
+            // which writes the URL verbatim.
+            ApiType::ImageImageToImage => crate::resource::ResourceInputForm::UrlOrBytes,
+            // The remaining operations carry no media input; stay on the
+            // conservative default so a future addition fails safe.
+            _ => crate::resource::ResourceInputForm::BytesOnly,
+        }
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -345,6 +363,12 @@ struct MiniMaxVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for MiniMaxVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // `resource_string` hands a URL straight through; only caller-supplied
+        // bytes are inlined.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -964,6 +988,12 @@ fn require_parameters(
 }
 
 fn resource_string(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {

@@ -2,18 +2,27 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 1,
+  "revision_seq": 3,
   "provider_profile_id": "doubao-speech",
   "static_inventory_models": [
     "doubao-seed-tts-2.0",
-    "doubao-seed-icl-2.0"
+    "doubao-seed-icl-2.0",
+    "doubao-seed-asr-2.0",
+    "doubao-seed-asr-2.0-fast"
   ],
-  "supplemental_inventory_api_types": ["audio.tts"],
+  "supplemental_inventory_api_types": ["audio.asr", "audio.tts"],
   "models": [
     {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}},
-    {"id": "doubao-seed-icl-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-icl-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
+    {"id": "doubao-seed-icl-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-icl-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}},
+    {"id": "doubao-seed-asr-2.0", "operations": {"audio.asr": "asr.recognize.submit"}, "provider_options": {"doubao_asr_resource_id": "volc.seedasr.auc"}},
+    {"id": "doubao-seed-asr-2.0-fast", "operations": {"audio.asr": "asr.recognize.flash"}, "provider_options": {"doubao_asr_resource_id": "volc.bigasr.auc_turbo"}}
   ],
   "patterns": [],
   "variants": [],
-  "model_pricing": []
+  "model_pricing": [
+    {"id": "doubao-seed-tts-2.0", "pricing": {"source_url": "https://www.volcengine.com/docs/6561/1359370?lang=zh", "verified_at": "2026-10-04", "currency": "CNY", "unit": "character", "amount": 0.0003}},
+    {"id": "doubao-seed-icl-2.0", "pricing": {"source_url": "https://www.volcengine.com/docs/6561/1359370?lang=zh", "verified_at": "2026-10-04", "currency": "CNY", "unit": "character", "amount": 0.0003}},
+    {"id": "doubao-seed-asr-2.0", "pricing": {"source_url": "https://www.volcengine.com/docs/6561/1359370?lang=zh", "verified_at": "2026-10-04", "currency": "CNY", "unit": "audio_second", "amount": 0.0002222222}},
+    {"id": "doubao-seed-asr-2.0-fast", "pricing": {"source_url": "https://www.volcengine.com/docs/6561/1359370?lang=zh", "verified_at": "2026-10-04", "currency": "CNY", "unit": "audio_second", "amount": 0.00125}}
+  ]
 }

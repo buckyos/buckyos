@@ -186,16 +186,21 @@ pub(crate) fn responses_dialect_adapter(
             .extend(media_registration.native_task_codecs);
     }
     if dialect == ResponsesDialectKind::Doubao {
-        let (operation, speech_registration) = super::doubao_speech::doubao_speech_registration();
+        let (operations, speech_registration) = super::doubao_speech::doubao_speech_registration();
         descriptor
             .component_adapter_ids
             .push(super::doubao_speech::DOUBAO_SPEECH_ADAPTER_ID.to_owned());
-        descriptor
-            .operations
-            .insert(operation.operation_id.clone(), operation);
+        for operation in operations {
+            descriptor
+                .operations
+                .insert(operation.operation_id.clone(), operation);
+        }
         registration
             .operation_codecs
             .extend(speech_registration.operation_codecs);
+        registration
+            .native_task_codecs
+            .extend(speech_registration.native_task_codecs);
     }
     Ok((descriptor, registration))
 }
@@ -369,6 +374,10 @@ fn dialect_strategy(dialect: ResponsesDialectKind) -> Arc<dyn ResponsesDialectSt
 
 #[async_trait]
 impl OperationCodec for ResponsesDialectCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        self.base.resource_input_form()
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -606,7 +615,12 @@ mod tests {
                 assert!(registration.native_task_codecs.is_empty());
             } else {
                 let expected_operations = match descriptor.protocol_adapter_id.as_str() {
-                    DOUBAO_RESPONSES_ADAPTER_ID => 5,
+                    // `responses.create` + 3 Doubao media operations
+                    // (`ark.images.generate`, `ark.contents.generate`,
+                    // `ark.embeddings.multimodal`) + 3 Doubao speech operations
+                    // (`tts.unidirectional`, `asr.recognize.flash`,
+                    // `asr.recognize.submit`).
+                    DOUBAO_RESPONSES_ADAPTER_ID => 7,
                     QWEN_RESPONSES_ADAPTER_ID => 4,
                     _ => 3,
                 };

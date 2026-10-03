@@ -2047,7 +2047,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 112);
+        assert_eq!(golden.len(), 114);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
@@ -2061,6 +2061,11 @@ mod tests {
         assert!(
             golden.contains(&"doubao-speech|doubao-responses|audio.tts|tts.unidirectional".into())
         );
+        assert!(
+            golden.contains(&"doubao-speech|doubao-responses|audio.asr|asr.recognize.flash".into())
+        );
+        assert!(golden
+            .contains(&"doubao-speech|doubao-responses|audio.asr|asr.recognize.submit".into()));
         assert!(golden.contains(
             &"doubao-agent-plan|doubao-responses|image.txt2img|ark.images.generate".into()
         ));

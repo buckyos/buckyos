@@ -101,6 +101,12 @@ struct GlmVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for GlmVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // `resource_string` hands a URL straight through; inlining the payload
+        // is only the fallback for bytes or a local object.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -335,6 +341,12 @@ fn resource_string(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {

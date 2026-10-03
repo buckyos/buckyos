@@ -89,6 +89,10 @@ struct DoubaoMultimodalEmbeddingCodec {
 
 #[async_trait]
 impl OperationCodec for DoubaoMultimodalEmbeddingCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -244,6 +248,10 @@ struct DoubaoImageCodec {
 
 #[async_trait]
 impl OperationCodec for DoubaoImageCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -330,6 +338,12 @@ struct DoubaoVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for DoubaoVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // `resource_string` hands a URL straight through; only caller-supplied
+        // bytes are inlined.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -642,17 +656,19 @@ fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
         .ok_or_else(|| {
             ProtocolError::invalid_response("Doubao video result is missing video_url")
         })?;
-    let usage = value.get("usage");
     let resource = ResourceRef::url(url.to_owned(), Some("video/mp4".to_owned()));
     Ok(NativeTaskOutput::Result(ProtocolOutput {
         value: json!({"video":resource}),
         usage: Some(AiUsage {
-            output_tokens: usage
-                .and_then(|usage| usage.get("completion_tokens"))
+            input_tokens: value
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64)
+                .or(Some(0)),
+            output_tokens: value
+                .pointer("/usage/completion_tokens")
                 .and_then(Value::as_u64),
-            total_tokens: usage
-                .and_then(|usage| usage.get("total_tokens"))
-                .and_then(Value::as_u64),
+            total_tokens: value.pointer("/usage/total_tokens").and_then(Value::as_u64),
+            video_seconds: value.get("duration").and_then(Value::as_f64),
             ..AiUsage::request_units(1)
         }),
         artifacts: vec![AiArtifact {
@@ -753,6 +769,12 @@ fn resource_string(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
@@ -1032,8 +1054,7 @@ mod tests {
             "content": {"video_url": "https://example.test/generated/video.mp4"},
             "usage": {"completion_tokens": 120, "total_tokens": 120}
         }))
-        .unwrap()
-        else {
+        .unwrap() else {
             panic!("expected video result")
         };
         assert_eq!(

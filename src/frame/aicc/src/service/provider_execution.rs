@@ -66,11 +66,41 @@ impl RuntimeProviderExecutionPort {
                 })?;
         }
         for (artifact_name, artifact_ref) in provider_artifact_refs {
-            let Some(content_digest) = output
+            let Some(artifact) = output
                 .artifacts
                 .iter()
                 .find(|artifact| artifact.name == artifact_name)
-                .and_then(|artifact| artifact.metadata.as_ref())
+            else {
+                continue;
+            };
+            let created_at_ms = now_ms() as i64;
+            // An object-form artifact is worth caching by object id even when no
+            // content digest was recorded. The object id is the object's own
+            // identity, so the entry can be looked up later without reading the
+            // payload back — which is the only way an object that was handed to
+            // the Provider by value (rather than downloaded from it) can ever
+            // produce a usable cache entry.
+            if let buckyos_api::ResourceRef::NamedObject { obj_id } = &artifact.resource {
+                storage
+                    .remember_provider_artifact(&ProviderArtifactRecord {
+                        key: ProviderArtifactKey::ObjectId(obj_id.to_string()),
+                        provider_instance_name: provider_instance_name.to_owned(),
+                        origin_provider: origin_provider.to_owned(),
+                        tenant_id: context.tenant_id.clone(),
+                        artifact_id: artifact_ref.id.clone(),
+                        expires_at_ms: artifact_ref.expires_at_ms,
+                        created_at_ms,
+                    })
+                    .await
+                    .map_err(|_| {
+                        ProtocolError::invalid_configuration(
+                            "Provider artifact object registration failed",
+                        )
+                    })?;
+            }
+            let Some(content_digest) = artifact
+                .metadata
+                .as_ref()
                 .and_then(|metadata| metadata.get("digest"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
@@ -78,13 +108,14 @@ impl RuntimeProviderExecutionPort {
                 continue;
             };
             storage
-                .remember_provider_artifact_id(&ProviderArtifactIdRecord {
-                    content_digest,
+                .remember_provider_artifact(&ProviderArtifactRecord {
+                    key: ProviderArtifactKey::ContentDigest(content_digest),
                     provider_instance_name: provider_instance_name.to_owned(),
                     origin_provider: origin_provider.to_owned(),
+                    tenant_id: context.tenant_id.clone(),
                     artifact_id: artifact_ref.id,
                     expires_at_ms: artifact_ref.expires_at_ms,
-                    created_at_ms: now_ms() as i64,
+                    created_at_ms,
                 })
                 .await
                 .map_err(|_| {

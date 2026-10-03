@@ -89,6 +89,13 @@ struct FalQueueCodec {
 
 #[async_trait]
 impl NativeTaskCodec for FalQueueCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // fal's queue API takes every media slot as a URL. `fal_resource`
+        // writes that URL verbatim and only converts to an inline `data:` URL
+        // when the caller actually supplied bytes.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -315,6 +322,12 @@ fn replace_resource(
 }
 
 fn fal_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(Value::String(url.to_string()));
+    }
     let url = match resource {
         ResourceRef::Url { url, .. } => {
             let parsed = Url::parse(url)

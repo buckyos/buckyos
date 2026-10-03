@@ -54,7 +54,7 @@ use buckyos_api::{
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
     QuotaQueryRequest, QuotaQueryResponse, QuotaState, RequestControlResult,
-    RequestDelegatedControlReq, RerankRequest, RerankResponse, RouteFallbackAttempt,
+    RequestDelegatedControlReq, RerankRequest, RerankResponse, ResourceRef, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RouteTrace, RoutingGetRequest, RoutingGetResponse,
     RoutingPreviewEntry, RoutingPreviewRequest, RoutingPreviewResponse, RoutingUpdateRequest,
     RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
@@ -117,9 +117,10 @@ use crate::provider::{
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::resource::{
-    ArtifactSpec, EmbeddingArtifactMetadata, NamedDataMgrResourceStore, ReqwestUrlResourceFetcher,
-    ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceFailure,
-    ResourceLimits, ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
+    ArtifactSpec, EmbeddingArtifactMetadata, NamedDataMgrResourceStore, NamedObjectUrlProvider,
+    ReqwestUrlResourceFetcher, ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer,
+    ResourceFailure, ResourceLimits, ResourceManager, ResourceStore, ResourceTarget,
+    UrlResourceFetcher, ZoneNamedObjectUrlProvider, DEFAULT_RESOURCE_MIME,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
@@ -140,7 +141,8 @@ use crate::settings::{
     ProviderLifecyclePolicy, ProviderSettings, SettingsDocument,
 };
 use crate::storage::{
-    AiccStorage, ArtifactUrlSourceRecord, ProviderArtifactIdRecord, RouteTraceRecord,
+    AiccStorage, ArtifactUrlSourceRecord, ProviderArtifactKey, ProviderArtifactRecord,
+    RouteTraceRecord,
 };
 use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,
@@ -430,6 +432,10 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         .get_named_store()
         .await
         .context("open AICC named resource store")?;
+    // Objects referenced as `ResourceRef::NamedObject` are handed to a Provider
+    // by URL rather than by value: the zone gateway serves them at
+    // `{zone_ndn_base_url}{obj_id}`.
+    let zone_ndn_base_url = api_runtime.get_zone_ndn_base_url();
     let client_version = api_runtime
         .device_config
         .as_ref()
@@ -495,6 +501,8 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         Arc::new(NamedDataMgrResourceStore::new(named_store));
     let url_fetcher: Arc<dyn UrlResourceFetcher> =
         Arc::new(ReqwestUrlResourceFetcher::new().context("initialize AICC URL resource fetcher")?);
+    let object_urls: Arc<dyn NamedObjectUrlProvider> =
+        Arc::new(ZoneNamedObjectUrlProvider::new(zone_ndn_base_url));
     let service_runtime: Arc<dyn ServiceRuntime> =
         Arc::new(RuntimeServiceAdapter::new(runtime.clone(), codecs.clone()));
     let model_health = Arc::new(ModelHealthRegistry::default());
@@ -529,6 +537,7 @@ pub(crate) async fn run_service() -> anyhow::Result<()> {
         storage.clone(),
         resource_store,
         url_fetcher,
+        object_urls,
         model_health,
     ));
     let service = AiccService::new(

@@ -1213,7 +1213,12 @@ mod tests {
             .clone();
         assert_eq!(
             rules.static_inventory_models,
-            vec!["doubao-seed-tts-2.0", "doubao-seed-icl-2.0"]
+            vec![
+                "doubao-seed-tts-2.0",
+                "doubao-seed-icl-2.0",
+                "doubao-seed-asr-2.0",
+                "doubao-seed-asr-2.0-fast"
+            ]
         );
         assert_eq!(
             rules
@@ -1221,7 +1226,7 @@ mod tests {
                 .iter()
                 .cloned()
                 .collect::<Vec<_>>(),
-            vec!["audio.tts"]
+            vec!["audio.asr", "audio.tts"]
         );
 
         let provider = descriptor(
@@ -1298,15 +1303,41 @@ mod tests {
                 .iter()
                 .map(|model| model.provider_model_id.as_str())
                 .collect::<Vec<_>>(),
-            vec!["doubao-seed-icl-2.0", "doubao-seed-tts-2.0"]
+            vec![
+                "doubao-seed-asr-2.0",
+                "doubao-seed-asr-2.0-fast",
+                "doubao-seed-icl-2.0",
+                "doubao-seed-tts-2.0"
+            ]
         );
         for model in &inventory.models {
-            assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
-            assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
-            assert!(model
-                .logical_mounts
-                .iter()
-                .any(|mount| mount == "audio.tts"));
+            match model.provider_model_id.as_str() {
+                "doubao-seed-tts-2.0" | "doubao-seed-icl-2.0" => {
+                    assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
+                    assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.tts"));
+                }
+                "doubao-seed-asr-2.0" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.submit");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.asr.doubao"));
+                }
+                "doubao-seed-asr-2.0-fast" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.flash");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.asr.doubao"));
+                }
+                other => panic!("unexpected doubao-speech static model `{other}`"),
+            }
         }
 
         // The operator allowlist narrows the static catalog before publishing.

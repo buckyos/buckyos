@@ -276,6 +276,12 @@ impl CodecInput {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct MaterializedResource {
     pub bytes: Bytes,
+    /// Set when the protocol consumes this resource as a URL, in which case
+    /// `bytes` is empty: the payload never entered this process. The URL is
+    /// either the object's own zone URL (for `ResourceRef::NamedObject`, and for
+    /// a `ResourceRef::Base64` payload published to NDN because the protocol
+    /// only takes URLs).
+    pub url: Option<String>,
     pub mime: String,
     pub file_name: Option<String>,
     pub provider_artifact_id: Option<String>,
@@ -286,6 +292,7 @@ impl std::fmt::Debug for MaterializedResource {
         formatter
             .debug_struct("MaterializedResource")
             .field("byte_len", &self.bytes.len())
+            .field("has_url", &self.url.is_some())
             .field("mime", &self.mime)
             .field("file_name", &self.file_name)
             .field(
@@ -310,6 +317,36 @@ impl MaterializedResource {
         }
         Ok(Self {
             bytes: bytes.into(),
+            url: None,
+            mime,
+            file_name,
+            provider_artifact_id: None,
+        })
+    }
+
+    /// A resource the codec is handed as a URL rather than as an inlined
+    /// payload: the materialization stage decided the protocol takes a URL, so
+    /// the bytes were neither downloaded nor read.
+    pub(crate) fn from_url(
+        url: impl Into<String>,
+        mime: impl Into<String>,
+        file_name: Option<String>,
+    ) -> ProtocolResultValue<Self> {
+        let url = url.into();
+        if url.trim().is_empty() {
+            return Err(ProtocolError::invalid_request(
+                "materialized resource URL must not be empty",
+            ));
+        }
+        let mime = mime.into();
+        if mime.trim().is_empty() {
+            return Err(ProtocolError::invalid_request(
+                "materialized resource MIME type must not be empty",
+            ));
+        }
+        Ok(Self {
+            bytes: Bytes::new(),
+            url: Some(url),
             mime,
             file_name,
             provider_artifact_id: None,
@@ -319,6 +356,11 @@ impl MaterializedResource {
     pub(crate) fn with_provider_artifact_id(mut self, artifact_id: Option<String>) -> Self {
         self.provider_artifact_id = artifact_id;
         self
+    }
+
+    /// The URL this resource must be referenced by, when the protocol takes one.
+    pub(crate) fn url(&self) -> Option<&str> {
+        self.url.as_deref()
     }
 }
 
@@ -495,6 +537,19 @@ impl CodecContext {
         })
     }
 
+    /// The URL this resource must be referenced by, if the protocol takes one.
+    ///
+    /// `Some` means the payload deliberately never entered this process — the
+    /// materialization stage handed the resource over in URL form because the
+    /// codec declared a URL-accepting [`ResourceInputForm`]. Such a codec must
+    /// use this URL rather than inlining bytes: the byte form is not available.
+    ///
+    /// [`ResourceInputForm`]: crate::resource::ResourceInputForm
+    pub(crate) fn materialized_url(&self, source: &ResourceRef) -> Option<&str> {
+        let key = crate::resource::ResourceKey::from_ref(source);
+        self.resources.get(key.as_str())?.url()
+    }
+
     pub(crate) fn validate(&self) -> ProtocolResultValue<()> {
         let parsed = reqwest::Url::parse(&self.base_url)
             .map_err(|_| ProtocolError::invalid_configuration("codec base URL is invalid"))?;
@@ -559,6 +614,20 @@ pub(crate) trait OperationCodec: Send + Sync {
     fn descriptor(&self) -> &OperationDescriptor;
     fn api_type(&self) -> ApiType;
     fn execution_modes(&self) -> BTreeSet<ExecutionMode>;
+
+    /// What this codec accepts as the *form* of a resource input.
+    ///
+    /// Materialization runs before encoding and cannot be deferred (encoding is
+    /// synchronous), so the codec has to declare up front whether it needs
+    /// payload bytes. The default `BytesOnly` keeps every unaudited codec on the
+    /// historical path of materializing all bytes. A codec whose wire grammar
+    /// takes a URL — either exclusively or alongside an inlined payload — should
+    /// declare `UrlOnly` / `UrlOrBytes` so that URL resources are not downloaded
+    /// and objects can be handed over by URL instead of being inlined.
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::BytesOnly
+    }
+
     fn encode(&self, call: &CodecCall<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode(&self, response: HttpResponse) -> ProtocolResultValue<ProtocolExecution>;
 
@@ -652,6 +721,26 @@ pub(crate) trait NativeTaskCodec: Send + Sync {
     fn output_video_seconds(&self, _request: &HttpRequest) -> Option<u64> {
         None
     }
+
+    /// What this codec accepts as the *form* of a resource input.
+    ///
+    /// Mirrors [`OperationCodec::resource_input_form`]: materialization runs
+    /// before encoding and cannot be deferred (encoding is synchronous), so a
+    /// native task codec has to declare up front whether its `encode_native`
+    /// needs payload bytes. The default `BytesOnly` keeps every unaudited codec
+    /// on the historical path of materializing all bytes, and a codec whose wire
+    /// grammar takes a URL should declare `UrlOrBytes` so the payload is not
+    /// downloaded for nothing.
+    ///
+    /// Declaring `UrlOrBytes` is only half of it: the resource encoding function
+    /// must also return the URL when materialization handed one over, i.e.
+    /// `context.materialized_url(resource)`. A codec that declares URL support
+    /// but never checks it receives an empty byte payload and encodes a
+    /// silently empty file.
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::BytesOnly
+    }
+
     fn encode_native(&self, input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest>;
     async fn decode_native(
         &self,
@@ -1146,6 +1235,42 @@ impl CodecRegistry {
             })
     }
 
+    /// The resource input form accepted by the codec that will actually encode
+    /// this call.
+    ///
+    /// `execution_mode` is the *resolved* mode carried by
+    /// `ResolvedProviderCall` — the same value `ProviderExecutor::start_once`
+    /// matches on — so the form is read from the same codec family that encodes
+    /// the request. Picking a codec without regard to the mode would answer for
+    /// the wrong one on a binding that registers both a buffered codec and a
+    /// native task codec.
+    ///
+    /// Anything unresolved falls back to `BytesOnly`, which is the historical
+    /// behaviour: materialize the bytes.
+    pub(crate) fn resource_input_form(
+        &self,
+        adapter_id: &str,
+        operation_id: &str,
+        api_type: ApiType,
+        execution_mode: ExecutionMode,
+    ) -> crate::resource::ResourceInputForm {
+        let Ok(registered) = self.registered(adapter_id, operation_id, api_type) else {
+            return crate::resource::ResourceInputForm::BytesOnly;
+        };
+        let form = if matches!(execution_mode, ExecutionMode::NativeTask) {
+            registered
+                .native_task_codec
+                .as_ref()
+                .map(|codec| codec.resource_input_form())
+        } else {
+            registered
+                .codec
+                .as_ref()
+                .map(|codec| codec.resource_input_form())
+        };
+        form.unwrap_or(crate::resource::ResourceInputForm::BytesOnly)
+    }
+
     pub(crate) fn encode(
         &self,
         adapter_id: &str,
@@ -1537,6 +1662,103 @@ mod tests {
                 }),
             }
         }
+    }
+
+    /// A native codec that declares a URL-accepting input form, so the
+    /// registry's mode-aware dispatch is observable: the same binding has to
+    /// answer differently depending on which codec family encodes it.
+    struct UrlNativeCodec {
+        descriptor: OperationDescriptor,
+        api_type: ApiType,
+    }
+
+    #[async_trait]
+    impl NativeTaskCodec for UrlNativeCodec {
+        fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+            crate::resource::ResourceInputForm::UrlOrBytes
+        }
+
+        fn descriptor(&self) -> &OperationDescriptor {
+            &self.descriptor
+        }
+
+        fn api_type(&self) -> ApiType {
+            self.api_type
+        }
+
+        fn operations(&self) -> BTreeSet<NativeTaskOperation> {
+            BTreeSet::from([
+                NativeTaskOperation::Submit,
+                NativeTaskOperation::Status,
+                NativeTaskOperation::Result,
+            ])
+        }
+
+        fn encode_native(&self, _input: &NativeTaskInput<'_>) -> ProtocolResultValue<HttpRequest> {
+            Ok(HttpRequest::new(Method::POST, "/native"))
+        }
+
+        async fn decode_native(
+            &self,
+            _operation: NativeTaskOperation,
+            _response: HttpResponse,
+        ) -> ProtocolResultValue<NativeTaskOutput> {
+            Err(ProtocolError::new(
+                ProtocolErrorKind::UnsupportedOperation,
+                "the mode dispatch test never decodes",
+            ))
+        }
+    }
+
+    #[test]
+    fn resource_input_form_follows_the_resolved_execution_mode() {
+        // One binding, both codec families. The form must come from whichever
+        // family actually encodes the request — a binding that registers both a
+        // buffered codec and a native task codec would otherwise be answered by
+        // the wrong one.
+        let descriptor = operation(
+            "media.create",
+            vec![OperationBinding::new(
+                ApiType::VideoImageToVideo,
+                [ExecutionMode::Immediate, ExecutionMode::NativeTask],
+            )],
+        );
+        let mut registry = CodecRegistry::default();
+        registry
+            .register_codecs(
+                adapter("mode-dispatch", descriptor.clone()),
+                CodecRegistration {
+                    operation_codecs: vec![Arc::new(FakeCodec {
+                        descriptor: descriptor.clone(),
+                        api_type: ApiType::VideoImageToVideo,
+                    }) as Arc<dyn OperationCodec>],
+                    native_task_codecs: vec![Arc::new(UrlNativeCodec {
+                        descriptor,
+                        api_type: ApiType::VideoImageToVideo,
+                    }) as Arc<dyn NativeTaskCodec>],
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            registry.resource_input_form(
+                "mode-dispatch",
+                "media.create",
+                ApiType::VideoImageToVideo,
+                ExecutionMode::Immediate,
+            ),
+            crate::resource::ResourceInputForm::BytesOnly,
+            "the buffered codec keeps the default"
+        );
+        assert_eq!(
+            registry.resource_input_form(
+                "mode-dispatch",
+                "media.create",
+                ApiType::VideoImageToVideo,
+                ExecutionMode::NativeTask,
+            ),
+            crate::resource::ResourceInputForm::UrlOrBytes,
+            "the native task codec declares URL support"
+        );
     }
 
     fn operation(id: &str, bindings: Vec<OperationBinding>) -> OperationDescriptor {
