@@ -237,6 +237,13 @@
       "capabilities": {"streaming": true}
     },
     {
+      "id": "doubao-seed-icl-2.0",
+      "parameter_scale": "audio",
+      "api_types": ["audio.tts"],
+      "logical_mounts": ["audio.tts", "audio.tts.doubao", "audio.tts.{model}"],
+      "capabilities": {"streaming": true}
+    },
+    {
       "id": "doubao-seed-asr-2.0",
       "exclude": true,
       "parameter_scale": "audio",

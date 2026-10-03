@@ -1,0 +1,19 @@
+{
+  "format": "buckyos.aicc.provider-rules-catalog",
+  "schema_version": 1,
+  "schema_revision": 1,
+  "revision_seq": 1,
+  "provider_profile_id": "doubao-speech",
+  "static_inventory_models": [
+    "doubao-seed-tts-2.0",
+    "doubao-seed-icl-2.0"
+  ],
+  "supplemental_inventory_api_types": ["audio.tts"],
+  "models": [
+    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}},
+    {"id": "doubao-seed-icl-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-icl-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}}
+  ],
+  "patterns": [],
+  "variants": [],
+  "model_pricing": []
+}

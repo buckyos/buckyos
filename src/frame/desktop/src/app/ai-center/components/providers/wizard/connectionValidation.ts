@@ -16,6 +16,7 @@ export const wizardDraftSchema = z.object({
   auth_mode: z.enum(['api_key', 'dynamic_login']),
   api_key: z.string(),
   auto_sync_models: z.boolean(),
+  selected_inventory_models: z.array(z.string()).optional(),
 }).superRefine((draft, context) => {
   if (!draft.provider_profile_id) return
   if (!draft.base_url) context.addIssue({ code: 'custom', path: ['base_url'], message: 'Base URL is required' })

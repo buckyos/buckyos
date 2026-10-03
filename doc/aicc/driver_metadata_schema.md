@@ -295,7 +295,11 @@ The Provider upgrade is implemented separately from the v2 model kernel.
 `static_inventory_models` is explicit channel inventory; neither Model Driver
 membership nor Provider technical/pricing rules imply availability. Dynamic
 success may only be supplemented for explicitly declared uncovered APIs via
-`supplemental_inventory_api_types`. All inputs use the same identity resolver.
+`supplemental_inventory_api_types`. `catalog-only` profiles can further narrow
+`static_inventory_models` per instance through `instance_rules.
+enabled_inventory_models`, because a declarative channel may still only be
+provisioned for a subset of them; discovery results are never filtered by it.
+All inputs use the same identity resolver.
 
 Executable presets are the intersection of `supported_efforts`, compiled Provider
 mappings and observed channel restrictions. Inventory and lowering use the same

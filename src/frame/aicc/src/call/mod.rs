@@ -2224,6 +2224,7 @@ mod tests {
                 "deepseek",
                 "doubao",
                 "doubao-agent-plan",
+                "doubao-speech",
                 "fal",
                 "gemini",
                 "glm",
@@ -2291,7 +2292,9 @@ mod tests {
         assert!(golden.contains(&"kimi|kimi-chat|vision.caption|chat.completions.create".into()));
         assert!(golden.contains(&"deepseek|deepseek-responses|vision.ocr|responses.create".into()));
         assert!(golden.contains(&"doubao|doubao-responses|vision.caption|responses.create".into()));
-        assert!(golden.contains(&"doubao|doubao-responses|audio.tts|tts.unidirectional".into()));
+        assert!(
+            golden.contains(&"doubao-speech|doubao-responses|audio.tts|tts.unidirectional".into())
+        );
         assert!(golden.contains(
             &"doubao-agent-plan|doubao-responses|image.txt2img|ark.images.generate".into()
         ));

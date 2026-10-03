@@ -757,6 +757,7 @@ mod tests {
                 "deepseek",
                 "doubao",
                 "doubao-agent-plan",
+                "doubao-speech",
                 "fal",
                 "gemini",
                 "glm",
@@ -1034,7 +1035,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 39);
+        assert_eq!(files.len(), 40);
         assert_eq!(
             files
                 .iter()
@@ -1047,7 +1048,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ProviderRules)
                 .count(),
-            14
+            15
         );
         assert_eq!(
             files
