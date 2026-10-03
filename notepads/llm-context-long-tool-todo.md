@@ -2,7 +2,7 @@
 
 日期：2026-10-02
 
-状态：待 review。依据 2026-10-02 对长命令处理方式（同步硬等、同步执行中崩溃、串行等待、并行等待）的讨论与源码核对，并已结合 [lib_opendan 输入协议与 Turn Loop TODO](./lib-opendan-input-and-turn-loop-todo.md) 的 review 意见。实施前重新确认基线。
+状态：待 review。依据 2026-10-02 对长命令处理方式（同步硬等、同步执行中崩溃、串行等待、并行等待）的讨论与源码核对，并已结合 [lib_opendan 输入协议与 Turn Loop TODO](./lib-opendan-input-and-turn-loop-todo.md) 的 review 意见。2026-10-02 按 review 意见补充 §3.2：遵循标准父子进程语义，exec 跨平台、少做非标处理，恢复时只按 runtime 给出“被打断”的结果、交给 LLM 判断；§9 第 4 项据此定稿。同日按 review 简化 §4 / §5：长命令的执行模式由配置决定（wait / auto），auto 到期转为 task；llm_context 只做“返回结果 / 挂起等 task”两种机械判断；不区分 job 与 run；§9 第 1、2、3、5 项随之定稿；随后按 review 明确 stop 的两种结束方式、可取消性由工具与 task 的实现声明、`wait_ms` 默认 30s 上限 30 分钟（§9 第 7、8 项）；补充 §1 术语，明确 30 分钟内必须返回 LLM、更长的等待只在 Session 层挂起，xllm 不挂起；§9 第 7、8 项全部定稿（stop 经 task-mgr 父子关系传导、审批作废，硬等上限默认 60 分钟可设为不限）；用哪个 task-mgr 由工具实现决定，`shell` 只用进程内 task-mgr，buckyos task-mgr 是可选依赖。实施前重新确认基线。
 
 ## 1. 范围与原则
 
@@ -11,6 +11,15 @@
 - Runtime 配置、Sandbox 与统一派发沿用 [AgentRuntime 下移 TODO](./llm-context-agent-runtime-todo.md)，本文只补长命令相关的契约，交叉处已注明。
 - 对 xAgent.md 的修改列在 §8，review 通过后再改该文档。
 - 遵循 beta 2.2 规则：持久格式变化时显式升版并拒绝旧版本，不做旧格式兼容。
+
+**术语**（2026-10-02 review）。简单术语最容易被各自理解成不同的意思，本文只按下面的含义使用：
+
+- **stop**：Session 术语，指结束当前 Turn，之后还能继续输入。llm_context 层没有 stop，宿主用平滑结束实现，必要时改用打断。stop 作用于本 Turn 中出现的全部 task：buckyos 的 task 经 Turn 的 task 传导给 sub task（包括审批），进程内的 task 由宿主逐个取消（§4）。
+- **打断**（interrupt）：llm_context 层，相当于 Ctrl-C。正在进行的推理立即中止；正在执行的工具收到打断信号（`ToolCallCtx.abort`），能取消就取消，不能取消就放弃等待。xllm 的 Ctrl-C 就是打断。
+- **平滑结束**（graceful finish）：llm_context 层。不再发起新的推理和工具调用，等当前推理完成、当前工具取消或完成后再结束。结束时所有调用都已配对结果，追加输入即可继续。
+- **取消**（cancel）：工具或 task 层，让正在进行的工作可靠地停下来。是否支持由实现声明，不是所有工作都能可靠取消。打断和平滑结束都会先尝试取消。
+- **挂起**（suspend）：工具返回 `Pending{task_id}`，llm_context 结束，等待转到 Session 层（不占进程），task 结束后回填结果、续跑。
+- **task**：可以脱离一次工具调用继续运行、可按 task_id 查询的工作。用哪个 task-mgr 管理由工具的实现决定：调用 buckyos 服务得到的 task 由 buckyos task-mgr 管理，其余由进程内 task-mgr 管理（§4）。
 
 实现计划“实现落地”里 llm_context 层遗留的三项未完成，本文处理方式：
 
@@ -23,166 +32,289 @@
 | 场景 | 当前行为 | 问题 |
 |---|---|---|
 | 同步硬等 | waist 直接 `call_tool(call).await`（`context_loop.rs` 的 `run_tool_batch` 与 behavior action 派发）；interrupt 只与推理竞争，wallclock 只在迭代之间检查。xllm 的 `XllmToolManager` 自带 cancel watch 与总 deadline，触发时返回 `Observation::Error`，且只在 `XllmRun::execute` 接线（xAgent G5）。exec 默认 30 分钟、最长 60 分钟，超时杀进程组 | 宿主 run（libopendan）里 stop 和 wallclock 都打断不了工具，最长要等到 exec 超时；取消被记成业务失败，而不是 Cancelled |
-| 同步执行中崩溃 | 派发前 fsync `InflightAction`；`TrackedBashRunner` 握手持久化 `ExecutionRecord`，子进程带 `OPENDAN_EXECUTION_ID`；恢复先 `stop_execution`（无法核验 → RecoveryBlocked），再 `materialize_unresolved` 注入“结果未知” | 方向正确：交给 Agent 判断，不重放。但 Agent 拿到的信息少：不知道命令跑了多久、恢复时是否仍在运行并被停止、已有哪些输出 |
-| 异步串行（PendingTool） | waist 完整：挂起、快照、续派、`ResumeFill::ToolResults`。`PendingToolCall.eta_ms` 与 `Outcome::PendingTool.deadline_ms` 恒为 None；等待对象只在 `tool_result.task_id` 里，没有类型。三个宿主都是 `allow_deferred=false`：工具返回 Pending → 调用记 Unknown，run 以 `Error{Internal}` 结束；xllm 不接手 PendingTool 快照，libopendan 返回 RecoveryBlocked | 没有结构化等待记录、截止时间、查询接口和宿主等待循环。`llm_explore` / `llm_understand_media` 的子 run 暂停或中断时会返回 Pending（`task_id=run_id`），实际就会触发上述 Internal 错误 |
-| 异步并行 | 没有任务化的后台执行。exec 工具说明建议 `nohup cmd > log 2>&1 &` 后轮询日志；命令正常退出时不杀进程组，后台进程能活过本次调用 | 后台进程继承执行标记，`ExecutionRecord` 留在 run 记录里（`TrackedBashRunner::sweep` 在生产代码中没有调用）。libopendan 的 `finish_run` 先 `stop_executions`，run 一结束后台进程就被杀；xllm 接手该 run 时由 `settle_previous_executor` 杀掉，而原调用早已返回，不会注入任何说明，Agent 只会看到截断的日志 |
+| 同步执行中崩溃 | 派发前 fsync `InflightAction`；`TrackedBashRunner` 握手持久化 `ExecutionRecord`，子进程带 `OPENDAN_EXECUTION_ID`；恢复先 `stop_execution`（无法核验 → RecoveryBlocked），再 `materialize_unresolved` 注入“结果未知” | 方向正确：交给 Agent 判断，不重放。但 Agent 拿到的信息少：不知道命令跑了多久、恢复时是否仍在运行并被停止、已有哪些输出。恢复前的进程核验依赖 Linux /proc，见 §3.2 |
+| 异步串行（PendingTool） | waist 完整：挂起、快照、续派、`ResumeFill::ToolResults`。`PendingToolCall.eta_ms` 与 `Outcome::PendingTool.deadline_ms` 恒为 None；等待对象只在 `tool_result.task_id` 里，没有类型。三个宿主都是 `allow_deferred=false`：工具返回 Pending → 调用记 Unknown，run 以 `Error{Internal}` 结束；xllm 不接手 PendingTool 快照，libopendan 返回 RecoveryBlocked | 没有结构化等待记录、截止时间、查询接口和宿主等待循环。`llm_explore` / `llm_understand_media` 的子 run 暂停或被打断时会返回 Pending（`task_id=run_id`），实际就会触发上述 Internal 错误 |
+| 异步并行 | 没有任务化的后台执行。exec 工具说明建议 `nohup cmd > log 2>&1 &` 后轮询日志；命令正常退出时不杀进程组，后台进程能活过本次调用 | 后台进程继承执行标记，`ExecutionRecord` 留在 run 记录里（`TrackedBashRunner::sweep` 在生产代码中没有调用）。libopendan 的 `finish_run` 先 `stop_executions`，run 一结束后台进程就被杀；xllm 接手该 run 时由 `settle_previous_executor` 杀掉，而原调用早已返回，不会注入任何说明，Agent 只会看到截断的日志。用 nohup 起服务时同样会被杀，见 §3.2 |
 
-## 3. P0：同步长命令——工具执行期间的取消与时限
+## 3. P0：同步长命令——取消、时限、子进程生命周期与工具命名
 
 不依赖输入协议，可以立即开工。
 
-- [ ] waist 为每次工具 / action 调用提供取消信号和截止时间，例如 `call_tool(call, ToolCallCtx { abort, deadline_ms })`，直接改 trait。`abort` 与推理共用 `LLMContextInterruptHandle` 的状态，stop 能打断正在执行的工具；`deadline_ms` 由 waist 按 `budget.max_wallclock_ms` 计算，各 ToolManager 不再自己维护。这同时解决 xAgent G5；Runtime TODO 的 `Sandbox::call_tool` 直接使用这个 ctx。
-- [ ] 取消信号或截止时间触发后，允许 ToolManager 内联返回 `Observation::Cancelled`；其它情况下内联返回 Cancelled 仍属违反契约。waist 记 `ToolExecStatus::Cancelled`，同批余下调用记 `Unresolved{effect_unknown: false}`；中断给出 `Interrupted`，到期给出 `BudgetExhausted{Wallclock}`。
-- [ ] 定义工具被中断时的快照语义。推理中断返回推理前快照 s0，恢复后重做推理；工具中断返回**已含配对 Cancelled 结果**的快照，恢复后不重跑该工具，LLM 看到的是“已取消”。behavior 模式按“第一个非成功结果停止其余 action”的规则处理。同步修改《LLM Context 设计》§8。
-- [ ] 返回 Cancelled 的前提是执行体确认进程已停止（杀进程组并 probe）；无法确认时返回 `ToolDispatchError{effect_unknown: true}`。渲染文本写明“中途取消，可能已有部分副作用”，不暗示没有副作用。
-- [ ] xllm：`XllmToolManager` 去掉自建的 cancel watch / deadline 分支，Ctrl-C 经 interrupt handle 进入 ctx。exec 自身超时仍是工具的 Error（`timed_out`），与 run 级取消区分开。
-- [ ] 测试：function call 与 behavior 各覆盖执行中 interrupt、执行中 wallclock 到期、无法确认停止三种情况；快照恢复后不重跑已取消的工具。
+### 3.1 工具执行期间的取消与时限
 
-宿主侧的配套（工具执行期间读取 stop 的监视任务）在 lib_opendan TODO §4。
+- [ ] waist 为每次工具 / action 调用提供打断信号和截止时间，例如 `call_tool(call, ToolCallCtx { abort, deadline_ms })`，直接改 trait。`abort` 与推理共用 `LLMContextInterruptHandle` 的状态，打断和平滑结束（§1 术语）都能作用于正在执行的工具；`deadline_ms` 由 waist 按 `budget.max_wallclock_ms` 计算，各 ToolManager 不再自己维护。这同时解决 xAgent G5；Runtime TODO 的 `Sandbox::call_tool` 直接使用这个 ctx。
+- [ ] **打断与平滑结束**（含义见 §1 术语）。llm_context 提供这两种结束方式，Session 的 stop 由宿主用它们实现：
+  - 打断：推理立即中止，返回推理前快照；正在执行的工具能取消就取消，不能取消就放弃等待。
+  - 平滑结束：
+    - 推理中：等推理完成并记录其输出。其中的工具调用不派发，配对为“因结束未执行”的结果（`Cancelled`，`effect_unknown: false`），保证快照可以续跑。
+    - 工具执行中：工具支持取消就取消；不支持就等它完成，最多等一段时间（默认 30s，可配置），超时后按打断处理。
+    - 结束时返回所有调用都已配对结果的快照，并新增一种 outcome 与 `Interrupted` 区分。命名避开 stop，以免与 Session 术语混淆。宿主追加新输入即可继续。
+- [ ] **工具是否支持取消，由工具实现声明**。`AgentTool` 增加声明，默认不支持，因为不是所有任务都能可靠取消。`shell` 按 runtime 支持：native 结束其进程组；tmux 停止等待，命令继续运行（§3.2）。不支持取消的工具被打断时只能放弃等待，结果记为“被打断，结果未知”（`effect_unknown: true`）。
+- [ ] 打断信号或截止时间触发后，允许 ToolManager 内联返回 `Observation::Cancelled`；其它情况下内联返回 Cancelled 仍属违反契约。waist 记 `ToolExecStatus::Cancelled`，同批余下调用记 `Unresolved{effect_unknown: false}`；打断给出 `Interrupted`，到期给出 `BudgetExhausted{Wallclock}`。
+- [ ] 定义打断时的快照语义。推理被打断时返回推理前快照 s0，恢复后重做推理；工具被打断时返回**已含配对 Cancelled 结果**的快照，恢复后不重跑该工具，LLM 看到的是“已取消”。behavior 模式按“第一个非成功结果停止其余 action”的规则处理。同步修改《LLM Context 设计》§8。
+- [ ] 取消时，执行体按 §3.2 的 runtime 规则处理当前命令后返回 Cancelled，不做进程核验。渲染文本按 runtime 写明命令状态（native：已结束；tmux：仍在运行及查看方式），并写明“中途取消，可能已有部分副作用”，不暗示没有副作用。取消动作本身失败（如 ssh 断线）时返回 `ToolDispatchError{effect_unknown: true}`。
+- [ ] xllm：`XllmToolManager` 去掉自建的 cancel watch / deadline 分支，Ctrl-C 经 interrupt handle 进入 ctx。exec 自身超时仍是工具的 Error（`timed_out`），与 run 级打断区分开。
+- [ ] 测试：function call 与 behavior 各覆盖以下情况，并验证快照恢复后不重跑已取消的工具：
+  - 执行中打断、执行中 wallclock 到期、取消动作失败；
+  - 平滑结束：推理中（工具调用配对为未执行）、可取消工具执行中、不可取消工具在等待时长内完成、不可取消工具超时后按打断处理。
 
-## 4. P1：串行等待——PendingTool 的等待记录与查询接口
+宿主侧的配套（工具执行期间读取 Session stop 的监视任务）在 lib_opendan TODO §4。
 
-- [ ] **结构化等待记录**：`PendingToolCall` 增加 `wait`，由 ToolManager 从 `AgentToolResult` 的 `task_id / pending_reason / check_after / estimated_wait` 归一而来：
+### 3.2 子进程生命周期：标准语义，恢复时交给 LLM 判断
 
-  ```text
-  wait: {
-    source: { kind, id },   // 与 AgentEvent.source 同一套词汇：job / subrun / task / approval …
-    class,                  // wait_for_runtime_task | wait_for_task，对齐长任务 RFC §5.3
-    check_after_ms, deadline_ms, detail
-  }
-  ```
+Review 意见（2026-10-02）：
 
-  - `source` 回答“等的是谁”。它和事件来源用同一套词汇，lib_opendan TODO §4 的“挂起调用与事件匹配”只需比较 `(kind, id)` 是否相等。
-  - `class` 回答“怎么等”：`wait_for_runtime_task` 可轮询、应有超时（本机 job、在后台推进的子 run）；`wait_for_task` 可以无限等待（TaskMgr、审批票据）。
-  - 缺少可解析 `source` 的 Pending 一律拒绝（参照 `exec_bash` 不转发无 `task_id` 的 Pending）。
-  - 快照升版。快照里的等待记录是唯一权威；Session 的 `waiting_for.refs` 在提交挂起时从它生成，`pending_task_calls` 删除（lib_opendan TODO §6.1）。非 Rust 实现可按 schema 解释。
-- [ ] **截止时间**：`ToolPolicy` 增加 deferred 等待上限（全局默认，可按工具覆盖），填入 `Outcome::PendingTool.deadline_ms`。到期后宿主以 `Cancelled` 或 `Error{timeout}` 回填（见 §9 第 1 项），并经 resolver 停止后台任务。`wait_for_task` 类可以声明不过期。
-- [ ] **查询接口**：`DeferredResolver` 定义在 llm_context 层，xllm 单独运行时也能使用；实现由宿主或 Runtime 提供，按 `wait.source.kind` 组合（示意）：
+- xllm 结束时杀掉自己启动过的全部进程是不对的。exec 的目的可能就是用 nohup 起一个服务，所以应遵循标准的父子进程语义。
+- native runtime 下的 exec 要跨平台，非标处理越多，兼容负担越重。tmux 本身就用来隔离环境和抗打断：调用 xllm 的 shell 崩了，tmux 里的命令还在跑。
+- 恢复时不核验、不停止进程，只需按 runtime 类型给出正确的 call_result（exec 执行被打断），由 LLM 决定下一步。
+
+现状（源码核对）：
+
+| 路径 | 当前行为 | 问题 |
+|---|---|---|
+| 第一次 Ctrl-C 或 `--timeout` 到期，且工具在执行 | `runner.cancel()`：`TrackedBashRunner::cancel` 对 `pending` 里**全部**执行按 `OPENDAN_EXECUTION_ID` 扫描 /proc 并 SIGKILL；当前命令由 `ProcessGroupGuard` 整组 SIGKILL | `pending` 里还有早已返回、但留下后台进程的执行，nohup 起的服务、setsid 的守护进程一并被杀 |
+| 第一次 Ctrl-C，在推理中 | 不杀进程 | `executions[]` 留着后台进程的记录（`sweep()` 没有调用）。之后 `xllm --resume` 时，`settle_previous_executor` → `reconcile_execution` → `stop_execution` 把它们杀掉 |
+| 第二次 Ctrl-C | 前台进程组 SIGKILL，`exit(4)` | 无 |
+| exec 自身超时 | 整组 SIGKILL，再按标记 `stop_execution` | 追杀已脱离进程组的进程 |
+| resume / 接手 | 先按 /proc 核验并停止 `executions[]` 里的全部执行，无法核验时返回 RecoveryBlocked；再把 inflight 物化为“结果未知” | 核验依赖 Linux /proc、boot_id 与进程启动时间，其它平台无法恢复；结果文本不区分 runtime |
+| tmux / remote_ssh | 包装脚本用 `/proc/$pid/stat` 记录身份，用 `setsid` 脱离；`cancel`、超时、`ExecutionGuard` 的 drop 都走 `stop_execution` | tmux 因此只能在 Linux 上用（macOS 没有 /proc，默认也没有 setsid） |
+
+目标语义：
+
+- **只处理正在执行的命令，只用现有的标准手段。** native 沿用现有机制：Unix 上用独立进程组，超时或取消时结束整组；其它平台用 `kill_on_drop` 结束直接子进程。不新增信号升级序列、进程身份核验或针对特定平台的处理。
+- **命令返回后留下的进程不归 xllm 管**，包括 `&`、nohup、setsid 和守护进程。Ctrl-C、总时长到期、run 结束、resume 或接手时都不停止它们，也不追杀。
+- **tmux 下打断 xllm 不结束命令**，这正是 tmux 的用途。Cancelled 结果写明“命令仍在 tmux 中运行”以及查看方式。exec 自身超时仍要结束命令，用 tmux 自身的手段（例如每条命令一个 window，超时时 `kill-window`），不依赖 /proc 和 setsid。具体做法在 tmux runner 改造时定。
+- **resume 不核验、不停止、不阻塞。** 执行器异常退出（kill -9、SIGTERM、SIGHUP、断电）时，留下的 inflight exec 一律物化为“exec 执行被打断”的 call_result，内容按 runtime 区分：
+  - native：命令、开始时间。说明上一次执行器在命令执行中退出：命令可能已部分执行，通常随执行器一起结束，但不保证（例如执行器被 kill -9 时命令可能仍在运行）；它启动的后台进程不受影响。
+  - tmux：读取执行目录。已有 `exit` 文件时，给出退出码和输出尾部；没有时，说明“可能仍在 tmux 中运行”，给出输出文件、`exit` 文件的位置和 tmux 目标。
+  - remote_ssh：同 tmux，读取远端执行目录；连不上时如实说明。
+  - 这类结果的状态都是“被打断”，不是 Success，不重放命令。LLM 可以自己查看（`ps`、日志、`exit` 文件），再决定重试、等待还是继续。
+- run 锁照旧防止两个执行器同时跑同一个 run。旧命令可能仍在运行、LLM 又重跑一遍的风险，由 call_result 写明后交给 LLM 判断。
+
+修改项：
+
+- [ ] 删除 exec_tracking 的进程跟踪：`probe_execution`、`stop_execution`、`ExecutionProbe`、环境标记 `OPENDAN_EXECUTION_ID`、启动握手、`ExecutionRegistrar`、`run.executions[]` 与 `sweep()`。native 回到 `LocalProcessBashRunner`。
+- [ ] tmux 与 remote_ssh 的执行目录改为由 `(run_id, call_id)` 推导的固定位置：tmux 放在 run 目录下（目前在系统临时目录，可能被清理），remote_ssh 放在远端 runtime 目录下。resume 据此找到输出和 `exit` 文件。runtime 种类和目标已在 run.json 的 runtime descriptor 中，`InflightAction` 不需要新增字段。
+- [ ] `materialize_unresolved` 按上面的规则生成 call_result。删除 `settle_previous_executor` 中停止旧执行的步骤和 `AgentRuntime::reconcile_execution`，进程状态不再导致 RecoveryBlocked。
+- [ ] `BashRunner::cancel` 只处理当前命令，不再遍历历史执行：native 结束其进程组或子进程；tmux 不结束，只停止等待；remote_ssh 关闭通道。取消动作本身失败时，返回 `effect_unknown`。
+- [ ] tmux 与 remote_ssh 的包装脚本去掉 `/proc` 身份记录和 `setsid`，只保留 `command`、`stdout`、`stderr`、`exit` 文件。
+- [ ] Ctrl-C 处理：第一次、第二次都保持现状。SIGTERM / SIGHUP 不新增处理，按异常退出走 resume 路径。
+- [ ] libopendan：删除 `finish_run` 中的 `stop_executions` 以及 live.rs 中相应的恢复核验。
+- [ ] 本节推翻 [Runtime TODO](./llm-context-agent-runtime-todo.md) 中已完成的“SSH 执行跟踪与恢复”（远端核验、不可证明停止即 RecoveryBlocked）和首版限制里的“原生恢复的进程核验沿用 Linux /proc”，实施时同步修改该文档。
+- [ ] 同步文档与 fixtures：
+  - xllm_rust_sdk.md：exec 一段，以及 resume 检查、执行跟踪（X6）两条；
+  - Session Directory Protocol：删除 `executions[]`，按规则升版；重新生成 `06_killed_during_exec` 等 fixtures；
+  - Agent Session SDK 实现计划：§5.2 与 §8.7 X6。
+- [ ] 测试：
+  - exec `nohup sleep 300 >/dev/null 2>&1 &` 返回后，分别在另一个长命令执行中按 Ctrl-C、`--timeout` 到期、run 正常结束、打断后 `--resume`，该进程都仍在运行；
+  - 前台命令执行中 kill -9 xllm，resume 不阻塞、不杀进程，按 native 规则给出“被打断”；
+  - tmux：命令执行中 kill -9 xllm，resume 时命令已结束的，给出退出码和输出尾部；仍在运行的，给出“可能仍在运行”和查看方式；
+  - 以上在 macOS 上各跑一遍 native 与 tmux。
+
+### 3.3 命令执行工具改名为 `shell`，说明按 runtime 生成
+
+已定（2026-10-02 review）：命令执行工具统一叫 `shell`。现有的两个名字都改掉：agent_tool、opendan、Jarvis behavior 和 llm_context 的 XML 动作用 `exec_bash`，xllm 和协议 fixtures 用 `exec`。理由：
+
+- `exec` 让人联想到 exec(2)，暗示工具完全掌控进程，与 §3.2 的语义不符；`bash` 是实现细节，语法在说明里写清即可。
+- `shell` 表示“当前 runtime 的 shell”，模型也熟悉这类名字（同类工具名有 `bash`、`shell`、`run_shell_command`）。
+- 名字不随 runtime 变化。接手、fixtures 和按名字查的副作用表（libopendan `runner/tools.rs`）都依赖固定的名字。
+
+本文 §2 和 §3.2 的“现状”沿用现在的名字；其余各节的新设计中，命令执行工具都指 `shell`。
+
+runtime 相关的信息通过说明和结果传达：
+
+- [ ] **工具说明按 runtime descriptor 和执行模式（§5）生成**，取代现在写死的 “Run bash command at target node”：
+  - 第一句：在本 run 的 runtime 中执行命令，使用 bash 语法；
+  - 按 runtime 写一条生命周期说明，与 §3.2 一致：
+    - native：命令是执行器的子进程，被打断或超时时结束其进程组，命令返回后留下的进程不受管理；
+    - tmux：命令在 tmux 会话 `<session>` 中运行，执行器被打断或退出时命令继续运行；
+    - remote_ssh：命令在远端 `<host>` 上运行；
+  - 按模式说明参数：wait 模式说明 `timeout_ms`；auto 模式说明 `wait_ms`，以及到期后转为 task、用 `wait_task` / `get_task_state` 继续（§5）；
+  - 后台进程：常驻服务用 nohup / setsid 启动后立即返回。Unix 上前台命令被打断或超时时，同组用 `&` / nohup 启动的进程也会结束。
+- [ ] **结果标明 runtime**：`BashRunOutput.engine` 渲染进 call_result；§3.2 的“被打断”结果同样带上 runtime。
+- [ ] **改名范围**（不保留旧名）：
+  - agent_tool：`TOOL_EXEC_BASH` 与 xllm 的 `TOOL_EXEC` 合并成一个常量，同步 `llm_compress`、`llm_explore`、`llm_understand_media`、`llm_tool_carft`、`todo_tools` 中的引用。`ExecBashTool`、`llm_bash` 等类型名和模块名不进入协议，实施时顺手改。
+  - llm_context：XML behavior 的内置动作标签 `<exec_bash>` 改为 `<shell>`，涉及 `xml_behavior.rs` 的标签表、body → `command` 的映射和协议提示词，以及 `request.rs` 的注释和相关测试。
+  - libopendan：`runner/tools.rs` 的副作用表，`lock.rs` 的注释和测试。
+  - opendan 与 Jarvis：`opendan/src` 中的引用，以及 `jarvis_runtime/agent/behaviors/*.toml` 中的提示词。
+  - buckyos-api：TaskMgr 的任务数据类型 `tool.exec_bash` 与 schema `tool.exec_bash/v1`（`taskdata.rs`、`task_mgr.rs`）。`shell` 不使用 buckyos task-mgr（§4），本仓库也没有其它引用。确认没有外部调用方后删除；有调用方则改名为 `tool.shell` 与 `tool.shell/v1`。这是 kernel 的共享类型。
+  - 其它：`msg_center/src/tg_tunnel.rs` 的测试数据、`src/read_aicc_log.py`、`tools/buckyos-agent/readme.md`。
+  - 文档：xllm PRD 与 xllm_rust_sdk.md；`doc/llm_context/` 下的 Agent Actions、agent_tool_result_protocol、local_llm_context_protocol 等；`doc/opendan/` 下的 build-in agent-tool 手册、NewOpenDANRuntime、Agent Session SDK 实现计划、xAgent.md 等。
+  - 协议 fixtures：工具名出现在 run.json 和快照里，随 §3.2 的升版一起重新生成。
+  - xllm 的内置工具组名 `bash`（`BUILTIN_TOOL_GROUP_BASH`）是配置项，LLM 看不到，保持不变。
+- [ ] **合并说明改写**：§5 的“改写工具说明”并入本节第一项，一次写完。
+- [ ] **验证**：`grep -rnw exec_bash` 只剩历史记录；xllm、llm_context、libopendan 中断言工具名的测试已更新；`cargo test -p llm_context`、`cargo test -p agent_tool --lib`、`cargo test -p libopendan -- --test-threads=1`、`cargo check -p opendan -p buckyos-api -p msg_center` 通过。
+
+## 4. P1：等待——llm_context 的两种机械判断与 RunningTaskResolver
+
+Review 意见（2026-10-02）：简化设计、渐进式披露，减少 LLM 在调用前要做的决策。llm_context 执行工具时只做机械判断，结果只有两种：
+
+1. **把结果返回给 LLM。** auto 模式下 `shell` 转为 task 后返回的“仍在运行”结果也属于这一种（§5）。
+2. **工具返回 `Pending{task_id}`。** 结束当前 llm_context（`Outcome::PendingTool`），由宿主在 Session 层等 task 结束（不占进程），再构造 tool_result 续跑（`ResumeFill::ToolResults`）。
+
+两条时间规则（2026-10-02 review）：
+
+- **30 分钟内必须返回 LLM。** llm_context 里任何在工具内等待 task 的调用，最长 30 分钟必须返回，并带上 task 当时的状态。这类调用包括 auto 模式的 `shell`、`wait_task`，以及宿主不能挂起时等待 Pending 的工具。task 继续运行，由 LLM 决定继续等、做别的，还是取消。这样一次工具调用不会把 llm_context 彻底卡住。wait 模式的硬等是配置显式选择的，不受这条规则约束（§5）。
+- **更长的等待放在 Session 层。** 需要等得更久时就挂起（第 2 种）：llm_context 结束，由 Session 等待，不占进程。只有能这样等待的宿主（libopendan 的 Session）才挂起；xllm 没有 Session，不挂起。
+
+挂起记录只需支持这个判断和之后的回填。原设计中的 `wait{source, class, check_after_ms, deadline_ms, detail}` 删除。
+
+- [ ] **挂起记录**：`PendingToolCall` 增加 `task_id`（必填）和 `until_ms`（可选：到这个时间 task 仍未结束，也按当时的状态回填）。
+  - 缺 `task_id` 的 Pending 一律拒绝（同现在 `exec_bash` 不转发无 `task_id` 的 Pending）。
+  - `task_id` 对 llm_context 不透明，不再按前缀归一。
+  - 快照升版。Session 的 `waiting_for.refs` 就是这些 `task_id`，`pending_task_calls` 删除（lib_opendan TODO §6.1）。
+- [ ] **`RunningTaskResolver`**（取代原设计的 `DeferredResolver`）定义在 llm_context 层，由宿主装配：
 
   ```rust
   #[async_trait]
-  pub trait DeferredResolver: Send + Sync {
-      /// 能解析的 `wait.source.kind`。
-      fn kinds(&self) -> &[&str];
-      /// Running { next_check_ms } | Ready(Observation) | Unknown { reason }
-      async fn poll(&self, p: &PendingToolCall) -> ResolvePoll;
-      async fn cancel(&self, p: &PendingToolCall, reason: &str) -> Result<Observation, String>;
+  pub trait RunningTaskResolver: Send + Sync {
+      /// Running { brief, output_tail, cancellable } | Finished(AgentToolResult) | Unknown { reason }
+      async fn state(&self, task_id: &str) -> TaskState;
+      /// 等到 task 结束或到达 until，返回当时的状态。
+      async fn wait(&self, task_id: &str, until_ms: Option<u64>) -> TaskState;
+      /// 只有 cancellable 的 task 能取消，其余返回 Unsupported。
+      async fn cancel(&self, task_id: &str) -> Result<TaskState, CancelUnsupported>;
+      /// 本 context 关注的 task 简介，供 background env 使用。
+      fn active(&self) -> Vec<TaskBrief>;
   }
   ```
 
-  - 通知只用来提前 poll，结果以 poll 为准（RFC §6–§7）。
-  - Ready 的 Observation 与内联结果走同一条 `AgentToolResult → Observation` 映射。
-  - Unknown 或查询失败时保留挂起现场并暴露诊断信息，不删除快照另起任务。
-- [ ] **接手时的能力检查**：run.json 记录挂起调用所需的 resolver 种类（即 `wait.source.kind`）。任何接手方（xllm、xagent）缺少对应 resolver 时拒绝接手并说明原因，做法同现在的 `app_tools`。这回答 lib_opendan TODO §7 中“交接时挂起结果的提供方与能力不足时的行为”。
-- [ ] **xllm 等待循环**：
-  - 允许开启 `allow_deferred`：`.llm_context` 显式开关，或者所有可能返回 Pending 的工具都有 resolver 时自动开启。
-  - 遇到 PendingTool 时：持久化快照 → run 状态 `waiting`（带等待记录）→ 按 `check_after` 有界退避 poll → `ResumeFill::ToolResults` 续跑同一 run。
-  - Ctrl-C 或崩溃后，`xllm --resume` 重新进入等待循环，取代现在“不接手 PendingTool 快照”的行为。
-  - `xllm status` 显示等待对象和截止时间。
+  - 两种实现：
+    - 用哪种 task-mgr 由工具的实现决定，语义正确优先（2026-10-02 review）：
+      - 工具调用的 buckyos 服务本身返回 task id 时，直接用 buckyos task-mgr。按 buckyos 的流程，这类 task 挂在当前 Turn 的 task 下（宿主经 `SessionRuntimeContext` 传入 Turn 的 task id）。
+      - 其余情况用进程内 task-mgr，包括任何 runtime 下的 `shell`。不为了用上 buckyos task-mgr，而把 `shell` 改成 buckyos 的 `run_at(node_id, cmd)` 之类的服务调用。
+      - buckyos task-mgr 是工具实现可用的依赖，不是必需的。
+    - resolver 因此是组合的：进程内 task-mgr，加上可访问时的 buckyos task-mgr，按 task_id 的来源分派（例如进程内 task 的 id 带固定前缀）。分派是 resolver 内部的事，对 llm_context 而言 task_id 仍不透明。
+  - `TaskState` 渲染成 tool_result 只用一个函数。内联的 `wait_task` / `get_task_state` 和挂起后的回填都用它，所以两条路径的结果完全一致。Finished 的结果走与内联结果相同的 `AgentToolResult → Observation` 映射。
+  - 通知只用来提前唤醒，结果以 `state` / `wait` 为准。
+  - task 能否取消由 task 的实现声明（同 §3.1 的工具），不是所有 task 都能可靠取消。
+- [ ] **task 工具**（auto 模式下，或环境中可能出现 task 时注册）：
+  - `wait_task(task_id, wait_ms)`：等到 task 结束或 `wait_ms` 到期，返回结果，或当前状态与新增输出。
+    - `wait_ms` 默认 30s。不超过 30 分钟时，在工具内等待，受 §3.1 的打断与时限约束；等待本身总能取消，不影响 task。
+    - 超过 30 分钟：宿主能在 Session 层等待时，返回 `Pending{task_id, until_ms}`，走第 2 种；否则（如 xllm）按 30 分钟截断，到时返回当时的状态。
+  - `get_task_state(task_id)`：立即返回状态与输出尾部。
+  - `cancel_task(task_id)`：只对声明可取消的 task 生效，其余返回“不支持取消”。
+  - task 仍在运行时，结果附上下一步提示：如何继续等待或稍后查询；只有可取消的 task 才提示 `cancel_task`。
+- [ ] **崩溃恢复与接手不做额外判断**。task_id 已写在 call_result 或挂起记录里，崩溃恢复后由 LLM 或宿主再查一次即可：
+  - 挂起中的 run：由 Session 继续等待。xllm 接手已挂起的 run 时不等待，用 `resolver.state` 按当时的状态立即回填，然后续跑。
+  - 进程内 task-mgr 重启后查不到旧 task：返回 Unknown，照常回填续跑，不返回 RecoveryBlocked。shell task 能从执行目录读到 `exit` 文件时，给出退出码和输出尾部。
+  - 挂起记录的 task_id 来自 buckyos，而接手方访问不了 buckyos task-mgr（例如单独运行的 xllm）：拒绝接手并说明原因，做法同 `app_tools`。进程内 task 换了进程后查不到，按上一项回填，不拒绝。
+- [ ] **background env：第一次使用半自动订阅。**
+  - 结果里带有运行中 task_id 的调用，自动登记为本 context 关注的 task。
+  - 每次推理前，waist 用 `resolver.active()` 渲染一段 background env，每个 task 一行：task_id、命令简述、状态、已运行时长、最后一行输出。
+  - 这里只放简介，完整输出由 LLM 按需调用 `get_task_state` / `wait_task` 获取（渐进式披露）。已结束的 task 显示到 LLM 读取过一次结果为止；没有 task 时不渲染。
+  - 这段内容每次推理重新生成，不写进历史，放在请求末尾以免破坏前缀缓存。现有 `CheckpointHook` 返回的 `Injection` 会把消息追加进历史，不适用，waist 需要新增这个临时插槽。
+  - run 结束后 task 才完成时是否唤醒 Session，在 lib_opendan TODO §6.2 处理。
+- [ ] **xllm 不挂起**：xllm 没有 Session，`allow_deferred` 保持关闭，所有等待都在工具内进行，最长 30 分钟返回 LLM。原设计中的 xllm 等待循环、run 状态 `waiting`、`xllm status` 显示等待对象都不做。xllm 原先“不接手 PendingTool 快照”，改为上一项的做法：按当时的状态回填后续跑。
+- [ ] **宿主不能挂起时**（xllm，或 Session 未开启挂起）：`wait_task` 最长等 30 分钟，结果是当时的状态。其它工具返回 Pending 时，ToolManager 用 resolver 在工具内等待，同样最长 30 分钟，到时以“仍在运行”和 task_id 返回 LLM（第 1 种），受 §3.1 约束。都不再以 Internal 错误结束 run。
+- [ ] **子 run 暂停或被打断**（`llm_explore` / `llm_understand_media`）：不再返回 Pending，直接作为结果返回，附上 `xllm --resume --run <id>` 接手提示。
+- [ ] 一次挂起只等一个调用，同批后续调用等回填后再派发。保持现状（串行语义），写进设计文档。
+- [ ] **Session stop 对 task 的影响**（2026-10-02 review）：stop 作用于本 Turn 中出现过的全部 task，即结果或挂起记录里带 task_id 的 task，与 task 来自哪个 task-mgr 无关：
+  - buckyos 的 task：Turn 的 task 进入 stop 状态，按 task-mgr 的父子关系传导给所有 sub task，审批票据随之作废；
+  - 进程内的 task：宿主对本 Turn 登记过的 task 逐个调用 `resolver.cancel`；
+  - 支持取消的被取消；不支持的继续运行，状态如实记录；
+  - 之前 Turn 创建、仍在运行的 task 不受影响。
+- [ ] **挂起期间收到 Session stop**：挂起时 llm_context 已经结束。宿主停止等待，Turn 的 task 按上一项传导 stop，再用 task 当时的状态（已取消、已作废或仍在运行）回填，Turn 结束。仍在运行的 task 继续显示在 background env 中。如果结果已经回填并提交，先完成回填再处理 stop。
+- [ ] 测试，function call 与 behavior 各覆盖：
+  - 挂起 → 快照 → 宿主用 resolver 回填 → 同一 run 续跑（测试宿主模拟 Session 层等待）；
+  - 工具内等待到 30 分钟上限（测试用小值）时返回当时的状态，task 继续运行；
+  - xllm 接手已挂起的 run：按当时的状态回填后续跑；
+  - `until_ms` 到期，按“仍在运行”回填；
+  - 进程内 task-mgr 重启后，按 Unknown 回填；
+  - 组合 resolver 按 task_id 的来源分派；挂起在 buckyos task 上、接手方访问不了 buckyos 时拒绝；
+  - 内联 `wait_task` 与挂起后回填的结果一致；
+  - background env 随 task 状态变化，结束的 task 被读取后不再显示。
 
-  这就是 xllm 上的串行等待：function call 不返回，定期检查，崩溃后继续等。
-- [ ] **区分“后台在推进”与“需要外部动作”**：`llm_explore` / `llm_understand_media` 的子 run 处于 Paused / Interrupted 时不会自己推进，poll 只会一直等到超时。需要二选一（见 §9 第 2 项）：
-  - 改为 Error，并附 `xllm --resume --run <id>` 提示；
-  - 作为 `wait_for_task` 类等待，由宿主或人工接手子 run 后再回填。
+## 5. P1：`shell` 的执行模式与 task
 
-  只有真正在后台推进的子 run 才用 `wait_for_runtime_task`。
-- [ ] **派发时宿主未开 deferred 的降级**：工具返回 Pending 而宿主 `allow_deferred=false` 时，不再以 Internal 错误结束整个 run。ToolManager 知道是否开启；关闭时按工具声明降级为以下两种之一（waist 的严格契约不变，规则见 §9 第 3 项）：
-  - 在工具内阻塞，直到终态（同步语义，受 §3 的取消和时限约束）；
-  - 转成携带任务引用和查询方法的普通 Success（并行语义）。
+长命令的执行方式由配置决定，不让 LLM 在调用前选择。
 
-  这与“已处于挂起态的快照遇到缺能力的接手方 → 拒绝 / RecoveryBlocked、保留现场”（lib_opendan TODO §6.1）是两个不同时机，不矛盾。
-- [ ] 一次挂起只等一个调用，同批后续调用等回填后再派发——保持现状（串行语义），写进设计文档，本期不做并发等待。
-- [ ] 挂起期间收到 stop 的处理按 §9 第 7 项定稿后，在 waist 文档中写明回填 Cancelled 后 run 的结束方式。
-- [ ] 测试：function call 与 behavior 各覆盖以下路径：
-  - Pending → 持久化 → kill -9 → resume 后继续等待 → 终态回填 → 同一 run 续跑；
-  - 截止时间到期；
-  - resolver 返回 Unknown；
-  - 接手方缺少 resolver 时拒绝；
-  - 回填后再次 Pending 的链式等待。
-
-## 5. P1：并行等待——后台 job 与 run 的所有权分离
-
-执行跟踪的前提是“run 结束或被接手之前，它启动的进程全部确认停止”；并行等待要求后台任务比 run 活得久。两者只有在所有权被显式区分后才能共存。
-
-- [ ] **两类执行**：
-  - run-owned：前台 exec 及其派生进程，保持现有纪律，run 结束或被接手前必须停止。
-  - detached job：显式以后台方式启动，不进 `run.executions`；run 结束、Runner 崩溃、run 被接手都不停止它。
-
-  job 属于执行体（Runtime TODO 的 Sandbox），归属记录在 Session（libopendan）或 workdir 下的 job 存储（xllm）。
-- [ ] **启动与记录**：
-  - exec 增加 `background: true`（或独立的 `job_start`，见 §9 第 5 项），立即返回 Success，内容包括 `job_id`、日志位置和查询方法。
-  - 沿用启动握手：先持久化 job 记录，再放行命令。
-  - job 用独立的环境标记（如 `OPENDAN_JOB_ID`），run 恢复时的扫描匹配不到它。
-  - 包装脚本在命令结束时写入退出码和结束时间，job 状态不依赖 Runner 存活。
-- [ ] **稳定身份与崩溃恢复**（同 lib_opendan TODO §6.3 的原则）：`job_id` 由 `(session, run, call_id)` 推导（xllm 无 Session 时用 `(run, call_id)`）。启动 job 的调用如果在 Runner 崩溃时仍在 inflight：
-  - job 记录已存在 → 回填为带 `job_id` 的已知结果，不注入“结果未知”，避免 Agent 重复启动；
-  - job 记录不存在 → 启动握手保证命令没有执行，记为未执行。
-- [ ] **查询与停止**：
-  - `job_status`：running / exited{code} / lost（进程不在也没有退出记录，即被杀或重启过）/ unknown；以 probe 结果和退出记录为准。
-  - `job_output`：日志尾部，有长度上限。
-  - `job_stop`。
-- [ ] **生命周期**：并发数和最长存活时间有上限；提供按归属停止并清理 job 的接口（libopendan 在 Session finished / discard 时调用，见 lib_opendan TODO §6.2）；xllm 的 job 存储要有 GC 规则；无法核验的 job 不静默删除。
-- [ ] **完成通知钩子**：提供 job 完成的观察接口（watch 或 poll 退出记录），宿主据此产出 `AgentEvent{source: {kind: job, id}}`。llm_context 层不负责事件路由；libopendan 以 Runner 内置 bridge 接入（lib_opendan TODO §6.2）。
-- [ ] **串行等待也用 job**：同一个 job 也可以按串行语义使用。比如 `background: "wait"`（名称待定）启动 job 后返回 `Pending{wait: {source: {kind: job, id}, class: wait_for_runtime_task}}`，由 job resolver（§4）poll 并回填。这样 exec 的串行、并行两种等待共用一套 job 底座，崩溃恢复行为一致。串行模式的 job 不登记事件订阅，避免同一完成既回填结果又作为事件注入。
-- [ ] **前台 exec 留下后台进程**（命令里自己写了 `&` / nohup）：
-  - 结果里明确告知 LLM：这些进程属于本 run，run 结束时会被停止；长时间任务请用 background 模式。
-  - xllm 和 libopendan 统一在 run 结束时停止这些进程。xllm 现在不停，是否统一见 §9 第 4 项。
-  - 恢复时被停止的进程，要在 transcript / worklog 里留说明，不再静默。
-  - 在 checkpoint 边界调用 `sweep()`，及时释放已退出的执行记录。
-- [ ] 改写 exec 工具说明：去掉 nohup 建议，改为介绍 background 模式和 job 工具的用法。
-- [ ] 实施位置：首版只做 native。tmux / remote_ssh 按 Runtime TODO 的执行体接口实现同一契约；未实现时，background 明确报告能力不足。
-- [ ] 测试：job 在 run 结束、Runner kill -9、run 被接手后都继续运行；启动后、结果持久化前崩溃不产生重复 job；退出记录在 Runner 不在时仍能写入；lost 状态可识别。
+- [ ] **模式**（配置项 `shell.mode`）：
+  - `wait`（硬等）：现有行为，执行到结束或 `timeout_ms` 到期（到期结束命令）。xllm 的很多用法会这样配置。`timeout_ms` 的上限是配置项，默认 60 分钟；手工选择硬等时可以设为 0，表示不限。不受 §4 的 30 分钟规则约束。
+  - `auto`（默认）：先在工具内等 `wait_ms`（默认 30s，上限 30 分钟；LLM 可以为长编译等命令调大）。到期仍未结束，命令转为 task 继续运行，并立即返回“仍在运行”的结果（§4 第 1 种），内容包括 task_id、已有输出、已运行时长，以及 `wait_task` / `get_task_state` 的用法提示。
+  - LLM 只看到当前模式的参数：§3.3 的工具说明按模式生成，wait 模式说明 `timeout_ms`，auto 模式说明 `wait_ms` 和转 task 的行为。不提供 `background` 之类让 LLM 选择执行方式的参数。
+- [ ] **执行目录**：native 的 `shell` 一律把 stdout / stderr 写入执行目录（由 `(run_id, call_id)` 推导，同 §3.2 的 tmux / remote_ssh），退出时写 `exit` 文件，不经管道。
+  - 这样转为 task 后，即使执行器退出，命令也不会因管道断开收到 SIGPIPE；task-mgr 重启后仍能读到输出和退出码。
+  - 崩溃后 §3.2 的“被打断”结果也能附上输出尾部（§6）。
+- [ ] **转 task 前后的归属**：
+  - 转 task 之前，按前台命令处理（§3.1 / §3.2 的取消与恢复）。
+  - 转 task 时解除 `ProcessGroupGuard` 和 `kill_on_drop`，命令不再属于 run。run 被打断、结束或被接手都不停止它（同 §3.2 的父子进程语义），由进程内 task-mgr 管理。Session 的 stop 是另一回事：它作用于本 Turn 的 task（§4）。
+  - 本层不给 task 设最长存活时间；task 能否取消由实现声明（§4）。native 的 shell task 可以取消（结束其进程组）。
+- [ ] **不区分 job 与 run**：删除原设计中的 detached job 子系统，包括 `background` 参数、`job_*` 工具、`OPENDAN_JOB_ID`、由 `(session, run, call_id)` 推导的稳定身份、启动握手、job 存储与 GC、完成通知钩子。
+  - task_id 写在 call_result 里。
+  - 转 task 之前崩溃：按 §3.2 给出“被打断”结果。
+  - 转 task 之后崩溃：由 LLM 再查一次 task_id。
+- [ ] **前台 `shell` 命令自己留下的后台进程**（命令里写了 `&`、nohup 或 setsid）：按 §3.2 不停止、不跟踪。常驻服务用 nohup / setsid 启动后立即返回；需要结果的长命令直接在前台运行，由 auto 模式转为 task。
+- [ ] 工具说明与 §3.3 一起改写。
+- [ ] 实施位置：
+  - 首版只做 native 与进程内 task-mgr；
+  - tmux / remote_ssh 的执行目录已有输出与 `exit` 文件，按同一契约接入；
+  - `shell` 只用进程内 task-mgr。buckyos task-mgr 的接入只在有工具调用返回 buckyos task id 的服务时才做。
+- [ ] 测试：
+  - `wait_ms` 内结束的命令，结果与 wait 模式一致；
+  - 超过 `wait_ms` 后转为 task，返回 task_id 和已有输出，之后 `wait_task` 拿到最终结果；
+  - 转 task 后 run 结束、Ctrl-C、kill -9 执行器，命令都继续运行，输出与 `exit` 正常写入；resume 后 `get_task_state` 给出结果或 Unknown；
+  - 转 task 之前 kill -9 执行器，resume 给出 §3.2 的“被打断”结果。
 
 ## 6. P2：同步崩溃恢复的信息补全
 
-- [ ] 恢复时区分“命令已退出”和“仍在运行、被停止”，写进 unresolved 的 reason，并附上命令、开始时间和已运行时长。
-- [ ] `TrackedBashRunner` 把输出同时写入执行目录下的有界日志，崩溃后 unresolved 结果可以附上输出尾部，帮助 Agent 判断进度和是否重试。
-- [ ] 保持不重放。`ToolSpec.effect` 的迁移仍按 Runtime TODO §7 后移。`exec` 的副作用取决于具体命令，effect 只能是 unknown，所以长命令崩溃后始终交给 Agent 判断。需要自动续跑的长任务走 §5 的 job，依据 job 状态判断，不重放命令。
+- [ ] native 的执行目录由 §5 提供后，§3.2 的“被打断”结果附上输出尾部和已运行时长，帮助 Agent 判断进度和是否重试。
+- [ ] 保持不重放。`ToolSpec.effect` 的迁移仍按 Runtime TODO §7 后移。`shell` 的副作用取决于具体命令，effect 只能是 unknown，所以长命令崩溃后始终交给 Agent 判断。长命令在 auto 模式下转为 task，崩溃后依据 task 状态判断，不重放命令。
 
 ## 7. 与 lib_opendan TODO 的对应
 
 | 本文 | lib_opendan TODO | 关系 |
 |---|---|---|
-| §3 工具取消与时限 | §4 工具执行期间的 stop 监视；§5 单写者纪律 | 监视任务依赖 `ToolCallCtx`；只查看控制输入并触发中断，不确认 / 消费输入、不写 state |
-| §4 `wait.source` / `wait.class` | §4 挂起调用与普通订阅分别登记和匹配 | 匹配按 `(kind, id)` 相等；`summary` 不参与 |
-| §4 等待记录 | §6.1 `waiting_for.refs`、删除 `pending_task_calls` | refs 从快照的等待记录生成 |
-| §4 `DeferredResolver`、run.json 记录所需种类 | §6.1 宿主查询能力；§7 xagent / xllm 交接 | 接口在本层，实现由宿主 / Runtime 提供 |
-| §4 派发时降级 | §6.1 缺能力时 RecoveryBlocked | 两个不同时机 |
-| §5 job 与完成钩子 | §6.2 自动订阅、内置 bridge、Session 结束停止 job | 本层提供 job 与钩子，路由与订阅在 Session |
-| §5 job 稳定身份 | §6.3 dispatch intent 与幂等身份 | 同一原则 |
-| §9 第 7 项 | §4 停止、审批和结果完成的先后 | 规则定稿后两边同步 |
+| §3 工具取消与时限 | §4 工具执行期间的 stop 监视；§5 单写者纪律 | 监视任务依赖 `ToolCallCtx`；只查看控制输入并触发打断或平滑结束，不确认 / 消费输入、不写 state |
+| §4 `Pending{task_id}` | §4 挂起调用与事件的匹配 | 按 `task_id` 相等匹配 |
+| §4 挂起记录 | §6.1 `waiting_for.refs`、删除 `pending_task_calls` | refs 即挂起记录中的 `task_id` |
+| §4 `RunningTaskResolver` | §6.1 宿主查询能力；§7 xagent / xllm 交接 | 接口在本层；组合进程内 task-mgr 与工具需要时的 buckyos task-mgr |
+| §4 宿主不支持挂起时在工具内等待 | §6.1 缺能力时 RecoveryBlocked | 两个不同时机 |
+| §4 background env、§5 auto 转 task | §6.2 自动订阅 | 本层提供 `active()` 和 env 插槽；run 结束后的唤醒在 Session |
+| §5 不区分 job 与 run | §6.3 dispatch intent 与幂等身份 | shell 不再需要推导稳定身份：task_id 写在 call_result 里，崩溃后再查 |
+| §3.1 两种结束方式、§4 stop 对 task 的影响 | §4 停止、审批和结果完成的先后 | Session 的 stop 按 §1 的含义，用平滑结束实现，必要时打断；Turn 的 task 的 stop 传导给 sub task（审批作废）；lib_opendan TODO 按此同步 |
+
+lib_opendan TODO 中引用本文原设计的条目（§4 的 `wait.source{kind, id}` 匹配，§6.1–§6.3 的 job、bridge、稳定身份），review 通过后按本次简化同步。[switch-support TODO](./llm-context-switch-support-todo.md) 中 T4 引用的 `subrun` 种类也一样。
 
 ## 8. 对 xAgent.md 的修改（review 通过后再改）
 
 | 位置 | 修改 |
 |---|---|
-| §0 第 5 点、§5.2 | `DoContext.deadline` 与取消改由 waist 的 `ToolCallCtx` 提供（§3）；`RequireApproval` 的 Pending 带 `wait{source: {kind: approval, id: ticket}, class: wait_for_task}`，审批经 resolver / 控制协议回填 |
-| §1.1 Agent Runtime 行 | 职责补上“后台 job 的所有权与查询”；“后台进程的识别与停止”限定为 run-owned 执行 |
+| §0 第 5 点、§5.2 | `DoContext.deadline` 与取消改由 waist 的 `ToolCallCtx` 提供（§3）；`RequireApproval` 返回 `Pending{task_id: 审批票据}`，审批结果经 resolver 回填；审批是当前 Turn 的 task 的 sub task，Turn 被 stop 时作废 |
+| §1.1 Agent Runtime 行 | 删除“后台进程的识别与停止”，改为“打断时按 runtime 处理当前命令；恢复时按 runtime 给出被打断命令的结果”（§3.2）；职责补上 shell 的 auto 转 task，task 的查询与等待由 `RunningTaskResolver` 提供（§4、§5） |
 | §3.1 G5 | 改为由 waist ctx 解决，`SessionToolManager` 不再自带 deadline |
-| §4.3 / §4.6 | `EventSource` 与 `wait.source` 共用词汇，增加 `job`（以及 `subrun` / `approval`）；本机 job watcher 作为 Runner 内置 bridge，先于 task_mgr 桥落地，用来验证并行等待 |
-| §4.7 Session 模板 | 无队列模板的并行 job 处理（§9 第 6 项）；Session 结束时停止其 job |
-| §9.3 / §9.5 | PendingTool 分支：`waiting_for.refs` 由等待记录生成；等待出口与 inbox 是否为空无关，统一调用 resolver poll，Ready 后提交 ToolResults，续跑同一 run / Turn；挂起期间收到 stop 的规则（§9 第 7 项）；工具执行期间的 stop 监视任务 |
-| §9.4 | 删除 PendingTool → `RecoveryBlocked`；有 resolver 时恢复等待，缺少能力时才返回 RecoveryBlocked |
-| §10 验证矩阵 | 新增四个实验：① 串行等待：job Pending，等待中 kill -9，恢复后继续等，终态回填到同一 Turn。② 并行等待：background job，Turn 关闭后 job 完成，job 事件唤醒 active session；期间 Runner 被杀，job 不受影响。③ 长 exec 中途 stop：Cancelled、快照配对、不重跑。④ 同步 exec 中途崩溃：unresolved 说明“已被停止”，不重放 |
-| §11 C8 / C12 | C12 的“`allow_deferred` 可开”改为依赖本文 §4 的 resolver 与等待循环；C8 的 Sandbox 包含 job 所有权；job 子系统新增一项或并入 C8 |
+| §3.6 工具子上下文（T4） | 不再用 `wait.source.kind == SUBRUN` 识别子 run：Session 按 `task_id` 在自己的登记表里识别；接手检查改为“接手方的 resolver 能否解析挂起的 task_id”（§4） |
+| §4.3 / §4.6 | 删除 `wait.source` 词汇；task 状态经 background env 呈现（§4 的半自动订阅），run 结束后的唤醒按 lib_opendan TODO §6.2 |
+| §4.7 Session 模板 | 无队列模板中 task 的呈现与唤醒（§9 第 6 项）；Session 结束时 task 的清理见 §9 第 4 项 |
+| §4.15 同步等待子 session | 不再由 `session:` 前缀归一；`task_id` 对 llm_context 不透明，由 Session 提供的 resolver 解析 |
+| §9.3 / §9.5 | PendingTool 分支：`waiting_for.refs` 即挂起记录的 `task_id`；等待出口与 inbox 是否为空无关，统一调用 `resolver.wait`，结束后回填 ToolResults，续跑同一 run / Turn；挂起期间收到 stop 时，Turn 的 task 的 stop 传导给 sub task 后再回填（§4）；Session stop 用 llm_context 的平滑结束实现，必要时打断（§1、§3.1）；工具执行期间的 stop 监视任务 |
+| §9.4 | 删除 PendingTool → `RecoveryBlocked`；恢复时用 resolver 继续等待，只有挂起在 buckyos task 上、接手方访问不了 buckyos 时才拒绝 |
+| §10 验证矩阵 | 新增实验：① `wait_task` 挂起：等待中 kill -9，恢复后继续等，结果回填到同一 Turn。② auto 转 task：命令超过 `wait_ms` 后转为 task，background env 显示其状态；Turn 关闭后 task 完成；Runner 被杀不影响 task。③ 长 shell 中途 stop：Cancelled、快照配对、不重跑。④ 同步 shell 中途崩溃：恢复不阻塞、不杀进程，按 runtime 给出“被打断”的结果，不重放。⑤ nohup 起的服务在 stop、run 结束和接手后都仍在运行。⑥ stop 传导：Turn 的 task 被 stop 后，审批作废，本 Turn 中可取消的 task 被取消，之前 Turn 的 task 不受影响 |
+| §11 C8 / C12 | C12 的“`allow_deferred` 可开”改为依赖本文 §4 的 resolver 与 Session 层等待（xllm 不开）；C8 的 Sandbox 包含 shell 的执行目录与 auto 转 task；进程内 task-mgr 与组合 resolver 新增一项或并入 C8 |
+| 全文 | 工具名 `exec` / `exec_bash` 改为 `shell`（§3.3） |
 
 ## 9. 待 review 决定
 
-1. deferred 截止时间到期时回填 `Cancelled` 还是 `Error{timeout}`。
-2. 子 run 暂停 / 中断时返回 Pending 的工具（`llm_explore`、`llm_understand_media`），改为 Error 加接手提示，还是作为 `wait_for_task` 类等待。
-3. 派发时宿主未开 deferred 的降级，是由每个工具声明（阻塞或返回 Success），还是统一一种规则。
-4. xllm 是否也在 run 结束时停止 run-owned 的后台进程，与 libopendan 保持一致。
-5. 后台执行的接口形态：`exec` 加参数，还是独立的 `job_*` 工具；`wait.source.kind` / `EventSource` 的词汇表（`job` 是否独立于 `task`）。
-6. 无输入队列的模板（work session）里的并行 job：由 Runner 内置 bridge 把完成事件写入 `pending_events`，还是这类模板只允许串行等待。
-7. 挂起期间收到 stop。建议规则：调用 `resolver.cancel`，回填 Cancelled，run 以 Stopped 结束；如果结果已经回填并提交，先完成回填再处理 stop。另需确定审批票据在 stop 时是否同时作废。
+1. ~~deferred 截止时间到期时回填 `Cancelled` 还是 `Error{timeout}`~~ 随 §4 的简化已定：`until_ms` 到期按当时的状态（仍在运行）回填，不算错误。
+2. ~~子 run 暂停 / 被打断时返回 Pending 的工具如何处理~~ 随 §4 的简化已定：直接作为结果返回，附接手提示。
+3. ~~派发时宿主未开 deferred 如何降级~~ 随 §4 的简化已定：在工具内等待，不需要按工具声明。
+4. ~~xllm 是否也在 run 结束时停止 run-owned 的后台进程~~ 已定（2026-10-02 review），见 §3.2：
+   - 遵循标准父子进程语义，不停止命令留下的后台进程；
+   - 恢复时不核验、不停止进程，按 runtime 给出“被打断”的 call_result；
+   - libopendan 共用 exec_tracking，一并处理；
+   - Session / Sandbox 销毁时的清理，建议交给 runtime 自身（例如停止容器），native 不另做。
+5. ~~后台执行的接口形态与词汇表~~ 随 §4 / §5 的简化已定：没有让 LLM 选择后台执行的参数，auto 模式到期转 task，task 工具只有 `wait_task` / `get_task_state`，没有 `wait.source` 词汇表。`cancel_task` 是否可用由 task 的实现决定（2026-10-02 review）：不能可靠取消的 task 返回“不支持取消”，结果提示里也不出现它（§4）。
+6. 无输入队列的模板（work session）：run 内由 background env 呈现 task 状态；run 结束后 task 才完成时是否唤醒 Session，由 lib_opendan TODO §6.2 决定。
+7. ~~挂起期间收到 stop~~ 已定（2026-10-02 review）：stop 的含义见 §1 术语，llm_context 层用打断和平滑结束实现（§3.1）；stop 作用于本 Turn 的全部 task：buckyos 的 task 经 Turn 的 task 传导（审批作废），进程内的 task 由宿主逐个取消（§4）。
+8. ~~默认值~~ 已定（2026-10-02 review）：`wait_ms` 默认 30s；任何在工具内等待 task 的调用最长 30 分钟必须返回 LLM，更长的等待只能挂起到 Session 层（§4）；本层不设 task 的最长存活时间；平滑结束时等待不可取消工具的时长默认 30s；wait 模式（硬等）的 `timeout_ms` 上限默认 60 分钟，手工选择硬等时可设为 0（不限）（§5）。
 
 ## 10. 实施顺序与验证
 
 命令在 `src/` 下执行。
 
-1. §3（P0）：立即开工，不依赖 lib_opendan 的输入协议，可与 lib_opendan TODO §8 第 1、2 步并行。验证 `cargo test -p llm_context`、`cargo test -p agent_tool --lib`。
-2. §4（P1）：等待记录、快照升版、resolver、接手检查、xllm 等待循环与降级规则；先定 §9 第 1–3 项。
-3. §5（P1）：job 子系统（native），与 Runtime TODO 的 Sandbox 协调先后；同步改 exec 工具说明。先定 §9 第 4–6 项。
+1. §3（P0）：立即开工，不依赖 lib_opendan 的输入协议，可与 lib_opendan TODO §8 第 1、2 步并行。§3.1（含两种结束方式与工具的可取消声明）与 §3.2 一起做，两者共用 cancel 路径；§3.3 的改名与 §3.2 的协议升版、fixtures 重新生成一起做。验证 `cargo test -p llm_context`、`cargo test -p agent_tool --lib`，§3.2 另跑 `cargo test -p libopendan -- --test-threads=1`，确认 `finish_run` 的变化。
+2. §4（P1）：挂起记录 `{task_id, until_ms}` 与快照升版、`RunningTaskResolver` 与进程内 task-mgr、`wait_task` / `get_task_state` / `cancel_task`、background env 插槽、xllm 接手已挂起 run 时的立即回填。
+3. §5（P1）：`shell` 的 wait / auto 模式、native 执行目录、到期转 task，与 Runtime TODO 的 Sandbox 协调先后；同步工具说明。可与第 2 步合并实施。
 4. §6（P2）：恢复信息补全。
 5. 之后才进入 lib_opendan TODO §6 的宿主接入（`cargo test -p libopendan -- --test-threads=1`）；review 通过后修改 xAgent.md，同步《LLM Context 设计》、xllm Rust SDK、Session Directory Protocol 和 fixtures。
 

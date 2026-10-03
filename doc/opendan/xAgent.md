@@ -1,8 +1,8 @@
 # xAgent：Agent Session 分层验证工具设计
 
-- 状态：草案 v0.2（2026-10-02，v0.2 增加 §3.2–§3.7 Context 调度），待 Review 后开始实施
+- 状态：草案 v0.2（2026-10-02，v0.2 增加 §3.2–§3.7 Context 调度、§4.10–§4.16 Sub Session），待 Review 后开始实施
 - 位置：`src/frame/lib_opendan`（二进制 `xagent`，替代 `examples/session.rs`）
-- 依据：[Agent Session SDK 实现计划](<./Agent Session SDK 实现计划.md>) v0.10、[LLM Context readme](../llm_context/readme.md)、[xllm Rust SDK 参考](../llm_context/xllm_rust_sdk.md)、`doc/opendan/protocol/`
+- 依据：[Agent Session SDK 实现计划](<./Agent Session SDK 实现计划.md>) v0.10、[长任务与执行体 RFC](<./OpenDAN Long Task & Sub-Agent.md>)、[LLM Context readme](../llm_context/readme.md)、[xllm Rust SDK 参考](../llm_context/xllm_rust_sdk.md)、`doc/opendan/protocol/`
 - 读者：决定是否按本文实施 xagent 的人；文中“现状”都对照 2026-10-02 的 `libopendan` / `agent_tool` 代码
 
 ---
@@ -13,6 +13,8 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 
 **Agent Session 与 LLMContext 的根本区别是 Context 调度**（§3.2–§3.7）：LLMContext 跑到 `next_behavior`（或一个挂起点）就返回；下一个 context 从哪份快照起、换成什么配置、结果怎么交回，全部由 Session 决定。普通切换、fork、independent、继承 context 的工具（工具子上下文）、改写、Turn 边界新建 run 是同一张转移表上的几行。继承 context 的工具不做成进程内工具，而是由工具调用触发的转移，结果经 PendingTool 交回。
 
+**Sub Session 是 SDK 化的主要用途之一**（§4.10–§4.16）：创建子 session 是一个层 ② 标准工具；父子各写各的 state，只经登记表、输入通道与控制协议沟通。进展以登记表为真相：父可以随时拉取，也可以按创建时选的汇报方式收到事件（进度不唤醒，需要关注和结束会唤醒）；子 LLM 也能主动给父发消息。等待分异步（默认）与同步（Pending + `session` resolver）两种；父结束前会等需要汇报的子 session。
+
 1. **xagent 是 xllm 的上一层**：xllm 加载 `.llm_context`，把一个 LLMContext run 推进到一个 Outcome；xagent 加载（或创建）一个 Agent Session，把它推进到**一个 Turn 关闭**，或常驻地不断完成 Turn。两者的 run 目录相同（`runs/` 就是 xllm 的 run 目录），同一个 run 可以在两者之间交接，这是验证 L2 / L3 边界的主要手段。
 2. **Agent Session 构造 llm_context 复用 xllm 的宿主装配 API**（`XllmTask::prepare_hosted` / `hosted_request` / `hosted_waist_deps` / `rebuild_toolset` / `create_run_llm` / `RunStore`），但 **system 段、历史段、输入批次、工具调度包装、checkpoint 钩子、run 生命周期都由 Session 决定**；差异清单见 §3。
 3. **Agent 感知到的输入只有两种：`AgentMessage` 与 `AgentEvent`**（§4）。Session 不关心它们怎么来的，只要求信封（key、来源与 index、from、at_ms、subscription_id）；把系统事件（msg-center、kevent、timer、task_mgr、子 session）翻译成这两种输入的是上层 **bridge**（xagent serve、以后的 OpenDAN Supervisor、应用）。事件是唤醒还是只在观察边界注入，由 **Session 按自己的订阅配置决定**，不由 producer 决定；半订阅事件按 key 保留在 state.json，空闲时不丢。stop / decide / subscribe / activity / perceive 不是 Agent 输入，是**Session 控制协议**，只是搭同一条队列。
@@ -20,7 +22,7 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 5. **Runtime 接管全部 agent-tool**（§5）：共享 AgentRuntime/Sandbox 已在 agent_tool 实现 native/tmux/remote_ssh、文件后端、环境与执行跟踪。Session 保留 lease、门槛、inflight、receipt、bin/helper 和绑定。ActionGuard、grant 与审批为后续 policy 设计，不属于已完成首版。
 6. **behavior 配置来自 Agent State，在 Session 构造时冻结进 `session_config.prompt`**（§6）；切换模式由**目标 behavior** 的冻结配置决定。
 7. **Agent State 不配置**（§7）：`AgentStateClient::connect(agent_did, who)` 按"进程内 → 本机 AgentRoot → kRPC"解析；Runner 只依赖 trait。
-8. **验收项**是 E1（xllm 接手）、E4（换 Agent State 实现）、E5（工具形态）、E13（无队列 work session）、E14（半订阅注入时机）、E17（Runtime 沙箱接管全部工具）、E18（Do 前检查与授权）、E19（普通切换换配置、切换点交接）、E20（工具子上下文），其余实验是回归（§10）。
+8. **验收项**是 E1（xllm 接手）、E4（换 Agent State 实现）、E5（工具形态）、E13（无队列 work session）、E14（半订阅注入时机）、E17（Runtime 沙箱接管全部工具）、E18（Do 前检查与授权）、E19（普通切换换配置、切换点交接）、E20（工具子上下文）、E21（Sub Session 派出与汇总），其余实验是回归（§10）。
 
 ---
 
@@ -33,14 +35,14 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 | 层 | 组件 | 回答的问题 | xagent 要证明的事 |
 |---|---|---|---|
 | LLM Context | `llm_context` + xllm（`agent_tool::xllm`） | 一次上下文推理循环：Round / Step、工具、快照、resume | Session 装配的 run 可以被 xllm 原样接手 / 跑完；Session 不重新实现 Loop |
-| Agent Session | `libopendan`：目录协议 + Runner | 以某个 Agent 的身份，把一次逻辑 Input 推进到 result（Turn）；**Turn 内调度多个 LLMContext**（切换、fork、independent、工具子上下文） | Turn 的开启 / 并入 / 关闭只由 Session 决定；LLMContext 停在 `next_behavior`，之后的转移只由 Session 决定；三种输入形态语义一致；崩溃后恢复同一 Turn |
+| Agent Session | `libopendan`：目录协议 + Runner | 以某个 Agent 的身份，把一次逻辑 Input 推进到 result（Turn）；**Turn 内调度多个 LLMContext**（切换、fork、independent、工具子上下文）；**创建与协调 Sub Session** | Turn 的开启 / 并入 / 关闭只由 Session 决定；LLMContext 停在 `next_behavior`，之后的转移只由 Session 决定；三种输入形态语义一致；崩溃后恢复同一 Turn |
 | Agent Runtime | `agent_tool::runtime` | 工具在哪里、以什么 PATH / cwd / 环境运行；后台进程的识别与停止 | 同一 session_config 可绑定不同 runtime；绑定后不可换；工具集与 runtime 解耦 |
 | Agent State | `libopendan::state` | 跨 Session 的 Agent 状态：登记表、活动视图、感知、认知、产物、**behavior 目录** | Runner 只依赖 `AgentStateClient`；文件实现 / 进程内实现 / kRPC 桩行为一致；behavior 冻结后不受更新影响 |
 
 ### 1.2 范围
 
-- 做：work / self_improve / self_check session；native 与 tmux runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态。
-- 不做（沿用计划的后移项）：UI session 与 msg-center 输入、kRPC 服务端、DID Object 宿主、opendan 改造、TS 版。
+- 做：work / self_improve / self_check session；native 与 tmux runtime；文件版与进程内 Agent State；behavior 冻结与 `BehaviorAssembler`；CLI 形态 session 工具；单 Turn / 积压消费 / 常驻三种运行形态；Sub Session（创建工具、ChildDriver、汇报与等待，§4.10–§4.16）。
+- 不做（沿用计划的后移项）：UI session 与 msg-center 输入、kRPC 服务端、DID Object 宿主、opendan 改造、TS 版；Sub-Agent Instance（另一个 Agent DID，RFC §16–§17）。
 - 不改协议目录结构（目录项由用户定稿，§4.1 of 计划）；新增字段只落在 `session_config.prompt` 与 `state.json`，schema 版本号递增。
 
 ### 1.3 与 xllm 的对位
@@ -273,7 +275,7 @@ impl AgentSession {
 
 ---
 
-## 4. Agent Input：原理、协议对象、模板
+## 4. Agent Input 与 Sub Session：原理、协议对象、模板、父子协作
 
 ### 4.1 原理
 
@@ -334,7 +336,7 @@ impl AgentSession {
 
 **半订阅是状态，不是事件流**。Observe 投递的事件在 state.json 里按 `(subscription_id, source)` 只保留最新一份（`pending_events`，上限等于订阅数加系统事件数，很小），terminal 事件单列不覆盖。注入时机：有 run 在跑 → 下一个观察边界；空闲 → 下一个 Turn 的首批输入。注入后随 receipt 清除。**空闲时不丢弃**（现状的 `change_dropped` 行为取消；只有被更新的旧值才记一条 `event_superseded`）。
 
-**内置 bridge**：Session 来源的订阅（`source = session`）现在由 Runner 在观察边界拉登记表比 rev，没有外部 producer。按原理它也要产出 AgentEvent，所以把它定义为 Runner 内的内置 bridge：比对 rev 后合成 `AgentEvent{subscription_id, source: Session, seq: rev, summary: watched 字段差异}`，再走同一套 `pending_events` 与注入逻辑。worklog 与实验断言只看一种形态。
+**内置 bridge**：Session 来源的订阅（`source = session`）现在由 Runner 在观察边界拉登记表比 rev，没有外部 producer。按原理它也要产出 AgentEvent，所以把它定义为 Runner 内的内置 bridge：比对 rev 后合成 `AgentEvent{subscription_id, source: Session, seq: rev, summary: watched 字段差异}`，再走同一套 `pending_events` 与注入逻辑。worklog 与实验断言只看一种形态。子 session（`origin.parent_session` 指向本 session）不需要显式订阅，内置 bridge 直接查登记表，事件的分类与投递见 §4.14；其中 Wake 的几类进入本批 `wake_events`，不进 `pending_events`。
 
 ### 4.4 Session 控制协议
 
@@ -379,7 +381,7 @@ bridge 必须保证：同一来源内有序、至少一次、key 唯一。Sessio
 | timer 桥 | 同上（self_check） | `AgentEvent{source: Timer}` |
 | task_mgr 桥 | 后移 | `AgentEvent{source: Task}` |
 | msg-center 桥 | 后移（UI session） | `AgentMessage{msg_ref}` |
-| 子 session 桥 | Runner 内置（§4.3） | `AgentEvent{source: Session}` |
+| 子 session 桥 | Runner 内置（§4.3、§4.14） | `AgentEvent{source: Session}`：订阅的 session 与本 session 的子 session |
 | CLI | `xagent post --msg / --event` | 任意一种，用于实验与手工驱动 |
 
 实验里用 `--no-bridge` 关掉进程内桥，手工 `post` 控制时序。
@@ -399,6 +401,8 @@ pub struct SessionTemplate {
     pub load_hints: bool,
     pub default_behavior: Option<String>,
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
+    pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
+    pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
     pub system_event_delivery: fn(&AgentEvent) -> Delivery,
 }
 ```
@@ -410,7 +414,7 @@ pub struct SessionTemplate {
 | `self_improve` | One | FinishFailed | None | Off | 否 | 感知窗口整理 |
 | `self_check` | Unbounded | FinishFailed | Queue（timer 事件） | Off | 是 | 定时自检 |
 
-**无队列 work session 的后果**（接受这些才成立）：stop 只能由 lease 持有者自己退出；decide 走 artifacts 门面不经 session；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断、感知只有结束时的 run_digest；父 session 对子 session 的半订阅（S-17）要求**父**有队列，父通常是 ui 类。声明了订阅的 work session 需要队列承接 bridge 的事件，模板自动升为 Queue。
+**无队列 work session 的后果**（接受这些才成立）：stop 只能由 lease 持有者自己退出；decide 走 artifacts 门面不经 session；exec 子进程的 `activity --touch` / `perceive` 没有通道，touching 由工具调用推断、感知只有结束时的 run_digest；父 session 收子 session 的状态事件不需要队列（内置 bridge 直接读登记表，§4.14），但子 LLM 主动发给父的消息需要父有队列。声明了订阅的 work session 需要队列承接 bridge 的事件，模板自动升为 Queue。
 
 ### 4.8 xagent 的三种运行形态
 
@@ -434,6 +438,125 @@ pub enum DriveResult {
 ```
 
 Turn 规则沿用 readme：没有打开的 Turn 时提交的输入批次开启新 Turn；切换、fork、independent、工具子上下文的进入与返回（§3.3）、观察注入、挂起、重写、重启都延续；只有 `finish_run` / `stop_session` 关闭。模板的 `wait_user_msg` 决定 `WAIT_USER_MSG` 在该 session 里是"保持打开"还是"结束"。
+
+### 4.10 Sub Session：与子 context、Sub-Agent 的区别
+
+Agent Session SDK 化的一个主要目的，是让 Agent（以及应用）方便地把一段工作交给**另一个 session**。[长任务与执行体 RFC](<./OpenDAN Long Task & Sub-Agent.md>) §14 把执行体分成 Tool（函数）、Session（线程）、Sub-Agent Instance（进程）三类，§21 的 long-once session 就是这里的 Sub Session。结合 §3 的 Context 调度，“把一段活交出去”有四种做法：
+
+| | 工具子上下文（T4） | fork（T2） | **Sub Session** | Sub-Agent / 其它 Agent |
+|---|---|---|---|---|
+| 是什么 | 本 session 里由工具调用触发的子 run | 本 session 里由 `next_behavior` 触发的子 run | 同一个 Agent 的另一个 session：自己的目录、state.json、worklog、Turn、lease | 另一个 Agent DID |
+| 能否并行 | 否，父 run 挂起 | 否 | **能**，各自的 Runner 推进 | 能 |
+| 上下文 | 按 `inherit` 继承父 run 的历史 | 继承父 run 的 steps | 不继承；只有创建时给的 objective、首批输入、附件引用（可选附父最近对话摘录） | 只有消息 |
+| 共享什么 | 父的 lease、state、Turn、runs/ | 同左 | 同一个 Agent State（登记表、认知、产物、behavior 目录），可共用 workspace | 不共享 |
+| 生命周期 | 不超过一次工具调用 | 不超过父 Turn | 独立：可以比父 Turn 长，可以常驻 | 独立、长期 |
+| 结果怎么回来 | `ToolResults` | `process_result` 交接批次 | 登记表状态 + AgentEvent + 子主动发的 AgentMessage；同步等待时作为工具结果（§4.14、§4.15） | 消息（msg-center） |
+| 谁看得见 | 父 session 的 runs/ 与 worklog | 同左 | 登记表、`sessions` 列表、自己的目录与报告；可以单独验收 | 对方系统 |
+| 适合 | 需要父上下文的窄意图小决定（路由、分类） | 换个角色做同一主任务的一段 | 一段独立工作：要并行、要长时间、要自己的 workspace / runtime / 产物 / 验收，或要在父结束后继续 | 宽意图、角色级能力域（RFC §12） |
+
+选择顺序沿用 RFC §10–§11：只是想隔离上下文 → 先用子 context（T2 / T4）；需要并行、独立生命周期、独立产物与验收 → Sub Session；角色级的长期能力域 → Sub-Agent（不在 xagent 范围，§1.2）。
+
+Sub Session 不是新的协议对象：它就是 `origin.parent_session` 指向父 session 的普通 session（计划 §4.8 `create_session`），父子关系只体现在登记表和下面几条约定里。**父子都只写自己的 state.json**，彼此只经过登记表、session 目录（只读）、输入通道和控制协议沟通。
+
+### 4.11 创建：一个标准 agent tool
+
+创建 Sub Session 是一个层 ② 工具（§5.5），由 `agent-session create-worksession` 实现，同时在 `bash_tools` 里声明 schema。LLM 看到的是一个普通 function / action，执行经 exec 进 Runtime，所以 xllm 接手的 run 也能用。
+
+```text
+agent-session create-worksession --objective <text>
+    [--msg <text>]... [--attach <path|objid>]...   首批输入：AgentMessage，附件只给引用
+    [--context recent:<n>|none]                     把父 run 最近 n 条对话摘录附进首批输入（默认 none；不继承 steps）
+    [--class work|…] [--behavior <name>]            模板与入口 behavior（默认 work 模板）
+    [--workspace inherit|new|<id>]                  默认 inherit：与父共用，靠活动视图避让
+    [--runtime inherit|<id>]                        默认 inherit：要求与父相同的 runtime_id，首次推进时绑定
+    [--report final|progress|none]                  父怎么收到汇报（§4.14），默认 final
+    [--interactive]                                 子 session 建输入队列，父之后可以继续 post（默认不建，§4.7）
+    [--wait]                                        同步等待（§4.15）：返回 Pending，父 run 挂起到子 session 结束
+```
+
+工具内部（都在 exec 子进程里，经 `AgentStateClient::connect`）：
+
+1. 从 exec 环境（Session 注入的 helper 环境）取父 `session_id`、驱动者 principal 与 `(run_id, call_id)`；`origin = {parent_session, report, created_by_call}`，子的 driver = 父的 driver（§5.6）。
+2. 幂等键 = `(父 sid, run_id, call_id)`：同一次调用被重放时，`create_session` 返回已有目录（计划 §4.8 `same_session_identity`），不会建出第二个。
+3. 校验 `session.policy.max_sub_sessions`（父同时未结束的子数）与 `max_session_depth`（RFC §13.4 防无限递归的工程边界），超限返回错误。
+4. 按模板创建（§4.7）；工具进程能读 behavior 目录就当场冻结（§6.3）；登记；把首批输入写成 bootstrap 批次。
+5. 不推进子 session（推进见 §4.12）。默认立刻返回 `{session_id, status: "created"}`；`--wait` 时返回带 `task_id = "session:<sid>"` 的结构化 Pending，exec 原样转发给 llm_context（`agent_tool/src/llm_bash.rs::try_forward_inner_agent_tool_result`）。
+
+**与现状的差距**：现在 `api.rs::create_session` 会向父 session 的队列投一条 `subscribe` 控制命令，让父半订阅子。这要求父有队列（§4.7 的无队列 work session 做不到），投递方式也写死为 semi。改为父对子的关注**隐式成立**：父的内置 session bridge 按 `origin.parent_session = 自己` 查登记表（§4.14），`origin.report` 记录创建时选的汇报方式。
+
+### 4.12 推进：谁来跑子 session
+
+**创建不等于推进。** 子 session 的 driver 是一个 principal（默认就是父的 driver），真正推进它的是这个 principal 的托管进程：OpenDAN 里是 Supervisor（计划附录 A.2），xagent 里是进程内的 `ChildDriver`：
+
+```rust
+/// xagent 进程内：推进本进程正在驱动的 session 所创建的子 session。
+impl ChildDriver {
+    async fn tick(&self, driving: &[SessionId], deps: &Deps) {
+        for e in deps.agent.sessions().children_of(driving).await? {        // NEW：按 origin.parent_session 查登记表
+            if e.driver != deps.who || e.status.run_state.is_terminal() || self.running(&e.session_id) { continue; }
+            if self.running_count() >= deps.options.max_child_concurrency { break; }
+            self.spawn(e.session_id, |sd| drive(sd, deps, StopWhen::Idle));  // 各持自己的 lease，与父并行；子的子也由同一个 ChildDriver 接管
+        }
+    }
+}
+```
+
+- 父每次提交之后、以及登记表变化时 `tick`。子 session 各持自己的 lease，与父并行；父进程挂掉不影响子的状态，重启后 ChildDriver 重新接管未结束的子。
+- 子的状态变化后，ChildDriver 也负责重新 `drive(parent)`，父才能收到 §4.14 的事件。
+- `xagent run <parent>`：父 Turn 关闭后，默认继续推进本进程拉起的子 session，直到它们空闲或结束再退出；`--detach-children` 立即返回，留给 `xagent serve`。`xagent serve` 同样接管所服务 session 的子 session。
+- 子 session 首次推进时自己绑定 runtime（`binding.json`），默认要求与父相同的 runtime_id；共用 workspace 时按活动视图避让，与多个顶层 session 共用 workspace 相同。
+
+### 4.13 父子之间的沟通渠道
+
+| 方向 | 渠道 | 内容 | 谁发起 | 怎么进入对方 |
+|---|---|---|---|---|
+| 父 → 子 | 创建参数 | objective、首批 AgentMessage、附件引用、可选的父对话摘录 | 父 LLM（创建工具） | 子的 bootstrap 批次 |
+| 父 → 子 | `agent-session post <child> --msg` | `AgentMessage{from: Session(父)}`：补充要求、回答子的提问 | 父 LLM | 唤醒子；要求子是 `--interactive`（有队列） |
+| 父 → 子 | 控制：`ctl <child> stop`、`decide accept\|discard` | 停止、验收 | 父 LLM，或父 Session（stop 级联，§4.16） | 不进上下文 |
+| 子 → 父 | 登记表状态 `SessionStatus` | `run_state`、`outcome`、`one_line_status`、`report_brief`、`pending_decision`、`last_error` | 子 Session 每次提交后自动 `report_state` | 父被动读取，或父的内置 bridge 产出 AgentEvent（§4.14） |
+| 子 → 父 | `agent-session post <parent> --msg` | `AgentMessage{from: Session(子)}`：提问、阶段性交付 | 子 LLM | 唤醒父（消息总是 Wake）；要求父有队列，否则子只能经状态汇报 |
+| 子 → 父 | 报告与产物 | `report.md`、登记的产物、worklog | 子结束时 | 父按需 `read-session` / `artifact head` |
+
+两条约定：
+
+- **子 session 的“用户”是父 session**：子默认 headless，没有 msg-center 通道，不直接对人发消息（RFC §21.2）；需要人参与时向父提问，由父决定是否转给用户。子的 system 段里有 `session.parent`（冻结变量，§6.5），子 LLM 知道该找谁。
+- **子要等输入时**：work 模板的子遇到 `WAIT_USER_MSG` 按 FinishFailed 结束，问题写进报告（§4.7）；`--interactive` 的子（`wait_user_msg = Allowed`）Turn 保持打开，状态变为等输入，父收到 `needs_input` 事件后用 `post` 回答。
+
+### 4.14 进展与汇报：被动查询与主动推送
+
+总原则沿用 RFC §6–§7：**登记表里的状态是真相，事件只是加速器**；被事件唤醒后要重新读状态，不能只信事件内容。有三种机制：
+
+1. **被动查询（父拉取）**：父 LLM 随时可以 `agent-session sessions --children [--active]`（子列表与 `one_line_status`）、`read-session <sid> [--report] [--worklog <n>]`。读到的就是真相，不受订阅影响。
+2. **状态推送（系统自动，子 LLM 不参与）**：子每次提交都 `report_state`；父的内置 session bridge（§4.3）在组批与观察边界时，按 `origin.parent_session = 自己` 比对子的 `status.rev`，合成 `AgentEvent{source: Session{child}, event, seq: rev, summary, terminal}`：
+   - **进度**（`one_line_status`、`activity` 变化）→ `event = progress`，Observe：不唤醒，按 `(child, source)` 只留最新一份，在下一个观察边界或下一批注入（§4.3 的 `pending_events`）。
+   - **需要关注**（`run_state` 进入等输入，或出现 `pending_decision`）→ `event = needs_input | needs_decision`，Wake。
+   - **结束**（finished / failed / stopped）→ `event = finished`，`terminal = true`，Wake；`summary` 取 `report_brief`。
+   - 创建时的 `--report` 决定父收哪些：`final` = 需要关注与结束；`progress` = 再加进度；`none` = 都不推，父只能拉取。它对应 opendan 的 `report_delivery`（final_only / top_level / all），但由**接收方**（父）选择，符合 §4.3“投递策略由 Session 决定”。
+3. **显式汇报（子 LLM 主动）**：子 LLM 调 `agent-session post <parent> --msg …`，用于需要父决定的问题或阶段性交付。它是 AgentMessage，总是唤醒父；频率由子的 behavior 提示词约束。
+
+父无队列也能收到 2 里的事件，因为它们来自登记表而不是队列；把父唤醒的是推进父的那个进程（ChildDriver / Supervisor），它在子状态变化后重新 `drive(parent)`。
+
+### 4.15 等待：异步与同步
+
+- **异步（默认）**：创建工具立即返回，父继续推进；结果按 §4.14 以事件到达，可能落在父后续的 run 甚至后续的 Turn。
+- **同步（`--wait`，或对已有子 session 调 `agent-session wait <sid>`）**：工具返回 Pending，等待记录为 `wait.source = {kind: session, id: <sid>}`、`class = wait_for_task`（由 `task_id` 的 `session:` 前缀归一而来，见 [long-tool TODO](../../notepads/llm-context-long-tool-todo.md) §4）。父 run 以 PendingTool 挂起（父的段要开启 `allow_deferred`，同 T4），Turn 保持打开。Session 提供 `session` resolver，它只读登记表：
+  - 子结束 → `Ready(Observation{session_id, outcome, report_brief, answer_ref, artifacts})`；
+  - 子在等输入或等决定 → `Ready(Observation{status: needs_input, question})`，父用 `post` 回答后再 `wait`；
+  - 其它情况继续等，ChildDriver 同时在推进子；
+  - 子的结束事件与挂起调用按 `(kind, id)` 匹配，作为工具结果消费，不再作为事件重复注入。
+- **一次等多个**：同一批次里对每个子各调一次 `wait`；批次串行派发，效果就是“等全部”。
+- **与 T4 的区别**：T4 的子 run 在父 session 内串行，父挂起时没有别的东西在跑；`--wait` 的子 session 在自己的 lease 下推进，可以同时有别的子 session 在跑，父崩溃也不影响子。
+- **接手**：`session` resolver 只依赖 Agent State，不依赖 Runner 内存；但 v1 只有 xagent 提供它，父 run 挂起期间 xllm 拒绝接手（同 T4）。
+
+**父结束规则（汇总）**：父的 `decide_end` 发现还有未结束、且 `report != none` 的子 session 时，不结束 session：run 结束，Turn 保持打开，`waiting_for = Children{sids}`；子的结束事件唤醒父并入同一个 Turn，父 LLM 汇总后再 `END`。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
+
+### 4.16 生命周期与限制
+
+- **stop 级联**：父 stop → 对未结束的子投 `stop`（子有队列时），或由 ChildDriver 直接中断（子无队列；驱动者是同一个 principal）。子被 stop 只在父那里产生 `finished{stopped}` 事件，不影响父。
+- **验收**：work 子 session 结束后 `acceptance = pending`，默认由父（创建者）决定：父 LLM 读报告后 `ctl decide <child> accept|discard`。
+- **数量与深度**：`session.policy.max_sub_sessions`（同时未结束的子，默认 4）与 `max_session_depth`（默认 2）。
+- **Turn 与预算不合并**：子有自己的 Turn（计划 §8.3），父的 Turn、Round、预算都不含子；子按自己的 budget。
+- **归档与清理**：子目录的归档与清理沿用顶层 session 的规则（后移）；登记表条目保留，供审计与 `sessions` 查询。
 
 ---
 
@@ -533,7 +656,8 @@ pub struct RuntimeGrant {
 | `recall <query>` | `cognition().recall_hints` | 读 | |
 | `note <text>` | `cognition().notebook_append(who)` | 写 | |
 | `sessions`、`read-session <sid>` | `sessions().query/lookup` + 目录读 | 读 | 遵守 `acl.agent_access` |
-| `create-worksession`、`post <sid>` | `sessions().register` / `post_input` | 写 | 子 session 的 driver 默认是调用者 |
+| `create-worksession`、`post <sid>` | `sessions().register` / `post_input` | 写 | 创建 Sub Session（§4.11）；子 session 的 driver 默认是调用者 |
+| `sessions --children`、`wait <sid>` | `sessions().children_of`（新）/ `lookup` | 读 | 查询子 session 进展（§4.14）；`wait` 返回 Pending，由 `session` resolver 解析（§4.15） |
 | `artifact register/head` | `artifacts()` | 写 / 读 | |
 | `ctl decide` | `artifacts().decide` | 写 | 有队列经驱动者；无队列直接走门面 |
 | `ctl grant` / `revoke`（新） | `runtime_grants()` | 写 | 只有用户 / OpenDAN 身份可签发；Agent 自己不能给自己授权 |
@@ -656,7 +780,7 @@ impl BehaviorConfig {
 
 | 进 system（冻结 / 构造期确定） | 进输入批次（每批现算） |
 |---|---|
-| `identity.*`、`behavior.{name,objective,mode}`、`session.{id,kind,objective,driver,scope}`、`paths.{session_root,workspace_root}`（相对或 binding 提供）、`workspace.id`、`xml_behavior_result_protocol`（由 xllm `runtime_protocol` 段提供） | `runtime.{clock_text,status}`、`<active_sessions>`、`<hints>`、`<events>`（pending_events 注入）、`<perceptions>`、`<inputs>`、`behavior_switch / process_result`、`session.current_todo*`（读 `todos.json`）、`notebook.last_items`、`workspace_list` |
+| `identity.*`、`behavior.{name,objective,mode}`、`session.{id,kind,objective,driver,scope,parent}`、`paths.{session_root,workspace_root}`（相对或 binding 提供）、`workspace.id`、`xml_behavior_result_protocol`（由 xllm `runtime_protocol` 段提供） | `runtime.{clock_text,status}`、`<active_sessions>`、`<hints>`、`<events>`（pending_events 注入）、`<perceptions>`、`<inputs>`、`behavior_switch / process_result`、`session.current_todo*`（读 `todos.json`）、`notebook.last_items`、`workspace_list` |
 
 opendan 的 prompt_env 在渲染时推进“上次看到”游标并 `flush_meta`，这是副作用；移植时游标改为 `state.json` 字段，由 `commit_input_batch` 与 receipt 一起提交，渲染保持纯函数（计划 §8.1 已定）。
 
@@ -694,7 +818,7 @@ impl dyn AgentStateClient {
 
 | 门面 | 读 | 写（驱动者） |
 |---|---|---|
-| `sessions()` | 登记门槛 `lookup`、每批 `me`、订阅的 session、`scope_touching` | 每次提交后 `report_state`；创建时 `register` |
+| `sessions()` | 登记门槛 `lookup`、每批 `me`、订阅的 session、`children_of`（新：子 session 状态，§4.14）、`scope_touching` | 每次提交后 `report_state`；创建时 `register` |
 | `activity()` | 每批 `<active_sessions>`、观察边界的活动集合变化 | （活动摘要经 `report_state` 回报） |
 | `perception()` | self_improve bootstrap 窗口、`last_seq` 补发 | perception 输入、`finish_run` 的 run_digest / task_outcome |
 | `cognition()` | bootstrap 或有新 msg/event 时 `recall_hints` | self_improve 成功时 `commit_consolidation` |
@@ -715,10 +839,10 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                 [--subscribe <spec>]... [--msg <text>] [--until turn|finished|idle|outcomes:<n>] [--no-run]
                  按模板创建 session（冻结 behavior 与模板），默认立刻推进一个 Turn
   xagent run    <session_dir|sid> [--msg <text> | --msg-file <path> | --event <json>]
-                [--until turn|finished|idle|outcomes:<n>] [--runtime <id>] [--no-bridge]
-                 投递（可选）后推进到 Turn 关闭；默认 --until turn
+                [--until turn|finished|idle|outcomes:<n>] [--runtime <id>] [--no-bridge] [--detach-children]
+                 投递（可选）后推进到 Turn 关闭；默认 --until turn；随后推进本进程拉起的子 session 到空闲（§4.12）
   xagent serve  <session_dir|sid>... [--idle-unload <secs>] [--no-bridge]
-                 常驻：起事件桥；drive(Idle) → 等唤醒 → drive(Idle)…
+                 常驻：起事件桥；drive(Idle) → 等唤醒 → drive(Idle)…；同时接管所服务 session 的子 session
   xagent post   <sid> (--msg <text> | --event <json>)                 Agent 输入（AgentMessage / AgentEvent）
   xagent ctl    <sid> (stop | decide accept|discard | approve <ticket> | subscribe <spec> | unsubscribe <id> | activity ... | perceive <text>
                        | grant --runtime <id> --ttl <dur> [--paths ...] | revoke <grant_id>)
@@ -732,7 +856,9 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 
   在 exec 子进程内（PATH 上的 agent-session 即 xagent）：
   xagent ctl activity [--summary <t>] [--touch <ref>]... | ctl perceive <text>
-  xagent recall <query> | note <text> | sessions [--active] | read-session <sid> | create-worksession --objective <t> [...] | artifact ...
+  xagent recall <query> | note <text> | sessions [--active] [--children] | read-session <sid> | artifact ...
+  xagent create-worksession --objective <t> [--report final|progress|none] [--wait] [...]   （§4.11）
+  xagent wait <sid> | post <sid> --msg <t>                                                  （§4.13、§4.15）
 
 身份与定位（都可用环境变量）：
   --agent <did>          [$OPENDAN_AGENT_DID]      --who <principal>       [$LIBOPENDAN_WHO，默认取 BuckyOS 运行时 app principal]
@@ -783,6 +909,7 @@ pub struct Deps {
     assembler: Arc<dyn SessionAssembler>,             // BehaviorAssembler
     tool_providers: Vec<Arc<dyn SessionToolProvider>>,// NEW 层 ③，注册给 Runtime、仍经 admit
     bridges: Vec<Arc<dyn EventBridge>>,               // NEW 进程内事件桥（kevent / timer）；--no-bridge 为空
+    children: Arc<ChildDriver>,                       // NEW §4.12：推进本进程驱动的 session 所创建的子 session
     summarizer: Option<Arc<dyn Summarizer>>,
     options: RunnerOptions,
 }
@@ -1095,7 +1222,8 @@ impl AgentSession {
                         WaitPolicy::FinishCompleted => self.decide_end(answer),
                     },
                     (_, Some(b)) if b != END && b != "done" => Next::switch(b),
-                    _ => self.decide_end(answer),                                                   // Completed；按 end_condition（模板 turns）判 finished / waiting
+                    _ => self.decide_end(answer),                                                   // Completed；按 end_condition（模板 turns）判 finished / waiting；
+                                                                                                    // NEW §4.15：还有 report != none 的未结束子 session → 不结束，Turn 保持打开，waiting_for = Children
                 }
             }
             BudgetExhausted{which, ..} => Next::budget(which),
@@ -1195,7 +1323,7 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 
 ## 10. 验证矩阵：xagent 要跑通的实验
 
-每个实验都是一条脚本（python mock LLM，见 xllm_rust_sdk.md §9；不需要 BuckyOS），结果写进 `tests/xagent/`，并作为 `cargo test -p libopendan --test xagent` 的用例。**验收项**（E1、E4、E5、E13、E14、E17、E18、E19、E20）失败说明分层有问题，先改设计；**回归项**失败说明实现有问题。
+每个实验都是一条脚本（python mock LLM，见 xllm_rust_sdk.md §9；不需要 BuckyOS），结果写进 `tests/xagent/`，并作为 `cargo test -p libopendan --test xagent` 的用例。**验收项**（E1、E4、E5、E13、E14、E17、E18、E19、E20、E21）失败说明分层有问题，先改设计；**回归项**失败说明实现有问题。
 
 | # | 类别 | 验证的边界 | 步骤 | 判据 / 什么算设计问题 |
 |---|---|---|---|---|
@@ -1219,6 +1347,8 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 | E16 | 回归 | 内置 session bridge | 父（ui）半订阅子（work）；子结束 | 父的下一个观察边界或下一批里出现 `AgentEvent{source: Session, terminal: true}`，与外部 bridge 产出同形 |
 | E19 | 验收 | 普通切换换配置；停止点交接（§3.4、G8） | a：`plan`（只读工具）normal 切到 `do`（可写工具、另一模型）；b：同一流程在切换前用 `xllm --resume` 接手，xllm 跑到 `next_behavior = do` 停下，再 `xagent run` | a：同一 run_id、同一 Turn；切换后请求的 system 段、工具广告、模型都是 `do` 的，run.json `config` 是 `do` 的有效配置，`plan` 的 steps 作为继承记录可见，工具额度不重置；b：xllm 停在跳转处且 run 不是终态，xagent reconcile 完成切换后续跑，worklog 与 a 同形。**设计问题**：切换需要 xllm 理解 behavior，或切换后的配置只存在于 Session 内存 |
 | E20 | 验收 | 工具子上下文（§3.6） | 父 behavior 声明 `sub_context` 工具 `pick{reason}`（子 behavior `route`，`inherit = Transcript{recent: 4}`，output Json），父分别用 function_call 与 behavior 模式；mock 父 context 在同一批次里调用 `pick` 与 `read`；子 run 中途用 `LIBOPENDAN_FAULT` abort 一次；再换 `Steps` / `None` 与栈深超限 | 父 run 以 PendingTool 挂起，栈顶是 `Call` frame；子 run 在 `runs/` 里、进 worklog；崩溃后续跑同一个子 run；子 run 结束后父 run 以 ToolResults 恢复，同批的 `read` 接着执行；全程一个 Turn；父 run 挂起期间 xllm 接手被拒，子 run 可由 xllm 跑完；超限时工具返回 Error 观察。**设计问题**：需要进程内工具或 Runner 内存句柄才能实现，或结果只能经交接批次、不能作为工具结果交回 |
+| E21 | 验收 | Sub Session 派出与汇总（§4.10–§4.16） | 无队列的 work 父 session：mock 父 LLM 用 `create-worksession` 派出子 A（`--report final`）、子 B（`--report progress`），再派出子 C（`--wait`）；C 返回后父 `END`；A 运行中 abort 父进程一次，再 `xagent run <parent>` | A、B、C 由 ChildDriver 并行推进，各持 lease、各有 Turn；B 的进度以 Observe 出现在父的观察边界；C 结束时父 run 以 ToolResults 恢复；父 `END` 时 A 未结束 → 父 Turn 保持打开（`waiting_for = Children`），A 的结束事件唤醒父并入同一 Turn，父汇总后 finished；父进程崩溃不影响子，重启后重新接管。**设计问题**：父收子的事件需要父有队列；子要写父的状态；bridge 要知道父的汇报方式才能投递；同步等待只能做成进程内工具 |
+| E22 | 回归 | 父子对话与 stop 级联（§4.13、§4.16） | 子以 `--interactive` 创建，mock 子回 `WAIT_USER_MSG` 提问；父 `post` 回答；子主动 `post <parent>` 一次；最后 `ctl stop <parent>` | 父收到 `needs_input`（Wake），`post` 后子在同一 Turn 里继续；子的消息以 AgentMessage 唤醒父；父 stop 后未结束的子被级联 stop，登记表状态为 stopped |
 
 ---
 
@@ -1242,8 +1372,9 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 | C12 | xllm prepare_hosted 已由 runtime.open 解析并派发工具（G7），resume 已校验实际目标与 Session env_check（G6）；HostProtocolFlavor、renderer_opts、budget 与 deferred 能力仍为后续 xagent 改动 | xllm.rs | Runtime 首版已完成 |
 | C13 | 文档：readme 的 AgentRuntime / 命令行工具两段、protocol Spec（输入与控制两篇、`prompt.frozen`、`session.policy`、`pending_events`、behavior schema）、fixtures 重生成 | `doc/llm_context/readme.md`、`doc/opendan/protocol/` | 实现后反写（V6）；readme 的“在 AgentSession 中的 LLM Context 的状态机切换”一节按 §3.2–§3.6 重写 |
 | C14 | Context 调度（§3.2–§3.7）：普通切换由只改 `behavior_name` 改为 `switch_in_place`（换 system / 工具 / 模型，run.json `config` 换段）；fork 子 run 的手工复制改为 `derive_child`；`ProcessFrame.mode` 增加 `Call{call_id, tool, args}`；`SubContextSpec` 冻结进 behavior；`SessionToolManager` 拦截 `sub_context` 工具、返回 `subrun` 等待；`handle_outcome` 增加 `Call` / `CallReturn`；Session 实现 `subrun` resolver；`session.policy.max_process_depth`；reconcile 完成 xllm 停在跳转处的转移（G8）以及做了一半的进入 / 返回 | `runner/outcome.rs`、`runner/live.rs`、`runner/tools.rs`、`runner/reconcile.rs`、`protocol/state.rs`、`protocol/behavior.rs` | 先做 [llm_context Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md)；`subrun` resolver 依赖 long-tool TODO §4；state.json 与 session_config 随 C2 / C7 同一次升版 |
+| C15 | Sub Session（§4.10–§4.16）：`create-worksession` 增加 `--report / --wait / --context / --interactive / --workspace / --runtime`，幂等键 `(父 sid, run_id, call_id)`，数量与深度校验；`origin.report`；删除 `create_session` 向父队列投 subscribe 的做法，改由内置 session bridge 按 `origin.parent_session` 查子（新 `sessions().children_of`）并按 §4.14 分类投递；`wait` 子命令与 `session` resolver；`decide_end` 的父结束规则与 `waiting_for = Children`；ChildDriver（`xagent run` / `serve`）；stop 级联；子默认 headless；冻结变量 `session.parent` | `api.rs`、`state/registry.rs`、`runner/bridge.rs`、`runner/outcome.rs`、`protocol/config.rs`、`bin/xagent.rs` | 与 C3（内置 bridge）改同一处；`session` resolver 依赖 long-tool TODO §4 的等待记录 |
 
-依赖顺序：C1 → C2/C3 → C4/C5 → C6 → C7 → C14 → C8/C9/C10 → C11 → C12 → C13。验收项 E1/E4/E5/E13/E14 随 C11 落地；E13 依赖 C4/C5，E14 依赖 C1–C3，E19/E20 依赖 C14 与 llm_context TODO。
+依赖顺序：C1 → C2/C3 → C4/C5 → C6 → C7 → C14 → C8/C9/C10 → C11 → C15 → C12 → C13。验收项 E1/E4/E5/E13/E14 随 C11 落地；E13 依赖 C4/C5，E14 依赖 C1–C3，E19/E20 依赖 C14 与 llm_context TODO，E21/E22 依赖 C15。
 
 ---
 
@@ -1265,3 +1396,9 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 14. **`Inherit` 的三档**（§3.6）：`Steps` / `Transcript{recent}` / `None` 是否够用；`Transcript` 的渲染放在 Session（模板可定制），还是用 llm_context 的固定格式。
 15. **工具子上下文里的 `WAIT_USER_MSG`**：本文转成 `Error{needs_user_input}` 交回父 context，由父决定是否问用户。另一选项是让 Turn 停下等用户（父 run 继续挂起），那样子 run 就要能并入用户输入。
 16. **栈深上限**（§3.3）：默认 4；超限时 T2 / T3 拒绝切换、当前 run 续跑，T4 返回 Error 观察。是否接受？
+17. **子 session 的 workspace 默认值**（§4.11）：默认共用父的（`inherit`，靠活动视图避让），还是默认新建（隔离干净，但产物要合并回父）？本文按前者。
+18. **父结束规则**（§4.15）：还有需要汇报的未结束子 session 时，父 Turn 保持打开等它们（本文）；另一选项是允许父结束，子的汇报只留在登记表。
+19. **父对子的关注改为隐式**（§4.11）：删除 `create_session` 向父队列投 subscribe 的现有做法，改由内置 bridge 查登记表。是否接受？
+20. **`xagent run` 是否默认推进子 session**（§4.12）：本文默认在父 Turn 关闭后继续推进到子空闲，`--detach-children` 立即返回。
+21. **子 session 的“用户”是父**（§4.13）：子默认 headless、不直接对人发消息。是否要允许某些子（如长期 work）直接面向用户？
+22. **数量与深度默认值**（§4.16）：`max_sub_sessions = 4`、`max_session_depth = 2`。
