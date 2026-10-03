@@ -8,6 +8,10 @@ Review 更新（二）：2026-10-03。对照现有实现（libopendan、llm_cont
 
 Review 更新（三）：2026-10-03。总线上的消息体直接使用 cyfs-ndn 的 MsgObject（协议级稳定结构），不再定义协议级的 `AgentMessage`；手工投递用一组构造 helper（§3.2.2）。msg bridge 只过滤不转换，MsgObject 到模板视图的转换移到 Session 内（§3.3.2 / §3.3.3）。
 
+Review 更新（四）：2026-10-03。按实施前 review 定稿：协议升级后的旧 Session 迁移前只读；默认按最后一条已消费 input message 或父 Session 的来路回复；未订阅事件直接丢弃；每个 Session 最多 64 条 pending input，满时拒绝 append；预算不足按 AICC 服务不可用处理。长工具宿主接入复用已完成的 llm_context 设计。协议时间统一 UTC，用户时区与 Session 绑定并默认半订阅；附件文本可用 ObjId 或 Agent 可访问的路径保持引用自足。
+
+Review 更新（五）：2026-10-03。模板优先使用 `{{ value | render_format: "格式名" }}`，例如 `{{ session.current_todo | render_format: "todo.summary_xml" }}`。命名格式负责结构排版、转义与附件定位信息；`xml / attr` 等作为底层工具保留，常规模板不必逐字段处理。
+
 状态：待实施。依据本轮对 xAgent 输入设计、串行 / 并行等待和旧 AgentSession 的讨论，以及 `9cd6e8f5` 下的 libopendan 源码核对。实施前重新确认基线。
 
 本 TODO 依赖的 llm_context 层修改（工具取消与时限、PendingTool 挂起记录与 `RunningTaskResolver`、`shell` 的执行模式与 task，已实施），以及需要 review 确认的 llm_context 事项，单独放在 [llm_context 长命令 / 长工具 TODO](./llm-context-long-tool-todo.md)。**llm_context 的修改总是先进行**，本 TODO 的宿主接入在其后。
@@ -21,6 +25,8 @@ Review 更新（三）：2026-10-03。总线上的消息体直接使用 cyfs-ndn
 Runtime 配置、沙箱和工具执行职责沿用 [AgentRuntime 下移 TODO](./llm-context-agent-runtime-todo.md)。libopendan 保留 Session 绑定、lease、输入提交和 run 生命周期管理，等待任务通过宿主提供的能力查询；不在 Session 内重新实现 TaskMgr、工具执行器或沙箱。
 
 设计说明应先回答“投递什么 JSON，接收方如何处理，崩溃后如何恢复”，再给实现入口。Rust 的 `take_agent_inputs` 等函数只是协议行为的一种实现，不要求其它语言复制 Runner 的内部结构。
+
+协议升级后，旧 Session 必须迁移到新协议才能继续推进；未迁移的一律 readonly，不允许 append input 或 drive。迁移是显式操作，本轮不实现自动迁移或旧格式兼容；读取旧现场用于查看、导出不等于允许新 Runner 推进。正式发布后的低概率旧版本问题按这个边界处理，不为它增加无限期事件版本历史。
 
 ## 2. 当前基线与已有能力
 
@@ -103,6 +109,8 @@ Runtime 配置、沙箱和工具执行职责沿用 [AgentRuntime 下移 TODO](./
 | 开发文件队列（`DirMsgQueue`） | 它实现的是同一个 kmsg 客户端接口，映射与 kmsg 完全相同 |
 | CLI | `xagent post <sid> --json <file \| ->` 接受逻辑记录。`schema`、`from`、`at_ms` 可省略，由 CLI 填当前版本、调用者 principal 和当前时间；`type = msg` 时 `key` 也可省略，由 CLI 按 MsgObject 计算；记录里出现 `src` / `index` 时报错。`--msg "<text>"` 用 §3.2.2 的 helper 构造 MsgObject |
 
+**pending input 容量**：每个 Session 的总线最多保留 64 条尚未提交消费的记录，`msg / event / control` 共用这个上限；满时不能 append，返回可重试的 `input_full`，不覆盖已有记录。容量检查与 append 必须原子执行，CLI、bridge 与跨语言 producer 使用同一限制；bridge 遇到满队列不确认上游，等待容量释放后重投。成功提交消费后释放名额，不把已经消费但等待累积 ack 的位置重复计入。监视任务扫描这最多 64 条 pending 记录查找控制命令，不因前面的普通输入暂存而漏掉已经入队的 stop。该限制约束总线积压；已接收并合并的半订阅状态按 §5 管理。
+
 Rust 类型（`protocol/input.rs`，取代现有 `Input` / `InputKind` / `InputMessage`）：
 
 ```rust
@@ -163,12 +171,12 @@ pub struct MsgDelivery {
 
 | 项 | 规则 |
 |---|---|
-| 信封 `key` | 必须等于 `msg` 的 ObjId（字符串形式）。消费侧用 `MsgObject::from_json_value_checked` 重新计算并核对，不一致按 `invalid_envelope` 拒绝。同一条消息重投自然去重，`thread.reply_to` / `relates_to.target` 的 ObjId 直接对得上总线里的 key |
+| 信封 `key` | 必须等于 `msg` 的 ObjId（字符串形式）。消费侧用 `MsgObject::from_json_value_checked` 重新计算并核对，不一致按 `invalid_envelope` 拒绝。同一条消息重投使用同一 key，按 §5 的范围去重，`thread.reply_to` / `relates_to.target` 的 ObjId 直接对得上总线里的 key |
 | 合法性 | `MsgObject::validate()` 通过；`content.content`、`content.refs`、`content.machine` 至少一项非空 |
 | 说话人 | `msg.from`。总线不携带签名（JWT），可信度来自投递者：msg bridge 只投递 msg-center 已验证的记录；手工投递的消息与投递者同等可信。权限仍只来自 Session 的驱动身份 |
 | `to` / `to_session` | Session 不校验、不路由：进了这个队列就是给这个 session 的。它们只用于渲染所在会话和推出回复目标 |
 | `kind` | 不限制。哪些 kind 值得投递由 bridge 过滤（§3.3.2）；`chat` / `group_msg` 之外的 kind 渲染时带 `kind` 属性 |
-| 附件 | 只有 `content.refs` 中的 `DataObj`（必须有 ObjId）。本机文件先登记进 NamedStore 再引用，不支持“session 目录相对路径”这种来源 |
+| 附件 | 总线中使用 `content.refs` 的 `DataObj`（必须有 ObjId），本机文件先登记进 NamedStore 再引用。渲染给 Agent 的文本可用 ObjId 或宿主已解析、Agent 可访问的路径定位附件（I4）；路径是本地视图，不另造总线附件格式 |
 | 大小 | 整个 payload ≤ 250 KB；`delivery` 各字段 ≤ 256 字节 |
 | 未知字段 | `msg` 的未知顶层字段按 MsgObject 的规则落入 `meta`；`delivery` 的未知字段忽略 |
 
@@ -251,7 +259,7 @@ msg bridge 投递的群消息（带附件与回复关系）：
 
 ```rust
 pub struct AgentEvent {
-    pub subscription_id: Option<String>,  // 由哪条订阅产生；系统事件可为空
+    pub subscription_id: Option<String>,  // 显式订阅 id；Session 已登记的隐式订阅可为空
     pub source: EventSource,              // 事件来源
     pub event: String,                    // 事件名：changed / updated / finished / fired …
     pub seq: Option<u64>,                 // 来源内的版本号；Observe 合并用它比较新旧（§5）
@@ -268,7 +276,7 @@ pub struct EventSource {
 
 | 字段 | 必需 | 默认 | 约束 |
 |---|---|---|---|
-| `source.kind` | ✔ | | 未知种类不拒绝，按无订阅事件的规则处理（§4.1） |
+| `source.kind` | ✔ | | 未知种类不因格式拒绝；未匹配有效订阅时直接丢弃（§4.1） |
 | `source.id` | ✔（`system` 除外） | `""` | ≤ 256 字节 |
 | `event` | ✔ | | 1–64 字节 |
 | `summary` | ✔ | | ≤ 1 KB；超出拒绝，不截断 |
@@ -295,7 +303,7 @@ pub struct EventSource {
 }
 ```
 
-例中的 `watch-t1` 必须对应接收 Session 的订阅。active 进入受控输入的候选批次，semi 更新待注入的半订阅状态；投递者不能替接收方决定策略。未匹配订阅时，按模板默认规则处理（§4.1）。
+例中的 `watch-t1` 必须对应接收 Session 的有效订阅，并匹配其 source。active 进入受控输入的候选批次，semi 更新待注入的半订阅状态；投递者不能替接收方决定策略。未匹配订阅时直接丢弃并提交消费位置，不进入上下文或 `pending_events`（§4.1）。timer、系统事件也没有无订阅兜底投递；内置 bridge 与用户时区使用 Session 已登记的隐式订阅。
 
 #### 3.2.4 ControlCommand（`type = "control"`）
 
@@ -349,7 +357,7 @@ payload 中的**未知字段忽略**，不拒绝（producer 可以比 consumer �
 ```jsonc
 "pending_events": [
   {
-    "subscription_id": "watch-obj",               // 无订阅的系统事件为 null
+    "subscription_id": "watch-obj",               // 已登记的隐式订阅可为 null
     "source": { "kind": "object", "id": "…" },
     "latest": {                                    // 该 (subscription_id, source) 的最新版本
       "seq": 8, "key": "obj:…:8", "event": "changed", "summary": "…", "data_ref": null,
@@ -372,6 +380,7 @@ payload 中的**未知字段忽略**，不拒绝（producer 可以比 consumer �
   "hook": "on_input",                              // on_init | on_input | on_context_switch
   "inputs": [ { "src": "q", "index": 121, "key": "cymsg:…c3", "kind": "msg" } ],
   "events": [ { "subscription_id": "watch-obj", "source": { "kind": "object", "id": "…" }, "seq": 8, "key": "obj:…:8" } ],
+  "reply": { "route": "message", "to": "did:bns:dev-team", "to_session": null, "kind": "group_msg", "reply_to": "cymsg:…c3", "tunnel": null },
   "parts": [
     { "part": "semi_subscription_snapshot", "pos": { "kind": "accumulated", "index": 6 }, "text": "<semi_subscription_snapshot>…" },
     { "part": "input",                      "pos": { "kind": "accumulated", "index": 7 }, "text": "<session_input hook=\"on_input\" …" }
@@ -381,14 +390,17 @@ payload 中的**未知字段忽略**，不拒绝（producer 可以比 consumer �
 ```
 
 - `inputs`：本批消费的 msg 与 Input event 的投递位置。
-- `events`：本批快照实际注入的半订阅状态版本；提交时只清除 `pending_events` 中 seq 相同的版本（§5）。取代 `changes[]` 与 `consumed_only[]`：Observe 事件在合并进 `pending_events` 时已标记消费，不再随 receipt 消费。
+- `events`：本批快照实际注入的半订阅状态版本；提交时按 `(subscription_id, source, key)` 精确清除，存在 seq 时同时核对 seq（§5）。取代 `changes[]` 与 `consumed_only[]`：Observe 事件在合并进 `pending_events` 时已标记消费，不再随 receipt 消费。
+- `reply`：本批提交后的默认回复路径，与正文同快照保存。恢复按 receipt 补回 `state.reply`，不从渲染文本反解，也不重新读取可能已清理的总线记录。
 - `parts`：本批注入的 1–2 条消息，取代单个 `content` + `message_pos`。`text` 是该消息的文本块；图片 / 文档块不重复保存，按 `pos` 在同一份快照中读取。
 
-**打开的 Turn 的回复目标**（`state.open_turn.reply`，由开启 Turn 的那条消息生成，供 §3.4 使用）：
+**Session 的默认回复路径**（`state.reply`，供 §3.4 使用）：每次提交输入批次，取本批按消费顺序排列的最后一条 input message 的来路；同一 Turn 的后续消息可更新它。event、control、半订阅快照和 context 交接本身不覆盖回复路径；交接批次并入了 message 时仍按该 message 更新。无新 message 时保留上一条路径；没有 message 来路而有 parent session 时，使用创建时记录的父 Session 来路；两者都没有则不产生默认消息回复。
 
 ```jsonc
-"reply": { "to": "did:bns:dev-team", "to_session": null, "kind": "group_msg", "reply_to": "cymsg:…c3", "tunnel": null }
+"reply": { "route": "message", "to": "did:bns:dev-team", "to_session": null, "kind": "group_msg", "reply_to": "cymsg:…c3", "tunnel": null }
 ```
+
+一对一回复取原消息的发送者，群消息回复取原群，保留原路需要的会话与 tunnel 信息，`thread.reply_to` 指向最后一条 input message 的 ObjId。父 Session 来路形如 `{"route":"parent_session","session_id":"…"}`，按父子 Session 的结果 / 消息通道回送。Batch 的“最后一条”按 §3.3.3 的消费顺序确定，不按发送时间或渲染后的顺序确定。
 
 ### 3.3 核心设计二：Input 链路
 
@@ -426,7 +438,7 @@ provider 原生消息
 - **I1 结构只编码一次。** 渲染之前，MsgObject 是消息结构的唯一载体，不引入第二个协议级的消息对象；`InputView` 只是它在进程内的视图。总线和 state 中不出现 `AiMessage`；注入的 `AiMessage` 不用 `ProviderState` 携带消息元数据。
 - **I2 每段只做一件事。** bridge 不渲染、不决定投递策略；模板不决定路由、出队和 Turn 边界；bridge 不转换消息；llm_context 的推理循环不认识 MsgObject；AICC 不认识 Session。
 - **I3 只渲染一次。** ④ 提交之后，上下文里的输入就是快照中的 `AiMessage`。恢复、接手（xllm）、压缩和历史重建都从快照与 worklog 读取，不回到总线重新渲染（那时总线记录可能已被清理，模板变量中的新鲜值也已变化）。
-- **I4 文本自足。** 每个附件都在文本块中以 `index`、名称和来源出现。去掉图片 / 文档块（纯文本模型、压缩、历史重建）不会丢失任何引用，Agent 仍可用工具按 `obj_id` 读取。
+- **I4 文本自足。** 每个附件都在文本块中以 `index`、名称和可读取的来源出现；来源可以是 ObjId，也可以是 Agent 在该 Session runtime 中可访问的路径。去掉图片 / 文档块（纯文本模型、压缩、历史重建）后仍能定位附件。仅有显示名不算可读取路径；使用路径时宿主须保证其在保留的 Session 历史中仍可用，临时缓存路径使用 ObjId 兜底。
 - **I5 正文不能伪造结构。** `text` 与所有属性值在渲染时转义；`from`、`key`、`mentioned` 等属性只来自 MsgObject 与 `delivery` 的结构字段。权限来自 Session 的驱动身份，从不来自正文。
 
 #### 3.3.2 ① 入队：msg bridge 过滤后原样投递
@@ -468,7 +480,7 @@ Session 不解析正文：未被 bridge 识别的斜杠文本就是普通消息�
 ```rust
 pub struct InputView {
     pub hook: String,                // on_init | on_input | on_context_switch
-    pub time: String,                // 本批时间（本地时区 RFC 3339）
+    pub time: String,                // 本批时间（UTC RFC 3339，Z 后缀）
     pub messages: Vec<MessageView>,  // 本批选中的消息
     pub events: Vec<EventView>,      // 本批选中的 Input event
     pub items: Vec<ItemView>,        // messages 与 events 按消费顺序的混排：{is_msg, is_event, …对应视图的全部字段}
@@ -485,7 +497,7 @@ pub struct MessageView {
     pub text: String,
     pub format: String,
     pub title: Option<String>,
-    pub attachments: Vec<AttachmentView>,   // {index, media, name, mime, obj_id, role}
+    pub attachments: Vec<AttachmentView>,   // {index, media, name, mime, obj_id, path?, role}
     pub relations: Vec<RelationView>,       // {rel, msg_id, reaction}
     pub mentions: MentionsView,             // {me, all, dids}
     pub machine: Option<Value>,
@@ -514,7 +526,7 @@ pub struct EventView {
 | `conversation` | `msg.kind`、`msg.to`、`msg.to_session`、`delivery.conversation_name` | `group_msg` → `{kind: group, id: to[0]}`；其它 kind 只有 `to_session` 非空时给出 `{kind: direct, session}` |
 | `text` | `content.content`（trim） | 正文只是 `[attachment]` / `[image]` 等占位词且有 refs 时置空（沿用 `msg_parser` 的规则） |
 | `format` / `title` | `content.format` / `content.title` | 非 `text/*` 的 `format` 记为 `text/plain`，只用于推断附件类型 |
-| `attachments[]` | `content.refs` 中的 `DataObj`，按数组顺序编号 | `media` / `mime` 用 `msg_parser` 现有的 `attachment_kind` / `attachment_mime` 推断（需从 llm_context 导出，属 llm_context 层的小改动，先行）；`name = label`；`role = ref.role` |
+| `attachments[]` | `content.refs` 中的 `DataObj`，按数组顺序编号 | `media` / `mime` 用 `msg_parser` 现有的 `attachment_kind` / `attachment_mime` 推断（需从 llm_context 导出，属 llm_context 层的小改动，先行）；`name = label`；`role = ref.role`。宿主已有该 ObjId 到 Session runtime 可读路径的映射时，可在模板使用前补入 `path`；不把 label 或未经验证的 uri_hint 当作可读路径，不在渲染函数里下载文件 |
 | `relations[]` | `thread.reply_to` → `reply_to`；`relates_to` → 同名 `rel` | `msg_id` 是目标消息的 ObjId，也就是它在总线上的 key |
 | `mentions` | `msg.mentions` | `me = dids 含 Agent DID`（`all` 不置 `me`） |
 | `machine` | `content.machine` | |
@@ -525,6 +537,8 @@ pub struct EventView {
 消费顺序：同一输入源内按 `index`；多个输入源按 `channels.inputs` 的声明顺序归并。不按 `at_ms` 或 `created_at_ms` 排序。
 
 模板可用的其它变量（`runtime.*`、`<hints>`、`<active_sessions>`、交接状态、半订阅快照等）沿用 xAgent §6.5 的“每批现算”一栏；`input.*` 是其中唯一来自总线的部分。
+
+所有协议时间与内建渲染中的时间统一用 UTC；RFC 3339 使用 `Z` 后缀，毫秒精度按 fixtures 固定。用户时区是与 Session 绑定的上下文，不取 Runner 所在机器的时区：创建时绑定 `session.timezone`（IANA 时区名），默认建立该用户时区的隐式 semi 订阅。初始值与后续变化进入 `semi_subscription_snapshot`，在下一次受控输入前呈现；时区变化本身不唤醒推理。UTC 时间与已知用户时区共同提供本地时间语境，Runner 换机器不会改变 `input.text`。
 
 #### 3.3.4 ③ 模板渲染：InputView → RenderedInput
 
@@ -543,7 +557,7 @@ pub struct EventView {
 
 ```xml
 <inputs>
-<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-03T10:00:00+08:00">
+<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
 @jarvis 帮我看一下这张截图里的报错，日志在附件里
 <attachment index="0" media="image" name="screenshot.png" mime="image/png" obj_id="cyfile:…a1"/>
 <attachment index="1" media="document" name="build.log" mime="text/plain" obj_id="cyfile:…b2"/>
@@ -563,14 +577,14 @@ pub struct EventView {
 | `reply_to` / `edit_of` / `redacts` / `thread` | `relations[]` | 值为目标消息的 ObjId，与它的 `<msg key>` 相同 |
 | `format` | `format` | 仅非 `text/plain` 时 |
 | `title` | `title` | 非空时 |
-| `time` | `sent_at`，缺省取 `received_at` | 本地时区 RFC 3339 |
+| `time` | `sent_at`，缺省取 `received_at` | UTC RFC 3339，`Z` 后缀 |
 | 元素正文 | `text` | 转义 `& < >`；前后各一个换行 |
-| `<attachment index media name mime obj_id role/>` | `attachments[]` | 每个附件一行，按数组顺序；`role` 仅非 `input` 时输出 |
+| `<attachment index media name mime obj_id path role/>` | `attachments[]` | 每个附件一行，按数组顺序；内建渲染保留 ObjId，`path` 有可读映射时输出，`role` 仅非 `input` 时输出；自定义模板可用其中任一可读来源满足 I4 |
 | `<event key subscription source event seq terminal>` | AgentEvent | `source` 为 `kind:id`；正文是转义后的 `summary`；`data_ref` 非空时输出 `data_ref` 属性；`terminal` 仅为 true 时 |
 
 属性值转义 `& < > "`。即使只有一条纯文本消息也使用 `<msg>` 元素，不退化成裸文本：多方对话里说话人与 `key` 始终可见，历史中的形态也保持一致。附件行的写法与 Agent 发送附件时使用的 `<attachment obj_id=… title=…/>` 标签（`msg_parser` 的出口约定）相近但属性不同，入口不解析它，仅供 LLM 阅读。
 
-自定义模板可以只用 `{{input.text}}`（现有 Jarvis 模板的 `on_wakeup` 就是这样写的，改名后继续可用），也可以遍历 `input.messages` / `input.events` 自行排版；系统内置的 filter 和六个模板示例见 §3.3.8。`machine` 不在内建渲染中出现，需要时由模板显式取用。
+自定义模板可以只用 `{{ input | render_format: "input.xml" }}`，与 `{{input.text}}` 的结果相同；也可以遍历 `input.messages` / `input.events`，为每个对象选择命名格式。`input.text` 保留为已渲染片段，现有 Jarvis 模板改名后仍可引用。命名格式、底层 filter 和六个模板示例见 §3.3.8。`machine` 不在内建渲染中出现，需要时由模板显式取用。
 
 渲染是纯函数：不读队列、不推进游标、不写 state。已有选中的输入却渲染出空文本时报错并保留现场（§4.2）。
 
@@ -642,9 +656,9 @@ msg-center 收到的 MsgObject（群消息，节选）：
 ① bridge 补上显示名后原样投递，总线记录就是 §3.2.2 的第二个样例。② 选中它（Batch，本批只有这一条）。③ 用内建模板渲染出：
 
 ```xml
-<session_input hook="on_input" time="2026-10-03T10:00:01+08:00">
+<session_input hook="on_input" time="2026-10-02T00:00:01Z">
 <inputs>
-<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-03T10:00:00+08:00">
+<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
 @jarvis 帮我看一下这张截图里的报错，日志在附件里
 <attachment index="0" media="image" name="screenshot.png" mime="image/png" obj_id="cyfile:…a1"/>
 <attachment index="1" media="document" name="build.log" mime="text/plain" obj_id="cyfile:…b2"/>
@@ -668,40 +682,55 @@ msg-center 收到的 MsgObject（群消息，节选）：
 
 同一份快照中的 receipt：`hook = on_input`、`inputs = [{src: "q", index: 121, key: "cymsg:…c3", kind: "msg"}]`、`parts = [{part: "input", pos: {kind: "accumulated", index: 7}, text: "<session_input …"}]`，`opens_turn` 取决于提交时是否有打开的 Turn。⑤ 由 AICC 读取两个对象并降格为所选 provider 的格式。
 
-#### 3.3.8 内置 filter 与模板示例
+#### 3.3.8 命名渲染格式、内置 filter 与模板示例
 
-模板引擎是 upon（`llm_context::prompt_engine`）。upon 支持在引擎上注册 filter（`Engine::add_filter`，模板里写 `{{ value | name }}` 或 `{{ value | name: arg }}`），现在的 `PromptRenderEngine` 每次渲染都新建一个空的 `Engine`，没有注册任何 filter。系统内置下面两组，写模板的 Agent 开发者可以直接用。
+模板引擎是 upon（`llm_context::prompt_engine`）。upon 支持在引擎上注册 filter（`Engine::add_filter`，模板里写 `{{ value | name }}` 或 `{{ value | name: arg }}`），现在的 `PromptRenderEngine` 每次渲染都新建一个空的 `Engine`，没有注册任何 filter。以下是待实施的接口与示例。
 
-**通用 filter**（注册在 `llm_context::prompt_engine`，不含 Session 词汇，system 模板同样可用；属于 llm_context 层的改动，先行）：
+模板作者优先选择“对象 + 命名格式”，由格式渲染器处理字段、默认值和转义：
+
+```jinja
+{{ session.current_todo | render_format: "todo.summary_xml" }}
+{{ msg | render_format: "message.xml" }}
+{{ msg.attachments | render_format: "attachments.list" }}
+```
+
+`render_format(value, format_name)` 是一个通用 filter，注册在 `llm_context::prompt_engine`；具体格式由宿主注册，llm_context 不内置 Session、MsgObject 或 todo 词汇。格式名是稳定标识，不是文件路径；渲染时只查已注册格式，不执行命令、不访问网络、不临时加载文件。`session.current_todo` 等材料由宿主在渲染前装配，filter 本身不读取 todos.json。格式未知或输入形状不匹配时报模板错误，沿用“保留现场、不消费输入”的规则；格式声明支持的空值输出空串。
+
+**命名格式**（由 libopendan 注册；输入格式基于 §3.3.3 的模板视图）：
+
+| 格式名 | 用法 | 结果 |
+|---|---|---|
+| `input.xml` | `{{ input \| render_format: "input.xml" }}` | 按 `input.items` 顺序渲染 `<inputs>` 块，与 `input.text` 逐字节一致；无输入时为空串 |
+| `message.xml` | `{{ msg \| render_format: "message.xml" }}` | 内建 `<msg …>…</msg>` 元素，与 `input.text` 中的同一条逐字节一致；包含说话人、@、关系和附件引用 |
+| `message.markdown` | `{{ msg \| render_format: "message.markdown" }}` | `Request from …` 标题、引用正文与附件清单，附件保留 ObjId 或可读路径 |
+| `event.xml` | `{{ ev \| render_format: "event.xml" }}` | 内建 `<event …>…</event>` 元素，与 `input.text` 中的同一条逐字节一致 |
+| `event.summary_text` | `{{ ev \| render_format: "event.summary_text" }}` | 单行来源、事件名、终态标记与摘要，摘要压缩空白后最多 300 个字符 |
+| `attachments.xml` | `{{ msg.attachments \| render_format: "attachments.xml" }}` | 每个附件一行 `<attachment …/>`；没有附件时为空串 |
+| `attachments.list` | `{{ msg.attachments \| render_format: "attachments.list" }}` | 一行纯文本，每项带可读取来源：`[0] screenshot.png (image, obj_id=cyfile:…a1), [1] build.log (document, path=/workspace/build.log)`；有可用路径时可用路径，否则用 ObjId |
+| `todo.summary_xml` | `{{ session.current_todo \| render_format: "todo.summary_xml" }}` | 把宿主已装配的当前 todo 视图渲染为 XML 摘要，包含其标识、状态和摘要文本；无当前 todo 时为空串 |
+
+XML 格式在内部对正文与属性分别转义，模板直接插入生成的完整片段，不再叠加 `xml` 或 `attr`。格式注册与 golden fixtures 共用一份渲染定义；`input.text` 也调用同一套输入格式渲染器，避免出现两种输出。
+
+**底层通用 filter**（注册在 `llm_context::prompt_engine`，不含 Session 词汇，system 模板同样可用；用于自定义排版或格式实现，常规模板优先使用上面的 `render_format`）：
 
 | filter | 用法 | 结果 |
 |---|---|---|
-| `xml` | `{{ msg.text \| xml }}` | 转义 `& < >`，用于元素正文 |
-| `attr` | `from="{{ msg.from.name \| attr }}"` | 转义 `& < > "`，用于属性值 |
+| `xml` | `{{ text \| xml }}` | 转义 `& < >`，用于元素正文 |
+| `attr` | `name="{{ name \| attr }}"` | 转义 `& < > "`，用于属性值 |
 | `json` | `{{ msg.machine \| json }}` | 任意值的紧凑 JSON |
 | `truncate` | `{{ msg.text \| truncate: 200 }}` | 最多 n 个字符，截断时以 `…` 结尾 |
 | `oneline` | `{{ msg.text \| oneline }}` | 把连续空白（含换行）压成一个空格 |
 | `default` | `{{ msg.from.name \| default: "unknown" }}` | 值为空（None / 空串 / 空列表）时取参数 |
 | `join` | `{{ msg.mentions.dids \| join: ", " }}` | 字符串列表拼接 |
 | `quote` | `{{ msg.text \| quote }}` | 每行前加 `> `（Markdown 引用） |
-| `time` | `{{ msg.sent_at \| time: "%H:%M" }}` | 把 RFC 3339 字符串或毫秒时间戳按本地时区格式化；值为空时输出空串 |
-
-**输入 filter**（由 libopendan 注册，认识 `input.*` 的结构；`PromptRenderEngine` 增加一个由宿主追加 filter 的入口）：
-
-| filter | 用法 | 结果 |
-|---|---|---|
-| `render_msg` | `{{ msg \| render_msg }}` | 内建的 `<msg …>…</msg>` 元素，与 `input.text` 中的同一条逐字节一致 |
-| `render_event` | `{{ ev \| render_event }}` | 内建的 `<event …>…</event>` 元素 |
-| `render_attachments` | `{{ msg.attachments \| render_attachments }}` | 每个附件一行 `<attachment …/>`；没有附件时为空串 |
-| `speaker` | `{{ msg.from \| speaker }}` | 显示名，没有则取 `id` |
-| `attachment_list` | `{{ msg.attachments \| attachment_list }}` | 一行纯文本：`[0] screenshot.png (image), [1] build.log (document)`，用于非 XML 的排版 |
+| `time` | `{{ msg.sent_at \| time: "%H:%M" }}` | 把 RFC 3339 字符串或毫秒时间戳按 UTC 格式化；值为空时输出空串；用户时区通过 Session 的默认半订阅提供 |
 
 约定：
 
 - filter 都是纯函数，不读队列、不访问网络、不改 state。
 - upon 没有比较运算符，条件只判断真假（None、false、0、空串、空列表为假）。所以视图里直接给布尔字段和可判空的字段：`msg.is_group`、`msg.mentions.me`、`msg.attachments`、`msg.relations`、`ev.terminal`、`input.messages`、`input.events`。可能缺失的字段用 `?.` 访问（如 `msg?.title`）。
-- upon 不会自动转义。内建渲染和 `render_*` filter 已经转义；自己排版时，写进 XML 风格结构里的消息字段要加 `xml` / `attr`，否则正文可以伪造标签，I5 只对用了这些 filter 的模板成立。纯文本 / Markdown 排版不需要转义，但也就不提供结构保证。
-- 无论模板怎么排版，每个附件都要出现在文本里（`render_attachments`、`attachment_list` 或自行遍历），否则破坏 I4。Session 在渲染后检查：本批有附件而文本中找不到任何附件的 `obj_id` 时记一条 warning，不拒绝。
+- upon 不会自动转义。`render_format` 的 XML 格式统一负责转义，使用这些格式的模板满足 I5；直接拼装 XML 的自定义模板仍需用底层 `xml / attr` 正确处理字段。纯文本 / Markdown 格式不提供 XML 结构保证。
+- 无论模板怎么排版，每个附件都要以 ObjId 或可读取路径出现在文本里（使用包含附件的 message 格式、`attachments.xml / attachments.list` 或自行遍历），否则破坏 I4。Session 在渲染后逐个检查附件：其 ObjId 与可用路径均未出现时记 warning，不拒绝；显示名不能替代定位信息。内建格式与示例必须满足 I4，自定义模板作者负责响应 warning。
 
 模板示例（behavior cfg 的 `[prompt]` 段；`{{ … }}` 之外的变量名沿用 xAgent §6.5）。
 
@@ -710,12 +739,12 @@ msg-center 收到的 MsgObject（群消息，节选）：
 ```toml
 on_input = """
 <session_input hook="{{ input.hook }}" time="{{ input.time }}">
-{{ input.text }}
+{{ input | render_format: "input.xml" }}
 </session_input>
 """
 ```
 
-**例 2：一对一 UI 对话**——在输入前加一段背景，输入用内建渲染（现有 Jarvis `chat_route` 的写法，`on_wakeup` 改名即可）：
+**例 2：一对一 UI 对话**——在输入前加一段背景与当前待办摘要，输入用内建格式（现有 Jarvis `chat_route` 的背景变量继续可用）：
 
 ```toml
 on_input = """
@@ -724,7 +753,8 @@ on_input = """
 {{ session.default_changed_background_hint_text }}
 </background_environment>
 {% endif %}
-{{ input.text }}
+{{ session.current_todo | render_format: "todo.summary_xml" }}
+{{ input | render_format: "input.xml" }}
 """
 ```
 
@@ -734,10 +764,7 @@ on_input = """
 on_input = """
 <group_chat time="{{ input.time }}">
 {% for msg in input.messages %}
-<msg key="{{ msg.key | attr }}" from="{{ msg.from | speaker | attr }}" at="{{ msg.sent_at | time: "%H:%M" }}"{% if msg.mentions.me %} mentioned="true"{% endif %}>
-{{ msg.text | xml }}
-{{ msg.attachments | render_attachments }}
-</msg>
+{{ msg | render_format: "message.xml" }}
 {% endfor %}
 </group_chat>
 Reply only if you were mentioned or the message is clearly addressed to you.
@@ -752,11 +779,7 @@ on_init = """
 {{ session.objective }}
 
 {% for msg in input.messages %}
-## Request from {{ msg.from | speaker }}
-{{ msg.text | quote }}
-{% if msg.attachments %}
-Attachments: {{ msg.attachments | attachment_list }}
-{% endif %}
+{{ msg | render_format: "message.markdown" }}
 {% endfor %}
 """
 ```
@@ -765,14 +788,13 @@ Attachments: {{ msg.attachments | attachment_list }}
 
 ```toml
 on_input = """
-<wakeup time="{{ input.time }}">
+Wakeup at {{ input.time }}
 {% for ev in input.events %}
-- [{{ ev.source.kind }}:{{ ev.source.id }}] {{ ev.event }}{% if ev.terminal %} (final){% endif %}: {{ ev.summary | oneline | truncate: 300 }}
+{{ ev | render_format: "event.summary_text" }}
 {% endfor %}
 {% for msg in input.messages %}
-{{ msg | render_msg }}
+{{ msg | render_format: "message.xml" }}
 {% endfor %}
-</wakeup>
 """
 ```
 
@@ -781,7 +803,7 @@ on_input = """
 ```toml
 on_input = """
 {% for item in input.items %}
-{% if item.is_msg %}{{ item | render_msg }}{% else %}{{ item | render_event }}{% endif %}
+{% if item.is_msg %}{{ item | render_format: "message.xml" }}{% else %}{{ item | render_format: "event.xml" }}{% endif %}
 {% endfor %}
 """
 ```
@@ -792,7 +814,7 @@ on_input = """
 
 ```text
 assistant AiMessage（function call 的最终回复）/ behavior 结果中的 messages_to_send
-   │ Session：取打开的 Turn 的 reply 目标，用 llm_context::ai_message_to_msg_object_with_base_validated_async
+   │ Session：取 state.reply 中最后一条 input message / 父 Session 的来路，用 llm_context::ai_message_to_msg_object_with_base_validated_async
    │          转成 MsgObject，写出站记录（与 Turn / run 状态同一次提交）
    ▼
 出站记录 { key, msg: MsgObject }
@@ -801,7 +823,7 @@ assistant AiMessage（function call 的最终回复）/ behavior 结果中的 me
 msg-center
 ```
 
-- 目标：`state.open_turn.reply`（§3.2.6）给出 `to`、`to_session`、`kind` 与 `thread.reply_to`；`from` 是 Agent DID。`messages_to_send` 自带 target 时以它为准。
+- 目标：`state.reply`（§3.2.6）保存最后一条已消费 input message 的原路回复目标，或父 Session 的来路；message 路径给出 `to`、`to_session`、`kind`、`thread.reply_to` 与 tunnel，`from` 是 Agent DID。不是只绑定开启 Turn 的那条消息；后续输入提交时更新，恢复时按 receipt 还原。`messages_to_send` 自带 target 时以它为准。
 - 转换复用 `msg_parser` 现有出口：文本块合并为正文；文本中的 `<attachment path=… | obj_id=…/>` 标签与 `NamedObject` 块转成 `MsgContent.refs`（本地路径经 `LocalFileResolver` 登记为对象，`AttachmentValidator` 做路径与权限检查）；thinking、tool_use、tool_result、provider_state 不出站。
 - 幂等：出站记录的 `key = (sid, turn, run_id, 序号)`；bridge 重发同一 key 不产生第二条消息。出入两个方向的线格式都是 MsgObject，Session 是唯一做 MsgObject ↔ AiMessage 转换的地方。
 - headless 的子 session 不产生 MsgObject，结果交给父 session（xAgent §4.13）。出站通道（`channels.outbound`）与 UI session 一起后移，这里只约定结构与转换点。
@@ -811,13 +833,15 @@ msg-center
 - [ ] `protocol/input.rs`：`SessionInput / PostedInput / FetchedInput`、`SessionMsg / MsgDelivery`、构造 helper（`text_msg / attach / reply_to / PostedInput::msg`）、`AgentEvent`、`ControlCommand::Perceive`、`RejectReason`；删除 `InputKind::{Change, Perception}`、`Input::{change, perception}`、`HEADER_INTENT`、`HEADER_REPLY_TO`；生成 JSON Schema。
 - [ ] `channel/kmsg.rs`：`encode_input` / `decode_message` 按 §3.2.1 的 header 映射，增加 `schema` 校验；投递与消费共用 §3.2.5 的校验函数。
 - [ ] `protocol/config.rs`：删除 `InputSourceConfig::MsgCenter`；behavior 的 `input` 段增加 `media: reference | inline`（与 `input.mode` 并列，随 C7 冻结）。
-- [ ] `protocol/state.rs`：`pending_events`、`open_turn.reply`；receipt 改为 `events[]` + `parts[]`，删除 `changes[]`、`consumed_only[]`、`content`、`message_pos`；`OBSERVATION_HOOK` 删除。
+- [ ] `protocol/state.rs`：`pending_events`、`state.reply`；receipt 改为 `events[]` + `parts[]` 并保存提交后的 `reply`，删除 `changes[]`、`consumed_only[]`、`content`、`message_pos`；`OBSERVATION_HOOK` 删除。
+- [ ] 输入通道：Session 级 pending input 上限 64，原子容量检查与 append、`input_full`、消费后释放容量；旧协议 Session 迁移前只读。
+- [ ] Session 配置与内置 bridge：绑定用户时区并默认建立隐式 semi 订阅；协议与内建时间渲染统一 UTC。
 - [ ] `runner/assembler.rs`：`InputMaterial.inputs` 改为 `InputView`；内建 `input.text` 渲染（§3.3.4）；`render_input` 返回 `RenderedInput`。
 - [ ] `runner/live.rs::commit_input_batch`：注入 1–2 条多块 `AiMessage`，按 `parts[]` 记录位置。
 - [ ] `runner/history.rs` 与压缩路径：早于当前 Turn 的输入消息去掉媒体块。
 - [ ] `Cargo.toml`：libopendan 直接依赖 `ndn-lib`（workspace 已有，llm_context 已在用）。
 - [ ] `runner/assembler.rs`：`message_view`（MsgObject → `MessageView`，§3.3.3）；llm_context 先导出 `attachment_kind` / `attachment_mime`。
-- [ ] 模板 filter（§3.3.8）：llm_context 的 `PromptRenderEngine` 注册通用 filter 并提供宿主追加 filter 的入口（llm_context 层，先行）；libopendan 注册 `render_msg / render_event / render_attachments / speaker / attachment_list`；六个示例模板进 fixtures。
+- [ ] 模板命名格式与 filter（§3.3.8）：llm_context 的 `PromptRenderEngine` 注册 `render_format` 与底层通用 filter，提供宿主注册格式和追加 filter 的入口（llm_context 层，先行）；libopendan 注册 `input.xml`、`message.xml / message.markdown`、`event.xml / event.summary_text`、`attachments.xml / attachments.list`、`todo.summary_xml`。材料在渲染前装配，XML 格式内部统一转义；六个示例模板进 fixtures。
 - [ ] `bridge/msg.rs`：`route_msg_record`（§3.3.2，只过滤与分流）。
 - [ ] CLI：`post --json <file | ->` 与 `post --msg … [--from] [--attach] [--reply-to]`，`--no-bridge` 下可单独验证接收方；调用者不需要了解 Rust 类型、闭包或进程内对象。
 - [ ] 手工投递样例与 fixtures：普通消息、带附件的群消息、active 任务事件、semi 对象变化、停止控制，以及 §3.2.5 每种拒绝原因各一条；每个样例给出所需的 Session 配置与预期行为；`input.text` 的渲染结果进 fixtures。
@@ -834,7 +858,7 @@ msg-center
 7. **多输入源的归并顺序**：本文按 `channels.inputs` 的声明顺序。目前每个 session 只有一个 kmsg 队列，多源出现前不实现。
 8. **prompt 中的消息 key 长度**：`<msg key>` 与 `reply_to` 现在是完整的 ObjId 字符串。是否在渲染时用批内短编号（并在 receipt 中保留对应关系）以节省 token？本文按完整 ObjId，保证跨批次引用稳定。
 9. **非人类来源的 `from`**：子 session 发给父的消息、定时任务生成的消息，`from` 用所属 Agent 的 DID，来源 session 放 `to_session` 还是 `meta`？本文倾向 `meta.from_session`，随 Sub Session（C15）实施时定。
-10. **自定义模板的转义**（§3.3.8）：upon 不自动转义，本文靠 `xml` / `attr` filter 和 `render_*` filter，由模板作者负责。另一选项是给输入模板设置默认转义的 formatter、用 `raw` 显式放行，代价是 `{{ input.text }}` 这类已渲染好的片段都要加 `raw`，且与 system 模板的行为不一致。
+10. **自定义模板的转义（已定）**（§3.3.8）：默认推荐 `render_format: "格式名"`，XML 格式渲染器负责转义，模板直接插入完整片段；`xml / attr` 保留给直接拼装 XML 的高级用法。不引入默认二次转义或额外 `raw` 要求，`input.text` 与 system 模板的既有插值方式保持一致。
 
 ## 4. P0：统一 Session 的机械判断与输入处理
 
@@ -844,9 +868,10 @@ msg-center
 - [ ] kevent 只通知 Runner 队列可能变化，重复通知和漏通知不影响已持久化输入的消费。是否运行 LLM 由可处理的受控输入或可恢复的 run 决定，不设独立的 wakeup 输入入口。
 - [ ] message 的业务意图交给 LLM；鉴权、去重、排序、暂存和终态拒绝仍按协议机械处理。普通自然语言消息不能被直接解释为停止控制命令：Session 不解析正文，斜杠命令只在 msg bridge 入队前按登记表与发送者身份转成 `control`（§3.3.2）。
 - [ ] event 按结构化字段机械匹配；`summary` 是给 LLM 的说明，不用于解析任务状态或推导等待条件。
-- [ ] 挂起调用的结果依赖与普通事件订阅分别登记和匹配。同一事件如同时满足两者，明确是否还需向上下文提供通知及如何避免重复注入。不能因事件来自 Task 就把未匹配调用的事件一律当成孤儿丢弃。
-- [ ] 明确未知、已删除订阅和无订阅系统事件的处理。投递策略统一为 `Input / Observe`：已知 active → Input，semi → Observe；未匹配时由模板决定，默认 timer → Input、其它 → Observe。Input 表示进入受控输入的候选批次；Observe 表示合并为半订阅状态。订阅变更的生效顺序与迟到事件行为纳入协议。
-- [ ] 挂起工具期间，普通 msg / 无关 Input event 保留待处理，不能填补缺失 ToolResult 或隐式开启替代 run；控制命令继续可处理。停止、审批和结果完成之间的先后关系必须有确定规则（建议规则与待决项见 llm_context TODO §9 第 7 项）。
+- [ ] 挂起调用的结果依赖与普通事件订阅分别登记和匹配。匹配 pending call 的任务通知只触发 resolver 查询，结果回填 ToolResult，不再重复注入普通事件；没有 pending call 时，按有效普通订阅处理，无订阅则丢弃。
+- [ ] 只接收匹配有效显式 / 隐式订阅的事件：active → Input，semi → Observe。未知、已删除或未匹配的订阅直接丢弃，提交消费位置并确认输入源，不进入上下文或 `pending_events`；timer、系统事件也遵循此规则。Session 模板负责预先登记所需订阅，不再提供“未订阅也投递”的默认策略。
+- [ ] 同一源的 subscribe / unsubscribe 与 event 按投递 index 生效；unsubscribe 清理该订阅尚未注入的状态，后续迟到事件直接丢弃。不能先应用整批订阅变更再重新解释排在它之前的事件。挂起调用自己的结果依赖不随普通 unsubscribe 删除。
+- [ ] 挂起工具期间，普通 msg / 无关 Input event 保留待处理，不能填补缺失 ToolResult 或隐式开启替代 run；控制命令继续可处理。stop、审批作废和 task 取消复用 llm_context TODO §3 / §4 / §9 第 7 项的已定规则，不再另设一套停止协议。
 - [ ] 挂起调用与事件的匹配按 `task_id` 相等：llm_context 的挂起记录只有 `task_id`（对 llm_context 不透明），`source.kind = task` 的 AgentEvent 以 `source.id` 携带同一个 `task_id`（§3.2.3）。事件只用来提前唤醒，结果以 `RunningTaskResolver` 的查询为准。
 - [ ] 工具执行期间也要能处理 stop 并维持 activity 心跳。当前控制输入只在 `before_inference` 边界读取；Runner 需要一个与工具调用并行的监视任务，读到 stop 后调用 interrupt handle（依赖 llm_context TODO §3 的工具取消）。监视任务只查看控制输入，不确认 / 消费，也不写 state；控制由驱动者在下一个边界执行并提交（§5 单写者纪律）。
 
@@ -855,6 +880,7 @@ msg-center
 | 可处理的 message | 校验、去重、组批 | 开启新 Turn 或并入未关闭 Turn |
 | 匹配普通 active 订阅的 event | 解析 Input 策略、组批 | 在可推理时进入上下文；挂起工具期间按等待规则暂存 |
 | semi / Observe event | 合并并持久化半订阅状态 | 在受控输入使用前渲染为半订阅快照；不独立生成输入批次或触发推理 |
+| 未匹配有效订阅、也未匹配 pending call 的 event | 丢弃并提交消费位置，再确认输入源 | 不进入上下文，不保存在 `pending_events`，不开启 Turn |
 | 匹配 pending call 的任务通知 | 重新查询权威状态、收集结果 | 满足快照所需结果后以 ToolResults 恢复原 run / Turn |
 | control | 校验后由 Session 驱动者执行并提交 | 不作为 Agent 输入；停止等命令可改变 Session / Turn 状态 |
 
@@ -872,13 +898,14 @@ msg-center
 - [ ] 输入模板统一为 `prompt.on_init / prompt.on_input / prompt.on_context_switch`；现有 `on_wakeup` 改为 `on_input`，`on_behavior_switch` 改为 `on_context_switch`。普通快照恢复、上下文压缩和 ToolResults 回填不新增受控输入入口。
 - [ ] 附件是否以图片 / 文档块随文本注入由 behavior 的 `input.media`（`reference | inline`，默认 `reference`）决定，与模板无关（§3.3.4）。
 - [ ] 单条 / 组批作为消费策略配置，与渲染模板分开；模板接收本次已选中的输入集合。behavior cfg 的 `input.mode` 默认 Batch，延续当前组批方式；Single 从排序后的可处理 message / Input event 中总共选一条，Batch 在批次预算内选取多条，未选输入保留。交接时先完成目标 behavior 的冻结与校验，再读取它的策略与模板。
+- [ ] 输入装配 / 推理预算不足时，按 AICC 服务不可用的失败与重试路径处理，不另造输入淘汰或预算专用协议。未提交批次不消费、不确认；已提交到快照的批次保留 receipt，恢复时不重复注入。不因暂时无法推理而静默丢输入，也不把本条改成 llm_context 执行预算的重新定义。
 - [ ] 初始化或交接与外部输入同时可处理时，沿用 `on_init` → `on_context_switch` → `on_input` 的入口选择顺序；允许消费的外部输入并入该批，不重复生成 `on_input`。子 context 不消费调用方队列、未完成工具批次期间暂存输入的规则保持有效。
 
 ### 4.3 半订阅快照的装配与提交
 
 统一术语为 **`semi_subscription_snapshot`（半订阅快照）**，模板字段为 `prompt.semi_subscription_snapshot`，装配函数为 `render_semi_subscription_snapshot`。“半订阅”描述变化的接收与使用方式，“快照”描述本次渲染所看到的当前状态。
 
-它是三类受控输入共用的装配材料，不设置 `on_observation`、`observed_state` 或第四类输入 hook。Observe 事件持续合并到持久化的 `pending_events`；本次快照选取其中待注入的状态版本，按策略包含活动 Session 集合变化，不逐条重放已被覆盖的变化事件。
+它是三类受控输入共用的装配材料，不设置 `on_observation`、`observed_state` 或第四类输入 hook。已订阅的 Observe 事件持续合并到持久化的 `pending_events`；本次快照选取其中待注入的状态版本，包含默认半订阅的 Session 用户时区，并按策略包含活动 Session 集合变化，不逐条重放已被覆盖的变化事件。
 
 ```text
 确定本次受控输入（on_init / on_input / on_context_switch）
@@ -891,47 +918,50 @@ msg-center
 
 - [ ] 运行中的检查点可继续接收、合并并保存半订阅状态；仅到达检查点、完成工具调用或收到 Observe event，不独立注入快照。没有受控输入时继续保留状态，空闲时同样保留。
 - [ ] 将当前 `render_observation` / `hook = observation` 的独立注入路径收敛到上述装配流程；不把旧 `on_behavior_step_ob` 直接作为半订阅输入入口。工具结果的渲染仍属于 LLM Context 的执行协议。
-- [ ] 渲染与选取无消费副作用，不在 render / drain 阶段清理 `pending_events`。只有受控输入确实提交时，才按 receipt 清理本次实际注入的版本；渲染失败、批次未提交或预算延期时保留状态。
+- [ ] 渲染与选取无消费副作用，不在 render / drain 阶段清理 `pending_events`。只有受控输入确实提交时，才按 receipt 清理本次实际注入的版本；渲染失败、批次未提交或预算不足而进入 AICC 不可用处理路径时保留状态。
 - [ ] 一个输入批次可以包含快照消息与受控输入消息，receipt 必须覆盖两部分正文的位置和实际注入的状态版本（`parts[]` 与 `events[]`，结构见 §3.2.6；behavior 模式下两部分并入同一个 Step 的 `next_user_message`，见 §3.3.5）。两部分一起恢复，不允许快照已消费而受控输入丢失；半订阅快照不独立计 Turn，批次是否开启 Turn 仍由受控输入提交时的 Session 状态决定。
 
 ## 5. P0：事件身份、合并和消费提交
 
 - [ ] 五种身份各司其职（字段定义见 §3.2）：逻辑输入去重 `key`、通道投递位置 `(src, index)`、事件来源 `source`、状态合并键 `(subscription_id, source)` 和来源版本 `seq`。同一逻辑输入重投沿用 key，不同变化使用不同 key。`pending_events` 的存储结构见 §3.2.6。
-- [ ] 明确去重记录的保留范围，避免把有界 `recent_keys` 描述成无限期去重保证；通道消费游标与 receipt 承担恢复时的幂等消费。
-- [ ] Observe 状态按同一来源的版本合并，迟到旧版本不能覆盖新版本。版本不可比、缺少 seq、来源重启等情况先规定行为，不用接收时间冒充来源顺序。
+- [ ] pending input 上限固定为 64（§3.2.1），容量满时拒绝 append，不增加无界积压机制。沿用有界 `recent_keys` 处理近期逻辑重投，选批时也按 key 去重；通道消费游标与 receipt 承担同一投递位置和已提交批次的恢复幂等。不承诺跨任意时间、跨协议版本的无限期逻辑去重。
+- [ ] 同一协议内，Observe 在尚未消费的同一来源状态上按 seq 合并，迟到旧版本不能覆盖仍保留的新版本；没有 seq 时按通道消费顺序更新，并用 key 区分本次状态，不用时间戳冒充来源版本。producer 对同一来源保持 seq 可比较，重启后不能保持时使用新来源身份。提交后不为低概率旧事件追加永久版本水位；状态已清理且超出近期去重窗口的事件不承诺历史版本过滤。协议升级是另一层边界：旧 Session 迁移前 readonly，不能继续消费新旧输入。
 - [ ] 不对所有 Input event 默认做快照合并；需要保留每次发生的事件按流处理，可覆盖的状态事件由协议声明合并语义。terminal 用于保留和注入优先级，不能代替权威任务状态判断。
-- [ ] `pending_events` 在空闲时保留；只在消费、明确拒绝或按规则覆盖后清除。容量 / 预算不足时定义延期或拒绝行为，不能统一丢掉所有 event。
-- [ ] receipt 记录本次实际消费的投递位置及事件版本。清理待观察状态时，只清掉 receipt 覆盖的版本；处理 v7 期间收到 v8，提交 v7 不得删除 v8。
+- [ ] `pending_events` 在空闲时保留；只在消费、取消订阅、明确拒绝或按规则覆盖后清除。它保存已订阅来源的待注入状态，不保存已被覆盖的历史事件。总线容量满按 §3.2.1 拒绝 append；注入预算不足按 AICC 服务不可用处理，保留尚未提交的状态。
+- [ ] receipt 记录本次实际消费的投递位置及事件版本。清理待观察状态时，按 `(subscription_id, source, key)` 精确匹配，存在 seq 时一并核对；latest / terminal 只清本批实际注入的记录，同一 key 只注入一次。处理 v7 期间收到 v8，提交 v7 不得删除 v8；seq 缺失也不能删除另一 key 的新事件。
 - [ ] 含半订阅快照的受控输入批次和结果补齐继续遵守已有顺序：正文与 receipt 同快照 → run 门槛 → state 提交 → 清门槛 → 确认输入源。禁止在可恢复提交前出队，也禁止结束时按来源键再次删除本轮期间新到达的事件。
 - [ ] 对仅更新待观察状态的投递，先提交该状态再确认输入源；区分“已接收保存”与“已注入上下文”，receipt 不声称 LLM 已看到尚未注入的变化。
 - [ ] 保持 lease 下单写者纪律；bridge 和生产者通过输入通道提交，由驱动者修改 Session state，避免多个异步写入覆盖彼此的磁盘状态。
 
 ## 6. P1：串行等待、并行后台任务与可靠恢复
 
-这里的“串行 / 并行”指 Agent 的后续工作是否依赖后台任务。后台任务要能独立于 Session 驱动进程存活并提供可查询状态；同步 `shell` 被打断或崩溃后的结果沿用 llm_context TODO §3.2 的纪律：不追杀进程，恢复时按 runtime 给出“被打断”的结果，不自动重放。
+这里的“串行 / 并行”指 Agent 的后续工作是否依赖后台任务。task 的存活与可查询能力由已有实现决定，不统一承诺跨进程存活：外部服务 task 经宿主 resolver 查询；进程内 task 重启后查不到可返回 Unknown，shell 能从执行目录读到 exit 时返回已有结果。同步 `shell` 被打断或崩溃后的结果沿用 llm_context TODO §3.2 的纪律：不追杀进程，恢复时按 runtime 给出“被打断”的结果，不自动重放。
 
 本节依赖 [llm_context TODO](./llm-context-long-tool-todo.md) 的修改（§3 工具取消与时限、§4 挂起记录与 `RunningTaskResolver`、§5 `shell` 的执行模式与 task），它们已于 2026-10-02 实施；以下是宿主侧的接入。原设计的 `wait.source / wait.class`、`DeferredResolver`、job 与 run 的区分均已取消，本节按简化后的词汇书写。
 
+本次 review 不重新设计 task 持久化、resolver 错误分类或 stop 状态机；以该文 §11 的完成记录和现有接口为准。仍需实施的是该文 §11.3 列出的 Session 宿主接入，不能把 llm_context 已完成等同于宿主已经接好。
+
 ### 6.1 串行等待：补齐未完成的工具调用
 
-- [ ] 完整定义 PendingTool 的宿主约定：工具返回 Pending 让出控制权，最终 ToolResult 尚未交付；持久化 run、call_id、等待对象引用、截止时间及已收集结果。每个调用的挂起记录（`task_id`、可选的 `until_ms`）以快照为准，由 llm_context TODO §4 定义；`waiting_for.refs` 在提交挂起时从中生成（call_id、task_id、until_ms），用于状态展示和 §4 的事件匹配，不再是空 refs。
+- [ ] PendingTool 接入沿用已实现的 `PendingToolCall{call, task_id, until_ms}`，挂起关联与已收集结果以 run 快照为准；`waiting_for.refs` 只从中生成 task_id 列表，用于状态展示和 §4 的事件匹配，不另存一份 call / deadline 协议。
 - [ ] 删除未使用的 `pending_task_calls: Vec<Value>`（当前只有定义与默认值），不另定 schema；等待关联只认快照中的挂起记录与由它生成的 `waiting_for.refs`。
-- [ ] 查询和恢复能力由宿主提供，Session 只依赖接口。Task、审批票据等挂起原因各自解析结果，不把所有 PendingTool 都转换为 TaskMgr 任务；审批沿用 xAgent 的控制协议设计。接口 `RunningTaskResolver`（`state / wait / cancel / active`）定义在 llm_context 层，由宿主装配组合实现：进程内 task-mgr、可访问时的 buckyos task-mgr，以及 Session 自己登记的 task（子 context、子 session、审批票据），按 `task_id` 分派。xllm 接手已挂起的 run 时不等待，按当时的状态回填后续跑；只有挂起在接手方解析不了的 task 上才拒绝（见 §7 交接）。
+- [ ] 宿主装配现有 `RunningTaskResolver`（`state / wait / cancel / can_resolve / watch / active`），复用组合 resolver 的进程内 task 与可选 buckyos task 路由；Session 自己的子 context、子 session、审批票据按需接入同一接口。不把所有 PendingTool 转换为 TaskMgr 任务，不在 Session 内另建任务执行器。xllm 接手时按当前状态立即回填，不等待。
 - [ ] 在 drive 恢复入口先对齐快照、提交现场和等待对象，再处理新输入。任务已终态就收集结果，仍在执行才继续等待；通知到达和兜底定时检查使用同一查询路径。
 - [ ] 收齐快照实际需要的结果后，使用 `ResumeFill::ToolResults` 恢复同一 run 和仍打开的 Turn；轮询未完成任务无需调用 LLM。到达 `until_ms` 而 task 仍未结束时，也按当时的状态回填。
 - [ ] 等待条件独立于 inbox 是否为空。所有等待出口、CLI 重入和常驻模式都能继续检查任务，不能只有“已经收到部分输入”的分支才做轮询。
-- [ ] 明确查询失败、任务不存在和结果不可读取的处理：resolver 返回 `Unknown{reason}` 时照常回填并续跑，由 LLM 判断（llm_context TODO §4）；resolver 自身不可用（服务访问不了）时保留现场并暴露可诊断状态。两种情况都不删除挂起快照后静默另起任务。
+- [ ] 查询与接手直接复用已实现的判断：`can_resolve(task_id) = false` 时拒绝接手并保留现场；能解析时调用 `state / wait`，得到 `Unknown{reason}` 就用现有 `task_state_observation` 回填续跑，由 LLM 判断，不解析 reason 再派生一种错误协议。进程内 task 换进程后查不到不因此返回 RecoveryBlocked；不静默重建或重放任务。
 - [ ] 支持结果恢复和崩溃场景后再开启 `allow_deferred`。宿主缺少对应能力时明确拒绝 / 返回 RecoveryBlocked，保留原始现场。这里指已处于挂起态的快照；派发时宿主未开 deferred 而工具返回 Pending 的情况，按 llm_context TODO §4 在工具内等待（最长 30 分钟），不报 Internal 错误。
+- [ ] stop 复用已实现的平滑结束、必要时打断与配对结果路径；对当前 Turn 的可取消 task 传导取消、审批作废，之前 Turn 的 task 不受影响。宿主只负责控制提交与调用现有能力，不另定义一套 resolver 取消结果或停止竞态协议。
 
 ### 6.2 并行等待：工具已经返回，后台任务继续
 
-- [ ] 正常 ToolResult 返回任务引用后，Agent 可以继续其它工作；后续通知按普通 active / semi 订阅处理，不走补齐旧 ToolResult 的路径。
+- [ ] 正常 ToolResult 返回任务引用后，Agent 可以继续其它工作；沿用 llm_context 的自动 watch。后续通知只按已登记的 active / semi 订阅处理，不走补齐旧 ToolResult 的路径，未订阅事件按 §4.1 丢弃。
 - [ ] Agent 在收到变化通知后通过工具重新读取任务状态，决定继续等待、处理结果或改方案。空闲时的定期检查由持久化 timer / 宿主调度提供机会，不能假定 LLM 自己持续轮询。
-- [ ] task 提交与订阅建立之间可能错过终态通知，建立订阅后立即查询一次；进程恢复后也先查询，再重新等待。
-- [ ] 明确无输入队列模板的能力边界：串行等待可由查询能力恢复；需要后台通知驱动后续推理的 Session 必须有相应输入 / 调度通道，缺少能力时给出明确结果。
+- [ ] task 提交与订阅建立之间可能错过终态通知，建立订阅后立即查询一次。恢复使用已持久化 call_result / 挂起记录中的 task_id 查询；`active()` 是当前 resolver 的展示列表，不是重启后的持久任务索引。查不到使用既有 Unknown 状态：有 pending call 时按 §6.1 回填；调用已经返回时只向后续推理呈现状态，不补写旧 ToolResult。不增加另一套恢复状态机。
+- [ ] 无输入队列时，串行等待由 resolver 恢复；后台 task 的完成检查由宿主调度 / 内置 bridge 提供。没有驱动或调度机会时，不承诺 Session 自行唤醒；已 finished 的 Session 不因 task 完成而重开。
 - [ ] 后台 task（llm_context TODO §4 / §5：`shell` 的 auto 模式到期转 task，以及其它返回 task 的工具）的 Session 侧处理：
   - run 进行中，task 的状态由 llm_context 的 background env 呈现（`resolver.active()`，半自动订阅），不经过输入队列。
-  - run 结束后仍在运行的 task，由 Runner 内置 bridge 接管：按 `resolver.active()` 登记，完成时合成 `AgentEvent{source: {kind: task, id: task_id}, terminal: true}`，按 Session 的投递策略进入候选批次或 `pending_events`，不依赖输入队列。被挂起调用等待的 task 不登记，避免同一完成既回填结果又作为事件注入（对应 §4 “同一事件同时满足两者”）。无队列模板中 task 的呈现与唤醒见 llm_context TODO §9 第 6 项。
+  - run 结束而 Session 尚未 finished 时，对本 context 已 watch、尚未结束且没有 pending call 等待的 task，由 Runner 内置 bridge 接管为隐式 active 订阅；已有显式订阅则沿用其 active / semi 策略。完成时合成 `AgentEvent{source: {kind: task, id: task_id}, terminal: true}`，走同一套已订阅事件处理，不依赖额外输入队列。恢复按上一条从已保存的 task_id 重新查询，不要求进程内 `active()` 自动恢复。被挂起调用等待的 task 只回填 ToolResult，避免重复注入。
   - Session stop 传导给当前 Turn 的 task（可取消的被取消，审批作废）；Session finished / discard 时 task 的清理见 llm_context TODO §9 第 4 项。
 
 ### 6.3 Task bridge 与任务创建的恢复关联
@@ -962,11 +992,21 @@ msg-center
 | 带附件、回复关系与 @ 的群消息经 msg bridge 进入（§3.3.7） | 总线记录、渲染文本与注入的 AiMessage 与 fixtures 一致；说话人是 `msg.from`，不是投递者；信封 `key` 等于消息 ObjId |
 | 同一批输入分别用 `input.media = reference` 与 `inline` | 文本块相同；`inline` 多出按顺序排列的图片 / 文档块，receipt 的 `parts[].pos` 指向它们所在的消息 |
 | 正文包含 `<msg>`、`</inputs>` 等标签文本或以 `/stop` 开头（非授权发送者） | 被转义后作为普通正文进入上下文，不改变结构，不被当作控制命令 |
-| msg bridge 在投递成功、确认 msg-center 之前崩溃 | 重投的记录按 `key` 去重，上下文中只出现一次 |
+| msg bridge 在投递成功、确认 msg-center 之前崩溃，在近期去重窗口内重投 | 重投的记录按 `key` 去重，上下文中只出现一次 |
 | 输入提交后崩溃，恢复时总线记录已被清理 | 按快照中的 receipt 补齐 state，不重新渲染，消息内容不变 |
-| §3.3.8 的六个示例模板渲染同一批输入 | 输出与 fixtures 一致；`render_msg` 的结果与 `input.text` 中的同一条逐字节相同；正文里的标签文本经 `xml` 转义 |
+| 一个批次多条 message、同一 Turn 后续补充 message，之后崩溃恢复 | `state.reply` 始终指向最后一条已提交 message 的来路；receipt 补回路径，不依赖总线或渲染文本 |
+| 只有 event / bootstrap 的批次，或子 Session 没有 message 来路 | 前者保留已有回复路径；后者按 parent session 来路回送；无任何来路时不产生默认消息回复 |
+| §3.3.8 的六个示例模板渲染同一批输入 | 输出与 fixtures 一致；`input.xml` 与 `input.text`、`message.xml / event.xml` 与其中的对应元素逐字节相同；XML 格式内部正确转义正文与属性 |
+| `session.current_todo` 为空或含标签文本；传入未知格式名或错误的对象形状 | `todo.summary_xml` 对空值输出空串，对文本正确转义；未知格式 / 错误形状报模板错误，输入保持未消费 |
+| 附件清单分别使用 ObjId 与宿主已解析的可读路径 | 两者均满足 I4；去掉媒体块后仍能按文本定位，只有显示名时给出 warning |
+| 不同时区的 Runner 渲染同一批输入；用户时区随后变化 | 内建时间都是相同 UTC 字符串；Session 绑定的用户时区默认半订阅，变化随下一次受控输入呈现，不独立唤醒 |
 | 新 run 重建历史，之前的 Turn 含图片块 | 历史中只保留文本块，`<attachment>` 行仍在 |
 | 同一事件投给 active 与 semi Session | 前者形成可推理输入，后者保存变化且空闲时保留 |
+| 未订阅、已取消订阅或未知来源的事件到达 | 丢弃并提交消费位置、确认输入源，不进入上下文或 `pending_events`；timer / system 无兜底例外 |
+| 同源 event A → unsubscribe → event B | A 按当时有效订阅处理，取消订阅清理未注入状态，B 丢弃；不因 fetch 分批方式改变生效顺序 |
+| 64 条 pending input 后继续 append，或多个 producer 争抢最后一个名额 | 最多接受 64 条，第 65 条返回 `input_full`；不覆盖已有记录，bridge 不确认未投递的上游记录 |
+| 队列有暂存普通输入，后面已入队 stop | 监视任务能在最多 64 条 pending 记录中发现 stop，按既有取消路径处理 |
+| 输入装配 / 推理预算不足 | 走 AICC 服务不可用的失败与重试路径；未提交输入保留，已提交 receipt 的批次不重复注入 |
 | 三类受控输入分别携带待注入半订阅状态 | 先出现半订阅快照消息，再出现对应的启动 / 外部输入 / 交接消息；正文与 receipt 同批提交 |
 | run 中只有 semi 更新、工具完成或检查点回调 | 更新保存但不独立注入；直到下一次受控输入使用前才渲染快照 |
 | on_input 单条与组批策略 | 模板只收到本次选中的输入；未选输入保留；control 与 Observe event 不被当作受控输入消费 |
@@ -974,10 +1014,13 @@ msg-center
 | 普通恢复、压缩或工具触发的子 context 返回 | 不重复执行 on_init / on_context_switch；工具返回按 call_id 补齐 ToolResult |
 | 非法输入 / 不支持版本（§3.2.5 的每种原因） | 按协议拒绝并记录原因；持久现场不被猜测性改写；累积确认不被卡住 |
 | 队列 kevent 重复或丢失 | 已持久化输入仍可被轮询发现并正确消费 |
-| 先到 v8，后到 v7 | v7 不覆盖 v8；事件流按其声明的规则处理 |
+| 同一协议内 v8 仍在 pending，随后到 v7 | v7 不覆盖 v8；不据此承诺消费清理后的永久版本过滤 |
 | 消费 v7 时 v8 到达 | 提交 v7 后，尚未注入的 v8 仍可被消费 |
+| 无 seq 的 Observe 更新在前一状态提交前到达 | receipt 按 key 精确清理，前一状态的提交不删除新 key |
+| 协议升级后打开旧 Session | 未迁移时 readonly，不能 append / drive；显式迁移成功后才能按新协议推进 |
 | 快照 / state / 清门槛 / ack 各窗口崩溃 | 恢复后不漏输入、不重复注入，同一打开的 Turn 延续 |
-| Task 在 Session 离线期间完成 | 无新通知也能查询终态并恢复；inbox 为空不阻止恢复 |
+| 可由 resolver 查询的持久 Task 在 Session 离线期间完成 | 无新通知也能查询终态并恢复；inbox 为空不阻止恢复 |
+| 进程内 task 在重启后查不到，或接手方没有对应 resolver 能力 | 前者按 Unknown 回填续跑、不重放；后者按 `can_resolve = false` 拒绝接手并保留现场 |
 | TaskMgr 的成功 / 失败 / 取消及重复通知 | 都按当前权威状态映射；结果与 call_id 精确关联 |
 | 普通后台任务订阅没有 pending call | 通知正常进入 active / semi 路径，不按任务路径前缀丢弃 |
 | 串行等待期间收到消息与停止控制 | 消息保留；控制按定义处理，不破坏挂起调用关联 |
@@ -986,16 +1029,16 @@ msg-center
 | 两个 Session 并行、两个进程争抢同一 Session | 不同 Session 正常推进；同一 Session 仅一个驱动者成功 |
 | 长 shell 执行中收到 stop | 工具被取消；快照含配对的 Cancelled 结果，恢复后不重跑 |
 | 同步 shell 执行中 Runner 被 kill | 恢复不阻塞、不追杀进程，按 runtime 给出“被打断”的结果，不重放（llm_context TODO §3.2） |
-| 串行等待 task 期间 kill -9 | 恢复后继续等待，终态回填到同一 run / Turn |
-| 并行 task：Turn 关闭后 task 完成，期间 Runner 被杀 | task 不受影响；完成事件进入 active session 的 on_input |
+| 串行等待 task 期间 kill -9 | 恢复先查询：Running 继续等待，Finished / Unknown 回填到同一 run / Turn；不承诺进程内 task 总能继续等待 |
+| 并行 task：Turn 关闭但 Session 未 finished，task 在 Runner 重启后完成 | 按保存的 task_id 查询，不依赖旧进程的 active 列表；可查询的完成结果按已登记 active / semi 订阅处理；查不到按 Unknown 规则处理 |
 | 经外部服务创建任务后、绑定持久化前崩溃 | 按稳定身份找回同一任务，不重复创建 |
 | 挂起期间收到 stop | 按定稿规则取消等待并回填，run 以 Stopped 结束 |
 
 建议实施顺序：
 
-0. [llm_context TODO](./llm-context-long-tool-todo.md) 先行：其 §3–§5 已实施。本文新增的 llm_context 层改动有两项，同样先做：从 `msg_parser` 导出 `attachment_kind` / `attachment_mime`（§3.3.3）；`prompt_engine` 注册通用 filter 并开放宿主追加 filter 的入口（§3.3.8）。
+0. [llm_context TODO](./llm-context-long-tool-todo.md) 先行：其 §3–§5 已实施。本文新增的 llm_context 层改动有两项，同样先做：从 `msg_parser` 导出 `attachment_kind` / `attachment_mime`（§3.3.3）；`prompt_engine` 注册 `render_format` 与底层通用 filter，开放宿主注册格式和追加 filter 的入口（§3.3.8）。
 1. 按 §3.5 实施总线数据结构与 Input 链路（§3.2 / §3.3 已定稿，§3.6 的待确认项不阻塞开工，按本文的选择实现），和 xAgent C1–C3 / C7 对齐；落实三类受控输入、system 模板命名及半订阅快照装配后，反写最终 Spec / Schema / fixtures。
-2. 补事件版本和精确消费，扩展既有 receipt / 崩溃验证，确认跨进程并行纪律。
+2. 落实未订阅事件丢弃、64 条 pending input、预算不足的 AICC 不可用路径、同协议内的 pending 版本合并和按 key 精确消费；扩展 reply / receipt、UTC 与用户时区订阅、崩溃验证，确认跨进程并行纪律。
 3. 在 llm_context TODO §4 / §5 的基础上，实现宿主结果查询、挂起关联和恢复路径；用模拟任务服务验证串行 / 并行两种语义，再开启 deferred。
 4. 接入 xagent 手工投递和常驻验证，随后按计划接 TaskMgr 等正式 bridge；更新主文、实现计划与 fixtures。
 
