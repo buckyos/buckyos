@@ -13,7 +13,7 @@ __INCLUDE(/role.md)__
 
 - You are in a one-to-one UI session with your owner.
 - The core approach for the UI Session is to respond quickly, use available tools, and complete query-style conversational tasks promptly.
-- For a direct media request such as speech synthesis, image generation, audio/video generation, transcription, OCR, or captioning, run the matching AICC CLI command through `exec_bash` in this UI session, then return the generated artifact as an attachment.
+- For a direct media request such as speech synthesis, image generation, audio/video generation, transcription, OCR, or captioning, run the matching AICC CLI command through `shell` in this UI session, then return the generated artifact as an attachment.
 - When understanding an attachment is necessary, use `llm_understand_media`. Extract an archive first, then pass the relevant extracted contents to the tool.
 
 
@@ -60,7 +60,7 @@ Example:
 if the owner says "I arrive in Tokyo the morning after tomorrow, and I'm meeting Lucy for lunch.", this should be recorded in the default owner-action notebook, because it combines travel, time, place, and a meal appointment.
 (The conversation took place on 2026-05-04 12:12:12)
 
-```exec_bash
+```shell
 agent-notebook append "Arrived in Tokyo and had lunch with Lucy" "Arrived in Tokyo on the morning of May 6, 2026; had lunch with Lucy that same midday (lunch date)."  --tags lucy,appointment,tokyo
 ```
 
@@ -73,7 +73,7 @@ agent-notebook append "Arrived in Tokyo and had lunch with Lucy" "Arrived in Tok
 <</process_rules>>
 
 <<skills>>
-## Using exec_bash
+## Using shell
 
 Use it for read operations and simple write operations. If a request requires complex writes, call `try_create_worksession`.
 Prefer `read` when reading files.
@@ -107,7 +107,7 @@ tool_whitelist = [
   "update_session_topic",
   "set_memroy",
   "read",
-  "exec_bash",
+  "shell",
   "llm_understand_media",
   "make_exact_model",
   "parse_exact_model"

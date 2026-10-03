@@ -108,9 +108,11 @@ pub struct LLMContextState {
 
 /// Current snapshot format version. 2: suspension state (`suspended`,
 /// `tool_batch`, `action_step`) replaced `pending_tool_calls`. 3: tool
-/// budget renamed (`tool_iterations_left`, `ToolBatch.batch_error`).
-/// `resume` accepts only this version.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 3;
+/// budget renamed (`tool_iterations_left`, `ToolBatch.batch_error`). 4:
+/// `PendingToolCall {task_id, until_ms}` replaced `{eta_ms, tool_result}`,
+/// `Observation::Cancelled.effect_unknown`, `Observation::Pending.task_id`,
+/// the `shell` action tag. `resume` accepts only this version.
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 4;
 
 /// Why a context is suspended. Every variant records when it yielded:
 /// suspended time is not charged to `max_wallclock_ms`.

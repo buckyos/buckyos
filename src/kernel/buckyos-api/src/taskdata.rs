@@ -235,7 +235,7 @@ pub const TASK_DATA_TYPE_APP_UPDATE: &str = "app.update";
 pub const TASK_DATA_TYPE_APP_UPDATE_BATCH: &str = "app.update_batch";
 pub const TASK_DATA_TYPE_SERVICE_RPC: &str = "workflow.execute_rpc";
 pub const TASK_DATA_TYPE_WORKFLOW_RUN_TARGET: &str = "workflow.run";
-pub const TASK_DATA_TYPE_TOOL_EXEC_BASH: &str = "tool.exec_bash";
+pub const TASK_DATA_TYPE_TOOL_SHELL: &str = "tool.shell";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TaskDataType {
@@ -258,7 +258,7 @@ pub enum TaskDataType {
     AppUpdateBatch,
     ServiceRpc,
     WorkflowRunTarget,
-    ToolExecBash,
+    ToolShell,
 }
 
 impl TaskDataType {
@@ -284,7 +284,7 @@ impl TaskDataType {
         Self::AppUpdateBatch,
         Self::ServiceRpc,
         Self::WorkflowRunTarget,
-        Self::ToolExecBash,
+        Self::ToolShell,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -308,7 +308,7 @@ impl TaskDataType {
             Self::AppUpdateBatch => TASK_DATA_TYPE_APP_UPDATE_BATCH,
             Self::ServiceRpc => TASK_DATA_TYPE_SERVICE_RPC,
             Self::WorkflowRunTarget => TASK_DATA_TYPE_WORKFLOW_RUN_TARGET,
-            Self::ToolExecBash => TASK_DATA_TYPE_TOOL_EXEC_BASH,
+            Self::ToolShell => TASK_DATA_TYPE_TOOL_SHELL,
         }
     }
 }
@@ -343,7 +343,7 @@ impl FromStr for TaskDataType {
             TASK_DATA_TYPE_APP_UPDATE_BATCH => Ok(Self::AppUpdateBatch),
             TASK_DATA_TYPE_SERVICE_RPC => Ok(Self::ServiceRpc),
             TASK_DATA_TYPE_WORKFLOW_RUN_TARGET => Ok(Self::WorkflowRunTarget),
-            TASK_DATA_TYPE_TOOL_EXEC_BASH => Ok(Self::ToolExecBash),
+            TASK_DATA_TYPE_TOOL_SHELL => Ok(Self::ToolShell),
             _ => Err(TaskDataParseError::UnknownTaskDataType(value.to_string())),
         }
     }
@@ -452,8 +452,8 @@ pub enum TypedTaskData {
     ServiceRpc(ServiceRpcTaskData),
     #[serde(rename = "workflow.run")]
     WorkflowRunTarget(WorkflowRunTargetTaskData),
-    #[serde(rename = "tool.exec_bash")]
-    ToolExecBash(ToolExecBashTaskData),
+    #[serde(rename = "tool.shell")]
+    ToolShell(ToolShellTaskData),
 }
 
 impl TypedTaskData {
@@ -496,7 +496,7 @@ impl TypedTaskData {
             TaskDataType::WorkflowRunTarget => {
                 parse_data(task_data_type, data).map(Self::WorkflowRunTarget)
             }
-            TaskDataType::ToolExecBash => parse_data(task_data_type, data).map(Self::ToolExecBash),
+            TaskDataType::ToolShell => parse_data(task_data_type, data).map(Self::ToolShell),
         }
     }
 
@@ -521,7 +521,7 @@ impl TypedTaskData {
             Self::AppUpdateBatch(_) => TaskDataType::AppUpdateBatch,
             Self::ServiceRpc(_) => TaskDataType::ServiceRpc,
             Self::WorkflowRunTarget(_) => TaskDataType::WorkflowRunTarget,
-            Self::ToolExecBash(_) => TaskDataType::ToolExecBash,
+            Self::ToolShell(_) => TaskDataType::ToolShell,
         }
     }
 }
@@ -1504,7 +1504,7 @@ pub struct WorkflowRunTargetTaskRequest {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ToolExecBashTaskData {
+pub struct ToolShellTaskData {
     #[serde(default)]
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

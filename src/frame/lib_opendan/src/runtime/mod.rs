@@ -6,12 +6,10 @@ pub use bin_overlay::{BinPlan, ToolPlan};
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::SessionDir;
-use agent_tool::exec_tracking::MemoryRegistrar;
 use agent_tool::runtime::RuntimeOpenCtx;
 use agent_tool::xllm::{LoopModel, ToolsConfig};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionEnvCtx {
@@ -76,7 +74,6 @@ pub async fn bind_or_verify(
     }
     let fallback = resolve_workdir(sd, cfg, agent_root)?;
     let mut open = RuntimeOpenCtx::new(&fallback, sd.sid(), LoopModel::FunctionCall);
-    open.registrar = Arc::new(MemoryRegistrar::default());
     let _ = rt
         .open(
             &open,
@@ -159,6 +156,7 @@ pub async fn bind_or_verify(
                 max_output_bytes: 4096,
                 env: Vec::new(),
                 target: agent_tool::llm_bash::BashTarget::Local,
+                call_id: None,
             },
             &agent_tool::SessionRuntimeContext {
                 trace_id: sd.sid().into(),

@@ -42,7 +42,7 @@ pub mod prompt_env;
 // Agent-local i18n dictionaries used for runtime-facing status text.
 pub mod i18n;
 
-// §9 step 5 — UI-session default tool wiring; exec_bash + session /bin scripts.
+// §9 step 5 — UI-session default tool wiring; shell + session /bin scripts.
 pub mod agent_bash;
 
 // §9.2 — single source of truth for the BuckyOS path layout (4 bin layers,

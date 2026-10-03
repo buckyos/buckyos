@@ -61,7 +61,7 @@ beta2.2 是 breaking-change 版本，下列旧上下文变量**已整体移除**
 
 | Tool | 入口 | 主要用途 | 代码位置 |
 |---|---|---|---|
-| [`exec_bash`](#1-exec_bash) | bash / action / llm_tool_call | 执行 bash 命令 | `src/llm_bash.rs` |
+| [`shell`](#1-shell) | bash / action / llm_tool_call | 执行 bash 命令 | `src/llm_bash.rs` |
 | [`read`](#2-read) | bash / action / llm_tool_call | 按 URI 读取（v2 Action） | `src/read_tool.rs` |
 | [`write_file`](#3-write_file) | action | 写文件 | `src/file_tools.rs` |
 | [`edit_file`](#4-edit_file) | action | 基于唯一字符串替换文件 | `src/file_tools.rs` |
@@ -88,7 +88,7 @@ CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内�
 
 ---
 
-## 1. `exec_bash`
+## 1. `shell`
 
 ### Prompt
 
@@ -105,7 +105,7 @@ CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内�
     "required": ["command"]
   }
   ```
-- `usage`: `exec_bash command='<shell>' [target=local] [timeout_ms=60000]`
+- `usage`: `shell command='<shell>' [target=local] [timeout_ms=60000]`
 
 可选字段（顶层 args）：`cwd`（必须落在 workspace 内）、`timeout_ms`、`env`（受 `allow_env` 约束）。
 
@@ -115,12 +115,12 @@ CLI 伪工具不走 `AgentTool` trait 注册，只在 `agent_tool` 二进制内�
 
 ### CLI 命令解释 + 常用例子
 
-`exec_bash` 自身不直接出现在 Session Exec Bin 里——bash 本身就是底座。常见入口是 Behavior 的 `<exec_bash>` action：
+`shell` 自身不直接出现在 Session Exec Bin 里——bash 本身就是底座。常见入口是 Behavior 的 `<shell>` action：
 
 ```xml
-<exec_bash command="ls -la"/>
-<exec_bash command="cargo build" cwd="/workspace/proj" timeout_ms="120000"/>
-<exec_bash command="read_file src/foo.rs 1-50"/>
+<shell command="ls -la"/>
+<shell command="cargo build" cwd="/workspace/proj" timeout_ms="120000"/>
+<shell command="read_file src/foo.rs 1-50"/>
 ```
 
 JSON 调度形态：
@@ -133,19 +133,19 @@ JSON 调度形态：
 
 ### 输出示例
 
-`exec_bash` 不自己产生业务结果，结果形态取决于 **实际跑的命令**：
+`shell` 不自己产生业务结果，结果形态取决于 **实际跑的命令**：
 
 #### A) 普通 bash 命令
 
-`exec_bash` 把 stdout / stderr / exit_code 包成自己的 envelope，`cmd_name="exec_bash"`：
+`shell` 把 stdout / stderr / exit_code 包成自己的 envelope，`cmd_name="shell"`：
 
 ```json
 {
   "agent_tool_protocol": "1",
   "status": "success",
-  "cmd_name": "exec_bash",
+  "cmd_name": "shell",
   "cmd_args": "ls -la",
-  "title": "exec_bash ls -la => exit=0",
+  "title": "shell ls -la => exit=0",
   "summary": "exit=0 in 12ms",
   "return_code": 0,
   "output": "$ ls -la\ntotal 8\n...",
@@ -168,12 +168,12 @@ JSON 调度形态：
 
 #### B) 内层输出 AgentToolResult envelope
 
-当内层命令自己在 stdout 输出合法 `agent_tool_protocol` envelope 时（典型来源是 Session Exec Bin 中的 AgentTool 链接，如 `read_file` / `todo` / `Glob` / `Grep` …），按协议契约（见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md) `exec_bash 约定` 节）：
+当内层命令自己在 stdout 输出合法 `agent_tool_protocol` envelope 时（典型来源是 Session Exec Bin 中的 AgentTool 链接，如 `read_file` / `todo` / `Glob` / `Grep` …），按协议契约（见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md) `shell 约定` 节）：
 
-- `exec_bash` 应把内层 stdout 上的合法 envelope **透传**为本次 `AgentToolResult`
-- 此时 `cmd_name` / `cmd_args` / `detail` 由内层工具决定，不再是 `exec_bash`
+- `shell` 应把内层 stdout 上的合法 envelope **透传**为本次 `AgentToolResult`
+- 此时 `cmd_name` / `cmd_args` / `detail` 由内层工具决定，不再是 `shell`
 
-例如 `<exec_bash command="read_file src/foo.rs 1-50"/>` 预期返回：
+例如 `<shell command="read_file src/foo.rs 1-50"/>` 预期返回：
 
 ```json
 {
@@ -1193,7 +1193,7 @@ agent_tool check_task task_id=12345
 }
 ```
 
-任务跑的是 `tool.exec_bash` 时，会顺带把 `output` / `return_code` 顶层带出来；非 exec_bash 任务则不带 `output`。
+任务跑的是 `tool.shell` 时，会顺带把 `output` / `return_code` 顶层带出来；非 shell 任务则不带 `output`。
 
 任务完成：
 

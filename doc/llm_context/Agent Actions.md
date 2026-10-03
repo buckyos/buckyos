@@ -22,7 +22,7 @@ Action 看起来像 ToolManager 注册表的 XML 投影，但**它不是**。too
 
 ### 0.2 为什么需要 Action：bash 写不出来的"写"
 
-如果 Action 只是为了"调用一个工具"，那 `exec_bash` 已经包打天下——任何 shell 表达式都能跑。Action 真正不可替代的场景只有一个：
+如果 Action 只是为了"调用一个工具"，那 `shell` 已经包打天下——任何 shell 表达式都能跑。Action 真正不可替代的场景只有一个：
 
 > **把一段大段任意内容写进文件 / 发出去 / 落进 session**。
 
@@ -48,7 +48,7 @@ bash 表达"写内容"是地狱级难度：heredoc 转义、`$` 反引号冲突�
 - ❌ Action 不追求"覆盖所有可能的工具调用"——那是 tool registry 的职责，跟 Behavior XML 协议无关。
 - ❌ Action 集合不追求"按需扩展"——它是一个 prompt-coupled 固化集合，扩展需要同步改提示词模板。
 - ❌ Action 不解决"如何调用一个新二进制"——加 shim 到 overlay 即可。
-- ❌ Action 不替代 ToolManager——`exec_bash` 之外的 tool 调用，要么走 shim、要么直接走 provider native tool_calls 通道，不进 `<actions>`。
+- ❌ Action 不替代 ToolManager——`shell` 之外的 tool 调用，要么走 shim、要么直接走 provider native tool_calls 通道，不进 `<actions>`。
 
 ### 0.5 关于版本
 
@@ -66,13 +66,13 @@ v2 是 beta2.2 节奏下的**breaking change**：旧的 `<action tool="...">` �
 | **LastState 标签** | `report` | 输出物要进 `LLMContext.last_report`，bash 表达不了；不放入 `<actions>` |
 | **过程通信** | `sendmsg` | 消息要路由到 user / agent / room，不应污染 `last_report` |
 | **读取**（协议化） | `read` | 占位为"万能读"，承接绕过 bash 输出截断 + 协议化扩展 |
-| **执行** | `exec_bash` | 通用 shell，所有非"写大段内容"的能力都走它 |
+| **执行** | `shell` | 通用 shell，所有非"写大段内容"的能力都走它 |
 | **session 控制** | `subscribe_event` / `unsubscribe_event` | 异步注册句柄，挂在 session 上，一次性命令表达不了 |
 
-### 1.1 `<exec_bash>`
+### 1.1 `<shell>`
 
 ```xml
-<exec_bash cwd="src" timeout_ms="30000">ls -la | head -20</exec_bash>
+<shell cwd="src" timeout_ms="30000">ls -la | head -20</shell>
 ```
 
 | 字段 | 形态 | 说明 |
@@ -134,7 +134,7 @@ pub fn bar() -> u32 { 42 }
 | `limit` | attr | 通用读上限 |
 | body | 空 | `<read>` 永远是空标签 / 自闭合 |
 
-**v2 首版只实现文件读取**：显式 `file://` 和无协议头的文件路径等价。它的存在理由是"绕开 `exec_bash` 的 `max_output_bytes` 截断"，所以它必须支持分页（`offset` / `limit`），并且**不被 `max_output_bytes` 限制**——否则不如直接 `cat`。
+**v2 首版只实现文件读取**：显式 `file://` 和无协议头的文件路径等价。它的存在理由是"绕开 `shell` 的 `max_output_bytes` 截断"，所以它必须支持分页（`offset` / `limit`），并且**不被 `max_output_bytes` 限制**——否则不如直接 `cat`。
 
 **路线图**（不在 v2 首版）：
 
@@ -207,10 +207,10 @@ pub fn bar() -> u32 { 42 }
 
 | v1 Action | v2 处置 | 替代方案 |
 |---|---|---|
-| `exec_bash` | 保留 | — |
+| `shell` | 保留 | — |
 | `read_file` | **删除** | 改名 `read`，uri 风格 |
 | `write_file` / `edit_file` | 保留 | — |
-| `Glob` / `Grep` | **删除** | `find` / `grep` / `rg`（走 exec_bash） |
+| `Glob` / `Grep` | **删除** | `find` / `grep` / `rg`（走 shell） |
 | `get_session` / `list_session` | **删除** | shim：`opendan-session list` |
 | `create_workspace` / `bind_workspace` / `list_external_workspaces` / `bind_external_workspace` | **删除** | shim：`opendan-workspace ...` |
 | `load_memory` / `set_memory` / `remove_memory` | **删除** | shim：`opendan-memory get|set|rm` |
@@ -233,7 +233,7 @@ pub fn bar() -> u32 { 42 }
   <thinking>...</thinking>
 
   <actions>
-    <exec_bash>cargo test</exec_bash>
+    <shell>cargo test</shell>
     <write_file path="src/foo.rs"><![CDATA[ ... ]]></write_file>
     <sendmsg target="user"><![CDATA[已开始测试...]]></sendmsg>
   </actions>
@@ -391,7 +391,7 @@ v2 与 v1 之间没有 transition window，所有变更同步发布：
 |---|---|
 | [`src/frame/llm_context/src/xml_behavior.rs`](../../src/frame/llm_context/src/xml_behavior.rs) | 解析器主体改写：识别 `<actions>` 容器、一级标签即 Action 名、CDATA body 提取 |
 | [`src/frame/llm_context/src/context_loop.rs`](../../src/frame/llm_context/src/context_loop.rs) | 派发逻辑：Self Report 直接更新 `LLMContext.last_report`；`<sendmsg target=...>` 走 message bus 记录；其它 Action 调 ToolManager |
-| [`src/frame/opendan/src/behavior_cfg.rs`](../../src/frame/opendan/src/behavior_cfg.rs) | `tool_whitelist` 保留旧语义（ToolManager 暴露的工具名白名单）；v2 默认 Action 面包含 `exec_bash`/`write_file`/`edit_file`/`read`/`sendmsg`/`subscribe_event`/`unsubscribe_event`。`<report>` 不进 whitelist——它在 parser/dispatcher 走特殊路径，不经过 ToolManager |
+| [`src/frame/opendan/src/behavior_cfg.rs`](../../src/frame/opendan/src/behavior_cfg.rs) | `tool_whitelist` 保留旧语义（ToolManager 暴露的工具名白名单）；v2 默认 Action 面包含 `shell`/`write_file`/`edit_file`/`read`/`sendmsg`/`subscribe_event`/`unsubscribe_event`。`<report>` 不进 whitelist——它在 parser/dispatcher 走特殊路径，不经过 ToolManager |
 | `LLMContext` 结构 | 新增 `last_report: Option<ReportRecord>` 字段，进快照 |
 | `src/frame/agent_tool` | v2 Action registry 不再注册 Glob / Grep / session/workspace/memory/todo_manage / read_file；新增 `read` Tool（带 uri scheme dispatch，无协议头默认文件路径） |
 | Overlay shim 二进制 | 新增 `opendan-session` / `opendan-workspace` / `opendan-memory` / `opendan-todo` 4 个 shim |
@@ -403,7 +403,7 @@ v2 落地的最小验收集合：
 
 1. **解析器单测**：覆盖 7 个 Action 的标签解析 + CDATA / 严格 escape 双形态 + `<sendmsg>` 与 `<report>` 的组合
 2. **fork 集成测试**：父 LLMContext fork 子，子写 Self Report 后终止，父能从快照读到 `last_report` 内容
-3. **shim 等价性测试**：对每个被删 Action，对应的 shim 通过 `exec_bash` 调用能产出原 Action 的结构化结果
+3. **shim 等价性测试**：对每个被删 Action，对应的 shim 通过 `shell` 调用能产出原 Action 的结构化结果
 4. **提示词全量切换**：项目内所有 Behavior 提示词模板已重写为 v2 形态，端到端代表性任务用例通过
 
 ---

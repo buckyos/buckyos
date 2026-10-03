@@ -25,8 +25,8 @@ fn xml(body: &str) -> AiResponse {
 #[tokio::test]
 async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
     let llm = Llm::new(vec![
-        xml("<thinking>go</thinking><actions><exec_bash>echo a</exec_bash><exec_bash>defer b</exec_bash><exec_bash>echo c</exec_bash></actions>"),
-        xml("<thinking>saw all</thinking><actions><exec_bash>echo d</exec_bash></actions>"),
+        xml("<thinking>go</thinking><actions><shell>echo a</shell><shell>defer b</shell><shell>echo c</shell></actions>"),
+        xml("<thinking>saw all</thinking><actions><shell>echo d</shell></actions>"),
         xml("<next_behavior>END</next_behavior>"),
     ]);
     let tools = Tools::new();
@@ -93,7 +93,7 @@ async fn behavior_action_pending_keeps_the_step_and_resumes_after_it() {
 #[tokio::test]
 async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_tools() {
     let llm = Llm::new(vec![
-        xml("<thinking>step 0</thinking><actions><exec_bash>echo a</exec_bash></actions>"),
+        xml("<thinking>step 0</thinking><actions><shell>echo a</shell></actions>"),
         tools_response(vec![call("echo", "n1"), call("defer", "n2")]),
         xml("<next_behavior>END</next_behavior>"),
     ]);
@@ -153,7 +153,7 @@ async fn behavior_inner_native_pending_resumes_the_inner_loop_without_rerunning_
 async fn behavior_context_limit_measures_the_prompt_and_rewrites_steps() {
     let step = |n: u32, pad: usize| {
         xml(&format!(
-            "<thinking>step {n} {}</thinking><actions><exec_bash>echo {n}</exec_bash></actions>",
+            "<thinking>step {n} {}</thinking><actions><shell>echo {n}</shell></actions>",
             "z".repeat(pad)
         ))
     };
@@ -161,7 +161,7 @@ async fn behavior_context_limit_measures_the_prompt_and_rewrites_steps() {
         vec![
             step(0, 400),
             step(1, 0),
-            xml("<thinking>after rewrite</thinking><actions><exec_bash>echo 2</exec_bash></actions>"),
+            xml("<thinking>after rewrite</thinking><actions><shell>echo 2</shell></actions>"),
             xml("<next_behavior>END</next_behavior>"),
         ]
     };

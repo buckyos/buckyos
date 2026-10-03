@@ -39,6 +39,7 @@ pub mod run_local_llm;
 pub mod runtime;
 pub mod runtime_context;
 pub mod skills_mgr;
+pub mod tasks;
 pub mod todo_tools;
 pub mod tool;
 pub mod workspace;
@@ -84,8 +85,13 @@ pub use json_args::{
 };
 pub use llm_bash::{
     kill_running_bash_process_groups, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
-    BashTargetSpec, BinOverlayConfig, ExecBashTool, LlmBashConfig, LocalProcessBashRunner,
-    TOOL_EXEC_BASH,
+    BashTargetSpec, BinOverlayConfig, CommandHandle, CommandProgress, LlmBashConfig,
+    LocalProcessBashRunner, RunBinding, RunBindingSlot, ShellMode, ShellRuntimeNote, ShellTool,
+    TOOL_SHELL,
+};
+pub use tasks::{
+    task_tools, CancelTaskTool, CompositeTaskResolver, GetTaskStateTool, InProcessTaskManager,
+    LocalTask, ShellTask, WaitTaskTool, TOOL_CANCEL_TASK, TOOL_GET_TASK_STATE, TOOL_WAIT_TASK,
 };
 pub use path_utils::{
     normalize_abs_path, normalize_root_path, resolve_path_from_root, resolve_path_under_root,
@@ -355,6 +361,15 @@ pub enum AgentToolError {
     Timeout,
     #[error("runtime transport: {message}")]
     Transport {
+        message: String,
+        effect_unknown: bool,
+    },
+    /// The call was cancelled by the run (interrupt, graceful finish or
+    /// deadline, see `llm_context::ToolCallCtx`). `effect_unknown = false`:
+    /// the work was stopped or is known to continue, as `message` says;
+    /// `true`: the work was abandoned while running.
+    #[error("cancelled: {message}")]
+    Cancelled {
         message: String,
         effect_unknown: bool,
     },
@@ -1062,7 +1077,8 @@ pub fn cli_exit_code_for_error(err: &AgentToolError) -> i32 {
         AgentToolError::AlreadyExists(_)
         | AgentToolError::ExecFailed(_)
         | AgentToolError::Timeout
-        | AgentToolError::Transport { .. } => CLI_EXIT_ERROR,
+        | AgentToolError::Transport { .. }
+        | AgentToolError::Cancelled { .. } => CLI_EXIT_ERROR,
     }
 }
 
@@ -1084,6 +1100,14 @@ pub trait AgentTool: Send + Sync {
     fn spec(&self) -> ToolSpec;
 
     fn calling(&self) -> CallingConventions;
+
+    /// Whether the tool stops its work when the call's `ToolCallCtx` fires
+    /// and answers with `AgentToolError::Cancelled`. Default `false`: the
+    /// dispatcher cannot cancel the work and abandons the call on an
+    /// interrupt (effect unknown); a graceful finish waits for it.
+    fn cancellable(&self) -> bool {
+        false
+    }
 
     async fn call(
         &self,

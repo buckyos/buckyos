@@ -35,7 +35,7 @@ use llm_context::{
     behavior_loop::{LLMResultParser, StepRenderer},
     deps::{
         InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, PolicyEngine,
-        ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
+        ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
     },
     error::{LLMComputeError, ProviderFailure},
     observation::Observation,
@@ -343,7 +343,11 @@ impl OpendanToolAdapter {
 /// `ToolDispatchError` themselves.
 #[async_trait]
 impl ToolManager for OpendanToolAdapter {
-    async fn call_tool(&self, mut call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(
+        &self,
+        mut call: AiToolCall,
+        _call_ctx: ToolCallCtx,
+    ) -> Result<Observation, ToolDispatchError> {
         let mut ctx = self.ctx.clone();
         ctx.tool_call_index = self.step_idx.fetch_add(1, Ordering::Relaxed);
         let call_id = call.call_id.clone();
@@ -387,9 +391,20 @@ impl ToolManager for OpendanToolAdapter {
 fn result_to_observation(call_id: String, result: AgentToolResult) -> Observation {
     let tool_result = Some(result.to_tool_result_view());
     if matches!(result.status, AgentToolStatus::Pending) {
-        return Observation::Pending {
-            call_id,
-            tool_result,
+        return match result.task_id.clone().filter(|t| !t.trim().is_empty()) {
+            Some(task_id) => Observation::Pending {
+                call_id,
+                task_id,
+                until_ms: result
+                    .check_after
+                    .map(|secs| agent_tool::now_ms().saturating_add(secs.saturating_mul(1000))),
+                tool_result,
+            },
+            None => Observation::Error {
+                call_id,
+                message: "tool returned a pending result without a task_id".into(),
+                tool_result,
+            },
         };
     }
     let is_error = matches!(result.status, AgentToolStatus::Error);
@@ -586,8 +601,8 @@ mod policy_tests {
     #[test]
     fn error_observation_keeps_tool_output() {
         let result = AgentToolResult::from_details(json!({}))
-            .with_tool("exec_bash")
-            .with_command_metadata("exec_bash", "date -d @1")
+            .with_tool("shell")
+            .with_command_metadata("shell", "date -d @1")
             .with_status(AgentToolStatus::Error)
             .with_result("exit=1 in 10ms")
             .with_output("date: illegal option -- d\nusage: date ...")
@@ -610,11 +625,11 @@ mod policy_tests {
     }
 
     #[test]
-    fn exec_bash_provider_tool_uses_tool_whitelist() {
+    fn shell_provider_tool_uses_tool_whitelist() {
         let policy = AgentPolicy::new(Vec::new());
         let request = request_with_policy(ToolPolicy {
             mode: ToolMode::Whitelist,
-            whitelist: vec!["exec_bash".to_string()],
+            whitelist: vec!["shell".to_string()],
             action_mode: ToolMode::None,
             action_whitelist: Vec::new(),
             ..Default::default()
@@ -622,7 +637,7 @@ mod policy_tests {
 
         let result = policy.gate_calls_on_surface(
             &request,
-            vec![call("exec_bash")],
+            vec![call("shell")],
             InvocationSurface::Tool,
         );
 
@@ -630,11 +645,11 @@ mod policy_tests {
     }
 
     #[test]
-    fn exec_bash_xml_action_uses_action_whitelist() {
+    fn shell_xml_action_uses_action_whitelist() {
         let policy = AgentPolicy::new(Vec::new());
         let request = request_with_policy(ToolPolicy {
             mode: ToolMode::Whitelist,
-            whitelist: vec!["exec_bash".to_string()],
+            whitelist: vec!["shell".to_string()],
             action_mode: ToolMode::None,
             action_whitelist: Vec::new(),
             ..Default::default()
@@ -642,13 +657,13 @@ mod policy_tests {
 
         let result = policy.gate_calls_on_surface(
             &request,
-            vec![call("exec_bash")],
+            vec![call("shell")],
             InvocationSurface::Action,
         );
 
         assert_eq!(
             result.unwrap_err(),
-            "action `exec_bash` is rejected: this behavior disables the action surface"
+            "action `shell` is rejected: this behavior disables the action surface"
         );
     }
 }

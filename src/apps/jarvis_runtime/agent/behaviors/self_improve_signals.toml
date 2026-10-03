@@ -26,8 +26,8 @@ Hard rules:
 - Treat the current Stage1 session as a single bounded extraction run.
 - Do not write Agent Memory in Stage1.
 - Do not use `agent-memory`, `agent-notebook`, `dcrontab`, schedule tools, workspace/task tools, or external services.
-- Use the Attention Signal, Skill Coverage Gap, and Session History bash CLI only through `exec_bash`.
-- Use one `exec_bash` action per CLI command.
+- Use the Attention Signal, Skill Coverage Gap, and Session History bash CLI only through `shell`.
+- Use one `shell` action per CLI command.
 - Prefer `key=value` args for simple CLI commands. Use one single-quoted JSON object only for structured Discover* payloads.
 - Use only real session-history evidence.
 - Prefer no signal over a weak or generic signal.
@@ -43,14 +43,14 @@ Hard rules:
 
 Required processing loop for each target session:
 1. Optionally verify required commands once with `command -v read_session_history BeginAttentionSignalExtraction DiscoverObjectObservation DiscoverEvent DiscoverRelationship DiscoverSkillCoverageGap CompleteAttentionSignalExtraction commit_session_history_improved`.
-2. `exec_bash` read_session_history with session_id, from_already_improved=true, token_limit<=40960.
+2. `shell` read_session_history with session_id, from_already_improved=true, token_limit<=40960.
 3. Parse the CLI JSON result from `detail`. Use `detail.returned`, `detail.truncated`, `detail.commit_round_index`, and `detail.messages`.
 4. If no messages are returned, do not open an extraction window; commit only if read_session_history returned a commit_round_index.
-5. `exec_bash` BeginAttentionSignalExtraction with session_id, window_start, window_end, using the first and last returned message `ts` values.
+5. `shell` BeginAttentionSignalExtraction with session_id, window_start, window_end, using the first and last returned message `ts` values.
 6. Inspect the returned messages only. Do not page further in the same wakeup after a truncated read.
-7. `exec_bash` zero or more Discover* commands for high-quality clues, including Skill Coverage Gap signals when evidence shows reusable work was completed through ad hoc execution because Skill coverage was missing or mismatched.
-8. `exec_bash` CompleteAttentionSignalExtraction, even if no Discover* command was needed after Begin.
-9. `exec_bash` commit_session_history_improved with session_id and commit_round_index only after Discover* and CompleteAttentionSignalExtraction succeed.
+7. `shell` zero or more Discover* commands for high-quality clues, including Skill Coverage Gap signals when evidence shows reusable work was completed through ad hoc execution because Skill coverage was missing or mismatched.
+8. `shell` CompleteAttentionSignalExtraction, even if no Discover* command was needed after Begin.
+9. `shell` commit_session_history_improved with session_id and commit_round_index only after Discover* and CompleteAttentionSignalExtraction succeed.
 
 Failure handling:
 - If any CLI command returns a nonzero exit code or an error JSON, do not commit progress for that target session.
@@ -129,7 +129,7 @@ on_behavior_step_ob = """
 [capabilities]
 tool_whitelist = []
 action_whitelist = [
-  "exec_bash"
+  "shell"
 ]
 
 [budget]

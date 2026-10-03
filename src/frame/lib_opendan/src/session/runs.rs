@@ -6,14 +6,14 @@
 //! - `publish_input_checkpoint`: snapshot fsync → run.json with
 //!   `host_commit_pending` (inputs not committed to state.json yet);
 //! - `complete_host_commit`: clear the gate after state.json was committed;
-//! - `register_inflight` / `register_execution`: persisted before a tool runs;
+//! - `register_inflight`: persisted before a tool runs;
 //! - `checkpoint_with_results`: snapshot fsync → run.json publishing the new
 //!   snapshot pointer and clearing only the in-flight actions it covers.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use agent_tool::exec_tracking::{persisted_outcome_ids, ExecutionRecord, InflightAction};
+use agent_tool::exec_tracking::{persisted_outcome_ids, InflightAction};
 use agent_tool::xllm::{FileLock as RunLockFile, RunRecord, RunStatus, RunStore};
 use llm_context::state::LLMContextSnapshot;
 
@@ -241,33 +241,6 @@ impl RunHandle {
             r.inflight.retain(|a| a.call_id != action.call_id);
             r.inflight.push(action);
         })
-    }
-
-    pub fn attach_execution(&self, call_id: Option<&str>, rec: &ExecutionRecord) -> Result<()> {
-        let rec = rec.clone();
-        let call = call_id.map(str::to_string);
-        self.update(|r| {
-            let mut rec = rec;
-            rec.call_id = call.clone();
-            if let Some(c) = &call {
-                if let Some(a) = r.inflight.iter_mut().find(|a| &a.call_id == c) {
-                    if !a.execution_ids.contains(&rec.execution_id) {
-                        a.execution_ids.push(rec.execution_id.clone());
-                    }
-                }
-            }
-            r.executions.retain(|e| e.execution_id != rec.execution_id);
-            r.executions.push(rec);
-        })
-    }
-
-    pub fn complete_execution(&self, execution_id: &str) -> Result<()> {
-        let id = execution_id.to_string();
-        self.update(|r| r.executions.retain(|e| e.execution_id != id))
-    }
-
-    pub fn executions(&self) -> Vec<ExecutionRecord> {
-        self.record.lock().expect("run record lock").executions.clone()
     }
 
     pub fn inflight(&self) -> Vec<InflightAction> {

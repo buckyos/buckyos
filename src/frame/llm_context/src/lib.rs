@@ -23,6 +23,7 @@ pub mod snapshot_overrides;
 pub mod state;
 pub mod step_record;
 pub mod suspension;
+pub mod tasks;
 pub mod xml_behavior;
 mod xml_util;
 
@@ -33,10 +34,10 @@ pub use behavior_loop::{
 };
 pub use context_loop::LLMContext;
 pub use deps::{
-    AllowAllPolicy, ByteHeuristicTokenizer, CheckpointHook, InferenceHook, Injection,
+    AllowAllPolicy, ByteHeuristicTokenizer, CancelCause, CheckpointHook, InferenceHook, Injection,
     InjectionPosition, LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink,
-    PolicyEngine, Tokenizer, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
-    MAX_INJECTIONS_PER_BOUNDARY,
+    PolicyEngine, Tokenizer, ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite, WorkEvent,
+    WorklogSink, MAX_INJECTIONS_PER_BOUNDARY,
 };
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
@@ -72,9 +73,22 @@ pub use state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
 pub use suspension::{is_thinking, strip_thinking};
+pub use tasks::{
+    next_step_hint, render_background_env, task_state_observation, CancelUnsupported,
+    RunningTaskResolver, TaskBrief, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS,
+    MAX_IN_TOOL_WAIT_MS,
+};
 pub use context_window::ContextLimits;
 pub use step_record::XmlStepRenderer;
 pub use xml_behavior::{XmlBehaviorParser, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT};
+
+/// Current time in ms since the epoch.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 #[cfg(test)]
 mod tests;

@@ -11,14 +11,13 @@
     {
       "live_run": {
         "applied_input_seq": 1,
-        "executions": 0,
         "host_commit_pending": 1,
         "inflight": [],
-        "run_id": "20261002-100518-e01ec4",
+        "run_id": "20261002-181136-c58910",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-100518-e01ec4"
+        "20261002-181136-c58910"
       ],
       "session_id": "work-fixture-gate",
       "state": {

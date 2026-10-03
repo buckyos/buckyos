@@ -68,7 +68,7 @@ fn lock_child_process_does_not_inherit_the_lock() {
     let Acquire::Acquired(l) = Lease::acquire("session:x", &p, holder("a")).unwrap() else {
         panic!()
     };
-    // A long-lived child started while the lock is held (like exec_bash).
+    // A long-lived child started while the lock is held (like shell).
     let mut child = Command::new("sleep").arg("5").spawn().unwrap();
     drop(l);
     // The lock is free although the child still runs (CLOEXEC).
@@ -502,7 +502,7 @@ async fn tool_plan_tombstones_are_repaired_before_running() {
             assert!(r.contains("blocked by tool plan"), "{r}");
             text("blocked as expected")
         }
-        None => tool_call("c1", "exec", json!({ "command": "rm-all" })),
+        None => tool_call("c1", "shell", json!({ "command": "rm-all" })),
     });
     // First drive prepares; then simulate a crash half-way through a later
     // preparation (tombstone gone, manifest stale).

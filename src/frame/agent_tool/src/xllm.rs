@@ -73,12 +73,13 @@ use serde_json::{json, Value};
 
 use llm_context::behavior_loop::{LLMBehaviorResult, LLMResultParser, SendMessageRecord};
 use llm_context::deps::{
-    InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolDispatchError, ToolManager,
-    ToolSpecLite, WorkEvent, WorklogSink,
+    InferenceHook, LLMContextDeps, LlmClient, LlmInferenceRequest, ToolCallCtx, ToolDispatchError,
+    ToolManager, ToolSpecLite, WorkEvent, WorklogSink,
 };
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::observation::Observation;
 use llm_context::outcome::{BudgetKind, ContextOutput, LLMContextOutcome, ResumeFill};
+use llm_context::tasks::{task_state_observation, RunningTaskResolver};
 use llm_context::request::{
     BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
@@ -86,22 +87,24 @@ use llm_context::request::{
 use llm_context::state::{LLMContextSnapshot, Suspension};
 use llm_context::{LLMContext, LLMContextInterruptHandle, XmlStepRenderer};
 
-use crate::exec_tracking::ExecutionRegistrar;
-use crate::exec_tracking::{ExecutionRecord, HostRunInfo, InflightAction};
-use crate::llm_bash::BashRunner;
+use crate::exec_tracking::{HostRunInfo, InflightAction};
+use crate::llm_bash::{
+    new_run_binding_slot, BashRunner, RunBinding, RunBindingSlot, ShellMode, ShellRuntimeNote,
+    DEFAULT_AUTO_WAIT_MS, MAX_AUTO_WAIT_MS,
+};
 use crate::llm_compress::LlmSummarizeCompressor;
 use crate::runtime::files::FileBackend;
 #[cfg(test)]
 use crate::runtime::files::LocalFileBackend;
 use crate::runtime::{
     AgentRuntime, RuntimeConfig, RuntimeDescriptor, RuntimeInfo, RuntimeOpenCtx, Sandbox,
-    SwitchRegistrar,
 };
+use crate::tasks::{task_tools, CompositeTaskResolver, InProcessTaskManager};
 use crate::tool::TypedToolHandle;
 use crate::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, BinOverlayConfig, EditFileTool,
-    ExecBashTool, FileToolConfig, LlmBashConfig, NoopFileWriteAudit, ReadFileTool,
-    SessionRuntimeContext, ToolSpec, WriteFileTool, TOOL_EDIT_FILE, TOOL_WRITE_FILE,
+    FileToolConfig, LlmBashConfig, NoopFileWriteAudit, ReadFileTool, SessionRuntimeContext,
+    ShellTool, ToolSpec, WriteFileTool, TOOL_EDIT_FILE, TOOL_SHELL, TOOL_WRITE_FILE,
 };
 
 // =========================================================================
@@ -120,13 +123,13 @@ pub const DEFAULT_LLM_TIMEOUT_SECS: u64 = 600;
 pub const DEFAULT_RUNS_DIR: &str = "~/.xllm/runs";
 /// 默认锁目录：启用工具的任务按工作目录互斥，与 Runs 目录无关（F05）。
 pub const DEFAULT_LOCK_DIR: &str = "~/.xllm/locks";
-/// 内置工具组 `bash` 提供的工具名。
-pub const TOOL_EXEC: &str = "exec";
+/// 内置工具组 `bash` 提供的命令执行工具名（`shell`）。
+pub const TOOL_EXEC: &str = TOOL_SHELL;
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
 /// `run.json` 记录格式版本（3：有效 runtime 配置与执行目标，快照格式 3）；resume 只接受当前版本。
-pub const RUN_RECORD_VERSION: u32 = 3;
+pub const RUN_RECORD_VERSION: u32 = 4;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
@@ -526,7 +529,81 @@ impl ToolSource {
     }
 }
 
-/// exec 命令手册条目（F04 `bash_tools`）。
+/// `shell` 工具的执行模式配置（long-tool TODO §5）。
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellToolConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ShellMode>,
+    /// auto 模式：默认在工具内等待的毫秒数。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u64>,
+    /// wait 模式：默认 `timeout_ms`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    /// wait 模式：`timeout_ms` 上限；0 = 不限。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_timeout_ms: Option<u64>,
+}
+
+impl ShellToolConfig {
+    pub fn merge_over(&mut self, over: &ShellToolConfig) {
+        if over.mode.is_some() {
+            self.mode = over.mode;
+        }
+        if over.wait_ms.is_some() {
+            self.wait_ms = over.wait_ms;
+        }
+        if over.timeout_ms.is_some() {
+            self.timeout_ms = over.timeout_ms;
+        }
+        if over.max_timeout_ms.is_some() {
+            self.max_timeout_ms = over.max_timeout_ms;
+        }
+    }
+}
+
+/// `shell` 的生效设置（写入 run.json）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellSettings {
+    pub mode: ShellMode,
+    pub wait_ms: u64,
+    pub timeout_ms: u64,
+    pub max_timeout_ms: u64,
+}
+
+impl Default for ShellSettings {
+    fn default() -> Self {
+        Self {
+            mode: ShellMode::Auto,
+            wait_ms: DEFAULT_AUTO_WAIT_MS,
+            timeout_ms: EXEC_DEFAULT_TIMEOUT_MS,
+            max_timeout_ms: EXEC_MAX_TIMEOUT_MS,
+        }
+    }
+}
+
+impl ShellSettings {
+    pub fn from_config(cfg: Option<&ShellToolConfig>) -> Self {
+        let mut s = Self::default();
+        if let Some(c) = cfg {
+            if let Some(m) = c.mode {
+                s.mode = m;
+            }
+            if let Some(w) = c.wait_ms {
+                s.wait_ms = w.clamp(1, MAX_AUTO_WAIT_MS);
+            }
+            if let Some(t) = c.timeout_ms {
+                s.timeout_ms = t;
+            }
+            if let Some(m) = c.max_timeout_ms {
+                s.max_timeout_ms = m;
+            }
+        }
+        s
+    }
+}
+
+/// shell 命令手册条目（F04 `bash_tools`）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BashToolManual {
     pub name: String,
@@ -560,6 +637,8 @@ pub struct ToolsConfig {
     pub actions: Option<Vec<ToolSource>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bash_tools: Option<Vec<BashToolManual>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<ShellToolConfig>,
 }
 
 impl ToolsConfig {
@@ -582,6 +661,9 @@ impl ToolsConfig {
         }
         if over.bash_tools.is_some() {
             self.bash_tools = over.bash_tools.clone();
+        }
+        if let Some(sh) = &over.shell {
+            self.shell.get_or_insert_with(Default::default).merge_over(sh);
         }
     }
 }
@@ -1044,6 +1126,7 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
             "tools",
             "actions",
             "bash_tools",
+            "shell",
         ],
     )?;
     let enabled = ctx.get_bool(field, m, "enabled")?;
@@ -1109,6 +1192,33 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
             ))
         }
     };
+    let shell = match m.get("shell") {
+        None | Some(Yaml::Null) => None,
+        Some(v) => {
+            let f = join_field(field, "shell");
+            let obj = ctx.expect_map(&f, v)?;
+            ctx.check_keys(&f, obj, &["mode", "wait_ms", "timeout_ms", "max_timeout_ms"])?;
+            let mode = match ctx.get_str(&f, obj, "mode")? {
+                None => None,
+                Some(s) => Some(match s.trim().to_ascii_lowercase().as_str() {
+                    "wait" => ShellMode::Wait,
+                    "auto" => ShellMode::Auto,
+                    _ => {
+                        return Err(ctx.err(
+                            &join_field(&f, "mode"),
+                            format!("unsupported shell mode `{s}` (supported: wait, auto)"),
+                        ))
+                    }
+                }),
+            };
+            Some(ShellToolConfig {
+                mode,
+                wait_ms: ctx.get_u64(&f, obj, "wait_ms")?,
+                timeout_ms: ctx.get_u64(&f, obj, "timeout_ms")?,
+                max_timeout_ms: ctx.get_u64(&f, obj, "max_timeout_ms")?,
+            })
+        }
+    };
     Ok(ToolsConfig {
         enabled,
         filesystem_policy,
@@ -1116,6 +1226,7 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
         tools,
         actions,
         bash_tools,
+        shell,
     })
 }
 
@@ -2052,7 +2163,10 @@ pub struct EffectiveTools {
     pub actions: Vec<ResolvedTool>,
     #[serde(default)]
     pub bash_tools: Vec<BashToolManual>,
-    /// exec 是否属于本次实际可用能力（tools 或 actions 中任一）。
+    /// `shell` 的执行模式与时限。
+    #[serde(default)]
+    pub shell: ShellSettings,
+    /// shell 是否属于本次实际可用能力（tools 或 actions 中任一）。
     pub exec_enabled: bool,
     /// 各字段的决定来源。
     #[serde(default)]
@@ -2112,7 +2226,7 @@ pub fn compute_tools_config(
         .cloned()
         .unwrap_or_else(|| "default".into());
     cfg.merge_over(&merged.tools);
-    for key in ["enabled", "tools2actions", "tools", "actions", "bash_tools"] {
+    for key in ["enabled", "tools2actions", "tools", "actions", "bash_tools", "shell"] {
         sources.insert(key.to_string(), top_src.clone());
     }
     sources.insert(
@@ -2563,21 +2677,21 @@ fn build_rules_system_text(loop_model: LoopModel, tools: &EffectiveTools) -> Str
         .any(|tool| tool.source == "groupname:bash")
     {
         lines.push(match tools.filesystem_policy {
-            FilesystemPolicy::Workspace => "Builtin file tools and exec's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.",
-            FilesystemPolicy::Unrestricted => "Builtin file tools and exec's cwd may access paths outside the working directory, subject to the current user's operating-system permissions. Relative paths default to the working directory.",
+            FilesystemPolicy::Workspace => "Builtin file tools and shell's cwd are restricted to the working directory. Shell commands are not sandboxed and run with the current user's permissions.",
+            FilesystemPolicy::Unrestricted => "Builtin file tools and shell's cwd may access paths outside the working directory, subject to the current user's operating-system permissions. Relative paths default to the working directory.",
         }.to_string());
     }
     lines.push("Do not claim a tool or command exists unless it is listed here.".to_string());
     lines.join("\n")
 }
 
-/// 依据 exec 是否启用与 bash_tools 生成 `cmd_manual`（40）的系统说明。
+/// 依据 shell 是否启用与 bash_tools 生成 `cmd_manual`（40）的系统说明。
 fn build_cmd_manual_system_text(tools: &EffectiveTools) -> Option<String> {
     if !tools.enabled || !tools.exec_enabled {
         return None;
     }
     let mut s = String::from(
-        "Commands run through `exec` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n",
+        "Commands run through `shell` in the working directory with the PATH inherited from the invoking shell. Documented commands:\n",
     );
     if tools.bash_tools.is_empty() {
         s.push_str("(no additional commands documented; standard commands on PATH may be used)\n");
@@ -2752,7 +2866,7 @@ pub fn assemble_prompt(a: &PromptAssembly<'_>) -> Result<PromptPlan, XllmError> 
                 _ => None,
             };
             if sec.line == 40 && !a.tools.exec_enabled {
-                // exec 未启用：不提供命令手册，也不把用户写的命令描述为可执行能力。
+                // shell 未启用：不提供命令手册，也不把用户写的命令描述为可执行能力。
                 sec.user_text = None;
             }
         }
@@ -3396,7 +3510,7 @@ impl WorklogSink for ObserverWorklog {
                 args,
                 ..
             } => {
-                let command = if tool == TOOL_EXEC {
+                let command = if tool == TOOL_SHELL {
                     args.get("command")
                         .and_then(Value::as_str)
                         .map(str::to_string)
@@ -3489,10 +3603,11 @@ pub struct XllmDeps {
     pub observer: Arc<dyn RunObserver>,
     /// 锁目录（默认 `~/.xllm/locks`）。
     pub lock_dir: Option<PathBuf>,
-    /// 内置 `exec` 使用的执行器（默认 `LocalProcessBashRunner`）。宿主可注入
-    /// 带执行跟踪的 runner（`exec_tracking::TrackedBashRunner`）。
+    /// 执行体（默认按 `.llm_context` 的 runtime 配置构造）。
     pub runtime: Option<Arc<dyn AgentRuntime>>,
-    pub execution_registrar: Option<Arc<dyn ExecutionRegistrar>>,
+    /// 宿主可访问 buckyos task-mgr 时注入的 task 解析器（long-tool TODO §4）；
+    /// 进程内 task-mgr 总是存在。
+    pub buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
     pub runtime_env: BTreeMap<String, String>,
     pub runtime_path_prefix: Vec<PathBuf>,
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
@@ -3508,7 +3623,7 @@ impl Default for XllmDeps {
             observer: Arc::new(NoopRunObserver),
             lock_dir: None,
             runtime: None,
-            execution_registrar: None,
+            buckyos_tasks: None,
             runtime_env: BTreeMap::new(),
             runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
@@ -3557,25 +3672,41 @@ pub struct XllmToolManager {
     runner: Option<Arc<dyn BashRunner>>,
     descriptor: Option<RuntimeDescriptor>,
     info: Option<RuntimeInfo>,
-    registrar: Option<Arc<SwitchRegistrar>>,
     tracking: Option<Arc<RunTracking>>,
     tools: BTreeMap<String, Arc<dyn AgentTool>>,
     /// Tool calls dispatched so far (`SessionRuntimeContext.tool_call_index`).
     tool_call_index: AtomicU32,
     session_template: SessionRuntimeContext,
     artifacts: Mutex<Vec<String>>,
-    cancel: Arc<tokio::sync::watch::Sender<bool>>,
-    deadline: Mutex<Option<(tokio::time::Instant, u64)>>,
+    /// In-process task manager of this run (`shell` auto mode, task tools).
+    tasks: Arc<InProcessTaskManager>,
+    /// The run the tools belong to (execution directories).
+    run: RunBindingSlot,
+    resolver: Arc<CompositeTaskResolver>,
 }
 
 impl XllmToolManager {
     pub fn new(workdir: PathBuf, run_id: &str, loop_model: LoopModel) -> Self {
+        Self::with_run_binding(workdir, run_id, loop_model, new_run_binding_slot(), None)
+    }
+
+    pub fn with_run_binding(
+        workdir: PathBuf,
+        run_id: &str,
+        loop_model: LoopModel,
+        run: RunBindingSlot,
+        buckyos_tasks: Option<Arc<dyn RunningTaskResolver>>,
+    ) -> Self {
+        let tasks = InProcessTaskManager::new();
+        let mut resolver = CompositeTaskResolver::new(tasks.clone(), run.clone());
+        if let Some(b) = buckyos_tasks {
+            resolver = resolver.with_buckyos(b);
+        }
         Self {
             workdir,
             runner: None,
             descriptor: None,
             info: None,
-            registrar: None,
             tracking: None,
             tools: BTreeMap::new(),
             tool_call_index: AtomicU32::new(0),
@@ -3589,15 +3720,49 @@ impl XllmToolManager {
                 read_token_limit: crate::DEFAULT_READ_TOKEN_LIMIT,
             },
             artifacts: Mutex::new(Vec::new()),
-            cancel: Arc::new(tokio::sync::watch::channel(false).0),
-            deadline: Mutex::new(None),
+            tasks,
+            run,
+            resolver: Arc::new(resolver),
         }
     }
 
-    /// 本次执行的总时长边界：运行中的工具调用到点即被取消（F08 `timeout`）。
-    fn set_deadline(&self, timeout_secs: u64) {
-        let at = tokio::time::Instant::now() + Duration::from_secs(timeout_secs);
-        *self.deadline.lock().expect("deadline lock") = Some((at, timeout_secs));
+    /// The task manager `shell` hands long commands to.
+    pub fn tasks(&self) -> Arc<InProcessTaskManager> {
+        self.tasks.clone()
+    }
+
+    /// The resolver the waist follows tasks with (background env, fills).
+    pub fn resolver(&self) -> Arc<dyn RunningTaskResolver> {
+        self.resolver.clone()
+    }
+
+    pub fn run_binding(&self) -> RunBindingSlot {
+        self.run.clone()
+    }
+
+    /// Wait for a task inside a call that could not suspend (§4): until the
+    /// task ends, `until_ms`, the 30 minute cap or the run deadline, then
+    /// the task's state; an interrupt / finish cancels the wait only.
+    async fn wait_in_tool(
+        &self,
+        call_id: String,
+        task_id: &str,
+        until_ms: Option<u64>,
+        ctx: &ToolCallCtx,
+    ) -> Observation {
+        let now = crate::now_ms();
+        let until = ctx.wait_until_ms(until_ms.map(|u| u.saturating_sub(now)));
+        let state = tokio::select! {
+            s = self.resolver.wait(task_id, Some(until)) => s,
+            cause = ctx.cancelled() => {
+                return Observation::Cancelled {
+                    call_id,
+                    reason: format!("stopped waiting for task {task_id} ({cause:?}); the task itself continues"),
+                    effect_unknown: false,
+                };
+            }
+        };
+        task_state_observation(&call_id, task_id, &state)
     }
 
     pub fn register(
@@ -3635,7 +3800,11 @@ impl XllmToolManager {
 
 #[async_trait]
 impl ToolManager for XllmToolManager {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(
+        &self,
+        call: AiToolCall,
+        call_ctx: ToolCallCtx,
+    ) -> Result<Observation, ToolDispatchError> {
         let call_id = call.call_id.clone();
         let mut ctx = self.session_template.clone();
         ctx.tool_call_index = self.tool_call_index.fetch_add(1, Ordering::SeqCst) + 1;
@@ -3661,37 +3830,58 @@ impl ToolManager for XllmToolManager {
                 .inflight(&call_id, &call.name, &args)
                 .map_err(ToolDispatchError::not_started)?;
         }
-        let deadline = *self.deadline.lock().expect("deadline lock");
-        let mut cancel_rx = self.cancel.subscribe();
-        let result = tokio::select! {
-            result = crate::runtime::CURRENT_TOOL_CALL.scope(call_id.clone(), tool.call(&ctx, args)) => result,
-            _ = async { let _ = cancel_rx.wait_for(|cancelled| *cancelled).await; } => {
-                if let Some(runner) = &self.runner { runner.cancel().await.map_err(|e| ToolDispatchError::effect_unknown(e.to_string()))?; }
-                return Ok(Observation::Error {
-                    call_id,
-                    message: format!("tool `{}` was cancelled: run interrupted", call.name),
-                    tool_result: None,
-                });
-            }
-            _ = async {
-                match deadline {
-                    Some((at, _)) => tokio::time::sleep_until(at).await,
-                    None => std::future::pending::<()>().await,
+        let fut = crate::runtime::CURRENT_TOOL_CTX.scope(
+            call_ctx.clone(),
+            crate::runtime::CURRENT_TOOL_CALL.scope(call_id.clone(), tool.call(&ctx, args)),
+        );
+        let result = if tool.cancellable() {
+            // The tool observes the ctx itself and answers `Cancelled`.
+            fut.await
+        } else {
+            // The work cannot be cancelled: a graceful finish waits for it
+            // (the waist escalates after its grace period), an interrupt or
+            // the deadline abandons it with an unknown effect.
+            tokio::select! {
+                result = fut => result,
+                cause = call_ctx.cancelled_hard() => {
+                    return Ok(Observation::Cancelled {
+                        call_id,
+                        reason: format!(
+                            "tool `{}` was abandoned while running ({cause:?}); it cannot be cancelled, so its effect is unknown",
+                            call.name
+                        ),
+                        effect_unknown: true,
+                    });
                 }
-            } => {
-                if let Some(runner) = &self.runner { runner.cancel().await.map_err(|e| ToolDispatchError::effect_unknown(e.to_string()))?; }
-                return Ok(Observation::Error {
-                    call_id,
-                    message: format!(
-                        "tool `{}` was cancelled: total execution time limit ({}s) reached",
-                        call.name,
-                        deadline.map(|(_, secs)| secs).unwrap_or_default()
-                    ),
-                    tool_result: None,
-                });
             }
         };
         Ok(match result {
+            Ok(res) if res.status == AgentToolStatus::Pending => {
+                let Some(task_id) = res.task_id.clone().filter(|t| !t.trim().is_empty()) else {
+                    return Ok(Observation::Error {
+                        call_id,
+                        message: format!(
+                            "tool `{}` returned a pending result without a task_id",
+                            call.name
+                        ),
+                        tool_result: Some(res.to_tool_result_view()),
+                    });
+                };
+                let until_ms = res
+                    .check_after
+                    .map(|secs| crate::now_ms().saturating_add(secs.saturating_mul(1000)));
+                if call_ctx.allow_deferred {
+                    Observation::Pending {
+                        call_id,
+                        task_id,
+                        until_ms,
+                        tool_result: Some(res.to_tool_result_view()),
+                    }
+                } else {
+                    self.wait_in_tool(call_id, &task_id, until_ms, &call_ctx)
+                        .await
+                }
+            }
             Ok(res) => {
                 if res.status == AgentToolStatus::Success
                     && matches!(call.name.as_str(), TOOL_WRITE_FILE | TOOL_EDIT_FILE)
@@ -3720,6 +3910,14 @@ impl ToolManager for XllmToolManager {
                     effect_unknown,
                 })
             }
+            Err(AgentToolError::Cancelled {
+                message,
+                effect_unknown,
+            }) => Observation::Cancelled {
+                call_id,
+                reason: message,
+                effect_unknown,
+            },
             Err(e) => Observation::Error {
                 call_id,
                 message: e.to_string(),
@@ -3791,9 +3989,20 @@ fn map_result_to_observation(call_id: String, result: AgentToolResult) -> Observ
                 tool_result,
             }
         }
-        AgentToolStatus::Pending => Observation::Pending {
-            call_id,
-            tool_result,
+        AgentToolStatus::Pending => match result.task_id.clone().filter(|t| !t.trim().is_empty()) {
+            Some(task_id) => Observation::Pending {
+                call_id,
+                task_id,
+                until_ms: result
+                    .check_after
+                    .map(|secs| crate::now_ms().saturating_add(secs.saturating_mul(1000))),
+                tool_result,
+            },
+            None => Observation::Error {
+                call_id,
+                message: "tool returned a pending result without a task_id".into(),
+                tool_result,
+            },
         },
     }
 }
@@ -3985,12 +4194,41 @@ fn truncate_chars(s: &str, max: usize) -> String {
     }
 }
 
-/// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `exec`。
+/// `shell` 工具说明里的 runtime 事实。
+fn shell_runtime_note(descriptor: &RuntimeDescriptor) -> ShellRuntimeNote {
+    let target = match descriptor.kind.as_str() {
+        "tmux" => descriptor
+            .target
+            .get("tmux")
+            .and_then(|t| t.get("session"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        "remote_ssh" => descriptor
+            .target
+            .get("connection")
+            .and_then(|c| c.get("hostname"))
+            .and_then(Value::as_str)
+            .or(descriptor.host.as_deref())
+            .unwrap_or_default()
+            .to_string(),
+        _ => String::new(),
+    };
+    ShellRuntimeNote {
+        kind: descriptor.kind.clone(),
+        target,
+    }
+}
+
+/// 内置组 `bash`：`read_file` / `write_file` / `edit_file` / `shell`。
 fn builtin_bash_group(
     workdir: &Path,
     filesystem_policy: FilesystemPolicy,
     bash_runner: Option<Arc<dyn BashRunner>>,
     files: Arc<dyn FileBackend>,
+    shell: &ShellSettings,
+    runtime: ShellRuntimeNote,
+    tasks: Arc<InProcessTaskManager>,
 ) -> Vec<Arc<dyn AgentTool>> {
     let mut cfg = FileToolConfig::new(workdir.to_path_buf());
     cfg.backend = files;
@@ -4001,13 +4239,17 @@ fn builtin_bash_group(
     }
     let audit = Arc::new(NoopFileWriteAudit);
     let bash_cfg = LlmBashConfig::local_workspace(workdir.to_path_buf())
-        .with_tool_name(TOOL_EXEC)
+        .with_tool_name(TOOL_SHELL)
         .with_restrict_cwd(restrict_cwd)
         .with_overlay(BinOverlayConfig::disabled())
-        .with_default_timeout_ms(EXEC_DEFAULT_TIMEOUT_MS)
-        .with_max_timeout_ms(EXEC_MAX_TIMEOUT_MS)
+        .with_default_timeout_ms(shell.timeout_ms)
+        .with_max_timeout_ms(shell.max_timeout_ms)
         .with_max_output_bytes(EXEC_MAX_OUTPUT_BYTES)
-        .with_allow_env(true);
+        .with_allow_env(true)
+        .with_mode(shell.mode)
+        .with_default_wait_ms(shell.wait_ms)
+        .with_runtime_note(runtime)
+        .with_tasks(tasks);
     vec![
         Arc::new(TypedToolHandle::with_null_host(ReadFileTool::new(
             cfg.clone(),
@@ -4020,8 +4262,8 @@ fn builtin_bash_group(
             cfg, audit,
         ))),
         match bash_runner {
-            Some(runner) => Arc::new(ExecBashTool::with_runner(bash_cfg, runner)),
-            None => Arc::new(ExecBashTool::new(bash_cfg)),
+            Some(runner) => Arc::new(ShellTool::with_runner(bash_cfg, runner)),
+            None => Arc::new(ShellTool::new(bash_cfg)),
         },
     ]
 }
@@ -4034,6 +4276,8 @@ async fn expand_tool_sources(
     manager: &mut XllmToolManager,
     runner: Arc<dyn BashRunner>,
     files: Arc<dyn FileBackend>,
+    shell: &ShellSettings,
+    runtime: &ShellRuntimeNote,
 ) -> Result<Vec<ResolvedTool>, XllmError> {
     let mut out = Vec::new();
     for src in sources {
@@ -4045,13 +4289,25 @@ async fn expand_tool_sources(
                         "unknown builtin tool group `{groupname}` (available: {BUILTIN_TOOL_GROUP_BASH})"
                     )));
                 }
+                let tasks = manager.tasks();
                 for t in builtin_bash_group(
                     workdir,
                     filesystem_policy,
                     Some(runner.clone()),
                     files.clone(),
+                    shell,
+                    runtime.clone(),
+                    tasks,
                 ) {
                     out.push(manager.register(t, &desc)?);
+                }
+                if shell.mode == ShellMode::Auto {
+                    // The model follows a command that became a task with
+                    // these (§4); registered with the group that can create
+                    // tasks.
+                    for t in task_tools(manager.resolver()) {
+                        out.push(manager.register(t, &desc)?);
+                    }
                 }
             }
             ToolSource::Mcp { endpoint } => {
@@ -4100,11 +4356,21 @@ pub(crate) async fn build_runtime_toolset(
     deps: &XllmDeps,
     runner: Arc<dyn BashRunner>,
     files: Arc<dyn FileBackend>,
+    descriptor: &RuntimeDescriptor,
+    run: RunBindingSlot,
 ) -> Result<(EffectiveTools, XllmToolManager), XllmError> {
     let enabled = cfg.enabled.unwrap_or(false);
     let filesystem_policy = cfg.filesystem_policy.unwrap_or_default();
     let tools2actions = cfg.tools2actions.unwrap_or(false);
-    let mut manager = XllmToolManager::new(workdir.to_path_buf(), run_id, loop_model);
+    let shell = ShellSettings::from_config(cfg.shell.as_ref());
+    let runtime_note = shell_runtime_note(descriptor);
+    let mut manager = XllmToolManager::with_run_binding(
+        workdir.to_path_buf(),
+        run_id,
+        loop_model,
+        run,
+        deps.buckyos_tasks.clone(),
+    );
     let mut eff = EffectiveTools {
         enabled,
         filesystem_policy,
@@ -4114,6 +4380,7 @@ pub(crate) async fn build_runtime_toolset(
         native: Vec::new(),
         actions: Vec::new(),
         bash_tools: cfg.bash_tools.clone().unwrap_or_default(),
+        shell: shell.clone(),
         exec_enabled: false,
         sources,
     };
@@ -4148,6 +4415,8 @@ pub(crate) async fn build_runtime_toolset(
         &mut manager,
         runner.clone(),
         files.clone(),
+        &shell,
+        &runtime_note,
     )
     .await?;
     let explicit_actions = expand_tool_sources(
@@ -4158,6 +4427,8 @@ pub(crate) async fn build_runtime_toolset(
         &mut manager,
         runner.clone(),
         files.clone(),
+        &shell,
+        &runtime_note,
     )
     .await?;
     match loop_model {
@@ -4175,9 +4446,9 @@ pub(crate) async fn build_runtime_toolset(
             }
         }
     }
-    eff.exec_enabled = manager.has(TOOL_EXEC)
-        && (eff.native.iter().any(|t| t.name == TOOL_EXEC)
-            || eff.actions.iter().any(|t| t.name == TOOL_EXEC));
+    eff.exec_enabled = manager.has(TOOL_SHELL)
+        && (eff.native.iter().any(|t| t.name == TOOL_SHELL)
+            || eff.actions.iter().any(|t| t.name == TOOL_SHELL));
     Ok((eff, manager))
 }
 
@@ -4193,10 +4464,6 @@ pub async fn build_toolset(
     ctx.sources = sources;
     ctx.env = deps.runtime_env.clone();
     ctx.path_prefix = deps.runtime_path_prefix.clone();
-    ctx.registrar = deps
-        .execution_registrar
-        .clone()
-        .unwrap_or_else(|| Arc::new(crate::exec_tracking::MemoryRegistrar::default()));
     let cfg_runtime = deps
         .runtime
         .as_ref()
@@ -5140,9 +5407,6 @@ pub struct RunRecord {
     /// 已派发、结果尚未随快照持久化的工具动作（X6）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inflight: Vec<InflightAction>,
-    /// 尚未确认停止的受管进程执行（X6）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub executions: Vec<ExecutionRecord>,
 }
 
 impl RunRecord {
@@ -5227,7 +5491,6 @@ impl RunRecord {
             host: None,
             host_commit_pending: None,
             inflight: Vec::new(),
-            executions: Vec::new(),
         }
     }
 
@@ -6229,16 +6492,8 @@ impl XllmTask {
         open.sources = tool_sources;
         open.env = deps.runtime_env.clone();
         open.path_prefix = deps.runtime_path_prefix.clone();
-        let registrar = Arc::new(SwitchRegistrar::default());
-        open.registrar = deps
-            .execution_registrar
-            .clone()
-            .unwrap_or_else(|| registrar.clone());
-        let (runtime, tools, mut manager) =
+        let (runtime, tools, manager) =
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
-        if deps.execution_registrar.is_none() {
-            manager.registrar = Some(registrar);
-        }
         let runtime_config = runtime.config();
         let runtime_descriptor = runtime.descriptor().clone();
 
@@ -6563,16 +6818,8 @@ impl XllmTask {
         open.sources = tool_sources;
         open.env = deps.runtime_env.clone();
         open.path_prefix = deps.runtime_path_prefix.clone();
-        let registrar = Arc::new(SwitchRegistrar::default());
-        open.registrar = deps
-            .execution_registrar
-            .clone()
-            .unwrap_or_else(|| registrar.clone());
-        let (runtime, tools, mut manager) =
+        let (runtime, tools, manager) =
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
-        if deps.execution_registrar.is_none() {
-            manager.registrar = Some(registrar);
-        }
         let runtime_config = runtime.config();
         let runtime_descriptor = runtime.descriptor().clone();
         let runtime_protocol = build_runtime_protocol(loop_model, &tools, false);
@@ -6692,7 +6939,6 @@ impl HostedTask {
             host: Some(host),
             host_commit_pending: None,
             inflight: Vec::new(),
-            executions: Vec::new(),
         }
     }
 
@@ -6723,17 +6969,18 @@ pub async fn rebuild_toolset(
         tools: Some(record.config.tools.tool_sources.clone()),
         actions: Some(record.config.tools.action_sources.clone()),
         bash_tools: Some(record.config.tools.bash_tools.clone()),
+        shell: Some(ShellToolConfig {
+            mode: Some(record.config.tools.shell.mode),
+            wait_ms: Some(record.config.tools.shell.wait_ms),
+            timeout_ms: Some(record.config.tools.shell.timeout_ms),
+            max_timeout_ms: Some(record.config.tools.shell.max_timeout_ms),
+        }),
     };
     let mut open = RuntimeOpenCtx::new(&workdir, &record.run_id, record.config.loop_model);
     open.sources = record.config.tools.sources.clone();
     open.env = deps.runtime_env.clone();
     open.path_prefix = deps.runtime_path_prefix.clone();
     restore_host_environment(record, &mut open)?;
-    let registrar = Arc::new(SwitchRegistrar::default());
-    open.registrar = deps
-        .execution_registrar
-        .clone()
-        .unwrap_or_else(|| registrar.clone());
     let (runtime, _eff, mut manager) =
         crate::runtime::open_runtime(&record.config.runtime, &open, &tools_cfg, deps).await?;
     if runtime.descriptor() != &record.config.runtime_descriptor {
@@ -6741,10 +6988,13 @@ pub async fn rebuild_toolset(
             "saved runtime target or workdir changed".into(),
         ));
     }
-    if deps.execution_registrar.is_none() {
-        manager.registrar = Some(registrar);
-    }
-    manager.bind_run(&record.run_id);
+    manager.bind_run_dir(
+        &record.run_id,
+        record
+            .runs_dir
+            .as_ref()
+            .map(|d| PathBuf::from(d).join(&record.run_id)),
+    );
     Ok(manager)
 }
 
@@ -6893,6 +7143,7 @@ pub fn hosted_request(
         disable_capabilities: cfg.disable_capabilities.clone(),
         parallel: false,
         allow_deferred: false,
+        finish_grace_ms: 30_000,
     };
     LLMContextRequest {
         owner,
@@ -7038,17 +7289,27 @@ impl std::fmt::Debug for XllmRun {
 pub struct XllmInterrupter {
     requested: Arc<Mutex<Option<String>>>,
     handle: Arc<Mutex<Option<LLMContextInterruptHandle>>>,
-    tool_cancel: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl XllmInterrupter {
+    /// Ctrl-C semantics: the inference is dropped, a running tool is
+    /// cancelled or abandoned (`LLMContextInterruptHandle::interrupt`).
     pub fn interrupt(&self, reason: impl Into<String>) {
         let reason = reason.into();
         *self.requested.lock().expect("lock") = Some(reason.clone());
         if let Some(h) = self.handle.lock().expect("lock").as_ref() {
             h.interrupt(reason);
         }
-        self.tool_cancel.send_replace(true);
+    }
+
+    /// Graceful finish (`LLMContextInterruptHandle::finish`): nothing new
+    /// starts, the run settles with every call paired.
+    pub fn finish(&self, reason: impl Into<String>) {
+        let reason = reason.into();
+        *self.requested.lock().expect("lock") = Some(reason.clone());
+        if let Some(h) = self.handle.lock().expect("lock").as_ref() {
+            h.finish(reason);
+        }
     }
 
     fn requested(&self) -> Option<String> {
@@ -7195,11 +7456,13 @@ impl XllmRun {
             llm_started_at: Mutex::new(None),
             tool_commands: Mutex::new(HashMap::new()),
         });
+        let resolver = manager.resolver();
         let tools_dyn: Arc<dyn ToolManager> = manager;
         let llm_dyn: Arc<dyn LlmClient> = llm;
         let mut d = LLMContextDeps::new(llm_dyn, tools_dyn)
             .with_worklog(worklog)
-            .with_inference_hook(hook);
+            .with_inference_hook(hook)
+            .with_tasks(resolver);
         if loop_model == LoopModel::Behavior {
             d = d
                 .with_result_parser(Arc::new(XllmActionParser::new(&tools.actions)))
@@ -7226,7 +7489,7 @@ impl XllmRun {
         } = prepared;
         store.ensure_writable()?;
         let run_id = store.create_run()?;
-        manager.bind_run(&run_id);
+        manager.bind_run_dir(&run_id, store.run_dir(&run_id));
         let (run_lock, workdir_lock) = Self::acquire_locks(
             &store,
             &run_id,
@@ -7271,13 +7534,11 @@ impl XllmRun {
             host: None,
             host_commit_pending: None,
             inflight: Vec::new(),
-            executions: Vec::new(),
         };
         store.write_record(&record)?;
         let record = Arc::new(Mutex::new(record));
         manager.attach_tracking(store.clone(), record.clone());
         let manager = Arc::new(manager);
-        let tool_cancel = manager.cancel.clone();
         let waist_deps = Self::build_waist_deps(
             &store,
             &record,
@@ -7301,7 +7562,6 @@ impl XllmRun {
             interrupter: XllmInterrupter {
                 requested: Arc::new(Mutex::new(None)),
                 handle: Arc::new(Mutex::new(None)),
-                tool_cancel,
             },
             file_stage,
             initial_messages,
@@ -7417,6 +7677,7 @@ impl XllmRun {
         runtime_deps.runtime = Some(runtime.clone());
         let mut manager = rebuild_toolset(&record, &runtime_deps).await?;
         Self::settle_previous_executor(store, &mut record, runtime.as_ref()).await?;
+        Self::fill_suspended_calls(store, &mut record, manager.resolver().as_ref()).await?;
 
         let mut record = record;
         if let Some(v) = limits.max_tokens {
@@ -7489,11 +7750,11 @@ impl XllmRun {
                 }
                 // Saved at the context limit: compacted before continuing.
                 Some(Suspension::ContextLimit { .. }) => limit_snapshot = Some(snap),
+                // Filled by `fill_suspended_calls` before this point.
                 Some(Suspension::PendingTool { .. }) => {
                     return Err(XllmError::NotResumable {
                         run_id: run_id_s.clone(),
-                        reason: "the run waits for deferred tool results, which xllm cannot supply"
-                            .into(),
+                        reason: "the run still waits for a task result".into(),
                     })
                 }
             }
@@ -7501,7 +7762,6 @@ impl XllmRun {
         let interrupter = XllmInterrupter {
             requested: Arc::new(Mutex::new(None)),
             handle: Arc::new(Mutex::new(None)),
-            tool_cancel: manager.cancel.clone(),
         };
         if let Some(c) = &ctx {
             *interrupter.handle.lock().expect("lock") = Some(c.interrupt_handle());
@@ -7544,32 +7804,16 @@ impl XllmRun {
         })))
     }
 
-    /// Before continuing a run: confirm every tracked execution of the
-    /// previous executor stopped (terminate verified leftovers, refuse when
-    /// unverifiable), then turn in-flight actions without a persisted result
-    /// into explicit "result unknown" observations — never re-run them.
+    /// Before continuing a run: turn the in-flight actions of the previous
+    /// executor (dispatched, no persisted result) into explicit
+    /// "interrupted, result unknown" observations, worded by the runtime
+    /// from what it can read (long-tool TODO §3.2). No process is verified
+    /// or stopped; nothing is re-run.
     async fn settle_previous_executor(
         store: &RunStore,
         record: &mut RunRecord,
         runtime: &dyn AgentRuntime,
     ) -> Result<(), XllmError> {
-        if !record.executions.is_empty() {
-            for exec in record.executions.clone() {
-                runtime.reconcile_execution(&exec)
-                    .await
-                    .map_err(|reason| XllmError::NotResumable {
-                        run_id: record.run_id.clone(),
-                        reason: format!(
-                            "cannot confirm that execution {} of the previous executor stopped: {reason}",
-                            exec.execution_id
-                        ),
-                    })?;
-                record
-                    .executions
-                    .retain(|e| e.execution_id != exec.execution_id);
-                store.write_record(record)?;
-            }
-        }
         if !record.inflight.is_empty() {
             let Some(idx) = record.latest_snapshot_idx else {
                 return Err(XllmError::NotResumable {
@@ -7579,13 +7823,85 @@ impl XllmRun {
             };
             let mut snap = store.get_snapshot(&record.run_id, idx)?;
             let behavior = record.config.loop_model == LoopModel::Behavior;
-            crate::exec_tracking::materialize_unresolved(&mut snap, &record.inflight, behavior);
+            let binding = RunBinding {
+                run_id: record.run_id.clone(),
+                run_dir: store.run_dir(&record.run_id),
+            };
+            let mut reasons = HashMap::new();
+            for action in &record.inflight {
+                reasons.insert(
+                    action.call_id.clone(),
+                    runtime.describe_interrupted(&binding, action).await,
+                );
+            }
+            crate::exec_tracking::materialize_unresolved(
+                &mut snap,
+                &record.inflight,
+                behavior,
+                &reasons,
+            );
             let new_idx = store.put_snapshot(&record.run_id, &snap)?;
             record.latest_snapshot_idx = Some(new_idx);
             record.inflight.clear();
             record.updated_at_ms = now_ms();
             store.write_record(record)?;
         }
+        Ok(())
+    }
+
+    /// A run suspended on a task (`PendingTool`) is taken over without
+    /// waiting: every suspended call is filled with the task's state at this
+    /// moment and the run continues (long-tool TODO §4). Refused when the
+    /// task belongs to a task manager this executor cannot reach.
+    async fn fill_suspended_calls(
+        store: &RunStore,
+        record: &mut RunRecord,
+        resolver: &dyn RunningTaskResolver,
+    ) -> Result<(), XllmError> {
+        let Some(idx) = record.latest_snapshot_idx else {
+            return Ok(());
+        };
+        let snap = store.get_snapshot(&record.run_id, idx)?;
+        let pending = snap.state.pending_calls().to_vec();
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let mut results = Vec::new();
+        for p in &pending {
+            if !resolver.can_resolve(&p.task_id) {
+                return Err(XllmError::NotResumable {
+                    run_id: record.run_id.clone(),
+                    reason: format!(
+                        "the run waits for task {} of a task manager this executor cannot reach",
+                        p.task_id
+                    ),
+                });
+            }
+            let state = resolver.state(&p.task_id).await;
+            results.push((
+                p.call.call_id.clone(),
+                task_state_observation(&p.call.call_id, &p.task_id, &state),
+            ));
+        }
+        // Validate and apply the fill with inert deps; the real context is
+        // built from the published snapshot afterwards.
+        let probe = LLMContextDeps::new(Arc::new(NoopLlm), Arc::new(NoopTools));
+        let probe = if record.config.loop_model == LoopModel::Behavior {
+            probe
+                .with_result_parser(Arc::new(XllmActionParser::new(&record.config.tools.actions)))
+                .with_step_renderer(Arc::new(XmlStepRenderer::new()))
+        } else {
+            probe
+        };
+        let filled = LLMContext::resume(snap, ResumeFill::ToolResults { results }, probe)
+            .map_err(|e| XllmError::NotResumable {
+                run_id: record.run_id.clone(),
+                reason: format!("cannot fill the suspended tool results: {e}"),
+            })?;
+        let new_idx = store.put_snapshot(&record.run_id, &filled.snapshot())?;
+        record.latest_snapshot_idx = Some(new_idx);
+        record.updated_at_ms = now_ms();
+        store.write_record(record)?;
         Ok(())
     }
 
@@ -7817,6 +8133,7 @@ impl XllmRun {
             disable_capabilities: cfg.disable_capabilities.clone(),
             parallel: false,
             allow_deferred: false,
+            finish_grace_ms: 30_000,
         };
         let output = if cfg.json && cfg.loop_model == LoopModel::FunctionCall {
             OutputSpec::Json {
@@ -7921,8 +8238,6 @@ impl XllmRun {
 
     /// 驱动到本次命令的停止点：完成 / 暂停 / 中断 / 失败 / 达到限制。
     pub async fn execute(&mut self) -> Result<RunOutcome, XllmError> {
-        self.manager
-            .set_deadline(self.record().config.limits.timeout_secs);
         self.emit(RunEvent::Phase {
             phase: RunPhase::PreparingInput,
             detail: String::new(),
@@ -8054,7 +8369,8 @@ impl XllmRun {
                     })?;
                     return Ok(RunOutcome::from_record(self.record()));
                 }
-                LLMContextOutcome::Interrupted { reason, usage, .. } => {
+                LLMContextOutcome::Interrupted { reason, usage, .. }
+                | LLMContextOutcome::Settled { reason, usage, .. } => {
                     let calls = self.llm.calls();
                     self.update(|r| {
                         r.status = RunStatus::Interrupted;
@@ -8065,6 +8381,8 @@ impl XllmRun {
                     return Ok(RunOutcome::Interrupted(self.record()));
                 }
                 LLMContextOutcome::PendingTool { .. } => {
+                    // xllm has no Session to wait in (`allow_deferred` is
+                    // off): tools wait inside the call instead.
                     let calls = self.llm.calls();
                     self.update(|r| {
                         r.status = RunStatus::Failed;
@@ -8073,7 +8391,7 @@ impl XllmRun {
                             phase: "tool".into(),
                             kind: "deferred_tool".into(),
                             message:
-                                "a tool returned a deferred result, which xllm does not support"
+                                "a tool suspended the run on a task, which xllm does not support"
                                     .into(),
                             recoverable: false,
                             condition: None,
@@ -8190,12 +8508,18 @@ impl XllmRun {
 impl XllmToolManager {
     /// Bind the manager to a run id (trace / session context of tool calls).
     pub fn set_run_id(&mut self, run_id: &str) {
-        self.bind_run(run_id);
+        self.bind_run_dir(run_id, None);
     }
 
-    fn bind_run(&mut self, run_id: &str) {
+    /// Bind the manager to a run: trace / session context of tool calls and
+    /// the run directory the `shell` execution directories live under.
+    pub fn bind_run_dir(&mut self, run_id: &str, run_dir: Option<PathBuf>) {
         self.session_template.trace_id = run_id.to_string();
         self.session_template.session_id = run_id.to_string();
+        *self.run.lock().expect("run binding") = Some(RunBinding {
+            run_id: run_id.to_string(),
+            run_dir,
+        });
     }
 }
 
@@ -8920,7 +9244,7 @@ tools:
             .template_vars
             .contains_key("env.XLLM_TEST_PROJECT"));
         assert!(record.config.tools.enabled);
-        assert_eq!(record.config.tools.native.len(), 4);
+        assert_eq!(record.config.tools.native.len(), 7);
     }
 
     #[tokio::test]
@@ -9086,8 +9410,19 @@ tools:
             .clone();
         let mut names = rec3.config.tools.all_names();
         names.sort();
-        assert_eq!(names, vec!["edit_file", "exec", "read_file", "write_file"]);
-        assert_eq!(llm3.seen()[0].tool_names.len(), 4);
+        assert_eq!(
+            names,
+            vec![
+                "cancel_task",
+                "edit_file",
+                "get_task_state",
+                "read_file",
+                "shell",
+                "wait_task",
+                "write_file"
+            ]
+        );
+        assert_eq!(llm3.seen()[0].tool_names.len(), 7);
         assert!(llm3.seen()[0].allow_tool_calls);
 
         // function_call + tools2actions → 配置不匹配。
@@ -9143,7 +9478,7 @@ tools:
     fn action_parser_handles_dynamic_tags_and_terminal_report() {
         let tools = vec![
             ResolvedTool {
-                name: "exec".into(),
+                name: TOOL_SHELL.into(),
                 description: "".into(),
                 args_schema: json!({"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}),
                 source: "t".into(),
@@ -9172,7 +9507,7 @@ tools:
 <response>
   <thinking>plan</thinking>
   <actions>
-    <exec><![CDATA[ls -la && echo "<done>"]]></exec>
+    <shell><![CDATA[ls -la && echo "<done>"]]></shell>
     <write_file path="a.txt"><![CDATA[hi
 there]]></write_file>
     <edit_file path="x.rs"><old_string><![CDATA[a]]></old_string><new_string>b &amp; c</new_string></edit_file>
@@ -9183,7 +9518,7 @@ there]]></write_file>
 ```"#;
         let r = parser.parse(&AiResponse::text(xml)).unwrap();
         assert_eq!(r.do_actions.len(), 5);
-        assert_eq!(r.do_actions[0].name, "exec");
+        assert_eq!(r.do_actions[0].name, TOOL_SHELL);
         assert_eq!(
             r.do_actions[0].args["command"],
             json!("ls -la && echo \"<done>\"")
@@ -9619,7 +9954,7 @@ there]]></write_file>
         let env = Env::new();
         let llm = ScriptedLlm::new(vec![
             tool_call("write_file", json!({"path":"out.txt","content":"x"}), "c1"),
-            tool_call("exec", json!({"command":"echo hi"}), "c2"),
+            tool_call(TOOL_SHELL, json!({"command":"echo hi"}), "c2"),
             text("never reached"),
         ]);
         let overrides = TaskOverrides {
@@ -9677,7 +10012,7 @@ there]]></write_file>
     async fn function_call_tool_loop_completes_with_observation() {
         let env = Env::new();
         let llm = ScriptedLlm::new(vec![
-            tool_call("exec", json!({"command":"echo tool-output-42"}), "c1"),
+            tool_call(TOOL_SHELL, json!({"command":"echo tool-output-42"}), "c1"),
             text("saw 42"),
         ]);
         let overrides = TaskOverrides {
@@ -9707,7 +10042,7 @@ there]]></write_file>
             "loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: true\n",
         );
         let llm = ScriptedLlm::new(vec![
-            text("<response><thinking>run</thinking><actions><exec><![CDATA[echo behavior-77]]></exec></actions></response>"),
+            text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>"),
             text("<response><observation>saw it</observation><report><![CDATA[{\"report\":\"结论 77\"}]]></report></response>"),
         ]);
         let o = env
@@ -9722,11 +10057,11 @@ there]]></write_file>
         let rec = o.record();
         assert_eq!(rec.config.loop_model, LoopModel::Behavior);
         assert!(rec.config.tools.native.is_empty());
-        assert_eq!(rec.config.tools.actions.len(), 4);
+        assert_eq!(rec.config.tools.actions.len(), 7);
         assert!(rec.config.tools.exec_enabled);
         let sys = system_text(&llm.seen()[0]);
         assert!(sys.contains("Available actions:"));
-        assert!(sys.contains("<exec"), "{sys}");
+        assert!(sys.contains("<shell"), "{sys}");
         assert!(sys.contains("Behavior actions available in this run"));
         assert!(!llm.seen()[0].allow_tool_calls || llm.seen()[0].tool_names.is_empty());
         let second = user_text(&llm.seen()[1]);
@@ -10164,10 +10499,10 @@ there]]></write_file>
             let llm = ScriptedLlm::new(vec![
                 if behavior {
                     text(
-                        "<response><actions><exec><![CDATA[echo one]]></exec></actions></response>",
+                        "<response><actions><shell><![CDATA[echo one]]></shell></actions></response>",
                     )
                 } else {
-                    tool_call("exec", json!({"command":"echo one"}), "c1")
+                    tool_call(TOOL_SHELL, json!({"command":"echo one"}), "c1")
                 },
                 Err(LLMComputeError::provider(ProviderFailure::Transient, "x")),
             ]);
@@ -10396,7 +10731,7 @@ there]]></write_file>
                 ];
                 for (name, args) in calls {
                     let obs = manager
-                        .call_tool(AiToolCall {
+                        .call_tool_t(AiToolCall {
                             name: name.into(),
                             args: serde_json::from_value(args).unwrap(),
                             call_id: "test-call".into(),
@@ -10434,7 +10769,7 @@ there]]></write_file>
                     },
                 );
                 let obs = manager
-                    .call_tool(AiToolCall {
+                    .call_tool_t(AiToolCall {
                         name: "write_file".into(),
                         args: serde_json::from_value(
                             json!({"path": "local.txt", "content": "local"}),
@@ -10449,7 +10784,7 @@ there]]></write_file>
                     std::fs::read_to_string(env.workdir.join("local.txt")).unwrap(),
                     "local"
                 );
-                let obs = manager.call_tool(exec_call("pwd")).await.unwrap();
+                let obs = manager.call_tool(exec_call("pwd"), ToolCallCtx::noop()).await.unwrap();
                 let Observation::Success { content, .. } = obs else {
                     panic!("{obs:?}")
                 };
@@ -10566,15 +10901,31 @@ there]]></write_file>
     fn exec_manager(workdir: &Path) -> XllmToolManager {
         let mut manager =
             XllmToolManager::new(workdir.to_path_buf(), "run-test", LoopModel::FunctionCall);
+        let shell = ShellSettings {
+            mode: ShellMode::Wait,
+            ..Default::default()
+        };
         for t in builtin_bash_group(
             workdir,
             FilesystemPolicy::Workspace,
             None,
             Arc::new(LocalFileBackend),
+            &shell,
+            ShellRuntimeNote::native(),
+            manager.tasks(),
         ) {
             manager.register(t, "groupname:bash").expect("register");
         }
         manager
+    }
+
+    trait CallT {
+        async fn call_tool_t(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
+    }
+    impl CallT for XllmToolManager {
+        async fn call_tool_t(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+            self.call_tool(call, ToolCallCtx::noop()).await
+        }
     }
 
     fn exec_call(command: &str) -> AiToolCall {
@@ -10587,54 +10938,139 @@ there]]></write_file>
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn run_deadline_cancels_running_exec_and_kills_it() {
+    async fn run_deadline_cancels_running_shell_and_kills_it() {
         let dir = tempfile::tempdir().unwrap();
         let marker = dir.path().join("survived");
         let manager = exec_manager(dir.path());
-        manager.set_deadline(1);
+        let ctx = ToolCallCtx {
+            abort: llm_context::InferenceAbortToken::noop(),
+            deadline_ms: Some(crate::now_ms() + 1000),
+            allow_deferred: false,
+        };
         let started = std::time::Instant::now();
         let obs = manager
-            .call_tool(exec_call(&format!("sleep 2; touch {}", marker.display())))
+            .call_tool(
+                exec_call(&format!("sleep 2; touch {}", marker.display())),
+                ctx,
+            )
             .await
             .unwrap();
         assert!(started.elapsed() < Duration::from_secs(2));
         match obs {
-            Observation::Error { message, .. } => {
-                assert!(
-                    message.contains("total execution time limit (1s)"),
-                    "{message}"
-                )
+            Observation::Cancelled {
+                reason,
+                effect_unknown,
+                ..
+            } => {
+                assert!(reason.contains("total time limit"), "{reason}");
+                assert!(!effect_unknown);
             }
             other => panic!("unexpected {other:?}"),
         }
         tokio::time::sleep(Duration::from_millis(2500)).await;
-        assert!(!marker.exists(), "cancelled exec kept running");
+        assert!(!marker.exists(), "cancelled shell kept running");
     }
 
     #[tokio::test]
-    async fn interrupt_cancels_running_exec() {
+    async fn interrupt_cancels_running_shell() {
         let dir = tempfile::tempdir().unwrap();
         let manager = Arc::new(exec_manager(dir.path()));
-        let interrupter = XllmInterrupter {
-            requested: Arc::new(Mutex::new(None)),
-            handle: Arc::new(Mutex::new(None)),
-            tool_cancel: manager.cancel.clone(),
+        let handle = LLMContextInterruptHandle::standalone();
+        let ctx = ToolCallCtx {
+            abort: handle.token(),
+            deadline_ms: None,
+            allow_deferred: false,
         };
         let m = manager.clone();
-        let call = tokio::spawn(async move { m.call_tool(exec_call("sleep 30")).await });
+        let call = tokio::spawn(async move { m.call_tool(exec_call("sleep 30"), ctx).await });
         tokio::time::sleep(Duration::from_millis(200)).await;
-        interrupter.interrupt("test");
+        handle.interrupt("test");
         let obs = tokio::time::timeout(Duration::from_secs(5), call)
             .await
             .expect("cancel must be prompt")
             .unwrap()
             .unwrap();
         match obs {
-            Observation::Error { message, .. } => {
-                assert!(message.contains("run interrupted"), "{message}")
+            Observation::Cancelled { reason, .. } => {
+                assert!(reason.contains("interrupted"), "{reason}")
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn auto_mode_turns_a_long_command_into_a_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager =
+            XllmToolManager::new(dir.path().to_path_buf(), "run-test", LoopModel::FunctionCall);
+        let shell = ShellSettings {
+            mode: ShellMode::Auto,
+            wait_ms: 200,
+            ..Default::default()
+        };
+        for t in builtin_bash_group(
+            dir.path(),
+            FilesystemPolicy::Workspace,
+            None,
+            Arc::new(LocalFileBackend),
+            &shell,
+            ShellRuntimeNote::native(),
+            manager.tasks(),
+        ) {
+            manager.register(t, "groupname:bash").expect("register");
+        }
+        for t in task_tools(manager.resolver()) {
+            manager.register(t, "groupname:bash").expect("register");
+        }
+        let obs = manager
+            .call_tool(exec_call("echo early; sleep 1; echo late"), ToolCallCtx::noop())
+            .await
+            .unwrap();
+        let Observation::Success {
+            content,
+            tool_result,
+            ..
+        } = obs
+        else {
+            panic!("{obs:?}")
+        };
+        let text = content.as_str().unwrap();
+        assert!(text.contains("still running"), "{text}");
+        assert!(text.contains("early"), "{text}");
+        let task_id = tool_result.unwrap().task_id.expect("task id");
+        assert_eq!(task_id, "local:shell:c1");
+        let obs = manager
+            .call_tool(
+                AiToolCall {
+                    name: crate::tasks::TOOL_WAIT_TASK.into(),
+                    args: HashMap::from([
+                        ("task_id".to_string(), Value::String(task_id.clone())),
+                        ("wait_ms".to_string(), json!(5000)),
+                    ]),
+                    call_id: "c2".into(),
+                },
+                ToolCallCtx::noop(),
+            )
+            .await
+            .unwrap();
+        let Observation::Success { content, .. } = obs else {
+            panic!("{obs:?}")
+        };
+        assert!(content.as_str().unwrap().contains("late"), "{content}");
+        assert!(content.as_str().unwrap().contains("exited with code 0"), "{content}");
+        let dir_obs = manager
+            .call_tool(
+                AiToolCall {
+                    name: crate::tasks::TOOL_GET_TASK_STATE.into(),
+                    args: HashMap::from([("task_id".to_string(), Value::String(task_id))]),
+                    call_id: "c3".into(),
+                },
+                ToolCallCtx::noop(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(dir_obs, Observation::Success { .. }));
     }
 
     #[tokio::test]
@@ -10642,9 +11078,10 @@ there]]></write_file>
         let dir = tempfile::tempdir().unwrap();
         let manager = exec_manager(dir.path());
         let obs = manager
-            .call_tool(exec_call(
-                "echo compile error: missing semicolon >&2; exit 2",
-            ))
+            .call_tool(
+                exec_call("echo compile error: missing semicolon >&2; exit 2"),
+                ToolCallCtx::noop(),
+            )
             .await
             .unwrap();
         match obs {
@@ -10660,7 +11097,7 @@ there]]></write_file>
     fn exec_spec_advertises_xllm_limits() {
         let dir = tempfile::tempdir().unwrap();
         let manager = exec_manager(dir.path());
-        let spec = manager.tools.get(TOOL_EXEC).unwrap().spec();
+        let spec = manager.tools.get(TOOL_SHELL).unwrap().spec();
         assert_eq!(
             spec.args_schema["properties"]["timeout_ms"]["maximum"],
             EXEC_MAX_TIMEOUT_MS
@@ -10681,7 +11118,7 @@ there]]></write_file>
     async fn provider_context_refusal_compacts_and_continues_the_same_run() {
         let env = Env::new();
         let llm = ScriptedLlm::new(vec![
-            tool_call("exec", json!({"command":"echo before-limit"}), "c1"),
+            tool_call(TOOL_SHELL, json!({"command":"echo before-limit"}), "c1"),
             context_refusal(),
             text("done after compaction"),
         ]);
@@ -10761,7 +11198,7 @@ there]]></write_file>
             "loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: true\n",
         );
         let llm = ScriptedLlm::new(vec![
-            text("<response><thinking>run</thinking><actions><exec><![CDATA[echo behavior-88]]></exec></actions></response>"),
+            text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-88]]></shell></actions></response>"),
             context_refusal(),
             text("<response><report><![CDATA[{\"report\":\"ok 88\"}]]></report></response>"),
         ]);
@@ -10814,10 +11251,29 @@ there]]></write_file>
             .get_snapshot(&run_id, o.record().latest_snapshot_idx.unwrap())
             .unwrap();
 
-        // Saved while waiting for a deferred tool: xllm cannot supply it.
+        // Saved while waiting for a task of a task manager xllm cannot
+        // reach: refused.
+        let pending_call = AiToolCall {
+            name: crate::tasks::TOOL_WAIT_TASK.into(),
+            args: HashMap::from([("task_id".to_string(), Value::String("bucky:42".into()))]),
+            call_id: "c1".into(),
+        };
         let mut pending = base.clone();
+        pending.state.accumulated.push(AiMessage::new(
+            AiRole::Assistant,
+            vec![AiContent::tool_use(
+                "c1".to_string(),
+                crate::tasks::TOOL_WAIT_TASK.to_string(),
+                pending_call.args.clone(),
+            )],
+        ));
+        pending.state.tool_batch = Some(llm_context::state::ToolBatch::default());
         pending.state.suspended = Some(Suspension::PendingTool {
-            pending: Vec::new(),
+            pending: vec![llm_context::observation::PendingToolCall {
+                call: pending_call.clone(),
+                task_id: "bucky:42".into(),
+                until_ms: None,
+            }],
             at_ms: now_ms(),
         });
         publish(&pending);
@@ -10830,10 +11286,55 @@ there]]></write_file>
         )
         .await
         .err()
-        .expect("a pending-tool run is not resumable by xllm");
-        assert!(err.to_string().contains("deferred tool"), "{err}");
+        .expect("a run waiting on an unreachable task manager is not resumable");
+        assert!(err.to_string().contains("cannot reach"), "{err}");
 
-        // Saved at the context limit: compacted, then continued.
+        // Saved while waiting for an in-process task this executor did not
+        // start: filled with the task's state (unknown) and continued.
+        if let Some(Suspension::PendingTool { pending: p, .. }) = pending.state.suspended.as_mut() {
+            p[0].task_id = "local:shell:nope".into();
+        }
+        publish(&pending);
+        let llm = ScriptedLlm::new(vec![text("continued after fill")]);
+        let start = XllmRun::resume(
+            &store,
+            Some(&run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(llm.clone()),
+        )
+        .await
+        .unwrap();
+        let ResumeStart::Run(mut run) = start else {
+            panic!("expected run, got {start:?}")
+        };
+        let o = run.execute().await.unwrap();
+        assert!(
+            matches!(o, RunOutcome::Completed(_)),
+            "{:?}",
+            o.record().last_error
+        );
+        let seen = llm.seen();
+        let filled = seen[0]
+            .messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .find_map(|c| match c {
+                AiContent::ToolResult { call_id, content, .. } if call_id == "c1" => {
+                    Some(format!("{content:?}"))
+                }
+                _ => None,
+            })
+            .expect("filled result");
+        assert!(filled.contains("state unknown"), "{filled}");
+        drop(run);
+
+        // Saved at the context limit: compacted, then continued. (The run
+        // completed above; put it back into a resumable state first.)
+        let mut rec = store.read_record(&run_id).unwrap();
+        rec.status = RunStatus::Paused;
+        rec.result = None;
+        store.write_record(&rec).unwrap();
         let mut limited = base;
         limited.state.suspended = Some(Suspension::ContextLimit {
             which: llm_context::outcome::ContextLimitKind::ProviderRefused,
@@ -10962,11 +11463,7 @@ impl XllmToolManager {
         self.info.as_ref()
     }
     fn attach_tracking(&mut self, store: RunStore, record: Arc<Mutex<RunRecord>>) {
-        if let Some(registrar) = &self.registrar {
-            let tracking = Arc::new(RunTracking { store, record });
-            registrar.set(tracking.clone());
-            self.tracking = Some(tracking);
-        }
+        self.tracking = Some(Arc::new(RunTracking { store, record }));
     }
 }
 
@@ -11010,36 +11507,32 @@ impl RunTracking {
             args: args.clone(),
             effect: "unknown".into(),
             idempotency_key: None,
-            execution_ids: Vec::new(),
             step_index: None,
             started_at_ms: now_ms(),
         });
         self.store.write_record(&rec).map_err(|e| e.to_string())
     }
 }
+
+/// Inert deps used to validate a fill before the real context is built.
+struct NoopLlm;
 #[async_trait]
-impl ExecutionRegistrar for RunTracking {
-    async fn register(&self, exec: &ExecutionRecord) -> Result<(), String> {
-        let mut rec = self.record.lock().expect("record");
-        let mut exec = exec.clone();
-        exec.call_id = crate::runtime::CURRENT_TOOL_CALL
-            .try_with(|c| c.clone())
-            .ok();
-        if let Some(action) = rec
-            .inflight
-            .iter_mut()
-            .find(|a| Some(&a.call_id) == exec.call_id.as_ref())
-        {
-            action.execution_ids.push(exec.execution_id.clone());
-        }
-        rec.executions.push(exec);
-        self.store.write_record(&rec).map_err(|e| e.to_string())
+impl LlmClient for NoopLlm {
+    async fn infer(&self, _req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        Err(LLMComputeError::Internal("inert llm".into()))
     }
-    async fn completed(&self, id: &str) {
-        let mut rec = self.record.lock().expect("record");
-        rec.executions.retain(|e| e.execution_id != id);
-        if let Err(e) = self.store.write_record(&rec) {
-            log::warn!("execution completion: {e}");
-        }
+}
+struct NoopTools;
+#[async_trait]
+impl ToolManager for NoopTools {
+    async fn call_tool(
+        &self,
+        call: AiToolCall,
+        _ctx: ToolCallCtx,
+    ) -> Result<Observation, ToolDispatchError> {
+        Err(ToolDispatchError::not_started(format!(
+            "inert tool manager: {}",
+            call.name
+        )))
     }
 }

@@ -2,13 +2,17 @@ pub mod files;
 pub mod ssh;
 pub mod tmux;
 
-use crate::exec_tracking::{ExecutionRecord, ExecutionRegistrar, TrackedBashRunner};
-use crate::llm_bash::{BashRunOutput, BashRunRequest, BashRunner, BashTarget};
+use crate::exec_tracking::{unresolved_reason, InflightAction};
+use crate::llm_bash::{
+    exec_dir_for, new_run_binding_slot, read_exit_file, read_file_tail, BashRunOutput,
+    BashRunRequest, BashRunner, BashTarget, LocalProcessBashRunner, RunBinding, RunBindingSlot,
+    OUTPUT_TAIL_BYTES, TOOL_SHELL,
+};
 use crate::xllm::{EffectiveTools, LoopModel, ToolsConfig, XllmDeps, XllmError, XllmToolManager};
 use crate::{AgentTool, AgentToolError, SessionRuntimeContext};
 use async_trait::async_trait;
 use files::{FileBackend, LocalFileBackend};
-use llm_context::deps::ToolManager;
+use llm_context::deps::{ToolCallCtx, ToolManager};
 use llm_context::prompt_engine::{
     PromptExec, PromptExecOutput, PromptExecRequest, RenderError, ValueLoader,
 };
@@ -17,8 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, XllmError>;
 
@@ -295,7 +298,10 @@ pub struct RuntimeOpenCtx {
     pub sources: BTreeMap<String, String>,
     pub env: BTreeMap<String, String>,
     pub path_prefix: Vec<PathBuf>,
-    pub registrar: Arc<dyn ExecutionRegistrar>,
+    /// The run the opened tools belong to; bound once the run id and its
+    /// directory are known (`XllmToolManager::bind_run`). Execution
+    /// directories of `shell` commands derive from it.
+    pub run: RunBindingSlot,
 }
 
 impl RuntimeOpenCtx {
@@ -307,34 +313,7 @@ impl RuntimeOpenCtx {
             sources: BTreeMap::new(),
             env: BTreeMap::new(),
             path_prefix: Vec::new(),
-            registrar: Arc::new(SwitchRegistrar::default()),
-        }
-    }
-}
-
-#[derive(Default)]
-pub struct SwitchRegistrar {
-    inner: Mutex<Option<Arc<dyn ExecutionRegistrar>>>,
-}
-impl SwitchRegistrar {
-    pub fn set(&self, registrar: Arc<dyn ExecutionRegistrar>) {
-        *self.inner.lock().expect("registrar") = Some(registrar);
-    }
-    fn get(&self) -> Option<Arc<dyn ExecutionRegistrar>> {
-        self.inner.lock().expect("registrar").clone()
-    }
-}
-#[async_trait]
-impl ExecutionRegistrar for SwitchRegistrar {
-    async fn register(&self, rec: &ExecutionRecord) -> std::result::Result<(), String> {
-        self.get()
-            .ok_or_else(|| "run not ready; command not started".to_string())?
-            .register(rec)
-            .await
-    }
-    async fn completed(&self, id: &str) {
-        if let Some(r) = self.get() {
-            r.completed(id).await;
+            run: new_run_binding_slot(),
         }
     }
 }
@@ -350,7 +329,13 @@ pub trait AgentRuntime: Send + Sync {
         tools: &ToolsConfig,
         host_tools: Vec<Arc<dyn AgentTool>>,
     ) -> Result<(EffectiveTools, XllmToolManager)>;
-    async fn reconcile_execution(&self, rec: &ExecutionRecord) -> Result<()>;
+
+    /// The text a previous executor's in-flight `action` is answered with
+    /// after a crash (long-tool TODO §3.2): no process is verified or
+    /// stopped. For `shell` the runtime reads the execution directory of
+    /// `(run, call_id)` — exit code and output tail when the command ended,
+    /// "may still be running" and where to look otherwise.
+    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String;
 }
 
 #[async_trait]
@@ -381,6 +366,100 @@ pub struct Runtime {
 }
 pub type NativeRuntime = Runtime;
 pub type TmuxRuntime = Runtime;
+
+/// What a finished `shell` command's execution directory says.
+pub(crate) struct ExecDirFacts {
+    pub exit_code: Option<i32>,
+    pub stdout_tail: String,
+    pub stderr_tail: String,
+    pub exists: bool,
+}
+
+pub(crate) fn read_exec_dir(dir: &Path) -> ExecDirFacts {
+    ExecDirFacts {
+        exit_code: read_exit_file(dir),
+        stdout_tail: read_file_tail(&dir.join("stdout"), OUTPUT_TAIL_BYTES),
+        stderr_tail: read_file_tail(&dir.join("stderr"), OUTPUT_TAIL_BYTES),
+        exists: dir.is_dir(),
+    }
+}
+
+fn shell_command_of(action: &InflightAction) -> String {
+    action
+        .args
+        .get("command")
+        .and_then(Value::as_str)
+        .map(|c| {
+            let one = c.split_whitespace().collect::<Vec<_>>().join(" ");
+            if one.chars().count() > 160 {
+                format!("{}…", one.chars().take(160).collect::<String>())
+            } else {
+                one
+            }
+        })
+        .unwrap_or_default()
+}
+
+fn tails(facts: &ExecDirFacts) -> String {
+    let mut s = String::new();
+    if !facts.stdout_tail.trim().is_empty() {
+        s.push_str("\n--- stdout (tail) ---\n");
+        s.push_str(facts.stdout_tail.trim_end());
+    }
+    if !facts.stderr_tail.trim().is_empty() {
+        s.push_str("\n--- stderr (tail) ---\n");
+        s.push_str(facts.stderr_tail.trim_end());
+    }
+    s
+}
+
+fn started_text(action: &InflightAction) -> String {
+    let elapsed = crate::now_ms().saturating_sub(action.started_at_ms);
+    format!(
+        "started {} ago (at {} ms since epoch)",
+        crate::llm_bash::fmt_elapsed(elapsed),
+        action.started_at_ms
+    )
+}
+
+/// Text for an interrupted `shell` call, by runtime kind (§3.2).
+pub(crate) fn interrupted_shell_text(
+    kind: &str,
+    target: &str,
+    action: &InflightAction,
+    facts: Option<&ExecDirFacts>,
+    location: &str,
+) -> String {
+    let command = shell_command_of(action);
+    let started = started_text(action);
+    if let Some(f) = facts {
+        if let Some(code) = f.exit_code {
+            return format!(
+                "shell ({kind}): the previous executor exited while `{command}` was running ({started}). The command has since ended with exit code {code} (read from {location}); its result was never returned, so review it before deciding whether to repeat anything.{}",
+                tails(f)
+            );
+        }
+    }
+    match kind {
+        "tmux" => format!(
+            "shell ({kind}): the previous executor exited while `{command}` was running in tmux session `{target}` ({started}). No exit was recorded, so the command may still be running there; its output and `exit` file are in {location}. Check (tmux, the files, `ps`) before repeating it.{}",
+            facts.map(tails).unwrap_or_default()
+        ),
+        "remote_ssh" => match facts {
+            Some(f) if f.exists => format!(
+                "shell ({kind}): the previous executor exited while `{command}` was running on `{target}` ({started}). No exit was recorded, so the command may still be running there; its output and `exit` file are in {location}. Check before repeating it.{}",
+                tails(f)
+            ),
+            _ => format!(
+                "shell ({kind}): the previous executor exited while `{command}` was running on `{target}` ({started}). The remote execution directory {location} could not be read (host unreachable or directory missing); the command may have completed or may still be running. Check the host before repeating it."
+            ),
+        },
+        _ => format!(
+            "shell ({kind}): the previous executor exited while `{command}` was running ({started}). The command may have partly executed; it usually ended together with the executor, but not necessarily (e.g. after kill -9 it may still be running). Background processes it started are unaffected. Check the actual state before repeating it.{}",
+            facts.map(tails).unwrap_or_default()
+        ),
+    }
+}
 
 pub fn native_host_id() -> String {
     let host = std::fs::read_to_string("/etc/hostname")
@@ -584,28 +663,15 @@ impl AgentRuntime for Runtime {
                     "remote Session helper deployment is not available".into(),
                 ));
             }
-            Arc::new(ssh::SshBashRunner::new(
-                ssh.clone(),
-                &s.descriptor.runtime_id,
-                ctx.registrar.clone(),
-                env,
-            ))
+            Arc::new(ssh::SshBashRunner::new(ssh.clone(), env, ctx.run.clone()))
         } else if let Some(tmux) = &s.tmux {
-            Arc::new(tmux::TmuxBashRunner::new(
-                tmux.clone(),
-                &s.descriptor.runtime_id,
-                ctx.registrar.clone(),
-                env,
-            ))
+            Arc::new(tmux::TmuxBashRunner::new(tmux.clone(), env, ctx.run.clone()))
         } else {
             Arc::new(
-                TrackedBashRunner::new(ctx.registrar.clone())
-                    .with_runtime(
-                        Some(s.descriptor.runtime_id.clone()),
-                        s.descriptor.host.clone(),
-                    )
+                LocalProcessBashRunner::new()
                     .with_path_layers(ctx.path_prefix.clone())
-                    .with_env(env.into_iter().collect()),
+                    .with_env(env.into_iter().collect())
+                    .with_run_binding(ctx.run.clone()),
             )
         };
         let deps = XllmDeps {
@@ -621,6 +687,8 @@ impl AgentRuntime for Runtime {
             &deps,
             runner.clone(),
             s.files.clone(),
+            &s.descriptor,
+            ctx.run.clone(),
         )
         .await?;
         let mut info = self.info().await?;
@@ -631,29 +699,38 @@ impl AgentRuntime for Runtime {
         manager.set_runtime(runner, s.descriptor.clone(), info);
         Ok((effective, manager))
     }
-    async fn reconcile_execution(&self, rec: &ExecutionRecord) -> Result<()> {
-        let s = self.initialize(&std::env::current_dir()?).await?;
-        if rec
-            .runtime_id
-            .as_ref()
-            .is_some_and(|id| id != &s.descriptor.runtime_id)
-        {
-            return Err(XllmError::RecoveryBlocked(
-                "execution runtime id differs".into(),
-            ));
+    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String {
+        if action.tool != TOOL_SHELL {
+            return unresolved_reason(&action.tool);
         }
-        if let Some(ssh) = &s.ssh {
-            ssh.stop(rec)
-                .await
-                .map_err(|e| XllmError::RecoveryBlocked(e.to_string()))
-        } else {
-            crate::exec_tracking::stop_execution(
-                rec,
-                s.descriptor.host.as_deref(),
-                Duration::from_secs(10),
-            )
-            .await
-            .map_err(XllmError::RecoveryBlocked)
+        let kind = self.descriptor().kind.clone();
+        let opened = self.opened.get();
+        if kind == "remote_ssh" {
+            let target = self
+                .config()
+                .remote_ssh
+                .as_ref()
+                .and_then(|s| s.host.clone())
+                .unwrap_or_default();
+            let Some(ssh) = opened.and_then(|o| o.ssh.clone()) else {
+                return interrupted_shell_text(&kind, &target, action, None, "(remote, not opened)");
+            };
+            let dir = ssh.remote_exec_dir(&run.run_id, &action.call_id);
+            let facts = ssh.read_exec_dir(&dir).await;
+            return interrupted_shell_text(&kind, &target, action, facts.as_ref(), &dir);
+        }
+        let target = self
+            .config()
+            .tmux
+            .as_ref()
+            .and_then(|t| t.session.clone())
+            .unwrap_or_default();
+        match exec_dir_for(run.run_dir.as_deref(), Some(&action.call_id)) {
+            Some(dir) => {
+                let facts = read_exec_dir(&dir);
+                interrupted_shell_text(&kind, &target, action, Some(&facts), &dir.display().to_string())
+            }
+            None => interrupted_shell_text(&kind, &target, action, None, "(no execution directory)"),
         }
     }
 }
@@ -718,6 +795,7 @@ impl PromptExec for SandboxPromptExec {
                     max_output_bytes: req.max_output_bytes,
                     env: Vec::new(),
                     target: BashTarget::Local,
+                    call_id: None,
                 },
                 &self.context,
             )
@@ -754,7 +832,7 @@ pub(crate) fn output(
     stderr: &[u8],
     max: usize,
     timed_out: bool,
-    elapsed: Duration,
+    elapsed: std::time::Duration,
     engine: &str,
     cwd: PathBuf,
 ) -> BashRunOutput {
@@ -779,7 +857,14 @@ pub(crate) fn output(
     }
 }
 
-tokio::task_local! { pub static CURRENT_TOOL_CALL: String; }
+tokio::task_local! {
+    /// Call id of the tool call running in this task (names the `shell`
+    /// execution directory, keys task ids).
+    pub static CURRENT_TOOL_CALL: String;
+    /// Interrupt / finish / deadline context of the tool call running in
+    /// this task (`llm_context::ToolCallCtx`), set by the dispatcher.
+    pub static CURRENT_TOOL_CTX: ToolCallCtx;
+}
 
 #[cfg(test)]
 mod tests;

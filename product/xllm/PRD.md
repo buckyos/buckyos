@@ -344,10 +344,10 @@ prompt:
             先读取相关实现和调用方，再给出结论。
             只依据实际读取的材料判断问题，区分已验证事实与推测。
             工具使用范围以系统提供的本次可用工具和 actions 说明为准。
-        cmd_manual: # 40：exec 命令手册；这里补充偏好，具体命令说明来自 bash_tools
+        cmd_manual: # 40：shell 命令手册；这里补充偏好，具体命令说明来自 bash_tools
           text: |
             搜索代码时优先使用 rg，查看变更时使用 git diff。
-            命令和参数以系统生成的 exec 手册为准。
+            命令和参数以系统生成的 shell 手册为准。
         output_format: # 100：最终内容要求；与上面的 result.report 提取方式配套
           text: |
             按 behavior 协议提交最终结果，在 report 字段中用中文列出评审结论。
@@ -363,10 +363,10 @@ prompt:
         tools2actions: true
         # 三种来源分别为内置工具组、MCP 服务和单个已注册内置工具。
         tools:
-          - groupname: bash # 包含 read_file、write_file、exec
+          - groupname: bash # 包含 read_file、write_file、shell
           - mcp: "http://127.0.0.1:3000/mcp" # 示例地址，需替换为实际可用服务
           - name: sendmsg # 不属于 bash 组，需运行环境提供
-        # exec 的补充命令手册；不会安装命令或单独启用 exec。
+        # shell 的补充命令手册；不会安装命令或单独启用 shell。
         bash_tools:
           - name: rg
             description: 搜索工作目录中的源码与文档。
@@ -402,7 +402,7 @@ prompt:
 
 `provider.type` 默认 buckyos，也可选 openai；buckyos 会使用 AICC、taskmgr 等所需服务，`session_token` 可手工指定，也可省略以沿用已有身份。`model` 执行主任务，`file_model` 处理图片等首版支持的附件理解；没有附件时不调用文件模型。`max_tokens` 是单次输出上限，256000 仅适用于支持该值的实际模型；`max_tool_iterations` 限制工具迭代次数（不是推理次数），`llm_timeout` 限制单次 LLM 请求等待秒数，与 `--timeout` 的命令总时长分开。`runs_dir` 的相对路径始终相对于声明它的配置文件。
 
-`loop_model` 支持 function_call（默认）和 behavior。示例选择 behavior，并在 review 组中用 `tools2actions: true` 把 bash 组、MCP 工具和 sendmsg 统一转换为 actions，原生 tools 列表变为空；也可关闭转换并分别配置 tools 与 actions。`bash_tools` 只补充 exec 命令手册。组内工具可覆盖顶层 tools 基础配置，`prompt.tools` 可进一步提供目录级覆盖，`--no-tools` 最后覆盖所有组和目录开关。未选中的组不提供任何工具；docs 组因此单独声明自己需要的 bash 能力。
+`loop_model` 支持 function_call（默认）和 behavior。示例选择 behavior，并在 review 组中用 `tools2actions: true` 把 bash 组、MCP 工具和 sendmsg 统一转换为 actions，原生 tools 列表变为空；也可关闭转换并分别配置 tools 与 actions。`bash_tools` 只补充 shell 命令手册。组内工具可覆盖顶层 tools 基础配置，`prompt.tools` 可进一步提供目录级覆盖，`--no-tools` 最后覆盖所有组和目录开关。未选中的组不提供任何工具；docs 组因此单独声明自己需要的 bash 能力。
 
 `run_logs: info` 将阶段进度写入 stderr；可选 debug、info、warn、result 四档，不改变 stdout 的结果。`result_format: result.report` 从模型最终结构化响应中提取 report；`result` 是解析后的根节点别名。改为 raw 则保留最终模型响应原文。这里的 output_format 提示词也明确要求 report 内容，使 `xllm > result.out` 可以直接得到报告；`--format json` 再将提取结果包装为 CLI 执行结果。
 
@@ -428,7 +428,7 @@ tools:
 
 `prompt.groups` 定义组，`prompt.select` 选择默认组；`default_user` 进入 user 输入，组内 sections 进入 system。`prompt.sections` 对所选组提供目录级覆盖或新增内容。section 的键可以是固定别名或带引号的数字行号，text 为用户文本，name 为可选自定义名称；同一集合不能重复声明同一行号及其别名。
 
-默认 review 的 system 顺序为 **10 role → 20 contexts/env → 25 project_conventions → 30 rules → 40 cmd_manual → 50 delivery_checklist → 100 output_format**，最后追加系统的 runtime_protocol。模板在组选取和文本合并后渲染；系统同时保证环境信息、可用 tools/actions 与 exec 手册和实际配置一致。切换到 docs 或 checkpr 后，不再带入 review 的文本、MCP 或 sendmsg 配置，目录级 50 行仍生效。
+默认 review 的 system 顺序为 **10 role → 20 contexts/env → 25 project_conventions → 30 rules → 40 cmd_manual → 50 delivery_checklist → 100 output_format**，最后追加系统的 runtime_protocol。模板在组选取和文本合并后渲染；系统同时保证环境信息、可用 tools/actions 与 shell 手册和实际配置一致。切换到 docs 或 checkpr 后，不再带入 review 的文本、MCP 或 sendmsg 配置，目录级 50 行仍生效。
 
 `project/src/.llm_context` 可以只写差异：覆盖规则和项目约定，清空 50 行，用行号 100 覆盖 output_format，并将所选组的工具来源列表替换为 bash 组。
 
@@ -550,9 +550,9 @@ prompt:
               their actual parameter schemas. Use read_file to inspect files and edit_file
               for targeted replacements; old_string must match the original text exactly
               and uniquely. Use write_file for new files or necessary complete rewrites.
-            - Use exec for directory listings, searches, builds, tests, and scripts.
+            - Use shell for directory listings, searches, builds, tests, and scripts.
               Do not assume cd or variable assignments persist between commands.
-              Do not attempt to execute commands when exec is disabled.
+              Do not attempt to execute commands when shell is disabled.
             - Read files and command output as needed, focusing on relevant ranges.
               If output is truncated, retrieve the missing parts before drawing conclusions.
             - When a tool fails, read the error and adjust the arguments or approach.
@@ -588,7 +588,7 @@ prompt:
           - groupname: bash
 ```
 
-这组配置采用 `function_call + raw`：工具调用通过原生接口完成，最终 assistant 文本直接交付，无需手写 XML 或 `report` 包装。内置 `bash` 组实际提供 `read_file`、`edit_file`、`write_file`、`exec`，对应 pi-mono 常用的 `read`、`edit`、`write`、`bash` 分工；不要把 pi 的工具名或参数直接用于 xllm。
+这组配置采用 `function_call + raw`：工具调用通过原生接口完成，最终 assistant 文本直接交付，无需手写 XML 或 `report` 包装。内置 `bash` 组实际提供 `read_file`、`edit_file`、`write_file`、`shell`，对应 pi-mono 常用的 `read`、`edit`、`write`、`bash` 分工；不要把 pi 的工具名或参数直接用于 xllm。
 
 `role / contexts / rules / cmd_manual / output_format` 分别映射到行号 10 / 20 / 30 / 40 / 100。SDK 会补充本次实际工具说明和 `runtime_protocol`；模板只填写业务规则。项目约定和技能文件需要模型按需读取或由调用方显式提供，xllm 不因上述提示词自动发现、注入这些文件。
 
@@ -605,7 +605,7 @@ agent_tool xllm --no-tools --json '返回一个包含 summary 和 items 的 JSON
 ```
 
 - **任务与工作目录**：模板不设 `default_user`，每次通过问题、`--user` 或非空 stdin 提交任务；只有配置而没有任务时显示用法。`--dir /absolute/project` 可指定工作目录，配置会从该目录向上查找并合并。每条普通调用创建独立 Run。
-- **工具与文件权限**：模板显式设置 `tools.filesystem_policy: unrestricted`，内置文件工具可读写工作目录外的路径，`exec.cwd` 也可指向其它目录，实际访问由运行 xllm 用户的操作系统权限决定。工作目录仅作为默认位置和相对路径基准。省略该字段时为 `workspace`，会限制文件工具路径和 `exec.cwd`；需要自由访问时保留模板中的 `unrestricted`。`--no-tools` 仍可关闭所有工具。该策略只控制内置 `bash` 组，MCP 和宿主注入工具遵循各自权限规则。
+- **工具与文件权限**：模板显式设置 `tools.filesystem_policy: unrestricted`，内置文件工具可读写工作目录外的路径，`shell.cwd` 也可指向其它目录，实际访问由运行 xllm 用户的操作系统权限决定。工作目录仅作为默认位置和相对路径基准。省略该字段时为 `workspace`，会限制文件工具路径和 `shell.cwd`；需要自由访问时保留模板中的 `unrestricted`。`--no-tools` 仍可关闭所有工具。该策略只控制内置 `bash` 组，MCP 和宿主注入工具遵循各自权限规则。
 - **预算与输出**：16 是本模板选择的工具迭代上限，不是 SDK 默认值；`llm_timeout` 与 `timeout` 单位均为秒，分别限制单次模型请求和整次执行。`--max-tool-iterations`、`--max-tokens` 等可按任务覆盖；`--json` 约束答案，`--format json` 则包装 CLI 结果。
 - **项目定制**：在 `general.sections` 中补充项目约定，或用 `prompt.sections` 覆盖某一节；子目录配置继承父目录，显式 CLI 参数优先。只有需要预设裸命令任务时才添加 `general.default_user`。
 - **恢复**：中断或可恢复暂停后使用 `agent_tool xllm --resume --run <runid>`；恢复沿用已保存的配置、文件访问策略和提示词。修改模板后以新任务验证，已有 Run 的策略不会因修改 `.llm_context` 而改变，终态 Run 不会重新执行。
@@ -634,7 +634,7 @@ runtime:
     identity_file: ~/.ssh/review_key
 ```
 
-SSH 使用本机 OpenSSH 配置、agent/key 与 known_hosts，非交互连接；远端需 Linux、bash、SFTP。工具 exec、文件读写编辑与模板 EXEC 使用同一目标 cwd，环境信息在目标探测；MCP 服务与宿主进程内工具保留原执行位置。native/tmux 工作目录、tmux.socket 和 identity_file 相对其声明配置文件；SSH workdir 必须显式绝对路径。tmux 连接块要求 session，mode 为 create/attach/create_or_attach，命令在专用 pane 串行执行。
+SSH 使用本机 OpenSSH 配置、agent/key 与 known_hosts，非交互连接；远端需 Linux、bash、SFTP。工具 shell、文件读写编辑与模板 EXEC 使用同一目标 cwd，环境信息在目标探测；MCP 服务与宿主进程内工具保留原执行位置。native/tmux 工作目录、tmux.socket 和 identity_file 相对其声明配置文件；SSH workdir 必须显式绝对路径。tmux 连接块要求 session，mode 为 create/attach/create_or_attach，每条命令在自己的 window 中执行，执行器被打断或退出时命令继续运行。
 
 配置、日志、run.json、快照与 INCLUDE 素材在控制侧，runtime.workdir 是执行侧路径。workspace 文件策略在目标侧核验真实路径，不能限制 shell 自身 I/O。恢复使用保存的有效 runtime 与 descriptor，核验 kind/id/目标/cwd；SSH alias 重定向不得改变旧 run 的执行体。超时、取消和接管须核验目标侧停止，结果未知的副作用不重放。SSH 无跨 Runner 的工作目录锁，宿主协调并发。
 
@@ -671,7 +671,7 @@ prompt:
           - groupname: bash
 ```
 
-这里的“同构”指任务能力和执行语义对应：`read_file`、`edit_file`、`write_file`、`exec` 的名称、参数、权限和执行限制保持一致，原生工具调用转换为同名 actions，原生 tools 列表置空。SDK 根据实际 actions 自动提供 XML 调用格式和结束条件；最终结果从 `report` 提取后交付给调用方。
+这里的“同构”指任务能力和执行语义对应：`read_file`、`edit_file`、`write_file`、`shell` 的名称、参数、权限和执行限制保持一致，原生工具调用转换为同名 actions，原生 tools 列表置空。SDK 根据实际 actions 自动提供 XML 调用格式和结束条件；最终结果从 `report` 提取后交付给调用方。
 
 例如，在保存了上述完整配置的项目目录执行：
 
@@ -746,12 +746,12 @@ agent_tool xllm '读取 README.md，只返回文档的一级标题文本。'
 - 启用工具后，支持读取文件、文本写入与编辑、执行本地命令，完成“分析—操作—检查结果”的多步任务。
 - 本地命令执行继承启动 xllm 的当前 Bash 的 `PATH`，默认工作目录使用其 `CWD`；显式 `--dir` 可覆盖工作目录。
 - 工具操作使用当前执行账户的权限。`--dir` 定义默认工作位置，不应被描述成已经提供操作系统级隔离。
-- `tools.filesystem_policy` 支持 `workspace` 和 `unrestricted`，可随顶层、组内和 `prompt.tools` 的工具配置按字段覆盖。省略时为 `workspace`，限制内置文件工具路径及 exec 的 cwd；通用默认模板显式选择 `unrestricted`，允许跨工作目录读写与选择命令工作目录，由操作系统执行当前用户权限检查。该配置不改变 MCP/宿主工具权限，也不构成 shell 沙箱。策略随 Run 保存，恢复时沿用保存值。
+- `tools.filesystem_policy` 支持 `workspace` 和 `unrestricted`，可随顶层、组内和 `prompt.tools` 的工具配置按字段覆盖。省略时为 `workspace`，限制内置文件工具路径及 shell 的 cwd；通用默认模板显式选择 `unrestricted`，允许跨工作目录读写与选择命令工作目录，由操作系统执行当前用户权限检查。该配置不改变 MCP/宿主工具权限，也不构成 shell 沙箱。策略随 Run 保存，恢复时沿用保存值。
 - 用户可以提供自己的脚本或已安装命令；工具不可用时给出可读错误，由模型纠正或结束任务。
-- 工具配置对象内的 `tools` 列表支持三种来源：`groupname` 引入内置工具组（如 `bash` 包含 `read_file`、`write_file`、`exec`），`mcp` 引入指定 MCP 服务提供的一组工具，`name` 选择单个已注册内置工具（如 `sendmsg`）。仅显式启用但未配置列表时使用默认 `bash` 组；显式空列表则不提供原生工具。未知组名、工具名、MCP 连接或工具发现失败应指出具体来源，不静默忽略；展开后的名称冲突必须报错或使用明确限定名消除歧义。
+- 工具配置对象内的 `tools` 列表支持三种来源：`groupname` 引入内置工具组（如 `bash` 包含 `read_file`、`write_file`、`shell`），`mcp` 引入指定 MCP 服务提供的一组工具，`name` 选择单个已注册内置工具（如 `sendmsg`）。仅显式启用但未配置列表时使用默认 `bash` 组；显式空列表则不提供原生工具。未知组名、工具名、MCP 连接或工具发现失败应指出具体来源，不静默忽略；展开后的名称冲突必须报错或使用明确限定名消除歧义。
 - `loop_model: function_call` 使用原生工具调用，默认不转换工具。`loop_model: behavior` 支持 `tools` 与 `actions` 两类入口；`tools2actions: true` 将生效的 tools 转为同等能力的 actions，原生 tools 列表置空，再与显式配置的 actions 合并并检查冲突。转换只改变调用协议，不改变参数含义、执行权限和限制。`tools2actions` 默认 false；function_call 模式下配置 actions 或启用 tools2actions 时报配置不匹配，不静默切换 loop。
 - behavior 模式允许同时配置原生 tools 与 actions，但需要模型和执行器同时支持两种入口；相同操作不能因两种入口重复执行。两类操作共用工具开关、工具迭代限制、错误处理和执行记录。
-- `bash_tools` 是 exec 的补充命令手册，每项至少包括名称、用途、调用命令和必要参数说明；用户不必将脚本改造成专用 API。它不替代结构化 `tools` / `actions` 列表，不会单独启用 exec，也不承诺构成 shell 命令白名单；exec 未启用时不将这些命令描述为可执行能力。
+- `bash_tools` 是 shell 的补充命令手册，每项至少包括名称、用途、调用命令和必要参数说明；用户不必将脚本改造成专用 API。它不替代结构化 `tools` / `actions` 列表，不会单独启用 shell，也不承诺构成 shell 命令白名单；shell 未启用时不将这些命令描述为可执行能力。
 - 实际执行能力必须与提供给模型的工具说明一致，不能仅在提示词中宣称存在某项工具。
 - 任务结束时列出已知生成的产物及其位置；对于未完成的文件或步骤，不描述为已经完成。
 - 多步操作可留下已经产生的文件；失败或恢复不会自动回滚工作目录。状态和结果需要让用户看出哪些工作已有产物。
@@ -831,7 +831,7 @@ list/status/result 和 `--resume` 均从当前生效的 Runs 目录查找记录�
 - CLI 自身的帮助、状态标签、进度日志和诊断信息统一使用英文；用户输入、模型结果和外部工具返回内容按原文保留。
 - `run_logs` 支持 `debug`、`info`、`warn`、`result`，默认 info；debug 提供详细调试记录，info 显示阶段和工具进度，warn 仅显示警告与错误，result 隐藏常规过程日志，仅交付结果并保留失败/中断所必需的诊断。级别只改变输出详略，不改变执行行为、退出状态或持久化记录；凭据不随 debug 日志展开。
 - info/debug 下，等待过程中至少能区分准备输入、等待模型、执行工具、整理上下文和保存结果；warn/result 下允许安静等待。
-- info/debug 下显示实际阶段及耗时，不编造完成百分比；启动时显示合并了多少个路径上的 `.llm_context`，并按祖先到工作目录的顺序列出实际路径，未找到时显示 0。恢复时明确显示沿用原 Run 的配置来源。工具开始与完成时给出简短信息；exec 的括号中显示实际命令，失败时也保留命令，多行命令转义为单行显示，调用 ID 留在内部记录中。
+- info/debug 下显示实际阶段及耗时，不编造完成百分比；启动时显示合并了多少个路径上的 `.llm_context`，并按祖先到工作目录的顺序列出实际路径，未找到时显示 0。恢复时明确显示沿用原 Run 的配置来源。工具开始与完成时给出简短信息；shell 的括号中显示实际命令，失败时也保留命令，多行命令转义为单行显示，调用 ID 留在内部记录中。
 - 用户按 Ctrl-C 后停止发起后续步骤，尽可能保存可恢复进度，并给出 `runid`、Runs 目录、保存是否成功，以及对应的 `xllm --resume --run <id>` 命令。尚未到达终态时记录为已中断；已保存的终态不能因 Ctrl-C 被改回可恢复状态。
 - 可恢复错误同样停止推进并保存进度，说明本次命令已失败、任务仍可恢复，以及需要等待服务恢复还是修复凭据等条件；多次 resume 失败不会丢失原输入和已完成工作。
 - 本地停止不等于服务端一定停止生成；不能把未确认取消的远端任务显示为已取消成功。
@@ -861,7 +861,7 @@ list/status/result 和 `--resume` 均从当前生效的 Runs 目录查找记录�
 | 10 | `role` | 角色、职责和可复用的总体目标；本次具体任务放在 user 输入中 | “你是代码评审助手，重点发现影响正确性的问题。” |
 | 20 | `contexts` / `env` | 当前时间、时区、操作系统、工作目录等运行环境，以及项目背景、领域知识和术语；两个别名指向同一 section | “当前时间为本次 Run 创建时的时间，工作目录为本次生效目录；这是一个 Rust 服务。” |
 | 30 | `rules` | 执行原则、工作步骤和行为约束，必须说明本次哪些工具可以使用 | “本次已启用的工具为……；先读取相关实现，再提出修改，修改后验证。” |
-| 40 | `cmd_manual`（cmd manual） | 可通过 exec 调用的命令手册，包括可用命令的名称、用途、调用方式和必要参数说明 | “项目检查命令：`./scripts/check.sh <target>`，用于验证指定模块。” |
+| 40 | `cmd_manual`（cmd manual） | 可通过 shell 调用的命令手册，包括可用命令的名称、用途、调用方式和必要参数说明 | “项目检查命令：`./scripts/check.sh <target>`，用于验证指定模块。” |
 | 100 | `output_format` | 最终答案的语言、组织方式、内容要求和格式偏好；不定义执行循环的内部输出协议 | “用中文回答，按问题、依据、建议组织结果。” |
 
 - **任意位置插入**：用户可在提示词组或目录配置中指定尚未占用的行号，新增自己的 section，并可附带名称或标题。例如 25 位于 `contexts` / `env` 与 `rules` 之间，50 位于 `cmd_manual` 与 `output_format` 之间；也可用 5 或 110 插入到这些预设 section 之前或之后，无需重编号其它 section。100 是 `output_format` 的固定位置，不是行号上限。
@@ -870,7 +870,7 @@ list/status/result 和 `--resume` 均从当前生效的 Runs 目录查找记录�
 
 这些 section 都属于可复用的 system 指令。组内默认任务要求、本次问题、文本附件、图片和 stdin 属于 user 输入，不是额外的 system section；模型回复和工具结果只在本次 Run 执行过程中产生，也不属于可配置 section。
 
-系统在新 Run 构造提示词时为 `contexts` / `env` 提供本次时间和实际运行环境，用户可通过 F11.4 的模板变量安排这些信息的位置并补充项目背景；已由模板呈现的信息不重复追加。`rules` 根据最终展开和转换后的 tools/actions 说明实际可用能力，`cmd_manual` 根据 exec 是否启用及 bash_tools 提供命令手册。用户可补充使用规则、命令示例和注意事项，无需重复抄写系统已提供的说明。关闭工具时，`rules` 明确说明没有可调用工具或动作，不提供可执行的命令手册；未启用的能力不能被描述为可用。
+系统在新 Run 构造提示词时为 `contexts` / `env` 提供本次时间和实际运行环境，用户可通过 F11.4 的模板变量安排这些信息的位置并补充项目背景；已由模板呈现的信息不重复追加。`rules` 根据最终展开和转换后的 tools/actions 说明实际可用能力，`cmd_manual` 根据 shell 是否启用及 bash_tools 提供命令手册。用户可补充使用规则、命令示例和注意事项，无需重复抄写系统已提供的说明。关闭工具时，`rules` 明确说明没有可调用工具或动作，不提供可执行的命令手册；未启用的能力不能被描述为可用。
 
 系统生成的环境信息、可用工具说明和命令手册与用户可编辑文本分开管理，在合并用户文本后填入对应行号。覆盖或清空用户文本不移除系统依据生效配置生成的说明，也不改变实际工具开关；写入工具或命令名称不会安装或启用它。实际工具声明及参数约定仍由系统提供。`output_format` 同样不能取消 `--json` 等显式输出约束；`--format` 只控制 CLI 结果包装，不是答案提示词 section。
 
@@ -895,7 +895,7 @@ list/status/result 和 `--resume` 均从当前生效的 Runs 目录查找记录�
 新任务默认采用标准模式，系统按以下步骤组装：
 
 1. **合并配置并确定模式与组**：按 F10 展开外部组并从最远父目录到工作目录合并配置，再应用显式 CLI 参数，确定本次提示词模式、loop_model 和唯一选中的组；未选组时跳过组内容。按 F04 计算工具配置并完成 tools2actions 转换后，确定实际可用能力。
-2. **计算每个 section 的最终文本**：将固定别名归一到行号，依次取“系统默认值 → 选中组的值 → 合并后的目录 section 覆盖值”，后层声明的同一行号整段替换前层的可配置文本，新行号作为独立 section 加入。未声明则继承，显式空文本则清空，不把多个配置来源的文本叠加。切换组时重新计算，不保留上一个组的文本。随后按 F11.4 渲染模板，按 F11.1 补齐实际环境、可用工具和 exec 命令说明。
+2. **计算每个 section 的最终文本**：将固定别名归一到行号，依次取“系统默认值 → 选中组的值 → 合并后的目录 section 覆盖值”，后层声明的同一行号整段替换前层的可配置文本，新行号作为独立 section 加入。未声明则继承，显式空文本则清空，不把多个配置来源的文本叠加。切换组时重新计算，不保留上一个组的文本。随后按 F11.4 渲染模板，按 F11.1 补齐实际环境、可用工具和 shell 命令说明。
 3. **组装 system 提示词**：将最终非空 section 按行号升序各拼接一次，自定义 section 按其行号插入；再追加 `runtime_protocol` 中的通用执行规则与当前协议说明，保留可辨认的边界。最终内容为空的 section 连同标题一起省略；系统生成的必要说明、通用循环与必需协议不能因清空用户文本而省略。配置文件中的字段书写顺序不影响结果。这里的排列顺序与上一步的配置覆盖优先级是两回事，协议是否有效还必须由运行时解析和执行校验保证。
 4. **组装一次 user 提交**：先放本次任务要求（显式位置问题或 `--user` 优先，其次为已渲染的组默认任务），再放按命令顺序组织的 `--file` / `--image` 材料，最后放自动读取的 stdin。启用 file_model 时按 F03 完成图片理解，主模型接收带原始标签和关联的分析结果，Run 仍保留原始图片。没有其它任务要求时，非空 stdin 自身作为任务要求，只放一次；空输入和空管道的处理遵循 F02。
 5. **执行并组织本次记录**：主任务首次请求使用上述 system 和 user 内容，并按生效配置提供工具声明及输出约束；后续由所选执行循环追加或渲染本次 Run 的模型回复、步骤记录和工具结果，持续保留必需协议说明，不加载其它 Run 的历史。最终完成响应按 F07 提取、校验和包装后交付用户。
@@ -998,7 +998,7 @@ user：本次任务要求 → 显式附件（命令顺序）→ stdin（若作�
 
 ### 8.1 首版必须完成
 
-首版交付 F01–F11 中的用户体验，包括：位置参数直接提问、目录默认任务与显式选组、文字和图片输入、主模型与文件模型、管道串联、`.llm_context` 向上查找与合并、buckyos/openai Provider 接入、function_call/behavior 两种 loop、section 行号与固定别名、自定义插入、环境模板、内联与外部提示词组、完整自定义提示词、组内工具配置、内置组/MCP/具名工具、tools2actions、exec 命令手册、四档日志与结果字段提取、Runs 目录、独立任务与恢复、最近任务列表、状态与结果查询、结构化结果、执行限制和中断处理。可恢复错误只使本次命令失败，原任务可反复 resume；终态任务只读展示结果，不得重新执行。跨任务只通过用户显式选择的输入传递材料，不提供持续 session。
+首版交付 F01–F11 中的用户体验，包括：位置参数直接提问、目录默认任务与显式选组、文字和图片输入、主模型与文件模型、管道串联、`.llm_context` 向上查找与合并、buckyos/openai Provider 接入、function_call/behavior 两种 loop、section 行号与固定别名、自定义插入、环境模板、内联与外部提示词组、完整自定义提示词、组内工具配置、内置组/MCP/具名工具、tools2actions、shell 命令手册、四档日志与结果字段提取、Runs 目录、独立任务与恢复、最近任务列表、状态与结果查询、结构化结果、执行限制和中断处理。可恢复错误只使本次命令失败，原任务可反复 resume；终态任务只读展示结果，不得重新执行。跨任务只通过用户显式选择的输入传递材料，不提供持续 session。
 
 首版先支持已有 TS agent tools 本地执行环境适用的 Linux/macOS 命令行。Windows 原生工具执行另行验收，不因 Node.js 可运行就宣称完全支持。
 
@@ -1054,7 +1054,7 @@ xllm 完成后的后续规划，是基于 OpenDAN Agent Session 提供面向单�
 | A22 | Provider 与模型配置 | provider.type 默认 buckyos，也支持 openai；buckyos 可沿用身份或指定 session_token，openai 不依赖 BuckyOS 服务；主模型与文件模型分别生效，CLI 对应参数可覆盖；凭据不写入日志/快照；能力不匹配在请求前报错 |
 | A23 | 提示词组与 section | 父目录定义多个组，子目录选组并按行号或固定别名覆盖一个 section；其它 section 正确继承，按行号升序各拼接一次，不受配置字段书写顺序影响；最终内容为空的 section 不输出标题或正文，不混入被覆盖或未选组内容；任务要求与附件位于其后的 user 输入中 |
 | A24 | 完整自定义提示词 | 业务部分只使用整段内容；`--system` 优先于文件配置；不额外拼接预设或用户新增的业务 section，必需的 runtime_protocol 仍注入，实际工具与限制仍生效 |
-| A25 | exec 命令手册 | exec 启用时模型能获知配置的 bash_tools 命令及参数；子目录列表替换和空列表清除生效；仅配置手册不启用 exec，未启用时不将命令描述为可执行能力 |
+| A25 | shell 命令手册 | shell 启用时模型能获知配置的 bash_tools 命令及参数；子目录列表替换和空列表清除生效；仅配置手册不启用 shell，未启用时不将命令描述为可执行能力 |
 | A26 | Runs 目录 | 无配置时保存到 `~/.xllm/runs`，文件和 CLI 可覆盖；继承的相对路径保持声明目录语义，任务记录保留原工作目录 |
 | A27 | 最近任务列表与编号定位 | cd 到项目后直接 list 展示该工作目录的最近任务；与显式指定同一 `--dir` 的结果一致；可按列出的 runid 查询或恢复，空列表和自定义 Runs 目录行为一致 |
 | A28 | 终态不可重跑 | 对正常完成、不可恢复失败、达到限制的任务执行 `--resume --run <id>`，只展示原结果；不新增模型/工具调用、不新建 Run、不改变终态；结果损坏也不重跑 |
@@ -1070,7 +1070,7 @@ xllm 完成后的后续规划，是基于 OpenDAN Agent Session 提供面向单�
 | A38 | 通用执行框架 | 问答、总结、写作和工具任务可选择 function_call 或 behavior，二者遵循相同的任务、限制和恢复规则；简单任务直接完成，复杂任务可多轮操作；无需业务专用 loop 或多个 behavior 的切换状态机 |
 | A39 | 小脚本中的副作用边界 | 同一脚本反复使用 `--no-tools` 处理材料并按退出状态分支，无需人工交互或 Agent 会话；模型不自行读取其它业务文件、执行命令或写入长期状态；本地仅新增 Runs 记录及显式输出，不自动创建项目工作区、修改目录配置或启动后续后台任务 |
 | A40 | section 行号与插入 | 固定别名正确映射为 role=10、contexts/env=20、rules=30、cmd_manual=40、output_format=100；新增 5、25、50、110 行时出现在对应位置，无需改动预设行号；子目录可覆盖或清空继承的自定义 section，数字与别名跨层覆盖不重复输出；resume 保留原行号、内容和顺序 |
-| A41 | 环境、工具与命令说明 | contexts/env 呈现本次时间与环境，rules 对应最终 tools/actions，cmd_manual 对应实际可用 exec 命令；清空业务文本不移除系统必要说明；转换工具后说明同步变化，关闭工具后不宣称能力可用 |
+| A41 | 环境、工具与命令说明 | contexts/env 呈现本次时间与环境，rules 对应最终 tools/actions，cmd_manual 对应实际可用 shell 命令；清空业务文本不移除系统必要说明；转换工具后说明同步变化，关闭工具后不宣称能力可用 |
 | A42 | 目录默认任务 | 默认组有 default_user 时直接运行 xllm 创建新 Run，重复调用彼此独立；无默认任务时显示用法；显式问题/选组可覆盖，空管道仍报错且不执行默认任务 |
 | A43 | 外部提示词组 | groups 中的路径按声明目录解析，外部文件作为组对象参与合并；子目录可覆盖其 section/tools；无效文件可诊断；修改或删除源文件后 resume 仍使用已保存的展开内容 |
 | A44 | 工具来源与组覆盖 | 所选组的工具可覆盖顶层基础配置，prompt.tools 再覆盖组，CLI 开关最高；内置组、MCP 和具名工具均能展开，未选组能力不混入；列表替换/清空有效，来源错误和名称冲突不静默跳过 |

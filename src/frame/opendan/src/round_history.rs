@@ -215,7 +215,8 @@ impl HistoryEvent {
                 Some(usage.clone()),
                 Some(format!("context limit reached: {which:?}")),
             ),
-            LLMContextOutcome::Interrupted { reason, usage, .. } => (
+            LLMContextOutcome::Interrupted { reason, usage, .. }
+            | LLMContextOutcome::Settled { reason, usage, .. } => (
                 OutcomeKind::Interrupted,
                 None,
                 Some(usage.clone()),
@@ -250,7 +251,9 @@ impl OutcomeKind {
             LLMContextOutcome::BudgetExhausted { .. } => OutcomeKind::BudgetExhausted,
             LLMContextOutcome::Error { .. } => OutcomeKind::Error,
             LLMContextOutcome::ContextLimitReached { .. } => OutcomeKind::ContextLimitReached,
-            LLMContextOutcome::Interrupted { .. } => OutcomeKind::Interrupted,
+            LLMContextOutcome::Interrupted { .. } | LLMContextOutcome::Settled { .. } => {
+                OutcomeKind::Interrupted
+            }
         }
     }
 }
@@ -662,7 +665,9 @@ impl SessionHistoryRecorder {
             LLMContextOutcome::BudgetExhausted { .. } | LLMContextOutcome::Error { .. } => {
                 Some(RoundStatus::Errored)
             }
-            LLMContextOutcome::Interrupted { .. } => Some(RoundStatus::Interrupted),
+            LLMContextOutcome::Interrupted { .. } | LLMContextOutcome::Settled { .. } => {
+                Some(RoundStatus::Interrupted)
+            }
             LLMContextOutcome::ContextLimitReached { .. } => None,
         }
     }

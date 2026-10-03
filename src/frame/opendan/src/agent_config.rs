@@ -753,7 +753,7 @@ impl AgentConfig {
                 // the LLM the full XML action surface and nothing else.
                 tool_whitelist: Vec::new(),
                 action_whitelist: vec![
-                    "exec_bash".to_string(),
+                    "shell".to_string(),
                     "write_file".to_string(),
                     "edit_file".to_string(),
                     "read".to_string(),
@@ -1208,34 +1208,12 @@ mod tests {
     fn builtin_ui_default_has_tools() {
         let b = AgentConfig::builtin_ui_default();
         assert_eq!(b.meta.name, "ui_default");
-        // exec_bash is an XML action, not a provider-native tool — it lives
+        // shell is an XML action, not a provider-native tool — it lives
         // on the action surface post-beta2.2 split.
         assert!(b
             .capabilities
             .action_whitelist
-            .contains(&"exec_bash".to_string()));
+            .contains(&"shell".to_string()));
         assert!(b.capabilities.tool_whitelist.is_empty());
-    }
-
-    /// Pins the on-disk minimal demo (`doc/opendan/mini_agent_demo/`) into
-    /// the test suite. Any schema drift that makes the demo file stop
-    /// parsing trips here so README/example/code stay in sync.
-    #[test]
-    fn mini_agent_demo_parses() {
-        let demo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../doc/opendan/mini_agent_demo");
-        let cfg = AgentConfig::open(demo_root.clone()).expect("open demo agent root");
-        assert_eq!(cfg.toml.identity.display_name, "echo-bot");
-        assert_eq!(cfg.toml.dispatch.default_class, "ui");
-        let ui = cfg.session_class("ui").expect("demo defines [session.ui]");
-        assert_eq!(ui.default_behavior, "ui_default");
-
-        let beh = cfg.load_behavior("ui_default").expect("load demo behavior");
-        assert_eq!(beh.name(), "ui_default");
-        // Echo-bot demo only emits <report> / <next_behavior>, neither of
-        // which is a dispatchable invocation — so both whitelists are empty.
-        assert!(beh.capabilities.tool_whitelist.is_empty());
-        assert!(beh.capabilities.action_whitelist.is_empty());
-        assert!(beh.prompt.on_init.contains("{agent_name}"));
     }
 }

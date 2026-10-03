@@ -2,8 +2,8 @@
 //!
 //! Outcomes split into two structural classes (see `LLM Context 设计.md` §3.10):
 //! - **Terminal**: `Done` / `Error` / `BudgetExhausted` — object is consumed.
-//! - **Suspended**: `PendingTool` / `ContextLimitReached` / `Interrupted` —
-//!   a `LLMContextSnapshot` is produced and the run is resumable.
+//! - **Suspended**: `PendingTool` / `ContextLimitReached` / `Interrupted` /
+//!   `Settled` — a `LLMContextSnapshot` is produced and the run is resumable.
 //!
 //! An outcome ends one `run()` call, not a Round (one inference), a Step or
 //! an AgentSession Turn: one run may contain many Rounds and Steps, and the
@@ -130,17 +130,17 @@ pub enum LLMContextOutcome {
         behavior_result: Option<LLMBehaviorResult>,
     },
 
-    /// Suspended: a tool / action returned `Observation::Pending` (only with
-    /// `tool_policy.allow_deferred`). Dispatch stopped at that call; the
-    /// calls after it stay in `snapshot.state.tool_batch` /
-    /// `action_step` and run after the fill. The scheduler persists the
-    /// snapshot before handing the call to its async executor, then resumes
-    /// with `ResumeFill::ToolResults`. `trace` audits this run segment.
+    /// Suspended: a tool / action returned `Observation::Pending { task_id }`
+    /// (only with `tool_policy.allow_deferred`). Dispatch stopped at that
+    /// call; the calls after it stay in `snapshot.state.tool_batch` /
+    /// `action_step` and run after the fill. The host persists the snapshot,
+    /// waits for the task outside the process (until `pending[i].until_ms`
+    /// at most), then resumes with `ResumeFill::ToolResults` carrying the
+    /// task's state rendered as an observation. `trace` audits this run
+    /// segment.
     PendingTool {
         pending: Vec<PendingToolCall>,
         snapshot: LLMContextSnapshot,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        deadline_ms: Option<u64>,
         #[serde(default)]
         trace: ContextRunTrace,
     },
@@ -184,17 +184,33 @@ pub enum LLMContextOutcome {
         trace: ContextRunTrace,
     },
 
-    /// Suspended: `run()` was preempted by an external interrupt handle while
-    /// an inference was in flight. The snapshot is the state captured **before**
-    /// the aborted inference started — no partial assistant tokens / tool calls
-    /// enter `accumulated`. Resume by feeding this snapshot back with
-    /// `ResumeFill::ResumeFromMidRun`; the next `run()` will retry the inference
-    /// from that point.
+    /// Suspended: `run()` was preempted by `LLMContextInterruptHandle::
+    /// interrupt`. Interrupted during an inference, the snapshot is the
+    /// state captured **before** that inference started — no partial
+    /// assistant tokens / tool calls enter `accumulated`, the next `run()`
+    /// retries it. Interrupted during a tool call, the snapshot already
+    /// pairs that call with `Observation::Cancelled` and the rest of its
+    /// batch / step with `Unresolved`: nothing re-runs. Resume with
+    /// `ResumeFill::ResumeFromMidRun`.
     Interrupted {
         reason: String,
         usage: AiUsage,
         snapshot: LLMContextSnapshot,
         abort: InferenceAbortTrace,
+    },
+
+    /// Suspended by `LLMContextInterruptHandle::finish` (graceful finish):
+    /// no inference or tool call is in flight, every tool call in the
+    /// snapshot is paired with a result (the calls that were not started are
+    /// `Cancelled { effect_unknown: false }`). Append input and resume with
+    /// `ResumeFill::ResumeFromMidRun` to continue. Not a Session "stop" —
+    /// the host implements its stop with this (or with an interrupt).
+    Settled {
+        reason: String,
+        usage: AiUsage,
+        snapshot: LLMContextSnapshot,
+        #[serde(default)]
+        trace: ContextRunTrace,
     },
 }
 

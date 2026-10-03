@@ -4,6 +4,7 @@
 
 mod behavior_loop;
 mod budgets;
+mod cancel;
 mod error_policy;
 mod function_call_loop;
 mod mocks;

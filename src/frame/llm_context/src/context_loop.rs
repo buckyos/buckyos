@@ -32,8 +32,15 @@
 //!
 //! Cooperative yields (see `suspension.rs` for the resume side):
 //! - `PendingTool`: with `tool_policy.allow_deferred`, a call returning
-//!   `Observation::Pending` stops dispatch; the rest of its batch / step is
-//!   kept in the state and runs after `ResumeFill::ToolResults`.
+//!   `Observation::Pending { task_id }` stops dispatch; the rest of its
+//!   batch / step is kept in the state and runs after
+//!   `ResumeFill::ToolResults`.
+//! - `Interrupted` / `Settled`: the interrupt handle stops the run — at
+//!   once (an inference is dropped, a running tool is cancelled or
+//!   abandoned) or gracefully (nothing new starts, a cancellable tool is
+//!   cancelled, the rest waits a grace period). Every tool call handed to
+//!   the `ToolManager` carries a `ToolCallCtx` with those signals and the
+//!   wallclock deadline; the waist keeps no other cancel path.
 //! - `ContextLimitReached`: at an inference boundary the request about to be
 //!   sent is checked against `BudgetSpec` (`context_window.rs`); a
 //!   structured provider refusal yields too. Nothing is sent; the scheduler
@@ -51,8 +58,8 @@ use serde_json::Value;
 use crate::behavior_loop::{is_terminal_next_behavior, LLMBehaviorResult, StepMeta, StepRecord};
 use crate::context_window::{estimate_request, ContextLimits};
 use crate::deps::{
-    resolve_tool_specs, Injection, InjectionPosition, LLMContextDeps, LlmInferenceRequest,
-    WorkEvent, MAX_INJECTIONS_PER_BOUNDARY,
+    resolve_tool_specs, CancelCause, Injection, InjectionPosition, LLMContextDeps,
+    LlmInferenceRequest, ToolCallCtx, WorkEvent, MAX_INJECTIONS_PER_BOUNDARY,
 };
 use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::interrupt::{
@@ -67,6 +74,7 @@ use crate::state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
 use crate::suspension::{apply_fill, inner_transcript_of};
+use crate::tasks::render_background_env;
 
 pub struct LLMContext {
     request: LLMContextRequest,
@@ -80,6 +88,9 @@ pub struct LLMContext {
     /// Shared abort state (§3.13). `interrupt_handle()` clones it for the
     /// scheduler side; the waist clones a token into every `LlmInferenceRequest`.
     abort: Arc<InferenceAbortState>,
+    /// Background env rendered for the next inference (not part of the
+    /// history).
+    background_env: Option<String>,
 }
 
 impl LLMContext {
@@ -101,6 +112,7 @@ impl LLMContext {
             tool_trace: Vec::new(),
             last_response: AiResponse::default(),
             abort: InferenceAbortState::new(),
+            background_env: None,
         }
     }
 
@@ -164,6 +176,7 @@ impl LLMContext {
             // request a new `interrupt_handle()` from the resumed context if
             // it wants to preempt the next inference.
             abort: InferenceAbortState::new(),
+            background_env: None,
         })
     }
 
@@ -372,6 +385,12 @@ impl LLMContext {
                 return budget_outcome;
             }
 
+            // A graceful finish requested at an inference boundary: nothing
+            // is in flight, the snapshot is already paired.
+            if self.abort.is_finishing() && !self.abort.is_aborted() {
+                return self.finish_settled();
+            }
+
             // 0. Host checkpoint / observation boundary (async, outer
             //    snapshot). Injected messages become part of s0.
             if let Some(outcome) = self.run_checkpoint_hook().await {
@@ -419,6 +438,7 @@ impl LLMContext {
                 );
             }
 
+            self.render_background_env().await;
             let infer_req = self.build_inference_request();
 
             // A request known not to fit is never sent. Checked after the
@@ -602,6 +622,14 @@ impl LLMContext {
     /// charged.
     async fn run_tool_batch(&mut self) -> Option<LLMContextOutcome> {
         loop {
+            // Finishing: the calls not started yet are paired as cancelled
+            // and the run settles. An interrupt is handled by the next call
+            // (its ctx fires at once).
+            if self.abort.is_finishing() && !self.abort.is_aborted() {
+                let rest = self.take_batch_rest();
+                self.cancel_tool_batch(&rest, FINISHING_SKIP_REASON);
+                return Some(self.finish_settled());
+            }
             let call = match self.state.tool_batch.as_mut() {
                 Some(batch) if !batch.remaining.is_empty() => batch.remaining.remove(0),
                 _ => break,
@@ -617,7 +645,8 @@ impl LLMContext {
                 })
                 .await;
 
-            let dispatched = self.deps.tools.call_tool(call.clone()).await;
+            let ctx = self.tool_call_ctx();
+            let dispatched = self.dispatch_tool(call.clone(), ctx.clone()).await;
             let duration_ms = now_ms().saturating_sub(started);
 
             let observation = match dispatched {
@@ -661,6 +690,7 @@ impl LLMContext {
                 }
             };
 
+            self.watch_task_of(&observation);
             match &observation {
                 Observation::Success { .. } => {
                     self.state
@@ -707,11 +737,12 @@ impl LLMContext {
                         }
                     }
                 }
-                Observation::Pending { tool_result, .. } => {
-                    if !self.request.tool_policy.allow_deferred {
-                        // The call started but broke the `allow_deferred =
-                        // false` contract: its effect is unknown.
-                        let message = "tool returned Pending but allow_deferred=false";
+                Observation::Pending {
+                    task_id, until_ms, ..
+                } => {
+                    if let Err(message) = self.pending_allowed(task_id) {
+                        // The call started but broke the contract: its
+                        // effect is unknown.
                         let rest = self.take_batch_rest();
                         self.abort_started_call(&call, &rest, message, duration_ms);
                         return Some(
@@ -721,16 +752,42 @@ impl LLMContext {
                     self.record_tool(&call, ToolExecStatus::Pending, duration_ms, None);
                     let pending = PendingToolCall {
                         call,
-                        eta_ms: None,
-                        tool_result: tool_result.clone(),
+                        task_id: task_id.clone(),
+                        until_ms: *until_ms,
                     };
                     return Some(self.suspend_pending(pending));
                 }
-                Observation::Cancelled { .. } | Observation::Unresolved { .. } => {
-                    // Both variants are produced by the session layer /
-                    // the waist itself, never by a `ToolManager`.
+                Observation::Cancelled { reason, .. } => {
+                    let Some(cause) = ctx.cause() else {
+                        let message =
+                            "tool returned Cancelled inline without an interrupt, finish or deadline";
+                        let rest = self.take_batch_rest();
+                        self.abort_started_call(&call, &rest, message, duration_ms);
+                        return Some(
+                            self.finish_error(LLMComputeError::Internal(message.to_string())),
+                        );
+                    };
+                    self.state
+                        .accumulated
+                        .push(tool_observation_message(&call.call_id, &observation));
+                    self.record_tool(
+                        &call,
+                        ToolExecStatus::Cancelled,
+                        duration_ms,
+                        Some(reason.clone()),
+                    );
+                    let rest = self.take_batch_rest();
+                    return Some(self.stop_after_cancel(cause, |this| match cause {
+                        CancelCause::Finishing => {
+                            this.cancel_tool_batch(&rest, FINISHING_SKIP_REASON)
+                        }
+                        _ => this.abort_tool_batch(&rest, INTERRUPTED_SKIP_REASON),
+                    }));
+                }
+                Observation::Unresolved { .. } => {
+                    // Produced by the waist itself, never by a `ToolManager`.
                     let message =
-                        "tool returned Cancelled/Unresolved inline; only valid via ResumeFill::ToolResults";
+                        "tool returned Unresolved inline; only valid via ResumeFill::ToolResults";
                     let rest = self.take_batch_rest();
                     self.abort_started_call(&call, &rest, message, duration_ms);
                     return Some(self.finish_error(LLMComputeError::Internal(message.to_string())));
@@ -774,8 +831,157 @@ impl LLMContext {
         LLMContextOutcome::PendingTool {
             pending,
             snapshot: self.snapshot(),
-            deadline_ms: None,
             trace,
+        }
+    }
+
+    /// `Err(message)` when a `Pending` observation breaks the contract.
+    fn pending_allowed(&self, task_id: &str) -> Result<(), &'static str> {
+        if task_id.trim().is_empty() {
+            return Err("tool returned Pending without a task_id");
+        }
+        if !self.request.tool_policy.allow_deferred {
+            return Err("tool returned Pending but allow_deferred=false");
+        }
+        Ok(())
+    }
+
+    /// Context handed to every tool call: the shared interrupt / finish
+    /// state and the absolute wallclock deadline of this run.
+    fn tool_call_ctx(&self) -> ToolCallCtx {
+        ToolCallCtx {
+            abort: self.abort_token(),
+            deadline_ms: self
+                .request
+                .budget
+                .max_wallclock_ms
+                .map(|m| self.state.started_at_ms.saturating_add(m)),
+            allow_deferred: self.request.tool_policy.allow_deferred,
+        }
+    }
+
+    /// Dispatch one call. A graceful finish requested while the tool runs
+    /// is escalated to an interrupt once `finish_grace_ms` passed without
+    /// the tool returning (a tool that cannot cancel its work is then
+    /// abandoned by its manager).
+    async fn dispatch_tool(
+        &self,
+        call: AiToolCall,
+        ctx: ToolCallCtx,
+    ) -> Result<Observation, crate::deps::ToolDispatchError> {
+        let tools = self.deps.tools.clone();
+        let abort = self.abort.clone();
+        let grace = std::time::Duration::from_millis(self.request.tool_policy.finish_grace_ms);
+        let escalate = async move {
+            abort.stopping().await;
+            if !abort.is_aborted() {
+                tokio::time::sleep(grace).await;
+                if !abort.is_aborted() {
+                    abort.set("graceful finish: the running tool did not stop in time".into());
+                }
+            }
+            std::future::pending::<()>().await
+        };
+        tokio::select! {
+            result = tools.call_tool(call, ctx) => result,
+            _ = escalate => unreachable!("escalation never completes"),
+        }
+    }
+
+    /// Register the task a result refers to (`tool_result.task_id`) with
+    /// the host's resolver so it shows up in the background env.
+    fn watch_task_of(&self, observation: &Observation) {
+        let Some(tasks) = &self.deps.tasks else {
+            return;
+        };
+        let task_id = match observation {
+            Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. } => {
+                tool_result.as_ref().and_then(|t| t.task_id.as_deref())
+            }
+            Observation::Pending { task_id, .. } => Some(task_id.as_str()),
+            _ => None,
+        };
+        if let Some(id) = task_id.filter(|s| !s.trim().is_empty()) {
+            tasks.watch(id);
+        }
+    }
+
+    /// After a legitimate inline `Cancelled`: pair the rest of the batch /
+    /// step (`pair_rest`) and end the run according to `cause`.
+    fn stop_after_cancel(
+        &mut self,
+        cause: CancelCause,
+        pair_rest: impl FnOnce(&mut Self),
+    ) -> LLMContextOutcome {
+        pair_rest(self);
+        match cause {
+            CancelCause::Interrupted => self.finish_interrupted_after_tool(),
+            CancelCause::Deadline => LLMContextOutcome::BudgetExhausted {
+                which: BudgetKind::Wallclock,
+                partial: None,
+                usage: self.state.usage.clone(),
+            },
+            CancelCause::Finishing => self.finish_settled(),
+        }
+    }
+
+    /// `Interrupted` after a tool call was cancelled: the snapshot already
+    /// pairs the cancelled call, nothing re-runs on resume.
+    fn finish_interrupted_after_tool(&mut self) -> LLMContextOutcome {
+        let now = now_ms();
+        let reason = self
+            .abort
+            .reason()
+            .unwrap_or_else(|| "interrupted".to_string());
+        let _ = self.take_trace();
+        LLMContextOutcome::Interrupted {
+            reason: reason.clone(),
+            usage: self.state.usage.clone(),
+            snapshot: self.snapshot(),
+            abort: InferenceAbortTrace {
+                reason,
+                requested_at_ms: now,
+                observed_at_ms: now,
+                provider_cancel_supported: true,
+                provider_task_ref: None,
+            },
+        }
+    }
+
+    /// `Settled` (graceful finish): every call is paired, nothing in flight.
+    fn finish_settled(&mut self) -> LLMContextOutcome {
+        let reason = self
+            .abort
+            .reason()
+            .unwrap_or_else(|| "finished".to_string());
+        let trace = self.take_trace();
+        LLMContextOutcome::Settled {
+            reason,
+            usage: self.state.usage.clone(),
+            snapshot: self.snapshot(),
+            trace,
+        }
+    }
+
+    /// Answer every call in `remaining` with `Cancelled { effect_unknown:
+    /// false }` (graceful finish: never started) and record it as
+    /// `NotExecuted`.
+    fn cancel_tool_batch(&mut self, remaining: &[AiToolCall], reason: &str) {
+        for call in remaining {
+            self.record_tool(
+                call,
+                ToolExecStatus::NotExecuted,
+                0,
+                Some(reason.to_string()),
+            );
+            let cancelled = Observation::Cancelled {
+                call_id: call.call_id.clone(),
+                reason: reason.to_string(),
+                effect_unknown: false,
+            };
+            self.state
+                .accumulated
+                .push(tool_observation_message(&call.call_id, &cancelled));
         }
     }
 
@@ -914,9 +1120,14 @@ impl LLMContext {
             OutputSpec::Json { schema, .. } => (true, schema.clone()),
         };
 
+        let mut messages = self.state.accumulated.clone();
+        if let Some(env) = &self.background_env {
+            messages.push(AiMessage::text(AiRole::User, env.clone()));
+        }
+
         LlmInferenceRequest {
             trace_id: self.request.trace.clone(),
-            messages: self.state.accumulated.clone(),
+            messages,
             model_alias: self.request.model_policy.preferred.clone(),
             fallbacks: self.request.model_policy.fallbacks.clone(),
             temperature: self.request.model_policy.temperature,
@@ -929,6 +1140,16 @@ impl LLMContext {
             allow_tool_calls,
             abort: self.abort_token(),
         }
+    }
+
+    /// Background env (§4 of the long-tool TODO): the tasks this context
+    /// follows, rendered fresh before every inference and appended to the
+    /// request only — never to the history, so the prefix stays cacheable.
+    async fn render_background_env(&mut self) {
+        self.background_env = match &self.deps.tasks {
+            Some(tasks) => render_background_env(&tasks.active().await),
+            None => None,
+        };
     }
 
     fn account_response(&mut self, response: &AiResponse) {
@@ -1102,6 +1323,11 @@ impl LLMContext {
 
             if let Some(outcome) = self.check_wallclock_budget() {
                 return outcome;
+            }
+
+            if self.abort.is_finishing() && !self.abort.is_aborted() && self.state.tool_batch.is_none()
+            {
+                return self.finish_settled();
             }
 
             // Step boundary: the previous step (if any) has been sedimented
@@ -1312,6 +1538,11 @@ impl LLMContext {
                     _ => break,
                 }
             };
+            if self.abort.is_finishing() && !self.abort.is_aborted() {
+                // Graceful finish between two actions: the rest of the step
+                // is paired as cancelled and the step sedimented.
+                return Some(self.settle_step(None, CancelCause::Finishing));
+            }
             let started = now_ms();
             self.deps
                 .worklog
@@ -1322,7 +1553,8 @@ impl LLMContext {
                     args: action.args.clone(),
                 })
                 .await;
-            let dispatched = self.deps.tools.call_tool(action.clone()).await;
+            let ctx = self.tool_call_ctx();
+            let dispatched = self.dispatch_tool(action.clone(), ctx.clone()).await;
             let duration_ms = now_ms().saturating_sub(started);
 
             let observation = match dispatched {
@@ -1362,6 +1594,7 @@ impl LLMContext {
                 }
             };
 
+            self.watch_task_of(&observation);
             match &observation {
                 Observation::Success { .. } => {
                     self.record_tool(&action, ToolExecStatus::Succeeded, duration_ms, None);
@@ -1393,26 +1626,48 @@ impl LLMContext {
                         })
                         .await;
                 }
-                Observation::Pending { tool_result, .. } => {
-                    if self.request.tool_policy.allow_deferred {
-                        self.record_tool(&action, ToolExecStatus::Pending, duration_ms, None);
-                        let pending = PendingToolCall {
-                            call: action,
-                            eta_ms: None,
-                            tool_result: tool_result.clone(),
-                        };
-                        return Some(self.suspend_pending(pending));
+                Observation::Pending {
+                    task_id, until_ms, ..
+                } => {
+                    match self.pending_allowed(task_id) {
+                        Ok(()) => {
+                            self.record_tool(&action, ToolExecStatus::Pending, duration_ms, None);
+                            let pending = PendingToolCall {
+                                call: action,
+                                task_id: task_id.clone(),
+                                until_ms: *until_ms,
+                            };
+                            return Some(self.suspend_pending(pending));
+                        }
+                        Err(message) => {
+                            // The call did start, so its effect is unknown.
+                            let message = format!("behavior loop: {message}");
+                            return Some(self.abort_started_action(
+                                &action,
+                                &message,
+                                duration_ms,
+                            ));
+                        }
                     }
-                    // The call did start, so its effect is unknown.
-                    let message = "behavior loop: action returned Pending but allow_deferred=false";
-                    return Some(self.abort_started_action(&action, message, duration_ms));
                 }
-                Observation::Cancelled { .. } | Observation::Unresolved { .. } => {
-                    // Same rationale as the traditional-loop arm: these
-                    // variants must arrive via ResumeFill / the waist,
-                    // never inline from a ToolManager.
+                Observation::Cancelled { reason, .. } => {
+                    let Some(cause) = ctx.cause() else {
+                        let message =
+                            "behavior loop: tool returned Cancelled inline without an interrupt, finish or deadline";
+                        return Some(self.abort_started_action(&action, message, duration_ms));
+                    };
+                    self.record_tool(
+                        &action,
+                        ToolExecStatus::Cancelled,
+                        duration_ms,
+                        Some(reason.clone()),
+                    );
+                    return Some(self.settle_step(Some(observation), cause));
+                }
+                Observation::Unresolved { .. } => {
+                    // Produced by the waist itself, never by a ToolManager.
                     let message =
-                        "behavior loop: tool returned Cancelled/Unresolved inline; only valid via ResumeFill::ToolResults";
+                        "behavior loop: tool returned Unresolved inline; only valid via ResumeFill::ToolResults";
                     return Some(self.abort_started_action(&action, message, duration_ms));
                 }
             }
@@ -1483,6 +1738,44 @@ impl LLMContext {
             self.sediment(step);
         }
         self.finish_error(err)
+    }
+
+    /// Stop the step in progress after an interrupt / finish / deadline:
+    /// `cancelled` (the action that was running, if any) is recorded, the
+    /// actions not started are paired (`Cancelled` on a graceful finish,
+    /// `Unresolved` otherwise), the truthful partial step is sedimented and
+    /// the run ends according to `cause`.
+    fn settle_step(&mut self, cancelled: Option<Observation>, cause: CancelCause) -> LLMContextOutcome {
+        if let Some(ActionStep { mut step, .. }) = self.state.action_step.take() {
+            if let Some(obs) = cancelled {
+                step.action_results.push(obs);
+            }
+            let done = step.action_results.len();
+            let rest = step.actions[done.min(step.actions.len())..].to_vec();
+            let skipped: Vec<Observation> = match cause {
+                CancelCause::Finishing => rest
+                    .iter()
+                    .map(|action| {
+                        self.record_tool(
+                            action,
+                            ToolExecStatus::NotExecuted,
+                            0,
+                            Some(FINISHING_SKIP_REASON.to_string()),
+                        );
+                        Observation::Cancelled {
+                            call_id: action.call_id.clone(),
+                            reason: FINISHING_SKIP_REASON.to_string(),
+                            effect_unknown: false,
+                        }
+                    })
+                    .collect(),
+                _ => self.skip_actions(&rest, INTERRUPTED_SKIP_REASON),
+            };
+            step.action_results.extend(skipped);
+            self.finish_step(&mut step);
+            self.sediment(step);
+        }
+        self.stop_after_cancel(cause, |_| {})
     }
 
     /// Terminal checks, the step-result hook and sedimentation of a step
@@ -1647,7 +1940,19 @@ impl LLMContext {
                 Err(LLMContextOutcome::PendingTool {
                     pending,
                     snapshot: self.snapshot(),
-                    deadline_ms: None,
+                    trace,
+                })
+            }
+            // Graceful finish inside the step: the inner transcript (with
+            // the cancelled calls paired) is kept; the outer snapshot is the
+            // resume point.
+            LLMContextOutcome::Settled { reason, trace, .. } => {
+                self.absorb_trace(trace);
+                let trace = self.take_trace();
+                Err(LLMContextOutcome::Settled {
+                    reason,
+                    usage: self.state.usage.clone(),
+                    snapshot: self.snapshot(),
                     trace,
                 })
             }
@@ -1953,11 +2258,19 @@ pub(crate) fn tool_observation_message(call_id: &str, observation: &Observation)
         }
         Observation::Error { message, .. } => (message.clone(), true),
         Observation::Pending { call_id: cid, .. } => (format!("pending:{cid}"), true),
-        Observation::Cancelled { reason, .. } => {
-            // `is_error=false` — the call did not fail, it was interrupted.
-            // The text marker lets a content-aware renderer / the LLM tell
-            // cancellations apart from successful outputs.
-            (format!("[cancelled] {reason}"), false)
+        Observation::Cancelled {
+            reason,
+            effect_unknown,
+            ..
+        } => {
+            // Not a failure to correct: the text marker lets the LLM tell a
+            // cancellation apart from an output. An abandoned call (effect
+            // unknown) is flagged like an unresolved one.
+            if *effect_unknown {
+                (format!("[cancelled, result unknown] {reason}"), true)
+            } else {
+                (format!("[cancelled] {reason}"), false)
+            }
         }
         Observation::Unresolved {
             reason,
@@ -1981,6 +2294,9 @@ pub(crate) fn tool_observation_message(call_id: &str, observation: &Observation)
         }],
     )
 }
+
+const FINISHING_SKIP_REASON: &str = "not executed: the run is finishing";
+const INTERRUPTED_SKIP_REASON: &str = "not executed: the run was interrupted";
 
 fn now_ms() -> u64 {
     SystemTime::now()

@@ -8,6 +8,7 @@ use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall};
 use serde_json::json;
 
 use crate::deps::{
+    ToolCallCtx,
     InferenceHook,
     LlmClient,
     LlmInferenceRequest,
@@ -118,7 +119,7 @@ pub(super) struct EchoTools;
 
 #[async_trait]
 impl ToolManager for EchoTools {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(&self, call: AiToolCall, _ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
         let value = serde_json::to_value(&call.args).unwrap_or(serde_json::Value::Null);
         Ok(Observation::Success {
             call_id: call.call_id,
@@ -142,7 +143,7 @@ pub(super) struct FailingTools;
 
 #[async_trait]
 impl ToolManager for FailingTools {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(&self, call: AiToolCall, _ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
         Ok(Observation::Error {
             call_id: call.call_id,
             message: "boom".into(),
@@ -280,7 +281,7 @@ impl ScriptedTools {
 
 #[async_trait]
 impl ToolManager for ScriptedTools {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(&self, call: AiToolCall, _ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
         self.calls.lock().unwrap().push(call.name.clone());
         if call.name.starts_with("dispatch:") {
             return Err(ToolDispatchError::effect_unknown("sandbox connection lost"));
@@ -302,7 +303,7 @@ impl ToolManager for ScriptedTools {
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
-        ["a", "fail:b", "dispatch:b", "c", "exec_bash"]
+        ["a", "fail:b", "dispatch:b", "c", "shell"]
             .iter()
             .map(|name| ToolSpecLite {
                 name: (*name).to_string(),

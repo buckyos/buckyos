@@ -46,15 +46,15 @@ fenced(lease, write): held() 为真才执行受保护的写入与副作用
 - 同一进程不重复加锁（flock 以打开文件描述为单位，两次打开会互相阻塞）；实现维护进程内已持有表。
 - 卡死但存活的持有者不会释放锁；协议不提供强制抢锁，由运维按锁文件中的 host / pid 处理。
 
-## 5. 锁保护的边界：执行核对
+## 5. 锁保护的边界：在途动作
 
-文件锁只保证协作 runner 之间状态写入互斥。runner 被 `kill -9` 时锁立即释放，但它启动的工具进程可能仍在运行。因此**接管方在启动新推理或工具之前**必须确认旧执行已停止：
+文件锁只保证协作 runner 之间状态写入互斥。runner 被 `kill -9` 时锁立即释放，但它启动的工具进程可能仍在运行。接管方**不核验、不停止**这些进程（标准父子进程语义，长命令 TODO §3.2）：命令留下的进程（`&`、nohup、setsid、守护进程）本来就不归 run 管；正在执行的命令在 native 下通常随执行器一起结束，但不保证；tmux / remote_ssh 下按设计继续运行。接管方只把没有持久结果的在途动作物化为“被打断、结果未知”，由模型判断下一步：
 
-1. **执行标识先持久化**：受管执行（native / tmux runtime 的 `exec`）在用户命令获准运行之前，把 `ExecutionRecord` 写入 run.json 的 `executions[]`（fsync）。native：启动包装进程（独立进程组），在收到 `go` 行之前不 `exec` 用户命令；登记失败或 runner 在放行前退出，管道关闭，命令不会执行。tmux：在专用 pane 启动等待 go 文件的包装进程，取得 PID/start ticks 后登记，登记成功才放行用户命令。
-2. **标识**：`execution_id` 以环境变量 `OPENDAN_EXECUTION_ID` 注入命令（子进程继承），另记 `host`、`boot_id`、`pgid`、进程组长的 `start_ticks`。不得只凭可能复用的 PID / PGID 杀进程。
-3. **探测**：boot_id 不同 → 已停止；host 不同 / 没有 `/proc` / 同进程组内有无法验证身份的进程 → **Unknown**；环境变量带该标记的存活进程 → **Alive**；否则 Stopped。
-4. **停止**：Alive → 逐个终止已验证的进程并等待消失；超时或 Unknown → `RecoveryBlocked`，保留现场，不自动继续。
-5. **记录的清除**：shell 返回后仍有后台子进程时记录保留；只有确认整个执行停止才移除。run 结束（及挂起）之前也必须核对并停止其执行。
+1. **执行目录**：`shell` 命令把 `command`、`stdout`、`stderr`、`exit`（结束时写）写进由 `(run, call_id)` 推导的执行目录（native / tmux：`runs/<run_id>/exec/<call_id>`；remote_ssh：远端 `/tmp/llm-runtime-<uid>/<run_id>/<call_id>`），不经管道，执行器退出不会让命令收到 SIGPIPE。
+2. **物化文本按 runtime 生成**（`AgentRuntime::describe_interrupted`）：native 给出命令与开始时间，说明命令可能已部分执行、通常随执行器结束但不保证、它启动的后台进程不受影响；tmux / remote_ssh 读执行目录，已有 `exit` 时给出退出码与输出尾部，没有时说明“可能仍在运行”以及输出文件、`exit` 文件与 tmux 目标 / 远端目录的位置；远端连不上时如实说明。这些结果都是“被打断”，不是 Success。
+3. **不重放**：模型可以自己查看（`ps`、日志、`exit` 文件）再决定重试、等待还是继续。run 锁照旧防止两个执行器同时跑同一个 run。
+4. **取消**：打断只处理正在执行的命令——native 结束其进程组；tmux 停止等待，命令继续；remote_ssh 用记录的 pid `kill`。取消动作本身失败时结果为 `effect_unknown`。
+5. **auto 模式的 task**：超过 `wait_ms` 的 `shell` 命令转为进程内 task（`local:shell:<call_id>`），不再属于 run；run 被打断、结束或接手都不停止它。接手方按 task_id 查执行目录，读到 `exit` 就给结果，否则返回 Unknown，不阻塞恢复。
 6. **在途动作**：`inflight[]` 在工具开始前 fsync；只有包含其结果（或显式 `Unresolved`）的快照发布后才清除（快照 fsync 与 run.json 发布是同一次原子写入里清除）。异常、取消、runner 退出都不提前清除。恢复时，已有持久结果的调用不得再标为未知；没有结果的调用以“结果未知”物化到快照（function call：补 assistant 调用 + tool 结果；behavior：补齐或新增一个 step）并先持久化，再推理。**不重放工具。**
 
 xllm 接手未结束的 run 时执行同样的检查（`XllmRun::resume`：先停旧执行，再物化 inflight），并在 `host_commit_pending` 非空时拒绝。

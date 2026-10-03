@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, load_app_identity_from_env,
     parse_typed_task_data, BuckyOSRuntimeType, CommitResultReq, FailTaskReq, RunnerWriteEnvelope,
-    Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase, ToolExecBashTaskData,
+    Task, TaskDataType, TaskError, TaskManagerClient, TaskOutcome, TaskPhase, ToolShellTaskData,
     TypedTaskData,
 };
 use kRPC::kRPC;
@@ -6939,34 +6939,34 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
     let top_status = task_protocol_status(&task);
     let summary = task_summary(&task, top_status);
     let pending_reason = task_pending_reason(&task);
-    let exec_bash_task = tool_exec_bash_task_data(&task);
-    let is_exec_bash_task = exec_bash_task.is_some();
-    let mut detail = if is_exec_bash_task {
+    let shell_task = tool_shell_task_data(&task);
+    let is_shell_task = shell_task.is_some();
+    let mut detail = if is_shell_task {
         json!({})
     } else {
         normalized_task_detail(&task)
     };
-    if !is_exec_bash_task {
+    if !is_shell_task {
         if let Some(map) = detail.as_object_mut() {
             map.insert("task".to_string(), json!(task.clone()));
         }
     }
 
-    let cmd_line = if is_exec_bash_task {
-        exec_bash_task
+    let cmd_line = if is_shell_task {
+        shell_task
             .as_ref()
             .and_then(|data| data.command.clone())
     } else {
         Some(format!("{tool_name} {}", task.task_id))
     };
-    let output = exec_bash_task.as_ref().and_then(|data| data.output.clone());
-    let return_code = exec_bash_task
+    let output = shell_task.as_ref().and_then(|data| data.output.clone());
+    let return_code = shell_task
         .as_ref()
         .and_then(|data| data.return_code.or(data.exit_code));
-    let estimated_wait = exec_bash_task
+    let estimated_wait = shell_task
         .as_ref()
         .and_then(|data| data.estimated_wait.clone());
-    let check_after = exec_bash_task
+    let check_after = shell_task
         .as_ref()
         .and_then(|data| data.check_after)
         .or_else(|| (top_status == AgentToolStatus::Pending).then_some(5));
@@ -6975,7 +6975,7 @@ fn build_check_task_result(tool_name: &str, task: Task) -> AgentToolResult {
         .with_status(top_status)
         .with_result(summary)
         .with_task_id(task.task_id.clone());
-    if !is_exec_bash_task {
+    if !is_shell_task {
         result = result.with_tool(tool_name);
     }
     if let Some(cmd_line) = cmd_line.as_deref() {
@@ -7110,7 +7110,7 @@ fn normalized_task_detail(task: &Task) -> Json {
 fn task_protocol_status(task: &Task) -> AgentToolStatus {
     match (task.phase, task.outcome) {
         (TaskPhase::Terminal, Some(TaskOutcome::Succeeded)) => {
-            match tool_exec_bash_task_data(task)
+            match tool_shell_task_data(task)
                 .and_then(|data| data.status)
                 .as_deref()
             {
@@ -7124,7 +7124,7 @@ fn task_protocol_status(task: &Task) -> AgentToolStatus {
 }
 
 fn task_summary(task: &Task, protocol_status: AgentToolStatus) -> String {
-    let exec_summary = tool_exec_bash_task_data(task).and_then(|data| data.summary);
+    let exec_summary = tool_shell_task_data(task).and_then(|data| data.summary);
     exec_summary
         .as_deref()
         .map(str::trim)
@@ -7148,7 +7148,7 @@ fn task_summary(task: &Task, protocol_status: AgentToolStatus) -> String {
 }
 
 fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
-    let pending_reason = tool_exec_bash_task_data(task).and_then(|data| data.pending_reason);
+    let pending_reason = tool_shell_task_data(task).and_then(|data| data.pending_reason);
     pending_reason
         .as_deref()
         .and_then(|value| match value {
@@ -7167,7 +7167,7 @@ fn task_pending_reason(task: &Task) -> Option<AgentToolPendingReason> {
 }
 
 async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
-    let tmux_target = tool_exec_bash_task_data(task)?.tmux_target?;
+    let tmux_target = tool_shell_task_data(task)?.tmux_target?;
     let tmux_target = tmux_target.trim();
     if tmux_target.is_empty() {
         return None;
@@ -7193,11 +7193,11 @@ async fn interrupt_task_if_supported(task: &Task) -> Option<String> {
     })
 }
 
-fn tool_exec_bash_task_data(task: &Task) -> Option<ToolExecBashTaskData> {
-    match parse_typed_task_data(TaskDataType::ToolExecBash.as_str(), task_data_payload(task))
+fn tool_shell_task_data(task: &Task) -> Option<ToolShellTaskData> {
+    match parse_typed_task_data(TaskDataType::ToolShell.as_str(), task_data_payload(task))
         .ok()?
     {
-        TypedTaskData::ToolExecBash(data) if data.kind == TaskDataType::ToolExecBash.as_str() => {
+        TypedTaskData::ToolShell(data) if data.kind == TaskDataType::ToolShell.as_str() => {
             Some(data)
         }
         _ => None,

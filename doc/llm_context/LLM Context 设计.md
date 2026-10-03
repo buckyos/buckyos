@@ -263,33 +263,50 @@ pub struct ToolPolicy {
     pub max_calls_per_round: u32,
     pub max_observation_bytes: u32,
     pub parallel: bool,                  // 默认 false（串行）
-    pub allow_deferred: bool,            // 是否允许 Pending(call_id)
+    pub allow_deferred: bool,            // 是否允许 Pending{task_id}（宿主能在 Session 层等 task）
+    pub finish_grace_ms: u64,            // 平滑结束时等待不可取消工具的时长（默认 30s）
 }
 
 pub enum Observation {
     Success { call_id, content: Value, bytes, truncated },
     Error   { call_id, message },
-    /// effect 层声明"异步，结果将通过外部回调喂回" → Outcome::PendingTool
-    Pending { call_id },
-    /// 仅允许 session 层 interrupt pending tool 时通过 ResumeFill::ToolResults 注入
-    Cancelled { call_id, reason },
+    /// effect 层把工作交给了 task（task_id 对 waist 不透明）→ Outcome::PendingTool；
+    /// until_ms（epoch）到期后宿主按 task 当时的状态回填。缺 task_id 一律拒绝
+    Pending { call_id, task_id, until_ms: Option<u64> },
+    /// 调用在完成前被取消：打断 / 平滑结束 / 截止时间触发后由 ToolManager 内联返回，
+    /// 或由宿主经 ResumeFill::ToolResults 回填。effect_unknown=false：工作已停止或
+    /// 已知仍在运行（文本说明状态）；true：工作不能取消、等待被放弃，副作用不可确认
+    Cancelled { call_id, reason, effect_unknown },
     /// 调度器没有为该调用产生结果：effect_unknown=true 表示基础设施在调用可能已
     /// 开始后失败（副作用不可确认）；false 表示批次在它开始前被中止。只由 waist
     /// 写入，用于让 transcript 与 StepRecord 保持配对、可审计。
     Unresolved { call_id, reason, effect_unknown },
 }
 
+/// 每次工具调用的上下文：与推理共用的打断 / 平滑结束信号，以及 run 的绝对截止时间
+/// （按 budget.max_wallclock_ms 计算）。ToolManager 不再自己维护 cancel watch 或 deadline。
+pub struct ToolCallCtx { abort: InferenceAbortToken, deadline_ms: Option<u64>, allow_deferred: bool }
+pub enum CancelCause { Interrupted, Finishing, Deadline }
+impl ToolCallCtx {
+    pub async fn cancelled(&self) -> CancelCause;      // 打断、平滑结束或到期
+    pub async fn cancelled_hard(&self) -> CancelCause; // 只有打断或到期（不可取消的工具用）
+    pub fn cause(&self) -> Option<CancelCause>;
+}
+
 /// ToolManager 边界：业务失败走 Ok(Observation::Error)，基础设施故障走 Err。
 /// Err 会让 waist 立即停止派发本批次剩余调用，保留已得结果，以
 /// LLMComputeError::ToolRuntime 结束本次 run 交给 Runtime 处理。
+/// 只有 ctx 的信号触发后才允许内联返回 Ok(Cancelled)；其它时候仍是契约违规。
 trait ToolManager {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
+    async fn call_tool(&self, call: AiToolCall, ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError>;
 }
 pub struct ToolDispatchError { message: String, effect_unknown: bool }
 
+/// 挂起记录：宿主等什么（task_id）、等到什么时候（until_ms，None = 等到 task 结束）
 pub struct PendingToolCall {
     pub call: AiToolCall,                // name + args + call_id 三件套
-    pub eta_ms: Option<u64>,
+    pub task_id: String,
+    pub until_ms: Option<u64>,
 }
 ```
 
@@ -297,7 +314,9 @@ pub struct PendingToolCall {
 
 **工具迭代额度**（`max_tool_iterations` → `LLMContextState.tool_iterations_left`）：原生工具批次在整批派发完成后扣一次（被 `Pending` 截断的批次在回填、续派完成后才扣），带 action 的 behavior Step 在派发前扣一次；Step 内层的原生批次与外层 action 共享同一额度。无工具的最终回答、纯 report / 决策 Step、解析纠错都不扣，所以剩余额度不能用来推算推理次数。额度为 0 时推理请求的 `allow_tool_calls = false`；模型仍返回 tool call（或带 action 的 Step）⇒ `BudgetExhausted{ToolIterations}`。恢复不重复扣减。
 
-`allow_deferred=false` 时 `Observation::Pending` 是契约违规（该调用记为结果未知、其余未执行，`Error{Internal}`）；为 true 时产生 `PendingTool`（§9.5）。`PendingToolCall` 另带 `tool_result`：effect 层随 `Pending` 给出的等待信息（任务 id、原因、部分输出）。
+`allow_deferred=false` 时 `Observation::Pending` 是契约违规（该调用记为结果未知、其余未执行，`Error{Internal}`）；为 true 时产生 `PendingTool`（§9.5）。`allow_deferred` 同时经 `ToolCallCtx` 传给工具：宿主不能挂起时，只拿到 task_id 的工具在调用内等待 task（最长 `MAX_IN_TOOL_WAIT_MS` = 30 分钟），到时带 task 当时的状态返回。
+
+**运行中的 task**（`tasks.rs`，长命令 TODO §4）：waist 对工具结果只做两种机械判断——返回给 LLM，或 `Pending{task_id}` 挂起由宿主在进程外等待。task 由宿主装配的 `RunningTaskResolver`（`state` / `wait` / `cancel` / `can_resolve` / `watch` / `active`）解析，task_id 对 waist 不透明。`task_state_observation` 是 `TaskState` 到 observation 的唯一渲染，内联的 `wait_task` / `get_task_state` 与挂起后的回填读起来一致。`LLMContextDeps.tasks` 存在时，每次推理前 waist 用 `active()` 渲染一段 `<background_tasks>` 简介追加在请求末尾（不进历史，不破坏前缀缓存）；结果里带 `task_id` 的调用自动 `watch`。
 
 ### 3.4 OutputSpec / ContextOutput
 
@@ -418,12 +437,11 @@ pub enum LLMContextOutcome {
     /// 终态：预算红线击穿
     BudgetExhausted { which: BudgetKind, partial: Option<ContextOutput>, usage: AiUsage },
 
-    /// 挂起态：等待 deferred 工具回填。派发停在该调用，同批次其后的调用留在
-    /// 快照里，回填后才执行；trace 是本段运行的审计。
+    /// 挂起态：工具返回 Pending{task_id}，等宿主在 Session 层等 task 后回填。派发停在
+    /// 该调用，同批次其后的调用留在快照里，回填后才执行；trace 是本段运行的审计。
     PendingTool {
         pending: Vec<PendingToolCall>,
         snapshot: LLMContextSnapshot,
-        deadline_ms: Option<u64>,
         trace: ContextRunTrace,
     },
     /// 挂起态：待发送请求装不下 —— waist 只暴露"事实信号"，请求未发送，
@@ -439,14 +457,24 @@ pub enum LLMContextOutcome {
         deadline_ms: Option<u64>,
         trace: ContextRunTrace,
     },
-    /// 挂起态：run 中被外部 interrupt 抢占。
-    /// snapshot 是被中断的这次 inference 发起前的状态；半截 assistant token / tool call
-    /// 不进入 accumulated。behavior 模式为外层快照（含进行中 Step 的 inner transcript）。
+    /// 挂起态：run 中被外部 interrupt 抢占（§8 打断）。
+    /// 推理中被打断：snapshot 是这次 inference 发起前的状态，半截 assistant token / tool call
+    /// 不进入 accumulated；工具执行中被打断：snapshot 已把该调用配对为 Cancelled、同批其余
+    /// 配对为 Unresolved，恢复后不重跑。behavior 模式为外层快照（含进行中 Step 的 inner transcript）。
     Interrupted {
         reason: String,
         usage: AiUsage,
         snapshot: LLMContextSnapshot,
         abort: InferenceAbortTrace,
+    },
+    /// 挂起态：平滑结束（§8 finish）。没有推理或工具在进行，快照里每个调用都已配对
+    /// （未开始的为 Cancelled{effect_unknown:false}），追加输入后 ResumeFromMidRun 即可继续。
+    /// 不是 Session 的 stop；宿主用它（必要时用打断）实现 stop。
+    Settled {
+        reason: String,
+        usage: AiUsage,
+        snapshot: LLMContextSnapshot,
+        trace: ContextRunTrace,
     },
 }
 ```
@@ -461,6 +489,7 @@ pub enum LLMContextOutcome {
 | `PendingTool` | `io_submit()` 后等待 | 是 | `ResumeFill::ToolResults` |
 | `ContextLimitReached` | page fault → 等 swap | 是 | `RewrittenHistory`（function call）/ `RewrittenSteps`（behavior） |
 | `Interrupted` | external interrupt | 是 | `ResumeFill::ResumeFromMidRun` |
+| `Settled` | 平滑结束（SIGTERM 后干净退出） | 是 | `ResumeFill::ResumeFromMidRun` |
 
 ### 4.2 上层如何处理
 
@@ -470,6 +499,7 @@ pub enum LLMContextOutcome {
 | `PendingTool` | session 进入"等事件" | workflow 挂起，pending 排到任务队列 |
 | `ContextLimitReached` | 调用自家长期记忆 summarize 后 resume | 一般 fail-and-escalate，或换大窗口模型重跑 |
 | `Interrupted` | 停止当前生成，保留 snapshot 待稍后 ResumeFromMidRun | 取消当前 node 执行 / 按策略重调度 |
+| `Settled` | Session stop 的默认实现：Turn 结束，追加输入即可续跑 | 节点干净地停下，可按策略续跑 |
 | `BudgetExhausted` | cost units 用尽 → 终止 | 走 retry / escalation / fail 分支 |
 | `Error` | 走错误处理状态 | 走 error handler 节点 |
 
@@ -669,9 +699,13 @@ pub struct CompositionOutcome {
 
 ---
 
-## 8. Inference Interrupt（节省生成 token）
+## 8. Interrupt 与 Finish（打断与平滑结束）
 
-`run()` 一旦返回，当前 inference 已结束；再说"中断"已经太晚。`LLMContextInterruptHandle` 是一条独立的 preemptive 控制面，允许 scheduler 在 `run()` 尚未返回时抢占当前 provider inference。
+`run()` 一旦返回，当前 inference 已结束；再说"中断"已经太晚。`LLMContextInterruptHandle` 是一条独立的 preemptive 控制面，允许 scheduler 在 `run()` 尚未返回时作用于进行中的推理**和工具调用**。它提供两种结束方式（术语见长命令 TODO §1）：
+
+- **打断**（`interrupt`，Ctrl-C 语义）：进行中的推理立即中止；正在执行的工具收到 `ToolCallCtx.abort`，能取消就取消，不能取消就放弃等待。结束于 `Interrupted`。
+- **平滑结束**（`finish`）：不再发起新的推理和工具调用；推理中则等它完成、其中的工具调用不派发而配对为 `Cancelled{effect_unknown:false}`；工具执行中，支持取消的工具取消，不支持的最多等 `finish_grace_ms`（默认 30s）后转为打断。结束于 `Settled`，所有调用都已配对，追加输入即可继续。
+- Session 的 **stop** 不是 waist 概念：宿主用平滑结束实现，必要时改用打断。
 
 ```rust
 #[derive(Clone)]
@@ -679,6 +713,9 @@ pub struct LLMContextInterruptHandle { inner: Arc<InferenceAbortState> }
 
 impl LLMContextInterruptHandle {
     pub fn interrupt(&self, reason: impl Into<String>) -> bool;
+    pub fn finish(&self, reason: impl Into<String>) -> bool;
+    pub fn standalone() -> Self;                 // 不挂在 context 上，直接驱动 ToolManager 时用
+    pub fn token(&self) -> InferenceAbortToken;
 }
 
 #[derive(Clone)]
@@ -686,7 +723,9 @@ pub struct InferenceAbortToken { inner: Arc<InferenceAbortState> }
 
 impl InferenceAbortToken {
     pub fn is_aborted(&self) -> bool;
-    pub async fn cancelled(&self);
+    pub fn is_finishing(&self) -> bool;
+    pub async fn cancelled(&self);               // 打断
+    pub async fn stopping(&self);                // 打断或平滑结束
     pub fn reason(&self) -> Option<String>;
 }
 
@@ -713,11 +752,14 @@ pub struct LlmInferenceRequest {
 4. provider adapter 应把 abort 映射到底层 HTTP / SDK cancel；不支持远端 cancel 时丢弃 late response（仍能尽早释放本地）。
 5. 收到 cancelled 后返回 `Outcome::Interrupted`，snapshot 是**被中断的这次 inference 发起前**的状态——半截 token / 半截 tool call 不进入 accumulated；behavior 模式是外层快照，进行中 Step 的 inner transcript 保留在其中。
 6. resume 时用 `ResumeFill::ResumeFromMidRun`：context 从这次 inference 前重新推进（behavior 模式继续同一个 Step）。
+7. **工具执行期间**：每次 `call_tool` 带 `ToolCallCtx { abort, deadline_ms, allow_deferred }`。工具是否支持取消由实现声明（`AgentTool::cancellable`，默认否）：支持的工具自己监听 `ctx.cancelled()`、处理当前命令后返回 `Cancelled{effect_unknown:false}`（文本写明命令状态与"可能已有部分副作用"）；不支持的工具由 ToolManager 在 `cancelled_hard()` 触发时放弃等待，返回 `Cancelled{effect_unknown:true}`。waist 按 `ctx.cause()` 收尾：打断 → 同批其余 `Unresolved{effect_unknown:false}`，`Interrupted`（快照含已配对的 Cancelled，恢复后不重跑）；到期 → `BudgetExhausted{Wallclock}`；平滑结束 → 其余 `Cancelled{effect_unknown:false}`，`Settled`。behavior 模式按"第一个非成功结果停止其余 action"处理，Step 被沉淀后再返回。
+8. 平滑结束期间 waist 自己计时：工具在 `finish_grace_ms` 内没有返回就把 finishing 升级为 abort（§7 的放弃等待路径）。
 
-`Interrupted` 与 cooperative yield 的边界：
+`Interrupted` / `Settled` 与 cooperative yield 的边界：
 
 - `PendingTool` / `ContextLimitReached` —— 在推理边界让出 CPU（工具派发中、请求发送前或 provider 拒绝后）。
-- `Interrupted` —— scheduler 在 inference 过程中抢占 CPU。
+- `Interrupted` —— scheduler 在 inference 或工具调用过程中抢占。
+- `Settled` —— scheduler 要求平滑结束，waist 在下一个干净的边界停下。
 - 等待用户输入 —— L4 / session 状态，不是 waist 概念。
 
 ---
@@ -883,9 +925,11 @@ run_inner():                              // function call 模式；也是 behav
     ├─> tool_batch in progress? → dispatch its remaining calls (below), continue
     ├─> check wallclock budget → BudgetExhausted?
     ├─> checkpoint_hook (outer snapshot, may inject) → Err ⇒ Error{Checkpoint}   // 内层没有
+    ├─> finishing (and not aborted)? → Settled(snapshot)        // nothing in flight
     ├─> s0 = snapshot()                                    // for InferenceHook / Interrupted
     ├─> inference_hook.before_inference(s0)? → Err ⇒ Error{Checkpoint}, no inference   // §9.2
     ├─> if abort.is_aborted(): return Interrupted(s0)
+    ├─> background env = render(tasks.active())            // appended to the request only
     ├─> estimate(request) vs window / threshold → ContextLimitReached(s0), not sent  // §9.5
     ├─> tokio::select!:                                    // 一个 Round
     │     - cancelled() → Interrupted(s0)
@@ -901,13 +945,20 @@ run_inner():                              // function call 模式；也是 behav
     │     ⇒ push assistant msg + error tool_result per call, bump, next inference
     ├─> push assistant_tool_call message; tool_batch = { remaining: calls, batch_error: None }
     ├─> dispatch tool_batch, for each call:
-    │     match tools.call_tool(call):
+    │     finishing? → answer rest as Cancelled{effect_unknown:false}, Settled
+    │     ctx = ToolCallCtx { abort, deadline_ms, allow_deferred }
+    │     match tools.call_tool(call, ctx)  (finish grace elapsed ⇒ escalate to abort):
     │       Err(dispatch) → record Unknown/NotExecuted, answer rest as Unresolved,
     │                       Error{ToolRuntime}
-    │       Ok(Success)   → push tool message
+    │       Ok(Success)   → push tool message; watch tool_result.task_id
     │       Ok(Error)     → push tool message, remember batch_error (batch continues)
-    │       Ok(Pending) + allow_deferred → PendingTool (rest of the batch kept in tool_batch)
-    │       Ok(Pending) without allow_deferred / Ok(Cancelled|Unresolved) → contract violation ⇒ Internal
+    │       Ok(Pending{task_id}) + allow_deferred → PendingTool (rest of the batch kept in tool_batch)
+    │       Ok(Pending) without task_id / without allow_deferred, Ok(Unresolved),
+    │         Ok(Cancelled) without ctx.cause()   → contract violation ⇒ Internal
+    │       Ok(Cancelled) with cause → push tool message, record Cancelled;
+    │           Interrupted ⇒ rest Unresolved, Interrupted(snapshot)
+    │           Deadline    ⇒ rest Unresolved, BudgetExhausted{Wallclock}
+    │           Finishing   ⇒ rest Cancelled, Settled(snapshot)
     ├─> batch complete: batch_error? bump once per batch : reset consecutive_errors
     ├─> tool_iterations_left -= 1
     └─> next inference (Round)
@@ -922,7 +973,7 @@ run_behavior():
     │     seeded with usage / errors / tool_iterations_left / tool_batch, shares abort state
     │     inner.run_inner()                                // 一个或多个 Round
     │       Done → clear inner transcript, take response
-    │       PendingTool / ContextLimitReached / Interrupted
+    │       PendingTool / ContextLimitReached / Interrupted / Settled
     │            → keep inner transcript + tool_batch in the outer state,
     │              return the same outcome with the OUTER snapshot
     │       Error / BudgetExhausted → return as the outer outcome

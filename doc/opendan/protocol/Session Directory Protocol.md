@@ -208,9 +208,10 @@ Schema：`schema/session_state.schema.json`。
 ## 7. runs/（xllm run 目录）
 
 ```text
-runs/<run_id>/run.json            xllm RunRecord（version 3）
-runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 3；先 fsync 再发布）
+runs/<run_id>/run.json            xllm RunRecord（version 4）
+runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 4；先 fsync 再发布）
 runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
+runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout、stderr、exit（命令结束时写）
 ```
 
 `run_id` = `YYYYMMDD-HHMMSS-<6hex>`。宿主装配的 run 在 RunRecord 中增加（均可缺省）：
@@ -219,8 +220,7 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 |---|---|
 | `host` | `{assembled_by:"libopendan", session_id, runtime_kind, runtime_id, env_check}`；xllm 按保存的实际 runtime/target/cwd 接手，核验 Session PATH、环境、bin manifest/helper 内容；凭据只保存环境引用 |
 | `host_commit_pending` | 宿主输入提交门槛（批次号）。非空时任何执行者都不得推理或调用工具，xllm 拒绝接手 |
-| `inflight[]` | 已派发、结果尚未随快照持久化的动作：`{call_id, tool, args, effect, execution_ids, started_at_ms}` |
-| `executions[]` | 尚未确认停止的受管进程执行：`{execution_id, call_id, kind, runtime_id, host, boot_id, pgid, leader_start_ticks, command, started_at_ms}` |
+| `inflight[]` | 已派发、结果尚未随快照持久化的动作：`{call_id, tool, args, effect, started_at_ms}`。没有进程身份：恢复时不核验、不停止进程，按 runtime 从执行目录读到什么就说什么（长命令 TODO §3.2） |
 | `host.extra.finish` | 宿主的结束决定：与终态 `status` 在**同一次** run.json 写入中记录（`{kind: done|wait|process_done|budget|error|stopped, finished, outcome, waiting, answer, error, usage, turn_end}`；`turn_end` 为本次结束关闭 Turn 的状态，空表示 Turn 继续）。结束流程中途崩溃时，恢复按它重做，而不是重新推断 |
 | `usage.llm_requests` | 本 run 的推理尝试数：libopendan 在每个 outcome 后加上本段经 run 的 `LlmClient::infer` 发起的 Round 数（含失败 / 中断），xllm 接手后在其上继续累加；任何执行者都不重置或覆盖 |
 
@@ -290,8 +290,8 @@ runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` / `session_config.json` 必须是 `/3`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。
-4. 打开 runtime 并核验完整 binding 与 bin/helper 环境（先于旧执行核对）；删除未被引用的 run（持锁、核对执行；无法核对则保留）。
-5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 3` 或快照 `snapshot_version ≠ 3` → RecoveryBlocked，保留现场）；确认旧执行已停止；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
+4. 打开 runtime 并核验完整 binding 与 bin/helper 环境；删除未被引用的 run（持锁；记录不可读则保留）。命令留下的进程不归 run 管，不核对也不停止。
+5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 4` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
 8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在等待 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。

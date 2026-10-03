@@ -77,7 +77,7 @@ Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都可以基
 - 普通 bash 命令使用 `output`
 - 文本型 Agent Tool 如果主结果就是终端文本，可以使用 `output`，也可以使用字符串 `detail`
 - `output` 是纯文本，不要求 JSON，也不应要求 consumer 反序列化
-- `exec_bash` 默认把 tmux / stdout / stderr 视角下用户会看到的输出收敛到 `output`
+- `shell` 默认把 tmux / stdout / stderr 视角下用户会看到的输出收敛到 `output`
 
 `detail` 表示：
 
@@ -195,7 +195,7 @@ Behavior XML action 的 ID 由运行时执行前分配，LLM 不需要输出。�
 
 | Action | 降级标题规则 |
 | --- | --- |
-| `exec_bash` | 使用 `command` 参数，压缩空白并截断到 160 字符 |
+| `shell` | 使用 `command` 参数，压缩空白并截断到 160 字符 |
 | `read` | `read <path-or-uri> [first_chunk=...] [range=...]` |
 | `write_file` | `write_file <path> mode=<mode>` |
 | `edit_file` | `edit_file <path> [old_string="..."]` |
@@ -333,7 +333,7 @@ AgentToolResult.summary | AgentToolResult.title
 - 自有 AgentTool 输出的协议 JSON 必须显式带上该字段
 - 当前版本为 `"1"`
 - 普通 bash 输出即使碰巧长得像 JSON，也不能仅凭 JSON 结构猜成 AgentToolResult
-- `exec_bash` 只有在 stdout 是带合法 `agent_tool_protocol` 的 AgentToolResult envelope 时，才应把 stdout 解析为 AgentToolResult
+- `shell` 只有在 stdout 是带合法 `agent_tool_protocol` 的 AgentToolResult envelope 时，才应把 stdout 解析为 AgentToolResult
 
 版本演进规则：
 
@@ -434,7 +434,7 @@ bash 语义的完整文本输出。
 规则：
 
 - 普通 bash 命令主结果放这里
-- `exec_bash` 默认回退逻辑把用户会看到的混合输出放这里
+- `shell` 默认回退逻辑把用户会看到的混合输出放这里
 - `output` 不要求是 JSON
 - consumer 不应把 `output` 当结构化数据解析
 - 如果同一份主结果已经放在 `detail`，不要再重复放进 `output`
@@ -537,9 +537,9 @@ read_file demo.txt range=1-20
 ```
 ````
 
-## `exec_bash` 约定
+## `shell` 约定
 
-`exec_bash` 本身也是一个标准工具。它负责执行 bash 命令，并把 bash 的执行结果转换成 `AgentToolResult`。
+`shell` 本身也是一个标准工具。它负责执行 bash 命令，并把 bash 的执行结果转换成 `AgentToolResult`。
 
 普通 bash 命令的推荐输出：
 
@@ -556,7 +556,7 @@ read_file demo.txt range=1-20
 }
 ```
 
-如果 `exec_bash` 执行的命令在 stdout 明确输出合法 AgentToolResult，`exec_bash` 可以把该结果转发为结构化工具结果。
+如果 `shell` 执行的命令在 stdout 明确输出合法 AgentToolResult，`shell` 可以把该结果转发为结构化工具结果。
 
 普通 bash 的 stdout 即使碰巧是 JSON，也不能在缺少合法 `agent_tool_protocol` 时被隐式当成 `detail` 或 AgentToolResult。
 

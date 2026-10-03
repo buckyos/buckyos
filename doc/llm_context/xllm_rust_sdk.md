@@ -27,13 +27,13 @@
 
 ## 3. 有效配置优先级
 
-`默认值 → 合并后的文件配置 → 选中组 → prompt.tools → CLI（TaskOverrides）`。工具开关：`tools.enabled` 默认 false；`--tools/--no-tools` 最高。仅启用未配置列表时使用 `bash` 组（`read_file`、`write_file`、`edit_file`、`exec`）。`exec` 默认超时 1800s、上限 3600s，输出按头 1/4 + 尾 3/4 保留 64KB；命令在独立进程组中运行，超时、中断或到达总时长时整组 SIGKILL，超时返回 Error 结果（`timed_out`、已有输出与重试提示）；非 0 退出的 Error 观察同时带 summary 与输出。运行中的工具调用受 `--timeout`（默认 3600s）和 Ctrl-C 取消。function_call 下配置 `actions` 或 `tools2actions` 报能力错误；behavior + `tools2actions` 把 tools 转为 actions，原生列表置空。
+`默认值 → 合并后的文件配置 → 选中组 → prompt.tools → CLI（TaskOverrides）`。工具开关：`tools.enabled` 默认 false；`--tools/--no-tools` 最高。仅启用未配置列表时使用 `bash` 组（`read_file`、`write_file`、`edit_file`、`shell`；`shell` 处于 auto 模式时另有 `wait_task`、`get_task_state`、`cancel_task`）。`shell` 在本 run 的 runtime 中以 bash 语法执行命令，说明按 runtime 与执行模式生成（长命令 TODO §3.3）。执行模式由配置 `tools.shell.mode` 决定：`auto`（默认）先在工具内等 `wait_ms`（默认 30s，上限 30 分钟），到期仍未结束的命令转为进程内 task 并立即返回“仍在运行”（含 task_id、已有输出、已运行时长与 `wait_task` / `get_task_state` 提示）；`wait` 硬等到结束或 `timeout_ms`（默认 1800s，上限 `tools.shell.max_timeout_ms`，默认 3600s，0 = 不限），到期结束命令并返回 Error 结果（`timed_out`、已有输出与重试提示）。输出按头 1/4 + 尾 3/4 保留 64KB，写入 run 目录下的执行目录 `runs/<run_id>/exec/<call_id>/{command,stdout,stderr,exit}`，不经管道；非 0 退出的 Error 观察同时带 summary 与输出。子进程遵循标准父子进程语义（§3.2）：native 命令在独立进程组中运行，被打断、到达 `--timeout`（默认 3600s）或 wait 模式超时时整组 SIGKILL；命令返回后留下的进程（`&`、nohup、setsid、守护进程）不被跟踪也不被杀。tmux 下打断只停止等待，命令继续在自己的 window 中运行，超时用 `kill-window` 结束。Ctrl-C 经 `ToolCallCtx` 作用于正在执行的工具，结果记为 `Cancelled`，而不是业务 Error。function_call 下配置 `actions` 或 `tools2actions` 报能力错误；behavior + `tools2actions` 把 tools 转为 actions，原生列表置空。
 
-`tools.filesystem_policy` 可在顶层、选中组或 `prompt.tools` 中配置，按同样的字段覆盖顺序生效。`workspace`（省略时的默认值）将内置文件工具路径和 `exec.cwd` 限制在工作目录内；`unrestricted` 清空读写路径白名单并允许 `exec.cwd` 指向其它目录，实际文件访问由运行用户的操作系统权限决定，相对路径仍以工作目录为基准。[通用模板](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 显式选择 `unrestricted`。该策略对 function_call 和 behavior 中的内置 `bash` 组均生效，不改变 MCP 或宿主工具的策略；`workspace` 也不隔离 shell 命令自身的文件访问。实际策略保存在 `RunRecord.config.tools.filesystem_policy` 中，resume 使用保存值，不重新读取目录配置。
+`tools.filesystem_policy` 可在顶层、选中组或 `prompt.tools` 中配置，按同样的字段覆盖顺序生效。`workspace`（省略时的默认值）将内置文件工具路径和 `shell.cwd` 限制在工作目录内；`unrestricted` 清空读写路径白名单并允许 `shell.cwd` 指向其它目录，实际文件访问由运行用户的操作系统权限决定，相对路径仍以工作目录为基准。[通用模板](../../product/xllm/PRD.md#49-通用配置模板参考-pi-mono) 显式选择 `unrestricted`。该策略对 function_call 和 behavior 中的内置 `bash` 组均生效，不改变 MCP 或宿主工具的策略；`workspace` 也不隔离 shell 命令自身的文件访问。实际策略保存在 `RunRecord.config.tools.filesystem_policy` 中，resume 使用保存值，不重新读取目录配置。
 
 ## 4. 提示词组装
 
-system = 按行号升序的非空 section（`## <name>` 标题 + 用户文本 + 系统说明）+ `## runtime_protocol`。系统说明：20 补齐未被模板引用的 RuntimeInfo 核心字段；30 列出实际可用 tools/actions（或声明没有工具）；40 只在 exec 启用时输出命令手册（含 `bash_tools`），exec 未启用时整段省略。custom 模式 = 用户整段 + `## capabilities` + `## runtime_protocol`。
+system = 按行号升序的非空 section（`## <name>` 标题 + 用户文本 + 系统说明）+ `## runtime_protocol`。系统说明：20 补齐未被模板引用的 RuntimeInfo 核心字段；30 列出实际可用 tools/actions（或声明没有工具）；40 只在 shell 启用时输出命令手册（含 `bash_tools`），shell 未启用时整段省略。custom 模式 = 用户整段 + `## capabilities` + `## runtime_protocol`。
 
 模板：`{{runtime.id|kind|os|arch|hostname|shell|cwd|tools|current_time|timezone}}`、`{{env.NAME}}`；`\{{` 转义；缺失变量在模型请求前报 `XllmError::Template`。渲染结果与变量随 Run 保存。
 
@@ -83,7 +83,7 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 
 `--format json` 输出 `XllmResult`（runid、状态、是否终态/可恢复、answer、artifacts、usage、error、Provider/模型/实际返回模型、resume 命令）。
 
-`run_logs: info/debug` 启动时在 stderr 显示实际合并的 `.llm_context` 数量及路径，按祖先到工作目录的覆盖顺序排列；未找到配置时显示 0。resume 显示沿用的原 Run 配置来源，不重新合并。`exec` 的开始、完成和失败日志在括号中显示实际 command，多行和控制字符转义为单行；call_id 保留在内部事件与运行记录中。日志级别取生效配置，显式 `--run-logs` 可覆盖；warn/result 隐藏这些常规进度。
+`run_logs: info/debug` 启动时在 stderr 显示实际合并的 `.llm_context` 数量及路径，按祖先到工作目录的覆盖顺序排列；未找到配置时显示 0。resume 显示沿用的原 Run 配置来源，不重新合并。`shell` 的开始、完成和失败日志在括号中显示实际 command，多行和控制字符转义为单行；call_id 保留在内部事件与运行记录中。日志级别取生效配置，显式 `--run-logs` 可覆盖；warn/result 隐藏这些常规进度。
 
 ## 8. buckyos Provider 的登录方式
 
@@ -108,9 +108,9 @@ libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增�
 
 - **宿主装配（X2）**：`XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps) -> HostedTask`。宿主给出 `.llm_context` 的 JSON 形式（同 schema、严格键）和自己的 system 文本；xllm 计算有效配置、展开工具，并在宿主文本后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`protocol_version = xllm/1`）。宿主 system 支持稳定 runtime.* 与具名 env.* 模板，current_time/timezone 在输入批次提供，system 引用新鲜量会报 Template；`HostedTask::new_record` / `build_request`、`hosted_request`、`hosted_waist_deps`（behavior 用 `XllmActionParser` + `XmlStepRenderer`）让宿主驱动 waist，而 run 目录保持 xllm 可接手。`rebuild_toolset` / `create_run_llm` 按保存的记录重建工具与 Provider。
 - **RunStore（X1）**：`create_run`、`lock_run`、`remove_run`、`prune_snapshots` 公开；`run.json` 与快照写入先 fsync 再原子发布（目录也 fsync）。
-- **RunRecord 新字段**（均可缺省）：`host`（`assembled_by`、`session_id`、`runtime_kind`、`runtime_id`、`env_check`）、`host_commit_pending`、`inflight[]`、`executions[]`。
-- **resume 检查（X3 / X6）**：`version` 不等于当前版本（`RUN_RECORD_VERSION = 3`）→ 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；按保存的 runtime 构造执行体并核对完整 descriptor（kind、id、实际 target、cwd）；Session 接管校验保存的环境、PATH、bin manifest 与 helper 内容，凭据重新读取环境引用；取得 run 锁后先确认 `executions[]` 中旧执行已停止（`exec_tracking::stop_execution`，无法确认则拒绝），再把没有持久结果的 `inflight[]` 物化为“结果未知”（`materialize_unresolved`）并落盘，**不重放工具**。
-- **执行跟踪（X6）**：`agent_tool::exec_tracking`：`TrackedBashRunner`（启动握手：执行标识经 `ExecutionRegistrar` 持久化后才放行命令；子进程继承 `OPENDAN_EXECUTION_ID`）、`probe_execution` / `stop_execution`（按环境标记而不是可复用的 PID 核对，无法核对返回 Unknown）。`XllmDeps.runtime` 注入共享 `AgentRuntime`，`execution_registrar`、`runtime_env` 与 `runtime_path_prefix` 由宿主装配；`XllmDeps.skip_workdir_lock` 让宿主自行协调共享 workspace。
+- **RunRecord 新字段**（均可缺省）：`host`（`assembled_by`、`session_id`、`runtime_kind`、`runtime_id`、`env_check`）、`host_commit_pending`、`inflight[]`。
+- **resume 检查（X3 / X6）**：`version` 不等于当前版本（`RUN_RECORD_VERSION = 4`）→ 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；按保存的 runtime 构造执行体并核对完整 descriptor（kind、id、实际 target、cwd）；Session 接管校验保存的环境、PATH、bin manifest 与 helper 内容，凭据重新读取环境引用；取得 run 锁后把没有持久结果的 `inflight[]` 物化为“被打断、结果未知”（`materialize_unresolved`，文本由 `AgentRuntime::describe_interrupted` 按 runtime 生成：native 给命令与开始时间并说明命令可能部分执行、通常随执行器结束但不保证、后台进程不受影响；tmux / remote_ssh 读执行目录，已有 `exit` 时给退出码与输出尾部，没有时说明“可能仍在运行”与查看位置）并落盘，**不核验、不停止任何进程，不重放工具**。挂起在 task 上（`PendingTool`）的 run 被接手时不等待：用 resolver 查 task 当时的状态立即回填后续跑；task 属于接手方访问不了的 task-mgr（非 `local:` 前缀且未注入 `XllmDeps.buckyos_tasks`）时拒绝接手。
+- **执行目录与 task（长命令 TODO §3.2 / §4 / §5）**：`agent_tool::exec_tracking` 只保留 `InflightAction` / `HostRunInfo` / `materialize_unresolved`；进程跟踪（`ExecutionRecord`、`OPENDAN_EXECUTION_ID`、启动握手、`probe_execution` / `stop_execution`、`reconcile_execution`、`run.executions[]`）已删除。`shell` 命令统一写执行目录 `(run, call_id)`（native / tmux：`runs/<run_id>/exec/<call_id>`；remote_ssh：`/tmp/llm-runtime-<uid>/<run_id>/<call_id>`）。auto 模式到期的命令交给进程内 task-mgr（`agent_tool::tasks::InProcessTaskManager`，id 为 `local:shell:<call_id>`），`CompositeTaskResolver` 作为 waist 的 `RunningTaskResolver`（进程内 task + 执行目录回读 + 可选 buckyos task-mgr）。xllm 没有 Session，`allow_deferred` 关闭，任何工具内等待最长 30 分钟后带 task 状态返回 LLM。`XllmDeps.runtime` 注入共享 `AgentRuntime`，`buckyos_tasks`、`runtime_env` 与 `runtime_path_prefix` 由宿主装配；`XllmDeps.skip_workdir_lock` 让宿主自行协调共享 workspace。
 - **用量累加**：宿主驱动时由宿主在每个 outcome 后把本段推理尝试数加到 `usage.llm_requests`（libOpenDAN 如此），xllm 接手后在其上继续累加；任何执行段都不覆盖已有值。
 - 快照版本与宿主元数据见《LLM Context 设计》§9.4；session 协议见 `doc/opendan/protocol/`。
 
@@ -149,7 +149,7 @@ runtime:
 
 同 kind 逐字段覆盖，env 按键覆盖；切换 kind 重置整段。native/tmux 的 workdir、tmux.socket、identity_file 按声明配置文件目录解析；SSH workdir 必须显式绝对路径。id 是身份，不是 profile 查找键。未知字段和无关连接块报 Config；规划中的 container、container_host、remote_node、http_proxy_runtime 报 Capability。runtime 不接受 fs_view、path_layers、limits 或 policy。文件工具的 workspace 策略在目标侧解析真实路径，防止符号链接逃逸；shell 的文件访问仍由系统权限控制。
 
-exec、read/write/edit、模板执行共用执行体。MCP 仍在所配置服务执行，进程内宿主工具仍在 Runner 执行；都由 Sandbox 派发，具名宿主工具缺失时拒绝接管。SSH 使用系统 ssh/sftp、非交互认证和 known_hosts，要求远端 Linux/bash/SFTP；探测与身份核验在首次模型请求前完成。脚本和文件内容经数据通道传送，目标侧临时文件替换写入，不回退本地执行。exec 在 go 放行前持久化身份，断线结果记为未知；超时、取消及恢复在目标侧核验停止，不重放副作用。无法核验时返回 RecoveryBlocked。
+shell、read/write/edit、模板执行共用执行体。MCP 仍在所配置服务执行，进程内宿主工具仍在 Runner 执行；都由 Sandbox 派发，具名宿主工具缺失时拒绝接管。SSH 使用系统 ssh/sftp、非交互认证和 known_hosts，要求远端 Linux/bash/SFTP（不再要求 setsid 与 /proc）；探测与身份核验在首次模型请求前完成。脚本和文件内容经数据通道传送，目标侧临时文件替换写入，不回退本地执行。远端命令由包装脚本在后台启动并把 `pid`、`stdout`、`stderr`、`exit` 写进远端执行目录，由后续 SSH 会话轮询；超时或取消用记录的 pid `kill`，恢复只读执行目录，不核验进程，不重放副作用。
 
 run.json 的 workdir、配置文件、日志和快照属于控制侧；config.runtime.workdir 是执行侧路径。恢复沿用保存配置，不重读 .llm_context；SSH alias 重定向或 tmux session 被替换都会拒绝。native/tmux 保留实际 cwd 的 flock；SSH 不取远端路径的本地锁，跨 Runner 并发由宿主协调。Session 未部署远端 helper 时明确报 Capability；SSH 可独立用于 xllm。
 

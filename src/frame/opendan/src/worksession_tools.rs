@@ -26,7 +26,7 @@ use std::sync::Weak;
 
 use agent_tool::{
     AgentToolError, AgentToolManager, CallingConventions, ToolCtx, TypedTool,
-    TOOL_CREATE_WORKSPACE, TOOL_EXEC_BASH, TOOL_READ,
+    TOOL_CREATE_WORKSPACE, TOOL_SHELL, TOOL_READ,
 };
 use async_trait::async_trait;
 use buckyos_api::{AiContent, AiMessage, AiRole};
@@ -884,7 +884,7 @@ fn worksession_sub_context_tool_policy(
     sub.mode = ToolMode::Whitelist;
     sub.whitelist = vec![
         TOOL_READ.to_string(),
-        TOOL_EXEC_BASH.to_string(),
+        TOOL_SHELL.to_string(),
         TOOL_CREATE_WORKSESSION.to_string(),
         TOOL_CREATE_WORKSPACE.to_string(),
     ];
@@ -1659,7 +1659,7 @@ mod tests {
             sub.whitelist,
             vec![
                 TOOL_READ.to_string(),
-                TOOL_EXEC_BASH.to_string(),
+                TOOL_SHELL.to_string(),
                 TOOL_CREATE_WORKSESSION.to_string(),
                 TOOL_CREATE_WORKSPACE.to_string(),
             ]

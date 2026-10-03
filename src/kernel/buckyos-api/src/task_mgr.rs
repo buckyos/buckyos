@@ -1008,7 +1008,7 @@ pub const OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID: &str = "opendan.async_tool/v1";
 /// `TaskDataType` envelope and no runner yet, but the schedule fire must be
 /// able to create the task rather than dying on `task_schema_not_found`.
 pub const OPENDAN_COMMAND_TASK_SCHEMA_ID: &str = "opendan.command/v1";
-pub const TOOL_EXEC_BASH_TASK_SCHEMA_ID: &str = "tool.exec_bash/v1";
+pub const TOOL_SHELL_TASK_SCHEMA_ID: &str = "tool.shell/v1";
 pub const AICC_COMPUTE_TASK_SCHEMA_ID: &str = "aicc.compute/v1";
 pub const APP_INSTALL_TASK_SCHEMA_ID: &str = "app.install/v1";
 pub const APP_UNINSTALL_TASK_SCHEMA_ID: &str = "app.uninstall/v1";
@@ -1040,7 +1040,7 @@ pub fn task_schema_id_for(kind: crate::TaskDataType) -> &'static str {
         AppUpdateBatch => APP_UPDATE_BATCH_TASK_SCHEMA_ID,
         ServiceRpc => WORKFLOW_EXECUTE_RPC_TASK_SCHEMA_ID,
         WorkflowRunTarget => WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID,
-        ToolExecBash => TOOL_EXEC_BASH_TASK_SCHEMA_ID,
+        ToolShell => TOOL_SHELL_TASK_SCHEMA_ID,
     }
 }
 
@@ -1121,7 +1121,7 @@ const BUILTIN_TASK_SCHEMAS: &[(&str, &str, &[TaskExecutorKind])] = &[
         &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
     ),
     (
-        TOOL_EXEC_BASH_TASK_SCHEMA_ID,
+        TOOL_SHELL_TASK_SCHEMA_ID,
         crate::OPENDAN_SERVICE_NAME,
         &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
     ),

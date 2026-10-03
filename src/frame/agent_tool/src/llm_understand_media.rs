@@ -22,7 +22,7 @@ use crate::xllm::{
 };
 use crate::{
     cli_error_result, llm_compress, render_cli_output, AgentTool, AgentToolError,
-    AgentToolPendingReason, AgentToolResult, AgentToolStatus, CallingConventions,
+    AgentToolResult, AgentToolStatus, CallingConventions,
     SessionRuntimeContext, ToolSpec, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR, CLI_EXIT_SUCCESS,
     CLI_EXIT_USAGE,
 };
@@ -96,7 +96,7 @@ impl AgentTool for LlmUnderstandMediaTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: TOOL_LLM_UNDERSTAND_MEDIA.to_string(),
-            description: "Understand a media resource through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier exec_bash produced.".to_string(),
+            description: "Understand a media resource through a controlled LLM side context. Archives must be extracted first; other formats are forwarded to the selected model and fail if it does not support them. media is either a stored object ({kind:\"named_object\", obj_id:\"cyfile:…\"}), a URL, or a local file ({kind:\"local_file\", path:\"/abs/path\"}); use the local-file form for artifacts an earlier shell produced.".to_string(),
             args_schema: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -104,7 +104,7 @@ impl AgentTool for LlmUnderstandMediaTool {
                 "properties": {
                     "media": {
                         "type": "object",
-                        "description": "Media locator. {kind:\"named_object\", obj_id:\"cyfile:…\"} for a stored object, {kind:\"local_file\", path:\"/abs/path\"} for a file on this host (for example a frame written by a previous exec_bash), or {url:\"https://…\"}. A bare path or url string is also accepted. mime_hint is optional."
+                        "description": "Media locator. {kind:\"named_object\", obj_id:\"cyfile:…\"} for a stored object, {kind:\"local_file\", path:\"/abs/path\"} for a file on this host (for example a frame written by a previous shell), or {url:\"https://…\"}. A bare path or url string is also accepted. mime_hint is optional."
                     },
                     "goal": {
                         "type": "string",
@@ -578,13 +578,17 @@ fn build_outcome_result(
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
                     tool: Some(TOOL_LLM_UNDERSTAND_MEDIA.to_string()),
                     cmd_name: None,
-                    status: AgentToolStatus::Pending,
-                    task_id: Some(run_id.to_string()),
-                    pending_reason: Some(AgentToolPendingReason::LongRunning),
+                    status: AgentToolStatus::Error,
+                    task_id: None,
+                    pending_reason: None,
                     check_after: None,
                     estimated_wait: None,
                     title: format!("{TOOL_LLM_UNDERSTAND_MEDIA} => {}", record.status.as_str()),
-                    summary: format!("run {}: {reason}", record.status.label()),
+                    summary: format!(
+                        "sub run {run_id} {}: {reason}. It did not finish; take it over with `{}` or start again.",
+                        record.status.label(),
+                        record.resume_command()
+                    ),
                     details: json!({
                         "outcome": record.status.as_str(),
                         "reason": reason,
@@ -656,7 +660,7 @@ struct MediaArg {
 /// Where `llm_understand_media` reads the media from.
 ///
 /// `ResourceRef` — the wire type — has no local-file variant, but an agent that
-/// has just produced a frame or a clip with `exec_bash` naturally holds a
+/// has just produced a frame or a clip with `shell` naturally holds a
 /// filesystem path. Accepting that path here keeps a multi-step media task
 /// inside one turn; the alternative is that the model wraps the path in a
 /// `named_object` (the only shape it is offered), the path fails to decode as
@@ -700,7 +704,7 @@ struct ResolvedMedia {
 /// * `{"kind":"named_object","obj_id":"cyfile:…"}` — a stored object;
 /// * `{"url":"https://…"}` / a bare `http(s):` / `data:` string;
 /// * a bare path or `{"kind":"local_file","path":"…"}` — a file on this host,
-///   which covers artifacts an earlier `exec_bash` produced;
+///   which covers artifacts an earlier `shell` produced;
 /// * `{"kind":"named_object","obj_id":"<path>"}` — a model that reached for
 ///   the only shape it knows; coerced to a local file when the path exists,
 ///   rejected with an actionable message when it does not.
@@ -853,7 +857,7 @@ fn local_path_from_object(
             if !looks_like_object_id(obj_id) && looks_like_path(obj_id) {
                 // A path handed over as an object id. It cannot decode as an
                 // id, but it is exactly the shape a model produces after
-                // `exec_bash` wrote an artifact — treat it as a local file and
+                // `shell` wrote an artifact — treat it as a local file and
                 // let resolution report a precise error if it is missing.
                 log::warn!(
                     "llm_understand_media: media.obj_id `{obj_id}` is not a typed object id; \
@@ -910,7 +914,7 @@ fn json_type_name(value: &Value) -> &'static str {
 
 /// Find the file a caller meant by a local path.
 ///
-/// `exec_bash` runs inside the session workspace — `<agent_root>/sessions/<id>`,
+/// `shell` runs inside the session workspace — `<agent_root>/sessions/<id>`,
 /// which is also where session media inputs live — while the agent process
 /// itself starts in the install root. A model that has just written
 /// `frame008.png` therefore names it relative to a directory that is *not* the
@@ -1851,6 +1855,7 @@ impl ToolManager for NoopToolManager {
     async fn call_tool(
         &self,
         call: buckyos_api::AiToolCall,
+        _ctx: llm_context::ToolCallCtx,
     ) -> Result<llm_context::Observation, llm_context::ToolDispatchError> {
         Ok(llm_context::Observation::Error {
             call_id: call.call_id,

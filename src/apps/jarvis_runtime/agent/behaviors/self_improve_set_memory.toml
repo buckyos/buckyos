@@ -27,10 +27,10 @@ Hard rules:
 - Memory stores non-deterministic hints, not truth, chat history, task logs, reminders, or notebook-style long facts.
 - If the user explicitly asked to remember a durable fact, preference, or project state, that belongs to Agent Notebook; do not copy that fact body into Memory.
 - Do not create duplicate Memory and Notebook recall sources for the same fact.
-- Do not pass `--root` to `agent-memory`; `exec_bash` prepares the correct environment and `agent-memory` resolves its own root dir.
-- Read and consume attention signals through bash CLI commands in `exec_bash`, not through non-bash actions.
-- Use one `exec_bash` action per CLI command. Quote JSON args with single quotes.
-- After processing a signal with `agent-memory`, run `MarkAttentionSignalConsumed` for that signal through `exec_bash`.
+- Do not pass `--root` to `agent-memory`; `shell` prepares the correct environment and `agent-memory` resolves its own root dir.
+- Read and consume attention signals through bash CLI commands in `shell`, not through non-bash actions.
+- Use one `shell` action per CLI command. Quote JSON args with single quotes.
+- After processing a signal with `agent-memory`, run `MarkAttentionSignalConsumed` for that signal through `shell`.
 - Do not write `skill_coverage_gap` signals to Agent Memory and do not mark them consumed. They are not memory facts; they are inputs to the separate Candidate Skill Miner flow.
 - If no pending signals exist, set next_behavior to END.
 
@@ -140,7 +140,7 @@ Round report:
 """
 
 on_behavior_switch = """
-This Stage2 session was woken from persisted Stage1 completion state. First run `ListPendingAttentionSignals` through exec_bash, then consume memory-owned pending signals into Agent Memory. Leave `skill_coverage_gap` signals pending for Candidate Skill Miner.
+This Stage2 session was woken from persisted Stage1 completion state. First run `ListPendingAttentionSignals` through shell, then consume memory-owned pending signals into Agent Memory. Leave `skill_coverage_gap` signals pending for Candidate Skill Miner.
 """
 
 on_behavior_step_ob = """
@@ -150,7 +150,7 @@ on_behavior_step_ob = """
 [capabilities]
 tool_whitelist = []
 action_whitelist = [
-  "exec_bash"
+  "shell"
 ]
 
 [budget]

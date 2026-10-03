@@ -666,10 +666,10 @@ fn append_turn_message_preserves_behavior_step_records() {
             ended_at_ms: Some(20),
             compression_level: Default::default(),
         },
-        assistant_text: "<response><actions><exec_bash>todo add \"first\"</exec_bash></actions><next_behavior>DO</next_behavior></response>".to_string(),
+        assistant_text: "<response><actions><shell>todo add \"first\"</shell></actions><next_behavior>DO</next_behavior></response>".to_string(),
         thought: Some("planned todos".to_string()),
         actions: vec![buckyos_api::AiToolCall {
-            name: "exec_bash".to_string(),
+            name: "shell".to_string(),
             args: std::collections::HashMap::new(),
             call_id: "call-1".to_string(),
         }],

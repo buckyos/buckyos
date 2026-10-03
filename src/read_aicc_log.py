@@ -207,18 +207,18 @@ def _format_function_call_content(item: dict) -> str:
     arguments = item.get("arguments", "")
     try:
         parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
-        if name == "exec_bash" and isinstance(parsed, dict):
-            return _format_exec_bash_call(parsed)
+        if name == "shell" and isinstance(parsed, dict):
+            return _format_shell_call(parsed)
         arguments = json.dumps(parsed, ensure_ascii=False)
     except (json.JSONDecodeError, TypeError):
         pass
     return f"-> {name}({arguments})"
 
 
-def _format_exec_bash_call(args: dict) -> str:
+def _format_shell_call(args: dict) -> str:
     command = args.get("command")
     rest = {key: value for key, value in args.items() if key != "command"}
-    lines = ["-> exec_bash"]
+    lines = ["-> shell"]
     if rest:
         lines.append(f"args: {json.dumps(rest, ensure_ascii=False, sort_keys=True)}")
     if isinstance(command, str):

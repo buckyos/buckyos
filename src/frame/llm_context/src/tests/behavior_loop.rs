@@ -204,7 +204,7 @@ async fn behavior_loop_honours_terminal_end_declared_with_actions() {
     let llm = Arc::new(ScriptedLlm::new(vec![text_response(
         r#"<response>
 <thinking>done, closing the loop</thinking>
-<actions><exec_bash>echo done</exec_bash></actions>
+<actions><shell>echo done</shell></actions>
 <next_behavior>END</next_behavior>
 </response>"#,
     )]));
@@ -253,7 +253,7 @@ async fn behavior_loop_still_defers_jump_target_declared_with_actions() {
         text_response(
             r#"<response>
 <thinking>run before switching</thinking>
-<actions><exec_bash>echo done</exec_bash></actions>
+<actions><shell>echo done</shell></actions>
 <next_behavior>CHECK</next_behavior>
 </response>"#,
         ),
@@ -310,7 +310,7 @@ async fn behavior_loop_on_behavior_step_ob_overrides_next_user_message() {
     let scripted = Arc::new(ScriptedLlm::new(vec![text_response(
         r#"<response>
 <thinking>run action</thinking>
-<actions><exec_bash>echo done</exec_bash></actions>
+<actions><shell>echo done</shell></actions>
 </response>"#,
     )]));
     let mut req = base_request();
@@ -360,7 +360,7 @@ async fn behavior_loop_on_behavior_step_ob_can_skip_next_inference() {
     let llm = Arc::new(RecordingLlm::new(text_response(
         r#"<response>
 <thinking>run action</thinking>
-<actions><exec_bash>echo done</exec_bash></actions>
+<actions><shell>echo done</shell></actions>
 </response>"#,
     )));
     let mut req = base_request();
@@ -423,7 +423,7 @@ async fn behavior_loop_releases_terminal_end_when_a_dispatched_action_failed() {
         text_response(
             r#"<response>
 <thinking>last step</thinking>
-<actions><exec_bash>boom</exec_bash></actions>
+<actions><shell>boom</shell></actions>
 <next_behavior>END</next_behavior>
 </response>"#,
         ),

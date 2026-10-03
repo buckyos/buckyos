@@ -1,7 +1,9 @@
 use super::files::{check_allowed, FileBackend};
-use super::{shell_quote, RuntimeInfo, SshConfig};
-use crate::exec_tracking::{new_execution_id, ExecutionRecord, ExecutionRegistrar, EXECUTION_ENV};
-use crate::llm_bash::{BashRunOutput, BashRunRequest, BashRunner, BashTarget};
+use super::{shell_quote, ExecDirFacts, RuntimeInfo, SshConfig};
+use crate::llm_bash::{
+    sanitize_call_id, BashRunOutput, BashRunRequest, BashRunner, BashTarget, CommandHandle,
+    CommandProgress, RunBindingSlot, OUTPUT_TAIL_BYTES, TIMEOUT_EXIT_CODE,
+};
 use crate::xllm::XllmError;
 use crate::{AgentToolError, SessionRuntimeContext};
 use async_trait::async_trait;
@@ -9,10 +11,14 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+fn new_transfer_id() -> String {
+    format!("{}-{}", std::process::id(), crate::tasks::next_local_seq())
+}
 
 type ToolResult<T> = Result<T, AgentToolError>;
 fn transport(message: impl Into<String>, effect_unknown: bool) -> AgentToolError {
@@ -41,12 +47,10 @@ pub struct Probe {
 const PROBE: &str = r#"set -e
 [ "$(uname -s)" = Linux ]
 command -v bash >/dev/null
-command -v setsid >/dev/null
 command -v realpath >/dev/null
 command -v base64 >/dev/null
-[ -r /proc/self/stat ]
 printf '%s\0' "$(cat /etc/machine-id)" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date -Iseconds)" "$(date +%Z%z)"
-for tool in bash setsid realpath base64; do printf '%s\0' "$tool"; done
+for tool in bash realpath base64; do printf '%s\0' "$tool"; done
 "#;
 
 fn probe_script(cwd: &str, env: &BTreeMap<String, String>) -> String {
@@ -94,7 +98,7 @@ pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<P
     command.arg("-c").arg(r#"set -e
 command -v bash >/dev/null
 printf '%s\0' "$(cat /etc/machine-id 2>/dev/null || hostname)" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Z%z)"
-for tool in bash setsid realpath base64; do if command -v "$tool" >/dev/null; then printf '%s\0' "$tool"; fi; done
+for tool in bash realpath base64; do if command -v "$tool" >/dev/null; then printf '%s\0' "$tool"; fi; done
 "#).current_dir(cwd).envs(env).kill_on_drop(true);
     let o = tokio::time::timeout(Duration::from_secs(10), command.output())
         .await
@@ -296,108 +300,59 @@ impl SshTransport {
         }
         Ok(())
     }
-    fn execution_dir(&self, id: &str) -> ToolResult<String> {
-        if !id.starts_with("ex-") || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-            return Err(transport("invalid execution id", false));
-        }
-        Ok(format!(
-            "/tmp/llm-runtime-{}/{id}",
-            self.identity
-                .as_ref()
-                .ok_or_else(|| transport("SSH not opened", false))?
-                .uid
-        ))
+    /// `/tmp/llm-runtime-<uid>/<run_id>/<call_id>`: the remote execution
+    /// directory of one `shell` call.
+    pub fn remote_exec_dir(&self, run_id: &str, call_id: &str) -> String {
+        let uid = self
+            .identity
+            .as_ref()
+            .map(|i| i.uid.clone())
+            .unwrap_or_else(|| "unknown".into());
+        format!(
+            "/tmp/llm-runtime-{uid}/{}/{}",
+            sanitize_call_id(run_id),
+            sanitize_call_id(call_id)
+        )
     }
-    async fn inspect_execution(&self, rec: &ExecutionRecord, terminate: bool) -> ToolResult<bool> {
-        let current = self
-            .probe("/", &BTreeMap::new())
-            .await
-            .map_err(|e| transport(e.to_string(), false))?;
-        if rec.kind != "remote_ssh"
-            || rec.host.as_deref() != self.target(&current).get("host").and_then(Value::as_str)
-        {
-            return Err(transport(
-                "RecoveryBlocked: execution target does not match",
-                false,
-            ));
-        }
-        let boot = rec
-            .boot_id
-            .as_deref()
-            .ok_or_else(|| transport("RecoveryBlocked: execution has no boot id", false))?;
-        let pgid = rec
-            .pgid
-            .ok_or_else(|| transport("RecoveryBlocked: execution has no process group", false))?;
-        let ticks = rec
-            .leader_start_ticks
-            .ok_or_else(|| transport("RecoveryBlocked: execution has no leader identity", false))?;
+
+    /// Exit code and output tails of a remote execution directory, `None`
+    /// when the host or the directory cannot be read.
+    pub async fn read_exec_dir(&self, dir: &str) -> Option<ExecDirFacts> {
+        let q = shell_quote(dir);
         let script = format!(
-            "llm_kill={}\nllm_exid={}\nllm_boot={}\nllm_pgid={pgid}\nllm_ticks={ticks}\n{}",
-            if terminate { 1 } else { 0 },
-            shell_quote(&rec.execution_id),
-            shell_quote(boot),
-            STOP
+            "if [ -d {q} ]; then echo DIR; else echo NODIR; exit 0; fi\nif [ -f {q}/exit ]; then cat -- {q}/exit; fi\necho '\x01'\nif [ -f {q}/stdout ]; then tail -c {n} -- {q}/stdout; fi\necho '\x01'\nif [ -f {q}/stderr ]; then tail -c {n} -- {q}/stderr; fi\n",
+            n = OUTPUT_TAIL_BYTES
         );
-        let stopped = self.script(&script, false).await? == b"STOPPED\n";
-        if stopped {
-            let dir = self.execution_dir(&rec.execution_id)?;
-            self.script(&format!("rm -rf -- {}\n", shell_quote(&dir)), false)
-                .await?;
+        let bytes = self.script(&script, false).await.ok()?;
+        let text = String::from_utf8_lossy(&bytes).to_string();
+        if text.starts_with("NODIR") {
+            return Some(ExecDirFacts {
+                exit_code: None,
+                stdout_tail: String::new(),
+                stderr_tail: String::new(),
+                exists: false,
+            });
         }
-        Ok(stopped)
-    }
-    pub async fn stop(&self, rec: &ExecutionRecord) -> ToolResult<()> {
-        if self.inspect_execution(rec, true).await? {
-            Ok(())
-        } else {
-            Err(transport(
-                "RecoveryBlocked: remote execution not stopped",
-                false,
-            ))
-        }
+        let rest = text.strip_prefix("DIR\n").unwrap_or(&text);
+        let mut parts = rest.split('\x01');
+        let exit_code = parts
+            .next()
+            .and_then(|p| p.trim().parse::<i32>().ok());
+        let stdout_tail = parts.next().unwrap_or("").trim_start_matches('\n').to_string();
+        let stderr_tail = parts.next().unwrap_or("").trim_start_matches('\n').to_string();
+        Some(ExecDirFacts {
+            exit_code,
+            stdout_tail,
+            stderr_tail,
+            exists: true,
+        })
     }
 }
-
-const STOP: &str = r#"set -e
-[ "$(cat /proc/sys/kernel/random/boot_id)" = "$llm_boot" ] || { echo STOPPED; exit 0; }
-for ((llm_round=0; llm_round<50; llm_round++)); do
-  llm_alive=0
-  llm_reused=0
-  if [ -r /proc/$llm_pgid/stat ]; then
-    IFS= read -r llm_stat < /proc/$llm_pgid/stat || true
-    llm_rest=${llm_stat##*) }
-    read -ra llm_fields <<< "$llm_rest"
-    [ "${llm_fields[19]}" = "$llm_ticks" ] || llm_reused=1
-  fi
-  for llm_proc in /proc/[0-9]*; do
-    [ -r "$llm_proc/stat" ] || continue
-    IFS= read -r llm_stat < "$llm_proc/stat" || continue
-    llm_rest=${llm_stat##*) }
-    read -ra llm_fields <<< "$llm_rest"
-    [[ ${llm_fields[0]} != Z && ${llm_fields[0]} != X ]] || continue
-    if (tr '\0' '\n' < "$llm_proc/environ" 2>/dev/null | grep -Fxq "OPENDAN_EXECUTION_ID=$llm_exid"); then
-      llm_alive=1
-      IFS= read -r llm_check < "$llm_proc/stat" || continue
-      llm_check=${llm_check##*) }
-      read -ra llm_verify <<< "$llm_check"
-      if [[ $llm_kill = 1 && "${llm_verify[19]}" = "${llm_fields[19]}" ]]; then kill -KILL "${llm_proc##*/}" 2>/dev/null || true; fi
-    elif [[ $llm_reused = 0 && ${llm_fields[2]} = "$llm_pgid" && ${llm_fields[19]} -ge $llm_ticks ]]; then
-      echo 'RecoveryBlocked: process in execution group cannot be verified' >&2
-      exit 197
-    fi
-  done
-  if [ "$llm_alive" = 0 ]; then echo STOPPED; exit 0; fi
-  if [ "$llm_kill" = 0 ]; then echo ALIVE; exit 0; fi
-  sleep .1
-done
-echo 'RecoveryBlocked: execution still alive' >&2
-exit 198
-"#;
 
 struct TempFile(PathBuf);
 impl TempFile {
     async fn new(bytes: &[u8]) -> ToolResult<Self> {
-        let p = std::env::temp_dir().join(format!("llm-transfer-{}", new_execution_id()));
+        let p = std::env::temp_dir().join(format!("llm-transfer-{}", new_transfer_id()));
         let mut f = tokio::fs::OpenOptions::new();
         f.write(true).create_new(true);
         #[cfg(unix)]
@@ -509,7 +464,7 @@ impl FileBackend for SshTransport {
         let parent = path
             .parent()
             .ok_or_else(|| AgentToolError::InvalidArgs("file requires parent directory".into()))?;
-        let remote = parent.join(format!(".llm-write-{}", new_execution_id()));
+        let remote = parent.join(format!(".llm-write-{}", new_transfer_id()));
         self.script(
             &format!(
                 "mkdir -p -- {}\n",
@@ -553,69 +508,53 @@ impl FileBackend for SshTransport {
 
 pub struct SshBashRunner {
     transport: Arc<SshTransport>,
-    runtime_id: String,
-    registrar: Arc<dyn ExecutionRegistrar>,
     env: BTreeMap<String, String>,
-    active: Arc<Mutex<BTreeMap<String, ExecutionRecord>>>,
+    run: RunBindingSlot,
 }
+
 impl SshBashRunner {
-    pub fn new(
-        transport: Arc<SshTransport>,
-        id: &str,
-        registrar: Arc<dyn ExecutionRegistrar>,
-        env: BTreeMap<String, String>,
-    ) -> Self {
+    pub fn new(transport: Arc<SshTransport>, env: BTreeMap<String, String>, run: RunBindingSlot) -> Self {
         Self {
             transport,
-            runtime_id: id.into(),
-            registrar,
             env,
-            active: Arc::new(Mutex::new(BTreeMap::new())),
+            run,
         }
     }
-}
-struct RemoteGuard {
-    transport: Arc<SshTransport>,
-    rec: Option<ExecutionRecord>,
-    registrar: Arc<dyn ExecutionRegistrar>,
-}
-impl Drop for RemoteGuard {
-    fn drop(&mut self) {
-        if let Some(rec) = self.rec.take() {
-            let ssh = self.transport.clone();
-            let registrar = self.registrar.clone();
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    if ssh.stop(&rec).await.is_ok() {
-                        registrar.completed(&rec.execution_id).await;
-                    }
-                });
-            }
-        }
+
+    fn remote_dir(&self, call_id: Option<&str>) -> String {
+        let run_id = self
+            .run
+            .lock()
+            .expect("run binding")
+            .as_ref()
+            .map(|b| b.run_id.clone())
+            .unwrap_or_else(|| "unbound".into());
+        let call = call_id
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("anon-{}", new_transfer_id()));
+        self.transport.remote_exec_dir(&run_id, &call)
     }
 }
 
-const WRAPPER: &str = r#"set -e
-llm_dir=$1
-llm_pid=$BASHPID
-IFS= read -r llm_stat < /proc/$llm_pid/stat
-llm_rest=${llm_stat##*) }
-read -ra llm_fields <<< "$llm_rest"
-printf '%s\n' "$(cat /proc/sys/kernel/random/boot_id)" "$llm_pid" "${llm_fields[19]}" > "$llm_dir/identity"
-for ((llm_wait=0; llm_wait<300; llm_wait++)); do
-  [ -e "$llm_dir/go" ] && break
-  sleep .1
-done
-[ -e "$llm_dir/go" ] || exit 125
-set +e
-bash --noprofile --norc "$llm_dir/command" </dev/null >"$llm_dir/stdout" 2>"$llm_dir/stderr"
+/// Remote wrapper, started in the background by one SSH session and polled
+/// by later ones: output to files, pid of the command's bash to `pid`
+/// (`kill` reads it), exit code to `exit`.
+const WRAPPER: &str = r#"llm_dir=$1
+bash --noprofile --norc "$llm_dir/command" </dev/null >"$llm_dir/stdout" 2>"$llm_dir/stderr" &
+llm_child=$!
+printf '%s\n' "$llm_child" > "$llm_dir/pid"
+wait "$llm_child"
 llm_ec=$?
 printf '%s\n' "$llm_ec" > "$llm_dir/exit.tmp"
-mv "$llm_dir/exit.tmp" "$llm_dir/exit"
+mv -f "$llm_dir/exit.tmp" "$llm_dir/exit"
 "#;
 
 #[async_trait]
 impl BashRunner for SshBashRunner {
+    fn engine(&self) -> &str {
+        "remote_ssh"
+    }
+
     async fn resolve_cwd(
         &self,
         root: &Path,
@@ -639,35 +578,28 @@ impl BashRunner for SshBashRunner {
             .await?;
         Ok(cwd)
     }
-    async fn run(
+
+    async fn start(
         &self,
         _ctx: &SessionRuntimeContext,
         req: BashRunRequest,
-    ) -> ToolResult<BashRunOutput> {
+    ) -> ToolResult<Box<dyn CommandHandle>> {
         if let BashTarget::Unsupported(t) = &req.target {
             return Err(AgentToolError::InvalidArgs(format!(
-                "unsupported exec target {t}"
+                "unsupported shell target {t}"
             )));
         }
-        let old = self
-            .active
-            .lock()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for rec in old {
-            if self.transport.inspect_execution(&rec, false).await? {
-                self.active.lock().unwrap().remove(&rec.execution_id);
-                self.registrar.completed(&rec.execution_id).await;
-            }
-        }
-        let started = Instant::now();
-        let id = new_execution_id();
-        let dir = self.transport.execution_dir(&id)?;
+        let dir = self.remote_dir(req.call_id.as_deref());
         let qdir = shell_quote(&dir);
-        let base = shell_quote(Path::new(&dir).parent().unwrap().to_str().unwrap());
-        self.transport.script(&format!("set -e\numask 077\nif [ ! -e {base} ]; then mkdir -m 700 -- {base}; fi\n[ -d {base} ] && [ ! -L {base} ] && [ -O {base} ] && [ \"$(stat -c %a -- {base})\" = 700 ]\nmkdir -- {qdir}\n"),false).await?;
+        let base = shell_quote(
+            Path::new(&dir)
+                .parent()
+                .and_then(Path::parent)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+        );
+        self.transport.script(&format!("set -e\numask 077\nif [ ! -e {base} ]; then mkdir -m 700 -- {base}; fi\n[ -d {base} ] && [ ! -L {base} ] && [ -O {base} ] && [ \"$(stat -c %a -- {base})\" = 700 ]\nmkdir -p -- {qdir}\nrm -f -- {qdir}/exit {qdir}/exit.tmp {qdir}/pid\n"),false).await?;
         let mut env = self.env.clone();
         env.extend(req.env.iter().cloned());
         let mut script = format!(
@@ -678,69 +610,64 @@ impl BashRunner for SshBashRunner {
             script.push_str(&format!("export {k}={}\n", shell_quote(v)));
         }
         script.push_str(&req.command);
+        script.push('\n');
         self.transport
             .write(Path::new(&format!("{dir}/command")), script.as_bytes())
             .await?;
-        let launch = format!("setsid env {EXECUTION_ENV}={} bash -c {} -- {qdir} </dev/null >/dev/null 2>&1 &\nfor ((i=0; i<100; i++)); do [ -f {qdir}/identity ] && break; sleep .02; done\ncat -- {qdir}/identity\n", shell_quote(&id), shell_quote(WRAPPER));
-        let ident = self.transport.script(&launch, false).await?;
-        let ident = String::from_utf8_lossy(&ident);
-        let p = ident.lines().collect::<Vec<_>>();
-        if p.len() != 3 {
-            return Err(transport("invalid SSH execution handshake", false));
+        let launch = format!(
+            "nohup bash -c {} -- {qdir} </dev/null >/dev/null 2>&1 &\nfor ((i=0; i<100; i++)); do [ -f {qdir}/pid ] && break; sleep .02; done\nif [ -f {qdir}/pid ]; then cat -- {qdir}/pid; fi\n",
+            shell_quote(WRAPPER)
+        );
+        let pid = self.transport.script(&launch, true).await?;
+        let pid = String::from_utf8_lossy(&pid).trim().to_string();
+        if pid.is_empty() {
+            return Err(transport("remote command did not start", true));
         }
-        let identity = self.transport.identity.as_ref().unwrap();
-        let rec = ExecutionRecord {
-            execution_id: id.clone(),
-            call_id: None,
-            kind: "remote_ssh".into(),
-            runtime_id: Some(self.runtime_id.clone()),
-            host: Some(format!(
-                "ssh:{}:{}:{}",
-                identity.hostname, identity.machine, identity.uid
-            )),
-            boot_id: Some(p[0].into()),
-            pgid: p[1].parse().ok(),
-            leader_start_ticks: p[2].parse().ok(),
-            command: req.command.chars().take(512).collect(),
-            started_at_ms: crate::exec_tracking::now_ms(),
-        };
-        let mut guard = RemoteGuard {
+        Ok(Box::new(SshCommand {
             transport: self.transport.clone(),
-            rec: Some(rec.clone()),
-            registrar: self.registrar.clone(),
-        };
-        self.registrar.register(&rec).await.map_err(|e| {
-            transport(
-                format!("execution registration failed; command not started: {e}"),
-                false,
+            dir,
+            started: Instant::now(),
+            max_output: req.max_output_bytes,
+            cwd: req.cwd,
+            finished: None,
+        }))
+    }
+}
+
+pub struct SshCommand {
+    transport: Arc<SshTransport>,
+    dir: String,
+    started: Instant,
+    max_output: usize,
+    cwd: PathBuf,
+    finished: Option<BashRunOutput>,
+}
+
+impl SshCommand {
+    async fn poll_exit(&self) -> ToolResult<Option<i32>> {
+        let qdir = shell_quote(&self.dir);
+        let poll = self
+            .transport
+            .script(
+                &format!("if [ -f {qdir}/exit ]; then cat -- {qdir}/exit; fi\n"),
+                true,
             )
-        })?;
-        self.active.lock().unwrap().insert(id.clone(), rec.clone());
-        self.transport
-            .script(&format!("touch -- {qdir}/go\n"), true)
             .await?;
-        let mut exit = None;
-        while started.elapsed() < Duration::from_millis(req.timeout_ms.max(1)) {
-            let poll = self
-                .transport
-                .script(
-                    &format!("if [ -f {qdir}/exit ]; then cat -- {qdir}/exit; fi\n"),
-                    true,
-                )
-                .await?;
-            if !poll.is_empty() {
-                exit = String::from_utf8_lossy(&poll).trim().parse::<i32>().ok();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        let timed_out = exit.is_none();
+        Ok(if poll.is_empty() {
+            None
+        } else {
+            String::from_utf8_lossy(&poll).trim().parse::<i32>().ok()
+        })
+    }
+
+    async fn collect(&self, exit_code: i32, timed_out: bool) -> ToolResult<BashRunOutput> {
+        let qdir = shell_quote(&self.dir);
         let stdout = self
             .transport
             .script(
                 &format!(
                     "if [ -f {qdir}/stdout ]; then head -c {} -- {qdir}/stdout; fi\n",
-                    req.max_output_bytes.saturating_add(1)
+                    self.max_output.saturating_add(1)
                 ),
                 true,
             )
@@ -750,48 +677,91 @@ impl BashRunner for SshBashRunner {
             .script(
                 &format!(
                     "if [ -f {qdir}/stderr ]; then head -c {} -- {qdir}/stderr; fi\n",
-                    req.max_output_bytes.saturating_add(1)
+                    self.max_output.saturating_add(1)
                 ),
                 true,
             )
             .await?;
-        let stopped = self
-            .transport
-            .inspect_execution(&rec, timed_out)
-            .await
-            .map_err(|e| transport(e.to_string(), true))?;
-        guard.rec = None;
-        if stopped {
-            self.active.lock().unwrap().remove(&id);
-            self.registrar.completed(&id).await;
-        }
         Ok(super::output(
-            exit.unwrap_or(124),
+            exit_code,
             &stdout,
             &stderr,
-            req.max_output_bytes,
+            self.max_output,
             timed_out,
-            started.elapsed(),
+            self.started.elapsed(),
             "remote_ssh",
-            req.cwd,
+            self.cwd.clone(),
         ))
     }
-    async fn cancel(&self) -> ToolResult<()> {
-        let active = self
-            .active
-            .lock()
-            .unwrap()
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for rec in active {
-            self.transport
-                .stop(&rec)
-                .await
-                .map_err(|e| transport(e.to_string(), true))?;
-            self.registrar.completed(&rec.execution_id).await;
-            self.active.lock().unwrap().remove(&rec.execution_id);
+}
+
+#[async_trait]
+impl CommandHandle for SshCommand {
+    async fn wait(&mut self, timeout: Duration) -> ToolResult<Option<BashRunOutput>> {
+        if let Some(done) = &self.finished {
+            return Ok(Some(done.clone()));
         }
-        Ok(())
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(code) = self.poll_exit().await? {
+                let out = self.collect(code, false).await?;
+                self.finished = Some(out.clone());
+                return Ok(Some(out));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn progress(&self) -> CommandProgress {
+        let qdir = shell_quote(&self.dir);
+        let tail = self
+            .transport
+            .script(
+                &format!(
+                    "if [ -f {qdir}/stdout ]; then tail -c {} -- {qdir}/stdout; fi\n",
+                    OUTPUT_TAIL_BYTES
+                ),
+                false,
+            )
+            .await
+            .map(|b| String::from_utf8_lossy(&b).to_string())
+            .unwrap_or_default();
+        CommandProgress {
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            output_tail: tail,
+        }
+    }
+
+    /// Kills the command's bash (the pid the wrapper recorded) with `kill`.
+    /// Children that detached from it are not chased.
+    async fn kill(&mut self) -> ToolResult<BashRunOutput> {
+        if let Some(done) = &self.finished {
+            return Ok(done.clone());
+        }
+        let qdir = shell_quote(&self.dir);
+        self.transport
+            .script(
+                &format!("if [ -f {qdir}/pid ]; then kill -KILL -- \"$(cat -- {qdir}/pid)\" 2>/dev/null || true; fi\n"),
+                true,
+            )
+            .await
+            .map_err(|e| transport(e.to_string(), true))?;
+        let code = self.poll_exit().await?.unwrap_or(TIMEOUT_EXIT_CODE);
+        let out = self.collect(code, true).await?;
+        self.finished = Some(out.clone());
+        Ok(out)
+    }
+
+    fn detach(&mut self) {}
+
+    fn cancellable(&self) -> bool {
+        true
+    }
+
+    fn locator(&self) -> String {
+        format!("remote execution directory {}", self.dir)
     }
 }

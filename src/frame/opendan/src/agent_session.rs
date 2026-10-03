@@ -2425,6 +2425,7 @@ impl AgentSession {
                     Observation::Cancelled {
                         call_id: p.call.call_id.clone(),
                         reason: reason.clone(),
+                        effect_unknown: false,
                     },
                 )
             })
@@ -4614,6 +4615,9 @@ impl AgentSession {
                 Ok(NextAction::WaitForMsg)
             }
             LLMContextOutcome::Interrupted {
+                reason, snapshot, ..
+            }
+            | LLMContextOutcome::Settled {
                 reason, snapshot, ..
             } => {
                 // §3.13 inference interrupt — scheduler preempted the
@@ -7582,6 +7586,7 @@ fn observation_from_task_event(call_id: &str, data: &serde_json::Value) -> Optio
             Some(Observation::Cancelled {
                 call_id: call_id.to_string(),
                 reason,
+                effect_unknown: false,
             })
         }
         _ => None,

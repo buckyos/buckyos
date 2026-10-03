@@ -14,14 +14,13 @@
     {
       "live_run": {
         "applied_input_seq": 1,
-        "executions": 0,
         "host_commit_pending": 2,
         "inflight": [],
-        "run_id": "20261002-100518-7dfd28",
+        "run_id": "20261002-181137-d4833e",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-100518-7dfd28"
+        "20261002-181137-d4833e"
       ],
       "session_id": "work-fixture-receipt",
       "state": {

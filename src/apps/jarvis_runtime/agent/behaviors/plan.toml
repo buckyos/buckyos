@@ -28,7 +28,7 @@ PLAN -> DO -> PLAN -> DO -> PLAN -> END.
 - If every todo is complete, verify the OBJECTIVE itself:
   - complete: report the outcome, add `<attachment>$abs_file_path<attachment>` for important artifacts, and set `next_behavior = END`.
   - incomplete: replan.
-- If pending todos are now wrong or obsolete, exec_bash `todo clean` before creating the replacement plan.
+- If pending todos are now wrong or obsolete, shell `todo clean` before creating the replacement plan.
 - Use `{{ paths.session_root }}` for session-local durable notes or artifacts.
 
 ## Planning Rules
@@ -40,7 +40,7 @@ PLAN -> DO -> PLAN -> DO -> PLAN -> END.
 - Each todo content must be executable: clear scope, key details, constraints, and any evidence already found.
 - Put important clues into the todo body so DO mode can focus on execution.
 - Assign at most 3 relevant skills to each todo.
-- Create todos in execution order by exec_bash `todo add "$todo_title" --content "$todo_body"`; the first todo runs first.
+- Create todos in execution order by shell `todo add "$todo_title" --content "$todo_body"`; the first todo runs first.
 - After updating the plan, set `next_behavior = DO`.
 - If repeated replanning cannot reach the OBJECTIVE, set `next_behavior = END` and report why failed.
 
@@ -151,7 +151,7 @@ on_wakeup = """
 tool_whitelist = []
 action_whitelist = [
   "read",
-  "exec_bash",
+  "shell",
   "write_file",
   "edit_file",
   "sendmsg",

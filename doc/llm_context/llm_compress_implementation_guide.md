@@ -75,7 +75,7 @@
 实测情况：
 
 - agent_tool crate 内部工具（[llm_explore.rs](../src/frame/agent_tool/src/llm_explore.rs)、[llm_understand_media.rs](../src/frame/agent_tool/src/llm_understand_media.rs)、[workspace.rs](../src/frame/agent_tool/src/workspace.rs)、[llm_tool_carft.rs](../src/frame/agent_tool/src/llm_tool_carft.rs)）emit 出来的 stdout 是合法 `AgentToolResult` JSON（带 `agent_tool_protocol: "1"`）。
-- `exec_bash` 在 stdout 是合法 envelope 时会作为 AgentToolResult 转发；普通 bash stdout 不会被强行包装成 envelope。
+- `shell` 在 stdout 是合法 envelope 时会作为 AgentToolResult 转发；普通 bash stdout 不会被强行包装成 envelope。
 - 因此 **AiContent::ToolResult.content 里的字符串如果以 `agent_tool_protocol` JSON 起头，就可以反解；否则就是 plain text**。
 
 落到代码上：

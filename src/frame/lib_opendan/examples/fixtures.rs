@@ -90,7 +90,7 @@ impl LlmClient for Script {
                 if all.contains("<tool_result c1>") {
                     text("done: notes.txt written")
                 } else {
-                    tool("c1", "exec", json!({ "command": "echo note > notes.txt" }))
+                    tool("c1", "shell", json!({ "command": "echo note > notes.txt" }))
                 }
             }
             "long_exec" => {
@@ -99,7 +99,7 @@ impl LlmClient for Script {
                 } else {
                     tool(
                         "c1",
-                        "exec",
+                        "shell",
                         json!({ "command": "echo start >> marker; sleep 60; echo done >> marker" }),
                     )
                 }
@@ -253,7 +253,6 @@ fn observe(sd: &SessionDir) -> Value {
             "run_status": rec.as_ref().map(|r| r.status.as_str()),
             "host_commit_pending": rec.as_ref().and_then(|r| r.host_commit_pending),
             "inflight": rec.as_ref().map(|r| r.inflight.iter().map(|a| a.call_id.clone()).collect::<Vec<_>>()),
-            "executions": rec.as_ref().map(|r| r.executions.len()),
         })
     });
     json!({
@@ -433,18 +432,16 @@ async fn gen(out: &Path) -> R<()> {
         }
         unsafe { libc::kill(ch.id() as i32, libc::SIGKILL) };
         let _ = ch.wait();
-        // Leave no process behind in the generator environment.
-        let st = sd.state()?;
-        let rec = sd.runs().record(&st.live_run.clone().unwrap().run_id)?;
-        for e in &rec.executions {
-            let _ =
-                agent_tool::exec_tracking::stop_execution(e, None, Duration::from_secs(5)).await;
-        }
+        // The command belongs to nobody now (standard process semantics);
+        // leave no process behind in the generator environment.
+        let _ = std::process::Command::new("pkill")
+            .args(["-KILL", "-f", &sd.path().join("marker").display().to_string()])
+            .status();
         write_expected(&d, "killed_during_exec",
-            "The runner was killed while `exec` ran: run.json holds the in-flight call c1 and its execution identity; the latest snapshot has no result for c1.",
+            "The runner was killed while `shell` ran: run.json holds the in-flight call c1; the latest snapshot has no result for c1. No process identity is recorded.",
             vec![observe(&sd)],
-            json!({ "action": "confirm_execution_stopped_then_resume", "materialize_unresolved": ["c1"], "rerun_tool": false,
-                    "if_execution_unverifiable": "recovery_blocked" }));
+            json!({ "action": "materialize_interrupted_then_resume", "materialize_unresolved": ["c1"], "rerun_tool": false,
+                    "process_verification": "none", "result_text": "runtime-specific: exit code and output tail from the execution directory when the command ended, otherwise 'may still be running'" }));
         relativize(&d);
     }
     // 7. new input into a resumed run: receipt ahead of state

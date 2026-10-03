@@ -29,7 +29,7 @@ When either of the following cases occurs, use the bash command `finish_task $ta
 - An active Worksession is highly similar to the current Task; treat this as a duplicate Task failure.
 
 <<skills>>
-## Using exec_bash
+## Using shell
 
 Use it for read operations and simple write operations. If a request requires complex writes, call `try_create_worksession`.
 Prefer `read` when reading files.
@@ -57,7 +57,7 @@ Follow the process_rules, create work session for this task.
 tool_whitelist = [
   "create_worksession",
   "read",
-  "exec_bash",
+  "shell",
   "llm_understand_media",
   "make_exact_model",
   "parse_exact_model"

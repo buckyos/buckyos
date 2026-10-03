@@ -26,9 +26,9 @@ async fn stop_takes_effect_after_one_do_action() {
                     },
                 ),
             );
-            tool_call("c1", "exec", json!({ "command": "echo one >> log" }))
+            tool_call("c1", "shell", json!({ "command": "echo one >> log" }))
         } else {
-            tool_call("c2", "exec", json!({ "command": "echo two >> log" }))
+            tool_call("c2", "shell", json!({ "command": "echo two >> log" }))
         }
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
@@ -98,7 +98,7 @@ async fn change_is_injected_at_the_observation_boundary() {
                     ),
                 );
             }
-            tool_call("c1", "exec", json!({ "command": "true" }))
+            tool_call("c1", "shell", json!({ "command": "true" }))
         }
         _ => {
             let u = last_user_text(req);
@@ -197,7 +197,7 @@ async fn behavior_loop_session_runs_actions() {
     let sd = env.create_work(spec).await;
     let llm = ScriptedLlm::new(|req, n| {
         match n {
-        0 => text("<response><thinking>go</thinking><actions><exec><![CDATA[echo behavior-77 > out.txt; cat out.txt]]></exec></actions></response>"),
+        0 => text("<response><thinking>go</thinking><actions><shell><![CDATA[echo behavior-77 > out.txt; cat out.txt]]></shell></actions></response>"),
         _ => {
             let u = last_user_text(req);
             assert!(u.contains("behavior-77"), "{u}");
@@ -263,7 +263,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
         if has_tool_result(req, "c1").is_some() {
             text("done")
         } else {
-            tool_call("c1", "exec", json!({ "command": "echo v >> snake.js" }))
+            tool_call("c1", "shell", json!({ "command": "echo v >> snake.js" }))
         }
     });
     let decide = |d: &str| {
@@ -561,12 +561,12 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
     let llm = ScriptedLlm::new(|req, n| {
         let all = render(&req.messages);
         match n {
-            0 => text("<response><actions><exec><![CDATA[echo p1-output]]></exec></actions></response>"),
+            0 => text("<response><actions><shell><![CDATA[echo p1-output]]></shell></actions></response>"),
             1 => text("<response><thinking>need research</thinking><next_behavior>research</next_behavior></response>"),
             2 => {
                 assert!(all.contains("p1-output"), "child inherits parent steps:\n{all}");
                 assert!(all.contains("behavior_switch to=\"research\""), "{all}");
-                text("<response><actions><exec><![CDATA[echo r1-output]]></exec></actions></response>")
+                text("<response><actions><shell><![CDATA[echo r1-output]]></shell></actions></response>")
             }
             3 => text("<response><report><![CDATA[research result X]]></report></response>"),
             4 => {
@@ -660,7 +660,7 @@ async fn independent_processes_keep_their_own_runs() {
         let all = render(&req.messages);
         match n {
             0 => {
-                text("<response><actions><exec><![CDATA[echo plan-1]]></exec></actions></response>")
+                text("<response><actions><shell><![CDATA[echo plan-1]]></shell></actions></response>")
             }
             1 => text("<response><next_behavior>writer</next_behavior></response>"),
             2 => {
@@ -669,7 +669,7 @@ async fn independent_processes_keep_their_own_runs() {
                     !all.contains("step_record behavior=\"plan\""),
                     "no step inheritance\n{all}"
                 );
-                text("<response><actions><exec><![CDATA[echo writer-1]]></exec></actions></response>")
+                text("<response><actions><shell><![CDATA[echo writer-1]]></shell></actions></response>")
             }
             3 => text("<response><next_behavior>plan</next_behavior></response>"),
             4 => {
@@ -705,7 +705,7 @@ async fn normal_switch_continues_the_same_run() {
         let all = render(&req.messages);
         match n {
             0 => text(
-                "<response><actions><exec><![CDATA[echo phase-1]]></exec></actions></response>",
+                "<response><actions><shell><![CDATA[echo phase-1]]></shell></actions></response>",
             ),
             1 => text("<response><next_behavior>do</next_behavior></response>"),
             2 => {
@@ -758,7 +758,7 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
         }
         None => tool_call(
             "c1",
-            "exec",
+            "shell",
             json!({ "command": "echo from-tmux; echo $OPENDAN_SESSION_ID; echo x > t.txt" }),
         ),
     });
@@ -788,9 +788,6 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
     let _ = std::process::Command::new("tmux")
         .args(["kill-session", "-t", &name])
         .status();
-    // The run record holds no unconfirmed executions.
-    let last = sd.state().unwrap().last_run.unwrap();
-    assert!(sd.runs().record(&last).unwrap().executions.is_empty());
 }
 
 #[tokio::test]
@@ -1009,12 +1006,12 @@ async fn call_ids_stay_unique_after_a_fork_return() {
         .create_work(behavior_spec("fork and act", json!({ "research": "fork" })))
         .await;
     let llm = ScriptedLlm::new(|_, n| match n {
-        0 => text("<response><actions><exec><![CDATA[echo p1]]></exec></actions></response>"),
+        0 => text("<response><actions><shell><![CDATA[echo p1]]></shell></actions></response>"),
         1 => text("<response><next_behavior>research</next_behavior></response>"),
-        2 => text("<response><actions><exec><![CDATA[echo r1]]></exec></actions></response>"),
+        2 => text("<response><actions><shell><![CDATA[echo r1]]></shell></actions></response>"),
         3 => text("<response><report><![CDATA[research result X]]></report></response>"),
         4 => text(
-            "<response><actions><exec><![CDATA[echo after-return]]></exec></actions></response>",
+            "<response><actions><shell><![CDATA[echo after-return]]></shell></actions></response>",
         ),
         _ => text("<response><report><![CDATA[final]]></report></response>"),
     });

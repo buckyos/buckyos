@@ -253,7 +253,7 @@ report_delivery     = "final_only"      # "final_only" | "top_level" | "all"
 name = "explorer"
 objective = "..."
 system_prompt_template = "..."
-tool_whitelist = ["exec_bash", "..."]
+tool_whitelist = ["shell", "..."]
 approval_required = []
 tool_plan = "minimal_safe"
 mode = "behavior"
@@ -307,7 +307,7 @@ parser = "xml"                          # LLM 输出 parse 方式；renderer 等
 
 # ─── 能力声明（占位，§5.3 详述）────────────────────────────
 # behavior 在这次推理中能用到的能力，三类合在一起：
-#   - v2 内建 Action（exec_bash / write_file / ... / subscribe_event）
+#   - v2 内建 Action（shell / write_file / ... / subscribe_event）
 #   - skills bundle（<agent_root>/skills/ 下加载的成套能力）
 #   - 传统 function-call tool（ToolManager 注册的命名函数）
 # 详细 schema 待 §5.3 收敛；当前 5.2 草案先占位，不写细节字段。
@@ -358,7 +358,7 @@ mode = "cancel_pending_tools_then_continue"
   自带 prompt 片段、tool 注册、可能还有自己的 sub-behavior。behavior 要做的是"声明本次推理把哪些
   bundle 挂进来"。
 - **传统 function-call tool**（ToolManager 注册的命名函数，走 provider native tool_calls 通道）
-  是 v2 Action 的并存通道——`exec_bash` 之外的工具调用要么走 shim 进 bash，要么走这条 native tool
+  是 v2 Action 的并存通道——`shell` 之外的工具调用要么走 shim 进 bash，要么走这条 native tool
   通道。behavior 要声明白名单。
 
 三类都需要一个"上层引用 + 下层细节定义"的解耦：
@@ -450,7 +450,7 @@ PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
 
 ### 6.2 Session `./tools/` 硬约束
 - 只放文本（脚本源码、`tool.toml`、prompts、schema），禁止二进制。
-- 单文件建议 ≤ 64 KB，整目录文件数建议 ≤ 几百（hot path，每次 `exec_bash` 起手要做 mtime 同步）。
+- 单文件建议 ≤ 64 KB，整目录文件数建议 ≤ 几百（hot path，每次 `shell` 起手要做 mtime 同步）。
 
 ### 6.3 Tool Plan
 位置：`<agent_root>/tool_plans/<plan>.toml`；schema 与渲染时机不变。

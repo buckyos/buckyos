@@ -35,7 +35,7 @@ use crate::state::AgentStateClient;
 pub use assembler::{DefaultAssembler, InputMaterial, SessionAssembler};
 pub use drive::drive;
 pub use history::{LlmSummarizer, Summarizer};
-pub use tools::{classify_effect, CURRENT_CALL};
+pub use tools::classify_effect;
 
 /// When `drive` returns (a property of this call, not a session end
 /// condition).

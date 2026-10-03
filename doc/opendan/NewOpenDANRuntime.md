@@ -239,7 +239,7 @@ render plan 由两类输入合成：
    ```
 
    两种形态的共同约束：
-   - 都没有 grant 概念——脚本就在 session 数据里，能写它的人已经能 `exec_bash`。
+   - 都没有 grant 概念——脚本就在 session 数据里，能写它的人已经能 `shell`。
    - 扁平形态发现规则：扫描 `./tools/` 顶层"文件"；扫描 `./tools/` 顶层"目录"则按结构化形态
      处理（识别 `tool.toml`）。扁平脚本和同名子目录冲突时拒绝 render 并要求 LLM 改名。
    - LLM 可以从扁平形态"升级"到结构化形态：把 `query_weather.ts` 移到 `query_weather/` 目录
@@ -253,7 +253,7 @@ render plan 由两类输入合成：
        授权治理；session 不是分发二进制的渠道
      启动器在 render 时按 magic bytes 探测：发现二进制文件 → 跳过该工具并 log warn，不阻断
      其他工具渲染。
-   - **`./tools/` 必须保持小且文件数有限**：这是 hot path。`exec_bash`（以及任何能写文件的
+   - **`./tools/` 必须保持小且文件数有限**：这是 hot path。`shell`（以及任何能写文件的
      session 工具）执行后，启动器都可能对 `./tools/` 做一次 sync 检查（默认实现是 mtime
      walk，必要时升级到内容 hash 触发 re-render，见 §1.5.6）。所以：
      - 单文件建议 ≤ 64 KB（脚本本身轻小，prompt/schema 长就拆 include）
@@ -346,7 +346,7 @@ render plan 由两类输入合成：
 | 触发点 | 动作 | 是否打断推理 |
 |--------|------|----------|
 | session worker cold start / resume | 同步 render，未完成不进 run loop | 启动期，无推理可打断 |
-| `exec_bash` 返回后 | 对 `./tools/` 做 sync 检查（mtime walk）；有改动才标记 dirty | 否，是 bash 工具调用尾部的一步 |
+| `shell` 返回后 | 对 `./tools/` 做 sync 检查（mtime walk）；有改动才标记 dirty | 否，是 bash 工具调用尾部的一步 |
 | 显式写工具的 session 工具（`write_file` / `edit_file` 等命中 `./tools/`）| 直接标记 dirty | 否 |
 | `tool_grants` 变化（用户授权 / 撤权）| 标记 dirty | 否 |
 | 任一 dirty 触发后，**下一个 turn 边界** | re-render | 否，turn 间空档 |
@@ -355,7 +355,7 @@ render plan 由两类输入合成：
 实现要点：
 
 - `AgentSession` 持有 `tools_dirty: AtomicBool` + `tools_mtime_snapshot: HashMap<PathBuf, SystemTime>`。
-- `exec_bash` 工具实现在返回前 walk `./tools/` 顶层 + 一层子目录的 mtime，diff 上一份快照；
+- `shell` 工具实现在返回前 walk `./tools/` 顶层 + 一层子目录的 mtime，diff 上一份快照；
   有差异才 `tools_dirty.store(true)`，并刷新快照。
 - worker 在每个 turn 入口检查 dirty，若为 true 则调启动器暴露的
   `re_render_session_tools(sid)` RPC（启动器进程外，AgentRuntime 进程内 client），完成后清 flag。
@@ -420,7 +420,7 @@ PATH overlay 顺序：**Session > Agent > Runtime > System**（前者优先，�
 统一渲染实现）。
 
 **UI Session 默认工具集**（写入 `behaviors/ui_default.toml` 的 whitelist）：
-- `exec_bash` / `read_file` / `glob` / `grep` / `edit_file` / `write_file`
+- `shell` / `read_file` / `glob` / `grep` / `edit_file` / `write_file`
 - `try_create_worksession { reason }` — fork 出 sub-LLMContext，基于近况和 worksession
   列表决定复用已有 / 新建。最终由 sub-context 调 `create_worksession` 落地，结果原样回传给
   UI session。详见 §8.1–§8.3。
@@ -437,7 +437,7 @@ PATH overlay 顺序：**Session > Agent > Runtime > System**（前者优先，�
 ```toml
 name = "ui_default"
 system_prompt_template = "..."        # 引用 role.md / self.md / users/*.md 的渲染模板
-tool_whitelist = ["exec_bash", "read_file", "try_create_worksession", "forward_msg"]
+tool_whitelist = ["shell", "read_file", "try_create_worksession", "forward_msg"]
 
 # Behavior 模式（决定 LLMContextDeps 是否装 parser/renderer）
 mode = "behavior"                     # "agent" | "behavior"
@@ -480,7 +480,7 @@ opendan 的 `agent_config` 负责把这份 TOML 翻译成 `LLMContextRequest` + 
 <response>
   <thinking>...自由形式推理...</thinking>
   <observation>...对上一步 action_result 的解读...</observation>
-  <action tool="exec_bash" call_id="optional">
+  <action tool="shell" call_id="optional">
     {"command": "ls -la"}
   </action>
   <next_behavior>END</next_behavior>
@@ -1065,7 +1065,7 @@ forward_msg { target_worksession_id: String }
   - `handle_outcome` 覆盖 Done / WaitInput / PendingTool（warn）/ Budget / Error / ContextLimit；Done 路径会调 `post_outbound_text` 走 `msg_center.post_send` 把回复发回 peer
   - `switch_behavior`（Normal-only；Fork / Independent warn 后按 Normal 处理）
   - 新增 API：`subscribe_event` / `unsubscribe_event` / `subscription_patterns` / `set_workspace` / `workspace_id` / `update_peer`（私有）/ `post_outbound_text`（私有）
-- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `exec_bash` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，4 层合成见上面"工程顺序 #4"）。**2026-05-14 新增 `TmuxBashRunner`**：`exec_bash` 不再用一次性 `/bin/bash -c`，每个 AgentSession 独占一个 detached tmux session（`od_<sanitized_session_id>`），每条 LLM 命令通过 wrapper 脚本 + run-id marker 在该 pane 里执行；用 `tee` 同时写 stdout/stderr 到 log 文件 + pane scrollback，操作员可 `tmux attach -t od_<sid>` 实时审计 AI 工作记录（pane 里能看到人类可读的 `# exec_bash[<run_id>] <command>` banner，不是不透明的 wrapper 路径）；超时走 `send-keys C-c`；session 数 ≥16 时按 24h idle GC。`exit N` 安全：用户命令包在 `( ... )` 子 shell 里，不会杀掉 wrapper 自身
+- §9.5 `opendan::agent_bash`：`build_session_tools(workspace, session_dir)` 注册 `shell` + read/write/edit/glob/grep；`SessionBinLayout` 持有 4 层 bin 路径（System / Runtime / Agent / Session），目前 overlay 仅落 Session 层（upstream `BinOverlayConfig` 是单 `bin_dir`，4 层合成见上面"工程顺序 #4"）。**2026-05-14 新增 `TmuxBashRunner`**：`shell` 不再用一次性 `/bin/bash -c`，每个 AgentSession 独占一个 detached tmux session（`od_<sanitized_session_id>`），每条 LLM 命令通过 wrapper 脚本 + run-id marker 在该 pane 里执行；用 `tee` 同时写 stdout/stderr 到 log 文件 + pane scrollback，操作员可 `tmux attach -t od_<sid>` 实时审计 AI 工作记录（pane 里能看到人类可读的 `# shell[<run_id>] <command>` banner，不是不透明的 wrapper 路径）；超时走 `send-keys C-c`；session 数 ≥16 时按 24h idle GC。`exit N` 安全：用户命令包在 `( ... )` 子 shell 里，不会杀掉 wrapper 自身
 - §9.6 `opendan::agent` + `opendan::msg_center_pump` + `opendan::session_event_pump`（**msg-center / kevent / outbound 全部接入**）：
   - `AIAgent::open(root, runtime)` 加载 `AgentConfig`、`AIAgent::run()` 驱动 dispatch loop（`tokio::select` { inbox, shutdown }）
   - **`Inbound { Msg { record_id, from, from_did, tunnel_did, session_id, text }, Event { event_id, target_session_id, data } }`** —— `from_did` / `tunnel_did` 用于 outbound 回送，`target_session_id` 由 session_event_pump 填充
@@ -1103,7 +1103,7 @@ forward_msg { target_worksession_id: String }
     - `render_initial(session_dir)`：mkdir session_bin → force `apply_snapshot`（hard-link agent_tools 顶层 + 一层子目录的可执行文件到 session_bin，跨 fs / 非 Unix 退 `fs::copy`） → 写 tombstone stub 文件（shebang，stderr 双行 JSON + 人类可读，`exit 127`） → 把 `ResolvedToolPlan` 序列化到 `<session_dir>/tool_plan.resolved.toml` 供操作员审计。
     - `maybe_resync()`：`snapshot_agent_tools` 算 max_mtime_ns；不大于上次同步 + 入口非空就直接跳过；否则 `apply_snapshot` re-link（不在 snapshot 的旧 link 自动 rm）+ 重新落 tombstone。
     - tombstone 永远 last-writer-wins：`apply_snapshot` 主动跳过和 tombstone 同名的 agent_tools 文件，再交给 `write_tombstones` 写脚本。
-  - `TmuxBashRunner::with_bin_renderer(renderer)` builder：`run()` 起手调 `renderer.maybe_resync()`，失败仅 warn（不阻 exec_bash）。
+  - `TmuxBashRunner::with_bin_renderer(renderer)` builder：`run()` 起手调 `renderer.maybe_resync()`，失败仅 warn（不阻 shell）。
   - `BehaviorCfg` 新增可选字段 `tool_plan: String`（默认空 = 无 tombstone）。
   - `AIAgent::build_session_bin_renderer(agent_id, session_id, behavior_name)`：load 行为 cfg 取 `tool_plan` 名 → load `<agent_root>/tool_plans/<name>.toml` → 扫宇宙 → resolve → 包成 `Arc<SessionBinRenderer>`；行为 cfg / 计划文件缺失全部 warn + 空计划兜底（仍做 Agent tools 同步）。
   - 集成测覆盖：`overlay_env_stacks_multiple_layers_in_priority_order`（agent_tool 75/75 全绿）、`session_bin_layout_overlay_has_four_layers`、`plan_deny_mode_picks_only_universe_intersect`、`plan_allow_mode_tombstones_everything_else`、`write_tombstone_creates_executable_script`、`render_initial_links_agent_tools_and_writes_resolved_plan`、`paths::buckyos_root_layout_honors_env_override`（opendan 69/69 全绿）。
@@ -1141,9 +1141,9 @@ forward_msg { target_worksession_id: String }
          # mode = "allow" 时改用 [[allow]]，未列的工具一律墓碑
          ```
        - 解析产物：session 启动时把"实际生效的合成策略"落到 `<session_dir>/tool_plan.resolved.toml`，跟 tmux pane scrollback 一起给操作员事后审计用。
-    2. **Agent tools 拷贝时机**：**每次 `exec_bash` 起手做一次 mtime 同步检查**（跟 §1.5.6 现有约定一致：`exec_bash` 调用 head 做 mtime walk，有改动才 re-render Session Exec Bin）。
-       - 动机：用户/operator 手工往 `<agent_root>/tools/` 拷新工具后，**不重启 session 也能在下一次 `exec_bash` 立即可用**。
-       - 成本理由：两次 `exec_bash` 之间至少隔一次 LLM 推理（秒级以上），多一次 mtime walk（毫秒级）成本可忽略；不需要 inotify watch / 后台同步线程。
+    2. **Agent tools 拷贝时机**：**每次 `shell` 起手做一次 mtime 同步检查**（跟 §1.5.6 现有约定一致：`shell` 调用 head 做 mtime walk，有改动才 re-render Session Exec Bin）。
+       - 动机：用户/operator 手工往 `<agent_root>/tools/` 拷新工具后，**不重启 session 也能在下一次 `shell` 立即可用**。
+       - 成本理由：两次 `shell` 之间至少隔一次 LLM 推理（秒级以上），多一次 mtime walk（毫秒级）成本可忽略；不需要 inotify watch / 后台同步线程。
        - 不暴露显式 `reload_session_tools` 工具——同步是隐式的，LLM 不必感知。
        - 拷贝形式：Linux 容器内用 hard link（零空间成本 + 写时自然 COW，session 改了文件不污染 Agent 持久层）；跨 fs / 非 Linux 退回 `copy_if_changed`。
        - 拷贝范围：只拷可执行 + 顶层 + 一层子目录，与 §1.5 hot-path 约定一致。
@@ -1225,7 +1225,7 @@ forward_msg { target_worksession_id: String }
   - 4 层 bin overlay 实施 — 已落地（2026-05-14 第 4 轮）。(a) 多层 `BinOverlayConfig`、(b) `paths::buckyos_root()` + `SessionBinLayout::compute(agent_id, session_id, agent_root)` + `SessionToolsBuild`、(c) `SessionBinRenderer`（hard-link Agent tools + mtime resync + tool plan tombstones + `tool_plan.resolved.toml` 审计）全部就位，agent_tool 75/75 + opendan 69/69 全绿。
 
 每个阶段独立编译 + 跑 `cargo test`。当前 opendan 已可：
-- 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `exec_bash` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）
+- 从 msg-center 拉 msg → `Inbound::Msg` → UI session → `enqueue_pending` 落盘 → ack `Readed` → worker 在合适状态下走 `shell` + 读文件 → outcome `Done` 时把回复 `post_send` 回原 peer DID（用 record 上的 `route.tunnel_did` 当 `preferred_tunnel`）
 - 进程崩 / 重启：未消费的 msg、peer 路由信息、kevent 订阅列表、workspace 绑定、`pending_task_calls`、process 调用栈（`process_entry` / `process_stack`）、各 process 的独立 snapshot 文件全部从 `.meta/` 还原（at-least-once）
 - 任何 session 通过 `subscribe_event(pattern)` 加订阅 → 直接走 `event_pump.set_session_subscriptions` 立即生效 → `session_event_pump` 重建 reader → kevent 命中自动派发回该 session 的 `pending_inputs`
 - LLM 触发 `PendingTool` outcome → 自动转 `task_mgr` 任务、订阅 `/task_mgr/<task_id>`、session 进入 `WaitingTool` → 完成事件回来后自动 `ResumeFill::ToolResults` 续跑

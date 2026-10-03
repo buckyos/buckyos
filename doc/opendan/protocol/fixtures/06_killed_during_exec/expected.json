@@ -1,29 +1,29 @@
 {
-  "description": "The runner was killed while `exec` ran: run.json holds the in-flight call c1 and its execution identity; the latest snapshot has no result for c1.",
+  "description": "The runner was killed while `shell` ran: run.json holds the in-flight call c1; the latest snapshot has no result for c1. No process identity is recorded.",
   "generated_by": "libopendan examples/fixtures.rs",
   "next": {
-    "action": "confirm_execution_stopped_then_resume",
-    "if_execution_unverifiable": "recovery_blocked",
+    "action": "materialize_interrupted_then_resume",
     "materialize_unresolved": [
       "c1"
     ],
-    "rerun_tool": false
+    "process_verification": "none",
+    "rerun_tool": false,
+    "result_text": "runtime-specific: exit code and output tail from the execution directory when the command ended, otherwise 'may still be running'"
   },
   "scenario": "killed_during_exec",
   "sessions": [
     {
       "live_run": {
         "applied_input_seq": 1,
-        "executions": 1,
         "host_commit_pending": null,
         "inflight": [
           "c1"
         ],
-        "run_id": "20261002-100518-93f7c7",
+        "run_id": "20261002-181137-3aeb32",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-100518-93f7c7"
+        "20261002-181137-3aeb32"
       ],
       "session_id": "work-fixture-kill",
       "state": {

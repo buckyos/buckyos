@@ -168,7 +168,7 @@ impl Default for PromptCfg {
 ///   previous behavior (empty ⇒ "all tools") is gone, since the common
 ///   behavior-loop case wants to disable provider tools entirely.
 ///
-/// * `action_whitelist` — XML behavior-loop actions (`exec_bash`,
+/// * `action_whitelist` — XML behavior-loop actions (`shell`,
 ///   `write_file`, `edit_file`, `read`, `sendmsg`, `subscribe_event`,
 ///   `unsubscribe_event`). The parser will still extract any of the
 ///   hardcoded tag set, but the policy gate drops anything not listed
@@ -457,14 +457,14 @@ mod tests {
             name = "x"
 
             [capabilities]
-            action_whitelist = ["read", "exec_bash"]
+            action_whitelist = ["read", "shell"]
         "#;
         let cfg = BehaviorCfg::from_toml_str(toml_src).unwrap();
         let pol = cfg.to_tool_policy();
         // Tool surface untouched ⇒ disabled.
         assert!(matches!(pol.mode, ToolMode::None));
         assert!(matches!(pol.action_mode, ToolMode::Whitelist));
-        assert_eq!(pol.action_whitelist, vec!["read", "exec_bash"]);
+        assert_eq!(pol.action_whitelist, vec!["read", "shell"]);
     }
 
     #[test]
@@ -659,7 +659,7 @@ mod tests {
             "use `llm_understand_media` for a general description or classification of audio",
             "reserve `speech_to_text` for established speech or explicit transcription requests",
             "present its diagnostic `candidate_text` only as an uncertain candidate",
-            "Use `exec_bash` to run the matching command",
+            "Use `shell` to run the matching command",
             "`text_to_speech`",
         ] {
             assert!(

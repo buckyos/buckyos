@@ -374,7 +374,7 @@ normal、planner → summarizer 用 fork),本版的回答是:**这种诉求不�
 name = "explorer"
 objective = "..."
 system_prompt_template = "..."
-tool_whitelist = ["exec_bash", "..."]
+tool_whitelist = ["shell", "..."]
 approval_required = []
 tool_plan = "minimal_safe"
 mode = "behavior"
@@ -461,7 +461,7 @@ on_input_event = """
 # v0 暂时直接沿用现状字段语义,只是物理位置移到本段下。
 # v0 之后会与 skill / function tool 配置一起重新设计,届时 break change。
 [capabilities]
-tool_whitelist    = ["exec_bash", "write_file", "edit_file", "read", "sendmsg"]
+tool_whitelist    = ["shell", "write_file", "edit_file", "read", "sendmsg"]
 disable_capabilities = ["web_search"]
 approval_required = []
 tool_plan         = "minimal_safe"
@@ -569,7 +569,7 @@ PATH = SessionExecBin : AgentBin : RuntimeBin : SystemBin : <inherited>
 
 ### 6.2 Session `./tools/` 硬约束
 - 只放文本(脚本源码、`tool.toml`、prompts、schema),禁止二进制。
-- 单文件建议 ≤ 64 KB,整目录文件数建议 ≤ 几百(hot path,每次 `exec_bash` 起手要做 mtime 同步)。
+- 单文件建议 ≤ 64 KB,整目录文件数建议 ≤ 几百(hot path,每次 `shell` 起手要做 mtime 同步)。
 
 ### 6.3 Tool Plan
 位置:`<agent_root>/tool_plans/<plan>.toml`;schema 与渲染时机不变。

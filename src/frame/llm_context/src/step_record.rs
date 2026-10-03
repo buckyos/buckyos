@@ -346,13 +346,17 @@ fn render_one_action_result_full(
                 RenderedActionResult::output(format!("Run {command}"), "Pending".to_string()),
             )
         }
-        Observation::Cancelled { reason, .. } => {
+        Observation::Cancelled {
+            reason,
+            effect_unknown,
+            ..
+        } => {
             let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
             with_action_title_id(
                 action,
                 RenderedActionResult::output(
                     format!("Run {command}"),
-                    format!("Cancelled: {body}"),
+                    format!("{}: {body}", cancelled_label(*effect_unknown)),
                 ),
             )
         }
@@ -439,21 +443,23 @@ fn render_one_action_result_compact(
                 RenderedActionResult::output(format!("Run {command}"), "Pending".to_string()),
             )
         }
-        Observation::Cancelled { reason, .. } => {
+        Observation::Cancelled {
+            reason,
+            effect_unknown,
+            ..
+        } => {
             let (body, _) = clip(reason.as_str(), max_body_chars);
             let body = body.trim();
+            let label = cancelled_label(*effect_unknown);
             if body.is_empty() {
                 with_action_title_id(
                     action,
-                    RenderedActionResult::output(format!("Run {command}"), "Cancelled".to_string()),
+                    RenderedActionResult::output(format!("Run {command}"), label.to_string()),
                 )
             } else {
                 with_action_title_id(
                     action,
-                    RenderedActionResult::output(
-                        format!("Run {command}"),
-                        format!("Cancelled: {body}"),
-                    ),
+                    RenderedActionResult::output(format!("Run {command}"), format!("{label}: {body}")),
                 )
             }
         }
@@ -509,9 +515,16 @@ fn render_unpaired_action_result(obs: &Observation, max_body_chars: usize) -> Re
             }
             RenderedActionResult::output("Step result".to_string(), "Pending".to_string())
         }
-        Observation::Cancelled { reason, .. } => {
+        Observation::Cancelled {
+            reason,
+            effect_unknown,
+            ..
+        } => {
             let (body, _) = clip(reason.as_str(), max_body_chars.max(512));
-            RenderedActionResult::output("Step result".to_string(), format!("Cancelled: {body}"))
+            RenderedActionResult::output(
+                "Step result".to_string(),
+                format!("{}: {body}", cancelled_label(*effect_unknown)),
+            )
         }
         Observation::Unresolved {
             reason,
@@ -709,9 +722,17 @@ fn format_action_result_body(body: &str, truncated: bool) -> String {
     s
 }
 
+fn cancelled_label(effect_unknown: bool) -> &'static str {
+    if effect_unknown {
+        "Cancelled (result unknown)"
+    } else {
+        "Cancelled"
+    }
+}
+
 fn action_command_text(action: &buckyos_api::AiToolCall) -> String {
     match action.name.as_str() {
-        "exec_bash" => action
+        "shell" => action
             .args
             .get("command")
             .and_then(Value::as_str)
@@ -940,8 +961,8 @@ mod tests {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
         step.assistant_text =
-            "<thinking>plan</thinking><actions><exec_bash>ls</exec_bash></actions>".into();
-        step.actions = vec![tool_call("exec_bash", "c-1")];
+            "<thinking>plan</thinking><actions><shell>ls</shell></actions>".into();
+        step.actions = vec![tool_call("shell", "c-1")];
         step.action_results = vec![Observation::Success {
             call_id: "c-1".into(),
             content: json!("ok"),
@@ -956,7 +977,7 @@ mod tests {
         assert!(user_text.starts_with("<<last_step_action_results"));
         assert!(user_text.contains("behavior=\"\""));
         assert!(user_text.contains("step=\"0\""));
-        assert!(user_text.contains("- Run exec_bash"));
+        assert!(user_text.contains("- Run shell"));
         assert!(user_text.contains("```output\nok\n```"));
     }
 
@@ -977,7 +998,7 @@ mod tests {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
         step.actions = vec![
-            tool_call("exec_bash", "c-1"),
+            tool_call("shell", "c-1"),
             tool_call("write_file", "c-2"),
         ];
         step.action_results = vec![
@@ -1001,7 +1022,7 @@ mod tests {
         assert!(text.starts_with("<<last_step_action_results"));
         assert!(text.ends_with("<</last_step_action_results>>"));
         // Both action results present, in order.
-        let i1 = text.find("- Run exec_bash").expect("exec_bash");
+        let i1 = text.find("- Run shell").expect("shell");
         let i2 = text.find("Run write_file").expect("write_file");
         assert!(i1 < i2, "actions should render in order");
     }
@@ -1010,9 +1031,9 @@ mod tests {
     fn step_record_renders_action_ids_only_in_result_wrapper() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.assistant_text = r#"<response><actions><exec_bash>ls</exec_bash><read uri="src/lib.rs"/></actions></response>"#.into();
+        step.assistant_text = r#"<response><actions><shell>ls</shell><read uri="src/lib.rs"/></actions></response>"#.into();
         step.actions = vec![
-            tool_call_with_args("exec_bash", "1", &[("command", json!("ls"))]),
+            tool_call_with_args("shell", "1", &[("command", json!("ls"))]),
             tool_call_with_args("read", "2", &[("uri", json!("src/lib.rs"))]),
         ];
         step.action_results = vec![
@@ -1034,7 +1055,7 @@ mod tests {
 
         let (a, u) = renderer.render(&step);
         let assistant_text = assistant_text_of(&a);
-        assert!(assistant_text.contains(r#"<exec_bash>ls</exec_bash>"#));
+        assert!(assistant_text.contains(r#"<shell>ls</shell>"#));
         assert!(assistant_text.contains(r#"<read uri="src/lib.rs"/>"#));
         assert!(!assistant_text.contains("call_id="));
         let user_text = user_text_of(&u);
@@ -1049,7 +1070,7 @@ mod tests {
         step.meta.behavior_name = "plan".into();
         step.meta.step_index = 1;
         step.actions = vec![tool_call_with_args(
-            "exec_bash",
+            "shell",
             "1",
             &[("command", json!("ls"))],
         )];
@@ -1175,7 +1196,7 @@ mod tests {
     fn error_result_carries_message() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.actions = vec![tool_call("exec_bash", "c-9")];
+        step.actions = vec![tool_call("shell", "c-9")];
         step.action_results = vec![Observation::Error {
             call_id: "c-9".into(),
             message: "permission denied".into(),
@@ -1209,6 +1230,8 @@ mod tests {
         step.actions = vec![tool_call("read", "p-1")];
         step.action_results = vec![Observation::Pending {
             call_id: "p-1".into(),
+            task_id: "t-1".into(),
+            until_ms: None,
             tool_result: None,
         }];
         let (_, u) = renderer.render(&step);
@@ -1239,7 +1262,7 @@ mod tests {
     fn xml_special_chars_in_body_are_not_escaped() {
         let renderer = XmlStepRenderer::new();
         let mut step = StepRecord::default();
-        step.actions = vec![tool_call("exec_bash", "e-1")];
+        step.actions = vec![tool_call("shell", "e-1")];
         step.action_results = vec![Observation::Success {
             call_id: "e-1".into(),
             content: json!("<b>not html</b> & friends"),
@@ -1385,10 +1408,10 @@ mod tests {
         let make_step = |idx: u32, body: &str| {
             let mut step = StepRecord::default();
             step.assistant_text = format!(
-                "<thinking>thought-{idx}</thinking><actions><exec_bash>t</exec_bash></actions>"
+                "<thinking>thought-{idx}</thinking><actions><shell>t</shell></actions>"
             );
             step.thought = Some(format!("thought-{idx}"));
-            step.actions = vec![tool_call("exec_bash", &format!("c-{idx}"))];
+            step.actions = vec![tool_call("shell", &format!("c-{idx}"))];
             step.action_results = vec![Observation::Success {
                 call_id: format!("c-{idx}"),
                 content: json!(body),
@@ -1410,14 +1433,14 @@ mod tests {
         // adding Step 1 appends messages instead of rewriting the prefix.
         let a0 = plain_text(&msgs[0]);
         assert!(
-            a0.contains("<exec_bash>t</exec_bash>"),
+            a0.contains("<shell>t</shell>"),
             "expected full assistant text for older step, got: {a0}"
         );
         let u0 = plain_text(&msgs[1]);
         assert!(u0.contains("old body, should compress"));
 
         let a1 = plain_text(&msgs[2]);
-        assert!(a1.contains("<exec_bash>t</exec_bash>"));
+        assert!(a1.contains("<shell>t</shell>"));
     }
 
     #[test]
@@ -1428,10 +1451,10 @@ mod tests {
             step.meta.behavior_name = "execute".into();
             step.meta.step_index = idx;
             step.assistant_text = format!(
-                "<thinking>thought-{idx}</thinking><actions><exec_bash>cmd-{idx}</exec_bash></actions>"
+                "<thinking>thought-{idx}</thinking><actions><shell>cmd-{idx}</shell></actions>"
             );
             step.thought = Some(format!("thought-{idx}"));
-            step.actions = vec![tool_call("exec_bash", &format!("c-{idx}"))];
+            step.actions = vec![tool_call("shell", &format!("c-{idx}"))];
             step.action_results = vec![Observation::Success {
                 call_id: format!("c-{idx}"),
                 content: json!(format!("result-{idx}")),
@@ -1457,7 +1480,7 @@ mod tests {
 
         assert_eq!(extended.len(), prefix.len() + 2);
         assert_eq!(&extended[..prefix.len()], prefix.as_slice());
-        assert!(plain_text(&extended[4]).contains("<exec_bash>cmd-2</exec_bash>"));
+        assert!(plain_text(&extended[4]).contains("<shell>cmd-2</shell>"));
         assert!(plain_text(&extended[5]).contains("result-2"));
     }
 
@@ -1467,7 +1490,7 @@ mod tests {
         let make_step = |idx: u32| {
             let mut step = StepRecord::default();
             step.assistant_text = format!("turn-{idx}");
-            step.actions = vec![tool_call("exec_bash", &format!("c-{idx}"))];
+            step.actions = vec![tool_call("shell", &format!("c-{idx}"))];
             step.action_results = vec![Observation::Success {
                 call_id: format!("c-{idx}"),
                 content: json!("ok"),
@@ -1509,7 +1532,7 @@ mod tests {
             step.observation = Some(format!("observed-{behavior}-{idx} <raw>"));
             step.thought = Some(format!("{behavior}-{idx} <thought>"));
             step.actions = vec![tool_call_with_args(
-                "exec_bash",
+                "shell",
                 &format!("c-{idx}"),
                 &[("command", json!("ls <raw>"))],
             )];

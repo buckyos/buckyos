@@ -409,7 +409,7 @@ impl AIAgent {
     /// Build a Session Exec Bin renderer for `behavior_name`. Returns
     /// `Some(renderer)` whenever we have *any* lower-layer state to manage
     /// (Agent tools to sync or a tool plan to enforce). The renderer is
-    /// then consulted by `TmuxBashRunner` on every `exec_bash` call.
+    /// then consulted by `TmuxBashRunner` on every `shell` call.
     ///
     /// Missing behavior config / missing tool plan files are downgraded
     /// to warnings + an empty-plan renderer so a misconfigured behavior

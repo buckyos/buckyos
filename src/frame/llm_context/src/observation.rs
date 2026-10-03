@@ -89,19 +89,34 @@ pub enum Observation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_result: Option<ToolResultView>,
     },
-    /// Effect layer declared this call is async — its result will arrive via
-    /// an external callback. waist then yields `Outcome::PendingTool`.
+    /// The effect layer handed the work to a task (`task_id`, opaque to the
+    /// waist). With `tool_policy.allow_deferred` the waist yields
+    /// `Outcome::PendingTool` and the host waits for the task; `until_ms`
+    /// (epoch) bounds that wait — past it the call is filled with the
+    /// task's state at that moment. Without `allow_deferred` a tool manager
+    /// must not return this (it waits inside the call instead).
     Pending {
         call_id: String,
+        task_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tool_result: Option<ToolResultView>,
     },
-    /// The call was cancelled (typically by an upper-layer interrupt) before
-    /// it ran to completion. Distinct from `Error` so renderers / the LLM
-    /// can treat it as "not a failure" — the side effects, if any, are
-    /// still external to this call's observation, but the *resolution* of
-    /// the call is "user / session cancelled, please move on".
-    Cancelled { call_id: String, reason: String },
+    /// The call was cancelled before it ran to completion: by an interrupt,
+    /// a graceful finish or the run deadline (inline, see
+    /// `ToolManager::call_tool`), or by the host through
+    /// `ResumeFill::ToolResults`. Distinct from `Error`: not a failure the
+    /// LLM should correct. `effect_unknown = false`: the work was stopped
+    /// (or never started) and the text says what state it is in;
+    /// `effect_unknown = true`: the work could not be cancelled and was
+    /// abandoned while running, so its effect cannot be confirmed.
+    Cancelled {
+        call_id: String,
+        reason: String,
+        #[serde(default)]
+        effect_unknown: bool,
+    },
     /// The dispatcher produced no result for this call. `effect_unknown =
     /// true`: the infrastructure failed while the call may have been running,
     /// so its side effects cannot be confirmed. `effect_unknown = false`: the
@@ -127,17 +142,16 @@ impl Observation {
     }
 }
 
-/// One pending (deferred) tool entry carried in `Outcome::PendingTool.pending`.
+/// One suspended call carried in `Outcome::PendingTool.pending` and in the
+/// snapshot: what the host waits for (`task_id`) and until when
+/// (`until_ms`, epoch; `None` = until the task ends).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PendingToolCall {
     /// The original call (name, args, call_id) exactly as dispatched.
     pub call: AiToolCall,
+    pub task_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub eta_ms: Option<u64>,
-    /// Waiting information the effect layer attached to its
-    /// `Observation::Pending` (task id, reason, partial output).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_result: Option<ToolResultView>,
+    pub until_ms: Option<u64>,
 }
 
 /// Final state of one tool call attempt as seen by the waist.
@@ -156,7 +170,8 @@ pub enum ToolExecStatus {
     /// Dispatched and deferred (`Observation::Pending`); the result is filled
     /// by the scheduler through `ResumeFill::ToolResults`.
     Pending,
-    /// A deferred call the scheduler resolved as `Observation::Cancelled`.
+    /// Cancelled: inline after an interrupt / finish / deadline, or by the
+    /// scheduler through `ResumeFill::ToolResults`.
     Cancelled,
 }
 

@@ -1,6 +1,6 @@
 ## AICC Media CLI
 
-The AIOS runtime provides image, vision, audio, video, and AICC diagnostic commands on `PATH`. Use `exec_bash` to run the matching command and return the generated artifact to the user.
+The AIOS runtime provides image, vision, audio, video, and AICC diagnostic commands on `PATH`. Use `shell` to run the matching command and return the generated artifact to the user.
 
 ### Tool selection
 
@@ -16,7 +16,7 @@ The AIOS runtime provides image, vision, audio, video, and AICC diagnostic comma
 - Run `command -v <command>` once if availability is uncertain. Do not repeatedly probe an available command.
 - For a message attachment whose source type is `named_object`, pass `named_object:<obj_id>` as the input image. Copy the complete typed object ID exactly as provided, including prefixes such as `cyfile:` or `chunk:`; never pass only the hexadecimal payload or otherwise strip the ID type.
 - For a URL attachment, pass its URL. A local file path and a `data:` URL are also accepted.
-- A `named_object` or `cyfile` reference is not a local path. Before another local command can inspect, convert, or otherwise process it, run `materialize_resource 'named_object:<complete_typed_object_id>' '<workspace_destination>'` through `exec_bash`, then use the absolute path returned by that command. Example: `materialize_resource 'named_object:cyfile:…' 'inputs/resource.bin'`. Never pass an object ID directly to a command that expects a local path.
+- A `named_object` or `cyfile` reference is not a local path. Before another local command can inspect, convert, or otherwise process it, run `materialize_resource 'named_object:<complete_typed_object_id>' '<workspace_destination>'` through `shell`, then use the absolute path returned by that command. Example: `materialize_resource 'named_object:cyfile:…' 'inputs/resource.bin'`. Never pass an object ID directly to a command that expects a local path.
 - A tool failure is an observation to reason about, not permission to change the input. Preserve the exact attachment identity across retries. If recovery requires local processing of a non-local resource, materialize that same resource first. Never search the workspace for a similarly named file or substitute an unrelated or stale artifact.
 - `llm_understand_media` returns `Confidence: Observed`, `Inferred`, or `Uncertain`. Treat an `Uncertain` conclusion as a hypothesis rather than a verified fact. It may inform exploratory or creative processing when the uncertainty is preserved. For a downstream operation that depends on exact media semantics, report the uncertainty and obtain stronger evidence with an appropriate tool or ask the user to clarify. Continue using media understanding for general descriptions of non-speech audio, and reserve `speech_to_text` for established speech or explicit transcription requests.
 - If `speech_to_text` reports ASR status `uncertain` or `no_speech`, present its diagnostic `candidate_text` only as an uncertain candidate. Preserve the uncertainty and use media understanding when the user asked for a general audio description.
@@ -35,9 +35,9 @@ Use `<command> --help` when non-default options are needed.
 
 ### High-latency execution
 
-- Media generation may legitimately take longer than the default shell deadline. For image, vision, speech, and audio commands, pass `--timeout 240` to the command and set `exec_bash.timeout_ms` to `300000`.
-- For video and music generation commands, pass `--timeout 540` to the command and set `exec_bash.timeout_ms` to `600000`.
-- In behavior XML, use `<exec_bash timeout_ms="300000">... --timeout 240</exec_bash>` for image/audio work and `<exec_bash timeout_ms="600000">... --timeout 540</exec_bash>` for video/music work. In provider-native tool calls, set the numeric `timeout_ms` field on `exec_bash`.
+- Media generation may legitimately take longer than the default shell deadline. For image, vision, speech, and audio commands, pass `--timeout 240` to the command and set `shell.timeout_ms` to `300000`.
+- For video and music generation commands, pass `--timeout 540` to the command and set `shell.timeout_ms` to `600000`.
+- In behavior XML, use `<shell timeout_ms="300000">... --timeout 240</shell>` for image/audio work and `<shell timeout_ms="600000">... --timeout 540</shell>` for video/music work. In provider-native tool calls, set the numeric `timeout_ms` field on `shell`.
 - Do not launch another billable generation attempt merely because the normal 60-second deadline elapsed. Wait for the extended command result, then retry only after a structured failure.
 
 ### Reading and extending the tools

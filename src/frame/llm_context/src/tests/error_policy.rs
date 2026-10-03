@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage};
 use serde_json::json;
 
-use crate::deps::{InferenceHook, LLMContextDeps, ToolDispatchError, ToolManager};
+use crate::deps::{
+    ToolCallCtx,InferenceHook, LLMContextDeps, ToolDispatchError, ToolManager};
 use crate::error::{CheckpointStage, LLMComputeError, ProviderFailure};
 use crate::observation::{Observation, ToolExecStatus};
 use crate::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
@@ -335,7 +336,7 @@ async fn behavior_actions_stop_after_first_business_error_and_record_skipped() {
         text_response(
             r#"<response>
 <thinking>three actions</thinking>
-<actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash><exec_bash>echo c</exec_bash></actions>
+<actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>
 </response>"#,
         ),
         text_response("<response><thinking>saw it</thinking><next_behavior>END</next_behavior></response>"),
@@ -345,11 +346,11 @@ async fn behavior_actions_stop_after_first_business_error_and_record_skipped() {
     }
     #[async_trait]
     impl ToolManager for FailSecond {
-        async fn call_tool(&self, mut c: AiToolCall) -> Result<Observation, ToolDispatchError> {
+        async fn call_tool(&self, mut c: AiToolCall, ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
             if c.call_id == "2" {
-                c.name = "fail:exec_bash".into();
+                c.name = "fail:shell".into();
             }
-            self.tools.call_tool(c).await
+            self.tools.call_tool(c, ctx).await
         }
     }
     let mut req = base_request();
@@ -404,7 +405,7 @@ async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step(
         text_response(
             r#"<response>
 <thinking>two actions</thinking>
-<actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions>
+<actions><shell>echo a</shell><shell>echo b</shell></actions>
 </response>"#,
         ),
         text_response("never reached"),
@@ -414,11 +415,11 @@ async fn behavior_action_dispatch_failure_ends_run_with_sedimented_partial_step(
     }
     #[async_trait]
     impl ToolManager for DispatchFailFirst {
-        async fn call_tool(&self, mut c: AiToolCall) -> Result<Observation, ToolDispatchError> {
+        async fn call_tool(&self, mut c: AiToolCall, ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
             if c.call_id == "1" {
-                c.name = "dispatch:exec_bash".into();
+                c.name = "dispatch:shell".into();
             }
-            self.tools.call_tool(c).await
+            self.tools.call_tool(c, ctx).await
         }
     }
     let mut req = base_request();

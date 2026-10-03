@@ -70,7 +70,7 @@ pub fn runtime_bin_dir() -> PathBuf {
 
 /// Session Exec Bin layer — rwx, per-Agent + per-Session. The runtime
 /// renders Agent tools + tool-plan tombstones into this directory at
-/// session boot, and on every `exec_bash` invocation re-checks Agent
+/// session boot, and on every `shell` invocation re-checks Agent
 /// tools mtime to pick up live changes.
 pub fn session_exec_bin_dir(agent_id: &str, session_id: &str) -> PathBuf {
     writable_tools_root()

@@ -74,7 +74,7 @@ pub enum ToolMode {
 /// * **tools** — provider-native function calls exposed by `ToolManager`.
 ///   Controlled by `mode` + `whitelist`. Filters spec advertisement
 ///   (see [`crate::deps::resolve_tool_specs`]) and gates dispatch.
-/// * **actions** — XML behavior-loop tags (`exec_bash`, `write_file`, …)
+/// * **actions** — XML behavior-loop tags (`shell`, `write_file`, …)
 ///   parsed out of the LLM response. Controlled by `action_mode` +
 ///   `action_whitelist`. Filters dispatch only — the recognized tag set
 ///   itself is hardcoded by the XML parser.
@@ -105,8 +105,13 @@ pub struct ToolPolicy {
     /// run with `Outcome::PendingTool` until the scheduler fills the result.
     /// When `false`, a `Pending` observation is a contract violation: the
     /// call is recorded with an unknown effect and the run ends with
-    /// `Internal`.
+    /// `Internal`. Passed to every tool call as `ToolCallCtx.allow_deferred`
+    /// so tools wait for their task inside the call instead.
     pub allow_deferred: bool,
+    /// Graceful finish (`LLMContextInterruptHandle::finish`): how long to
+    /// wait for a running tool that cannot cancel its work before the
+    /// finish falls back to an interrupt.
+    pub finish_grace_ms: u64,
 }
 
 impl Default for ToolPolicy {
@@ -122,6 +127,7 @@ impl Default for ToolPolicy {
             disable_capabilities: Vec::new(),
             parallel: false,
             allow_deferred: false,
+            finish_grace_ms: 30_000,
         }
     }
 }

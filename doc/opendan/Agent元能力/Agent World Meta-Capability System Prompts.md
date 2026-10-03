@@ -97,7 +97,7 @@ Start from the root objects you are given. Treat each discovered object as Entit
 ```
 
 
-tools: -> cli工具，可以通过exec_bash使用
+tools: -> cli工具，可以通过shell使用
 
 indexer: 通过 read(indexr_url?query=xxx) 可以尝试过滤
 entity: 

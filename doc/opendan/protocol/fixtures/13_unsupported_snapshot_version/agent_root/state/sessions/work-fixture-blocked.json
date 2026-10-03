@@ -22,16 +22,16 @@
     "report_brief": "",
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1790960719811
+      "heartbeat_ms": 1790989898270
     },
     "last_runner": {
-      "runner_id": "rn-d86da62a880841b4",
+      "runner_id": "rn-11fdbbaf3177484a",
       "host": "${FIXTURE_HOST}",
-      "pid": 3004789,
+      "pid": 3818297,
       "lock_epoch": 1,
-      "at_ms": 1790960719814
+      "at_ms": 1790989898272
     },
-    "updated_at_ms": 1790960719811
+    "updated_at_ms": 1790989898270
   },
   "location_rev": 0
 }

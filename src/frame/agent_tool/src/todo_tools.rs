@@ -10,7 +10,7 @@
 //! - workspace 级 `tasks.json` —— `<workspace_dir>/.agent/tasks.json`
 //!
 //! `agent_rootfs` 在工具构造时注入；`session_id` 来自 `ToolCtx::session()`；
-//! `workspace_dir` 取 `ToolCtx::shell_cwd()`（即 `exec_bash` 的 cwd），缺省时
+//! `workspace_dir` 取 `ToolCtx::shell_cwd()`（即 `shell` 的 cwd），缺省时
 //! 回退到 cwd 向上找最近一层带 `.agent/` 的目录。
 
 use std::fs::{File, OpenOptions};

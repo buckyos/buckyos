@@ -67,9 +67,9 @@ async fn function_call_run_continues_after_a_mid_run_rewrite() {
             return Err(refusal());
         }
         if all.contains("<session_history>") && all.contains("[result #c1") {
-            return Ok(tool_call("c2", "exec", json!({ "command": "echo two" })));
+            return Ok(tool_call("c2", "shell", json!({ "command": "echo two" })));
         }
-        Ok(tool_call("c1", "exec", json!({ "command": "echo one" })))
+        Ok(tool_call("c1", "shell", json!({ "command": "echo one" })))
     });
     let deps = env.deps(llm.clone());
     let r = drive(&sd, &deps, StopWhen::Finished).await;
@@ -154,7 +154,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
             return Err(refusal());
         }
         Ok(text(
-            "<response><thinking>go</thinking><actions><exec><![CDATA[echo behavior-1]]></exec></actions></response>",
+            "<response><thinking>go</thinking><actions><shell><![CDATA[echo behavior-1]]></shell></actions></response>",
         ))
     });
     let deps = env

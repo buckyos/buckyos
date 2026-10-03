@@ -37,7 +37,7 @@ fn file_key(meta: &std::fs::Metadata) -> (u64, u64) {
 /// An exclusive flock on a lock file. Dropping it releases the lock.
 ///
 /// The descriptor is opened with `O_CLOEXEC` (Rust's default) so processes
-/// started by `exec_bash` never inherit it.
+/// started by `shell` never inherit it.
 pub struct FileLock {
     file: File,
     path: PathBuf,

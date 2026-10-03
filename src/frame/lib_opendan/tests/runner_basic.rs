@@ -17,7 +17,7 @@ async fn a01_work_session_completes_with_tool_call() {
             assert!(last_user_text(req).contains("on_init"), "{}", render(&req.messages));
             tool_call(
                 "c1",
-                "exec",
+                "shell",
                 json!({ "command": "echo hi > hello.txt && echo $OPENDAN_SESSION_ID" }),
             )
         }
@@ -45,7 +45,6 @@ async fn a01_work_session_completes_with_tool_call() {
     assert!(sd.runs().exists(&last), "last run directory kept");
     let rec = sd.runs().record(&last).unwrap();
     assert!(rec.inflight.is_empty(), "inflight cleared: {:?}", rec.inflight);
-    assert!(rec.executions.is_empty(), "executions confirmed stopped");
     assert!(rec.host_commit_pending.is_none());
     assert_eq!(rec.host.as_ref().unwrap().assembled_by, "libopendan");
     assert!(sd.report().unwrap().contains("hello.txt contains hi"));
@@ -162,7 +161,7 @@ async fn a02_two_runners_share_one_agent_root_concurrently() {
         if has_tool_result(req, "c1").is_some() {
             text("done")
         } else {
-            tool_call("c1", "exec", json!({ "command": "echo $OPENDAN_SESSION_ID > me.txt" }))
+            tool_call("c1", "shell", json!({ "command": "echo $OPENDAN_SESSION_ID > me.txt" }))
         }
     };
     // Two independent runners (separate deps / runner ids), same AgentRoot.

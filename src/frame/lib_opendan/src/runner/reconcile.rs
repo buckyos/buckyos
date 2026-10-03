@@ -13,7 +13,7 @@ use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
 
-use super::live::{remove_if_safe, stop_executions};
+use super::live::remove_if_safe;
 use super::outcome::{
     classify_done, decide_end, finish_run, has_report, is_fork_child, FinishKind, Next,
 };
@@ -58,8 +58,6 @@ pub(super) async fn reconcile_runs(sh: &Arc<Shared>) -> Result<Reconciled> {
         ));
     };
     let run = RunHandle::new(runs.store().clone(), record.clone(), lock);
-    // kill -9 of a runner does not stop its tools.
-    stop_executions(sh, &run).await?;
     // Receipts: fill in state from the snapshot, never re-append messages.
     {
         let mut s = sh.session.lock().await;

@@ -284,6 +284,8 @@ async fn tool_results_are_matched_by_call_id() {
             "p".into(),
             Observation::Pending {
                 call_id: "p".into(),
+                task_id: "task:p".into(),
+                until_ms: None,
                 tool_result: None,
             },
         )]),
@@ -330,6 +332,7 @@ async fn tool_results_are_matched_by_call_id() {
         Observation::Cancelled {
             call_id: "p".into(),
             reason: "user".into(),
+            effect_unknown: false,
         },
         Observation::Unresolved {
             call_id: "p".into(),
@@ -355,9 +358,9 @@ async fn out_of_order_results_are_written_in_call_order() {
         pending: calls
             .into_iter()
             .map(|c| crate::observation::PendingToolCall {
+                task_id: format!("task:{}", c.call_id),
                 call: c,
-                eta_ms: None,
-                tool_result: None,
+                until_ms: None,
             })
             .collect(),
         at_ms: 1,
@@ -398,6 +401,7 @@ async fn a_cancelled_fill_winds_the_rest_of_the_batch_down() {
                 Observation::Cancelled {
                     call_id: "p".into(),
                     reason: "user interrupt".into(),
+                    effect_unknown: false,
                 },
             )],
         },

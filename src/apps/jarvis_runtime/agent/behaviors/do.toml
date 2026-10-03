@@ -44,8 +44,8 @@ Your only job is to complete the TASK_ANCHOR (Todo Task).
 
 ## Completion
 
-- If the TASK_ANCHOR is complete, you MUST exec_bash `todo done $summary` to finish the todo as successful, write a final `<report>`, and set `next_behavior = END`.
-- If the TASK_ANCHOR cannot be completed, you MUST exec_bash `todo failed $summary` to finish the todo as failed, write a final `<report>` with the blocker or failure cause, and set `next_behavior = END`.
+- If the TASK_ANCHOR is complete, you MUST shell `todo done $summary` to finish the todo as successful, write a final `<report>`, and set `next_behavior = END`.
+- If the TASK_ANCHOR cannot be completed, you MUST shell `todo failed $summary` to finish the todo as failed, write a final `<report>` with the blocker or failure cause, and set `next_behavior = END`.
 - If user input is required, you MUST use action `sendmsg` and set `next_behavior = WAIT_FOR_MSG`.
 
 ## Failure Handling
@@ -105,7 +105,7 @@ tool_whitelist = []
 
 action_whitelist = [
   "read",
-  "exec_bash",
+  "shell",
   "write_file",
   "edit_file",
   "sendmsg"

@@ -9,7 +9,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use agent_tool::exec_tracking::{probe_execution, ExecutionProbe};
 use common::*;
 use libopendan::protocol::*;
 use libopendan::runner::{drive, DriveResult, StopWhen};
@@ -42,7 +41,7 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                             json!({ "text": "motion at door", "subscription": "s2", "version": "e1" }),
                         ),
                     );
-                    tool_call("c1", "exec", json!({ "command": "true" }))
+                    tool_call("c1", "shell", json!({ "command": "true" }))
                 }
             })
         }
@@ -60,7 +59,7 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
             if has_tool_result(req, "c1").is_some() {
                 text("all done")
             } else {
-                tool_call("c1", "exec", json!({ "command": "echo step >> steps.log" }))
+                tool_call("c1", "shell", json!({ "command": "echo step >> steps.log" }))
             }
         }),
         "exec_sleep" => {
@@ -69,7 +68,7 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                     Some(r) => text(&format!("recovered: {r}")),
                     None => tool_call(
                         "c1",
-                        "exec",
+                        "shell",
                         json!({ "command": "echo start >> marker; sleep 30; echo done >> marker" }),
                     ),
                 },
@@ -87,13 +86,13 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
             } else if all.contains("<session_history>") && all.contains("[result #c1") {
                 Ok(tool_call(
                     "c2",
-                    "exec",
+                    "shell",
                     json!({ "command": "echo two >> steps.log" }),
                 ))
             } else {
                 Ok(tool_call(
                     "c1",
-                    "exec",
+                    "shell",
                     json!({ "command": "echo one >> steps.log" }),
                 ))
             }
@@ -359,7 +358,7 @@ async fn crash_after_context_limit_rewrite_published() {
 }
 
 #[tokio::test]
-async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
+async fn kill_9_during_shell_reports_interrupted_result_and_leaves_the_command_alone() {
     let env = Env::new();
     let sd = env.create_work(work_spec("long running command")).await;
     let mut child = spawn_child(&env, &sd, "exec_sleep", None);
@@ -380,7 +379,7 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
         libc::kill(child.id() as i32, libc::SIGKILL);
     }
     let _ = child.wait();
-    // The runner is gone, its tool is not.
+    // The runner is gone; its in-flight record is not.
     let st = sd.state().unwrap();
     let live = st.live_run.clone().expect("live run");
     let rec = sd.runs().record(&live.run_id).unwrap();
@@ -389,23 +388,19 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
         1,
         "inflight persisted before the tool ran"
     );
-    assert_eq!(rec.executions.len(), 1, "execution identity persisted");
-    let exec = rec.executions[0].clone();
-    assert!(matches!(
-        probe_execution(&exec, None),
-        ExecutionProbe::Alive { .. }
-    ));
-    // Same identity, other process: takes over after stopping the old tool.
+    // Same identity, other process: takes over without probing or killing
+    // anything (standard process semantics, long-tool TODO §3.2).
     let llm = script("exec_sleep");
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    assert_eq!(probe_execution(&exec, None), ExecutionProbe::Stopped);
-    // The tool was not re-run and its result is reported as unknown.
+    // The tool was not re-run; its result says the executor exited while
+    // it ran and leaves the judgement to the model.
     let m = std::fs::read_to_string(&marker).unwrap();
     assert_eq!(m.matches("start").count(), 1, "{m}");
-    assert!(!m.contains("done"), "old tool must be stopped: {m}");
     let result = has_tool_result(&llm.requests.lock().unwrap()[0], "c1").unwrap();
-    assert!(result.contains("unknown"), "{result}");
+    assert!(result.contains("result unknown"), "{result}");
+    assert!(result.contains("previous executor exited"), "{result}");
+    assert!(result.contains("shell (native)"), "{result}");
     assert_eq!(llm.count(), 1);
     let wl = read_worklog(&sd);
     assert!(wl.iter().any(|e| matches!(&e.body,
@@ -413,7 +408,12 @@ async fn kill_9_during_exec_stops_old_tool_and_reports_unknown_result() {
     assert_worklog_contiguous(&sd);
     let last = sd.state().unwrap().last_run.unwrap();
     let rec = sd.runs().record(&last).unwrap();
-    assert!(rec.inflight.is_empty() && rec.executions.is_empty());
+    assert!(rec.inflight.is_empty());
+    // Leave no process behind in the test environment: the orphaned
+    // command belongs to nobody, so the test kills it itself.
+    let _ = Command::new("pkill")
+        .args(["-KILL", "-f", &format!("{}", marker.display())])
+        .status();
 }
 
 #[tokio::test]
@@ -476,7 +476,7 @@ async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
         } else {
             tool_call(
                 "helper-check",
-                "exec",
+                "shell",
                 json!({"command": r#"case $PATH in *"$OPENDAN_SESSION_DIR/.runtime/bin"*) echo runtime-bin;; *) echo missing; exit 1;; esac; test -n "$OPENDAN_RUNTIME_ID""#}),
             )
         }

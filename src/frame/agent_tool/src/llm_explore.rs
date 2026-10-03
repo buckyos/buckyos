@@ -7,7 +7,7 @@
 //! - `--prompt`     (user content): 实际给 LLM 看的任务说明。
 //!
 //! 我们在一个本地目录上起一个 xllm Run（`xllm`）,预装好 bash 工具组 /
-//! Grep / exec_bash 等只读 / 读写工具,把这套 system prompt 钉在第一条
+//! Grep / shell 等只读 / 读写工具,把这套 system prompt 钉在第一条
 //! 消息上,然后 `drive_to_terminal`,把最终的助手输出整理成
 //! `AgentToolResult` 写到 stdout。
 //!
@@ -47,7 +47,7 @@ use crate::xllm::{
     XllmDeps, XllmRun, XllmTask,
 };
 use crate::{
-    cli_error_result, render_cli_output, AgentToolError, AgentToolPendingReason, AgentToolResult,
+    cli_error_result, render_cli_output, AgentToolError, AgentToolResult,
     AgentToolStatus, AGENT_TOOL_PROTOCOL_VERSION, CLI_EXIT_ERROR, CLI_EXIT_SUCCESS, CLI_EXIT_USAGE,
 };
 
@@ -293,13 +293,17 @@ fn build_outcome_result(
                     agent_tool_protocol: AGENT_TOOL_PROTOCOL_VERSION.to_string(),
                     tool: Some(TOOL_NAME.to_string()),
                     cmd_name: None,
-                    status: AgentToolStatus::Pending,
-                    task_id: Some(run_id.to_string()),
-                    pending_reason: Some(AgentToolPendingReason::LongRunning),
+                    status: AgentToolStatus::Error,
+                    task_id: None,
+                    pending_reason: None,
                     check_after: None,
                     estimated_wait: None,
                     title: format!("{TOOL_NAME} => {}", record.status.as_str()),
-                    summary: format!("run {}: {reason}", record.status.label()),
+                    summary: format!(
+                        "sub run {run_id} {}: {reason}. It did not finish; take it over with `{}` or start again.",
+                        record.status.label(),
+                        record.resume_command()
+                    ),
                     details,
                     cmd_args: None,
                     return_code: None,

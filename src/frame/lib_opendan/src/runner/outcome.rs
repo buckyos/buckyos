@@ -21,7 +21,7 @@ use crate::state::run_digest;
 use super::flush::{run_history_entries, FlushMarks};
 use super::history::maybe_compact;
 use super::inputs::side_effects_from_worklog;
-use super::live::{live_from_frame, remove_if_safe, stop_executions, suspend_run};
+use super::live::{live_from_frame, remove_if_safe, suspend_run};
 use super::shared::{commit_and_report, report, LiveCtx, Shared};
 
 const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
@@ -297,6 +297,12 @@ pub(super) async fn handle_context_outcome(
             usage,
             snapshot: s,
             ..
+        }
+        | LLMContextOutcome::Settled {
+            reason,
+            usage,
+            snapshot: s,
+            ..
         } => {
             next.usage = Some(usage);
             snapshot = s;
@@ -424,8 +430,6 @@ pub(super) async fn finish_run(
     behavior: bool,
     next: Next,
 ) -> Result<()> {
-    // Background processes of the run must be confirmed stopped first.
-    stop_executions(sh, run).await?;
     let mut s = sh.session.lock().await;
     let ended = commit_run_end(sh, &mut s, run, snapshot, behavior, &next).await?;
     after_run_end(sh, s, run, &next, ended).await

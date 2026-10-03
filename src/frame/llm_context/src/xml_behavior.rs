@@ -15,7 +15,7 @@
 //!   <thinking>...free-form reasoning...</thinking>
 //!
 //!   <actions>
-//!     <exec_bash>cargo test</exec_bash>
+//!     <shell>cargo test</shell>
 //!     <write_file path="src/foo.rs"><![CDATA[
 //! pub fn bar() -> u32 { 42 }
 //! ]]></write_file>
@@ -28,7 +28,7 @@
 //!
 //! ## Recognized Action tags (first-class, hardcoded allowlist)
 //!
-//! `exec_bash`, `write_file`, `edit_file`, `read`, `sendmsg`,
+//! `shell`, `write_file`, `edit_file`, `read`, `sendmsg`,
 //! `subscribe_event`, `unsubscribe_event`. Any other element inside
 //! `<actions>` is silently skipped — the v2 Action set is prompt-coupled,
 //! not registry-driven.
@@ -82,12 +82,12 @@ The response MUST be parseable by XMLParser. Example:
     <write_file path="test.py"><![CDATA[
 print("test")
     ]]></write_file>
-    <exec_bash><![CDATA[
+    <shell><![CDATA[
 python3 test.py
-    ]]></exec_bash>
-    <exec_bash><![CDATA[
+    ]]></shell>
+    <shell><![CDATA[
 ifconfig
-    ]]></exec_bash>
+    ]]></shell>
     <edit_file path="src/foo.rs">
       <old_string><![CDATA[println!("hello");]]></old_string>
       <new_string><![CDATA[println!("hi");]]></new_string>
@@ -112,9 +112,9 @@ Message to the user; optional; SHOULD only be provided when there is important p
 ## <actions> Usage Rules
 
 - Actions are executed in order, and later actions can depend on the results of earlier actions.
-- You SHOULD always prefer `write_file` / `edit_file` / `read` over `exec_bash`. MUST NOT use `echo`, `cat`, or heredoc to write files
+- You SHOULD always prefer `write_file` / `edit_file` / `read` over `shell`. MUST NOT use `echo`, `cat`, or heredoc to write files
 - `<edit_file>` MUST provide `old_string` and `new_string`. `new_string` MUST be different from `old_string`. `old_string` MUST match exactly once in the target file, otherwise the edit fails.
-- `<exec_bash>` MUST contain online bash commands in its body, and each `<exec_bash>` SHOULD complete exactly one task.
+- `<shell>` MUST contain bash commands in its body (run by the runtime's shell), and each `<shell>` SHOULD complete exactly one task.
 
 "#;
 
@@ -125,7 +125,7 @@ Message to the user; optional; SHOULD only be provided when there is important p
 /// but it's never dispatched as an action — see the `<sendmsg>` handling
 /// note above.
 pub const V2_ACTION_TAGS: &[&str] = &[
-    "exec_bash",
+    "shell",
     "write_file",
     "edit_file",
     "read",
@@ -147,7 +147,7 @@ const EDIT_FILE_ARG_TAGS: &[&str] = &["old_string", "new_string"];
 pub fn is_v2_action_tag(name: &str) -> bool {
     matches!(
         name,
-        "exec_bash" | "write_file" | "edit_file" | "read" | "subscribe_event" | "unsubscribe_event"
+        "shell" | "write_file" | "edit_file" | "read" | "subscribe_event" | "unsubscribe_event"
     )
 }
 
@@ -155,7 +155,7 @@ pub fn is_v2_action_tag(name: &str) -> bool {
 /// (e.g. `<read uri="..."/>`) or are special-cased (`sendmsg`).
 fn body_arg_name(tag: &str) -> Option<&'static str> {
     match tag {
-        "exec_bash" => Some("command"),
+        "shell" => Some("command"),
         "write_file" => Some("content"),
         _ => None,
     }
@@ -674,16 +674,16 @@ mod tests {
     // ---- v2 first-class Action tags ----
 
     #[test]
-    fn exec_bash_body_maps_to_command_arg() {
+    fn shell_body_maps_to_command_arg() {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
-                r#"<actions><exec_bash>ls -la | head -5</exec_bash></actions>"#,
+                r#"<actions><shell>ls -la | head -5</shell></actions>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
         let call = &out.do_actions[0];
-        assert_eq!(call.name, "exec_bash");
+        assert_eq!(call.name, "shell");
         assert_eq!(call.args.get("command"), Some(&json!("ls -la | head -5")));
     }
 
@@ -764,20 +764,20 @@ mod tests {
         let out = parser
             .parse(&resp(
                 r#"<actions>
-<exec_bash>echo first</exec_bash>
+<shell>echo first</shell>
 <write_file path="a">A</write_file>
-<exec_bash>echo third</exec_bash>
+<shell>echo third</shell>
 </actions>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 3);
-        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(out.do_actions[0].name, "shell");
         assert_eq!(
             out.do_actions[0].args.get("command"),
             Some(&json!("echo first"))
         );
         assert_eq!(out.do_actions[1].name, "write_file");
-        assert_eq!(out.do_actions[2].name, "exec_bash");
+        assert_eq!(out.do_actions[2].name, "shell");
         assert_eq!(
             out.do_actions[2].args.get("command"),
             Some(&json!("echo third"))
@@ -791,12 +791,12 @@ mod tests {
             .parse(&resp(
                 r#"<actions>
 <unknown_thing>nope</unknown_thing>
-<exec_bash>ok</exec_bash>
+<shell>ok</shell>
 </actions>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
-        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(out.do_actions[0].name, "shell");
     }
 
     #[test]
@@ -805,10 +805,10 @@ mod tests {
         // `<response>` still get picked up.
         let parser = XmlBehaviorParser::new();
         let out = parser
-            .parse(&resp(r#"<response><exec_bash>ls</exec_bash></response>"#))
+            .parse(&resp(r#"<response><shell>ls</shell></response>"#))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
-        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(out.do_actions[0].name, "shell");
     }
 
     // ---- <sendmsg> / <report> handling ----
@@ -819,7 +819,7 @@ mod tests {
         let out = parser
             .parse(&resp(
                 r#"<response>
-<actions><exec_bash>echo done</exec_bash></actions>
+<actions><shell>echo done</shell></actions>
 <report><![CDATA[本步骤完成]]></report>
 <next_behavior>END</next_behavior>
 </response>"#,
@@ -867,14 +867,14 @@ mod tests {
                 r#"<response>
 <actions>
 <sendmsg target="user">中途反馈</sendmsg>
-<exec_bash>echo work</exec_bash>
+<shell>echo work</shell>
 </actions>
 <report>最终总结</report>
 </response>"#,
             ))
             .unwrap();
         assert_eq!(out.do_actions.len(), 1);
-        assert_eq!(out.do_actions[0].name, "exec_bash");
+        assert_eq!(out.do_actions[0].name, "shell");
         assert_eq!(out.self_report.as_deref(), Some("最终总结"));
         assert_eq!(out.messages_to_send.len(), 1);
         assert_eq!(out.messages_to_send[0].target, "user");
@@ -905,7 +905,7 @@ mod tests {
         let response = AiResponse {
             message: AiResponse::message_from_parts(
                 Some(
-                    r#"<actions><exec_bash>ignored</exec_bash></actions><report>kept</report>"#
+                    r#"<actions><shell>ignored</shell></actions><report>kept</report>"#
                         .to_string(),
                 ),
                 vec![provider_call],
@@ -980,7 +980,7 @@ mod tests {
         let parser = XmlBehaviorParser::new();
         let out = parser
             .parse(&resp(
-                r#"<actions><exec_bash>echo &lt;hi&gt;</exec_bash></actions>"#,
+                r#"<actions><shell>echo &lt;hi&gt;</shell></actions>"#,
             ))
             .unwrap();
         assert_eq!(

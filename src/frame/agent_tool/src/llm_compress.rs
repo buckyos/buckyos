@@ -1156,6 +1156,7 @@ mod tests {
         async fn call_tool(
             &self,
             call: buckyos_api::AiToolCall,
+            _ctx: llm_context::deps::ToolCallCtx,
         ) -> Result<llm_context::observation::Observation, llm_context::deps::ToolDispatchError>
         {
             Ok(llm_context::observation::Observation::Error {
@@ -1633,7 +1634,7 @@ mod tests {
             AiRole::Assistant,
             vec![buckyos_api::AiContent::tool_use(
                 "call-1",
-                "exec_bash",
+                "shell",
                 HashMap::new(),
             )],
         ));

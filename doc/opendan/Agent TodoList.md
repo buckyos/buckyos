@@ -665,7 +665,7 @@ Todo A 已完成
 
 ## 13. CLI 命令设计
 
-Todo 工具以 CLI shim 形式落地，对接 Behavior 层的 `exec_bash` 通道（参见 `doc/opendan/Agent Actions.md`）。prompt 中优先暴露短工具名：
+Todo 工具以 CLI shim 形式落地，对接 Behavior 层的 `shell` 通道（参见 `doc/opendan/Agent Actions.md`）。prompt 中优先暴露短工具名：
 
 - `todo`：session 级 Todo 管理。
 - `delegateTask`：系统级 Task 委托入口。
@@ -798,15 +798,15 @@ task_management wait task_01J...
 
 ### 13.3 环境变量与路径解析
 
-Todo CLI 是一个独立子进程，**不能假设自己在哪一个 session / 哪一个 workspace 里**。所有路径解析都靠 runtime 在 `exec_bash` 时注入的 env 变量。这套变量同时也是其他 agent CLI 工具的通用上下文，复用 [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) 已有的 per-call env 注入通道。
+Todo CLI 是一个独立子进程，**不能假设自己在哪一个 session / 哪一个 workspace 里**。所有路径解析都靠 runtime 在 `shell` 时注入的 env 变量。这套变量同时也是其他 agent CLI 工具的通用上下文，复用 [llm_bash.rs](../../src/frame/agent_tool/src/llm_bash.rs) 已有的 per-call env 注入通道。
 
 | 环境变量 | 含义 | 由谁注入 |
 | --- | --- | --- |
 | `BUCKYOS_ROOT` | BuckyOS 安装根（已存在，见 [paths.rs](../../src/frame/opendan/src/paths.rs)） | 进程启动时 |
 | `AGENT_ROOTFS` | 当前 agent 在 host 上的可写根（典型：`$BUCKYOS_ROOT/tools/<agent_id>`），承载 sessions/、workspaces/ 等子目录 | runtime 启动 session 时 |
-| `WORK_SESSION_ID` | 当前 work session 的 id | runtime 每次 `exec_bash` 注入 |
-| `WORKSPACE_ID` | 当前 session 绑定到的 workspace id（可选；缺省时按 cwd 反查 `session_workspace_bindings.json`） | runtime 每次 `exec_bash` 注入 |
-| `WORKSPACE_DIR` | 当前 workspace 在 host 上的实际目录（绝对路径），通常 == `exec_bash` 的 cwd | runtime 每次 `exec_bash` 注入 |
+| `WORK_SESSION_ID` | 当前 work session 的 id | runtime 每次 `shell` 注入 |
+| `WORKSPACE_ID` | 当前 session 绑定到的 workspace id（可选；缺省时按 cwd 反查 `session_workspace_bindings.json`） | runtime 每次 `shell` 注入 |
+| `WORKSPACE_DIR` | 当前 workspace 在 host 上的实际目录（绝对路径），通常 == `shell` 的 cwd | runtime 每次 `shell` 注入 |
 
 面向 LLM 的主流程不暴露 `--ws` / `--session` / `--agent` / `--op-id` 等全局 flag。它们可以作为隐藏调试参数存在，但不写入 skill 提示词，避免模型在必填/选填之间做无意义判断。
 

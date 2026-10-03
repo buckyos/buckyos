@@ -103,7 +103,7 @@ deno run --config /opt/buckyos/bin/opendan/buckyos-agent/deno.json \
 CLI 始终将 `AgentToolResult` JSON 写到 stdout（与 `src/frame/agent_tool` 的协议一致，`agent_tool_protocol: "1"`），stderr 用于进度日志。退出码遵循 doc §2.5：
 
 异步 AICC 任务等待期间，CLI 每 5 秒向 stderr 写一行以
-`__BUCKYOS_AGENT_PROGRESS__` 开头的结构化心跳。OpenDAN 会消费该心跳以更新会话状态并续租 `exec_bash` 的空闲超时；它不属于最终 `AgentToolResult`。
+`__BUCKYOS_AGENT_PROGRESS__` 开头的结构化心跳。OpenDAN 会消费该心跳以更新会话状态并续租 `shell` 的空闲超时；它不属于最终 `AgentToolResult`。
 
 - `0` 成功
 - `1` 参数错误

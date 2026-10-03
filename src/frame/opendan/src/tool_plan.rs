@@ -12,7 +12,7 @@
 //! the Session Exec Bin so that the AgentSession's tmux pane sees the same
 //! tool surface the agent author maintains, without exposing the persistent
 //! Agent tools dir to mutation. A cheap mtime walk runs at the head of
-//! every `exec_bash` call so live edits to `<agent_root>/tools/` show up
+//! every `shell` call so live edits to `<agent_root>/tools/` show up
 //! in the next LLM step.
 
 use std::collections::{BTreeMap, HashSet};
@@ -329,7 +329,7 @@ fn link_or_copy(src: &Path, dst: &Path) -> io::Result<()> {
 /// Stateful renderer driving the Session Exec Bin layer.
 ///
 /// Constructed once per AgentSession (at session boot or restore), held by
-/// the tmux runner, and consulted on every `exec_bash` call to keep Agent
+/// the tmux runner, and consulted on every `shell` call to keep Agent
 /// tools in sync. The renderer owns the *list of currently-linked Agent
 /// tool basenames* so it can also remove stale entries when tools are
 /// deleted from the Agent tools directory.
@@ -385,7 +385,7 @@ impl SessionBinRenderer {
         Ok(())
     }
 
-    /// Per-`exec_bash` opportunistic sync. Cheap mtime walk; only re-links
+    /// Per-`shell` opportunistic sync. Cheap mtime walk; only re-links
     /// when something under `agent_tools` changed since the last pass.
     /// Tombstones are re-applied on top in case a stale Agent tool with
     /// the same name was just written (last-writer-wins on the session

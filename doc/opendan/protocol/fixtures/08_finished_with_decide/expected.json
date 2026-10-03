@@ -14,13 +14,13 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261002-100518-4c974a"
+        "20261002-181137-ea4840"
       ],
       "session_id": "work-fixture-decide",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20261002-100518-4c974a",
+        "last_run": "20261002-181137-ea4840",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],
@@ -30,9 +30,9 @@
         "turns_completed": 1
       },
       "worklog": {
-        "committed_bytes": 1623,
+        "committed_bytes": 1613,
         "committed_seq": 8,
-        "file_bytes": 1623,
+        "file_bytes": 1613,
         "uncommitted_tail": false
       }
     }

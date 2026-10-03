@@ -136,7 +136,7 @@ BuckyOS Node 的命令执行接口不能直接假定具有完整文件工具能�
 - [x] **文件工具后端**：从 `file_tools.rs` 拆出可替换的 I/O 后端；read / write / edit 的参数、匹配、diff 与审计行为继续复用。路径解析、路径约束与必要的真实路径核验在目标文件系统上完成，remote 不能调用 Runner 的本地 fs 校验后就声称远端路径已通过。
 - [x] **SSH 传输**：首版使用系统 OpenSSH `ssh` / `sftp` CLI 与现有进程管理依赖，不引入 SSH crate 或常驻 runtime daemon。`ssh` 运行远端 bash，`sftp` 提供文件传输；首版以 Linux、bash 与 SFTP 为目标能力要求，以复用现有 Linux 执行跟踪思路，其它目标 OS 后续扩展。复用本机 ssh_config、agent / key 与 known_hosts，以非交互方式连接，连接或认证失败明确报告。
 - [x] **SSH 命令与文件语义**：命令在远端 workdir 执行，返回 exit_code / stdout / stderr / timeout / truncation；文件工具经远端后端读写同一目录。命令脚本与文件内容通过数据通道传送，不能将文件内容拼进 shell 命令；路径与 env 使用明确的转义规则。远端写入采用目标侧临时文件与替换，不能因 SSH 失败把写入改为本地文件。
-- [x] **SSH 执行跟踪与恢复**：复用 `ExecutionRecord` / registrar 契约，在放行用户命令前持久化远端 execution_id、目标身份、boot_id 与可核验的进程身份。Linux 远端沿用执行标记与进程组核验思路，超时 / 取消须在远端终止并核验，而不只是杀掉本地 ssh 客户端。断线后重新连接核验旧执行；目标不可达或无法证明执行已停止时返回 RecoveryBlocked。没有持久结果的调用记为结果未知，不重放。
+- [x] ~~**SSH 执行跟踪与恢复**：复用 `ExecutionRecord` / registrar 契约……无法证明执行已停止时返回 RecoveryBlocked。~~ **2026-10-02 被 [长命令 TODO](./llm-context-long-tool-todo.md) §3.2 推翻**：不再持久化进程身份、不核验、不停止；远端命令由包装脚本后台启动，把 `pid`、`stdout`、`stderr`、`exit` 写进远端执行目录 `/tmp/llm-runtime-<uid>/<run_id>/<call_id>`，后续 SSH 会话轮询；超时 / 取消用记录的 pid `kill`；恢复只读执行目录（`AgentRuntime::describe_interrupted`），连不上时如实说明，不返回 RecoveryBlocked。没有持久结果的调用记为“被打断、结果未知”，不重放。
 - [x] **xllm 装配**：`prepare / prepare_hosted` 改为 `runtime.open(..)`；`XllmDeps.bash_runner` 改由 Runtime 提供，`XllmDeps.runtime` 支持宿主 / 测试注入，仍核对有效配置与目标。resume 由对应 runtime 完成恢复，替换“只接受 native”的硬编码。
 - [x] **控制侧与执行侧目录**：配置来源、run.json、快照与日志仍属于 Runner 的控制侧；`runtime.workdir` 是工具执行侧路径，二者显式区分。run 锁与 native / tmux 的工作目录锁保留；SSH 不对远端路径取本地 flock。首版不提供跨 Runner 的远端工作目录锁，同一远端目录的并发使用需由宿主协调。
 - [x] **MCP / 宿主工具**：全部经 Runtime 派发，MCP 仍由所配置的服务执行，层 ③ 工具仍在宿主进程执行；其位置与依赖不能伪装成远端能力。宿主工具依赖记入 run.json，xllm 缺少它们时按既有 app_tools 规则拒绝接手。
@@ -248,4 +248,4 @@ Session 接管额外保存并核验 runtime、PATH、环境和 bin manifest/help
 - `cargo check --workspace` 与 `uv run buckyos-build.py --skip-web` 通过。整仓 `cargo test --workspace -- --test-threads=1` 在链接阶段因现有磁盘空间不足（ENOSPC）未完成；已清理本轮生成的增量缓存/链接产物，相关模块测试重新通过。
 - schema 和 fixtures 由 Rust 参考实现重新生成；fixture 路径替换同步重算 worklog 字节边界，测试专用主机身份占位符不改变生产恢复核验。
 
-首版限制：SSH 目标需 Linux/bash/SFTP；libopendan 未部署远端 Session helper，选择 SSH 时明确能力错误，独立 xllm 可用。native/tmux 的 workspace 路径检查不构成 OS 隔离。SSH 不提供跨 Runner 的远端工作目录锁。policy、grant、approval 与其它类型按 §7/§8 后续评估；不提前冻结 daemon/HTTP 协议。原生恢复的进程核验沿用 Linux /proc；其它平台能力需单独验证。
+首版限制：SSH 目标需 Linux/bash/SFTP；libopendan 未部署远端 Session helper，选择 SSH 时明确能力错误，独立 xllm 可用。native/tmux 的 workspace 路径检查不构成 OS 隔离。SSH 不提供跨 Runner 的远端工作目录锁。policy、grant、approval 与其它类型按 §7/§8 后续评估；不提前冻结 daemon/HTTP 协议。2026-10-02 起恢复不做进程核验（长命令 TODO §3.2），native / tmux / SSH 都不再依赖 /proc 与 setsid；tmux 因此可在 macOS 上使用。

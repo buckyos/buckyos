@@ -6,15 +6,15 @@ OpenDAN 里的 Agent Tool 在工程上由 `agent_tool` crate 的 `AgentToolManag
 
 | 位 | 含义 | 提示词里 LLM 看到的形态 |
 |---|---|---|
-| `BASH`  | 可以作为命令行被 `exec_bash` 调起 | overlay PATH 里的一个 shim 二进制（或真二进制） |
-| `ACTION` | 可以作为 Behavior 模式下 `<actions>` 里的一个 XML 标签出现 | `<write_file>`、`<exec_bash>` 这类标签 |
+| `BASH`  | 可以作为命令行被 `shell` 调起 | overlay PATH 里的一个 shim 二进制（或真二进制） |
+| `ACTION` | 可以作为 Behavior 模式下 `<actions>` 里的一个 XML 标签出现 | `<write_file>`、`<shell>` 这类标签 |
 | `LLM`   | 可以作为 provider 原生 tool_call 被调用 | OpenAI/Anthropic tool/function schema |
 
 > 实现：[`agent_tool/src/tool.rs:31`](src/frame/agent_tool/src/tool.rs:31) 定义 `CallingConventions`，各 tool 通过 `fn calling(&self)` 声明。
 
-90% 的 Agent Tool 是同时带 `BASH` 位的——它们在 4 层 PATH overlay（Session > Agent > Runtime > System，见 [`agent_bash.rs`](src/frame/opendan/src/agent_bash.rs)）里有一个对应的可执行文件，LLM 通过 `exec_bash` 像 shell 调用一样把它们用起来。这是默认的、推荐的扩展方式：写一个二进制丢进 overlay，立刻能用。
+90% 的 Agent Tool 是同时带 `BASH` 位的——它们在 4 层 PATH overlay（Session > Agent > Runtime > System，见 [`agent_bash.rs`](src/frame/opendan/src/agent_bash.rs)）里有一个对应的可执行文件，LLM 通过 `shell` 像 shell 调用一样把它们用起来。这是默认的、推荐的扩展方式：写一个二进制丢进 overlay，立刻能用。
 
-**"特殊"指的是那些不带 `BASH` 位的工具**：它们没有 shim、不在 PATH 上，永远不会被 `exec_bash` 看到。原因通常只有一个——
+**"特殊"指的是那些不带 `BASH` 位的工具**：它们没有 shim、不在 PATH 上，永远不会被 `shell` 看到。原因通常只有一个——
 
 > **这些工具依赖 session 的可变状态**（session id、订阅句柄、`Weak<AIAgent>`、消息队列），无状态的 CLI 进程根本拿不到这些上下文。所以它们只能由 Session 层在创建 session 的时候手工注册到当前 session 的 ToolManager 上。
 
@@ -71,7 +71,7 @@ OpenDAN 里的 Agent Tool 在工程上由 `agent_tool` crate 的 `AgentToolManag
 
 ### 3.3 关于 Action 集合
 
-完整的 v2 Action 7 件集合（`exec_bash` / `read` / `write_file` / `edit_file` / `sendmsg` / `subscribe_event` / `unsubscribe_event`）以及 actions 外的 `<report>` LastState 标签已经在 [Agent Actions.md](doc/opendan/Agent%20Actions.md) 单独定稿。本文不重复 Action 部分；这里只列出"被 Session 层手工注册、没有 CLI 化身"的工具——这才是把"特殊"四个字落到代码上的判定标准。
+完整的 v2 Action 7 件集合（`shell` / `read` / `write_file` / `edit_file` / `sendmsg` / `subscribe_event` / `unsubscribe_event`）以及 actions 外的 `<report>` LastState 标签已经在 [Agent Actions.md](doc/opendan/Agent%20Actions.md) 单独定稿。本文不重复 Action 部分；这里只列出"被 Session 层手工注册、没有 CLI 化身"的工具——这才是把"特殊"四个字落到代码上的判定标准。
 
 ## 4. 增加新特殊工具的检查表
 

@@ -7,7 +7,7 @@
 //
 // ## 触发路径
 //
-// 当 behavior cfg 在某条 exec_bash 上打开了意图旁路：
+// 当 behavior cfg 在某条 shell 上打开了意图旁路：
 // 1. `opendan::agent_bash::build_exec_script` 注入 `command_not_found_handle`
 //    并由 runtime 按路径规则直接写入 agent_tool 绝对路径。
 // 2. tmux pane 里跑 `missing-cmd args...` 触发 hook,bash 改调
@@ -242,7 +242,7 @@ impl std::fmt::Display for CraftError {
 /// - 起一个 `LocalLLMContext`,system prompt 描述 step 3 的两个分支 + 当
 ///   前 agent 的 tools 目录布局 + 已安装 apt 包列表
 /// - 把 (missing-cmd, argv, 失败原因) 喂进去,让模型选分支并出方案
-/// - apt 分支:直接 exec_bash `apt install -y <pkg>`,成功后 retry 原 argv
+/// - apt 分支:直接 shell `apt install -y <pkg>`,成功后 retry 原 argv
 /// - script 分支:把生成的脚本写进 `<agent_env_root>/tools/<name>`,加
 ///   可执行位,返回 ConstructedArtifact 指向新脚本
 async fn craft_new_tool(

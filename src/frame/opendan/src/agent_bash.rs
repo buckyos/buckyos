@@ -2,10 +2,10 @@
 //!
 //! Registers the built-in tool catalogue described in §2 / §3 of the notepad
 //! onto an `AgentToolManager`:
-//!   - `exec_bash` (with overlay PATH stacked across the §2 4-layer model:
+//!   - `shell` (with overlay PATH stacked across the §2 4-layer model:
 //!     Session > Agent > Runtime > System) — backed by a per-session tmux
 //!     runner so each AgentSession owns one long-lived `od_<sid>` tmux
-//!     session, and `exec_bash` calls land in that pane
+//!     session, and `shell` calls land in that pane
 //!   - `read` / `write_file` / `edit_file`
 //!   - Agent Tool session-bin links (`todo`, `Glob`, `Grep`, `read_file`)
 //!
@@ -14,7 +14,7 @@
 //! prepended to PATH in priority order. Session Exec Bin is the only
 //! rendered layer: at session boot we hard-link Agent tools into it and
 //! write tombstone stub scripts for tools blocked by the behavior's tool
-//! plan; every `exec_bash` call runs an opportunistic mtime resync so live
+//! plan; every `shell` call runs an opportunistic mtime resync so live
 //! edits to `<agent_root>/tools/` show up on the next LLM step.
 
 use std::path::{Path, PathBuf};
@@ -34,7 +34,7 @@ use agent_did_object_lib::{
 };
 use agent_tool::{
     AgentToolError, AgentToolManager, BashRunOutput, BashRunRequest, BashRunner, BashTarget,
-    BinOverlayConfig, EditFileTool, ExecBashTool, FileToolConfig, LlmBashConfig,
+    BinOverlayConfig, EditFileTool, ShellTool, FileToolConfig, LlmBashConfig,
     LlmUnderstandMediaTool, NoopFileWriteAudit, SessionRuntimeContext, WriteFileTool,
 };
 use buckyos_api::get_buckyos_api_runtime;
@@ -263,7 +263,7 @@ impl FsRoots {
     }
 }
 
-/// `BashRunner` implementation that routes every `exec_bash` call through a
+/// `BashRunner` implementation that routes every `shell` call through a
 /// per-agent-session tmux session (one `od_<sid>` window per AgentSession).
 ///
 /// Rationale: keeping a long-lived pane preserves shell state (env exports,
@@ -335,7 +335,7 @@ impl BashRunner for TmuxBashRunner {
         // silent fallback.
         if let BashTarget::Unsupported(value) = &req.target {
             return Err(AgentToolError::InvalidArgs(format!(
-                "unsupported exec_bash target `{value}` (only local is supported)"
+                "unsupported shell target `{value}` (only local is supported)"
             )));
         }
 
@@ -343,7 +343,7 @@ impl BashRunner for TmuxBashRunner {
         // mtime walk picks up any new/edited tools the operator dropped
         // into `<agent_root>/tools/` since the last run. Failure is
         // logged but doesn't block the command — stale tool surface is
-        // better than a refused exec_bash.
+        // better than a refused shell.
         if let Some(renderer) = self.bin_renderer.as_ref() {
             if let Err(err) = renderer.maybe_resync() {
                 warn!("opendan.agent_bash: Session Exec Bin resync failed: {err}");
@@ -419,7 +419,7 @@ impl BashRunner for TmuxBashRunner {
         // history makes after-the-fact audit possible.
         let banner_command = banner_command_text(&req.command, &script_path);
         let banner = format!(
-            "printf '\\n\\033[1;36m# exec_bash[%s]\\033[0m %s\\n' {run} {cmd}",
+            "printf '\\n\\033[1;36m# shell[%s]\\033[0m %s\\n' {run} {cmd}",
             run = shell_quote(&run_id),
             cmd = shell_quote(&banner_command),
         );
@@ -480,7 +480,7 @@ impl BashRunner for TmuxBashRunner {
 /// `(workspace_root, session_dir)` MVP — `agent_id` + `session_id` drive
 /// the Session Exec Bin path, `agent_root` anchors the Agent Bin layer,
 /// and `bin_renderer` (when present) wires Agent tool sync + tombstones
-/// into `exec_bash`.
+/// into `shell`.
 pub struct SessionToolsBuild {
     pub workspace_root: PathBuf,
     pub session_dir: PathBuf,
@@ -520,7 +520,7 @@ pub fn build_default_tool_manager(
         runner = runner.with_progress_sink(progress_sink);
     }
     let runner: Arc<dyn BashRunner> = Arc::new(runner);
-    let _ = manager.register_tool(ExecBashTool::with_runner(bash_cfg, runner));
+    let _ = manager.register_tool(ShellTool::with_runner(bash_cfg, runner));
 
     let file_cfg = fs_roots.to_file_tool_config();
     let audit = Arc::new(NoopFileWriteAudit);
@@ -550,11 +550,11 @@ pub fn build_default_tool_manager(
 pub fn build_session_tools(build: SessionToolsBuild) -> std::io::Result<Arc<AgentToolManager>> {
     let layout = SessionBinLayout::compute(&build.agent_id, &build.session_id, &build.agent_root);
     layout.ensure_dirs()?;
-    let bash_runtime_dir = build.session_dir.join(".runtime").join("exec_bash");
+    let bash_runtime_dir = build.session_dir.join(".runtime").join("shell");
     std::fs::create_dir_all(&bash_runtime_dir)?;
 
     // If a renderer is supplied, do the initial Agent tools link + tombstone
-    // render now so the very first `exec_bash` finds the layer populated.
+    // render now so the very first `shell` finds the layer populated.
     // We propagate render errors so the agent boots cleanly or fails loudly
     // — a half-rendered Session Exec Bin would be hard to diagnose later.
     if let Some(renderer) = build.bin_renderer.as_ref() {
@@ -1224,7 +1224,7 @@ mod tests {
         })
         .expect("build tools");
         for name in [
-            "exec_bash",
+            "shell",
             "read",
             "llm_understand_media",
             "make_exact_model",
@@ -1492,7 +1492,7 @@ mod tests {
         );
     }
 
-    /// End-to-end: requires `tmux` on PATH. Verifies that `exec_bash` runs
+    /// End-to-end: requires `tmux` on PATH. Verifies that `shell` runs
     /// through the tmux runner and returns the script's stdout + exit code.
     /// Cleans up its own tmux session on success.
     #[tokio::test]
@@ -1515,6 +1515,7 @@ mod tests {
             max_output_bytes: 64 * 1024,
             env: Vec::new(),
             target: BashTarget::Local,
+            call_id: None,
         };
         let output = runner.run(&ctx, req).await.expect("run ok");
         assert_eq!(output.exit_code, 0);
@@ -1554,6 +1555,7 @@ mod tests {
             max_output_bytes: payload.len() + 128,
             env: Vec::new(),
             target: BashTarget::Local,
+            call_id: None,
         };
         let output = runner.run(&ctx, req).await.expect("run ok");
         assert_eq!(output.exit_code, 0);
@@ -1585,6 +1587,7 @@ mod tests {
             max_output_bytes: 4_096,
             env: Vec::new(),
             target: BashTarget::Local,
+            call_id: None,
         };
         let output = runner.run(&ctx, req).await.expect("run ok");
         assert_eq!(output.exit_code, 9);
@@ -1615,6 +1618,7 @@ mod tests {
             max_output_bytes: 1_024,
             env: Vec::new(),
             target: BashTarget::Local,
+            call_id: None,
         };
         let err = runner.run(&ctx, req).await.expect_err("should time out");
         assert!(matches!(err, AgentToolError::Timeout), "got {err:?}");

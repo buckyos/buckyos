@@ -8,6 +8,7 @@ use buckyos_api::{AiContent, AiMessage, AiResponse, AiRole, AiToolCall, AiUsage}
 use serde_json::json;
 
 use crate::deps::{
+    ToolCallCtx,
     LLMContextDeps,
     LlmClient,
     LlmInferenceRequest,
@@ -98,7 +99,7 @@ impl Tools {
 
 #[async_trait]
 impl ToolManager for Tools {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(&self, call: AiToolCall, _ctx: ToolCallCtx) -> Result<Observation, ToolDispatchError> {
         self.calls.lock().unwrap().push(call.call_id.clone());
         let text = format!(
             "{} {}",
@@ -107,7 +108,9 @@ impl ToolManager for Tools {
         );
         if text.contains("defer") {
             return Ok(Observation::Pending {
+                task_id: format!("task:{}", call.call_id),
                 call_id: call.call_id,
+                until_ms: None,
                 tool_result: None,
             });
         }

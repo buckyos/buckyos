@@ -17,6 +17,7 @@ use crate::interrupt::InferenceAbortToken;
 use crate::observation::Observation;
 use crate::request::{LLMContextRequest, ToolPolicy};
 use crate::state::LLMContextSnapshot;
+use crate::tasks::RunningTaskResolver;
 
 /// One inference request sent down to the provider adapter.
 #[derive(Debug, Clone)]
@@ -88,6 +89,115 @@ impl ToolDispatchError {
     }
 }
 
+/// Why a tool call should stop (see [`ToolCallCtx::cancelled`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelCause {
+    /// `LLMContextInterruptHandle::interrupt`: stop now; give up waiting
+    /// when the work cannot be cancelled.
+    Interrupted,
+    /// `LLMContextInterruptHandle::finish`: stop when the work can be
+    /// cancelled; otherwise keep going — the waist waits a grace period and
+    /// then interrupts.
+    Finishing,
+    /// `ToolCallCtx::deadline_ms` passed (`BudgetSpec.max_wallclock_ms`).
+    Deadline,
+}
+
+/// Per-call context handed to [`ToolManager::call_tool`]: the interrupt /
+/// finish signals shared with the inference and the absolute deadline of
+/// the run. Tool managers do not keep their own cancel watch or deadline.
+#[derive(Debug, Clone)]
+pub struct ToolCallCtx {
+    pub abort: InferenceAbortToken,
+    /// Epoch ms by which the run's wallclock budget ends, if any.
+    pub deadline_ms: Option<u64>,
+    /// Whether the host can suspend the run on `Observation::Pending`
+    /// (`ToolPolicy.allow_deferred`). When `false`, a tool that only has a
+    /// task id must wait for the task inside the call (at most
+    /// [`crate::tasks::MAX_IN_TOOL_WAIT_MS`]) and return its state.
+    pub allow_deferred: bool,
+}
+
+impl ToolCallCtx {
+    /// A context that never cancels (tests, ad-hoc calls).
+    pub fn noop() -> Self {
+        Self {
+            abort: InferenceAbortToken::noop(),
+            deadline_ms: None,
+            allow_deferred: false,
+        }
+    }
+
+    pub fn with_allow_deferred(mut self, allow: bool) -> Self {
+        self.allow_deferred = allow;
+        self
+    }
+
+    /// Epoch ms by which a wait inside this call must end: the run deadline
+    /// capped by [`crate::tasks::MAX_IN_TOOL_WAIT_MS`] from now, further
+    /// capped by `wait_ms` when given.
+    pub fn wait_until_ms(&self, wait_ms: Option<u64>) -> u64 {
+        let now = crate::now_ms();
+        let mut until = now.saturating_add(wait_ms.unwrap_or(crate::tasks::MAX_IN_TOOL_WAIT_MS));
+        until = until.min(now.saturating_add(crate::tasks::MAX_IN_TOOL_WAIT_MS));
+        if let Some(d) = self.deadline_ms {
+            until = until.min(d);
+        }
+        until
+    }
+
+    /// The cause currently in force, if any (`Deadline` only once it passed).
+    pub fn cause(&self) -> Option<CancelCause> {
+        if self.abort.is_aborted() {
+            return Some(CancelCause::Interrupted);
+        }
+        if self.deadline_ms.is_some_and(|d| crate::now_ms() >= d) {
+            return Some(CancelCause::Deadline);
+        }
+        if self.abort.is_finishing() {
+            return Some(CancelCause::Finishing);
+        }
+        None
+    }
+
+    /// Resolves when the call should stop: interrupt, graceful finish or
+    /// deadline. A cancellable tool stops on any of them; a tool that cannot
+    /// cancel its work keeps running on `Finishing` and only gives up on
+    /// `Interrupted` / `Deadline` (see [`ToolCallCtx::cancelled_hard`]).
+    pub async fn cancelled(&self) -> CancelCause {
+        tokio::select! {
+            biased;
+            _ = self.abort.stopping() => {}
+            _ = self.sleep_until_deadline() => {}
+        }
+        self.cause().unwrap_or(CancelCause::Interrupted)
+    }
+
+    /// Resolves on interrupt or deadline only (not on a graceful finish).
+    pub async fn cancelled_hard(&self) -> CancelCause {
+        tokio::select! {
+            biased;
+            _ = self.abort.cancelled() => {}
+            _ = self.sleep_until_deadline() => {}
+        }
+        if self.abort.is_aborted() {
+            CancelCause::Interrupted
+        } else {
+            CancelCause::Deadline
+        }
+    }
+
+    async fn sleep_until_deadline(&self) {
+        match self.deadline_ms {
+            Some(d) => {
+                let now = crate::now_ms();
+                tokio::time::sleep(std::time::Duration::from_millis(d.saturating_sub(now))).await
+            }
+            None => std::future::pending::<()>().await,
+        }
+    }
+}
+
 /// Effect-side dispatcher. Implementations bridge to whatever tool
 /// substrate the scheduler owns (Agent tool manager, MCP, sandbox, ...).
 #[async_trait]
@@ -99,7 +209,18 @@ pub trait ToolManager: Send + Sync {
     /// infrastructure failure: the waist stops dispatching the remaining
     /// calls of the batch, keeps the results already obtained, and ends the
     /// run with `LLMComputeError::ToolRuntime` for the runtime to handle.
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError>;
+    ///
+    /// `ctx` carries the interrupt / finish signal and the run deadline.
+    /// `Ok(Observation::Cancelled)` is valid only after one of them fired
+    /// (`ctx.cause().is_some()`): a tool that could cancel its work reports
+    /// `effect_unknown: false`, one whose work was abandoned while running
+    /// reports `effect_unknown: true`. `Ok(Observation::Pending)` requires a
+    /// `task_id`.
+    async fn call_tool(
+        &self,
+        call: AiToolCall,
+        ctx: ToolCallCtx,
+    ) -> Result<Observation, ToolDispatchError>;
 
     /// Specs advertised to the LLM. Returning empty is fine — callers can
     /// also disable tool dispatch via `ToolPolicy.mode = None`.
@@ -355,6 +476,9 @@ pub struct LLMContextDeps {
     pub step_result_hook: Option<Arc<dyn StepResultHook>>,
     /// Optional async checkpoint / observation hook with outer snapshots.
     pub checkpoint_hook: Option<Arc<dyn CheckpointHook>>,
+    /// Running tasks this context may follow (background env before every
+    /// inference) — host assembled; `None` when the host has no tasks.
+    pub tasks: Option<Arc<dyn RunningTaskResolver>>,
 }
 
 impl LLMContextDeps {
@@ -370,6 +494,7 @@ impl LLMContextDeps {
             step_renderer: None,
             step_result_hook: None,
             checkpoint_hook: None,
+            tasks: None,
         }
     }
 
@@ -410,6 +535,11 @@ impl LLMContextDeps {
 
     pub fn with_checkpoint_hook(mut self, hook: Arc<dyn CheckpointHook>) -> Self {
         self.checkpoint_hook = Some(hook);
+        self
+    }
+
+    pub fn with_tasks(mut self, tasks: Arc<dyn RunningTaskResolver>) -> Self {
+        self.tasks = Some(tasks);
         self
     }
 

@@ -77,7 +77,7 @@ AgentTool CLI 可执行文件启动
 - [agent_tool_result_protocol.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/agent_tool_result_protocol.md)
 - [builtin_agent_tools.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/builtin_agent_tools.md)
 
-本节只保留设计动机。具体字段定义、兼容规则、`output/detail` 分工、`exec_bash` 的判定规则都以单独文档为准。
+本节只保留设计动机。具体字段定义、兼容规则、`output/detail` 分工、`shell` 的判定规则都以单独文档为准。
 
 ### 动机
 

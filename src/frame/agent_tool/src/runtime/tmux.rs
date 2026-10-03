@@ -1,9 +1,16 @@
-use super::{native_host_id, shell_quote, TmuxConfig, TmuxMode};
-use crate::exec_tracking::{
-    current_boot_id, new_execution_id, probe_execution, stop_execution, ExecutionProbe,
-    ExecutionRecord, ExecutionRegistrar,
+//! tmux runtime: each `shell` command runs in its own window of the
+//! configured session, writing `command` / `stdout` / `stderr` / `exit`
+//! into the run's execution directory. tmux is the isolation: an executor
+//! that is interrupted or dies leaves the command running; a `shell`
+//! timeout or a task cancel kills the window (tmux's own means, no /proc,
+//! no setsid).
+
+use super::{shell_quote, TmuxConfig, TmuxMode};
+use crate::llm_bash::{
+    exec_dir_for, read_exit_file, read_file_tail, sanitize_call_id, BashRunOutput, BashRunRequest,
+    BashRunner, BashTarget, CommandHandle, CommandProgress, RunBindingSlot, OUTPUT_TAIL_BYTES,
+    TIMEOUT_EXIT_CODE,
 };
-use crate::llm_bash::{BashRunOutput, BashRunRequest, BashRunner, BashTarget};
 use crate::xllm::XllmError;
 use crate::{AgentToolError, SessionRuntimeContext};
 use async_trait::async_trait;
@@ -30,10 +37,10 @@ pub fn tmux_session_name(sid: &str) -> String {
 
 pub struct TmuxTarget {
     socket: Option<String>,
-    pane: String,
+    session: String,
     identity: Value,
-    gate: tokio::sync::Mutex<()>,
 }
+
 impl TmuxTarget {
     async fn command(
         socket: Option<&str>,
@@ -49,6 +56,7 @@ impl TmuxTarget {
             .map_err(|e| XllmError::Capability(e.to_string()))?
             .map_err(|e| XllmError::Capability(format!("tmux unavailable: {e}")))
     }
+
     pub async fn open(cfg: &TmuxConfig, cwd: &Path) -> Result<Self, XllmError> {
         let session = cfg.session.as_ref().unwrap();
         let target = format!("={session}");
@@ -105,226 +113,150 @@ impl TmuxTarget {
             return Err(XllmError::Capability("cannot identify tmux session".into()));
         }
         let actual = String::from_utf8_lossy(&o.stdout).trim().to_string();
-        let o = Self::command(
-            socket,
-            &[
-                "new-window",
-                "-d",
-                "-P",
-                "-F",
-                "#{pane_id}",
-                "-t",
-                &target,
-                "-n",
-                "llm_runtime",
-                "-c",
-                &cwd.display().to_string(),
-                "bash --noprofile --norc",
-            ],
-        )
-        .await?;
-        if !o.status.success() {
-            return Err(XllmError::Capability(format!(
-                "cannot create dedicated tmux pane: {}",
-                String::from_utf8_lossy(&o.stderr)
-            )));
-        }
-        let pane = String::from_utf8_lossy(&o.stdout).trim().to_string();
         Ok(Self {
             socket: cfg.socket.clone(),
-            pane,
+            session: session.clone(),
             identity: json!({"session": session, "actual": actual}),
-            gate: tokio::sync::Mutex::new(()),
         })
     }
+
     pub fn identity(&self) -> Value {
         self.identity.clone()
     }
-    async fn send(&self, text: &str) -> Result<(), AgentToolError> {
-        let out = Self::command(
-            self.socket.as_deref(),
-            &["send-keys", "-l", "-t", &self.pane, "--", text],
-        )
-        .await
-        .map_err(|e| AgentToolError::Transport {
-            message: e.to_string(),
-            effect_unknown: true,
-        })?;
+
+    pub fn session(&self) -> &str {
+        &self.session
+    }
+
+    async fn tmux(&self, args: &[&str]) -> Result<std::process::Output, AgentToolError> {
+        Self::command(self.socket.as_deref(), args)
+            .await
+            .map_err(|e| AgentToolError::Transport {
+                message: e.to_string(),
+                effect_unknown: true,
+            })
+    }
+
+    /// Start `script` in a new window named `window`; returns once the
+    /// window exists.
+    async fn new_window(
+        &self,
+        window: &str,
+        cwd: &Path,
+        script: &str,
+    ) -> Result<(), AgentToolError> {
+        let target = format!("={}", self.session);
+        let out = self
+            .tmux(&[
+                "new-window",
+                "-d",
+                "-t",
+                &target,
+                "-n",
+                window,
+                "-c",
+                &cwd.display().to_string(),
+                script,
+            ])
+            .await?;
         if !out.status.success() {
             return Err(AgentToolError::Transport {
-                message: "tmux send-keys failed".into(),
-                effect_unknown: true,
-            });
-        }
-        let out = Self::command(
-            self.socket.as_deref(),
-            &["send-keys", "-t", &self.pane, "Enter"],
-        )
-        .await
-        .map_err(|e| AgentToolError::Transport {
-            message: e.to_string(),
-            effect_unknown: true,
-        })?;
-        if !out.status.success() {
-            return Err(AgentToolError::Transport {
-                message: "tmux release failed".into(),
-                effect_unknown: true,
+                message: format!(
+                    "tmux new-window failed: {}",
+                    String::from_utf8_lossy(&out.stderr)
+                ),
+                effect_unknown: false,
             });
         }
         Ok(())
     }
-}
-impl Drop for TmuxTarget {
-    fn drop(&mut self) {
-        let mut c = std::process::Command::new("tmux");
-        if let Some(s) = &self.socket {
-            c.args(["-S", s]);
+
+    async fn kill_window(&self, window: &str) -> Result<(), AgentToolError> {
+        let target = format!("={}:={window}", self.session);
+        let out = self.tmux(&["kill-window", "-t", &target]).await?;
+        // A window that already closed (command ended) is not an error.
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.contains("can't find") {
+                return Err(AgentToolError::Transport {
+                    message: format!("tmux kill-window failed: {err}"),
+                    effect_unknown: true,
+                });
+            }
         }
-        let _ = c
-            .args(["kill-pane", "-t", &self.pane])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+        Ok(())
     }
 }
 
 pub struct TmuxBashRunner {
     target: Arc<TmuxTarget>,
-    runtime_id: String,
-    registrar: Arc<dyn ExecutionRegistrar>,
     env: BTreeMap<String, String>,
-    pending: std::sync::Mutex<BTreeMap<String, ExecutionRecord>>,
+    run: RunBindingSlot,
 }
+
 impl TmuxBashRunner {
     pub fn new(
         target: Arc<TmuxTarget>,
-        id: &str,
-        registrar: Arc<dyn ExecutionRegistrar>,
         env: BTreeMap<String, String>,
+        run: RunBindingSlot,
     ) -> Self {
-        Self {
-            target,
-            runtime_id: id.into(),
-            registrar,
-            env,
-            pending: std::sync::Mutex::new(BTreeMap::new()),
-        }
+        Self { target, env, run }
+    }
+
+    fn exec_dir(&self, call_id: Option<&str>) -> PathBuf {
+        let bound = self
+            .run
+            .lock()
+            .expect("run binding")
+            .clone()
+            .and_then(|b| exec_dir_for(b.run_dir.as_deref(), call_id));
+        bound.unwrap_or_else(|| {
+            std::env::temp_dir().join(format!(
+                "llm-tmux-{}-{}",
+                std::process::id(),
+                crate::tasks::next_local_seq()
+            ))
+        })
     }
 }
 
-struct ExecutionGuard {
-    record: ExecutionRecord,
-    dir: PathBuf,
-    done: bool,
-    cleanup: bool,
-}
-impl Drop for ExecutionGuard {
-    fn drop(&mut self) {
-        if self.done {
-            if self.cleanup {
-                let _ = std::fs::remove_dir_all(&self.dir);
-            }
-        } else {
-            let rec = self.record.clone();
-            let dir = self.dir.clone();
-            if let Ok(h) = tokio::runtime::Handle::try_current() {
-                h.spawn(async move {
-                    if stop_execution(&rec, Some(&native_host_id()), Duration::from_secs(5))
-                        .await
-                        .is_ok()
-                    {
-                        let _ = tokio::fs::remove_dir_all(dir).await;
-                    }
-                });
-            }
-        }
-    }
+/// Wrapper run as the window's command: output to files, exit code to
+/// `exit`; the window closes when it ends.
+fn window_script(dir: &Path) -> String {
+    let q = shell_quote(&dir.display().to_string());
+    format!(
+        "bash --noprofile --norc {q}/command </dev/null >{q}/stdout 2>{q}/stderr; __llm_ec=$?; printf '%s\\n' \"$__llm_ec\" > {q}/exit.tmp && mv -f {q}/exit.tmp {q}/exit"
+    )
 }
 
 #[async_trait]
 impl BashRunner for TmuxBashRunner {
-    async fn cancel(&self) -> Result<(), AgentToolError> {
-        let records = self
-            .pending
-            .lock()
-            .expect("tmux pending")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for rec in records {
-            stop_execution(&rec, Some(&native_host_id()), Duration::from_secs(5))
-                .await
-                .map_err(|message| AgentToolError::Transport {
-                    message,
-                    effect_unknown: true,
-                })?;
-            self.pending
-                .lock()
-                .expect("tmux pending")
-                .remove(&rec.execution_id);
-            self.registrar.completed(&rec.execution_id).await;
-        }
-        Ok(())
+    fn engine(&self) -> &str {
+        "tmux"
     }
-    async fn run(
+
+    async fn start(
         &self,
         _ctx: &SessionRuntimeContext,
         req: BashRunRequest,
-    ) -> Result<BashRunOutput, AgentToolError> {
+    ) -> Result<Box<dyn CommandHandle>, AgentToolError> {
         if let BashTarget::Unsupported(t) = &req.target {
             return Err(AgentToolError::InvalidArgs(format!(
                 "unsupported target {t}"
             )));
         }
-        let _serial = self.target.gate.lock().await;
-        let pending = self
-            .pending
-            .lock()
-            .expect("tmux pending")
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for rec in pending {
-            if matches!(
-                probe_execution(&rec, Some(&native_host_id())),
-                ExecutionProbe::Stopped
-            ) {
-                self.pending
-                    .lock()
-                    .expect("tmux pending")
-                    .remove(&rec.execution_id);
-                self.registrar.completed(&rec.execution_id).await;
-            }
-        }
-        let started = Instant::now();
-        let id = new_execution_id();
-        let dir = std::env::temp_dir().join(format!("llm-tmux-{id}"));
+        let dir = self.exec_dir(req.call_id.as_deref());
         let mut builder = tokio::fs::DirBuilder::new();
+        builder.recursive(true);
         #[cfg(unix)]
         builder.mode(0o700);
         builder
             .create(&dir)
             .await
             .map_err(|e| AgentToolError::ExecFailed(e.to_string()))?;
-        let mut rec = ExecutionRecord {
-            execution_id: id.clone(),
-            call_id: None,
-            kind: "native".into(),
-            runtime_id: Some(self.runtime_id.clone()),
-            host: Some(native_host_id()),
-            boot_id: current_boot_id(),
-            pgid: None,
-            leader_start_ticks: None,
-            command: req.command.chars().take(512).collect(),
-            started_at_ms: crate::exec_tracking::now_ms(),
-        };
-        let mut guard = ExecutionGuard {
-            record: rec.clone(),
-            dir: dir.clone(),
-            done: false,
-            cleanup: false,
-        };
-        let q = shell_quote(&dir.display().to_string());
+        for stale in ["exit", "exit.tmp"] {
+            let _ = std::fs::remove_file(dir.join(stale));
+        }
         let mut env = self.env.clone();
         env.extend(req.env.iter().cloned());
         let mut command = format!(
@@ -335,111 +267,106 @@ impl BashRunner for TmuxBashRunner {
             command.push_str(&format!("export {k}={}\n", shell_quote(v)));
         }
         command.push_str(&req.command);
+        command.push('\n');
         tokio::fs::write(dir.join("command"), command)
             .await
             .map_err(|e| AgentToolError::ExecFailed(e.to_string()))?;
-        let wrapper = format!(
-            r#"llm_pid=$BASHPID
-IFS= read -r llm_stat < /proc/$llm_pid/stat
-llm_rest=${{llm_stat##*) }}
-read -ra llm_fields <<< "$llm_rest"
-printf '%s\n' "$llm_pid" "${{llm_fields[19]}}" > {q}/identity
-for ((i=0; i<300; i++)); do [ -f {q}/go ] && break; sleep .1; done
-[ -f {q}/go ] || exit 125
-bash --noprofile --norc {q}/command > >(tee {q}/stdout) 2> >(tee {q}/stderr >&2) </dev/null
-llm_ec=$?
-wait
-printf '%s\n' "$llm_ec" > {q}/exit
-"#
+        let window = format!(
+            "llm-{}",
+            req.call_id
+                .as_deref()
+                .map(sanitize_call_id)
+                .unwrap_or_else(|| crate::tasks::next_local_seq().to_string())
         );
-        let invoke = format!(
-            "env OPENDAN_EXECUTION_ID={} setsid bash -c {}",
-            shell_quote(&id),
-            shell_quote(&wrapper)
-        );
-        self.target.send(&invoke).await?;
-        for _ in 0..200 {
-            if dir.join("identity").exists() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        let identity = tokio::fs::read_to_string(dir.join("identity"))
-            .await
-            .map_err(|e| AgentToolError::Transport {
-                message: e.to_string(),
-                effect_unknown: false,
-            })?;
-        let fields = identity.lines().collect::<Vec<_>>();
-        rec.pgid = fields.first().and_then(|s| s.parse().ok());
-        rec.leader_start_ticks = fields.get(1).and_then(|s| s.parse().ok());
-        guard.record = rec.clone();
-        self.registrar
-            .register(&rec)
-            .await
-            .map_err(|e| AgentToolError::Transport {
-                message: format!("registration failed; command not started: {e}"),
-                effect_unknown: false,
-            })?;
-        self.pending
-            .lock()
-            .expect("tmux pending")
-            .insert(id.clone(), rec.clone());
-        tokio::fs::write(dir.join("go"), b"go")
-            .await
-            .map_err(|e| AgentToolError::Transport {
-                message: e.to_string(),
-                effect_unknown: true,
-            })?;
-        let mut exit = None;
-        while started.elapsed() < Duration::from_millis(req.timeout_ms.max(1)) {
-            if let Ok(s) = tokio::fs::read_to_string(dir.join("exit")).await {
-                exit = s.trim().parse::<i32>().ok();
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(30)).await;
-        }
-        let timed_out = exit.is_none();
-        if timed_out {
-            stop_execution(&rec, Some(&native_host_id()), Duration::from_secs(5))
-                .await
-                .map_err(|message| AgentToolError::Transport {
-                    message,
-                    effect_unknown: true,
-                })?;
-        }
-        match probe_execution(&rec, Some(&native_host_id())) {
-            ExecutionProbe::Stopped => {
-                guard.done = true;
-                guard.cleanup = true;
-                self.pending.lock().expect("tmux pending").remove(&id);
-                self.registrar.completed(&id).await;
-            }
-            ExecutionProbe::Alive { .. } => {
-                guard.done = true;
-            }
-            ExecutionProbe::Unknown { reason } => {
-                return Err(AgentToolError::Transport {
-                    message: reason,
-                    effect_unknown: true,
-                })
-            }
-        }
-        let stdout = tokio::fs::read(dir.join("stdout"))
-            .await
-            .unwrap_or_default();
-        let stderr = tokio::fs::read(dir.join("stderr"))
-            .await
-            .unwrap_or_default();
-        Ok(super::output(
-            exit.unwrap_or(124),
-            &stdout,
-            &stderr,
-            req.max_output_bytes,
+        self.target
+            .new_window(&window, &req.cwd, &window_script(&dir))
+            .await?;
+        Ok(Box::new(TmuxCommand {
+            target: self.target.clone(),
+            window,
+            dir,
+            started: Instant::now(),
+            max_output: req.max_output_bytes,
+            cwd: req.cwd,
+            finished: None,
+        }))
+    }
+}
+
+pub struct TmuxCommand {
+    target: Arc<TmuxTarget>,
+    window: String,
+    dir: PathBuf,
+    started: Instant,
+    max_output: usize,
+    cwd: PathBuf,
+    finished: Option<BashRunOutput>,
+}
+
+impl TmuxCommand {
+    fn output(&self, exit_code: i32, timed_out: bool) -> BashRunOutput {
+        crate::llm_bash::output_from_exec_dir(
+            &self.dir,
+            exit_code,
             timed_out,
-            started.elapsed(),
+            self.started.elapsed(),
+            self.max_output,
             "tmux",
-            req.cwd,
-        ))
+            self.cwd.clone(),
+        )
+    }
+}
+
+#[async_trait]
+impl CommandHandle for TmuxCommand {
+    async fn wait(&mut self, timeout: Duration) -> Result<Option<BashRunOutput>, AgentToolError> {
+        if let Some(done) = &self.finished {
+            return Ok(Some(done.clone()));
+        }
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(code) = read_exit_file(&self.dir) {
+                let out = self.output(code, false);
+                self.finished = Some(out.clone());
+                return Ok(Some(out));
+            }
+            if Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
+    async fn progress(&self) -> CommandProgress {
+        CommandProgress {
+            elapsed_ms: self.started.elapsed().as_millis() as u64,
+            output_tail: read_file_tail(&self.dir.join("stdout"), OUTPUT_TAIL_BYTES),
+        }
+    }
+
+    async fn kill(&mut self) -> Result<BashRunOutput, AgentToolError> {
+        if let Some(done) = &self.finished {
+            return Ok(done.clone());
+        }
+        self.target.kill_window(&self.window).await?;
+        let code = read_exit_file(&self.dir).unwrap_or(TIMEOUT_EXIT_CODE);
+        let out = self.output(code, true);
+        self.finished = Some(out.clone());
+        Ok(out)
+    }
+
+    fn detach(&mut self) {}
+
+    fn cancellable(&self) -> bool {
+        true
+    }
+
+    fn locator(&self) -> String {
+        format!(
+            "tmux session `{}` window `{}`; output and `exit` file in {}",
+            self.target.session(),
+            self.window,
+            self.dir.display()
+        )
     }
 }

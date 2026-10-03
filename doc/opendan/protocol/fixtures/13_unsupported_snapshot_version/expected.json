@@ -15,14 +15,13 @@
     {
       "live_run": {
         "applied_input_seq": 1,
-        "executions": 0,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261002-100519-e07608",
+        "run_id": "20261002-181138-5df9ee",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-100519-e07608"
+        "20261002-181138-5df9ee"
       ],
       "session_id": "work-fixture-blocked",
       "state": {

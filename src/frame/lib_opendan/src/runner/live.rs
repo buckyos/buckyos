@@ -1,19 +1,17 @@
 //! The live run of a drive: creating a fresh `LLMContext` for a run (§4.4),
 //! resuming the live run (§8.6), the mid-run context-limit rewrite (X7),
 //! suspending a process into `process_stack`, committing an input batch
-//! (§8.3) and stopping / removing a run's executions.
+//! (§8.3) and removing unreferenced runs.
 
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use agent_tool::exec_tracking::{
-    materialize_unresolved, ExecutionRecord, ExecutionRegistrar, HostRunInfo,
-};
+use agent_tool::exec_tracking::{materialize_unresolved, HostRunInfo};
+use agent_tool::llm_bash::RunBinding;
 use agent_tool::xllm::{
     create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel, RunStatus,
     XllmTask,
 };
-use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiRole};
 use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
@@ -35,79 +33,21 @@ use super::receipts::{
     apply_receipt, host_meta_of, position_of, snapshot_host_meta, with_host_meta,
 };
 use super::shared::{commit_and_report, counted, LiveCtx, Shared};
-use super::tools::{RunRegistrar, SessionToolManager};
+use super::tools::SessionToolManager;
 
 /// Mid-run compactions in a row before a context-limit run is paused.
 const MAX_LIMIT_COMPACTIONS: u32 = 3;
 
-/// Late-bound registrar (the bash runner exists before the run handle).
-struct LateRegistrar {
-    run: Mutex<Option<Arc<RunRegistrar>>>,
-}
-
-impl LateRegistrar {
-    fn get(&self) -> Option<Arc<RunRegistrar>> {
-        self.run.lock().expect("registrar").clone()
-    }
-}
-
-#[async_trait]
-impl ExecutionRegistrar for LateRegistrar {
-    async fn register(&self, rec: &ExecutionRecord) -> std::result::Result<(), String> {
-        match self.get() {
-            Some(r) => r.register(rec).await,
-            None => Err("run not ready".into()),
-        }
-    }
-
-    async fn completed(&self, execution_id: &str) {
-        if let Some(r) = self.get() {
-            r.completed(execution_id).await;
-        }
-    }
-}
-
-pub(super) async fn stop_executions(sh: &Shared, run: &RunHandle) -> Result<()> {
-    for exec in run.executions() {
-        sh.deps
-            .runtime
-            .reconcile_execution(&exec)
-            .await
-            .map_err(|e| match e {
-                agent_tool::xllm::XllmError::RecoveryBlocked(reason) => {
-                    OpenDanError::blocked(reason, Some(run.run_id()))
-                }
-                other => OpenDanError::Llm(other.to_string()),
-            })?;
-        run.complete_execution(&exec.execution_id)?;
-    }
-    Ok(())
-}
-
-/// Remove an unreferenced run: lock, verify no unconfirmed execution, delete.
+/// Remove an unreferenced run: lock, then delete. Processes a run's
+/// commands left behind are not the run's to stop (long-tool TODO §3.2).
 pub(super) async fn remove_if_safe(sh: &Shared, run_id: &str) -> Result<bool> {
     let runs = sh.dir.runs();
     let Some(lock) = runs.try_lock(run_id)? else {
         return Ok(false); // someone executes it (xllm?)
     };
-    let record = match runs.record(run_id) {
-        Ok(r) => r,
-        Err(e) => {
-            if runs.dir().join(run_id).join("run.json").exists() {
-                // Unreadable: its executions cannot be checked — keep it.
-                log::warn!("keeping unreferenced run {run_id}: {e}");
-                return Ok(false);
-            }
-            // No record: never got past creation.
-            runs.remove_locked(run_id, &lock)?;
-            return Ok(true);
-        }
-    };
-    for exec in &record.executions {
-        if let Err(e) = sh.deps.runtime.reconcile_execution(exec).await {
-            log::warn!("keeping run {run_id}: {e}");
-            return Ok(false);
-        }
+    if runs.record(run_id).is_err() && runs.dir().join(run_id).join("run.json").exists() {
+        log::warn!("keeping unreferenced run {run_id}: its record is unreadable");
+        return Ok(false);
     }
     runs.remove_locked(run_id, &lock)?;
     Ok(true)
@@ -117,14 +57,9 @@ fn default_llm_context() -> Value {
     json!({ "tools": { "enabled": true } })
 }
 
-async fn xllm_deps_for(
-    sh: &Arc<Shared>,
-    env: &SessionEnv,
-    registrar: Arc<dyn ExecutionRegistrar>,
-) -> agent_tool::xllm::XllmDeps {
+async fn xllm_deps_for(sh: &Arc<Shared>, env: &SessionEnv) -> agent_tool::xllm::XllmDeps {
     let mut x = sh.deps.xllm.clone();
     x.runtime = Some(sh.deps.runtime.clone());
-    x.execution_registrar = Some(registrar);
     x.runtime_env = env.env.iter().cloned().collect();
     x.runtime_path_prefix = env.path_layers.clone();
     x.skip_workdir_lock = true;
@@ -229,10 +164,7 @@ async fn new_run_context_plain(
         .assembler
         .system_text(&cfg, sh.agent_root.as_deref())
         .await?;
-    let registrar = Arc::new(LateRegistrar {
-        run: Mutex::new(None),
-    });
-    let xdeps = xllm_deps_for(sh, env, registrar.clone()).await;
+    let xdeps = xllm_deps_for(sh, env).await;
     let mut llm_ctx = if cfg.prompt.llm_context.is_null() {
         default_llm_context()
     } else {
@@ -288,10 +220,9 @@ async fn new_run_context_plain(
     let system_prompt = hosted.prompt.system_prompt.clone();
     let config = hosted.config.clone();
     let mut manager = hosted.manager;
-    manager.set_run_id(&run_id);
+    manager.bind_run_dir(&run_id, Some(runs.dir().join(&run_id)));
     let run = RunHandle::new(runs.store().clone(), record, lock);
     run.write()?;
-    *registrar.run.lock().expect("registrar") = Some(Arc::new(RunRegistrar::new(run.clone())));
     let tools = SessionToolManager::new(
         Arc::new(manager),
         run.clone(),
@@ -348,8 +279,7 @@ async fn new_run_context_plain(
     })
 }
 
-/// Resume the live run (§8.6): executions already confirmed stopped and
-/// receipts reconciled by `reconcile_runs`.
+/// Resume the live run (§8.6): receipts reconciled by `reconcile_runs`.
 pub(super) async fn resume_live_run(
     sh: &Arc<Shared>,
     run: RunHandle,
@@ -358,8 +288,7 @@ pub(super) async fn resume_live_run(
 ) -> Result<LiveCtx> {
     let record = run.record();
     let run_id = record.run_id.clone();
-    let registrar: Arc<dyn ExecutionRegistrar> = Arc::new(RunRegistrar::new(run.clone()));
-    let xdeps = xllm_deps_for(sh, env, registrar).await;
+    let xdeps = xllm_deps_for(sh, env).await;
     let blocked = |e: String| OpenDanError::blocked(e, Some(&run_id));
     let manager = rebuild_toolset(&record, &xdeps)
         .await
@@ -369,10 +298,23 @@ pub(super) async fn resume_live_run(
         .map_err(|e| blocked(format!("cannot create the run's provider: {e}")))?;
     let behavior = record.config.loop_model == LoopModel::Behavior;
     let mut snapshot = snapshot;
-    // In-flight actions without a persisted result → explicit "unknown";
-    // persisted before any further inference.
+    // In-flight actions without a persisted result → explicit "interrupted,
+    // result unknown", worded by the runtime from what it can read (long-tool
+    // TODO §3.2); persisted before any further inference. No process is
+    // verified or stopped.
     if !record.inflight.is_empty() {
-        materialize_unresolved(&mut snapshot, &record.inflight, behavior);
+        let binding = RunBinding {
+            run_id: run_id.clone(),
+            run_dir: Some(sh.dir.runs().dir().join(&run_id)),
+        };
+        let mut reasons = std::collections::HashMap::new();
+        for action in &record.inflight {
+            reasons.insert(
+                action.call_id.clone(),
+                sh.deps.runtime.describe_interrupted(&binding, action).await,
+            );
+        }
+        materialize_unresolved(&mut snapshot, &record.inflight, behavior, &reasons);
         run.checkpoint_with_results(&snapshot, None)?;
     }
     if matches!(
@@ -606,7 +548,6 @@ pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> R
     let mut snapshot = snapshot
         .ok_or_else(|| OpenDanError::blocked("suspended run has no snapshot", Some(&run_id)))?;
     let run = RunHandle::new(runs.store().clone(), record, lock);
-    stop_executions(sh, &run).await?;
     if let Some(b) = behavior_name {
         snapshot.request.behavior_name = b;
     }
@@ -624,7 +565,6 @@ pub(super) async fn suspend_run(
     mode: ProcessMode,
     next_behavior: &str,
 ) -> Result<()> {
-    stop_executions(sh, &lc.run).await?;
     let run_id = lc.run.run_id().to_string();
     let mut s = sh.session.lock().await;
     let live = s

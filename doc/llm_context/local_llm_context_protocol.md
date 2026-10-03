@@ -336,7 +336,7 @@ CLI 第一次 Ctrl-C 请求协作中断并保存进度；第二次 Ctrl-C 杀掉
 | `edit_file` | `path`、`old_string`、`new_string` | old_string 非空且精确匹配一次，执行文本替换 |
 | `exec` | `command`，可选 `target`、`timeout_ms`、`cwd`、`env` | 本地 `/bin/bash -c`；env 由执行器接受，当前 schema 未展示该字段 |
 
-这里的工具名是 `exec`，不是旧目录工具的 `exec_bash`。默认 cwd 为 workdir；相对 cwd 和文件路径基于 workdir。exec 只支持本地 target，继承进程环境，可覆盖 env；stdin 为 EOF，每次调用启动新的 shell，不保留上次 shell 的 cwd / 变量。`bash_tools` 只生成命令手册，不安装程序、不注册函数、不修改 PATH。
+这里的工具名是 `exec`，不是旧目录工具的 `shell`。默认 cwd 为 workdir；相对 cwd 和文件路径基于 workdir。exec 只支持本地 target，继承进程环境，可覆盖 env；stdin 为 EOF，每次调用启动新的 shell，不保留上次 shell 的 cwd / 变量。`bash_tools` 只生成命令手册，不安装程序、不注册函数、不修改 PATH。
 
 exec 默认超时 1,800,000 ms（30 分钟），最大 3,600,000 ms（1 小时），过大的有效值 clamp 到上限。输出限制为 64 KiB，保留头部 1/4 和尾部 3/4。命令在独立进程组中运行，超时、取消或总时长限制触发时杀掉受管理的进程组；超时 Error 含已有输出、`timed_out` 和重试提示。非零退出的错误 observation 同时包含摘要及输出。
 

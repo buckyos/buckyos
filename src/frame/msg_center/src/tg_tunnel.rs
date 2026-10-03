@@ -5002,7 +5002,7 @@ mod tests {
                 session_id.clone(),
                 UI_SESSION_STATE_STATUS_LINE_KEY.to_string(),
                 json!({
-                    "value": "tool: exec_bash",
+                    "value": "tool: shell",
                     "turn_nonce": "turn-1",
                 }),
                 RPCContext::default(),
@@ -5012,8 +5012,8 @@ mod tests {
         TgTunnel::refresh_ui_sessions(tunnel.ui_session_tracker.as_ref(), gateway.as_ref()).await;
         assert_eq!(gateway.status_line_count.load(Ordering::SeqCst), 1);
         assert_eq!(
-            TgTunnel::render_status_line("tool: exec_bash"),
-            "⏳ tool: exec_bash..."
+            TgTunnel::render_status_line("tool: shell"),
+            "⏳ tool: shell..."
         );
         assert_eq!(
             TgTunnel::render_status_line("LLM finished"),
@@ -5043,7 +5043,7 @@ mod tests {
             let guard = tunnel.ui_session_tracker.sessions.lock().await;
             let session = guard.get(&session_id).unwrap();
             assert!(session.status_message_id.is_none());
-            assert_eq!(session.last_status_line, "tool: exec_bash");
+            assert_eq!(session.last_status_line, "tool: shell");
         }
         center
             .handle_update_ui_session_state(
@@ -5122,7 +5122,7 @@ mod tests {
                     status_message_id: Some("status-1".to_string()),
                     status_nonce: Some("turn-1".to_string()),
                     completed_status_nonce: None,
-                    last_status_line: "tool: exec_bash".to_string(),
+                    last_status_line: "tool: shell".to_string(),
                 },
             );
         }
@@ -5199,7 +5199,7 @@ mod tests {
                     status_message_id: Some("status-1".to_string()),
                     status_nonce: Some("old-turn".to_string()),
                     completed_status_nonce: None,
-                    last_status_line: "tool: exec_bash".to_string(),
+                    last_status_line: "tool: shell".to_string(),
                 },
             );
         }
@@ -5404,7 +5404,7 @@ mod tests {
                     status_message_id: Some("status-1".to_string()),
                     status_nonce: Some("turn-1".to_string()),
                     completed_status_nonce: None,
-                    last_status_line: "tool: exec_bash".to_string(),
+                    last_status_line: "tool: shell".to_string(),
                 },
             );
         }

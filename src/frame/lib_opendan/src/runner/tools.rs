@@ -1,21 +1,21 @@
 //! Tool call adaptation — the effect layer (§8.5).
 //!
 //! Every call: lease admission → host input gate clear → in-flight record
-//! (fsync, non read-only calls) → tool runs (a process-launching tool first
-//! persists its execution identity through the registrar, then releases the
-//! command). The in-flight marker is **not** cleared here, not even on error
-//! or cancellation: only a checkpoint whose snapshot contains the result (or
-//! an explicit `Unresolved`) clears it.
+//! (fsync, non read-only calls) → tool runs. The in-flight marker is **not**
+//! cleared here, not even on error or cancellation: only a checkpoint whose
+//! snapshot contains the result (or an explicit `Unresolved`) clears it. A
+//! `shell` command's lifecycle follows standard process semantics (long-tool
+//! TODO §3.2): nothing is tracked beyond the in-flight record.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use agent_tool::exec_tracking::{ExecutionRecord, ExecutionRegistrar, InflightAction};
+use agent_tool::exec_tracking::InflightAction;
 use agent_tool::runtime::Sandbox;
-use agent_tool::xllm::TOOL_EXEC;
+use agent_tool::TOOL_SHELL;
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
-use llm_context::deps::{ToolDispatchError, ToolManager, ToolSpecLite};
+use llm_context::deps::{ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite};
 use llm_context::observation::Observation;
 
 use crate::lock::Lease;
@@ -24,46 +24,14 @@ use crate::session::runs::RunHandle;
 
 use super::flush::canonical_args;
 
-tokio::task_local! {
-    /// Call id of the tool call running in this task (links execution
-    /// identities registered by the bash runner to their in-flight action).
-    pub static CURRENT_CALL: String;
-}
 
 /// `read_only | idempotent | side_effect | unknown` of a tool name.
 pub fn classify_effect(tool: &str) -> &'static str {
     match tool {
         "read_file" | "glob" | "grep" | "list_dir" | "read" => "read_only",
         "write_file" | "edit_file" => "side_effect",
-        t if t == TOOL_EXEC || t == "exec_bash" => "unknown",
+        t if t == TOOL_SHELL => "unknown",
         _ => "unknown",
-    }
-}
-
-/// Persists execution identities of the `exec` tool into the run record.
-pub struct RunRegistrar {
-    run: RunHandle,
-}
-
-impl RunRegistrar {
-    pub fn new(run: RunHandle) -> Self {
-        Self { run }
-    }
-}
-
-#[async_trait]
-impl ExecutionRegistrar for RunRegistrar {
-    async fn register(&self, rec: &ExecutionRecord) -> Result<(), String> {
-        let call = CURRENT_CALL.try_with(|c| c.clone()).ok();
-        self.run
-            .attach_execution(call.as_deref(), rec)
-            .map_err(|e| e.to_string())
-    }
-
-    async fn completed(&self, execution_id: &str) {
-        if let Err(e) = self.run.complete_execution(execution_id) {
-            log::warn!("execution {execution_id} completion not persisted: {e}");
-        }
     }
 }
 
@@ -126,7 +94,11 @@ impl SessionToolManager {
 
 #[async_trait]
 impl ToolManager for SessionToolManager {
-    async fn call_tool(&self, call: AiToolCall) -> Result<Observation, ToolDispatchError> {
+    async fn call_tool(
+        &self,
+        call: AiToolCall,
+        ctx: ToolCallCtx,
+    ) -> Result<Observation, ToolDispatchError> {
         if let Err(e) = self.lease.check() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
@@ -141,7 +113,6 @@ impl ToolManager for SessionToolManager {
                 args: canonical_args(&call.args),
                 effect: effect.to_string(),
                 idempotency_key: None,
-                execution_ids: Vec::new(),
                 step_index: None,
                 started_at_ms: crate::now_ms(),
             };
@@ -153,10 +124,7 @@ impl ToolManager for SessionToolManager {
             }
             self.infer_touching(&call);
         }
-        let call_id = call.call_id.clone();
-        CURRENT_CALL
-            .scope(call_id, self.inner.call_tool(call))
-            .await
+        self.inner.call_tool(call, ctx).await
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {

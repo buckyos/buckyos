@@ -184,14 +184,14 @@ EXEC_BASH_ALWAYS_AVAILABLE_CLI_TOOL_NAMES = [
 
 ### 2.4 `exec` 如何识别 AgentTool JSON
 
-tmux 命令执行结束后，`decode_exec_bash_json_result()` 只有在命令看起来是内部 AgentTool 命令时才尝试解析 stdout：
+tmux 命令执行结束后，`decode_shell_json_result()` 只有在命令看起来是内部 AgentTool 命令时才尝试解析 stdout：
 
 - 命令名是 `agent_tool`
 - 或命令名在 `default_agent_cli_tool_names()` 中
 - stdout 是 JSON
 - JSON 顶层 `agent_tool_protocol == "1"`
 
-解析成功后，Runtime 会把它作为 `AgentToolResult` 返回，并补上 `cmd_name` / `cmd_args` / `return_code`。解析失败或普通 bash 命令则走 `build_default_exec_bash_result()`，把 tmux 捕获到的混合输出放进 `output`。
+解析成功后，Runtime 会把它作为 `AgentToolResult` 返回，并补上 `cmd_name` / `cmd_args` / `return_code`。解析失败或普通 bash 命令则走 `build_default_shell_result()`，把 tmux 捕获到的混合输出放进 `output`。
 
 ---
 

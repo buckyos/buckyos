@@ -17,7 +17,7 @@ async fn behavior_actions_consume_tool_iterations_even_on_business_failure() {
     for max_tool_iterations in [0, 2] {
         for fail in [false, true] {
             let response = text_response(
-                "<response><actions><exec_bash>echo action</exec_bash></actions></response>",
+                "<response><actions><shell>echo action</shell></actions></response>",
             );
             let llm = Arc::new(ScriptedRecordingLlm::new(vec![
                 response;
@@ -72,7 +72,7 @@ async fn behavior_action_batch_uses_one_tool_iteration_and_allows_final_response
         };
         let llm = Arc::new(ScriptedRecordingLlm::new(vec![
             text_response(&format!(
-                "<response><actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions>{terminal}</response>"
+                "<response><actions><shell>echo a</shell><shell>echo b</shell></actions>{terminal}</response>"
             )),
             text_response("<response><next_behavior>END</next_behavior></response>"),
         ]));
@@ -103,7 +103,7 @@ async fn behavior_native_tools_and_actions_share_tool_iterations_across_steps() 
         }],
     );
     let action =
-        text_response("<response><actions><exec_bash>echo action</exec_bash></actions></response>");
+        text_response("<response><actions><shell>echo action</shell></actions></response>");
     for max_tool_iterations in [1, 2, 3, 4] {
         let llm = Arc::new(ScriptedRecordingLlm::new(vec![
             native.clone(),
@@ -190,7 +190,7 @@ async fn behavior_step_spans_rounds_and_holds_several_actions() {
         ),
         // Step 0, Round 2: the decision with two actions.
         text_response(
-            "<response><actions><exec_bash>echo a</exec_bash><exec_bash>echo b</exec_bash></actions></response>",
+            "<response><actions><shell>echo a</shell><shell>echo b</shell></actions></response>",
         ),
         // Step 1, Round 3: terminal decision.
         text_response("<response><next_behavior>END</next_behavior></response>"),
@@ -231,7 +231,7 @@ async fn behavior_inner_context_inherits_outer_budget() {
         AiResponse {
             message: AiMessage::text(
                 AiRole::Assistant,
-                "<response><thinking>go</thinking><actions><exec_bash>echo a</exec_bash></actions></response>",
+                "<response><thinking>go</thinking><actions><shell>echo a</shell></actions></response>",
             ),
             usage: usage(8),
             ..Default::default()

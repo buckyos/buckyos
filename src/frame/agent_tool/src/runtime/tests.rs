@@ -1,7 +1,9 @@
 use super::*;
-use crate::exec_tracking::MemoryRegistrar;
+use crate::exec_tracking::InflightAction;
+use crate::llm_bash::TOOL_SHELL;
 use buckyos_api::AiToolCall;
-use llm_context::deps::ToolManager;
+use llm_context::deps::{ToolCallCtx, ToolManager};
+use std::time::Duration;
 use llm_context::prompt_engine::{EngineConfig, PromptRenderEngine, RenderVars};
 use serde_json::json;
 
@@ -24,6 +26,33 @@ fn request(cwd: &str, command: &str) -> BashRunRequest {
         max_output_bytes: 1024 * 64,
         env: Vec::new(),
         target: BashTarget::Local,
+        call_id: None,
+    }
+}
+fn inflight(call_id: &str, command: &str) -> InflightAction {
+    InflightAction {
+        call_id: call_id.into(),
+        tool: TOOL_SHELL.into(),
+        args: json!({ "command": command }),
+        effect: "unknown".into(),
+        idempotency_key: None,
+        step_index: None,
+        started_at_ms: crate::now_ms(),
+    }
+}
+trait CallT {
+    async fn call_tool_t(
+        &self,
+        call: AiToolCall,
+    ) -> std::result::Result<llm_context::observation::Observation, llm_context::deps::ToolDispatchError>;
+}
+impl CallT for XllmToolManager {
+    async fn call_tool_t(
+        &self,
+        call: AiToolCall,
+    ) -> std::result::Result<llm_context::observation::Observation, llm_context::deps::ToolDispatchError>
+    {
+        self.call_tool(call, ToolCallCtx::noop()).await
     }
 }
 fn call(name: &str, args: Value) -> AiToolCall {
@@ -42,16 +71,11 @@ async fn open(
     config: RuntimeConfig,
     workdir: &Path,
     policy: crate::xllm::FilesystemPolicy,
-) -> (
-    Arc<dyn AgentRuntime>,
-    Arc<XllmToolManager>,
-    Arc<MemoryRegistrar>,
-) {
+) -> (Arc<dyn AgentRuntime>, Arc<XllmToolManager>, RunBindingSlot) {
     let rt = RuntimeRegistry::from_config(&config).unwrap();
-    let reg = Arc::new(MemoryRegistrar::default());
-    let mut ctx = RuntimeOpenCtx::new(workdir, "test", LoopModel::FunctionCall);
-    ctx.registrar = reg.clone();
-    let (_, manager) = rt
+    let ctx = RuntimeOpenCtx::new(workdir, "test", LoopModel::FunctionCall);
+    let slot = ctx.run.clone();
+    let (_, mut manager) = rt
         .open(
             &ctx,
             &ToolsConfig {
@@ -63,7 +87,8 @@ async fn open(
         )
         .await
         .unwrap();
-    (rt, Arc::new(manager), reg)
+    manager.bind_run_dir("test", Some(workdir.join("runs").join("test")));
+    (rt, Arc::new(manager), slot)
 }
 
 #[test]
@@ -146,12 +171,12 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
         env: BTreeMap::from([("LLM_RUNTIME_TEST".into(), "base".into())]),
         ..Default::default()
     };
-    let (rt, manager, reg) =
+    let (rt, manager, slot) =
         open(config, dir.path(), crate::xllm::FilesystemPolicy::Workspace).await;
     assert_eq!(rt.descriptor().runtime_id, default.descriptor().runtime_id);
     assert_eq!(rt.descriptor().target, default.descriptor().target);
     let obs = manager
-        .call_tool(call(
+        .call_tool_t(call(
             "write_file",
             json!({"path":"quote ' 中文.txt","content":"literal $() 中文\n"}),
         ))
@@ -213,17 +238,34 @@ async fn native_default_explicit_env_files_and_prompt_share_executor() {
         rendered.rendered,
         format!("{}|{}\n", info.hostname, info.hostname)
     );
-    assert!(reg.records.lock().unwrap().len() >= 2);
-    assert_eq!(
-        reg.records.lock().unwrap().len(),
-        reg.completed.lock().unwrap().len()
-    );
+    // Crash recovery wording (§3.2): a finished command's exit and output
+    // are read from its execution directory; an unknown one is described
+    // as possibly still running, nothing is probed or killed.
+    let binding = slot.lock().unwrap().clone().unwrap();
+    let done = manager
+        .call_tool(
+            call(TOOL_SHELL, json!({"command": "echo partial; exit 3"})),
+            ToolCallCtx::noop(),
+        )
+        .await
+        .unwrap();
+    assert!(matches!(done, llm_context::observation::Observation::Error { .. }));
+    let text = rt
+        .describe_interrupted(&binding, &inflight(&format!("test-{TOOL_SHELL}"), "echo partial; exit 3"))
+        .await;
+    assert!(text.contains("exit code 3"), "{text}");
+    assert!(text.contains("partial"), "{text}");
+    let text = rt
+        .describe_interrupted(&binding, &inflight("never-ran", "sleep 1"))
+        .await;
+    assert!(text.contains("may have partly executed"), "{text}");
+    assert!(text.contains("Background processes it started are unaffected"), "{text}");
     #[cfg(unix)]
     {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), dir.path().join("escape")).unwrap();
         let obs = manager
-            .call_tool(call(
+            .call_tool_t(call(
                 "write_file",
                 json!({"path":"escape/new","content":"bad"}),
             ))
@@ -261,7 +303,7 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
         .is_err());
     let mut cfg = cfg;
     cfg.tmux.as_mut().unwrap().mode = Some(TmuxMode::Create);
-    let (rt, m, reg) = open(
+    let (rt, m, slot) = open(
         cfg.clone(),
         dir.path(),
         crate::xllm::FilesystemPolicy::Workspace,
@@ -278,7 +320,7 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
     assert_eq!(o.stdout, "tmux\n");
     assert_eq!(o.engine, "tmux");
     let obs = m
-        .call_tool(call("read_file", json!({"path":"file"})))
+        .call_tool_t(call("read_file", json!({"path":"file"})))
         .await
         .unwrap();
     assert!(format!("{obs:?}").contains("same"));
@@ -291,10 +333,18 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
     cfg.tmux.as_mut().unwrap().mode = Some(TmuxMode::CreateOrAttach);
     let (second, _, _) = open(cfg, dir.path(), crate::xllm::FilesystemPolicy::Workspace).await;
     assert_eq!(rt.descriptor(), second.descriptor());
-    assert_eq!(
-        reg.records.lock().unwrap().len(),
-        reg.completed.lock().unwrap().len()
-    );
+    // A command the executor stops waiting for keeps running in tmux; a
+    // timeout kills its window.
+    let mut long = request(m.workdir(), "sleep 30; echo late");
+    long.timeout_ms = 500;
+    long.call_id = Some("long".into());
+    let out = m.exec(long, &context()).await.unwrap();
+    assert!(out.timed_out);
+    let binding = slot.lock().unwrap().clone().unwrap();
+    let text = rt
+        .describe_interrupted(&binding, &inflight("long", "sleep 30; echo late"))
+        .await;
+    assert!(text.contains("tmux session `runtime-test`"), "{text}");
     let _ = std::process::Command::new("tmux")
         .args(["-S", &socket, "kill-server"])
         .status();
@@ -329,7 +379,7 @@ fn ssh_config() -> RuntimeConfig {
 async fn ssh_real_transport_files_paths_timeout_and_recovery() {
     let local = tempfile::tempdir().unwrap();
     std::fs::write(local.path().join("same.txt"), "local").unwrap();
-    let (rt, m, reg) = open(
+    let (rt, m, slot) = open(
         ssh_config(),
         local.path(),
         crate::xllm::FilesystemPolicy::Workspace,
@@ -339,7 +389,7 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
     let path = "a space ' 中文.txt";
     let content = "line one\nquotes ' \" and $(touch SHOULD_NOT_RUN)\n中文\n";
     let obs = m
-        .call_tool(call("write_file", json!({"path":path,"content":content})))
+        .call_tool_t(call("write_file", json!({"path":path,"content":content})))
         .await
         .unwrap();
     assert!(
@@ -347,7 +397,7 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
         "{obs:?}"
     );
     let obs = m
-        .call_tool(call(
+        .call_tool_t(call(
             "edit_file",
             json!({"path":path,"old_string":"line one","new_string":"updated"}),
         ))
@@ -386,10 +436,15 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
     assert_eq!(out.stdout.trim(), info.hostname);
     let mut timeout = request(m.workdir(), "sleep 40; printf BAD > timed-out");
     timeout.timeout_ms = 700;
+    timeout.call_id = Some("timed".into());
     let output = m.exec(timeout, &context()).await.unwrap();
     assert!(output.timed_out);
-    let rec = reg.records.lock().unwrap().last().unwrap().clone();
-    rt.reconcile_execution(&rec).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let binding = slot.lock().unwrap().clone().unwrap();
+    let text = rt
+        .describe_interrupted(&binding, &inflight("timed", "sleep 40"))
+        .await;
+    assert!(text.contains("remote"), "{text}");
     let out = m
         .exec(
             request(m.workdir(), "test ! -e timed-out; ln -sfn /tmp escape"),
@@ -399,7 +454,7 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
         .unwrap();
     assert_eq!(out.exit_code, 0);
     let obs = m
-        .call_tool(call(
+        .call_tool_t(call(
             "write_file",
             json!({"path":"escape/outside-runtime-test","content":"denied"}),
         ))
@@ -410,7 +465,7 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
         llm_context::observation::Observation::Error { .. }
     ));
     let obs = m
-        .call_tool(call("exec", json!({"command":"pwd","cwd":"/tmp"})))
+        .call_tool_t(call(TOOL_SHELL, json!({"command":"pwd","cwd":"/tmp"})))
         .await
         .unwrap();
     assert!(matches!(
@@ -424,177 +479,13 @@ async fn ssh_real_transport_files_paths_timeout_and_recovery() {
     )
     .await;
     let obs = unrestricted
-        .call_tool(call("exec", json!({"command":"pwd","cwd":"/tmp"})))
+        .call_tool_t(call(TOOL_SHELL, json!({"command":"pwd","cwd":"/tmp"})))
         .await
         .unwrap();
     assert!(
         !matches!(obs, llm_context::observation::Observation::Error { .. }),
         "{obs:?}"
     );
-    let mut wrong = rec.clone();
-    wrong.host = Some("different-host".into());
-    assert!(matches!(
-        rt.reconcile_execution(&wrong).await,
-        Err(XllmError::RecoveryBlocked(_))
-    ));
-}
-
-#[tokio::test]
-#[ignore]
-async fn ssh_cancel_failure_and_disconnect_are_explicit() {
-    let local = tempfile::tempdir().unwrap();
-    let (rt, m, reg) = open(
-        ssh_config(),
-        local.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    let cwd = m.workdir().to_string();
-    let task_m = m.clone();
-    let pending = tokio::spawn(async move {
-        task_m
-            .exec(
-                request(
-                    &cwd,
-                    "echo started > cancel-start; sleep 40; echo bad > cancel-end",
-                ),
-                &context(),
-            )
-            .await
-    });
-    let remote = PathBuf::from(std::env::var("LLM_RUNTIME_SSH_WORKDIR").unwrap());
-    wait_file(&remote.join("cancel-start")).await;
-    pending.abort();
-    let _ = pending.await;
-    let rec = reg.records.lock().unwrap().last().unwrap().clone();
-    rt.reconcile_execution(&rec).await.unwrap();
-    assert!(!remote.join("cancel-end").exists());
-    let mut bad = ssh_config();
-    bad.remote_ssh.as_mut().unwrap().port = Some(1);
-    let r = RuntimeRegistry::from_config(&bad).unwrap();
-    let ctx = RuntimeOpenCtx::new(local.path(), "bad", LoopModel::FunctionCall);
-    assert!(matches!(
-        r.open(&ctx, &ToolsConfig::default(), Vec::new()).await,
-        Err(XllmError::Capability(_))
-    ));
-    let mut denied = ssh_config();
-    denied.remote_ssh.as_mut().unwrap().host = Some("runtime-denied".into());
-    let r = RuntimeRegistry::from_config(&denied).unwrap();
-    assert!(matches!(
-        r.open(&ctx, &ToolsConfig::default(), Vec::new()).await,
-        Err(XllmError::Capability(_))
-    ));
-    let cwd = m.workdir().to_string();
-    let task_m = m.clone();
-    let pending = tokio::spawn(async move {
-        task_m.call_tool(call("exec",json!({"command":"echo start > disconnect-start; sleep 40; echo bad > disconnect-end","cwd":cwd}))).await
-    });
-    wait_file(&remote.join("disconnect-start")).await;
-    let pid_file = std::env::var("LLM_RUNTIME_SSH_PID_FILE").unwrap();
-    let pid = std::fs::read_to_string(&pid_file).unwrap();
-    assert!(std::process::Command::new("kill")
-        .arg(pid.trim())
-        .status()
-        .unwrap()
-        .success());
-    let result = tokio::time::timeout(Duration::from_secs(20), pending)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap_err();
-    assert!(result.effect_unknown, "{result:?}");
-    let rec = reg.records.lock().unwrap().last().unwrap().clone();
-    assert!(matches!(
-        rt.reconcile_execution(&rec).await,
-        Err(XllmError::RecoveryBlocked(_))
-    ));
-    let status = std::process::Command::new(std::env::var("LLM_RUNTIME_SSH_SERVER").unwrap())
-        .args([
-            "-f",
-            &std::env::var("LLM_RUNTIME_SSH_SERVER_CONFIG").unwrap(),
-        ])
-        .status()
-        .unwrap();
-    assert!(status.success());
-    rt.reconcile_execution(&rec).await.unwrap();
-    assert!(!remote.join("disconnect-end").exists());
-}
-
-async fn wait_file(path: &Path) {
-    for _ in 0..300 {
-        if path.exists() {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    panic!("file did not appear: {}", path.display());
-}
-struct DiskTestRegistrar(PathBuf);
-#[async_trait]
-impl ExecutionRegistrar for DiskTestRegistrar {
-    async fn register(&self, rec: &ExecutionRecord) -> std::result::Result<(), String> {
-        use std::io::Write;
-        let mut f = std::fs::File::create(&self.0).map_err(|e| e.to_string())?;
-        f.write_all(&serde_json::to_vec(rec).unwrap())
-            .map_err(|e| e.to_string())?;
-        f.sync_all().map_err(|e| e.to_string())
-    }
-    async fn completed(&self, _: &str) {}
-}
-#[tokio::test]
-#[ignore]
-async fn ssh_crash_child() {
-    let Ok(record) = std::env::var("LLM_RUNTIME_SSH_CRASH_RECORD") else {
-        return;
-    };
-    let r = RuntimeRegistry::from_config(&ssh_config()).unwrap();
-    let mut ctx = RuntimeOpenCtx::new(Path::new("/tmp"), "child", LoopModel::FunctionCall);
-    ctx.registrar = Arc::new(DiskTestRegistrar(record.into()));
-    let (_, m) = r
-        .open(&ctx, &ToolsConfig::default(), Vec::new())
-        .await
-        .unwrap();
-    let _ = m
-        .exec(
-            request(
-                m.workdir(),
-                "echo start >> crash-count; sleep 60; echo end >> crash-count",
-            ),
-            &context(),
-        )
-        .await;
-}
-#[tokio::test]
-#[ignore]
-async fn ssh_runner_kill9_reconciles_persisted_remote_execution() {
-    let local = tempfile::tempdir().unwrap();
-    let record = local.path().join("execution.json");
-    let (rt, m, _) = open(
-        ssh_config(),
-        local.path(),
-        crate::xllm::FilesystemPolicy::Workspace,
-    )
-    .await;
-    m.exec(request(m.workdir(), "rm -f crash-count"), &context())
-        .await
-        .unwrap();
-    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--ignored", "--exact", "runtime::tests::ssh_crash_child"])
-        .env("LLM_RUNTIME_SSH_CRASH_RECORD", &record)
-        .stdout(std::process::Stdio::null())
-        .spawn()
-        .unwrap();
-    let remote = PathBuf::from(std::env::var("LLM_RUNTIME_SSH_WORKDIR").unwrap());
-    wait_file(&remote.join("crash-count")).await;
-    let rec: ExecutionRecord = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
-    child.kill().unwrap();
-    let _ = child.wait();
-    rt.reconcile_execution(&rec).await.unwrap();
-    let output = m
-        .exec(request(m.workdir(), "cat crash-count"), &context())
-        .await
-        .unwrap();
-    assert_eq!(output.stdout, "start\n");
 }
 
 #[tokio::test]

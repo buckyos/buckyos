@@ -9,9 +9,9 @@
   "side_effects": [
     {
       "call_id": "c1",
-      "tool": "exec",
-      "note": "exec cannot be undone by the session"
+      "tool": "shell",
+      "note": "shell cannot be undone by the session"
     }
   ],
-  "updated_at_ms": 1790960718827
+  "updated_at_ms": 1790989897544
 }

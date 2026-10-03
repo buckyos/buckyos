@@ -23,7 +23,7 @@
 >
 > 1. **sid 全局唯一**：覆盖不同 Agent、App 和 owner；统一随机与确定性生成规则，队列仍按 sid 命名（§4.1、§4.2）。
 > 2. **工具结果先持久化，再清除在途标记**：异常、取消与 checkpoint 失败均保留恢复证据（§8.5）。
-> 3. **文件锁与工具生命周期分别校验**：接管前确认旧工具执行已经停止，无法确认则阻塞恢复；runner 被 kill 不代表工具子进程退出（§5.2、§7.2）。
+> 3. **文件锁与工具生命周期分开**：锁只保护状态写入；工具子进程遵循标准父子进程语义，接管方不核验、不停止旧进程，只把在途动作物化为“被打断、结果未知”交给模型（2026-10-02 按长命令 TODO §3.2 修订；§5.2、§7.2）。
 > 4. **恢复失败保留现场**：不支持的版本、损坏或缺失的快照返回明确错误，不清空 live_run 后自动重跑（§8.6）。
 > 5. **输入提交可恢复**：所有进入上下文的输入都有结构化 receipt，与快照一起持久化；恢复时先补齐 state 消费状态，再取新输入（§4.5、§8.3）。
 > 6. **产物 head 的所有移动都持 artifact 锁**：discard 在锁内重读 head，并检查回退版本有效性（§6.5）。
@@ -73,7 +73,7 @@
 
 - **Agent Session**：自包含、与位置无关的目录协议，是本期要先定稿的**关键协议**。任何进程按协议在任意位置建出 session 目录，就能以某个 Agent 的身份工作。
 - **Agent State**：Agent 跨 session 的状态，落在 AgentRoot 上，包括 session 登记表（session mgr）、活动视图、感知、认知和产物列表。统一经 `AgentStateClient` 访问；首版直接读写文件，用文件锁协调。
-- **Agent Runtime**：为 `exec_bash` 提供执行环境（native 或 tmux）。session 首次推进时绑定 runtime，之后不再改变。
+- **Agent Runtime**：为 `shell` 提供执行环境（native 或 tmux）。session 首次推进时绑定 runtime，之后不再改变。
 - **Session Runner**：把以上三者与 LM Context 组合起来，把 session 推进到结束条件。**Runner 是实现，不是协议**：Rust 版在 libopendan，TS 版将来是 buckyos-websdk 的 ts-runner。
 
 session 的 `runs/` 直接采用 xllm 的 run 目录：native runtime 下，跑到一半的 llm_context 原则上可以交给 xllm 接手。
@@ -110,7 +110,7 @@ session 的 `runs/` 直接采用 xllm 的 run 目录：native runtime 下，跑�
 
 1. **基于文件系统的 Agent State**（跨 session 状态）：session mgr、感知管理、认知管理、产物列表。
 2. **Agent Session**：用协议级文档确定目录结构，实现创建和读取；本计划补上了推进与恢复。session 目录可以放在 AgentRoot 之外。
-3. **Agent Runtime**：核心是为 `exec_bash` 提供环境，可以是 OS native，也可以是(容器里)的 tmux session。session 一旦确定了 runtime，就不再修改。
+3. **Agent Runtime**：核心是为 `shell` 提供环境，可以是 OS native，也可以是(容器里)的 tmux session。session 一旦确定了 runtime，就不再修改。
 
 OpenDAN 的后续职责（本期不实施，见附录 A）：
 
@@ -485,7 +485,7 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
 ```jsonc
 {"seq":312,"t":"turn_started","run_id":"20260929-101500-3f9c2a","turn":12,"input_seq":1,"inputs":[{"src":"q","index":121,"key":"msg:…","kind":"msg"}],"changes":["s1@16"],"hook":"on_wakeup","at_ms":0}
 {"seq":313,"t":"user_message","run_id":"…","turn":12,"content":"…"}
-{"seq":314,"t":"step","run_id":"…","turn":12,"step_index":0,"behavior":"do","assistant":"…","actions":[{"call_id":"c-12-1","tool":"exec_bash","args":{…},"effect":"unknown"}]}
+{"seq":314,"t":"step","run_id":"…","turn":12,"step_index":0,"behavior":"do","assistant":"…","actions":[{"call_id":"c-12-1","tool":"shell","args":{…},"effect":"unknown"}]}
                                                                        // function call run 写 {"t":"assistant_message","run_id":"…","turn":12,"assistant":"…","tool_calls":[…]}
 {"seq":315,"t":"action_result","run_id":"…","turn":12,"call_id":"c-12-1","status":"ok","result":"…"}
 {"seq":316,"t":"outcome","run_id":"…","turn":12,"kind":"done","next_behavior":null}
@@ -579,7 +579,7 @@ def reconcile_runs(lease, s, deps):                           # drive 开头、�
         else:
             s.runs.ensure_locked(run)                            # 真正持有 run 锁；不以 is_live 探测代替加锁；持有到本次推进结束
             cp, record = s.runs.load_checked(run)                 # 不支持 / 损坏 / 缺失 → RecoveryBlocked，保留现场（§8.6）
-            ensure_previous_execution_stopped(record, deps.runtime)  # kill runner 不代表旧工具退出（§5.2）
+            # 2026-10-02：不再核验 / 停止旧工具进程（长命令 TODO §3.2）；在途动作按 runtime 物化为“被打断”
             reconcile_input_receipts(lease, s, cp, record)         # 先补齐 state 消费状态，再允许 fetch（§8.3）
             if record.status.is_terminal():                      # 结束流程未完成，或 xllm 已跑完
                 finish_run(lease, s, run, cp, …)                   # §8.3；工具结果已持久化且执行已核对
@@ -602,11 +602,11 @@ def reconcile_runs(lease, s, deps):                           # drive 开头、�
 xllm --resume --run <run_id> --runs-dir <sid>/.opendan_agent_session/runs --dir <binding.workdir>
 ```
 
-- **条件**：binding 的 runtime 是 native；run 的工具能由 `prompt.llm_context.tools` 重建（session 专用的操作以 CLI 形式经 exec_bash 提供，而不是只存在于 runner 进程内的工具）；run.json 由 libopendan 按 xllm 的 RunRecord 写出（§8.7 X2）。格式校验、工具环境完整性校验与旧工具停止检查均通过，且 `host_commit_pending` 为空（§8.3）。不满足时明确拒绝；有待补交的宿主输入时先由 libopendan 恢复，xllm 不代写 state.json。
+- **条件**：binding 的 runtime 是 native；run 的工具能由 `prompt.llm_context.tools` 重建（session 专用的操作以 CLI 形式经 shell 提供，而不是只存在于 runner 进程内的工具）；run.json 由 libopendan 按 xllm 的 RunRecord 写出（§8.7 X2）。格式校验、工具环境完整性校验与旧工具停止检查均通过，且 `host_commit_pending` 为空（§8.3）。不满足时明确拒绝；有待补交的宿主输入时先由 libopendan 恢复，xllm 不代写 state.json。
 - **互斥**：run 的执行互斥由 `runs/<run_id>/.lock` 保证。libopendan runner 恢复 live_run 之前先拿 run 锁；拿不到就返回 Busy，不另起新 run。
 - **写入范围**：接手的 xllm 只写 run 目录，不碰 state.json、worklog 和 Agent State。run 到达终态后，下一次 drive 的 `reconcile_runs` 照常把它的历史写入 worklog 并提交；xllm 执行期间的输入留在队列里。
 - **workdir 锁**：xllm 自己的 workdir 互斥锁（`<lock_dir>/<hash(workdir)>.lock`）只在 xllm 接手时生效。libopendan runner 不使用它：多个 session 可以共享一个 workspace，由活动视图避让（§6.7）。
-- **在途动作**：记录在 RunRecord 中（§8.7 X6）。先确认旧执行停止，再根据已持久化的结果区分“已有结果”和“结果未知”；xllm 使用同一恢复与 checkpoint 提交规则，不能仅因拿到 run 锁就继续执行。
+- **在途动作**：记录在 RunRecord 中（§8.7 X6）。根据已持久化的结果区分“已有结果”和“结果未知”，后者按 runtime 从执行目录读到什么就说什么（`AgentRuntime::describe_interrupted`），不核验、不停止进程；xllm 使用同一恢复与 checkpoint 提交规则。
 
 ### 4.5 输入通道：kmsg + kevent（不用文件系统）
 
@@ -830,7 +830,7 @@ def fenced(lease, write_fn):                            # 受 lease 保护的写
 
 - **没有 TTL，也没有续约**：锁只在持有者释放或退出时释放，不存在“时钟偏差导致提前接管”的问题。
 - **锁文件永不替换**：flock 锁在 inode 上。v0.8 在持锁期间用 `atomic_replace` 替换 lease.json，替换之后新打开者拿到的是新 inode，可以同时拿到锁。所以锁文件只原地改写；其它状态文件照常用 `atomic_replace`。
-- **fd 不被子进程继承**：锁 fd 必须带 CLOEXEC（Rust 的 `std::fs` 默认如此）。否则 exec_bash 启动的后台进程会在 runner 退出后继续持锁。
+- **fd 不被子进程继承**：锁 fd 必须带 CLOEXEC（Rust 的 `std::fs` 默认如此）。否则 shell 启动的后台进程会在 runner 退出后继续持锁。
 - **同一进程不重复加锁**：flock 属于“打开的文件描述”，同一进程两次打开同一锁文件并加锁会互相阻塞。libopendan 在进程内维护已持有锁的表。
 - **锁保护的边界**（S-22）：文件锁保证协作 runner 的状态写入互斥；`lease.held()` 是新动作的准入检查，不是对已经启动的进程或远端请求的 fencing。runner 被 `kill -9` 时，锁会释放，但工具子进程可能仍在运行，Drop / finally 均不能保证执行。
 - **接管前先核对旧工具**：获得 session / run 锁后、启动新推理或应用会产生副作用的 control 之前，按 RunRecord 的执行标识查询旧执行；仍存活的本地进程组先终止并等待退出。只有确认旧执行已停止才继续。执行标识至少关联 runtime / host、主机启动标识及进程创建身份，不能只凭可能复用的 PID / PGID 杀进程。无法定位、无权终止或无法证明已经停止时返回 `RecoveryBlocked`，保留现场，不自动继续。
@@ -1076,8 +1076,8 @@ pub trait AgentStateClient: Send + Sync {
 **来源**（由粗到细）：
 
 1. **创建时的声明**：`session_config.session.scope`，加上 `workspace` / `artifact_id`（由应用或意图分析给出）。
-2. **Agent 自己声明**：通过 CLI（例如 `agent-session activity --touch <ref>`，经 exec_bash）向本 session 的 kmsg 队列投递 `control(activity)`，持有者在观察边界合并。用 CLI 而不是进程内工具，是为了让 xllm 接手的 run 也能声明（§4.4）。
-3. **runner 推断**（尽力而为）：从写类工具调用中能识别出的路径（例如文件写工具的参数）。exec_bash 内部的写入不推断。
+2. **Agent 自己声明**：通过 CLI（例如 `agent-session activity --touch <ref>`，经 shell）向本 session 的 kmsg 队列投递 `control(activity)`，持有者在观察边界合并。用 CLI 而不是进程内工具，是为了让 xllm 接手的 run 也能声明（§4.4）。
+3. **runner 推断**（尽力而为）：从写类工具调用中能识别出的路径（例如文件写工具的参数）。shell 内部的写入不推断。
 
 **更新时机**：commit_input_batch、run 进行中的 checkpoint（节流）、handle_context_outcome。run 结束且没有挂起时清空 touching；session finished 时整个 activity 清空。
 
@@ -1104,7 +1104,7 @@ pub trait AgentStateClient: Send + Sync {
 
 ### 7.1 逻辑 runtime 与绑定
 
-**Runtime** 是为 `exec_bash` 提供执行环境的**逻辑身份**：在哪台主机上执行、看到什么文件系统视图、PATH 上有哪些工具、用 native 还是 tmux 执行。它不是一个进程；tmux server 或容器重启后，仍是同一个 runtime。
+**Runtime** 是为 `shell` 提供执行环境的**逻辑身份**：在哪台主机上执行、看到什么文件系统视图、PATH 上有哪些工具、用 native 还是 tmux 执行。它不是一个进程；tmux server 或容器重启后，仍是同一个 runtime。
 
 ```jsonc
 // RuntimeDescriptor（由提供方声明）
@@ -1155,11 +1155,10 @@ pub trait AgentRuntime: Send + Sync {
     async fn verify_session_env(&self, sd: &SessionDir, binding: &Binding) -> Result<()>;
     /// 核验完整性后打开执行视图：tmux session、cwd、PATH（.runtime/bin 在最前）、env
     async fn open_session_env(&self, binding: &Binding, s: &SessionCtx) -> Result<SessionEnv>;
-    /// 准备执行标识与启动握手；持久化标识并放行之前，用户命令不得执行（§5.2）
-    async fn prepare_execution(&self, call: &ToolCall) -> Result<ExecutionTicket>;
-    /// 确认旧执行已停止，必要时终止并等待；无法确认返回 RecoveryBlocked
-    async fn reconcile_execution(&self, execution: &ExecutionRef) -> Result<()>;
-    async fn exec_bash(&self, env: &SessionEnv, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError>;
+    /// 2026-10-02：取代执行标识 / 启动握手 / reconcile_execution（长命令 TODO §3.2）——
+    /// 为上一个执行器的在途动作生成“被打断、结果未知”的文本：shell 读 (run, call_id) 的执行目录
+    async fn describe_interrupted(&self, run: &RunBinding, action: &InflightAction) -> String;
+    async fn shell(&self, env: &SessionEnv, req: BashRunRequest) -> Result<BashRunOutput, AgentToolError>;
     async fn interrupt(&self, env: &SessionEnv) -> Result<()>;
     async fn status(&self) -> RuntimeStatus;   // 给提示词引擎：活跃 tmux 会话、后台进程、磁盘、工具清单
     async fn close_session_env(&self, env: SessionEnv) -> Result<()>;
@@ -1175,7 +1174,7 @@ pub trait AgentRuntime: Send + Sync {
 
 执行跟踪的生命周期独立于 `inflight`：工具结果已经持久化，也可能还有后台子进程。只有确认整个受管执行已停止，才能移除执行记录。runtime 不支持可靠核对的后台 / 脱离进程组执行应拒绝，或返回 `RecoveryBlocked` 等待显式处置；不能沿用“shell 退出即解除所有跟踪”的行为。显式交给 task_mgr 的 PendingTool 使用其任务句柄与生命周期，不能误当作失联的本地进程清理。
 
-### 7.3 exec_bash 的环境契约
+### 7.3 shell 的环境契约
 
 | 变量 | 说明 |
 |---|---|
@@ -1434,7 +1433,7 @@ class SessionToolManager(llm_context.ToolManager):          # 移植并改造 op
         if eff != "read_only":
             track_touching(self.session, call)                    # 尽力推断写入目标，更新 activity（§6.7）
         try:
-            obs = await tool.run(call, runtime=self.env, execution=ticket)   # 记录成功后才放行；exec_bash 的 cwd = binding.workdir
+            obs = await tool.run(call, runtime=self.env, execution=ticket)   # 记录成功后才放行；shell 的 cwd = binding.workdir
         except DispatchError:
             raise ToolDispatchError(call.id, effect_unknown=(eff != "read_only"))   # 由 waist 生成 Unresolved；ToolManager 直接返回 Unresolved 会被判为内部错误
         return obs                                                # 此处不清除 inflight；异常 / 取消路径也不清除
@@ -1449,8 +1448,8 @@ def checkpoint_with_results(run, snapshot, status):        # 步边界、推理�
 ```
 
 - **恢复证据**：`inflight` 在动作开始前 fsync；只有相应结果（包括明确的 Unresolved）随快照持久化，才能清除。写完快照但未发布 run.json 就崩溃时，仍按旧指针与 inflight 保守恢复；发布成功则读取新快照里的结果。磁盘满、异常、取消、runner 退出不能提前清除标记。
-- **结果未知与执行存活分开处理**：`inflight` 按 `call_id` 记录工具名、参数、effect、幂等键以及关联的执行标识。RunRecord 另保留未确认停止的 `executions`；即使清除了 inflight，也不能删除仍有后台进程的执行记录。对旧动作的核对、停止与 Unresolved 注入按 §5.2、§8.6 执行。
-- session-aware 工具（`create_worksession`、`forward_msg`、`try_create_worksession`、`update_session_topic`、`read_session_history` …）改为调用 `AgentStateClient` 与输入通道 API，不再持有 `Weak<AIAgent>`。能做成 CLI（经 exec_bash）的优先做成 CLI，让 xllm 接手的 run 也能使用（§4.4）。
+- **结果未知**：`inflight` 按 `call_id` 记录工具名、参数、effect、幂等键。2026-10-02 起 RunRecord 不再保留 `executions`，没有进程身份；对旧动作的 Unresolved 注入按 §5.2、§8.6 执行，文本由 runtime 按执行目录生成。
+- session-aware 工具（`create_worksession`、`forward_msg`、`try_create_worksession`、`update_session_topic`、`read_session_history` …）改为调用 `AgentStateClient` 与输入通道 API，不再持有 `Weak<AIAgent>`。能做成 CLI（经 shell）的优先做成 CLI，让 xllm 接手的 run 也能使用（§4.4）。
 - 意图分析（S-09）继续使用 fork 原语；它是一个逻辑分支，不是持久化的 session。
 
 ### 8.6 崩溃恢复：复用 llm_context（Q5）
@@ -1504,7 +1503,7 @@ def resume_live_run(s, lease, deps, env) -> LLMContext | None:
 | X3 | **格式版本与恢复校验**：快照与 RunRecord 带版本并检查引用完整性；不支持 / 损坏 / 缺失时保留现场并阻塞；持久化类型容忍允许的未知字段，宿主元数据必须保留；`ToolUse.args` 按规范键序序列化 | 快照没有版本；`deny_unknown_fields`；args 是 HashMap | 明确拒绝不支持的格式，不自动 abandon / 新建 context；不要求兼容旧格式 |
 | X4 | **checkpoint 钩子**：增加异步支持并保留失败即停止的语义；behavior 步边界给出含 steps / 连续 call_id / input_receipts 的**外层**快照；各 checkpoint 共用 §8.5 的结果提交顺序 | `TurnHook`（2026-10-01 改名 `InferenceHook`）已能返回错误阻止推理，但同步只读；behavior 模式只见内层快照 | 最细到一次 do-action 之后恢复；结果持久化后才清除 inflight |
 | X5 | **观察钩子**：function-call 模式在一批工具结果之后、下一次推理之前返回注入内容与 receipt；两种模式均传播提交错误，完成 §8.3 提交后才继续 | function-call 没有此钩子；behavior 钩子错误被忽略 | 观察边界的变化注入与 control 检查（§8.4） |
-| X6 | **effect、在途记录与执行跟踪**：ToolSpec 增加 effect；RunRecord 增加按 call_id 的 inflight 与受管 executions；启动前持久化执行标识，结果 checkpoint 后清除 inflight；resume 先核对旧执行，再注入 Unresolved | 没有 effect / inflight；LocalProcessBashRunner 的 Drop 无法覆盖 runner 被 kill 的情况；xllm resume 清空 pending | S-04 / S-22；与 L2 共同补齐启动握手、后台进程跟踪和停止确认，xllm 同样执行 |
+| X6 | **effect 与在途记录**：ToolSpec 增加 effect（后移）；RunRecord 增加按 call_id 的 inflight，结果 checkpoint 后清除；resume 把没有结果的 inflight 物化为“被打断、结果未知”（文本按 runtime 从执行目录生成）。**2026-10-02**：执行跟踪（执行标识、启动握手、后台进程跟踪、停止确认、`executions[]`）按长命令 TODO §3.2 删除，改为标准父子进程语义 + 执行目录 | 没有 effect / inflight；xllm resume 清空 pending | S-04 / S-22；xllm 同样执行 |
 | X7 | **挂起与上下文上限**：真正产出 `ContextLimitReached`（`context_yield_threshold`）与 `PendingTool`（延迟工具）；behavior 模式的 steps 可以压缩 | 两者都不产出；opendan / xllm 的相应分支是死代码；behavior 模式的 steps 无界增长 | §4.4 的“压缩后续跑”；task_mgr 结果恢复。**2026-09-30**：waist 完成；libopendan 接入上下文上限重写，deferred 工具回填未接入 |
 | X8 | **渲染可确定**：step 渲染可以不带时间戳；时间等新鲜量不进入历史段 | step 渲染带 started / ended 时间戳；xllm 的 system 段带当前时间 | §4.4 的稳定前缀 |
 
@@ -1750,7 +1749,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 ### L2 Runtime
 
 - **交付**：`AgentRuntime` trait、**`NativeRuntime`（本期重点）**、`TmuxRuntime`（移植，后续用于 OpenDAN）、可幂等修复的 `.runtime/bin`、`bind_or_verify` / 环境完整性校验、§7.3 的 env；与 X6 共用执行标识、启动握手、后台进程跟踪、停止并等待确认。
-- **验证**：exec_bash 在 native 与 tmux 下结果一致；runtime 不匹配、缺少工具、看不到 workspace、缺少 app_tools 时均在推理前拒绝。binding 已发布但工具 / 墓碑准备失败或被 kill 时，重试会修复环境；连续失败不推理，binding 不变。启动放行前 kill 不执行用户命令；放行后 kill 仍能定位旧进程组；shell 退出但后台子进程存活时继续跟踪；无法确认执行身份或停止状态时阻塞接管，不按裸 PID 杀进程。
+- **验证**：shell 在 native 与 tmux 下结果一致；runtime 不匹配、缺少工具、看不到 workspace、缺少 app_tools 时均在推理前拒绝。binding 已发布但工具 / 墓碑准备失败或被 kill 时，重试会修复环境；连续失败不推理，binding 不变。启动放行前 kill 不执行用户命令；放行后 kill 仍能定位旧进程组；shell 退出但后台子进程存活时继续跟踪；无法确认执行身份或停止状态时阻塞接管，不按裸 PID 杀进程。
 
 ### L3 Runner（work session）
 

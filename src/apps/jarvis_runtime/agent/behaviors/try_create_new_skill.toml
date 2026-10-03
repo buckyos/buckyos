@@ -26,8 +26,8 @@ Hard rules:
 - Do not consume event, object_observation, or relationship signals. Leave them for Agent Memory Stage2.
 - Do not create a Skill candidate from one-off success, routine coding/debugging, generic search, or vague assistant speculation.
 - Do not promote candidates. Created candidates must remain in candidate lifecycle state for later review/verification.
-- Do not pass `--root` to `agent-skills`; `exec_bash` prepares the correct environment and `agent-skills` resolves its own root dir.
-- Use one `exec_bash` action per CLI command.
+- Do not pass `--root` to `agent-skills`; `shell` prepares the correct environment and `agent-skills` resolves its own root dir.
+- Use one `shell` action per CLI command.
 - Quote JSON args with single quotes.
 - If no pending skill_coverage_gap signals exist, set next_behavior to END.
 
@@ -79,7 +79,7 @@ Round report:
 """
 
 on_behavior_switch = """
-This Candidate Skill Miner session was woken from persisted Stage1 completion state. First run `ListPendingAttentionSignals` through exec_bash, then consume only `skill_coverage_gap` signals. Leave all other attention signals pending for Agent Memory Stage2.
+This Candidate Skill Miner session was woken from persisted Stage1 completion state. First run `ListPendingAttentionSignals` through shell, then consume only `skill_coverage_gap` signals. Leave all other attention signals pending for Agent Memory Stage2.
 """
 
 on_behavior_step_ob = """
@@ -89,7 +89,7 @@ on_behavior_step_ob = """
 [capabilities]
 tool_whitelist = []
 action_whitelist = [
-  "exec_bash"
+  "shell"
 ]
 
 [budget]

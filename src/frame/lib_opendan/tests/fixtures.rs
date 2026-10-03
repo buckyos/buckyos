@@ -89,7 +89,7 @@ fn script(name: &'static str) -> Arc<ScriptedLlm> {
                 if has_tool_result(req, "c1").is_some() {
                     text("done: notes.txt written")
                 } else {
-                    tool_call("c1", "exec", json!({ "command": "echo note > notes.txt" }))
+                    tool_call("c1", "shell", json!({ "command": "echo note > notes.txt" }))
                 }
             }
             "long_exec" => {
