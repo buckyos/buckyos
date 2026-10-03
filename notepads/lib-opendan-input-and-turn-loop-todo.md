@@ -628,7 +628,7 @@ receipt 按 §3.2.6 的结构与消息写进同一份快照；提交顺序不变
 
 - llm_context 把 `request.input`、`state.accumulated`、Step 渲染结果组成 `AiMessage[]`，作为 AICC `llm` 请求的输入。llm_context 不改写 user 消息的内容块。
 - AICC 的资源层（`aicc/src/resource`）把 `ResourceRef::NamedObject` 解析并验证为 provider 可用的形式；各 provider adapter 把 `AiRole` 与内容块降格成原生格式（`AiMessage` 重构文档 §1.4）。Session 与 bridge 都不做 provider 相关的处理。
-- `input.media = inline` 而模型不支持图片 / 文档，或对象不可读时，AICC 返回 `ResourceInvalid` / `UnsupportedOperation`，llm_context 按错误策略给出 `Outcome::Error`。Session 不自动去掉媒体块重试；是否提供机械降级见待确认。
+- `input.media = inline` 而模型不支持图片 / 文档，或对象不可读时，AICC 返回 `ResourceInvalid` / `UnsupportedOperation`，llm_context 按错误策略给出 `Outcome::Error`。Session 机械降级一次：去掉该 run 中 user 消息的媒体块、在文本中注明后重试（§3.6 第 2 项）；仍失败则按原错误处理。
 
 #### 3.3.7 端到端示例
 
@@ -847,18 +847,66 @@ msg-center
 - [x] 手工投递样例与 fixtures：普通消息、带附件的群消息、active 任务事件、semi 对象变化、停止控制，以及 §3.2.5 每种拒绝原因各一条；每个样例给出所需的 Session 配置与预期行为；`input.text` 的渲染结果进 fixtures。
 - [x] 反写：xAgent §4.2 / §4.3 / §4.5 / §6.2 / §9.5 与 C1、C2；Session Input Protocol 拆成“Agent 输入”与“Session 控制”两篇并升到版本 3。
 
-### 3.6 待确认
+### 3.6 待确认（2026-10-03 已答复）
+
+`>` 开头的是答复原文，“结论”是据此落实的处理。
 
 1. **`input.media` 的默认值**：本文定为 `reference`（快照小、前缀稳定、不依赖模型能力）。旧 OpenDAN 的 UI session 实际是把图片 / 文档块直接交给模型，UI 类 behavior 是否默认 `inline`？
+
+> 这个最好是一个render的配置。原理上我们不认为所有的跑agent loop的模型是多模态的，一般会统一渲染成后续llm_understand_media可用的信息
+
+结论：默认保持 `reference`（附件只渲染成文本里的定位信息，供 `llm_understand_media` 等工具按需读取），UI 类 behavior 也不默认 `inline`。它是 behavior 冻结配置里的一项渲染配置，现在的字段是 `input.media`；如果希望它和模板放在一起（如 `prompt.media`），改名即可，尚未改。
+
 2. **`inline` 失败时是否机械降级**：模型不支持或对象不可读时，本文不自动重试。另一选项是 Session 去掉媒体块重试一次并在文本中注明。
+
+> 好
+
+结论（按“同意机械降级”理解，已实施）：`inline` 的批次被 provider 拒绝（`Provider{Permanent | Unknown}`）时，Session 去掉该 run 中 user 消息的图片 / 文档块，在文本末尾注明，原地重试一次；每个 run 只降级一次（`HostMeta.media_degraded`），没有媒体块的请求不走这条路。llm_context 没有“媒体不被支持”的结构化错误码，所以不区分拒绝原因：其它永久错误在带媒体块时也会多重试这一次。如果这里的“好”是指维持不重试，删掉 `runner/live.rs::degrade_inline_media` 的调用即可。
+
 3. **`edit` / `redact` 的投递**：本文作为普通消息原样投递（渲染出 `edit_of` / `redacts` 属性），由 LLM 理解；原消息已进入上下文的不回改历史。是否需要对“原消息尚未被消费”的情况做机械合并或删除？
+
+> 不用
+
+结论：维持现状，`edit` / `redact` 作为普通消息原样投递，不做机械合并或删除。
+
 4. **`reaction` 与 `ServiceDid` 引用**：首版不投递 / 不进入模板视图。是否需要以 Observe 事件或 `relations` 的形式呈现？
+
+> 先不用 
+
+结论：维持现状，`reaction` 由 msg bridge 丢弃，`ServiceDid` 引用不进入模板视图。
+
 5. **说话人与 Agent 的关系**（owner / 联系人 / 陌生人 / 其它 Agent）：模板视图的说话人目前只有 `id / did / name`。是否要由 bridge 在 `delivery` 中给出关系字段供模板与策略使用，还是留给 Agent 用联系人工具查询？
+
+> 1对1的session在系统提示词里组合，后续不用。群聊通过半订阅状态contact info来实现首次收到来自某人的消息时，通过contact mgr查询一下其联系人状态（另一个思路时通过Agent memory 由agent自动查询，里面由基于did的 映像hint)
+
+结论（未实施，后续项）：`delivery` 不增加关系字段。一对一 Session 的对方信息由 system 模板组合（Session 创建时已知）。群聊有两个候选做法，尚未选定：(a) 首次收到某人的消息时由宿主查 contact mgr，把其联系人状态作为半订阅状态（`source = system:contact:<did>`）并入 `pending_events`，随下一次受控输入的快照呈现；(b) 交给 Agent memory，由 Agent 按 DID 的印象 hint 自行查询。(a) 需要宿主提供联系人查询入口并记录已见过的说话人，libopendan 目前没有。
+
 6. **斜杠命令的授权范围**：本文限定为 session 驱动者或 Agent owner 发出的才转成 `control`，其它人发的按普通消息处理。群内其他成员是否可以 `/stop`？
+
+> OK，不过后续可能会开放一些命令给所有人
+
+结论：维持现状（只有驱动者或 Agent owner 的斜杠命令转成 `control`）。以后开放给所有人的命令在 `MsgBridgeCtx.commands` 的登记项上加“谁可以发”即可，现在没有这个字段。
+
 7. **多输入源的归并顺序**：本文按 `channels.inputs` 的声明顺序。目前每个 session 只有一个 kmsg 队列，多源出现前不实现。
+
+> 不会有多输入源的
+
+结论：每个 Session 只有一个 kmsg 输入源，不设计多源归并。代码里的输入源列表与“按声明顺序”只是现有结构，不作为协议能力。
+
 8. **prompt 中的消息 key 长度**：`<msg key>` 与 `reply_to` 现在是完整的 ObjId 字符串。是否在渲染时用批内短编号（并在 receipt 中保留对应关系）以节省 token？本文按完整 ObjId，保证跨批次引用稳定。
+
+> 就按ObjId就好。不会太长的
+
+结论：维持完整 ObjId。
+
 9. **非人类来源的 `from`**：子 session 发给父的消息、定时任务生成的消息，`from` 用所属 Agent 的 DID，来源 session 放 `to_session` 还是 `meta`？本文倾向 `meta.from_session`，随 Sub Session（C15）实施时定。
+
+> 按设计，sub session通常都是work session,不会是ui session. 我思考不会有 ui session需要给work session主动发message的情况，要有也是转发某个用户的信息
+
+结论：不引入 `meta.from_session`。子 Session 是 work session；父给子的输入是创建参数或转发的用户消息（`from` 就是那位用户），子的结果经父子 Session 的结果通道回送（`state.reply = parent_session`）。
+
 10. **自定义模板的转义（已定）**（§3.3.8）：默认推荐 `render_format: "格式名"`，XML 格式渲染器负责转义，模板直接插入完整片段；`xml / attr` 保留给直接拼装 XML 的高级用法。不引入默认二次转义或额外 `raw` 要求，`input.text` 与 system 模板的既有插值方式保持一致。
+
 
 ## 4. P0：统一 Session 的机械判断与输入处理
 
@@ -1057,7 +1105,7 @@ msg-center
 
 ## 10. 实施记录（2026-10-03）
 
-按 §8 的顺序实施完成。验证：`cargo test -p libopendan -- --test-threads=1`（单元 18 + 集成 108，另有 1 个 `--ignored` 的真实 kmsg 用例未跑）、`cargo test -p llm_context`（209）、`cargo build -p opendan -p agent_tool`。fixtures 已重新生成（13 个场景升到新 schema，新增 `14_input_bus`）。
+按 §8 的顺序实施完成。验证：`cargo test -p libopendan -- --test-threads=1`（单元 18 + 集成 109，另有 1 个 `--ignored` 的真实 kmsg 用例未跑）、`cargo test -p llm_context`（209）、`cargo build -p opendan -p agent_tool`。fixtures 已重新生成（13 个场景升到新 schema，新增 `14_input_bus`）。
 
 ### 10.1 落点
 
@@ -1105,4 +1153,4 @@ msg-center
 - **显式迁移工具**：旧 Session 只读已落实，迁移本身没有实现（本文 §1 明确本轮不做）。
 - **TS 侧**：websdk 的同名构造 helper 与 TS Runner 未做；`14_input_bus` 可直接用于它的验证。
 - **`on_context_switch` 携带半订阅快照**没有单独的端到端用例（`on_init`、`on_input` 有）；实现是同一条提交路径。
-- §3.6 的待确认项 1–9 均按本文的选择实现，仍待确认。
+- §3.6 的待确认项已答复（2026-10-03）：第 2 项的机械降级已实施（`runner/live.rs::degrade_inline_media`，用例 `refused_inline_media_degrades_to_references_once`）；第 5 项（群聊说话人的联系人状态）与第 6 项（向所有人开放的斜杠命令）是后续项；其余维持实现现状。

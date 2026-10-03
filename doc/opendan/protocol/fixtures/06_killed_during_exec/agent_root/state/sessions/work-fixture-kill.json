@@ -22,16 +22,16 @@
     "report_brief": "",
     "activity": {
       "summary": "long command",
-      "heartbeat_ms": 1791037307158
+      "heartbeat_ms": 1791038404414
     },
     "last_runner": {
-      "runner_id": "rn-56f7209e699f4d96",
+      "runner_id": "rn-5cfae7bb6a694e56",
       "host": "${FIXTURE_HOST}",
-      "pid": 858160,
+      "pid": 909279,
       "lock_epoch": 1,
-      "at_ms": 1791037307160
+      "at_ms": 1791038404416
     },
-    "updated_at_ms": 1791037307158
+    "updated_at_ms": 1791038404414
   },
   "location_rev": 0
 }

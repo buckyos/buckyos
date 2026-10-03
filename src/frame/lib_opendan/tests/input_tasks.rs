@@ -637,3 +637,48 @@ async fn a_filled_run_can_wait_for_another_task() {
     assert_eq!(results_of(&sd, "t2").len(), 1);
     assert_eq!(sd.state().unwrap().turns_completed, 1);
 }
+
+/// `inline` media refused by the provider: the session removes the blocks,
+/// says so in the text and retries once; the attachment stays locatable.
+#[tokio::test]
+async fn refused_inline_media_degrades_to_references_once() {
+    let env = Env::new();
+    let mut spec = work_spec("look at the picture");
+    spec.prompt.input.media = InputMedia::Inline;
+    let sd = env.create_work(spec).await;
+    let image = ndn_lib::ObjId::new(&format!("cyfile:{}", "a1".repeat(32))).unwrap();
+    let m = attach(
+        text_msg(&parse_did(USER).unwrap(), &parse_did(AGENT).unwrap(), "what is this?"),
+        image.clone(),
+        Some("photo.png".into()),
+    );
+    let posted = PostedInput::msg(APP, m, MsgDelivery::default()).unwrap();
+    libopendan::post_input(env.agent().as_ref(), sd.sid(), &posted).await.unwrap();
+    let llm = ScriptedLlm::fallible(move |req, _| {
+        let user = req.messages.iter().rev().find(|m| m.role == AiRole::User).unwrap();
+        if user.content.iter().any(|c| matches!(c, AiContent::Image { .. })) {
+            return Err(llm_context::error::LLMComputeError::Provider {
+                failure: llm_context::error::ProviderFailure::Permanent,
+                message: "image input is not supported by this model".into(),
+            });
+        }
+        let t = user.text_content();
+        assert!(t.contains("blocks of this message were removed"), "{t}");
+        assert!(t.contains(&image.to_string()), "still locatable: {t}");
+        Ok(text("cannot see it, reading the file instead"))
+    });
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 2, "one refused request, one retry");
+    // A text-only request that is refused is not retried this way.
+    let sd2 = env.create_work(work_spec("plain")).await;
+    let always = ScriptedLlm::fallible(|_, _| {
+        Err(llm_context::error::LLMComputeError::Provider {
+            failure: llm_context::error::ProviderFailure::Permanent,
+            message: "no".into(),
+        })
+    });
+    let r = drive(&sd2, &env.deps(always.clone()), StopWhen::Finished).await;
+    assert!(matches!(r, DriveResult::Error { .. }), "{r:?}");
+    assert_eq!(always.count(), 1);
+}

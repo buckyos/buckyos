@@ -26,13 +26,13 @@
       "heartbeat_ms": 0
     },
     "last_runner": {
-      "runner_id": "rn-49e36d05c7484c8d",
+      "runner_id": "rn-01ee379b04cf4e66",
       "host": "${FIXTURE_HOST}",
-      "pid": 857798,
+      "pid": 908772,
       "lock_epoch": 1,
-      "at_ms": 1791037306788
+      "at_ms": 1791038404033
     },
-    "updated_at_ms": 1791037306785
+    "updated_at_ms": 1791038404028
   },
   "location_rev": 0
 }

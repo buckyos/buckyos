@@ -14,13 +14,13 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261003-072147-a65deb"
+        "20261003-074004-ea2749"
       ],
       "session_id": "work-fixture-decide",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20261003-072147-a65deb",
+        "last_run": "20261003-074004-ea2749",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],

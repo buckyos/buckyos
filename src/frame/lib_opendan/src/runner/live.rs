@@ -14,6 +14,7 @@ use agent_tool::xllm::{
 };
 use buckyos_api::{AiContent, AiMessage, AiRole};
 use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
+use llm_context::error::{LLMComputeError, ProviderFailure};
 use llm_context::tasks::{task_state_observation, RunningTaskResolver, TaskState};
 use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
@@ -754,6 +755,25 @@ pub(super) async fn run_compacting(
     let mut attempt = 0;
     loop {
         let outcome = lc.ctx.run().await;
+        // `input.media = inline` and the provider refused the request (the
+        // model takes no images / documents, or an object is unreadable):
+        // degrade mechanically, once — drop the media blocks, say so in the
+        // text (which still locates every attachment) and run again.
+        if let LLMContextOutcome::Error {
+            error:
+                LLMComputeError::Provider {
+                    failure: ProviderFailure::Permanent | ProviderFailure::Unknown,
+                    ..
+                },
+            ..
+        } = &outcome
+        {
+            if let Some(ctx) = degrade_inline_media(sh, lc)? {
+                lc.ctx = ctx;
+                *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
+                continue;
+            }
+        }
         let LLMContextOutcome::ContextLimitReached { snapshot, .. } = &outcome else {
             return Ok(outcome);
         };
@@ -773,6 +793,80 @@ pub(super) async fn run_compacting(
         .await?;
         *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
     }
+}
+
+/// Appended to a user message whose media blocks were removed.
+pub const MEDIA_DEGRADED_NOTE: &str = "[The image / document blocks of this message were removed because the model request was refused with them. Read the attachments listed above with tools if you need their content.]";
+
+fn strip_media(m: &mut AiMessage) -> bool {
+    if m.role != AiRole::User {
+        return false;
+    }
+    let before = m.content.len();
+    m.content
+        .retain(|c| !matches!(c, AiContent::Image { .. } | AiContent::Document { .. }));
+    if m.content.len() == before {
+        return false;
+    }
+    match m.content.iter_mut().find_map(|c| match c {
+        AiContent::Text { text } => Some(text),
+        _ => None,
+    }) {
+        Some(text) => {
+            text.push('\n');
+            text.push_str(MEDIA_DEGRADED_NOTE);
+        }
+        None => m.content.push(AiContent::Text {
+            text: MEDIA_DEGRADED_NOTE.to_string(),
+        }),
+    }
+    true
+}
+
+/// Remove the inline media blocks of the run's user messages and resume it.
+/// `None`: nothing to remove, or it was already done once for this run.
+fn degrade_inline_media(sh: &Arc<Shared>, lc: &LiveCtx) -> Result<Option<LLMContext>> {
+    let mut snapshot = lc.ctx.snapshot();
+    let mut meta = snapshot_host_meta(&snapshot);
+    if meta.media_degraded || snapshot.state.suspended.is_some() {
+        return Ok(None);
+    }
+    let mut stripped = false;
+    for m in snapshot
+        .request
+        .input
+        .iter_mut()
+        .chain(snapshot.state.accumulated.iter_mut())
+    {
+        stripped |= strip_media(m);
+    }
+    for step in snapshot
+        .state
+        .steps
+        .iter_mut()
+        .chain(snapshot.state.last_step.iter_mut())
+    {
+        if let Some(m) = step.next_user_message.as_mut() {
+            stripped |= strip_media(m);
+        }
+    }
+    if !stripped {
+        return Ok(None);
+    }
+    meta.media_degraded = true;
+    snapshot.state.host = Some(with_host_meta(snapshot.state.host.as_ref(), &meta));
+    let run_id = lc.run.run_id().to_string();
+    let ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, lc.deps.clone())
+        .map_err(|e| {
+            OpenDanError::blocked(format!("media degrade: {e}"), Some(&run_id))
+        })?;
+    lc.run
+        .checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
+    log::warn!(
+        "session {}: provider refused run {run_id} with inline media; retrying once with references only",
+        sh.dir.sid()
+    );
+    Ok(Some(ctx))
 }
 
 /// Mid-run rewrite of a run suspended at the context limit (§4.4, X7):

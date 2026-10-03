@@ -367,6 +367,10 @@
       },
       "type": "array"
     },
+    "media_degraded": {
+      "description": "The run's inline media blocks were removed once after the provider refused the request (`input.media = inline` degraded to references); it is not tried again.",
+      "type": "boolean"
+    },
     "process_entry": {
       "description": "Behavior process entry the run belongs to.",
       "type": [

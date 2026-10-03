@@ -13,11 +13,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261003-072147-6fea92",
+        "run_id": "20261003-074004-486970",
         "run_status": "completed"
       },
       "runs_on_disk": [
-        "20261003-072147-6fea92"
+        "20261003-074004-486970"
       ],
       "session_id": "work-fixture-tail",
       "state": {

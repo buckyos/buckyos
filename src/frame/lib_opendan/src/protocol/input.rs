@@ -896,6 +896,11 @@ pub struct HostMeta {
     /// message positions no longer apply (their identity still does).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub epoch_input_seq: u64,
+    /// The run's inline media blocks were removed once after the provider
+    /// refused the request (`input.media = inline` degraded to references);
+    /// it is not tried again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub media_degraded: bool,
 }
 
 pub const HOST_META_KEY: &str = "libopendan";

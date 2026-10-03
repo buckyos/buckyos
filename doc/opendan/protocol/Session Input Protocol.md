@@ -235,6 +235,8 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 与模板无关，由接收批次的 context 的 `input.media` 机械决定：`reference`（默认）只有文本；`inline` 在文本块之后按消息顺序、附件顺序为 `image` / `document` 附件追加 `Image{source: named_object}` / `Document{source: named_object, title}` 块，每批最多 8 个，其余只保留文本引用。两种取值下文本块相同。worklog 的 `user_message` 只记文本，新 run 重建的历史因此只有文本。
 
+`inline` 的请求被 provider 拒绝（永久或未知的 provider 错误：模型不接受图片 / 文档，或对象不可读）时，Session 机械降级一次：去掉该 run 中 user 消息的媒体块，在其文本末尾追加一行说明，发布改写后的快照并重试；快照的 `host.libopendan.media_degraded = true` 记录它已发生，同一个 run 不再降级。文本自足保证附件仍可按 ObjId / 路径读取。
+
 ## 7. 输入 receipt 与提交
 
 每个批次由有序的 1–2 条 user 消息组成：有待注入的半订阅状态时先是快照消息，再是受控输入消息，一次注入，中间不推理、不发布快照。receipt 与消息写在**同一份**快照的 `state.host.libopendan.input_receipts[]`：
