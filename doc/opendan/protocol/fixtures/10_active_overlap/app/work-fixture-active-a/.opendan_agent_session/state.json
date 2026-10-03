@@ -1,14 +1,14 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1791024660791,
+    "heartbeat_ms": 1791037307686,
     "summary": "edit",
     "touching": [
       {
         "kind": "path",
         "mode": "write",
         "ref": "ws:snake/src/",
-        "since_ms": 1791024660791
+        "since_ms": 1791037307686
       }
     ]
   },
@@ -18,13 +18,10 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261003-035100-9bd034",
+    "run_id": "20261003-072147-41dd4c",
     "turns": [
       {
-        "at_ms": 1791024660787,
-        "changes": [
-          "_active_sessions@input"
-        ],
+        "at_ms": 1791037307682,
         "hook": "on_init",
         "input_seq": 1,
         "turn": 1
@@ -33,28 +30,25 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1791024660787,
+    "at_ms": 1791037307682,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
-    "run_id": "20261003-035100-9bd034"
+    "run_id": "20261003-072147-41dd4c"
   },
   "perception_seq": 0,
   "recent_keys": [],
   "reported_rev": 1,
   "rev": 2,
   "run_state": "running",
-  "schema": "opendan.session_state/4",
+  "schema": "opendan.session_state/5",
   "stop_requested": false,
-  "subscription_cursors": {
-    "_active_sessions": []
-  },
   "topic": {
     "title": ""
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1791024660791,
+  "updated_at_ms": 1791037307686,
   "worklog": {
     "committed_bytes": 138,
     "committed_seq": 1
@@ -62,8 +56,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 494763,
+    "pid": 858535,
     "principal": "app:app2@alice",
-    "runner_id": "rn-d67a517db5574ac6"
+    "runner_id": "rn-ff70b03b5f944f88"
   }
 }

@@ -44,7 +44,11 @@ pub trait SessionRegistry: Send + Sync {
     /// Mark entries whose location vanished as unreachable (never deletes).
     async fn verify(&self) -> Result<Vec<String>>;
     /// Post an input to a session's kmsg queue (+ wake event).
-    async fn post_input(&self, sid: &str, input: &Input, who: &str) -> Result<u64>;
+    /// Append a record to the session's input bus. Refused with
+    /// `input_full` while the bus holds [`MAX_PENDING_INPUTS`] records that
+    /// are not consumed yet (nothing is overwritten; retry later), and with
+    /// `session_readonly` for a session of an older protocol version.
+    async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64>;
 }
 
 /// Active session view (§6.7): other sessions that run and what they touch.

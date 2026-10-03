@@ -12,7 +12,7 @@ Review 更新（四）：2026-10-03。按实施前 review 定稿：协议升级�
 
 Review 更新（五）：2026-10-03。模板优先使用 `{{ value | render_format: "格式名" }}`，例如 `{{ session.current_todo | render_format: "todo.summary_xml" }}`。命名格式负责结构排版、转义与附件定位信息；`xml / attr` 等作为底层工具保留，常规模板不必逐字段处理。
 
-状态：待实施。依据本轮对 xAgent 输入设计、串行 / 并行等待和旧 AgentSession 的讨论，以及 `9cd6e8f5` 下的 libopendan 源码核对。实施前重新确认基线。
+状态：**已实施（2026-10-03）**，实施记录与未完成项见 §10。依据本轮对 xAgent 输入设计、串行 / 并行等待和旧 AgentSession 的讨论，以及 `9cd6e8f5` 下的 libopendan 源码核对。
 
 本 TODO 依赖的 llm_context 层修改（工具取消与时限、PendingTool 挂起记录与 `RunningTaskResolver`、`shell` 的执行模式与 task，已实施），以及需要 review 确认的 llm_context 事项，单独放在 [llm_context 长命令 / 长工具 TODO](./llm-context-long-tool-todo.md)。**llm_context 的修改总是先进行**，本 TODO 的宿主接入在其后。
 
@@ -557,7 +557,7 @@ pub struct EventView {
 
 ```xml
 <inputs>
-<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
+<msg key="cymsg:…c3" from="Bob" from_id="bob.bns.did" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
 @jarvis 帮我看一下这张截图里的报错，日志在附件里
 <attachment index="0" media="image" name="screenshot.png" mime="image/png" obj_id="cyfile:…a1"/>
 <attachment index="1" media="document" name="build.log" mime="text/plain" obj_id="cyfile:…b2"/>
@@ -658,7 +658,7 @@ msg-center 收到的 MsgObject（群消息，节选）：
 ```xml
 <session_input hook="on_input" time="2026-10-02T00:00:01Z">
 <inputs>
-<msg key="cymsg:…c3" from="Bob" from_id="bob" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
+<msg key="cymsg:…c3" from="Bob" from_id="bob.bns.did" group="Dev Team" mentioned="true" reply_to="cymsg:…99" time="2026-10-02T00:00:00Z">
 @jarvis 帮我看一下这张截图里的报错，日志在附件里
 <attachment index="0" media="image" name="screenshot.png" mime="image/png" obj_id="cyfile:…a1"/>
 <attachment index="1" media="document" name="build.log" mime="text/plain" obj_id="cyfile:…b2"/>
@@ -830,22 +830,22 @@ msg-center
 
 ### 3.5 实施清单
 
-- [ ] `protocol/input.rs`：`SessionInput / PostedInput / FetchedInput`、`SessionMsg / MsgDelivery`、构造 helper（`text_msg / attach / reply_to / PostedInput::msg`）、`AgentEvent`、`ControlCommand::Perceive`、`RejectReason`；删除 `InputKind::{Change, Perception}`、`Input::{change, perception}`、`HEADER_INTENT`、`HEADER_REPLY_TO`；生成 JSON Schema。
-- [ ] `channel/kmsg.rs`：`encode_input` / `decode_message` 按 §3.2.1 的 header 映射，增加 `schema` 校验；投递与消费共用 §3.2.5 的校验函数。
-- [ ] `protocol/config.rs`：删除 `InputSourceConfig::MsgCenter`；behavior 的 `input` 段增加 `media: reference | inline`（与 `input.mode` 并列，随 C7 冻结）。
-- [ ] `protocol/state.rs`：`pending_events`、`state.reply`；receipt 改为 `events[]` + `parts[]` 并保存提交后的 `reply`，删除 `changes[]`、`consumed_only[]`、`content`、`message_pos`；`OBSERVATION_HOOK` 删除。
-- [ ] 输入通道：Session 级 pending input 上限 64，原子容量检查与 append、`input_full`、消费后释放容量；旧协议 Session 迁移前只读。
-- [ ] Session 配置与内置 bridge：绑定用户时区并默认建立隐式 semi 订阅；协议与内建时间渲染统一 UTC。
-- [ ] `runner/assembler.rs`：`InputMaterial.inputs` 改为 `InputView`；内建 `input.text` 渲染（§3.3.4）；`render_input` 返回 `RenderedInput`。
-- [ ] `runner/live.rs::commit_input_batch`：注入 1–2 条多块 `AiMessage`，按 `parts[]` 记录位置。
-- [ ] `runner/history.rs` 与压缩路径：早于当前 Turn 的输入消息去掉媒体块。
-- [ ] `Cargo.toml`：libopendan 直接依赖 `ndn-lib`（workspace 已有，llm_context 已在用）。
-- [ ] `runner/assembler.rs`：`message_view`（MsgObject → `MessageView`，§3.3.3）；llm_context 先导出 `attachment_kind` / `attachment_mime`。
-- [ ] 模板命名格式与 filter（§3.3.8）：llm_context 的 `PromptRenderEngine` 注册 `render_format` 与底层通用 filter，提供宿主注册格式和追加 filter 的入口（llm_context 层，先行）；libopendan 注册 `input.xml`、`message.xml / message.markdown`、`event.xml / event.summary_text`、`attachments.xml / attachments.list`、`todo.summary_xml`。材料在渲染前装配，XML 格式内部统一转义；六个示例模板进 fixtures。
-- [ ] `bridge/msg.rs`：`route_msg_record`（§3.3.2，只过滤与分流）。
-- [ ] CLI：`post --json <file | ->` 与 `post --msg … [--from] [--attach] [--reply-to]`，`--no-bridge` 下可单独验证接收方；调用者不需要了解 Rust 类型、闭包或进程内对象。
-- [ ] 手工投递样例与 fixtures：普通消息、带附件的群消息、active 任务事件、semi 对象变化、停止控制，以及 §3.2.5 每种拒绝原因各一条；每个样例给出所需的 Session 配置与预期行为；`input.text` 的渲染结果进 fixtures。
-- [ ] 反写：xAgent §4.2 / §4.3 / §4.5 / §6.2 / §9.5 与 C1、C2；Session Input Protocol 拆成“Agent 输入”与“Session 控制”两篇并升到版本 3。
+- [x] `protocol/input.rs`：`SessionInput / PostedInput / FetchedInput`、`SessionMsg / MsgDelivery`、构造 helper（`text_msg / attach / reply_to / PostedInput::msg`）、`AgentEvent`、`ControlCommand::Perceive`、`RejectReason`；删除 `InputKind::{Change, Perception}`、`Input::{change, perception}`、`HEADER_INTENT`、`HEADER_REPLY_TO`；生成 JSON Schema。
+- [x] `channel/kmsg.rs`：`encode_input` / `decode_message` 按 §3.2.1 的 header 映射，增加 `schema` 校验；投递与消费共用 §3.2.5 的校验函数。
+- [x] `protocol/config.rs`：删除 `InputSourceConfig::MsgCenter`；behavior 的 `input` 段增加 `media: reference | inline`（与 `input.mode` 并列，随 C7 冻结）。
+- [x] `protocol/state.rs`：`pending_events`、`state.reply`；receipt 改为 `events[]` + `parts[]` 并保存提交后的 `reply`，删除 `changes[]`、`consumed_only[]`、`content`、`message_pos`；`OBSERVATION_HOOK` 删除。
+- [x] 输入通道：Session 级 pending input 上限 64，原子容量检查与 append、`input_full`、消费后释放容量；旧协议 Session 迁移前只读。
+- [x] Session 配置与内置 bridge：绑定用户时区并默认建立隐式 semi 订阅；协议与内建时间渲染统一 UTC。
+- [x] `runner/assembler.rs`：`InputMaterial.inputs` 改为 `InputView`；内建 `input.text` 渲染（§3.3.4）；`render_input` 返回 `RenderedInput`。
+- [x] `runner/live.rs::commit_input_batch`：注入 1–2 条多块 `AiMessage`，按 `parts[]` 记录位置。
+- [x] `runner/history.rs` 与压缩路径：早于当前 Turn 的输入消息去掉媒体块。
+- [x] `Cargo.toml`：libopendan 直接依赖 `ndn-lib`（workspace 已有，llm_context 已在用）。
+- [x] `runner/assembler.rs`：`message_view`（MsgObject → `MessageView`，§3.3.3）；llm_context 先导出 `attachment_kind` / `attachment_mime`。
+- [x] 模板命名格式与 filter（§3.3.8）：llm_context 的 `PromptRenderEngine` 注册 `render_format` 与底层通用 filter，提供宿主注册格式和追加 filter 的入口（llm_context 层，先行）；libopendan 注册 `input.xml`、`message.xml / message.markdown`、`event.xml / event.summary_text`、`attachments.xml / attachments.list`、`todo.summary_xml`。材料在渲染前装配，XML 格式内部统一转义；六个示例模板进 fixtures。
+- [x] `bridge/msg.rs`：`route_msg_record`（§3.3.2，只过滤与分流）。
+- [ ] （`--attach` 只接受 ObjId，本机文件登记未做，见 §10.3）CLI：`post --json <file | ->` 与 `post --msg … [--from] [--attach] [--reply-to]`，`--no-bridge` 下可单独验证接收方；调用者不需要了解 Rust 类型、闭包或进程内对象。
+- [x] 手工投递样例与 fixtures：普通消息、带附件的群消息、active 任务事件、semi 对象变化、停止控制，以及 §3.2.5 每种拒绝原因各一条；每个样例给出所需的 Session 配置与预期行为；`input.text` 的渲染结果进 fixtures。
+- [x] 反写：xAgent §4.2 / §4.3 / §4.5 / §6.2 / §9.5 与 C1、C2；Session Input Protocol 拆成“Agent 输入”与“Session 控制”两篇并升到版本 3。
 
 ### 3.6 待确认
 
@@ -864,16 +864,16 @@ msg-center
 
 ### 4.1 输入路由与控制
 
-- [ ] 用规则表说明 `type + subscription + waiting_for + Session 模板` 的处理结果，覆盖 drive 入口、空闲等待和运行中的检查点；渲染模板只改变正文，不改变输入路由和消费语义。
-- [ ] kevent 只通知 Runner 队列可能变化，重复通知和漏通知不影响已持久化输入的消费。是否运行 LLM 由可处理的受控输入或可恢复的 run 决定，不设独立的 wakeup 输入入口。
-- [ ] message 的业务意图交给 LLM；鉴权、去重、排序、暂存和终态拒绝仍按协议机械处理。普通自然语言消息不能被直接解释为停止控制命令：Session 不解析正文，斜杠命令只在 msg bridge 入队前按登记表与发送者身份转成 `control`（§3.3.2）。
-- [ ] event 按结构化字段机械匹配；`summary` 是给 LLM 的说明，不用于解析任务状态或推导等待条件。
-- [ ] 挂起调用的结果依赖与普通事件订阅分别登记和匹配。匹配 pending call 的任务通知只触发 resolver 查询，结果回填 ToolResult，不再重复注入普通事件；没有 pending call 时，按有效普通订阅处理，无订阅则丢弃。
-- [ ] 只接收匹配有效显式 / 隐式订阅的事件：active → Input，semi → Observe。未知、已删除或未匹配的订阅直接丢弃，提交消费位置并确认输入源，不进入上下文或 `pending_events`；timer、系统事件也遵循此规则。Session 模板负责预先登记所需订阅，不再提供“未订阅也投递”的默认策略。
-- [ ] 同一源的 subscribe / unsubscribe 与 event 按投递 index 生效；unsubscribe 清理该订阅尚未注入的状态，后续迟到事件直接丢弃。不能先应用整批订阅变更再重新解释排在它之前的事件。挂起调用自己的结果依赖不随普通 unsubscribe 删除。
-- [ ] 挂起工具期间，普通 msg / 无关 Input event 保留待处理，不能填补缺失 ToolResult 或隐式开启替代 run；控制命令继续可处理。stop、审批作废和 task 取消复用 llm_context TODO §3 / §4 / §9 第 7 项的已定规则，不再另设一套停止协议。
-- [ ] 挂起调用与事件的匹配按 `task_id` 相等：llm_context 的挂起记录只有 `task_id`（对 llm_context 不透明），`source.kind = task` 的 AgentEvent 以 `source.id` 携带同一个 `task_id`（§3.2.3）。事件只用来提前唤醒，结果以 `RunningTaskResolver` 的查询为准。
-- [ ] 工具执行期间也要能处理 stop 并维持 activity 心跳。当前控制输入只在 `before_inference` 边界读取；Runner 需要一个与工具调用并行的监视任务，读到 stop 后调用 interrupt handle（依赖 llm_context TODO §3 的工具取消）。监视任务只查看控制输入，不确认 / 消费，也不写 state；控制由驱动者在下一个边界执行并提交（§5 单写者纪律）。
+- [x] 用规则表说明 `type + subscription + waiting_for + Session 模板` 的处理结果，覆盖 drive 入口、空闲等待和运行中的检查点；渲染模板只改变正文，不改变输入路由和消费语义。
+- [x] kevent 只通知 Runner 队列可能变化，重复通知和漏通知不影响已持久化输入的消费。是否运行 LLM 由可处理的受控输入或可恢复的 run 决定，不设独立的 wakeup 输入入口。
+- [x] message 的业务意图交给 LLM；鉴权、去重、排序、暂存和终态拒绝仍按协议机械处理。普通自然语言消息不能被直接解释为停止控制命令：Session 不解析正文，斜杠命令只在 msg bridge 入队前按登记表与发送者身份转成 `control`（§3.3.2）。
+- [x] event 按结构化字段机械匹配；`summary` 是给 LLM 的说明，不用于解析任务状态或推导等待条件。
+- [x] 挂起调用的结果依赖与普通事件订阅分别登记和匹配。匹配 pending call 的任务通知只触发 resolver 查询，结果回填 ToolResult，不再重复注入普通事件；没有 pending call 时，按有效普通订阅处理，无订阅则丢弃。
+- [x] 只接收匹配有效显式 / 隐式订阅的事件：active → Input，semi → Observe。未知、已删除或未匹配的订阅直接丢弃，提交消费位置并确认输入源，不进入上下文或 `pending_events`；timer、系统事件也遵循此规则。Session 模板负责预先登记所需订阅，不再提供“未订阅也投递”的默认策略。
+- [x] 同一源的 subscribe / unsubscribe 与 event 按投递 index 生效；unsubscribe 清理该订阅尚未注入的状态，后续迟到事件直接丢弃。不能先应用整批订阅变更再重新解释排在它之前的事件。挂起调用自己的结果依赖不随普通 unsubscribe 删除。
+- [x] 挂起工具期间，普通 msg / 无关 Input event 保留待处理，不能填补缺失 ToolResult 或隐式开启替代 run；控制命令继续可处理。stop、审批作废和 task 取消复用 llm_context TODO §3 / §4 / §9 第 7 项的已定规则，不再另设一套停止协议。
+- [x] 挂起调用与事件的匹配按 `task_id` 相等：llm_context 的挂起记录只有 `task_id`（对 llm_context 不透明），`source.kind = task` 的 AgentEvent 以 `source.id` 携带同一个 `task_id`（§3.2.3）。事件只用来提前唤醒，结果以 `RunningTaskResolver` 的查询为准。
+- [ ] （stop 已实施；心跳未做，见 §10.3）工具执行期间也要能处理 stop 并维持 activity 心跳。当前控制输入只在 `before_inference` 边界读取；Runner 需要一个与工具调用并行的监视任务，读到 stop 后调用 interrupt handle（依赖 llm_context TODO §3 的工具取消）。监视任务只查看控制输入，不确认 / 消费，也不写 state；控制由驱动者在下一个边界执行并提交（§5 单写者纪律）。
 
 | 输入 / 情况 | 机械处理 | 对 LLM / Turn 的影响 |
 |---|---|---|
@@ -894,12 +894,12 @@ msg-center
 | `on_input` | 将选中的外部 message / Input event 渲染为输入消息 | 消费策略支持单条或组批；收到 control、Observe event 或队列通知本身不构成此入口 |
 | `on_context_switch` | 根据交接状态生成目标 context 继续执行所需的消息，包括切换 behavior、进入子 context，以及经交接批次返回的子结果 | 延续当前 Turn；工具触发的子调用返回仍补齐原调用的 ToolResult，不另造 user message |
 
-- [ ] behavior cfg 的 system 模板独立命名为 `prompt.system`；`prompt.on_init` 专指启动输入。旧 behavior cfg 的 `prompt.on_init` 是 system 模板，实施时显式改名，不沿用同名异义。
-- [ ] 输入模板统一为 `prompt.on_init / prompt.on_input / prompt.on_context_switch`；现有 `on_wakeup` 改为 `on_input`，`on_behavior_switch` 改为 `on_context_switch`。普通快照恢复、上下文压缩和 ToolResults 回填不新增受控输入入口。
-- [ ] 附件是否以图片 / 文档块随文本注入由 behavior 的 `input.media`（`reference | inline`，默认 `reference`）决定，与模板无关（§3.3.4）。
-- [ ] 单条 / 组批作为消费策略配置，与渲染模板分开；模板接收本次已选中的输入集合。behavior cfg 的 `input.mode` 默认 Batch，延续当前组批方式；Single 从排序后的可处理 message / Input event 中总共选一条，Batch 在批次预算内选取多条，未选输入保留。交接时先完成目标 behavior 的冻结与校验，再读取它的策略与模板。
-- [ ] 输入装配 / 推理预算不足时，按 AICC 服务不可用的失败与重试路径处理，不另造输入淘汰或预算专用协议。未提交批次不消费、不确认；已提交到快照的批次保留 receipt，恢复时不重复注入。不因暂时无法推理而静默丢输入，也不把本条改成 llm_context 执行预算的重新定义。
-- [ ] 初始化或交接与外部输入同时可处理时，沿用 `on_init` → `on_context_switch` → `on_input` 的入口选择顺序；允许消费的外部输入并入该批，不重复生成 `on_input`。子 context 不消费调用方队列、未完成工具批次期间暂存输入的规则保持有效。
+- [x] behavior cfg 的 system 模板独立命名为 `prompt.system`；`prompt.on_init` 专指启动输入。旧 behavior cfg 的 `prompt.on_init` 是 system 模板，实施时显式改名，不沿用同名异义。
+- [x] 输入模板统一为 `prompt.on_init / prompt.on_input / prompt.on_context_switch`；现有 `on_wakeup` 改为 `on_input`，`on_behavior_switch` 改为 `on_context_switch`。普通快照恢复、上下文压缩和 ToolResults 回填不新增受控输入入口。
+- [x] 附件是否以图片 / 文档块随文本注入由 behavior 的 `input.media`（`reference | inline`，默认 `reference`）决定，与模板无关（§3.3.4）。
+- [x] 单条 / 组批作为消费策略配置，与渲染模板分开；模板接收本次已选中的输入集合。behavior cfg 的 `input.mode` 默认 Batch，延续当前组批方式；Single 从排序后的可处理 message / Input event 中总共选一条，Batch 在批次预算内选取多条，未选输入保留。交接时先完成目标 behavior 的冻结与校验，再读取它的策略与模板。
+- [x] 输入装配 / 推理预算不足时，按 AICC 服务不可用的失败与重试路径处理，不另造输入淘汰或预算专用协议。未提交批次不消费、不确认；已提交到快照的批次保留 receipt，恢复时不重复注入。不因暂时无法推理而静默丢输入，也不把本条改成 llm_context 执行预算的重新定义。
+- [x] 初始化或交接与外部输入同时可处理时，沿用 `on_init` → `on_context_switch` → `on_input` 的入口选择顺序；允许消费的外部输入并入该批，不重复生成 `on_input`。子 context 不消费调用方队列、未完成工具批次期间暂存输入的规则保持有效。
 
 ### 4.3 半订阅快照的装配与提交
 
@@ -916,22 +916,22 @@ msg-center
   → 继续推理
 ```
 
-- [ ] 运行中的检查点可继续接收、合并并保存半订阅状态；仅到达检查点、完成工具调用或收到 Observe event，不独立注入快照。没有受控输入时继续保留状态，空闲时同样保留。
-- [ ] 将当前 `render_observation` / `hook = observation` 的独立注入路径收敛到上述装配流程；不把旧 `on_behavior_step_ob` 直接作为半订阅输入入口。工具结果的渲染仍属于 LLM Context 的执行协议。
-- [ ] 渲染与选取无消费副作用，不在 render / drain 阶段清理 `pending_events`。只有受控输入确实提交时，才按 receipt 清理本次实际注入的版本；渲染失败、批次未提交或预算不足而进入 AICC 不可用处理路径时保留状态。
-- [ ] 一个输入批次可以包含快照消息与受控输入消息，receipt 必须覆盖两部分正文的位置和实际注入的状态版本（`parts[]` 与 `events[]`，结构见 §3.2.6；behavior 模式下两部分并入同一个 Step 的 `next_user_message`，见 §3.3.5）。两部分一起恢复，不允许快照已消费而受控输入丢失；半订阅快照不独立计 Turn，批次是否开启 Turn 仍由受控输入提交时的 Session 状态决定。
+- [x] 运行中的检查点可继续接收、合并并保存半订阅状态；仅到达检查点、完成工具调用或收到 Observe event，不独立注入快照。没有受控输入时继续保留状态，空闲时同样保留。
+- [x] 将当前 `render_observation` / `hook = observation` 的独立注入路径收敛到上述装配流程；不把旧 `on_behavior_step_ob` 直接作为半订阅输入入口。工具结果的渲染仍属于 LLM Context 的执行协议。
+- [x] 渲染与选取无消费副作用，不在 render / drain 阶段清理 `pending_events`。只有受控输入确实提交时，才按 receipt 清理本次实际注入的版本；渲染失败、批次未提交或预算不足而进入 AICC 不可用处理路径时保留状态。
+- [x] 一个输入批次可以包含快照消息与受控输入消息，receipt 必须覆盖两部分正文的位置和实际注入的状态版本（`parts[]` 与 `events[]`，结构见 §3.2.6；behavior 模式下两部分并入同一个 Step 的 `next_user_message`，见 §3.3.5）。两部分一起恢复，不允许快照已消费而受控输入丢失；半订阅快照不独立计 Turn，批次是否开启 Turn 仍由受控输入提交时的 Session 状态决定。
 
 ## 5. P0：事件身份、合并和消费提交
 
-- [ ] 五种身份各司其职（字段定义见 §3.2）：逻辑输入去重 `key`、通道投递位置 `(src, index)`、事件来源 `source`、状态合并键 `(subscription_id, source)` 和来源版本 `seq`。同一逻辑输入重投沿用 key，不同变化使用不同 key。`pending_events` 的存储结构见 §3.2.6。
-- [ ] pending input 上限固定为 64（§3.2.1），容量满时拒绝 append，不增加无界积压机制。沿用有界 `recent_keys` 处理近期逻辑重投，选批时也按 key 去重；通道消费游标与 receipt 承担同一投递位置和已提交批次的恢复幂等。不承诺跨任意时间、跨协议版本的无限期逻辑去重。
-- [ ] 同一协议内，Observe 在尚未消费的同一来源状态上按 seq 合并，迟到旧版本不能覆盖仍保留的新版本；没有 seq 时按通道消费顺序更新，并用 key 区分本次状态，不用时间戳冒充来源版本。producer 对同一来源保持 seq 可比较，重启后不能保持时使用新来源身份。提交后不为低概率旧事件追加永久版本水位；状态已清理且超出近期去重窗口的事件不承诺历史版本过滤。协议升级是另一层边界：旧 Session 迁移前 readonly，不能继续消费新旧输入。
-- [ ] 不对所有 Input event 默认做快照合并；需要保留每次发生的事件按流处理，可覆盖的状态事件由协议声明合并语义。terminal 用于保留和注入优先级，不能代替权威任务状态判断。
-- [ ] `pending_events` 在空闲时保留；只在消费、取消订阅、明确拒绝或按规则覆盖后清除。它保存已订阅来源的待注入状态，不保存已被覆盖的历史事件。总线容量满按 §3.2.1 拒绝 append；注入预算不足按 AICC 服务不可用处理，保留尚未提交的状态。
-- [ ] receipt 记录本次实际消费的投递位置及事件版本。清理待观察状态时，按 `(subscription_id, source, key)` 精确匹配，存在 seq 时一并核对；latest / terminal 只清本批实际注入的记录，同一 key 只注入一次。处理 v7 期间收到 v8，提交 v7 不得删除 v8；seq 缺失也不能删除另一 key 的新事件。
-- [ ] 含半订阅快照的受控输入批次和结果补齐继续遵守已有顺序：正文与 receipt 同快照 → run 门槛 → state 提交 → 清门槛 → 确认输入源。禁止在可恢复提交前出队，也禁止结束时按来源键再次删除本轮期间新到达的事件。
-- [ ] 对仅更新待观察状态的投递，先提交该状态再确认输入源；区分“已接收保存”与“已注入上下文”，receipt 不声称 LLM 已看到尚未注入的变化。
-- [ ] 保持 lease 下单写者纪律；bridge 和生产者通过输入通道提交，由驱动者修改 Session state，避免多个异步写入覆盖彼此的磁盘状态。
+- [x] 五种身份各司其职（字段定义见 §3.2）：逻辑输入去重 `key`、通道投递位置 `(src, index)`、事件来源 `source`、状态合并键 `(subscription_id, source)` 和来源版本 `seq`。同一逻辑输入重投沿用 key，不同变化使用不同 key。`pending_events` 的存储结构见 §3.2.6。
+- [x] pending input 上限固定为 64（§3.2.1），容量满时拒绝 append，不增加无界积压机制。沿用有界 `recent_keys` 处理近期逻辑重投，选批时也按 key 去重；通道消费游标与 receipt 承担同一投递位置和已提交批次的恢复幂等。不承诺跨任意时间、跨协议版本的无限期逻辑去重。
+- [x] 同一协议内，Observe 在尚未消费的同一来源状态上按 seq 合并，迟到旧版本不能覆盖仍保留的新版本；没有 seq 时按通道消费顺序更新，并用 key 区分本次状态，不用时间戳冒充来源版本。producer 对同一来源保持 seq 可比较，重启后不能保持时使用新来源身份。提交后不为低概率旧事件追加永久版本水位；状态已清理且超出近期去重窗口的事件不承诺历史版本过滤。协议升级是另一层边界：旧 Session 迁移前 readonly，不能继续消费新旧输入。
+- [x] 不对所有 Input event 默认做快照合并；需要保留每次发生的事件按流处理，可覆盖的状态事件由协议声明合并语义。terminal 用于保留和注入优先级，不能代替权威任务状态判断。
+- [x] `pending_events` 在空闲时保留；只在消费、取消订阅、明确拒绝或按规则覆盖后清除。它保存已订阅来源的待注入状态，不保存已被覆盖的历史事件。总线容量满按 §3.2.1 拒绝 append；注入预算不足按 AICC 服务不可用处理，保留尚未提交的状态。
+- [x] receipt 记录本次实际消费的投递位置及事件版本。清理待观察状态时，按 `(subscription_id, source, key)` 精确匹配，存在 seq 时一并核对；latest / terminal 只清本批实际注入的记录，同一 key 只注入一次。处理 v7 期间收到 v8，提交 v7 不得删除 v8；seq 缺失也不能删除另一 key 的新事件。
+- [x] 含半订阅快照的受控输入批次和结果补齐继续遵守已有顺序：正文与 receipt 同快照 → run 门槛 → state 提交 → 清门槛 → 确认输入源。禁止在可恢复提交前出队，也禁止结束时按来源键再次删除本轮期间新到达的事件。
+- [x] 对仅更新待观察状态的投递，先提交该状态再确认输入源；区分“已接收保存”与“已注入上下文”，receipt 不声称 LLM 已看到尚未注入的变化。
+- [x] 保持 lease 下单写者纪律；bridge 和生产者通过输入通道提交，由驱动者修改 Session state，避免多个异步写入覆盖彼此的磁盘状态。
 
 ## 6. P1：串行等待、并行后台任务与可靠恢复
 
@@ -943,42 +943,42 @@ msg-center
 
 ### 6.1 串行等待：补齐未完成的工具调用
 
-- [ ] PendingTool 接入沿用已实现的 `PendingToolCall{call, task_id, until_ms}`，挂起关联与已收集结果以 run 快照为准；`waiting_for.refs` 只从中生成 task_id 列表，用于状态展示和 §4 的事件匹配，不另存一份 call / deadline 协议。
-- [ ] 删除未使用的 `pending_task_calls: Vec<Value>`（当前只有定义与默认值），不另定 schema；等待关联只认快照中的挂起记录与由它生成的 `waiting_for.refs`。
-- [ ] 宿主装配现有 `RunningTaskResolver`（`state / wait / cancel / can_resolve / watch / active`），复用组合 resolver 的进程内 task 与可选 buckyos task 路由；Session 自己的子 context、子 session、审批票据按需接入同一接口。不把所有 PendingTool 转换为 TaskMgr 任务，不在 Session 内另建任务执行器。xllm 接手时按当前状态立即回填，不等待。
-- [ ] 在 drive 恢复入口先对齐快照、提交现场和等待对象，再处理新输入。任务已终态就收集结果，仍在执行才继续等待；通知到达和兜底定时检查使用同一查询路径。
-- [ ] 收齐快照实际需要的结果后，使用 `ResumeFill::ToolResults` 恢复同一 run 和仍打开的 Turn；轮询未完成任务无需调用 LLM。到达 `until_ms` 而 task 仍未结束时，也按当时的状态回填。
-- [ ] 等待条件独立于 inbox 是否为空。所有等待出口、CLI 重入和常驻模式都能继续检查任务，不能只有“已经收到部分输入”的分支才做轮询。
-- [ ] 查询与接手直接复用已实现的判断：`can_resolve(task_id) = false` 时拒绝接手并保留现场；能解析时调用 `state / wait`，得到 `Unknown{reason}` 就用现有 `task_state_observation` 回填续跑，由 LLM 判断，不解析 reason 再派生一种错误协议。进程内 task 换进程后查不到不因此返回 RecoveryBlocked；不静默重建或重放任务。
-- [ ] 支持结果恢复和崩溃场景后再开启 `allow_deferred`。宿主缺少对应能力时明确拒绝 / 返回 RecoveryBlocked，保留原始现场。这里指已处于挂起态的快照；派发时宿主未开 deferred 而工具返回 Pending 的情况，按 llm_context TODO §4 在工具内等待（最长 30 分钟），不报 Internal 错误。
-- [ ] stop 复用已实现的平滑结束、必要时打断与配对结果路径；对当前 Turn 的可取消 task 传导取消、审批作废，之前 Turn 的 task 不受影响。宿主只负责控制提交与调用现有能力，不另定义一套 resolver 取消结果或停止竞态协议。
+- [x] PendingTool 接入沿用已实现的 `PendingToolCall{call, task_id, until_ms}`，挂起关联与已收集结果以 run 快照为准；`waiting_for.refs` 只从中生成 task_id 列表，用于状态展示和 §4 的事件匹配，不另存一份 call / deadline 协议。
+- [x] 删除未使用的 `pending_task_calls: Vec<Value>`（当前只有定义与默认值），不另定 schema；等待关联只认快照中的挂起记录与由它生成的 `waiting_for.refs`。
+- [x] 宿主装配现有 `RunningTaskResolver`（`state / wait / cancel / can_resolve / watch / active`），复用组合 resolver 的进程内 task 与可选 buckyos task 路由；Session 自己的子 context、子 session、审批票据按需接入同一接口。不把所有 PendingTool 转换为 TaskMgr 任务，不在 Session 内另建任务执行器。xllm 接手时按当前状态立即回填，不等待。
+- [x] 在 drive 恢复入口先对齐快照、提交现场和等待对象，再处理新输入。任务已终态就收集结果，仍在执行才继续等待；通知到达和兜底定时检查使用同一查询路径。
+- [x] 收齐快照实际需要的结果后，使用 `ResumeFill::ToolResults` 恢复同一 run 和仍打开的 Turn；轮询未完成任务无需调用 LLM。到达 `until_ms` 而 task 仍未结束时，也按当时的状态回填。
+- [x] 等待条件独立于 inbox 是否为空。所有等待出口、CLI 重入和常驻模式都能继续检查任务，不能只有“已经收到部分输入”的分支才做轮询。
+- [x] 查询与接手直接复用已实现的判断：`can_resolve(task_id) = false` 时拒绝接手并保留现场；能解析时调用 `state / wait`，得到 `Unknown{reason}` 就用现有 `task_state_observation` 回填续跑，由 LLM 判断，不解析 reason 再派生一种错误协议。进程内 task 换进程后查不到不因此返回 RecoveryBlocked；不静默重建或重放任务。
+- [x] 支持结果恢复和崩溃场景后再开启 `allow_deferred`。宿主缺少对应能力时明确拒绝 / 返回 RecoveryBlocked，保留原始现场。这里指已处于挂起态的快照；派发时宿主未开 deferred 而工具返回 Pending 的情况，按 llm_context TODO §4 在工具内等待（最长 30 分钟），不报 Internal 错误。
+- [x] stop 复用已实现的平滑结束、必要时打断与配对结果路径；对当前 Turn 的可取消 task 传导取消、审批作废，之前 Turn 的 task 不受影响。宿主只负责控制提交与调用现有能力，不另定义一套 resolver 取消结果或停止竞态协议。
 
 ### 6.2 并行等待：工具已经返回，后台任务继续
 
-- [ ] 正常 ToolResult 返回任务引用后，Agent 可以继续其它工作；沿用 llm_context 的自动 watch。后续通知只按已登记的 active / semi 订阅处理，不走补齐旧 ToolResult 的路径，未订阅事件按 §4.1 丢弃。
-- [ ] Agent 在收到变化通知后通过工具重新读取任务状态，决定继续等待、处理结果或改方案。空闲时的定期检查由持久化 timer / 宿主调度提供机会，不能假定 LLM 自己持续轮询。
-- [ ] task 提交与订阅建立之间可能错过终态通知，建立订阅后立即查询一次。恢复使用已持久化 call_result / 挂起记录中的 task_id 查询；`active()` 是当前 resolver 的展示列表，不是重启后的持久任务索引。查不到使用既有 Unknown 状态：有 pending call 时按 §6.1 回填；调用已经返回时只向后续推理呈现状态，不补写旧 ToolResult。不增加另一套恢复状态机。
-- [ ] 无输入队列时，串行等待由 resolver 恢复；后台 task 的完成检查由宿主调度 / 内置 bridge 提供。没有驱动或调度机会时，不承诺 Session 自行唤醒；已 finished 的 Session 不因 task 完成而重开。
-- [ ] 后台 task（llm_context TODO §4 / §5：`shell` 的 auto 模式到期转 task，以及其它返回 task 的工具）的 Session 侧处理：
+- [x] 正常 ToolResult 返回任务引用后，Agent 可以继续其它工作；沿用 llm_context 的自动 watch。后续通知只按已登记的 active / semi 订阅处理，不走补齐旧 ToolResult 的路径，未订阅事件按 §4.1 丢弃。
+- [x] Agent 在收到变化通知后通过工具重新读取任务状态，决定继续等待、处理结果或改方案。空闲时的定期检查由持久化 timer / 宿主调度提供机会，不能假定 LLM 自己持续轮询。
+- [ ] （轮询查询已实施；reconcile 重做结束时不从 call_result 找回 task id，见 §10.3）task 提交与订阅建立之间可能错过终态通知，建立订阅后立即查询一次。恢复使用已持久化 call_result / 挂起记录中的 task_id 查询；`active()` 是当前 resolver 的展示列表，不是重启后的持久任务索引。查不到使用既有 Unknown 状态：有 pending call 时按 §6.1 回填；调用已经返回时只向后续推理呈现状态，不补写旧 ToolResult。不增加另一套恢复状态机。
+- [x] 无输入队列时，串行等待由 resolver 恢复；后台 task 的完成检查由宿主调度 / 内置 bridge 提供。没有驱动或调度机会时，不承诺 Session 自行唤醒；已 finished 的 Session 不因 task 完成而重开。
+- [x] 后台 task（llm_context TODO §4 / §5：`shell` 的 auto 模式到期转 task，以及其它返回 task 的工具）的 Session 侧处理：
   - run 进行中，task 的状态由 llm_context 的 background env 呈现（`resolver.active()`，半自动订阅），不经过输入队列。
   - run 结束而 Session 尚未 finished 时，对本 context 已 watch、尚未结束且没有 pending call 等待的 task，由 Runner 内置 bridge 接管为隐式 active 订阅；已有显式订阅则沿用其 active / semi 策略。完成时合成 `AgentEvent{source: {kind: task, id: task_id}, terminal: true}`，走同一套已订阅事件处理，不依赖额外输入队列。恢复按上一条从已保存的 task_id 重新查询，不要求进程内 `active()` 自动恢复。被挂起调用等待的 task 只回填 ToolResult，避免重复注入。
   - Session stop 传导给当前 Turn 的 task（可取消的被取消，审批作废）；Session finished / discard 时 task 的清理见 llm_context TODO §9 第 4 项。
 
 ### 6.3 Task bridge 与任务创建的恢复关联
 
-- [ ] 将 TaskMgr 当前 `phase / outcome` 与结果引用转换成稳定的宿主结果 / AgentEvent；映射在适配层完成，Session 不读取旧 `to_status`，不解析服务专有事件路径来推断工具依赖。
-- [ ] 通知只加速检查，Task / 状态 API 才是权威来源。原始 kevent 的丢失通过重新查询收敛；需要保留每次发生的事件必须有持久来源或可靠投递，不能仅靠弱通知承诺至少一次。
-- [ ] 创建任务前持久化 dispatch intent；根据 Session / run / call 的稳定身份生成幂等键；创建后持久化 task 绑定。崩溃在创建和登记之间时，按该身份找回同一个任务。这条只针对经 TaskMgr 等外部服务创建的任务；`shell` 转成的进程内 task 不需要推导稳定身份，`task_id` 写在 call_result 里，崩溃后再查即可（llm_context TODO §5）。
-- [ ] 任务创建、结果收集、ToolResults 恢复及旧等待关联清理之间设定可恢复提交点；链式 PendingTool 不得被上一批的清理操作抹掉。
-- [ ] 首先用模拟任务服务 / 宿主验证上述协议，正式 TaskMgr bridge 作为后续接入项，不要求修改现有 OpenDAN 来完成验证。
+- [ ] （只有 `TaskState → AgentEvent` 的映射，未接 TaskMgr，见 §10.3）将 TaskMgr 当前 `phase / outcome` 与结果引用转换成稳定的宿主结果 / AgentEvent；映射在适配层完成，Session 不读取旧 `to_status`，不解析服务专有事件路径来推断工具依赖。
+- [x] 通知只加速检查，Task / 状态 API 才是权威来源。原始 kevent 的丢失通过重新查询收敛；需要保留每次发生的事件必须有持久来源或可靠投递，不能仅靠弱通知承诺至少一次。
+- [ ] （只落实了在途记录里的幂等键，见 §10.3）创建任务前持久化 dispatch intent；根据 Session / run / call 的稳定身份生成幂等键；创建后持久化 task 绑定。崩溃在创建和登记之间时，按该身份找回同一个任务。这条只针对经 TaskMgr 等外部服务创建的任务；`shell` 转成的进程内 task 不需要推导稳定身份，`task_id` 写在 call_result 里，崩溃后再查即可（llm_context TODO §5）。
+- [x] 任务创建、结果收集、ToolResults 恢复及旧等待关联清理之间设定可恢复提交点；链式 PendingTool 不得被上一批的清理操作抹掉。
+- [x] 首先用模拟任务服务 / 宿主验证上述协议，正式 TaskMgr bridge 作为后续接入项，不要求修改现有 OpenDAN 来完成验证。
 
 ## 7. P1：分层与并行推进的验收
 
-- [ ] 多个 Session 可由不同进程并行推进；每个 Session 仍只有一个持 lease 的驱动者、一个 active run。后台任务并行不要求同一 Session 同时启动多个 LLM run。
-- [ ] bridge 只转换来源和可靠投递；Session 判断消费与等待；LLM Context 推进推理 / 工具调用并给出 Outcome；Runtime 执行工具；Agent State 提供跨 Session 状态。Runner 复用现有组件，不把这些职责收回到一个大循环。
-- [ ] xagent 与 xllm 交接时遵守 Session / run 锁和提交门槛，不能同时推进同一 run；挂起结果的提供方及能力不足时的行为也需明确：接手方按自己的 resolver 能否解析挂起的 `task_id` 判断，解析不了才拒绝接手；xllm 接手时不等待，按当时的状态回填后续跑（llm_context TODO §4）。
-- [ ] 跨语言共享 schema、处理规则与 fixtures，包括 §3.2 的三种记录、§3.2.5 的拒绝原因和 §3.3.4 `input.text` 的逐字节渲染结果。先验证独立进程生产 JSON、Rust Runner 消费和恢复；TS Runner 后续用相同 fixture 验证，不要求本轮实现第二套 Runner。
-- [ ] xAgent 主文以 JSON 样例、规则表和恢复步骤解释设计，详细伪代码作为实现参考；主循环只呈现阶段边界，具体协议约定不隐藏在闭包或模板分支中。
+- [x] 多个 Session 可由不同进程并行推进；每个 Session 仍只有一个持 lease 的驱动者、一个 active run。后台任务并行不要求同一 Session 同时启动多个 LLM run。
+- [x] bridge 只转换来源和可靠投递；Session 判断消费与等待；LLM Context 推进推理 / 工具调用并给出 Outcome；Runtime 执行工具；Agent State 提供跨 Session 状态。Runner 复用现有组件，不把这些职责收回到一个大循环。
+- [x] xagent 与 xllm 交接时遵守 Session / run 锁和提交门槛，不能同时推进同一 run；挂起结果的提供方及能力不足时的行为也需明确：接手方按自己的 resolver 能否解析挂起的 `task_id` 判断，解析不了才拒绝接手；xllm 接手时不等待，按当时的状态回填后续跑（llm_context TODO §4）。
+- [x] 跨语言共享 schema、处理规则与 fixtures，包括 §3.2 的三种记录、§3.2.5 的拒绝原因和 §3.3.4 `input.text` 的逐字节渲染结果。先验证独立进程生产 JSON、Rust Runner 消费和恢复；TS Runner 后续用相同 fixture 验证，不要求本轮实现第二套 Runner。
+- [x] xAgent 主文以 JSON 样例、规则表和恢复步骤解释设计，详细伪代码作为实现参考；主循环只呈现阶段边界，具体协议约定不隐藏在闭包或模板分支中。
 
 ## 8. 验收场景与实施顺序
 
@@ -1054,3 +1054,55 @@ msg-center
 - 旧 OpenDAN 的消息入口（只作对照）：`opendan/src/msg_center_pump.rs`（过滤规则、`from_name`、斜杠命令）、`session_model.rs::PendingInput`、`prompt_env.rs` 的 `od.msg/1` 渲染。
 - 旧实现审查来源：`opendan/src/agent_session.rs` 的提前出队、按事件来源键清理、Task 事件分流与等待分支；`task_dispatch.rs` 的任务创建关联。只用于设计验证，不纳入改动范围。
 - llm_context 层：[llm_context 长命令 / 长工具 TODO](./llm-context-long-tool-todo.md)（先于本 TODO 实施，含对 xAgent.md 的修改清单与待 review 事项）、[AgentRuntime 下移 TODO](./llm-context-agent-runtime-todo.md)。
+
+## 10. 实施记录（2026-10-03）
+
+按 §8 的顺序实施完成。验证：`cargo test -p libopendan -- --test-threads=1`（单元 18 + 集成 108，另有 1 个 `--ignored` 的真实 kmsg 用例未跑）、`cargo test -p llm_context`（209）、`cargo build -p opendan -p agent_tool`。fixtures 已重新生成（13 个场景升到新 schema，新增 `14_input_bus`）。
+
+### 10.1 落点
+
+| 内容 | 位置 |
+|---|---|
+| llm_context 先行：`attachment_kind / attachment_mime` 导出；`render_format` + 通用 filter（`xml / attr / json / truncate / oneline / default / join / quote / time`）；宿主入口 `EngineConfig.extensions: RenderExtensions`（`with_format` / `with_filter`） | `llm_context/src/{msg_parser,prompt_engine,lib}.rs` |
+| 总线数据结构（§3.2）：`SessionInput / PostedInput / FetchedInput / SessionMsg / MsgDelivery / AgentEvent / EventSource / ControlCommand::Perceive / RejectReason`、构造 helper、`parse_record`（投递与消费共用）、`parse_logical_record`、receipt 的 `events[] / parts[] / reply` | `lib_opendan/src/protocol/input.rs` |
+| kmsg 映射（`schema` header，删除 `intent / reply_to`）；64 条 pending 上限与 `input_full`、旧 Session 只读（`session_readonly`） | `channel/kmsg.rs`、`state/registry.rs::post_input`（`post.lock`） |
+| 配置：`prompt.system`、`on_init / on_input / on_context_switch / semi_subscription_snapshot`、`input{mode, media}`、`session.timezone`、订阅来源 `task / timer / system`、隐式订阅；删除 `InputSourceConfig::MsgCenter` | `protocol/config.rs`（`session_config/4`） |
+| state：`pending_events`（`merge_pending_event / clear_pending_events`）、`reply`、`watched_tasks`、`inputs[src].accepted`；删除 `pending_task_calls` | `protocol/state.rs`（`session_state/5`） |
+| 路由（§4.1、§5）：按投递顺序处理 control / event / msg，未订阅丢弃，pending call 的 task 通知只唤醒，拉模式 session 订阅合成事件 | `runner/inputs.rs` |
+| 模板视图与内建格式（§3.3.3、§3.3.4、§3.3.8）：`InputView / MessageView / EventView`、`message_view`、八个命名格式、`media_blocks`、I4 检查 | `runner/input_view.rs` |
+| 模板渲染与三类受控输入（§4.2）、半订阅快照装配（§4.3） | `runner/assembler.rs`、`runner/drive.rs::select_snapshot` |
+| 落盘（§3.3.5）：1–2 条消息 + receipt 同快照；检查点不再注入 | `runner/live.rs::commit_input_batch`、`runner/hook.rs`、`runner/receipts.rs`、`runner/flush.rs` |
+| 串行等待（§6.1）：`WaitingRun`、`try_fill`、`can_resolve` 拒绝接手、`Unknown` 回填、stop 时取消并回填、`allow_deferred` 开启 | `runner/live.rs`、`runner/drive.rs`、`runner/shared.rs`、`runner/tools.rs` |
+| 并行等待（§6.2）：`watched_tasks` 接管与 `poll_watched_tasks` | `runner/outcome.rs`、`runner/drive.rs` |
+| stop 监视任务（§4.1 最后一项） | `runner/drive.rs::StopMonitor`、`runner/inputs.rs::stop_queued` |
+| bridge：`route_msg_record`、`task_event`、`dispatch_idempotency_key`、`outbound_base / outbound_key` | `lib_opendan/src/bridge/` |
+| CLI：`post --json <file \| ->`、`post --msg … [--from] [--attach] [--reply-to]`、`post --stop` | `examples/session.rs` |
+| 反写：Session Input Protocol（Agent 输入）、Session Control Protocol（新）、Session Directory Protocol、协议 README、xAgent §4.1–§4.7 / §6.2 / §9.5 / C1–C3 | `doc/opendan/` |
+
+### 10.2 与本文不同或补充的实现决定
+
+1. **`from_id`**：按 §3.3.3 的规则取 `msg.from.to_raw_host_name()`，`did:bns:bob` 得到 `bob.bns.did`（不是示例里原先写的 `bob`）；文中示例已改。
+2. **拒绝原因**多一项 `input_policy`（Session 的 `input_policy = none` 时收到 msg / Input event）；`input_rejected` 增加可选的 `detail`（诊断文本，不属于协议判断）。
+3. **未订阅 / pending call 事件**写新的 worklog 条目 `event_dropped{input, reason: unsubscribed | pending_call}`，取代 `change_dropped`。
+4. **active 事件的接受状态**持久化在 `inputs[src].accepted`：保证 “A → unsubscribe → B” 的结果不随 fetch 分批变化（A 在被接受后即使一时未入批，也不因随后的 unsubscribe 改判）。
+5. **拉模式 session 订阅总是 Observe**（与原行为一致）：它没有投递位置，合成事件并入 `pending_events`，`subscription_cursors` 只保留它的 rev 游标。活动 session 集合不再走半订阅游标：每个受控输入消息里现算完整列表。
+6. **模板输出的空白**：只含块标签的行不产生输出行，整体去掉首尾空白（否则 `{% for %}` 会留下空行）；规则写进了 Session Input Protocol §6.3 并由 fixtures 固定。
+7. **模板变量**：`session.{id, kind, objective, timezone, is_bootstrap, current_todo, background_hint_changed, default_changed_background_hint_text}`、`runtime.{status, clock_text}`、`handover`、内建块文本（`task_text / handover_text / perceptions_text / hints_text / active_sessions_text / runtime_text / builtin`）。libopendan 没有 todo 与背景提示的来源，`current_todo` 为 null、`background_hint_changed` 为 false，由持有这些状态的宿主（OpenDAN）装配。
+8. **64 条上限的原子性**：容量检查与 append 在 `<session>/.opendan_agent_session/post.lock` 的临界区内，经 `SessionRegistry::post_input` 投递的 producer 都遵守。直接调用 `kmsg::post_to_queue` 的写入（或读不到 session 目录的跨主机 producer）不受限：kmsg 服务本身没有条件追加。
+9. **等待 task 的 drive 返回**：run 挂起在 task 上时，`StopWhen::Idle / Finished` 都在本次 drive 内轮询到 `options.max_wait` 才返回 Idle（`waiting_for.kind = tool`），`MaxOutcomes` 立即返回。原因是进程内 task 随进程结束，立即返回会让它变成 Unknown。
+10. **Idle 的含义**：一个 Turn 以等待输入结束时，如果队列里已有候选输入，`StopWhen::Idle` 继续处理而不是返回（原先会返回，留给下一次 drive）。
+11. **回填后的输入暂存**：挂起调用刚被回填的 run 先跑完它的工具批次，期间不放入新的输入批次（与工具触发的子 context 返回同一规则）。
+12. **session finished 时清空** `pending_events` 与 `watched_tasks`。
+13. 机械渲染里 turn 行的 ` changes: …` 改为 ` events: …`（列出的是注入的半订阅状态 key）。
+
+### 10.3 未完成 / 后移
+
+- **stop 监视任务不维持 activity 心跳**：它被限定为只查看、不写 state；心跳仍只在检查点刷新，长工具执行期间不更新。
+- **`--attach <本机文件>`**：CLI 只接受 ObjId（`--attach <obj_id>[=<name>]`）；经 `LocalFileResolver` 把本机文件登记进 NamedStore 需要宿主提供 resolver，开发 CLI 没有。
+- **出站记录的持久化与发送**（§3.4）：只提供了信封构造与幂等 key（`bridge::outbound_base / outbound_key`），没有接到 Turn 提交与 `channels.outbound`（随 UI session 后移）。
+- **msg-center / TaskMgr 的正式 bridge**：只有纯函数映射与模拟宿主验证（测试用假的 `RunningTaskResolver` 与宿主工具），没有接真实服务。外部任务的 dispatch intent 只落实到在途记录的 `idempotency_key`，没有工具使用它。
+- **崩溃后重建 `watched_tasks`**：只在正常的 run 结束时从 resolver 的 `active()` 接管；由 reconcile 重做的结束（没有 resolver）不会从快照的 call_result 里找回 task id。
+- **显式迁移工具**：旧 Session 只读已落实，迁移本身没有实现（本文 §1 明确本轮不做）。
+- **TS 侧**：websdk 的同名构造 helper 与 TS Runner 未做；`14_input_bus` 可直接用于它的验证。
+- **`on_context_switch` 携带半订阅快照**没有单独的端到端用例（`on_init`、`on_input` 有）；实现是同一条提交路径。
+- §3.6 的待确认项 1–9 均按本文的选择实现，仍待确认。

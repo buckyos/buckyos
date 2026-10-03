@@ -11,11 +11,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::config::ContextMode;
+use super::input::{AgentEvent, EventReceipt, EventSource, ReplyRoute};
 
-/// 2: logical Turn identity (`turn_seq` / `open_turn` / `turns_completed`)
-/// replaced the input-driven `round` counter; split flush cursors. Earlier
-/// versions are refused.
-pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/4";
+/// 5: session input protocol 3 — `pending_events`, `reply`,
+/// `watched_tasks`, accepted Input events per source; `pending_task_calls`
+/// removed. Earlier versions are read-only until migrated.
+pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/5";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;
@@ -107,11 +108,11 @@ pub struct TurnInputs {
     /// Stable input ids, e.g. `q#121`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
-    /// Subscription changes, e.g. `s1@16`.
+    /// Keys of the semi-subscription state versions injected with them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub changes: Vec<String>,
-    /// Hook point of the first batch (`on_init`, `on_wakeup`,
-    /// `on_behavior_switch`, `observation`).
+    pub events: Vec<String>,
+    /// Controlled input of the first batch (`on_init`, `on_input`,
+    /// `on_context_switch`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hook: Option<String>,
     /// `input_seq` of the first batch of this Turn in the run.
@@ -278,9 +279,11 @@ pub struct SourceProgress {
     /// Consumed indices above `acked_index` (selective consumption).
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub consumed_above: BTreeSet<u64>,
-    /// msg-center records consumed but not yet marked `Read` (deferred).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reading: Vec<String>,
+    /// Input events accepted by an active subscription that are still
+    /// pending: their routing was decided when they were first seen, so a
+    /// later `unsubscribe` does not turn them into dropped events.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub accepted: BTreeSet<u64>,
 }
 
 impl SourceProgress {
@@ -291,6 +294,7 @@ impl SourceProgress {
     /// Mark `index` consumed and fold the contiguous prefix into
     /// `acked_index`. Never moves backwards.
     pub fn mark(&mut self, index: u64) {
+        self.accepted.remove(&index);
         if index <= self.acked_index {
             return;
         }
@@ -309,6 +313,7 @@ impl SourceProgress {
         }
         self.acked_index = first_available - 1;
         self.consumed_above.retain(|i| *i > first_available - 1);
+        self.accepted.retain(|i| *i > first_available - 1);
         while self.consumed_above.remove(&(self.acked_index + 1)) {
             self.acked_index += 1;
         }
@@ -336,6 +341,135 @@ impl RecentKeys {
             self.0.drain(0..drop);
         }
     }
+}
+
+/// Delivery position of a bus record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct InputPos {
+    pub src: String,
+    pub index: u64,
+}
+
+/// One version of an observed source's state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingEventVersion {
+    #[serde(default)]
+    pub seq: Option<u64>,
+    pub key: String,
+    pub event: String,
+    pub summary: String,
+    #[serde(default)]
+    pub data_ref: Option<String>,
+    pub received_at_ms: u64,
+    /// Where it was delivered (`None`: synthesized by the runner, e.g. a
+    /// pull-mode session subscription).
+    #[serde(default)]
+    pub input: Option<InputPos>,
+}
+
+/// Semi-subscription state waiting to be injected: the newest version of
+/// one `(subscription_id, source)`, its terminal event kept separately.
+/// Saved when received (the delivery is then consumed); cleared only by the
+/// receipt of the batch that injected exactly these versions, by
+/// `unsubscribe`, or replaced by a newer version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PendingEvent {
+    #[serde(default)]
+    pub subscription_id: Option<String>,
+    pub source: EventSource,
+    #[serde(default)]
+    pub latest: Option<PendingEventVersion>,
+    /// Never replaced by later non-terminal versions.
+    #[serde(default)]
+    pub terminal: Option<PendingEventVersion>,
+    /// Versions replaced before they were injected.
+    #[serde(default)]
+    pub superseded: u64,
+}
+
+/// What merging an Observe event did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MergeResult {
+    /// Saved as the newest (or terminal) version.
+    Saved,
+    /// Older than the version kept (`seq`), or the same key again: ignored.
+    Stale,
+}
+
+/// Merge an Observe event into `pending` (same protocol version only).
+/// With `seq` on both sides an older version never replaces a newer one;
+/// without it the consumption order decides and `key` tells versions apart.
+pub fn merge_pending_event(
+    pending: &mut Vec<PendingEvent>,
+    subscription_id: Option<&str>,
+    ev: &AgentEvent,
+    key: &str,
+    input: Option<InputPos>,
+    now_ms: u64,
+) -> MergeResult {
+    let version = PendingEventVersion {
+        seq: ev.seq,
+        key: key.to_string(),
+        event: ev.event.clone(),
+        summary: ev.summary.clone(),
+        data_ref: ev.data_ref.clone(),
+        received_at_ms: now_ms,
+        input,
+    };
+    let pos = pending
+        .iter()
+        .position(|p| p.subscription_id.as_deref() == subscription_id && p.source == ev.source);
+    let entry = match pos {
+        Some(i) => &mut pending[i],
+        None => {
+            pending.push(PendingEvent {
+                subscription_id: subscription_id.map(str::to_string),
+                source: ev.source.clone(),
+                latest: None,
+                terminal: None,
+                superseded: 0,
+            });
+            pending.last_mut().expect("just pushed")
+        }
+    };
+    let slot = if ev.terminal {
+        &mut entry.terminal
+    } else {
+        &mut entry.latest
+    };
+    if let Some(old) = slot.as_ref() {
+        let older = matches!((version.seq, old.seq), (Some(new), Some(kept)) if new < kept);
+        if older || old.key == version.key {
+            return MergeResult::Stale;
+        }
+        entry.superseded += 1;
+    }
+    *slot = Some(version);
+    MergeResult::Saved
+}
+
+/// Remove exactly the versions a batch injected: matched by
+/// `(subscription_id, source, key)` and by `seq` when the receipt has one.
+/// A newer version that arrived meanwhile stays.
+pub fn clear_pending_events(pending: &mut Vec<PendingEvent>, injected: &[EventReceipt]) {
+    for r in injected {
+        for p in pending
+            .iter_mut()
+            .filter(|p| p.subscription_id == r.subscription_id && p.source == r.source)
+        {
+            let hit = |v: &Option<PendingEventVersion>| {
+                v.as_ref()
+                    .is_some_and(|v| v.key == r.key && (r.seq.is_none() || v.seq == r.seq))
+            };
+            if hit(&p.latest) {
+                p.latest = None;
+            }
+            if hit(&p.terminal) {
+                p.terminal = None;
+            }
+        }
+    }
+    pending.retain(|p| p.latest.is_some() || p.terminal.is_some());
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -433,8 +567,6 @@ pub struct SessionState {
     pub process_entry: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub process_stack: Vec<ProcessFrame>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub pending_task_calls: Vec<Value>,
     #[serde(default)]
     pub bootstrap_done: bool,
     #[serde(default)]
@@ -450,8 +582,21 @@ pub struct SessionState {
     pub inputs: BTreeMap<String, SourceProgress>,
     #[serde(default)]
     pub recent_keys: RecentKeys,
+    /// Pull-mode cursors only (registry rev of session subscriptions).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub subscription_cursors: BTreeMap<String, Value>,
+    /// Semi-subscription state received and not injected yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_events: Vec<PendingEvent>,
+    /// Default reply path: the way the last consumed input message came,
+    /// else the parent session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<ReplyRoute>,
+    /// Background tasks of ended runs the runner follows for this session
+    /// (implicit active subscriptions on `task:<task_id>`): when one ends,
+    /// its completion is handled like a subscribed event.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watched_tasks: Vec<String>,
     #[serde(default)]
     pub perception_seq: u64,
     #[serde(default)]
@@ -500,7 +645,6 @@ impl SessionState {
             current_behavior: None,
             process_entry: None,
             process_stack: Vec::new(),
-            pending_task_calls: Vec::new(),
             bootstrap_done: false,
             topic: Topic::default(),
             live_run: None,
@@ -509,6 +653,9 @@ impl SessionState {
             inputs: BTreeMap::new(),
             recent_keys: RecentKeys::default(),
             subscription_cursors: BTreeMap::new(),
+            pending_events: Vec::new(),
+            reply: None,
+            watched_tasks: Vec::new(),
             perception_seq: 0,
             reported_rev: 0,
             activity: Activity::default(),
@@ -520,6 +667,53 @@ impl SessionState {
             process_result: None,
             updated_at_ms: now_ms,
         }
+    }
+
+    /// Initial state of a session created from `config`: the parent
+    /// session as the default reply path (until a message arrives), and the
+    /// user's time zone as the first state of its implicit semi
+    /// subscription (shown with the first controlled input).
+    pub fn initial_for(
+        config: &super::config::SessionConfig,
+        worklog: WorklogBoundary,
+        now_ms: u64,
+    ) -> Self {
+        let mut state = Self::initial(worklog, now_ms);
+        if let Some(parent) = config
+            .session
+            .origin
+            .as_ref()
+            .and_then(|o| o.parent_session.clone())
+        {
+            state.reply = Some(ReplyRoute::ParentSession { session_id: parent });
+        }
+        if let Some(tz) = config.session.timezone.as_ref().filter(|t| !t.is_empty()) {
+            let ev = AgentEvent {
+                subscription_id: Some(super::config::USER_TIMEZONE_SUBSCRIPTION.to_string()),
+                source: EventSource::new("system", super::config::USER_TIMEZONE_SOURCE_ID),
+                event: "timezone".to_string(),
+                seq: None,
+                summary: format!("The user's time zone is {tz}. Times in inputs are UTC."),
+                data_ref: None,
+                terminal: false,
+            };
+            merge_pending_event(
+                &mut state.pending_events,
+                Some(super::config::USER_TIMEZONE_SUBSCRIPTION),
+                &ev,
+                &format!("timezone:{tz}"),
+                None,
+                now_ms,
+            );
+        }
+        state
+    }
+
+    /// Records of the bus not consumed yet, given the source's newest index.
+    pub fn pending_inputs(&self, src: &str, last_index: u64) -> usize {
+        let p = self.source(src);
+        let above = p.consumed_above.iter().filter(|i| **i <= last_index).count() as u64;
+        last_index.saturating_sub(p.acked_index).saturating_sub(above) as usize
     }
 
     pub fn source_mut(&mut self, id: &str) -> &mut SourceProgress {
@@ -591,4 +785,97 @@ impl SessionState {
 
 fn is_zero(v: &u64) -> bool {
     *v == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ev(seq: Option<u64>, summary: &str, terminal: bool) -> AgentEvent {
+        AgentEvent {
+            subscription_id: Some("s".into()),
+            source: EventSource::new("object", "o"),
+            event: "changed".into(),
+            seq,
+            summary: summary.into(),
+            data_ref: None,
+            terminal,
+        }
+    }
+
+    fn receipt(key: &str, seq: Option<u64>) -> EventReceipt {
+        EventReceipt {
+            subscription_id: Some("s".into()),
+            source: EventSource::new("object", "o"),
+            seq,
+            key: key.into(),
+        }
+    }
+
+    #[test]
+    fn an_older_version_never_replaces_a_newer_pending_one() {
+        let mut p = Vec::new();
+        assert_eq!(
+            merge_pending_event(&mut p, Some("s"), &ev(Some(8), "v8", false), "k8", None, 1),
+            MergeResult::Saved
+        );
+        assert_eq!(
+            merge_pending_event(&mut p, Some("s"), &ev(Some(7), "v7", false), "k7", None, 2),
+            MergeResult::Stale
+        );
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].latest.as_ref().unwrap().key, "k8");
+        assert_eq!(p[0].superseded, 0);
+        // The same delivery again changes nothing.
+        assert_eq!(
+            merge_pending_event(&mut p, Some("s"), &ev(Some(8), "v8", false), "k8", None, 3),
+            MergeResult::Stale
+        );
+    }
+
+    #[test]
+    fn committing_v7_keeps_v8_that_arrived_meanwhile() {
+        let mut p = Vec::new();
+        merge_pending_event(&mut p, Some("s"), &ev(Some(7), "v7", false), "k7", None, 1);
+        // v7 is being injected (its receipt is written); v8 arrives.
+        let injected = vec![receipt("k7", Some(7))];
+        merge_pending_event(&mut p, Some("s"), &ev(Some(8), "v8", false), "k8", None, 2);
+        clear_pending_events(&mut p, &injected);
+        assert_eq!(p.len(), 1, "v8 is still to be injected");
+        assert_eq!(p[0].latest.as_ref().unwrap().key, "k8");
+        clear_pending_events(&mut p, &[receipt("k8", Some(8))]);
+        assert!(p.is_empty());
+    }
+
+    #[test]
+    fn without_seq_the_key_tells_versions_apart() {
+        let mut p = Vec::new();
+        merge_pending_event(&mut p, Some("s"), &ev(None, "first", false), "a", None, 1);
+        let injected = vec![receipt("a", None)];
+        merge_pending_event(&mut p, Some("s"), &ev(None, "second", false), "b", None, 2);
+        assert_eq!(p[0].superseded, 1);
+        clear_pending_events(&mut p, &injected);
+        assert_eq!(p[0].latest.as_ref().unwrap().summary, "second");
+    }
+
+    #[test]
+    fn a_terminal_version_is_kept_next_to_the_latest() {
+        let mut p = Vec::new();
+        merge_pending_event(&mut p, Some("s"), &ev(Some(3), "done", true), "t", None, 1);
+        merge_pending_event(&mut p, Some("s"), &ev(Some(4), "late", false), "l", None, 2);
+        assert!(p[0].terminal.is_some() && p[0].latest.is_some());
+        clear_pending_events(&mut p, &[receipt("l", Some(4))]);
+        assert_eq!(p.len(), 1, "only what was injected is cleared");
+        assert!(p[0].terminal.is_some() && p[0].latest.is_none());
+    }
+
+    #[test]
+    fn pending_inputs_do_not_count_consumed_positions() {
+        let mut st = SessionState::initial(WorklogBoundary::default(), 0);
+        assert_eq!(st.pending_inputs("q", 10), 10);
+        st.source_mut("q").mark(1);
+        st.source_mut("q").mark(2);
+        st.source_mut("q").mark(5);
+        assert_eq!(st.pending_inputs("q", 10), 7);
+    }
 }

@@ -1,0 +1,3 @@
+<semi_subscription_snapshot>
+<event key="obj:doc-1:8" subscription="watch-obj" source="object:doc-1" event="changed" seq="8">doc-1 was edited by Bob</event>
+</semi_subscription_snapshot>

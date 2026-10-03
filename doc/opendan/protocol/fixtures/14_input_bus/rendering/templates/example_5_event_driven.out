@@ -1,0 +1,7 @@
+Wakeup at 2026-10-02T00:00:01Z
+task:t1 updated: 任务 t1 的状态发生变化
+<msg key="cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a" from="Bob" from_id="bob.bns.did" group="Dev Team" mentioned="true" reply_to="cymsg:9999999999999999999999999999999999999999999999999999999999999999" time="2026-10-02T00:00:00Z">
+@jarvis 帮我看一下这张截图里的报错 &lt;build&gt;，日志在附件里
+<attachment index="0" media="image" name="screenshot.png" mime="image/png" obj_id="cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"/>
+<attachment index="1" media="document" name="build.log" mime="text/plain" obj_id="cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"/>
+</msg>

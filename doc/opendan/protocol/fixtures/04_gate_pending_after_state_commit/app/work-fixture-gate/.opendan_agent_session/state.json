@@ -1,7 +1,7 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1791024660069,
+    "heartbeat_ms": 1791037306960,
     "summary": "x"
   },
   "bootstrap_done": true,
@@ -14,13 +14,10 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261003-035100-61ab88",
+    "run_id": "20261003-072146-146f13",
     "turns": [
       {
-        "at_ms": 1791024660066,
-        "changes": [
-          "_active_sessions@input"
-        ],
+        "at_ms": 1791037306956,
         "hook": "on_init",
         "input_seq": 1,
         "inputs": [
@@ -32,33 +29,38 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1791024660066,
+    "at_ms": 1791037306956,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
     "inputs": [
       "q#1"
     ],
-    "run_id": "20261003-035100-61ab88"
+    "run_id": "20261003-072146-146f13"
   },
   "perception_seq": 0,
   "recent_keys": [
-    "m-1"
+    "cymsg:df9c3ec6588b68e8b7918d3309ef8f69865174b33c8c47fa3cb885cb0f6e4f3b"
   ],
+  "reply": {
+    "kind": "chat",
+    "reply_to": "cymsg:df9c3ec6588b68e8b7918d3309ef8f69865174b33c8c47fa3cb885cb0f6e4f3b",
+    "route": "message",
+    "to": "did:bns:alice",
+    "to_session": null,
+    "tunnel": null
+  },
   "reported_rev": 1,
   "rev": 2,
   "run_state": "running",
-  "schema": "opendan.session_state/4",
+  "schema": "opendan.session_state/5",
   "stop_requested": false,
-  "subscription_cursors": {
-    "_active_sessions": []
-  },
   "topic": {
     "title": ""
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1791024660069,
+  "updated_at_ms": 1791037306960,
   "worklog": {
     "committed_bytes": 131,
     "committed_seq": 1
@@ -66,8 +68,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 494209,
+    "pid": 857979,
     "principal": "app:app2@alice",
-    "runner_id": "rn-a87a9181a2474e14"
+    "runner_id": "rn-b6a2964d6c6b4655"
   }
 }

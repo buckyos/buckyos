@@ -188,7 +188,8 @@ impl SessionDir {
                 &state_dir.join(WORKLOG_FILE),
                 &fsutil::to_json_lines(&[entry])?,
             )?;
-            let state = SessionState::initial(
+            let state = SessionState::initial_for(
+                config,
                 WorklogBoundary {
                     committed_seq: 1,
                     committed_bytes: end,

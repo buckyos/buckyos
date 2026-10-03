@@ -36,7 +36,7 @@
           "type": "string"
         },
         "kind": {
-          "description": "`msg | event | change | control | perception`.",
+          "description": "`msg | event | control`.",
           "type": "string"
         },
         "src": {
@@ -83,7 +83,7 @@
       ]
     }
   },
-  "description": "Worklog entry bodies (format of `opendan.session_state/2` sessions).\n\nIdentities: an input batch is `(run_id, input_seq)`, a Turn is `turn` (session-wide), a behavior Step is `(run_id, step_index)`, a tool call / action is its `call_id`. Entries of one run carry the Turn they belong to.",
+  "description": "Worklog entry bodies (format of `opendan.session_state/5` sessions).\n\nIdentities: an input batch is `(run_id, input_seq)`, a Turn is `turn` (session-wide), a behavior Step is `(run_id, step_index)`, a tool call / action is its `call_id`. Entries of one run carry the Turn they belong to.",
   "oneOf": [
     {
       "description": "First entry of every session.",
@@ -130,7 +130,7 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "changes": {
+        "events": {
           "default": [],
           "items": {
             "type": "string"
@@ -180,14 +180,14 @@
       "type": "object"
     },
     {
-      "description": "An input batch that joined the open Turn (behavior hand-over, fork return, input consumed while the Turn was in progress). Observation injections are only recorded as their `user_message`.",
+      "description": "An input batch that joined the open Turn (hand-over, sub context return, input consumed while the Turn was in progress).",
       "properties": {
         "at_ms": {
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
         },
-        "changes": {
+        "events": {
           "default": [],
           "items": {
             "type": "string"
@@ -514,8 +514,11 @@
       "type": "object"
     },
     {
-      "description": "An input marked consumed without being processed.",
+      "description": "An input marked consumed without being processed. `reason` is a `RejectReason` name.",
       "properties": {
+        "detail": {
+          "type": "string"
+        },
         "input": {
           "$ref": "#/definitions/InputRef"
         },
@@ -537,23 +540,23 @@
       "type": "object"
     },
     {
-      "description": "A subscription change dropped by coalescing / trimming.",
+      "description": "An event consumed without entering the context or `pending_events`: no valid subscription matched (`unsubscribed`), or it only woke the wait of a suspended call (`pending_call`).",
       "properties": {
-        "change": {
-          "type": "string"
+        "input": {
+          "$ref": "#/definitions/InputRef"
         },
         "reason": {
           "type": "string"
         },
         "t": {
           "enum": [
-            "change_dropped"
+            "event_dropped"
           ],
           "type": "string"
         }
       },
       "required": [
-        "change",
+        "input",
         "reason",
         "t"
       ],

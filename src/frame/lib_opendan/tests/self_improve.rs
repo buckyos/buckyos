@@ -96,7 +96,7 @@ async fn failed_self_improve_does_not_advance_the_cursor() {
     .unwrap()
     .unwrap();
     // Stopped instead of succeeded.
-    libopendan::post_input(agent.as_ref(), si.sid(), &Input::control("s", &ControlCommand::Stop { reason: None }), APP)
+    libopendan::post_input(agent.as_ref(), si.sid(), &PostedInput::control(APP, "s", ControlCommand::Stop { reason: None }))
         .await
         .unwrap();
     let r = drive(&si, &env.deps(ScriptedLlm::new(|_, _| text("never"))), StopWhen::Finished).await;

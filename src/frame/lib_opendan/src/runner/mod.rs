@@ -5,6 +5,7 @@
 
 pub mod assembler;
 mod drive;
+pub mod input_view;
 mod flush;
 pub mod history;
 mod hook;
@@ -32,7 +33,7 @@ use crate::runtime::AgentRuntime;
 use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
-pub use assembler::{DefaultAssembler, InputMaterial, SessionAssembler};
+pub use assembler::{render_template, DefaultAssembler, InputMaterial, SessionAssembler};
 pub use drive::drive;
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
@@ -122,8 +123,11 @@ pub struct RunnerOptions {
     pub heartbeat_interval: Duration,
     /// Active sessions rendered into a turn.
     pub active_sessions_limit: usize,
-    /// Changes injected per boundary.
+    /// Semi-subscription state versions shown per snapshot message; the
+    /// rest stays pending.
     pub change_budget: usize,
+    /// msg / Input events one `on_input` batch takes (`input.mode = batch`).
+    pub input_batch_max: usize,
     pub load_hints: bool,
     /// Snapshots kept per finished run.
     pub keep_snapshots: usize,
@@ -139,6 +143,7 @@ impl Default for RunnerOptions {
             heartbeat_interval: Duration::from_secs(60),
             active_sessions_limit: 8,
             change_budget: 16,
+            input_batch_max: 16,
             load_hints: true,
             keep_snapshots: 2,
         }

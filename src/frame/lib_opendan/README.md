@@ -10,9 +10,10 @@
 | `fsutil`、`lock` | 原子替换、批量追加、反向读、不覆盖发布；长期持有的 flock 锁 |
 | `session` | `SessionDir`（读取、创建发布）、`Session`（持锁提交 state.json）、worklog、`runs/`（xllm RunStore 封装） |
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
+| `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流）、task bridge（task 状态 → `AgentEvent`）、回复信封 |
 | `state` | `AgentStateClient` 与文件实现：登记表、活动视图、感知、认知门面、产物列表、Agent 级锁 |
 | `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
-| `runner` | `drive`：恢复、输入批次提交（开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭、观察边界、process 切换、压缩、Round 统计 |
+| `runner` | `drive`：恢复、输入路由（`inputs`）、模板视图与内建格式（`input_view`）、输入批次提交（半订阅快照 + 受控输入，开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭、挂起调用的 task 等待与回填、后台 task 跟踪、process 切换、压缩、Round 统计 |
 | `api` | `create_session` / `read_session` / `post_input` / `create_self_improve_session` |
 
 ## 使用
@@ -40,7 +41,7 @@ cargo run -p libopendan --example session -- create --parent /tmp/x/app --object
 cargo run -p libopendan --example session -- run /tmp/x/app/<sid> [--until finished|idle|outcomes:<n>]
 cargo run -p libopendan --example session -- read <sid> --worklog 20 --report
 cargo run -p libopendan --example session -- decide <sid> accept
-cargo run -p libopendan --example session -- active | holder <dir> | post <sid> --text … | schema <dir>
+cargo run -p libopendan --example session -- active | holder <dir> | post <sid> (--msg <text> [--attach <obj_id>]… | --json <file \| -> | --stop) | schema <dir>
 ```
 
 `run` 把自身包装成 session 的 `.runtime/bin/agent-session`，`exec` 里的命令可以用 `agent-session activity --touch ws:foo` / `agent-session perceive "…"` 向本 session 投递。
@@ -54,10 +55,11 @@ cargo test -p libopendan -- --test-threads=1
 | 文件 | 覆盖 |
 |---|---|
 | `tests/l1.rs` | 锁（epoch、inode 不变、CLOEXEC、kill -9 后接管）、反向读有界、压缩无空洞、kmsg 规则（文件队列与 kmsg 的 sled 实现）、订阅丢失重建、迁移、巡检、幂等创建、绑定失败、墓碑修复、活动视图 |
-| `tests/runner_basic.rs`、`tests/runner_more.rs` | work session 端到端、finished 后拒绝输入、非驱动者 / Busy、stop、变化注入与合并、半订阅、behavior loop、普通 / fork / independent 切换（同一 Turn 内交接）、`max_turns` 只计已完成 Turn、decide 与 head、activity / perception 输入、tmux runtime |
+| `tests/runner_basic.rs`、`tests/runner_more.rs` | work session 端到端、finished 后拒绝输入、非驱动者 / Busy、stop、事件路由（active / semi / 未订阅丢弃 / 订阅变更按投递顺序生效）、半订阅快照、behavior loop、普通 / fork / independent 切换（同一 Turn 内交接）、`max_turns` 只计已完成 Turn、decide 与 head、activity / perception 输入、tmux runtime |
 | `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |
+| `tests/input_tasks.rs` | 输入协议 3 与长任务：挂起调用在上下文之外等待 task 并回填同一 run、无 resolver 拒绝接手与 Unknown 回填、等待期间 stop、后台 task 完成合成 Input 事件、工具执行中的 stop、64 条 pending 上限、Single / Batch、`input.media = inline`、重投去重与回复路径、旧 Session 只读、模板失败不消费、用户时区半订阅 |
 | `tests/self_improve.rs` | 感知幂等、self_improve 锁、整理游标、防自我回声 |
-| `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json` |
+| `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/dv_kmsg.rs` | （`--ignored`）真实 kmsg 服务：幂等建队列 / 订阅、消费与累积 ack、finished 后拒绝并 ack；在 DV Test OOD 上以 root 运行 `cargo test -p libopendan --test dv_kmsg -- --ignored` |
 
 重新生成 fixtures / JSON Schema：`cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures`（在 `src/` 下执行）。

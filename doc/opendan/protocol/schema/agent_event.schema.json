@@ -1,0 +1,71 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "EventSource": {
+      "description": "Where an event comes from.",
+      "properties": {
+        "id": {
+          "default": "",
+          "description": "object: object id; session: sid; task: task_id; timer: timer name; system: may be empty.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`object | session | task | timer | system`; unknown kinds are not a format error (an event without a matching subscription is dropped).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "`type = \"event\"` payload: something this session cares about happened. The poster only describes the event; whether it is an Input or an Observe is decided by the receiving session's subscriptions.",
+  "properties": {
+    "data_ref": {
+      "description": "ObjId or a path relative to the session directory.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "event": {
+      "description": "`changed | updated | finished | fired ...`.",
+      "type": "string"
+    },
+    "seq": {
+      "description": "Version inside the source; Observe merging compares it.",
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "source": {
+      "$ref": "#/definitions/EventSource"
+    },
+    "subscription_id": {
+      "description": "Explicit subscription id; may be empty for implicit subscriptions.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "summary": {
+      "description": "One sentence for the LLM (≤ 1 KB); never parsed mechanically.",
+      "type": "string"
+    },
+    "terminal": {
+      "description": "The source's final event.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "event",
+    "source",
+    "summary"
+  ],
+  "title": "AgentEvent",
+  "type": "object"
+}

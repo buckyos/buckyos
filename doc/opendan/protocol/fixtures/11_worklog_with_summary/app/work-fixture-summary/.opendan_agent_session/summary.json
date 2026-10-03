@@ -8,7 +8,7 @@
       "decide",
       "compaction",
       "input_rejected",
-      "change_dropped",
+      "event_dropped",
       "turn_ended"
     ],
     "max_result_chars": 4096,

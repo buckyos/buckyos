@@ -22,16 +22,16 @@
     "report_brief": "",
     "activity": {
       "summary": "research then answer",
-      "heartbeat_ms": 1791024661110
+      "heartbeat_ms": 1791037308001
     },
     "last_runner": {
-      "runner_id": "rn-bd3c3f2545594bc4",
+      "runner_id": "rn-4f5320e822aa450b",
       "host": "${FIXTURE_HOST}",
-      "pid": 494856,
+      "pid": 858628,
       "lock_epoch": 1,
-      "at_ms": 1791024661111
+      "at_ms": 1791037308002
     },
-    "updated_at_ms": 1791024661110
+    "updated_at_ms": 1791037308001
   },
   "location_rev": 0
 }

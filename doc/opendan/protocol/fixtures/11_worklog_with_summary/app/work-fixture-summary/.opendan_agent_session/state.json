@@ -14,14 +14,14 @@
   "reported_rev": 0,
   "rev": 2,
   "run_state": "created",
-  "schema": "opendan.session_state/4",
+  "schema": "opendan.session_state/5",
   "stop_requested": false,
   "topic": {
     "title": ""
   },
   "turn_seq": 0,
   "turns_completed": 0,
-  "updated_at_ms": 1791024660966,
+  "updated_at_ms": 1791037307860,
   "worklog": {
     "committed_bytes": 17219,
     "committed_seq": 201

@@ -2,6 +2,44 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
+    "BehaviorPrompt": {
+      "additionalProperties": false,
+      "description": "`prompt` of a behavior entry.",
+      "properties": {
+        "on_context_switch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_init": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "semi_subscription_snapshot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system": {
+          "description": "Application system prompt of the context (replaces `prompt.system`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ContextMode": {
       "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
       "oneOf": [
@@ -52,6 +90,67 @@
           "type": "string"
         }
       ]
+    },
+    "InputMedia": {
+      "description": "Whether attachments also enter the context as image / document blocks.",
+      "oneOf": [
+        {
+          "description": "Text references only (`<attachment .../>` lines); the agent reads attachments with tools.",
+          "enum": [
+            "reference"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Image / document attachments additionally as content blocks (at most [`MAX_INLINE_MEDIA`] per batch).",
+          "enum": [
+            "inline"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InputMode": {
+      "description": "How many selected inputs one `on_input` batch takes.",
+      "oneOf": [
+        {
+          "description": "One msg / Input event per batch; the rest stays queued.",
+          "enum": [
+            "single"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "As many as the batch budget allows.",
+          "enum": [
+            "batch"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InputSection": {
+      "additionalProperties": false,
+      "description": "Input consumption policy of a context (separate from its templates).",
+      "properties": {
+        "media": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputMedia"
+            }
+          ],
+          "default": "reference"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputMode"
+            }
+          ],
+          "default": "batch"
+        }
+      },
+      "type": "object"
     }
   },
   "description": "`extensions.opendan.behaviors.<name>`: entry configuration of a behavior.",
@@ -64,18 +163,30 @@
       ],
       "default": "none"
     },
+    "input": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InputSection"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Input consumption of the context (`None`: the session's)."
+    },
     "llm_context": {
       "description": "Top-level keys replacing those of `prompt.llm_context` (model, tools, limits …). Not allowed for `fork`."
     },
     "mode": {
       "$ref": "#/definitions/ContextMode"
     },
-    "system_prompt": {
-      "description": "Application system prompt of the context (replaces `prompt.system_prompt`). Not allowed for `fork`.",
-      "type": [
-        "string",
-        "null"
-      ]
+    "prompt": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorPrompt"
+        }
+      ],
+      "description": "`prompt.system` and the input templates of the context. A system prompt is not allowed for `fork`."
     }
   },
   "required": [

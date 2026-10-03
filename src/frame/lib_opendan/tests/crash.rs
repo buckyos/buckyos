@@ -25,26 +25,8 @@ fn script(name: &str) -> Arc<ScriptedLlm> {
     script_for(name, None)
 }
 
-fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
+fn script_for(name: &str, _ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
     match name {
-        "change_obs" => {
-            let (qd, q) = ctx.expect("queue context");
-            ScriptedLlm::new(move |req: &LlmInferenceRequest, _| {
-                if render(&req.messages).contains("motion at door") {
-                    text("noted")
-                } else {
-                    post_blocking(
-                        &qd,
-                        &q,
-                        Input::change(
-                            "cam01#motion",
-                            json!({ "text": "motion at door", "subscription": "s2", "version": "e1" }),
-                        ),
-                    );
-                    tool_call("c1", "shell", json!({ "command": "true" }))
-                }
-            })
-        }
         "transient" => ScriptedLlm::fallible(|req: &LlmInferenceRequest, _| {
             if render(&req.messages).contains("second message") {
                 Ok(text("got both"))
@@ -102,7 +84,7 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
             text("<response><next_behavior>WAIT_USER_MSG</next_behavior></response>")
         }),
         "switch" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
-            if render(&req.messages).contains("behavior_switch to=\"do\"") {
+            if render(&req.messages).contains("context_switch to=\"do\"") {
                 text("<response><report><![CDATA[both phases done]]></report></response>")
             } else {
                 text("<response><next_behavior>do</next_behavior></response>")
@@ -112,7 +94,7 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
             let all = render(&req.messages);
             if all.contains("research result X") {
                 text("<response><report><![CDATA[final answer]]></report></response>")
-            } else if all.contains("behavior_switch to=\"research\"") {
+            } else if all.contains("context_switch to=\"research\"") {
                 text("<response><report><![CDATA[research result X]]></report></response>")
             } else {
                 text("<response><next_behavior>research</next_behavior></response>")
@@ -206,10 +188,10 @@ fn count_kind(sd: &SessionDir, kind: &str) -> usize {
         .count()
 }
 
-async fn post_msg(env: &Env, sd: &SessionDir, key: &str, text: &str) {
+async fn post_msg(env: &Env, sd: &SessionDir, _key: &str, text: &str) {
     let ch = env.channels();
     let q = sd.config().unwrap().channels.kmsg().unwrap().1.to_string();
-    libopendan::channel::kmsg::post_to_queue(&ch.client(), &q, &Input::msg(key, text), APP)
+    libopendan::channel::kmsg::post_to_queue(&ch.client(), &q, &msg(text))
         .await
         .unwrap();
 }
@@ -255,7 +237,6 @@ async fn crash_window(fault: &str) -> (Env, SessionDir, Arc<ScriptedLlm>) {
     let q = libopendan::channel::DirMsgQueue::new(&env.queue_dir).unwrap();
     let sub = match &sd.config().unwrap().channels.inputs[0] {
         InputSourceConfig::Kmsg { subscriber, .. } => subscriber.clone(),
-        _ => unreachable!(),
     };
     assert_eq!(q.cursor(&sub), Some(2), "{fault}: kmsg ack");
     // Only the last run survives.
@@ -556,8 +537,13 @@ async fn xllm_refuses_run_with_pending_host_commit() {
     assert!(err.to_string().contains("not committed"), "{err}");
 }
 
+/// A batch of two messages (semi-subscription snapshot + controlled
+/// input) committed into the snapshot, crash before state.json: recovery
+/// completes state from the receipt — both messages stay once, exactly the
+/// injected state version is cleared, the reply path is restored — without
+/// rendering again or reading the bus.
 #[tokio::test]
-async fn crash_after_observation_injection_does_not_reinject() {
+async fn crash_after_snapshot_batch_checkpoint_does_not_reinject() {
     let env = Env::new();
     let mut spec = work_spec("watch");
     spec.subscriptions.push(Subscription {
@@ -565,37 +551,73 @@ async fn crash_after_observation_injection_does_not_reinject() {
         mode: SubscriptionMode::Semi,
         source: SubscriptionSource::ObjectEvent {
             object: "https://cam/01".into(),
-            event: "motion".into(),
+            event: String::new(),
         },
         watch: vec![],
     });
     let sd = env.create_work(spec).await;
-    let mut child = spawn_child(&env, &sd, "change_obs", Some("hook:after_input_checkpoint"));
+    match drive(&sd, &env.deps(script("transient")), StopWhen::Finished).await {
+        DriveResult::Error { error, .. } => assert_eq!(error["recoverable"], json!(true)),
+        r => panic!("{r:?}"),
+    }
+    let agent = env.agent();
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &event("cam:7", Some("s2"), "object", "https://cam/01", Some(7), "motion at door"),
+    )
+    .await
+    .unwrap();
+    let second = msg("second message");
+    libopendan::post_input(agent.as_ref(), sd.sid(), &second).await.unwrap();
+    let mut child = spawn_child(
+        &env,
+        &sd,
+        "transient",
+        Some("input_batch:after_input_checkpoint"),
+    );
     assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
-    // Snapshot has the injected change + receipt; state has not applied it.
+    // The event was saved (and its delivery consumed) before the batch; the
+    // batch itself is only in the snapshot.
     let st = sd.state().unwrap();
-    let live = st.live_run.clone().unwrap();
-    assert_eq!(live.applied_input_seq, 1);
-    assert_eq!(st.source("q").acked_index, 0);
-    let llm = script_for("change_obs", Some((env.queue_dir.clone(), queue_of(&sd))));
-    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 1, "resumed from the snapshot, no re-post");
-    let t = llm.transcript(0);
-    assert_eq!(t.matches("motion at door").count(), 1, "{t}");
-    let st = sd.state().unwrap();
+    assert_eq!(st.live_run.clone().unwrap().applied_input_seq, 1);
+    assert_eq!(st.pending_events.len(), 1);
     assert_eq!(st.source("q").acked_index, 1);
-    assert_eq!(st.subscription_cursors["s2"]["version"], json!("e1"));
+    assert!(st.reply.is_none());
+    // A newer version arrives before the recovery.
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &event("cam:8", Some("s2"), "object", "https://cam/01", Some(8), "door closed"),
+    )
+    .await
+    .unwrap();
+    let llm = script("transient");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Idle).await;
+    assert!(r.is_finished(), "{r:?}");
+    let t = llm.transcript(llm.count() - 1);
+    assert_eq!(t.matches("motion at door").count(), 1, "{t}");
+    assert_eq!(t.matches("second message").count(), 1, "{t}");
+    assert!(!t.contains("door closed"), "v8 was not part of the committed batch: {t}");
+    let st = sd.state().unwrap();
+    assert_eq!(st.source("q").acked_index, 3);
+    assert_eq!(
+        st.reply,
+        Some(ReplyRoute::Message {
+            to: USER.into(),
+            to_session: None,
+            kind: "chat".into(),
+            reply_to: Some(second.key.clone()),
+            tunnel: None,
+        })
+    );
     let users = read_worklog(&sd)
         .into_iter()
         .filter(|e| matches!(e.body, WorklogBody::UserMessage { .. }))
         .count();
-    assert_eq!(users, 2);
-    assert_eq!(
-        count_kind(&sd, "turn_started"),
-        1,
-        "the observation joined Turn 1"
-    );
+    assert_eq!(users, 3, "on_init, snapshot, on_input");
+    assert_eq!(count_kind(&sd, "turn_started"), 1);
+    assert_eq!(count_kind(&sd, "input_batch"), 1);
     assert_worklog_contiguous(&sd);
 }
 
@@ -781,7 +803,7 @@ async fn crash_while_committing_the_switch_hand_over_does_not_repeat_it() {
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
     let t = llm.transcript(llm.count() - 1);
-    assert_eq!(t.matches("behavior_switch to=\"do\"").count(), 1, "{t}");
+    assert_eq!(t.matches("context_switch to=\"do\"").count(), 1, "{t}");
     assert!(sd.state().unwrap().internal_continuation.is_none());
     assert_eq!(count_kind(&sd, "turn_started"), 1);
     assert_eq!(count_kind(&sd, "input_batch"), 1);
@@ -914,7 +936,7 @@ async fn crash_at_the_hand_over_point_commits_the_transfer_once() {
     assert!(r.is_finished(), "{r:?}");
     assert_eq!(llm.count(), 1, "only `do` runs");
     let t = llm.transcript(0);
-    assert_eq!(t.matches("behavior_switch to=\"do\"").count(), 1, "{t}");
+    assert_eq!(t.matches("context_switch to=\"do\"").count(), 1, "{t}");
     assert_eq!(outcome_kinds(&sd), vec!["suspended", "done"]);
     assert_eq!(count_kind(&sd, "turn_started"), 1);
     assert_eq!(count_kind(&sd, "turn_ended"), 1);

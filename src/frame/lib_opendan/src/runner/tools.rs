@@ -53,7 +53,7 @@ pub struct SessionToolManager {
     lease: Arc<Lease>,
     workdir: PathBuf,
     /// Write targets inferred from tool calls (merged into activity at the
-    /// next observation boundary).
+    /// next checkpoint).
     touched: Arc<Mutex<Vec<Touching>>>,
 }
 
@@ -123,7 +123,14 @@ impl ToolManager for SessionToolManager {
                 tool: call.name.clone(),
                 args: canonical_args(&call.args),
                 effect: effect.to_string(),
-                idempotency_key: None,
+                // Stable identity of the dispatch (session / run / call): a
+                // tool that creates a task in an external service uses it as
+                // the idempotency key, so a crash between creating and
+                // recording the task finds the same task again.
+                idempotency_key: Some(crate::ids::h(&[
+                    self.run.run_id(),
+                    call.call_id.as_str(),
+                ])),
                 step_index: None,
                 started_at_ms: crate::now_ms(),
             };
@@ -135,12 +142,9 @@ impl ToolManager for SessionToolManager {
             }
             self.infer_touching(&call);
         }
-        // Only a sub context call suspends the run: every other tool waits
-        // for its task inside the call.
-        let mut ctx = ctx;
-        if call.name != TOOL_CALL_BEHAVIOR {
-            ctx.allow_deferred = false;
-        }
+        // A tool that answers `Pending { task_id }` suspends the run: the
+        // session waits for the task outside the context (the run's
+        // resolver answers for it) and fills the result on resume.
         self.inner.call_tool(call, ctx).await
     }
 

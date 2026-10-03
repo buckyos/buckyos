@@ -211,6 +211,47 @@ pub fn has_tool_result(req: &LlmInferenceRequest, call_id: &str) -> Option<Strin
     None
 }
 
+/// DID the test user speaks as (the owner of [`APP`]).
+pub const USER: &str = "did:bns:alice";
+
+/// A text message from the test user to the agent (`key` = its ObjId).
+pub fn msg(text: impl Into<String>) -> libopendan::protocol::PostedInput {
+    libopendan::protocol::PostedInput::text(APP, AGENT, text).unwrap()
+}
+
+/// An event record of `source_kind:source_id`.
+pub fn event(
+    key: &str,
+    subscription: Option<&str>,
+    source_kind: &str,
+    source_id: &str,
+    seq: Option<u64>,
+    summary: &str,
+) -> libopendan::protocol::PostedInput {
+    libopendan::protocol::PostedInput::event(
+        APP,
+        key,
+        libopendan::protocol::AgentEvent {
+            subscription_id: subscription.map(str::to_string),
+            source: libopendan::protocol::EventSource::new(source_kind, source_id),
+            event: "changed".into(),
+            seq,
+            summary: summary.into(),
+            data_ref: None,
+            terminal: false,
+        },
+    )
+}
+
+/// Text of every user message of a request, in order.
+pub fn user_texts(req: &LlmInferenceRequest) -> Vec<String> {
+    req.messages
+        .iter()
+        .filter(|m| m.role == AiRole::User)
+        .map(|m| m.text_content())
+        .collect()
+}
+
 pub fn work_spec(objective: &str) -> SessionSpec {
     let mut s = SessionSpec::work(objective);
     s.prompt.llm_context = json!({ "tools": { "enabled": true } });
@@ -227,14 +268,14 @@ pub fn kinds(entries: &[libopendan::protocol::WorklogEntry]) -> Vec<&'static str
 
 /// Post an input from synchronous code (e.g. inside an LLM script) through a
 /// dedicated thread + runtime.
-pub fn post_blocking(queue_dir: &Path, queue: &str, input: libopendan::protocol::Input) -> u64 {
+pub fn post_blocking(queue_dir: &Path, queue: &str, input: libopendan::protocol::PostedInput) -> u64 {
     let queue_dir = queue_dir.to_path_buf();
     let queue = queue.to_string();
     std::thread::spawn(move || {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async move {
             let client = libopendan::channel::DirMsgQueue::client(&queue_dir).unwrap();
-            libopendan::channel::kmsg::post_to_queue(&client, &queue, &input, APP)
+            libopendan::channel::kmsg::post_to_queue(&client, &queue, &input)
                 .await
                 .unwrap()
         })

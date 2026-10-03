@@ -1,21 +1,20 @@
-//! Observation boundaries (§8.4) and the checkpoint hook (§8.3 / §8.5).
+//! The checkpoint hook (§8.3 / §8.5).
 //!
-//! The hook runs before every inference with the outer snapshot:
-//! - no pending batch: publish the snapshot with the tool results it now
-//!   contains (clears the in-flight markers it covers), apply control inputs
-//!   (stop / activity / subscriptions / perception), refresh the activity
-//!   heartbeat, and look for changes to inject;
-//! - changes found: hand the waist an injection whose host metadata already
-//!   carries the batch receipt (message and receipt land in one snapshot);
-//! - called again with the injected state: ① snapshot fsync ② run.json with
-//!   the host commit gate ③ state.json ④ clear the gate ⑤ confirm inputs —
-//!   only then may the inference start.
+//! The hook runs before every inference with the outer snapshot: it
+//! publishes the snapshot with the tool results it now contains (clears the
+//! in-flight markers it covers), routes what the bus delivered meanwhile
+//! (controls are applied, Observe events are merged into `pending_events`
+//! and saved) and refreshes the activity heartbeat.
+//!
+//! Nothing is injected here: reaching a checkpoint, finishing a tool call
+//! or receiving an Observe event never puts a message into the context.
+//! Saved semi-subscription state waits for the next controlled input
+//! (`on_init / on_input / on_context_switch`), which renders it as the
+//! snapshot message in front of its own.
 
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use buckyos_api::{AiMessage, AiRole};
 use llm_context::deps::{CheckpointHook, Injection};
 use llm_context::state::LLMContextSnapshot;
 use serde_json::{json, Value};
@@ -23,35 +22,12 @@ use serde_json::{json, Value};
 use crate::error::Result;
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
-use crate::state::{declared_refs, render_active_sessions, AgentStateClient};
+use crate::state::declared_refs;
 
-use super::assembler::{ChangeItem, InputMaterial};
-use super::inputs::{apply_controls, confirm_inputs, fetch_inputs};
-use super::receipts::{apply_receipt, predict_position, snapshot_host_meta, with_host_meta};
+use super::inputs::route_inputs;
 use super::shared::{report, Shared};
 
-/// Cursor key of the active-session set subscription.
-pub const ACTIVE_CURSOR: &str = "_active_sessions";
-
-/// Result of a change check.
-#[derive(Debug, Default)]
-pub struct Changes {
-    pub items: Vec<ChangeItem>,
-    pub receipts: Vec<ChangeReceipt>,
-    /// Queue change inputs rendered into the message.
-    pub injected_inputs: Vec<InputRef>,
-    /// Queue change inputs consumed without rendering (coalesced).
-    pub consumed_only: Vec<InputRef>,
-    pub dropped: Vec<(String, String)>,
-}
-
-impl Changes {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty() && self.consumed_only.is_empty()
-    }
-}
-
-fn watched_view(status: &SessionStatus, watch: &[String]) -> Value {
+pub(super) fn watched_view(status: &SessionStatus, watch: &[String]) -> Value {
     let full = json!({
         "run_state": status.run_state,
         "outcome": status.outcome,
@@ -75,307 +51,32 @@ fn watched_view(status: &SessionStatus, watch: &[String]) -> Value {
     Value::Object(out)
 }
 
-/// Pull-mode changes of subscribed sessions, push-mode `change` inputs
-/// (coalesced by key; terminal keys separate) and the active session set.
-pub async fn check_changes(
-    agent: &dyn AgentStateClient,
-    cfg: &SessionConfig,
-    state: &SessionState,
-    me: Option<&RegistryEntry>,
-    change_inputs: &[InputMessage],
-    budget: usize,
-    active_limit: usize,
-    include_active: bool,
-) -> Result<Changes> {
-    let mut out = Changes::default();
-    let mut candidates: Vec<(ChangeItem, Option<ChangeReceipt>, Option<InputRef>)> = Vec::new();
-    // 1. subscribed sessions (compare registry rev, not event delivery).
-    for sub in &cfg.subscriptions {
-        let SubscriptionSource::Session { session_ref } = &sub.source else {
-            continue;
-        };
-        let Some(e) = agent.sessions().lookup(session_ref).await? else {
-            continue;
-        };
-        let cur = state.subscription_cursors.get(&sub.id);
-        let cur_rev = cur.and_then(|c| c.get("rev")).and_then(Value::as_u64).unwrap_or(0);
-        if e.status.rev <= cur_rev {
-            continue;
-        }
-        let view = watched_view(&e.status, &sub.watch);
-        let changed = cur.and_then(|c| c.get("view")) != Some(&view);
-        if !changed {
-            continue;
-        }
-        let terminal = e.status.run_state == RunState::Finished;
-        let mut text = format!(
-            "session {} is {}",
-            e.session_id,
-            e.status.run_state.as_str()
-        );
-        if let Some(o) = e.status.outcome {
-            text.push_str(&format!(" ({:?})", o).to_lowercase());
-        }
-        if !e.status.one_line_status.is_empty() {
-            text.push_str(&format!(": {}", e.status.one_line_status));
-        }
-        if terminal && !e.status.report_brief.is_empty() {
-            text.push_str(&format!("\nreport: {}", e.status.report_brief));
-        }
-        let id = format!("{}@{}", sub.id, e.status.rev);
-        candidates.push((
-            ChangeItem {
-                id: id.clone(),
-                text,
-                terminal,
-            },
-            Some(ChangeReceipt {
-                id,
-                subscription: sub.id.clone(),
-                cursor: json!({ "rev": e.status.rev, "view": view }),
-            }),
-            None,
-        ));
-    }
-    // 2. queue changes: the newest per key wins; `#terminal` keys never merge
-    //    with progress keys.
-    let mut latest: BTreeMap<String, &InputMessage> = BTreeMap::new();
-    for m in change_inputs {
-        match latest.get(&m.key) {
-            Some(prev) if prev.index > m.index => {
-                out.consumed_only.push(m.input_ref());
-                out.dropped
-                    .push((m.input_ref().id(), "superseded by a newer change".into()));
-            }
-            Some(prev) => {
-                out.consumed_only.push(prev.input_ref());
-                out.dropped
-                    .push((prev.input_ref().id(), "superseded by a newer change".into()));
-                latest.insert(m.key.clone(), m);
-            }
-            None => {
-                latest.insert(m.key.clone(), m);
-            }
-        }
-    }
-    for (key, m) in latest {
-        let terminal = key.ends_with("#terminal")
-            || m.payload.get("terminal").and_then(Value::as_bool) == Some(true);
-        let sub = m
-            .payload
-            .get("subscription")
-            .and_then(Value::as_str)
-            .map(str::to_string);
-        let receipt = sub.map(|s| ChangeReceipt {
-            id: m.input_ref().id(),
-            subscription: s,
-            cursor: json!({ "key": key, "version": m.payload.get("version").cloned().unwrap_or(Value::Null) }),
-        });
-        candidates.push((
-            ChangeItem {
-                id: m.input_ref().id(),
-                text: m.text(),
-                terminal,
-            },
-            receipt,
-            Some(m.input_ref()),
-        ));
-    }
-    // 3. active session set (default semi-subscription, §6.7). An input
-    //    batch message renders the full list itself; boundaries inject
-    //    changes.
-    let active = if include_active {
-        agent.activity().active(me, active_limit).await?
-    } else {
-        Vec::new()
-    };
-    let view = active_view(&active);
-    let cur = state.subscription_cursors.get(ACTIVE_CURSOR);
-    if include_active && state.bootstrap_done && cur != Some(&view) {
-        let text = render_active_sessions(&active)
-            .unwrap_or_else(|| "no other active sessions".to_string());
-        let id = format!("{ACTIVE_CURSOR}@{}", crate::ids::h(&[&view.to_string()])[..8].to_string());
-        candidates.push((
-            ChangeItem {
-                id: id.clone(),
-                text,
-                terminal: false,
-            },
-            Some(ChangeReceipt {
-                id,
-                subscription: ACTIVE_CURSOR.to_string(),
-                cursor: view,
-            }),
-            None,
-        ));
-    }
-    // Terminal first; trim to budget (trimmed queue inputs stay unconsumed).
-    candidates.sort_by_key(|(c, _, _)| !c.terminal);
-    for (i, (item, receipt, input)) in candidates.into_iter().enumerate() {
-        if i >= budget {
-            out.dropped
-                .push((item.id.clone(), "change budget exceeded; deferred".into()));
-            continue;
-        }
-        if let Some(r) = receipt {
-            out.receipts.push(r);
-        }
-        if let Some(inp) = input {
-            out.injected_inputs.push(inp);
-        }
-        out.items.push(item);
-    }
-    Ok(out)
-}
-
-/// Cursor value of an active-session list (what the agent has seen).
-pub fn active_view(active: &[crate::state::ActiveSession]) -> Value {
-    json!(active
-        .iter()
-        .map(|a| json!({"id": a.session_id, "state": a.run_state, "overlap": a.overlap}))
-        .collect::<Vec<_>>())
-}
-
 /// The per-run checkpoint hook.
 pub struct SessionCheckpointHook {
     shared: Arc<Shared>,
     run: RunHandle,
-    behavior: bool,
-    pending: Mutex<Option<(InputReceipt, Vec<(String, String)>)>>,
 }
 
 impl SessionCheckpointHook {
-    pub fn new(shared: Arc<Shared>, run: RunHandle, behavior: bool) -> Self {
-        Self {
-            shared,
-            run,
-            behavior,
-            pending: Mutex::new(None),
-        }
+    pub fn new(shared: Arc<Shared>, run: RunHandle) -> Self {
+        Self { shared, run }
     }
 
-    async fn commit_pending(
-        &self,
-        snapshot: &LLMContextSnapshot,
-        receipt: InputReceipt,
-        dropped: Vec<(String, String)>,
-    ) -> Result<()> {
-        let sh = &self.shared;
-        // The receipt must be the one inside the snapshot.
-        let meta = snapshot_host_meta(snapshot);
-        if !meta
-            .input_receipts
-            .iter()
-            .any(|r| r.input_seq == receipt.input_seq)
-        {
-            return Err(crate::error::OpenDanError::Other(
-                "injected receipt missing from the snapshot".into(),
-            ));
-        }
-        self.run
-            .publish_input_checkpoint(snapshot, receipt.input_seq)?; // ① ②
-        crate::fault::point("hook:after_input_checkpoint");
-        {
-            let mut s = sh.session.lock().await;
-            apply_receipt(&mut s.state, &receipt)?;
-            let bodies: Vec<WorklogBody> = dropped
-                .into_iter()
-                .map(|(change, reason)| WorklogBody::ChangeDropped { change, reason })
-                .collect();
-            s.append_worklog(&sh.lease, bodies)?;
-            s.commit_state(&sh.lease)?; // ③
-            self.run.complete_host_commit()?; // ④
-            confirm_inputs(&sh.sources, &s.state).await; // ⑤
-        }
-        Ok(())
-    }
-
-    async fn boundary(&self, snapshot: &LLMContextSnapshot) -> Result<Option<Injection>> {
+    async fn boundary(&self, snapshot: &LLMContextSnapshot) -> Result<()> {
         let sh = &self.shared;
         sh.lease.check()?;
         // Tool results first: publish and clear covered in-flight actions.
         self.run.checkpoint_with_results(snapshot, None)?;
-        // Controls / perception / malformed inputs.
-        let mut inputs = fetch_inputs(sh).await?;
-        apply_controls(sh, &mut inputs, true).await?;
-        let (stop, state_snapshot, cfg) = {
-            let s = sh.session.lock().await;
-            (s.state.stop_requested, s.state.clone(), s.config.clone())
-        };
-        if stop {
+        // Controls, rejected records, Observe events. msg / Input events
+        // stay queued for the next controlled input.
+        route_inputs(sh, true, &[]).await?;
+        if sh.session.lock().await.state.stop_requested {
             if let Some(h) = sh.interrupt.lock().expect("interrupt lock").as_ref() {
                 h.interrupt("session stop requested");
             }
-            return Ok(None);
+            return Ok(());
         }
-        self.heartbeat().await?;
-        // Changes to inject at this boundary.
-        let change_inputs: Vec<InputMessage> = inputs
-            .items
-            .iter()
-            .filter(|m| m.kind == InputKind::Change)
-            .cloned()
-            .collect();
-        let me = sh.agent().sessions().lookup(&cfg.session.session_id).await?;
-        let changes = check_changes(
-            sh.agent(),
-            &cfg,
-            &state_snapshot,
-            me.as_ref(),
-            &change_inputs,
-            sh.deps.options.change_budget,
-            sh.deps.options.active_sessions_limit,
-            true,
-        )
-        .await?;
-        if changes.is_empty() {
-            return Ok(None);
-        }
-        let material = InputMaterial {
-            hook: OBSERVATION_HOOK.into(),
-            changes: changes.items.clone(),
-            now_ms: crate::now_ms(),
-            ..Default::default()
-        };
-        let text = sh.deps.assembler.render_observation(&material).await?;
-        let seq = state_snapshot
-            .live_run
-            .as_ref()
-            .filter(|l| l.run_id == self.run.run_id())
-            .map(|l| l.applied_input_seq)
-            .unwrap_or(0)
-            + 1;
-        let receipt = InputReceipt {
-            run_id: self.run.run_id().to_string(),
-            input_seq: seq,
-            // Observations join the Turn in progress, never open one.
-            turn: state_snapshot.current_turn(),
-            opens_turn: false,
-            hook: Some(OBSERVATION_HOOK.into()),
-            inputs: changes.injected_inputs.clone(),
-            changes: changes.receipts.clone(),
-            consumed_only: changes.consumed_only.clone(),
-            message_pos: if text.is_some() {
-                predict_position(snapshot, self.behavior)
-            } else {
-                MessagePos::None
-            },
-            content: text.clone().unwrap_or_default(),
-            bootstrap: false,
-            after_step: snapshot.state.next_step_index,
-            extra: Default::default(),
-            at_ms: crate::now_ms(),
-        };
-        let mut meta = snapshot_host_meta(snapshot);
-        meta.input_receipts.push(receipt.clone());
-        let host = with_host_meta(snapshot.state.host.as_ref(), &meta);
-        *self.pending.lock().expect("pending lock") = Some((receipt, changes.dropped));
-        Ok(Some(Injection {
-            messages: text
-                .map(|t| vec![AiMessage::text(AiRole::User, t)])
-                .unwrap_or_default(),
-            host: Some(host),
-        }))
+        self.heartbeat().await
     }
 
     /// Merge inferred touching, refresh the heartbeat (throttled commit).
@@ -408,14 +109,8 @@ impl CheckpointHook for SessionCheckpointHook {
         &self,
         snapshot: &LLMContextSnapshot,
     ) -> std::result::Result<Option<Injection>, String> {
-        let pending = self.pending.lock().expect("pending lock").take();
-        if let Some((receipt, dropped)) = pending {
-            self.commit_pending(snapshot, receipt, dropped)
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(None);
-        }
-        self.boundary(snapshot).await.map_err(|e| e.to_string())
+        self.boundary(snapshot).await.map_err(|e| e.to_string())?;
+        Ok(None)
     }
 }
 

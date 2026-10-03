@@ -11,10 +11,12 @@
 //! - [`state`]: Agent State through [`state::AgentStateClient`] (registry,
 //!   active session view, perception, cognition facade, artifact list).
 //! - [`channel`]: kmsg inputs + kevent wake-ups.
+//! - [`bridge`]: msg-center / task state → Session Input Bus records.
 //! - [`runtime`]: execution environments for `exec` (native, tmux).
 //! - [`runner`]: drives a session to its end condition.
 
 pub mod api;
+pub mod bridge;
 pub mod channel;
 pub mod error;
 pub mod fault;

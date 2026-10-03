@@ -12,6 +12,8 @@
 
 #[path = "support/fixture_paths.rs"]
 mod fixture_paths;
+#[path = "support/input_fixture.rs"]
+mod input_fixture;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -119,7 +121,7 @@ impl LlmClient for Script {
                 let _ = n;
                 if all.contains("research result") {
                     text("<response><report><![CDATA[final]]></report></response>")
-                } else if all.contains("behavior_switch to=\"research\"") {
+                } else if all.contains("context_switch to=\"research\"") {
                     text("<response><report><![CDATA[research result]]></report></response>")
                 } else if all.contains("p1-output") {
                     text("<response><next_behavior>research</next_behavior></response>")
@@ -204,9 +206,9 @@ impl Env {
         .await
         .unwrap()
     }
-    async fn post(&self, sd: &SessionDir, input: Input) {
+    async fn post(&self, sd: &SessionDir, input: PostedInput) {
         let q = sd.config().unwrap().channels.kmsg().unwrap().1.to_string();
-        post_to_queue(&self.channels().client(), &q, &input, APP)
+        post_to_queue(&self.channels().client(), &q, &input)
             .await
             .unwrap();
     }
@@ -229,6 +231,24 @@ impl Env {
         let mut ch = self.child(sd, script, Some(fault));
         let _ = ch.wait();
     }
+}
+
+/// Time every fixture record is stamped with (2026-10-02T00:00:00Z).
+const FIXTURE_MS: u64 = 1_790_899_200_000;
+
+/// A text message with a fixed creation time and nonce: the same ObjId
+/// (bus key) on every generation.
+fn msg(n: u64, text: &str) -> PostedInput {
+    let mut m = text_msg(
+        &parse_did("did:bns:alice").unwrap(),
+        &parse_did(AGENT).unwrap(),
+        text,
+    );
+    m.created_at_ms = FIXTURE_MS + n;
+    m.nonce = Some(n);
+    let mut p = PostedInput::msg(APP, m, MsgDelivery::default()).unwrap();
+    p.at_ms = FIXTURE_MS + n;
+    p
 }
 
 fn work(obj: &str) -> SessionSpec {
@@ -377,7 +397,7 @@ async fn gen(out: &Path) -> R<()> {
         let d = scen("03_orphan_run_pending_host_commit");
         let env = Env::new(&d);
         let sd = env.create("work-fixture-orphan", work("x")).await;
-        env.post(&sd, Input::msg("m-1", "please do it")).await;
+        env.post(&sd, msg(1, "please do it")).await;
         env.child_wait(
             &sd,
             "tool_then_answer",
@@ -394,7 +414,7 @@ async fn gen(out: &Path) -> R<()> {
         let d = scen("04_gate_pending_after_state_commit");
         let env = Env::new(&d);
         let sd = env.create("work-fixture-gate", work("x")).await;
-        env.post(&sd, Input::msg("m-1", "please do it")).await;
+        env.post(&sd, msg(1, "please do it")).await;
         env.child_wait(&sd, "tool_then_answer", "input_batch:after_state_commit");
         write_expected(&d, "gate_pending_after_state_commit",
             "state.json consumed input q#1 (applied batch 1); run.json still has host_commit_pending=1; ack not confirmed.",
@@ -452,7 +472,7 @@ async fn gen(out: &Path) -> R<()> {
             .create("work-fixture-receipt", work("needs two messages"))
             .await;
         drive(&sd, &env.deps("transient"), StopWhen::Finished).await;
-        env.post(&sd, Input::msg("m-2", "second message")).await;
+        env.post(&sd, msg(2, "second message")).await;
         env.child_wait(&sd, "transient", "input_batch:after_input_checkpoint");
         write_expected(&d, "receipt_ahead_of_state",
             "A paused run was resumed with input q#1; the snapshot carries receipt batch 2 (and the message), state.json only applied batch 1.",
@@ -470,9 +490,7 @@ async fn gen(out: &Path) -> R<()> {
         drive(&sd, &env.deps("tool_then_answer"), StopWhen::Finished).await;
         env.post(
             &sd,
-            Input::control(
-                "d-1",
-                &ControlCommand::Decide {
+            PostedInput::control(APP, "d-1", ControlCommand::Decide {
                     decision: "accept".into(),
                     by: "did:user:alice".into(),
                     note: None,
@@ -480,7 +498,7 @@ async fn gen(out: &Path) -> R<()> {
             ),
         )
         .await;
-        env.post(&sd, Input::msg("m-late", "one more thing")).await;
+        env.post(&sd, msg(9, "one more thing")).await;
         write_expected(&d, "finished_with_decide",
             "Finished work session (artifact demo, version produced) with control(decide: accept) and a late msg in the queue.",
             vec![observe(&sd)],
@@ -506,7 +524,8 @@ async fn gen(out: &Path) -> R<()> {
         write_expected(&d, "semi_subscription",
             "B semi-subscribes to A; A is finished (registry status rev > B's cursor, which is empty).",
             vec![observe(&a), observe(&b)],
-            json!({ "action": "inject_change_on_next_input_batch", "session": b.sid(), "change_id_prefix": "sa@", "extra_inference": false }));
+            json!({ "action": "snapshot_message_before_the_next_controlled_input", "session": b.sid(),
+                    "subscription": "sa", "event_key_prefix": format!("session:{}@", a.sid()), "extra_inference": false }));
         relativize(&d);
     }
     // 10. two active sessions touching the same workspace
@@ -625,6 +644,98 @@ async fn gen(out: &Path) -> R<()> {
             json!({ "action": "recovery_blocked", "keep": ["live_run", "run directory", "consumption"], "infer": false }),
         );
         relativize(&d);
+    }
+    // 14. the input bus: records, rejections, renderings (no session state)
+    {
+        use libopendan::runner::assembler::render_snapshot_events;
+        use libopendan::runner::input_view::{event_view, EventView};
+        use libopendan::runner::render_template;
+        let d = scen("14_input_bus");
+        let write = |rel: &str, bytes: &[u8]| {
+            let p = d.join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, bytes).unwrap();
+        };
+        let pretty = |v: &Value| serde_json::to_vec_pretty(v).unwrap();
+        let records: Vec<(String, Value)> = input_fixture::records()
+            .into_iter()
+            .map(|(n, v)| (n.to_string(), v))
+            .collect();
+        for (name, v) in &records {
+            write(&format!("records/{name}"), &pretty(v));
+        }
+        let mut rejected = Vec::new();
+        for (name, reason, v) in input_fixture::rejected() {
+            write(&format!("rejected/{name}"), &pretty(&v));
+            rejected.push(json!({ "file": name, "reason": reason }));
+        }
+        // The batch: a group message with attachments + an active task event.
+        let view = input_fixture::batch_view(&records, HOOK_ON_INPUT);
+        let vars = input_fixture::vars(&view);
+        write("rendering/vars.json", &pretty(&vars));
+        write("rendering/input_text.xml", view.text.as_bytes());
+        let builtin = format!(
+            "<session_input hook=\"{}\" time=\"{}\">\n{}\n</session_input>",
+            view.hook, view.time, view.text
+        );
+        write("rendering/on_input_builtin.txt", builtin.as_bytes());
+        for (name, tpl) in input_fixture::TEMPLATES {
+            write(&format!("rendering/templates/{name}.tpl"), tpl.as_bytes());
+            let out = render_template(tpl, vars.clone()).await?;
+            write(&format!("rendering/templates/{name}.out"), out.as_bytes());
+        }
+        for (name, media) in [("reference", InputMedia::Reference), ("inline", InputMedia::Inline)] {
+            let m = input_fixture::user_message(&builtin, &view, media);
+            write(
+                &format!("rendering/ai_message_{name}.json"),
+                &pretty(&serde_json::to_value(&m)?),
+            );
+        }
+        // The semi event as the snapshot message of the next controlled input.
+        let semi = &records[3].1;
+        let SessionInput::Event(ev) = parse_logical_record(semi).map_err(|e| e.to_string())? else {
+            return Err("fixture record 04 is not an event".into());
+        };
+        let views: Vec<EventView> = vec![event_view(semi["key"].as_str().unwrap(), &ev)];
+        let snapshot = format!(
+            "<semi_subscription_snapshot>\n{}\n</semi_subscription_snapshot>",
+            render_snapshot_events(&views)
+        );
+        write("rendering/semi_subscription_snapshot.txt", snapshot.as_bytes());
+        let v = json!({
+            "scenario": "input_bus",
+            "description": "Hand-written Session Input Bus records (opendan.session_input/3): what a consumer does with each, why the rejected ones are rejected, and the byte-exact text of the built-in formats and the example templates for one batch.",
+            "generated_by": "libopendan examples/fixtures.rs",
+            "agent_did": input_fixture::AGENT_DID,
+            "session": { "subscriptions": input_fixture::subscriptions() },
+            "records": input_fixture::expectations(),
+            "rejected": rejected,
+            "generated": [
+                { "reason": "payload_too_large", "how": "any record whose payload JSON exceeds 256000 bytes (not stored)" },
+                { "reason": "session_finished", "how": "anything but control(decide) after the session finished: see 08_finished_with_decide" }
+            ],
+            "rendering": {
+                "hook": HOOK_ON_INPUT,
+                "batch": input_fixture::BATCH,
+                "batch_time_ms": input_fixture::BATCH_MS,
+                "vars": "rendering/vars.json",
+                "input_text": "rendering/input_text.xml",
+                "on_input_builtin": "rendering/on_input_builtin.txt",
+                "semi_subscription_snapshot": { "of": "04_event_semi_object.json", "text": "rendering/semi_subscription_snapshot.txt" },
+                "templates": input_fixture::TEMPLATES.iter().map(|(n, _)| json!({
+                    "template": format!("rendering/templates/{n}.tpl"),
+                    "output": format!("rendering/templates/{n}.out"),
+                })).collect::<Vec<_>>(),
+                "ai_message": { "reference": "rendering/ai_message_reference.json", "inline": "rendering/ai_message_inline.json" },
+                "rules": [
+                    "`{{ input | render_format: \"input.xml\" }}` equals input.text byte for byte",
+                    "message.xml / event.xml equal the corresponding element inside input.text",
+                    "a template's output is trimmed of leading / trailing whitespace",
+                    "the text block is the same for input.media = reference and inline"
+                ]
+            }
+        });
+        write("expected.json", &pretty(&v));
     }
     // JSON Schemas next to the fixtures.
     let schema_dir = out.join("..").join("schema");

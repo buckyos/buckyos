@@ -1,0 +1,160 @@
+{
+  "agent_did": "did:bns:jarvis",
+  "description": "Hand-written Session Input Bus records (opendan.session_input/3): what a consumer does with each, why the rejected ones are rejected, and the byte-exact text of the built-in formats and the example templates for one batch.",
+  "generated": [
+    {
+      "how": "any record whose payload JSON exceeds 256000 bytes (not stored)",
+      "reason": "payload_too_large"
+    },
+    {
+      "how": "anything but control(decide) after the session finished: see 08_finished_with_decide",
+      "reason": "session_finished"
+    }
+  ],
+  "generated_by": "libopendan examples/fixtures.rs",
+  "records": [
+    {
+      "file": "01_msg_text.json",
+      "handling": "candidate of a controlled input batch; opens a Turn or joins the open one",
+      "reply_after": {
+        "kind": "chat",
+        "route": "message",
+        "to": "did:bns:alice"
+      },
+      "type": "msg"
+    },
+    {
+      "file": "02_msg_group_attachments.json",
+      "handling": "candidate of a controlled input batch; the speaker is msg.from (Bob), not the poster (the bridge)",
+      "reply_after": {
+        "kind": "group_msg",
+        "route": "message",
+        "to": "did:bns:dev-team"
+      },
+      "type": "msg"
+    },
+    {
+      "file": "03_event_active_task.json",
+      "handling": "Input: candidate of a controlled input batch; without the subscription it is dropped (event_dropped: unsubscribed)",
+      "needs_subscription": "watch-t1",
+      "type": "event"
+    },
+    {
+      "file": "04_event_semi_object.json",
+      "handling": "Observe: merged into state.pending_events and consumed; never triggers inference; shown as the semi_subscription_snapshot message before the next controlled input",
+      "needs_subscription": "watch-obj",
+      "type": "event"
+    },
+    {
+      "file": "05_control_stop.json",
+      "handling": "applied by the driver (stop_requested); never enters the context, no receipt",
+      "type": "control"
+    }
+  ],
+  "rejected": [
+    {
+      "file": "unsupported_schema.json",
+      "reason": "unsupported_schema"
+    },
+    {
+      "file": "unknown_type.json",
+      "reason": "unknown_type"
+    },
+    {
+      "file": "invalid_envelope_key_is_not_the_obj_id.json",
+      "reason": "invalid_envelope"
+    },
+    {
+      "file": "invalid_envelope_missing_from.json",
+      "reason": "invalid_envelope"
+    },
+    {
+      "file": "payload_not_json.json",
+      "reason": "payload_not_json"
+    },
+    {
+      "file": "invalid_payload_event_without_summary.json",
+      "reason": "invalid_payload"
+    },
+    {
+      "file": "invalid_payload_msg_not_valid.json",
+      "reason": "invalid_payload"
+    },
+    {
+      "file": "unknown_command.json",
+      "reason": "unknown_command"
+    }
+  ],
+  "rendering": {
+    "ai_message": {
+      "inline": "rendering/ai_message_inline.json",
+      "reference": "rendering/ai_message_reference.json"
+    },
+    "batch": [
+      "02_msg_group_attachments.json",
+      "03_event_active_task.json"
+    ],
+    "batch_time_ms": 1790899201000,
+    "hook": "on_input",
+    "input_text": "rendering/input_text.xml",
+    "on_input_builtin": "rendering/on_input_builtin.txt",
+    "rules": [
+      "`{{ input | render_format: \"input.xml\" }}` equals input.text byte for byte",
+      "message.xml / event.xml equal the corresponding element inside input.text",
+      "a template's output is trimmed of leading / trailing whitespace",
+      "the text block is the same for input.media = reference and inline"
+    ],
+    "semi_subscription_snapshot": {
+      "of": "04_event_semi_object.json",
+      "text": "rendering/semi_subscription_snapshot.txt"
+    },
+    "templates": [
+      {
+        "output": "rendering/templates/example_1_builtin_equivalent.out",
+        "template": "rendering/templates/example_1_builtin_equivalent.tpl"
+      },
+      {
+        "output": "rendering/templates/example_2_ui_dialogue.out",
+        "template": "rendering/templates/example_2_ui_dialogue.tpl"
+      },
+      {
+        "output": "rendering/templates/example_3_group_chat.out",
+        "template": "rendering/templates/example_3_group_chat.tpl"
+      },
+      {
+        "output": "rendering/templates/example_4_task_markdown.out",
+        "template": "rendering/templates/example_4_task_markdown.tpl"
+      },
+      {
+        "output": "rendering/templates/example_5_event_driven.out",
+        "template": "rendering/templates/example_5_event_driven.tpl"
+      },
+      {
+        "output": "rendering/templates/example_6_mixed_in_order.out",
+        "template": "rendering/templates/example_6_mixed_in_order.tpl"
+      }
+    ],
+    "vars": "rendering/vars.json"
+  },
+  "scenario": "input_bus",
+  "session": {
+    "subscriptions": [
+      {
+        "id": "watch-t1",
+        "mode": "active",
+        "source": {
+          "task_id": "t1",
+          "type": "task"
+        }
+      },
+      {
+        "id": "watch-obj",
+        "mode": "semi",
+        "source": {
+          "object": "doc-1",
+          "type": "object_event"
+        }
+      }
+    ]
+  }
+}

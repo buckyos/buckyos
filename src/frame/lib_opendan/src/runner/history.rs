@@ -35,7 +35,7 @@ fn trunc(s: &str, max: usize) -> String {
     format!("{t}…")
 }
 
-fn input_list(inputs: &[InputRef], changes: &[String]) -> String {
+fn input_list(inputs: &[InputRef], events: &[String]) -> String {
     let ins: Vec<String> = inputs.iter().map(|i| i.id()).collect();
     format!(
         "{}{}",
@@ -44,10 +44,10 @@ fn input_list(inputs: &[InputRef], changes: &[String]) -> String {
         } else {
             format!(" inputs: {}", ins.join(","))
         },
-        if changes.is_empty() {
+        if events.is_empty() {
             String::new()
         } else {
-            format!(" changes: {}", changes.join(","))
+            format!(" events: {}", events.join(","))
         }
     )
 }
@@ -93,23 +93,23 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
         WorklogBody::TurnStarted {
             turn,
             inputs,
-            changes,
+            events,
             hook,
             ..
         } => format!(
             "── turn {turn}{}{} ──",
             hook.as_ref().map(|h| format!(" ({h})")).unwrap_or_default(),
-            input_list(inputs, changes)
+            input_list(inputs, events)
         ),
         WorklogBody::InputBatch {
             inputs,
-            changes,
+            events,
             hook,
             ..
         } => format!(
             "── {}{} ──",
             hook.as_deref().unwrap_or("input"),
-            input_list(inputs, changes)
+            input_list(inputs, events)
         ),
         WorklogBody::UserMessage { content, .. } => {
             format!("[input] {}", limit(content, cfg.max_result_chars))
@@ -176,10 +176,12 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
         }
         WorklogBody::Compaction { .. } => return None,
         WorklogBody::Decide { decision, by, .. } => format!("[decide] {decision} by {by}"),
-        WorklogBody::InputRejected { input, reason } => {
+        WorklogBody::InputRejected { input, reason, .. } => {
             format!("[rejected {}] {reason}", input.id())
         }
-        WorklogBody::ChangeDropped { change, reason } => format!("[change dropped {change}] {reason}"),
+        WorklogBody::EventDropped { input, reason } => {
+            format!("[event dropped {}] {reason}", input.id())
+        }
         WorklogBody::ControlApplied { command, .. } => format!("[control] {command}"),
     })
 }

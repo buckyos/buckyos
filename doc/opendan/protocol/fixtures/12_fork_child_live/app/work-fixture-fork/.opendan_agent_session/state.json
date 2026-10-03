@@ -1,7 +1,7 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1791024661110,
+    "heartbeat_ms": 1791037308001,
     "summary": "research then answer"
   },
   "bootstrap_done": true,
@@ -11,14 +11,11 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261003-035101-7fa520",
+    "run_id": "20261003-072147-129aa0",
     "turns": [
       {
-        "at_ms": 1791024661106,
-        "changes": [
-          "_active_sessions@input"
-        ],
-        "hook": "on_behavior_switch",
+        "at_ms": 1791037307996,
+        "hook": "on_context_switch",
         "input_seq": 1,
         "turn": 1
       }
@@ -26,11 +23,11 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1791024661047,
+    "at_ms": 1791037307940,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
-    "run_id": "20261003-035101-8e399d"
+    "run_id": "20261003-072147-4e29cb"
   },
   "perception_seq": 0,
   "process_entry": "research",
@@ -47,15 +44,12 @@
       "entry": "plan",
       "flushed_input_seq": 1,
       "flushed_step_index": 2,
-      "handover_at_ms": 1791024661071,
+      "handover_at_ms": 1791037307963,
       "role": "caller",
-      "run_id": "20261003-035101-8e399d",
+      "run_id": "20261003-072147-4e29cb",
       "turns": [
         {
-          "at_ms": 1791024661047,
-          "changes": [
-            "_active_sessions@input"
-          ],
+          "at_ms": 1791037307940,
           "hook": "on_init",
           "input_seq": 1,
           "turn": 1
@@ -67,26 +61,23 @@
   "reported_rev": 3,
   "rev": 4,
   "run_state": "running",
-  "schema": "opendan.session_state/4",
+  "schema": "opendan.session_state/5",
   "stop_requested": false,
-  "subscription_cursors": {
-    "_active_sessions": []
-  },
   "topic": {
     "title": ""
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1791024661110,
+  "updated_at_ms": 1791037308001,
   "worklog": {
-    "committed_bytes": 1775,
+    "committed_bytes": 1741,
     "committed_seq": 7
   },
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 494856,
+    "pid": 858628,
     "principal": "app:app2@alice",
-    "runner_id": "rn-bd3c3f2545594bc4"
+    "runner_id": "rn-4f5320e822aa450b"
   }
 }

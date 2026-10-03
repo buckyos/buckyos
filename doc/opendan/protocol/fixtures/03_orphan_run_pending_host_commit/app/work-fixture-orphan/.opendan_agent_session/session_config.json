@@ -1,12 +1,12 @@
 {
-  "schema": "opendan.session_config/3",
+  "schema": "opendan.session_config/4",
   "config_rev": 1,
   "session": {
     "session_id": "work-fixture-orphan",
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791024659907,
+    "created_at_ms": 1791037306801,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -38,7 +38,7 @@
         "decide",
         "compaction",
         "input_rejected",
-        "change_dropped",
+        "event_dropped",
         "turn_ended"
       ]
     }

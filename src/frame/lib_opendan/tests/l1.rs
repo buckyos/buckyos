@@ -298,8 +298,7 @@ async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {
         post_to_queue(
             &client,
             &q1,
-            &Input::msg(format!("k{i}"), format!("m{i}")),
-            APP,
+            &msg(format!("m{i}")),
         )
         .await
         .unwrap();
@@ -363,8 +362,8 @@ async fn lost_subscription_is_recreated_at_the_acked_position() {
     )
     .await
     .unwrap();
-    for i in 1..=3 {
-        post_to_queue(&client, &q, &Input::msg(format!("k{i}"), "m"), APP)
+    for _ in 1..=3 {
+        post_to_queue(&client, &q, &msg("m"))
             .await
             .unwrap();
     }

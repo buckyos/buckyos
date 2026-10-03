@@ -1,0 +1,21 @@
+{
+  "at_ms": 1790899200000,
+  "from": "did:bns:alice",
+  "key": "cymsg:a2ec847030b945ccde613ba5a9bab152992fb2e9d5a067db3da9c80ce0dcaf14",
+  "payload": {
+    "msg": {
+      "content": {
+        "content": "查询构建进度"
+      },
+      "created_at_ms": 1790899200000,
+      "from": "did:bns:alice",
+      "kind": "chat",
+      "nonce": 4211,
+      "to": [
+        "did:bns:jarvis"
+      ]
+    }
+  },
+  "schema": "opendan.session_input/2",
+  "type": "msg"
+}

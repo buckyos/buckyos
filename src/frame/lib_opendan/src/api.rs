@@ -46,6 +46,9 @@ pub struct SessionSpec {
     pub acl: Acl,
     #[serde(default)]
     pub task_binding: Option<Value>,
+    /// User time zone bound to the session (IANA name).
+    #[serde(default)]
+    pub timezone: Option<String>,
     #[serde(default)]
     pub prompt: PromptSection,
     #[serde(default)]
@@ -85,6 +88,7 @@ impl SessionSpec {
             input_policy: InputPolicy::Any,
             acl: Acl::default(),
             task_binding: None,
+            timezone: None,
             prompt: PromptSection::default(),
             runtime: RuntimeSection::default(),
             workspace: None,
@@ -189,6 +193,7 @@ pub async fn create_session(
             input_policy: spec.input_policy,
             acl: spec.acl.clone(),
             task_binding: spec.task_binding.clone(),
+            timezone: spec.timezone.clone(),
         },
         prompt: spec.prompt.clone(),
         runtime: spec.runtime.clone(),
@@ -262,8 +267,8 @@ pub async fn create_session(
                 ],
             },
         };
-        let input = Input::control(format!("subscribe:{sid}"), &cmd);
-        if let Err(e) = agent.sessions().post_input(&parent, &input, who).await {
+        let input = PostedInput::control(who, format!("subscribe:{sid}"), cmd);
+        if let Err(e) = agent.sessions().post_input(&parent, &input).await {
             log::warn!("could not subscribe parent session {parent} to {sid}: {e}");
         }
     }
@@ -333,15 +338,11 @@ pub async fn read_session(
     Ok(view)
 }
 
-/// Post an input to a session through the registry (anyone with write access
-/// to its queue). Publishes the wake event when a waker is configured.
-pub async fn post_input(
-    agent: &dyn AgentStateClient,
-    sid: &str,
-    input: &Input,
-    who: &str,
-) -> Result<u64> {
-    agent.sessions().post_input(sid, input, who).await
+/// Post a record to a session's input bus through the registry (anyone
+/// with write access to its queue). Publishes the wake event when a waker
+/// is configured. `input_full` (64 pending records) is retryable.
+pub async fn post_input(agent: &dyn AgentStateClient, sid: &str, input: &PostedInput) -> Result<u64> {
+    agent.sessions().post_input(sid, input).await
 }
 
 /// Open a self-improve session over the current perception backlog

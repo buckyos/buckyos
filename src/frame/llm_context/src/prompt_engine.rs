@@ -116,6 +116,8 @@ pub struct EngineConfig {
     pub include_roots: Vec<PathBuf>,
     /// Max recursion depth for `__INCLUDE__`-nested templates. Default 8.
     pub max_recursion_depth: u8,
+    /// Host-registered named formats (`render_format`) and extra filters.
+    pub extensions: RenderExtensions,
 }
 
 impl Default for EngineConfig {
@@ -130,7 +132,216 @@ impl Default for EngineConfig {
             template_dir: None,
             include_roots: Vec::new(),
             max_recursion_depth: 8,
+            extensions: RenderExtensions::default(),
         }
+    }
+}
+
+/// A pure function over a template value: no queue, network or state access.
+pub type RenderValueFn = Arc<dyn Fn(&Json) -> Result<String, String> + Send + Sync>;
+
+/// What a host adds to the template engine: named formats used through
+/// `{{ value | render_format: "name" }}` and extra one-argument filters
+/// (`{{ value | name }}`). The engine itself registers `render_format` and
+/// the generic filters (`xml`, `attr`, `json`, `truncate`, `oneline`,
+/// `default`, `join`, `quote`, `time`) and knows no host vocabulary.
+#[derive(Clone, Default)]
+pub struct RenderExtensions {
+    formats: HashMap<String, RenderValueFn>,
+    filters: HashMap<String, RenderValueFn>,
+}
+
+impl std::fmt::Debug for RenderExtensions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut formats: Vec<&String> = self.formats.keys().collect();
+        formats.sort();
+        let mut filters: Vec<&String> = self.filters.keys().collect();
+        filters.sort();
+        f.debug_struct("RenderExtensions")
+            .field("formats", &formats)
+            .field("filters", &filters)
+            .finish()
+    }
+}
+
+impl RenderExtensions {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register a named format. The name is a stable identifier, not a path.
+    pub fn with_format<F>(mut self, name: impl Into<String>, f: F) -> Self
+    where
+        F: Fn(&Json) -> Result<String, String> + Send + Sync + 'static,
+    {
+        self.formats.insert(name.into(), Arc::new(f));
+        self
+    }
+
+    /// Register an extra filter taking the piped value only.
+    pub fn with_filter<F>(mut self, name: impl Into<String>, f: F) -> Self
+    where
+        F: Fn(&Json) -> Result<String, String> + Send + Sync + 'static,
+    {
+        self.filters.insert(name.into(), Arc::new(f));
+        self
+    }
+
+    pub fn format(&self, name: &str) -> Option<&RenderValueFn> {
+        self.formats.get(name)
+    }
+
+    /// Render `value` with the named format (what `render_format` does).
+    pub fn render_format(&self, value: &Json, name: &str) -> Result<String, String> {
+        match self.formats.get(name) {
+            Some(f) => f(value).map_err(|e| format!("render_format `{name}`: {e}")),
+            None => Err(format!("render_format: unknown format `{name}`")),
+        }
+    }
+}
+
+/// Escape `& < >` (element text).
+pub fn escape_xml_text(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Escape `& < > "` (attribute value).
+pub fn escape_xml_attr(s: &str) -> String {
+    escape_xml_text(s).replace('"', "&quot;")
+}
+
+fn upon_to_json(v: &upon::Value) -> Json {
+    match v {
+        upon::Value::None => Json::Null,
+        upon::Value::Bool(b) => Json::Bool(*b),
+        upon::Value::Integer(i) => Json::from(*i),
+        upon::Value::Float(f) => serde_json::Number::from_f64(*f)
+            .map(Json::Number)
+            .unwrap_or(Json::Null),
+        upon::Value::String(s) => Json::String(s.clone()),
+        upon::Value::List(l) => Json::Array(l.iter().map(upon_to_json).collect()),
+        upon::Value::Map(m) => Json::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), upon_to_json(v)))
+                .collect(),
+        ),
+    }
+}
+
+/// Text of a template value: strings as they are, `None` as the empty
+/// string, anything else as compact JSON.
+fn upon_text(v: &upon::Value) -> String {
+    match v {
+        upon::Value::None => String::new(),
+        upon::Value::String(s) => s.clone(),
+        upon::Value::Bool(b) => b.to_string(),
+        upon::Value::Integer(i) => i.to_string(),
+        upon::Value::Float(f) => f.to_string(),
+        other => upon_to_json(other).to_string(),
+    }
+}
+
+fn upon_is_empty(v: &upon::Value) -> bool {
+    match v {
+        upon::Value::None => true,
+        upon::Value::String(s) => s.is_empty(),
+        upon::Value::List(l) => l.is_empty(),
+        _ => false,
+    }
+}
+
+/// Format an RFC 3339 string or an epoch-ms number in UTC.
+fn format_time_utc(v: &upon::Value, fmt: &str) -> Result<String, String> {
+    use chrono::format::{Item, StrftimeItems};
+    let t = match v {
+        upon::Value::None => return Ok(String::new()),
+        upon::Value::String(s) if s.trim().is_empty() => return Ok(String::new()),
+        upon::Value::String(s) => chrono::DateTime::parse_from_rfc3339(s.trim())
+            .map(|t| t.with_timezone(&chrono::Utc))
+            .map_err(|e| format!("time: `{s}` is not RFC 3339: {e}"))?,
+        upon::Value::Integer(ms) => chrono::DateTime::from_timestamp_millis(*ms)
+            .ok_or_else(|| format!("time: `{ms}` is out of range"))?,
+        other => {
+            return Err(format!(
+                "time: expected an RFC 3339 string or epoch ms, got {}",
+                upon_to_json(other)
+            ))
+        }
+    };
+    let items: Vec<Item> = StrftimeItems::new(fmt).collect();
+    if items.iter().any(|i| matches!(i, Item::Error)) {
+        return Err(format!("time: invalid format `{fmt}`"));
+    }
+    Ok(t.format_with_items(items.iter()).to_string())
+}
+
+fn register_filters(engine: &mut Engine<'_>, ext: &RenderExtensions) {
+    engine.add_function("xml", |v: upon::Value| escape_xml_text(&upon_text(&v)));
+    engine.add_function("attr", |v: upon::Value| escape_xml_attr(&upon_text(&v)));
+    engine.add_function("json", |v: upon::Value| upon_to_json(&v).to_string());
+    engine.add_function(
+        "truncate",
+        |v: upon::Value, n: i64| -> Result<String, String> {
+            if n < 0 {
+                return Err("truncate: length must not be negative".to_string());
+            }
+            let text = upon_text(&v);
+            let n = n as usize;
+            if text.chars().count() <= n {
+                return Ok(text);
+            }
+            let mut out: String = text.chars().take(n.saturating_sub(1)).collect();
+            out.push('…');
+            Ok(out)
+        },
+    );
+    engine.add_function("oneline", |v: upon::Value| {
+        upon_text(&v).split_whitespace().collect::<Vec<_>>().join(" ")
+    });
+    engine.add_function("default", |v: upon::Value, d: upon::Value| {
+        if upon_is_empty(&v) {
+            d
+        } else {
+            v
+        }
+    });
+    engine.add_function(
+        "join",
+        |v: upon::Value, sep: String| -> Result<String, String> {
+            match v {
+                upon::Value::None => Ok(String::new()),
+                upon::Value::List(l) => Ok(l.iter().map(upon_text).collect::<Vec<_>>().join(&sep)),
+                other => Err(format!(
+                    "join: expected a list, got {}",
+                    upon_to_json(&other)
+                )),
+            }
+        },
+    );
+    engine.add_function("quote", |v: upon::Value| {
+        upon_text(&v)
+            .lines()
+            .map(|l| if l.is_empty() { ">".to_string() } else { format!("> {l}") })
+            .collect::<Vec<_>>()
+            .join("\n")
+    });
+    engine.add_function(
+        "time",
+        |v: upon::Value, fmt: String| -> Result<String, String> { format_time_utc(&v, &fmt) },
+    );
+    let formats = ext.clone();
+    engine.add_function(
+        "render_format",
+        move |v: upon::Value, name: String| -> Result<String, String> {
+            formats.render_format(&upon_to_json(&v), &name)
+        },
+    );
+    for (name, f) in &ext.filters {
+        let f = f.clone();
+        engine.add_function(
+            name.clone(),
+            move |v: upon::Value| -> Result<String, String> { f(&upon_to_json(&v)) },
+        );
     }
 }
 
@@ -225,6 +436,7 @@ impl PromptRenderEngine {
 
         let escaped = escape_template_literals(&preprocessed);
         let mut engine = Engine::new();
+        register_filters(&mut engine, &self.config.extensions);
         engine
             .add_template("text_template", &escaped)
             .map_err(|err| RenderError::Syntax(format!("add text template failed: {err}")))?;
@@ -1059,6 +1271,83 @@ mod tests {
             self.calls.lock().unwrap().push(expr.to_string());
             Ok(self.values.get(expr).cloned())
         }
+    }
+
+    #[tokio::test]
+    async fn generic_filters() {
+        let engine = PromptRenderEngine::with_defaults();
+        let vars = RenderVars::new()
+            .with_var("t", "a <b> & \"c\"\n  next")
+            .with_var("empty", "")
+            .with_var("list", json!(["x", "y"]))
+            .with_var("obj", json!({"k": 1}))
+            .with_var("at", "2026-10-02T08:05:00+08:00")
+            .with_var("ms", 1_790_899_200_000u64);
+        let r = |tpl: &'static str| {
+            let engine = &engine;
+            let vars = &vars;
+            async move {
+                engine
+                    .render(tpl, vars, &NullValueLoader)
+                    .await
+                    .map(|r| r.rendered)
+            }
+        };
+        assert_eq!(r("{{ t | xml }}").await.unwrap(), "a &lt;b&gt; &amp; \"c\"\n  next");
+        assert_eq!(
+            r("{{ t | attr }}").await.unwrap(),
+            "a &lt;b&gt; &amp; &quot;c&quot;\n  next"
+        );
+        assert_eq!(r("{{ t | oneline }}").await.unwrap(), "a <b> & \"c\" next");
+        assert_eq!(r("{{ t | truncate: 3 }}").await.unwrap(), "a …");
+        assert_eq!(r("{{ t | quote }}").await.unwrap(), "> a <b> & \"c\"\n>   next");
+        assert_eq!(r("{{ empty | default: \"unknown\" }}").await.unwrap(), "unknown");
+        assert_eq!(r("{{ list | join: \", \" }}").await.unwrap(), "x, y");
+        assert_eq!(r("{{ obj | json }}").await.unwrap(), "{\"k\":1}");
+        assert_eq!(r("{{ at | time: \"%H:%M\" }}").await.unwrap(), "00:05");
+        assert_eq!(r("{{ ms | time: \"%Y-%m-%d\" }}").await.unwrap(), "2026-10-02");
+        assert_eq!(r("{{ empty | time: \"%H\" }}").await.unwrap(), "");
+        assert!(r("{{ t | time: \"%H\" }}").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn render_format_uses_host_formats_only() {
+        let ext = RenderExtensions::new()
+            .with_format("todo.summary_xml", |v| match v {
+                Json::Null => Ok(String::new()),
+                Json::Object(m) => Ok(format!(
+                    "<todo>{}</todo>",
+                    escape_xml_text(m.get("title").and_then(Json::as_str).unwrap_or_default())
+                )),
+                _ => Err("expected a todo object".to_string()),
+            })
+            .with_filter("shout", |v| Ok(v.as_str().unwrap_or_default().to_uppercase()));
+        let engine = PromptRenderEngine::new(EngineConfig {
+            extensions: ext,
+            ..EngineConfig::default()
+        });
+        let vars = RenderVars::new()
+            .with_var("todo", json!({"title": "fix <it>"}))
+            .with_var("none", Json::Null)
+            .with_var("s", "x");
+        let ok = engine
+            .render(
+                "{{ todo | render_format: \"todo.summary_xml\" }}|{{ none | render_format: \"todo.summary_xml\" }}|{{ s | shout }}",
+                &vars,
+                &NullValueLoader,
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok.rendered, "<todo>fix &lt;it&gt;</todo>||X");
+        // unknown format / wrong shape are template errors
+        assert!(engine
+            .render("{{ todo | render_format: \"nope\" }}", &vars, &NullValueLoader)
+            .await
+            .is_err());
+        assert!(engine
+            .render("{{ s | render_format: \"todo.summary_xml\" }}", &vars, &NullValueLoader)
+            .await
+            .is_err());
     }
 
     #[tokio::test]

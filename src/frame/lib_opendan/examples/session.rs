@@ -15,7 +15,11 @@
 //!           [--llm-context <json | @file>] [--system <text>] [--tool-plan <name>]
 //!   run     <session_dir> [--until finished|idle|outcomes:<n>] [--runtime-id <id>]
 //!   read    <sid> [--worklog <n>] [--report]
-//!   post    <sid> (--text <t> | --stop | --change <key> <text> | --perception <text>) [--key <k>]
+//!   post    <sid> --json <file | ->       a logical record (`opendan.session_input/3`);
+//!                                          `schema` / `from` / `at_ms` may be omitted,
+//!                                          and the `key` of a `msg`
+//!   post    <sid> --msg <text> [--from <did>] [--attach <obj_id>[=<name>]]... [--reply-to <obj_id>]
+//!   post    <sid> --stop [--key <k>]
 //!   decide  <sid> accept|discard [--note <t>]
 //!   active
 //!   holder  <session_dir>
@@ -56,16 +60,7 @@ impl Args {
         while let Some(a) = it.next() {
             if let Some(name) = a.strip_prefix("--") {
                 let flag = matches!(name, "stop" | "report" | "clear");
-                let val = if flag {
-                    None
-                } else if name == "change" {
-                    // --change <key> <text>
-                    let k = it.next();
-                    let t = it.next();
-                    k.zip(t).map(|(k, t)| format!("{k}\u{0}{t}"))
-                } else {
-                    it.next()
-                };
+                let val = if flag { None } else { it.next() };
                 opts.push((name.to_string(), val));
             } else {
                 pos.push_back(a);
@@ -155,7 +150,7 @@ async fn cmd_create(a: &Args) -> R<()> {
     }
     spec.idempotency_key = a.get("key");
     spec.prompt.llm_context = llm_context_arg(a)?;
-    spec.prompt.system_prompt = a.get("system");
+    spec.prompt.system = a.get("system");
     spec.runtime.tool_plan = a.get("tool-plan");
     if let Some(ws) = a.get("workspace") {
         spec.workspace = Some(WorkspaceRef::External { path: ws });
@@ -231,20 +226,43 @@ fn key(a: &Args, prefix: &str) -> String {
 async fn cmd_post(a: &mut Args) -> R<()> {
     let c = ctx(a)?;
     let sid = sid_arg(a)?;
-    let input = if let Some(t) = a.get("text") {
-        Input::msg(key(a, "msg"), t)
+    let input = if let Some(src) = a.get("json") {
+        // A logical record, written by hand or by any other program.
+        let text = if src == "-" {
+            std::io::read_to_string(std::io::stdin())?
+        } else {
+            std::fs::read_to_string(&src)?
+        };
+        PostedInput::from_json(serde_json::from_str(&text)?, &c.who)?
+    } else if let Some(t) = a.get("msg").or_else(|| a.get("text")) {
+        // The construction helpers as a command line.
+        let from = match a.get("from") {
+            Some(d) => parse_did(&d)?,
+            None => did_of_principal(&c.who)?,
+        };
+        let agent = parse_did(c.agent.agent_did())?;
+        let mut msg = text_msg(&from, &agent, t);
+        for att in a.all("attach") {
+            let (id, name) = match att.split_once('=') {
+                Some((id, name)) => (id.to_string(), Some(name.to_string())),
+                None => (att.clone(), None),
+            };
+            let obj_id = ndn_lib::ObjId::new(&id).map_err(|e| {
+                format!("--attach takes the ObjId of a data object (register local files in the NamedStore first): {e}")
+            })?;
+            msg = attach(msg, obj_id, name);
+        }
+        if let Some(r) = a.get("reply-to") {
+            msg = reply_to(msg, ndn_lib::ObjId::new(&r).map_err(|e| format!("--reply-to: {e}"))?);
+        }
+        PostedInput::msg(&c.who, msg, MsgDelivery::default())?
     } else if a.has("stop") {
-        Input::control(key(a, "stop"), &ControlCommand::Stop { reason: None })
-    } else if let Some(kt) = a.get("change") {
-        let (k, t) = kt.split_once('\u{0}').ok_or("--change <key> <text>")?;
-        Input::change(k.to_string(), json!({ "text": t }))
-    } else if let Some(t) = a.get("perception") {
-        Input::perception(key(a, "perc"), json!({ "kind": "observation", "summary": t }))
+        PostedInput::control(&c.who, key(a, "stop"), ControlCommand::Stop { reason: None })
     } else {
-        return Err("post needs --text / --stop / --change / --perception".into());
+        return Err("post needs --json / --msg / --stop".into());
     };
-    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input, &c.who).await?;
-    print(&json!({ "posted": idx }));
+    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input).await?;
+    print(&json!({ "posted": idx, "key": input.key }));
     Ok(())
 }
 
@@ -252,15 +270,16 @@ async fn cmd_decide(a: &mut Args) -> R<()> {
     let c = ctx(a)?;
     let sid = a.pos.pop_front().ok_or("missing <sid>")?;
     let d = a.pos.pop_front().ok_or("missing accept|discard")?;
-    let input = Input::control(
+    let input = PostedInput::control(
+        &c.who,
         key(a, "decide"),
-        &ControlCommand::Decide {
+        ControlCommand::Decide {
             decision: d,
             by: c.who.clone(),
             note: a.get("note"),
         },
     );
-    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input, &c.who).await?;
+    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input).await?;
     print(&json!({ "posted": idx }));
     Ok(())
 }
@@ -300,9 +319,8 @@ async fn cmd_activity(a: &mut Args) -> R<()> {
         touch,
         clear: a.has("clear"),
     };
-    let idx =
-        libopendan::post_input(c.agent.as_ref(), &sid, &Input::control(key(a, "activity"), &cmd), &c.who)
-            .await?;
+    let input = PostedInput::control(&c.who, key(a, "activity"), cmd);
+    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input).await?;
     print(&json!({ "posted": idx }));
     Ok(())
 }
@@ -314,8 +332,17 @@ async fn cmd_perceive(a: &mut Args) -> R<()> {
         .or_else(|| std::env::var("OPENDAN_SESSION_ID").ok())
         .ok_or("missing --sid")?;
     let text = a.pos.pop_front().ok_or("missing <text>")?;
-    let input = Input::perception(key(a, "perc"), json!({ "kind": "observation", "summary": text }));
-    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input, &c.who).await?;
+    let input = PostedInput::control(
+        &c.who,
+        key(a, "perc"),
+        ControlCommand::Perceive {
+            kind: "observation".into(),
+            summary: text,
+            tags: Vec::new(),
+            objects: Vec::new(),
+        },
+    );
+    let idx = libopendan::post_input(c.agent.as_ref(), &sid, &input).await?;
     print(&json!({ "posted": idx }));
     Ok(())
 }

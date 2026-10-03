@@ -18,7 +18,7 @@ xagent 的目的是**在一个新产品里验证四层架构、发现设计问�
 
 1. **xagent 是 xllm 的上一层**：xllm 加载 `.llm_context`，把一个 LLMContext run 推进到一个 Outcome；xagent 加载（或创建）一个 Agent Session，把它推进到**一个 Turn 关闭**，或常驻地不断完成 Turn。两者的 run 目录相同（`runs/` 就是 xllm 的 run 目录），同一个 run 可以在两者之间交接，这是验证 L2 / L3 边界的主要手段。
 2. **Agent Session 构造 llm_context 复用 xllm 的宿主装配 API**（`XllmTask::prepare_hosted` / `hosted_request` / `hosted_waist_deps` / `rebuild_toolset` / `create_run_llm` / `RunStore`），但 **system 段、历史段、输入批次、工具调度包装、checkpoint 钩子、run 生命周期都由 Session 决定**；差异清单见 §3。
-3. **Agent 感知到的输入只有两种：`AgentMessage` 与 `AgentEvent`**（§4）。Session 不关心它们怎么来的，只要求信封（key、来源与 index、from、at_ms、subscription_id）；把系统事件（msg-center、kevent、timer、task_mgr、子 session）翻译成这两种输入的是上层 **bridge**（xagent serve、以后的 OpenDAN Supervisor、应用）。事件进入受控输入还是更新半订阅状态，由 **Session 按自己的订阅配置决定**，不由 producer 决定；半订阅状态按 `(subscription_id, source)` 合并并持久化，在受控输入使用前渲染为快照，空闲时不丢。stop / decide / subscribe / activity / perceive 不是 Agent 输入，是**Session 控制协议**，只是搭同一条队列。
+3. **Agent 感知到的输入只有两种：消息（MsgObject）与 `AgentEvent`**（§4）。Session 不关心它们怎么来的，只要求信封（key、来源与 index、from、at_ms、subscription_id）；把系统事件（msg-center、kevent、timer、task_mgr、子 session）翻译成这两种输入的是上层 **bridge**（xagent serve、以后的 OpenDAN Supervisor、应用）。事件进入受控输入还是更新半订阅状态，由 **Session 按自己的订阅配置决定**，不由 producer 决定；半订阅状态按 `(subscription_id, source)` 合并并持久化，在受控输入使用前渲染为快照，空闲时不丢。stop / decide / subscribe / activity / perceive 不是 Agent 输入，是**Session 控制协议**，只是搭同一条队列。
 4. **Session 模板**（§4.7）决定一个 session 的形态：Turn 上限、`WAIT_USER_MSG` 的含义、要不要输入队列、半订阅快照包含哪些材料、hints、默认 behavior。work 模板 = 一个 Turn、不等用户、默认不建队列；ui 模板 = 无限 Turn、有队列。模板是 `SessionSpec` 的预设，创建时解析进 session_config，不是新协议对象。
 5. **Runtime 接管全部 agent-tool**（§5）：共享 AgentRuntime/Sandbox 已在 agent_tool 实现 native/tmux/remote_ssh、文件后端、环境与执行跟踪。Session 保留 lease、门槛、inflight、receipt、bin/helper 和绑定。ActionGuard、grant 与审批为后续 policy 设计，不属于已完成首版。
 6. **behavior 配置来自 Agent State，在 Session 构造时冻结进 `session_config.prompt`**（§6）；进入模式（`switch_context` / `create_sub_context` / `fork`）由**目标 behavior** 的冻结配置决定，没有缺省回退。
@@ -285,62 +285,59 @@ impl AgentSession {
 
 Agent Session 是协议，所以要先说清 Agent 在一个 Session 里**能感知到什么**：
 
-- **`AgentMessage`**：有人（用户、别的 Agent、别的 session）对这个 session 说了什么。
+- **消息**：有人（用户、别的 Agent、别的 session）对这个 session 说了什么。消息体直接是 cyfs-ndn 的 MsgObject（§4.2）。
 - **`AgentEvent`**：这个 session 关心的某件事发生了（对象变化、定时器、任务结果、子 session 状态、系统通知）。
 
 除此之外没有第三种。Session **不关心这两种东西怎么来的**：msg-center 记录、kevent、timer、task_mgr 回调、登记表 rev 变化，都由上层 bridge 翻译成这两种对象后投递；Session 只要求信封完整（§4.5）。
 
 经过同一条队列的还有 **Session 控制协议**（§4.4：stop、decide、subscribe、unsubscribe、activity、perceive）。它们不是 Agent 的输入，不进上下文，由 Runner 直接执行；搭队列只是为了多方投递与持久化。协议文档要把两者分开写。
 
-与现状的差距：现有 `Input` 有五种 kind（msg / event / change / control / perception）。按原理，`change` 不是一种输入而是 AgentEvent 的一种**投递策略**（§4.3）；`perception` 归控制协议；`msg` 的 payload 只有 `{text}`，缺附件与引用。
+已实施（2026-10-03，`opendan.session_input/3`）：总线记录只有 `msg / event / control` 三种。原 `change` 是 AgentEvent 的一种**投递策略**（§4.3），原 `perception` 并入控制协议（`perceive`），`msg` 的 payload 是 MsgObject 加投递层信息。线格式、校验与拒绝规则以 [Session Input Protocol](<protocol/Session Input Protocol.md>) 为准。
 
-### 4.2 AgentMessage
+### 4.2 消息：直接使用 MsgObject
+
+不定义协议级的 `AgentMessage`。`type = "msg"` 的 payload 是 MsgObject（原样，不改写、不裁剪）加一个很小的投递层结构：
 
 ```rust
-pub struct AgentMessage {
-    pub from: Principal,                 // 发送者身份（用户 DID / app principal / session 引用）
-    pub text: String,                    // 正文；Session 渲染为 <msg from= key=>…</msg>，AiMessage 由 assembler 现场生成
-    pub attachments: Vec<AttachmentRef>, // 相对路径或 NamedStore 对象 id；不内联内容（队列 payload 上限 250 KB）
-    pub msg_ref: Option<ObjId>,          // 来源消息对象（cymsg MsgObject）的 id，供回复与审计
-    pub reply_to: Option<String>,        // 回复哪条 key
-    pub intent: Option<String>,          // bridge 或上游标注的意图（可选）
+pub struct SessionMsg {
+    pub msg: MsgObject,            // cyfs-ndn MsgObject v2（CYFS 标准对象 §16）
+    pub delivery: MsgDelivery,     // from_name / conversation_name / record_id / tunnel，全部可选
 }
 ```
 
-总线上放的是它，不是 `AiMessage`：Session 要先做渲染、附件解析、机械压缩与 receipt，LLM 线格式是最后一步。
+- 信封 `key` 必须等于消息的 ObjId（`thread.reply_to`、`relates_to.target` 因此直接对得上总线里的 key）；说话人是 `msg.from`，信封 `from` 只是投递者，用于审计。
+- 附件是 `content.refs` 里的 `DataObj`（有 ObjId）；本机文件先登记进 NamedStore 再引用。
+- 手工投递用构造 helper（`text_msg / attach / reply_to / PostedInput::msg`），CLI 的 `post --msg … [--from] [--attach] [--reply-to]` 是它的命令行形式。
+- 总线上放的是 MsgObject，不是 `AiMessage`：Session 先做选批、模板视图、渲染与 receipt，`AiMessage` 只在渲染之后出现（一条链路：MsgObject → 模板视图 → 模板 → user AiMessage → AICC）。
 
 ### 4.3 AgentEvent 与投递策略
 
 ```rust
 pub struct AgentEvent {
-    pub subscription_id: Option<String>, // 由哪条订阅产生；系统事件（timer）可为空
-    pub source: EventSource,             // Object{id} | Session{sid} | Task{id} | Timer{name} | System
-    pub event: String,                   // 事件名，如 changed / finished / fired
-    pub seq: Option<u64>,                // 来源内单调序号或游标；semi 合并时取最新
-    pub summary: String,                 // LLM 看到的一句话（上限 1 KB）；大数据只给引用
-    pub data_ref: Option<ObjId>,
-    pub terminal: bool,                  // 该订阅的终结事件（子 session 结束等），不被 event_budget（原 change_budget） 挤掉
-}
-
-/// Session 自己决定一个事件怎么进入上下文；bridge 不决定。
-pub enum Delivery {
-    Input,    // 进入受控输入的候选批次：可开启或并入 Turn（原 kind = event）
-    Observe,  // 合并为半订阅状态，在受控输入使用前渲染快照（原 kind = change）
-}
-
-impl AgentSession {
-    fn resolve_delivery(&self, e: &AgentEvent) -> Delivery {
-        match e.subscription_id.as_deref().and_then(|id| self.cfg.subscription(id)) {
-            Some(sub) => sub.mode.into(),                       // active → Input，semi → Observe
-            None => self.template().system_event_delivery(e),   // 模板默认：timer → Input，其它 → Observe
-        }
-    }
+    pub subscription_id: Option<String>, // 显式订阅 id；Session 已登记的隐式订阅可为空
+    pub source: EventSource,             // { kind: object | session | task | timer | system, id }
+    pub event: String,                   // 事件名，如 changed / updated / finished / fired
+    pub seq: Option<u64>,                // 来源内的版本号；Observe 合并用它比较新旧
+    pub summary: String,                 // LLM 看到的一句话（上限 1 KB，超出拒绝）；不用于机械判断
+    pub data_ref: Option<String>,        // ObjId 或相对 session 目录的路径
+    pub terminal: bool,                  // 该来源的终结事件
 }
 ```
 
-**半订阅维护状态**。Observe 投递的事件在 state.json 里按 `(subscription_id, source)` 合并为最新的待注入状态（`pending_events`），terminal 事件单列不覆盖。渲染材料统一称为 **`semi_subscription_snapshot`（半订阅快照）**：只有在 `on_init / on_input / on_context_switch` 受控输入使用前，才选取状态版本并渲染、注入。检查点可以接收并保存更新，但不独立注入；没有受控输入时继续保留，空闲时同样保留。被新版本覆盖的旧值记 `event_superseded`。渲染和选取不消费状态，提交时只清除 receipt 覆盖的版本；处理 v7 时收到 v8，提交 v7 不得清掉 v8。容量与预算不足时延期或按协议拒绝，不能静默丢弃。
+投递者只描述事件；它是 Input 还是 Observe 由接收 Session 按订阅机械决定（`SessionConfig::subscription_for`）：
 
-**内置 bridge**：Session 来源的订阅（`source = session`）现在由 Runner 在观察边界拉登记表比 rev，没有外部 producer。按原理它也要产出 AgentEvent，所以把它定义为 Runner 内的内置 bridge：比对 rev 后合成 `AgentEvent{subscription_id, source: Session, seq: rev, summary: watched 字段差异}`，再走同一套 `pending_events` 与注入逻辑。worklog 与实验断言只看一种形态。子 session（`origin.parent_session` 指向本 session）不需要显式订阅，内置 bridge 直接查登记表，事件的分类与投递见 §4.14；其中 Input 的几类进入本批 `input_events`，不进 `pending_events`。
+| 情况 | 处理 |
+|---|---|
+| 匹配 active 订阅 | Input：进入受控输入的候选批次，可开启或并入 Turn |
+| 匹配 semi 订阅 | Observe：合并进 `state.pending_events` 并消费；不独立触发推理 |
+| `source = task:<id>` 且有挂起调用在等这个 task | 只触发 resolver 查询，结果回填 ToolResult，不作为事件注入 |
+| 未匹配有效订阅（含未知、已取消、`subscription_id` 与来源不符） | 丢弃并提交消费位置（`event_dropped`）；timer、系统事件没有兜底例外 |
+
+订阅变更与事件按投递 index 生效；active 事件一经接受（`inputs[src].accepted`），之后的 unsubscribe 不改变它的处理。用户时区是每个 Session 的隐式 semi 订阅（`source = system:user_timezone`）。
+
+**半订阅维护状态**。Observe 投递的事件在 state.json 里按 `(subscription_id, source)` 合并为最新的待注入状态（`pending_events`），terminal 事件单列不覆盖。渲染材料统一称为 **`semi_subscription_snapshot`（半订阅快照）**：只有在 `on_init / on_input / on_context_switch` 受控输入使用前，才选取状态版本并渲染、注入。检查点可以接收并保存更新，但不独立注入；没有受控输入时继续保留，空闲时同样保留。被新版本覆盖的旧值只计数（`superseded`）。渲染和选取不消费状态，提交时按 `(subscription_id, source, key)`（有 seq 时一并核对）只清除 receipt 覆盖的版本；处理 v7 时收到 v8，提交 v7 不得清掉 v8。总线容量满（每个 Session 最多 64 条 pending input）时拒绝 append；快照预算不足的版本留在 `pending_events`。
+
+**内置 bridge**：Session 来源的订阅（`source = session`）由 Runner 在每次路由（drive 入口、主循环、检查点）拉登记表比 rev，没有外部 producer。它是 Runner 内的内置 bridge（已实施）：比对 rev 后合成 `AgentEvent{subscription_id, source: Session, seq: rev, summary: watched 字段差异}`，再走同一套 `pending_events` 与注入逻辑。worklog 与实验断言只看一种形态。子 session（`origin.parent_session` 指向本 session）不需要显式订阅，内置 bridge 直接查登记表，事件的分类与投递见 §4.14；其中 Input 的几类进入本批 `input_events`，不进 `pending_events`。
 
 ### 4.4 Session 控制协议
 
@@ -356,24 +353,29 @@ impl AgentSession {
 
 ### 4.5 InputBus：信封与 bridge 保证
 
-```rust
-pub enum SessionInput { Message(AgentMessage), Event(AgentEvent), Control(ControlCommand) }
+总线上每条记录是一个 JSON 对象（逻辑记录）；kmsg 上信封字段是 headers，payload 是消息体：
 
-pub struct Envelope {
-    pub key: String,                 // producer 去重 key；Observe 事件按 (subscription_id, source) 合并，与 key 无关
-    pub src: String, pub index: u64, // 来源 id 与单调 index：消费游标、累积 ack
-    pub from: Principal,             // 自报身份，审计用；权限不来自它
-    pub at_ms: u64,
-}
-
-#[async_trait]
-pub trait InputBus: Send + Sync {
-    async fn post(&self, input: &SessionInput, who: &str) -> Result<u64>;                       // 任何有写权限者；发布队列变化通知
-    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<(Envelope, SessionInput)>>;  // 仅 lease 持有者
-    async fn confirm(&self, progress: &SourceProgress) -> Result<()>;                            // 先提交 state.json，再累积 ack
-    async fn wait(&self, timeout: Duration);                                                     // kevent 或轮询
-}
+```jsonc
+{ "schema": "opendan.session_input/3", "type": "msg | event | control",
+  "key": "…", "from": "<投递者 principal>", "at_ms": 0, "payload": { } }
 ```
+
+```rust
+#[serde(tag = "type", content = "payload")]
+pub enum SessionInput { Msg(SessionMsg), Event(AgentEvent), Control(ControlCommand) }
+
+pub struct PostedInput  { schema, key, from, at_ms, input: SessionInput }               // producer
+pub struct FetchedInput { src, index, kind, key, from, at_ms,
+                          input: Result<SessionInput, Rejected> }                         // consumer
+
+// 投递（任何有写权限者，经登记表）：校验 + 容量检查（64 条 pending）+ append 在一个临界区内；满时返回 input_full
+async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64>;
+// 消费（仅 lease 持有者）
+async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>>;
+async fn confirm(&self, progress: &SourceProgress) -> Result<()>;   // 先提交 state.json，再累积 ack
+```
+
+投递与消费用同一套校验（`parse_record`）；消费时不合法的记录标记为已消费并写 `input_rejected{reason}`，不卡住累积确认。`src` / `index` 由通道给出，producer 不能提供。
 
 bridge 必须保证：同一来源内有序、至少一次、key 唯一。Session 用 receipt 与 `recent_keys` 做幂等。现有 `KmsgInput` / `DirMsgQueue` / `Waker` / `confirm_inputs` 已覆盖这四个操作，`InputBus` 只是把它们收拢并换掉 payload 类型。
 
@@ -385,8 +387,8 @@ bridge 必须保证：同一来源内有序、至少一次、key 唯一。Sessio
 |---|---|---|
 | kevent 桥 | xagent `run` / `serve` 进程内；以后是 OpenDAN Supervisor | 按 session 的 ObjectEvent 订阅模式订阅 kevent → `AgentEvent{subscription_id, source: Object}` |
 | timer 桥 | 同上（self_check） | `AgentEvent{source: Timer}` |
-| task_mgr 桥 | 后移 | `AgentEvent{source: Task}` |
-| msg-center 桥 | 后移（UI session） | `AgentMessage{msg_ref}` |
+| task_mgr 桥 | `libopendan::bridge::task::task_event`（映射已实施；接 TaskMgr 后移） | `AgentEvent{source: task:<task_id>}` |
+| msg-center 桥 | `libopendan::bridge::msg::route_msg_record`（纯函数，已实施；接 msg-center 后移） | 过滤 / 分流后原样投递 `SessionMsg{msg, delivery}`，斜杠命令转 `control` |
 | 子 session 桥 | Runner 内置（§4.3、§4.14） | `AgentEvent{source: Session}`：订阅的 session 与本 session 的子 session |
 | CLI | `xagent post --msg / --event` | 任意一种，用于实验与手工驱动 |
 
@@ -409,7 +411,7 @@ pub struct SessionTemplate {
     pub max_process_depth: u8,        // process_stack 深度上限（默认 4，§3.3）
     pub max_sub_sessions: u8,         // 同时未结束的子 session 数上限（默认 4，§4.11）
     pub max_session_depth: u8,        // 子 session 嵌套深度上限（默认 2，§4.11）
-    pub system_event_delivery: fn(&AgentEvent) -> Delivery,
+    pub implicit_subscriptions: Vec<Subscription>, // 模板预先登记的订阅（如 self_check 的 timer、用户时区）；没有“未订阅也投递”的兜底策略（§4.3）
 }
 ```
 
@@ -456,7 +458,7 @@ Agent Session SDK 化的一个主要目的，是让 Agent（以及应用）方�
 | 上下文 | 由目标的进入模式决定：create-sub-context 按 `inherit` 选父历史，fork 带分叉点的完整有效历史 | 同左 | 不继承；只有创建时给的 objective、首批输入、附件引用（可选附父最近对话摘录） | 只有消息 |
 | 共享什么 | 父的 lease、state、Turn、runs/ | 同左 | 同一个 Agent State（登记表、认知、产物、behavior 目录），可共用 workspace | 不共享 |
 | 生命周期 | 不超过一次工具调用 | 不超过父 Turn | 独立：可以比父 Turn 长，可以常驻 | 独立、长期 |
-| 结果怎么回来 | `ToolResults` | `process_result` 交接批次 | 登记表状态 + AgentEvent + 子主动发的 AgentMessage；同步等待时作为工具结果（§4.14、§4.15） | 消息（msg-center） |
+| 结果怎么回来 | `ToolResults` | `process_result` 交接批次 | 登记表状态 + AgentEvent + 子主动发的消息；同步等待时作为工具结果（§4.14、§4.15） | 消息（msg-center） |
 | 谁看得见 | 父 session 的 runs/ 与 worklog | 同左 | 登记表、`sessions` 列表、自己的目录与报告；可以单独验收 | 对方系统 |
 | 适合 | 需要父上下文的窄意图小决定（路由、分类） | 换个角色做同一主任务的一段 | 一段独立工作：要并行、要长时间、要自己的 workspace / runtime / 产物 / 验收，或要在父结束后继续 | 宽意图、角色级能力域（RFC §12） |
 
@@ -470,7 +472,7 @@ Sub Session 不是新的协议对象：它就是 `origin.parent_session` 指向�
 
 ```text
 agent-session create-worksession --objective <text>
-    [--msg <text>]... [--attach <path|objid>]...   首批输入：AgentMessage，附件只给引用
+    [--msg <text>]... [--attach <path|objid>]...   首批输入：消息（MsgObject），附件只给引用
     [--context recent:<n>|none]                     把父 run 最近 n 条对话摘录附进首批输入（默认 none；不继承 steps）
     [--class work|…] [--behavior <name>]            模板与入口 behavior（默认 work 模板）
     [--workspace inherit|new|<id>]                  默认 inherit：与父共用，靠活动视图避让
@@ -516,11 +518,11 @@ impl ChildDriver {
 
 | 方向 | 渠道 | 内容 | 谁发起 | 怎么进入对方 |
 |---|---|---|---|---|
-| 父 → 子 | 创建参数 | objective、首批 AgentMessage、附件引用、可选的父对话摘录 | 父 LLM（创建工具） | 子的 bootstrap 批次 |
-| 父 → 子 | `agent-session post <child> --msg` | `AgentMessage{from: Session(父)}`：补充要求、回答子的提问 | 父 LLM | 进入子的受控输入；要求子是 `--interactive`（有队列） |
+| 父 → 子 | 创建参数 | objective、首批消息、附件引用、可选的父对话摘录 | 父 LLM（创建工具） | 子的 bootstrap 批次 |
+| 父 → 子 | `agent-session post <child> --msg` | 消息（MsgObject，`from` 为所属 Agent）：补充要求、回答子的提问 | 父 LLM | 进入子的受控输入；要求子是 `--interactive`（有队列） |
 | 父 → 子 | 控制：`ctl <child> stop`、`decide accept\|discard` | 停止、验收 | 父 LLM，或父 Session（stop 级联，§4.16） | 不进上下文 |
 | 子 → 父 | 登记表状态 `SessionStatus` | `run_state`、`outcome`、`one_line_status`、`report_brief`、`pending_decision`、`last_error` | 子 Session 每次提交后自动 `report_state` | 父被动读取，或父的内置 bridge 产出 AgentEvent（§4.14） |
-| 子 → 父 | `agent-session post <parent> --msg` | `AgentMessage{from: Session(子)}`：提问、阶段性交付 | 子 LLM | 进入父的受控输入；要求父有队列，否则子只能经状态汇报 |
+| 子 → 父 | `agent-session post <parent> --msg` | 消息（MsgObject，`from` 为所属 Agent）：提问、阶段性交付 | 子 LLM | 进入父的受控输入；要求父有队列，否则子只能经状态汇报 |
 | 子 → 父 | 报告与产物 | `report.md`、登记的产物、worklog | 子结束时 | 父按需 `read-session` / `artifact head` |
 
 两条约定：
@@ -538,7 +540,7 @@ impl ChildDriver {
    - **需要关注**（`run_state` 进入等输入，或出现 `pending_decision`）→ `event = needs_input | needs_decision`，Input。
    - **结束**（finished / failed / stopped）→ `event = finished`，`terminal = true`，Input；`summary` 取 `report_brief`。
    - 创建时的 `--report` 决定父收哪些：`final` = 需要关注与结束；`progress` = 再加进度；`none` = 都不推，父只能拉取。它对应 opendan 的 `report_delivery`（final_only / top_level / all），但由**接收方**（父）选择，符合 §4.3“投递策略由 Session 决定”。
-3. **显式汇报（子 LLM 主动）**：子 LLM 调 `agent-session post <parent> --msg …`，用于需要父决定的问题或阶段性交付。它是 AgentMessage，进入父的受控输入；频率由子的 behavior 提示词约束。
+3. **显式汇报（子 LLM 主动）**：子 LLM 调 `agent-session post <parent> --msg …`，用于需要父决定的问题或阶段性交付。它是一条消息，进入父的受控输入；频率由子的 behavior 提示词约束。
 
 父无队列也能收到 2 里的事件，因为它们来自登记表而不是队列；负责推进父的是持有父 Session 推进权的进程（ChildDriver / Supervisor），它在子状态变化后重新 `drive(parent)`。
 
@@ -714,7 +716,8 @@ pub struct BehaviorConfig {
         semi_subscription_snapshot: Option<String>, // 受控输入之前的半订阅快照材料，不是触发入口
         parser, parser_strict, output,
     },
-    pub input: InputConsumption { mode: Single | Batch }, // 消费策略；单条 / 组批，与正文模板分开；默认 Batch
+    pub input: InputConsumption { mode: Single | Batch,   // 消费策略；单条 / 组批，与正文模板分开；默认 Batch
+                                  media: Reference | Inline }, // 附件是否以图片 / 文档块注入；默认 Reference
     pub capabilities: Capabilities { tool_whitelist, action_whitelist, tool_plan, approval_required, disable_capabilities },
     pub budget: Budget { max_tool_iterations, max_consecutive_errors, max_total_tokens, max_completion_tokens, max_wallclock_ms },
     pub model: Model { preferred, fallbacks, temperature, provider_options },
@@ -738,9 +741,9 @@ pub struct BehaviorConfig {
 
 `input.mode` 默认 Batch，延续当前组批方式；Single 在排序后的可处理 message / Input event 中总共选一条，Batch 在批次预算内选取多条，未选输入保留。首次进入目标 behavior 时先完成必要的冻结与校验，再读取它的消费策略和模板。模板缺省使用内建渲染；已有受控输入却渲染为空应报错并保留现场，不能借空正文确认输入。
 
-`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup` / `on_behavior_switch` 分别改为 `on_input` / `on_context_switch`；旧 behavior cfg 的 `prompt.on_init` 改为 `prompt.system`。这些是待实施的配置变更，不是现有代码已经支持的字段，也不提供旧名兼容。
+`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup` / `on_behavior_switch` 分别改为 `on_input` / `on_context_switch`；旧 behavior cfg 的 `prompt.on_init` 改为 `prompt.system`。libopendan 的 Session 宿主已按新名实施（`session_config/4`），不提供旧名兼容；OpenDAN 的 behavior toml 随 C7 改名。附件是否以图片 / 文档块随文本注入由 `input.media`（`reference | inline`，默认 `reference`）决定，与模板无关。
 
-进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6），不需要另外声明工具。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, system_prompt?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
+进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6），不需要另外声明工具。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
 
 ### 6.3 冻结：时机、位置、范围
 
@@ -874,7 +877,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
                  投递（可选）后推进到 Turn 关闭；默认 --until turn；随后推进本进程拉起的子 session 到空闲（§4.12）
   xagent serve  <session_dir|sid>... [--idle-unload <secs>] [--no-bridge]
                  常驻：起事件桥；drive(Idle) → 等队列变化 → drive(Idle)…；同时接管所服务 session 的子 session
-  xagent post   <sid> (--msg <text> | --event <json>)                 Agent 输入（AgentMessage / AgentEvent）
+  xagent post   <sid> (--msg <text> [--from] [--attach]… [--reply-to] | --json <file | ->)   Agent 输入（MsgObject 消息 / 逻辑记录）
   xagent ctl    <sid> (stop | decide accept|discard | approve <ticket> | subscribe <spec> | unsubscribe <id> | activity ... | perceive <text>
                        | grant --runtime <id> --ttl <dur> [--paths ...] | revoke <grant_id>)
                  Session 控制协议
@@ -948,7 +951,7 @@ pub struct Deps {
 /// 一批准备进入上下文的材料：受控输入 + 半订阅快照 + 新鲜量。
 pub struct Batch {
     hook: &'static str,                    // on_init | on_input | on_context_switch
-    messages: Vec<(Envelope, AgentMessage)>,
+    messages: Vec<FetchedInput /* SessionMsg */>,
     input_events: Vec<(Envelope, AgentEvent)>,
     semi_subscription_snapshot: Vec<AgentEvent>, // 选定的 pending_events 版本；包含内置 bridge 的产出，选取不消费 // NEW
     hints: Vec<Hint>, active: Vec<ActiveSession>, runtime_status: Value, now_ms: u64,
@@ -1268,15 +1271,15 @@ impl AgentSession {
         let mut receipt = InputReceipt {
             run_id: lc.run.id(), input_seq: self.state.live_run_applied_seq() + 1, turn, opens_turn: opens, hook: batch.hook.into(),
             inputs: batch.messages.ids() ++ batch.input_events.ids(),
-            events: rendered.snapshot_versions,                                         // NEW：实际注入的半订阅状态版本（sub, source, seq）
+            events: rendered.snapshot_versions,                                         // 实际注入的半订阅状态版本（subscription_id, source, seq, key）
+            reply: last_msg_route(&batch).or(self.state.reply.clone()),                 // 本批提交后的默认回复路径（最后一条 input message 的来路）
             bootstrap: !self.state.bootstrap_done, after_step: lc.ctx.snapshot().next_step_index, continuation: self.state.internal_continuation.is_some(), .. };
-        receipt.message_positions = predict_message_positions(&lc.ctx, &rendered.messages); // NEW：覆盖有序的一至两条消息，不能只记受控输入的位置
-        receipt.contents = rendered.messages.clone();                                   // NEW：保存两部分实际正文，恢复不重新渲染
-        lc.ctx.inject(Injection { messages: rendered.messages, .. });                    // 半订阅快照在前，受控输入在后；两条消息之间不推理、不发布快照
+        let pos = lc.ctx.inject(Injection { messages: rendered.messages, .. });          // 半订阅快照在前，受控输入在后；两条消息之间不推理、不发布快照
+        receipt.parts = parts(pos, &rendered);                                           // 有序的一至两条消息：{part, pos, text}；恢复不重新渲染
         lc.ctx.host_meta_mut().input_receipts.push(receipt.clone());
         lc.run.publish_input_checkpoint(&lc.ctx.snapshot(), receipt.input_seq)?;         // ①②
         apply_receipt(&mut self.state, &receipt)?;                                       // live_run.turns / open_turn|turn_seq / 消费位置 / bootstrap_done / 清 continuation；
-                                                                                         // NEW：按 receipt.events 清 pending_events（seq 相同才清，新来的保留）
+                                                                                         // 按 receipt.events 精确清 pending_events（key / seq 相同才清，新来的保留）；按 receipt.reply 还原 state.reply
         self.state.run_state = Running; self.state.waiting_for = None; self.state.last_error = None;
         self.state.refresh_activity(&batch.messages, &self.cfg);
         commit!(self);                                                                   // ③
@@ -1442,7 +1445,7 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 | E19 | 验收 | SWITCH_CONTEXT 的独立配置 / 历史；交接点交接（§3.5、G8） | a：`do`（可写工具）与 `check`（只读工具、另一模型）都是 `switch_context` 目标，跑 do → check → do → check → `END`；b：同一流程在第一次交接前用 `xllm --resume` 接手，xllm 跑到 `next_behavior = check` 让出，再 `xllm --resume` 一次，然后 `xagent run`；c：转移提交前、后各用 `LIBOPENDAN_FAULT` abort 一次；d：跳到一个没有声明进入模式的 behavior | a：两个 run_id，各自的 system 段、工具广告、模型、历史、编号、预算互不串；每个 run 的 run.json `config` 从建 run 起不变；再次进入恢复目标原快照，只追加交接批次；全程一个 Turn，`END` 按结束条件收尾、不隐式回到 do；b：xllm 停在交接点（run.json `handover`，状态 `paused`，不是终态），再次 resume 被拒、不重复推理；xagent reconcile 把转移提交一次后续跑，worklog 与 a 同形；c：目标只进入一次，Turn、已用预算、消费位置不变；d：配置错误，Turn `failed{behavior_config}`，不落回“同一 run 换 system”。**设计问题**：交接需要 xllm 理解 behavior 或进入模式；目标的配置或历史只存在于 Session 内存；要在一个 run 里换配置才能完成切换 |
 | E20 | 验收 | 工具触发的子调用；两种派生方式与分叉点边界（§3.5、§3.6） | 父分别用 function_call 与 behavior 模式；目标 `route`（`create_sub_context`，`inherit` 依次为 `recent_dialogue` / `steps` / `none`）与 `branch`（`fork`）；mock 父 context 在同一批次里调用 `call_behavior` 与 `read`；子 run 中途、进入与返回的提交前后各用 `LIBOPENDAN_FAULT` abort 一次；子回 `WAIT_USER_MSG`、子 Error 各一次；再测嵌套超限，以及 fork 目标声明了自己的 system | 父 run 以 PendingTool 挂起（`subctx:<call_id>`），栈顶是 `caller` frame（`trigger = tool`）；子 run 在 `runs/` 里、进 worklog；create-sub-context 的子用自己的 system，输入范围符合 `inherit`，进行中的 Step 不当作已完成记录；fork 的子与父 system 相同，分叉点之前的有效消息前缀一致，分叉点在触发批次之前，未完成的批次留在父快照、没有伪造的 tool result；派生不改父快照，继承部分不重复写 worklog；崩溃后续跑同一个子 run，结果恰好交回一次；子 run 结束后父 run 以 ToolResults 恢复，只回填对应 call_id，同批的 `read` 接着执行、已执行的不重放；`WAIT_USER_MSG` → `needs_user_input`，子 Error → failed，父 Turn 都不失败；重建的 session history 里只有子的结果；全程一个 Turn；父 run 挂起期间 xllm 接手被拒；超限时工具返回 Error 观察；fork 目标带自己的 system 在配置校验时被拒。**设计问题**：需要在工具里跑推理或拿 Runner 内存句柄才能实现；结果只能经交接批次、不能作为工具结果交回；fork 要伪造 tool result 或截断历史才能得到合法请求；派生要修改父快照 |
 | E21 | 验收 | Sub Session 派出与汇总（§4.10–§4.16） | 无队列的 work 父 session：mock 父 LLM 用 `create-worksession` 派出子 A（`--report final`）、子 B（`--report progress`），再派出子 C（`--wait`）；C 返回后父 `END`；A 运行中 abort 父进程一次，再 `xagent run <parent>` | A、B、C 由 ChildDriver 并行推进，各持 lease、各有 Turn；B 的进度按 Observe 保存，在父下一次受控输入前以半订阅快照出现；C 结束时父 run 以 ToolResults 恢复；父 `END` 时 A 未结束 → 父 Turn 保持打开（`waiting_for = Children`），A 的结束事件作为受控输入并入同一 Turn，父汇总后 finished；父进程崩溃不影响子，重启后重新接管。**设计问题**：父收子的事件需要父有队列；子要写父的状态；bridge 要知道父的汇报方式才能投递；同步等待只能做成进程内工具 |
-| E22 | 回归 | 父子对话与 stop 级联（§4.13、§4.16） | 子以 `--interactive` 创建，mock 子回 `WAIT_USER_MSG` 提问；父 `post` 回答；子主动 `post <parent>` 一次；最后 `ctl stop <parent>` | 父收到 `needs_input`（Input），`post` 后子在同一 Turn 里继续；子的消息以 AgentMessage 进入父的受控输入；父 stop 后未结束的子被级联 stop，登记表状态为 stopped |
+| E22 | 回归 | 父子对话与 stop 级联（§4.13、§4.16） | 子以 `--interactive` 创建，mock 子回 `WAIT_USER_MSG` 提问；父 `post` 回答；子主动 `post <parent>` 一次；最后 `ctl stop <parent>` | 父收到 `needs_input`（Input），`post` 后子在同一 Turn 里继续；子的消息进入父的受控输入；父 stop 后未结束的子被级联 stop，登记表状态为 stopped |
 | E23 | 回归 | 受控输入模板与消费策略 | bootstrap、外部输入、context 交接分别使用不同模板；外部输入分别配置 Single / Batch；启动或交接时也放入可消费的外部消息 | system 只用 `prompt.system`，三类 user message 分别用 `on_init / on_input / on_context_switch`；每批只选一个入口，无重复注入；单条模式未选输入保留；control、Observe event 不作为外部输入消费；普通恢复、压缩和 ToolResults 回填不重复触发模板 |
 
 ---
@@ -1453,9 +1456,9 @@ async fn serve(targets: Vec<Target>, deps: &Deps, idle_unload: Duration) {
 
 | # | 差距（现状 → 目标） | 位置 | 备注 |
 |---|---|---|---|
-| C1 | `Input` 五种 kind → `SessionInput::{Message(AgentMessage), Event(AgentEvent), Control}`；`change` 并入 Event + `Delivery`；`perception` 并入 Control；`Envelope` 显式化 | `protocol/input.rs` | Session Input Protocol 拆成"Agent 输入"与"Session 控制"两篇；schema 升版 |
-| C2 | 投递策略由 kind 决定 → 由 Session 按订阅 / 模板解析为 Input / Observe；change 合并 → `state.pending_events`（按 `(sub, source)` 取最新，terminal 单列）；空闲保留，覆盖记 `event_superseded`；检查点独立 observation 注入 → 受控输入前的半订阅快照；receipt 覆盖两部分正文、消息位置与实际注入版本，提交时精确清理 | `drive.rs` 3a/3b/3d、`hook.rs::boundary`、`receipts.rs`、`protocol/state.rs` | Schema 按实施基线升版；不把渲染当作消费 |
-| C3 | Session 来源订阅在 `check_changes` 内直接比 rev → 内置 bridge 产出 `AgentEvent{source: Session}` 走同一路径 | `hook.rs`、新 `runner/bridge.rs` | 外部 bridge trait `EventBridge` 同文件；kevent / timer 实现在 xagent |
+| C1 | **已实施（2026-10-03）**：`SessionInput::{Msg(SessionMsg), Event(AgentEvent), Control}`，消息体直接用 MsgObject；`change` 并入 Event，`perception` 并入 Control（`perceive`）；逻辑记录 `opendan.session_input/3`、`PostedInput / FetchedInput`、拒绝原因表、64 条 pending 上限 | `protocol/input.rs`、`channel/kmsg.rs`、`state/registry.rs` | Spec 已拆成 [Session Input Protocol](<protocol/Session Input Protocol.md>) 与 [Session Control Protocol](<protocol/Session Control Protocol.md>) |
+| C2 | **已实施（2026-10-03；未订阅事件一律丢弃，没有模板兜底策略）**：投递策略由 Session 按订阅解析为 Input / Observe；change 合并 → `state.pending_events`（按 `(sub, source)` 取最新，terminal 单列）；空闲保留，覆盖记 `event_superseded`；检查点独立 observation 注入 → 受控输入前的半订阅快照；receipt 覆盖两部分正文、消息位置与实际注入版本，提交时精确清理 | `drive.rs` 3a/3b/3d、`hook.rs::boundary`、`receipts.rs`、`protocol/state.rs` | Schema 按实施基线升版；不把渲染当作消费 |
+| C3 | **已实施（2026-10-03）**：Session 来源订阅由内置 bridge 合成 `AgentEvent{source: session}` 并入 `pending_events`（`runner/inputs.rs::poll_session_subscriptions`）；后台 task 的完成由 `drive.rs::poll_watched_tasks` 合成 | `runner/inputs.rs`、`runner/drive.rs`、`bridge/` | 外部 bridge trait `EventBridge` 同文件；kevent / timer 实现在 xagent |
 | C4 | 所有 session 都建 kmsg 队列 → 模板决定（`InputChannel::None` 不建）；`bus: Option`；`fetch/confirm/wait` 对 None 为空操作；等待分支对无队列直接返回 | `api.rs::create_session`、`drive.rs` | 父订阅子时校验父有队列 |
 | C5 | `SessionTemplate` 与 `session.policy{wait_user_msg, observe, load_hints}`；内置四模板 + `agent.toml [session.<class>]` 覆盖；`classify_done` 按 `wait_user_msg` 解释 `WAIT_USER_MSG` | 新 `protocol/template.rs`、`drive.rs::classify_done` | 与 C7 同一 schema 升版 |
 | C6 | `StopWhen::TurnClosed`、`DriveResult::{TurnClosed, TurnOpen}` | `runner/mod.rs`、`drive.rs` 3b/3f | |

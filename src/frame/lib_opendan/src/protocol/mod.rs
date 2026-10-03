@@ -33,6 +33,8 @@ pub const SUMMARY_FILE: &str = "summary.json";
 pub const WORKLOG_FILE: &str = "worklog.jsonl";
 pub const STATIC_FILE: &str = "static.json";
 pub const LEASE_FILE: &str = "lease.json";
+/// Serializes "check pending inputs + append" of producers.
+pub const POST_LOCK_FILE: &str = "post.lock";
 pub const BINDING_FILE: &str = "binding.json";
 pub const RUNS_DIR: &str = "runs";
 pub const README_FILE: &str = "readme.md";
@@ -57,7 +59,9 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("perception_cursor", s::<agent_state::PerceptionCursor>()),
         ("artifact_head", s::<agent_state::ArtifactHead>()),
         ("artifact_version", s::<agent_state::ArtifactVersion>()),
-        ("input", s::<input::Input>()),
+        ("session_input", s::<input::PostedInput>()),
+        ("session_msg", s::<input::SessionMsg>()),
+        ("agent_event", s::<input::AgentEvent>()),
         ("control_command", s::<input::ControlCommand>()),
         ("input_receipt", s::<input::InputReceipt>()),
         ("host_meta", s::<input::HostMeta>()),

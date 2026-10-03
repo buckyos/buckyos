@@ -485,10 +485,14 @@ pub(super) async fn handle_context_outcome(
         RunState::Ready
     };
     if next.waiting {
+        // Generated from the snapshot's suspended calls (status display and
+        // event matching); the calls and their deadlines live in the
+        // snapshot only.
+        let pending = snapshot.state.pending_calls();
         s.state.waiting_for = Some(WaitingFor {
             kind: WaitingKind::Tool,
-            refs: Vec::new(),
-            deadline_ms: None,
+            refs: pending.iter().map(|p| p.task_id.clone()).collect(),
+            deadline_ms: pending.iter().filter_map(|p| p.until_ms).min(),
         });
     }
     s.state.last_error = next.error.clone();
@@ -670,6 +674,22 @@ async fn commit_run_end(
                 _ => s.state.internal_continuation = Some(entry),
             }
             s.state.process_result = Some(result);
+        }
+    }
+    // Background tasks the run started and that are still running (their
+    // calls already returned): the session keeps following them after the
+    // run — until it finishes, which never re-opens for a task.
+    if next.finished {
+        s.state.watched_tasks.clear();
+        s.state.pending_events.clear();
+    } else {
+        let resolver = sh.tasks.lock().expect("tasks").clone();
+        if let Some(r) = resolver {
+            for t in r.active().await {
+                if t.status == "running" && !s.state.watched_tasks.contains(&t.task_id) {
+                    s.state.watched_tasks.push(t.task_id);
+                }
+            }
         }
     }
     let digest_seq = s.state.perception_seq + 1;

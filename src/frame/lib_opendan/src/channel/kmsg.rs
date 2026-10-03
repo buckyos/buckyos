@@ -15,9 +15,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition};
-use serde_json::Value;
-
-use crate::error::{OpenDanError, Result};
+use crate::error::Result;
 use crate::protocol::*;
 
 use super::InputSource;
@@ -75,68 +73,47 @@ pub async fn ensure_subscription(
     }
 }
 
-/// Encode an input into a kmsg message.
-pub fn encode_input(input: &Input, from: &str) -> Result<Message> {
-    let payload = serde_json::to_vec(&input.payload)
-        .map_err(|e| OpenDanError::InvalidArgument(format!("payload: {e}")))?;
-    if payload.len() > MAX_PAYLOAD_BYTES {
-        return Err(OpenDanError::InvalidArgument(format!(
-            "input payload is {} bytes; put large content into the session directory or NamedStore and post a reference (limit {MAX_PAYLOAD_BYTES})",
-            payload.len()
-        )));
-    }
-    let mut msg = Message::new(payload);
+/// Encode a logical record into a kmsg message: the envelope as headers
+/// (all strings), the payload as UTF-8 JSON. A record that would be
+/// rejected when consumed is refused here.
+pub fn encode_input(input: &PostedInput) -> Result<Message> {
+    input.validate()?;
+    let mut msg = Message::new(input.payload_bytes()?);
     let mut headers = HashMap::new();
-    headers.insert(HEADER_TYPE.to_string(), input.kind.as_str().to_string());
+    headers.insert(HEADER_SCHEMA.to_string(), input.schema.clone());
+    headers.insert(HEADER_TYPE.to_string(), input.input.type_name().to_string());
     headers.insert(HEADER_KEY.to_string(), input.key.clone());
-    headers.insert(HEADER_FROM.to_string(), from.to_string());
-    headers.insert(HEADER_AT_MS.to_string(), crate::now_ms().to_string());
-    if let Some(i) = &input.intent {
-        headers.insert(HEADER_INTENT.to_string(), i.clone());
-    }
-    if let Some(r) = &input.reply_to {
-        headers.insert(HEADER_REPLY_TO.to_string(), r.clone());
-    }
+    headers.insert(HEADER_FROM.to_string(), input.from.clone());
+    headers.insert(HEADER_AT_MS.to_string(), input.at_ms.to_string());
     msg.headers = headers;
     Ok(msg)
 }
 
-/// Decode a kmsg message; undecodable deliveries come back `malformed`.
-pub fn decode_message(src: &str, m: &Message) -> InputMessage {
+/// Decode a kmsg message with the rules a record is posted with; a record
+/// that does not pass comes back rejected.
+pub fn decode_message(src: &str, m: &Message) -> FetchedInput {
     let h = |k: &str| m.headers.get(k).cloned().unwrap_or_default();
-    let kind_raw = h(HEADER_TYPE);
-    let payload: std::result::Result<Value, _> = serde_json::from_slice(&m.payload);
-    let mut malformed = None;
-    let kind = match InputKind::parse(&kind_raw) {
-        Some(k) => k,
-        None => {
-            malformed = Some(format!("unknown input type `{kind_raw}`"));
-            InputKind::Msg
-        }
-    };
-    let payload = match payload {
-        Ok(v) => v,
-        Err(e) => {
-            malformed.get_or_insert(format!("payload is not JSON: {e}"));
-            Value::Null
-        }
-    };
-    let mut msg = InputMessage {
+    let kind = h(HEADER_TYPE);
+    let key = h(HEADER_KEY);
+    let from = h(HEADER_FROM);
+    let at_ms = m.headers.get(HEADER_AT_MS).and_then(|v| v.parse::<u64>().ok());
+    let input = parse_record(
+        m.headers.get(HEADER_SCHEMA).map(String::as_str),
+        &kind,
+        &key,
+        &from,
+        at_ms,
+        &m.payload,
+    );
+    FetchedInput {
         src: src.to_string(),
         index: m.index,
         kind,
-        key: h(HEADER_KEY),
-        from: h(HEADER_FROM),
-        at_ms: h(HEADER_AT_MS).parse().unwrap_or(m.created_at * 1000),
-        intent: m.headers.get(HEADER_INTENT).cloned(),
-        reply_to: m.headers.get(HEADER_REPLY_TO).cloned(),
-        payload,
-        malformed,
-    };
-    if msg.malformed.is_none() && kind == InputKind::Control && msg.control().is_none() {
-        msg.malformed = Some("control payload is not a known command".into());
+        key,
+        from,
+        at_ms: at_ms.unwrap_or(m.created_at * 1000),
+        input,
     }
-    msg
 }
 
 /// kmsg input source of one session.
@@ -188,7 +165,7 @@ impl InputSource for KmsgInput {
         &self.id
     }
 
-    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<InputMessage>> {
+    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>> {
         let mut out = Vec::new();
         let mut cursor = progress.acked_index + 1;
         loop {
@@ -244,13 +221,11 @@ impl InputSource for KmsgInput {
     }
 }
 
-/// Post an input to a session queue (anyone with write access).
-pub async fn post_to_queue(
-    client: &MsgQueueClient,
-    queue: &str,
-    input: &Input,
-    from: &str,
-) -> Result<u64> {
-    let msg = encode_input(input, from)?;
+/// Post a record to a session queue (anyone with write access). This is
+/// the raw append: the pending-input limit is enforced by
+/// `SessionRegistry::post_input`, which knows the session's consumption
+/// progress.
+pub async fn post_to_queue(client: &MsgQueueClient, queue: &str, input: &PostedInput) -> Result<u64> {
+    let msg = encode_input(input)?;
     Ok(client.post_message(queue, msg).await?)
 }

@@ -4,7 +4,6 @@
 pub mod dir_queue;
 pub mod kmsg;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,7 +22,7 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     /// Deliveries after the committed progress that are not consumed yet
     /// (oldest first, at most `max`).
-    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<InputMessage>>;
+    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>>;
     /// Confirm (cumulative ack) the committed contiguous position. Always
     /// safe to repeat; never called with a position below a previous one.
     async fn confirm(&self, progress: &SourceProgress) -> Result<()>;
@@ -78,13 +77,6 @@ impl InputChannelFactory for KmsgChannels {
                     &cfg.session.driver.principal,
                     self.client.clone(),
                 ))),
-                InputSourceConfig::MsgCenter { .. } => {
-                    // UI sessions / msg-center input are deferred (V1).
-                    return Err(OpenDanError::Channel(
-                        "msg_center inputs are not supported yet (UI sessions are deferred)"
-                            .into(),
-                    ));
-                }
             }
         }
         Ok(out)
@@ -92,50 +84,6 @@ impl InputChannelFactory for KmsgChannels {
 
     fn queue_client(&self) -> Option<Arc<MsgQueueClient>> {
         Some(self.client.clone())
-    }
-}
-
-/// Inputs fetched in one pass, grouped by kind.
-#[derive(Debug, Clone, Default)]
-pub struct Inputs {
-    pub items: Vec<InputMessage>,
-}
-
-impl Inputs {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    pub fn take(&mut self, kind: InputKind) -> Vec<InputMessage> {
-        let (taken, rest): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.items).into_iter().partition(|m| m.kind == kind);
-        self.items = rest;
-        taken
-    }
-
-    pub fn peek(&self, kind: InputKind) -> Vec<&InputMessage> {
-        self.items.iter().filter(|m| m.kind == kind).collect()
-    }
-
-    pub fn take_malformed(&mut self) -> Vec<InputMessage> {
-        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.items)
-            .into_iter()
-            .partition(|m| m.malformed.is_some());
-        self.items = rest;
-        taken
-    }
-
-    pub fn extend(&mut self, other: Inputs) {
-        let mut seen: BTreeMap<(String, u64), ()> = self
-            .items
-            .iter()
-            .map(|m| ((m.src.clone(), m.index), ()))
-            .collect();
-        for m in other.items {
-            if seen.insert((m.src.clone(), m.index), ()).is_none() {
-                self.items.push(m);
-            }
-        }
     }
 }
 

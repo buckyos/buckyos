@@ -1,0 +1,10 @@
+{
+  "at_ms": 1790899260000,
+  "from": "did:bns:alice",
+  "key": "ctl:stop:1790899260000",
+  "payload": {
+    "command": "reboot"
+  },
+  "schema": "opendan.session_input/3",
+  "type": "control"
+}
