@@ -5,7 +5,7 @@
  * `/sdk/appservice/selftest` (see ../../main.ts), so the user can compare
  * "in page" vs "in background service" results side by side.
  */
-import { bns, buckyos, ndm_proxy, parseSessionTokenClaims, sn } from 'buckyos'
+import { bns, buckyos, mailboxAddress, mailboxResource, ndm_proxy, parseSessionTokenClaims, sn } from 'buckyos'
 
 type Sdk = typeof buckyos
 
@@ -25,6 +25,7 @@ export interface TestGroup {
   title: string
   description: string
   cases: TestCase[]
+  backendOnly?: boolean
 }
 
 function getKEventBaseUrl(sdk: Sdk): string {
@@ -33,7 +34,7 @@ function getKEventBaseUrl(sdk: Sdk): string {
 }
 
 function getKEventRequestUrl(sdk: Sdk, path: 'publish' | 'stream'): string {
-  return new URL(path, getKEventBaseUrl(sdk)).toString()
+  return new URL(path, new URL(getKEventBaseUrl(sdk), window.location.origin)).toString()
 }
 
 async function readJsonResponse(response: Response): Promise<Record<string, unknown>> {
@@ -46,11 +47,19 @@ async function readJsonResponse(response: Response): Promise<Record<string, unkn
 }
 
 async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unknown>): Promise<void> {
+  const account = await sdk.getAccountInfo()
+  if (!account?.session_token) {
+    throw new Error('KEvent publish requires a browser session')
+  }
   const response = await fetch(getKEventRequestUrl(sdk, 'publish'), {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      authorization: `Bearer ${account.session_token}`,
+    },
     credentials: 'include',
     body: JSON.stringify({ eventid, data }),
+    signal: AbortSignal.timeout(5_000),
   })
   const payload = await readJsonResponse(response)
   if (!response.ok || payload.status !== 'ok') {
@@ -59,6 +68,13 @@ async function publishKEvent(sdk: Sdk, eventid: string, data: Record<string, unk
 }
 
 export const TEST_GROUPS: TestGroup[] = [
+  {
+    id: 'xllm',
+    title: 'xllm 子进程身份（#640）',
+    description: '后台通过 bash 启动 xllm，继承 OOD 与容器网关环境，发起一次真实模型请求，并从 AICC 用量记录核对应用身份。需在 OOD 应用容器中运行，会消耗少量模型额度。',
+    backendOnly: true,
+    cases: [],
+  },
   {
     id: 'runtime',
     title: 'SDK Runtime',
@@ -121,18 +137,32 @@ export const TEST_GROUPS: TestGroup[] = [
     id: 'app_settings',
     title: 'AppSettings',
     description:
-      '应用设置读写检测：getAppSetting / setAppSetting 在测试键上完成一次往返。',
+      '应用设置读写检测：页面通过 SystemConfigClient 访问用户应用设置；后台通过 getAppSetting / setAppSetting 完成往返。',
     cases: [
       {
-        name: 'getAppSetting/setAppSetting round trip on namespaced key',
-        run: async ({ sdk }) => {
-          const settingPath = `test_settings.websdk_${Date.now()}`
-          await sdk.setAppSetting(settingPath, '"roundtrip"')
-          const read = await sdk.getAppSetting(settingPath)
-          if (read !== 'roundtrip') {
-            throw new Error(`settings round trip mismatch, got ${JSON.stringify(read)}`)
+        name: 'SystemConfigClient round trip on user app settings',
+        run: async ({ sdk, userId, appId }) => {
+          const client = sdk.getSystemConfigClient()
+          const key = `users/${userId}/apps/${appId}/settings`
+          let previous: string | null = null
+          try {
+            previous = (await client.get(key)).value
+          } catch (error) {
+            if (!(error instanceof Error) || error.message !== `system_config key not found: ${key}`) throw error
           }
-          return { settingPath }
+          const settingPath = `websdk_${crypto.randomUUID().replaceAll('-', '')}`
+          const settings = previous === null ? {} : JSON.parse(previous)
+          try {
+            await client.set(key, JSON.stringify({ ...settings, [settingPath]: 'roundtrip' }))
+            const read = JSON.parse((await client.get(key)).value)
+            if (read[settingPath] !== 'roundtrip') {
+              throw new Error(`settings round trip mismatch, got ${JSON.stringify(read[settingPath])}`)
+            }
+            return { key, settingPath }
+          } finally {
+            if (previous === null) await client.delete(key)
+            else await client.set(key, previous)
+          }
         },
       },
     ],
@@ -140,10 +170,10 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'task_manager',
     title: 'TaskManagerClient',
-    description: '任务管理器生命周期检测：创建 → 更新进度/状态 → 查询 → 删除。',
+    description: '任务管理器生命周期检测：创建 → 更新进度/状态 → 查询 → 归档。',
     cases: [
       {
-        name: 'TaskManagerClient creates/updates/queries/deletes a namespaced task',
+        name: 'TaskManagerClient creates/runs/queries/archives a namespaced task',
         run: async ({ sdk, userId, appId }) => {
           const client = sdk.getTaskManagerClient()
           const name = `test-websdk-${Date.now()}`
@@ -225,7 +255,10 @@ export const TEST_GROUPS: TestGroup[] = [
             .toString(36)
             .slice(2, 8)}`
           const marker = `page_${Date.now()}`
-          const reader = await sdk.createEventReader(eventid, { keepaliveMs: 1_000 })
+          const reader = await sdk.createEventReader(eventid, {
+            keepaliveMs: 1_000,
+            signal: AbortSignal.timeout(10_000),
+          })
           try {
             await publishKEvent(sdk, eventid, {
               marker,
@@ -265,7 +298,7 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'service_clients',
     title: 'Service Clients',
-    description: '新版服务客户端检测：Workflow、AICC、MsgCenter、Repo 执行只读调用，MsgQueue 执行带清理的生命周期调用。',
+    description: 'Workflow、AICC、Repo 执行只读调用，MsgQueue 执行带清理的生命周期调用；MsgCenter 验证未授予收件箱权限时的拒绝行为。',
     cases: [
       {
         name: 'WorkflowClient.listDefinitions',
@@ -287,16 +320,28 @@ export const TEST_GROUPS: TestGroup[] = [
         },
       },
       {
-        name: 'MsgCenterClient.peekBox',
+        name: 'MsgCenterClient rejects an ungranted owner inbox read',
         run: async ({ sdk, userId }) => {
-          const owner = bns.didBnsFromName(userId)
-          const records = await sdk.getMsgCenterClient().peekBox({
-            mailbox: owner,
-            box_kind: 'INBOX',
-            limit: 1,
-            with_object: false,
-          })
-          return { owner, records: records.length }
+          const mailbox = mailboxAddress(bns.didBnsFromName(userId))
+          const resource = mailboxResource(mailbox, 'INBOX')
+          try {
+            await sdk.getMsgCenterClient().peekBox({
+              mailbox,
+              box_kind: 'INBOX',
+              limit: 1,
+              with_object: false,
+            })
+          } catch (error) {
+            if (
+              error instanceof Error
+              && error.message.startsWith('RPC call error: No permission:')
+              && error.message.includes(`resource:${resource},action:read`)
+            ) {
+              return { mailbox, resource, access: 'denied' }
+            }
+            throw error
+          }
+          throw new Error('sys_test has no MsgCenter grant but could read the owner inbox')
         },
       },
       {
@@ -365,7 +410,7 @@ export const TEST_GROUPS: TestGroup[] = [
   {
     id: 'ndm_proxy',
     title: 'NDM Proxy',
-    description: '新版 NDM proxy 检测：Browser 验证受信运行时保护，AppService 通过 kRPC 读取 outbox 计数。',
+    description: 'Browser 验证受信运行时保护；AppService 查询不存在的对象，并验证网关拒绝受限 outboxCount 管理调用。',
     cases: [
       {
         name: 'ndm_proxy.outboxCount',

@@ -74,6 +74,7 @@ fi
 mkdir -p "${TARGET_ROOT}"
 install -m 0644 "${SOURCE_ROOT}/deno.json" "${TARGET_ROOT}/deno.json"
 install -m 0644 "${SOURCE_ROOT}/main.ts" "${TARGET_ROOT}/main.ts"
+install -m 0644 "${SOURCE_ROOT}/xllm_selftest.ts" "${TARGET_ROOT}/xllm_selftest.ts"
 rm -rf "${TARGET_ROOT}/dist"
 cp -R "${SOURCE_ROOT}/dist" "${TARGET_ROOT}/dist"
 

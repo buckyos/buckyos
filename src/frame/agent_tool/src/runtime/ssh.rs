@@ -63,11 +63,12 @@ fn probe_script(cwd: &str, env: &BTreeMap<String, String>) -> String {
 }
 pub(super) fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
     let p = bytes
+        .strip_suffix(&[0])
+        .unwrap_or(bytes)
         .split(|b| *b == 0)
-        .filter(|p| !p.is_empty())
         .map(|p| String::from_utf8_lossy(p).to_string())
         .collect::<Vec<_>>();
-    if p.len() < 10 {
+    if p.len() < 10 || p[..10].iter().any(String::is_empty) {
         return Err(capability(
             "execution environment probe returned incomplete data",
         ));
@@ -95,7 +96,9 @@ pub(super) fn parse_probe(bytes: &[u8]) -> Result<Probe, XllmError> {
 
 pub(super) const LOCAL_PROBE: &str = r#"set -e
 command -v bash >/dev/null
-printf '%s\0' "$(cat /etc/machine-id 2>/dev/null || hostname)" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Z%z)"
+machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+[ -n "$machine_id" ] || machine_id="$(hostname)"
+printf '%s\0' "$machine_id" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$(date +%Z%z)"
 for tool in bash realpath base64; do if command -v "$tool" >/dev/null; then printf '%s\0' "$tool"; fi; done
 "#;
 
@@ -118,6 +121,56 @@ pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<P
         )));
     }
     parse_probe(&o.stdout)
+}
+
+#[cfg(all(test, unix))]
+mod probe_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn local_probe_uses_hostname_when_machine_id_is_empty() {
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(format!("cat() {{ return 0; }}\n{LOCAL_PROBE}"))
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let probe = parse_probe(&output.stdout).unwrap();
+        assert_eq!(probe.identity.machine, probe.identity.hostname);
+        assert_eq!(
+            probe.info.cwd,
+            std::env::current_dir().unwrap().to_str().unwrap()
+        );
+        assert!(probe.info.shell.ends_with("/bash"));
+    }
+
+    #[test]
+    fn probe_rejects_empty_fields_without_shifting_positions() {
+        let fields = [
+            "machine",
+            "host",
+            "1000",
+            "linux",
+            "x86_64",
+            "/bin/bash",
+            "/tmp/work",
+            "/usr/bin:/bin",
+            "2026-10-03T00:00:00+0000",
+            "UTC+0000",
+            "bash",
+            "realpath",
+            "base64",
+        ];
+        for index in 0..10 {
+            let mut incomplete = fields;
+            incomplete[index] = "";
+            assert!(parse_probe(format!("{}\0", incomplete.join("\0")).as_bytes()).is_err());
+        }
+        let probe = parse_probe(format!("{}\0", fields.join("\0")).as_bytes()).unwrap();
+        assert_eq!(probe.info.cwd, "/tmp/work");
+        assert_eq!(probe.path, "/usr/bin:/bin");
+    }
 }
 
 #[derive(Debug, Clone)]

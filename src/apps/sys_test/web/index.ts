@@ -15,7 +15,7 @@
  * Each group also leaves a placeholder area for future per-service manual
  * call panels (point 4 of the task brief).
  */
-import { buckyos, ndm, ndn } from 'buckyos'
+import { buckyos, ndm, ndn, RuntimeType } from 'buckyos'
 import { TEST_GROUPS, TestCase, TestContext, TestGroup } from './src/test_groups'
 
 const APP_ID = 'buckyos-systest.buckyos.bns.did'
@@ -200,12 +200,12 @@ async function runGroupOnServer(group: TestGroup): Promise<CaseResult[]> {
       `non-json response from ${url} (status=${response.status}): ${text.slice(0, 200)}`,
     )
   }
-  if (!response.ok && (!payload || !Array.isArray(payload.results))) {
+  if (!Array.isArray(payload?.results) || payload.results.length === 0) {
     throw new Error(
       payload?.error ?? `selftest endpoint returned status ${response.status}`,
     )
   }
-  return payload.results ?? []
+  return payload.results
 }
 
 function renderResults(container: HTMLElement, origin: RunOrigin, results: CaseResult[] | null, error?: string) {
@@ -327,7 +327,7 @@ function renderGroups() {
         runInPage.disabled = false
       }
     })
-    actions.appendChild(runInPage)
+    if (!group.backendOnly) actions.appendChild(runInPage)
 
     const runOnServer = document.createElement('button')
     runOnServer.className = 'btn secondary'
@@ -742,7 +742,29 @@ async function main() {
   setAuthStatus({ kind: 'init' })
 
   try {
-    await buckyos.initBuckyOS(APP_ID)
+    const response = await fetch('/sdk/appservice/runtime')
+    const runtime = await response.json()
+    if (!response.ok || !runtime.ok) {
+      throw new Error(runtime.error ?? `AppService runtime returned ${response.status}`)
+    }
+    if (
+      runtime.appId !== APP_ID
+      || typeof runtime.ownerUserId !== 'string'
+      || !runtime.ownerUserId
+      || runtime.appInstanceId !== `${APP_ID}@${runtime.ownerUserId}`
+      || typeof runtime.zoneHost !== 'string'
+      || !runtime.zoneHost
+    ) {
+      throw new Error('AppService runtime is missing its app instance identity or Zone hostname')
+    }
+    await buckyos.initBuckyOS(APP_ID, {
+      appId: APP_ID,
+      appInstanceId: runtime.appInstanceId,
+      ownerUserId: runtime.ownerUserId,
+      zoneHost: runtime.zoneHost,
+      runtimeType: RuntimeType.Browser,
+      defaultProtocol: `${window.location.protocol}//`,
+    })
   } catch (error) {
     setAuthStatus({
       kind: 'error',

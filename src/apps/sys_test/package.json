@@ -6,7 +6,8 @@
     "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
   },
   "scripts": {
+    "check": "deno check main.ts && pnpm --filter ./web exec tsc --noEmit",
     "build:web": "pnpm --filter ./web run build",
-    "build": "pnpm run build:web && node prepare.mjs"
+    "build": "pnpm run check && pnpm run build:web && node prepare.mjs"
   }
 }

@@ -1,7 +1,7 @@
 {
   "lock": false,
   "tasks": {
-    "start": "deno run --allow-net --allow-read --allow-env main.ts",
+    "start": "deno run --allow-net --allow-read --allow-env --allow-write --allow-run=/bin/bash main.ts",
     "build": "pnpm build"
   },
   "imports": {

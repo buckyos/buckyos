@@ -19,6 +19,7 @@
  * AppService runtime from a Deno process.
  */
 import { serveDir } from "jsr:@std/http/file-server";
+import { runXllmIdentitySelftest } from "./xllm_selftest.ts";
 
 type NodeSdkModule = typeof import("@sys-test/websdk-node-types");
 type NdmModule = NodeSdkModule["ndm"];
@@ -44,6 +45,7 @@ type SelftestCaseResult = {
 
 type GroupId =
   | "runtime"
+  | "xllm"
   | "system_config"
   | "app_settings"
   | "task_manager"
@@ -193,13 +195,46 @@ async function bootstrapSdk(): Promise<BootstrapState> {
 
   try {
     const sdk = await loadSdkModule();
+    let zoneHost = getEnv("BUCKYOS_ZONE_HOST") ?? "";
+    const zoneConfig = getEnv("BUCKYOS_ZONE_CONFIG");
+    if (!zoneHost && zoneConfig) {
+      const config: unknown = JSON.parse(zoneConfig);
+      if (!sdk.isBuckyOSZoneConfig(config)) {
+        throw new Error("BUCKYOS_ZONE_CONFIG must contain zone_document");
+      }
+      const zone = sdk.namelib.parseDidDoc(config.zone_document);
+      if (zone.docType !== "zone") {
+        throw new Error("BUCKYOS_ZONE_CONFIG does not contain a Zone document");
+      }
+      zoneHost = zone.doc.hostname;
+    }
+    let sessionToken = appToken;
+    let refreshToken: string | undefined;
+    if (sdk.parseSessionTokenClaims(appToken)?.iss !== "verify-hub") {
+      const gateway = getEnv("BUCKYOS_HOST_GATEWAY") ?? "host.docker.internal";
+      const verifyHub = new sdk.VerifyHubClient(
+        new sdk.buckyos.kRPCClient(
+          `http://${gateway}:3180/kapi/verify-hub`,
+        ),
+      );
+      const pair = await verifyHub.loginByJwt({
+        jwt: appToken,
+        target: {
+          kind: "app",
+          app_instance_id: `${identity.appId}@${identity.ownerUserId}`,
+        },
+      });
+      sessionToken = pair.session_token;
+      refreshToken = pair.refresh_token;
+    }
     await sdk.buckyos.initBuckyOS(identity.appId, {
       appId: identity.appId,
       ownerUserId: identity.ownerUserId,
       runtimeType: sdk.RuntimeType.AppService,
-      zoneHost: getEnv("BUCKYOS_ZONE_HOST") ?? "",
+      zoneHost,
       defaultProtocol: "https://",
-      sessionToken: appToken,
+      sessionToken,
+      refreshToken,
     });
     await sdk.buckyos.login();
     return { kind: "ready", identity, sdk };
@@ -302,10 +337,18 @@ async function publishKEvent(
   eventid: string,
   data: Record<string, unknown>,
 ): Promise<void> {
+  const account = await sdk.buckyos.getAccountInfo();
+  if (!account?.session_token) {
+    throw new Error("KEvent publish requires an AppService session");
+  }
   const response = await fetch(getKEventRequestUrl(sdk, "publish"), {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${account.session_token}`,
+    },
     body: JSON.stringify({ eventid, data }),
+    signal: AbortSignal.timeout(5_000),
   });
   const payload = await readJsonResponse(response);
   if (!response.ok || payload.status !== "ok") {
@@ -337,8 +380,14 @@ function buildGroupRunners(
               `expected appId ${identity.appId}, got ${actualAppId ?? "null"}`,
             );
           }
-          if (!zoneHost) {
-            throw new Error("getZoneHostName() returned an empty value");
+          const appInstanceId = sdk.buckyos.getAppInstanceId();
+          if (
+            sdk.buckyos.getRuntimeType() !== sdk.RuntimeType.AppService ||
+            appInstanceId !== `${identity.appId}@${identity.ownerUserId}`
+          ) {
+            throw new Error(
+              "AppService runtime identity does not match the app instance",
+            );
           }
           const services = [
             "system-config",
@@ -355,9 +404,20 @@ function buildGroupRunners(
               sdk.buckyos.getZoneServiceURL(name),
             ]),
           );
+          const gateway = getEnv("BUCKYOS_HOST_GATEWAY") ??
+            "host.docker.internal";
+          for (const [name, address] of Object.entries(serviceUrls)) {
+            const url = new URL(address);
+            if (url.hostname !== gateway || url.port !== "3180") {
+              throw new Error(
+                `${name} does not resolve through the node gateway: ${address}`,
+              );
+            }
+          }
           return {
             runtimeType: sdk.buckyos.getRuntimeType(),
             appId: actualAppId,
+            appInstanceId,
             zoneHost,
             serviceUrls,
           };
@@ -413,30 +473,31 @@ function buildGroupRunners(
       await runSelftestCase(
         "getAppSetting/setAppSetting round trip on namespaced key",
         async () => {
-          const settingPath = `test_settings.websdk_${Date.now()}`;
+          const client = sdk.buckyos.getSystemConfigClient();
+          const settingsPath = getSettingsPath(identity);
+          let previous: string | null = null;
           try {
-            await sdk.buckyos.setAppSetting(settingPath, '"roundtrip"');
+            previous = (await client.get(settingsPath)).value;
           } catch (error) {
             if (!isMissingSettingsError(error)) throw error;
-            // First-time settings write: synthesize the full settings tree at
-            // the app-level key so subsequent setAppSetting calls succeed.
-            const settingsPath = getSettingsPath(identity);
-            const segments = settingPath.split(/[./]/).filter(Boolean);
-            const rootSettings = segments.reduceRight<unknown>(
-              (acc, segment) => ({ [segment]: acc }),
-              "roundtrip",
-            );
-            await sdk.buckyos
-              .getSystemConfigClient()
-              .set(settingsPath, JSON.stringify(rootSettings));
           }
-          const read = await sdk.buckyos.getAppSetting(settingPath);
-          if (read !== "roundtrip") {
-            throw new Error(
-              `settings round trip mismatch, got ${JSON.stringify(read)}`,
-            );
+          const settingPath = `websdk_${
+            crypto.randomUUID().replaceAll("-", "")
+          }`;
+          if (previous === null) await client.set(settingsPath, "{}");
+          try {
+            await sdk.buckyos.setAppSetting(settingPath, '"roundtrip"');
+            const read = await sdk.buckyos.getAppSetting(settingPath);
+            if (read !== "roundtrip") {
+              throw new Error(
+                `settings round trip mismatch, got ${JSON.stringify(read)}`,
+              );
+            }
+            return { settingPath };
+          } finally {
+            if (previous === null) await client.delete(settingsPath);
+            else await client.set(settingsPath, previous);
           }
-          return { settingPath };
         },
       ),
     ];
@@ -445,7 +506,7 @@ function buildGroupRunners(
   const taskManagerGroup = async (): Promise<SelftestCaseResult[]> => {
     return [
       await runSelftestCase(
-        "TaskManagerClient creates/updates/queries/deletes a namespaced task",
+        "TaskManagerClient creates/runs/queries/archives a namespaced task",
         async () => {
           const client = sdk.buckyos.getTaskManagerClient();
           const name = `test-websdk-${Date.now()}`;
@@ -530,8 +591,15 @@ function buildGroupRunners(
               crypto.randomUUID().replaceAll("-", "").slice(0, 8)
             }`;
           const marker = `app_service_${Date.now()}`;
-          const reader = await sdk.buckyos.createEventReader(eventid, {
+          const client = new sdk.KEventClient({
+            mode: "browser",
+            streamUrl: sdk.buckyos.getZoneServiceURL("kevent"),
+            sessionTokenProvider: async () =>
+              (await sdk.buckyos.getAccountInfo())?.session_token,
+          });
+          const reader = await client.createEventReader(eventid, {
             keepaliveMs: 1_000,
+            signal: AbortSignal.timeout(10_000),
           });
           try {
             await publishKEvent(sdk, eventid, {
@@ -593,15 +661,33 @@ function buildGroupRunners(
         }
         return { quota };
       }),
-      await runSelftestCase("MsgCenterClient.peekBox", async () => {
-        const records = await sdk.buckyos.getMsgCenterClient().peekBox({
-          mailbox: owner,
-          box_kind: "INBOX",
-          limit: 1,
-          with_object: false,
-        });
-        return { owner, records: records.length };
-      }),
+      await runSelftestCase(
+        "MsgCenterClient rejects an ungranted owner inbox read",
+        async () => {
+          const mailbox = sdk.mailboxAddress(owner);
+          const resource = sdk.mailboxResource(mailbox, "INBOX");
+          try {
+            await sdk.buckyos.getMsgCenterClient().peekBox({
+              mailbox,
+              box_kind: "INBOX",
+              limit: 1,
+              with_object: false,
+            });
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.startsWith("RPC call error: No permission:") &&
+              error.message.includes(`resource:${resource},action:read`)
+            ) {
+              return { mailbox, resource, access: "denied" };
+            }
+            throw error;
+          }
+          throw new Error(
+            "sys_test has no MsgCenter grant but could read the owner inbox",
+          );
+        },
+      ),
       await runSelftestCase("RepoClient.stat", async () => {
         const stat = await sdk.buckyos.getRepoClient().stat();
         return { stat };
@@ -671,18 +757,53 @@ function buildGroupRunners(
 
   const ndmProxyGroup = async (): Promise<SelftestCaseResult[]> => {
     return [
-      await runSelftestCase("ndm_proxy.outboxCount", async () => {
-        const result = await sdk.ndm_proxy.outboxCount();
-        if (!Number.isInteger(result.count) || result.count < 0) {
-          throw new Error(`invalid outbox count: ${result.count}`);
-        }
-        return { count: result.count };
-      }),
+      await runSelftestCase(
+        "ndm_proxy queries a missing object through the node gateway",
+        async () => {
+          const objId = new sdk.ndn.ObjId(
+            sdk.ndn.OBJ_TYPE_FILE,
+            crypto.getRandomValues(new Uint8Array(32)),
+          ).toString();
+          const result = await sdk.ndm_proxy.queryObjectById({ obj_id: objId });
+          if (result.state !== "not_exist") {
+            throw new Error(`expected a missing object, got ${result.state}`);
+          }
+          return { objId, state: result.state };
+        },
+      ),
+      await runSelftestCase(
+        "ndm_proxy rejects restricted outboxCount on the app gateway",
+        async () => {
+          try {
+            await sdk.ndm_proxy.outboxCount();
+          } catch (error) {
+            if (
+              error instanceof sdk.ndm_proxy.NdmProxyApiError &&
+              error.status === 403 &&
+              error.message.includes(
+                "restricted operation 'outbox_count' is disabled on this gateway",
+              )
+            ) {
+              return { access: "denied", status: error.status };
+            }
+            throw error;
+          }
+          throw new Error(
+            "app gateway unexpectedly allowed restricted outboxCount",
+          );
+        },
+      ),
     ];
   };
 
   return {
     runtime: runtimeGroup,
+    xllm: async () => [
+      await runSelftestCase(
+        "bash → xllm preserves AppService identity with inherited OOD environment (#640)",
+        () => runXllmIdentitySelftest(sdk, identity),
+      ),
+    ],
     system_config: systemConfigGroup,
     app_settings: appSettingsGroup,
     task_manager: taskManagerGroup,
@@ -924,6 +1045,7 @@ Deno.serve({
           ok: true,
           mode: "app-service",
           appId: identity.appId,
+          appInstanceId: sdk.buckyos.getAppInstanceId(),
           ownerUserId: identity.ownerUserId,
           zoneHost: sdk.buckyos.getZoneHostName(),
           hostGateway: getEnv("BUCKYOS_HOST_GATEWAY"),
@@ -1275,7 +1397,9 @@ Deno.serve({
       const groupId = url.pathname.slice(
         `${sdkRoutePrefix}/selftest/`.length,
       ) as GroupId;
-      const runner = groupRunners[groupId];
+      const runner = Object.hasOwn(groupRunners, groupId)
+        ? groupRunners[groupId]
+        : null;
       if (!runner) {
         return tap(
           `selftest/${groupId}[unknown]`,
