@@ -15,8 +15,9 @@ use crate::session::runs::RunHandle;
 
 use super::live::remove_if_safe;
 use super::outcome::{
-    classify_done, decide_end, finish_run, has_report, is_fork_child, FinishKind, Next,
+    call_site_of, classify_done, finish_run, hand_over, has_report, CallSite, FinishKind, Next,
 };
+use super::tools::pending_sub_call;
 use super::receipts::{apply_receipt, receipts_after, snapshot_host_meta, validate_receipts};
 use super::shared::Shared;
 
@@ -97,7 +98,83 @@ pub(super) async fn reconcile_runs(sh: &Arc<Shared>) -> Result<Reconciled> {
         finish_terminal_record(sh, &run, &record, &snapshot).await?;
         return Ok(Reconciled::None);
     }
+    if redo_transfer(sh, &run, &record, &snapshot).await? {
+        return Ok(Reconciled::None);
+    }
     Ok(Reconciled::Resume(run, snapshot))
+}
+
+/// The live run stopped at a transfer that state has not committed yet: a
+/// `next_behavior` hand-over recorded in run.json (ours before a crash, or
+/// xllm's, which never commits one), or a `call_behavior` suspension. The
+/// transfer is committed here, exactly once: after the commit the run is no
+/// longer the live run. `true` = the run was set aside or ended.
+async fn redo_transfer(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    record: &RunRecord,
+    snapshot: &LLMContextSnapshot,
+) -> Result<bool> {
+    let behavior = record.config.loop_model == LoopModel::Behavior;
+    let (cfg, completed, returned, committed) = {
+        let s = sh.session.lock().await;
+        (
+            s.config.clone(),
+            s.state.turns_completed,
+            s.state.tool_return_pending(),
+            s.state.live_run.as_ref().map(|l| l.handover_at_ms).unwrap_or(0),
+        )
+    };
+    let assembler = sh.deps.assembler.clone();
+    let entry_cfg = cfg.clone();
+    let entry = move |b: &str| assembler.behavior_entry(&entry_cfg, b);
+    // A record this state already committed (the run was suspended by it
+    // and is live again) is history, not a transfer left to do.
+    if let Some(h) = record.handover.as_ref().filter(|h| h.at_ms != committed) {
+        let (child, depth) = call_site_of(sh, &record.run_id).await;
+        let site = CallSite {
+            child,
+            depth,
+            entry: &entry,
+        };
+        let st = &snapshot.state;
+        let last_step = st.last_step.as_ref().or(st.steps.last());
+        let answer = st
+            .last_report
+            .clone()
+            .or_else(|| last_step.and_then(|s| s.self_report.clone()));
+        let replied =
+            has_report(snapshot) || last_step.is_some_and(|s| !s.messages_sent.is_empty());
+        let mut next = classify_done(
+            &cfg,
+            behavior,
+            Some(h.next_behavior.clone()),
+            answer,
+            replied,
+            &site,
+            completed,
+        );
+        next.usage = record.usage.main.clone();
+        if next.kind == FinishKind::Switch {
+            hand_over(sh, run, behavior, snapshot, &mut next).await?;
+        } else {
+            finish_run(sh, run, snapshot, behavior, next).await?;
+        }
+        return Ok(true);
+    }
+    if !returned {
+        if let Some(call) = pending_sub_call(snapshot, &entry)? {
+            let mut next = Next {
+                kind: FinishKind::Switch,
+                next_behavior: Some(call.behavior.clone()),
+                call: Some(call),
+                ..Default::default()
+            };
+            hand_over(sh, run, behavior, snapshot, &mut next).await?;
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// Redo the end of a run from its record (xllm finished it, or finish_run
@@ -155,16 +232,20 @@ async fn derive_next(
                 )
             };
             let answer = answer.or_else(|| record.result.as_ref().map(|r| r.raw.clone()));
-            let fork_child = is_fork_child(sh, &record.run_id).await;
-            let mut next =
-                classify_done(&cfg, behavior, nb, answer, replied, fork_child, completed);
-            if next.kind == FinishKind::Switch {
-                // The executor ended the run; nothing continues it.
-                next.kind = FinishKind::Done;
-                next.run_ended = true;
-                next.next_behavior = None;
-                decide_end(&cfg, &mut next, completed + 1);
-            }
+            // A terminal record has no hand-over left (a hosted run that
+            // hands over stays `paused`, see `redo_transfer`): whatever the
+            // last step named, the run delivered its result.
+            let nb = nb.filter(|b| !agent_tool::xllm::is_handover_target(b));
+            let (child, depth) = call_site_of(sh, &record.run_id).await;
+            let assembler = sh.deps.assembler.clone();
+            let entry_cfg = cfg.clone();
+            let entry = move |b: &str| assembler.behavior_entry(&entry_cfg, b);
+            let site = CallSite {
+                child,
+                depth,
+                entry: &entry,
+            };
+            let mut next = classify_done(&cfg, behavior, nb, answer, replied, &site, completed);
             next.usage = record.usage.main.clone();
             next
         }

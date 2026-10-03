@@ -13,11 +13,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": 1,
         "inflight": [],
-        "run_id": "20261002-181136-c58910",
+        "run_id": "20261003-035100-61ab88",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-181136-c58910"
+        "20261003-035100-61ab88"
       ],
       "session_id": "work-fixture-gate",
       "state": {

@@ -535,7 +535,7 @@ fn behavior_spec(obj: &str, modes: serde_json::Value) -> libopendan::api::Sessio
     });
     spec.prompt.behavior = Some("plan".into());
     spec.extensions
-        .insert("opendan".into(), json!({ "process_modes": modes }));
+        .insert("opendan".into(), json!({ "behaviors": modes }));
     spec
 }
 
@@ -555,7 +555,7 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
     let sd = env
         .create_work(behavior_spec(
             "research then answer",
-            json!({ "research": "fork" }),
+            json!({ "research": { "mode": "fork" } }),
         ))
         .await;
     let llm = ScriptedLlm::new(|req, n| {
@@ -648,12 +648,12 @@ fn count(k: &[&str], what: &str) -> usize {
 }
 
 #[tokio::test]
-async fn independent_processes_keep_their_own_runs() {
+async fn switch_context_processes_keep_their_own_runs() {
     let env = Env::new();
     let sd = env
         .create_work(behavior_spec(
             "alternate",
-            json!({ "writer": "independent", "plan": "independent" }),
+            json!({ "writer": { "mode": "switch_context" }, "plan": { "mode": "switch_context" } }),
         ))
         .await;
     let llm = ScriptedLlm::new(|req, n| {
@@ -664,7 +664,7 @@ async fn independent_processes_keep_their_own_runs() {
             }
             1 => text("<response><next_behavior>writer</next_behavior></response>"),
             2 => {
-                // Session history (worklog) is shared; live steps are not.
+                // Its own context: neither the session history nor plan's steps.
                 assert!(
                     !all.contains("step_record behavior=\"plan\""),
                     "no step inheritance\n{all}"
@@ -696,51 +696,234 @@ async fn independent_processes_keep_their_own_runs() {
 }
 
 #[tokio::test]
-async fn normal_switch_continues_the_same_run() {
+async fn hand_over_without_an_entry_mode_fails_instead_of_switching_in_place() {
     let env = Env::new();
     let sd = env
         .create_work(behavior_spec("two phases", json!({})))
         .await;
+    let llm = ScriptedLlm::new(|_, n| match n {
+        0 => text("<response><next_behavior>do</next_behavior></response>"),
+        _ => panic!("no context may run behavior `do`: call {n}"),
+    });
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    let libopendan::runner::DriveResult::Error { error, .. } = &r else {
+        panic!("{r:?}");
+    };
+    assert_eq!(error["kind"], json!("behavior_config"), "{error}");
+    assert!(error["message"].as_str().unwrap().contains("`do`"), "{error}");
+    assert_eq!(llm.count(), 1);
+    let st = sd.state().unwrap();
+    assert!(st.live_run.is_none() && st.process_stack.is_empty());
+    assert!(st.open_turn.is_none(), "the Turn failed");
+    assert_eq!(st.turns_completed, 0);
+}
+
+#[tokio::test]
+async fn invalid_behavior_table_is_refused_before_anything_runs() {
+    for (modes, what) in [
+        (json!({ "do": { "mode": "normal" } }), "unknown mode"),
+        (json!({ "do": {} }), "missing mode"),
+        (
+            json!({ "do": { "mode": "fork", "system_prompt": "other" } }),
+            "fork with its own system",
+        ),
+        (
+            json!({ "do": { "mode": "switch_context", "inherit": "steps" } }),
+            "steps into a switch target",
+        ),
+    ] {
+        let env = Env::new();
+        let sd = env.create_work(behavior_spec("bad table", modes)).await;
+        let llm = ScriptedLlm::new(|_, n| panic!("nothing may run: call {n}"));
+        let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+        assert!(
+            matches!(r, libopendan::runner::DriveResult::Error { .. }),
+            "{what}: {r:?}"
+        );
+        assert_eq!(llm.count(), 0, "{what}");
+    }
+    // The session level table of the old design is not a fallback either.
+    let env = Env::new();
+    let mut spec = behavior_spec("old table", json!({}));
+    spec.extensions.insert(
+        "opendan".into(),
+        json!({ "process_modes": { "do": "fork" } }),
+    );
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|_, n| panic!("nothing may run: call {n}"));
+    let r = drive(&sd, &env.deps(llm), StopWhen::Finished).await;
+    assert!(matches!(r, libopendan::runner::DriveResult::Error { .. }), "{r:?}");
+}
+
+fn system_of(req: &llm_context::deps::LlmInferenceRequest) -> String {
+    req.messages
+        .iter()
+        .filter(|m| m.role == buckyos_api::AiRole::System)
+        .map(|m| m.text_content())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// V2: DO → CHECK → DO → CHECK. Each behavior has its own run, system and
+/// history; re-entering resumes the target's own snapshot; one Turn.
+#[tokio::test]
+async fn switch_context_targets_keep_their_own_system_and_history() {
+    let env = Env::new();
+    let mut spec = behavior_spec(
+        "do and check",
+        json!({
+            "do": { "mode": "switch_context", "system_prompt": "SYSTEM-DO" },
+            "check": { "mode": "switch_context", "system_prompt": "SYSTEM-CHECK" }
+        }),
+    );
+    spec.prompt.behavior = Some("do".into());
+    let sd = env.create_work(spec).await;
     let llm = ScriptedLlm::new(|req, n| {
         let all = render(&req.messages);
+        let sys = system_of(req);
         match n {
-            0 => text(
-                "<response><actions><shell><![CDATA[echo phase-1]]></shell></actions></response>",
-            ),
-            1 => text("<response><next_behavior>do</next_behavior></response>"),
+            0 => {
+                assert!(sys.contains("SYSTEM-DO") && !sys.contains("SYSTEM-CHECK"), "{sys}");
+                text("<response><actions><shell><![CDATA[echo do-1]]></shell></actions></response>")
+            }
+            1 => text("<response><next_behavior>check</next_behavior></response>"),
             2 => {
-                assert!(
-                    all.contains("phase-1") && all.contains("behavior_switch to=\"do\""),
-                    "{all}"
-                );
-                text("<response><report><![CDATA[both phases done]]></report></response>")
+                assert!(sys.contains("SYSTEM-CHECK") && !sys.contains("SYSTEM-DO"), "{sys}");
+                assert!(!all.contains("do-1"), "DO's history is not CHECK's:\n{all}");
+                assert!(all.contains("behavior_switch to=\"check\""), "{all}");
+                text("<response><actions><shell><![CDATA[echo check-1]]></shell></actions></response>")
+            }
+            3 => text("<response><next_behavior>do</next_behavior></response>"),
+            4 => {
+                // Back in DO's own run: its system and its earlier steps.
+                assert!(sys.contains("SYSTEM-DO"), "{sys}");
+                assert!(all.contains("do-1") && !all.contains("check-1"), "{all}");
+                text("<response><next_behavior>check</next_behavior></response>")
+            }
+            5 => {
+                // CHECK resumed from its own snapshot.
+                assert!(sys.contains("SYSTEM-CHECK"), "{sys}");
+                assert!(all.contains("check-1") && !all.contains("do-1"), "{all}");
+                text("<response><report><![CDATA[checked]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
     assert!(r.is_finished(), "{r:?}");
-    let st = sd.state().unwrap();
-    assert_eq!(st.current_behavior.as_deref(), Some("do"));
-    // One run for both behaviors.
-    let runs: Vec<String> = read_worklog(&sd)
+    assert_eq!(llm.count(), 6);
+    // Two runs only: each context was created once and resumed afterwards.
+    let mut runs: Vec<String> = read_worklog(&sd)
         .into_iter()
         .filter_map(|e| match e.body {
-            WorklogBody::TurnStarted { run_id, .. } | WorklogBody::InputBatch { run_id, .. } => {
-                Some(run_id)
-            }
+            WorklogBody::Step { run_id, .. } => Some(run_id),
             _ => None,
         })
         .collect();
-    assert_eq!(runs.len(), 2);
-    assert_eq!(runs[0], runs[1]);
-    // Three Rounds, one run, one logical Input → result.
+    runs.sort();
+    runs.dedup();
+    assert_eq!(runs.len(), 2, "{runs:?}");
     let k = kinds(&read_worklog(&sd));
     assert_eq!(count(&k, "turn_started"), 1);
-    assert_eq!(count(&k, "input_batch"), 1);
-    let stats = sd.statistics().unwrap();
-    assert_eq!((stats.rounds, stats.runs, stats.turns), (3, 1, 1));
+    assert_eq!(count(&k, "turn_ended"), 1);
+    let st = sd.state().unwrap();
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(st.process_stack.is_empty());
+}
+
+/// V3: create_sub_context uses the target's system; `inherit` selects what
+/// of the caller it sees; its transcript does not enter the caller.
+#[tokio::test]
+async fn create_sub_context_uses_its_own_system_and_selected_history() {
+    for (inherit, sees_steps, sees_history) in [
+        ("none", false, false),
+        ("steps", true, false),
+        ("recent_dialogue", false, true),
+    ] {
+        let env = Env::new();
+        let sd = env
+            .create_work(behavior_spec(
+                "plan then do",
+                json!({ "do": { "mode": "create_sub_context", "system_prompt": "SYSTEM-DO", "inherit": inherit } }),
+            ))
+            .await;
+        let llm = ScriptedLlm::new(move |req, n| {
+            let all = render(&req.messages);
+            let sys = system_of(req);
+            match n {
+                0 => text("<response><actions><shell><![CDATA[echo plan-1]]></shell></actions></response>"),
+                1 => text("<response><next_behavior>do</next_behavior></response>"),
+                2 => {
+                    assert!(sys.contains("SYSTEM-DO"), "{inherit}: {sys}");
+                    assert!(all.contains("<sub_task mode=\"create_sub_context\""), "{inherit}: {all}");
+                    assert_eq!(
+                        all.contains("step_record behavior=\"plan\""),
+                        sees_steps,
+                        "{inherit}:\n{all}"
+                    );
+                    assert_eq!(all.contains("<session_history>"), sees_history, "{inherit}:\n{all}");
+                    assert_eq!(all.contains("plan-1"), sees_steps || sees_history, "{inherit}:\n{all}");
+                    text("<response><actions><shell><![CDATA[echo do-1]]></shell></actions></response>")
+                }
+                3 => text("<response><report><![CDATA[did it]]></report></response>"),
+                4 => {
+                    assert!(!sys.contains("SYSTEM-DO"), "{sys}");
+                    assert!(all.contains("did it") && !all.contains("do-1"), "{inherit}:\n{all}");
+                    assert!(all.contains("plan-1"), "{all}");
+                    text("<response><report><![CDATA[final]]></report></response>")
+                }
+                _ => panic!("unexpected call {n}"),
+            }
+        });
+        let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+        assert!(r.is_finished(), "{inherit}: {r:?}");
+        assert_eq!(llm.count(), 5, "{inherit}");
+        let steps = step_texts(&sd);
+        assert_eq!(steps.iter().filter(|s| s.contains("plan-1")).count(), 1, "{inherit}: {steps:?}");
+        assert_eq!(steps.iter().filter(|s| s.contains("do-1")).count(), 1, "{inherit}: {steps:?}");
+        let st = sd.state().unwrap();
+        assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "{inherit}");
+    }
+}
+
+/// A sub context never waits for the user itself and never ends the Turn
+/// by failing: both come back to the caller as its result.
+#[tokio::test]
+async fn sub_context_wait_and_failure_return_to_the_caller() {
+    let env = Env::new();
+    let sd = env
+        .create_work(behavior_spec(
+            "ask through the caller",
+            json!({ "do": { "mode": "create_sub_context" } }),
+        ))
+        .await;
+    let llm = ScriptedLlm::new(|req, n| {
+        let all = render(&req.messages);
+        match n {
+            0 => text("<response><next_behavior>do</next_behavior></response>"),
+            1 => text("<response><report><![CDATA[which color?]]></report><next_behavior>WAIT_USER_MSG</next_behavior></response>"),
+            2 => {
+                assert!(
+                    all.contains("status=\"needs_user_input\"") && all.contains("which color?"),
+                    "{all}"
+                );
+                // The sub context hands over to a behavior nobody declared.
+                text("<response><next_behavior>do</next_behavior></response>")
+            }
+            3 => text("<response><next_behavior>nowhere</next_behavior></response>"),
+            4 => {
+                assert!(all.contains("status=\"failed\"") && all.contains("`nowhere`"), "{all}");
+                text("<response><report><![CDATA[done]]></report></response>")
+            }
+            _ => panic!("unexpected call {n}"),
+        }
+    });
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 5);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(st.outcome, Some(Outcome::Succeeded));
 }
 
 #[tokio::test]
@@ -862,10 +1045,13 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
 }
 
 #[tokio::test]
-async fn normal_switch_across_drives_runs_the_next_behavior() {
+async fn switch_across_drives_runs_the_next_behavior() {
     let env = Env::new();
     let sd = env
-        .create_work(behavior_spec("two phases", json!({})))
+        .create_work(behavior_spec(
+            "two phases",
+            json!({ "do": { "mode": "switch_context" } }),
+        ))
         .await;
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text("<response><next_behavior>do</next_behavior></response>"),
@@ -881,10 +1067,11 @@ async fn normal_switch_across_drives_runs_the_next_behavior() {
         "{r:?}"
     );
     let st = sd.state().unwrap();
-    let rec = sd
-        .runs()
-        .record(&st.live_run.clone().unwrap().run_id)
-        .unwrap();
+    // The run that handed over is parked, not finished; `do` gets its own.
+    assert!(st.live_run.is_none());
+    assert_eq!(st.process_stack.len(), 1);
+    assert_eq!(st.process_stack[0].role, FrameRole::Parked);
+    let rec = sd.runs().record(&st.process_stack[0].run_id).unwrap();
     assert!(
         !rec.status.is_terminal(),
         "switched run must not look finished: {:?}",
@@ -910,7 +1097,7 @@ async fn normal_switch_across_drives_runs_the_next_behavior() {
 #[tokio::test]
 async fn max_turns_counts_completed_turns_not_hand_overs() {
     let env = Env::new();
-    let mut spec = behavior_spec("two requests", json!({}));
+    let mut spec = behavior_spec("two requests", json!({ "do": { "mode": "switch_context" } }));
     spec.end_condition = EndCondition {
         kind: EndConditionType::MaxTurns,
         detail: json!({ "n": 2 }),
@@ -970,7 +1157,7 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
     let sd = env
         .create_work(behavior_spec(
             "research then answer",
-            json!({ "research": "fork" }),
+            json!({ "research": { "mode": "fork" } }),
         ))
         .await;
     let (qd, q) = (env.queue_dir.clone(), queue_of(&sd));
@@ -1003,7 +1190,7 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
 async fn call_ids_stay_unique_after_a_fork_return() {
     let env = Env::new();
     let sd = env
-        .create_work(behavior_spec("fork and act", json!({ "research": "fork" })))
+        .create_work(behavior_spec("fork and act", json!({ "research": { "mode": "fork" } })))
         .await;
     let llm = ScriptedLlm::new(|_, n| match n {
         0 => text("<response><actions><shell><![CDATA[echo p1]]></shell></actions></response>"),

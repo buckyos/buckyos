@@ -32,6 +32,126 @@
       },
       "type": "object"
     },
+    "CallTrigger": {
+      "description": "How a sub context was called, i.e. where its result returns to.",
+      "oneOf": [
+        {
+          "description": "`next_behavior` of a complete Step: the result returns as `process_result` in the caller's hand-over batch.",
+          "properties": {
+            "kind": {
+              "enum": [
+                "behavior"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A tool call / behavior action: the caller is suspended on `PendingTool`, the result is filled as the tool result of `call_id`.",
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "tool"
+              ],
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "kind",
+            "task_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "ChildCall": {
+      "description": "The sub context a `Caller` frame waits for.",
+      "properties": {
+        "behavior": {
+          "type": "string"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ContextMode"
+            }
+          ],
+          "description": "`create_sub_context | fork` (how the child was constructed)."
+        },
+        "task": {
+          "description": "Task given to the child (tool trigger: the call's `task` argument).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "trigger": {
+          "$ref": "#/definitions/CallTrigger"
+        }
+      },
+      "required": [
+        "behavior",
+        "mode",
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "ContextMode": {
+      "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
+      "oneOf": [
+        {
+          "description": "The target has its own context (system, tools, history, run): created on first entry, resumed from its own snapshot afterwards.",
+          "enum": [
+            "switch_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new sub context per call with the target's system and task input, plus an explicit selection of the caller's history; its result returns to the caller.",
+          "enum": [
+            "create_sub_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new branch per call that keeps the caller's system and its complete effective history at the fork point; its result returns to the caller.",
+          "enum": [
+            "fork"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "FrameRole": {
+      "description": "Why a run sits in `process_stack`.",
+      "oneOf": [
+        {
+          "description": "A context left through SWITCH_CONTEXT: re-entered when a hand-over names its entry again.",
+          "enum": [
+            "parked"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The caller of a sub context (create-sub-context / fork): live again when the child returns.",
+          "enum": [
+            "caller"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "LiveRun": {
       "description": "A run that is not finished yet (xllm run directory).",
       "properties": {
@@ -63,6 +183,12 @@
         },
         "flushed_step_index": {
           "description": "Behavior runs: steps with `step_index <` this are in the worklog (identity high-water mark, not a count: inherited steps of a fork child and steps rewritten away are never written).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "handover_at_ms": {
+          "description": "`at_ms` of the run's hand-over record (run.json `handover`) this state already committed: a record with this stamp is not a transfer left to do.",
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
@@ -152,6 +278,17 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "call": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChildCall"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`Caller` frames: the child being waited for."
+        },
         "entry": {
           "type": "string"
         },
@@ -176,8 +313,14 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "mode": {
-          "$ref": "#/definitions/ProcessMode"
+        "handover_at_ms": {
+          "description": "`at_ms` of the hand-over record this suspension committed (see [`LiveRun::handover_at_ms`]).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "role": {
+          "$ref": "#/definitions/FrameRole"
         },
         "run_id": {
           "type": "string"
@@ -192,17 +335,10 @@
       },
       "required": [
         "entry",
-        "mode",
+        "role",
         "run_id"
       ],
       "type": "object"
-    },
-    "ProcessMode": {
-      "enum": [
-        "fork",
-        "independent"
-      ],
-      "type": "string"
     },
     "RecentKeys": {
       "description": "Bounded dedup cache of producer `key`s (§4.5). It only filters duplicate deliveries; it never replaces the receipts persisted in snapshots or the per-source consumption positions.",
@@ -468,7 +604,7 @@
       "type": "object"
     },
     "internal_continuation": {
-      "description": "An input batch to commit without new input (behavior switch / fork return / independent hand-over); it joins the open Turn.",
+      "description": "An input batch to commit without new input (context switch, sub context call / return through `next_behavior`); it joins the open Turn.",
       "type": [
         "string",
         "null"
@@ -538,7 +674,7 @@
       ]
     },
     "process_result": {
-      "description": "Result of a fork child process, handed to the resumed parent in its hand-over batch (`{behavior, result}`)."
+      "description": "Result of a sub context, handed to its caller: `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`. Behavior trigger: rendered into the caller's hand-over batch. Tool trigger: carries `call_id` and is filled as that call's tool result when the caller's run is opened."
     },
     "process_stack": {
       "items": {

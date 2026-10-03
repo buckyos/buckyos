@@ -362,7 +362,7 @@ pub(crate) fn unanswered_tool_calls(messages: &[AiMessage]) -> Vec<String> {
 
 /// Every tool call answered by a later result, every result answering an
 /// earlier call.
-fn check_paired(messages: &[AiMessage]) -> Result<(), LLMComputeError> {
+pub(crate) fn check_paired(messages: &[AiMessage]) -> Result<(), LLMComputeError> {
     let mut open: Vec<&str> = Vec::new();
     for message in messages {
         for block in &message.content {
@@ -416,7 +416,7 @@ pub fn strip_thinking(messages: &mut Vec<AiMessage>) {
     });
 }
 
-fn strip_step_thinking(step: &mut StepRecord) {
+pub(crate) fn strip_step_thinking(step: &mut StepRecord) {
     if let Some(m) = step.assistant_message.as_mut() {
         let before = m.content.len();
         m.content.retain(|p| !is_thinking(p));

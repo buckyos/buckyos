@@ -57,15 +57,13 @@ pub trait SessionAssembler: Send + Sync {
         state: &SessionState,
         m: &InputMaterial,
     ) -> Result<Option<String>>;
-    /// Process mode of a behavior (§4.4): `None` = normal switch (same run);
-    /// fork / independent get their own run. Default: read
-    /// `extensions.opendan.process_modes.<behavior>` = `"fork" | "independent"`.
-    fn process_mode(&self, cfg: &SessionConfig, behavior: &str) -> Option<ProcessMode> {
-        cfg.extensions
-            .get("opendan")
-            .and_then(|o| o.get("process_modes"))
-            .and_then(|m| m.get(behavior))
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
+    /// Entry configuration of a hand-over / call target (§4.4): how the
+    /// behavior is entered is decided by the target, and a target without a
+    /// declared mode is an error — there is no in-place switch to fall back
+    /// to. Default: `extensions.opendan.behaviors.<behavior>`.
+    fn behavior_entry(&self, cfg: &SessionConfig, behavior: &str) -> Result<BehaviorEntry> {
+        cfg.behavior_entry(behavior)
+            .map_err(crate::error::OpenDanError::InvalidArgument)
     }
     /// Text injected at an observation boundary (changes only).
     async fn render_observation(&self, m: &InputMaterial) -> Result<Option<String>> {
@@ -199,9 +197,18 @@ impl SessionAssembler for DefaultAssembler {
             s.push_str(&format!("<behavior_switch to=\"{}\"/>\n", esc(b)));
             if let Some(r) = &state.process_result {
                 s.push_str(&format!(
-                    "<process_result behavior=\"{}\">{}</process_result>\n",
+                    "<process_result behavior=\"{}\" status=\"{}\">{}</process_result>\n",
                     esc(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
+                    esc(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
                     esc(r.get("result").and_then(Value::as_str).unwrap_or_default())
+                ));
+            }
+            // A sub context being entered: its task, and what it returns to.
+            if let Some(call) = state.child_call().filter(|c| &c.behavior == b) {
+                s.push_str(&format!(
+                    "<sub_task mode=\"{}\">{}\nYour result returns to the caller: finish with your report; do not ask the user.</sub_task>\n",
+                    call.mode.as_str(),
+                    esc(call.task.as_deref().unwrap_or("Continue the work handed over to this behavior."))
                 ));
             }
         }

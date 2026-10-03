@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "ContextMode": {
+      "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
+      "oneOf": [
+        {
+          "description": "The target has its own context (system, tools, history, run): created on first entry, resumed from its own snapshot afterwards.",
+          "enum": [
+            "switch_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new sub context per call with the target's system and task input, plus an explicit selection of the caller's history; its result returns to the caller.",
+          "enum": [
+            "create_sub_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new branch per call that keeps the caller's system and its complete effective history at the fork point; its result returns to the caller.",
+          "enum": [
+            "fork"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InheritMode": {
+      "description": "History a new context starts with (besides its system and task input).",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The session history rendered by the host (summary + recent worklog records): a filtered view, labelled `<session_history>`.",
+          "enum": [
+            "recent_dialogue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The caller's completed steps as structured records (`create_sub_context`, both contexts in the behavior loop).",
+          "enum": [
+            "steps"
+          ],
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "description": "`extensions.opendan.behaviors.<name>`: entry configuration of a behavior.",
+  "properties": {
+    "inherit": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/InheritMode"
+        }
+      ],
+      "default": "none"
+    },
+    "llm_context": {
+      "description": "Top-level keys replacing those of `prompt.llm_context` (model, tools, limits …). Not allowed for `fork`."
+    },
+    "mode": {
+      "$ref": "#/definitions/ContextMode"
+    },
+    "system_prompt": {
+      "description": "Application system prompt of the context (replaces `prompt.system_prompt`). Not allowed for `fork`.",
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  },
+  "required": [
+    "mode"
+  ],
+  "title": "BehaviorEntry",
+  "type": "object"
+}

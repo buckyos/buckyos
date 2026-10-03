@@ -292,8 +292,8 @@ async fn stop_session(sh: &Arc<Shared>, live: Option<LiveCtx>, env: &SessionEnv)
         turn_end: Some(TurnStatus::Stopped),
         ..Default::default()
     };
-    // A run state still references (e.g. a parent just resumed after its fork
-    // child) ends through the normal finish path.
+    // A run state still references (e.g. a caller just resumed after its sub
+    // context) ends through the normal finish path.
     let live = match live {
         Some(l) => Some(l),
         None if sh.session.lock().await.state.live_run.is_some() => {
@@ -344,6 +344,14 @@ async fn stop_session(sh: &Arc<Shared>, live: Option<LiveCtx>, env: &SessionEnv)
 }
 
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
+    // Behavior entry modes are checked before anything runs: an invalid
+    // table never degrades into some default way of switching.
+    sh.session
+        .lock()
+        .await
+        .config
+        .behaviors()
+        .map_err(OpenDanError::InvalidArgument)?;
     // Kind leases: one consolidation at a time for the whole agent.
     let kind = sh.session.lock().await.config.session.kind;
     let _kind_lease = if kind == SessionKind::SelfImprove {
@@ -458,10 +466,27 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             let s = sh.session.lock().await;
             (s.config.clone(), s.state.clone())
         };
+        // A caller whose tool-triggered sub context returned: the result is
+        // filled as that call's tool result and the run continues its batch
+        // by itself. No input batch can be placed before the batch is done,
+        // so inputs wait for the next boundary.
+        let returning = live.is_none() && state.tool_return_pending();
+        if returning {
+            live = Some(open_state_live_run(sh, &env).await?);
+        }
+        // A sub context never consumes its caller's input queue: while one is
+        // in progress, msg / event stay queued for the caller.
+        let hold_inputs = returning || state.child_call().is_some();
         // Pull policy: msg / event make an input batch (opening a Turn, or
         // joining the open one); changes ride along.
-        let mut picked = inputs.take(InputKind::Msg);
-        picked.extend(inputs.take(InputKind::Event));
+        let mut picked = if hold_inputs {
+            Vec::new()
+        } else {
+            inputs.take(InputKind::Msg)
+        };
+        if !hold_inputs {
+            picked.extend(inputs.take(InputKind::Event));
+        }
         picked.sort_by_key(|m| (m.src.clone(), m.index));
         if cfg.session.input_policy == InputPolicy::None && !picked.is_empty() {
             let mut s = sh.session.lock().await;

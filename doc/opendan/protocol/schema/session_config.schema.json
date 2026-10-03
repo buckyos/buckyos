@@ -104,7 +104,7 @@
           "type": "string"
         },
         {
-          "description": "Finish after `detail.n` (default 1) completed logical Turns; between them the session waits for input. Internal hand-overs (behavior switch, fork, independent) are not Turns and cost nothing.",
+          "description": "Finish after `detail.n` (default 1) completed logical Turns; between them the session waits for input. Internal hand-overs (context switch, sub context call / return) are not Turns and cost nothing.",
           "enum": [
             "max_turns"
           ],

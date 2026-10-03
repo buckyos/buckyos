@@ -128,8 +128,8 @@ pub const TOOL_EXEC: &str = TOOL_SHELL;
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
 pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
-/// `run.json` 记录格式版本（3：有效 runtime 配置与执行目标，快照格式 3）；resume 只接受当前版本。
-pub const RUN_RECORD_VERSION: u32 = 4;
+/// `run.json` 记录格式版本（3：有效 runtime 配置与执行目标，快照格式 3；5：`handover`，宿主 Run 的 behavior 交接点）；resume 只接受当前版本。
+pub const RUN_RECORD_VERSION: u32 = 5;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
@@ -5407,6 +5407,27 @@ pub struct RunRecord {
     /// 已派发、结果尚未随快照持久化的工具动作（X6）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inflight: Vec<InflightAction>,
+    /// 宿主 Run 停在 behavior 交接点：模型声明了 `next_behavior`，转移由
+    /// 宿主 Session 提交。非空时状态为 `paused`，任何执行者都不得继续推理；
+    /// 宿主重新打开该 Run 执行时清除。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub handover: Option<RunHandover>,
+}
+
+/// 宿主 Run 的 behavior 交接点（context switch TODO S3）。xllm 只记录事实，
+/// 目标的进入模式由宿主读取自己的配置决定。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunHandover {
+    pub next_behavior: String,
+    pub at_ms: u64,
+}
+
+/// `next_behavior` 是否指向另一个 behavior（而不是结束 / 等待输入）。
+pub fn is_handover_target(next_behavior: &str) -> bool {
+    !next_behavior.trim().is_empty()
+        && !next_behavior.eq_ignore_ascii_case(llm_context::NEXT_BEHAVIOR_END)
+        && !next_behavior.eq_ignore_ascii_case("done")
+        && next_behavior != "WAIT_USER_MSG"
 }
 
 impl RunRecord {
@@ -5490,6 +5511,7 @@ impl RunRecord {
             pid: std::process::id(),
             host: None,
             host_commit_pending: None,
+            handover: None,
             inflight: Vec::new(),
         }
     }
@@ -6938,6 +6960,7 @@ impl HostedTask {
             pid: std::process::id(),
             host: Some(host),
             host_commit_pending: None,
+            handover: None,
             inflight: Vec::new(),
         }
     }
@@ -7527,6 +7550,7 @@ impl XllmRun {
             pid: std::process::id(),
             host: None,
             host_commit_pending: None,
+            handover: None,
             inflight: Vec::new(),
         };
         store.write_record(&record)?;
@@ -7626,6 +7650,15 @@ impl XllmRun {
                 ),
             });
         }
+        if let Some(h) = &record.handover {
+            return Err(XllmError::NotResumable {
+                run_id: record.run_id.clone(),
+                reason: format!(
+                    "the run handed over to behavior `{}`; its host session commits the transfer, drive the session with its host runner",
+                    h.next_behavior
+                ),
+            });
+        }
         if record.prompt.protocol_version != RUNTIME_PROTOCOL_VERSION {
             return Err(XllmError::NotResumable {
                 run_id: record.run_id.clone(),
@@ -7661,6 +7694,15 @@ impl XllmRun {
             return Err(XllmError::NotResumable {
                 run_id: run_id_s.clone(),
                 reason: "host input batch is not committed yet".into(),
+            });
+        }
+        if let Some(h) = &record.handover {
+            return Err(XllmError::NotResumable {
+                run_id: run_id_s.clone(),
+                reason: format!(
+                    "the run handed over to behavior `{}`; its host session commits the transfer",
+                    h.next_behavior
+                ),
             });
         }
         let runtime = match &deps.runtime {
@@ -8306,8 +8348,30 @@ impl XllmRun {
                     output,
                     usage,
                     response,
+                    behavior_result,
                     ..
                 } => {
+                    // A hosted run that hands over to another behavior is not
+                    // finished: it yields at the hand-over point and its host
+                    // session commits the transfer.
+                    let target = behavior_result
+                        .as_ref()
+                        .and_then(|b| b.next_behavior.clone())
+                        .filter(|b| is_handover_target(b));
+                    if let (Some(target), true) = (target, self.record().host.is_some()) {
+                        let calls = self.llm.calls();
+                        self.update(|r| {
+                            r.status = RunStatus::Paused;
+                            r.last_error = None;
+                            r.usage.main = Some(usage);
+                            r.usage.llm_requests += calls;
+                            r.handover = Some(RunHandover {
+                                next_behavior: target,
+                                at_ms: now_ms(),
+                            });
+                        })?;
+                        return Ok(RunOutcome::Paused(self.record()));
+                    }
                     let raw = match &output {
                         ContextOutput::Json { content } => {
                             let text = response.message.text_content();

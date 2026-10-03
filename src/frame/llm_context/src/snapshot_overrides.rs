@@ -1,23 +1,15 @@
-//! Snapshot overrides — the data shape and helpers that schedulers use to
-//! rebuild the next [`LLMContext`] from a previous run's snapshot while
-//! changing only the inputs they care about (system prompt, tool policy,
-//! ...). Inherited state (`accumulated` history, step records, usage,
-//! pending tool calls — though see the pre-condition below) carries over
-//! unchanged.
+//! Snapshot overrides — rebuilding the next [`LLMContext`] of the *same*
+//! run from its own snapshot while changing request-side inputs (tool
+//! policy, budget, …). Inherited state (`accumulated` history, step records,
+//! usage) carries over unchanged.
 //!
-//! Three scheduler modes are expressed via the same two functions:
-//!
-//! - **switch** — same session, swap system messages + tool policy, persist
-//!   the rebuilt snapshot back to the session's state file.
-//! - **fork** — sub-context inherits parent snapshot, runs to completion,
-//!   parent resumes from its own on-disk snapshot. The sub-context's
-//!   rebuilt snapshot is intentionally never persisted.
-//! - **independent** — each named behavior has its own snapshot file; the
-//!   active one is loaded, optionally rebuilt with new policies, and run.
-//!
-//! Originally lived in `opendan::llm_context_helper`. Moved here so the
-//! waist owns its own data-rebuilding surface; opendan now imports these
-//! types directly rather than re-defining them.
+//! This is not how one context hands over to another. A hand-over never
+//! replaces the system prompt over an existing history: the target either
+//! resumes its own snapshot (SWITCH_CONTEXT), or is derived as a child with
+//! [`crate::context_derive::derive_child`] (create-sub-context, own system)
+//! or [`crate::context_derive::fork_snapshot`] (fork, same system and
+//! complete history). `RequestOverrides.system_messages` /
+//! `user_messages` remain for the legacy opendan runtime only.
 
 use buckyos_api::{AiMessage, AiRole};
 

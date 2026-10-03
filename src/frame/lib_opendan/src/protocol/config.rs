@@ -78,8 +78,8 @@ pub enum EndConditionType {
     LlmDeclaresDone,
     OutputSchema,
     /// Finish after `detail.n` (default 1) completed logical Turns; between
-    /// them the session waits for input. Internal hand-overs (behavior
-    /// switch, fork, independent) are not Turns and cost nothing.
+    /// them the session waits for input. Internal hand-overs (context
+    /// switch, sub context call / return) are not Turns and cost nothing.
     MaxTurns,
 }
 
@@ -250,6 +250,109 @@ pub struct PromptSection {
     pub compact_ratio: Option<f32>,
 }
 
+/// How a behavior is entered when a hand-over (`next_behavior`) or a
+/// `call_behavior` tool call names it. Decided by the target behavior, never
+/// by the session as a whole; there is no default mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextMode {
+    /// The target has its own context (system, tools, history, run):
+    /// created on first entry, resumed from its own snapshot afterwards.
+    SwitchContext,
+    /// A new sub context per call with the target's system and task input,
+    /// plus an explicit selection of the caller's history; its result
+    /// returns to the caller.
+    CreateSubContext,
+    /// A new branch per call that keeps the caller's system and its
+    /// complete effective history at the fork point; its result returns to
+    /// the caller.
+    Fork,
+}
+
+impl ContextMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ContextMode::SwitchContext => "switch_context",
+            ContextMode::CreateSubContext => "create_sub_context",
+            ContextMode::Fork => "fork",
+        }
+    }
+
+    /// The result returns to the caller.
+    pub fn is_sub_context(&self) -> bool {
+        !matches!(self, ContextMode::SwitchContext)
+    }
+}
+
+/// History a new context starts with (besides its system and task input).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InheritMode {
+    #[default]
+    None,
+    /// The session history rendered by the host (summary + recent worklog
+    /// records): a filtered view, labelled `<session_history>`.
+    RecentDialogue,
+    /// The caller's completed steps as structured records
+    /// (`create_sub_context`, both contexts in the behavior loop).
+    Steps,
+}
+
+/// `extensions.opendan.behaviors.<name>`: entry configuration of a behavior.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BehaviorEntry {
+    pub mode: ContextMode,
+    /// Application system prompt of the context (replaces
+    /// `prompt.system_prompt`). Not allowed for `fork`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
+    /// Top-level keys replacing those of `prompt.llm_context` (model, tools,
+    /// limits …). Not allowed for `fork`.
+    #[serde(default, skip_serializing_if = "Value::is_null")]
+    pub llm_context: Value,
+    #[serde(default)]
+    pub inherit: InheritMode,
+}
+
+impl BehaviorEntry {
+    fn check(&self, name: &str) -> std::result::Result<(), String> {
+        if !self.llm_context.is_null() && !self.llm_context.is_object() {
+            return Err(format!("behavior `{name}`: llm_context must be an object"));
+        }
+        match self.mode {
+            ContextMode::Fork => {
+                if self.system_prompt.is_some() || !self.llm_context.is_null() {
+                    return Err(format!(
+                        "behavior `{name}`: fork keeps the caller's system and configuration; use create_sub_context to change them"
+                    ));
+                }
+                if self.inherit != InheritMode::None {
+                    return Err(format!(
+                        "behavior `{name}`: fork always inherits the complete history; `inherit` only applies to the other modes"
+                    ));
+                }
+            }
+            ContextMode::SwitchContext => {
+                if self.inherit == InheritMode::Steps {
+                    return Err(format!(
+                        "behavior `{name}`: a switch_context target has its own history; `inherit: steps` only applies to create_sub_context"
+                    ));
+                }
+            }
+            ContextMode::CreateSubContext => {}
+        }
+        Ok(())
+    }
+}
+
+/// Nested sub contexts (callers on `process_stack`) allowed in one session.
+pub const MAX_CALL_DEPTH: usize = 4;
+
+/// Tool a context calls to run a sub context (`create_sub_context` / `fork`
+/// targets): `{behavior, task}`.
+pub const TOOL_CALL_BEHAVIOR: &str = "call_behavior";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RuntimeRequirement {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -392,5 +495,50 @@ fn one() -> u64 {
 impl SessionConfig {
     pub fn session_id(&self) -> &str {
         &self.session.session_id
+    }
+
+    /// Entry configuration of every behavior
+    /// (`extensions.opendan.behaviors`), validated. `process_modes` (the
+    /// session level table with a normal-switch fallback) is refused.
+    pub fn behaviors(&self) -> std::result::Result<BTreeMap<String, BehaviorEntry>, String> {
+        let Some(o) = self.extensions.get("opendan") else {
+            return Ok(BTreeMap::new());
+        };
+        if o.get("process_modes").is_some() {
+            return Err(
+                "extensions.opendan.process_modes is no longer supported; declare extensions.opendan.behaviors.<name>.mode"
+                    .to_string(),
+            );
+        }
+        let Some(b) = o.get("behaviors") else {
+            return Ok(BTreeMap::new());
+        };
+        let map: BTreeMap<String, BehaviorEntry> = serde_json::from_value(b.clone())
+            .map_err(|e| format!("extensions.opendan.behaviors: {e}"))?;
+        for (name, entry) in &map {
+            entry.check(name)?;
+        }
+        Ok(map)
+    }
+
+    /// Entry configuration of `behavior`. The session's initial behavior
+    /// (`prompt.behavior`) without an entry of its own is a `switch_context`
+    /// target running the session's base configuration. Any other behavior
+    /// without an entry is an error: there is no fallback mode.
+    pub fn behavior_entry(&self, behavior: &str) -> std::result::Result<BehaviorEntry, String> {
+        if let Some(e) = self.behaviors()?.remove(behavior) {
+            return Ok(e);
+        }
+        if self.prompt.behavior.as_deref() == Some(behavior) {
+            return Ok(BehaviorEntry {
+                mode: ContextMode::SwitchContext,
+                system_prompt: None,
+                llm_context: Value::Null,
+                inherit: InheritMode::RecentDialogue,
+            });
+        }
+        Err(format!(
+            "behavior `{behavior}` has no entry mode (extensions.opendan.behaviors.{behavior}.mode)"
+        ))
     }
 }

@@ -207,6 +207,7 @@ impl RunHandle {
             r.latest_snapshot_idx = Some(idx);
             r.host_commit_pending = Some(input_seq);
             r.status = RunStatus::Running;
+            r.handover = None;
             r.inflight.retain(|a| !covered.contains(&a.call_id));
         })?;
         Ok(idx)
@@ -302,7 +303,30 @@ impl RunHandle {
             if last_error.is_some() {
                 r.last_error = last_error;
             }
+            if status == RunStatus::Running {
+                // Executing again: the hand-over it stopped at was committed.
+                r.handover = None;
+            }
         })
+    }
+
+    /// The run yields at a behavior hand-over (`next_behavior = target`):
+    /// snapshot and, in the same run.json write, the non-terminal hand-over
+    /// record. Whoever recovers the session commits the transfer exactly
+    /// once from it; no executor infers on the run meanwhile.
+    pub fn checkpoint_handover(&self, snapshot: &LLMContextSnapshot, target: &str) -> Result<u32> {
+        let idx = self.store.put_snapshot(&self.run_id, snapshot)?;
+        let covered = persisted_outcome_ids(snapshot);
+        self.update(|r| {
+            r.latest_snapshot_idx = Some(idx);
+            r.status = RunStatus::Paused;
+            r.inflight.retain(|a| !covered.contains(&a.call_id));
+            r.handover = Some(agent_tool::xllm::RunHandover {
+                next_behavior: target.to_string(),
+                at_ms: crate::now_ms(),
+            });
+        })?;
+        Ok(idx)
     }
 
     /// Record the run's cumulative context usage and add the Rounds

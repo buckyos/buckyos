@@ -1,5 +1,5 @@
 {
-  "description": "The plan process was suspended into process_stack (fork) and the research child run is live.",
+  "description": "The plan run is the caller of a fork sub context (Caller frame in process_stack) and the research child run is live.",
   "generated_by": "libopendan examples/fixtures.rs",
   "next": {
     "action": "resume_child_run",
@@ -13,12 +13,12 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261002-181138-1f0949",
+        "run_id": "20261003-035101-7fa520",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261002-181138-1f0949",
-        "20261002-181138-3d2b53"
+        "20261003-035101-7fa520",
+        "20261003-035101-8e399d"
       ],
       "session_id": "work-fixture-fork",
       "state": {
@@ -29,9 +29,16 @@
         "outcome": null,
         "process_stack": [
           {
+            "call": {
+              "behavior": "research",
+              "mode": "fork",
+              "trigger": {
+                "kind": "behavior"
+              }
+            },
             "entry": "plan",
-            "mode": "fork",
-            "run_id": "20261002-181138-3d2b53"
+            "role": "caller",
+            "run_id": "20261003-035101-8e399d"
           }
         ],
         "rev": 4,

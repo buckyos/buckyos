@@ -10,10 +10,12 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::config::ContextMode;
+
 /// 2: logical Turn identity (`turn_seq` / `open_turn` / `turns_completed`)
 /// replaced the input-driven `round` counter; split flush cursors. Earlier
 /// versions are refused.
-pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/3";
+pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/4";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;
@@ -150,20 +152,57 @@ pub struct LiveRun {
     /// Process entry the run belongs to (behavior process ↔ run).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_entry: Option<String>,
+    /// `at_ms` of the run's hand-over record (run.json `handover`) this
+    /// state already committed: a record with this stamp is not a transfer
+    /// left to do.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub handover_at_ms: u64,
 }
 
+/// Why a run sits in `process_stack`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum ProcessMode {
-    Fork,
-    Independent,
+pub enum FrameRole {
+    /// A context left through SWITCH_CONTEXT: re-entered when a hand-over
+    /// names its entry again.
+    Parked,
+    /// The caller of a sub context (create-sub-context / fork): live again
+    /// when the child returns.
+    Caller,
+}
+
+/// How a sub context was called, i.e. where its result returns to.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CallTrigger {
+    /// `next_behavior` of a complete Step: the result returns as
+    /// `process_result` in the caller's hand-over batch.
+    Behavior,
+    /// A tool call / behavior action: the caller is suspended on
+    /// `PendingTool`, the result is filled as the tool result of `call_id`.
+    Tool { call_id: String, task_id: String },
+}
+
+/// The sub context a `Caller` frame waits for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChildCall {
+    /// `create_sub_context | fork` (how the child was constructed).
+    pub mode: ContextMode,
+    pub behavior: String,
+    pub trigger: CallTrigger,
+    /// Task given to the child (tool trigger: the call's `task` argument).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
 }
 
 /// Suspended behavior process (its run is kept, §4.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProcessFrame {
     pub entry: String,
-    pub mode: ProcessMode,
+    pub role: FrameRole,
+    /// `Caller` frames: the child being waited for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<ChildCall>,
     pub run_id: String,
     #[serde(default)]
     pub turns: Vec<TurnInputs>,
@@ -177,6 +216,10 @@ pub struct ProcessFrame {
     pub flushed_epoch: u64,
     #[serde(default)]
     pub applied_input_seq: u64,
+    /// `at_ms` of the hand-over record this suspension committed (see
+    /// [`LiveRun::handover_at_ms`]).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub handover_at_ms: u64,
 }
 
 /// How a logical Turn ended (decided by the session from the outcome and
@@ -198,8 +241,8 @@ pub enum TurnStatus {
 /// The logical Turn in progress (one Input → result of the AgentSession).
 ///
 /// Opened by the first input batch committed while no Turn is open
-/// (bootstrap, msg / event). Behavior switches, fork calls and returns,
-/// independent context switches, observation injections, resumable
+/// (bootstrap, msg / event). Context switches, sub context calls and
+/// returns, observation injections, resumable
 /// suspensions (interrupt, retryable error, context limit, pending tool),
 /// history epoch rewrites and restarts keep it open; inputs consumed while
 /// it is open join it. Only the session closes it, when it interprets an
@@ -425,12 +468,15 @@ pub struct SessionState {
     /// Stop requested through `control(stop)`; applied at the next safe point.
     #[serde(default)]
     pub stop_requested: bool,
-    /// An input batch to commit without new input (behavior switch / fork
-    /// return / independent hand-over); it joins the open Turn.
+    /// An input batch to commit without new input (context switch, sub
+    /// context call / return through `next_behavior`); it joins the open Turn.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub internal_continuation: Option<String>,
-    /// Result of a fork child process, handed to the resumed parent in its
-    /// hand-over batch (`{behavior, result}`).
+    /// Result of a sub context, handed to its caller: `{behavior, result,
+    /// status: ok | failed | needs_user_input, next_action_id,
+    /// next_step_index}`. Behavior trigger: rendered into the caller's
+    /// hand-over batch. Tool trigger: carries `call_id` and is filled as that
+    /// call's tool result when the caller's run is opened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub process_result: Option<Value>,
     #[serde(default)]
@@ -501,6 +547,33 @@ impl SessionState {
 
     pub fn references(&self, run_id: &str) -> bool {
         self.referenced_runs().contains(run_id)
+    }
+
+    /// The call the live (or about to be created) run answers, if it is a
+    /// sub context.
+    pub fn child_call(&self) -> Option<&ChildCall> {
+        self.process_stack
+            .last()
+            .filter(|f| f.role == FrameRole::Caller)
+            .and_then(|f| f.call.as_ref())
+    }
+
+    /// The live run is a caller whose tool-triggered sub context returned:
+    /// its result waits to be filled as the call's tool result.
+    pub fn tool_return_pending(&self) -> bool {
+        self.live_run.is_some()
+            && self
+                .process_result
+                .as_ref()
+                .is_some_and(|r| r.get("call_id").is_some())
+    }
+
+    /// Sub contexts in progress (nesting depth of the live run).
+    pub fn call_depth(&self) -> usize {
+        self.process_stack
+            .iter()
+            .filter(|f| f.role == FrameRole::Caller)
+            .count()
     }
 
     pub fn is_finished(&self) -> bool {

@@ -184,6 +184,45 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
     })
 }
 
+/// Run a transcript entry belongs to (`None`: session level entries).
+fn entry_run(body: &WorklogBody) -> Option<&str> {
+    match body {
+        WorklogBody::InputBatch { run_id, .. }
+        | WorklogBody::UserMessage { run_id, .. }
+        | WorklogBody::AssistantMessage { run_id, .. }
+        | WorklogBody::Step { run_id, .. }
+        | WorklogBody::ActionResult { run_id, .. }
+        | WorklogBody::Outcome { run_id, .. } => Some(run_id),
+        _ => None,
+    }
+}
+
+/// Sub contexts that returned (`process_done`): their transcript stays in
+/// the worklog for audit, but a history built for another context only
+/// carries what they handed back — the `process_done` outcome with its
+/// result. Without this a caller rebuilt from the session history would get
+/// the child's whole transcript mixed into its own.
+#[derive(Default)]
+struct ReturnedChildren(std::collections::HashSet<String>);
+
+impl ReturnedChildren {
+    fn note(&mut self, body: &WorklogBody) {
+        if let WorklogBody::Outcome { run_id, kind, .. } = body {
+            if kind == "process_done" {
+                self.0.insert(run_id.clone());
+            }
+        }
+    }
+
+    /// The entry is part of a returned child's transcript (not its result).
+    fn hides(&self, body: &WorklogBody) -> bool {
+        if matches!(body, WorklogBody::Outcome { kind, .. } if kind == "process_done") {
+            return false;
+        }
+        entry_run(body).is_some_and(|r| self.0.contains(r))
+    }
+}
+
 /// Rendered history window.
 #[derive(Debug, Clone, Default)]
 pub struct HistoryWindow {
@@ -215,10 +254,16 @@ pub fn read_window(
     let mut rev: Vec<String> = Vec::new();
     let mut age = 0u32;
     let mut pending_age_bump = false;
+    let mut children = ReturnedChildren::default();
     loop {
         let Some((offset, e)) = r.next_json::<WorklogEntry>()? else {
             break;
         };
+        // Read backwards: a child's `process_done` comes before its entries.
+        children.note(&e.body);
+        if children.hides(&e.body) {
+            continue;
+        }
         if pending_age_bump {
             age += 1;
             pending_age_bump = false;
@@ -342,8 +387,13 @@ pub async fn compact(
         recent_full_responses: u32::MAX,
         ..sm.mechanical.clone()
     };
+    let mut children = ReturnedChildren::default();
+    for (_, e) in &segment_entries {
+        children.note(&e.body);
+    }
     let segment: Vec<String> = segment_entries
         .iter()
+        .filter(|(_, e)| !children.hides(&e.body))
         .filter_map(|(_, e)| render_entry(e, 0, &full))
         .collect();
     let summary_text = summarizer

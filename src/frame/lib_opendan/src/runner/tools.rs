@@ -11,15 +11,23 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use agent_tool::exec_tracking::InflightAction;
-use agent_tool::runtime::Sandbox;
-use agent_tool::TOOL_SHELL;
+use agent_tool::runtime::{Sandbox, CURRENT_TOOL_CALL, CURRENT_TOOL_CTX};
+use agent_tool::{
+    AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, CallingConventions,
+    SessionRuntimeContext, ToolSpec, TOOL_SHELL,
+};
+use llm_context::state::LLMContextSnapshot;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::deps::{ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite};
 use llm_context::observation::Observation;
 
 use crate::lock::Lease;
-use crate::protocol::Touching;
+use crate::protocol::{
+    BehaviorEntry, ChildCall, CallTrigger, Touching, MAX_CALL_DEPTH, TOOL_CALL_BEHAVIOR,
+};
 use crate::session::runs::RunHandle;
 
 use super::flush::canonical_args;
@@ -29,6 +37,9 @@ use super::flush::canonical_args;
 pub fn classify_effect(tool: &str) -> &'static str {
     match tool {
         "read_file" | "glob" | "grep" | "list_dir" | "read" => "read_only",
+        // The call itself changes nothing: what the sub context does is
+        // tracked by its own run.
+        TOOL_CALL_BEHAVIOR => "read_only",
         "write_file" | "edit_file" => "side_effect",
         t if t == TOOL_SHELL => "unknown",
         _ => "unknown",
@@ -124,6 +135,12 @@ impl ToolManager for SessionToolManager {
             }
             self.infer_touching(&call);
         }
+        // Only a sub context call suspends the run: every other tool waits
+        // for its task inside the call.
+        let mut ctx = ctx;
+        if call.name != TOOL_CALL_BEHAVIOR {
+            ctx.allow_deferred = false;
+        }
         self.inner.call_tool(call, ctx).await
     }
 
@@ -134,4 +151,142 @@ impl ToolManager for SessionToolManager {
     fn has_tool(&self, name: &str) -> bool {
         self.inner.has_tool(name)
     }
+}
+
+/// Task id of a sub context call: the caller's run is suspended on it
+/// (`PendingTool`) until the sub context returns. Opaque to the waist; only
+/// this runner resolves it.
+pub const SUB_CONTEXT_TASK_PREFIX: &str = "subctx:";
+
+/// `call_behavior({behavior, task})`: run a sub context (`create_sub_context`
+/// / `fork` target) and return its result as this call's tool result. The
+/// tool only validates and suspends; the session runs the child (§4.4).
+pub struct CallBehaviorTool {
+    /// Behaviors that can be called (sub context modes only).
+    targets: BTreeMap<String, BehaviorEntry>,
+    /// Sub contexts already in progress above the run this tool belongs to.
+    depth: usize,
+}
+
+impl CallBehaviorTool {
+    pub fn new(behaviors: &BTreeMap<String, BehaviorEntry>, depth: usize) -> Option<Self> {
+        let targets: BTreeMap<String, BehaviorEntry> = behaviors
+            .iter()
+            .filter(|(_, e)| e.mode.is_sub_context())
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+        (!targets.is_empty()).then_some(Self { targets, depth })
+    }
+}
+
+#[async_trait]
+impl AgentTool for CallBehaviorTool {
+    fn spec(&self) -> ToolSpec {
+        let list = self
+            .targets
+            .iter()
+            .map(|(k, e)| format!("{k} ({})", e.mode.as_str()))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ToolSpec {
+            name: TOOL_CALL_BEHAVIOR.into(),
+            description: format!(
+                "Run a sub task in a sub context and get its result as this call's result. The sub context cannot ask the user; state the goal and the expected output in `task`. Available behaviors: {list}."
+            ),
+            args_schema: json!({
+                "type": "object",
+                "properties": {
+                    "behavior": { "type": "string", "description": "behavior to run" },
+                    "task": { "type": "string", "description": "what the sub context must do and return" }
+                },
+                "required": ["behavior", "task"]
+            }),
+            output_schema: json!({ "type": "object" }),
+            usage: Some(format!("{TOOL_CALL_BEHAVIOR} behavior=<name> task=<text>")),
+        }
+    }
+
+    fn calling(&self) -> CallingConventions {
+        CallingConventions::ALL
+    }
+
+    async fn call(
+        &self,
+        _ctx: &SessionRuntimeContext,
+        args: Value,
+    ) -> std::result::Result<AgentToolResult, AgentToolError> {
+        let behavior = args
+            .get("behavior")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|b| !b.is_empty())
+            .ok_or_else(|| AgentToolError::InvalidArgs("`behavior` is required".into()))?;
+        let task = args
+            .get("task")
+            .or_else(|| args.get("body"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+            .ok_or_else(|| AgentToolError::InvalidArgs("`task` is required".into()))?;
+        if !self.targets.contains_key(behavior) {
+            return Err(AgentToolError::InvalidArgs(format!(
+                "behavior `{behavior}` cannot be called as a sub context (available: {})",
+                self.targets.keys().cloned().collect::<Vec<_>>().join(", ")
+            )));
+        }
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(AgentToolError::ExecFailed(format!(
+                "sub contexts are nested {MAX_CALL_DEPTH} deep already; do the work in this context"
+            )));
+        }
+        let deferred = CURRENT_TOOL_CTX
+            .try_with(|c| c.allow_deferred)
+            .unwrap_or(false);
+        let call_id = CURRENT_TOOL_CALL.try_with(|c| c.clone()).unwrap_or_default();
+        if !deferred || call_id.is_empty() {
+            return Err(AgentToolError::ExecFailed(
+                "this executor cannot suspend the run for a sub context; the session's own runner must drive it".into(),
+            ));
+        }
+        let mut r = AgentToolResult::from_details(json!({ "behavior": behavior, "task": task }))
+            .with_tool(TOOL_CALL_BEHAVIOR)
+            .with_status(AgentToolStatus::Pending);
+        r.task_id = Some(format!("{SUB_CONTEXT_TASK_PREFIX}{call_id}"));
+        r.summary = format!("sub context `{behavior}` started");
+        Ok(r)
+    }
+}
+
+/// The sub context call a `PendingTool` snapshot waits for, if that is what
+/// it is suspended on (exactly one pending call, made through
+/// `call_behavior`).
+pub(super) fn pending_sub_call(
+    snapshot: &LLMContextSnapshot,
+    mode_of: impl Fn(&str) -> crate::error::Result<BehaviorEntry>,
+) -> crate::error::Result<Option<ChildCall>> {
+    let pending = snapshot.state.pending_calls();
+    let [p] = pending else {
+        return Ok(None);
+    };
+    if !p.task_id.starts_with(SUB_CONTEXT_TASK_PREFIX) {
+        return Ok(None);
+    }
+    let arg = |k: &str| {
+        p.call
+            .args
+            .get(k)
+            .and_then(Value::as_str)
+            .map(|s| s.trim().to_string())
+    };
+    let behavior = arg("behavior").unwrap_or_default();
+    let entry = mode_of(&behavior)?;
+    Ok(Some(ChildCall {
+        mode: entry.mode,
+        behavior,
+        trigger: CallTrigger::Tool {
+            call_id: p.call.call_id.clone(),
+            task_id: p.task_id.clone(),
+        },
+        task: arg("task").or_else(|| arg("body")),
+    }))
 }

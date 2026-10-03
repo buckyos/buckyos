@@ -266,7 +266,7 @@ fn observe(sd: &SessionDir) -> Value {
             "open_turn": st.open_turn.as_ref().map(|t| t.index),
             "turns_completed": st.turns_completed,
             "last_run": st.last_run,
-            "process_stack": st.process_stack.iter().map(|f| json!({"entry": f.entry, "mode": f.mode, "run_id": f.run_id})).collect::<Vec<_>>(),
+            "process_stack": st.process_stack.iter().map(|f| json!({"entry": f.entry, "role": f.role, "call": f.call, "run_id": f.run_id})).collect::<Vec<_>>(),
             "inputs": st.inputs,
         },
         "live_run": live,
@@ -591,12 +591,12 @@ async fn gen(out: &Path) -> R<()> {
         spec.prompt.behavior = Some("plan".into());
         spec.extensions.insert(
             "opendan".into(),
-            json!({ "process_modes": { "research": "fork" } }),
+            json!({ "behaviors": { "research": { "mode": "fork" } } }),
         );
         let sd = env.create("work-fixture-fork", spec).await;
         env.child_wait(&sd, "fork", "input_batch:after_gate_clear#2");
         write_expected(&d, "fork_child_live",
-            "The plan process was suspended into process_stack (fork) and the research child run is live.",
+            "The plan run is the caller of a fork sub context (Caller frame in process_stack) and the research child run is live.",
             vec![observe(&sd)],
             json!({ "action": "resume_child_run", "keep_runs": "live child + suspended parent", "on_child_done": "pop_parent_inject_process_result" }));
         relativize(&d);

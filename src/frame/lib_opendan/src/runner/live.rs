@@ -9,11 +9,12 @@ use std::sync::Arc;
 use agent_tool::exec_tracking::{materialize_unresolved, HostRunInfo};
 use agent_tool::llm_bash::RunBinding;
 use agent_tool::xllm::{
-    create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel, RunStatus,
-    XllmTask,
+    create_run_llm, hosted_waist_deps, rebuild_toolset, EffectiveConfig, LoopModel, RunRecord,
+    RunStatus, XllmTask,
 };
 use buckyos_api::{AiMessage, AiRole};
 use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
+use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::request::ContextOwnerRef;
 use llm_context::state::{LLMContextSnapshot, Suspension};
@@ -33,7 +34,7 @@ use super::receipts::{
     apply_receipt, host_meta_of, position_of, snapshot_host_meta, with_host_meta,
 };
 use super::shared::{commit_and_report, counted, LiveCtx, Shared};
-use super::tools::SessionToolManager;
+use super::tools::{CallBehaviorTool, SessionToolManager};
 
 /// Mid-run compactions in a row before a context-limit run is paused.
 const MAX_LIMIT_COMPACTIONS: u32 = 3;
@@ -57,13 +58,52 @@ fn default_llm_context() -> Value {
     json!({ "tools": { "enabled": true } })
 }
 
-async fn xllm_deps_for(sh: &Arc<Shared>, env: &SessionEnv) -> agent_tool::xllm::XllmDeps {
+/// xllm deps of a run at call depth `depth` (sub contexts in progress above
+/// it): the session's runtime and, when the session declares sub context
+/// behaviors, the `call_behavior` tool.
+async fn xllm_deps_for(
+    sh: &Arc<Shared>,
+    env: &SessionEnv,
+    depth: usize,
+) -> Result<agent_tool::xllm::XllmDeps> {
     let mut x = sh.deps.xllm.clone();
     x.runtime = Some(sh.deps.runtime.clone());
     x.runtime_env = env.env.iter().cloned().collect();
     x.runtime_path_prefix = env.path_layers.clone();
     x.skip_workdir_lock = true;
-    x
+    let behaviors = {
+        let s = sh.session.lock().await;
+        s.config.behaviors().map_err(OpenDanError::InvalidArgument)?
+    };
+    if let Some(tool) = CallBehaviorTool::new(&behaviors, depth) {
+        x.host_tools
+            .insert(TOOL_CALL_BEHAVIOR.to_string(), Arc::new(tool));
+    }
+    Ok(x)
+}
+
+/// Whether the run's tool set has `call_behavior` (the run may then be
+/// suspended on a sub context).
+fn calls_sub_contexts(cfg: &EffectiveConfig) -> bool {
+    cfg.tools.all_names().iter().any(|n| n == TOOL_CALL_BEHAVIOR)
+}
+
+/// The configuration a behavior's own context runs with: the session's,
+/// with the entry's application system prompt and `llm_context` keys.
+fn context_config(cfg: &SessionConfig, entry: &BehaviorEntry) -> SessionConfig {
+    let mut c = cfg.clone();
+    if let Some(p) = &entry.system_prompt {
+        c.prompt.system_prompt = Some(p.clone());
+    }
+    if let Some(over) = entry.llm_context.as_object() {
+        if !c.prompt.llm_context.is_object() {
+            c.prompt.llm_context = default_llm_context();
+        }
+        for (k, v) in over {
+            c.prompt.llm_context[k.as_str()] = v.clone();
+        }
+    }
+    c
 }
 
 fn checkpoint_deps(
@@ -82,47 +122,163 @@ fn checkpoint_deps(
     hosted_waist_deps(cfg, llm, Arc::new(tools)).with_checkpoint_hook(hook)
 }
 
-/// A fresh llm_context: system + summary + reverse-read worklog (§4.4).
+/// What a new run is created for.
+struct NewRun {
+    /// Behavior the run executes (`request.behavior_name` of a non-fork run).
+    behavior: String,
+    /// Entry configuration, `None` for a session without behaviors.
+    entry: Option<BehaviorEntry>,
+    /// Sub context: the call it answers and the caller's run.
+    child: Option<(ChildCall, String)>,
+    depth: usize,
+}
+
+/// A fresh llm_context for the behavior the session is entering (§4.4). How
+/// it is built is decided by the target's entry mode:
+///
+/// - the session's first run / a `switch_context` target entered for the
+///   first time: its own system, tools and model; history as configured
+///   (`inherit`), never another context's snapshot;
+/// - `create_sub_context` child: its own system and configuration plus the
+///   selected history of the caller (`derive_child`);
+/// - `fork` child: the caller's system, configuration and complete effective
+///   history at the fork point (`fork_snapshot`).
+///
+/// A child continues the caller's step / action numbering; what it inherited
+/// is never written to the worklog by it (`HostMeta.inherited_below`,
+/// `base_input_len`).
 pub(super) async fn new_run_context(
     sh: &Arc<Shared>,
     binding: &Binding,
     env: &SessionEnv,
 ) -> Result<LiveCtx> {
-    let fork_parent = {
+    let (cfg, new) = {
         let s = sh.session.lock().await;
-        s.state
+        let cfg = s.config.clone();
+        let behavior = s
+            .state
+            .current_behavior
+            .clone()
+            .or_else(|| cfg.prompt.behavior.clone())
+            .unwrap_or_default();
+        let child = s
+            .state
             .process_stack
             .last()
-            .filter(|f| f.mode == ProcessMode::Fork && s.state.live_run.is_none())
-            .map(|f| f.run_id.clone())
+            .filter(|f| f.role == FrameRole::Caller && s.state.live_run.is_none())
+            .and_then(|f| f.call.clone().map(|c| (c, f.run_id.clone())));
+        let depth = s.state.call_depth();
+        (
+            cfg,
+            NewRun {
+                behavior,
+                entry: None,
+                child,
+                depth,
+            },
+        )
     };
-    let mut lc = new_run_context_plain(sh, binding, env).await?;
-    if let (Some(parent), true) = (fork_parent, lc.behavior) {
-        // Fork child: a new run inheriting the parent process's steps; its
-        // control flow must end into the caller.
-        let (_, parent_snap) = sh.dir.runs().load_checked(&parent)?;
-        let parent_snap = parent_snap.ok_or_else(|| {
-            OpenDanError::blocked("fork parent run has no snapshot", Some(&parent))
-        })?;
-        let mut snap = lc.ctx.snapshot();
-        let mut steps = parent_snap.state.steps.clone();
-        steps.extend(parent_snap.state.last_step.clone());
-        snap.state.steps = steps;
-        snap.state.last_step = None;
-        snap.state.history_summaries = parent_snap.state.history_summaries.clone();
-        snap.state.next_step_index = parent_snap.state.next_step_index;
-        snap.state.next_action_id = parent_snap.state.next_action_id;
-        // A fork child returns to its caller: jump targets it emits are
-        // ignored by `classify_done` (the waist's `forbid_next_behavior`
-        // would also scrub xllm's terminal `done` marker).
-        let mut meta = snapshot_host_meta(&snap);
-        meta.inherited_below = parent_snap.state.next_step_index;
-        snap.state.host = Some(with_host_meta(snap.state.host.as_ref(), &meta));
-        lc.ctx = LLMContext::resume(snap, ResumeFill::ResumeFromMidRun, lc.deps.clone())
-            .map_err(|e| OpenDanError::Llm(format!("fork child: {e}")))?;
-        *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
+    let mut new = new;
+    if !new.behavior.is_empty() {
+        new.entry = Some(sh.deps.assembler.behavior_entry(&cfg, &new.behavior)?);
     }
-    Ok(lc)
+    match &new.child {
+        Some((call, parent)) if call.mode == ContextMode::Fork => {
+            fork_run_context(sh, env, parent, new.depth).await
+        }
+        _ => own_run_context(sh, binding, env, &cfg, &new).await,
+    }
+}
+
+fn parent_snapshot(sh: &Shared, parent: &str) -> Result<(RunRecord, LLMContextSnapshot)> {
+    let (record, snap) = sh.dir.runs().load_checked(parent)?;
+    let snap = snap
+        .ok_or_else(|| OpenDanError::blocked("the caller's run has no snapshot", Some(parent)))?;
+    Ok((record, snap))
+}
+
+/// fork child: a new run with the caller's configuration, system and
+/// complete effective history up to the fork point.
+async fn fork_run_context(
+    sh: &Arc<Shared>,
+    env: &SessionEnv,
+    parent: &str,
+    depth: usize,
+) -> Result<LiveCtx> {
+    let (parent_record, parent_snap) = parent_snapshot(sh, parent)?;
+    let sid = sh.dir.sid().to_string();
+    let runs = sh.dir.runs();
+    let (run_id, lock) = runs.create_locked()?;
+    let derived = llm_context::fork_snapshot(
+        &parent_snap,
+        llm_context::ForkOptions {
+            trace: Some(run_id.clone()),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| OpenDanError::InvalidArgument(e.to_string()))?;
+    let now = crate::now_ms();
+    let record = RunRecord {
+        run_id: run_id.clone(),
+        status: RunStatus::Running,
+        created_at_ms: now,
+        updated_at_ms: now,
+        pending_input: None,
+        latest_snapshot_idx: None,
+        last_error: None,
+        result: None,
+        artifacts: Vec::new(),
+        usage: Default::default(),
+        limit_reason: None,
+        interrupt_reason: None,
+        compactions: 0,
+        pid: std::process::id(),
+        host_commit_pending: None,
+        inflight: Vec::new(),
+        handover: None,
+        ..parent_record
+    };
+    let xdeps = xllm_deps_for(sh, env, depth).await?;
+    let manager = rebuild_toolset(&record, &xdeps).await?;
+    let llm = create_run_llm(&record, &xdeps).await?;
+    let config = record.config.clone();
+    let workdir = PathBuf::from(&record.workdir);
+    let run = RunHandle::new(runs.store().clone(), record, lock);
+    run.write()?;
+    let tools = SessionToolManager::new(
+        Arc::new(manager),
+        run.clone(),
+        sh.lease.clone(),
+        workdir,
+        sh.touched.clone(),
+    );
+    let (ctx_llm, rounds) = counted(llm.clone());
+    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools);
+    let mut snap = derived.snapshot;
+    let meta = HostMeta {
+        session_id: sid,
+        base_input_len: derived.boundary.messages as u64,
+        process_entry: {
+            let s = sh.session.lock().await;
+            s.state.process_entry.clone()
+        },
+        inherited_below: derived.boundary.steps_below,
+        input_receipts: Vec::new(),
+        ..Default::default()
+    };
+    snap.state.host = Some(with_host_meta(None, &meta));
+    let ctx = LLMContext::resume(snap, ResumeFill::ResumeFromMidRun, deps.clone())
+        .map_err(|e| OpenDanError::Llm(format!("fork child: {e}")))?;
+    *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
+    Ok(LiveCtx {
+        behavior: config.loop_model == LoopModel::Behavior,
+        ctx,
+        run,
+        ready: false,
+        deps,
+        rounds,
+        summary_llm: llm,
+    })
 }
 
 fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
@@ -150,21 +306,32 @@ fn session_env_check(sh: &Shared, env: &SessionEnv) -> Result<Value> {
     )
 }
 
-async fn new_run_context_plain(
+/// A run with its own system and configuration: the session's first run, a
+/// `switch_context` target, or a `create_sub_context` child.
+async fn own_run_context(
     sh: &Arc<Shared>,
     binding: &Binding,
     env: &SessionEnv,
+    session_cfg: &SessionConfig,
+    new: &NewRun,
 ) -> Result<LiveCtx> {
-    let (cfg, sid) = {
-        let s = sh.session.lock().await;
-        (s.config.clone(), s.sid().to_string())
+    let sid = sh.dir.sid().to_string();
+    let cfg = match &new.entry {
+        Some(e) => context_config(session_cfg, e),
+        None => session_cfg.clone(),
     };
+    // A session without behaviors keeps reading the session history.
+    let inherit = new
+        .entry
+        .as_ref()
+        .map(|e| e.inherit)
+        .unwrap_or(InheritMode::RecentDialogue);
     let system = sh
         .deps
         .assembler
         .system_text(&cfg, sh.agent_root.as_deref())
         .await?;
-    let xdeps = xllm_deps_for(sh, env).await;
+    let xdeps = xllm_deps_for(sh, env, new.depth).await?;
     let mut llm_ctx = if cfg.prompt.llm_context.is_null() {
         default_llm_context()
     } else {
@@ -196,11 +363,15 @@ async fn new_run_context_plain(
             model: hosted.config.model.clone(),
         }),
     };
-    let history = {
+    // The session history is a view selected by the target's entry
+    // (`inherit: recent_dialogue`), never attached implicitly.
+    let history = if inherit == InheritMode::RecentDialogue {
         let mut s = sh.session.lock().await;
         build_history(&mut s, &sh.lease, Some(summarizer.as_ref()), budget)
             .await?
             .0
+    } else {
+        None
     };
     let runs = sh.dir.runs();
     let (run_id, lock) = runs.create_locked()?;
@@ -234,15 +405,8 @@ async fn new_run_context_plain(
     if let Some(h) = history {
         input.push(h);
     }
-    let behavior_name = {
-        let s = sh.session.lock().await;
-        s.state
-            .current_behavior
-            .clone()
-            .or_else(|| cfg.prompt.behavior.clone())
-            .unwrap_or_default()
-    };
-    let request = agent_tool::xllm::hosted_request(
+    let behavior_name = new.behavior.clone();
+    let mut request = agent_tool::xllm::hosted_request(
         &config,
         ContextOwnerRef::Agent {
             session_id: sid.clone(),
@@ -252,9 +416,30 @@ async fn new_run_context_plain(
         &behavior_name,
         input.clone(),
     );
+    request.tool_policy.allow_deferred = calls_sub_contexts(&config);
     let (ctx_llm, rounds) = counted(llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools);
-    let mut ctx = LLMContext::new(request, deps.clone());
+    let mut inherited_below = 0;
+    let mut ctx = match &new.child {
+        // create-sub-context: the caller's selected history, its numbering.
+        Some((_, parent)) => {
+            let (_, parent_snap) = parent_snapshot(sh, parent)?;
+            let derived = llm_context::derive_child(
+                &parent_snap,
+                request,
+                if inherit == InheritMode::Steps {
+                    llm_context::InheritHistory::Steps
+                } else {
+                    llm_context::InheritHistory::None
+                },
+            )
+            .map_err(|e| OpenDanError::InvalidArgument(e.to_string()))?;
+            inherited_below = derived.boundary.steps_below;
+            LLMContext::resume(derived.snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
+                .map_err(|e| OpenDanError::Llm(format!("sub context: {e}")))?
+        }
+        None => LLMContext::new(request, deps.clone()),
+    };
     let meta = HostMeta {
         session_id: sid,
         base_input_len: input.len() as u64,
@@ -262,7 +447,7 @@ async fn new_run_context_plain(
             let s = sh.session.lock().await;
             s.state.process_entry.clone()
         },
-        inherited_below: 0,
+        inherited_below,
         input_receipts: Vec::new(),
         ..Default::default()
     };
@@ -288,7 +473,8 @@ pub(super) async fn resume_live_run(
 ) -> Result<LiveCtx> {
     let record = run.record();
     let run_id = record.run_id.clone();
-    let xdeps = xllm_deps_for(sh, env).await;
+    let depth = sh.session.lock().await.state.call_depth();
+    let xdeps = xllm_deps_for(sh, env, depth).await?;
     let blocked = |e: String| OpenDanError::blocked(e, Some(&run_id));
     let manager = rebuild_toolset(&record, &xdeps)
         .await
@@ -317,29 +503,35 @@ pub(super) async fn resume_live_run(
         materialize_unresolved(&mut snapshot, &record.inflight, behavior, &reasons);
         run.checkpoint_with_results(&snapshot, None)?;
     }
-    if matches!(
-        snapshot.state.suspended,
-        Some(Suspension::PendingTool { .. })
-    ) {
-        return Err(blocked(
-            "the run waits for deferred tool results, which this runner cannot supply".into(),
-        ));
+    // Suspended on a sub context call: its result is the tool result of
+    // that call (`ResumeFill::ToolResults`); the rest of the batch / step
+    // continues afterwards. Any other deferred task has no resolver here.
+    let returned = sh.session.lock().await.state.process_result.clone();
+    let returned_call = returned
+        .as_ref()
+        .and_then(|r| r.get("call_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut fill = ResumeFill::ResumeFromMidRun;
+    if let Some(Suspension::PendingTool { pending, .. }) = &snapshot.state.suspended {
+        let mut results = Vec::new();
+        for p in pending {
+            if returned_call.as_deref() != Some(p.call.call_id.as_str()) {
+                return Err(blocked(format!(
+                    "the run waits for task {} of call {}, which this runner cannot supply",
+                    p.task_id, p.call.call_id
+                )));
+            }
+            results.push((
+                p.call.call_id.clone(),
+                sub_result_observation(&p.call.call_id, returned.as_ref().unwrap_or(&Value::Null)),
+            ));
+        }
+        fill = ResumeFill::ToolResults { results };
     }
     if behavior {
-        let (current, returned) = {
-            let s = sh.session.lock().await;
-            (
-                s.state.current_behavior.clone(),
-                s.state.process_result.clone(),
-            )
-        };
-        // A normal switch changes the behavior of the same run; the last
-        // published snapshot may predate it.
-        if let Some(b) = current {
-            snapshot.request.behavior_name = b;
-        }
-        // Back from a fork child: continue its action / step numbering.
-        if let Some(r) = returned {
+        // Back from a sub context: continue its action / step numbering.
+        if let Some(r) = &returned {
             if let Some(n) = r.get("next_action_id").and_then(Value::as_u64) {
                 snapshot.state.next_action_id = snapshot.state.next_action_id.max(n as u32);
             }
@@ -366,9 +558,22 @@ pub(super) async fn resume_live_run(
         // rewrite did not complete): compact again before running on.
         rewrite_for_limit(sh, &run, snapshot, behavior, &deps, &llm, 1).await?
     } else {
-        LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone())
-            .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?
+        let filled = matches!(fill, ResumeFill::ToolResults { .. });
+        let ctx = LLMContext::resume(snapshot, fill, deps.clone())
+            .map_err(|e| blocked(format!("snapshot cannot be resumed: {e}")))?;
+        if filled {
+            // The result is in the run before anything runs on.
+            run.checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
+            crate::fault::point("sub_return:after_fill");
+        }
+        ctx
     };
+    if returned_call.is_some() {
+        // Delivered (now, or before a crash): the hand-back is consumed.
+        let mut s = sh.session.lock().await;
+        s.state.process_result = None;
+        s.commit_state(&sh.lease)?;
+    }
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
     run.set_status(RunStatus::Running, None)?;
     Ok(LiveCtx {
@@ -525,10 +730,10 @@ async fn rewrite_for_limit(
     Ok(ctx)
 }
 
-/// Open the run `state.live_run` points to (a process resumed after a fork
-/// child returned, or an independent process re-entered).
+/// Open the run `state.live_run` points to (a caller resumed after its sub
+/// context returned, or a parked context re-entered).
 pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> Result<LiveCtx> {
-    let (run_id, behavior_name) = {
+    let (run_id, tool_return) = {
         let s = sh.session.lock().await;
         let run_id = s
             .state
@@ -536,7 +741,7 @@ pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> R
             .as_ref()
             .map(|l| l.run_id.clone())
             .ok_or_else(|| OpenDanError::Other("no live run to open".into()))?;
-        (run_id, s.state.current_behavior.clone())
+        (run_id, s.state.tool_return_pending())
     };
     let runs = sh.dir.runs();
     let lock = runs
@@ -545,27 +750,33 @@ pub(super) async fn open_state_live_run(sh: &Arc<Shared>, env: &SessionEnv) -> R
             run_id: run_id.clone(),
         })?;
     let (record, snapshot) = runs.load_checked(&run_id)?;
-    let mut snapshot = snapshot
+    let snapshot = snapshot
         .ok_or_else(|| OpenDanError::blocked("suspended run has no snapshot", Some(&run_id)))?;
     let run = RunHandle::new(runs.store().clone(), record, lock);
-    if let Some(b) = behavior_name {
-        snapshot.request.behavior_name = b;
-    }
     let mut lc = resume_live_run(sh, run, snapshot, env).await?;
-    lc.ready = false; // resumed on purpose: the hand-over batch brings the input
+    // Resumed on purpose: the hand-over batch brings the input. A caller
+    // back from a tool-triggered sub context got its tool result instead
+    // and runs on by itself.
+    lc.ready = tool_return;
     Ok(lc)
 }
 
-/// Suspend the current process run into `process_stack` (§4.4): flush its
-/// history so far (worklog keeps time order), keep the run directory.
+/// Suspend the live run into `process_stack` (§4.4) and hand over to
+/// `next_behavior`: flush its history so far (worklog keeps time order),
+/// keep the run directory. `call` = the sub context it calls (the run is
+/// the caller and gets the result back); `None` = SWITCH_CONTEXT (the run
+/// is parked, and the target's own parked run, if any, becomes live again).
+/// One state commit: redone after a crash, it is driven by the run's
+/// hand-over record / pending call and lands here once.
 pub(super) async fn suspend_run(
     sh: &Arc<Shared>,
-    lc: &LiveCtx,
+    run: &RunHandle,
+    behavior: bool,
     snapshot: &LLMContextSnapshot,
-    mode: ProcessMode,
     next_behavior: &str,
+    call: Option<ChildCall>,
 ) -> Result<()> {
-    let run_id = lc.run.run_id().to_string();
+    let run_id = run.run_id().to_string();
     let mut s = sh.session.lock().await;
     let live = s
         .state
@@ -575,7 +786,7 @@ pub(super) async fn suspend_run(
         .ok_or_else(|| OpenDanError::Other(format!("run {run_id} is not the live run")))?;
     let turn = s.state.current_turn();
     let (mut bodies, marks) =
-        run_history_entries(&run_id, snapshot, lc.behavior, FlushMarks::of(&live), turn);
+        run_history_entries(&run_id, snapshot, behavior, FlushMarks::of(&live), turn);
     bodies.push(WorklogBody::Outcome {
         run_id: run_id.clone(),
         turn,
@@ -590,10 +801,17 @@ pub(super) async fn suspend_run(
         .clone()
         .or_else(|| s.state.current_behavior.clone())
         .or_else(|| s.config.prompt.behavior.clone())
-        .unwrap_or_else(|| "main".to_string());
+        // A session without behaviors (function call loop) has no entry name.
+        .unwrap_or_default();
+    let switch = call.is_none();
     s.state.process_stack.push(ProcessFrame {
         entry,
-        mode,
+        role: if switch {
+            FrameRole::Parked
+        } else {
+            FrameRole::Caller
+        },
+        call,
         run_id: run_id.clone(),
         turns: live.turns,
         flushed_message_count: marks.messages,
@@ -601,26 +819,61 @@ pub(super) async fn suspend_run(
         flushed_input_seq: marks.input_seq,
         flushed_epoch: marks.epoch,
         applied_input_seq: live.applied_input_seq,
+        handover_at_ms: run.record().handover.map(|h| h.at_ms).unwrap_or(0),
     });
     s.state.live_run = None;
     s.state.process_entry = Some(next_behavior.to_string());
     s.state.current_behavior = Some(next_behavior.to_string());
     s.state.internal_continuation = Some(next_behavior.to_string());
     s.state.run_state = RunState::Ready;
-    // Independent: re-enter the target's own suspended run when it exists.
-    if mode == ProcessMode::Independent {
+    s.state.waiting_for = None;
+    s.state.last_error = None;
+    // SWITCH_CONTEXT: re-enter the target's own parked run when it exists.
+    if switch {
         if let Some(pos) = s
             .state
             .process_stack
             .iter()
-            .position(|f| f.entry == next_behavior && f.mode == ProcessMode::Independent)
+            .position(|f| f.entry == next_behavior && f.role == FrameRole::Parked)
         {
             let f = s.state.process_stack.remove(pos);
             s.state.live_run = Some(live_from_frame(f));
         }
     }
-    lc.run.set_status(RunStatus::Paused, None)?;
     commit_and_report(sh, &mut s).await
+}
+
+/// Tool result a caller gets for its `call_behavior` call from the sub
+/// context's hand-back (`state.process_result`).
+fn sub_result_observation(call_id: &str, r: &Value) -> Observation {
+    let text = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    match r.get("status").and_then(Value::as_str).unwrap_or("ok") {
+        "failed" => Observation::Error {
+            call_id: call_id.to_string(),
+            message: format!("sub context `{}` failed: {}", text("behavior"), text("result")),
+            tool_result: None,
+        },
+        status => {
+            let content = if status == "needs_user_input" {
+                json!({
+                    "status": "needs_user_input",
+                    "behavior": text("behavior"),
+                    "question": text("result"),
+                    "note": "the sub context cannot ask the user; ask the user yourself and call it again with the answer",
+                })
+                .to_string()
+            } else {
+                text("result")
+            };
+            Observation::Success {
+                call_id: call_id.to_string(),
+                bytes: content.len(),
+                content: Value::String(content),
+                truncated: false,
+                tool_result: None,
+            }
+        }
+    }
 }
 
 /// A suspended process becomes the live run again.
@@ -633,7 +886,8 @@ pub(super) fn live_from_frame(f: ProcessFrame) -> LiveRun {
         flushed_step_index: f.flushed_step_index,
         flushed_input_seq: f.flushed_input_seq,
         flushed_epoch: f.flushed_epoch,
-        process_entry: Some(f.entry),
+        process_entry: Some(f.entry).filter(|e| !e.is_empty()),
+        handover_at_ms: f.handover_at_ms,
     }
 }
 

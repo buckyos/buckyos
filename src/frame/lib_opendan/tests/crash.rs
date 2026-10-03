@@ -118,6 +118,19 @@ fn script_for(name: &str, ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
                 text("<response><next_behavior>research</next_behavior></response>")
             }
         }),
+        "subcall" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
+            if has_tool_result(req, "f1").is_some() {
+                text("final answer")
+            } else if last_user_text(req).contains("<sub_task") {
+                text("X is 42")
+            } else {
+                tool_call(
+                    "f1",
+                    "call_behavior",
+                    json!({ "behavior": "research", "task": "find X" }),
+                )
+            }
+        }),
         other => panic!("unknown scenario {other}"),
     }
 }
@@ -684,7 +697,7 @@ fn behavior_spec(obj: &str, modes: serde_json::Value) -> libopendan::api::Sessio
     });
     spec.prompt.behavior = Some("plan".into());
     spec.extensions
-        .insert("opendan".into(), json!({ "process_modes": modes }));
+        .insert("opendan".into(), json!({ "behaviors": modes }));
     spec
 }
 
@@ -730,7 +743,7 @@ async fn fork_return_survives_a_crash_after_the_child_finish() {
     let sd = env
         .create_work(behavior_spec(
             "research then answer",
-            json!({ "research": "fork" }),
+            json!({ "research": { "mode": "fork" } }),
         ))
         .await;
     let mut child = spawn_child(&env, &sd, "fork", Some("finish_run:after_commit"));
@@ -751,9 +764,12 @@ async fn fork_return_survives_a_crash_after_the_child_finish() {
 async fn crash_while_committing_the_switch_hand_over_does_not_repeat_it() {
     let env = Env::new();
     let sd = env
-        .create_work(behavior_spec("two phases", json!({})))
+        .create_work(behavior_spec(
+            "two phases",
+            json!({ "do": { "mode": "switch_context" } }),
+        ))
         .await;
-    // Hit #2 = the hand-over batch of the normal switch (same run, same Turn).
+    // Hit #2 = the hand-over batch entering `do`'s own context (same Turn).
     let mut child = spawn_child(
         &env,
         &sd,
@@ -769,5 +785,192 @@ async fn crash_while_committing_the_switch_hand_over_does_not_repeat_it() {
     assert!(sd.state().unwrap().internal_continuation.is_none());
     assert_eq!(count_kind(&sd, "turn_started"), 1);
     assert_eq!(count_kind(&sd, "input_batch"), 1);
+    assert_worklog_contiguous(&sd);
+}
+
+// Context scheduling (context switch TODO V6 / V7) ----------------------------
+
+fn subcall_spec() -> libopendan::api::SessionSpec {
+    let mut spec = work_spec("fork from a tool call");
+    spec.prompt.llm_context = json!({
+        "tools": { "enabled": true, "tools": [ { "groupname": "bash" }, { "name": "call_behavior" } ] }
+    });
+    spec.extensions.insert(
+        "opendan".into(),
+        json!({ "behaviors": { "research": { "mode": "fork" } } }),
+    );
+    spec
+}
+
+fn outcome_kinds(sd: &SessionDir) -> Vec<String> {
+    read_worklog(sd)
+        .into_iter()
+        .filter_map(|e| match e.body {
+            WorklogBody::Outcome { kind, .. } => Some(kind),
+            _ => None,
+        })
+        .collect()
+}
+
+/// V7: a crash at every stage of a tool-triggered sub context — after the
+/// caller suspended on the call, while the child's hand-over batch commits,
+/// after the child finished, after its result was filled into the caller —
+/// recovers into the same child / result: one child run, the result handed
+/// back exactly once, the caller's Turn kept.
+#[tokio::test]
+async fn sub_context_call_survives_a_crash_at_every_stage() {
+    for (fault, left) in [
+        ("outcome:after_checkpoint", 2),
+        ("input_batch:after_input_checkpoint#2", 2),
+        ("finish_run:after_commit", 1),
+        ("sub_return:after_fill", 1),
+    ] {
+        let env = Env::new();
+        let sd = env.create_work(subcall_spec()).await;
+        let mut child = spawn_child(&env, &sd, "subcall", Some(fault));
+        assert!(
+            !wait_exit(&mut child, Duration::from_secs(60)).success(),
+            "{fault}: the fault point was not reached"
+        );
+        let llm = script("subcall");
+        let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+        assert!(r.is_finished(), "{fault}: {r:?}");
+        assert_eq!(llm.count(), left, "{fault}: nothing is inferred twice");
+        assert!(sd.report().unwrap().contains("final answer"), "{fault}");
+        assert_eq!(
+            outcome_kinds(&sd),
+            vec!["suspended", "process_done", "done"],
+            "{fault}"
+        );
+        let results: Vec<(String, String)> = read_worklog(&sd)
+            .into_iter()
+            .filter_map(|e| match e.body {
+                WorklogBody::ActionResult { call_id, result, .. } => Some((call_id, result)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            results,
+            vec![("f1".to_string(), "X is 42".to_string())],
+            "{fault}: the result is handed back once"
+        );
+        let st = sd.state().unwrap();
+        assert!(st.process_stack.is_empty() && st.process_result.is_none(), "{fault}");
+        assert_eq!((st.turn_seq, st.turns_completed), (1, 1), "{fault}");
+        assert_eq!(count_kind(&sd, "turn_started"), 1, "{fault}");
+        assert_worklog_contiguous(&sd);
+        // Referenced runs only: no orphan child run is left behind.
+        assert_eq!(sd.runs().list().unwrap(), vec![st.last_run.unwrap()], "{fault}");
+    }
+}
+
+/// xllm has neither the session's `call_behavior` tool nor a resolver for
+/// its task: it refuses to take over a run suspended on a sub context
+/// instead of dropping the call as an unknown local task.
+#[tokio::test]
+async fn xllm_refuses_a_run_suspended_on_a_sub_context() {
+    use agent_tool::xllm::{ResumeLimits, RunStore, XllmDeps, XllmRun};
+    let env = Env::new();
+    let sd = env.create_work(subcall_spec()).await;
+    let mut child = spawn_child(&env, &sd, "subcall", Some("outcome:after_checkpoint"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    let store = RunStore::disk(sd.runs_dir());
+    let llm = script("subcall");
+    let deps = XllmDeps::default().with_llm(llm.clone());
+    let r = XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps).await;
+    assert!(r.is_err(), "xllm must refuse: {r:?}");
+    assert_eq!(llm.count(), 0);
+    // The session still completes the call.
+    let llm = script("subcall");
+    assert!(drive(&sd, &env.deps(llm.clone()), StopWhen::Finished)
+        .await
+        .is_finished());
+    assert_eq!(llm.count(), 2);
+}
+
+/// V6: a crash between the hand-over checkpoint and the state commit. The
+/// run stopped at the hand-over point: recovery commits the transfer, it
+/// does not infer on the run again.
+#[tokio::test]
+async fn crash_at_the_hand_over_point_commits_the_transfer_once() {
+    let env = Env::new();
+    let sd = env
+        .create_work(behavior_spec(
+            "two phases",
+            json!({ "do": { "mode": "switch_context" } }),
+        ))
+        .await;
+    let mut child = spawn_child(&env, &sd, "switch", Some("outcome:after_checkpoint"));
+    assert!(!wait_exit(&mut child, Duration::from_secs(60)).success());
+    let st = sd.state().unwrap();
+    let run_id = st.live_run.clone().unwrap().run_id;
+    let rec = sd.runs().record(&run_id).unwrap();
+    assert_eq!(rec.status, agent_tool::xllm::RunStatus::Paused);
+    assert_eq!(rec.handover.as_ref().unwrap().next_behavior, "do");
+    assert!(st.process_stack.is_empty(), "the transfer is not committed yet");
+    let llm = script("switch");
+    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 1, "only `do` runs");
+    let t = llm.transcript(0);
+    assert_eq!(t.matches("behavior_switch to=\"do\"").count(), 1, "{t}");
+    assert_eq!(outcome_kinds(&sd), vec!["suspended", "done"]);
+    assert_eq!(count_kind(&sd, "turn_started"), 1);
+    assert_eq!(count_kind(&sd, "turn_ended"), 1);
+    assert_worklog_contiguous(&sd);
+}
+
+/// V6: xllm takes over a hosted run whose model hands over to another
+/// behavior. The run yields at the hand-over point (not completed), every
+/// further `xllm --resume` stays there, and the session commits the transfer
+/// exactly once.
+#[tokio::test]
+async fn xllm_yields_at_a_hand_over_and_the_session_commits_it_once() {
+    use agent_tool::xllm::{ResumeLimits, ResumeStart, RunStatus, RunStore, XllmDeps, XllmRun};
+    let env = Env::new();
+    let sd = env
+        .create_work(behavior_spec(
+            "two phases",
+            json!({ "do": { "mode": "switch_context" } }),
+        ))
+        .await;
+    let mut child = spawn_child(&env, &sd, "switch", Some("input_batch:after_gate_clear"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    let run_id = sd.state().unwrap().live_run.unwrap().run_id;
+    let store = RunStore::disk(sd.runs_dir());
+    let llm = script("switch");
+    let deps = XllmDeps::default().with_llm(llm.clone());
+    let ResumeStart::Run(mut run) =
+        XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps.clone())
+            .await
+            .unwrap()
+    else {
+        panic!("terminal?")
+    };
+    let out = run.execute().await.unwrap();
+    assert_eq!(out.status(), RunStatus::Paused, "a hand-over is not a completed run");
+    assert_eq!(out.record().handover.as_ref().unwrap().next_behavior, "do");
+    drop(run);
+    assert_eq!(llm.count(), 1);
+    // Repeated resume stays at the hand-over point.
+    for _ in 0..2 {
+        let err = XllmRun::resume(&store, Some(&run_id), None, ResumeLimits::default(), deps.clone())
+            .await
+            .err()
+            .expect("must not continue past the hand-over");
+        assert!(err.to_string().contains("handed over"), "{err}");
+    }
+    assert_eq!(llm.count(), 1);
+    // The session commits the transfer and runs the target.
+    let llm2 = script("switch");
+    let r = drive(&sd, &env.deps(llm2.clone()), StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm2.count(), 1, "only `do` runs");
+    assert!(sd.report().unwrap().contains("both phases done"));
+    assert_eq!(outcome_kinds(&sd), vec!["suspended", "done"]);
+    let st = sd.state().unwrap();
+    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert_eq!(count_kind(&sd, "turn_ended"), 1, "the hand-over did not close the Turn");
     assert_worklog_contiguous(&sd);
 }

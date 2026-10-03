@@ -79,6 +79,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         flushed_input_seq: 0,
         flushed_epoch: 0,
         process_entry: None,
+        handover_at_ms: 0,
     });
     if live.run_id != r.run_id {
         return Err(OpenDanError::blocked(

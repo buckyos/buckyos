@@ -7,12 +7,11 @@ use std::sync::Arc;
 use agent_tool::xllm::RunStatus;
 use buckyos_api::AiUsage;
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
-use llm_context::outcome::{ContextOutput, LLMContextOutcome, ResumeFill};
+use llm_context::outcome::{ContextOutput, LLMContextOutcome};
 use llm_context::state::LLMContextSnapshot;
-use llm_context::{LLMContext, NEXT_BEHAVIOR_END};
 use serde_json::{json, Value};
 
-use crate::error::{OpenDanError, Result};
+use crate::error::Result;
 use crate::protocol::*;
 use crate::session::runs::RunHandle;
 use crate::session::Session;
@@ -23,6 +22,7 @@ use super::history::maybe_compact;
 use super::inputs::side_effects_from_worklog;
 use super::live::{live_from_frame, remove_if_safe, suspend_run};
 use super::shared::{commit_and_report, report, LiveCtx, Shared};
+use super::tools::pending_sub_call;
 
 const WAIT_USER_MSG: &str = "WAIT_USER_MSG";
 
@@ -36,11 +36,13 @@ pub(super) enum FinishKind {
     /// The run delivered its result (`Done`, terminal).
     #[default]
     Done,
-    /// A fork child returned to its caller.
+    /// A sub context (create-sub-context / fork child) returned to its
+    /// caller.
     ProcessDone,
     /// `WAIT_USER_MSG`: the run ended waiting for input.
     Wait,
-    /// Hand-over to another behavior (the run continues or is suspended).
+    /// Hand-over to another behavior: the run is suspended into
+    /// `process_stack` (parked, or as the caller of a sub context).
     Switch,
     Budget,
     Error,
@@ -89,8 +91,13 @@ pub(super) struct Next {
     /// The run was suspended into `process_stack` (not ended, not kept open).
     pub(super) suspended: bool,
     /// The open Turn ends with this run end (`None`: it continues — a
-    /// hand-over, a fork child returning, a resumable suspension).
+    /// hand-over, a sub context returning, a resumable suspension).
     pub(super) turn_end: Option<TurnStatus>,
+    /// `Switch`: the sub context being called (`None`: SWITCH_CONTEXT).
+    pub(super) call: Option<ChildCall>,
+    /// `ProcessDone`: `ok | failed | needs_user_input`, handed to the caller
+    /// with the result.
+    pub(super) child_status: Option<String>,
 }
 
 fn is_retryable_error(e: &LLMComputeError) -> bool {
@@ -137,19 +144,66 @@ pub(super) fn has_report(snapshot: &LLMContextSnapshot) -> bool {
         .is_some_and(|r| !r.trim().is_empty())
 }
 
+/// Where the run being interpreted stands in the session's call structure.
+pub(super) struct CallSite<'a> {
+    /// The run is a sub context: whatever it ends with returns to its caller.
+    pub(super) child: bool,
+    /// Sub contexts in progress, this run included.
+    pub(super) depth: usize,
+    /// Entry configuration of a hand-over target.
+    pub(super) entry: &'a (dyn Fn(&str) -> Result<BehaviorEntry> + Send + Sync),
+}
+
+/// A sub context returns `result` to its caller.
+fn returns(next: &mut Next, status: &str, result: Option<String>) {
+    next.kind = FinishKind::ProcessDone;
+    next.run_ended = true;
+    next.waiting = false;
+    next.finished = false;
+    next.turn_end = None;
+    next.error = None;
+    next.next_behavior = None;
+    next.child_status = Some(status.to_string());
+    if result.is_some() {
+        next.answer = result;
+    }
+}
+
+/// A hand-over that cannot be carried out (target without an entry mode,
+/// nesting limit). There is no fallback: a sub context reports it to its
+/// caller, any other run ends the Turn as failed.
+fn refuse_handover(next: &mut Next, site: &CallSite, message: String) {
+    if site.child {
+        returns(next, "failed", Some(message));
+        return;
+    }
+    next.kind = FinishKind::Error;
+    next.run_ended = true;
+    next.turn_end = Some(TurnStatus::Failed);
+    next.error = Some(json!({ "kind": "behavior_config", "message": message, "recoverable": false }));
+}
+
 /// Session-level meaning of a `Done` outcome (also used to rebuild the
-/// decision of a run another executor finished). `completed` = Turns
-/// completed before this outcome. Hand-overs (switch, fork child return)
-/// keep the Turn open; waiting for input completes it only when a reply
-/// was delivered (`replied`: a report or a sent message, D2), otherwise the
-/// next input joins the same Turn.
+/// decision of a run another executor finished or left at a hand-over).
+/// `completed` = Turns completed before this outcome.
+///
+/// - `next_behavior = B`: decided by B's entry mode — `switch_context`
+///   parks this run and enters B's own context; `create_sub_context` /
+///   `fork` call B as a sub context. Both keep the Turn open.
+/// - a sub context returns to its caller whatever else it ends with: `END`,
+///   a hand-over to a `switch_context` target (a sub context does not leave
+///   its call), or `WAIT_USER_MSG` (returned as `needs_user_input`: it never
+///   consumes the caller's inputs).
+/// - otherwise waiting for input completes the Turn only when a reply was
+///   delivered (`replied`: a report or a sent message, D2), and `END`
+///   applies the session's end condition.
 pub(super) fn classify_done(
     cfg: &SessionConfig,
     behavior: bool,
     next_behavior: Option<String>,
     answer: Option<String>,
     replied: bool,
-    fork_child: bool,
+    site: &CallSite,
     completed: u64,
 ) -> Next {
     let mut next = Next {
@@ -159,10 +213,7 @@ pub(super) fn classify_done(
         ..Default::default()
     };
     match next_behavior.as_deref() {
-        // A fork child returns to its caller whatever it declares.
-        _ if fork_child && next_behavior.as_deref() != Some(WAIT_USER_MSG) => {
-            next.kind = FinishKind::ProcessDone;
-        }
+        Some(WAIT_USER_MSG) if site.child => returns(&mut next, "needs_user_input", None),
         Some(WAIT_USER_MSG) => {
             next.kind = FinishKind::Wait;
             next.waiting = true;
@@ -172,27 +223,66 @@ pub(super) fn classify_done(
         }
         // `END` (waist) and `done` (xllm: report without actions) are
         // terminal; anything else hands over to that behavior.
-        Some(b)
-            if behavior
-                && !b.eq_ignore_ascii_case(NEXT_BEHAVIOR_END)
-                && !b.eq_ignore_ascii_case("done") =>
-        {
-            next.kind = FinishKind::Switch;
-            next.next_behavior = Some(b.to_string());
-            next.run_ended = false;
+        Some(b) if behavior && agent_tool::xllm::is_handover_target(b) => {
+            match (site.entry)(b) {
+                Err(e) => refuse_handover(&mut next, site, e.to_string()),
+                Ok(entry) if entry.mode.is_sub_context() => {
+                    if site.depth >= MAX_CALL_DEPTH {
+                        refuse_handover(
+                            &mut next,
+                            site,
+                            format!("sub contexts are nested {MAX_CALL_DEPTH} deep; `{b}` cannot be called"),
+                        );
+                    } else {
+                        next.kind = FinishKind::Switch;
+                        next.next_behavior = Some(b.to_string());
+                        next.run_ended = false;
+                        next.call = Some(ChildCall {
+                            mode: entry.mode,
+                            behavior: b.to_string(),
+                            trigger: CallTrigger::Behavior,
+                            task: None,
+                        });
+                    }
+                }
+                Ok(_) if site.child => returns(&mut next, "ok", None),
+                Ok(_) => {
+                    next.kind = FinishKind::Switch;
+                    next.next_behavior = Some(b.to_string());
+                    next.run_ended = false;
+                }
+            }
         }
+        _ if site.child => returns(&mut next, "ok", None),
         _ => decide_end(cfg, &mut next, completed + 1),
     }
     next
 }
 
-pub(super) async fn is_fork_child(sh: &Shared, run_id: &str) -> bool {
+/// Whether `run_id` is a sub context, and the call depth of the session.
+pub(super) async fn call_site_of(sh: &Shared, run_id: &str) -> (bool, usize) {
     let s = sh.session.lock().await;
-    s.state
+    let child = s
+        .state
         .process_stack
         .last()
-        .map(|f| f.mode == ProcessMode::Fork && f.run_id != run_id)
-        .unwrap_or(false)
+        .map(|f| f.role == FrameRole::Caller && f.run_id != run_id)
+        .unwrap_or(false);
+    (child, s.state.call_depth())
+}
+
+/// Carry out a decided hand-over: suspend the run and enter the target.
+pub(super) async fn hand_over(
+    sh: &Arc<Shared>,
+    run: &RunHandle,
+    behavior: bool,
+    snapshot: &LLMContextSnapshot,
+    next: &mut Next,
+) -> Result<()> {
+    let target = next.next_behavior.clone().unwrap_or_default();
+    suspend_run(sh, run, behavior, snapshot, &target, next.call.clone()).await?;
+    next.suspended = true;
+    Ok(())
 }
 
 /// Interpret one `LLMContext` outcome for the session (run status, Turn
@@ -214,6 +304,15 @@ pub(super) async fn handle_context_outcome(
     };
     let mut next = Next::default();
     let mut snapshot = lc.ctx.snapshot();
+    let (child, depth) = call_site_of(sh, lc.run.run_id()).await;
+    let entry_cfg = cfg.clone();
+    let assembler = sh.deps.assembler.clone();
+    let entry = move |b: &str| assembler.behavior_entry(&entry_cfg, b);
+    let site = CallSite {
+        child,
+        depth,
+        entry: &entry,
+    };
     let status;
     match outcome {
         LLMContextOutcome::Done {
@@ -240,39 +339,32 @@ pub(super) async fn handle_context_outcome(
                 || behavior_result
                     .as_ref()
                     .is_some_and(|b| !b.messages_to_send.is_empty());
-            let fork_child = is_fork_child(sh, lc.run.run_id()).await;
-            next = classify_done(
-                &cfg,
-                lc.behavior,
-                nb,
-                answer,
-                replied,
-                fork_child,
-                completed,
-            );
+            next = classify_done(&cfg, lc.behavior, nb, answer, replied, &site, completed);
             next.usage = Some(usage);
-            status = if next.kind == FinishKind::Switch {
-                // The run continues (normal switch) or is suspended into
-                // process_stack (fork / independent): never terminal.
-                match next
-                    .next_behavior
-                    .as_deref()
-                    .and_then(|b| sh.deps.assembler.process_mode(&cfg, b))
-                {
-                    None => RunStatus::Running,
-                    Some(_) => RunStatus::Paused,
-                }
-            } else {
-                RunStatus::Completed
+            status = match next.kind {
+                // Suspended into process_stack: never terminal.
+                FinishKind::Switch => RunStatus::Paused,
+                FinishKind::Error => RunStatus::Failed,
+                _ => RunStatus::Completed,
             };
         }
         LLMContextOutcome::BudgetExhausted { which, usage, .. } => {
             next.usage = Some(usage);
             next.run_ended = true;
-            next.kind = FinishKind::Budget;
-            next.turn_end = Some(TurnStatus::BudgetExhausted);
             status = RunStatus::LimitReached;
-            next.error = Some(json!({ "kind": "budget_exhausted", "message": format!("{which:?}") }));
+            if site.child {
+                // A sub context's failure is a result for its caller.
+                returns(
+                    &mut next,
+                    "failed",
+                    Some(format!("the sub context ran out of budget ({which:?})")),
+                );
+            } else {
+                next.kind = FinishKind::Budget;
+                next.turn_end = Some(TurnStatus::BudgetExhausted);
+                next.error =
+                    Some(json!({ "kind": "budget_exhausted", "message": format!("{which:?}") }));
+            }
         }
         LLMContextOutcome::Error { error, usage, .. } => {
             next.usage = Some(usage);
@@ -286,6 +378,9 @@ pub(super) async fn handle_context_outcome(
             if retry {
                 // Retryable: the run is kept and the Turn stays open.
                 status = RunStatus::Paused;
+            } else if site.child {
+                status = RunStatus::Failed;
+                returns(&mut next, "failed", Some(error.to_string()));
             } else {
                 status = RunStatus::Failed;
                 next.run_ended = true;
@@ -321,9 +416,20 @@ pub(super) async fn handle_context_outcome(
         }
         LLMContextOutcome::PendingTool { snapshot: s, .. } => {
             snapshot = s;
-            next.kind = FinishKind::PendingTool;
-            next.waiting = true;
             status = RunStatus::Paused;
+            match pending_sub_call(&snapshot, &entry)? {
+                // Suspended on `call_behavior`: the run becomes the caller
+                // of that sub context; its batch / step stays with it.
+                Some(call) => {
+                    next.kind = FinishKind::Switch;
+                    next.next_behavior = Some(call.behavior.clone());
+                    next.call = Some(call);
+                }
+                None => {
+                    next.kind = FinishKind::PendingTool;
+                    next.waiting = true;
+                }
+            }
         }
         LLMContextOutcome::ContextLimitReached {
             usage, snapshot: s, ..
@@ -340,9 +446,15 @@ pub(super) async fn handle_context_outcome(
     if next.run_ended {
         let finish = serde_json::to_value(&next).unwrap_or(Value::Null);
         lc.run.checkpoint_finish(&snapshot, status, finish)?;
+    } else if next.kind == FinishKind::Switch && snapshot.state.suspended.is_none() {
+        // `next_behavior` hand-over: recorded with the snapshot, so recovery
+        // commits the transfer instead of inferring again.
+        let target = next.next_behavior.clone().unwrap_or_default();
+        lc.run.checkpoint_handover(&snapshot, &target)?;
     } else {
         lc.run.checkpoint_with_results(&snapshot, Some(status))?;
     }
+    crate::fault::point("outcome:after_checkpoint");
     // Rounds of this segment: added to run.json (all executors) and to the
     // session statistics (this runner's attempts).
     let rounds = lc.rounds.take();
@@ -358,26 +470,7 @@ pub(super) async fn handle_context_outcome(
         });
     }
     if next.kind == FinishKind::Switch {
-        let b = next.next_behavior.clone().unwrap_or_default();
-        match sh.deps.assembler.process_mode(&cfg, &b) {
-            None => {
-                // Normal switch: same context, same run, new behavior.
-                let mut snap = snapshot.clone();
-                snap.request.behavior_name = b.clone();
-                lc.ctx = LLMContext::resume(snap, ResumeFill::ResumeFromMidRun, lc.deps.clone())
-                    .map_err(|e| OpenDanError::Llm(format!("behavior switch: {e}")))?;
-                *sh.interrupt.lock().expect("interrupt") = Some(lc.ctx.interrupt_handle());
-                let mut s = sh.session.lock().await;
-                s.state.current_behavior = Some(b.clone());
-                s.state.internal_continuation = Some(b);
-                s.state.run_state = RunState::Ready;
-                commit_and_report(sh, &mut s).await?;
-            }
-            Some(mode) => {
-                suspend_run(sh, lc, &snapshot, mode, &b).await?;
-                next.suspended = true;
-            }
-        }
+        hand_over(sh, &lc.run, lc.behavior, &snapshot, &mut next).await?;
         return Ok(next);
     }
     if next.run_ended {
@@ -546,22 +639,37 @@ async fn commit_run_end(
         s.state.run_state = RunState::Ready;
     }
     if next.kind == FinishKind::ProcessDone {
-        // Fork child ended: its caller becomes live again in this same
-        // commit, with the child's result for its hand-over batch (same
-        // Turn).
-        if let Some(f) = s.state.process_stack.pop() {
+        // A sub context ended: its caller becomes live again in this same
+        // commit (same Turn), with the child's result — rendered into the
+        // caller's hand-over batch (behavior trigger) or filled as the tool
+        // result of the call when the caller's run is opened (tool trigger).
+        if let Some(f) = s
+            .state
+            .process_stack
+            .pop_if(|f| f.role == FrameRole::Caller)
+        {
             let entry = f.entry.clone();
+            let trigger = f.call.as_ref().map(|c| c.trigger.clone());
             s.state.live_run = Some(live_from_frame(f));
-            s.state.process_entry = Some(entry.clone());
-            s.state.current_behavior = Some(entry.clone());
-            s.state.internal_continuation = Some(entry);
-            s.state.process_result = Some(json!({
+            let named = Some(entry.clone()).filter(|e| !e.is_empty());
+            s.state.process_entry = named.clone();
+            s.state.current_behavior = named;
+            let mut result = json!({
                 "behavior": child_behavior.unwrap_or_default(),
                 "result": next.answer.clone().unwrap_or_default(),
+                "status": next.child_status.clone().unwrap_or_else(|| "ok".into()),
                 // Keep action / step ids unique after the return.
                 "next_action_id": snapshot.state.next_action_id,
                 "next_step_index": snapshot.state.next_step_index,
-            }));
+            });
+            match trigger {
+                Some(CallTrigger::Tool { call_id, .. }) => {
+                    result["call_id"] = json!(call_id);
+                    s.state.internal_continuation = None;
+                }
+                _ => s.state.internal_continuation = Some(entry),
+            }
+            s.state.process_result = Some(result);
         }
     }
     let digest_seq = s.state.perception_seq + 1;

@@ -7,6 +7,7 @@
 //! OneShot) sit above and below this waist but do not appear here.
 
 pub mod behavior_loop;
+pub mod context_derive;
 pub mod context_loop;
 pub mod context_window;
 pub mod deps;
@@ -31,6 +32,10 @@ pub use behavior_loop::{
     is_terminal_next_behavior, HistorySummaryRecord, LLMBehaviorResult, LLMResultParser,
     StepCompressionLevel, StepMeta, StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
     NEXT_BEHAVIOR_END,
+};
+pub use context_derive::{
+    derive_child, fork_snapshot, DeriveError, DerivedContext, ForkOptions, ForkPoint,
+    InheritBoundary, InheritHistory,
 };
 pub use context_loop::LLMContext;
 pub use deps::{

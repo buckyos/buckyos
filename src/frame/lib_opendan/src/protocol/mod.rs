@@ -45,6 +45,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
     }
     vec![
         ("session_config", s::<config::SessionConfig>()),
+        ("behavior_entry", s::<config::BehaviorEntry>()),
         ("session_state", s::<state::SessionState>()),
         ("session_summary", s::<summary::SessionSummary>()),
         ("worklog_entry", s::<worklog::WorklogEntry>()),
