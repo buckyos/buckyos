@@ -40,6 +40,7 @@ fn lease_epoch_monotonic_and_lock_file_never_replaced() {
     let dir = tempfile::tempdir().unwrap();
     let p = dir.path().join("lease.json");
     let mut epochs = Vec::new();
+    #[cfg(unix)]
     let mut ino = None;
     for i in 0..3 {
         let Acquire::Acquired(l) = Lease::acquire("session:x", &p, holder(&i.to_string())).unwrap()
@@ -49,16 +50,44 @@ fn lease_epoch_monotonic_and_lock_file_never_replaced() {
         // Second acquisition while held (another descriptor) is busy.
         match Lease::acquire("session:x", &p, holder("other")).unwrap() {
             Acquire::Busy(Some(info)) => assert_eq!(info.epoch, l.epoch()),
+            Acquire::Busy(None) if cfg!(windows) => {}
             _ => panic!("expected busy with holder info"),
         }
         epochs.push(l.epoch());
-        let now = inode(&p);
-        assert_eq!(*ino.get_or_insert(now), now, "lock file replaced");
+        #[cfg(unix)]
+        {
+            let now = inode(&p);
+            assert_eq!(*ino.get_or_insert(now), now, "lock file replaced");
+        }
         l.release();
         let info: LockInfo = serde_json::from_slice(&std::fs::read(&p).unwrap()).unwrap();
         assert!(info.released_at_ms.is_some());
     }
     assert_eq!(epochs, vec![1, 2, 3]);
+}
+
+#[test]
+fn distinct_locks_remain_valid_after_rewriting() {
+    let dir = tempfile::tempdir().unwrap();
+    let first = FileLock::try_acquire(&dir.path().join("first.lock")).unwrap().unwrap();
+    let second = FileLock::try_acquire(&dir.path().join("second.lock")).unwrap().unwrap();
+    first.rewrite(b"first holder").unwrap();
+    second.rewrite(b"second holder with different length").unwrap();
+    assert!(first.still_valid());
+    assert!(second.still_valid());
+    assert!(FileLock::try_acquire(first.path()).unwrap().is_none());
+    assert!(FileLock::try_acquire(second.path()).unwrap().is_none());
+}
+
+#[test]
+fn replaced_lock_is_detected() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("held.lock");
+    let lock = FileLock::try_acquire(&path).unwrap().unwrap();
+    std::fs::rename(&path, dir.path().join("previous.lock")).unwrap();
+    std::fs::write(&path, b"replacement").unwrap();
+    assert!(!lock.still_valid());
+    assert!(FileLock::try_acquire(&path).unwrap().is_some());
 }
 
 #[test]
@@ -110,6 +139,9 @@ fn kill_9_of_holder_releases_the_lease_immediately() {
         .unwrap();
     let start = Instant::now();
     loop {
+        if cfg!(windows) && FileLock::try_acquire(&p).unwrap().is_none() {
+            break;
+        }
         if let Some(info) = libopendan::lock::read_holder_info(&p) {
             if info.holder.runner_id == "rn-child" {
                 break;
@@ -125,9 +157,7 @@ fn kill_9_of_holder_releases_the_lease_immediately() {
         Lease::acquire("session:x", &p, holder("p")).unwrap(),
         Acquire::Busy(_)
     ));
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
+    child.kill().unwrap();
     let _ = child.wait();
     let Acquire::Acquired(l) = Lease::acquire("session:x", &p, holder("p")).unwrap() else {
         panic!("lock not released by kill -9")
@@ -483,6 +513,7 @@ async fn tool_plan_tombstones_are_repaired_before_running() {
     let tools = env.agent_root.join("tools");
     std::fs::create_dir_all(&tools).unwrap();
     std::fs::write(tools.join("rm-all"), "#!/bin/sh\necho boom\n").unwrap();
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(tools.join("rm-all"), std::fs::Permissions::from_mode(0o755))

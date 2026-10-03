@@ -763,7 +763,7 @@ fn resolve_include_path(
     current_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
     let requested = PathBuf::from(path);
-    if requested.is_absolute() {
+    if requested.has_root() {
         if let Some(root) = include_root {
             return Ok(root.join(strip_virtual_root(&requested)?));
         }

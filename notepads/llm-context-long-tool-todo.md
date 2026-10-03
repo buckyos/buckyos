@@ -1,6 +1,6 @@
 # llm_context 层修改 TODO：长命令、长工具与等待
 
-日期：2026-10-02（macOS 验证完成：2026-10-03，见 §11.4）
+日期：2026-10-02（macOS / Windows 验证：2026-10-03，见 §11.4 / §11.5）
 
 状态：**已实施（2026-10-02，见 §11）**；xAgent.md 的修改（§8）仍待 review 后进行。依据 2026-10-02 对长命令处理方式（同步硬等、同步执行中崩溃、串行等待、并行等待）的讨论与源码核对，并已结合 [lib_opendan 输入协议与 Turn Loop TODO](./lib-opendan-input-and-turn-loop-todo.md) 的 review 意见。2026-10-02 按 review 意见补充 §3.2：遵循标准父子进程语义，exec 跨平台、少做非标处理，恢复时只按 runtime 给出“被打断”的结果、交给 LLM 判断；§9 第 4 项据此定稿。同日按 review 简化 §4 / §5：长命令的执行模式由配置决定（wait / auto），auto 到期转为 task；llm_context 只做“返回结果 / 挂起等 task”两种机械判断；不区分 job 与 run；§9 第 1、2、3、5 项随之定稿；随后按 review 明确 stop 的两种结束方式、可取消性由工具与 task 的实现声明、`wait_ms` 默认 30s 上限 30 分钟（§9 第 7、8 项）；补充 §1 术语，明确 30 分钟内必须返回 LLM、更长的等待只在 Session 层挂起，xllm 不挂起；§9 第 7、8 项全部定稿（stop 经 task-mgr 父子关系传导、审批作废，硬等上限默认 60 分钟可设为不限）；用哪个 task-mgr 由工具实现决定，`shell` 只用进程内 task-mgr，buckyos task-mgr 是可选依赖。实施前重新确认基线。
 
@@ -49,7 +49,7 @@
     - 推理中：等推理完成并记录其输出。其中的工具调用不派发，配对为“因结束未执行”的结果（`Cancelled`，`effect_unknown: false`），保证快照可以续跑。
     - 工具执行中：工具支持取消就取消；不支持就等它完成，最多等一段时间（默认 30s，可配置），超时后按打断处理。
     - 结束时返回所有调用都已配对结果的快照，并新增一种 outcome 与 `Interrupted` 区分。命名避开 stop，以免与 Session 术语混淆。宿主追加新输入即可继续。
-- [x] **工具是否支持取消，由工具实现声明**。`AgentTool` 增加声明，默认不支持，因为不是所有任务都能可靠取消。`shell` 按 runtime 支持：native 结束其进程组；tmux 停止等待，命令继续运行（§3.2）。不支持取消的工具被打断时只能放弃等待，结果记为“被打断，结果未知”（`effect_unknown: true`）。
+- [x] **工具是否支持取消，由工具实现声明**。`AgentTool` 增加声明，默认不支持，因为不是所有任务都能可靠取消。`shell` 按 runtime 支持：native 在 Unix 结束其进程组，在 Windows 只结束直接子进程；tmux 停止等待，命令继续运行（§3.2）。不支持取消的工具被打断时只能放弃等待，结果记为“被打断，结果未知”（`effect_unknown: true`）。
 - [x] 打断信号或截止时间触发后，允许 ToolManager 内联返回 `Observation::Cancelled`；其它情况下内联返回 Cancelled 仍属违反契约。waist 记 `ToolExecStatus::Cancelled`，同批余下调用记 `Unresolved{effect_unknown: false}`；打断给出 `Interrupted`，到期给出 `BudgetExhausted{Wallclock}`。
 - [x] 定义打断时的快照语义。推理被打断时返回推理前快照 s0，恢复后重做推理；工具被打断时返回**已含配对 Cancelled 结果**的快照，恢复后不重跑该工具，LLM 看到的是“已取消”。behavior 模式按“第一个非成功结果停止其余 action”的规则处理。同步修改《LLM Context 设计》§8。
 - [x] 取消时，执行体按 §3.2 的 runtime 规则处理当前命令后返回 Cancelled，不做进程核验。渲染文本按 runtime 写明命令状态（native：已结束；tmux：仍在运行及查看方式），并写明“中途取消，可能已有部分副作用”，不暗示没有副作用。取消动作本身失败（如 ssh 断线）时返回 `ToolDispatchError{effect_unknown: true}`。
@@ -126,7 +126,7 @@ runtime 相关的信息通过说明和结果传达：
 - [x] **工具说明按 runtime descriptor 和执行模式（§5）生成**，取代现在写死的 “Run bash command at target node”：
   - 第一句：在本 run 的 runtime 中执行命令，使用 bash 语法；
   - 按 runtime 写一条生命周期说明，与 §3.2 一致：
-    - native：命令是执行器的子进程，被打断或超时时结束其进程组，命令返回后留下的进程不受管理；
+    - native：命令是执行器的子进程，被打断或超时时 Unix 结束其进程组、Windows 只结束直接子进程；Windows 的后代进程可能仍在运行，命令返回后留下的进程不受管理；
     - tmux：命令在 tmux 会话 `<session>` 中运行，执行器被打断或退出时命令继续运行；
     - remote_ssh：命令在远端 `<host>` 上运行；
   - 按模式说明参数：wait 模式说明 `timeout_ms`；auto 模式说明 `wait_ms`，以及到期后转为 task、用 `wait_task` / `get_task_state` 继续（§5）；
@@ -239,7 +239,7 @@ Review 意见（2026-10-02）：简化设计、渐进式披露，减少 LLM 在�
 - [x] **转 task 前后的归属**：
   - 转 task 之前，按前台命令处理（§3.1 / §3.2 的取消与恢复）。
   - 转 task 时解除 `ProcessGroupGuard` 和 `kill_on_drop`，命令不再属于 run。run 被打断、结束或被接手都不停止它（同 §3.2 的父子进程语义），由进程内 task-mgr 管理。Session 的 stop 是另一回事：它作用于本 Turn 的 task（§4）。
-  - 本层不给 task 设最长存活时间；task 能否取消由实现声明（§4）。native 的 shell task 可以取消（结束其进程组）。
+  - 本层不给 task 设最长存活时间；task 能否取消由实现声明（§4）。native 的 shell task 可以取消（Unix 结束其进程组，Windows 只结束直接子进程，后代进程可能继续运行）。
 - [x] **不区分 job 与 run**：删除原设计中的 detached job 子系统，包括 `background` 参数、`job_*` 工具、`OPENDAN_JOB_ID`、由 `(session, run, call_id)` 推导的稳定身份、启动握手、job 存储与 GC、完成通知钩子。
   - task_id 写在 call_result 里。
   - 转 task 之前崩溃：按 §3.2 给出“被打断”结果。
@@ -367,7 +367,7 @@ lib_opendan TODO 中引用本文原设计的条目（§4 的 `wait.source{kind, 
 - 宿主侧（lib_opendan TODO §4 / §6）：Session 层等待挂起 task、`waiting_for.refs`、stop 对 task 的传导、挂起期间收到 stop、工具执行期间的 stop 监视任务、run 结束后 task 完成的唤醒。libopendan 仍 `allow_deferred=false`，`Pending` 在工具内等待（最长 30 分钟）。
 - buckyos task-mgr resolver 未实现（`XllmDeps.buckyos_tasks` 预留注入点；组合 resolver 按 `local:` 前缀分派）。
 - xAgent.md 的 §8 修改清单待 review 后进行。
-- macOS 上的 native / tmux 验证已完成（§11.4）；SSH 真机测试（`--ignored`）未重跑，`remote_ssh` 的 `kill` 只杀记录的命令 bash 进程，不追子进程。
+- macOS 上的 native / tmux 验证见 §11.4，Windows native 验证见 §11.5；SSH 真机测试（`--ignored`）未重跑，`remote_ssh` 的 `kill` 只杀记录的命令 bash 进程，不追子进程。
 - buckyos websdk（npm `buckyos` 包）的 `task_mgr_client.d.ts` 仍带 `tool.exec_bash`，属于另一仓库，需随 `tool.shell` 改名同步。
 - `shell` 的 `target` 参数已从 schema 删除（runtime 决定执行位置）；`BashRunner::run` 与 `start` 互为默认实现，实现方至少覆盖其一。
 
@@ -399,3 +399,51 @@ lib_opendan TODO 中引用本文原设计的条目（§4 的 `wait.source{kind, 
 **其余检查的限制**：完整 `cargo test -p llm_context -p agent_tool -p libopendan -- --test-threads=1` 在 fixtures 的 f04 / f06 / f07 / f10 / f12 失败，其余 8 个 fixture 通过；这些 fixture 保存的 `config.runtime_descriptor.capabilities.os` 为 `linux`，loader 只替换目录、host、uid、hostname，macOS 接手因 descriptor 不同返回 RuntimeMismatch / RecoveryBlocked。`cargo build -p agent_tool_cli_dev --bin agent_tool` 因现有 `opendan/src/agent_session.rs:7356,7405` 使用已删除的 `MsgObject.to_session` 字段失败，因此端到端验证使用上述 CLI 入口的临时启动器。未运行完整 buckyos-build；上述 fixture、OpenDAN 编译问题与 SSH 真机验证仍待处理。
 
 本机验证证据：`/private/tmp/buckyos-macos-long-tool-e2e-final-20261003/report.json`（11 项结果、恢复文本与清理结果）；同目录各场景保留请求、CLI stdout / stderr、run 与快照；脚本为 `/tmp/buckyos_macos_long_tool_verify.py`，启动器源码为 `/private/tmp/buckyos-macos-xllm-driver/`。自动化日志为 `/tmp/buckyos-macos-llm-context-tests.log`、`/tmp/buckyos-macos-agent-tool-final-tests.log`、`/tmp/buckyos-macos-libopendan-final-tests.log`；完整测试及 CLI 构建失败日志分别为 `/tmp/buckyos-macos-long-tool-tests.log`、`/tmp/buckyos-macos-long-tool-build.log`。
+
+### 11.5 Windows 验证（2026-10-03）
+
+环境：Windows 11 Pro 10.0.26200（x64）、Rust / Cargo 1.97.1、uv 0.11.2、Git Bash 5.2.37（x86_64-pc-msys）。基线为 `9a1b155c0cbc`，加上下述 Windows 修复。验证使用原生 Windows Rust 进程和 Git Bash；将 Git Bash 放在 PATH 首部，避免选择本机 System32 的 WSL `bash.exe`。
+
+**发现并修复**：
+
+- `agent_tool/src/llm_bash.rs`、`runtime/mod.rs`、`runtime/ssh.rs`：原来的 `/bin/bash`、Windows 执行目录参数和分号分隔的 PATH 不能直接交给 Git Bash。现在从父进程 PATH 解析 Bash 的完整路径，转换驱动器 / UNC / 扩展路径及 PATH，probe 使用 Windows 的规范 cwd 并报告 `os=windows`。Git Bash 启动器还会把自身目录插到 PATH 首部，因此包装脚本恢复指定 PATH，再用当前 `$BASH` 执行命令，保留 Session / overlay 工具目录优先级。现有 overlay 测试扩展到 Windows，覆盖中文、空格、单引号目录及只有一个 Windows 目录的 PATH；执行目录持久化测试也使用特殊字符路径。
+- `lib_opendan/src/lock.rs`：原来的非 Unix 锁身份为 `(0, 文件长度)`，不同空锁文件会冲突，写 holder 后长度改变还会使已持有的 lease 失效。Windows 改用系统文件句柄查询卷号与完整 128 位文件 ID（工作盘 D: 使用 ReFS），Unix 保持 dev / ino；新增不同文件同时加锁、改写后仍有效、替换锁文件后失效的回归。未新增第三方依赖。Windows 的独占锁会阻止其它句柄读取 holder，Busy 的 holder / run_id 因此可以是 None / unknown，相应测试保留 Busy 断言并按平台检查可读性。
+- `llm_context/src/prompt_engine.rs`：虚拟 include 根路径用 `has_root()` 判断，修复 Windows 上 `/role.md` 被错误拼成驱动器根目录路径的问题；原有 include 根目录 / 白名单测试通过。
+- `lib_opendan/examples/fixtures.rs`、`tests/crash.rs`、`tests/l1.rs`：真实强制结束改用标准库 `Child::kill()`（Windows 为 TerminateProcess，Unix 仍为 SIGKILL），Unix inode / chmod 检查按平台编译；继续验证强制退出后锁释放、恢复不重放且不停止遗留命令。
+- fixtures loader / replacement helper：替换 Windows 路径时正确转义 JSON，按当前 OS 调整保存的 runtime capability，并规范化 Windows 路径；补回生成器创建、Git 未保存的 f10 空 `ws` 目录。13 个 fixture 全部通过，解决 §11.4 提到的 loader 限制；macOS 未在本次重跑。其它测试调整 CRLF、路径分隔符、Git Bash `pwd -W` 和 MSYS 路径别名断言。
+- `llm_bash.rs`、`tasks.rs`：说明、超时 / 取消结果明确 Windows 只结束直接子进程，后代可能继续运行；保持 §3.2 的标准进程语义，不增加进程树追杀。无协议字段、持久格式、前端或依赖声明变化；xAgent.md 未改。
+
+**自动化回归**（PowerShell，`src/` 下）：
+
+```powershell
+$env:PATH = 'C:/Program Files/Git/bin;C:/Program Files/Git/usr/bin;' + $env:PATH
+$env:CARGO_BUILD_JOBS = '2'
+cargo test -p llm_context -p agent_tool -p libopendan -- --test-threads=1 --skip workspace::tests::external_workspace_tools_bind_and_list_from_agent_tool_backend
+cargo check -p llm_context -p agent_tool -p libopendan --tests
+```
+
+- `llm_context`：199 通过。
+- `agent_tool`：208 通过、5 ignored、1 filtered；另有 1 个 doc-test ignored。新增 Windows overlay 覆盖，包含 native 超时 / 取消、auto 转 task、task 查询 / 等待 / 取消、run deadline、恢复与 Session 接手。
+- `libopendan`：85 通过、1 ignored（lib 6、context_limit 3、crash 20、fixtures 13、l1 19、runner_basic 4、runner_more 17、self_improve 3）。
+- `cargo check -p llm_context -p agent_tool -p libopendan --tests`：通过，exit 0；保留原有 unused / private_interfaces 等警告。
+- 文件锁采用完整 128 位 ID 后再跑 `cargo test -p libopendan -- --test-threads=1`；另外分别在默认 C: 临时目录（NTFS）和 `TEMP=TMP=D:/tmp/buckyos-long-tool-refs-20261003`（ReFS）运行 l1，均 19 通过，覆盖文件身份、替换检测、跨进程抢锁与强制退出后的恢复。
+- 唯一显式排除的测试 `external_workspace_tools_bind_and_list_from_agent_tool_backend` 需要创建 Windows symlink，本机实际运行失败为 `os error 1314`（缺少所需特权）；未更改系统权限或开发者模式。5 个 agent_tool ignored 是 3 个 SSH 真机、2 个开发压缩测试；libopendan ignored 需要正在运行的 DV kmsg。没有 tmux，相关测试会自行跳过，因此不算 Windows tmux 验证通过。
+
+**命令行端到端**：本地 OpenAI 兼容 mock HTTP 服务驱动当前源码的 `agent_tool::run_local_llm::run_subcommand`，临时 Tokio 启动器复用 CLI 入口；在专用隐藏 Windows 控制台实际发送 Ctrl-C，崩溃用 TerminateProcess，检查真实 Windows PID、请求、run.json、快照和执行目录。工作路径包含中文、空格、单引号。8 个场景全部通过：
+
+| 场景 | Windows native 结果 |
+|---|---|
+| nohup 后台命令返回，run 正常结束 | 后台 PID 仍存活 |
+| 前台长命令中 Ctrl-C，再 resume | 直接子进程结束，Cancelled 配对，后台 PID 存活，恢复不重放 |
+| 前台长命令中 run `--timeout 2` | Cancelled 配对，run 为 limit_reached，后台 PID 存活 |
+| 执行器被强制结束，旧命令仍运行时 resume | 约 0.96s 完成恢复，结果 unknown；不核验 / 不停止旧命令，不重放，后台 PID 存活 |
+| 执行器被强制结束，旧命令结束后 resume | 约 0.98s 完成恢复，读到 exit code 7 与 stdout / stderr 尾部，不重放，后台 PID 存活 |
+| shell 自身 `timeout_ms=350` | 返回 timed_out，直接子进程结束，后台 PID 存活 |
+| auto 转 task，再 wait_task | 返回 task_id、最终输出和退出码，后台 PID 存活 |
+| auto 转 task，再 cancel_task | 返回 Cancelled 并注明只结束直接子进程，后台 PID 存活 |
+
+所有恢复场景的长命令启动 marker 均只有一次，恢复后 inflight 清空；每项均确认后台 PID 存活，验证结束后清理测试 PID 并确认结束。后台启动时等待 `ps` 的命令名成为 sleep，再记录 Windows PID，避免 MSYS exec 换 PID 的启动竞态。启动器源码仅保留在证据目录，已从仓库删除。
+
+**全仓 / 构建限制**：实际执行 `cargo check --workspace --tests` 失败，现有 msg_center 测试仍引用已删除的 `MsgRelType` / `MsgRelation` / `CyfsNamedObjectEncoding` 等 API（146 个错误），opendan 的 `agent_session.rs:7356,7405` 仍写已删除的 `MsgObject.to_session`。实际执行 `uv run buckyos-build.py --skip-web` 的 Windows 原生 release 构建也因同一 opendan 字段错误失败。因此不能声明全仓测试或 buckyos-build 通过；未运行 Web 构建、安装启动、DV / SSH 真机或 Windows tmux 验证。Windows 文件锁验证在本机 NTFS / ReFS 上完成，其它文件系统未验证。上述范围外的消息协议问题未改动。
+
+证据目录：`C:/Users/water/AppData/Local/Temp/buckyos-windows-long-tool-20261003/`。最终端到端结果为 `cli-report.json`，详细请求、stdout / stderr、run / 快照保留在 `cli-20261003-013606/`；脚本 `verify_cli.py`、启动器 `windows_long_tool_driver.rs`，最终 CLI 构建 / 运行日志 `cli-driver-final-source-build.log` / `cli-e2e-final-source.log`。自动化最终日志 `windows-regression-final.log`、`libopendan-final-source.log`、`affected-check-final.log`，两种文件系统的 l1 日志为 `windows-file-id-ntfs.log` / `windows-file-id-refs.log`；全仓检查 / release 构建失败日志 `workspace-check.log` / `buckyos-build.log`。

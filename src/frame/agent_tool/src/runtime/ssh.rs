@@ -103,7 +103,7 @@ for tool in bash realpath base64; do if command -v "$tool" >/dev/null; then prin
 "#;
 
 pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<Probe, XllmError> {
-    let mut command = Command::new("bash");
+    let mut command = Command::new(crate::llm_bash::native_bash_executable());
     command
         .arg("-c")
         .arg(LOCAL_PROBE)
@@ -120,7 +120,23 @@ pub async fn local_probe(cwd: &Path, env: &BTreeMap<String, String>) -> Result<P
             String::from_utf8_lossy(&o.stderr)
         )));
     }
-    parse_probe(&o.stdout)
+    let probe = parse_probe(&o.stdout)?;
+    #[cfg(windows)]
+    let probe = {
+        let mut probe = probe;
+        if !["mingw", "msys", "cygwin"]
+            .iter()
+            .any(|os| probe.info.os.starts_with(os))
+        {
+            return Err(capability(
+                "native Windows runtime requires a Windows bash (e.g. Git Bash) on PATH",
+            ));
+        }
+        probe.info.cwd = cwd.canonicalize().map_err(capability)?.display().to_string();
+        probe.info.os = "windows".into();
+        probe
+    };
+    Ok(probe)
 }
 
 #[cfg(all(test, unix))]

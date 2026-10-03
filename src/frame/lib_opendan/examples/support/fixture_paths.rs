@@ -13,7 +13,13 @@ pub fn rewrite(root: &Path, replacements: &[(&str, &str)]) {
             }
             if let Ok(mut s) = std::fs::read_to_string(&p) {
                 for (from, to) in replacements {
-                    s = s.replace(from, to);
+                    if p.extension().is_some_and(|ext| ext == "json" || ext == "jsonl") {
+                        let from = serde_json::to_string(from).unwrap();
+                        let to = serde_json::to_string(to).unwrap();
+                        s = s.replace(&from[1..from.len() - 1], &to[1..to.len() - 1]);
+                    } else {
+                        s = s.replace(from, to);
+                    }
                 }
                 std::fs::write(&p, s).unwrap();
             }

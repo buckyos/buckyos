@@ -430,7 +430,7 @@ async fn gen(out: &Path) -> R<()> {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        unsafe { libc::kill(ch.id() as i32, libc::SIGKILL) };
+        ch.kill()?;
         let _ = ch.wait();
         // The command belongs to nobody now (standard process semantics);
         // leave no process behind in the generator environment.

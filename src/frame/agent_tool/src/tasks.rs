@@ -103,6 +103,9 @@ impl ShellTask {
                 self.command, out.exit_code, out.duration_ms, self.runtime
             )
         };
+        if cancelled && cfg!(windows) && self.runtime == "native" {
+            text.push_str(" Only the direct child was stopped; its descendants may still be running.");
+        }
         if !out.output.trim().is_empty() {
             text.push_str("\n--- output ---\n");
             text.push_str(out.output.trim_end());

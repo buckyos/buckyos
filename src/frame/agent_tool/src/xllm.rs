@@ -10305,7 +10305,13 @@ there]]></write_file>
         .unwrap();
         let err = XllmRun::start(prepared_b, deps_b).await.unwrap_err();
         match err {
-            XllmError::WorkdirBusy { run_id, .. } => assert_eq!(run_id, run_a.run_id()),
+            XllmError::WorkdirBusy { run_id, .. } => {
+                if cfg!(windows) {
+                    assert_eq!(run_id, "unknown");
+                } else {
+                    assert_eq!(run_id, run_a.run_id());
+                }
+            }
             other => panic!("unexpected: {other}"),
         }
         // 无工具任务可并行。
@@ -10742,7 +10748,7 @@ there]]></write_file>
         );
         assert_eq!(cfg.filesystem_policy, Some(FilesystemPolicy::Unrestricted));
         assert_eq!(cfg.enabled, Some(false));
-        assert!(sources["filesystem_policy"].ends_with("src/.llm_context"));
+        assert!(sources["filesystem_policy"].replace('\\', "/").ends_with("src/.llm_context"));
         for raw in [
             "tools:\n  filesystem_policy: invalid\n",
             "prompt:\n  tools:\n    filesystem_policy: false\n",
@@ -10790,8 +10796,8 @@ there]]></write_file>
                         "edit_file",
                         json!({"path": "../fixture.txt", "old_string": "outside-original", "new_string": "outside-edited"}),
                     ),
-                    (TOOL_EXEC, json!({"command": "pwd", "cwd": outside})),
-                    (TOOL_EXEC, json!({"command": "pwd", "cwd": ".."})),
+                    (TOOL_EXEC, json!({"command": if cfg!(windows) { "pwd -W" } else { "pwd" }, "cwd": outside})),
+                    (TOOL_EXEC, json!({"command": if cfg!(windows) { "pwd -W" } else { "pwd" }, "cwd": ".."})),
                 ];
                 for (name, args) in calls {
                     let obs = manager
@@ -10811,7 +10817,7 @@ there]]></write_file>
                             assert!(content.contains("outside-original"), "{content}");
                         }
                         if name == TOOL_EXEC {
-                            assert!(content.contains(outside.to_str().unwrap()), "{content}");
+                            assert!(content.contains(&outside.to_string_lossy().replace('\\', "/")), "{content}");
                         }
                     } else {
                         let Observation::Error { message, .. } = obs else {
@@ -10848,12 +10854,12 @@ there]]></write_file>
                     std::fs::read_to_string(env.workdir.join("local.txt")).unwrap(),
                     "local"
                 );
-                let obs = manager.call_tool(exec_call("pwd"), ToolCallCtx::noop()).await.unwrap();
+                let obs = manager.call_tool(exec_call(if cfg!(windows) { "pwd -W" } else { "pwd" }), ToolCallCtx::noop()).await.unwrap();
                 let Observation::Success { content, .. } = obs else {
                     panic!("{obs:?}")
                 };
                 let content = content.as_str().expect("text observation");
-                assert!(content.contains(env.workdir.to_str().unwrap()), "{content}");
+                assert!(content.contains(&env.workdir.to_string_lossy().replace('\\', "/")), "{content}");
             }
         }
     }
@@ -10861,7 +10867,8 @@ there]]></write_file>
     #[tokio::test]
     async fn documented_filesystem_policy_survives_resume() {
         let env = Env::new();
-        let template = include_str!("../../../../product/xllm/PRD.md")
+        let doc = include_str!("../../../../product/xllm/PRD.md").replace("\r\n", "\n");
+        let template = doc
             .split("#### 4.9.1 ")
             .nth(1)
             .unwrap()
@@ -10928,7 +10935,7 @@ there]]></write_file>
             ),
             tool_call(
                 TOOL_EXEC,
-                json!({"command": "pwd > resumed-cwd.txt", "cwd": ".."}),
+                json!({"command": if cfg!(windows) { "pwd -W > resumed-cwd.txt" } else { "pwd > resumed-cwd.txt" }, "cwd": ".."}),
                 "exec",
             ),
             text("done"),
@@ -10954,12 +10961,8 @@ there]]></write_file>
             std::fs::read_to_string(env.project().join("shared.txt")).unwrap(),
             "after-resume"
         );
-        assert_eq!(
-            std::fs::read_to_string(env.project().join("resumed-cwd.txt"))
-                .unwrap()
-                .trim(),
-            env.project().to_str().unwrap(),
-        );
+        let cwd = std::fs::read_to_string(env.project().join("resumed-cwd.txt")).unwrap();
+        assert_eq!(Path::new(cwd.trim()).canonicalize().unwrap(), env.project().canonicalize().unwrap());
     }
 
     fn exec_manager(workdir: &Path) -> XllmToolManager {

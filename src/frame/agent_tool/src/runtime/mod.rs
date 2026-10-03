@@ -658,7 +658,13 @@ impl AgentRuntime for Runtime {
         let mut path = ctx
             .path_prefix
             .iter()
-            .map(|p| p.display().to_string())
+            .map(|p| {
+                if s.config.kind() == "native" {
+                    crate::llm_bash::native_shell_path(p)
+                } else {
+                    p.display().to_string()
+                }
+            })
             .collect::<Vec<_>>();
         path.push(
             env.get("PATH")

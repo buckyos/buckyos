@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "doc_type": "app",
+  "did": "did:bns:buckyos-systest.buckyos",
+  "name": "buckyos-systest",
+  "version": "0.5.1",
+  "app_type": "dapp",
+  "author": "did:bns:buckyos",
+  "owner": "did:bns:buckyos",
+  "controller": "did:bns:buckyos",
+  "create_time": 1787646334,
+  "last_update_time": 1787646334,
+  "exp": 1945326334,
+  "categories": [
+    "dapp"
+  ],
+  "pkg_list": {
+    "script": {
+      "pkg_id": "all.script.buckyos-systest.buckyos.bns.did#0.5.1",
+      "pkg_objid": "pkg:0dd8400fa805d23272b52aa251274f34287194bd5b6cc04e2dd0f8000d755569",
+      "required": true
+    }
+  },
+  "show_name": "BuckyOS System Test",
+  "selector_type": "single",
+  "service_config_tips": {
+    "service_endpoints": {
+      "www": {
+        "protocol": "http",
+        "inner_port": 3000,
+        "required": true,
+        "expose": {
+          "route": {
+            "type": "web"
+          },
+          "scope": "",
+          "allow_guest": true
+        }
+      }
+    }
+  }
+}

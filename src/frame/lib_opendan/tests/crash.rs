@@ -375,9 +375,7 @@ async fn kill_9_during_shell_reports_interrupted_result_and_leaves_the_command_a
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    unsafe {
-        libc::kill(child.id() as i32, libc::SIGKILL);
-    }
+    child.kill().unwrap();
     let _ = child.wait();
     // The runner is gone; its in-flight record is not.
     let st = sd.state().unwrap();
@@ -477,7 +475,7 @@ async fn xllm_takes_over_a_native_run_and_drive_writes_back() {
             tool_call(
                 "helper-check",
                 "shell",
-                json!({"command": r#"case $PATH in *"$OPENDAN_SESSION_DIR/.runtime/bin"*) echo runtime-bin;; *) echo missing; exit 1;; esac; test -n "$OPENDAN_RUNTIME_ID""#}),
+                json!({"command": if cfg!(windows) { r#"if test "${PATH%%:*}" -ef "$(cygpath -u "$OPENDAN_SESSION_DIR")/.runtime/bin"; then echo runtime-bin; else printf 'missing PATH=%s DIR=%s\n' "$PATH" "$OPENDAN_SESSION_DIR"; exit 1; fi; test -n "$OPENDAN_RUNTIME_ID""# } else { r#"case $PATH in *"$OPENDAN_SESSION_DIR/.runtime/bin"*) echo runtime-bin;; *) echo missing; exit 1;; esac; test -n "$OPENDAN_RUNTIME_ID""# }}),
             )
         }
     });

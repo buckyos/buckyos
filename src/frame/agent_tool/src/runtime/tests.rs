@@ -110,10 +110,10 @@ fn config_merge_resolves_source_paths_and_resets_kind() {
         },
     ])
     .unwrap();
-    assert_eq!(merged.runtime.workdir.as_deref(), Some("/one/work"));
+    assert_eq!(merged.runtime.workdir.as_deref().map(Path::new), Some(Path::new("/one/work")));
     assert_eq!(
-        merged.runtime.tmux.as_ref().unwrap().socket.as_deref(),
-        Some("/one/sock")
+        merged.runtime.tmux.as_ref().unwrap().socket.as_deref().map(Path::new),
+        Some(Path::new("/one/sock"))
     );
     assert_eq!(merged.runtime.env.len(), 2);
     let mut r = merged.runtime;

@@ -143,7 +143,7 @@ async fn non_driver_is_refused_and_busy_is_reported() {
         _ => panic!(),
     };
     match drive(&sd, &env.deps(llm.clone()), StopWhen::Idle).await {
-        DriveResult::Busy { holder } => assert!(holder.is_some()),
+        DriveResult::Busy { holder } => assert_eq!(holder.is_some(), !cfg!(windows)),
         r => panic!("{r:?}"),
     }
     drop(lease);

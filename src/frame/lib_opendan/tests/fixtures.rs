@@ -24,10 +24,26 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
     let tmp = tempfile::tempdir().unwrap();
     let dst = tmp.path().join(name);
     copy_dir(&fixtures_dir().join(name), &dst, libopendan::now_ms());
+    if name == "10_active_overlap" {
+        std::fs::create_dir_all(dst.join("ws")).unwrap();
+    }
     let root = dst.display().to_string();
     let host = libopendan::runtime::native_host_id();
     let uid = fixture_paths::uid();
     let hostname = fixture_paths::hostname();
+    let os = if cfg!(windows) {
+        "windows".to_string()
+    } else {
+        String::from_utf8_lossy(
+            &std::process::Command::new("uname")
+                .arg("-s")
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_ascii_lowercase()
+    };
     fixture_paths::rewrite(
         &dst,
         &[
@@ -37,6 +53,7 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
             ("${FIXTURE_HOSTNAME}", &hostname),
         ],
     );
+    localize(&dst, &root, &os);
     let expected: Value =
         serde_json::from_slice(&std::fs::read(dst.join("expected.json")).unwrap()).unwrap();
     let env = Env {
@@ -47,6 +64,46 @@ fn load(name: &str) -> (tempfile::TempDir, Env, Value) {
         ..Env::at(&dst)
     };
     (tmp, env, expected)
+}
+
+fn localize(dir: &Path, root: &str, os: &str) {
+    fn value(v: &mut Value, root: &str, os: &str, canonical: bool) {
+        match v {
+            Value::Object(map) => {
+                if map.get("os").and_then(Value::as_str) == Some("linux") {
+                    map.insert("os".into(), os.into());
+                }
+                for (key, v) in map.iter_mut() {
+                    value(v, root, os, key == "workdir" || key == "cwd");
+                }
+            }
+            Value::Array(values) => {
+                for v in values {
+                    value(v, root, os, canonical);
+                }
+            }
+            Value::String(path) if cfg!(windows) && path.starts_with(root) => {
+                let native: PathBuf = Path::new(path).components().collect();
+                let native = if canonical {
+                    native.canonicalize().unwrap_or(native)
+                } else {
+                    native
+                };
+                *path = native.display().to_string();
+            }
+            _ => {}
+        }
+    }
+    for entry in std::fs::read_dir(dir).unwrap().flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            localize(&path, root, os);
+        } else if path.extension().is_some_and(|ext| ext == "json") {
+            let mut v: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            value(&mut v, root, os, false);
+            std::fs::write(&path, serde_json::to_vec_pretty(&v).unwrap()).unwrap();
+        }
+    }
 }
 
 fn copy_dir(src: &Path, dst: &Path, started_at_ms: u64) {
@@ -282,9 +339,8 @@ async fn f10_active_overlap() {
         );
         text("avoid")
     });
-    assert!(drive(&b, &fdeps(&env, llm), StopWhen::Finished)
-        .await
-        .is_finished());
+    let result = drive(&b, &fdeps(&env, llm), StopWhen::Finished).await;
+    assert!(result.is_finished(), "{result:?}");
 }
 
 #[tokio::test]

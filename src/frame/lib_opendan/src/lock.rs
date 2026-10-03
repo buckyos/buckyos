@@ -18,20 +18,53 @@ use serde_json::Value;
 use crate::error::{OpenDanError, Result};
 use crate::protocol::{HolderInfo, LockInfo};
 
-fn held_table() -> &'static Mutex<HashSet<(u64, u64)>> {
-    static T: OnceLock<Mutex<HashSet<(u64, u64)>>> = OnceLock::new();
+fn held_table() -> &'static Mutex<HashSet<(u64, u128)>> {
+    static T: OnceLock<Mutex<HashSet<(u64, u128)>>> = OnceLock::new();
     T.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
 #[cfg(unix)]
-fn file_key(meta: &std::fs::Metadata) -> (u64, u64) {
+fn file_key(file: &File) -> std::io::Result<(u64, u128)> {
     use std::os::unix::fs::MetadataExt;
-    (meta.dev(), meta.ino())
+    let meta = file.metadata()?;
+    Ok((meta.dev(), meta.ino() as u128))
 }
 
-#[cfg(not(unix))]
-fn file_key(meta: &std::fs::Metadata) -> (u64, u64) {
-    (0, meta.len())
+#[cfg(windows)]
+fn file_key(file: &File) -> std::io::Result<(u64, u128)> {
+    use std::os::windows::io::AsRawHandle;
+    #[repr(C)]
+    struct FileInformation {
+        volume_serial_number: u64,
+        file_id: [u8; 16],
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandleEx(
+            file: *mut std::ffi::c_void,
+            information_class: i32,
+            information: *mut std::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let mut information = std::mem::MaybeUninit::<FileInformation>::uninit();
+    const FILE_ID_INFO: i32 = 18;
+    if unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FILE_ID_INFO,
+            information.as_mut_ptr().cast(),
+            std::mem::size_of::<FileInformation>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    let information = unsafe { information.assume_init() };
+    Ok((
+        information.volume_serial_number,
+        u128::from_le_bytes(information.file_id),
+    ))
 }
 
 /// An exclusive flock on a lock file. Dropping it releases the lock.
@@ -41,7 +74,7 @@ fn file_key(meta: &std::fs::Metadata) -> (u64, u64) {
 pub struct FileLock {
     file: File,
     path: PathBuf,
-    key: (u64, u64),
+    key: (u64, u128),
 }
 
 impl std::fmt::Debug for FileLock {
@@ -64,8 +97,7 @@ impl FileLock {
             .truncate(false)
             .open(path)
             .map_err(|e| OpenDanError::io(path, e))?;
-        let meta = file.metadata().map_err(|e| OpenDanError::io(path, e))?;
-        let key = file_key(&meta);
+        let key = file_key(&file).map_err(|e| OpenDanError::io(path, e))?;
         {
             let table = held_table().lock().expect("lock table");
             if table.contains(&key) {
@@ -118,8 +150,8 @@ impl FileLock {
     /// file that was replaced or deleted (a protocol violation that would let
     /// a second holder in).
     pub fn still_valid(&self) -> bool {
-        match std::fs::metadata(&self.path) {
-            Ok(meta) => file_key(&meta) == self.key,
+        match File::open(&self.path).and_then(|file| file_key(&file)) {
+            Ok(key) => key == self.key,
             Err(_) => false,
         }
     }

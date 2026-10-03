@@ -137,7 +137,7 @@ impl ShellRuntimeNote {
                 "The command runs on the remote host `{}`; it keeps running if this executor is interrupted or exits.",
                 self.target
             ),
-            _ => "The command is a child process of this executor: an interrupt or a timeout ends its process group; processes it leaves behind after returning are not managed.".to_string(),
+            _ => format!("The command is a child process of this executor: an interrupt or a timeout ends {}; processes it leaves behind after returning are not managed.", if cfg!(unix) { "its process group" } else { "the direct child process" }),
         }
     }
 }
@@ -525,12 +525,12 @@ pub fn prepare_overlay_env(
         .cloned()
         .or_else(|| std::env::var("PATH").ok())
         .unwrap_or_default();
-    let mut path = ensure_system_path_entries(&base_path);
+    let mut path = ensure_system_path_entries(&native_shell_path_list(&base_path));
 
     let active = overlay.active_layers();
     if !active.is_empty() {
         for layer in active.iter().rev() {
-            let entry = layer.to_string_lossy().to_string();
+            let entry = native_shell_path(layer);
             path = prepend_path_entry(&entry, &path);
         }
     }
@@ -798,11 +798,52 @@ fn is_valid_shell_env_key(key: &str) -> bool {
 /// Wrapper run as `bash -c WRAPPER <command> <exec_dir>`: the command's
 /// output goes to files, its exit code to `exit`, so the command outlives
 /// this executor without SIGPIPE and its result survives a crash.
-const NATIVE_WRAPPER: &str = r#"printf '%s\n' "$0" > "$1/command"
-bash -c "$0" </dev/null >"$1/stdout" 2>"$1/stderr"
+const NATIVE_WRAPPER: &str = r#"if [ "$#" -ge 2 ]; then export PATH="$2"; fi
+printf '%s\n' "$0" > "$1/command"
+"$BASH" -c "$0" </dev/null >"$1/stdout" 2>"$1/stderr"
 __llm_ec=$?
 printf '%s\n' "$__llm_ec" > "$1/exit.tmp" && mv -f "$1/exit.tmp" "$1/exit"
 exit $__llm_ec"#;
+
+pub(crate) fn native_shell_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    {
+        let path = path.strip_prefix(r"\\?\").unwrap_or(&path).replace('\\', "/");
+        if let Some(unc) = path.strip_prefix("UNC/") {
+            return format!("//{unc}");
+        }
+        if path.as_bytes().get(1) == Some(&b':') && path.as_bytes()[0].is_ascii_alphabetic() {
+            return format!("/{}{}", path[..1].to_ascii_lowercase(), &path[2..]);
+        }
+        path
+    }
+    #[cfg(not(windows))]
+    path.into_owned()
+}
+
+pub(crate) fn native_bash_executable() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os("PATH").and_then(|path| {
+        std::env::split_paths(&path)
+            .map(|dir| dir.join("bash.exe"))
+            .find(|file| file.is_file())
+    }) {
+        return path;
+    }
+    PathBuf::from(if cfg!(windows) { "bash" } else { "/bin/bash" })
+}
+
+fn native_shell_path_list(path: &str) -> String {
+    #[cfg(windows)]
+    if path.contains(';') || Path::new(path).is_absolute() {
+        return std::env::split_paths(path)
+            .map(|p| native_shell_path(&p))
+            .collect::<Vec<_>>()
+            .join(":");
+    }
+    path.to_string()
+}
 
 /// Default [`BashRunner`]: spawns `/bin/bash` in its own process group (Unix)
 /// with its output redirected into the execution directory. Only the
@@ -857,8 +898,9 @@ impl LocalProcessBashRunner {
         let mut parts: Vec<String> = self
             .path_layers
             .iter()
-            .map(|p| p.display().to_string())
+            .map(|p| native_shell_path(p))
             .collect();
+        let base = native_shell_path_list(&base);
         for p in base.split(':') {
             if !p.is_empty() && !parts.iter().any(|x| x == p) {
                 parts.push(p.to_string());
@@ -917,8 +959,11 @@ impl BashRunner for LocalProcessBashRunner {
 
         // `-c` rather than `-lc`: a login shell sources profile files which
         // would reorder PATH under the overlay.
-        let mut cmd = tokio::process::Command::new("/bin/bash");
-        cmd.arg("-c").arg(NATIVE_WRAPPER).arg(&req.command).arg(&dir);
+        let mut cmd = tokio::process::Command::new(native_bash_executable());
+        cmd.arg("-c")
+            .arg(NATIVE_WRAPPER)
+            .arg(&req.command)
+            .arg(native_shell_path(&dir));
         cmd.current_dir(&req.cwd);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::null());
@@ -933,8 +978,23 @@ impl BashRunner for LocalProcessBashRunner {
         for (k, v) in &req.env {
             cmd.env(k, v);
         }
-        if let Some(path) = self.build_path(&req.env) {
+        let path = self.build_path(&req.env);
+        if let Some(path) = &path {
             cmd.env("PATH", path);
+        }
+        #[cfg(windows)]
+        {
+            let path = path
+                .or_else(|| {
+                    req.env
+                        .iter()
+                        .rev()
+                        .find(|(key, _)| key == "PATH")
+                        .map(|(_, value)| value.clone())
+                })
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            cmd.arg(ensure_system_path_entries(&native_shell_path_list(&path)));
         }
 
         let child = cmd
@@ -1247,8 +1307,13 @@ impl ShellTool {
         }
         let summary = if output.timed_out {
             format!(
-                "timed out after {}ms (timeout_ms={timeout_ms}); the command was stopped. Retry with a larger timeout_ms{}, or start a long-lived service with nohup / setsid and return at once.",
+                "timed out after {}ms (timeout_ms={timeout_ms}); {}. Retry with a larger timeout_ms{}, or start a long-lived service with nohup / setsid and return at once.",
                 output.duration_ms,
+                if cfg!(windows) && self.config.runtime.kind == "native" {
+                    "the direct child was stopped; its descendants may still be running"
+                } else {
+                    "the command was stopped"
+                },
                 if self.config.max_timeout_ms == 0 {
                     String::new()
                 } else {
@@ -1301,7 +1366,12 @@ impl ShellTool {
             match handle.kill().await {
                 Ok(out) => AgentToolError::Cancelled {
                     message: format!(
-                        "shell ({runtime}): `{command}` was stopped after {}ms because {}. It may have had partial side effects; check before repeating it.{tail}",
+                        "shell ({runtime}): {} after {}ms because {}. It may have had partial side effects; check before repeating it.{tail}",
+                        if cfg!(windows) && runtime == "native" {
+                            format!("the direct child for `{command}` was stopped; its descendants may still be running")
+                        } else {
+                            format!("`{command}` was stopped")
+                        },
                         out.duration_ms,
                         cause_text(cause)
                     ),
@@ -1672,7 +1742,7 @@ mod tests {
         let tool = ShellTool::local_workspace(workspace.clone());
 
         let result = tool
-            .call(&ctx(), json!({ "command": "pwd" }))
+            .call(&ctx(), json!({ "command": if cfg!(windows) { "pwd -W" } else { "pwd" } }))
             .await
             .expect("call ok");
 
@@ -1687,26 +1757,31 @@ mod tests {
     }
 
     #[tokio::test]
-    #[cfg(unix)]
     async fn bin_overlay_shadows_system_path() {
         let (dir, workspace) = ws();
-        let bin_dir = dir.path().join("bin");
+        let bin_dir = dir.path().join("bin 中文 ' space");
         fs::create_dir_all(&bin_dir).expect("mkdir bin");
 
         let unique_path = bin_dir.join("llm_bash_overlay_probe");
         fs::write(&unique_path, "#!/bin/sh\necho UNIQUE_HIT\n").expect("write unique shim");
-        let mut perms = fs::metadata(&unique_path).expect("meta").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&unique_path, perms).expect("chmod");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&unique_path).expect("meta").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&unique_path, perms).expect("chmod");
+        }
 
         let cat_shim = bin_dir.join("cat");
         fs::write(&cat_shim, "#!/bin/sh\necho SHIM_CAT_WINS\n").expect("write cat shim");
-        let mut perms = fs::metadata(&cat_shim).expect("meta").permissions();
-        perms.set_mode(0o755);
-        fs::set_permissions(&cat_shim, perms).expect("chmod");
+        #[cfg(unix)]
+        {
+            let mut perms = fs::metadata(&cat_shim).expect("meta").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&cat_shim, perms).expect("chmod");
+        }
 
-        let cfg = LlmBashConfig::local_workspace(workspace)
-            .with_overlay(BinOverlayConfig::local(bin_dir));
+        let cfg = LlmBashConfig::local_workspace(workspace.clone())
+            .with_overlay(BinOverlayConfig::local(bin_dir.clone()));
         let tool = ShellTool::new(cfg);
 
         let unique_result = tool
@@ -1728,6 +1803,15 @@ mod tests {
             shadow_stdout.contains("SHIM_CAT_WINS"),
             "overlay should win over system cat, got: {shadow_stdout}"
         );
+        #[cfg(windows)]
+        {
+            let plain_tool = ShellTool::local_workspace(workspace);
+            let result = plain_tool
+                .call(&ctx(), json!({ "command": "llm_bash_overlay_probe", "env": { "PATH": bin_dir } }))
+                .await
+                .expect("call ok");
+            assert!(result.details["stdout"].as_str().unwrap().contains("UNIQUE_HIT"), "{result:?}");
+        }
     }
 
     #[tokio::test]
@@ -2007,7 +2091,7 @@ mod tests {
         let result = tool
             .call(
                 &ctx(),
-                json!({ "command": format!("echo hi; nohup bash -c 'sleep 1; touch {}' >/dev/null 2>&1 &", marker.display()) }),
+                json!({ "command": format!("echo hi; nohup bash -c {} >/dev/null 2>&1 &", crate::runtime::shell_quote(&format!("sleep 1; touch {}", crate::runtime::shell_quote(&native_shell_path(&marker))))) }),
             )
             .await
             .expect("call ok");
@@ -2195,7 +2279,7 @@ mod tests {
     #[tokio::test]
     async fn exec_dir_under_the_run_keeps_command_output_and_exit() {
         let (dir, workspace) = ws();
-        let run_dir = dir.path().join("runs").join("r1");
+        let run_dir = dir.path().join("runs 中文 ' space").join("r1");
         let slot = new_run_binding_slot();
         *slot.lock().unwrap() = Some(RunBinding {
             run_id: "r1".into(),
