@@ -1,6 +1,6 @@
 # llm_context 层修改 TODO：长命令、长工具与等待
 
-日期：2026-10-02
+日期：2026-10-02（macOS 验证完成：2026-10-03，见 §11.4）
 
 状态：**已实施（2026-10-02，见 §11）**；xAgent.md 的修改（§8）仍待 review 后进行。依据 2026-10-02 对长命令处理方式（同步硬等、同步执行中崩溃、串行等待、并行等待）的讨论与源码核对，并已结合 [lib_opendan 输入协议与 Turn Loop TODO](./lib-opendan-input-and-turn-loop-todo.md) 的 review 意见。2026-10-02 按 review 意见补充 §3.2：遵循标准父子进程语义，exec 跨平台、少做非标处理，恢复时只按 runtime 给出“被打断”的结果、交给 LLM 判断；§9 第 4 项据此定稿。同日按 review 简化 §4 / §5：长命令的执行模式由配置决定（wait / auto），auto 到期转为 task；llm_context 只做“返回结果 / 挂起等 task”两种机械判断；不区分 job 与 run；§9 第 1、2、3、5 项随之定稿；随后按 review 明确 stop 的两种结束方式、可取消性由工具与 task 的实现声明、`wait_ms` 默认 30s 上限 30 分钟（§9 第 7、8 项）；补充 §1 术语，明确 30 分钟内必须返回 LLM、更长的等待只在 Session 层挂起，xllm 不挂起；§9 第 7、8 项全部定稿（stop 经 task-mgr 父子关系传导、审批作废，硬等上限默认 60 分钟可设为不限）；用哪个 task-mgr 由工具实现决定，`shell` 只用进程内 task-mgr，buckyos task-mgr 是可选依赖。实施前重新确认基线。
 
@@ -105,7 +105,7 @@ Review 意见（2026-10-02）：
   - xllm_rust_sdk.md：exec 一段，以及 resume 检查、执行跟踪（X6）两条；
   - Session Directory Protocol：删除 `executions[]`，按规则升版；重新生成 `06_killed_during_exec` 等 fixtures；
   - Agent Session SDK 实现计划：§5.2 与 §8.7 X6。
-- [~] 测试（自动化覆盖见 §11；macOS 上的 native / tmux 一轮未做）：
+- [x] 测试（自动化覆盖见 §11；2026-10-03 已完成 macOS 上的 native / tmux 验证，见 §11.4）：
   - exec `nohup sleep 300 >/dev/null 2>&1 &` 返回后，分别在另一个长命令执行中按 Ctrl-C、`--timeout` 到期、run 正常结束、打断后 `--resume`，该进程都仍在运行；
   - 前台命令执行中 kill -9 xllm，resume 不阻塞、不杀进程，按 native 规则给出“被打断”；
   - tmux：命令执行中 kill -9 xllm，resume 时命令已结束的，给出退出码和输出尾部；仍在运行的，给出“可能仍在运行”和查看方式；
@@ -367,7 +367,35 @@ lib_opendan TODO 中引用本文原设计的条目（§4 的 `wait.source{kind, 
 - 宿主侧（lib_opendan TODO §4 / §6）：Session 层等待挂起 task、`waiting_for.refs`、stop 对 task 的传导、挂起期间收到 stop、工具执行期间的 stop 监视任务、run 结束后 task 完成的唤醒。libopendan 仍 `allow_deferred=false`，`Pending` 在工具内等待（最长 30 分钟）。
 - buckyos task-mgr resolver 未实现（`XllmDeps.buckyos_tasks` 预留注入点；组合 resolver 按 `local:` 前缀分派）。
 - xAgent.md 的 §8 修改清单待 review 后进行。
-- macOS 上的 native / tmux 验证未做；SSH 真机测试（`--ignored`）未重跑，`remote_ssh` 的 `kill` 只杀记录的命令 bash 进程，不追子进程。
+- macOS 上的 native / tmux 验证已完成（§11.4）；SSH 真机测试（`--ignored`）未重跑，`remote_ssh` 的 `kill` 只杀记录的命令 bash 进程，不追子进程。
 - buckyos websdk（npm `buckyos` 包）的 `task_mgr_client.d.ts` 仍带 `tool.exec_bash`，属于另一仓库，需随 `tool.shell` 改名同步。
 - `shell` 的 `target` 参数已从 schema 删除（runtime 决定执行位置）；`BashRunner::run` 与 `start` 互为默认实现，实现方至少覆盖其一。
 
+### 11.4 macOS 验证（2026-10-03）
+
+环境：macOS 15.7.7（24G720，arm64）、tmux 3.6a、Cargo 1.95.0；验证基线为 `4def5a3bf`，加上下述取消路径修复。
+
+**发现并修复**：`ShellTool::cancel_command` 原来只按 `CommandHandle::cancellable()` 判断是否杀命令；tmux 支持显式取消 task，因此返回 true，导致 Ctrl-C、平滑结束和 run 总超时错误地调用 `kill-window`。`src/frame/agent_tool/src/llm_bash.rs` 改为 tmux 在 run 取消时只 detach、停止等待，结果包含“仍在运行”、session/window 和执行目录。shell 自身超时及显式 task 取消仍走 `kill-window`。`runtime/tests.rs` 新增 `tmux_run_cancellation_keeps_the_command_running`，覆盖打断、平滑结束、deadline，验证及时返回配对的 Cancelled 结果后，命令仍完成并写出 `exit=0` 与输出。
+
+**端到端**：本地 OpenAI 兼容 mock HTTP 服务驱动当前源码的 `agent_tool::run_local_llm::run_subcommand`；临时 Tokio 启动器复用该 CLI 入口，实际向执行器发送 SIGINT / SIGKILL，并读取 PID、run.json、快照和执行目录。wait 模式下 11 个场景全部通过：
+
+| 场景 | native | tmux |
+|---|---|---|
+| `nohup sleep 300 >/dev/null 2>&1 &` 返回后，run 正常结束 | 后台 PID 存活 | 后台 PID 存活 |
+| 另一个长命令执行中 Ctrl-C，再 `--resume --run <id>` | 当前命令结束，Cancelled 配对；恢复不重跑，后台 PID 存活 | 当前命令继续运行，Cancelled 带查看位置；恢复不重跑，后台 PID 存活 |
+| 另一个长命令执行中 `--timeout 2` 到期 | 当前命令结束，Cancelled 配对，run 为 limit_reached；后台 PID 存活 | 当前命令继续运行，Cancelled 配对，run 为 limit_reached；后台 PID 存活 |
+| 前台命令执行中 kill -9，命令仍运行时 resume | 0.128s 完成恢复；不杀旧命令、不重放，结果为 native 被打断、可能部分执行；后台 PID 存活 | 0.235s 完成恢复；不杀旧命令、不重放，结果为可能仍在运行，并给 session、输出 / exit 文件位置；后台 PID 存活 |
+| kill -9 后等命令结束再 resume | — | 0.243s 完成恢复；结果仍为被打断 / unknown，含 exit code 7、stdout / stderr 尾部，不重放；后台 PID 存活 |
+| shell 自身 `timeout_ms=500` | 当前命令结束，返回 timed_out 工具结果；后台 PID 存活 | kill-window 结束当前命令，返回 timed_out 工具结果；后台 PID 存活 |
+
+每个场景均检查后台 PID；所有长命令的启动 marker 只出现一次，恢复后 inflight 清空。验证结束后已清理全部测试 PID 和专用 tmux server。后台启动命令在返回前用 `ps` 确认进程已进入 `sleep`：macOS 下 tmux window 立即关闭可能在 nohup 设置忽略 SIGHUP 前结束子进程，独立于 xllm 的 bash 包装命令也能复现；就绪检查用于验证已成功启动的后台进程生命周期。
+
+**自动化验证**（在 `src/` 下；`TMPDIR=/private/tmp` 避免 macOS `/var` 与 `/private/var` 指向同一路径导致字符串断言失败）：
+
+- `TMPDIR=/private/tmp cargo test -p llm_context -- --test-threads=1`：199 通过。
+- `TMPDIR=/private/tmp cargo test -p agent_tool --lib -- --test-threads=1`：221 通过、5 ignored（3 个 SSH 真机、2 个开发压缩测试）；包含新增 tmux 取消回归、现有 tmux 超时和按 window id 取消测试。
+- `TMPDIR=/private/tmp cargo test -p libopendan --lib --test l1 --test context_limit --test crash --test runner_basic --test runner_more --test self_improve -- --test-threads=1`：70 通过（lib 6、l1 17、context_limit 3、crash 20、runner_basic 4、runner_more 17、self_improve 3），含真实 kill -9 后恢复与 tmux Session 测试。
+
+**其余检查的限制**：完整 `cargo test -p llm_context -p agent_tool -p libopendan -- --test-threads=1` 在 fixtures 的 f04 / f06 / f07 / f10 / f12 失败，其余 8 个 fixture 通过；这些 fixture 保存的 `config.runtime_descriptor.capabilities.os` 为 `linux`，loader 只替换目录、host、uid、hostname，macOS 接手因 descriptor 不同返回 RuntimeMismatch / RecoveryBlocked。`cargo build -p agent_tool_cli_dev --bin agent_tool` 因现有 `opendan/src/agent_session.rs:7356,7405` 使用已删除的 `MsgObject.to_session` 字段失败，因此端到端验证使用上述 CLI 入口的临时启动器。未运行完整 buckyos-build；上述 fixture、OpenDAN 编译问题与 SSH 真机验证仍待处理。
+
+本机验证证据：`/private/tmp/buckyos-macos-long-tool-e2e-final-20261003/report.json`（11 项结果、恢复文本与清理结果）；同目录各场景保留请求、CLI stdout / stderr、run 与快照；脚本为 `/tmp/buckyos_macos_long_tool_verify.py`，启动器源码为 `/private/tmp/buckyos-macos-xllm-driver/`。自动化日志为 `/tmp/buckyos-macos-llm-context-tests.log`、`/tmp/buckyos-macos-agent-tool-final-tests.log`、`/tmp/buckyos-macos-libopendan-final-tests.log`；完整测试及 CLI 构建失败日志分别为 `/tmp/buckyos-macos-long-tool-tests.log`、`/tmp/buckyos-macos-long-tool-build.log`。

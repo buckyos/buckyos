@@ -349,6 +349,104 @@ async fn tmux_modes_dedicated_pane_and_serial_execution() {
         .args(["-S", &socket, "kill-server"])
         .status();
 }
+
+#[tokio::test]
+async fn tmux_run_cancellation_keeps_the_command_running() {
+    if !Runtime::available() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("socket").display().to_string();
+    struct Cleanup(String);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::process::Command::new("tmux")
+                .args(["-S", &self.0, "kill-server"])
+                .output();
+        }
+    }
+    let _cleanup = Cleanup(socket.clone());
+    let (_, manager, slot) = open(
+        RuntimeConfig {
+            kind: Some("tmux".into()),
+            tmux: Some(TmuxConfig {
+                session: Some("run-cancellation".into()),
+                socket: Some(socket),
+                mode: Some(TmuxMode::Create),
+            }),
+            ..Default::default()
+        },
+        dir.path(),
+        crate::xllm::FilesystemPolicy::Workspace,
+    )
+    .await;
+    let binding = slot.lock().unwrap().clone().unwrap();
+    for cause in ["interrupt", "finish", "deadline"] {
+        let handle = llm_context::LLMContextInterruptHandle::standalone();
+        let call_ctx = ToolCallCtx {
+            abort: handle.token(),
+            deadline_ms: (cause == "deadline").then(|| crate::now_ms() + 500),
+            allow_deferred: false,
+        };
+        let mut call = call(
+            TOOL_SHELL,
+            json!({"command": format!("echo started > {cause}.started; sleep 2; echo finished")}),
+        );
+        call.call_id = cause.into();
+        let manager = manager.clone();
+        let running = tokio::spawn(async move { manager.call_tool(call, call_ctx).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !dir.path().join(format!("{cause}.started")).exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("tmux command started");
+        match cause {
+            "interrupt" => {
+                handle.interrupt("test");
+            }
+            "finish" => {
+                handle.finish("test");
+            }
+            _ => {}
+        }
+        let observation = tokio::time::timeout(Duration::from_secs(1), running)
+            .await
+            .expect("run cancellation is prompt")
+            .unwrap()
+            .unwrap();
+        let llm_context::observation::Observation::Cancelled {
+            reason,
+            effect_unknown,
+            ..
+        } = observation
+        else {
+            panic!("expected cancelled, got {observation:?}");
+        };
+        assert!(!effect_unknown);
+        assert!(reason.contains("still running"), "{reason}");
+        assert!(
+            reason.contains("tmux session `run-cancellation`"),
+            "{reason}"
+        );
+        let exec = crate::llm_bash::exec_dir_for(binding.run_dir.as_deref(), Some(cause)).unwrap();
+        assert!(reason.contains(&exec.display().to_string()), "{reason}");
+        assert!(!exec.join("exit").exists());
+        tokio::time::timeout(Duration::from_secs(4), async {
+            while crate::llm_bash::read_exit_file(&exec).is_none() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("detached command completes");
+        assert_eq!(crate::llm_bash::read_exit_file(&exec), Some(0));
+        assert!(std::fs::read_to_string(exec.join("stdout"))
+            .unwrap()
+            .contains("finished"));
+    }
+}
+
 struct CommandOutput;
 impl CommandOutput {
     fn tmux(socket: &str, args: &[&str]) -> String {

@@ -1297,7 +1297,7 @@ impl ShellTool {
                 progress.output_tail.trim_end()
             )
         };
-        if handle.cancellable() {
+        if runtime != "tmux" && handle.cancellable() {
             match handle.kill().await {
                 Ok(out) => AgentToolError::Cancelled {
                     message: format!(
