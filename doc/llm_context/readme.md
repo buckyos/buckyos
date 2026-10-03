@@ -188,16 +188,16 @@ Interrupted          -> 用推理前的快照 LLMContext.resume(snapshot, Resume
 
 这些挂起都不结束 Step 或 Turn；恢复时不重扣已扣的工具迭代额度。Interrupted 只有真实发起过的推理才计入 Round。
 
-当前三个宿主都没有开启 deferred 工具，PendingTool 的结果回填还没接入。
+当前宿主都没有开启 deferred 工具（`allow_deferred = false`）：工具返回 `pending` 时派发器在调用内等 task（最长 30 分钟），PendingTool 的结果回填还没接入宿主。
 
 
 ## AgentRuntime
 
-共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 构造 native、tmux、remote_ssh，AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 exec、文件读写编辑、注入 PromptExec 的模板执行使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。
+共享实现位于 agent_tool::runtime。RuntimeConfig / RuntimeRegistry 构造 native、tmux、remote_ssh，AgentRuntime.open 解析工具并返回实现 Sandbox/ToolManager 的派发器。内置 shell、文件读写编辑、注入 PromptExec 的模板执行使用同一执行体；MCP 服务与宿主进程内工具保留各自位置。
 
 RuntimeInfo 提供实际执行侧的 id、kind、os、arch、hostname、shell、cwd、tools、current_time、timezone，供提示词引用；Session 的稳定信息放 system，新鲜时间、半订阅与 active sessions 仍由 Session 输入批次管理。配置/日志/快照/INCLUDE 属于控制侧素材，runtime.workdir 属于执行侧。
 
-执行记录在用户命令放行前持久化，恢复先核验保存的目标与旧执行是否停止，不重放结果未知的副作用。native/tmux 不提供 OS 隔离；SSH 目标需 Linux/bash/SFTP，远端 Session helper 未部署时报 Capability。policy、grant、approval 与其它执行体留到后续阶段。接口、配置示例与恢复规则见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
+shell 命令的输出与退出码写入执行目录 `runs/<run_id>/exec/<call_id>/`；恢复时不核验、不停止任何进程，也不重放，没有结果的调用由 `AgentRuntime::describe_interrupted` 按 runtime 生成“被打断”的说明交给 LLM。shell 默认 auto 模式，超过 `wait_ms` 的命令转为进程内 task，模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进。native/tmux 不提供 OS 隔离；SSH 目标需 Linux/bash/SFTP，远端 Session helper 未部署时报 Capability。policy、grant、approval 与其它执行体留到后续阶段。接口、配置示例与恢复规则见 [xllm Rust SDK §10](xllm_rust_sdk.md#10-共享-agentruntime)。
 
 ## AgentState (RootFS)
 

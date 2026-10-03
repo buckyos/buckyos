@@ -6,7 +6,7 @@
 2. 输入参数 schema 如何接入 function call
 3. 输出格式怎么稳定落到 `AgentToolResult`
 
-本文只覆盖当前工程内已经实现并对外暴露的 builtin tools，不覆盖外部 bash 命令，也不覆盖 MCP tool。
+本文只覆盖当前工程内已经实现并对外暴露的 builtin tools，不覆盖外部 bash 命令，也不覆盖 MCP tool。工具在一次 run 中如何被装配、执行环境（Runtime）、取消与长任务的实现规则见 [OpenDAN AgentTool 开发指南](<OpenDAN AgentTool 开发指南.md>)。
 
 ## 1. 统一执行模型
 
@@ -39,11 +39,12 @@ builtin agent tool 目前常见三种入口：
 - `action`：以结构化 JSON 参数调用，主要用于写操作
 - `llm_tool_call`：以 `ToolSpec.args_schema` 声明的 JSON 调用
 
-每个工具都会通过 `AgentTool` trait 声明自己支持哪些入口：
+每个工具通过 `AgentTool::calling()` 返回的 `CallingConventions` bitflag 声明自己支持哪些入口：
 
-- `support_bash()`
-- `support_action()`
-- `support_llm_tool_call()`
+- `CallingConventions::BASH`
+- `CallingConventions::ACTION`
+- `CallingConventions::LLM`
+- `CallingConventions::ALL`
 
 设计约定：
 
@@ -64,6 +65,8 @@ Agent Tool 的实现不能反向依赖 Agent 相关基础设施。
 - 需要路径、URL、token、session id、workspace id 等上下文时，应作为 arguments 或显式 runtime env 输入进入工具
 - 工具返回 `AgentToolResult`，但不应该知道这个结果之后会被哪个 Agent 或哪种 prompt 压缩策略消费
 - 即使工具处理的是 session、todo、worklog 这类 Agent 领域对象，实现上也应把它们当作普通文件、数据库记录或网络资源来操作
+- 内置组里的工具在本 run 的 runtime 中执行：文件工具经 `runtime::files::FileBackend` 读写，命令经 runtime 的 `BashRunner`，因此同一份实现可以跑在 native、tmux 或 remote_ssh 上
+- 调用期间的取消与时限来自 `ToolCallCtx`，工具不自己维护取消监听或 deadline；会在调用返回后继续运行的工作交给 task 管理器并返回 `task_id`，不要直接返回 `pending`
 
 ## 2. Function Call Schema
 
@@ -113,7 +116,8 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 补充字段按需出现：
 
-- `task_id` / `pending_reason` / `check_after`：长任务轮询时使用
+- `task_id`：调用返回后仍在运行的工作（task）的 id，`pending` 时必填，`success` 也可以带
+- `pending_reason` / `check_after`：只在 `pending` 时有意义
 - `return_code`：仅当需要保留 shell 退出码语义时使用
 - `output`：仅当工具明确要暴露 bash 主文本输出时使用，builtin tool 默认不依赖它
 
@@ -142,9 +146,9 @@ builtin tool 的标准输出协议是 `AgentToolResult`，详细字段见：
 
 如果某个结果字段和输入参数同名，必须确认它表达的是执行后事实，而不是简单回显。
 
-### 3.2 legacy `read_file` 的纯文本例外
+### 3.2 `read_file` 的 CLI 纯文本例外
 
-legacy CLI `read_file` 在 CLI 下存在一个特例：
+`read_file` 在 `agent_tool` CLI 下存在一个特例：
 
 - 当“没有 agent 环境”且“stdout 不是 TTY”时
 - 自动切换到纯文本模式
@@ -154,28 +158,47 @@ legacy CLI `read_file` 在 CLI 下存在一个特例：
 
 ## 4. 当前 builtin tools 一览
 
+### 4.1 内置 `bash` 组
+
+xllm 与 libopendan 的 run 在 `.llm_context` 启用工具但未配置列表时使用内置 `bash` 组。这些工具由 `AgentRuntime::open` 装配，在本 run 的 runtime 中执行。
+
+| Tool | 主要用途 | 代码位置 |
+|---|---|---|
+| `shell` | 在 runtime 中执行 bash 命令 | `src/llm_bash.rs` |
+| `read_file` | 读文件 | `src/file_tools.rs` |
+| `write_file` | 覆盖 / 追加写文件 | `src/file_tools.rs` |
+| `edit_file` | 基于唯一 old_string 替换文件 | `src/file_tools.rs` |
+| `wait_task` / `get_task_state` / `cancel_task` | 跟进 task；仅 `shell` 处于 auto 模式时加入 | `src/tasks.rs` |
+
+### 4.2 其它工具
+
+由宿主按需注册（`XllmDeps::with_host_tool`，在 `.llm_context` 的 `tools.tools` 中以 `- name: <tool>` 引用），或作为 CLI 命令在 `shell` 中调用。
+
 | Tool | 入口 | 主要用途 | 代码位置 |
 |---|---|---|---|
 | `read` | action / llm_tool_call | 按 uri/path 读取内容；无 `://` 时默认文件路径 | `src/read_tool.rs` |
-| `write_file` | action | 覆盖/追加写文件 | `src/file_tools.rs` |
-| `edit_file` | action | 基于唯一 old_string 替换文件 | `src/file_tools.rs` |
 | `get_session` | bash | 读取 session 状态 | `src/lib.rs` |
 | `load_memory` | bash / llm_tool_call | 加载记忆摘要 | `src/lib.rs` |
-| `todo` | bash | 工作项 PDCA 管理 | `src/agent_todo_tool.rs` |
+| `todo` | bash | 工作项 PDCA 管理 | `src/todo_tools.rs` |
 | `create_workspace` | bash | 创建并绑定 workspace | `src/lib.rs` |
 | `bind_workspace` | bash | 切换当前 workspace | `src/lib.rs` |
-| `bind_external_workspace` | call | 注册外部 workspace | `src/lib.rs` |
-| `list_external_workspaces` | call | 列出外部 workspace | `src/lib.rs` |
+| `bind_external_workspace` | call | 注册外部 workspace | `src/workspace.rs` |
+| `list_external_workspaces` | call | 列出外部 workspace | `src/workspace.rs` |
 | `worklog_manage` | bash / call | worklog 结构化管理 | `src/lib.rs` |
-| `check_task` | CLI | 轮询 pending task | `src/cli.rs` |
-| `cancel_task` | CLI | 取消 pending task | `src/cli.rs` |
-| `finish_task` | CLI | 结束 task（完成/失败） | `src/cli.rs` |
+
+### 4.3 CLI task 伪工具
+
+| Tool | 主要用途 | 代码位置 |
+|---|---|---|
+| `check_task` | 查询 buckyos task | `src/frame/agent_tool_cli_dev/src/lib.rs` |
+| `cancel_task` | 取消 buckyos task | `src/frame/agent_tool_cli_dev/src/lib.rs` |
+| `finish_task` | 把 buckyos task 结束为完成 / 失败 | `src/frame/agent_tool_cli_dev/src/lib.rs` |
 
 说明：
 
+- 代码位置除 4.3 外都相对 `src/frame/agent_tool/`
 - `bind_external_workspace` / `list_external_workspaces` 当前主要走结构化调用
-- `check_task` / `cancel_task` / `finish_task` 是 CLI 暴露能力，不走 `AgentTool` trait 的常规注册路径
-- `read_file` 是 legacy CLI 兼容工具，不再是 v2 Agent Action；当前 Action 应使用 `read`
+- 4.3 的三个命令只存在于 `agent_tool` CLI，不走 `AgentTool` trait 的注册路径，在 `shell` 里调用；它们与同名的 LLM 工具 `cancel_task` 的分工见第 6 节
 - `list_session` 常量已预留，但当前文档不把它当作已完成 builtin tool
 
 ## 5. 各工具输入 / 输出约定
@@ -595,78 +618,95 @@ detail 常见字段：
 > 历史接口 `append_step_summary / mark_step_committed / list_step / build_prompt_worklog / render_for_prompt`
 > 已在 beta2.2 简化中移除，调用会返回 `unsupported action` 错误。详见 `notepads/worklog简化.md`。
 
-### 5.12 `check_task`
+### 5.12 `shell`
 
 用途：
 
-- 对 `pending` 任务做轮询
+- 在本 run 的 runtime（native / tmux / remote_ssh）中以 bash 语法执行命令
+- 执行方式由配置决定，不由模型选择
 
-CLI 输入：
+配置（`.llm_context` 的 `tools.shell`，详见 [xllm Rust SDK §3](<../xllm_rust_sdk.md>)）：
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `mode` | `auto` | `auto`：等 `wait_ms`，到期仍在运行的命令转为进程内 task 并返回；`wait`：等到结束或 `timeout_ms`，超时结束命令 |
+| `wait_ms` | 30000 | auto 模式的默认等待，上限 30 分钟 |
+| `timeout_ms` | 1800000 | wait 模式的默认超时 |
+| `max_timeout_ms` | 3600000 | wait 模式 `timeout_ms` 的上限，0 = 不限 |
+
+输入（按模式二选一出现 `wait_ms` 或 `timeout_ms`）：
+
+```json
+{
+  "command": "string",
+  "cwd": "string",
+  "wait_ms": "number (auto)",
+  "timeout_ms": "number (wait)"
+}
+```
+
+`cwd` 在 `filesystem_policy = workspace`（默认）时限制在工作目录内。
+
+结果：
+
+- 命令结束：退出码 0 且未超时为 `success`，否则 `error`；`return_code` 是退出码，`output` 是 stdout + stderr 混合文本（过长时保留头 1/4、尾 3/4）
+- detail 关键字段：`command`、`cwd`、`exit_code`、`stdout`、`stderr`、`output`、`output_truncated`、`timed_out`、`duration_ms`、`engine`、`runtime`
+- auto 模式到期仍在运行：`success` + `task_id`（`local:shell:<call_id>`）+ `partial_output`，`output` 写明已运行时长、已有输出和 `wait_task` / `get_task_state`（可取消时还有 `cancel_task`）的用法；detail 为 `command`、`task_id`、`elapsed_ms`、`runtime`、`still_running`、`cancellable`
+- wait 模式超时：`error`，`timed_out = true`，命令已结束，`summary` 给出加大 `timeout_ms` 或改用 nohup / setsid 的提示
+- 命令是简单命令且 stdout 是合法 AgentToolResult 时转发该结果，规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#shell-约定)
+
+打断、平滑结束、run deadline（`ToolCallCtx`）：
+
+- native、remote_ssh：结束命令（native 整个进程组 SIGKILL，remote_ssh 按记录的 pid kill），返回 `AgentToolError::Cancelled`，说明可能已有部分副作用
+- tmux：只停止等待，命令继续在自己的 window 里运行，返回的说明包含 session / window 和执行目录
+- 命令留下的后台进程（`&`、nohup、setsid、守护进程）在任何情况下都不被追杀
+
+执行目录：每条命令写 `command` / `stdout` / `stderr` / `exit` 到执行目录（native / tmux：`runs/<run_id>/exec/<call_id>/`；remote_ssh：`/tmp/llm-runtime-<uid>/<run_id>/<call_id>/`）。执行器崩溃后，恢复时据此生成“被打断”的结果，task 也可从这里读回结果。
+
+## 6. task 工具
+
+调用返回后仍在运行的工作称为 task，id 前缀表示归属：`local:<kind>:<n>` 属于执行器进程内的 `InProcessTaskManager`（`shell` 为 `local:shell:<call_id>`）；其它 id 属于 buckyos task-mgr。
+
+### 6.1 LLM 工具：`wait_task` / `get_task_state` / `cancel_task`
+
+三个工具共用宿主的 `RunningTaskResolver`（`tasks::CompositeTaskResolver`）：`local:` id 由进程内 task 管理器回答，进程已不在时 `shell` task 从执行目录读回结果；其它 id 交给宿主注入的 buckyos task-mgr resolver（`XllmDeps.buckyos_tasks`），没有注入时状态为 unknown。
+
+| Tool | 输入 | 行为 |
+|---|---|---|
+| `wait_task` | `task_id`，`wait_ms`（默认 30000） | 等到 task 结束或 `wait_ms`，返回当时状态。工具内等待最长 30 分钟；`wait_ms` 超过上限且宿主可以挂起（`allow_deferred`）时返回 `pending`，由宿主在进程外等待。打断只停止等待，task 继续 |
+| `get_task_state` | `task_id` | 立即返回当前状态 |
+| `cancel_task` | `task_id` | 停止可取消的 task；不可取消时返回 `error`，task 继续运行 |
+
+结果文本由 `llm_context::tasks::task_state_observation` 生成，与 `pending` 回填时模型看到的一致：
+
+- 仍在运行：`success`，说明已运行时长、输出尾部和下一步用法
+- 已结束：按 task 成功与否返回 `success` / `error`，内容是最终输出
+- 状态未知（进程已退出且没有记录、task-mgr 不可达）：`error`，提示先核实实际状态再决定是否重做
+
+### 6.2 CLI 伪工具：`check_task` / `cancel_task` / `finish_task`
+
+在 `shell` 里通过 `TaskManagerClient` 直接操作 buckyos task-mgr。
 
 ```bash
 check_task <task_id>
-```
-
-输出约定：
-
-- 如果目标任务本身是 agent tool 任务，则继续返回 builtin 风格结果
-- builtin 风格结果仍应优先满足 `agent_tool_protocol / status / cmd_name / cmd_args / title / summary`
-- `status` 会映射成 `success|error|pending`
-- 可能带：
-  - `task_id`
-  - `pending_reason`
-  - `check_after`
-  - `return_code`
-- 只有在任务本身不是 builtin agent tool、而是 bash 任务代理时，才可能继续带 `output`
-
-detail 常见字段：
-
-- 规范化后的 task detail
-- `task`
-
-### 5.13 `cancel_task`
-
-用途：
-
-- 取消 pending task，可选递归取消
-
-CLI 输入：
-
-```bash
 cancel_task <task_id> [--recursive]
-```
-
-输出约定：
-
-- 返回取消后的 task 结果封装
-- builtin 风格结果仍应优先满足 `agent_tool_protocol / status / cmd_name / cmd_args / title / summary`
-- detail 常见字段：
-  - `task`
-  - `interrupt_error`
-
-### 5.14 `finish_task`
-
-用途：
-
-- 把指定 task 结束为完成或失败
-
-CLI 输入：
-
-```bash
 finish_task <task_id> [failed] [--message <text>]
 ```
 
 输出约定：
 
-- 默认调用 TaskManager `update_task` 写入 `Completed` 和 `progress=100.0`
-- `failed` / `--failed` 调用 TaskManager `update_task_error` 写入 `Failed` 和错误消息
-- 返回更新后的 task 结果封装
-- builtin 风格结果仍应优先满足 `agent_tool_protocol / status / cmd_name / cmd_args / title / summary`
-- detail 常见字段：
-  - `task`
-  - `finish_outcome`
+- 结果仍优先满足 `agent_tool_protocol / status / cmd_name / cmd_args / title / summary`
+- `check_task`：task 状态映射成 `success|error|pending`，可能带 `task_id` / `pending_reason` / `check_after` / `return_code`；detail 是规范化后的 task（`task`）
+- `cancel_task`：可选递归取消；detail 常见字段 `task`、`interrupt_error`
+- `finish_task`：默认调用 TaskManager `update_task` 写入 `Completed` 和 `progress=100.0`；`failed` / `--failed` 调用 `update_task_error` 写入 `Failed` 和错误消息；detail 常见字段 `task`、`finish_outcome`
 
-## 6. 后续文档拆分建议
+### 6.3 分工
+
+- 模型先用 LLM 工具：`local:` task 由 runtime 自己处理，宿主注入了 buckyos resolver 时 buckyos task 也走这条路
+- 遇到 buckyos task 而宿主没有注入 buckyos resolver（LLM 工具返回状态未知 / 不支持取消）时，在 `shell` 里调用 CLI 伪工具
+- LLM 工具 `cancel_task` 与 CLI `cancel_task` 同名：前者是 function call，后者是 `shell` 命令，二者不会冲突
+
+## 7. 后续文档拆分建议
 
 为了避免这份文档继续膨胀，建议后续按主题拆成几个子文档：
 
@@ -677,9 +717,9 @@ finish_task <task_id> [failed] [--message <text>]
 3. `workspace_tools_protocol.md`
    统一整理 workspace 相关工具
 4. `task_tools_protocol.md`
-   统一整理 `check_task / cancel_task / finish_task` 和 pending 轮询模型
+   统一整理第 6 节的 task 工具与 task 状态模型
 
-## 7. 文档维护原则
+## 8. 文档维护原则
 
 - 以当前代码为准，不追求历史兼容描述
 - 参数名必须与 `ToolSpec.args_schema` 或 CLI 实现保持一致

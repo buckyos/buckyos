@@ -1,6 +1,6 @@
 <mxfile host="65bd71144e">
     <diagram id="QcCrowe_-ap4eG5OFclH" name="fork">
-        <mxGraphModel dx="1379" dy="1424" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1249" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="0"/>
                 <mxCell id="1" parent="0"/>
@@ -82,7 +82,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="41HGm-ju9PTb0uUM7zko" name="create-sub">
-        <mxGraphModel dx="1017" dy="1424" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="1249" dy="1198" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="htsIZBueUpF6MwID5XVR-0"/>
                 <mxCell id="htsIZBueUpF6MwID5XVR-1" parent="htsIZBueUpF6MwID5XVR-0"/>
@@ -163,7 +163,7 @@
         </mxGraphModel>
     </diagram>
     <diagram id="w5R_fIhFq3Cdg7gCB9bY" name="swith context">
-        <mxGraphModel dx="701" dy="982" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+        <mxGraphModel dx="861" dy="826" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
             <root>
                 <mxCell id="yjN1LFYSLKr9tgTwjyc0-0"/>
                 <mxCell id="yjN1LFYSLKr9tgTwjyc0-1" parent="yjN1LFYSLKr9tgTwjyc0-0"/>
@@ -275,6 +275,52 @@
                 </mxCell>
                 <mxCell id="-U8zG1KlwLV4cTXBlX8I-42" parent="yjN1LFYSLKr9tgTwjyc0-1" style="text;html=1;whiteSpace=wrap;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;rounded=0;" value="Session内有多个LLM Context,通过Context Switch在多个历史记录中切换。各个LLM Context共享Session的状态，因此不需要通过input 选项传递信息，类似“交给你接手了”，&lt;div&gt;Session里只有一个LLM Cone系统在运行&lt;/div&gt;" vertex="1">
                     <mxGeometry height="120" width="330" x="295" y="140" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+    <diagram id="htq1sZkNhz6Ycm3LOpzZ" name="Page-4">
+        <mxGraphModel grid="1" page="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+            <root>
+                <mxCell id="FhILC4TLuEHByhY4nqwZ-0"/>
+                <mxCell id="FhILC4TLuEHByhY4nqwZ-1" parent="FhILC4TLuEHByhY4nqwZ-0"/>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-1" parent="FhILC4TLuEHByhY4nqwZ-1" style="rounded=0;whiteSpace=wrap;html=1;" value="UI Session" vertex="1">
+                    <mxGeometry height="780" width="80" x="70" y="170" as="geometry"/>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-2" parent="FhILC4TLuEHByhY4nqwZ-1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;" value="&lt;div&gt;sub session&lt;/div&gt;意图检查" vertex="1">
+                    <mxGeometry height="200" width="60" x="190" y="440" as="geometry"/>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-8" edge="1" parent="FhILC4TLuEHByhY4nqwZ-1" source="nmFHpukknDNe1pI9bRIv-3" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1.02;entryY=0.916;entryDx=0;entryDy=0;entryPerimeter=0;" target="nmFHpukknDNe1pI9bRIv-1" value="Report">
+                    <mxGeometry relative="1" as="geometry">
+                        <mxPoint x="310" y="870" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-3" parent="FhILC4TLuEHByhY4nqwZ-1" style="rounded=0;whiteSpace=wrap;html=1;" value="worksession&lt;div&gt;Plan/DO&amp;nbsp;&lt;/div&gt;&lt;div&gt;每个do 都是用create-sub构造出来的 llm context&lt;/div&gt;" vertex="1">
+                    <mxGeometry height="150" width="90" x="280" y="670" as="geometry"/>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-4" parent="FhILC4TLuEHByhY4nqwZ-1" style="rounded=1;whiteSpace=wrap;html=1;" value="sub exproler session1" vertex="1">
+                    <mxGeometry height="70" width="80" x="450" y="670" as="geometry"/>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-5" parent="FhILC4TLuEHByhY4nqwZ-1" style="rounded=1;whiteSpace=wrap;html=1;" value="sub exproler session2" vertex="1">
+                    <mxGeometry height="100" width="80" x="560" y="690" as="geometry"/>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-6" edge="1" parent="FhILC4TLuEHByhY4nqwZ-1" source="nmFHpukknDNe1pI9bRIv-2" style="edgeStyle=elbowEdgeStyle;elbow=vertical;endArrow=classic;html=1;curved=0;rounded=0;endSize=8;startSize=8;exitX=1;exitY=0.75;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="nmFHpukknDNe1pI9bRIv-3" value="创建">
+                    <mxGeometry height="50" relative="1" width="50" as="geometry">
+                        <mxPoint x="280" y="640" as="sourcePoint"/>
+                        <mxPoint x="330" y="590" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="nmFHpukknDNe1pI9bRIv-7" edge="1" parent="FhILC4TLuEHByhY4nqwZ-1" source="nmFHpukknDNe1pI9bRIv-2" style="edgeStyle=none;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.97;entryY=0.652;entryDx=0;entryDy=0;entryPerimeter=0;" target="nmFHpukknDNe1pI9bRIv-1" value="report">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="GNWuztXTgMLaF9fmgVVZ-1" edge="1" parent="FhILC4TLuEHByhY4nqwZ-1" source="nmFHpukknDNe1pI9bRIv-5" style="endArrow=classic;html=1;exitX=-0.016;exitY=0.823;exitDx=0;exitDy=0;exitPerimeter=0;entryX=1.017;entryY=0.701;entryDx=0;entryDy=0;entryPerimeter=0;" target="nmFHpukknDNe1pI9bRIv-3" value="Reoprt">
+                    <mxGeometry height="50" relative="1" width="50" as="geometry">
+                        <mxPoint x="450" y="850" as="sourcePoint"/>
+                        <mxPoint x="500" y="800" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="GNWuztXTgMLaF9fmgVVZ-2" edge="1" parent="FhILC4TLuEHByhY4nqwZ-1" source="nmFHpukknDNe1pI9bRIv-4" style="edgeStyle=none;html=1;entryX=1.037;entryY=0.556;entryDx=0;entryDy=0;entryPerimeter=0;" target="nmFHpukknDNe1pI9bRIv-3" value="Reprot">
+                    <mxGeometry relative="1" as="geometry"/>
                 </mxCell>
             </root>
         </mxGraphModel>

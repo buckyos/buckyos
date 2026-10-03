@@ -35,7 +35,7 @@ Behavior Loop 在下一个 Step 的 prompt 中消费的不是孤立的工具 std
 - `error`
 - `pending`
 
-Agent Loop、WorkLog、`check_task`、审批等待、长任务等待都可以基于这些控制字段工作：
+宿主的工具派发（把结果映射为 llm_context 的 `Observation`）、task 工具（`wait_task` / `get_task_state` / `cancel_task`）、审批等待都只读这些控制字段：
 
 - `status`
 - `task_id`
@@ -286,6 +286,7 @@ AgentToolResult.summary | AgentToolResult.title
   "agent_tool_protocol": "1",
   "status": "success|error|pending",
 
+  "tool": "registered tool name",
   "cmd_name": "bash-style command name",
   "cmd_args": "bash-style argument text",
 
@@ -297,12 +298,11 @@ AgentToolResult.summary | AgentToolResult.title
 
   "return_code": 0,
 
-  //下面的字段只有在pending的时候才有
+  // task：pending 时 task_id 必填；success / error 也可以带，表示调用返回后仍在运行的工作
   "task_id": "optional",
-  "partial_output": "optional pending progress text",
-  //可以随意扩展
+  "partial_output": "optional progress text",
+  // 只在 pending 时有意义
   "pending_reason": "long_running|user_approval|wait_for_install",
-  //预期多久后完成
   "check_after": 5
 }
 ```
@@ -312,8 +312,8 @@ AgentToolResult.summary | AgentToolResult.title
 | 分组 | 字段 | 说明 |
 | --- | --- | --- |
 | 协议识别 | `agent_tool_protocol` | 标识这是 AgentToolResult 协议结果 |
-| 控制语义 | `status`, `task_id`, `pending_reason`, `check_after`, `return_code`, `partial_output` | Runtime / Agent Loop / `check_task` 使用 |
-| 命令表达 | `cmd_name`, `cmd_args` | 原始调用意图 |
+| 控制语义 | `status`, `task_id`, `pending_reason`, `check_after`, `return_code`, `partial_output` | 宿主工具派发与 task 工具使用 |
+| 命令表达 | `tool`, `cmd_name`, `cmd_args` | 原始调用意图；`tool` 是已注册工具的名字，普通 bash 结果没有 |
 | 渲染压缩 | `title`, `summary` | prompt / history 压缩视图 |
 | 完整返回体 | `output` 或 `detail` | Full / 不压缩展示和调试使用 |
 
@@ -398,7 +398,7 @@ AgentToolResult.summary | AgentToolResult.title
 ```text
 cargo test => failed (exit=101)
 read_file demo.txt range=1-20 => success
-check_task 123 => pending (long_running)
+wait_task local:shell:call_7 => success
 ```
 
 ### `summary`
@@ -470,31 +470,38 @@ Agent Tool 内部的完整返回。
 
 ### `task_id`
 
-当 `status = pending` 时，用于后续 `check_task` 轮询。
-
-### `partial_output`
-
-`pending` 时的阶段性输出。
+调用返回后仍在运行的工作（task）的 id。
 
 规则：
 
-- 用于暴露长任务当前进展
+- `status = pending` 时必填；缺少时宿主把结果当作 `Error`，`shell` 转发内部工具结果时也会退回普通 shell 结果
+- `success` / `error` 结果也可以带 `task_id`：调用本身已经返回，它启动的工作还在运行。例如 `shell` auto 模式下超过 `wait_ms` 的命令返回 `success` + `task_id`
+- 前缀表示归属：`local:<kind>:<n>`（`shell` 为 `local:shell:<call_id>`）属于执行器进程内的 task 管理器，进程退出后不再可查（`shell` 可从执行目录读回结果）；其它 id 属于 buckyos task-mgr
+- 模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进；buckyos task 也可以在 shell 里用 CLI `check_task` / `cancel_task` / `finish_task`，见 [builtin_agent_tools.md](builtin_agent_tools.md#6-task-工具)
+
+### `partial_output`
+
+调用返回时 task 已有的输出，通常是尾部。
+
+规则：
+
+- 用于暴露 task 当前进展
 - 不要求完整
 - 不替代最终 `output`
 
 ### `pending_reason`
 
-当前使用以下值：
+等待原因的人读分类，当前取值：
 
 - `long_running`
 - `user_approval`
 - `wait_for_install`
 
+宿主不读它，也不要求模型按它选择等待策略。模型从 `title` / `summary` / `output` 的说明和 task 工具的提示里决定下一步。
+
 ### `check_after`
 
-建议 Agent 多少秒后再次轮询。
-
-仅在 `status = pending` 时有意义。
+秒，仅在 `status = pending` 时有意义：宿主把它当作这次等待的上限（从返回时起算）。缺省时等到 task 结束、工具内等待上限（30 分钟）或 run 的 deadline。
 
 ## 单个 AgentToolResult 渲染规则
 
@@ -539,24 +546,32 @@ read_file demo.txt range=1-20
 
 ## `shell` 约定
 
-`shell` 本身也是一个标准工具。它负责执行 bash 命令，并把 bash 的执行结果转换成 `AgentToolResult`。
+`shell` 本身也是一个标准工具（`agent_tool::llm_bash::ShellTool`）。它在本 run 的 runtime（native / tmux / remote_ssh）里执行 bash 命令，并把执行结果转换成 `AgentToolResult`。
 
-普通 bash 命令的推荐输出：
+命令结束时的结果：
 
 ```json
 {
   "agent_tool_protocol": "1",
   "status": "error",
-  "cmd_name": "cargo",
-  "cmd_args": "test",
-  "title": "cargo test => failed (exit=101)",
-  "summary": "cargo test failed with exit code 101.\nLast error: unresolved import `foo` in src/lib.rs.",
-  "output": "$ cargo test\n...\nerror[E0432]: unresolved import `foo`\n...",
-  "return_code": 101
+  "tool": "shell",
+  "cmd_name": "shell",
+  "cmd_args": "cargo test",
+  "title": "shell cargo test => error",
+  "summary": "exit=101 in 5321ms",
+  "output": "...\nerror[E0432]: unresolved import `foo`\n...",
+  "return_code": 101,
+  "detail": { "command": "cargo test", "exit_code": 101, "timed_out": false, "duration_ms": 5321, "runtime": "native", "...": "..." }
 }
 ```
 
-如果 `shell` 执行的命令在 stdout 明确输出合法 AgentToolResult，`shell` 可以把该结果转发为结构化工具结果。
+规则：
+
+- 退出码为 0 且未超时是 `success`，否则 `error`；`return_code` 是命令退出码
+- `output` 是 stdout + stderr 的混合文本，过长时保留头 1/4、尾 3/4
+- 命令还在运行时的返回（auto 模式转 task、被打断）见下面的“长任务与 Pending 结果”和[调用身份、结果归属与 Pending 回填](#调用身份结果归属与-pending-回填)
+
+转发内部 AgentToolResult：命令是一条不含 shell 操作符（管道、`;`、`&&`、重定向等）的简单命令，且 stdout 整体是带合法 `agent_tool_protocol` 的 AgentToolResult 时，`shell` 直接返回这个结果，缺少 `return_code` 时补上命令退出码。内部结果是 `pending` 但没有 `task_id` 时不转发，退回普通 shell 结果。
 
 普通 bash 的 stdout 即使碰巧是 JSON，也不能在缺少合法 `agent_tool_protocol` 时被隐式当成 `detail` 或 AgentToolResult。
 
@@ -605,34 +620,37 @@ Agent Tool 的推荐输出：
 
 等价地，也可以选择把完整文本放在 `output` 中；关键约束是不要两边都有同一份主结果。
 
-## Pending 结果
+## 长任务与 Pending 结果
 
-长任务或等待用户审批时返回 `pending`。
+调用返回时工作还没结束，有两种返回方式，区别在于这次调用的结果是否必须等工作结束才有。
 
-示例：
+**1. 调用返回、工作继续（常用）。** `status` 按调用本身填写（通常是 `success`），带 `task_id`，`output` 说明“仍在运行”、已有输出和跟进方式。模型可以先做别的，之后再用 `wait_task` / `get_task_state` 跟进。`shell` 在 auto 模式下就是这样：命令超过 `wait_ms` 仍未结束时，交给进程内 task 管理器并返回：
 
 ```json
 {
   "agent_tool_protocol": "1",
-  "status": "pending",
-  "cmd_name": "cargo",
-  "cmd_args": "test",
-  "title": "cargo test => pending (long_running)",
-  "summary": "cargo test is still running. Partial output shows compilation in progress.",
-  "return_code": 0,
-  "task_id": "12345",
+  "status": "success",
+  "tool": "shell",
+  "cmd_name": "shell",
+  "cmd_args": "cargo test",
+  "summary": "still running as task local:shell:call_7",
+  "output": "`cargo test` is still running after 30000ms (30s elapsed); it continues as task local:shell:call_7 (...).\n--- output so far (tail) ---\nCompiling opendan v0.1.0 ...\nCall `wait_task` with task_id=\"local:shell:call_7\" to keep waiting (wait_ms up to 30 min), or `get_task_state` to check later. `cancel_task` with task_id=\"local:shell:call_7\" stops it.",
+  "task_id": "local:shell:call_7",
   "partial_output": "Compiling opendan v0.1.0 ...",
-  "pending_reason": "long_running",
-  "check_after": 5
+  "detail": { "command": "cargo test", "task_id": "local:shell:call_7", "still_running": true, "cancellable": true, "...": "..." }
 }
 ```
 
+`cancel_task` 的提示只在 task 可取消时出现。
+
+**2. 调用本身等待（`pending`）。** `status = pending` + `task_id`，表示这次调用的结果要等 task 结束才有，由宿主决定怎么等（见下一节）。只在调用的语义就是“等待”时使用，例如 `wait_task` 的等待时长超过工具内上限（30 分钟）且宿主可以挂起，或 shell 里的 CLI 工具把工作交给 buckyos task-mgr 后返回 `pending`（`shell` 会转发它）。
+
 规则：
 
-- `task_id` 用于后续 `check_task`
-- `check_after` 是建议轮询间隔
-- `partial_output` 是阶段性输出
-- 最终完成后，`check_task` 应返回新的 `success` 或 `error` 结果
+- `pending` 必须带 `task_id`
+- 不要因为“耗时长”就返回 `pending`：能先返回就先返回 `task_id`（方式 1），由模型决定是否等待
+- 等多久、是否转 task 由工具配置决定（如 `tools.shell.mode` / `wait_ms`），不给模型加调用前要选择的参数
+- task 结束后，`wait_task` / `get_task_state` 返回最终结果；`pending` 被回填时使用同一份文本（`llm_context::tasks::task_state_observation`）
 
 ## 调用身份、结果归属与 Pending 回填
 
@@ -648,12 +666,39 @@ Agent Tool 的推荐输出：
 - behavior 模式：action 结果按序写入当前 Step 的 `action_results`，全部就绪后该 Step 折叠为 `StepRecord`，下一个 Step 通过 `<<last_step_action_results>>` 看到它们；一个分派 action 的 Step 也消耗一次工具迭代。
 - 工具运行上下文 `SessionRuntimeContext.tool_call_index` 是宿主在每次工具调用时递增的调用序号（xllm 由 `XllmToolManager` 维护，只在内存中，run 恢复后重新计数；CLI 进程中为 0），只用于日志和请求 id。它不是 `step_index`，也不是 Turn 编号，不能用来推导 Step 或 Turn。
 - 工具内部再发起的模型调用（如 `llm_understand_media`、`llm_explore` 内部的 xllm run）是这次调用的嵌套推理：有自己的 run 和用量统计，不计入父 run 的 Round，不是父 Step，也不开启、推进或完成 Session Turn。对父循环而言只有一次调用和一个结果。
-- 调用进行中宿主崩溃：libopendan 在调用前登记 in-flight 记录，只有包含结果的 checkpoint 才清除它；恢复时没有已持久化结果的调用被回填为 `Unresolved`（效果未知），不会自动重放。
+### 结果到 Observation 的映射
 
-Pending 回填：`status = pending` 的结果在宿主中映射为 `Observation::Pending`，llm_context 的处理取决于 `ToolPolicy.allow_deferred`：
+xllm 和 libopendan 共用的派发器 `agent_tool::xllm::XllmToolManager` 把一次调用映射为 llm_context 的 `Observation`：
 
-- `allow_deferred = true`：分派停在该调用，run 以 `PendingTool` 挂起，批次或 Step 中剩余的调用保留在状态里。宿主拿到结果后用 `ResumeFill::ToolResults { results: [(call_id, Observation)] }` 按 `call_id` 回填（缺失、重复或未知的 id 会被拒绝），再继续剩余调用。回填不重新推理已完成的决策、不重放已执行的工具、不重复扣工具迭代，也不新开 Turn；behavior 模式下结果仍属于原来那个 Step。
-- `allow_deferred = false`：`Pending` 视为违约，该调用记为效果未知，run 以 `Internal` 错误结束。当前 xllm 和 libopendan 托管执行都使用 `false`（libopendan 恢复时遇到 `PendingTool` 挂起也会拒绝继续），所以本文 `task_id` + `check_task` 的轮询模型尚未在这两个宿主中接通。
+| 工具返回 | Observation |
+| --- | --- |
+| `status = success` | `Success`，模型看到的文本依次取 `output`、`summary`、`detail` JSON 中第一个非空的 |
+| `status = error` | `Error`，文本是 `summary` 加 `output` |
+| `status = pending` 且有 `task_id` | 见下面的“Pending 的处理” |
+| `status = pending` 但没有 `task_id` | `Error`（违约） |
+| `Err(AgentToolError::Cancelled { effect_unknown })` | `Cancelled`，效果是否未知按工具声明 |
+| 工具不可取消（`AgentTool::cancellable() == false`）时遇到打断或 deadline | 派发器放弃等待，记为 `Cancelled { effect_unknown: true }`；平滑结束则先等它做完，超过 `ToolPolicy.finish_grace_ms` 再升级为打断 |
+| `Err(AgentToolError::Transport { effect_unknown })` | 派发基础设施失败（`ToolDispatchError`），不是业务错误 |
+| 其它 `Err` | `Error` |
+
+两种结果都带 `tool_result` 视图（`cmd_name` / `cmd_args` / `summary` 等），供 StepRecord 渲染使用。打断、平滑结束、deadline 的定义见 [LLM Context 设计](<../LLM Context 设计.md>) §8。
+
+### Pending 的处理
+
+由 `ToolPolicy.allow_deferred` 决定，它同时作为 `ToolCallCtx.allow_deferred` 传给每次调用：
+
+- `allow_deferred = false`（xllm、libopendan 当前都是）：派发器在这次调用内部等 task，直到 task 结束、`check_after`、工具内等待上限（30 分钟）或 run 的 deadline，然后把 task 当时的状态作为结果交给模型。打断只停止等待，task 继续运行。run 不会因此结束。
+- `allow_deferred = true`：调用记为 `Observation::Pending { task_id, until_ms }`，run 以 `PendingTool` 挂起，批次或 Step 中剩余的调用保留在状态里。宿主在进程外等 task，拿到结果后用 `ResumeFill::ToolResults { results: [(call_id, Observation)] }` 按 `call_id` 回填（缺失、重复或未知的 id 会被拒绝），再继续剩余调用。回填不重新推理已完成的决策、不重放已执行的工具、不重复扣工具迭代，也不新开 Turn；behavior 模式下结果仍属于原来那个 Step。一次挂起只等一个调用。
+- xllm 接手 `PendingTool` 快照时不等待，按 task 当时的状态立即回填后续跑；task 属于它访问不到的 task-mgr（非 `local:` 前缀且没有注入 `XllmDeps.buckyos_tasks`）时拒绝接手。libopendan 恢复时遇到 `PendingTool` 挂起会拒绝继续。
+
+### 后台 task 的呈现
+
+每次推理前，llm_context 通过 `LLMContextDeps.tasks`（`RunningTaskResolver`；agent_tool 提供 `tasks::CompositeTaskResolver`：`local:` id 走进程内 task 管理器和执行目录，其它 id 走宿主可选注入的 buckyos task-mgr）列出本 context 启动的 task，渲染为 `<background_tasks>` 追加在请求末尾，不进历史。它只是状态简介，完整输出由模型按需用 `get_task_state` / `wait_task` 获取。
+
+### 打断与崩溃
+
+- 执行器只管理正在执行的工具调用。命令留下的进程（`&`、nohup、setsid、守护进程）在打断、超时、run 结束、恢复时都不被停止，也不被追杀。
+- 调用前宿主登记 in-flight 记录（run.json `inflight[]`），只有包含结果的 checkpoint 才清除。恢复时，没有持久化结果的调用被物化为“被打断、结果未知”的结果，不自动重放，也不核验或停止任何进程。文本由 `AgentRuntime::describe_interrupted` 按 runtime 生成：`shell` 读执行目录（native / tmux 为 `runs/<run_id>/exec/<call_id>/{command,stdout,stderr,exit}`，remote_ssh 在远端），已有 `exit` 时给出退出码和输出尾部，没有时说明命令可能仍在运行以及去哪里查看；其它工具给出通用的“结果未知”说明。
 
 ## Agent 侧消费规则
 

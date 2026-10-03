@@ -1,13 +1,25 @@
 # OpenDAN AgentTool 实体化
 
-## 协议文档
+## 文档索引
 
-- [run_local_llm SDK 化：目录与命令行协议基线](local_llm_context_protocol.md)：工具 SDK 化范围、Rust 协议现状与 TS 设计参考；Rust 库改造另行处理。
-- [xllm Rust SDK 参考](xllm_rust_sdk.md)：按 xllm PRD 重写后的 Rust `xllm` SDK / `agent_tool xllm` CLI 的协议摘要（Run 目录格式、状态机、退出码、提示词组装），供 TS 版本对照实现。
+本目录：
+
+- [OpenDAN AgentTool 开发指南](<OpenDAN AgentTool 开发指南.md>)：分层、派发、取消与 task、CLI、环境变量，新增工具的步骤
+- [agent_tool_result_protocol.md](agent_tool_result_protocol.md)：`AgentToolResult` 字段定义、StepRecord 渲染、到 `Observation` 的映射与 Pending 处理
+- [builtin_agent_tools.md](builtin_agent_tools.md)：当前 builtin tools 与 task 工具的输入 / 输出约定
+- [agent-tool实例分析.md](agent-tool实例分析.md)：以 `read_file` / `write_file` 为例讲 `TypedTool` 的写法
+- [无需返回的agent-tool.md](无需返回的agent-tool.md)：结果不需要进入后续输入的工具
+- [Agent 计划任务cli工具需求.md](<Agent 计划任务cli工具需求.md>)：`dcrontab` 需求
+
+上级目录：
+
+- [run_local_llm SDK 化：目录与命令行协议基线](../local_llm_context_protocol.md)：工具 SDK 化范围、Rust 协议现状与 TS 设计参考
+- [xllm Rust SDK 参考](../xllm_rust_sdk.md)：`.llm_context` 配置、Run 目录、状态机、退出码、提示词组装、共享 AgentRuntime
+- [LLM Context 设计](<../LLM Context 设计.md>)：waist、`ToolManager`、打断与平滑结束
 
 ## 背景
 
-当前 OpenDAN Runtime 中的 AgentTool 采用传统模式实现，基于 tool_calls 机制提供基本的 Agent 工具能力。在此基础上，每个 tool 支持两种调用模式：
+AgentTool 基于 tool_calls 机制提供 Agent 的工具能力。每个 tool 支持两种调用模式：
 
 - **Function 模式**：标准的 function calling，一个 run 中可多次调用；每次推理（Round）返回的原生 tool calls 组成一个工具批次，结果按 `call_id` 回灌
 - **Action 模式**：Behavior Loop 中在一个 Step 的决策输出之后执行，结果记入该 Step 的 `StepRecord`，供下一个 Step 读取，通常用于写操作
@@ -16,154 +28,127 @@
 
 根据我们对 Agent 使用工具的长期规划，我们相信：**所有 Agent 最终都将通过标准 Linux Bash 来使用全部外置能力。** Bash 无平台相关性，是 Agent 获得真正能力的统一入口。
 
-### 当前问题
+如果内置工具只存在于宿主进程里，LLM 构造组合命令（管道、子命令、脚本）时就无法调用它们，内置工具与 Bash 原生命令之间存在不可组合的断层。
 
-目前在 Tmux 中执行命令时，Runtime 会先解析命令，判断是否为内置命令：
+## 分层
 
-- **是内置命令** → 走内置 AgentTool 逻辑
-- **否则** → 交给 Tmux 的 Bash 执行
+```text
+宿主：xllm CLI / libopendan SessionRunner / xagent
+  ▼
+llm_context（waist）：ToolManager::call_tool(call, ToolCallCtx) -> Observation
+  ▼
+agent_tool::runtime：AgentRuntime（native | tmux | remote_ssh）= 执行环境（sandbox）
+  ├─ 内置 bash 组：shell / read_file / write_file / edit_file（+ task 工具）
+  ├─ MCP 工具
+  └─ 宿主工具
+        ▼  shell 命令中
+  PATH 上的 agent_tool CLI（单二进制 + 命令别名）
+```
 
-这导致一个关键问题：**当 LLM 构造组合性语法（如管道、子命令等）时，无法在组合命令中调用内置的 AgentTool。** 内置工具与 Bash 原生命令之间存在不可组合的断层。
+- Runtime 决定工具在哪里执行。内置工具、模板里的命令都经同一个执行体，同一份实现可以跑在本机进程、tmux 或远端 SSH 上。
+- AgentTool 同时有两种形态：在派发器里被直接调用，或作为 CLI 命令在 `shell` 里被调用。两种形态共用同一份实现和同一个结果协议。
+
+细节见 [开发指南](<OpenDAN AgentTool 开发指南.md>) 第 1、2 节。
 
 ## 方案：AgentTool CLI 化（BusyBox 模式）
 
-将原有 Runtime 内置的 AgentTool 提取出来，打包为**真实存在于 Bash 环境中的可执行文件**，类似 BusyBox 的思路——一个二进制，多个命令别名。
+把 AgentTool 打包为**真实存在于 Bash 环境中的可执行文件**，类似 BusyBox：一个二进制，多个命令别名。
 
 ### 基本特征
 
 - 最终部署形态是**一个主二进制 + 多个命令别名**，而不是为每个工具长期维护独立二进制
 - 命令名通过软链接、硬链接、wrapper 或 `argv[0]` 分发暴露给 Bash
 - 可执行文件真实存在于 Bash 的 `$PATH` 中，可被 Bash 原生组合调用
-- 支持不同的命令名 / 别名（类似 `ls`、`cat` 等）
 
 ### 部署约束
 
-- **最终交付以单主二进制为准**，例如 `agent_tool`
-- `todo`、`get_session`、`read_file` 这类名字对 Bash 仍然直接可见，但底层应尽量复用同一份可执行文件
-- 开发或迁移阶段中，允许临时产出多个 `bin` 以便联调、测试、灰度验证；这属于过渡措施，不应成为最终部署模型
-- 这样做的原因很直接：部署、升级、版本一致性、回滚与制品管理都会显著简单
+- **最终交付以单主二进制为准**，即 `agent_tool`
+- `todo`、`get_session`、`read_file` 这类名字对 Bash 直接可见，但底层复用同一份可执行文件
+- 开发或迁移阶段允许临时产出多个 `bin` 以便联调、测试、灰度验证；这属于过渡措施，不应成为最终部署模型
+- 原因：部署、升级、版本一致性、回滚与制品管理都会显著简单
 
 ### 执行流程
 
 ```
-LLM 生成 Bash 命令
+LLM 调用 shell
     ↓
-Tmux / Bash 执行
+runtime 执行 bash 命令（PATH 前置 Session Bin 与 Agent Bin）
     ↓
-AgentTool CLI 可执行文件启动
+AgentTool CLI 启动，按 argv[0] 分发
     ↓
-读取环境变量（由 OpenDAN 启动 Tmux 时注入）
+读取环境变量（宿主注入），构造 RuntimeContext
     ↓
-┌─ 纯本地工具（如 editfile）→ 直接执行，无需回调
-└─ 需要 Runtime 能力的工具  → 通过本地 RPC 回调 Runtime 进程
+┌─ 纯本地工具（如 edit_file）→ 直接执行
+└─ 需要 Session / Agent 状态的工具 → 读写 Session 目录、Agent RootFS，或访问 BuckyOS 服务
     ↓
-返回结果至 Bash stdout/stderr
+stdout 输出 AgentToolResult JSON；简单命令的结果由 shell 直接转发给模型
 ```
 
-### 环境变量注入
-
-由于 AgentTool CLI 运行在 OpenDAN 启动的 Tmux 环境中，我们可以通过环境变量传入充足的上下文信息（Session ID、RPC 地址、认证信息等），使 CLI 工具能够定位并回调 Runtime。
-
-### 本地 RPC 回调
-
-对于需要 Runtime 能力的工具，CLI 进程通过本地 RPC 调用回 Runtime 主进程，由 Runtime 完成实际的执行操作后将结果返回。
+PATH 分层与环境变量契约见 [开发指南](<OpenDAN AgentTool 开发指南.md>) 第 5、6 节。
 
 ## Tool Result 统一协议
 
-借 AgentTool 实体化的机会，统一设计工具调用返回结果的协议。
-
-协议文档已单独整理，见：
-
-- [agent_tool_result_protocol.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/agent_tool_result_protocol.md)
-- [builtin_agent_tools.md](/Users/liuzhicong/project/buckyos/src/frame/agent_tool/builtin_agent_tools.md)
-
-本节只保留设计动机。具体字段定义、兼容规则、`output/detail` 分工、`shell` 的判定规则都以单独文档为准。
+借 AgentTool 实体化的机会，统一设计工具调用返回结果的协议。字段定义、兼容规则、`output` / `detail` 分工、`shell` 的转发规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md)，本节只保留设计动机。
 
 ### 动机
 
-当前 Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自有的 AgentTool CLI 化后，我们可以要求所有自有工具遵循统一的返回协议，带来两个关键好处：
+Bash 环境下只能依赖 stdout / stderr 获取结果，格式不统一。自有 AgentTool CLI 化后，所有自有工具遵循统一的返回协议，带来两个好处：
 
 1. **结构化返回**：统一以 JSON 格式输出结果，便于程序化解析和后续处理
-2. **适配 WorkLog 压缩渲染**：工具调用的历史记录会以不同压缩比显示在 Agent 的 WorkLog 中——越早的记录压缩率越高。结构化的返回协议使我们能更智能地做 Tool Result 的提示词压缩（摘要、截断、字段裁剪等），而非粗暴地截断纯文本
+2. **适配 WorkLog 压缩渲染**：工具调用的历史记录会以不同压缩比显示在 Agent 的历史中，越早的记录压缩率越高。结构化的返回协议让我们能更智能地压缩 Tool Result（摘要、截断、字段裁剪等），而非粗暴地截断纯文本
 
 ### 核心洞察：同步、长任务、用户授权是同构的
 
-工具调用从 Agent 的视角看，只有三种状态——**立即完成、还没完成、出错了**。而"还没完成"的原因可能各不相同，但对 Agent 的处理逻辑完全一致：
+工具调用从 Agent 的视角看，只有三种情况：**已经完成、还没完成、出错了**。“还没完成”的原因各不相同，但对 Agent 的处理逻辑一致：
 
 | 完成模式 | 等待对象 | 示例 |
 |----------|----------|------|
-| 同步完成 | 无 | `ls`、`cat`、`editfile` |
+| 同步完成 | 无 | `ls`、`cat`、`edit_file` |
 | 异步等待（机器） | 进程 / 系统 | `build`、`test`、`deploy` |
 | 异步等待（人类） | 用户审批 / 输入 | 删除敏感文件、执行危险操作、需要人类确认方案 |
 
-**用户授权本质上就是一种"非同步完成"的工具调用——和长时间 build 命令在结构上完全同构。** Agent 不需要知道它在等什么，只需要知道"这个操作还没完成，我先去做别的"。
+**用户授权本质上是一种“非同步完成”的工具调用，和长时间 build 命令在结构上同构。** Agent 不需要知道它在等什么，只需要知道“这个工作还没完成，有一个 task 可以跟进”。
 
-### 当前协议要点
+### 协议要点
 
 - 顶层协议对象统一为 `AgentToolResult`
-- 对 builtin tool，固定字段优先是 `agent_tool_protocol / cmd_name / status / summary / detail`
-- `detail` 是内置工具结构化数据
-- `output` 不是 builtin tool 默认字段，只在明确需要 bash 主文本输出时才使用
-- `pending_reason` 当前统一使用 `long_running | user_approval | wait_for_install`
-
-### Agent 决策流程
-
-1. 拿到 `status: "success"` 或 `"error"` → 正常处理结果，继续下一步
-2. 拿到 `status: "pending"` → 记下 `task_id`
-3. 看 `pending_reason` 决定行为策略：
-   - `user_approval` → 催也没用，优先去做其他独立任务
-   - `long_running` → 按 `check_after` 周期 poll
-   - `wait_for_install` → 等待外部流程完成
-4. 在后续 loop 中调用 `check_task <task_id>` 获取最终结果
-
-> 当前 xllm / libopendan 宿主以 `allow_deferred = false` 运行，工具返回 `pending` 会结束 run，上述流程尚未接通；宿主侧的调用身份与 Pending 回填规则见 [agent_tool_result_protocol.md](agent_tool_result_protocol.md#调用身份结果归属与-pending-回填)。
-
-### 状态可流转
-
-一个操作的状态可以多次流转，Agent 的 poll 逻辑完全不用变——每次 check 都拿到当前 status 即可：
-
-```
-pending (user_approval)  →  pending (long_running)  →  success
-   用户批准后                   开始执行 build              完成
-```
+- builtin tool 的固定字段是 `agent_tool_protocol / cmd_name / status / summary / detail`
+- `detail` 是内置工具结构化数据；`output` 只在明确需要 bash 主文本输出时使用
+- 调用返回后仍在运行的工作用 `task_id` 表示；`pending` 只在这次调用的结果必须等 task 结束才有时使用，且必须带 `task_id`
 
 ### 设计要点
 
 - 所有自有 AgentTool 的 stdout 输出遵循此统一 JSON 协议
 - builtin tool 应稳定提供 `cmd_name` 与 `summary`，支持 WorkLog 的不同粒度压缩渲染
-- 外部原生命令（非自有工具）的输出仍为纯文本，由 Runtime 侧做通用处理
+- 外部原生命令（非自有工具）的输出仍为纯文本，由 `shell` 做通用包装
 
-## 异步执行与长任务支持
+## 长任务
 
 ### 问题
 
-AgentTool CLI 化并合入 Bash 后，Agent 可以一次性向 Tmux 提交多条命令（不再是逐行执行）。但部分命令（如 `build`）可能耗时数分钟，当前逻辑下 Agent 必须同步等待上一条命令执行完毕才能执行下一条，造成阻塞。
+部分命令（如 `build`）可能耗时数分钟甚至更久。如果工具调用必须同步等完，Agent 就只能空转；而调用前无法预知一个命令会跑多久，让 LLM 在调用前选择“同步 / 后台”也会出错。为简单的长命令启动 SubAgent 又过于重量级。
 
-现有的解决方案是让 Agent 用 SubAgent 来跑长任务，但存在两个问题：
+### 方案：配置决定执行方式，task 承接未完成的工作
 
-- 调用前无法预知某个命令是长任务还是短任务
-- 对于简单的长命令，启动 SubAgent 过于重量级
-
-### 方案：基于统一协议的异步模式
-
-异步执行不需要单独的机制——它自然地落在 Tool Result 统一协议的 `pending` 状态上。Agent Loop 的底层只需要能理解 `pending` 并做相应调度即可：
+- **执行方式由配置决定，不由 LLM 选择。** `shell` 的 `tools.shell.mode` 默认 `auto`：在调用内等 `wait_ms`（默认 30s），到期仍在运行的命令转为进程内 task，调用立即返回“仍在运行”、`task_id`、已有输出和跟进方式；`wait` 模式则等到结束或超时。
+- **task 工具跟进。** 模型用 `wait_task` / `get_task_state` / `cancel_task` 跟进 task；`cancel_task` 只对声明了可取消的 task 有效。buckyos task 也可以在 shell 里用 CLI `check_task` / `cancel_task` / `finish_task`。
+- **后台状态半自动呈现。** 每次推理前，本 context 启动的 task 以 `<background_tasks>` 简介追加在请求末尾，不进历史；完整输出由模型按需取。
+- **调用内等待有上限。** 任何工具内等待最长 30 分钟后必须把控制权还给 LLM，task 继续运行，由 LLM 决定是否继续等或取消。更长的等待只能由能挂起 run 的宿主（Session 层）在进程外进行。
+- **llm_context 只做两种机械判断。** 结果交给 LLM；或者工具返回 `pending` + `task_id`，run 挂起等 task 后按 `call_id` 回填。
 
 ```
-Agent 发起命令
+LLM 调用 shell（cargo test）
+    ↓ 30s 后仍在运行
+返回 { status: "success", task_id: "local:shell:<call_id>", output: "still running ... Call wait_task ..." }
     ↓
-工具返回 { status: "pending", task_id: "xxx", pending_reason: "long_running" }
+LLM 继续做别的；每次推理前看到 <background_tasks>
     ↓
-Agent 继续执行其他操作
+LLM 调用 wait_task / get_task_state
     ↓
-Agent 在后续 loop 中调用 check_task <task_id>
-    ↓
-拿到 { status: "success", detail: {...} } → 处理结果
+拿到最终结果
 ```
 
-Agent 知道自己在一个工作 Session 中有且仅有一个 Tmux，可以选择：
-
-- **同步模式**（默认）：等待命令执行完毕后继续
-- **异步模式**：命令后台执行，返回 `pending`，Agent 可继续做其他事情，按需 poll 结果
+用户审批将走同一模型：审批是一个 task，批准后再开始执行，Agent 的跟进方式不变。
 
 ### 并发层次总览
 
@@ -171,34 +156,39 @@ Agent 知道自己在一个工作 Session 中有且仅有一个 Tmux，可以选
 |------|------|----------|
 | Session 级 | 同一 Agent 跑多个 Session（不共享 Workspace 即可并发） | ✅ 已支持 |
 | SubAgent 级 | 通过 SubAgent 实现子任务并发 | ✅ 已支持 |
-| **工具调用级** | **单个 Session 内的 pending → poll 异步调用** | ⬜ 待实现 |
-
-核心观点：Agent 不应假设所有工具都是同步的。从基础能力上，Agent Loop 应支持异步操作，让 Agent 能够同时做多件事情。
+| 工具调用级 | 单个 run 内的 task：`shell` auto 模式 + task 工具 + `<background_tasks>` | ✅ 已支持（进程内 task） |
+| Session 挂起等待 | `allow_deferred`：run 以 `PendingTool` 挂起，宿主在进程外等 task 后回填 | ⬜ llm_context 已支持，xllm / libopendan 未开启 |
 
 ### 统一模型带来的额外好处
 
-**权限分级自然落地。** 可以在 tool 定义里标注哪些操作需要用户 approval，Runtime 拦截后直接返回 `pending + user_approval`。Agent 不需要知道权限策略的细节，它只知道"这个操作还没完成"。
+**权限分级自然落地。** 可以在 Runtime 层统一检查工具调用，需要用户 approval 时返回一个审批 task。Agent 不需要知道权限策略的细节，它只知道“这个工作还没完成”。
 
-**AHL（Agent-Human-Loop）天然融入。** OpenDAN 的 AHL Workflow Engine 中，human-in-the-loop 不再是特殊路径——它就是一个返回 `pending` 的工具调用，和等一个 docker build 没有本质区别。人类审批、人类提供输入、人类确认方案，都走同一个 `pending → poll → result` 流程。
-
-**状态可组合。** 一个操作可能先 `pending: user_approval`（等用户批准），批准后变成 `pending: long_running`（开始执行），最终变成 `success`。Agent 的 poll 逻辑完全不用变。
+**AHL（Agent-Human-Loop）天然融入。** human-in-the-loop 不再是特殊路径：人类审批、人类提供输入、人类确认方案，都和等一个 docker build 一样是一个 task。
 
 ## 设计原则
 
-### 1. 能不绕回 Runtime 就不绕回
+### 1. 能不绕回宿主就不绕回
 
-- **纯本地工具**（如 `editfile` 等文件系统操作）：直接在 CLI 进程内完成，不经过 RPC
-- **需要 Runtime 上下文的工具**：才通过本地 RPC 回调
+- **纯本地工具**（如 `edit_file` 等文件系统操作）：直接在 CLI 进程内完成
+- **需要 Session / Agent 状态的工具**：把 session、todo、worklog 当作 Session 目录、Agent RootFS 里的文件或 BuckyOS 服务来操作，尽量不回调宿主进程
 
-尽量减少对 Runtime 的依赖，保持工具的独立性和轻量性。
+尽量减少对宿主的依赖，保持工具的独立性和轻量性。
 
-### 2. Tmux 基座保持不变
+### 2. Runtime 是执行环境
 
-Tmux 作为 Agent Bash 环境的底层基座已经非常稳固，提供了良好的 Session 管理和屏幕捕获能力。本次重构在 Tmux 之上进行，不改变底层架构。
+工具在哪里执行由 run 的 runtime 决定（native / tmux / remote_ssh），工具实现不假设自己跑在本机。Runtime 同时是 sandbox：之后的安全检查、授权都在这一层统一进行。
 
-### 3. 自有工具遵循统一协议
+### 3. 不给 LLM 增加调用前的决策
 
-所有 AgentTool CLI 的输入输出遵循统一协议，为 WorkLog 压缩渲染和结构化处理提供基础。
+能交给配置或运行结果的，就不给 LLM 加参数，也不给协议加字段。工具返回结果时附带下一步提示（渐进式披露），细节由 LLM 按需调用工具获取。
+
+### 4. 标准父子进程语义
+
+执行器只管理正在执行的命令。命令留下的后台进程（`&`、nohup、setsid）在打断、超时、run 结束、恢复时都不被追杀；恢复时不核验进程，把“被打断、结果未知”如实交给 LLM 判断。
+
+### 5. 自有工具遵循统一协议
+
+所有 AgentTool CLI 的输入输出遵循统一协议，为历史压缩渲染和结构化处理提供基础。
 
 ## 收益
 
@@ -208,20 +198,19 @@ AgentTool 成为真正的 CLI 命令后，LLM 可以自由地将其与其他 Bas
 
 ### 2. 调试便利性
 
-此前调试一个 AgentTool 需要拉起整个 OpenDAN Runtime，调用链很长。CLI 化后，可以直接在终端中独立运行和调试单个工具，开发体验大幅改善。  
-这里的“独立运行”不要求最终发布多个独立二进制；单主二进制 + 命令别名同样满足调试需求。
+CLI 化后，可以直接在终端中独立运行和调试单个工具，而不必拉起整个 Agent 宿主。单主二进制 + 命令别名同样满足独立调试的需求。
 
 ### 3. 为 Agent 自演化铺路
 
-当 AgentTool 以独立可执行文件形式存在时，Agent 未来可以"阅读"自己工具的源码，理解其实现方式，从而具备自主创建或改进工具的能力。
+当 AgentTool 以独立可执行文件形式存在时，Agent 未来可以“阅读”自己工具的源码，理解其实现方式，从而具备自主创建或改进工具的能力。
 
 ### 4. 长任务不再阻塞
 
-异步执行模式让 Agent 在等待长时间命令时不必空转，可以继续推进其他工作，整体效率提升。
+长命令转为 task 后，Agent 不必空转，可以继续推进其他工作。
 
 ### 5. AHL 与权限控制统一
 
-用户授权、人类审批、人类输入不再是 Agent 系统中的特殊路径，而是与长任务等待完全同构的 `pending → poll → result` 流程。权限分级策略可以在 tool 定义层标注，Runtime 拦截后透明地返回 `pending`，Agent 无需感知权限细节。
+用户授权、人类审批、人类输入与长任务等待是同一个 task 模型。权限策略在 Runtime 层统一处理，Agent 无需感知权限细节。
 
 ## 实现语言选择
 
@@ -230,4 +219,4 @@ AgentTool 成为真正的 CLI 命令后，LLM 可以自由地将其与其他 Bas
 | **当前阶段** | **Rust** | 稳定可靠，适合系统级 CLI 工具 |
 | 未来（自演化阶段） | TypeScript | Agent 可读、可理解、可修改自身工具的源码 |
 
-当前阶段距离 Agent 自演化还较远，优先选择 Rust 以保证工具的稳定性和性能。待进入自演化阶段后，再考虑切换到 TypeScript 以降低 Agent 理解和修改工具代码的门槛。
+当前阶段距离 Agent 自演化还较远，优先选择 Rust 以保证工具的稳定性和性能。进入自演化阶段后，再考虑切换到 TypeScript，以降低 Agent 理解和修改工具代码的门槛。
