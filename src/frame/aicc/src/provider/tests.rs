@@ -1315,6 +1315,7 @@ fn instance_rules_exclude_models_before_inventory_publication() {
         policy_region: None,
         exclude_models: BTreeSet::from(["gpt-test".to_string()]),
         model_driver_overrides: BTreeMap::new(),
+        enabled_inventory_models: None,
     });
     let inventory = InventoryBuilder::build(
         &profile(),
@@ -1337,6 +1338,7 @@ fn instance_driver_override_maps_endpoint_ids_without_global_provider_rules() {
             "ep-user-specific".into(),
             "openai/gpt-test".into(),
         )]),
+        enabled_inventory_models: None,
     });
     let inventory = InventoryBuilder::build(
         &profile(),

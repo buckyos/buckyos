@@ -2,10 +2,8 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 11,
+  "revision_seq": 12,
   "provider_profile_id": "doubao",
-  "static_inventory_models": ["doubao-seed-tts-2.0"],
-  "supplemental_inventory_api_types": ["audio.tts"],
   "model_driver_overrides": {
     "deepseek-v4-1-flash-260910": "deepseek/deepseek-v4.1-flash",
     "deepseek-v4-flash-260425": "deepseek/deepseek-v4-flash",
@@ -37,7 +35,6 @@
     "glm-5-3-flash-260828": "glm/glm-5.3-flash"
   },
   "models": [
-    {"id": "doubao-seed-tts-2.0", "operations": {"audio.tts": "tts.unidirectional"}, "provider_options": {"doubao_tts_wire_profile": "standard", "doubao_tts_resource_id": "seed-tts-2.0"}, "canonical_fields": {"/voice": {"converter": "doubao_tts_voice_v1", "fallback": {"action": "default", "value": {}}}}},
     {"id": "doubao-seed-translation-250915", "operations": {"llm": "responses.create"}, "request_rules": [
       {"when": {"api_type": "llm", "operation": "responses.create"}, "defaults": {"translation_options": {"target_language": "en"}}}
     ]},

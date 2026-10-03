@@ -29,6 +29,7 @@ use std::time::Duration;
 pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
 pub(crate) const DOUBAO_AGENT_PLAN_PROFILE_ID: &str = "doubao-agent-plan";
+pub(crate) const DOUBAO_SPEECH_PROFILE_ID: &str = "doubao-speech";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
 #[cfg(test)]
@@ -163,6 +164,7 @@ pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogF
         DEEPSEEK_PROFILE_ID,
         DOUBAO_PROFILE_ID,
         DOUBAO_AGENT_PLAN_PROFILE_ID,
+        DOUBAO_SPEECH_PROFILE_ID,
         QWEN_PROFILE_ID,
         "glm",
         "kimi",
@@ -961,7 +963,7 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 11,
+                    DOUBAO_PROFILE_ID => 12,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 7,
                     QWEN_PROFILE_ID => 4,
                     _ => 3,
@@ -1190,17 +1192,136 @@ mod tests {
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::Llm));
             assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
-            if profile_id == DOUBAO_PROFILE_ID {
-                let tts = inventory
-                    .models
-                    .iter()
-                    .find(|model| model.provider_model_id == "doubao-seed-tts-2.0")
-                    .unwrap();
-                assert!(tts.api_types.contains(&ApiType::AudioTextToSpeech));
-                assert_eq!(tts.operations["audio.tts"], "tts.unidirectional");
-                assert!(tts.logical_mounts.iter().any(|mount| mount == "audio.tts"));
-            }
         }
+    }
+
+    #[test]
+    fn doubao_speech_static_inventory_and_model_allowlist_are_explicit() {
+        let catalog = CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            openai_responses_compatible_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let known = catalog
+            .known_provider(DOUBAO_SPEECH_PROFILE_ID)
+            .expect("doubao-speech Known Provider must be bundled")
+            .clone();
+        let rules = catalog
+            .provider_rules(DOUBAO_SPEECH_PROFILE_ID)
+            .expect("doubao-speech Provider Rules must be bundled")
+            .clone();
+        assert_eq!(
+            rules.static_inventory_models,
+            vec!["doubao-seed-tts-2.0", "doubao-seed-icl-2.0"]
+        );
+        assert_eq!(
+            rules
+                .supplemental_inventory_api_types
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["audio.tts"]
+        );
+
+        let provider = descriptor(
+            known,
+            rules,
+            BuiltinDiscoveryKind::CatalogOnly,
+            ResponsesDialectKind::Doubao,
+        );
+        assert_eq!(
+            provider.profile.provider_profile_id,
+            DOUBAO_SPEECH_PROFILE_ID
+        );
+        assert_eq!(provider.profile.discovery_mode, DiscoveryMode::CatalogOnly);
+
+        let mut codecs = CodecRegistry::default();
+        let (base_descriptor, base_registration) = openai_responses_adapter();
+        codecs
+            .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        for (descriptor, registration) in [
+            crate::protocol::doubao_media_adapter(),
+            crate::protocol::doubao_speech_adapter(),
+            crate::protocol::qwen_media_adapter(),
+        ] {
+            codecs.register_codecs(descriptor, registration).unwrap();
+        }
+        for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
+            codecs.register_derived(descriptor, registration).unwrap();
+        }
+
+        let instance = |enabled: Option<BTreeSet<String>>| ProviderInstanceConfig {
+            provider_instance_name: "doubao-speech-main".to_owned(),
+            provider_profile_id: DOUBAO_SPEECH_PROFILE_ID.to_owned(),
+            protocol_adapter_id: provider.profile.default_protocol_adapter_id.clone(),
+            base_url: "https://openspeech.bytedance.com/api/v3/tts".to_owned(),
+            operation_base_urls: BTreeMap::new(),
+            credential: CredentialReference {
+                reference: "secret://doubao-speech/main".to_owned(),
+            },
+            credential_kind: None,
+            provider_rules_id: Some(DOUBAO_SPEECH_PROFILE_ID.to_owned()),
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: enabled.map(|enabled| buckyos_api::ProviderInstanceRules {
+                enabled_inventory_models: Some(enabled),
+                ..Default::default()
+            }),
+        };
+        let empty = || ProviderDiscoverySnapshot {
+            revision: Some("fixture-v1".to_owned()),
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: Vec::new(),
+        };
+        let build = |enabled: Option<BTreeSet<String>>| {
+            InventoryBuilder::build(
+                &provider.profile,
+                &instance(enabled),
+                empty(),
+                &catalog,
+                &codecs,
+            )
+            .unwrap()
+        };
+
+        // Declared static models are published from the wire-free catalog snapshot.
+        let inventory = build(None);
+        assert_eq!(
+            inventory
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["doubao-seed-icl-2.0", "doubao-seed-tts-2.0"]
+        );
+        for model in &inventory.models {
+            assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
+            assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
+            assert!(model
+                .logical_mounts
+                .iter()
+                .any(|mount| mount == "audio.tts"));
+        }
+
+        // The operator allowlist narrows the static catalog before publishing.
+        let narrowed = build(Some(BTreeSet::from(["doubao-seed-tts-2.0".to_owned()])));
+        assert_eq!(
+            narrowed
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["doubao-seed-tts-2.0"]
+        );
+
+        // An empty allowlist keeps the profile configured but publishes no models.
+        assert!(build(Some(BTreeSet::new())).models.is_empty());
     }
 }
 

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 7,
+  "revision_seq": 8,
   "catalog_id": "doubao",
   "providers": [
     {
@@ -20,8 +20,7 @@
         "policy_region": {"mode": "optional", "default_value": "unknown", "allowed_values": ["unknown", "cn", "other"]},
         "operation_base_urls": {
           "ark.images.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3"
         }
       },
       "ui_hints": {
@@ -41,6 +40,44 @@
           "account": {"mode": "unsupported"},
           "policy_region": {"mode": "optional", "default_value": "unknown", "allowed_values": ["unknown", "cn", "other"]}
         }
+      }
+    },
+    {
+      "provider_profile_id": "doubao-speech",
+      "display_name": "Doubao Speech (Volcengine Doubao Voice)",
+      "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+      "protocol_adapter_id": "doubao-responses",
+      "discovery_behavior_id": "catalog-only",
+      "provider_rules_id": "doubao-speech",
+      "credential": {"kind": "bearer"},
+      "connection": {
+        "region": {"mode": "unsupported"},
+        "workspace": {"mode": "unsupported"},
+        "account": {"mode": "unsupported"},
+        "operation_base_urls": {
+          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+        }
+      },
+      "ui_hints": {
+        "setup_group": {
+          "id": "doubao",
+          "display_name": "Doubao (Volcengine Ark)",
+          "account_type": "speech",
+          "account_type_label": "Doubao Speech",
+          "default": false
+        },
+        "credential_label": "Doubao Speech API key",
+        "credential_type": "bearer",
+        "instance_fields": {
+          "default_base_url": "https://openspeech.bytedance.com/api/v3/tts",
+          "region": {"mode": "unsupported"},
+          "workspace": {"mode": "unsupported"},
+          "account": {"mode": "unsupported"}
+        },
+        "selectable_inventory_models": [
+          {"id": "doubao-seed-tts-2.0", "label": "Doubao Speech Synthesis 2.0"},
+          {"id": "doubao-seed-icl-2.0", "label": "Doubao Voice Clone 2.0"}
+        ]
       }
     },
     {

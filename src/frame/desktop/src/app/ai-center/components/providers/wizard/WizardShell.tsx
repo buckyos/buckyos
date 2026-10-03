@@ -8,6 +8,7 @@ import { type ProviderSetupCatalog, type ProviderType, type ValidationResult, ty
 import { Stepper } from '../../shared/Stepper'
 import { StepChooseType } from './StepChooseType'
 import { StepConnection } from './StepConnection'
+import { StepModels } from './StepModels'
 import { StepValidation } from './StepValidation'
 import { StepReview } from './StepReview'
 import { isConnectionValid, wizardDraftSchema } from './connectionValidation'
@@ -21,6 +22,16 @@ const INITIAL_DRAFT: WizardDraft = {
   auth_mode: 'api_key',
   api_key: '',
   auto_sync_models: true,
+}
+
+type WizardStepKey = 'chooseType' | 'connection' | 'models' | 'validation' | 'review'
+
+const STEP_LABELS: Record<WizardStepKey, string> = {
+  chooseType: 'Choose Type',
+  connection: 'Connection',
+  models: 'Models',
+  validation: 'Validation',
+  review: 'Review',
 }
 
 interface WizardShellProps {
@@ -49,12 +60,12 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   const [keyboardInset, setKeyboardInset] = useState(0)
   const selectedProfile = catalog?.providers.find((item) => item.provider_profile_id === draft.provider_profile_id)
 
-  const steps = [
-    t('aiCenter.wizard.step.chooseType', 'Choose Type'),
-    t('aiCenter.wizard.step.connection', 'Connection'),
-    t('aiCenter.wizard.step.validation', 'Validation'),
-    t('aiCenter.wizard.step.review', 'Review'),
-  ]
+  const selectsInventoryModels = (selectedProfile?.selectable_inventory_models?.length ?? 0) > 0
+  const stepKeys = (selectsInventoryModels
+    ? ['chooseType', 'connection', 'models', 'validation', 'review']
+    : ['chooseType', 'connection', 'validation', 'review']) as WizardStepKey[]
+  const currentStep = stepKeys[Math.min(step, stepKeys.length - 1)]
+  const steps = stepKeys.map((key) => t(`aiCenter.wizard.step.${key}`, STEP_LABELS[key]))
 
   const updateDraft = (partial: Partial<WizardDraft>) => {
     setCreateError(null)
@@ -64,17 +75,18 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
   }
 
   const canNext = () => {
-    switch (step) {
-      case 0: return draft.provider_profile_id !== null
-      case 1: return isConnectionValid(draft) && providerConnectionFieldsValid(draft, selectedProfile)
-      case 2: return validation !== null && validationCanProceed(validation)
-      case 3: return true
+    switch (currentStep) {
+      case 'chooseType': return draft.provider_profile_id !== null
+      case 'connection': return isConnectionValid(draft) && providerConnectionFieldsValid(draft, selectedProfile)
+      case 'models': return true
+      case 'validation': return validation !== null && validationCanProceed(validation)
+      case 'review': return true
       default: return false
     }
   }
 
   const handleNext = async () => {
-    if (step === 3) {
+    if (currentStep === 'review') {
       setCreating(true)
       setCreateError(null)
       try {
@@ -86,7 +98,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         if (message.includes('provider_validation_required') || message.includes('provider_validation_mismatch')) {
           setCreateError(t('aiCenter.wizard.validationExpired', 'Provider validation expired. Please validate again.'))
           setValidation(null)
-          setStep(2)
+          setStep(stepKeys.indexOf('validation'))
         } else {
           setCreateError(message || t('aiCenter.wizard.createFailed', 'Could not create provider.'))
         }
@@ -95,8 +107,8 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
       }
       return
     }
-    if (step === 1) {
-      // Reset validation when moving to step 2
+    if (currentStep === 'connection') {
+      // Reset validation when leaving the connection step
       setValidation(null)
       setCreateError(null)
     }
@@ -107,7 +119,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     if (step === 0) {
       onBack()
     } else {
-      if (step === 2) setValidation(null)
+      if (currentStep === 'validation') setValidation(null)
       setStep((s) => s - 1)
     }
   }
@@ -135,6 +147,9 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         : undefined,
       auth_mode: 'api_key',
       api_key: '',
+      selected_inventory_models: profile?.selectable_inventory_models?.length
+        ? profile.selectable_inventory_models.map((model) => model.id)
+        : undefined,
     })
   }
 
@@ -235,7 +250,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         } : undefined}
         onFocusCapture={keepFocusedFieldVisible}
       >
-        {step === 0 && (
+        {currentStep === 'chooseType' && (
           <StepChooseType
             selected={draft.provider_profile_id}
             onSelect={handleTypeSelect}
@@ -246,7 +261,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             onRetry={() => void loadCatalog()}
           />
         )}
-        {step === 1 && (
+        {currentStep === 'connection' && (
           <StepConnection
             key={draft.provider_profile_id}
             draft={draft}
@@ -254,10 +269,13 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             onUpdate={updateDraft}
           />
         )}
-        {step === 2 && (
+        {currentStep === 'models' && (
+          <StepModels draft={draft} profile={selectedProfile ?? null} onUpdate={updateDraft} />
+        )}
+        {currentStep === 'validation' && (
           <StepValidation draft={draft} onResult={setValidation} />
         )}
-        {step === 3 && (
+        {currentStep === 'review' && (
           <StepReview
             draft={draft}
             validation={validation}
@@ -294,13 +312,13 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
           className="min-h-11 rounded-lg px-4 py-2 text-sm"
           style={{ color: 'var(--cp-muted)' }}
         >
-          {step === 0 ? t('aiCenter.wizard.back', 'Back') : t('aiCenter.wizard.prev', 'Previous')}
+          {currentStep === 'chooseType' ? t('aiCenter.wizard.back', 'Back') : t('aiCenter.wizard.prev', 'Previous')}
         </button>
 
-        {step === 2 && validation && !validation.auth_valid ? (
+        {currentStep === 'validation' && validation && !validation.auth_valid ? (
           <button
             type="button"
-            onClick={() => { setValidation(null); setStep(1) }}
+            onClick={() => { setValidation(null); setStep(stepKeys.indexOf('connection')) }}
             className="min-h-11 rounded-lg px-4 py-2 text-sm font-medium"
             style={{ background: 'var(--cp-warning)', color: '#fff' }}
           >
@@ -314,7 +332,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
             className="min-h-11 rounded-lg px-5 py-2 text-sm font-medium transition-opacity disabled:opacity-40"
             style={{ background: 'var(--cp-accent)', color: '#fff' }}
           >
-            {step === 3
+            {currentStep === 'review'
               ? creating
                 ? t('aiCenter.wizard.creating', 'Creating...')
                 : t('aiCenter.wizard.create', 'Create Provider')

@@ -58,17 +58,29 @@ const discoveredModelsByType: Record<string, string[]> = {
   glm: ['glm-5@glm-main'],
   deepseek: ['deepseek-chat@deepseek-main'],
   doubao: ['doubao-seed-2.0@doubao-main'],
+  'doubao-speech': ['doubao-seed-tts-2.0@doubao-speech-main', 'doubao-seed-icl-2.0@doubao-speech-main'],
   qwen: ['qwen3-max@qwen-main'],
   fal: ['fal-ai/flux@fal-main'],
   custom: ['custom-chat-model@custom-provider', 'custom-embedding@custom-provider'],
 }
 
 function modelsForDraft(draft: WizardDraft, instanceName: string): ModelMetadata[] {
-  const names = discoveredModelsByType[draft.provider_profile_id ?? 'custom'] ?? []
+  const selection = draft.selected_inventory_models
+  const names = (discoveredModelsByType[draft.provider_profile_id ?? 'custom'] ?? [])
+    .filter((exactName) => {
+      if (!Array.isArray(selection)) return true
+      const providerModelId = exactName.split('@')[0] ?? exactName
+      return selection.includes(providerModelId)
+    })
   return names.map((exactName) => {
     const providerModelId = exactName.split('@')[0] ?? exactName
-    const apiTypes = providerModelId.includes('embedding') ? ['embedding.text' as const] : ['llm' as const]
-    const mount = providerModelId.includes('embedding') ? 'embedding.large' : `llm.${draft.provider_profile_id ?? 'custom'}`
+    const isSpeech = providerModelId.startsWith('doubao-seed-tts') || providerModelId.startsWith('doubao-seed-icl')
+    const apiTypes = providerModelId.includes('embedding')
+      ? ['embedding.text' as const]
+      : isSpeech ? ['audio.tts' as const] : ['llm' as const]
+    const mount = providerModelId.includes('embedding')
+      ? 'embedding.large'
+      : isSpeech ? 'audio.tts.doubao' : `llm.${draft.provider_profile_id ?? 'custom'}`
     return model(providerModelId, instanceName, [mount], apiTypes)
   })
 }

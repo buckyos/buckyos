@@ -221,6 +221,14 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 
 当前 `fal-ai/esrgan`、`fal-ai/imageutils/rembg`、`fal-ai/deepfilternet3` 和 `fal-ai/video-upscaler` 尚无对应原厂 Provider 接入，暂时统一归属 `fal` Model Driver。其它配置随 fal 官方事实调整。
 
+### 3.4 无模型发现接口的渠道与库存白名单
+
+部分渠道只提供推理端点，没有 `/models` 之类的发现接口（例如火山引擎豆包语音的 `openspeech.bytedance.com`）。这类 Profile 必须用 `discovery_behavior_id: catalog-only` 声明，并把渠道确实支持的模型显式写进 `static_inventory_models`，同时用 `supplemental_inventory_api_types` 声明允许静态补充的 API 集合（如 `audio.tts`）。库存因此完全来自元数据，不从 Model Driver 全量定义推导。
+
+该模式下无法探测账号实际开通了哪些模型，所以 Known Provider 用 `ui_hints.selectable_inventory_models` 把候选清单交给 UI —— 有序的 `[{"id","label"}]` 数组。管理 UI 据此让用户勾选，默认全选；用户的选择按实例持久化为 `instance_rules.enabled_inventory_models`。二者关系是：**Provider Rules 声明"渠道能提供什么"，实例规则声明"这个账号开通了什么"**。
+
+同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`）、`doubao-agent-plan` 三个 Profile，共用 `doubao-responses` Adapter 与同一个 setup group。
+
 ## 4. Custom Provider 的最小规则
 
 省略厂商规则时仍可使用通用身份匹配。人工修正使用实例：
@@ -230,6 +238,12 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 ```
 
 目标必须是存在的精确 `driver/model_id`。无效 override 是终止失败，不继续通用匹配。实例和 Provider 主动排除不算 unmatched。
+
+`enabled_inventory_models` 是同一实例规则里的静态库存白名单：省略表示发布 Provider 声明的全部 `static_inventory_models`（默认，向后兼容），显式给出集合时只发布该子集，空集合表示暂不发布任何静态模型。它只作用于 `static_inventory_models`；discovery 实际返回的模型永不被它过滤，也不会被它复活。典型用法见 §3.4：
+
+```json
+{"instance_rules":{"policy_region":"cn","exclude_models":[],"enabled_inventory_models":["doubao-seed-tts-2.0"]}}
+```
 Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter；每个 Adapter 必须与声明它的内置 Provider 属于同一 protocol family，且不能被多个 Provider Rules 重复开放。
 
 ## 5. 模型规则

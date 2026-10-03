@@ -4804,6 +4804,12 @@ pub struct ProviderInstanceRules {
     pub exclude_models: BTreeSet<String>,
     #[serde(default)]
     pub model_driver_overrides: BTreeMap<String, String>,
+    /// Operator-facing allowlist over the provider's `static_inventory_models`.
+    /// `None` publishes every declared static model (backward compatible);
+    /// `Some(set)` publishes only the selected subset. Models that arrive from a
+    /// live discovery response are never filtered by this list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled_inventory_models: Option<BTreeSet<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
