@@ -70,7 +70,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 
 子 context 无论以什么结束都返回调用方：`END` / report → `status=ok`；`WAIT_USER_MSG` → `status=needs_user_input`（子 context 从不消费调用方的输入队列）；不可重试错误、预算耗尽、未知交接目标 → `status=failed`；在子 context 内交接到 `switch_context` 目标也只是返回。工具触发时 failed 回填为工具错误，needs_user_input 回填为结构化 JSON。子 context 可以继续调用子 context，最深 4 层（`MAX_CALL_DEPTH`）。只有 `call_behavior` 可以 deferred，其它工具的 `allow_deferred` 被屏蔽。
 
-交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 和压缩输入时只渲染它的 `process_done` 结果（`runner/history.rs`）。
+交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
 
 未实现：UI Stop 后补充输入（H3）、`report` 工具与显式完成策略（H4）。
 

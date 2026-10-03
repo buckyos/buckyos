@@ -224,7 +224,7 @@ Schema：`schema/session_state.schema.json`。
 ## 7. runs/（xllm run 目录）
 
 ```text
-runs/<run_id>/run.json            xllm RunRecord（version 4）
+runs/<run_id>/run.json            xllm RunRecord（version 5）
 runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 4；先 fsync 再发布）
 runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout、stderr、exit（命令结束时写）
@@ -299,7 +299,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 - 子 run 写入 `runs/`，进入时的交接批次（`on_behavior_switch`）带 `<sub_task mode="…">任务</sub_task>`；它继承的部分不由它写入 worklog（function call：`request.input` 即继承的前缀；behavior：`HostMeta.inherited_below` 之下的 step），step / action 编号接着调用方的，调用方恢复时编号不小于子 run 的，保证 `(run_id, step_index)` 与 `call_id` 唯一。预算、用量、错误计数与输入 receipt 独立；调用方恢复时不重置自己的预算。
 - fork 的分叉点：调用方没有未完成调用时是它的全部历史；工具触发时是触发批次（function call）/ 进行中的 Step（behavior）之前的最后一个已配对前缀，触发批次只留在调用方。
 - 子 context 无论以什么结束都返回调用方，**在子 run 结束的同一次提交里**出栈、调用方的 run 成为 `live_run`、写入 `process_result`：`END` / 交付结果 → `ok`；`WAIT_USER_MSG` → `needs_user_input`（子 context 不消费调用方的输入队列，由调用方去问用户）；不可重试错误、预算耗尽、交接到没有进入模式的 behavior → `failed`（不结束 Turn）；交接到 `switch_context` 目标也只是返回。子 context 可以再调用子 context，`caller` 帧最多 4 层，超出时调用失败。
-- 子 run 新增的记录进入 worklog 供审计，但不进入调用方的上下文：为其它 context 重建会话历史（§6）或压缩时，已返回的子 run（有 `process_done` outcome）只渲染这条 outcome（即交回的结果），不渲染它的过程。
+- 子 run 新增的记录进入 worklog 供审计，但不进入调用方的上下文：为其它 context 重建会话历史（§6）时，已返回的子 run（有 `process_done` outcome）只渲染这条 outcome（即交回的结果），不渲染它的过程。压缩时同样过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要（当前实现的限制）。
 
 交接都发生在同一 Turn 内：交接批次（`input_batch`，receipt `opens_turn = false`）加入打开的 Turn，子 context 结束（`process_done`）也不关闭它。
 
@@ -326,7 +326,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。
 4. 打开 runtime 并核验完整 binding 与 bin/helper 环境；删除未被引用的 run（持锁；记录不可读则保留）。命令留下的进程不归 run 管，不核对也不停止。
-5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 5` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。恢复未结束的 behavior run 时，以 `state.current_behavior` 作为 behavior 名（普通切换可能晚于最后一个快照）。 run 停在未提交的交接点（run.json `handover.at_ms ≠ live_run.handover_at_ms`，或快照挂起在 `call_behavior` 而 state 还没有它的结果）→ 按 §8 提交这次转移（挂起入栈 / 子 context 返回），不在该 run 上推理。
+5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 5` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。run 停在未提交的交接点（run.json `handover.at_ms ≠ live_run.handover_at_ms`，或快照挂起在 `call_behavior` 而 state 还没有它的结果）→ 按 §8 提交这次转移（挂起入栈 / 子 context 返回），不在该 run 上推理。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
 8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在子 context 调用上且 `process_result` 带着它的 `call_id` → 回填工具结果、发布快照、清除 `process_result` 后继续（回填后崩溃：快照已不再挂起，只清除 `process_result`）；挂起在其它 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。

@@ -118,7 +118,7 @@ behavior mode 当前把较多 session/agent 语义带进了 `LLMContextSnapshot`
 - run 快照先 fsync 再发布到 `runs/<run_id>/snapshots/`，`state.json` 是会话提交点，worklog 追加先于它写入。
 - run 结束、交接挂起（`switch_context` 的 Parked 帧、子 context 调用方的 Caller 帧）、上下文上限重写前，都先按 flush 游标把未写入的历史追加进 worklog，再继续。
 - 交接点（run.json 的 `handover`）随快照先落盘，再提交 `state.json`；崩溃后由 reconcile（`redo_transfer`）恰好补交一次，state 用 `handover_at_ms` 记住已提交的交接。
-- 已返回的子 context（`process_done`）的记录留在 worklog 供审计，但重建 `<session_history>` 和压缩输入时被排除，只渲染它的 `process_done` 结果（`runner/history.rs`），避免子过程的完整内容混进其它 context 的输入。
+- 已返回的子 context（`process_done`）的记录留在 worklog 供审计，但重建 `<session_history>` 时被排除，只渲染它的 `process_done` 结果（`runner/history.rs`），避免子过程的完整内容混进其它 context 的输入。压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
 - 上下文上限在 Session 层重写（上面的 history epoch），不在 waist 内。
 
 旧 opendan Runtime（待下一阶段 opendan 重构接入）也有同方向的边界：

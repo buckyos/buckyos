@@ -208,7 +208,7 @@ libopendan 用"换 run"实现这两点:`switch_context` / `create_sub_context` �
 
 工具触发时,`failed` 回填为工具错误,`needs_user_input` 回填为结构化 JSON,其余是结果文本。子 context 可以再调用子 context,最深 4 层(`MAX_CALL_DEPTH`)。只有 `call_behavior` 可以让 run 以 deferred 方式挂起,其它工具的 `allow_deferred` 被屏蔽;xllm 不能接手挂起在子 context 上的 run。
 
-child 的 Step 不写回调用方的 context;Session worklog 记录 child 的过程,Step 身份是 `(child_run_id, step_index)`。child 返回后,重建 `<session_history>` 和压缩输入时这些记录被排除,只渲染它的 `process_done` 结果(`runner/history.rs`),避免子过程的完整内容又混进其它 context。
+child 的 Step 不写回调用方的 context;Session worklog 记录 child 的过程,Step 身份是 `(child_run_id, step_index)`。child 返回后,重建 `<session_history>` 时这些记录被排除,只渲染它的 `process_done` 结果(`runner/history.rs`),避免子过程的完整内容又混进其它 context。压缩输入做同样的过滤,但只识别被压缩片段内的 `process_done`:切点把 child 的记录与它的 `process_done` 分开时,切点之前的那部分仍会进入摘要。
 
 交接点(run.json 的 `handover`)随快照先落盘,再提交 state;崩溃后 reconcile(`runner/reconcile.rs::redo_transfer`)恰好补交一次,state 用 `LiveRun.handover_at_ms` / `ProcessFrame.handover_at_ms` 记住已提交的交接。
 

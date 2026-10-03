@@ -381,7 +381,7 @@ behavior 模式的快照总是**外层**快照。挂起点有两类:Step 之间�
 - `action_step`:已解析、action 尚未派发完的 Step 与它的 response(未沉淀,`step.action_results` 是已得结果);
 - `next_step_index` / `next_action_id`:下一个待分配的编号。step_index 在解析出 Step 时就分配(合成纠错 Step 也占一个),是分配位置,不是已完成 Step 数;`action_step` 里的 Step 已有编号但未完成。
 
-`ResumeFill`(与 function call 模式共用,快照版本 3):
+`ResumeFill`(与 function call 模式共用,快照版本 4):
 
 | 挂起 | fill | behavior 模式下的语义 |
 |---|---|---|

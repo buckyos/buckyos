@@ -1,6 +1,6 @@
 # Agent Session 协议（反写 Spec）
 
-- 版本：3（session_config、session_state、binding 为 /3，xllm RunRecord.version = 3；summary 与机械渲染保持 /2，快照 snapshot_version = 3）。版本 3 引入共享 Runtime 的有效配置与实际目标绑定，不改变 worklog 形状。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
+- 版本：3（session_config、binding 为 /3，session_state 为 /4，xllm RunRecord.version = 5；summary 与机械渲染保持 /2，快照 snapshot_version = 4）。版本 3 引入共享 Runtime 的有效配置与实际目标绑定，不改变 worklog 形状。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
 - 日期：2026-09-29；2026-10-01 按 Round / Step / Turn 术语统一更新
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。

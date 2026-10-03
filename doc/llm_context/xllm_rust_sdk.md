@@ -1,6 +1,6 @@
 # xllm Rust SDK 参考
 
-- 日期：2026-09-18；2026-10-02 同步 AgentRuntime 与快照 v3；2026-10-03 同步 `RunRecord.version = 5`（`handover`，宿主 Run 的 behavior 交接点）
+- 日期：2026-09-18；2026-10-02 同步 AgentRuntime 与快照 v4（`PendingToolCall {task_id, until_ms}`）；2026-10-03 同步 `RunRecord.version = 5`（`handover`，宿主 Run 的 behavior 交接点）
 - 实现：`src/frame/agent_tool/src/xllm.rs`（SDK）、`src/frame/agent_tool/src/run_local_llm.rs`（CLI，`agent_tool xllm ...`）
 - 依据：[xllm PRD](../../product/xllm/PRD.md)。本文只记录 Rust 实现落实 PRD 时固定下来的协议决定，供 websdk 的 TS 版本对照；产品行为以 PRD 为准。
 
@@ -53,7 +53,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 ```
 <runs_dir>/<run_id>/run.json        RunRecord
-<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（每次推理前 + outcome 边界；快照 v3）
+<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（每次推理前 + outcome 边界；快照 v4）
 <runs_dir>/<run_id>/.lock           该 Run 的执行互斥
 <lock_dir>/<hash(workdir)>.lock     启用工具的任务按工作目录互斥（默认 ~/.xllm/locks）
 ```
@@ -71,7 +71,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 | failed | 是 | Provider Permanent（非凭据）/ Unknown、输出解析或工具错误连续超限、上下文压缩 3 次仍超限、deferred tool |
 | limit_reached | 是 | 工具迭代（`max_tool_iterations`）/ 总时长（`timeout`，映射为 waist wallclock 预算）/ token 预算 |
 
-resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，工具迭代沿用已消耗值（`ResumeLimits.max_tool_iterations` 显式调高时剩余 = 新总额 − 已消耗，只增加差额），`usage.llm_requests` 继续累加。`RunRecord.version` 不是 5 或快照版本不是 3 的 Run 不能恢复（不迁移旧格式）。记录了 `handover` 的宿主 Run 报 `NotResumable`（转移由宿主 Session 提交）。保存于上下文上限挂起态的快照先压缩再续跑；等待 deferred 工具结果的快照报 `NotResumable`（xllm 不提供 deferred 结果）。
+resume：终态只返回记录（附带限制参数则报 `RunTerminal`）；非终态重置 wallclock 起点，工具迭代沿用已消耗值（`ResumeLimits.max_tool_iterations` 显式调高时剩余 = 新总额 − 已消耗，只增加差额），`usage.llm_requests` 继续累加。`RunRecord.version` 不是 5 或快照版本不是 4（`SNAPSHOT_FORMAT_VERSION`）的 Run 不能恢复（不迁移旧格式）。记录了 `handover` 的宿主 Run 报 `NotResumable`（转移由宿主 Session 提交）。保存于上下文上限挂起态的快照先压缩再续跑；等待 deferred 工具结果的快照报 `NotResumable`（xllm 不提供 deferred 结果）。
 
 ## 7. CLI（`agent_tool xllm`）
 
