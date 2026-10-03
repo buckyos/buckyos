@@ -678,6 +678,7 @@ fn encode_content(
             summary,
             text,
             provider_metadata,
+            ..
         } => {
             if summary.is_some() {
                 return Err(ProtocolError::new(
@@ -937,6 +938,7 @@ fn decode_content(value: &Value) -> ProtocolResultValue<AiContent> {
             })
         }
         "thinking" => Ok(AiContent::Thinking {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             summary: None,
             text: Some(required_value_string(value, "thinking")?),
             provider_metadata: Some(
@@ -1630,6 +1632,7 @@ mod tests {
                     AiRole::Assistant,
                     vec![
                         AiContent::Thinking {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             summary: None,
                             text: Some("reason".to_string()),
                             provider_metadata: Some(json!({"signature": "sig"})),
@@ -2125,6 +2128,87 @@ mod tests {
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["output_config"]["format"]["schema"]["type"], "object");
+    }
+
+    #[test]
+    fn registry_replays_native_thinking_and_drops_foreign_thinking() {
+        let (descriptor, registration) = claude_messages_adapter();
+        let mut registry = super::super::CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let native = context().state_coordinate;
+        // Same model served by another provider instance: still foreign.
+        let mut backup = native.clone();
+        backup.provider_profile_id = "openrouter".into();
+        backup.adapter_type = "openai-responses".into();
+        let turn = |source: buckyos_api::ProviderStateCoordinate, text: &str, metadata: Value| {
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![
+                    AiContent::Thinking {
+                        source,
+                        summary: None,
+                        text: Some(format!("{text} reasoning")),
+                        provider_metadata: Some(metadata),
+                    },
+                    AiContent::text(text),
+                ],
+            )
+        };
+        let mut request = LlmChatInvokeRequest::new(
+            "test-model@claude",
+            vec![
+                AiMessage::text(AiRole::User, "one"),
+                turn(native, "primary", json!({"signature": "sig-primary"})),
+                AiMessage::text(AiRole::User, "two"),
+                turn(backup, "backup", json!({"id": "rs_1", "encrypted_content": "x"})),
+                AiMessage::text(AiRole::User, "three"),
+                // Kimi / GLM style: plaintext only, never bound to a source.
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![AiContent::Thinking {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
+                        summary: None,
+                        text: Some("unbound".into()),
+                        provider_metadata: None,
+                    }],
+                ),
+                AiMessage::text(AiRole::User, "four"),
+            ],
+        );
+        request.max_output_tokens = Some(64);
+        let input = input(request, &[]);
+        let encode = || {
+            let wire = registry
+                .encode(
+                    CLAUDE_MESSAGES_ADAPTER_ID,
+                    CLAUDE_MESSAGES_OPERATION_ID,
+                    ApiType::Llm,
+                    &input,
+                    &context(),
+                )
+                .unwrap();
+            let HttpBody::Json(body) = wire.body else {
+                panic!("expected a JSON body");
+            };
+            body
+        };
+        let body = encode();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[1]["content"],
+            json!([
+                {"type": "thinking", "thinking": "primary reasoning", "signature": "sig-primary"},
+                {"type": "text", "text": "primary"}
+            ])
+        );
+        assert_eq!(
+            messages[3]["content"],
+            json!([{"type": "text", "text": "backup"}])
+        );
+        assert!(!body.to_string().contains("unbound"));
+        assert!(!body.to_string().contains("backup reasoning"));
+        // Deterministic: the same blocks are dropped on every request.
+        assert_eq!(body, encode());
     }
 }
 

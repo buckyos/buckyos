@@ -9,3 +9,4 @@ mod error_policy;
 mod function_call_loop;
 mod mocks;
 mod suspension;
+mod thinking;

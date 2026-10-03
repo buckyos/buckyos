@@ -15,7 +15,7 @@ use crate::error::LLMComputeError;
 use crate::observation::{Observation, PendingToolCall, ToolExecRecord, ToolExecStatus};
 use crate::outcome::ResumeFill;
 use crate::request::LLMContextRequest;
-use crate::state::{LLMContextState, Suspension};
+use crate::state::{LLMContextSnapshot, LLMContextState, Suspension};
 
 fn corrupted(message: impl Into<String>) -> LLMComputeError {
     LLMComputeError::SnapshotCorrupted(message.into())
@@ -414,6 +414,23 @@ pub fn strip_thinking(messages: &mut Vec<AiMessage>) {
         m.content.retain(|p| !is_thinking(p));
         !(before > 0 && m.content.is_empty())
     });
+}
+
+/// [`strip_thinking`] over everything a snapshot can send back to the
+/// provider: `request.input`, `accumulated` and the assistant message of
+/// every step record.
+pub fn strip_snapshot_thinking(snapshot: &mut LLMContextSnapshot) {
+    strip_thinking(&mut snapshot.request.input);
+    let state = &mut snapshot.state;
+    strip_thinking(&mut state.accumulated);
+    for step in state
+        .steps
+        .iter_mut()
+        .chain(state.last_step.iter_mut())
+        .chain(state.action_step.iter_mut().map(|a| &mut a.step))
+    {
+        strip_step_thinking(step);
+    }
 }
 
 pub(crate) fn strip_step_thinking(step: &mut StepRecord) {

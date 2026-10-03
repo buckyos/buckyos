@@ -567,7 +567,7 @@ pub enum AiContent {
     Document { source: ResourceRef, title: Option<String> },
     ToolUse { call_id: String, name: String, args: HashMap<String, Value> },
     ToolResult { call_id: String, content: Vec<AiToolResultContent>, is_error: bool },
-    Thinking { summary: Option<String>, text: Option<String>, provider_metadata: Option<Value> },
+    Thinking { source: ProviderStateCoordinate, summary: Option<String>, text: Option<String>, provider_metadata: Option<Value> },
     ProviderState { source: ProviderStateCoordinate, provider: String, value: Value },
 }
 ```
@@ -597,7 +597,7 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 1. `messages[].content` 是 `Vec<AiContent>` content-block 数组。最常见的纯文本消息用单个 `text` block 表达（`AiMessage::text(role, "...")`）。
 2. `role` 是 `AiRole` 枚举（snake_case 序列化）。`tool` 是 IR 内部承载 tool result 的角色，`developer` 是 OpenAI Responses 原生角色；Provider Adapter 在 lowering 时改写为各 provider 原生形态。
 3. `tool_use` / `tool_result` 用 `call_id` 关联；`tool_result.content` 只允许 `text` / `image` / `document` 三类子块。
-4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。lowering 仅在 `source` 四元组与目标四元组完全一致时原样还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。
+4. `thinking` 承载扩展思考；`provider_state` 承载无法跨协议抽象、但需要 round-trip 的原生项。lowering 仅在 `source` 四元组与目标四元组完全一致时原样还原；不一致时必须转换为目标可接受结构。当前通用转换只提取公开文本、摘要、拒绝说明或规范化内容，无法安全转换的 opaque 块跳过。不得读取加密状态或伪造目标私有状态。`thinking` 同样带 `source` 四元组，AICC 在每次响应（Immediate / Stream / Native Task）上与 `provider_state` 一起绑定；调用方原样回传即可，缺省为 unbound。编码请求前统一过滤：`source` 与目标四元组完全一致的 `thinking` 原样回放，其它来源或 unbound 的 `thinking` 静默丢弃（不报错、不降级为文本或 `reasoning_content`），只剩 thinking 的消息整条去掉。四元组包含 provider 实例，同一模型换 provider 实例（如官方 Anthropic 与 OpenRouter）也视为不同来源。过滤只取决于坐标，因此 `runtime_failover` 换到 backup 或之后切回 primary 时，发给同一目标的前缀在多次请求之间保持稳定。
 5. 多模态内容直接进入 `content` 数组，不引入 `messages_v2` 等并行通道。
 6. Provider 响应中的一个原生历史单元可以同时产生 provider-neutral block 和紧邻的 `ProviderState`。两者不是两份待发送内容：同四元组回放时原生状态是权威表示并替代对应 canonical block；跨实例、原厂或模型时由源坐标到目标坐标执行转换，不能仅凭 namespace 直传。
 7. tool result 的 canonical `call_id` 必须能关联此前的 `tool_use`。若目标协议还要求函数名，Adapter 必须从同一历史中的 `tool_use` 恢复并校验名称，不能把内部生成的占位 ID 或缺失名称发送给 Provider。

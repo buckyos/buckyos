@@ -531,6 +531,7 @@ fn reasoning_from_response(
     let mut content = Vec::new();
     if text.is_some() || provider_metadata.is_some() {
         content.push(AiContent::Thinking {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             summary: None,
             text,
             provider_metadata: provider_metadata.clone(),
@@ -994,6 +995,7 @@ mod tests {
                         text: "draft".to_owned(),
                     },
                     AiContent::Thinking {
+                        source: call_context.state_coordinate.clone(),
                         summary: None,
                         text: Some("prior reasoning".to_owned()),
                         provider_metadata: None,

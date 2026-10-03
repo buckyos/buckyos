@@ -249,6 +249,17 @@ pub(crate) struct CodecInput {
     pub resolved_parameters: BTreeMap<String, Value>,
 }
 
+impl CodecInput {
+    fn without_foreign_thinking(&self, context: &CodecContext) -> Option<Self> {
+        super::drop_foreign_thinking(&self.canonical_request, &context.state_coordinate).map(
+            |canonical_request| Self {
+                canonical_request,
+                resolved_parameters: self.resolved_parameters.clone(),
+            },
+        )
+    }
+}
+
 impl std::fmt::Debug for CodecInput {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1168,13 +1179,14 @@ impl CodecRegistry {
         }
         input.validate_for(&registered.binding)?;
         context.validate()?;
+        let filtered = input.without_foreign_thinking(context);
         registered
             .codec
             .as_ref()
             .expect("registry validated operation codec")
             .encode(&CodecCall {
                 api_type,
-                input,
+                input: filtered.as_ref().unwrap_or(input),
                 context,
             })
     }
@@ -1302,7 +1314,19 @@ impl CodecRegistry {
                 "native lifecycle operation is not supported",
             ));
         }
-        codec.encode_native(input)
+        let filtered = input
+            .codec_input
+            .and_then(|codec_input| codec_input.without_foreign_thinking(input.context));
+        match &filtered {
+            Some(codec_input) => codec.encode_native(&NativeTaskInput {
+                operation: input.operation,
+                remote_task_id: input.remote_task_id,
+                codec_input: Some(codec_input),
+                resolved_parameters: input.resolved_parameters,
+                context: input.context,
+            }),
+            None => codec.encode_native(input),
+        }
     }
 
     pub(crate) fn output_video_seconds(

@@ -371,6 +371,7 @@ async fn rewrite_strips_thinking_and_rejects_broken_pairing() {
             AiRole::Assistant,
             vec![
                 AiContent::Thinking {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     summary: None,
                     text: Some("hmm".into()),
                     provider_metadata: Some(json!({"signature": "sig"})),
@@ -383,6 +384,7 @@ async fn rewrite_strips_thinking_and_rejects_broken_pairing() {
         AiMessage::new(
             AiRole::Assistant,
             vec![AiContent::Thinking {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 summary: None,
                 text: Some("only thinking".into()),
                 provider_metadata: None,

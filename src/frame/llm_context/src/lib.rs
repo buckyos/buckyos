@@ -78,7 +78,7 @@ pub use snapshot_overrides::{
 pub use state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
-pub use suspension::{is_thinking, strip_thinking};
+pub use suspension::{is_thinking, strip_snapshot_thinking, strip_thinking};
 pub use tasks::{
     next_step_hint, render_background_env, task_state_observation, CancelUnsupported,
     RunningTaskResolver, TaskBrief, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS,

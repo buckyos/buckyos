@@ -1178,6 +1178,7 @@ fn decode_response_item(
                 })
                 .filter(|text| !text.is_empty());
             blocks.push(AiContent::Thinking {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 summary,
                 text,
                 provider_metadata: Some(json!({
@@ -3058,6 +3059,7 @@ mod tests {
                     AiRole::Assistant,
                     vec![
                         AiContent::Thinking {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             summary: Some("ignored neutral summary".to_string()),
                             text: None,
                             provider_metadata: None,

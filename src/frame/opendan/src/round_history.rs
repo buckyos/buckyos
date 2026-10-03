@@ -1382,6 +1382,7 @@ mod tests {
                     AiRole::Assistant,
                     vec![
                         AiContent::Thinking {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             summary: None,
                             text: Some("hidden".to_string()),
                             provider_metadata: None,

@@ -576,6 +576,7 @@ fn encode_assistant_steps(
                 summary,
                 text,
                 provider_metadata,
+                ..
             } => {
                 flush_model_output(&mut model_content, input);
                 let mut thought =
@@ -1642,6 +1643,7 @@ fn normalize_llm_output(output: &Value, content: &mut Vec<AiContent>) -> Protoco
                 .and_then(Value::as_str)
                 .map(|signature| json!({"signature": signature}));
             content.push(AiContent::Thinking {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 summary,
                 text: None,
                 provider_metadata,
