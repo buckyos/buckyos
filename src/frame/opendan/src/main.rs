@@ -286,15 +286,36 @@ async fn run() -> Result<()> {
         zone_env(&args).await?
     };
     let loader = Loader::start(env).await?;
+    wait_exit_signal().await?;
+    // Leaving ends the hosting only; no session is stopped.
+    log::info!("opendan: leaving, waiting for the serving loops");
+    loader.shutdown().await;
+    Ok(())
+}
+
+#[cfg(unix)]
+async fn wait_exit_signal() -> Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
         .context("SIGTERM handler")?;
     tokio::select! {
         r = tokio::signal::ctrl_c() => r.context("SIGINT handler")?,
         _ = term.recv() => {}
     }
-    // Leaving ends the hosting only; no session is stopped.
-    log::info!("opendan: leaving, waiting for the serving loops");
-    loader.shutdown().await;
+    Ok(())
+}
+
+#[cfg(windows)]
+async fn wait_exit_signal() -> Result<()> {
+    use tokio::signal::windows;
+    let mut brk = windows::ctrl_break().context("CTRL_BREAK handler")?;
+    let mut close = windows::ctrl_close().context("CTRL_CLOSE handler")?;
+    let mut shutdown = windows::ctrl_shutdown().context("CTRL_SHUTDOWN handler")?;
+    tokio::select! {
+        r = tokio::signal::ctrl_c() => r.context("CTRL_C handler")?,
+        _ = brk.recv() => {}
+        _ = close.recv() => {}
+        _ = shutdown.recv() => {}
+    }
     Ok(())
 }
 
