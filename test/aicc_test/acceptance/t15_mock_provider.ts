@@ -72,6 +72,7 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
     response_shape: "openai",
     volcengine_ark_capabilities: true,
   },
+  "doubao-speech": { mode: "catalog_only" },
   qwen: { mode: "catalog_only" },
   "sn-ai-provider": {
     mode: "machine_api",
@@ -960,6 +961,159 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         response.writeHead(200, { "content-type": mime });
         response.end(Buffer.from("mock-artifact"));
         return;
+      }
+
+      if (
+        contract.async_protocol === "doubao_asr" &&
+        (url.pathname === contract.path ||
+          contract.async_steps?.some((step) =>
+            step.path === url.pathname && step.http_method === request.method
+          ))
+      ) {
+        // Doubao AUC speech recognition carries task state in response headers:
+        // submit only returns the task id, the query path reports status, and the
+        // JSON transcript body only ever arrives on the final query.
+        const asrErrorFixture = catalog.error_fixtures[
+          contract.error_fixture_key ?? selection.provider_driver
+        ]?.find((fixture) => fixture.scenario === selection?.scenario);
+        if (asrErrorFixture) {
+          // Record the wire before answering: the official error fixture is a
+          // real Provider response, so the audit must still show the request
+          // AICC sent rather than a phantom "no request received".
+          const bytes = await bodyBytes(request);
+          requests.push({
+            received_at: new Date().toISOString(),
+            selection,
+            method: request.method ?? "",
+            pathname: url.pathname,
+            query: Object.fromEntries(url.searchParams),
+            headers: safeHeaders(request.headers),
+            body: parseRequestBody(request, bytes),
+            validation_errors: [],
+          });
+          return json(
+            response,
+            asrErrorFixture.status,
+            asrErrorFixture.body,
+            asrErrorFixture.headers,
+          );
+        }
+        if (url.pathname === contract.path) {
+          const bytes = await bodyBytes(request);
+          const parsedBody = parseRequestBody(request, bytes);
+          const captured: CapturedProviderRequest = {
+            method: request.method ?? "",
+            pathname: url.pathname,
+            query: url.searchParams,
+            headers: new Headers(request.headers as Record<string, string>),
+            body: parsedBody,
+          };
+          const submitErrors = validateProviderRequest(
+            contract,
+            captured,
+            selection.api_type ?? contract.api_types[0],
+          );
+          requests.push({
+            received_at: new Date().toISOString(),
+            selection,
+            method: captured.method,
+            pathname: captured.pathname,
+            query: Object.fromEntries(captured.query),
+            headers: safeHeaders(request.headers),
+            body: parsedBody,
+            validation_errors: submitErrors,
+          });
+          if (submitErrors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors: submitErrors,
+            });
+          }
+          const echoed = request.headers["x-api-request-id"];
+          return json(response, 200, {}, {
+            "x-api-status-code": "20000000",
+            "x-api-message": "OK",
+            "x-api-request-id": Array.isArray(echoed)
+              ? echoed[0]
+              : (echoed ?? "doubao-asr-task-mock"),
+          });
+        }
+        await bodyBytes(request);
+        const prior = requests.filter((captured) =>
+          captured.selection.contract_id === selection!.contract_id &&
+          captured.pathname === url.pathname && captured.method === request.method
+        );
+        if (selection.scenario === "async_failed") {
+          const errors = captureAuxiliary("poll");
+          if (errors.length > 0) {
+            return json(response, 400, {
+              type: "t15_mock_contract_violation",
+              errors,
+            });
+          }
+          return json(response, 200, {}, {
+            "x-api-status-code": "50000000",
+            "x-api-message": "mock speech recognition failed",
+            "x-tt-logid": "mock-doubao-asr-failed",
+          });
+        }
+        const step = prior.length === 0 ? "poll" : "result";
+        const errors = captureAuxiliary(step);
+        if (errors.length > 0) {
+          return json(response, 400, {
+            type: "t15_mock_contract_violation",
+            errors,
+          });
+        }
+        if (selection.scenario === "async_poll_timeout") {
+          return json(response, 200, {}, {
+            "x-api-status-code": "20000002",
+            "x-api-message": "queued",
+          });
+        }
+        // Response-corruption scenarios must reach the step that carries the
+        // transcript so the real Adapter has to reject a malformed/typed-wrong
+        // AUC result instead of the Mock silently returning a valid task.
+        if (step === "result") {
+          if (selection.scenario === "malformed_response") {
+            response.writeHead(200, {
+              "content-type": "application/json",
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+            response.end('{"malformed":');
+            return;
+          }
+          if (selection.scenario === "wrong_content_type") {
+            response.writeHead(200, {
+              "content-type": contract.success_content_type === "text/plain"
+                ? "application/octet-stream"
+                : "text/plain",
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+            response.end(JSON.stringify(contract.success_fixture ?? {}));
+            return;
+          }
+          if (selection.scenario === "missing_required_response_field") {
+            return json(response, 200, {}, {
+              "x-api-status-code": "20000000",
+              "x-api-message": "OK",
+            });
+          }
+        }
+        return json(
+          response,
+          200,
+          step === "poll"
+            ? {}
+            : structuredClone(contract.success_fixture ?? {}),
+          {
+            "x-api-status-code": step === "poll" ? "20000002" : "20000000",
+            "x-api-message": step === "poll" ? "queued" : "OK",
+            "x-tt-logid": "mock-doubao-asr-result",
+          },
+        );
       }
 
       const bytes = await bodyBytes(request);

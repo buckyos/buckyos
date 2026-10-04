@@ -8,6 +8,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "glm",
   "doubao",
   "doubao-agent-plan",
+  "doubao-speech",
 ] as const;
 
 export type ProviderTokenDriver = (typeof SUPPORTED_TOKEN_DRIVERS)[number];
@@ -36,6 +37,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     glm: "https://api.z.ai/api/paas/v4",
     doubao: "https://ark.cn-beijing.volces.com/api/v3",
     "doubao-agent-plan": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "doubao-speech": "https://openspeech.bytedance.com",
   };
   const adapters: Record<ProviderTokenDriver, string> = {
     openai: "openai-responses",
@@ -47,6 +49,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     glm: "glm-chat",
     doubao: "doubao-responses",
     "doubao-agent-plan": "doubao-responses",
+    "doubao-speech": "doubao-responses",
   };
   const profile = profileId(driver);
   return {
@@ -127,6 +130,7 @@ export function applyProviderTokens(
         glm: "glm-main",
         doubao: "doubao-main",
         "doubao-agent-plan": "doubao-agent-plan-main",
+        "doubao-speech": "doubao-speech-main",
       };
       const created = defaultInstance(
         driver,

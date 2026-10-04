@@ -36,6 +36,7 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
   "doubao-agent-plan": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-speech": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com", "help.aliyun.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
@@ -94,7 +95,8 @@ export type ProviderProtocolContract = {
     | "openai_video"
     | "glm_video"
     | "doubao_video"
-    | "qwen_media";
+    | "qwen_media"
+    | "doubao_asr";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -1922,7 +1924,8 @@ export function buildT15Manifest(
               contract.async_protocol === "minimax_video" ||
               contract.async_protocol === "minimax_video_v2" ||
               contract.async_protocol === "glm_video" ||
-              contract.async_protocol === "doubao_video"
+              contract.async_protocol === "doubao_video" ||
+              contract.async_protocol === "doubao_asr"
               ? ["async_poll_timeout"] as const
               : ["async_poll_timeout", "async_artifact_unavailable"] as const;
           for (const scenario of terminalFailureScenarios) {
@@ -1942,7 +1945,8 @@ export function buildT15Manifest(
                     contract.async_protocol === "minimax_video" ||
                     contract.async_protocol === "minimax_video_v2" ||
                     contract.async_protocol === "glm_video" ||
-                    contract.async_protocol === "doubao_video"
+                    contract.async_protocol === "doubao_video" ||
+                    contract.async_protocol === "doubao_asr"
                   ? 3_500
                   : 1_500
                 : common.timeout_ms,

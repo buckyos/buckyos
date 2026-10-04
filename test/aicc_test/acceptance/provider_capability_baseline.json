@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-10-01.1",
-  "checked_at": "2026-10-01",
+  "baseline_revision": "2026-10-04.2",
+  "checked_at": "2026-10-04",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -915,12 +915,12 @@
         {
           "model_pattern": "gemini-omni-*",
           "status": "preview",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video"],
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
-          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation and editing."
+          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation, editing, and extension."
         },
         {
           "model_pattern": "gemini-*image*",
@@ -1493,6 +1493,138 @@
         { "model_pattern": "kimi-k2.8-preview", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents Kimi K2.8 Preview as a text-input Responses model." },
         { "model_pattern": "minimax-m3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents MiniMax M3 as a text-input Responses model." },
         { "model_pattern": "doubao-seed-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents the listed Doubao Seed language models with text and image input through Responses." }
+      ]
+    },
+    {
+      "provider_driver": "doubao-speech",
+      "provider_profile_id": "doubao-speech",
+      "protocol_adapter_ids": [
+        "doubao-responses"
+      ],
+      "model_driver_ids": [
+        "doubao"
+      ],
+      "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://www.volcengine.com/docs/6561/1257584?lang=zh",
+        "format": "frozen",
+        "authentication": "none",
+        "model_ids": [
+          "doubao-seed-tts-2.0",
+          "doubao-seed-icl-2.0",
+          "doubao-seed-asr-2.0",
+          "doubao-seed-asr-2.0-fast"
+        ],
+        "checked_at": "2026-10-04",
+        "risk": "Doubao Voice exposes no public /models catalog endpoint; the four speech model ids are frozen from the official Doubao Voice product documentation and the bundled speech provider rules, not from a live discovery response."
+      },
+      "source_urls": [
+        "https://www.volcengine.com/docs/6561/1257584?lang=zh",
+        "https://www.volcengine.com/docs/6561/1354868?lang=zh"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "Official Doubao Voice (openspeech.bytedance.com) documentation checked 2026-10-04; v3 TTS and v3 AUC bigmodel speech endpoints.",
+        "streaming_semantics": "Unidirectional TTS answers with newline-delimited JSON frames carrying base64 audio chunks and a terminal 20000000 completion frame.",
+        "async_operation_semantics": "asr.recognize.submit uses the AUC submit/query native task lifecycle; asr.recognize.flash is a single synchronous request.",
+        "usage_semantics": "TTS reports billed text_words in the usage frames; ASR reports audio duration from audio_info.duration.",
+        "input_output_formats": "TTS accepts text and returns mp3/wav/pcm/ogg_opus audio; ASR accepts wav, mp3, ogg or raw audio and returns transcript text with optional utterance segments.",
+        "item_request_batch_limits": "One utterance or one audio asset per request; AUC task submission carries exactly one audio reference.",
+        "image_audio_video_limits": "TTS text is bounded by the request byte limit; ASR flash accepts up to 160 MiB of audio bytes and the standard task path requires a fetchable absolute audio URL.",
+        "context_output_limits": "Speech operations have no conversational context; the transcript is returned as a single text result.",
+        "region_restrictions": "Doubao Voice is served from the China North region endpoint.",
+        "account_tier_restrictions": "Speech models require the Doubao Voice product to be activated for the account and identity that owns the API key.",
+        "preview_allowlist": "No preview speech model is enabled for this channel in the current release."
+      },
+      "coverage_rules": [],
+      "rules": [
+        {
+          "model_pattern": "doubao-seed-tts-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.tts"
+          ],
+          "methods": [
+            "audio.tts"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "audio"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1598757?lang=zh",
+            "https://www.volcengine.com/docs/6257/2607681?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Synthesis 2.0 is a unidirectional TTS model on the Doubao Voice v3 endpoint with resource id seed-tts-2.0."
+        },
+        {
+          "model_pattern": "doubao-seed-icl-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.tts"
+          ],
+          "methods": [
+            "audio.tts"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "audio"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1305191?lang=zh",
+            "https://www.volcengine.com/docs/6561/1257584?lang=zh"
+          ],
+          "evidence_summary": "Doubao Voice Clone 2.0 reuses the unidirectional TTS operation with resource id seed-icl-2.0 and a cloned speaker."
+        },
+        {
+          "model_pattern": "doubao-seed-asr-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.asr"
+          ],
+          "methods": [
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "audio"
+          ],
+          "output_kinds": [
+            "text"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+            "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Recognition 2.0 standard uses the AUC bigmodel submit/query task lifecycle with resource id volc.seedasr.auc."
+        },
+        {
+          "model_pattern": "doubao-seed-asr-2.0-fast",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.asr"
+          ],
+          "methods": [
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "audio"
+          ],
+          "output_kinds": [
+            "text"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+            "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Recognition 2.0 flash uses a single synchronous AUC request with resource id volc.bigasr.auc_turbo."
+        }
       ]
     },
     {

@@ -108,6 +108,26 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   settings.session_config = session;
 }
 
+function speechDiscovery(): JsonObject {
+  return {
+    revision: "t1-doubao-speech-v1",
+    discovered_at_ms: Date.now(),
+    health: "healthy",
+    models: [
+      ["doubao-seed-tts-2.0", ["audio.tts"], ["tts.unidirectional"]],
+      ["doubao-seed-icl-2.0", ["audio.tts"], ["tts.unidirectional"]],
+      ["doubao-seed-asr-2.0", ["audio.asr"], ["asr.recognize.submit"]],
+      ["doubao-seed-asr-2.0-fast", ["audio.asr"], ["asr.recognize.flash"]],
+    ].map(([provider_model_id, api_types, remote_methods]) => ({
+      provider_model_id,
+      api_types,
+      remote_methods,
+      availability: "available",
+      deprecated: false,
+    })),
+  };
+}
+
 function falDiscovery(): JsonObject {
   return {
     revision: "t1-fal-v1",
@@ -207,6 +227,15 @@ export function buildMockSettings(
       baseUrl: `${baseUrl}/instance-typesafe/v1`,
       token: `mock-typesafe-${suffix}`,
       timeoutMs,
+    }),
+    provider({
+      name: `dv-doubao-speech-${suffix}`,
+      profile: "doubao-speech",
+      adapter: "doubao-responses",
+      baseUrl: `${baseUrl}/instance-doubao-speech/api/v3`,
+      token: `mock-speech-${suffix}`,
+      timeoutMs,
+      discovery: speechDiscovery(),
     }),
     provider({
       name: `dv-fal-${suffix}`,

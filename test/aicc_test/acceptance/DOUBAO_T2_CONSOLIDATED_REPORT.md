@@ -4,9 +4,95 @@
 > 同一项目和身份开通豆包语音 TTS 2.0 后，标准账号现在通过静态补充能力
 > 暴露 `audio.tts`；该模型仍不会出现在 Ark `/api/v3/models` 的发现结果中。
 
-测试周期：2026-09-25 至 2026-09-30
+测试周期：2026-09-25 至 2026-10-04
 
 本文档按 `case_id` 合并 Agent Plan 与标准 ModelArk 的多轮 T2 结果；同一用例重测时以最新结果为准，原始报告保留在执行历史中供审计。
+
+---
+
+## 2026-10-04 本轮新增：豆包语音专用渠道（`doubao-speech`）T1 → T1.5 → T2
+
+> 本轮按用户要求**严格串行**执行：T1 通过后才进入 T1.5，T1.5 通过后才进入 T2，范围只限豆包语音渠道。
+> 凭证为豆包语音（openspeech）产品的 UUID 型 API Key，不写入本文档；运行期由 `AICC_DOUBAO_SPEECH_API_TOKEN` 注入，测试后已在清理步骤恢复。
+
+### 测试条件
+
+| 项 | 值 |
+|---|---|
+| 目标机 | Ubuntu 192.168.100.136（LAN），运行目录 `/opt/buckyos` |
+| 分支 / 提交 | `fix/624-improve-doubao-model-support` / `f53e0c2d` |
+| 渠道 profile | `doubao-speech`，适配器 `doubao-responses`，端点 `https://openspeech.bytedance.com/api/v3`，认证头 `x-api-key` |
+| 覆盖模型 | `doubao-seed-tts-2.0`、`doubao-seed-icl-2.0`（`audio.tts`）；`doubao-seed-asr-2.0`、`doubao-seed-asr-2.0-fast`（`audio.asr`） |
+| 测试运行器 | deno 2.8.3（该机无 node/pnpm，`node` 由 shim 转 deno） |
+| AICC 二进制 | 未重编译，三轮验收使用同一二进制；本轮所有修复都在验收工程侧 |
+
+### T1（通用确定性 Mock）
+
+- 采用运行：`reports/acceptance/aicc-t1-2026-10-04T10-04-59-175Z-ac3b5712`
+- 结果：**142 通过 / 37 失败**（共 179 例）；清单覆盖 104/130；T1 需求分支 101/127；路由暴露 38/49。
+- 豆包语音范围：`t1.route.exposure.doubao-speech.*` **4/4 通过**（TTS 2.0、ICL 2.0、ASR 2.0、ASR 2.0-fast 均按 `audio.tts` / `audio.asr` 正确暴露）。
+- 37 个失败与本轮范围无关，是该分支上预先存在的休眠缺陷（该分支此前从未执行过 T1）：
+  - 失败归类：`routing_failed` 15、`baseline_mismatch` 11（`t1.route.exposure` 契约把 `logical_entrypoint` 渲染成裸 `llm`，而 Mock 的 `logical_tree.llm` 是分支节点 → `no candidate for llm`；`dv-openai-a` 为 `model_unavailable`、`dv-openai-b` 为 `provider_weight_zero,provider_not_allowed`）、`provider_runtime_failed` 7、`task_lifecycle_failed` 1、`usage_failed` 1、`assertion_failed` 1、`provider_protocol_failed` 1。
+  - 其中重启/一致性类（`t1.config.restart_consistency`、`t1.task.restart_recovery` 等）失败原因是 AICC 以 root 运行、测试用户 `zhangzhen` 无权限操作容器。
+  - 归因依据：工作区改动**不含任何 `src/frame/aicc` 代码**，12 个改动文件全部位于 `test/aicc_test/acceptance/` 且均为豆包语音相关新增，因此这 37 例不可能由本轮改动引入。
+- 前两轮 T1（`09-41-21`、`09-56-02`）因运行器 `gateway_mock` 未能启动只产生 0/1 的无效结果，已在 `PATH` 注入 node→deno shim 后由上述运行取代。
+
+### T1.5（Zone Gateway → 真实 AICC 类型化方法 → 官方协议高保真 Mock）
+
+三轮迭代：`17 通过 / 11 失败` → `24 / 4` → **`28 通过 / 0 失败`**（采用运行 `reports/acceptance/t15-20261004102146-2930799`，清单覆盖 28/28）。
+
+11 个首轮失败全部定位为**验收工程的夹具/分支缺口**，不是 AICC 缺陷，且无需重编译 AICC：
+
+| 现象 | 根因 | 修复 |
+|---|---|---|
+| 8 个错误场景失败（均在 ASR 相关用例） | AUC ASR 编解码器从**响应头** `X-Api-Status-Code` / `X-Api-Message` 读取业务码，而共享的 `doubao-speech` 错误夹具只把业务码放在 JSON body 内（TTS 走 body，所以 TTS 全过） | 为 4 个 `error_fixtures["doubao-speech"]` 场景补上 `headers`（`invalid_request`、`authentication`、`rate_limit`、`server_error`） |
+| 3 个 `response.*` 用例失败（`malformed_response`、`wrong_content_type`、`missing_required_response_field`） | `doubao_asr` Mock 分支在 `result` 步骤绕过了通用响应破坏逻辑 | 在 `step === "result"` 上按场景返回损坏响应 |
+| 4 个 task 错误用例 `captured_requests=0` | 错误夹具分支在记录请求之前就返回了 | 返回前先记录线报（`requests.push(...)`） |
+
+改动文件：`acceptance/provider_protocol_contracts.json`、`acceptance/t15_mock_provider.ts`（改动前版本已备份）。完整过程见 [ISSUE_624_TEST_REPORT.md](ISSUE_624_TEST_REPORT.md)。
+
+### T2（豆包语音真实调用）
+
+采用运行：`reports/acceptance/aicc-2026-10-04T10-24-39-106Z-651b3c3c`
+
+- 结果：**0 通过 / 2 失败 / 2 待语义复核**；真实模型调用 5/8；成本暴露 $0.05 / $1.00；清理通过（临时 Provider 凭证已恢复）。
+
+| 模型 | API | 状态 | 证据 |
+|---|---|---|---|
+| `doubao-seed-tts-2.0` | `audio.tts` | 待语义复核（协议/制品通过） | 产出音频制品 `cyfile:ad86f907…`，待音频语义复核 |
+| `doubao-seed-asr-2.0-fast` | `audio.asr` | 待语义复核（协议通过） | 同步 flash 请求成功，待转写语义复核 |
+| `doubao-seed-icl-2.0` | `audio.tts` | **失败** | `55000000 resource ID is mismatched with speaker related resource` |
+| `doubao-seed-asr-2.0` | `audio.asr` | **失败** | `45000006 [Invalid audio URI] … audio download failed` |
+
+两个失败项的归因与处置：
+
+1. **`doubao-seed-asr-2.0`（标准异步 ASR）——音频 URL 无法被豆包侧抓取。**
+   标准 ASR 走 AUC submit/query，资源形式只能是 URL（`resource_input_form = UrlOnly`）。AICC 将音频物化后把 `${publicNdnBaseUrl}/${objId}` 交给豆包，而该基址取自网关地址（`127.0.0.1:3180`）。本机位于 LAN（`192.168.100.136`），出口为 NAT 地址；`test.buckyos.io` 在公共解析（8.8.8.8 / 1.1.1.1）下解析到 `127.0.0.1`，即该 zone 身份**没有对外可达端点**，豆包服务器无法下载音频。
+   按用户策略（"若只是修改启动配置即可解决则临时改配置；若需要更新逻辑才能支持则不修改，记录用例失败"）：**没有任何配置项能让该 zone 变为公网可达**——这是部署/拓扑属性而非启动配置，因此**不做修改，记录该用例失败**。
+   注：同步 flash 版（`doubao-seed-asr-2.0-fast`）协议通过，反证解码、鉴权、解析链路正确，失败点被隔离在"外部可抓取性"这一项上。
+
+2. **`doubao-seed-icl-2.0`（声音复刻 TTS）——音色与资源不匹配。**
+   AICC 的规范音色解析对豆包返回**硬编码**预置音色 `zh_female_vv_uranus_bigtts`（`src/frame/aicc/src/canonical/mod.rs:511`），该音色属于资源 `seed-tts-2.0`；而 ICL 模型的资源为 `seed-icl-2.0`，按能力基线声明必须配**克隆音色**（"Doubao Voice Clone 2.0 reuses the unidirectional TTS operation with resource id seed-icl-2.0 and a cloned speaker"）。T2 夹具不发送音色字段，默认音色因此被注入 → Provider 以 55000000 拒绝。
+   处置：修复它需要改代码逻辑（音色默认值不是配置项，元数据 `canonical_fields["/voice"].fallback` 只支持 `default` / `omit` / `reject`，无法指定具体音色），且本测试账号未开通克隆音色，**在不改逻辑的前提下无法通过**。按同一策略**不修改，记录失败**。
+   供后续决策的建议（本轮未实施）：克隆类模型应要求调用方显式给出音色，或把默认音色改为按模型维度由元数据提供，避免把 `seed-tts-2.0` 的预置音色注入 `seed-icl-2.0` 请求。
+
+### 本轮验证门禁
+
+- `deno check acceptance/*.ts`：通过（退出码 0）
+- 验收预检 `preflight.ts`：通过
+- 验收自测：**98 通过 / 0 失败**
+- T1：142 通过 / 37 失败（豆包语音范围 4/4 通过）
+- T1.5：**28 通过 / 0 失败**
+- T2：0 通过 / 2 失败 / 2 待语义复核（真实调用 5/8，预算内）
+- AICC Rust 源码未改动、未重编译
+
+### 本轮遗留
+
+| 项 | 性质 | 处置 |
+|---|---|---|
+| 标准 ASR（`doubao-seed-asr-2.0`）外网音频抓取 | 环境/拓扑限制 | 按策略不修改，记录失败 |
+| ICL（`doubao-seed-icl-2.0`）克隆音色 | 需改代码逻辑，且账号未开通克隆音色 | 按策略不修改，记录失败并给出改进建议 |
+| T1 的 37 个非豆包语音失败 | 该分支预存缺陷 | 超出本轮范围，单独跟踪 |
 
 ## 状态定义
 
@@ -204,6 +290,8 @@ Agent Plan 没有遗留失败。
 | 翻译目标语言使用展示名称 | Provider 拒绝 `target_language=English` | 配置和 T1.5 请求改用官方代码 `en` | 标准账号翻译 T2 通过 |
 | Seedance 结果 URL 响应结构错误 | 真实任务成功，但 AICC 找不到 `video_url` | 解码器和标准/Agent Plan Mock 改用字符串形式 `content.video_url`，并保留 usage | 两个标准账号视频单元生成并验证制品；T1.5 生命周期通过 |
 | 角色模型标记断言对排版敏感 | Provider 返回 `BUCKYOS - AICC - 4827` | 通用断言规范化分隔符两侧空白，不添加模型特判 | Character 251128 T2 通过 |
+| 豆包语音 T1.5 错误夹具缺少响应头业务码 | 8 个 ASR 错误场景失败（AUC ASR 从响应头 `X-Api-Status-Code` 读取业务码，夹具只给了 body） | 为 4 个 `doubao-speech` 错误夹具补 `headers` | T1.5 28 通过、0 失败 |
+| 豆包语音 T1.5 Mock 未处理响应破坏与请求记录 | 3 个 `response.*` 用例失败、4 个 task 错误用例 `captured_requests=0` | `doubao_asr` 分支在 `result` 步骤处理破坏场景，错误分支先记录请求 | T1.5 28 通过、0 失败 |
 
 ## 执行历史
 
@@ -215,6 +303,9 @@ Agent Plan 没有遗留失败。
 | 2026-09-30 | [余额恢复后标准账号 T2](../reports/acceptance/aicc-2026-09-30T04-45-42-713Z-8c2a4567/summary.md) | 重试被余额阻塞的 35 个单元 | 暴露 4 个可修复失败，其余结果保留 |
 | 2026-09-30 | [修复后 T1.5](../reports/acceptance/t15-20260930053834-640745/summary.md) | 翻译、两类账号视频成功响应及 TaskMgr 制品持久化 | 9 通过、0 失败 |
 | 2026-09-30 | [标准账号最终重测](../reports/acceptance/aicc-2026-09-30T06-54-40-209Z-49932e6d/summary.md) | 4 个修复单元和 9 个历史非余额限制单元 | 2 通过、2 待复核、9 Provider 受限、0 失败 |
+| 2026-10-04 | [豆包语音渠道 T1](../reports/acceptance/aicc-t1-2026-10-04T10-04-59-175Z-ac3b5712/summary.md) | doubao-speech 通用 Mock、需求分支与路由暴露 | 142 通过、37 失败（豆包语音范围 4/4 通过；37 例为超范围预存缺陷） |
+| 2026-10-04 | [豆包语音渠道 T1.5（三轮）](../reports/acceptance/t15-20261004102146-2930799/summary.md) | 官方协议高保真 Mock 全量用例 | 17/11 → 24/4 → 28 通过、0 失败 |
+| 2026-10-04 | [豆包语音渠道 T2](../reports/acceptance/aicc-2026-10-04T10-24-39-106Z-651b3c3c/summary.md) | 真实 Provider 调用矩阵（4 个单元） | 2 待语义复核、2 失败、0 Provider 受限 |
 
 各轮执行均完成清理：临时 Provider 凭证已恢复，生成的输出对象已删除。
 
@@ -226,5 +317,6 @@ Agent Plan 没有遗留失败。
 - 修复后定向 T1.5：9 通过、0 失败。
 - `deno check acceptance/*.ts` 和 `git diff --check` 通过。
 - 已跟踪差异凭证扫描未发现 API Key。
+- 2026-10-04 豆包语音渠道复跑：`deno check` 通过；预检通过；验收自测 98 通过、0 失败；T1 142/37（豆包语音范围 4/4）；T1.5 28 通过、0 失败；T2 2 待语义复核、2 失败。
 
 按时间顺序的实现说明及更早的 T1/T1.5 记录见 [ISSUE_624_TEST_REPORT.md](ISSUE_624_TEST_REPORT.md)。

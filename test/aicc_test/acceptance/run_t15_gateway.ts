@@ -303,6 +303,7 @@ async function addProvider(
     "fal",
     "glm",
     "doubao",
+    "doubao-speech",
     "qwen",
   ]);
   const catalogModels = provider.official_first_party_model_ids ??

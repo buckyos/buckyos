@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-01.1",
-  "checked_at": "2026-10-01",
+  "revision": "official-provider-protocols-2026-10-04.1",
+  "checked_at": "2026-10-04",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1818,6 +1818,236 @@
       }]
     },
     {
+      "provider_driver": "doubao-speech",
+      "provider_profile_id": "doubao-speech",
+      "endpoint_path": "/api/v3",
+      "operation_endpoint_paths": {
+        "tts.unidirectional": "/api/v3/tts",
+        "asr.recognize.submit": "/api/v3/auc/bigmodel",
+        "asr.recognize.flash": "/api/v3/auc/bigmodel"
+      },
+      "credential_type": "bearer",
+      "official_first_party_model_ids": {
+        "audio.tts": [
+          "doubao-seed-tts-2.0",
+          "doubao-seed-icl-2.0"
+        ],
+        "audio.asr": [
+          "doubao-seed-asr-2.0",
+          "doubao-seed-asr-2.0-fast"
+        ]
+      },
+      "test_model_ids": {
+        "audio.tts": "doubao-seed-tts-2.0",
+        "audio.asr": "doubao-seed-asr-2.0"
+      },
+      "contracts": [
+        {
+          "id": "doubao-speech.tts.v3",
+          "protocol_adapter_id": "doubao-responses",
+          "error_fixture_key": "doubao-speech",
+          "api_version": "v3",
+          "api_types": [
+            "audio.tts"
+          ],
+          "test_model_ids": {
+            "audio.tts": "doubao-seed-tts-2.0"
+          },
+          "operation": "tts.unidirectional",
+          "http_method": "POST",
+          "path": "/api/v3/tts/unidirectional",
+          "auth": {
+            "kind": "header",
+            "name": "x-api-key",
+            "prefix": ""
+          },
+          "required_headers": {
+            "x-api-resource-id": "seed-tts-2.0",
+            "x-control-require-usage-tokens-return": "*"
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "req_params"
+          ],
+          "allowed_body_fields": [
+            "req_params"
+          ],
+          "body_field_types": {
+            "req_params": [
+              "object"
+            ]
+          },
+          "success_content_type": "text/plain",
+          "success_chunk_fixtures": [
+            {
+              "code": 0,
+              "message": "",
+              "data": "SUQz"
+            },
+            {
+              "code": 0,
+              "message": "",
+              "data": "BA==",
+              "usage": {
+                "text_words": 5
+              }
+            },
+            {
+              "code": 20000000,
+              "message": "OK",
+              "data": null
+            }
+          ],
+          "official_sources": [
+            "https://www.volcengine.com/docs/6561/1598757?lang=zh",
+            "https://www.volcengine.com/docs/6257/2607681?lang=zh"
+          ],
+          "evidence_summary": "Doubao Voice unidirectional TTS posts req_params to /api/v3/tts/unidirectional with X-Api-Key, X-Api-Resource-Id and the usage tokens control header, and streams newline-delimited JSON frames terminated by code 20000000."
+        },
+        {
+          "id": "doubao-speech.asr.flash.v3",
+          "protocol_adapter_id": "doubao-responses",
+          "error_fixture_key": "doubao-speech",
+          "api_version": "v3",
+          "api_types": [
+            "audio.asr"
+          ],
+          "test_model_ids": {
+            "audio.asr": "doubao-seed-asr-2.0-fast"
+          },
+          "operation": "asr.recognize.flash",
+          "http_method": "POST",
+          "path": "/api/v3/auc/bigmodel/recognize/flash",
+          "auth": {
+            "kind": "header",
+            "name": "x-api-key",
+            "prefix": ""
+          },
+          "required_headers": {
+            "x-api-resource-id": "volc.bigasr.auc_turbo"
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "allowed_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "body_field_types": {
+            "user": [
+              "object"
+            ],
+            "audio": [
+              "object"
+            ],
+            "request": [
+              "object"
+            ]
+          },
+          "success_fixture": {
+            "result": {
+              "text": "The quick brown fox jumps over the lazy dog.",
+              "utterances": [
+                {
+                  "text": "The quick brown fox jumps over the lazy dog.",
+                  "start_time": 0,
+                  "end_time": 2140
+                }
+              ]
+            },
+            "audio_info": {
+              "duration": 2140
+            }
+          },
+          "official_sources": [
+            "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+          ],
+          "evidence_summary": "Doubao Voice ASR flash posts user/audio/request to the AUC bigmodel recognize/flash path with resource id volc.bigasr.auc_turbo; success is signalled by X-Api-Status-Code 20000000 and the transcript is in result.text with optional result.utterances."
+        },
+        {
+          "id": "doubao-speech.asr.task.v3",
+          "protocol_adapter_id": "doubao-responses",
+          "error_fixture_key": "doubao-speech",
+          "api_version": "v3",
+          "api_types": [
+            "audio.asr"
+          ],
+          "test_model_ids": {
+            "audio.asr": "doubao-seed-asr-2.0"
+          },
+          "operation": "asr.recognize.submit",
+          "http_method": "POST",
+          "path": "/api/v3/auc/bigmodel/submit",
+          "auth": {
+            "kind": "header",
+            "name": "x-api-key",
+            "prefix": ""
+          },
+          "required_headers": {
+            "x-api-resource-id": "volc.seedasr.auc"
+          },
+          "content_type": "application/json",
+          "required_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "allowed_body_fields": [
+            "user",
+            "audio",
+            "request"
+          ],
+          "body_field_types": {
+            "user": [
+              "object"
+            ],
+            "audio": [
+              "object"
+            ],
+            "request": [
+              "object"
+            ]
+          },
+          "async_protocol": "doubao_asr",
+          "async_steps": [
+            {
+              "name": "poll",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/query"
+            },
+            {
+              "name": "result",
+              "http_method": "POST",
+              "path": "/api/v3/auc/bigmodel/query"
+            }
+          ],
+          "success_fixture": {
+            "result": {
+              "text": "The quick brown fox jumps over the lazy dog.",
+              "utterances": [
+                {
+                  "text": "The quick brown fox jumps over the lazy dog.",
+                  "start_time": 0,
+                  "end_time": 2140
+                }
+              ]
+            },
+            "audio_info": {
+              "duration": 2140
+            }
+          },
+          "official_sources": [
+            "https://www.volcengine.com/docs/6561/1354868?lang=zh"
+          ],
+          "evidence_summary": "Doubao Voice ASR standard submits one absolute audio URL to the AUC bigmodel submit path with resource id volc.seedasr.auc, then polls the query path with the returned X-Api-Request-Id until X-Api-Status-Code reports 20000000 and the transcript arrives in result.text."
+        }
+      ]
+    },
+    {
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
       "endpoint_path": "/api/v3",
@@ -2317,6 +2547,7 @@
     }
   ],
   "error_evidence": {
+    "doubao-speech": {"applicable_api_versions": ["v3"], "official_sources": ["https://www.volcengine.com/docs/6561/1354869?lang=zh", "https://www.volcengine.com/docs/6561/1257584?lang=zh"], "evidence_summary": "Doubao Voice reports authentication, request, throttling and service errors through HTTP status plus header.code/header.message for TTS and X-Api-Status-Code/X-Api-Message for AUC speech recognition."},
     "typesafe": {"applicable_api_versions": ["v1"], "official_sources": ["https://docs.typesafe.ai/api"], "evidence_summary": "HTTP 401 invalid key, 422 validation, 429 rate limit and 529 overload; errors are opaque JSON."},
     "openai": { "applicable_api_versions": ["v1"], "official_sources": ["https://platform.openai.com/docs/guides/error-codes/api-errors"], "evidence_summary": "OpenAI documents HTTP authentication, permission, request, not-found, rate-limit and server error categories with an error envelope." },
     "claude": { "applicable_api_versions": ["2023-06-01"], "official_sources": ["https://platform.claude.com/docs/en/api/errors"], "evidence_summary": "Anthropic documents status-specific error.type values and the top-level error/request_id envelope." },
@@ -2334,6 +2565,12 @@
     "sn-ai-provider": { "applicable_api_versions": ["v1"], "official_sources": ["https://github.com/buckyos/sn-business/blob/f765081d5ae038b9eeec14cb38e6af12750db31a/src/modules/sn_aicc/src/http/error.rs"], "evidence_summary": "SN source at f765081 defines HTTP errors as code/message and the 429 insufficient-balance special case as an OpenAI-shaped nested error." }
   },
   "error_fixtures": {
+    "doubao-speech": [
+      { "scenario": "invalid_request", "status": 400, "body": { "header": { "reqid": "mock-doubao-speech-invalid", "code": 40000000, "message": "invalid request" } }, "headers": { "x-api-status-code": "40000000", "x-api-message": "invalid request" } },
+      { "scenario": "authentication", "status": 401, "body": { "header": { "reqid": "mock-doubao-speech-auth", "code": 45000010, "message": "Invalid X-Api-Key" } }, "headers": { "x-api-status-code": "45000010", "x-api-message": "Invalid X-Api-Key" } },
+      { "scenario": "rate_limit", "status": 429, "body": { "header": { "reqid": "mock-doubao-speech-rate-limit", "code": 42900000, "message": "rate limit reached" } }, "headers": { "x-api-status-code": "42900000", "x-api-message": "rate limit reached" } },
+      { "scenario": "server_error", "status": 500, "body": { "header": { "reqid": "mock-doubao-speech-server", "code": 50000000, "message": "internal service error" } }, "headers": { "x-api-status-code": "50000000", "x-api-message": "internal service error" } }
+    ],
     "typesafe": [{"scenario": "auth", "status": 401, "body": {"detail": "Invalid API key"}}, {"scenario": "rate_limit", "status": 429, "body": {"detail": "Rate limit exceeded"}, "headers": {"retry-after": "1"}}, {"scenario": "server_error", "status": 529, "body": {"detail": "Overloaded"}}],
     "openai": [
       { "scenario": "invalid_request", "status": 400, "body": { "error": { "message": "Invalid request", "type": "invalid_request_error", "param": null, "code": null } } },

@@ -429,7 +429,7 @@ export function buildRouteExposureRuntimeCells(args: {
           apiType,
         );
         const key =
-          `${provider.provider_driver}\u0000${modelPattern}\u0000${apiType}\u0000${inventory.provider_instance_name}`;
+          `${provider.provider_driver}\u0000${modelPattern}\u0000${apiType}`;
         if (!cells.has(key)) {
           cells.set(key, {
             provider_driver: provider.provider_driver,
