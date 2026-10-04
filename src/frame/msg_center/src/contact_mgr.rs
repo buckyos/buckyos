@@ -1241,6 +1241,25 @@ impl ContactMgr {
         contacts: Vec<ZoneUserContactSeed>,
         owner: Option<DID>,
     ) -> std::result::Result<usize, RPCErrors> {
+        self.upsert_zone_contacts(contacts, owner, "zone_user")
+            .await
+    }
+
+    pub async fn upsert_zone_agent_contacts(
+        &self,
+        contacts: Vec<ZoneUserContactSeed>,
+        owner: DID,
+    ) -> std::result::Result<usize, RPCErrors> {
+        self.upsert_zone_contacts(contacts, Some(owner), "zone_agent")
+            .await
+    }
+
+    async fn upsert_zone_contacts(
+        &self,
+        contacts: Vec<ZoneUserContactSeed>,
+        owner: Option<DID>,
+        membership_tag: &str,
+    ) -> std::result::Result<usize, RPCErrors> {
         let owner_scope = owner
             .as_ref()
             .map(|did| did.to_string())
@@ -1271,9 +1290,8 @@ impl ContactMgr {
                 let created = !store.contacts.contains_key(&did);
                 let contact =
                     Self::ensure_contact_exists(store, did.clone(), now_ms, ContactSource::Shared);
-                // Admission is granted when the DID first becomes a zone user
-                // contact; later (periodic) syncs keep the owner's own choice.
-                let newly_zone_user = created || !contact.tags.iter().any(|tag| tag == "zone_user");
+                let newly_zone_contact =
+                    created || !contact.tags.iter().any(|tag| tag == membership_tag);
 
                 let trimmed_name = name.trim();
                 if !trimmed_name.is_empty() {
@@ -1283,7 +1301,7 @@ impl ContactMgr {
                 }
                 contact.source = ContactSource::Shared;
                 contact.is_verified = true;
-                if newly_zone_user && contact.access_level != AccessGroupLevel::Block {
+                if newly_zone_contact && contact.access_level != AccessGroupLevel::Block {
                     contact.access_level = AccessGroupLevel::Friend;
                     contact.temp_grants.clear();
                 }
@@ -1294,11 +1312,11 @@ impl ContactMgr {
                     .or(contact.note.clone());
 
                 let mut merged_groups = groups;
-                merged_groups.push("zone_user".to_string());
+                merged_groups.push(membership_tag.to_string());
                 contact.groups = Self::merge_string_lists(&contact.groups, merged_groups);
 
                 let mut merged_tags = tags;
-                merged_tags.push("zone_user".to_string());
+                merged_tags.push(membership_tag.to_string());
                 contact.tags = Self::merge_string_lists(&contact.tags, merged_tags);
 
                 for binding in prepared_bindings {
@@ -1308,7 +1326,7 @@ impl ContactMgr {
                 updated = updated.saturating_add(1);
                 if created {
                     info!(
-                        "zone user contact added from system config scan: owner_scope={}, did={}, name={}, binding_count={}",
+                        "zone contact added from system config scan: owner_scope={}, did={}, name={}, binding_count={}",
                         owner_scope,
                         did.to_string(),
                         contact.name,

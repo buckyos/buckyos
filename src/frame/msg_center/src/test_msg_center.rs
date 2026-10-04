@@ -2963,6 +2963,135 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test]
+    async fn zone_agent_sync_establishes_mutual_friendship_without_a_tunnel() {
+        let (center, _tmp) = new_center("zone-agent-sync").await;
+        let owner = DID::new("web", "alice.test.buckyos.io");
+        let agent = name_lib::AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            owner.clone(),
+            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
+                .unwrap(),
+        );
+        let mut agent = agent;
+        agent
+            .extra_info
+            .insert("display_name".into(), json!("Jarvis"));
+        let users = vec![crate::contact_mgr::ZoneUserContactSeed {
+            did: owner.clone(),
+            name: "Alice".into(),
+            note: None,
+            bindings: vec![],
+            groups: vec![],
+            tags: vec![],
+        }];
+        crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
+            .await
+            .unwrap();
+
+        for (sender, recipient, name, tag) in [
+            (&owner, &agent.id, "Alice", "zone_user"),
+            (&agent.id, &owner, "Jarvis", "zone_agent"),
+        ] {
+            let contact = center
+                .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+            assert_eq!(contact.name, name);
+            assert!(contact.tags.iter().any(|value| value == tag));
+            inbound(
+                &center,
+                chat_at(sender, vec![recipient.clone()], "Hello", 8_100_000),
+                "agent-sync",
+                &sender.to_string(),
+            )
+            .await;
+            let mailbox = buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap();
+            for (kind, count) in [(MailboxKind::Inbox, 1), (MailboxKind::RequestBox, 0)] {
+                let records = center
+                    .handle_peek_box(mailbox.clone(), kind, None, None, None, ctx())
+                    .await
+                    .unwrap();
+                assert_eq!(records.len(), count);
+            }
+        }
+        assert!(center
+            .handle_get_contact(agent.id.clone(), Some(DID::new("bns", "bob")), ctx())
+            .await
+            .unwrap()
+            .is_none());
+
+        center
+            .handle_block_contact(agent.id.clone(), None, Some(owner.clone()), ctx())
+            .await
+            .unwrap();
+        center
+            .handle_update_contact(
+                owner.clone(),
+                buckyos_api::ContactPatch {
+                    access_level: Some(buckyos_api::AccessGroupLevel::Stranger),
+                    ..Default::default()
+                },
+                Some(agent.id.clone()),
+                ctx(),
+            )
+            .await
+            .unwrap();
+        crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
+            .await
+            .unwrap();
+        for (sender, recipient, level) in [
+            (&owner, &agent.id, buckyos_api::AccessGroupLevel::Stranger),
+            (&agent.id, &owner, buckyos_api::AccessGroupLevel::Block),
+        ] {
+            let contact = center
+                .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(contact.access_level, level);
+        }
+    }
+
+    #[tokio::test]
+    async fn zone_agent_sync_preserves_an_existing_block_on_first_sync() {
+        let (center, _tmp) = new_center("zone-agent-block").await;
+        let owner = DID::new("bns", "alice");
+        let agent = name_lib::AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            owner.clone(),
+            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
+                .unwrap(),
+        );
+        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+            center
+                .handle_block_contact(sender.clone(), None, Some(recipient.clone()), ctx())
+                .await
+                .unwrap();
+        }
+        crate::sync_zone_agent_contacts(&center, &[], &[agent.clone()])
+            .await
+            .unwrap();
+        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+            let result = center
+                .handle_dispatch(
+                    chat_at(sender, vec![recipient.clone()], "Blocked", 8_200_000),
+                    None,
+                    None,
+                    ctx(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.dropped_recipients, vec![recipient.clone()]);
+        }
+    }
+
+    #[tokio::test]
     async fn zone_user_tokens_scope_reads_and_writes_to_the_owner() {
         let (center, _tmp) = new_center("auth").await;
         let alice = DID::new("bns", "alice");

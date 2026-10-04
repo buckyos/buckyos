@@ -23,9 +23,10 @@ use ::kRPC::*;
 use anyhow::{Context, Result};
 use buckyos_api::{
     get_buckyos_api_runtime, init_buckyos_api_runtime, set_buckyos_api_runtime, AccountBinding,
-    BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
-    MsgCenterClient, MsgCenterServerHandler, SystemConfigClient, UserContactSettings,
-    UserPrivateProfile, UserSettings, UserState, MSG_CENTER_SERVICE_NAME, MSG_CENTER_SERVICE_PORT,
+    AgentSpec, BuckyOSRuntimeType, DeliveryRecordWithObject, DeliveryReportResult, DeliveryState,
+    MsgCenterClient, MsgCenterServerHandler, SystemConfigClient, SystemConfigError,
+    UserContactSettings, UserPrivateProfile, UserSettings, UserState, MSG_CENTER_SERVICE_NAME,
+    MSG_CENTER_SERVICE_PORT,
 };
 use buckyos_http_server::Runner;
 use buckyos_http_server::{
@@ -36,7 +37,7 @@ use bytes::Bytes;
 use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use log::{error, info, warn};
-use name_lib::DID;
+use name_lib::{AgentDocument, DID};
 use ndn_lib::{MsgContent, MsgContentFormat, MsgObject};
 use serde::Deserialize;
 use serde_json::Value;
@@ -526,7 +527,10 @@ fn build_zone_user_seed(
         return None;
     }
 
-    let mut contact_did = DID::new("bns", username);
+    let mut contact_did = profile
+        .as_ref()
+        .map(|profile| profile.did.clone())
+        .unwrap_or_else(|| DID::new("bns", username));
     let mut note = None;
     let mut groups = vec!["zone_user".to_string()];
     let mut tags = vec!["zone_user".to_string()];
@@ -542,8 +546,10 @@ fn build_zone_user_seed(
                     }
                     Err(error) => {
                         warn!(
-                            "invalid user contact.did, fallback to did:bns:{}: did={}, error={}",
-                            username, did, error
+                            "invalid user contact.did, fallback to {}: did={}, error={}",
+                            contact_did.to_string(),
+                            did,
+                            error
                         );
                     }
                 }
@@ -679,13 +685,15 @@ async fn sync_zone_user_contacts_once(
     raw_settings: &Value,
 ) -> Result<String> {
     let contacts = load_zone_user_contact_seeds().await?;
-    let signature = zone_user_seed_signature(&contacts);
+    let agents = load_zone_agent_documents().await?;
+    let signature = zone_contact_seed_signature(&contacts, &agents);
+    sync_zone_agent_contacts(center, &contacts, &agents).await?;
     sync_zone_user_contacts(center, contacts, raw_settings).await?;
     Ok(signature)
 }
 
 /// What a sync would write, without the per-load binding timestamps.
-fn zone_user_seed_signature(seeds: &[ZoneUserContactSeed]) -> String {
+fn zone_contact_seed_signature(seeds: &[ZoneUserContactSeed], agents: &[AgentDocument]) -> String {
     let mut parts: Vec<String> = seeds
         .iter()
         .map(|seed| {
@@ -717,6 +725,14 @@ fn zone_user_seed_signature(seeds: &[ZoneUserContactSeed]) -> String {
             )
         })
         .collect();
+    parts.extend(agents.iter().map(|agent| {
+        format!(
+            "agent|{}|{}|{}",
+            agent.id.to_string(),
+            agent.owner.to_string(),
+            zone_agent_contact_name(agent)
+        )
+    }));
     parts.sort();
     parts.join("\n")
 }
@@ -738,7 +754,14 @@ fn start_zone_user_sync(center: MessageCenter, mut last_applied: Option<String>)
                     continue;
                 }
             };
-            let signature = zone_user_seed_signature(&seeds);
+            let agents = match load_zone_agent_documents().await {
+                Ok(agents) => agents,
+                Err(error) => {
+                    warn!("periodic zone-agent scan failed: {}", error);
+                    continue;
+                }
+            };
+            let signature = zone_contact_seed_signature(&seeds, &agents);
             if last_applied.as_deref() == Some(signature.as_str()) {
                 continue;
             }
@@ -752,12 +775,124 @@ fn start_zone_user_sync(center: MessageCenter, mut last_applied: Option<String>)
                 }),
                 Err(_) => serde_json::json!({}),
             };
+            if let Err(error) = sync_zone_agent_contacts(&center, &seeds, &agents).await {
+                warn!("periodic zone-agent sync failed: {}", error);
+                continue;
+            }
             match sync_zone_user_contacts(&center, seeds, &settings).await {
                 Ok(()) => last_applied = Some(signature),
                 Err(error) => warn!("periodic zone-user sync failed: {}", error),
             }
         }
     });
+}
+
+async fn load_zone_agent_documents() -> Result<Vec<AgentDocument>> {
+    let client = get_buckyos_api_runtime()?
+        .get_system_config_client()
+        .await?;
+    let mut sources = Vec::new();
+    for agent_id in client.list("agents").await? {
+        sources.push((format!("agents/{agent_id}"), agent_id, false));
+    }
+    for user_id in client.list("users").await? {
+        let prefix = format!("users/{user_id}/agents");
+        for agent_id in client.list(&prefix).await? {
+            sources.push((format!("{prefix}/{agent_id}"), agent_id, true));
+        }
+    }
+    let mut agents = HashMap::new();
+    for (prefix, agent_id, is_spec) in sources {
+        let field = if is_spec { "spec" } else { "doc" };
+        let value = match client.get(&format!("{prefix}/{field}")).await {
+            Ok(value) => value,
+            Err(SystemConfigError::KeyNotFound(_)) => continue,
+            Err(error) => return Err(error.into()),
+        };
+        let doc = parse_zone_agent_document(&value.value, &agent_id, is_spec)?;
+        let settings = match client.get(&format!("{prefix}/settings")).await {
+            Ok(value) => serde_json::from_str::<Value>(&value.value)?,
+            Err(SystemConfigError::KeyNotFound(_)) => Value::Null,
+            Err(error) => return Err(error.into()),
+        };
+        if settings.get("state").and_then(Value::as_str) == Some("deleted") {
+            agents.remove(&doc.id);
+            continue;
+        }
+        agents.insert(doc.id.clone(), doc);
+    }
+    Ok(agents.into_values().collect())
+}
+
+fn parse_zone_agent_document(value: &str, agent_id: &str, is_spec: bool) -> Result<AgentDocument> {
+    if !is_spec {
+        return Ok(serde_json::from_str(value)?);
+    }
+    let spec: AgentSpec = serde_json::from_str(value)?;
+    spec.validate().map_err(|error| anyhow::anyhow!(error))?;
+    anyhow::ensure!(
+        spec.agent_id.as_str() == agent_id,
+        "AgentSpec key does not match its identity"
+    );
+    Ok(spec.agent_doc)
+}
+
+fn zone_agent_contact_name(agent: &AgentDocument) -> String {
+    if let Some(name) = agent
+        .extra_info
+        .get("display_name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return name.to_string();
+    }
+    let label = agent.id.id.split('.').next().unwrap_or(&agent.id.id);
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => agent.id.to_string(),
+    }
+}
+
+async fn sync_zone_agent_contacts(
+    center: &MessageCenter,
+    users: &[ZoneUserContactSeed],
+    agents: &[AgentDocument],
+) -> Result<()> {
+    for agent in agents {
+        let owner_contact = users
+            .iter()
+            .find(|user| user.did == agent.owner)
+            .cloned()
+            .unwrap_or_else(|| ZoneUserContactSeed {
+                did: agent.owner.clone(),
+                name: agent.owner.id.clone(),
+                note: None,
+                bindings: vec![],
+                groups: vec![],
+                tags: vec![],
+            });
+        center.register_local_recipients([agent.id.clone()]);
+        center
+            .upsert_zone_user_contacts(vec![owner_contact], Some(agent.id.clone()))
+            .await?;
+        center
+            .contact_mgr
+            .upsert_zone_agent_contacts(
+                vec![ZoneUserContactSeed {
+                    did: agent.id.clone(),
+                    name: zone_agent_contact_name(agent),
+                    note: None,
+                    bindings: vec![],
+                    groups: vec![],
+                    tags: vec!["agent".to_string()],
+                }],
+                agent.owner.clone(),
+            )
+            .await?;
+    }
+    Ok(())
 }
 
 async fn sync_zone_user_contacts(
@@ -1198,6 +1333,85 @@ async fn main() {
     init_logging("msg_center", true);
     if let Err(err) = start_msg_center_service().await {
         error!("msg-center service start failed: {:?}", err);
+    }
+}
+
+#[cfg(test)]
+mod zone_contact_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn installed_agent_spec_supplies_the_owner_and_default_name() {
+        let (_, public_key) = name_lib::generate_ed25519_key_pair();
+        let agent = AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            DID::new("web", "alice.test.buckyos.io"),
+            serde_json::from_value(public_key).unwrap(),
+        );
+        let doc = serde_json::to_value(&agent).unwrap();
+        let object_id = ndn_lib::build_named_object_by_json("agentdoc", &doc).0;
+        let agent_id = buckyos_api::AgentId::from_agent_did(&agent.id).unwrap();
+        let spec = json!({
+            "schema_version": buckyos_api::AGENT_SPEC_SCHEMA_VERSION,
+            "agent_id": agent_id,
+            "agent_did": agent.id,
+            "agent_doc_object_id": object_id,
+            "agent_doc": doc,
+            "binding": {
+                "schema_version": buckyos_api::AGENT_SPEC_SCHEMA_VERSION,
+                "agent_did": agent.id,
+                "agent_doc_object_id": object_id,
+                "target_app_instance_id": "jarvis.buckyos.ai@alice",
+                "service_name": "www",
+                "generation": 1
+            },
+            "generation": 1
+        });
+        let loaded = parse_zone_agent_document(&spec.to_string(), agent_id.as_str(), true).unwrap();
+        assert_eq!(loaded, agent);
+        assert_eq!(zone_agent_contact_name(&loaded), "Jarvis");
+        assert!(parse_zone_agent_document(&spec.to_string(), "different-agent", true).is_err());
+        assert_eq!(
+            parse_zone_agent_document(&doc.to_string(), agent_id.as_str(), false).unwrap(),
+            agent
+        );
+    }
+
+    #[test]
+    fn zone_user_contact_uses_the_profile_did() {
+        let profile: UserPrivateProfile = serde_json::from_value(json!({
+            "did": "did:web:alice.test.buckyos.io",
+            "display_name": "Alice"
+        }))
+        .unwrap();
+        let settings: UserSettings = serde_json::from_value(json!({
+            "user_id": "alice", "type": "user", "password": "", "state": "active",
+            "res_pool_id": "default"
+        }))
+        .unwrap();
+        let seed = build_zone_user_seed("alice", settings, Some(profile.clone())).unwrap();
+        assert_eq!(seed.did, profile.did);
+        assert_eq!(seed.name, "Alice");
+    }
+
+    #[test]
+    fn agent_changes_trigger_contact_sync() {
+        let (_, public_key) = name_lib::generate_ed25519_key_pair();
+        let mut agent = AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            DID::new("bns", "alice"),
+            serde_json::from_value(public_key).unwrap(),
+        );
+        let original = zone_contact_seed_signature(&[], &[agent.clone()]);
+        assert_ne!(original, zone_contact_seed_signature(&[], &[]));
+        agent
+            .extra_info
+            .insert("display_name".into(), json!("My assistant"));
+        let renamed = zone_contact_seed_signature(&[], &[agent.clone()]);
+        assert_ne!(original, renamed);
+        agent.owner = DID::new("bns", "bob");
+        assert_ne!(renamed, zone_contact_seed_signature(&[], &[agent]));
     }
 }
 

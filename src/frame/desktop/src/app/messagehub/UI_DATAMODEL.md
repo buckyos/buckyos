@@ -1421,7 +1421,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `GroupInfo` | `group.get_doc` / `group.list_members` / `group.list_sessions` / `group.check_access` | 见 3.7 |
 | `AccountBinding.endpointDid` | `Contact.bindings[].endpoint_did` | 直接 |
 | `EntityDetail.accessLevel` | `Contact.access_level` | `SCREAMING`→`snake` 已由 serde 处理 |
-| 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；请求处理状态与跨页计数待补齐 |
+| 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；当前已为 Friend 时不显示会话顶部待接收 / 拉黑提示，历史请求计数仍可在详情查看；请求处理状态与跨页计数待补齐 |
 | 群操作能力 | `group.check_access` | 按 actor 和 action（`session.post` 带 session_id）查询，不由 native / 本地托管推断 |
 | 回执详情 | `msg.list_read_receipts` | 独立于 mailbox 与 delivery；当前持久性限制见 6.5 |
 
