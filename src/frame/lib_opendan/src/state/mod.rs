@@ -6,7 +6,9 @@
 
 mod activity;
 mod artifacts;
+mod behaviors;
 mod cognition;
+mod connect;
 mod fs_client;
 mod locks;
 mod perception;
@@ -25,7 +27,15 @@ pub use activity::{
     STALE_HEARTBEAT_MS,
 };
 pub use artifacts::{nearest_valid_base, DecideResult};
+pub use behaviors::{
+    freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog, FsBehaviorCatalog,
+    MemBehaviorCatalog,
+};
 pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
+pub use connect::{
+    connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
+    StateLocator, WithBehaviors, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
+};
 pub use fs_client::{AgentLayout, FsAgentStateClient};
 pub use perception::{run_digest, Backlog, BacklogItem};
 
@@ -39,6 +49,22 @@ pub trait SessionRegistry: Send + Sync {
     async fn report_state(&self, lease: &Lease, sid: &str, status: SessionStatus) -> Result<bool>;
     async fn lookup(&self, sid: &str) -> Result<Option<RegistryEntry>>;
     async fn query(&self, q: &RegistryQuery) -> Result<Vec<RegistryEntry>>;
+    /// Sub sessions of `parents` (`origin.parent_session`), by session id.
+    async fn children_of(&self, parents: &[String]) -> Result<Vec<RegistryEntry>> {
+        let mut out: Vec<RegistryEntry> = self
+            .query(&RegistryQuery::default())
+            .await?
+            .into_iter()
+            .filter(|e| {
+                e.origin
+                    .as_ref()
+                    .and_then(|o| o.parent_session.as_ref())
+                    .is_some_and(|p| parents.contains(p))
+            })
+            .collect();
+        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        Ok(out)
+    }
     /// Driver only: the session directory moved.
     async fn update_location(&self, lease: &Lease, sid: &str, location: &Path) -> Result<()>;
     /// Mark entries whose location vanished as unreachable (never deletes).
@@ -136,4 +162,7 @@ pub trait AgentStateClient: Send + Sync {
     fn cognition(&self) -> &dyn Cognition;
     fn artifacts(&self) -> &dyn Artifacts;
     fn locks(&self) -> &dyn LockManager;
+    /// The agent's behaviors and identity text (frozen into a session when
+    /// it is constructed).
+    fn behaviors(&self) -> &dyn BehaviorCatalog;
 }

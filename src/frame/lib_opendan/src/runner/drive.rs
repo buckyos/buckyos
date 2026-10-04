@@ -44,7 +44,10 @@ use super::outcome::{
 };
 use super::receipts::internal_task_key;
 use super::reconcile::{reconcile_runs, Reconciled};
-use super::shared::{commit_and_report, report, LiveCtx, Opened, Shared, WaitingRun};
+use super::children::poll_children;
+use super::shared::{
+    commit_and_report, report, ClosedTurn, LiveCtx, Opened, Shared, WaitingRun,
+};
 use super::{DriveResult, RunnerDeps, StopWhen};
 
 /// Advance a session until `until` (§8.2).
@@ -113,78 +116,11 @@ async fn drive_locked(
         _ => return DriveResult::Unregistered,
     }
     let mut deps = deps.clone();
-    let mut config = deps.runtime.config();
-    let declared = session.config.prompt.llm_context.get("runtime").cloned();
-    if let Some(value) = declared {
-        let parsed = agent_tool::xllm::parse_llm_context_file(
-            &sd.path().join("session_config.json"),
-            &serde_json::json!({"runtime":value}).to_string(),
-        );
-        match parsed {
-            Ok(file) => {
-                if let Some(r) = file.runtime {
-                    let original = config.clone();
-                    config.merge_over(&r);
-                    if original.kind() != config.kind()
-                        || original
-                            .id
-                            .as_ref()
-                            .is_some_and(|id| config.id.as_ref() != Some(id))
-                        || original
-                            .workdir
-                            .as_ref()
-                            .is_some_and(|cwd| config.workdir.as_ref() != Some(cwd))
-                        || original
-                            .remote_ssh
-                            .as_ref()
-                            .is_some_and(|ssh| config.remote_ssh.as_ref() != Some(ssh))
-                        || original
-                            .env
-                            .iter()
-                            .any(|(k, v)| config.env.get(k) != Some(v))
-                        || original.tmux.as_ref().is_some_and(|tmux| {
-                            config.tmux.as_ref().is_none_or(|new| {
-                                tmux.session
-                                    .as_ref()
-                                    .is_some_and(|v| new.session.as_ref() != Some(v))
-                                    || tmux
-                                        .socket
-                                        .as_ref()
-                                        .is_some_and(|v| new.socket.as_ref() != Some(v))
-                                    || tmux.mode.is_some_and(|v| new.mode != Some(v))
-                            })
-                        })
-                    {
-                        return DriveResult::BindFailed {
-                            error: serde_json::json!({"kind":"RuntimeMismatch","reason":"provided runtime differs from prompt.llm_context.runtime"}),
-                        };
-                    }
-                }
-            }
-            Err(e) => {
-                return DriveResult::BindFailed {
-                    error: serde_json::json!({"kind":"Config","reason":e.to_string()}),
-                }
-            }
-        }
+    match crate::runtime::session_runtime(sd, &session.config, &deps.runtime, deps.agent.agent_root()) {
+        Ok(r) => deps.runtime = r,
+        Err(e) => return DriveResult::BindFailed { error: e.to_json() },
     }
-    if config.workdir.is_none() {
-        match crate::runtime::resolve_workdir(sd, &session.config, deps.agent.agent_root()) {
-            Ok(p) => config.workdir = Some(p.display().to_string()),
-            Err(e) => return DriveResult::BindFailed { error: e.to_json() },
-        }
-    }
-    if config != deps.runtime.config() {
-        match agent_tool::runtime::RuntimeRegistry::from_config(&config) {
-            Ok(r) => deps.runtime = r,
-            Err(e) => {
-                return DriveResult::BindFailed {
-                    error: serde_json::json!({"reason":e.to_string()}),
-                }
-            }
-        }
-    }
-    let sources = match deps.inputs.open(&session.config).await {
+    let mut sources = match deps.inputs.open(&session.config).await {
         Ok(s) => s,
         Err(e) => {
             return DriveResult::Error {
@@ -193,6 +129,13 @@ async fn drive_locked(
             }
         }
     };
+    if !session.config.prompt.initial_inputs.is_empty() {
+        // Bootstrap material of a session without a queue: a read-only
+        // source consumed through the same routing and receipts.
+        sources.push(Arc::new(crate::channel::BootstrapSource::new(
+            &session.config.prompt.initial_inputs,
+        )));
+    }
     let sh = Arc::new(Shared {
         deps: deps.clone(),
         lease: lease.clone(),
@@ -204,6 +147,7 @@ async fn drive_locked(
         dir: sd.clone(),
         kind_lease: Mutex::new(None),
         tasks: Mutex::new(None),
+        turn_closed: Mutex::new(None),
     });
     let r = Box::pin(drive_inner(&sh, until)).await;
     let rev = sh.session.lock().await.state.rev;
@@ -240,6 +184,53 @@ async fn record_error(sh: &Arc<Shared>, e: &OpenDanError) {
     if let Err(err) = commit_and_report(sh, &mut s).await {
         log::warn!("cannot record error of {}: {err}", sh.dir.sid());
     }
+}
+
+/// Freeze what the session still needs from the agent's behavior catalog
+/// (the whole closure at the first drive, one behavior on its first use
+/// later) and commit the changed configuration (`config_rev + 1`,
+/// `control_applied{behavior_frozen}`).
+pub(super) async fn ensure_frozen(sh: &Arc<Shared>, behavior: Option<&str>) -> Result<()> {
+    let cfg = sh.session.lock().await.config.clone();
+    let Some(next) = sh
+        .deps
+        .assembler
+        .ensure_frozen(&cfg, behavior, sh.agent(), &sh.deps.who)
+        .await?
+    else {
+        return Ok(());
+    };
+    let added: Vec<String> = next
+        .prompt
+        .frozen
+        .iter()
+        .flat_map(|f| f.behaviors.keys())
+        .filter(|k| {
+            !cfg.prompt
+                .frozen
+                .as_ref()
+                .is_some_and(|f| f.behaviors.contains_key(*k))
+        })
+        .cloned()
+        .collect();
+    let mut s = sh.session.lock().await;
+    s.config = next;
+    s.write_config(&sh.lease)?;
+    let rev = s.config.config_rev;
+    s.append_worklog(
+        &sh.lease,
+        vec![WorklogBody::ControlApplied {
+            input: InputRef {
+                src: "_runner".into(),
+                index: 0,
+                key: format!("behavior_frozen@{rev}"),
+                kind: INPUT_TYPE_CONTROL.into(),
+            },
+            command: "behavior_frozen".into(),
+            detail: serde_json::json!({ "behaviors": added, "config_rev": rev }),
+        }],
+    )?;
+    commit_and_report(sh, &mut s).await
 }
 
 async fn catch_up(sh: &Arc<Shared>) -> Result<()> {
@@ -313,6 +304,7 @@ async fn stop_session(
     };
     let mut live = live;
     let mut waiting = waiting;
+    stop_children(sh).await;
     // A run state still references (e.g. a caller just resumed after its sub
     // context) ends through the normal finish path.
     if live.is_none() && waiting.is_none() && sh.session.lock().await.state.live_run.is_some() {
@@ -372,10 +364,41 @@ async fn stop_session(
                     status: TurnStatus::Stopped,
                     at_ms: crate::now_ms(),
                 });
+                *sh.turn_closed.lock().expect("turn closed") = Some(ClosedTurn {
+                    turn,
+                    status: TurnStatus::Stopped,
+                    answer: None,
+                });
             }
             s.append_worklog(&sh.lease, bodies)?;
             commit_and_report(sh, &mut s).await?;
             Ok(())
+        }
+    }
+}
+
+/// A stopped parent stops its sub sessions that are not finished: those with
+/// a queue get a `stop`; one without a queue is stopped by whoever drives it
+/// (the host of this process stops the sub sessions it drives when their
+/// parent finished as stopped).
+async fn stop_children(sh: &Arc<Shared>) {
+    let me = sh.dir.sid().to_string();
+    let Ok(children) = sh.agent().sessions().children_of(&[me.clone()]).await else {
+        return;
+    };
+    for e in children {
+        if e.status.run_state == RunState::Finished || e.input_queue.is_none() {
+            continue;
+        }
+        let input = PostedInput::control(
+            &sh.deps.who,
+            format!("stop:parent:{me}"),
+            ControlCommand::Stop {
+                reason: Some(format!("parent session {me} was stopped")),
+            },
+        );
+        if let Err(err) = sh.agent().sessions().post_input(&e.session_id, &input).await {
+            log::warn!("cannot stop sub session {}: {err}", e.session_id);
         }
     }
 }
@@ -540,11 +563,11 @@ impl StopMonitor {
         let sh = sh.clone();
         let task = tokio::spawn(async move {
             loop {
-                sh.deps
-                    .waker
-                    .wait(wake_event.as_deref(), sh.deps.options.poll_interval)
-                    .await;
-                if stop_queued(&sh).await {
+                tokio::select! {
+                    _ = sh.deps.waker.wait(wake_event.as_deref(), sh.deps.options.poll_interval) => {}
+                    _ = sh.deps.stop.wait() => {}
+                }
+                if sh.deps.stop.requested() || stop_queued(&sh).await {
                     flag.store(true, Ordering::SeqCst);
                     if let Some(h) = sh.interrupt.lock().expect("interrupt lock").as_ref() {
                         h.interrupt("session stop requested");
@@ -563,6 +586,67 @@ impl StopMonitor {
         let _ = self.task.await;
         self.seen.load(Ordering::SeqCst)
     }
+}
+
+/// `StopWhen::TurnClosed`: the Turn a commit of this drive closed.
+async fn turn_closed_result(sh: &Arc<Shared>, until: StopWhen) -> Option<DriveResult> {
+    if until != StopWhen::TurnClosed {
+        return None;
+    }
+    let closed = sh.turn_closed.lock().expect("turn closed").clone()?;
+    let rev = sh.session.lock().await.state.rev;
+    Some(DriveResult::TurnClosed {
+        rev,
+        turn: closed.turn,
+        status: closed.status,
+        answer: closed.answer,
+    })
+}
+
+/// `StopWhen::TurnClosed` without a Turn closed by this drive: the open
+/// Turn as it is, or `Idle` when there is none (never a made-up Turn).
+async fn turn_open_result(sh: &Arc<Shared>) -> DriveResult {
+    let s = sh.session.lock().await;
+    match &s.state.open_turn {
+        Some(t) => DriveResult::TurnOpen {
+            rev: s.state.rev,
+            turn: t.index,
+            waiting_for: s.state.waiting_for.clone(),
+        },
+        None if s.state.is_finished() => finished_result(&s),
+        None => DriveResult::Idle {
+            rev: s.state.rev,
+            run_state: s.state.run_state,
+        },
+    }
+}
+
+/// A stop requested by the driving process (`RunnerDeps.stop`): recorded
+/// like a consumed `stop` control, then handled by the same path.
+async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
+    if !sh.deps.stop.requested() {
+        return Ok(());
+    }
+    let mut s = sh.session.lock().await;
+    if s.state.stop_requested || s.state.is_finished() {
+        return Ok(());
+    }
+    s.state.stop_requested = true;
+    let rev = s.state.rev;
+    s.append_worklog(
+        &sh.lease,
+        vec![WorklogBody::ControlApplied {
+            input: InputRef {
+                src: "_runner".into(),
+                index: 0,
+                key: format!("stop@{rev}"),
+                kind: INPUT_TYPE_CONTROL.into(),
+            },
+            command: "stop".into(),
+            detail: serde_json::json!({ "reason": "the driving process was asked to stop", "from": sh.deps.who }),
+        }],
+    )?;
+    commit_and_report(sh, &mut s).await
 }
 
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
@@ -644,6 +728,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let env = crate::runtime::open_session_env(&binding, &ctx);
         (binding, env)
     };
+    // Behaviors come from the agent's catalog: frozen before any inference
+    // (the creator may not have been able to read the catalog).
+    ensure_frozen(sh, None).await?;
+    sh.session
+        .lock()
+        .await
+        .config
+        .behaviors()
+        .map_err(OpenDanError::InvalidArgument)?;
     // Recovery: runs, receipts, executions — before reading any new input.
     // The snapshot, the committed state and what the run waits for are
     // aligned first; a task that already ended is collected, only a task
@@ -662,6 +755,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         Reconciled::Resume(_, snapshot) => pending_task_ids(snapshot),
         Reconciled::None => Vec::new(),
     };
+    // A Turn closed by the recovery itself is this drive's result.
+    if let Some(r) = turn_closed_result(sh, until).await {
+        return Ok(r);
+    }
     let mut routed = route_inputs(sh, false, &pending_now).await?;
     if sh.session.lock().await.state.is_finished() {
         return Ok(finished_result(&*sh.session.lock().await));
@@ -676,8 +773,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     let mut outcomes_handled = 0u64;
     loop {
         sh.lease.check()?;
+        external_stop(sh).await?;
         if sh.session.lock().await.state.stop_requested {
             Box::pin(stop_session(sh, live.take(), waiting.take(), &env)).await?;
+            if let Some(r) = turn_closed_result(sh, until).await {
+                return Ok(r);
+            }
             return Ok(finished_result(&*sh.session.lock().await));
         }
         if let StopWhen::MaxOutcomes { n } = until {
@@ -720,6 +821,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                         return Ok(DriveResult::OutcomesHandled { rev, run_state: rs });
                     }
                     if started.elapsed() >= sh.deps.options.max_wait {
+                        if until == StopWhen::TurnClosed {
+                            return Ok(turn_open_result(sh).await);
+                        }
                         return Ok(DriveResult::Idle { rev, run_state: rs });
                     }
                     if !routed.task_notified {
@@ -729,7 +833,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                             pause = pause.min(Duration::from_millis(left));
                         }
                         let wake = sh.session.lock().await.config.channels.wake_event.clone();
-                        sh.deps.waker.wait(wake.as_deref(), pause).await;
+                        tokio::select! {
+                            _ = sh.deps.waker.wait(wake.as_deref(), pause) => {}
+                            _ = sh.deps.stop.wait() => {}
+                        }
                     }
                     routed = route_inputs(sh, false, &w.task_ids()).await?;
                     waiting = Some(w);
@@ -773,8 +880,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let entry = if behavior.is_empty() {
             None
         } else {
+            // First use of a behavior the freeze did not cover.
+            ensure_frozen(sh, Some(&behavior)).await?;
+            let cfg = sh.session.lock().await.config.clone();
             Some(sh.deps.assembler.behavior_entry(&cfg, &behavior)?)
         };
+        let cfg = sh.session.lock().await.config.clone();
         let (templates, input_cfg) = cfg.input_config(entry.as_ref());
         // Candidates: msg and accepted Input events of the bus, then the
         // completions of watched background tasks.
@@ -782,6 +893,8 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if !hold_inputs {
             let mut candidates = std::mem::take(&mut routed.candidates);
             candidates.extend(poll_watched_tasks(sh).await?);
+            // What the session's sub sessions need from it (xAgent §4.14).
+            candidates.extend(poll_children(sh, &[]).await?);
             let take = match input_cfg.mode {
                 InputMode::Single => 1,
                 InputMode::Batch => sh.deps.options.input_batch_max.max(1),
@@ -804,7 +917,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let mut media = Vec::new();
         if triggered {
             let me = sh.agent().sessions().lookup(sh.dir.sid()).await?;
+            let policy = &cfg.session.policy;
             let hints = if sh.deps.options.load_hints
+                && policy.load_hints
                 && (!state.bootstrap_done || !picked.is_empty())
             {
                 sh.agent()
@@ -818,12 +933,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             } else {
                 Vec::new()
             };
-            let active = sh
-                .agent()
-                .activity()
-                .active(me.as_ref(), sh.deps.options.active_sessions_limit)
-                .await
-                .unwrap_or_default();
+            let active = if policy.observe == ObserveScope::EventsAndActive {
+                sh.agent()
+                    .activity()
+                    .active(me.as_ref(), sh.deps.options.active_sessions_limit)
+                    .await
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let now_ms = crate::now_ms();
             let items: Vec<InputItem> = picked
                 .iter()
@@ -915,10 +1033,35 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 let s = sh.session.lock().await;
                 (s.state.rev, s.state.run_state)
             };
+            // Sub sessions and followed tasks advance without this
+            // session's queue: waiting for them is polling, with or without
+            // an input channel.
+            let advancing = {
+                let s = sh.session.lock().await;
+                !s.state.watched_tasks.is_empty()
+                    || s.state
+                        .waiting_for
+                        .as_ref()
+                        .is_some_and(|w| w.kind == WaitingKind::Children)
+            };
             match until {
                 StopWhen::Idle => return Ok(DriveResult::Idle { rev, run_state: rs }),
                 StopWhen::MaxOutcomes { .. } => {
                     return Ok(DriveResult::OutcomesHandled { rev, run_state: rs })
+                }
+                StopWhen::TurnClosed
+                    if !advancing || started.elapsed() >= sh.deps.options.max_wait =>
+                {
+                    return Ok(turn_open_result(sh).await);
+                }
+                StopWhen::TurnClosed => {
+                    let wake = cfg.channels.wake_event.clone();
+                    tokio::select! {
+                        _ = sh.deps.waker.wait(wake.as_deref(), sh.deps.options.poll_interval) => {}
+                        _ = sh.deps.stop.wait() => {}
+                    }
+                    routed = route_inputs(sh, false, &[]).await?;
+                    continue;
                 }
                 StopWhen::Finished => {
                     if sh.session.lock().await.state.last_error.is_some() {
@@ -935,10 +1078,10 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     // or repeating it changes nothing, persisted inputs are
                     // found by the poll.
                     let wake = cfg.channels.wake_event.clone();
-                    sh.deps
-                        .waker
-                        .wait(wake.as_deref(), sh.deps.options.poll_interval)
-                        .await;
+                    tokio::select! {
+                        _ = sh.deps.waker.wait(wake.as_deref(), sh.deps.options.poll_interval) => {}
+                        _ = sh.deps.stop.wait() => {}
+                    }
                     routed = route_inputs(sh, false, &[]).await?;
                     if sh.session.lock().await.state.is_finished() {
                         return Ok(finished_result(&*sh.session.lock().await));
@@ -962,7 +1105,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         if let Some(text) = msg {
             // The semi-subscription snapshot is assembled right before the
             // controlled input and committed with it as one batch.
-            let (views, shown) = select_snapshot(&state, sh.deps.options.change_budget);
+            let budget = match cfg.session.policy.observe {
+                ObserveScope::Off => 0,
+                _ => sh.deps.options.change_budget,
+            };
+            let (views, shown) = select_snapshot(&state, budget);
             let snapshot = sh
                 .deps
                 .assembler
@@ -990,6 +1137,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             // The stop is consumed and committed by the driver before the
             // interrupted outcome is interpreted.
             route_inputs(sh, true, &[]).await?;
+            external_stop(sh).await?;
         }
         let next = Box::pin(handle_context_outcome(sh, &mut lc, outcome?)).await?;
         outcomes_handled += 1;
@@ -1005,6 +1153,11 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             let s = sh.session.lock().await;
             (s.state.rev, s.state.run_state)
         };
+        // The Turn this outcome closed is the result asked for, also when
+        // the session finished with it.
+        if let Some(r) = turn_closed_result(sh, until).await {
+            return Ok(r);
+        }
         if next.finished {
             return Ok(finished_result(&*sh.session.lock().await));
         }
@@ -1018,6 +1171,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
             && until == StopWhen::Idle
             && next.kind != FinishKind::PendingTool
             && routed.candidates.is_empty()
+            && poll_children(sh, &pending_now).await?.is_empty()
         {
             return Ok(DriveResult::Idle { rev, run_state: rs });
         }

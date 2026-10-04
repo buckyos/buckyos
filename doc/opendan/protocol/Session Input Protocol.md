@@ -1,6 +1,6 @@
 # Session Input Protocol（Agent 输入）
 
-版本 3（`opendan.session_input/3`）· 2026-10-03 · 由 `libopendan` 反写（`src/protocol/input.rs`、`src/channel/kmsg.rs`、`src/runner/{inputs,input_view,assembler,receipts,live,drive}.rs`、`src/bridge/`）。
+版本 3（`opendan.session_input/3`）· 2026-10-03 · 由 `libopendan` 反写（`src/protocol/input.rs`、`src/channel/{mod,kmsg}.rs`、`src/runner/{inputs,input_view,assembler,receipts,live,drive,children}.rs`、`src/bridge/`）。§10（Sub Session）与内部输入源 `_bootstrap` / `_child` 随 session_config/5 加入。
 
 总线上的记录有三种：`msg`、`event`（Agent 的输入）和 `control`（Session 控制，见 [Session Control Protocol](<Session Control Protocol.md>)）。本文说明记录的线格式、接收方如何处理、输入如何成为上下文里的 user 消息，以及崩溃后如何恢复。输入批次与逻辑 Turn 的关系见 [Session Directory Protocol](<Session Directory Protocol.md>) §4。机器可读样例与逐字节渲染结果在 `fixtures/14_input_bus/`。
 
@@ -280,3 +280,17 @@ bridge 只转换来源并可靠投递（先 `post`，成功后再确认上游；
 - stop：可取消的 task 被取消，每个挂起调用按当时状态回填，run 以 Stopped 结束。工具执行期间由监视任务查看队列中的 stop 并打断运行（只查看，不消费、不写 state）。
 - **并行等待**：调用已返回、task 继续运行。run 结束而 Session 未 finished 时，仍在运行的 task 记入 `state.watched_tasks`；之后每轮用保存的 task id 查询，结束时合成 `AgentEvent{source: task:<id>, terminal: true}`：有显式订阅按其 active / semi 处理，否则作为 Input 事件。不依赖输入队列或通知；finished 的 Session 不因 task 完成而重开。
 - 经外部服务创建任务的工具用在途记录里的 `idempotency_key`（由 run 与 call 的稳定身份导出）作为幂等键。
+- 崩溃恢复：run 的终态已落盘而 state 尚未提交时，重做的结束从 run.json 的 `host.extra.tasks` 取回仍需跟踪的 task（[Session Directory Protocol](<Session Directory Protocol.md>) §7），其完成只交付一次。
+
+## 10. Sub Session：创建、汇报与等待
+
+Sub Session 是 `origin.parent_session` 指向父的普通 Session：自己的目录、state、worklog、Turn 与 lease，驱动者默认是父的驱动者。父子都只写自己的 state.json，彼此只经登记表、输入通道与控制协议沟通；登记表里的状态是真相，下面的事件只是加速。
+
+- **创建**（参考实现 `api::create_sub_session`，CLI `agent-session create-worksession`）：`origin = {parent_session, report, created_by_call}`。幂等键由 `(父 session_id, run_id, call_id)` 导出：同一次调用重放得到同一个 Session。超过父的 `policy.max_sub_sessions`（同时未结束）或 `max_session_depth` 时拒绝。继承父的 `prompt.llm_context`（含 runtime 配置；绑定身份是子自己的）、默认共用父的工作目录。首批输入是所属 Agent 自己发出的 MsgObject：子没有队列时进 `prompt.initial_inputs`，有队列（interactive）时投递到队列。创建不推进子 Session。
+- **隐式关注**：父的 Runner 按 `origin.parent_session = 自己` 查登记表（每次选批之前、以及等待期间的每次轮询），不需要订阅，父也不需要输入队列。`origin.report` 为 `none` 或缺省的子不产生任何事件。
+  - 进度（仅 `report = progress`，子未结束）：`status.rev` 前进且 `{run_state, one_line_status, activity.summary}` 变化时，合成 `AgentEvent{subscription_id: "_child:<sid>", source: session:<sid>, event: "progress", seq: rev}` 并入 `pending_events`（Observe），游标存 `state.subscription_cursors["_child:<sid>"] = {rev, view}`。
+  - 需要关注与结束：子 `finished` → `event = finished`（`terminal = true`，summary 含 `report_brief`）；有 `pending_decision` → `needs_decision`；`run_state = waiting` 且 `status.waiting_for = input` → `needs_input`。它们是 **Input**：作为内部输入源 `_child` 的候选（`key = child:<sid>:<event>@<rev>`，index 0）进入受控输入批次，可开启或并入 Turn。候选在每次选批时重新合成，直到消费它的批次的 receipt 提交：应用 receipt 时把 `subscription_cursors["_child:<sid>"].attention` 置为该事件名，同一状态不再交付；子离开该状态后清空，下次进入是新的事件。`_child` 与 `_task` 一样没有总线消费位置。
+- **同步等待**：工具返回 `Pending{task_id: "session:<sid>"}`（`create-worksession --wait`、`wait <sid>`）时父 run 以 PendingTool 挂起，按 §9 的串行等待处理；该 task id 由宿主 Session 的 resolver 只读登记表解析：结束 → 结果 `{session_id, status: finished, outcome, acceptance, one_line_status, report_brief, answer_ref, artifact_id}`；等输入 / 等决定 → `{status: needs_input | needs_decision, question}`；其它继续等。被挂起调用等待的子不产生 `_child` 候选；回填时把当时的状态记为已交付，结束不再作为事件重复注入。等待不拥有该 Session：`cancel` 不支持，stop 是显式的控制命令。不具备这个 resolver 的执行方（独立 xllm）`can_resolve = false`，拒绝接手。
+- **父结束规则**：见 [Session Directory Protocol](<Session Directory Protocol.md>) §4 的 `waiting_for = children`。`run`、`serve` 与等待循环在 `waiting_for.kind = children` 或 `watched_tasks` 非空时轮询登记表 / resolver，不以“没有输入队列”为返回依据。
+- **stop 级联**：父被 stop 时，对未结束且有输入队列的子投递 `stop`；没有队列的子由驱动它的宿主以驱动者自己的停止请求结束（见 [Session Control Protocol](<Session Control Protocol.md>)）。子被 stop 只在父那里表现为一次 `finished`（outcome stopped）。
+- **推进**：子由其驱动者身份的托管进程推进（参考实现 `host::ChildDriver`：轮询登记表，为每个未结束、未被驱动的子按其自己的配置装配 runtime 后 `drive(Idle)`，各持自己的 lease）。宿主进程退出只停止这些任务，不改变已提交状态；重启后从登记表重新接管。

@@ -4,6 +4,7 @@
 //! protocol piece used here is xllm's run directory (§8.7).
 
 pub mod assembler;
+mod children;
 mod drive;
 pub mod input_view;
 mod flush;
@@ -33,7 +34,10 @@ use crate::runtime::AgentRuntime;
 use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
-pub use assembler::{render_template, DefaultAssembler, InputMaterial, SessionAssembler};
+pub use assembler::{
+    render_template, BehaviorAssembler, DefaultAssembler, InputMaterial, SessionAssembler,
+};
+pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
@@ -57,6 +61,10 @@ pub enum StopWhen {
     /// error (`Error`), or has nothing to run (`OutcomesHandled`, which then
     /// reports the waiting state).
     MaxOutcomes { n: u64 },
+    /// Return when a Turn was closed by this drive (its recovery included),
+    /// with that Turn's result. A return condition only: what closes a Turn
+    /// is unchanged.
+    TurnClosed,
 }
 
 /// Why `drive` returned.
@@ -78,6 +86,21 @@ pub enum DriveResult {
     OutcomesHandled {
         rev: u64,
         run_state: RunState,
+    },
+    /// `StopWhen::TurnClosed`: a Turn was closed by this drive (the session
+    /// may have finished with it).
+    TurnClosed {
+        rev: u64,
+        turn: u64,
+        status: TurnStatus,
+        answer: Option<String>,
+    },
+    /// `StopWhen::TurnClosed`: the open Turn could not be closed by this
+    /// drive (it waits for input, a tool or sub sessions).
+    TurnOpen {
+        rev: u64,
+        turn: u64,
+        waiting_for: Option<WaitingFor>,
     },
     /// Another holder advances the session (display info).
     Busy {
@@ -133,6 +156,37 @@ pub struct RunnerOptions {
     pub keep_snapshots: usize,
 }
 
+/// A stop requested by the driving process itself (SIGINT, a host stopping
+/// a sub session without a queue): handled like a queued `stop` — the run is
+/// interrupted, the Turn closes as stopped and the session finishes.
+#[derive(Clone, Default)]
+pub struct StopSignal {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl StopSignal {
+    pub fn request(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn requested(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Returns once a stop is requested.
+    pub async fn wait(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.requested() {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 impl Default for RunnerOptions {
     fn default() -> Self {
         Self {
@@ -171,6 +225,7 @@ pub struct RunnerDeps {
     /// Tools that only exist in this runner process (`requirement.app_tools`).
     pub app_tools: Vec<String>,
     pub options: RunnerOptions,
+    pub stop: StopSignal,
 }
 
 impl RunnerDeps {
@@ -195,6 +250,7 @@ impl RunnerDeps {
             session_cli: None,
             app_tools: Vec::new(),
             options: RunnerOptions::default(),
+            stop: StopSignal::default(),
         }
     }
 

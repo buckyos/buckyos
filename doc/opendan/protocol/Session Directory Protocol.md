@@ -1,6 +1,6 @@
 # Session Directory Protocol
 
-版本 2 · 2026-10-01 · 由 `libopendan` 反写（`src/protocol/{config,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
+版本 5 · 2026-10-03 · 由 `libopendan` 反写（`src/protocol/{config,behavior,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
 
 ## 1. 目录结构
 
@@ -48,7 +48,7 @@ Schema：`schema/session_config.schema.json`。要点：
 
 ```jsonc
 {
-  "schema": "opendan.session_config/3",
+  "schema": "opendan.session_config/5",
   "config_rev": 1,                    // 运行中可改的字段（订阅）变化时 +1
   "session": {
     "session_id": "...", "agent_did": "did:bns:jarvis.alice",
@@ -57,18 +57,26 @@ Schema：`schema/session_config.schema.json`。要点：
     "created_by": { "principal": "app:app2@alice", "via": "app" },
     "driver": { "principal": "app:app2@alice" },   // 推进身份，创建后不变
     "idempotency_key": null, "route_key": null,
-    "origin": { "parent_session": null, "intent_ref": null, "reason_messages": [] },
+    "origin": { "parent_session": null, "intent_ref": null, "reason_messages": [],
+                "report": "final | progress | none", "created_by_call": "<run_id>/<call_id>" },   // Sub Session：父怎么收到汇报、创建它的调用
     "objective": "...",
     "end_condition": { "type": "llm_declares_done | output_schema | max_turns", "detail": {"n": 3} },
     "scope": { "objects": [], "paths": ["ws:snake/src/"] },     // 活动视图的初始声明
     "input_policy": "any | supplement_only | none",
     "acl": { "owner": null, "readers": [], "agent_access": "full | status_only" },
     "task_binding": null,
-    "timezone": null                                // 用户时区（IANA 名），与 Session 绑定；默认半订阅
+    "timezone": null,                               // 用户时区（IANA 名），与 Session 绑定；默认半订阅
+    "policy": { "wait_user_msg": "allowed | finish_failed | finish_completed",   // Session 模板在创建时解析出的策略（缺省值时省略）
+                "observe": "off | events | events_and_active", "load_hints": true,
+                "max_process_depth": 4, "max_sub_sessions": 4, "max_session_depth": 2 }
   },
   "prompt": {
     "llm_context": { /* xllm .llm_context 的 JSON 形式（同 schema、严格键） */ },
     "behavior": "plan", "system": "...", "context": ["..."],
+    "frozen": { "catalog_rev": "sha256:…", "frozen_at_ms": 0, "frozen_by": "app:xagent@alice",   // 从 Agent 的 behavior 目录冻结（schema behavior_config）
+                "identity": { "role": "…", "self": "…", "i18n": {} },
+                "behaviors": { "plan": { /* BehaviorConfig */ } } },
+    "initial_inputs": [ /* 无输入队列的 Session：创建时给出的 msg 逻辑记录（≤ 64），发布后不变 */ ],
     "on_init": null, "on_input": null, "on_context_switch": null, "semi_subscription_snapshot": null,   // 输入模板；缺省内建
     "input": { "mode": "batch | single", "media": "reference | inline" },
     "mechanical_compress": { "recent_full_responses": 2, "summary_chars": 280, "max_result_chars": 4096,
@@ -106,6 +114,14 @@ Schema：`schema/session_config.schema.json`。要点：
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
 - 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
 - `extensions.opendan.perception_window`：self_improve session 要整理的感知窗口（见 Agent State Protocol §4）。
+- `session.policy`（版本 5）：Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 可覆盖）在创建时解析的结果，随配置冻结。
+  - `wait_user_msg`：`WAIT_USER_MSG` 在该 Session 的含义。`allowed`：Turn 保持打开等输入（已交付回复则完成该 Turn）；`finish_failed`：Turn 以 `failed` 关闭、Session `finished + failed`，`last_error.kind = needs_user_input`，问题写入 report（不影响工具 / task 等待）；`finish_completed`：按交付结果处理。
+  - `observe`：`off` 不注入半订阅快照；`events` 注入快照；`events_and_active` 另在受控输入里给出活动 Session 列表。`load_hints`：是否装配 hints。
+  - `max_process_depth`：`process_stack` 上 `caller` 帧的上限（子 context 嵌套）。`max_sub_sessions` / `max_session_depth`：同时未结束的子 Session 数与子 Session 的嵌套深度；创建时校验，超限拒绝。
+- `session.origin.report`：父 Session 怎么收到这个子 Session 的汇报（由创建者选择）：`final` = 需要关注（等输入 / 等决定）与结束；`progress` = 另加进度；`none` 或缺省 = 不推送，父只能读登记表。父对子的关注是隐式的（按 `origin.parent_session` 查登记表），不需要订阅，父也不需要输入队列，见 [Session Input Protocol](<Session Input Protocol.md>) §10。
+- `prompt.frozen`（版本 5）：Session 构造时从 Agent 的 behavior 目录（[Agent State Protocol](<Agent State Protocol.md>) §7）冻结的身份文本与 behavior 配置。范围 = 入口 behavior + `meta.next` 声明的闭包；之后目录的修改不影响该 Session。冻结同时为每个 behavior 生成 `extensions.opendan.behaviors.<name>`（`mode / prompt / input / llm_context / inherit`；入口 behavior 未声明进入模式时为 `switch_context`，其它 behavior 未声明是配置错误），应用提供的同名条目与之不同则拒绝。创建者读不到目录时留空，由驱动者在首次推进（绑定之后、任何推理之前）冻结并替换配置（`config_rev + 1`）；首次用到闭包之外的 behavior 时补冻结（`config_rev + 1`，worklog `control_applied{command: behavior_frozen}`）。有 `frozen` 的 Session 的 system 段只来自冻结材料与配置；既没有 `frozen` 又读不到目录时 RecoveryBlocked，不猜。未采用冻结的 Session 仍直接使用 `extensions.opendan.behaviors`。
+- `prompt.initial_inputs`（版本 5）：没有输入队列的 Session 的首批输入。只允许 `msg` 记录；Runner 把它当作只读输入源 `_bootstrap`（index 从 1 起），按同样的路由、消费策略与 receipt 消费，`state.inputs["_bootstrap"]` 记录进度，确认是空操作。有输入队列的 Session 不使用它（投递到队列）。
+- 输入队列是可选的：`channels.inputs` 为空的 Session 不能被投递（`post` / 队列型控制返回错误），stop 由驱动进程自己发起，等待工具 / task / 子 Session 仍靠轮询推进。
 
 ## 4. state.json（提交点）
 
@@ -178,7 +194,7 @@ Schema：`schema/session_state.schema.json`。
 | 关闭 | 只由 session 决定（run 结束时的 `finish_run`，或 stop），与 `open_turn = null`、worklog `turn_ended` 同一次提交：`Done` 交付结果 → `completed`（再按 `end_condition` 判定是否 finished）；`WAIT_USER_MSG` 只在本 run 已交付答复（快照 `last_report` 非空，或最后一个 Step 带 `<sendmsg>`）时 `completed`，否则 Turn 保持打开，下一条输入加入它；不可重试错误 → `failed`；预算耗尽 → `budget_exhausted`；`control(stop)` → `stopped`。fork 子 process 结束（`process_done`）不关闭 Turn |
 
 - 条目归属的 Turn：有 `open_turn` 时为其 `index`，否则为 `turn_seq`。`turns_completed` 只计 `completed`。
-- Sub AgentSession 是另一个 session，有自己的 Turn；父子 session 的 Turn 不合并计数（当前只有 `create_session` + `origin.parent_session` 的创建与登记，启动子 Runner、等待与结果回传的 helper 属设计接口，尚未实现）。
+- Sub AgentSession 是另一个 session，有自己的 Turn；父子 session 的 Turn 不合并计数。父 Session 将要成功结束、而仍有 `origin.report` 不为 `none` 的子 Session 未结束（或其结束尚未交付给父）时不结束：run 结束，Turn 保持打开，`waiting_for = {kind: children, refs: [sid…]}`；子的结束作为受控输入并入同一个 Turn。创建、汇报与等待见 [Session Input Protocol](<Session Input Protocol.md>) §10。
 
 **static.json**（统计，可缺失；`schema/session_static.schema.json`）：`{input_tokens, output_tokens, total_tokens, rounds, rounds_failed, rounds_interrupted, turns, runs, tool_calls, busy_ms, cost, updated_at_ms}`。
 
@@ -284,6 +300,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 一次推进内连续最多 3 次；仍装不下时 run 以 `paused` + `last_error.kind=context_limit` 保留挂起快照，下一次推进先重写再继续。① 之后、③ 之前崩溃：恢复用旧 epoch 最后发布的快照，再次让出、重写，已写入的部分由 flush 标记跳过；③ 之后崩溃：新 epoch 的计数从 0 开始。receipt 的 `input_seq`、消费位置与打开的 Turn 都不随重写改变。
 
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。
+- `host.extra.tasks`（宿主字段）：run 的工具结果里引用过、LLM 还没有看到其结束的后台 task id。结果首次引用一个 task（且不是一条已结束命令的结果）或说明它“still running”时加入；之后关于它的其它结果（它的结束）移除。run 结束而 Session 未 finished 时，这些 id 与当时 resolver 报告仍在运行的 task 一起记入 `state.watched_tasks`；run 的结束在崩溃后被重做时同样从这里取，不依赖见过这个 run 的进程。
 
 ## 8. behavior process 与 run
 
@@ -325,6 +342,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 - workdir：显式 runtime.workdir 优先；否则有 workspace 用 workspace（agent 内部 workspace 为 `<agent_root>/workspace/<id>`），无 workspace 为 session 目录。
 - binding.json 核验打开后的 runtime_id、kind、target、workdir，不只比较声明的 kind；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
 - 墓碑：`#!/bin/sh` 输出 `{"blocked_by":"tool_plan",...}` 与人读说明到 stderr，`exit 127`。
+- **tmux runtime 属于 Session**：`runtime_id`（配置、run 的 runtime descriptor、binding 三处）等于 session_id；tmux session 名由 session_id 导出（`od_` + 非 `[A-Za-z0-9_]` 字符替换为 `_`）。配置、`runtime.requirement.runtime_id` 或显式参数给出别的 id / 名称是配置错误，在创建目标和推理之前拒绝。首次绑定时目标不存在则创建、已存在则复用；已有 binding 时只 attach 绑定记录的目标，目标丢失或身份改变按绑定错误停止，不以同名新目标继续旧执行。目标上的 tmux 选项 `@opendan_session` 记录所属 session_id：两个 session_id 的名称规整后相同，后者被拒绝。同一 Session 的全部 Turn、behavior、子 context、fork 与恢复使用这一个目标；子 Session 继承的是配置，按自己的 session_id 得到自己的目标。创建 Session 不创建目标；run / Turn 结束与宿主退出不销毁它。
 
 共享 Runtime 来自 agent_tool::runtime，执行实现不再保留在 Session 层；Session 仅装配 bin/helper 与通用环境。prompt.llm_context.runtime 是构造配置，runtime.requirement 是绑定要求；推理、工具及旧执行恢复前先核验 binding。control workdir（run.json.workdir）与执行 cwd（config.runtime.workdir）分开保存。Session helper 未部署到远端时 remote_ssh 报 Capability，不把本地 bin 路径放进远端 PATH。
 

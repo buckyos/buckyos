@@ -35,6 +35,16 @@ pub struct Shared {
     /// Task resolver of the run opened last in this drive: answers for the
     /// background tasks the session still follows after that run ended.
     pub tasks: Mutex<Option<Arc<dyn RunningTaskResolver>>>,
+    /// The Turn this drive closed last (`StopWhen::TurnClosed`).
+    pub turn_closed: Mutex<Option<ClosedTurn>>,
+}
+
+/// A Turn closed by a commit of this drive.
+#[derive(Debug, Clone)]
+pub struct ClosedTurn {
+    pub turn: u64,
+    pub status: TurnStatus,
+    pub answer: Option<String>,
 }
 
 impl Shared {

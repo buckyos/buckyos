@@ -13,13 +13,13 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261003-074004-a2f426"
+        "20261003-093959-261e81"
       ],
       "session_id": "work-fixture-sub-a",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20261003-074004-a2f426",
+        "last_run": "20261003-093959-261e81",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],

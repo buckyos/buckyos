@@ -149,6 +149,12 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
             if let Some(task) = task_of_internal_key(&i.key) {
                 state.watched_tasks.retain(|t| t != task);
             }
+        } else if i.src == INTERNAL_CHILD_SRC {
+            // The sub session's state entered the context: remembered per
+            // child, so the same state is not delivered again.
+            if let Some((sid, event)) = super::children::child_of_internal_key(&i.key) {
+                super::children::set_attention(state, sid, Some(event));
+            }
         } else {
             state.source_mut(&i.src).mark(i.index);
         }

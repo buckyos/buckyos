@@ -6,7 +6,7 @@
   },
   "bootstrap_done": true,
   "inputs": {},
-  "last_run": "20261003-074003-6783ec",
+  "last_run": "20261003-093958-a69ffa",
   "live_run": null,
   "one_line_status": "finished: done: notes.txt written",
   "outcome": "succeeded",
@@ -26,7 +26,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1791038404028,
+  "updated_at_ms": 1791045598324,
   "worklog": {
     "committed_bytes": 1597,
     "committed_seq": 8
@@ -34,8 +34,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 908772,
+    "pid": 1262562,
     "principal": "app:app2@alice",
-    "runner_id": "rn-01ee379b04cf4e66"
+    "runner_id": "rn-149e340ce22a47ad"
   }
 }

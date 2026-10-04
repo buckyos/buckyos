@@ -84,6 +84,10 @@ pub fn new_run_binding_slot() -> RunBindingSlot {
     Arc::new(Mutex::new(None))
 }
 
+/// Environment variable carrying the id of the tool call a `shell` command
+/// runs for.
+pub const ENV_CALL_ID: &str = "XLLM_CALL_ID";
+
 /// `<run_dir>/exec/<call_id>`, the execution directory of one call (native
 /// and tmux runtimes). `None` without a persistent run directory or call id.
 pub fn exec_dir_for(run_dir: Option<&Path>, call_id: Option<&str>) -> Option<PathBuf> {
@@ -1874,6 +1878,12 @@ impl AgentTool for ShellTool {
             .try_with(|c| c.clone())
             .ok();
 
+        // The command can name the call that started it (e.g. as an
+        // idempotency key of what it creates).
+        let mut env = env;
+        if let Some(id) = call_id.as_ref().filter(|id| !id.is_empty()) {
+            env.push((ENV_CALL_ID.to_string(), id.clone()));
+        }
         let request = BashRunRequest {
             command: command.clone(),
             cwd,

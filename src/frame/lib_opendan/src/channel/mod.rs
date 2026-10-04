@@ -157,3 +157,54 @@ pub struct NoopNotifier;
 impl Notifier for NoopNotifier {
     async fn session_changed(&self, _sid: &str, _rev: u64) {}
 }
+
+/// Read-only source over `prompt.initial_inputs` ([`BOOTSTRAP_SRC`]): the
+/// bootstrap material of a session without an input queue. Index = position
+/// from 1; consumption is recorded in state like any source, confirming is a
+/// no-op.
+pub struct BootstrapSource {
+    records: Vec<PostedInput>,
+}
+
+impl BootstrapSource {
+    pub fn new(records: &[PostedInput]) -> Self {
+        Self {
+            records: records.to_vec(),
+        }
+    }
+}
+
+#[async_trait]
+impl InputSource for BootstrapSource {
+    fn id(&self) -> &str {
+        BOOTSTRAP_SRC
+    }
+
+    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>> {
+        Ok(self
+            .records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i as u64 + 1, r))
+            .filter(|(index, _)| !progress.is_consumed(*index))
+            .take(max)
+            .map(|(index, r)| FetchedInput {
+                src: BOOTSTRAP_SRC.to_string(),
+                index,
+                kind: r.input.type_name().to_string(),
+                key: r.key.clone(),
+                from: r.from.clone(),
+                at_ms: r.at_ms,
+                input: Ok(r.input.clone()),
+            })
+            .collect())
+    }
+
+    async fn confirm(&self, _progress: &SourceProgress) -> Result<()> {
+        Ok(())
+    }
+
+    async fn first_available(&self) -> Result<Option<u64>> {
+        Ok((!self.records.is_empty()).then_some(1))
+    }
+}

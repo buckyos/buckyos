@@ -7,6 +7,7 @@
 //! no aliases).
 
 pub mod agent_state;
+pub mod behavior;
 pub mod config;
 pub mod input;
 pub mod misc;
@@ -16,6 +17,7 @@ pub mod summary;
 pub mod worklog;
 
 pub use agent_state::*;
+pub use behavior::*;
 pub use config::*;
 pub use input::*;
 pub use misc::*;
@@ -48,6 +50,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
     vec![
         ("session_config", s::<config::SessionConfig>()),
         ("behavior_entry", s::<config::BehaviorEntry>()),
+        ("behavior_config", s::<behavior::BehaviorConfig>()),
         ("session_state", s::<state::SessionState>()),
         ("session_summary", s::<summary::SessionSummary>()),
         ("worklog_entry", s::<worklog::WorklogEntry>()),

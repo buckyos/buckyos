@@ -33,6 +33,327 @@
       ],
       "type": "string"
     },
+    "AgentEvent": {
+      "description": "`type = \"event\"` payload: something this session cares about happened. The poster only describes the event; whether it is an Input or an Observe is decided by the receiving session's subscriptions.",
+      "properties": {
+        "data_ref": {
+          "description": "ObjId or a path relative to the session directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "description": "`changed | updated | finished | fired ...`.",
+          "type": "string"
+        },
+        "seq": {
+          "description": "Version inside the source; Observe merging compares it.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/EventSource"
+        },
+        "subscription_id": {
+          "description": "Explicit subscription id; may be empty for implicit subscriptions.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "summary": {
+          "description": "One sentence for the LLM (≤ 1 KB); never parsed mechanically.",
+          "type": "string"
+        },
+        "terminal": {
+          "description": "The source's final event.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "event",
+        "source",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "BehaviorBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_completion_tokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_consecutive_errors": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tool_iterations": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_wallclock_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "action_whitelist": {
+          "description": "Named tools offered as actions (behavior loop).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tool_whitelist": {
+          "description": "Named tools offered as native functions (`None`: the session's tools).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorConfig": {
+      "additionalProperties": false,
+      "description": "One behavior of the agent, includes expanded.",
+      "properties": {
+        "budget": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorBudget"
+            }
+          ],
+          "default": {}
+        },
+        "capabilities": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorCapabilities"
+            }
+          ],
+          "default": {}
+        },
+        "entry": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorEntryConfig"
+            }
+          ],
+          "default": {}
+        },
+        "hooks": {
+          "additionalProperties": true,
+          "description": "Host hooks (`on_context_limit_reached` …): carried, not interpreted.",
+          "type": "object"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InputSection"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "meta": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorMeta"
+            }
+          ],
+          "default": {
+            "name": ""
+          }
+        },
+        "model": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorModel"
+            }
+          ],
+          "default": {}
+        },
+        "prompt": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BehaviorPromptConfig"
+            }
+          ],
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorEntryConfig": {
+      "additionalProperties": false,
+      "description": "How the behavior is entered (decided by the target, §3.3). `mode` may only be left out by a session's entry behavior (`switch_context`).",
+      "properties": {
+        "inherit": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InheritMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContextMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorLoop": {
+      "description": "Loop of the behavior's own context.",
+      "enum": [
+        "function_call",
+        "behavior"
+      ],
+      "type": "string"
+    },
+    "BehaviorMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "next": {
+          "description": "Behaviors this one may hand over to or call: the frozen closure.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "objective": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorModel": {
+      "additionalProperties": false,
+      "properties": {
+        "fallbacks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "preferred": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorPromptConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BehaviorLoop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None`: the session's `prompt.llm_context.loop_model`."
+        },
+        "on_context_switch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_init": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "semi_subscription_snapshot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system": {
+          "description": "System template of the behavior's context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Channels": {
       "properties": {
         "inputs": {
@@ -52,6 +373,189 @@
         }
       },
       "type": "object"
+    },
+    "ContextMode": {
+      "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
+      "oneOf": [
+        {
+          "description": "The target has its own context (system, tools, history, run): created on first entry, resumed from its own snapshot afterwards.",
+          "enum": [
+            "switch_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new sub context per call with the target's system and task input, plus an explicit selection of the caller's history; its result returns to the caller.",
+          "enum": [
+            "create_sub_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new branch per call that keeps the caller's system and its complete effective history at the fork point; its result returns to the caller.",
+          "enum": [
+            "fork"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "ControlCommand": {
+      "description": "`type = \"control\"` payload: session control, executed by the runner. Never enters the LLM context and produces no input receipt.",
+      "oneOf": [
+        {
+          "properties": {
+            "command": {
+              "enum": [
+                "stop"
+              ],
+              "type": "string"
+            },
+            "reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "The only input a finished session still accepts.",
+          "properties": {
+            "by": {
+              "default": "",
+              "type": "string"
+            },
+            "command": {
+              "enum": [
+                "decide"
+              ],
+              "type": "string"
+            },
+            "decision": {
+              "description": "`accept | discard`.",
+              "type": "string"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "command",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "enum": [
+                "subscribe"
+              ],
+              "type": "string"
+            },
+            "subscription": {
+              "$ref": "#/definitions/Subscription"
+            }
+          },
+          "required": [
+            "command",
+            "subscription"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "command": {
+              "enum": [
+                "unsubscribe"
+              ],
+              "type": "string"
+            },
+            "id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "command",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Activity declaration (e.g. `agent-session activity --touch <ref>`).",
+          "properties": {
+            "clear": {
+              "default": false,
+              "type": "boolean"
+            },
+            "command": {
+              "enum": [
+                "activity"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "touch": {
+              "items": {
+                "$ref": "#/definitions/Touching"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A perception record of this session (the former `perception` input).",
+          "properties": {
+            "command": {
+              "enum": [
+                "perceive"
+              ],
+              "type": "string"
+            },
+            "kind": {
+              "default": "observation",
+              "type": "string"
+            },
+            "objects": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "summary": {
+              "default": "",
+              "type": "string"
+            },
+            "tags": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "command"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "CreatedBy": {
       "properties": {
@@ -107,6 +611,102 @@
           "description": "Finish after `detail.n` (default 1) completed logical Turns; between them the session waits for input. Internal hand-overs (context switch, sub context call / return) are not Turns and cost nothing.",
           "enum": [
             "max_turns"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "EventSource": {
+      "description": "Where an event comes from.",
+      "properties": {
+        "id": {
+          "default": "",
+          "description": "object: object id; session: sid; task: task_id; timer: timer name; system: may be empty.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`object | session | task | timer | system`; unknown kinds are not a format error (an event without a matching subscription is dropped).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    "FrozenPrompt": {
+      "description": "`prompt.frozen`: what the session took from the behavior catalog when it was constructed. Later catalog changes never reach the session; a behavior used for the first time afterwards is added once (`control_applied{behavior_frozen}` in the worklog).",
+      "properties": {
+        "behaviors": {
+          "additionalProperties": {
+            "$ref": "#/definitions/BehaviorConfig"
+          },
+          "type": "object"
+        },
+        "catalog_rev": {
+          "default": "",
+          "description": "Catalog revision at the first freeze (audit).",
+          "type": "string"
+        },
+        "frozen_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "frozen_by": {
+          "default": "",
+          "type": "string"
+        },
+        "identity": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/IdentityText"
+            }
+          ],
+          "default": {}
+        }
+      },
+      "type": "object"
+    },
+    "IdentityText": {
+      "description": "Identity text of the agent (`role.md`, `self.md`, `i18n/`).",
+      "properties": {
+        "i18n": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "role": {
+          "type": "string"
+        },
+        "self": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "InheritMode": {
+      "description": "History a new context starts with (besides its system and task input).",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The session history rendered by the host (summary + recent worklog records): a filtered view, labelled `<session_history>`.",
+          "enum": [
+            "recent_dialogue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The caller's completed steps as structured records (`create_sub_context`, both contexts in the behavior loop).",
+          "enum": [
+            "steps"
           ],
           "type": "string"
         }
@@ -251,8 +851,58 @@
       },
       "type": "object"
     },
+    "MsgDelivery": {
+      "description": "Delivery layer information; everything optional.",
+      "properties": {
+        "conversation_name": {
+          "description": "Display name of the conversation (group name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_name": {
+          "description": "Display name of the speaker.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record_id": {
+          "description": "msg-center record id (audit).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tunnel": {
+          "description": "DID of the ingress tunnel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ObserveScope": {
+      "description": "Material of the semi-subscription snapshot and the fresh view.",
+      "enum": [
+        "off",
+        "events",
+        "events_and_active"
+      ],
+      "type": "string"
+    },
     "Origin": {
       "properties": {
+        "created_by_call": {
+          "description": "`<run_id>/<call_id>` of the tool call that created the session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "intent_ref": {
           "type": [
             "string",
@@ -270,15 +920,111 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "report": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReportMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the parent session hears about this session (chosen by the parent when it created it). `None`: no implicit reporting."
         }
       },
+      "type": "object"
+    },
+    "PostedInput": {
+      "description": "Producer side: one logical record to post.",
+      "oneOf": [
+        {
+          "properties": {
+            "payload": {
+              "$ref": "#/definitions/SessionMsg"
+            },
+            "type": {
+              "enum": [
+                "msg"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "payload",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
+              "$ref": "#/definitions/AgentEvent"
+            },
+            "type": {
+              "enum": [
+                "event"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "payload",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "payload": {
+              "$ref": "#/definitions/ControlCommand"
+            },
+            "type": {
+              "enum": [
+                "control"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "payload",
+            "type"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "at_ms": {
+          "description": "Posting time; display / diagnosis only, never ordering.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "from": {
+          "description": "Poster principal (self-reported, audit only): neither the speaker nor a source of permissions.",
+          "type": "string"
+        },
+        "key": {
+          "description": "Dedup key of the logical input: a re-post keeps it, another input uses another one. `msg`: the message's ObjId.",
+          "type": "string"
+        },
+        "schema": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "from",
+        "key",
+        "schema"
+      ],
       "type": "object"
     },
     "PromptSection": {
       "description": "Prompt configuration: a superset of xllm's `.llm_context` (§4.2).",
       "properties": {
         "behavior": {
-          "description": "`behaviors/<name>` reference (BehaviorAssembler).",
+          "description": "Entry behavior of the session (`behaviors/<name>` of the agent).",
           "type": [
             "string",
             "null"
@@ -299,6 +1045,17 @@
           },
           "type": "array"
         },
+        "frozen": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/FrozenPrompt"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Behaviors and identity frozen from the agent's catalog."
+        },
         "history_budget_tokens": {
           "description": "Context budget (tokens) available to the history section when the next llm_context is assembled. `None` → runner default.",
           "format": "uint32",
@@ -307,6 +1064,13 @@
             "integer",
             "null"
           ]
+        },
+        "initial_inputs": {
+          "description": "Bootstrap inputs of a session created without an input queue: `msg` records only, at most [`super::input::MAX_PENDING_INPUTS`], never changed after creation. The runner reads them as the read-only source [`BOOTSTRAP_SRC`] (index from 1).",
+          "items": {
+            "$ref": "#/definitions/PostedInput"
+          },
+          "type": "array"
         },
         "input": {
           "allOf": [
@@ -376,6 +1140,32 @@
         }
       },
       "type": "object"
+    },
+    "ReportMode": {
+      "description": "What a parent receives from a sub session without subscribing: the registry state stays the truth, these events only accelerate.",
+      "oneOf": [
+        {
+          "description": "Needs attention (waiting for input / a decision) and the end: Input.",
+          "enum": [
+            "final"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`final` plus progress, kept as semi-subscription state.",
+          "enum": [
+            "progress"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Nothing is pushed; the parent reads the registry itself.",
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "RuntimeRequirement": {
       "properties": {
@@ -454,6 +1244,68 @@
       ],
       "type": "string"
     },
+    "SessionMsg": {
+      "description": "`type = \"msg\"` payload: the message object as it is plus what a MsgObject does not carry by design.",
+      "properties": {
+        "delivery": {
+          "$ref": "#/definitions/MsgDelivery"
+        },
+        "msg": {
+          "description": "cyfs-ndn MsgObject v2, never rewritten or trimmed."
+        }
+      },
+      "required": [
+        "msg"
+      ],
+      "type": "object"
+    },
+    "SessionPolicy": {
+      "description": "`session.policy`: the session template resolved at creation (xAgent §4.7) and frozen with the session.",
+      "properties": {
+        "load_hints": {
+          "default": true,
+          "type": "boolean"
+        },
+        "max_process_depth": {
+          "default": 4,
+          "description": "Callers on `process_stack` at most (sub contexts in progress).",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_session_depth": {
+          "default": 2,
+          "description": "Nesting depth of sub sessions below this session's root.",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "max_sub_sessions": {
+          "default": 4,
+          "description": "Sub sessions not finished at the same time.",
+          "format": "uint8",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "observe": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ObserveScope"
+            }
+          ],
+          "default": "events_and_active"
+        },
+        "wait_user_msg": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WaitPolicy"
+            }
+          ],
+          "default": "allowed"
+        }
+      },
+      "type": "object"
+    },
     "SessionSection": {
       "properties": {
         "acl": {
@@ -525,6 +1377,9 @@
               "type": "null"
             }
           ]
+        },
+        "policy": {
+          "$ref": "#/definitions/SessionPolicy"
         },
         "route_key": {
           "description": "UI sessions only (deferred, V1).",
@@ -708,6 +1563,59 @@
             "type"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "Touching": {
+      "properties": {
+        "kind": {
+          "description": "`path | object | artifact`.",
+          "type": "string"
+        },
+        "mode": {
+          "default": "write",
+          "description": "`read | write`.",
+          "type": "string"
+        },
+        "ref": {
+          "type": "string"
+        },
+        "since_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "type": "object"
+    },
+    "WaitPolicy": {
+      "description": "Meaning of `WAIT_USER_MSG` in a session.",
+      "oneOf": [
+        {
+          "description": "The Turn stays open waiting for input.",
+          "enum": [
+            "allowed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Nobody answers: the Turn fails with `needs_user_input` and the session finishes as failed; the question is in the report.",
+          "enum": [
+            "finish_failed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Treated as the delivered result.",
+          "enum": [
+            "finish_completed"
+          ],
+          "type": "string"
         }
       ]
     },

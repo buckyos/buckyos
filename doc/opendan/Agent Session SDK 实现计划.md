@@ -258,7 +258,7 @@ src/frame/libopendan/
     state/              # AgentStateClient trait；fs/：registry、activity、perception、cognition（门面）、artifacts
     runtime/            # AgentRuntime trait、native、tmux、bin overlay、paths
     runner/             # drive、assembler、next_llm_context、tools、deps（实现，非协议）
-  examples/session.rs   # 开发 CLI：create / run / read / post / decide / active / holder
+  src/bin/xagent.rs     # CLI（见 xAgent.md）：new / run / serve / post / ctl / status / list / behaviors / xllm / schema
   tests/
 ```
 
@@ -1756,7 +1756,7 @@ V1 / V6：协议是**目录结构 + 提交顺序 + 锁语义 + 输入消息格�
 - **交付**：
   - `drive`、`commit_input_batch` / `handle_context_outcome`、`finish_run`、`flush_run`、`reconcile_runs` / `reconcile_input_receipts`、`next_llm_context`（summary.json + 反向读 worklog）、`compact` / `maybe_compact`、`resume_live_run`（run 锁、格式与旧执行检查、RecoveryBlocked）、`SessionToolManager`（effect、执行准入、inflight 与结果提交）、`check_changes`（含 control 与活动 session）、`BehaviorAssembler`（含活动 session 段与避让规则）；
   - 从 `agent_session.rs` 移植 outcome、切换、压缩、fork、report 逻辑；
-  - 开发 CLI：`cargo run -p libopendan --example session -- create|run|read|post|decide|active|holder`。
+  - 开发 CLI：`cargo run -p libopendan --bin xagent -- new|run|serve|post|ctl|status|list`（见 [xAgent](<./xAgent.md>) §8）。
 - **验证**：用 OpenAI 兼容的 mock LLM 覆盖：
   - A-01：work session 在独立进程中完成；
   - A-02：两个 runner 共享同一个 AgentRoot；

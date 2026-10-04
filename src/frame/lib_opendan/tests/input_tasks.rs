@@ -682,3 +682,91 @@ async fn refused_inline_media_degrades_to_references_once() {
     assert!(matches!(r, DriveResult::Error { .. }), "{r:?}");
     assert_eq!(always.count(), 1);
 }
+
+const ENV_C16_ROOT: &str = "LIBOPENDAN_TEST_C16_ROOT";
+const ENV_C16_SESSION: &str = "LIBOPENDAN_TEST_C16_SESSION";
+
+fn c16_script() -> Arc<ScriptedLlm> {
+    ScriptedLlm::new(|req, _| {
+        let u = last_user_text(req);
+        if u.contains("source=\"task:bucky:2\"") {
+            assert!(u.contains("task bucky:2 finished: all green"), "{u}");
+            text("the build is green")
+        } else if has_tool_result(req, "b1").is_some() {
+            text("started; I will report when it ends")
+        } else {
+            tool_call("b1", "start_task", json!({ "id": "2", "mode": "background" }))
+        }
+    })
+}
+
+/// Child entry point of the C16 test: a no-op unless spawned by it.
+#[tokio::test]
+async fn c16_child_driver() {
+    let (Ok(root), Ok(session)) = (std::env::var(ENV_C16_ROOT), std::env::var(ENV_C16_SESSION)) else {
+        return;
+    };
+    let env = Env::at(std::path::Path::new(&root));
+    let sd = SessionDir::open(&session).unwrap();
+    let deps = task_deps(&env, c16_script(), Some(Arc::new(FakeTasks::default())));
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    eprintln!("child drive result: {r:?}");
+}
+
+/// C16 / E27: the run that started a background task ends, its terminal
+/// record is on disk, and the process dies before the session state took
+/// the task over. The redone finish finds the task in the run's own record
+/// (no resolver of this process ever saw the run) and its completion is
+/// delivered once.
+#[tokio::test]
+async fn a_background_task_survives_a_crash_before_the_run_end_commit() {
+    let env = Env::new();
+    let mut spec = task_spec("start the build and wait for news");
+    spec.end_condition = EndCondition {
+        kind: EndConditionType::MaxTurns,
+        detail: json!({ "n": 2 }),
+    };
+    let sd = env.create_work(spec).await;
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "c16_child_driver", "--nocapture", "--test-threads=1"])
+        .env(ENV_C16_ROOT, &env.root)
+        .env(ENV_C16_SESSION, sd.path())
+        .env("LIBOPENDAN_FAULT", "outcome:after_checkpoint")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break st;
+        }
+        assert!(start.elapsed() < Duration::from_secs(60), "child did not exit");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(!status.success(), "the child must die after the run's terminal checkpoint");
+    let before = sd.state().unwrap();
+    assert!(before.live_run.is_some() && before.watched_tasks.is_empty(), "state never saw the run end");
+
+    let tasks = Arc::new(FakeTasks::default());
+    let llm = c16_script();
+    let deps = task_deps(&env, llm.clone(), Some(tasks.clone()));
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    assert!(matches!(r, DriveResult::Idle { .. }), "{r:?}");
+    assert_eq!(llm.count(), 0, "the finish is redone, nothing is inferred again");
+    let st = sd.state().unwrap();
+    assert_eq!(st.watched_tasks, vec!["bucky:2".to_string()], "found in the run's record");
+    assert_eq!(st.turns_completed, 1);
+    // Still running: nothing to infer on.
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(llm.count(), 0);
+    tasks.finish("bucky:2", "all green");
+    let r = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(r.is_finished(), "{r:?}");
+    assert_eq!(llm.count(), 1, "delivered exactly once");
+    let st = sd.state().unwrap();
+    assert!(st.watched_tasks.is_empty());
+    assert_eq!((st.turn_seq, st.turns_completed), (2, 2));
+    assert_eq!(drive(&sd, &deps, StopWhen::Idle).await.is_finished(), true);
+    assert_eq!(llm.count(), 1);
+}

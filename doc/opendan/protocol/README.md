@@ -1,6 +1,6 @@
 # Agent Session 协议（反写 Spec）
 
-- 版本：4（session_input 为 /3，session_config 为 /4，session_state 为 /5，binding 为 /3，xllm RunRecord.version = 5；summary 与机械渲染保持 /2，快照 snapshot_version = 4）。版本 4（2026-10-03）引入 Session Input Bus 协议 3：总线记录收敛为 `msg / event / control`，消息体直接用 MsgObject，输入模板 `on_init / on_input / on_context_switch` 与半订阅快照，`pending_events` / `reply` / `watched_tasks`，挂起调用在上下文之外等待 task；旧版本的 Session 在显式迁移前只读。版本 3 引入共享 Runtime 的有效配置与实际目标绑定，不改变 worklog 形状。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
+- 版本：5（session_input 为 /3，session_config 为 /5，session_state 为 /5，binding 为 /3，xllm RunRecord.version = 5；summary 与机械渲染保持 /2，快照 snapshot_version = 4）。版本 5（2026-10-03，xagent）把 session_config 升到 /5：`session.policy`（Session 模板）、`origin.report / created_by_call`（Sub Session）、`prompt.frozen`（behavior 冻结）、`prompt.initial_inputs`（无输入队列的首批输入）；登记表 `status` 增加 `waiting_for / turn_open`；内部输入源 `_bootstrap`、`_child` 与 `session:<sid>` task；tmux runtime 的 id 等于 session_id。版本 4（2026-10-03）引入 Session Input Bus 协议 3：总线记录收敛为 `msg / event / control`，消息体直接用 MsgObject，输入模板 `on_init / on_input / on_context_switch` 与半订阅快照，`pending_events` / `reply` / `watched_tasks`，挂起调用在上下文之外等待 task；旧版本的 Session 在显式迁移前只读。版本 3 引入共享 Runtime 的有效配置与实际目标绑定，不改变 worklog 形状。版本 2 引入逻辑 Turn（`turn_seq` / `open_turn` / `turns_completed`）、新的 worklog 条目与拆分的 flush 游标，并把工具预算改名为 `max_tool_iterations`；Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)
 - 日期：2026-09-29；2026-10-01 按 Round / Step / Turn 术语统一更新
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。
@@ -22,13 +22,13 @@
 |---|---|
 | [Session Directory Protocol](<Session Directory Protocol.md>) | 目录结构、session_config / state / summary / worklog / static / binding / runs、逻辑 Turn 的打开 / 继续 / 关闭、提交顺序、恢复规则、sid 规则 |
 | [Lease Protocol](<Lease Protocol.md>) | 推进权与各类锁、锁文件内容、接管前的执行核对 |
-| [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待 |
-| [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive |
-| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide |
+| [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待、Sub Session 的创建 / 汇报 / 等待 |
+| [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive；驱动者自己的停止请求 |
+| [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录与 Session 模板 |
 
 ## 3. 机器可读材料
 
-- `schema/*.schema.json`：由 `libopendan::protocol::json_schemas()` 导出，覆盖全部持久结构（`cargo run -p libopendan --example session -- schema <dir>` 可重新导出）。
+- `schema/*.schema.json`：由 `libopendan::protocol::json_schemas()` 导出，覆盖全部持久结构（`cargo run -p libopendan --bin xagent -- schema <dir>` 可重新导出）。
 - `fixtures/<NN>_<scenario>/`：由 `cargo run -p libopendan --example fixtures -- doc/opendan/protocol/fixtures` 生成的黄金目录。每个场景包含 `agent_root/`、`app/<sid>/`、`kmsg/`（开发用文件队列，语义同 kmsg）和 `expected.json`。文件里的绝对路径已替换为 `${FIXTURE_ROOT}`，使用前替换为拷贝后的场景目录。
 - `expected.json` 的 `sessions[]` 记录解析结果（state 摘要、live_run、run.json 的门槛与在途、worklog 边界），`next` 记录符合协议的 runner 下一步必须做什么。Rust 参考实现用 `tests/fixtures.rs` 在每个场景上验证 `next`；其它语言应跑同一组断言。
 

@@ -106,6 +106,13 @@
     },
     "Origin": {
       "properties": {
+        "created_by_call": {
+          "description": "`<run_id>/<call_id>` of the tool call that created the session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "intent_ref": {
           "type": [
             "string",
@@ -123,6 +130,17 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "report": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReportMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "How the parent session hears about this session (chosen by the parent when it created it). `None`: no implicit reporting."
         }
       },
       "type": "object"
@@ -134,6 +152,32 @@
         "stopped"
       ],
       "type": "string"
+    },
+    "ReportMode": {
+      "description": "What a parent receives from a sub session without subscribing: the registry state stays the truth, these events only accelerate.",
+      "oneOf": [
+        {
+          "description": "Needs attention (waiting for input / a decision) and the end: Input.",
+          "enum": [
+            "final"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`final` plus progress, kept as semi-subscription state.",
+          "enum": [
+            "progress"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Nothing is pushed; the parent reads the registry itself.",
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "RunState": {
       "enum": [
@@ -234,11 +278,26 @@
         "run_state": {
           "$ref": "#/definitions/RunState"
         },
+        "turn_open": {
+          "description": "A Turn is open (work in progress, or waiting inside it).",
+          "type": "boolean"
+        },
         "updated_at_ms": {
           "default": 0,
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "waiting_for": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WaitingKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "What a waiting session waits for (a parent tells \"needs input\" from \"waits for a tool / its own sub sessions\")."
         }
       },
       "required": [
@@ -273,6 +332,16 @@
         "ref"
       ],
       "type": "object"
+    },
+    "WaitingKind": {
+      "description": "What a waiting session waits for (`waiting_for.kind`).",
+      "enum": [
+        "input",
+        "tool",
+        "event",
+        "children"
+      ],
+      "type": "string"
     },
     "WorkspaceRef": {
       "oneOf": [

@@ -1,12 +1,12 @@
 {
-  "schema": "opendan.session_config/4",
+  "schema": "opendan.session_config/5",
   "config_rev": 1,
   "session": {
     "session_id": "work-fixture-finished",
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791038403930,
+    "created_at_ms": 1791045598226,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"

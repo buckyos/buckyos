@@ -29,6 +29,7 @@
     "acceptance": "n/a",
     "one_line_status": "",
     "report_brief": "",
+    "turn_open": true,
     "activity": {
       "summary": "edit",
       "touching": [
@@ -36,19 +37,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1791038404943
+          "since_ms": 1791045599233
         }
       ],
-      "heartbeat_ms": 1791038404943
+      "heartbeat_ms": 1791045599233
     },
     "last_runner": {
-      "runner_id": "rn-0081b924fb7f4206",
+      "runner_id": "rn-ce3507d154a144a9",
       "host": "${FIXTURE_HOST}",
-      "pid": 909661,
+      "pid": 1263380,
       "lock_epoch": 1,
-      "at_ms": 1791038404945
+      "at_ms": 1791045599234
     },
-    "updated_at_ms": 1791038404943
+    "updated_at_ms": 1791045599233
   },
   "location_rev": 0
 }

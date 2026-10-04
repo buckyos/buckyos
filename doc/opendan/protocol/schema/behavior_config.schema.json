@@ -1,0 +1,388 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "additionalProperties": false,
+  "definitions": {
+    "BehaviorBudget": {
+      "additionalProperties": false,
+      "properties": {
+        "max_completion_tokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_consecutive_errors": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_tool_iterations": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_total_tokens": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "max_wallclock_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "action_whitelist": {
+          "description": "Named tools offered as actions (behavior loop).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "tool_whitelist": {
+          "description": "Named tools offered as native functions (`None`: the session's tools).",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorEntryConfig": {
+      "additionalProperties": false,
+      "description": "How the behavior is entered (decided by the target, §3.3). `mode` may only be left out by a session's entry behavior (`switch_context`).",
+      "properties": {
+        "inherit": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InheritMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ContextMode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorLoop": {
+      "description": "Loop of the behavior's own context.",
+      "enum": [
+        "function_call",
+        "behavior"
+      ],
+      "type": "string"
+    },
+    "BehaviorMeta": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "default": "",
+          "type": "string"
+        },
+        "next": {
+          "description": "Behaviors this one may hand over to or call: the frozen closure.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "objective": {
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorModel": {
+      "additionalProperties": false,
+      "properties": {
+        "fallbacks": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "preferred": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "temperature": {
+          "format": "float",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BehaviorPromptConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BehaviorLoop"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "`None`: the session's `prompt.llm_context.loop_model`."
+        },
+        "on_context_switch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_init": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "on_input": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "semi_subscription_snapshot": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "system": {
+          "description": "System template of the behavior's context.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ContextMode": {
+      "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
+      "oneOf": [
+        {
+          "description": "The target has its own context (system, tools, history, run): created on first entry, resumed from its own snapshot afterwards.",
+          "enum": [
+            "switch_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new sub context per call with the target's system and task input, plus an explicit selection of the caller's history; its result returns to the caller.",
+          "enum": [
+            "create_sub_context"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A new branch per call that keeps the caller's system and its complete effective history at the fork point; its result returns to the caller.",
+          "enum": [
+            "fork"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InheritMode": {
+      "description": "History a new context starts with (besides its system and task input).",
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The session history rendered by the host (summary + recent worklog records): a filtered view, labelled `<session_history>`.",
+          "enum": [
+            "recent_dialogue"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The caller's completed steps as structured records (`create_sub_context`, both contexts in the behavior loop).",
+          "enum": [
+            "steps"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InputMedia": {
+      "description": "Whether attachments also enter the context as image / document blocks.",
+      "oneOf": [
+        {
+          "description": "Text references only (`<attachment .../>` lines); the agent reads attachments with tools.",
+          "enum": [
+            "reference"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Image / document attachments additionally as content blocks (at most [`MAX_INLINE_MEDIA`] per batch).",
+          "enum": [
+            "inline"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InputMode": {
+      "description": "How many selected inputs one `on_input` batch takes.",
+      "oneOf": [
+        {
+          "description": "One msg / Input event per batch; the rest stays queued.",
+          "enum": [
+            "single"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "As many as the batch budget allows.",
+          "enum": [
+            "batch"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "InputSection": {
+      "additionalProperties": false,
+      "description": "Input consumption policy of a context (separate from its templates).",
+      "properties": {
+        "media": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputMedia"
+            }
+          ],
+          "default": "reference"
+        },
+        "mode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/InputMode"
+            }
+          ],
+          "default": "batch"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "One behavior of the agent, includes expanded.",
+  "properties": {
+    "budget": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorBudget"
+        }
+      ],
+      "default": {}
+    },
+    "capabilities": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorCapabilities"
+        }
+      ],
+      "default": {}
+    },
+    "entry": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorEntryConfig"
+        }
+      ],
+      "default": {}
+    },
+    "hooks": {
+      "additionalProperties": true,
+      "description": "Host hooks (`on_context_limit_reached` …): carried, not interpreted.",
+      "type": "object"
+    },
+    "input": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InputSection"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "meta": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorMeta"
+        }
+      ],
+      "default": {
+        "name": ""
+      }
+    },
+    "model": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorModel"
+        }
+      ],
+      "default": {}
+    },
+    "prompt": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/BehaviorPromptConfig"
+        }
+      ],
+      "default": {}
+    }
+  },
+  "title": "BehaviorConfig",
+  "type": "object"
+}

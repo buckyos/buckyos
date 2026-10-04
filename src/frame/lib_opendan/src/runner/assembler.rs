@@ -85,6 +85,20 @@ pub trait SessionAssembler: Send + Sync {
         cfg.behavior_entry(behavior)
             .map_err(crate::error::OpenDanError::InvalidArgument)
     }
+    /// Freeze what the session still needs from the agent's behavior
+    /// catalog before `behavior` (`None`: the session itself) is used. The
+    /// changed configuration is returned and committed by the driver
+    /// (`config_rev + 1`). Default: the session carries its own entries
+    /// (`extensions.opendan.behaviors`), nothing is frozen.
+    async fn ensure_frozen(
+        &self,
+        _cfg: &SessionConfig,
+        _behavior: Option<&str>,
+        _agent: &dyn crate::state::AgentStateClient,
+        _who: &str,
+    ) -> Result<Option<SessionConfig>> {
+        Ok(None)
+    }
 }
 
 /// Render a custom input template (`llm_context::prompt_engine`, `__EXEC__`
@@ -194,7 +208,15 @@ impl SessionAssembler for DefaultAssembler {
         let mut s = String::new();
         // 1. identity
         let mut identity = String::new();
-        if let Some(root) = agent_root {
+        if let Some(f) = &cfg.prompt.frozen {
+            // Frozen with the session: the AgentRoot is not read again.
+            for t in [&f.identity.role, &f.identity.self_text] {
+                if !t.trim().is_empty() {
+                    identity.push_str(t.trim());
+                    identity.push_str("\n\n");
+                }
+            }
+        } else if let Some(root) = agent_root {
             for f in ["role.md", "self.md"] {
                 if let Ok(t) = std::fs::read_to_string(root.join(f)) {
                     if !t.trim().is_empty() {
@@ -464,5 +486,97 @@ impl DefaultAssembler {
     pub fn with_attachment_paths(mut self, f: AttachmentPathFn) -> Self {
         self.attachment_paths = Some(f);
         self
+    }
+}
+
+/// Assembler of sessions whose behaviors come from the agent's catalog
+/// (xAgent §6.4): the system section only depends on the frozen material
+/// and the session config, so runs of one behavior share a stable prefix.
+/// Input rendering, formats and media are those of [`DefaultAssembler`].
+#[derive(Clone, Default)]
+pub struct BehaviorAssembler {
+    pub inner: DefaultAssembler,
+}
+
+impl BehaviorAssembler {
+    pub fn new(inner: DefaultAssembler) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl SessionAssembler for BehaviorAssembler {
+    async fn system_text(&self, cfg: &SessionConfig, agent_root: Option<&Path>) -> Result<String> {
+        let Some(frozen) = &cfg.prompt.frozen else {
+            return Err(OpenDanError::blocked(
+                "the session has no frozen behaviors (prompt.frozen) and they cannot be guessed",
+                None,
+            ));
+        };
+        let mut c = cfg.clone();
+        if let Some(system) = c.prompt.system.clone().filter(|t| t.contains("{{") || t.contains("{%")) {
+            let name = cfg.prompt.behavior.clone().unwrap_or_default();
+            let behavior = frozen.behaviors.get(&name);
+            let vars = json!({
+                "identity": { "role": frozen.identity.role, "self": frozen.identity.self_text, "i18n": frozen.identity.i18n },
+                "behavior": {
+                    "name": name,
+                    "objective": behavior.map(|b| b.meta.objective.clone()).unwrap_or_default(),
+                    "mode": behavior.and_then(|b| b.prompt.mode).map(|m| m.as_str()),
+                },
+                "session": {
+                    "id": cfg.session.session_id,
+                    "kind": cfg.session.kind.as_str(),
+                    "objective": cfg.session.objective,
+                    "driver": cfg.session.driver.principal,
+                    "scope": cfg.session.scope,
+                    "parent": cfg.session.origin.as_ref().and_then(|o| o.parent_session.clone()),
+                },
+                "workspace": { "id": match &cfg.workspace {
+                    Some(WorkspaceRef::Agent { id }) => Value::String(id.clone()),
+                    Some(WorkspaceRef::External { path }) => Value::String(path.clone()),
+                    None => Value::Null,
+                }},
+            });
+            c.prompt.system = Some(render_template(&system, vars).await?);
+        }
+        self.inner.system_text(&c, agent_root).await
+    }
+
+    fn attachment_path(&self, cfg: &SessionConfig, obj_id: &str) -> Option<String> {
+        self.inner.attachment_path(cfg, obj_id)
+    }
+
+    async fn render_input(
+        &self,
+        cfg: &SessionConfig,
+        state: &SessionState,
+        templates: &InputTemplates,
+        m: &InputMaterial,
+    ) -> Result<Option<String>> {
+        self.inner.render_input(cfg, state, templates, m).await
+    }
+
+    async fn ensure_frozen(
+        &self,
+        cfg: &SessionConfig,
+        behavior: Option<&str>,
+        agent: &dyn crate::state::AgentStateClient,
+        who: &str,
+    ) -> Result<Option<SessionConfig>> {
+        let mut next = cfg.clone();
+        if next.prompt.frozen.is_none() {
+            // Without frozen material and without a readable catalog nothing
+            // is guessed and nothing is inferred.
+            crate::state::freeze_config(&mut next, agent.behaviors(), who)
+                .await
+                .map_err(|e| {
+                    OpenDanError::blocked(format!("cannot freeze the session's behaviors: {e}"), None)
+                })?;
+        }
+        if let Some(b) = behavior.filter(|b| !b.is_empty()) {
+            crate::state::freeze_behavior(&mut next, agent.behaviors(), b).await?;
+        }
+        Ok((&next != cfg).then_some(next))
     }
 }

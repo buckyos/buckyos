@@ -293,6 +293,41 @@ impl RunHandle {
         Ok(idx)
     }
 
+    /// A tool result referred to a background task: `running` — the task
+    /// continues after the call (`host.extra.tasks` gains it); otherwise the
+    /// LLM saw its end and the note is dropped. The list is what the session
+    /// keeps following when the run ends, also when that end is redone after
+    /// a crash.
+    pub fn note_task(&self, task_id: &str, running: bool) -> Result<()> {
+        let noted = self.noted_tasks();
+        if noted.iter().any(|t| t == task_id) == running {
+            return Ok(());
+        }
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                let mut tasks: Vec<String> = noted.clone();
+                tasks.retain(|t| t != task_id);
+                if running {
+                    tasks.push(task_id.to_string());
+                }
+                h.extra["tasks"] = serde_json::json!(tasks);
+            }
+        })
+    }
+
+    /// Background tasks of the run whose end the LLM has not seen.
+    pub fn noted_tasks(&self) -> Vec<String> {
+        self.record()
+            .host
+            .as_ref()
+            .and_then(|h| h.extra.get("tasks"))
+            .and_then(|t| serde_json::from_value(t.clone()).ok())
+            .unwrap_or_default()
+    }
+
     pub fn set_status(
         &self,
         status: RunStatus,

@@ -21,6 +21,7 @@ use crate::error::{OpenDanError, Result};
 
 use super::activity::FsActivity;
 use super::artifacts::FsArtifacts;
+use super::behaviors::FsBehaviorCatalog;
 use super::cognition::FsCognition;
 use super::locks::FsLocks;
 use super::perception::FsPerception;
@@ -125,6 +126,7 @@ pub struct FsAgentStateClient {
     cognition: FsCognition,
     artifacts: FsArtifacts,
     locks: FsLocks,
+    behaviors: FsBehaviorCatalog,
 }
 
 impl FsAgentStateClient {
@@ -155,6 +157,7 @@ impl FsAgentStateClient {
             cognition: FsCognition::new(layout.clone()),
             artifacts: FsArtifacts::new(layout.clone()),
             locks: FsLocks::new(layout.clone()),
+            behaviors: FsBehaviorCatalog::new(layout.root.clone()),
             layout,
             did: agent_did.to_string(),
             id,
@@ -207,5 +210,9 @@ impl AgentStateClient for FsAgentStateClient {
 
     fn locks(&self) -> &dyn LockManager {
         &self.locks
+    }
+
+    fn behaviors(&self) -> &dyn BehaviorCatalog {
+        &self.behaviors
     }
 }

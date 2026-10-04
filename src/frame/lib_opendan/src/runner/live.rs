@@ -56,6 +56,9 @@ pub(super) async fn remove_if_safe(sh: &Shared, run_id: &str) -> Result<bool> {
     Ok(true)
 }
 
+/// Opening of the runtime protocol of a session's runs.
+pub const SESSION_PROTOCOL_INTRO: &str = "You are running inside an Agent Session. Work on the session's objective with the inputs you are given; the session delivers your result and decides what follows it. Use only the material provided and the results you obtain in this session; distinguish verified facts from assumptions.";
+
 fn default_llm_context() -> Value {
     json!({ "tools": { "enabled": true } })
 }
@@ -73,11 +76,27 @@ async fn xllm_deps_for(
     x.runtime_env = env.env.iter().cloned().collect();
     x.runtime_path_prefix = env.path_layers.clone();
     x.skip_workdir_lock = true;
-    let behaviors = {
+    if x.host_protocol == agent_tool::xllm::HostProtocolFlavor::OneShot {
+        // A session is not a one-shot task: whether the agent may wait for
+        // the user is the session's rule (`session.policy.wait_user_msg`).
+        x.host_protocol = agent_tool::xllm::HostProtocolFlavor::Session {
+            intro: SESSION_PROTOCOL_INTRO.to_string(),
+        };
+    }
+    let (behaviors, max_depth) = {
         let s = sh.session.lock().await;
-        s.config.behaviors().map_err(OpenDanError::InvalidArgument)?
+        (
+            s.config.behaviors().map_err(OpenDanError::InvalidArgument)?,
+            s.config.session.policy.max_process_depth as usize,
+        )
     };
-    if let Some(tool) = CallBehaviorTool::new(&behaviors, depth) {
+    // Suspended calls waiting for a sub session (`session:<sid>`) are
+    // answered from the registry; other task ids go to the host's resolver.
+    x.buckyos_tasks = Some(Arc::new(super::children::SessionTaskResolver::new(
+        sh.deps.agent.clone(),
+        sh.deps.xllm.buckyos_tasks.clone(),
+    )));
+    if let Some(tool) = CallBehaviorTool::new(&behaviors, depth, max_depth) {
         x.host_tools
             .insert(TOOL_CALL_BEHAVIOR.to_string(), Arc::new(tool));
     }
@@ -314,10 +333,20 @@ async fn own_run_context(
     new: &NewRun,
 ) -> Result<LiveCtx> {
     let sid = sh.dir.sid().to_string();
-    let cfg = match &new.entry {
+    let mut cfg = match &new.entry {
         Some(e) => context_config(session_cfg, e),
         None => session_cfg.clone(),
     };
+    if !new.behavior.is_empty() {
+        // The run's own view: the assembler renders this behavior's system.
+        cfg.prompt.behavior = Some(new.behavior.clone());
+    }
+    let frozen_budget = session_cfg
+        .prompt
+        .frozen
+        .as_ref()
+        .and_then(|f| f.behaviors.get(&new.behavior))
+        .map(|b| (b.budget.clone(), b.model.clone()));
     // A session without behaviors keeps reading the session history.
     let inherit = new
         .entry
@@ -419,6 +448,25 @@ async fn own_run_context(
     // a task this session waits for outside the context and fills in on
     // resume (串行等待).
     request.tool_policy.allow_deferred = true;
+    // The frozen behavior's budget for the whole run (the limits xllm reads
+    // from `.llm_context` were laid over the config already).
+    if let Some((budget, model)) = frozen_budget {
+        if let Some(n) = budget.max_total_tokens {
+            request.budget.max_total_tokens = Some(n);
+        }
+        if let Some(n) = budget.max_wallclock_ms {
+            request.budget.max_wallclock_ms = Some(n);
+        }
+        if let Some(n) = budget.max_consecutive_errors {
+            request.error_policy.max_consecutive_errors = n;
+        }
+        if !model.fallbacks.is_empty() {
+            request.model_policy.fallbacks = model.fallbacks;
+        }
+        if model.temperature.is_some() {
+            request.model_policy.temperature = model.temperature;
+        }
+    }
     let (ctx_llm, rounds) = counted(llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
     let mut inherited_below = 0;
@@ -542,6 +590,7 @@ pub(super) async fn try_fill(
         return Ok(Err(w));
     };
     let run_id = w.run.run_id().to_string();
+    let waited = w.task_ids();
     let ctx = LLMContext::resume(
         w.snapshot,
         ResumeFill::ToolResults { results },
@@ -555,10 +604,13 @@ pub(super) async fn try_fill(
         .checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
     crate::fault::point("pending_tool:after_fill");
     {
+        let marked = super::children::mark_waited(sh, &waited).await?;
         let mut s = sh.session.lock().await;
-        if s.state.run_state == RunState::Waiting {
-            s.state.run_state = RunState::Running;
-            s.state.waiting_for = None;
+        if s.state.run_state == RunState::Waiting || marked {
+            if s.state.run_state == RunState::Waiting {
+                s.state.run_state = RunState::Running;
+                s.state.waiting_for = None;
+            }
             s.commit_state(&sh.lease)?;
         }
     }

@@ -1073,7 +1073,6 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
     let rt = std::sync::Arc::new(libopendan::runtime::TmuxRuntime::from_config(
         agent_tool::runtime::RuntimeConfig {
             kind: Some("tmux".into()),
-            id: Some("rt-test-tmux".into()),
             tmux: Some(agent_tool::runtime::TmuxConfig {
                 session: Some(libopendan::runtime::tmux::tmux_session_name(sd.sid())),
                 ..Default::default()

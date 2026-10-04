@@ -46,6 +46,9 @@ fn unknown() -> String {
 /// Source id of inputs the runner synthesizes itself (completion of a
 /// watched task): they have no delivery position to consume.
 pub const INTERNAL_TASK_SRC: &str = "_task";
+/// Source id of the events a runner synthesizes from the registry state of
+/// the session's sub sessions (needs attention / finished).
+pub const INTERNAL_CHILD_SRC: &str = "_child";
 
 /// Worklog entry bodies (format of `opendan.session_state/5` sessions).
 ///

@@ -2586,10 +2586,37 @@ fn action_body_arg(name: &str, schema: &Value) -> Option<String> {
 
 /// 生成运行时协议（F11.2）。由 loop_model、实际可用能力与输出约束决定。
 pub fn build_runtime_protocol(loop_model: LoopModel, tools: &EffectiveTools, json: bool) -> String {
+    build_runtime_protocol_for(&HostProtocolFlavor::OneShot, loop_model, tools, json)
+}
+
+/// Who a hosted run talks to (the opening of the runtime protocol). xllm's
+/// own runs are one-shot tasks; a host with a longer conversation (an Agent
+/// Session) words the opening itself — whether the agent may wait for the
+/// user is the host's rule, not xllm's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum HostProtocolFlavor {
+    #[default]
+    OneShot,
+    Session {
+        intro: String,
+    },
+}
+
+pub fn build_runtime_protocol_for(
+    flavor: &HostProtocolFlavor,
+    loop_model: LoopModel,
+    tools: &EffectiveTools,
+    json: bool,
+) -> String {
     let mut s = String::new();
+    if let HostProtocolFlavor::Session { intro } = flavor {
+        s.push_str(intro.trim_end());
+        s.push('\n');
+    } else {
     s.push_str(&format!(
         "You are running inside xllm ({RUNTIME_PROTOCOL_VERSION}), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n"
     ));
+    }
     match loop_model {
         LoopModel::FunctionCall => {
             if tools.enabled && !tools.native.is_empty() {
@@ -3613,6 +3640,8 @@ pub struct XllmDeps {
     /// 为 true 时不获取工作目录互斥锁（宿主自行协调，例如 libOpenDAN 的
     /// 多个 session 共享 workspace，由活动视图避让）。
     pub skip_workdir_lock: bool,
+    /// Opening of the runtime protocol of hosted runs (`prepare_hosted`).
+    pub host_protocol: HostProtocolFlavor,
 }
 
 impl Default for XllmDeps {
@@ -3627,6 +3656,7 @@ impl Default for XllmDeps {
             runtime_env: BTreeMap::new(),
             runtime_path_prefix: Vec::new(),
             skip_workdir_lock: false,
+            host_protocol: HostProtocolFlavor::OneShot,
         }
     }
 }
@@ -6844,7 +6874,8 @@ impl XllmTask {
             crate::runtime::open_runtime(&runtime_config, &open, &tools_cfg, deps).await?;
         let runtime_config = runtime.config();
         let runtime_descriptor = runtime.descriptor().clone();
-        let runtime_protocol = build_runtime_protocol(loop_model, &tools, false);
+        let runtime_protocol =
+            build_runtime_protocol_for(&deps.host_protocol, loop_model, &tools, false);
         let mut template_env = TemplateEnv::for_new_run(
             manager
                 .runtime_info()
@@ -7208,6 +7239,16 @@ pub fn hosted_request(
     }
 }
 
+/// Step renderer of a run: hosted runs render without wall-clock timestamps
+/// (their history is a stable prefix), whoever executes them.
+fn step_renderer(hosted: bool) -> XmlStepRenderer {
+    if hosted {
+        XmlStepRenderer::new().without_timestamps()
+    } else {
+        XmlStepRenderer::new()
+    }
+}
+
 /// Waist deps for a hosted run: behavior runs use xllm's action parser and
 /// step renderer (without wall-clock timestamps, so the rendered history is
 /// byte-stable for a prefix cache) — xllm can continue the run unchanged.
@@ -7220,7 +7261,7 @@ pub fn hosted_waist_deps(
     if cfg.loop_model == LoopModel::Behavior {
         d = d
             .with_result_parser(Arc::new(XllmActionParser::new(&cfg.tools.actions)))
-            .with_step_renderer(Arc::new(XmlStepRenderer::new().without_timestamps()));
+            .with_step_renderer(Arc::new(step_renderer(true)));
     }
     d
 }
@@ -7476,6 +7517,9 @@ impl XllmRun {
         let resolver = manager.resolver();
         let tools_dyn: Arc<dyn ToolManager> = manager;
         let llm_dyn: Arc<dyn LlmClient> = llm;
+        // A hosted run keeps the renderer its host assembled it with: the
+        // rendered history stays byte-identical across executors.
+        let hosted = record.lock().map(|r| r.host.is_some()).unwrap_or(false);
         let mut d = LLMContextDeps::new(llm_dyn, tools_dyn)
             .with_worklog(worklog)
             .with_inference_hook(hook)
@@ -7483,7 +7527,7 @@ impl XllmRun {
         if loop_model == LoopModel::Behavior {
             d = d
                 .with_result_parser(Arc::new(XllmActionParser::new(&tools.actions)))
-                .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+                .with_step_renderer(Arc::new(step_renderer(hosted)));
         }
         d
     }
@@ -7925,7 +7969,7 @@ impl XllmRun {
         let probe = if record.config.loop_model == LoopModel::Behavior {
             probe
                 .with_result_parser(Arc::new(XllmActionParser::new(&record.config.tools.actions)))
-                .with_step_renderer(Arc::new(XmlStepRenderer::new()))
+                .with_step_renderer(Arc::new(step_renderer(record.host.is_some())))
         } else {
             probe
         };

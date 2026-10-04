@@ -61,6 +61,28 @@ pub struct SessionSpec {
     pub subscriptions: Vec<Subscription>,
     #[serde(default)]
     pub extensions: BTreeMap<String, Value>,
+    /// Session template policy (`session.policy`).
+    #[serde(default)]
+    pub policy: SessionPolicy,
+    /// Whether the session gets an input queue. `None`: one is created
+    /// when the host has a queue client.
+    #[serde(default)]
+    pub input_channel: Option<InputChannel>,
+    /// Freeze the session's behaviors from the agent's catalog at creation
+    /// (xAgent §6.3). A creator that cannot read the catalog leaves it to
+    /// the driver's first drive.
+    #[serde(default)]
+    pub freeze: bool,
+}
+
+/// Input channel of a session (xAgent §4.7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputChannel {
+    /// No queue: bootstrap material comes from `prompt.initial_inputs`,
+    /// nothing can be posted later.
+    None,
+    Queue,
 }
 
 fn default_class() -> String {
@@ -95,6 +117,9 @@ impl SessionSpec {
             artifact_id: None,
             subscriptions: Vec::new(),
             extensions: BTreeMap::new(),
+            policy: SessionPolicy::default(),
+            input_channel: None,
+            freeze: false,
         }
     }
 }
@@ -140,11 +165,36 @@ pub async fn create_session(
         )?,
     };
     let driver = spec.driver.clone().unwrap_or_else(|| who.to_string());
+    if spec.prompt.initial_inputs.len() > MAX_PENDING_INPUTS {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "prompt.initial_inputs holds at most {MAX_PENDING_INPUTS} records"
+        )));
+    }
+    for i in &spec.prompt.initial_inputs {
+        i.validate()?;
+        if !matches!(i.input, SessionInput::Msg(_)) {
+            return Err(OpenDanError::InvalidArgument(
+                "prompt.initial_inputs only takes msg records".into(),
+            ));
+        }
+    }
+    let queue_client = match spec.input_channel {
+        Some(InputChannel::None) => None,
+        Some(InputChannel::Queue) => Some(channels.queue_client().ok_or_else(|| {
+            OpenDanError::Channel("the session needs an input queue but the host has no queue client".into())
+        })?),
+        None => channels.queue_client(),
+    };
+    if queue_client.is_some() && !spec.prompt.initial_inputs.is_empty() {
+        return Err(OpenDanError::InvalidArgument(
+            "prompt.initial_inputs is the bootstrap material of a session without an input queue; post to the queue instead".into(),
+        ));
+    }
 
     // Input queue: created by the creator (usually the driver's app), other
     // apps may post (control / msg). "Already exists" counts as success.
     let mut inputs = Vec::new();
-    if let Some(client) = channels.queue_client() {
+    if let Some(client) = queue_client {
         let (app, owner) = ids::parse_app_principal(&driver)
             .unwrap_or_else(|| ("opendan".to_string(), "unknown".to_string()));
         let queue =
@@ -168,7 +218,7 @@ pub async fn create_session(
     }
     let wake_event = ids::wake_event(agent.agent_id(), &sid);
 
-    let config = SessionConfig {
+    let mut config = SessionConfig {
         schema: SESSION_CONFIG_SCHEMA.to_string(),
         config_rev: 1,
         session: SessionSection {
@@ -194,6 +244,7 @@ pub async fn create_session(
             acl: spec.acl.clone(),
             task_binding: spec.task_binding.clone(),
             timezone: spec.timezone.clone(),
+            policy: spec.policy.clone(),
         },
         prompt: spec.prompt.clone(),
         runtime: spec.runtime.clone(),
@@ -207,6 +258,16 @@ pub async fn create_session(
         },
         extensions: spec.extensions.clone(),
     };
+    if spec.freeze {
+        match crate::state::freeze_config(&mut config, agent.behaviors(), who).await {
+            Ok(()) => {}
+            // A wrong behavior / entry mode is the creator's error.
+            Err(e @ OpenDanError::InvalidArgument(_)) => return Err(e),
+            Err(e) => log::info!(
+                "session {sid}: behaviors not frozen at creation ({e}); the driver freezes them"
+            ),
+        }
+    }
     let created = WorklogBody::Created {
         session_id: sid.clone(),
         kind: spec.kind.as_str().to_string(),
@@ -249,29 +310,8 @@ pub async fn create_session(
         location_rev: 0,
     };
     agent.sessions().register(entry, who).await?;
-    // A work session derived from a UI session: the parent semi-subscribes
-    // to it (S-17).
-    if let Some(parent) = spec.origin.as_ref().and_then(|o| o.parent_session.clone()) {
-        let cmd = ControlCommand::Subscribe {
-            subscription: Subscription {
-                id: format!("child-{sid}"),
-                mode: SubscriptionMode::Semi,
-                source: SubscriptionSource::Session {
-                    session_ref: sid.clone(),
-                },
-                watch: vec![
-                    "run_state".into(),
-                    "outcome".into(),
-                    "acceptance".into(),
-                    "one_line_status".into(),
-                ],
-            },
-        };
-        let input = PostedInput::control(who, format!("subscribe:{sid}"), cmd);
-        if let Err(e) = agent.sessions().post_input(&parent, &input).await {
-            log::warn!("could not subscribe parent session {parent} to {sid}: {e}");
-        }
-    }
+    // A parent's attention to its sub sessions is implicit: its runner
+    // reads them from the registry by `origin.parent_session` (xAgent §4.14).
     Ok(sd)
 }
 
@@ -376,4 +416,237 @@ pub async fn create_self_improve_session(
     create_session(parent_dir, spec, agent, who, channels)
         .await
         .map(Some)
+}
+
+/// Where a sub session works.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubWorkspace {
+    /// The parent's working directory (shared; the activity view keeps the
+    /// sessions apart).
+    #[default]
+    Inherit,
+    /// An agent workspace of its own.
+    New,
+    /// The agent workspace `<agent_root>/workspace/<id>`.
+    Id(String),
+}
+
+/// What a session asks for when it hands a piece of work to a sub session
+/// (xAgent §4.11). A sub session is an ordinary session whose
+/// `origin.parent_session` names its parent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SubSessionSpec {
+    pub objective: String,
+    /// First inputs (text messages from the agent itself).
+    #[serde(default)]
+    pub msgs: Vec<String>,
+    /// Data objects attached to the first message.
+    #[serde(default)]
+    pub attachments: Vec<(String, Option<String>)>,
+    /// Attach an excerpt of the parent's last `n` dialogue records.
+    #[serde(default)]
+    pub context_recent: usize,
+    #[serde(default)]
+    pub class: Option<String>,
+    #[serde(default)]
+    pub behavior: Option<String>,
+    #[serde(default)]
+    pub workspace: SubWorkspace,
+    /// Explicit runtime id requirement (`None`: inherit the parent's
+    /// runtime configuration; a tmux runtime is derived per session).
+    #[serde(default)]
+    pub runtime_id: Option<String>,
+    #[serde(default)]
+    pub report: ReportMode,
+    /// The sub session gets an input queue and may wait for input.
+    #[serde(default)]
+    pub interactive: bool,
+    /// `(run_id, call_id)` of the creating tool call: the idempotency key.
+    #[serde(default)]
+    pub call: Option<(String, String)>,
+    /// Idempotency key when there is no call identity.
+    #[serde(default)]
+    pub key: Option<String>,
+}
+
+/// Last `n` dialogue records of a session (user / assistant text), oldest
+/// first: a labelled excerpt, not the session's context.
+pub fn dialogue_excerpt(sd: &SessionDir, n: usize) -> Result<String> {
+    if n == 0 {
+        return Ok(String::new());
+    }
+    let state = sd.state()?;
+    let mut lines = Vec::new();
+    let mut r = sd.worklog().reverse(state.worklog.committed_bytes, 0)?;
+    while lines.len() < n {
+        let Some((_, e)) = r.next_json::<WorklogEntry>()? else {
+            break;
+        };
+        let (role, text) = match e.body {
+            WorklogBody::UserMessage { content, .. } => ("user", content),
+            WorklogBody::AssistantMessage { assistant, .. } | WorklogBody::Step { assistant, .. } => {
+                ("assistant", assistant)
+            }
+            _ => continue,
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        let cut: String = text.trim().chars().take(600).collect();
+        lines.push(format!("[{role}] {cut}"));
+    }
+    lines.reverse();
+    Ok(lines.join("\n"))
+}
+
+/// Nesting depth of `sid` below its root session.
+async fn session_depth(agent: &dyn AgentStateClient, entry: &RegistryEntry) -> Result<usize> {
+    let mut depth = 0;
+    let mut cur = entry.origin.as_ref().and_then(|o| o.parent_session.clone());
+    while let Some(p) = cur {
+        depth += 1;
+        if depth > 32 {
+            break;
+        }
+        cur = agent
+            .sessions()
+            .lookup(&p)
+            .await?
+            .and_then(|e| e.origin.and_then(|o| o.parent_session));
+    }
+    Ok(depth)
+}
+
+/// Create a sub session of `parent_sid`: registered with
+/// `origin = {parent_session, report, created_by_call}`, driven by the
+/// parent's driver, not advanced here. Idempotent for the same creating
+/// call. Refused beyond the parent's `max_sub_sessions` (not finished at the
+/// same time) and `max_session_depth`.
+pub async fn create_sub_session(
+    agent: &dyn AgentStateClient,
+    who: &str,
+    parent_sid: &str,
+    sub: SubSessionSpec,
+    channels: &dyn InputChannelFactory,
+) -> Result<SessionDir> {
+    let parent = agent
+        .sessions()
+        .lookup(parent_sid)
+        .await?
+        .ok_or_else(|| OpenDanError::NotFound(format!("parent session {parent_sid}")))?;
+    let parent_dir = SessionDir::open(&parent.location)?;
+    let pcfg = parent_dir.config()?;
+    let key = match (&sub.call, &sub.key) {
+        (Some((run, call)), _) => format!("sub:{}", ids::h(&[parent_sid, run, call])),
+        (None, Some(k)) => format!("sub:{}", ids::h(&[parent_sid, k])),
+        (None, None) => format!("sub:{}", uuid::Uuid::new_v4().simple()),
+    };
+    let class = sub.class.clone().unwrap_or_else(|| "work".to_string());
+    let template = crate::template::SessionTemplate::load(&class, agent.agent_root())?;
+    let sid = ids::derive_session_id(template.kind, agent.agent_did(), who, Some(&key), None)?;
+    // The same call again: the session it created, never a second one.
+    if let Some(existing) = agent.sessions().lookup(&sid).await? {
+        return SessionDir::open(&existing.location);
+    }
+    let policy = &pcfg.session.policy;
+    let siblings = agent
+        .sessions()
+        .children_of(&[parent_sid.to_string()])
+        .await?
+        .into_iter()
+        .filter(|e| e.status.run_state != RunState::Finished)
+        .count();
+    if siblings >= policy.max_sub_sessions as usize {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "session {parent_sid} already has {siblings} unfinished sub sessions (max_sub_sessions = {}); wait for one or stop it",
+            policy.max_sub_sessions
+        )));
+    }
+    let depth = session_depth(agent, &parent).await? + 1;
+    if depth > policy.max_session_depth as usize {
+        return Err(OpenDanError::InvalidArgument(format!(
+            "sub sessions are nested {} deep (max_session_depth = {}); do the work in this session",
+            depth - 1,
+            policy.max_session_depth
+        )));
+    }
+    let mut spec = template.spec(sub.objective.clone());
+    spec.idempotency_key = Some(key);
+    spec.driver = Some(parent.driver.principal.clone());
+    spec.via = format!("session:{parent_sid}");
+    spec.origin = Some(Origin {
+        parent_session: Some(parent_sid.to_string()),
+        intent_ref: None,
+        reason_messages: Vec::new(),
+        report: Some(sub.report),
+        created_by_call: sub.call.as_ref().map(|(run, call)| format!("{run}/{call}")),
+    });
+    spec.timezone = pcfg.session.timezone.clone();
+    spec.prompt.llm_context = pcfg.prompt.llm_context.clone();
+    spec.runtime = pcfg.runtime.clone();
+    // The binding identity is the sub session's own: only an explicit
+    // requirement is carried, the runtime configuration is inherited.
+    spec.runtime.requirement.runtime_id = sub.runtime_id.clone();
+    spec.policy.max_session_depth = policy.max_session_depth;
+    if let Some(b) = sub.behavior.clone() {
+        spec.prompt.behavior = Some(b);
+    }
+    spec.freeze = spec.prompt.behavior.is_some() || pcfg.prompt.frozen.is_some();
+    spec.workspace = match &sub.workspace {
+        SubWorkspace::Inherit => Some(pcfg.workspace.clone().unwrap_or(WorkspaceRef::External {
+            path: parent_dir
+                .path()
+                .canonicalize()
+                .unwrap_or_else(|_| parent_dir.path().to_path_buf())
+                .display()
+                .to_string(),
+        })),
+        SubWorkspace::New => Some(WorkspaceRef::Agent { id: sid.clone() }),
+        SubWorkspace::Id(id) => Some(WorkspaceRef::Agent { id: id.clone() }),
+    };
+    if sub.interactive {
+        spec.input_channel = Some(InputChannel::Queue);
+        spec.policy.wait_user_msg = WaitPolicy::Allowed;
+    }
+    // First inputs: messages of the agent itself.
+    let me = parse_did(agent.agent_did())?;
+    let mut texts = sub.msgs.clone();
+    if sub.context_recent > 0 {
+        let excerpt = dialogue_excerpt(&parent_dir, sub.context_recent)?;
+        if !excerpt.is_empty() {
+            texts.push(format!(
+                "Excerpt of the parent session's recent dialogue (for reference only):\n{excerpt}"
+            ));
+        }
+    }
+    let mut first = Vec::new();
+    for (i, t) in texts.iter().enumerate() {
+        let mut msg = text_msg(&me, &me, t.clone());
+        if i == 0 {
+            for (id, name) in &sub.attachments {
+                let obj_id = ndn_lib::ObjId::new(id).map_err(|e| {
+                    OpenDanError::InvalidArgument(format!("attachment `{id}` is not an ObjId: {e}"))
+                })?;
+                msg = attach(msg, obj_id, name.clone());
+            }
+        }
+        first.push(PostedInput::msg(who, msg, MsgDelivery::default())?);
+    }
+    let queued = spec.input_channel == Some(InputChannel::Queue);
+    if !queued {
+        spec.prompt.initial_inputs = first.clone();
+    }
+    let parent_of_dirs = parent_dir
+        .path()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| parent_dir.path().to_path_buf());
+    let sd = create_session(&parent_of_dirs, spec, agent, who, channels).await?;
+    if queued {
+        for input in &first {
+            agent.sessions().post_input(sd.sid(), input).await?;
+        }
+    }
+    Ok(sd)
 }

@@ -10,11 +10,13 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// 4: input templates (`prompt.system / on_init / on_input /
-/// on_context_switch / semi_subscription_snapshot`), `input.mode / media`,
-/// `session.timezone`, event sources of subscriptions; msg-center input
-/// sources removed. Earlier versions are read-only until migrated.
-pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/4";
+/// 5: `session.policy` (session template), `origin.report /
+/// created_by_call`, `prompt.frozen` (behaviors frozen from the agent's
+/// catalog) and `prompt.initial_inputs` (bootstrap material of a session
+/// without an input queue). 4: input templates, `input.mode / media`,
+/// `session.timezone`, event sources of subscriptions. Earlier versions are
+/// read-only until migrated.
+pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/5";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +75,104 @@ pub struct Origin {
     pub intent_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub reason_messages: Vec<String>,
+    /// How the parent session hears about this session (chosen by the
+    /// parent when it created it). `None`: no implicit reporting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<ReportMode>,
+    /// `<run_id>/<call_id>` of the tool call that created the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by_call: Option<String>,
+}
+
+/// What a parent receives from a sub session without subscribing: the
+/// registry state stays the truth, these events only accelerate.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportMode {
+    /// Needs attention (waiting for input / a decision) and the end: Input.
+    #[default]
+    Final,
+    /// `final` plus progress, kept as semi-subscription state.
+    Progress,
+    /// Nothing is pushed; the parent reads the registry itself.
+    None,
+}
+
+/// Meaning of `WAIT_USER_MSG` in a session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitPolicy {
+    /// The Turn stays open waiting for input.
+    #[default]
+    Allowed,
+    /// Nobody answers: the Turn fails with `needs_user_input` and the
+    /// session finishes as failed; the question is in the report.
+    FinishFailed,
+    /// Treated as the delivered result.
+    FinishCompleted,
+}
+
+/// Material of the semi-subscription snapshot and the fresh view.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObserveScope {
+    Off,
+    Events,
+    #[default]
+    EventsAndActive,
+}
+
+fn default_true() -> bool {
+    true
+}
+fn default_process_depth() -> u8 {
+    MAX_CALL_DEPTH as u8
+}
+fn default_sub_sessions() -> u8 {
+    4
+}
+fn default_session_depth() -> u8 {
+    2
+}
+
+/// `session.policy`: the session template resolved at creation (xAgent
+/// §4.7) and frozen with the session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionPolicy {
+    #[serde(default)]
+    pub wait_user_msg: WaitPolicy,
+    #[serde(default)]
+    pub observe: ObserveScope,
+    #[serde(default = "default_true")]
+    pub load_hints: bool,
+    /// Callers on `process_stack` at most (sub contexts in progress).
+    #[serde(default = "default_process_depth")]
+    pub max_process_depth: u8,
+    /// Sub sessions not finished at the same time.
+    #[serde(default = "default_sub_sessions")]
+    pub max_sub_sessions: u8,
+    /// Nesting depth of sub sessions below this session's root.
+    #[serde(default = "default_session_depth")]
+    pub max_session_depth: u8,
+}
+
+impl Default for SessionPolicy {
+    fn default() -> Self {
+        Self {
+            wait_user_msg: WaitPolicy::default(),
+            observe: ObserveScope::default(),
+            load_hints: true,
+            max_process_depth: default_process_depth(),
+            max_sub_sessions: default_sub_sessions(),
+            max_session_depth: default_session_depth(),
+        }
+    }
+}
+
+impl SessionPolicy {
+    pub fn is_default(&self) -> bool {
+        self == &SessionPolicy::default()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -175,6 +275,8 @@ pub struct SessionSection {
     /// ([`USER_TIMEZONE_SUBSCRIPTION`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    #[serde(default, skip_serializing_if = "SessionPolicy::is_default")]
+    pub policy: SessionPolicy,
 }
 
 fn default_class() -> String {
@@ -237,9 +339,18 @@ pub struct PromptSection {
     /// OpenDAN extensions below.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub llm_context: Value,
-    /// `behaviors/<name>` reference (BehaviorAssembler).
+    /// Entry behavior of the session (`behaviors/<name>` of the agent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub behavior: Option<String>,
+    /// Behaviors and identity frozen from the agent's catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<super::behavior::FrozenPrompt>,
+    /// Bootstrap inputs of a session created without an input queue: `msg`
+    /// records only, at most [`super::input::MAX_PENDING_INPUTS`], never
+    /// changed after creation. The runner reads them as the read-only source
+    /// [`BOOTSTRAP_SRC`] (index from 1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initial_inputs: Vec<super::input::PostedInput>,
     /// Application system prompt (S-05); composed after the agent identity
     /// and the non-overridable constraints.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -446,7 +557,7 @@ pub struct BehaviorEntry {
 }
 
 impl BehaviorEntry {
-    fn check(&self, name: &str) -> std::result::Result<(), String> {
+    pub fn validate(&self, name: &str) -> std::result::Result<(), String> {
         if !self.llm_context.is_null() && !self.llm_context.is_object() {
             return Err(format!("behavior `{name}`: llm_context must be an object"));
         }
@@ -476,8 +587,12 @@ impl BehaviorEntry {
     }
 }
 
-/// Nested sub contexts (callers on `process_stack`) allowed in one session.
+/// Nested sub contexts (callers on `process_stack`) allowed in one session
+/// by default (`session.policy.max_process_depth`).
 pub const MAX_CALL_DEPTH: usize = 4;
+
+/// Id of the read-only input source over `prompt.initial_inputs`.
+pub const BOOTSTRAP_SRC: &str = "_bootstrap";
 
 /// Tool a context calls to run a sub context (`create_sub_context` / `fork`
 /// targets): `{behavior, task}`.
@@ -729,7 +844,7 @@ impl SessionConfig {
         let map: BTreeMap<String, BehaviorEntry> = serde_json::from_value(b.clone())
             .map_err(|e| format!("extensions.opendan.behaviors: {e}"))?;
         for (name, entry) in &map {
-            entry.check(name)?;
+            entry.validate(name)?;
         }
         Ok(map)
     }

@@ -26,7 +26,7 @@ use llm_context::observation::Observation;
 
 use crate::lock::Lease;
 use crate::protocol::{
-    BehaviorEntry, ChildCall, CallTrigger, Touching, MAX_CALL_DEPTH, TOOL_CALL_BEHAVIOR,
+    BehaviorEntry, ChildCall, CallTrigger, Touching, TOOL_CALL_BEHAVIOR,
 };
 use crate::session::runs::RunHandle;
 
@@ -55,6 +55,8 @@ pub struct SessionToolManager {
     /// Write targets inferred from tool calls (merged into activity at the
     /// next checkpoint).
     touched: Arc<Mutex<Vec<Touching>>>,
+    /// Task ids the results of this run referred to so far.
+    seen_tasks: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl SessionToolManager {
@@ -65,12 +67,14 @@ impl SessionToolManager {
         workdir: PathBuf,
         touched: Arc<Mutex<Vec<Touching>>>,
     ) -> Self {
+        let seen_tasks = Mutex::new(run.noted_tasks().into_iter().collect());
         Self {
             inner,
             run,
             lease,
             workdir,
             touched,
+            seen_tasks,
         }
     }
 
@@ -145,7 +149,32 @@ impl ToolManager for SessionToolManager {
         // A tool that answers `Pending { task_id }` suspends the run: the
         // session waits for the task outside the context (the run's
         // resolver answers for it) and fills the result on resume.
-        self.inner.call_tool(call, ctx).await
+        let result = self.inner.call_tool(call, ctx).await;
+        if let Ok(Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. }) =
+            &result
+        {
+            if let Some((task_id, t)) = tool_result
+                .as_ref()
+                .and_then(|t| t.task_id.as_deref().map(|id| (id, t)))
+            {
+                // A result that introduces a task (and is not the result of
+                // a finished command) or says it is "still running" means
+                // the task continues after the call; any other result about
+                // a known task is its end as the LLM saw it.
+                let first = self
+                    .seen_tasks
+                    .lock()
+                    .expect("seen tasks")
+                    .insert(task_id.to_string());
+                let ok = matches!(&result, Ok(Observation::Success { .. }));
+                let running = t.summary.contains("still running")
+                    || (first && ok && t.return_code.is_none());
+                if let Err(e) = self.run.note_task(task_id, running) {
+                    log::warn!("cannot note task {task_id} of run {}: {e}", self.run.run_id());
+                }
+            }
+        }
+        result
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -170,16 +199,26 @@ pub struct CallBehaviorTool {
     targets: BTreeMap<String, BehaviorEntry>,
     /// Sub contexts already in progress above the run this tool belongs to.
     depth: usize,
+    /// `session.policy.max_process_depth`.
+    max_depth: usize,
 }
 
 impl CallBehaviorTool {
-    pub fn new(behaviors: &BTreeMap<String, BehaviorEntry>, depth: usize) -> Option<Self> {
+    pub fn new(
+        behaviors: &BTreeMap<String, BehaviorEntry>,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<Self> {
         let targets: BTreeMap<String, BehaviorEntry> = behaviors
             .iter()
             .filter(|(_, e)| e.mode.is_sub_context())
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        (!targets.is_empty()).then_some(Self { targets, depth })
+        (!targets.is_empty()).then_some(Self {
+            targets,
+            depth,
+            max_depth,
+        })
     }
 }
 
@@ -238,9 +277,10 @@ impl AgentTool for CallBehaviorTool {
                 self.targets.keys().cloned().collect::<Vec<_>>().join(", ")
             )));
         }
-        if self.depth >= MAX_CALL_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(AgentToolError::ExecFailed(format!(
-                "sub contexts are nested {MAX_CALL_DEPTH} deep already; do the work in this context"
+                "sub contexts are nested {} deep already; do the work in this context",
+                self.max_depth
             )));
         }
         let deferred = CURRENT_TOOL_CTX

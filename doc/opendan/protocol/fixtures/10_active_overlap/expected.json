@@ -19,11 +19,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261003-074004-6b29c6",
+        "run_id": "20261003-093959-2170fb",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261003-074004-6b29c6"
+        "20261003-093959-2170fb"
       ],
       "session_id": "work-fixture-active-a",
       "state": {
