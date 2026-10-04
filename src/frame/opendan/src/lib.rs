@@ -13,6 +13,7 @@
 //! driver does, through `drive`.
 
 pub mod config;
+pub mod home;
 pub mod loader;
 pub mod rootfs;
 pub mod service;

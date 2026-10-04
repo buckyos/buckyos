@@ -17,6 +17,7 @@ use libopendan::runner::{BehaviorAssembler, OutboundSink, RunnerOptions};
 use libopendan::state::{register_in_process, unregister_in_process, AgentStateClient, FsAgentStateClient};
 
 use crate::config::AgentConfig;
+use crate::home::Home;
 use crate::rootfs;
 use crate::service::{Access, LoaderInfo, ModuleStatus, StateService, SERVICE_PATH};
 use crate::ui::{MailService, MsgCenterSink, OutboundTexts, UiModule};
@@ -199,6 +200,7 @@ impl Loader {
                     info: info.clone(),
                     ui: ui.clone(),
                     access: env.access.clone(),
+                    home: Home::new(&env.agent_root),
                 });
                 runner
                     .add_http_server(SERVICE_PATH.to_string(), service)

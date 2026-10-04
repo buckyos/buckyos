@@ -12,6 +12,7 @@
   --ok: #18794e;
   --warn: #a15c07;
   --bad: #c0362c;
+  --soft: #eef2fb;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -25,6 +26,7 @@
     --ok: #4cc38a;
     --warn: #e0a341;
     --bad: #ff7b72;
+    --soft: #242b38;
   }
 }
 
@@ -34,6 +36,14 @@ body {
   color: var(--fg);
   font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
   font-size: 13px;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* The home page is read on a phone: larger type, finger-sized targets. */
+.home {
+  font-size: 15px;
+  line-height: 1.45;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 
 @layer components {
@@ -48,6 +58,12 @@ body {
   }
   .btn {
     @apply inline-flex items-center gap-1 rounded border border-line bg-panel px-2 py-1 text-xs hover:border-accent disabled:opacity-50;
+  }
+  .card {
+    @apply rounded-2xl border border-line bg-panel;
+  }
+  .tap {
+    @apply inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-4 text-sm font-medium disabled:opacity-50;
   }
   .input {
     @apply rounded border border-line bg-panel px-2 py-1 text-xs text-fg;

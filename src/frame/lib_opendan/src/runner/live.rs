@@ -267,7 +267,7 @@ async fn fork_run_context(
         workdir,
         sh.touched.clone(),
     );
-    let (ctx_llm, rounds) = counted(llm.clone());
+    let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
     let mut snap = derived.snapshot;
     let meta = HostMeta {
@@ -467,7 +467,7 @@ async fn own_run_context(
             request.model_policy.temperature = model.temperature;
         }
     }
-    let (ctx_llm, rounds) = counted(llm.clone());
+    let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
     let mut inherited_below = 0;
     let mut ctx = match &new.child {
@@ -733,7 +733,7 @@ pub(super) async fn resume_live_run(
         workdir,
         sh.touched.clone(),
     );
-    let (ctx_llm, rounds) = counted(llm.clone());
+    let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &record.config, ctx_llm, tools, &resolver);
     if suspended_on_tools {
         let w = WaitingRun {

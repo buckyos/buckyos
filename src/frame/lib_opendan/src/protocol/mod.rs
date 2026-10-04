@@ -34,6 +34,8 @@ pub const STATE_FILE: &str = "state.json";
 pub const SUMMARY_FILE: &str = "summary.json";
 pub const WORKLOG_FILE: &str = "worklog.jsonl";
 pub const STATIC_FILE: &str = "static.json";
+/// Per-Round usage by model (append only, may be missing).
+pub const USAGE_FILE: &str = "usage.jsonl";
 pub const LEASE_FILE: &str = "lease.json";
 /// Serializes "check pending inputs + append" of producers.
 pub const POST_LOCK_FILE: &str = "post.lock";
@@ -57,6 +59,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("lock_info", s::<misc::LockInfo>()),
         ("binding", s::<misc::Binding>()),
         ("session_static", s::<misc::SessionStatic>()),
+        ("usage_record", s::<misc::UsageRecord>()),
         ("registry_entry", s::<agent_state::RegistryEntry>()),
         ("perception_record", s::<agent_state::PerceptionRecord>()),
         ("perception_cursor", s::<agent_state::PerceptionCursor>()),

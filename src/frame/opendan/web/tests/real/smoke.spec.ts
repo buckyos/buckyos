@@ -10,6 +10,8 @@ test('built UI loads from opendan and every page reads the kRPC service', async 
 
   await page.goto('/')
   await expect(page.getByTestId('data-source')).toHaveText('data: krpc')
+  await expect(page.getByTestId('agent-card')).toBeVisible()
+  await page.getByRole('link', { name: 'Advanced' }).click()
   await expect(page.getByTestId('sessions-panel')).toBeVisible()
   await expect(page.getByTestId('active-panel')).toBeVisible()
 
@@ -28,7 +30,7 @@ test('built UI loads from opendan and every page reads the kRPC service', async 
 
   await expect.poll(() => new Set(calls)).toEqual(
     new Set([
-      'loader.status', 'sessions.query', 'activity.active', 'perception.cursor', 'perception.backlog', 'artifacts.list',
+      'agent.profile', 'usage.models', 'ui.bindings', 'loader.status', 'sessions.query', 'activity.active', 'perception.cursor', 'perception.backlog', 'artifacts.list',
       'behaviors.revision', 'behaviors.list', 'behaviors.identity', 'cognition.recall_hints', 'session.read',
     ]),
   )

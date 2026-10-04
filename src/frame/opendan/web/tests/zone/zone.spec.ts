@@ -20,6 +20,10 @@ test('the WebUI behind the zone gateway reads the Loader with the zone login', a
   await page.getByRole('button', { name: 'Sign In' }).click()
 
   await expect(page.getByTestId('data-source')).toHaveText('data: krpc')
+  await expect(page.getByTestId('agent-card')).toBeVisible()
+  await expect(page.getByTestId('session-list').locator('a[data-target="messagehub"]').first()).toBeVisible()
+  await page.screenshot({ path: 'test-results-zone/home.png', fullPage: true })
+  await page.getByRole('link', { name: 'Advanced' }).click()
   await expect(page.getByTestId('sessions-panel')).toBeVisible()
   await expect(page.getByTestId('sessions-panel')).toContainText('ui-')
   await page.screenshot({ path: 'test-results-zone/sessions.png', fullPage: true })

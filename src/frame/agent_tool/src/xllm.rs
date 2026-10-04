@@ -4880,7 +4880,11 @@ impl AiccLlmClient {
                     cost: response.cost,
                     finish_reason: response.finish_reason,
                     provider_task_ref: response.provider_task_ref,
-                    extra: None,
+                    // The model the route ended on (usage statistics by model).
+                    extra: response
+                        .route_trace
+                        .and_then(|t| t.final_model)
+                        .map(|model| serde_json::json!({ "model": model })),
                 })
             }
             AiMethodStatus::Failed => Err(LLMComputeError::provider(

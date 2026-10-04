@@ -4,6 +4,8 @@ import type { MessageHubContext } from './types'
 export const messageHubLaunchSchema = z.object({
   kind: z.literal('messagehub'),
   entityId: z.string().startsWith('did:').nullable(),
+  /** Opens this session of the entity instead of its default one. */
+  sessionId: z.string().min(1).nullable().optional(),
   context: z.object({ viewerDid: z.string().startsWith('did:'), ownerDid: z.string().startsWith('did:'), mode: z.enum(['self', 'observe']) }),
 })
 

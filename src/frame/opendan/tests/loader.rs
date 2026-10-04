@@ -518,6 +518,26 @@ async fn agent_state_over_krpc_matches_the_files() {
     assert_eq!(modules["self_check"], false);
     assert!(status["hosted"].as_array().unwrap().iter().any(|h| h["session_id"] == ui.sid()));
 
+    // The home page: profile card, usage by model, conversations.
+    let profile = rpc(port, "agent.profile", json!({})).await.unwrap();
+    assert_eq!(profile["agent_did"], AGENT);
+    assert!(profile["owner_did"].is_null() && profile["desktop_url"].is_null());
+    let profile = rpc(port, "agent.profile_set", json!({ "display_name": "Jay", "bio": "at your service" }))
+        .await
+        .unwrap();
+    assert_eq!(profile["display_name"], "Jay");
+    assert_eq!(rpc(port, "agent.profile", json!({})).await.unwrap()["bio"], "at your service");
+    let err = rpc(port, "agent.profile_set", json!({ "avatar": "file:///etc/passwd" })).await.unwrap_err();
+    assert!(matches!(err, OpenDanError::InvalidArgument(_)), "{err:?}");
+    let usage = rpc(port, "usage.models", json!({})).await.unwrap();
+    let models = usage["models"].as_array().unwrap();
+    assert!(!models.is_empty(), "{usage}");
+    let recorded: u64 = models.iter().map(|m| m["all"]["total"].as_u64().unwrap()).sum();
+    let counted: u64 = [&done, &ui].iter().map(|sd| sd.usage().unwrap().iter().map(|r| r.total_tokens).sum::<u64>()).sum();
+    assert!(recorded >= 30 && recorded == counted, "{usage}");
+    assert_eq!(models[0]["hour"], models[0]["all"]);
+    assert!(rpc(port, "ui.bindings", json!({})).await.unwrap().is_array());
+
     // The three operations are records on the session's bus.
     let posted = rpc(port, "session.post", json!({ "sid": ui.sid(), "text": "second" })).await.unwrap();
     assert!(posted["key"].as_str().unwrap().starts_with("cymsg:"));

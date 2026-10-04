@@ -1,5 +1,6 @@
 import type {
   ActiveSession,
+  AgentProfile,
   ArtifactHead,
   ArtifactVersion,
   BacklogItem,
@@ -10,8 +11,11 @@ import type {
   LoaderStatus,
   PerceptionCursor,
   PerceptionRecord,
+  ProfilePatch,
   RegistryEntry,
   SessionDetail,
+  UiBinding,
+  UsageByModel,
 } from './types'
 
 export interface PerceptionView {
@@ -28,6 +32,12 @@ export interface OpenDanDataModel {
   readonly source: 'mock' | 'krpc'
 
   loaderStatus(): Promise<LoaderStatus>
+
+  profile(): Promise<AgentProfile>
+  setProfile(patch: ProfilePatch): Promise<AgentProfile>
+  /** `null`: the service does not record usage by model. */
+  usageModels(): Promise<UsageByModel | null>
+  uiBindings(): Promise<UiBinding[]>
 
   sessions(): Promise<RegistryEntry[]>
   activeSessions(): Promise<ActiveSession[]>

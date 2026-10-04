@@ -15,6 +15,7 @@
     worklog.jsonl                    严格只追加的历史
     summary.json                     历史压缩状态（首次压缩前可以不存在）
     static.json                      统计（可缺失）
+    usage.jsonl                      按模型的用量明细（只追加，可缺失）
     lease.json                       session 锁文件（见 Lease Protocol）
     binding.json                     runtime 绑定（只写一次）
     runs/<run_id>/                   xllm run 目录：run.json + snapshots/NNNN.json + .lock
@@ -204,6 +205,8 @@ Schema：`schema/session_state.schema.json`。
 
 - `rounds`：本 runner 经 run 的 `LlmClient::infer` 发起的推理尝试数（成功、失败、中断都计；provider adapter 内部的重试算一次），每个 outcome 后累加；`rounds_failed` / `rounds_interrupted` 是其中返回错误 / 被中途放弃的部分。历史摘要（压缩）推理不是 Round，不计入；xllm 接手 run 后发起的推理只计入该 run 的 `run.json usage.llm_requests`（§7）。
 - `turns` = 已完成的 Turn 数（`state.turns_completed`）；`runs` = 已结束的 run 数。Round、Turn、run 三个计数互不推导。
+
+**usage.jsonl**（按模型的用量明细，只追加，可缺失；`schema/usage_record.schema.json`）：每个成功返回且带用量的 Round 一行 `{at_ms, model, run_id, input_tokens, output_tokens, total_tokens}`。`model` 是 provider 报告的实际模型（AICC 路由的 `final_model`），没有时是请求的模型别名。由持有 session 锁的驱动者追加，写入失败只记日志、不影响 Round；末行不完整时读取方跳过。历史摘要推理与 xllm 接手后的推理不写入（同 `rounds`）。它只用于按模型、按时间窗口的统计，总量仍以 `static.json` 为准。
 
 **report.md**（finished 时写入）：标题 `# Report — <objective 首行>`，随后 `- session:`、`- outcome:`、`- turns: N`（已完成的 Turn 数）和答复正文。
 

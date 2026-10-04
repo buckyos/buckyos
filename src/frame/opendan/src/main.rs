@@ -237,6 +237,7 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
             owner,
             app_id: runtime.get_app_id(),
             trust_loopback: args.trust_loopback,
+            zone_host: Some(runtime.zone_id.to_host_name()).filter(|h| !h.is_empty()),
         },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),

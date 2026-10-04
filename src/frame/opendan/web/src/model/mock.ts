@@ -1,5 +1,6 @@
 import { OpenDanError, type OpenDanDataModel } from './datamodel'
 import type {
+  AgentProfile,
   ArtifactVersion,
   HostedStatus,
   PerceptionRecord,
@@ -11,6 +12,7 @@ import type {
 
 const WHO = 'app:jarvis@devtest'
 const AGENT = 'did:bns:jarvis.devtest'
+const OWNER = 'did:bns:devtest'
 const ROOT = '/opt/buckyos/data/home/devtest/.local/share/jarvis/agents/jarvis'
 const now = Date.now()
 const ago = (seconds: number) => now - seconds * 1000
@@ -105,7 +107,7 @@ const buildFixtures = () => {
     one_line_status: 'Waiting for the next message',
     updated_at_ms: ago(45),
   }, {
-    route_key: 'inbox:did:bns:devtest',
+    route_key: `${AGENT}/dm:${OWNER}`,
     input_queue: `opendan/${UI}/input`,
     wake_event: `/opendan/session/${UI}/input`,
   })
@@ -127,6 +129,7 @@ const buildFixtures = () => {
     origin: { parent_session: UI, reason_messages: ['msg:1a2b'], created_by_call: 'call_91' },
     input_queue: `opendan/${WORK_RUNNING}/input`,
     artifact_id: 'art-weekly-report',
+    workspace: { kind: 'external', path: '/home/devtest/Downloads' },
   })
   const pending = entry(WORK_PENDING, 'work', 'work.default', 'Rename photos by capture date', {
     rev: 48,
@@ -141,6 +144,7 @@ const buildFixtures = () => {
     origin: { parent_session: UI },
     input_queue: `opendan/${WORK_PENDING}/input`,
     artifact_id: 'art-photo-rename',
+    workspace: { kind: 'agent', id: 'photos' },
   })
   const failed = entry(WORK_FAILED, 'work', 'work.default', 'Fetch the release notes of cyfs-gateway', {
     rev: 9,
@@ -305,6 +309,18 @@ const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 export const createMockDataModel = (): OpenDanDataModel => {
   const fx = buildFixtures()
   let inputIndex = 8
+  const profile: AgentProfile = {
+    agent_did: AGENT,
+    agent_id: 'jarvis',
+    display_name: 'Jarvis',
+    avatar: null,
+    bio: 'Your personal agent. I keep an eye on your files and get things done while you are away.',
+    owner_did: OWNER,
+    desktop_url: 'https://test.buckyos.io',
+    updated_at_ms: 0,
+    editable: true,
+  }
+  const tokens = (input: number, output: number) => ({ input, output, total: input + output })
   let worklogSeq = 1000
 
   const find = (sid: string): RegistryEntry => {
@@ -356,15 +372,48 @@ export const createMockDataModel = (): OpenDanDataModel => {
           last_scan_ms: ago(3),
           last_error: 'msg-center: list_box_by_time timeout',
           inboxes: [
-            { route_key: 'inbox:did:bns:devtest', session_id: UI, delivered: 7, dropped: 0, last_at_ms: ago(400) },
-            { route_key: 'inbox:did:bns:alice.buckyos', delivered: 0, dropped: 2, held: 'session input queue is full', last_at_ms: ago(1800) },
+            { route_key: `${AGENT}/dm:${OWNER}`, session_id: UI, delivered: 7, dropped: 0, last_at_ms: ago(400) },
+            { route_key: `${AGENT}/dm:did:bns:alice.buckyos`, delivered: 0, dropped: 2, held: 'session input queue is full', last_at_ms: ago(1800) },
           ],
         },
         errors: [
-          { at_ms: ago(1800), source: 'ui', message: 'inbox:did:bns:alice.buckyos: session input queue is full' },
+          { at_ms: ago(1800), source: 'ui', message: `${AGENT}/dm:did:bns:alice.buckyos: session input queue is full` },
           { at_ms: ago(5400), source: 'supervisor', message: `${WORK_FAILED}: drive ended with error (llm)` },
         ],
       }
+    },
+
+    profile: async () => {
+      await delay()
+      return { ...profile }
+    },
+
+    setProfile: async (patch) => {
+      await delay()
+      if (patch.display_name !== undefined) profile.display_name = patch.display_name.trim() || 'jarvis'
+      if (patch.bio !== undefined) profile.bio = patch.bio.trim()
+      if (patch.avatar !== undefined) profile.avatar = patch.avatar || null
+      profile.updated_at_ms = Date.now()
+      return { ...profile }
+    },
+
+    usageModels: async () => {
+      await delay()
+      return {
+        now_ms: Date.now(),
+        since_ms: ago(86400 * 6),
+        models: [
+          { model: 'claude-sonnet-5-5', hour: tokens(41200, 3800), day: tokens(612000, 48100), all: tokens(3804000, 301500) },
+          { model: 'gpt-5.6', hour: tokens(0, 0), day: tokens(88400, 9100), all: tokens(1210300, 96400) },
+          { model: 'qwen3-local', hour: tokens(5100, 420), day: tokens(20900, 1800), all: tokens(64000, 5200) },
+          { model: 'llm.chat', hour: tokens(0, 0), day: tokens(0, 0), all: tokens(9100, 800) },
+        ],
+      }
+    },
+
+    uiBindings: async () => {
+      await delay()
+      return [{ session_id: UI, to: OWNER, to_session: null, kind: 'chat' }]
     },
 
     sessions: async () => {

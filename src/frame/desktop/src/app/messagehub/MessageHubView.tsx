@@ -42,6 +42,8 @@ const EMPTY_SESSIONS: Session[] = []
 
 interface MessageHubViewProps {
   initialEntityId?: string | null
+  /** Session to open instead of the entity's default one; without an entity, the session's own entity opens. */
+  initialSessionId?: string | null
   contextRequest?: MessageHubContextRequest | MessageHubContext
   windowId?: string
   /** Standalone route only: leave MessageHub for the desktop. */
@@ -50,20 +52,20 @@ interface MessageHubViewProps {
   onExitObserver?: () => void
 }
 
-export function MessageHubView({ initialEntityId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
+export function MessageHubView({ initialEntityId = null, initialSessionId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
   const { t } = useI18n()
   const [exitFrom, setExitFrom] = useState<string | null>(null)
   const { status, retry } = useMessageHubReady()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   if (status !== 'ready') return <div className="flex h-full items-center justify-center gap-3"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.loadFailed')}</p>{status === 'error' && <button type="button" className={hubButtonClass} onClick={retry}>{t('messagehub.retry')}</button>}</div>
   const exit = (value: string | null) => { setExitFrom(value); onExitObserver?.() }
-  return <MessageHubOwnerGate initialEntityId={initialEntityId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
+  return <MessageHubOwnerGate initialEntityId={initialEntityId} initialSessionId={initialSessionId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
 }
 
 /** How long a freshly created account may wait for its mailbox permission to propagate. */
 const SELF_DENIED_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
 
-function MessageHubOwnerGate({ initialEntityId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
+function MessageHubOwnerGate({ initialEntityId, initialSessionId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; initialSessionId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
   const { t } = useI18n()
   const store = useMessageHubStore()
   const requested = resolveMessageHubContext(store.defaultContext(), contextRequest)
@@ -93,7 +95,7 @@ function MessageHubOwnerGate({ initialEntityId, contextRequest, exitFrom, onExit
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
     {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
-    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}`} initialEntityId={initialEntityId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
+    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
   </div>
 }
 
@@ -114,7 +116,7 @@ function HomeButton({ onHome }: { onHome: () => void }) {
   )
 }
 
-function MessageHubContent({ initialEntityId, context, onHome }: { initialEntityId: string | null; context: MessageHubContext; onHome?: () => void }) {
+function MessageHubContent({ initialEntityId, initialSessionId, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; context: MessageHubContext; onHome?: () => void }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
@@ -123,17 +125,22 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
   // Without an explicit entity the most recent one opens (pinned first), which
   // is what the mock route did with the CodeAssistant seed.
   // Resolved once: the component is keyed on the context and the initial entity.
-  const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : store.entities(context)[0]?.id ?? null)
+  // A requested session (a link from another app) wins over the default one;
+  // it may be archived, and without an entity it brings its own.
+  const findRequestedSession = (entityId?: string | null) => initialSessionId
+    ? (['active', 'archived'] as const).flatMap(lifecycle => store.sessions(context, entityId ?? undefined, lifecycle)).find(session => session.id === initialSessionId) ?? null
+    : null
+  const [resolvedInitialEntityId] = useState(() => initialEntityId ? store.findEntity(context, initialEntityId)?.id ?? null : findRequestedSession()?.entityId ?? store.entities(context)[0]?.id ?? null)
   const getDefaultSessionId = (entityId: string | null) => entityId ? store.defaultSession(context, entityId)?.id ?? null : null
   const contextEpoch = useRef(0)
   const ownerDid = context.ownerDid
   useEffect(() => () => { contextEpoch.current++; store.clearTransient(ownerDid) }, [ownerDid, store])
-  const [archived, setArchived] = useState(false)
+  const [archived, setArchived] = useState(() => findRequestedSession(resolvedInitialEntityId)?.lifecycle === 'archived')
   const [writeConfirmations, setWriteConfirmations] = useState<Record<string, string>>({})
 
   const [selectedEntityId, setSelectedEntityId] = useState<string | null>(resolvedInitialEntityId)
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(
-    () => getDefaultSessionId(resolvedInitialEntityId),
+    () => findRequestedSession(resolvedInitialEntityId)?.id ?? getDefaultSessionId(resolvedInitialEntityId),
   )
   const [defaultSessionError, setDefaultSessionError] = useState(false)
   const resolveDefaultSession = useCallback((entityId: string, epoch: number) => {
@@ -145,8 +152,8 @@ function MessageHubContent({ initialEntityId, context, onHome }: { initialEntity
     }).catch(() => { if (contextEpoch.current === epoch) setDefaultSessionError(true) })
   }, [store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (resolvedInitialEntityId) resolveDefaultSession(resolvedInitialEntityId, contextEpoch.current)
-  }, [resolvedInitialEntityId, resolveDefaultSession])
+    if (resolvedInitialEntityId && !findRequestedSession(resolvedInitialEntityId)) resolveDefaultSession(resolvedInitialEntityId, contextEpoch.current)
+  }, [resolvedInitialEntityId, resolveDefaultSession]) // eslint-disable-line react-hooks/exhaustive-deps
   const [filter, setFilter] = useState<EntityFilter>('all')
   const [searchQuery, setSearchQuery] = useState('')
   const [mobileView, setMobileView] = useState<MobileView>(

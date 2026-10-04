@@ -112,6 +112,21 @@ impl SessionDir {
         Ok(fsutil::read_json_opt(&self.file(STATIC_FILE))?.unwrap_or_default())
     }
 
+    /// `usage.jsonl`: per-Round usage by model. A line that does not parse
+    /// (a torn last line) is skipped.
+    pub fn usage(&self) -> Result<Vec<UsageRecord>> {
+        let path = self.file(USAGE_FILE);
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(OpenDanError::io(&path, e)),
+        };
+        Ok(text
+            .lines()
+            .filter_map(|l| serde_json::from_str(l).ok())
+            .collect())
+    }
+
     pub fn report(&self) -> Option<String> {
         std::fs::read_to_string(self.root.join(REPORT_FILE)).ok()
     }

@@ -17,7 +17,7 @@ use crate::session::runs::RunHandle;
 use crate::session::{Session, SessionDir};
 use crate::state::AgentStateClient;
 
-use super::rounds::{CountingLlm, RoundCounter};
+use super::rounds::{CountingLlm, RoundCounter, UsageLog};
 use super::RunnerDeps;
 
 /// State shared by the drive loop, the checkpoint hook and the tools.
@@ -127,10 +127,22 @@ pub(super) enum Opened {
     Waiting(WaitingRun),
 }
 
-/// The run's client for the context: every inference is a counted Round.
-pub(super) fn counted(llm: Arc<dyn LlmClient>) -> (Arc<dyn LlmClient>, Arc<RoundCounter>) {
+/// The run's client for the context: every inference is a counted Round
+/// whose usage goes to the session's `usage.jsonl`.
+pub(super) fn counted(
+    sh: &Shared,
+    run_id: &str,
+    llm: Arc<dyn LlmClient>,
+) -> (Arc<dyn LlmClient>, Arc<RoundCounter>) {
     let counter = Arc::new(RoundCounter::default());
-    (Arc::new(CountingLlm::new(llm, counter.clone())), counter)
+    let usage = UsageLog {
+        path: sh.dir.file(crate::protocol::USAGE_FILE),
+        run_id: run_id.to_string(),
+    };
+    (
+        Arc::new(CountingLlm::new(llm, counter.clone()).with_usage(usage)),
+        counter,
+    )
 }
 
 /// Registry report (best effort; `reported_rev` drives the catch-up).

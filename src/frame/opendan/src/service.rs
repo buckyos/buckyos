@@ -11,6 +11,8 @@
 //!   `session.post {sid, text}`: the three operations of the WebUI; each is
 //!   a record posted to the session's input bus, nothing else.
 //! - `loader.status`: hosting state, modules, recent errors.
+//! - `agent.profile`, `agent.profile_set`, `usage.models`, `ui.bindings`:
+//!   the home page ([`crate::home`]).
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
@@ -29,6 +31,7 @@ use libopendan::{OpenDanError, SessionDir};
 use serde::Serialize;
 use serde_json::{json, Value};
 
+use crate::home::Home;
 use crate::ui::UiModule;
 
 pub const SERVICE_PATH: &str = "/kapi/opendan";
@@ -47,6 +50,8 @@ pub enum Access {
         owner: String,
         app_id: String,
         trust_loopback: bool,
+        /// Host name of the zone: where the desktop (MessageHub) is served.
+        zone_host: Option<String>,
     },
 }
 
@@ -96,6 +101,7 @@ pub struct StateService {
     pub info: Arc<LoaderInfo>,
     pub ui: Option<Arc<UiModule>>,
     pub access: Access,
+    pub home: Home,
 }
 
 fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T, OpenDanError> {
@@ -135,6 +141,17 @@ impl StateService {
                 })
             }
         }
+    }
+
+    fn profile(&self) -> Value {
+        let (owner_did, desktop_url) = match &self.access {
+            Access::Zone { owner, zone_host, .. } => (
+                Some(format!("did:bns:{owner}")),
+                zone_host.as_ref().map(|h| format!("https://{h}")),
+            ),
+            Access::Open { .. } => (None, None),
+        };
+        self.home.profile(self.agent.as_ref(), owner_did, desktop_url)
     }
 
     async fn read_session(&self, params: &Value) -> Result<Value, OpenDanError> {
@@ -251,6 +268,13 @@ impl StateService {
                 self.host(&sid, "input").await;
                 Ok(json!({ "index": index, "key": input.key }))
             }
+            "agent.profile" => Ok(self.profile()),
+            "agent.profile_set" => {
+                self.home.set_profile(params)?;
+                Ok(self.profile())
+            }
+            "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
+            "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
             "loader.status" => Ok(json!({
                 "agent_did": self.info.agent_did,
                 "agent_id": self.info.agent_id,
@@ -270,7 +294,10 @@ impl StateService {
 
 /// Methods outside the Agent State facade that change something.
 fn is_operation(method: &str) -> bool {
-    matches!(method, "session.stop" | "session.decide" | "session.post")
+    matches!(
+        method,
+        "session.stop" | "session.decide" | "session.post" | "agent.profile_set"
+    )
 }
 
 #[async_trait]

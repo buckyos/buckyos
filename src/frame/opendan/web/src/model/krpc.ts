@@ -1,6 +1,6 @@
 import { buckyos, getActiveSessionToken, RuntimeType } from 'buckyos'
 import { OpenDanError, type OpenDanDataModel } from './datamodel'
-import type { PerceptionCursor } from './types'
+import type { AgentProfile, LoaderStatus, PerceptionCursor } from './types'
 
 const SERVICE_URL = '/kapi/opendan'
 
@@ -60,9 +60,37 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     }
   }
 
+  // A service older than the home page answers `unknown method`.
+  const optional = async <T>(method: string, fallback: () => T | Promise<T>): Promise<T> => {
+    try {
+      return await call<T>(method)
+    } catch (error) {
+      if (error instanceof OpenDanError && error.message.includes('unknown method')) return fallback()
+      throw error
+    }
+  }
+
   return {
     source: 'krpc',
     loaderStatus: () => call('loader.status'),
+    profile: () =>
+      optional<AgentProfile>('agent.profile', async () => {
+        const status = await call<LoaderStatus>('loader.status')
+        return {
+          agent_did: status.agent_did,
+          agent_id: status.agent_id,
+          display_name: status.agent_id,
+          avatar: null,
+          bio: '',
+          owner_did: null,
+          desktop_url: null,
+          updated_at_ms: 0,
+          editable: false,
+        }
+      }).then((p) => ({ ...p, editable: p.editable ?? true })),
+    setProfile: (patch) => call<AgentProfile>('agent.profile_set', { ...patch }).then((p) => ({ ...p, editable: true })),
+    usageModels: () => optional('usage.models', () => null),
+    uiBindings: () => optional('ui.bindings', () => []),
     sessions: () => call('sessions.query'),
     activeSessions: () => call('activity.active', { limit: 50 }),
     session: (sid, worklog = 40) => call('session.read', { sid, worklog }),

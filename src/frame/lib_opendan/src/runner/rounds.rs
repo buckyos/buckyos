@@ -4,6 +4,7 @@
 //! nor from outcomes. Retries inside a provider adapter are part of one
 //! Round; history summarization uses its own client and is not counted.
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -11,6 +12,9 @@ use async_trait::async_trait;
 use buckyos_api::AiResponse;
 use llm_context::deps::{LlmClient, LlmInferenceRequest};
 use llm_context::error::LLMComputeError;
+
+use crate::fsutil;
+use crate::protocol::UsageRecord;
 
 /// Rounds since the last [`RoundCounter::take`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,15 +46,64 @@ impl RoundCounter {
     }
 }
 
+/// Where the usage of the run's Rounds is appended (the session's
+/// `usage.jsonl`).
+#[derive(Debug, Clone)]
+pub struct UsageLog {
+    pub path: PathBuf,
+    pub run_id: String,
+}
+
+impl UsageLog {
+    /// Best effort: statistics never fail a Round.
+    fn append(&self, alias: &str, response: &AiResponse) {
+        let Some(usage) = &response.usage else { return };
+        let input = usage.input_tokens.unwrap_or(0);
+        let output = usage.output_tokens.unwrap_or(0);
+        let total = usage.total_tokens.unwrap_or(input + output);
+        if total == 0 {
+            return;
+        }
+        let model = response
+            .extra
+            .as_ref()
+            .and_then(|e| e["model"].as_str())
+            .filter(|m| !m.is_empty())
+            .unwrap_or(alias);
+        let record = UsageRecord {
+            at_ms: crate::now_ms(),
+            model: model.to_string(),
+            run_id: Some(self.run_id.clone()),
+            input_tokens: input,
+            output_tokens: output,
+            total_tokens: total,
+        };
+        let result = fsutil::to_json_lines(&[record]).and_then(|l| fsutil::append_batch(&self.path, &l));
+        if let Err(e) = result {
+            log::warn!("usage of run {}: {e}", self.run_id);
+        }
+    }
+}
+
 /// Wraps the run's client; every call is one Round.
 pub struct CountingLlm {
     inner: Arc<dyn LlmClient>,
     counter: Arc<RoundCounter>,
+    usage: Option<UsageLog>,
 }
 
 impl CountingLlm {
     pub fn new(inner: Arc<dyn LlmClient>, counter: Arc<RoundCounter>) -> Self {
-        Self { inner, counter }
+        Self {
+            inner,
+            counter,
+            usage: None,
+        }
+    }
+
+    pub fn with_usage(mut self, usage: UsageLog) -> Self {
+        self.usage = Some(usage);
+        self
     }
 }
 
@@ -78,8 +131,12 @@ impl LlmClient for CountingLlm {
             done: false,
         };
         let aborted = req.abort.clone();
+        let alias = self.usage.as_ref().map(|_| req.model_alias.clone());
         let result = self.inner.infer(req).await;
         guard.done = true;
+        if let (Some(log), Some(alias), Ok(response)) = (&self.usage, &alias, &result) {
+            log.append(alias, response);
+        }
         if let Err(e) = &result {
             if matches!(e, LLMComputeError::Cancelled) || aborted.is_aborted() {
                 self.counter.interrupted.fetch_add(1, Ordering::SeqCst);

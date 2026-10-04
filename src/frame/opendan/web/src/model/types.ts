@@ -57,7 +57,7 @@ export interface RegistryEntry {
   wake_event?: string
   agent_access: 'full' | 'status_only'
   origin?: Origin
-  workspace?: unknown
+  workspace?: WorkspaceRef
   artifact_id?: string
   objective: string
   scope?: { objects?: string[]; paths?: string[] }
@@ -261,9 +261,11 @@ export interface PerceptionRecord {
   refs?: unknown
 }
 
+export type WorkspaceRef = { kind: 'agent'; id: string } | { kind: 'external'; path: string }
+
 export interface ArtifactHead {
   aid: string
-  workspace?: unknown
+  workspace?: WorkspaceRef
   head: string | null
   rev: number
   updated_at_ms: number
@@ -326,4 +328,52 @@ export interface LoaderStatus {
   hosted: HostedStatus[]
   ui: { scans: number; last_scan_ms: number; last_error?: string; inboxes: InboxStatus[] } | null
   errors: { at_ms: number; source: string; message: string }[]
+}
+
+// `owner_did` / `desktop_url` are null outside a zone. `editable` is false
+// when the service is too old to keep a profile.
+export interface AgentProfile {
+  agent_did: string
+  agent_id: string
+  display_name: string
+  avatar: string | null
+  bio: string
+  owner_did: string | null
+  desktop_url: string | null
+  updated_at_ms: number
+  editable: boolean
+}
+
+export interface ProfilePatch {
+  display_name?: string
+  avatar?: string
+  bio?: string
+}
+
+export interface TokenCount {
+  input: number
+  output: number
+  total: number
+}
+
+export interface ModelUsage {
+  model: string
+  hour: TokenCount
+  day: TokenCount
+  all: TokenCount
+}
+
+export interface UsageByModel {
+  now_ms: number
+  since_ms: number | null
+  models: ModelUsage[]
+}
+
+// The conversation a UI session answers: the peer (or group) and the
+// conversation's session id on that side.
+export interface UiBinding {
+  session_id: string
+  to: string
+  to_session?: string | null
+  kind: string
 }

@@ -13,6 +13,7 @@ export default {
         ok: 'var(--ok)',
         warn: 'var(--warn)',
         bad: 'var(--bad)',
+        soft: 'var(--soft)',
       },
     },
   },

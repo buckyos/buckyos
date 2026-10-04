@@ -456,7 +456,7 @@ export interface EntitySessionCreation {
 
 策略按 `(ownerDid, entityId)` 保存，`default` 对 Agent 和 BuckyOS 原生连接为允许，其它外部连接为禁止。显式 `deny` 对所有类型生效。
 
-实体点击和带 `entityId` 的入口统一调用 `ensureDefaultSession`：只选择 active 会话，按 `lastActiveAt` 降序、ID 升序选择，置顶不影响默认会话。Agent 仅选择未绑定 msg-tunnel 的原生会话；Person / Group / Service 可选择已有的外部会话。缺失时先继续查询分页，再在创建策略和连接能力允许的情况下登记空会话并进入；观察模式不创建。同一 viewer/owner/entity 的并发请求合并，切换实体后忽略旧请求的界面跳转。
+入口（`/messagehub` 的查询参数、桌面 launch payload）可以带 `sessionId`：该 owner 视图中存在这个 Session（active 或 archived）时直接打开它，不再解析默认会话；没有 `entityId` 时进入这个 Session 所属的实体；找不到时按没有 `sessionId` 处理。实体点击和带 `entityId` 的入口统一调用 `ensureDefaultSession`：只选择 active 会话，按 `lastActiveAt` 降序、ID 升序选择，置顶不影响默认会话。Agent 仅选择未绑定 msg-tunnel 的原生会话；Person / Group / Service 可选择已有的外部会话。缺失时先继续查询分页，再在创建策略和连接能力允许的情况下登记空会话并进入；观察模式不创建。同一 viewer/owner/entity 的并发请求合并，切换实体后忽略旧请求的界面跳转。
 `canCreate` 是策略、当前视角、后端授权与所选连接能力共同计算的结果；多连接时在提交前明确选定连接，
 并重新校验对应能力。在 tunnel 中新建还要求 `supportsMultipleSessions && canCreateRemoteSession`。
 原生 Agent 会话不要求外部 tunnel 存在。配置允许不能绕过平台限制，不能解除已有 Session 的只读模式。

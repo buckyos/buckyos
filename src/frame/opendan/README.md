@@ -12,7 +12,8 @@
 | `rootfs.rs` | AgentRoot 目录布局、从 Agent 包同步素材（保留本地修改） |
 | `ui.rs` | UI Session + Message Tunnel：inbox 发现、绑定、入站桥、出站 sink |
 | `service.rs` | Agent State kRPC 服务、Session 观测、三个操作、Loader 状态 |
-| `web/` | WebUI（只读为主），数据全部来自 kRPC |
+| `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话 |
+| `web/` | WebUI：首页（资料卡、工作概况、Session 列表，按手机屏幕设计）+ 观测页（Sessions / Agent State / Loader，`#/sessions` 起），数据全部来自 kRPC |
 
 托管循环在 `libopendan::host::Supervisor`：登记表里 `driver = 本进程身份` 且未结束（或有待处理 decide）的 Session 各有一个协程循环 `drive(Idle)`；启动后的第一次扫描就是恢复；空闲超过 `idle_unload_secs` 且没有待推进工作的 Session 被卸载，有新输入时再装载。
 
@@ -128,6 +129,19 @@ cd src && uv run start.py --skip-update
 | `session.post` | `{sid, text}` | 以调用方身份向有队列的 Session 投一条文本消息 |
 
 返回 `{index}`（`session.post` 另带 `key`）。投递后服务端让 Supervisor 装载该 Session。三个操作都要求 Session 有输入队列；没有队列的 Session（如一次性的 work session）返回 `channel` 错误，它的产物验收走 `artifacts.decide`。
+
+### 首页
+
+| method | params | result |
+|---|---|---|
+| `agent.profile` | – | `{agent_did, agent_id, display_name, avatar, bio, owner_did, desktop_url, updated_at_ms}` |
+| `agent.profile_set` | `{display_name?, avatar?, bio?}` | 同 `agent.profile` |
+| `usage.models` | – | `{now_ms, since_ms, models: [{model, hour, day, all}]}`，`hour` / `day` / `all` 为 `{input, output, total}` |
+| `ui.bindings` | – | `[{session_id, to, to_session, kind}]` |
+
+- 资料：默认值取 `agent.toml [identity]`（`display_name`、`avatar`、`bio`），owner 的修改保存在 `<agent_root>/.meta/profile.json`；`agent.profile_set` 只改传入的字段，传空字符串回到默认值。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL 或 http(s) URL，≤ 128 KiB。`owner_did` 与 `desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。
+- 用量：汇总登记表里各 Session 的 `usage.jsonl`（[Session Directory Protocol](../../../doc/opendan/protocol/Session%20Directory%20Protocol.md) §4），按 `all.total` 降序；`hour` / `day` 是最近 1 小时 / 24 小时。`model` 是 AICC 路由最终选中的模型，取不到时是请求里的模型别名。没有 `usage.jsonl` 的旧 Session 不计入，`since_ms` 是最早一条记录的时间。
+- `ui.bindings`：UI Session 的回复去向（`session_config.json` 的 `channels.outbound`）。WebUI 据此把 Session 链接到 MessageHub：对方是 owner 时打开 owner 自己与 Agent 的会话（`/messagehub?entityId=<agent>&sessionId=<to_session | dm:<agent>>`），否则以观察模式打开 Agent 的会话（`ownerDid=<agent>&mode=observe&entityId=<对方>&sessionId=<收件箱会话>`）。没有绑定会话的 Session（work、self_check 等）在 WebUI 里进入自己的详情页。
 
 ### Loader 状态
 
