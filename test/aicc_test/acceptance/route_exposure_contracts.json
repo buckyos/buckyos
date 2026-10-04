@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "contract_revision": "2026-10-01.3",
-  "capability_baseline_revision": "2026-10-01.1",
-  "capability_cells_sha256": "6c626003f76bc004cb2f5041fbe240116a2a55aaf96d295ee25d7a361234a907",
+  "contract_revision": "2026-10-04.4",
+  "capability_baseline_revision": "2026-10-04.2",
+  "capability_cells_sha256": "53ac3bb21b11dd495e34d863a1edac79695328d8ada147d80a39e48f7811b4dd",
   "profiles": [
     { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "openai", "provider_profile_id": "openai", "covered_model_patterns": ["gpt-5.6*", "sora-2*", "gpt-image-*", "dall-e-3", "dall-e-2", "text-embedding-*", "whisper-1", "*transcribe*", "tts-1*", "*-tts*", "gpt-5.2-pro*", "gpt-5.4-pro*", "gpt-5*", "gpt-*", "o*", "babbage-*", "davinci-*", "computer-use-preview*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
@@ -15,6 +15,7 @@
     { "provider_driver": "glm", "provider_profile_id": "glm", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "deepseek", "provider_profile_id": "deepseek", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "doubao-agent-plan", "provider_profile_id": "doubao-agent-plan", "covered_model_patterns": ["doubao-seedream-*", "doubao-seedance-*", "doubao-embedding-vision", "doubao-seed-tts-2.0", "deepseek-v4-*", "deepseek-v4.1-*", "glm-5.3", "glm-5.3-flash", "kimi-k2.7-code", "kimi-k3", "kimi-k2.8-preview", "minimax-m3", "doubao-seed-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
+    { "provider_driver": "doubao-speech", "provider_profile_id": "doubao-speech", "covered_model_patterns": ["doubao-seed-tts-2.0", "doubao-seed-icl-2.0", "doubao-seed-asr-2.0", "doubao-seed-asr-2.0-fast"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "doubao", "provider_profile_id": "doubao", "covered_model_patterns": ["doubao-seed-tts-2.0", "doubao-embedding-vision-*", "doubao-seedream-*", "deepseek-v4-*", "glm-*-*", "qwen*-*", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "qwen", "provider_profile_id": "qwen", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint": "{api_type}" }, "overrides": [] },
     { "provider_driver": "sn-ai-provider", "provider_profile_id": "sn", "covered_model_patterns": [], "default_exposure": { "mode": "not_applicable", "reason": "Capabilities are inherited from the configured upstream inventory." }, "overrides": [] }

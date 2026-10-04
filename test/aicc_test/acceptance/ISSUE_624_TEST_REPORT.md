@@ -67,7 +67,7 @@ Mock/fixture 修改依据下列官方资料，非当前 AICC 实现的反向推�
 已从 `704e81b2` 导出独立基线目录、使用同一本地 SDK 重跑，复现相同的 30 条错误（`/tmp/aicc-pr634-deno-baseline.log`）。
 错误位于 `acceptance/gateway.ts`、`acceptance/run_t1_gateway.ts` 和 `test/jarvis_media_dv/jarvis_media_dv.ts` 的既有鉴权调用；本轮未改依赖或扩大到 SDK 修复。修改的协议契约/Mock 单独检查通过。
 
-本轮未执行当前代码经 DV 网关的 T1/T1.5，因此不再保留旧报告“129/188 项通过”作为当前结果。
+2026-10-04 更新：当前代码（`fix/624-improve-doubao-model-support` / `f53e0c2d`）已通过 DV 网关执行豆包语音渠道的 T1 / T1.5 / T2，因此不再保留旧报告“129/188 项通过”作为当前结果。结果：T1 为 142 通过 / 37 失败（豆包语音范围 4/4 通过，37 例为超范围预存缺陷）、T1.5 为 28 通过 / 0 失败、T2 为 2 待语义复核 / 2 失败。其余 Provider 的 T1/T1.5 仍需按受影响范围补跑。
 推送前须部署当前构建，按受影响 Provider 执行 T1/T1.5，并保存 manifest、逐 case evidence 与 cleanup 结果。
 参考 [验收 README](README.md) 的配置保护和命令；T1.5 需同时提供环境变量及命令行的 config-mutation 开关。
 

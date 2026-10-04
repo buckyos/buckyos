@@ -499,6 +499,7 @@ async function waitForMockInventories(
     `dv-minimax-${suffix}`,
     `dv-openrouter-${suffix}`,
     `dv-typesafe-${suffix}`,
+    `dv-doubao-speech-${suffix}`,
     `dv-fal-${suffix}`,
     `dv-custom-openai-${suffix}`,
     `dv-custom-claude-${suffix}`,
@@ -534,6 +535,11 @@ async function waitForMockInventories(
       item.provider_instance_name === `dv-typesafe-${suffix}` &&
       item.models.some((model) => model.api_types.includes("decision"))
     );
+    const doubaoSpeechReady = selected.some((item) =>
+      item.provider_instance_name === `dv-doubao-speech-${suffix}` &&
+      item.models.some((model) => model.api_types.includes("audio.tts")) &&
+      item.models.some((model) => model.api_types.includes("audio.asr"))
+    );
     const customReady = ["openai", "claude", "gemini"].every((protocol) =>
       selected.some((item) =>
         item.provider_instance_name === `dv-custom-${protocol}-${suffix}` && item.models.length > 0
@@ -541,7 +547,8 @@ async function waitForMockInventories(
     );
     if (
       expected.every((name) => selected.some((item) => item.provider_instance_name === name)) &&
-      openAiReady && geminiReady && falReady && typesafeReady && customReady
+      openAiReady && geminiReady && falReady && typesafeReady && customReady &&
+      doubaoSpeechReady
     ) {
       return selected;
     }

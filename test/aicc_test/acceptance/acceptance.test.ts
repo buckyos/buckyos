@@ -1140,6 +1140,7 @@ test("preflight covers protocol, providers, and static cases", async () => {
     "deepseek",
     "doubao",
     "doubao-agent-plan",
+    "doubao-speech",
     "fal",
     "glm",
     "google-gemini",
@@ -1448,12 +1449,12 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
       "dv-openai-b-run-one",
     ],
   );
-  assert.equal(providers.length, 12);
+  assert.equal(providers.length, 13);
   assert.deepEqual(providers[1].credentials, {
     api_token: { locked: "mock-a-run-one" },
   });
   assert.deepEqual(
-    providers.slice(9).map((
+    providers.slice(10).map((
       item,
     ) => [item.provider_profile_id, item.protocol_adapter_id]),
     [
@@ -2685,7 +2686,7 @@ test("T2 Gemini Embedding 2 has one minimal cell per API type and no variant cel
 
 test("T1.5 protocol catalog is independent, traceable, and strict on Provider wire", async () => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 14);
+  assert.equal(catalog.providers.length, 15);
   assert.deepEqual(
     catalog.providers.map((provider) => provider.provider_driver).sort(),
     [
@@ -2693,6 +2694,7 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
       "deepseek",
       "doubao",
       "doubao-agent-plan",
+      "doubao-speech",
       "fal",
       "glm",
       "google-gemini",
@@ -3257,7 +3259,7 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
 
 test("T1.5 Provider mock serves every contract for all Provider profiles", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
-  assert.equal(catalog.providers.length, 14);
+  assert.equal(catalog.providers.length, 15);
   assert.deepEqual(
     new Set(Object.keys(T15_PROVIDER_DISCOVERY_CONTRACTS)),
     new Set(catalog.providers.map((provider) => provider.provider_driver)),
@@ -3739,6 +3741,7 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
       "minimax_video_v2",
       "glm_video",
       "doubao_video",
+      "doubao_asr",
       "qwen_media",
     ]),
   );
