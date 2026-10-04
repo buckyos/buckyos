@@ -297,6 +297,87 @@
       ],
       "type": "object"
     },
+    "OutboxEntry": {
+      "description": "One outbound message of a session.",
+      "properties": {
+        "attempts": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "deliveries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Idempotency key: `(sid, turn, run_id, n)`.",
+          "type": "string"
+        },
+        "msg": {
+          "description": "The complete message, `created_at_ms` included: re-sent unchanged."
+        },
+        "msg_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/OutboxStatus"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "msg",
+        "status",
+        "turn"
+      ],
+      "type": "object"
+    },
+    "OutboxStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "sent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Not handed to the outbound sink yet, or the hand-over failed in a way worth retrying.",
+          "enum": [
+            "pending"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Refused (route mismatch, rejected by the message service); never retried.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Outcome": {
       "enum": [
         "succeeded",
@@ -856,6 +937,13 @@
         }
       ],
       "description": "The Turn in progress, if any."
+    },
+    "outbox": {
+      "description": "Replies produced by committed Turns and their delivery: written in the commit that closes the Turn, sent afterwards, re-sent as they are after a restart (the idempotency key and the message never change).",
+      "items": {
+        "$ref": "#/definitions/OutboxEntry"
+      },
+      "type": "array"
     },
     "outcome": {
       "anyOf": [

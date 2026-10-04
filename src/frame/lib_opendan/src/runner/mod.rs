@@ -12,6 +12,7 @@ pub mod history;
 mod hook;
 mod inputs;
 mod live;
+mod outbound;
 mod outcome;
 mod receipts;
 mod reconcile;
@@ -39,6 +40,7 @@ pub use assembler::{
 };
 pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
+pub use outbound::{compose_text, has_pending_outbound, OutboundSink, SendResult, TurnReply};
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
 
@@ -220,6 +222,8 @@ pub struct RunnerDeps {
     pub assembler: Arc<dyn SessionAssembler>,
     pub summarizer: Option<Arc<dyn Summarizer>>,
     pub notifier: Arc<dyn Notifier>,
+    /// Where replies leave the process (`None`: no outbox is kept).
+    pub outbound: Option<Arc<dyn OutboundSink>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
@@ -247,6 +251,7 @@ impl RunnerDeps {
             assembler: Arc::new(DefaultAssembler::default()),
             summarizer: None,
             notifier: Arc::new(NoopNotifier),
+            outbound: None,
             session_cli: None,
             app_tools: Vec::new(),
             options: RunnerOptions::default(),

@@ -453,6 +453,13 @@
         }
       ]
     },
+    "route_key": {
+      "description": "What the session is bound to (a ui session: its mailbox address).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "scope": {
       "anyOf": [
         {

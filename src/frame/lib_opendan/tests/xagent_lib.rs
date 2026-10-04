@@ -558,6 +558,7 @@ fn spawn_host(env: &Env, llm: Arc<dyn LlmClient>, parent: &SessionDir) -> HostDe
         },
         max_child_concurrency: 4,
         bridges: Vec::new(),
+        outbound: None,
         runtime_id: None,
     }
 }

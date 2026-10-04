@@ -83,6 +83,9 @@ pub struct RegistryEntry {
     pub created_by: CreatedBy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// What the session is bound to (a ui session: its mailbox address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_key: Option<String>,
     pub driver: DriverRef,
     /// Path of the session directory (DFS path).
     pub location: String,

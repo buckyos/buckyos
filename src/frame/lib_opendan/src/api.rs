@@ -68,6 +68,9 @@ pub struct SessionSpec {
     /// when the host has a queue client.
     #[serde(default)]
     pub input_channel: Option<InputChannel>,
+    /// Reply coordinates of a session bound to one conversation.
+    #[serde(default)]
+    pub outbound: Option<OutboundBinding>,
     /// Freeze the session's behaviors from the agent's catalog at creation
     /// (xAgent §6.3). A creator that cannot read the catalog leaves it to
     /// the driver's first drive.
@@ -119,6 +122,7 @@ impl SessionSpec {
             extensions: BTreeMap::new(),
             policy: SessionPolicy::default(),
             input_channel: None,
+            outbound: None,
             freeze: false,
         }
     }
@@ -145,10 +149,13 @@ pub async fn create_session(
     who: &str,
     channels: &dyn InputChannelFactory,
 ) -> Result<SessionDir> {
-    if spec.kind == SessionKind::Ui {
-        return Err(OpenDanError::InvalidArgument(
-            "ui sessions are deferred (V1): only work / self_improve / self_check sessions".into(),
-        ));
+    let mut spec = spec;
+    if spec.kind == SessionKind::Ui && spec.route_key.is_none() {
+        // Not bound to a mailbox (a local dialogue): a route of its own.
+        spec.route_key = Some(match &spec.idempotency_key {
+            Some(k) => format!("local:{k}"),
+            None => format!("local:{}", uuid::Uuid::new_v4().simple()),
+        });
     }
     let agent_did = agent.agent_did().to_string();
     let sid = match &spec.session_id {
@@ -253,7 +260,7 @@ pub async fn create_session(
         subscriptions: spec.subscriptions.clone(),
         channels: Channels {
             inputs,
-            outbound: None,
+            outbound: spec.outbound.clone(),
             wake_event: Some(wake_event.clone()),
         },
         extensions: spec.extensions.clone(),
@@ -280,7 +287,7 @@ pub async fn create_session(
     let (sd, publish) = SessionDir::publish_new(parent_dir, &config, created, &readme)?;
     let existing = sd.config()?;
     if publish == Publish::AlreadyExists
-        && !(spec.idempotency_key.is_some()
+        && !((spec.idempotency_key.is_some() || spec.kind == SessionKind::Ui)
             && same_session_identity(&existing, &agent_did, &spec, who, &driver))
     {
         return Err(OpenDanError::SessionIdConflict(sid));
@@ -295,6 +302,7 @@ pub async fn create_session(
         class: existing.session.class.clone(),
         created_by: existing.session.created_by.clone(),
         idempotency_key: existing.session.idempotency_key.clone(),
+        route_key: existing.session.route_key.clone(),
         driver: existing.session.driver.clone(),
         location: canonical.display().to_string(),
         input_queue: existing.channels.kmsg().map(|(_, q, _)| q.to_string()),

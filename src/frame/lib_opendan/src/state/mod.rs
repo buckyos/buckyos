@@ -1,8 +1,8 @@
 //! Agent State (§6): cross-session state on the AgentRoot, accessed only
-//! through [`AgentStateClient`]. The first implementation reads and writes the
-//! AgentRoot files directly and coordinates with file locks
-//! ([`FsAgentStateClient`]); a kRPC implementation follows the OpenDAN
-//! refactor, a DFS mount stays transparent to the file version.
+//! through [`AgentStateClient`]. [`FsAgentStateClient`] reads and writes the
+//! AgentRoot files directly and coordinates with file locks (a DFS mount
+//! stays transparent to it); [`KrpcAgentStateClient`] reaches the Agent
+//! State service of the OpenDAN process for callers without the AgentRoot.
 
 mod activity;
 mod artifacts;
@@ -10,6 +10,7 @@ mod behaviors;
 mod cognition;
 mod connect;
 mod fs_client;
+pub mod krpc;
 mod locks;
 mod perception;
 mod registry;
@@ -37,6 +38,7 @@ pub use connect::{
     StateLocator, WithBehaviors, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
 };
 pub use fs_client::{AgentLayout, FsAgentStateClient};
+pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
 pub use perception::{run_digest, Backlog, BacklogItem};
 
 /// Session registry (session mgr, §6.2). The only entry point to discover

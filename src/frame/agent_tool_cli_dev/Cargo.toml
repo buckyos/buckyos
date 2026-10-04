@@ -9,9 +9,8 @@ agent-did-object-lib = { path = "../agent-did-object-lib" }
 agent_tool = { path = "../agent_tool" }
 async-trait = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
-chrono = { workspace = true }
 kRPC = { workspace = true }
-opendan = { path = "../opendan" }
+schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }

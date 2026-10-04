@@ -27,6 +27,7 @@ src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/nfs-server/nfs_server
 /src/rootfs/bin/control-panel/control_panel
 /src/rootfs/bin/control-panel/web/
+/src/rootfs/bin/opendan/web/
 /src/rootfs/bin/sys-test/dist/
 src/rootfs/logs
 src/rootfs/tmp

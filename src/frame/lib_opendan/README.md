@@ -10,12 +10,12 @@
 | `fsutil`、`lock` | 原子替换、批量追加、反向读、不覆盖发布；长期持有的 flock 锁 |
 | `session` | `SessionDir`（读取、创建发布）、`Session`（持锁提交 state.json）、worklog、`runs/`（xllm RunStore 封装） |
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
-| `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流）、task bridge（task 状态 → `AgentEvent`）、回复信封；宿主内的 `EventBridge`：timer、kevent |
-| `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`ForwardingStateClient`（kRPC 客户端的转发桩）、`WithBehaviors` |
-| `template` | Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 覆盖）→ `SessionSpec` 与 `session.policy` |
-| `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve` |
+| `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流）、task bridge（task 状态 → `AgentEvent`）、回复信封与出站记录；宿主内的 `EventBridge`：timer、kevent |
+| `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`krpc`（`KrpcAgentStateClient` 与传输无关的服务端分发 `serve_call`：读与带署名的写；驱动者的写入不上 kRPC）、`ForwardingStateClient`、`WithBehaviors` |
+| `template` | Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 覆盖；包自定义的 class 用 `base = "<内建模板>"` 指定起点，缺省 `work`）→ `SessionSpec` 与 `session.policy`。ui 模板的 kind 是 `ui`，由 `route_key` 绑定到一个会话 |
+| `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve`；常驻宿主用的 `Supervisor`（按登记表托管 `driver = me` 的未结束 Session 与子 Session、`ensure_task`、按 class 的 idle unload、只读托管状态、退出时等待各循环结束而不 stop Session） |
 | `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
-| `runner` | `drive`：恢复、输入路由（`inputs`）、模板视图与内建格式（`input_view`）、输入批次提交（半订阅快照 + 受控输入，开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭（`StopWhen::TurnClosed`）、挂起调用的 task 等待与回填、后台 task 跟踪、process 切换、压缩、Round 统计、子 Session 的隐式关注与 `session:<sid>` resolver（`children`）、`BehaviorAssembler`、驱动者停止请求（`StopSignal`） |
+| `runner` | `drive`：恢复、输入路由（`inputs`）、模板视图与内建格式（`input_view`）、输入批次提交（半订阅快照 + 受控输入，开启或加入逻辑 Turn）、Outcome 处理与 Turn 关闭（`StopWhen::TurnClosed`）、挂起调用的 task 等待与回填、后台 task 跟踪、process 切换、压缩、Round 统计、子 Session 的隐式关注与 `session:<sid>` resolver（`children`）、`BehaviorAssembler`、驱动者停止请求（`StopSignal`）、出站（`outbound`：Turn 关闭的提交里写 `state.outbox`，提交后交给 `OutboundSink`，重启后原样重发） |
 | `api` | `create_session` / `read_session` / `post_input` / `create_self_improve_session` / `create_sub_session` |
 | `bin/xagent` | 命令行：`xagent new / run / serve / post / ctl / status / list / behaviors / xllm / schema`，以及作为 `agent-session` 被 shell 里的命令调用的层 ② 工具 |
 
@@ -74,6 +74,7 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |
 | `tests/input_tasks.rs` | 输入协议 3 与长任务：挂起调用在上下文之外等待 task 并回填同一 run、无 resolver 拒绝接手与 Unknown 回填、等待期间 stop、后台 task 完成合成 Input 事件、run 终态落盘后崩溃仍找回后台 task、工具执行中的 stop、64 条 pending 上限、Single / Batch、`input.media = inline`、重投去重与回复路径、旧 Session 只读、模板失败不消费、用户时区半订阅 |
 | `tests/self_improve.rs` | 感知幂等、self_improve 锁、整理游标、防自我回声 |
+| `tests/outbound.rs` | 回复随 Turn 提交并沿来路发出、sink 不可达时保留并原样重发（同键同 ObjId）、被拒与路由不一致只记录不重试、没有 sink 时不产生 outbox |
 | `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/xagent_lib.rs` | 无队列 work Session 与 `prompt.initial_inputs`、`WAIT_USER_MSG` 的模板语义、`TurnClosed` / `TurnOpen`、behavior 冻结 / 补冻结 / 缺失冻结、三种 Agent State 实现结果一致、Sub Session（父等待汇报、`session:<sid>` 回填、数量与深度、交互式子提问、stop 级联、进度半订阅）、驱动者停止请求、on_context_switch 前的半订阅快照、timer bridge |
 | `tests/xagent_cli.rs` | `xagent` 可执行文件（本地 OpenAI 兼容 mock）：`new --no-run` / `run` / `post` / `ctl` / `status` / `list` / `xllm` / `schema` 的退出码与 stdout 单个 JSON、无队列投递拒绝、ui 模板等输入与同一 Turn 续答、经 `shell` 的 `agent-session create-worksession --wait`、xllm 接手后由 xagent 提交结束、第二个驱动者 Busy 与 SIGINT、tmux runtime 归属 Session、`serve` |

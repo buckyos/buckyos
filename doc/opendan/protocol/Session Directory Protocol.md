@@ -38,7 +38,7 @@
 | work | `work-<yyyymmddThhmmss>-<uuid_v4 32hex>`（UTC 时间）；带幂等键时 `work-H("work", agent_did, creator_principal, key)` |
 | self_improve | `si-<yyyymmddThhmmss>-<uuid>`；带幂等键时 `si-H("self_improve", agent_did, creator_principal, key)` |
 | self_check | `sc-H("self_check", agent_did)` |
-| ui（后移） | `ui-H("ui", agent_did, route_key)` |
+| ui | `ui-H("ui", agent_did, route_key)`；`route_key` 是该 Session 绑定的会话（OpenDAN 的 UI Session 用 msg-center 的 `MailboxAddress` 字符串）。未给 `route_key` 的 ui Session（本地对话）由创建函数补一个 `local:<幂等键或 uuid>`。宿主需要同一个 `route_key` 下的多代 Session 时显式传 sid（OpenDAN：`ui-H("ui", agent_did, route_key, <代次>)`） |
 
 字符集：字母、数字、`_ - .`，不以 `.` 开头，长度 1..=200。显式传入的 sid 必须满足同样的约束并由调用方保证全局唯一。
 
@@ -93,7 +93,7 @@ Schema：`schema/session_config.schema.json`。要点：
                        "watch": ["run_state","outcome"] } ],
   "channels": {
     "inputs": [ { "kind": "kmsg", "id": "q", "queue": "<urn>", "subscriber": "opendan.<agent_id>.<sid>" } ],
-    "outbound": null,
+    "outbound": null | { "to": "<对端或群的 DID>", "to_session": null, "kind": "chat" },  // 回复坐标，创建时固定
     "wake_event": "/opendan/<agent_id>/session/<sid>/input"
   },
   "extensions": { "<app_id>": {} , "opendan": { "behaviors": { "check": { "mode": "switch_context", "prompt": { "system": "…" } },
@@ -165,6 +165,9 @@ Schema：`schema/session_state.schema.json`。
   "pending_events": [ /* 已接收、尚未注入的半订阅状态；见 Session Input Protocol §5 */ ],
   "reply": null | { "route": "message", "to": "…", "to_session": null, "kind": "chat", "reply_to": "cymsg:…", "tunnel": null }
                 | { "route": "parent_session", "session_id": "…" },   // 默认回复路径
+  "outbox": [ { "key": "<sid>:<turn>:<run_id>:<n>", "msg": { /* 完整的 MsgObject，含 created_at_ms */ }, "turn": 3,
+                "status": "pending | sent | failed", "msg_id": null, "deliveries": [], "error": null,
+                "attempts": 0, "updated_at_ms": 0 } ],                 // 出站消息，见下
   "watched_tasks": ["<task_id>"],              // run 结束后仍在跟踪的后台 task
   "perception_seq": 88, "reported_rev": 17,
   "activity": { "summary": "…", "touching": [ { "kind": "path", "ref": "ws:…", "mode": "write", "since_ms": 0 } ], "heartbeat_ms": 0 },
@@ -183,6 +186,7 @@ Schema：`schema/session_state.schema.json`。
 - `process_result`：子 context 交回调用方的结果 `{behavior, result, status: ok | failed | needs_user_input, next_action_id, next_step_index}`；工具触发的调用另带 `call_id`（§8）。
 - `handover_at_ms`：本 state 已提交的交接记录（run.json `handover.at_ms`）的时间戳；带相同时间戳的记录不是待办的转移（§7、§8）。
 - `live_run` = 未结束的 run；`last_run` = 最后一次结束的 run（保留其 llm context 状态）；`process_stack[].run_id` = 挂起的 process 的 run。三者之外的 run 目录可以删除（§7）。
+- `outbox`（出站，驱动者配置了出站 sink 时才产生）：Turn 关闭的那次提交里，由 `reply` 给出信封、sink 填内容，生成完整的 MsgObject 连同幂等键写入，`status = pending`；`created_at_ms` 在这里定死。提交之后驱动者把 `pending` 条目按序交给 sink：成功 → `sent`（记 `msg_id` / `deliveries`）；被拒 → `failed`（记 `error`，不重试）；没送到 → 保持 `pending`，`attempts + 1`，退避后由之后的 drive 原样重发（同一个键、同一个 MsgObject，ObjId 不变）。发送失败不让 Turn 失败，也不阻塞后续输入；排在它后面的条目等它。`channels.outbound` 存在而 `reply` 的 `to / to_session / kind` 与它不一致时，条目直接记为 `failed`（`route_mismatch`），不发送。有父 Session 的 Session、以及回复对象是 Agent 自己时不产生条目。已结束（`sent` / `failed`）的条目保留最近 16 条供展示。
 - `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。stop / decide 只能由驱动者执行，其它参与方投递 control。
 
 **逻辑 Turn**（当前实现）：Turn = AgentSession 的一次逻辑 Input → result，与 run、`LLMContext` Outcome、输入批次 `(run_id, input_seq)` 都不一一对应，不能用 run 数或 Outcome 数推算 Turn 数。

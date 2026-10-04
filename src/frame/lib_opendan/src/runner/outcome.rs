@@ -619,9 +619,21 @@ async fn commit_run_end(
     let turn = s.state.current_turn();
     let (mut bodies, _) = run_history_entries(&run_id, snapshot, behavior, marks, turn);
     // Close the Turn before the report renders the counters.
-    let turn_closed = match (next.turn_end, s.state.open_turn.is_some()) {
-        (Some(status), true) => {
-            s.state.open_turn = None;
+    let turn_closed = match (next.turn_end, s.state.open_turn.take()) {
+        (Some(status), Some(open)) => {
+            super::outbound::queue_reply(
+                sh,
+                s,
+                &run_id,
+                super::outbound::TurnReply {
+                    turn,
+                    status,
+                    answer: next.answer.clone(),
+                    inputs: open.inputs,
+                    error: next.error.clone(),
+                },
+            )
+            .await;
             if status == TurnStatus::Completed {
                 s.state.turns_completed += 1;
             }
@@ -632,7 +644,10 @@ async fn commit_run_end(
             });
             Some(status)
         }
-        _ => None,
+        (_, open) => {
+            s.state.open_turn = open;
+            None
+        }
     };
     let mut artifact_ref = None;
     if next.finished {
@@ -877,6 +892,7 @@ async fn after_run_end(
     let status = s.status(sh.lease.epoch());
     drop(s);
     report(sh, status).await;
+    super::outbound::flush_outbox(sh).await;
     if consolidate {
         let kind_lease = sh.kind_lease.lock().expect("kind lease").clone();
         if let (Some(w), Some(l)) = (window, kind_lease) {

@@ -39,6 +39,8 @@ pub struct HostDeps {
     pub max_child_concurrency: usize,
     /// Producers started for the sessions being served.
     pub bridges: Vec<Arc<dyn EventBridge>>,
+    /// Where the replies of the sessions leave the process.
+    pub outbound: Option<Arc<dyn crate::runner::OutboundSink>>,
     /// Binding identity required of the sessions driven directly (not of
     /// their sub sessions).
     pub runtime_id: Option<String>,
@@ -67,6 +69,7 @@ impl HostDeps {
         .with_options(self.options.clone());
         deps.session_cli = self.session_cli.clone();
         deps.app_tools = self.app_tools.clone();
+        deps.outbound = self.outbound.clone();
         deps.stop = stop;
         Ok(deps)
     }
@@ -332,6 +335,7 @@ fn has_pending_work(sd: &SessionDir) -> bool {
         return false;
     };
     !state.watched_tasks.is_empty()
+        || crate::runner::has_pending_outbound(&state)
         || state
             .waiting_for
             .as_ref()
@@ -382,6 +386,7 @@ async fn serve_one(
     sd: SessionDir,
     stop: StopSignal,
     idle_unload: Option<Duration>,
+    observer: Option<Arc<dyn Fn(&DriveResult) + Send + Sync>>,
 ) -> DriveResult {
     let mut bridges: Option<BridgeSet> = None;
     let mut idle_since: Option<Instant> = None;
@@ -398,6 +403,9 @@ async fn serve_one(
             }
         }
         let r = host.drive(&sd, StopWhen::Idle, stop.clone()).await;
+        if let Some(o) = &observer {
+            o(&r);
+        }
         let pause = match &r {
             DriveResult::Finished { .. } => {
                 // Controls queued for a finished session (decide) were
@@ -477,7 +485,7 @@ pub async fn serve(
     let mut loops = Vec::new();
     for sd in targets {
         let sid = sd.sid().to_string();
-        let task = tokio::spawn(serve_one(host.clone(), sd, stop.clone(), idle_unload));
+        let task = tokio::spawn(serve_one(host.clone(), sd, stop.clone(), idle_unload, None));
         loops.push((sid, task));
     }
     let mut out = Vec::new();
@@ -496,4 +504,319 @@ pub async fn serve(
     let _ = ticker.await;
     children.shutdown().await;
     out
+}
+
+/// What a [`Supervisor`] knows about one session (memory only, rebuilt from
+/// the registry after a restart; not a protocol).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HostedStatus {
+    pub session_id: String,
+    pub class: String,
+    /// A serving loop of this process advances the session.
+    pub loaded: bool,
+    pub loaded_at_ms: u64,
+    pub drives: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_result: Option<DriveResult>,
+    pub last_result_at_ms: u64,
+    pub idle_unload_secs: Option<u64>,
+    /// Why the loop was started last.
+    pub reason: String,
+}
+
+struct Slot {
+    task: Option<tokio::task::JoinHandle<DriveResult>>,
+    stop: StopSignal,
+    status: Arc<Mutex<HostedStatus>>,
+    unloaded_at: Option<Instant>,
+}
+
+impl Slot {
+    fn running(&self) -> bool {
+        self.task.as_ref().is_some_and(|t| !t.is_finished())
+    }
+}
+
+fn blocked(r: Option<&DriveResult>) -> bool {
+    matches!(
+        r,
+        Some(
+            DriveResult::NotDriver { .. }
+                | DriveResult::Unregistered
+                | DriveResult::BindFailed { .. }
+                | DriveResult::RecoveryBlocked(_)
+        )
+    )
+}
+
+/// The resident host of an agent's sessions (xAgent §9.6): every hosted
+/// session has its own serving loop under its own lease; which sessions are
+/// hosted follows the registry (`driver = me`, not finished or with a
+/// pending decision) — top-level sessions and sub sessions alike — plus
+/// what the embedding process asks for with [`Supervisor::ensure_task`].
+/// Stopping the supervisor ends the loops and waits for them; it never
+/// stops a session.
+pub struct Supervisor {
+    host: HostDeps,
+    default_idle: Option<Duration>,
+    class_idle: HashMap<String, Duration>,
+    /// How long an unloaded session with an input queue stays unchecked
+    /// (notifications only speed this up).
+    recheck: Duration,
+    slots: Mutex<HashMap<String, Slot>>,
+    closing: StopSignal,
+}
+
+impl Supervisor {
+    pub fn new(mut host: HostDeps, default_idle: Option<Duration>) -> Arc<Self> {
+        host.runtime_id = None;
+        Arc::new(Self {
+            host,
+            default_idle,
+            class_idle: HashMap::new(),
+            recheck: Duration::from_secs(30),
+            slots: Mutex::new(HashMap::new()),
+            closing: StopSignal::default(),
+        })
+    }
+
+    /// Idle unload per session class (others use the default).
+    pub fn with_class_idle(mut self: Arc<Self>, class: &str, idle: Duration) -> Arc<Self> {
+        Arc::get_mut(&mut self)
+            .expect("configured before use")
+            .class_idle
+            .insert(class.to_string(), idle);
+        self
+    }
+
+    pub fn with_recheck(mut self: Arc<Self>, recheck: Duration) -> Arc<Self> {
+        Arc::get_mut(&mut self).expect("configured before use").recheck = recheck;
+        self
+    }
+
+    pub fn host(&self) -> &HostDeps {
+        &self.host
+    }
+
+    fn start(&self, sd: SessionDir, class: &str, reason: &str, stopped: bool) {
+        if self.closing.requested() {
+            return;
+        }
+        let sid = sd.sid().to_string();
+        let idle = self.class_idle.get(class).copied().or(self.default_idle);
+        let mut slots = self.slots.lock().expect("slots");
+        if slots.get(&sid).is_some_and(Slot::running) {
+            return;
+        }
+        let drives = slots
+            .get(&sid)
+            .map(|s| s.status.lock().expect("status").drives)
+            .unwrap_or(0);
+        let status = Arc::new(Mutex::new(HostedStatus {
+            session_id: sid.clone(),
+            class: class.to_string(),
+            loaded: true,
+            loaded_at_ms: crate::now_ms(),
+            drives,
+            last_result: None,
+            last_result_at_ms: 0,
+            idle_unload_secs: idle.map(|d| d.as_secs()),
+            reason: reason.to_string(),
+        }));
+        let stop = StopSignal::default();
+        if stopped {
+            stop.request();
+        }
+        let seen = status.clone();
+        let observer: Arc<dyn Fn(&DriveResult) + Send + Sync> = Arc::new(move |r| {
+            let mut s = seen.lock().expect("status");
+            s.drives += 1;
+            s.last_result = Some(r.clone());
+            s.last_result_at_ms = crate::now_ms();
+        });
+        log::info!("supervisor: hosting {sid} ({reason})");
+        let task = tokio::spawn(serve_one(
+            self.host.clone(),
+            sd,
+            stop.clone(),
+            idle,
+            Some(observer),
+        ));
+        slots.insert(
+            sid,
+            Slot {
+                task: Some(task),
+                stop,
+                status,
+                unloaded_at: None,
+            },
+        );
+    }
+
+    /// Make sure a serving loop advances `sid` (new input was posted, a
+    /// decision was queued, the session was just created).
+    pub async fn ensure_task(&self, sid: &str, reason: &str) -> Result<()> {
+        let entry = self
+            .host
+            .agent
+            .sessions()
+            .lookup(sid)
+            .await?
+            .ok_or_else(|| crate::error::OpenDanError::NotFound(format!("session {sid}")))?;
+        if entry.driver.principal != self.host.who {
+            return Err(crate::error::OpenDanError::NotDriver {
+                session_id: sid.to_string(),
+                principal: self.host.who.clone(),
+                driver: entry.driver.principal,
+            });
+        }
+        let sd = SessionDir::open(&entry.location)?;
+        self.start(sd, &entry.class, reason, false);
+        Ok(())
+    }
+
+    fn reap(&self) {
+        let mut slots = self.slots.lock().expect("slots");
+        for (sid, slot) in slots.iter_mut() {
+            if slot.task.as_ref().is_some_and(|t| t.is_finished()) {
+                slot.task = None;
+                slot.unloaded_at = Some(Instant::now());
+                let mut s = slot.status.lock().expect("status");
+                s.loaded = false;
+                log::info!("supervisor: {sid} unloaded ({:?})", s.last_result.as_ref().map(kind_of));
+            }
+        }
+    }
+
+    /// One look at the registry: sessions this identity drives that are not
+    /// hosted and can be advanced get a serving loop. The first look after
+    /// a start is the recovery of everything left unfinished.
+    pub async fn tick(&self) -> Result<()> {
+        self.reap();
+        let entries = self
+            .host
+            .agent
+            .sessions()
+            .query(&RegistryQuery {
+                driver: Some(self.host.who.clone()),
+                not_finished_or_pending: Some(true),
+                ..Default::default()
+            })
+            .await?;
+        for e in entries {
+            if e.unreachable {
+                continue;
+            }
+            let finished = e.status.run_state == RunState::Finished;
+            let parent_stopped = match e.origin.as_ref().and_then(|o| o.parent_session.clone()) {
+                Some(p) if !finished => self
+                    .host
+                    .agent
+                    .sessions()
+                    .lookup(&p)
+                    .await?
+                    .is_some_and(|p| p.status.outcome == Some(Outcome::Stopped)),
+                _ => false,
+            };
+            let reason = {
+                let slots = self.slots.lock().expect("slots");
+                let slot = slots.get(&e.session_id);
+                if let Some(s) = slot.filter(|s| s.running()) {
+                    // A stopped parent stops the sub sessions this host
+                    // drives (one without a queue has no other way to hear).
+                    if parent_stopped {
+                        s.stop.request();
+                    }
+                    continue;
+                }
+                let last = slot.and_then(|s| s.status.lock().expect("status").last_result.clone());
+                match slot {
+                    None if finished && e.status.pending_decision.is_none() => continue,
+                    None => "registry",
+                    Some(_) if finished => {
+                        if e.status.pending_decision.is_none()
+                            || matches!(last, Some(DriveResult::Finished { .. }))
+                        {
+                            continue;
+                        }
+                        "pending decision"
+                    }
+                    Some(_) if parent_stopped => "parent stopped",
+                    Some(_) if blocked(last.as_ref()) => continue,
+                    // Without a queue only its own progress moves it, and
+                    // that happens while it is hosted.
+                    Some(_) if e.input_queue.is_none() => continue,
+                    Some(s) => {
+                        if s.unloaded_at.is_some_and(|t| t.elapsed() < self.recheck) {
+                            continue;
+                        }
+                        "recheck"
+                    }
+                }
+            };
+            let Ok(sd) = SessionDir::open(&e.location) else {
+                continue;
+            };
+            self.start(sd, &e.class, reason, parent_stopped);
+        }
+        Ok(())
+    }
+
+    /// Follow the registry until [`Supervisor::shutdown`].
+    pub async fn run(self: Arc<Self>) {
+        let pause = self.host.options.poll_interval.min(Duration::from_secs(2));
+        while !self.closing.requested() {
+            if let Err(e) = self.tick().await {
+                log::warn!("supervisor: registry scan: {e}");
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(pause) => {}
+                _ = self.closing.wait() => {}
+            }
+        }
+    }
+
+    /// Hosting state of every session seen since the start.
+    pub fn status(&self) -> Vec<HostedStatus> {
+        self.reap();
+        let slots = self.slots.lock().expect("slots");
+        let mut out: Vec<HostedStatus> = slots
+            .values()
+            .map(|s| s.status.lock().expect("status").clone())
+            .collect();
+        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        out
+    }
+
+    pub fn is_loaded(&self, sid: &str) -> bool {
+        self.slots
+            .lock()
+            .expect("slots")
+            .get(sid)
+            .is_some_and(Slot::running)
+    }
+
+    /// End hosting: no new loops, the running ones are cancelled and waited
+    /// for (their leases are released). Sessions keep their committed state.
+    pub async fn shutdown(&self) {
+        self.closing.request();
+        let tasks: Vec<tokio::task::JoinHandle<DriveResult>> = self
+            .slots
+            .lock()
+            .expect("slots")
+            .values_mut()
+            .filter_map(|s| s.task.take())
+            .collect();
+        for t in tasks {
+            t.abort();
+            let _ = t.await;
+        }
+    }
+}
+
+fn kind_of(r: &DriveResult) -> String {
+    serde_json::to_value(r)
+        .ok()
+        .and_then(|v| v.get("kind").and_then(|k| k.as_str().map(str::to_string)))
+        .unwrap_or_default()
 }

@@ -68,11 +68,10 @@ impl SessionTemplate {
                 ObserveScope::Events,
                 false,
             ),
-            // The long-lived dialogue entry. Formal UI sessions (msg-center,
-            // outbound delivery) are deferred: this template only carries
-            // the waiting semantics, on a work kind session.
+            // The long-lived dialogue entry: bound to one conversation by
+            // its `route_key`, replies leave through the outbound sink.
             "ui" => base(
-                SessionKind::Work,
+                SessionKind::Ui,
                 Turns::Unbounded,
                 WaitPolicy::Allowed,
                 InputChannel::Queue,
@@ -132,8 +131,14 @@ impl SessionTemplate {
             .flatten();
         let mut t = match (Self::builtin(class), &over) {
             (Some(t), _) => t,
-            (None, Some(_)) => {
-                let mut t = Self::builtin("work").expect("work template");
+            // A class of the package: `base` names the built-in it starts from.
+            (None, Some(o)) => {
+                let base = o.get("base").and_then(|b| b.as_str()).unwrap_or("work");
+                let mut t = Self::builtin(base).ok_or_else(|| {
+                    OpenDanError::InvalidArgument(format!(
+                        "agent.toml [session.{class}] base: unknown built-in `{base}`"
+                    ))
+                })?;
                 t.class = class.to_string();
                 t
             }

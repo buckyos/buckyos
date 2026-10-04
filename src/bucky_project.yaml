@@ -55,6 +55,10 @@ modules:
   xagent:
     type: rust
     name: libopendan
+  opendan_web:
+    type: web
+    name: opendan_web
+    src_dir: frame/opendan/web/
   # control_panel_web:
   #   type: web
   #   name: control_panel
@@ -102,6 +106,7 @@ apps:
       opendan: bin/opendan/
       agent_tool: bin/opendan/
       xagent: bin/opendan/xagent
+      opendan_web: bin/opendan/web/
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
       scheduler-etc: etc/scheduler/

@@ -722,12 +722,25 @@ impl InputSourceConfig {
     }
 }
 
+/// Reply coordinates of a session bound to one conversation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct OutboundBinding {
+    /// The peer (one-to-one) or the group.
+    pub to: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_session: Option<String>,
+    /// MsgObject kind of the replies.
+    pub kind: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Channels {
     #[serde(default)]
     pub inputs: Vec<InputSourceConfig>,
+    /// Where the session's replies go, fixed when it is created: a reply
+    /// whose route differs is not sent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outbound: Option<Value>,
+    pub outbound: Option<OutboundBinding>,
     /// kevent id published after posting; every segment only uses
     /// letters, digits and `_ - .`.
     #[serde(default, skip_serializing_if = "Option::is_none")]

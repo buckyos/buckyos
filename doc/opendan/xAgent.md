@@ -906,7 +906,7 @@ impl dyn AgentStateClient {
 ```
 
 - **权限**：文件版靠 OS 权限 + lease（驱动者单写）；kRPC 版靠 `who` 的 BuckyOS 会话 token 与 RBAC；进程内靠宿主。Runner 不感知差别，`who` 只在 `register / notebook_append / post_input` 这类带署名的写入里传递。
-- **xagent v1 实现**：`InProcess`（给测试与嵌入）、`AgentRoot`（`FsAgentStateClient`）。`Krpc` 只定义 trait 对象的构造函数并用一个把调用转发到 `FsAgentStateClient` 的桩实现跑同一组 fixtures（E4），证明 Runner 不依赖实现。
+- **实现**：`InProcess`（测试与嵌入；OpenDAN 进程把自己的文件实现登记在这里）、`AgentRoot`（`FsAgentStateClient`）、`Krpc`（`KrpcAgentStateClient`，对端是 OpenDAN 的 Agent State 服务，定位用 `OPENDAN_AGENT_STATE_URL` / `--state-url`；DID 文档与 zone 服务发现尚未接线）。kRPC 只承载读与带署名的写（`register`、`post_input`、`notebook_append`、`decide`）；驱动者在 lease 下的写入与 Agent 级锁依赖 flock，仍要求能看到 AgentRoot。`ForwardingStateClient` 保留为证明 Runner 不依赖实现的转发实现（E4）。
 - 与现状的差别：现在 `FsAgentStateClient::open(agent_root, did, …)` 要求显式路径；`connect` 把路径解析收进来，CLI 不再必须给 `--agent-root`。
 
 ### 7.2 Runner 读写 Agent State 的边界
@@ -1246,11 +1246,11 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | C2 | 已实施 | 冻结 behavior 的模板经生成的 `extensions.opendan.behaviors` 进入现有装配；E14 的 context-switch 快照用例已补 | — |
 | C3 | 已实施（kevent 未在真实 zone 验证） | `bridge::EventBridge`、`TimerBridge`、`KEventBridge`；`host::serve` 按 `config_rev` 重启 bridge；`--no-bridge` | timer 的间隔取 `extensions.opendan.timers.<name>.every_secs`（缺省 300s）是本轮的默认选择；kevent 的对象 → 事件 id 映射只在本机编译通过 |
 | C4 | 已实施 | `SessionSpec.input_channel`、`prompt.initial_inputs`、`channel::BootstrapSource`（`_bootstrap`） | — |
-| C5 | 已实施 | `template.rs`（四模板 + `agent.toml` 覆盖）、`session.policy`、`classify_done` 的 `wait_user_msg` | ui 模板落在 work kind 上（正式 UI kind 后移） |
+| C5 | 已实施 | `template.rs`（四模板 + `agent.toml` 覆盖）、`session.policy`、`classify_done` 的 `wait_user_msg` | ui 模板的 kind 已是 `ui`（2026-10-03，随 OpenDAN Loader）；`[session.<class>] base = "<内建模板>"` 让包自定义的 class 从某个内建模板起步 |
 | C6 | 已实施 | `StopWhen::TurnClosed`、`DriveResult::{TurnClosed, TurnOpen}`、`Shared.turn_closed` | — |
 | C7 | 已实施 | `BehaviorCatalog`（文件 / 内存）、`freeze_config` / `freeze_behavior`、`BehaviorAssembler`、`SessionAssembler::ensure_frozen` | hooks、parser / output 只携带不解释 |
 | C8 | 已接入 CLI | `HostDeps::runner_deps` | ActionGuard / grant / 审批后移 |
-| C9 | 已实施（v1 范围） | `state::connect` / `StateLocator`、`register_in_process`、`WithBehaviors`、`ForwardingStateClient` | 真 kRPC 客户端 / 服务端；进程内实现只把 behavior 目录放进宿主内存，其余门面仍是文件 |
+| C9 | 已实施（v1 范围） | `state::connect` / `StateLocator`、`register_in_process`、`WithBehaviors`、`ForwardingStateClient` | kRPC 客户端 / 服务端已实施（`state::krpc`，服务端在 OpenDAN）；DID 文档 / zone 服务发现未接线；进程内实现只把 behavior 目录放进宿主内存，其余门面仍是文件 |
 | C10 | 已实施 | `runtime::{runtime_for_session, session_runtime}`、`@opendan_session` 归属标记 | — |
 | C11 | 已实施 | `src/bin/xagent.rs`；`examples/session.rs` 已删除，README / 协议索引已改 | `artifact register` 不提供（版本由驱动者在结束时登记） |
 | C12 | 已实施 | `HostProtocolFlavor::Session`（G3）；宿主装配的 run 无论谁执行都用无时间戳渲染器（G2，按 `record.host` 判断，不另存 `renderer_opts`）；behavior 预算写入 request | — |
@@ -1272,7 +1272,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 ### 11.3 后移项与保证范围
 
-- 正式 msg-center / TaskMgr 接入、出站持久记录与 channels.outbound 发送、外部服务 dispatch intent / task 绑定；现有桥仅是映射与幂等 key helper。
+- TaskMgr 接入、外部服务 dispatch intent / task 绑定；task 桥仍是映射与幂等 key helper。msg-center 接入、出站（`state.outbox` + `OutboundSink`）、正式 ui kind、真 kRPC Agent State（`state::krpc`）与常驻托管（`host::Supervisor`）已随 OpenDAN Loader 实施（2026-10-03，见 [opendan README](../../src/frame/opendan/README.md)）。
 - 本机附件登记到 NamedStore；首版 CLI 的 --attach 仅接受 ObjId。
 - 长工具执行期间持续 activity 心跳；StopMonitor 当前仅查看 stop，不写 state。
 - 旧 Session 的显式迁移工具、TS helper / Runner、正式 UI / OpenDAN 改造。

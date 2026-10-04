@@ -264,6 +264,43 @@ pub struct OpenTurn {
     pub at_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboxStatus {
+    /// Not handed to the outbound sink yet, or the hand-over failed in a
+    /// way worth retrying.
+    Pending,
+    Sent,
+    /// Refused (route mismatch, rejected by the message service); never
+    /// retried.
+    Failed,
+}
+
+/// Settled outbox entries kept for display.
+pub const OUTBOX_KEEP_SETTLED: usize = 16;
+
+/// One outbound message of a session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct OutboxEntry {
+    /// Idempotency key: `(sid, turn, run_id, n)`.
+    pub key: String,
+    /// The complete message, `created_at_ms` included: re-sent unchanged.
+    #[schemars(with = "Value")]
+    pub msg: ndn_lib::MsgObject,
+    pub turn: u64,
+    pub status: OutboxStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub msg_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deliveries: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default)]
+    pub attempts: u32,
+    #[serde(default)]
+    pub updated_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct WorklogBoundary {
     pub committed_seq: u64,
@@ -592,6 +629,11 @@ pub struct SessionState {
     /// else the parent session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<ReplyRoute>,
+    /// Replies produced by committed Turns and their delivery: written in
+    /// the commit that closes the Turn, sent afterwards, re-sent as they are
+    /// after a restart (the idempotency key and the message never change).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outbox: Vec<OutboxEntry>,
     /// Background tasks of ended runs the runner follows for this session
     /// (implicit active subscriptions on `task:<task_id>`): when one ends,
     /// its completion is handled like a subscribed event.
@@ -655,6 +697,7 @@ impl SessionState {
             subscription_cursors: BTreeMap::new(),
             pending_events: Vec::new(),
             reply: None,
+            outbox: Vec::new(),
             watched_tasks: Vec::new(),
             perception_seq: 0,
             reported_rev: 0,

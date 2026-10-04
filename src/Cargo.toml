@@ -34,6 +34,7 @@ members = [
 ]
 
 exclude = [
+    "./frame/opendan_legacy",
     "./tools/ns-tool",
     "./apps/tray-controller"
 ]

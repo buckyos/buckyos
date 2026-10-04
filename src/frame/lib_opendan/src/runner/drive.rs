@@ -751,6 +751,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     if let Err(e) = catch_up(sh).await {
         log::warn!("catch-up of {}: {e}", sh.dir.sid());
     }
+    // Replies committed and not handed over yet (a crash after the commit,
+    // a sink that was not reachable).
+    super::outbound::flush_outbox(sh).await;
     let pending_now = match &reconciled {
         Reconciled::Resume(_, snapshot) => pending_task_ids(snapshot),
         Reconciled::None => Vec::new(),

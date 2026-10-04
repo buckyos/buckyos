@@ -8,7 +8,7 @@
 //   - pkg_list.script => HostScript
 //   - pkg_list.agent  => Agent / OpenDan
 //
-//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]
+//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--detach]
 
 type JsonValue =
   | string
@@ -92,15 +92,13 @@ function printUsage(): never {
   console.error(
     [
       'Usage:',
-      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]',
+      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--detach]',
       '',
       'Example:',
       '  service_debug jarvis.buckyos.bns.did alice',
       '  service_debug buckyos_systest devtest',
       '  service_debug jarvis.buckyos.bns.did alice --port 14060',
       '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./apps/jarvis_runtime/agent',
-      '  service_debug jarvis.buckyos.bns.did alice --worksession-test ./case.json',
-      '  service_debug jarvis.buckyos.bns.did alice --worksession-task-test ./case.json',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -164,59 +162,7 @@ function parseArgs(args: string[]): StartupOptions {
         agentPackageRoot = raw
         break
       }
-      case '--worksession-test':
-      case '--work-session-test': {
-        const raw = args[index + 1]?.trim()
-        index += 1
-        if (!raw) {
-          throw new Error(`missing value for ${arg}`)
-        }
-        opendanArgs.push(arg, raw)
-        break
-      }
-      case '--worksession-task-test':
-      case '--work-session-task-test':
-      case 'worksession-task-test':
-      case 'work-session-task-test': {
-        const raw = args[index + 1]?.trim()
-        index += 1
-        if (!raw) {
-          throw new Error(`missing value for ${arg}`)
-        }
-        opendanArgs.push('--worksession-task-test', raw)
-        break
-      }
-      case '--': {
-        const next = args[index + 1]?.trim()
-        if (
-          next === 'worksession-task-test' ||
-          next === 'work-session-task-test' ||
-          next === '--worksession-task-test' ||
-          next === '--work-session-task-test'
-        ) {
-          const raw = args[index + 2]?.trim()
-          index += 2
-          if (!raw) {
-            throw new Error(`missing value for ${next}`)
-          }
-          opendanArgs.push('--worksession-task-test', raw)
-          break
-        }
-        throw new Error(`unknown argument after --: ${next || ''}`)
-      }
       default: {
-        if (arg.startsWith('--worksession-test=') || arg.startsWith('--work-session-test=')) {
-          opendanArgs.push(arg)
-          break
-        }
-        if (arg.startsWith('--worksession-task-test=') || arg.startsWith('--work-session-task-test=')) {
-          const value = arg.slice(arg.indexOf('=') + 1)
-          if (!value.trim()) {
-            throw new Error(`missing value for ${arg.slice(0, arg.indexOf('='))}`)
-          }
-          opendanArgs.push(`--worksession-task-test=${value}`)
-          break
-        }
         throw new Error(`unknown argument: ${arg}`)
       }
     }

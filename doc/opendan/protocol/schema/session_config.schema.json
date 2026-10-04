@@ -363,7 +363,17 @@
           },
           "type": "array"
         },
-        "outbound": true,
+        "outbound": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OutboundBinding"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Where the session's replies go, fixed when it is created: a reply whose route differs is not sent."
+        },
         "wake_event": {
           "description": "kevent id published after posting; every segment only uses letters, digits and `_ - .`.",
           "type": [
@@ -933,6 +943,30 @@
           "description": "How the parent session hears about this session (chosen by the parent when it created it). `None`: no implicit reporting."
         }
       },
+      "type": "object"
+    },
+    "OutboundBinding": {
+      "description": "Reply coordinates of a session bound to one conversation.",
+      "properties": {
+        "kind": {
+          "description": "MsgObject kind of the replies.",
+          "type": "string"
+        },
+        "to": {
+          "description": "The peer (one-to-one) or the group.",
+          "type": "string"
+        },
+        "to_session": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "to"
+      ],
       "type": "object"
     },
     "PostedInput": {

@@ -12,3 +12,8 @@ parse_error = "parse error: {error}"
 context_rewritten = "compressed history: {from_messages} → {to_messages}"
 self_report_set = "self-report set ({chars} chars)"
 message_sent = "message → {target} ({chars} chars)"
+
+[outbound]
+delivery_failure_notice = "My reply could not be delivered. Please ask again or check the channel."
+turn_failed = "Something went wrong while I was working on this. Please try again."
+convert_failed = "I produced a reply but could not turn it into a message. Please ask again."

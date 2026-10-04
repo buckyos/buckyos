@@ -1,11 +1,10 @@
 //! Locating an agent's state (xAgent §7): nothing is configured, a caller
 //! only gives the agent DID and its own identity.
 //!
-//! Resolution order: in-process registry → AgentRoot on this machine → kRPC.
-//! The kRPC service itself follows the OpenDAN refactor; until then
-//! [`ForwardingStateClient`] stands where the kRPC client will: it owns no
-//! state and passes every call on, which is what proves the runner depends
-//! on the trait only.
+//! Resolution order: in-process registry → AgentRoot on this machine → kRPC
+//! (the Agent State service of the OpenDAN process hosting the agent, see
+//! [`super::krpc`]). [`ForwardingStateClient`] owns no state and passes
+//! every call on: it proves the runner depends on the trait only.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -86,7 +85,7 @@ pub async fn connect(
     match &options.hint {
         Some(StateLocator::InProcess(c)) => return Ok(c.clone()),
         Some(StateLocator::AgentRoot(root)) => return open_root(root),
-        Some(StateLocator::Krpc { endpoint }) => return krpc(agent_did, endpoint),
+        Some(StateLocator::Krpc { endpoint }) => return krpc(agent_did, endpoint).await,
         None => {}
     }
     if let Some(c) = registry().lock().expect("state registry").get(agent_did) {
@@ -99,21 +98,22 @@ pub async fn connect(
         return open_root(&root);
     }
     if let Ok(endpoint) = std::env::var(ENV_AGENT_STATE_URL) {
-        return krpc(agent_did, &endpoint);
+        return krpc(agent_did, &endpoint).await;
     }
     Err(OpenDanError::NotFound(format!(
         "agent state of {agent_did}: no in-process client, ${ENV_AGENT_ROOT}, ~/.opendan/agents.toml entry or ${ENV_AGENT_STATE_URL}"
     )))
 }
 
-fn krpc(agent_did: &str, endpoint: &str) -> Result<Arc<dyn AgentStateClient>> {
-    Err(OpenDanError::NotFound(format!(
-        "agent state of {agent_did} at {endpoint}: the Agent State kRPC service is not available yet (it follows the OpenDAN refactor)"
-    )))
+async fn krpc(agent_did: &str, endpoint: &str) -> Result<Arc<dyn AgentStateClient>> {
+    let transport = Arc::new(super::krpc::KrpcTransport::new(endpoint, None));
+    Ok(Arc::new(
+        super::krpc::KrpcAgentStateClient::connect(agent_did, transport).await?,
+    ))
 }
 
-/// Stand-in of the kRPC client: every facade call is forwarded to `inner`.
-/// It exposes no AgentRoot path, like a remote client.
+/// Every facade call is forwarded to `inner`. It exposes no AgentRoot path,
+/// like a remote client.
 pub struct ForwardingStateClient {
     inner: Arc<dyn AgentStateClient>,
     /// Whether callers may see the AgentRoot path (a remote client cannot).
