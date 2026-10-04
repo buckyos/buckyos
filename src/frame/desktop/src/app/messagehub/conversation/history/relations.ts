@@ -138,6 +138,13 @@ export function ownReactionId(message: MessageObject, viewerDid: string, key: st
 }
 
 /** The text a bubble shows: the latest edit when there is one. */
+/** Plain text standing for a message: its displayed text, or the names of its attachments when it has none. */
+export function messageSummaryText(message: MessageObject): string {
+  const text = displayedContent(message).trim()
+  if (text) return text
+  return (message.content.refs ?? []).map(ref => ref.label ?? (ref.target.type === 'data_obj' ? ref.target.uri_hint ?? ref.target.obj_id : ref.target.did)).join('\n')
+}
+
 export function displayedContent(message: MessageObject): string {
   return messageRelations(message)?.edited?.content ?? message.content.content ?? ''
 }

@@ -285,8 +285,7 @@ test('message relations: edit, reaction, reply, recall, admin delete, mentions a
   await page.evaluate(({ owner, id, target }) => window.__messageHubMock.injectRelation(owner, id, 'did:buckyos:person:bob', target!, { rel: 'thread' }, 'Looks good'), { owner: SELF, id: SESSION, target: targetId as string })
   await expect(replyBubble('Looks good').getByTestId('reply-quote')).toContainText('Draft two')
 
-  await bubble('Draft two').getByTestId('message-actions').click()
-  await page.getByRole('menuitem', { name: 'Reply' }).click()
+  await bubble('Draft two').getByTestId('message-reply').click()
   await expect(page.getByTestId('composer-relation')).toContainText('Replying to You')
   await page.getByTestId('mention-button').click()
   await page.getByTestId('mention-picker').getByRole('option', { name: 'Bob Zhang' }).click()
@@ -305,10 +304,10 @@ test('message relations: edit, reaction, reply, recall, admin delete, mentions a
   await expect(bubble('Hey you').getByTestId('mention-badge')).toBeVisible()
   await page.screenshot({ path: 'test-results/messagehub-group-relations.png' })
 
-  await bubble('Hey you').getByTestId('message-actions').click()
+  await bubble('Hey you').getByTestId('message-delete').click()
   await page.getByRole('menuitem', { name: 'Delete for everyone' }).click()
   await expect(history.getByTestId('message-redacted').filter({ hasText: 'deleted by You' })).toBeVisible()
-  await bubble('Draft two').getByTestId('message-actions').click()
+  await bubble('Draft two').getByTestId('message-delete').click()
   await page.getByRole('menuitem', { name: 'Recall' }).click()
   await expect(history.getByTestId('message-redacted').filter({ hasText: 'Message recalled' })).toBeVisible()
   await expect(history.getByText('Draft two', { exact: true })).toHaveCount(0)

@@ -9,6 +9,7 @@ export const sharedStateSchema = z.object({ title: z.string().trim().max(64), de
 export const groupSharedStateSchema = sharedStateSchema.extend({ announcement: z.string().trim().max(1024).optional() })
 export const memberStateSchema = z.object({ nickname: z.string().trim().max(64) })
 export const presentationSchema = z.object({ title: z.string().trim().max(64), pinned: z.boolean(), muted: z.boolean() })
+export const pinnedMessageSchema = z.object({ id: z.string().min(1), text: z.string().max(2000), senderDid: z.string(), createdAt: z.number() })
 export const defaultPreferences: SessionPreferences = { title: '', pinned: false, muted: false, showActions: true }
 export const sessionKey = (ownerDid: string, sessionId: string) => JSON.stringify([ownerDid, sessionId])
 export const viewerSessionKey = (context: MessageHubContext, sessionId: string) => JSON.stringify([context.viewerDid, context.ownerDid, sessionId])

@@ -71,6 +71,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   hasOlder?: boolean
   onLoadOlder?: () => Promise<boolean>
   onVisibleMessages?: (recordIds: string[]) => void
+  /** Space kept free above the first row (a floating session panel). */
+  topInset?: number
 }>(function ConversationHistoryPane({
   reader,
   selfDid,
@@ -82,6 +84,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   hasOlder = false,
   onLoadOlder,
   onVisibleMessages,
+  topInset = 0,
 }, ref) {
   const { t } = useI18n()
   const filterAnchor = useRef<{ messageIndex: number; messageId?: string; offset: number; targetIndex?: number } | null>(null)
@@ -352,6 +355,7 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
     count: projection?.totalCount ?? 0,
     getScrollElement: () => scrollRef.current,
     getItemKey: (index) => projection?.entries[index]?.key ?? index,
+    paddingStart: topInset,
     estimateSize: (index) => (
       projection?.entries[index]?.kind === 'message' ? 180 : 52
     ),

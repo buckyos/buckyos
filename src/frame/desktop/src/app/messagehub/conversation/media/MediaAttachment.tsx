@@ -4,9 +4,9 @@ import { usePreviewThumbnail } from '../../../../components/preview/thumbnail'
 import { useI18n } from '../../../../i18n/provider'
 import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
 import { useOpenAttachment } from './context'
+import { objectCacheKey, readyObjectKind, readyObjects, rememberReadyObject, type ReadyObjectState } from './objectCache'
 import { useMediaSettings } from './settings'
 import {
-  attachmentKindOf,
   attachmentMediaType,
   installMessageHubPreviewSources,
   isInlineImageType,
@@ -31,37 +31,23 @@ function formatDuration(seconds: number): string {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-export function MessageAttachmentView({ attachment, isSelf }: { attachment: MessageAttachment; isSelf: boolean }) {
+export function MessageAttachmentView({ attachment, isSelf, onKind }: { attachment: MessageAttachment; isSelf: boolean; onKind?: (kind: AttachmentKind) => void }) {
   if (attachment.uri) {
     const mediaType = attachmentMediaType(undefined, attachment.uri)
     return <InlineImage attachment={attachment} url={attachment.uri} isGif={mediaType === 'image/gif'} />
   }
-  return <ObjectAttachment attachment={attachment} isSelf={isSelf} />
+  return <ObjectAttachment attachment={attachment} isSelf={isSelf} onKind={onKind} />
 }
 
 type ObjectState =
   | { phase: 'loading' }
-  | { phase: 'ready'; info: ObjectInfo; contentUrl?: string }
+  | ReadyObjectState
   | { phase: 'error'; message: string }
 
-type ReadyObjectState = Extract<ObjectState, { phase: 'ready' }>
-
-// Resolved attachments by object id and label: a bubble that is re-mounted
-// (virtualized history) renders at its final size at once instead of going
-// through the loading state and resizing the rows around it.
-const readyObjects = new Map<string, ReadyObjectState>()
-const READY_OBJECTS_LIMIT = 256
-
-function rememberReadyObject(key: string, state: ReadyObjectState) {
-  readyObjects.delete(key)
-  readyObjects.set(key, state)
-  if (readyObjects.size > READY_OBJECTS_LIMIT) readyObjects.delete(readyObjects.keys().next().value!)
-}
-
-function ObjectAttachment({ attachment, isSelf }: { attachment: MessageAttachment; isSelf: boolean }) {
+function ObjectAttachment({ attachment, isSelf, onKind }: { attachment: MessageAttachment; isSelf: boolean; onKind?: (kind: AttachmentKind) => void }) {
   const { t } = useI18n()
   const objId = attachment.objId ?? ''
-  const cacheKey = `${objId}\n${attachment.label}`
+  const cacheKey = objectCacheKey(attachment)
   const [state, setState] = useState<ObjectState>(() => readyObjects.get(cacheKey) ?? { phase: 'loading' })
   const [retry, setRetry] = useState(0)
   useEffect(() => {
@@ -84,6 +70,8 @@ function ObjectAttachment({ attachment, isSelf }: { attachment: MessageAttachmen
   }, [objId, attachment.label, cacheKey, retry])
 
   const label = attachment.label
+  const readyKind = state.phase === 'ready' ? readyObjectKind(state, label) : undefined
+  useEffect(() => { if (readyKind) onKind?.(readyKind) }, [readyKind, onKind])
   if (state.phase === 'loading') {
     return <span className="text-xs" data-testid="attachment-loading">{t('messagehub.attachmentLoading')} · {label}</span>
   }
@@ -95,7 +83,7 @@ function ObjectAttachment({ attachment, isSelf }: { attachment: MessageAttachmen
     return <span className="flex items-center gap-2 text-sm break-all" data-testid="attachment-ready" data-kind="object"><FileText size={14} />{info.name ?? label} · {t('messagehub.attachmentNotFile')}</span>
   }
   const mediaType = attachmentMediaType(info, label)
-  const kind = attachmentKindOf(mediaType, info.name ?? label) ?? 'file'
+  const kind = readyKind ?? 'file'
   let body: ReactNode
   if (kind === 'image' && state.contentUrl) {
     body = <InlineImage attachment={attachment} url={state.contentUrl} isGif={mediaType === 'image/gif'} />

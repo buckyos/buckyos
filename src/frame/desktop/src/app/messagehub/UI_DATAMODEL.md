@@ -523,6 +523,23 @@ Agent 观察则连展示配置、已读、草稿都不能写入。后续代 Agen
 快照携带 revision，修改携带 expected_revision 与幂等键；只提交真实生效的变更并记录日志。
 本节不要求添加组件、表单或原型交互，也不将目标类型提前写进当前协议镜像。
 
+#### 3.3.6 会话浮动面板（Session Panel，2026-10-04）
+
+会话历史顶部可选的浮动面板（`conversation/SessionPanel.tsx`），没有内容时不渲染。折叠态最多三行文本高
+（标题一行，字段一行，正文占余下行并截断）；内容超出或带自定义内容时出现展开按钮，展开后显示全部字段、
+全文与自定义内容（最高 50vh，内部滚动）。折叠高度作为历史列表的顶部留白（`topInset`），首屏消息不被遮挡。
+
+内容来源按优先级取一个：
+
+1. `EntitySession.panel?: SessionPanelInfo`：宿主 / 会话类型定义的内容（例如工单状态）。
+   `{ title, text?, fields?: { label, value, tone?: 'success' | 'warning' | 'danger' }[] }`。
+   **后端目标契约**：当前只有 mock 提供（Release Hub 的工单面板），真实投影不产生该字段；
+   `ConversationView.sessionPanelDetails` 可再传入任意 ReactNode，仅在展开态显示。
+2. 置顶消息：`SessionPreferences.pinnedMessage?: PinnedMessage | null`，
+   `{ id: 消息 obj id, text（≤ 2000 字符的正文快照；无正文时为附件名）, senderDid, createdAt }`。
+   这是 owner 个人偏好（`ui.pinned_message`，见 §4.4），不是群共享置顶；面板关闭按钮 = 取消置顶，观察模式只读。
+   保存的是快照：消息之后被编辑 / 撤回不会回写面板；本人删除该消息时一并取消置顶。
+
 ### 3.4 EntityDetail
 
 ```ts
@@ -648,6 +665,22 @@ Agent 实体会话中对端发来的 `text/plain` 也按 Markdown 渲染，因�
 本人发送的 `text/plain` 保持原文。已知限制：`text/html` 当前按纯文本显示。列表摘要在显示时去除 Markdown 标记。
 
 同一发送者 5 分钟内的连续消息（Action 除外）视为一组：组内间距收紧、群聊只在组首显示发送者名称。
+
+消息操作（悬停栏 / 触屏页脚菜单，`renderers.tsx`）：快捷回应之后是四个图标入口——回复、复制、转发、删除，
+其余（编辑、置顶）收在「更多」菜单。
+
+- 复制：写入剪贴板的是显示正文（含编辑后的内容），无正文时为附件名；观察模式同样可用。
+- 转发：选择目标实体后向其默认 Session 发送一条新消息（`store.forward`：显示正文 + `data_obj` 引用，
+  不带 `relates_to` / `mentions` / `machine`，不标注原发送者）；发送中 / 失败的消息与通知卡片不可转发。
+- 删除：君子协议语义——向会话各方发出删除请求（`relates_to.rel = redact`），对端的默认实现会照做，但无法强制。
+  群内沿用 `Self-Host-Groupv2.md` §2.6 的规则（本人在撤回窗口内、或具备 `message.redact_any`）；
+  非群会话没有 host 裁决，任一方可对任意消息发出请求，收到后本端把目标消息折叠为占位。
+  图标点开后是单项确认：可发请求时为「撤回 / 为所有人删除」，否则（群内无权限、已是占位消息）为「仅为我删除」
+  （`store.deleteMessage`：`msg.update_record_state(record_id, 'DELETED')`，只影响 owner 自己的 mailbox 记录）。
+
+纯图片 / 视频消息不绘制气泡背景（`data-testid="message-media"`）：媒体直接落在会话画布上，
+caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片或其它引用的消息仍用气泡。
+类型在对象解析前按文件名判断，解析后以对象信息为准。
 
 附件（`conversation/media/`）与 Preview 的集成：
 
@@ -961,6 +994,8 @@ export const uiSessionStateSchema = z.object({
   'ui.title': z.string().trim().min(1).max(64).optional(),
   'ui.pinned': z.boolean().optional(),
   'ui.muted': z.boolean().optional(),
+  /** 置顶消息快照（§3.3.6）；`null` 表示未置顶。 */
+  'ui.pinned_message': pinnedMessageSchema.nullable().optional(),
   'ui.tags': z.array(z.string().trim().min(1).max(24)).max(16).optional(),
   /** 未发送草稿文本。附件不持久化。 */
   'ui.draft': z.string().max(32_768).optional(),
@@ -1433,6 +1468,9 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 本地标记已读 | `msg.update_record_state` | `{ record_id, new_state: 'READ' }`，自己的已展示入站记录；批量水位待补，见 6.5 |
 | 写入群消息回执 | `msg.set_read_state` | group_id / msg_id / reader_did / status；不清除邮箱未读，当前仅内存保存 |
 | 单条记录状态变更 | `msg.update_record_state` | RecipientState；不能代替 Session 生命周期 |
+| 仅为我删除消息 | `msg.update_record_state` | `{ record_id, new_state: 'DELETED' }`；`msg.list_session` 不再返回该记录，对端不受影响 |
+| 转发消息 | `msg.post_send` | 目标 Session 的新消息，正文与 `data_obj` 引用取自原消息 |
+| 置顶消息 | `ui_session.update_state` | `{ owner, session_id, key: 'ui.pinned_message', value: PinnedMessage \| null }` |
 | 会话归档 / 恢复 / 彻底删除 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session` | `{ owner, session_id }`；保留阅读状态、删除水位和共享对象引用，见 4.5 |
 | 手工创建空会话 | `msg.create_session` | `{ owner, peer_did, title?, binding?, session_id? }`；返回 `OwnerSessionState` |
 | 个人显示标题 / 置顶 / 静音 | `ui_session.update_state` | `{ owner, session_id, key, value }`，带 `owner` 走 owner 范围表；草稿仅存 viewer 本地 |

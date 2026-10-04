@@ -373,7 +373,7 @@ const seedEntities: Entity[] = [
 
 /* ── Sessions ── */
 
-const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | 'type' | 'source' | 'lastActiveAt' | 'unreadCount'>[]> = {
+const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | 'type' | 'source' | 'lastActiveAt' | 'unreadCount' | 'panel'>[]> = {
   'agent-coder': [
     {
       id: 'session-coder-1',
@@ -449,6 +449,15 @@ const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | '
       type: 'workspace',
       lastActiveAt: Date.now() - 22 * 60_000,
       unreadCount: 4,
+      panel: {
+        title: 'Ticket #1042 · Release 2.4 rollout',
+        text: 'Staged rollout is paused at 25% while the sync regression is verified on the canary zone. Resume needs sign-off from QA and the release owner.',
+        fields: [
+          { label: 'Status', value: 'In review', tone: 'warning' },
+          { label: 'Owner', value: 'Alice Chen' },
+          { label: 'Due', value: 'Fri 18:00' },
+        ],
+      },
     },
   ],
   'release-war-room': [

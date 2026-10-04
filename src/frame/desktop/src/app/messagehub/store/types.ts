@@ -95,6 +95,10 @@ export interface MessageHubStore {
   send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined): Promise<void>
   /** Post a failed outgoing message again as a new message (same text and attachment refs). */
   resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
+  /** Post a copy of `message` (displayed text and attachment refs) to another session of the owner. */
+  forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
+  /** Remove a message from the owner's own view of the session; other participants keep it. */
+  deleteMessage(context: MessageHubContext, sessionId: string, message: MessageObject): Promise<void>
   runtimeFor(context: MessageHubContext, sessionId: string): RuntimeState[]
   clearTransient(ownerDid: string): void
   title(context: MessageHubContext, session: Session): string

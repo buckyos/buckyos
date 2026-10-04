@@ -4,6 +4,7 @@ import { ChevronLeft, ChevronRight, House, ImagePlay, MessageSquare, SquarePen, 
 import './messagehub.css'
 import { useI18n } from '../../i18n/provider'
 import { ConversationView } from './ConversationView'
+import { ForwardMessageForm } from './ForwardDialog'
 import { InMemoryConversationMessageReader } from './conversation/history/data-source'
 import { useMessageMediaHost } from './conversation/media/context'
 import { MessageMediaHost } from './conversation/media/MessageMediaHost'
@@ -349,8 +350,12 @@ function MessageHubContent({ initialEntityId, initialSessionId, context, onHome 
     if (!activeSession) throw Error('session_missing')
     await store.resend(context, activeSession.id, message, writeConfirmations[activeSession.id])
   }
+  const openForward = (message: import('./protocol/msgobj').MessageObject) => {
+    void dialog.open({ title: t('messagehub.forward.title'), size: 'sm', dismissible: false, renderBody: controls => <ForwardMessageForm context={context} message={message} confirmationFor={sessionId => writeConfirmations[sessionId]} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
+  }
   const conversationProps = {
     onResend: handleResend,
+    onForward: openForward,
     context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
     defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
     historyStatus: activeSession ? store.historyStatus(context, activeSession.id) : 'ready' as const,

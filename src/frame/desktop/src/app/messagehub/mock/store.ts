@@ -5,7 +5,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
-import { foldMessageRelations, messageObjId } from '../conversation/history/relations'
+import { displayedContent, foldMessageRelations, messageObjId } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
@@ -46,6 +46,8 @@ type Snapshot = {
   sessions: Record<string, Session>
   deleted: Record<string, { at: number; session: Session }>
   withoutSeed: Record<string, boolean>
+  /** Stable ids of the messages an owner deleted from their own view, by session key. */
+  hidden: Record<string, string[]>
   messages: Record<string, MessageObject[]>
   delivery: Record<string, Record<string, MessageDeliveryStatus>>
   preferences: Record<string, SessionPreferences>
@@ -128,7 +130,7 @@ function seedSnapshot(now: number): Snapshot {
       notice('msg-session-invite-reading', carol, 'session-carol-1', now - 40 * 60000, MOCK_BOOK_CLUB, 'session_invite', { session_id: 'reading', title: 'Reading list' }),
     ],
   }
-  return { groups, sessions, deleted: {}, withoutSeed: {}, messages, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {} }
+  return { groups, sessions, deleted: {}, withoutSeed: {}, hidden: {}, messages, delivery: {}, preferences: {}, policies: {}, drafts: {}, draftAttachments: {} }
 }
 
 function groupEvent(group: MockGroup, action: string, actorDid: string, at: number, subjectDid?: string): MessageObject {
@@ -254,7 +256,7 @@ export class MessageHubMockStore implements MessageHubStore {
       Object.assign(stored.messages, seeded.messages, stored.messages)
       Object.assign(stored.sessions, seeded.sessions, stored.sessions)
     }
-    if (stored) this.snapshot = stored
+    if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {} }
     else await this.persist(this.snapshot)
     this.listeners.forEach(listener => listener())
   }
@@ -281,7 +283,7 @@ export class MessageHubMockStore implements MessageHubStore {
         const [viewer, owner, sessionId] = JSON.parse(key) as string[]
         void viewer
         const ref = sessionKey(owner, sessionId)
-        if (!next.sessions[ref] || JSON.stringify(next.messages[ref]) !== JSON.stringify(old.messages[ref]) || next.withoutSeed[ref] !== old.withoutSeed[ref] || next.deleted[ref]?.at !== old.deleted[ref]?.at || JSON.stringify(next.delivery[ref]) !== JSON.stringify(old.delivery[ref])) this.readers.delete(key)
+        if (!next.sessions[ref] || JSON.stringify(next.messages[ref]) !== JSON.stringify(old.messages[ref]) || next.withoutSeed[ref] !== old.withoutSeed[ref] || (next.hidden[ref]?.length ?? 0) !== (old.hidden[ref]?.length ?? 0) || next.deleted[ref]?.at !== old.deleted[ref]?.at || JSON.stringify(next.delivery[ref]) !== JSON.stringify(old.delivery[ref])) this.readers.delete(key)
       }
       this.listeners.forEach(listener => listener())
       return value
@@ -350,14 +352,16 @@ export class MessageHubMockStore implements MessageHubStore {
     // Bob's seeded message), so seeds from `mockMessageSeeds` fold with them.
     const seedMessages = base && base === mockMessageReaders[id] ? mockMessageSeeds[id] : undefined
     const folded = foldMessageRelations([...(seedMessages ?? []), ...raw])
-    const seededRows = seedMessages ? folded.slice(0, seedMessages.length) : undefined
-    const delta = seedMessages ? folded.slice(seedMessages.length) : folded
-    const baseCount = base?.totalCount ?? 0
+    const hidden = new Set(this.snapshot.hidden[key] ?? [])
+    const visible = (rows: MessageObject[]) => hidden.size ? rows.filter(message => !hidden.has(getMessageStableId(message, 0))) : rows
+    const seededRows = seedMessages ? visible(folded.slice(0, seedMessages.length)) : undefined
+    const delta = visible(seedMessages ? folded.slice(seedMessages.length) : folded)
+    const baseCount = seededRows?.length ?? base?.totalCount ?? 0
     // Folded relations change rows without changing the row count, so the
     // raw message count serves as the reader revision the history pane watches.
     const reader: ConversationMessageReader & { revision: number } = {
       readerKey: `mock:${cacheKey}:${this.snapshot.withoutSeed[key] ? `fresh:${deletedAt}` : 'seed'}:${JSON.stringify(delivery)}`,
-      revision: raw.length,
+      revision: raw.length + hidden.size,
       totalCount: exists ? baseCount + delta.length : 0,
       readRange: async (start, count) => {
         if (!this.canView(context) || !this.snapshot.sessions[key] || this.snapshot.withoutSeed[key] !== withoutSeed || this.snapshot.deleted[key]?.at !== deletedAt) return []
@@ -415,7 +419,7 @@ export class MessageHubMockStore implements MessageHubStore {
   updatePreferences(context: MessageHubContext, id: string, patch: Partial<SessionPreferences>) {
     return this.mutate(next => {
       this.requireSession(next, context, id)
-      if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions'].includes(key))) throw Error('permission_denied')
+      if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw Error('permission_denied')
       if (Object.keys(patch).some(key => key !== 'showActions')) this.requireOwn(context)
       const key = viewerSessionKey(context, id)
       const preferences = { ...defaultPreferences, ...next.preferences[key], ...patch }
@@ -469,10 +473,10 @@ export class MessageHubMockStore implements MessageHubStore {
       const target = timeline.find(item => messageObjId(item) === targetId)
       if (!target) throw Error('rejected: relation-target-not-found')
       const own = target.from === context.ownerDid
-      // Edits and recalls follow the group rules (`Self-Host-Groupv2.md` §2.6);
-      // reactions, replies and cancelling an own reaction work in any session.
+      // Edits and group redacts follow the group rules (`Self-Host-Groupv2.md` §2.6);
+      // reactions, replies and delete requests outside a group work in any session.
       if (rel === 'edit' && (!group || !own || !withinWindow(EDIT_WINDOW_MS, target.created_at_ms, this.now()))) throw Error('rejected: edit-window-expired')
-      if (rel === 'redact' && !(own ? withinWindow(RECALL_WINDOW_MS, target.created_at_ms, this.now()) : !!group && this.groupInfo(group, context.ownerDid).can.redactAny)) throw Error('rejected: capability-denied')
+      if (rel === 'redact' && group && !(own ? withinWindow(RECALL_WINDOW_MS, target.created_at_ms, this.now()) : this.groupInfo(group, context.ownerDid).can.redactAny)) throw Error('rejected: capability-denied')
       if (rel === 'reaction') {
         // The same (from, target, key) counts once: the host answers a repeat with the existing message.
         const redacted = new Set(timeline.filter(item => item.relates_to?.rel === 'redact').map(item => item.relates_to!.target))
@@ -497,6 +501,24 @@ export class MessageHubMockStore implements MessageHubStore {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
     const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: message.content.content ?? '', createdAtMs: this.now() })
     return this.sendMessage(context, id, { ...outgoing, content: { ...message.content } }, confirmation)
+  }
+  forward(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
+    const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
+    const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: displayedContent(message), createdAtMs: this.now() })
+    const refs = (message.content.refs ?? []).filter(ref => ref.target.type === 'data_obj')
+    return this.sendMessage(context, id, { ...outgoing, content: { ...outgoing.content, format: message.content.format ?? outgoing.content.format, ...(refs.length ? { refs } : {}) } }, confirmation)
+  }
+  deleteMessage(context: MessageHubContext, id: string, message: MessageObject) {
+    return this.mutate(next => {
+      this.requireOwn(context)
+      this.requireSession(next, context, id)
+      const key = sessionKey(context.ownerDid, id)
+      // Lazily generated seed histories are read by range and cannot drop a row.
+      if (context.ownerDid === MOCK_SELF_DID && !next.withoutSeed[key] && this.seeds[id] && this.seeds[id] !== mockMessageReaders[id]) throw Error('backend_unavailable')
+      next.hidden[key] = [...(next.hidden[key] ?? []), getMessageStableId(message, 0)]
+      const prefsKey = viewerSessionKey(context, id)
+      if (next.preferences[prefsKey]?.pinnedMessage?.id === messageObjId(message)) next.preferences[prefsKey] = { ...next.preferences[prefsKey], pinnedMessage: null }
+    })
   }
   sendMessage(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     return this.mutate(next => {

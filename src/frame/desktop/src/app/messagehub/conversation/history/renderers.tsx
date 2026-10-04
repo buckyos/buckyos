@@ -8,8 +8,12 @@ import {
   Check,
   CheckCheck,
   Clock,
+  Copy,
+  Forward,
   MoreHorizontal,
+  Reply,
   SmilePlus,
+  Trash2,
   Users,
 } from 'lucide-react'
 import {
@@ -22,11 +26,12 @@ import {
   type MessageObject,
 } from '../../protocol/msgobj'
 import { MessageAttachmentView } from '../media/MediaAttachment'
-import { attachmentOfRef, isHttpUri } from '../media/source'
+import { knownAttachmentKind } from '../media/objectCache'
+import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, type AttachmentKind } from '../media/source'
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
-import { displayedContent, mentionsViewer, messageRelations, ownReactionId } from './relations'
+import { displayedContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
 import type { ConversationListItem } from './types'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
@@ -67,6 +72,11 @@ function bubbleStyle(isSelf: boolean, continued: boolean): React.CSSProperties {
       : `${continued ? 6 : 18}px 18px 18px 6px`,
     padding: '8px 12px',
   } as React.CSSProperties
+}
+
+/** Media stands on the canvas without a bubble; the footer under it uses the canvas colours. */
+function framelessStyle(): React.CSSProperties {
+  return { '--mh-link': 'var(--cp-accent)', color: 'var(--cp-text)' } as React.CSSProperties
 }
 
 function rowClass(isSelf: boolean, continued: boolean): string {
@@ -272,71 +282,143 @@ function ReactionChips({ message, isSelf, selfDid }: { message: MessageObject; i
 }
 
 /**
- * Discord-style bar on the bubble's top edge (pointer devices only, see
- * `messagehub.css`): quick reactions, the emoji picker and the actions menu.
+ * `message`: an ordinary bubble. `card`: a notification card, which is neither
+ * copied, forwarded nor pinned. `redacted`: a placeholder the viewer may only
+ * remove from their own view.
  */
-function MessageHoverBar({ message, isSelf, selfDid }: { message: MessageObject; isSelf: boolean; selfDid?: string }) {
+type ActionMode = 'message' | 'card' | 'redacted'
+
+/** What the viewer may do with one message. */
+function useMessageActionSet(message: MessageObject, mode: ActionMode) {
+  const { relations, forward, remove, pin } = useContext(ConversationMessageActionsContext)
+  const can = mode === 'redacted' ? undefined : relations?.capabilities(message)
+  const plain = mode === 'message'
+  const sendable = plain && message.ui_delivery_status !== 'sending' && message.ui_delivery_status !== 'failed'
+  return {
+    react: can?.react ?? false,
+    reply: can?.reply ?? false,
+    edit: can?.edit ?? false,
+    redact: can?.redact ?? false,
+    recall: can?.recall ?? false,
+    copy: plain && (displayedContent(message).trim().length > 0 || (message.content.refs?.length ?? 0) > 0),
+    forward: sendable && !!forward,
+    remove: !!remove,
+    pin: sendable && !!pin && !!messageObjId(message),
+  }
+}
+
+async function copyMessage(message: MessageObject) {
+  await navigator.clipboard.writeText(messageSummaryText(message))
+}
+
+type ActionPopover = 'picker' | 'menu' | 'delete' | null
+
+/** Reply / copy / forward / delete as icon buttons, shared by the hover bar and the touch menu. */
+function MessageActionIcons({ message, mode, run, open, setOpen, buttonClass }: { message: MessageObject; mode: ActionMode; run: (operation: () => Promise<void> | void) => void; open: ActionPopover; setOpen: (update: (value: ActionPopover) => ActionPopover) => void; buttonClass?: string }) {
   const { t } = useI18n()
-  const { relations } = useContext(ConversationMessageActionsContext)
-  const [open, setOpen] = useState<'picker' | 'menu' | null>(null)
+  const { relations, forward } = useContext(ConversationMessageActionsContext)
+  const can = useMessageActionSet(message, mode)
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [copied])
+  const close = () => setOpen(() => null)
+  const copyLabel = t(copied ? 'messagehub.message.copied' : 'messagehub.message.copy')
+  return <>
+    {can.reply ? <button type="button" className={buttonClass} aria-label={t('messagehub.message.reply')} title={t('messagehub.message.reply')} onClick={() => { close(); run(() => relations?.reply(message)) }} data-testid="message-reply"><Reply size={16} /></button> : null}
+    {can.copy ? <button type="button" className={buttonClass} aria-label={copyLabel} title={copyLabel} onClick={() => run(async () => { await copyMessage(message); setCopied(true) })} data-testid="message-copy" data-copied={copied || undefined}>{copied ? <Check size={16} /> : <Copy size={16} />}</button> : null}
+    {can.forward ? <button type="button" className={buttonClass} aria-label={t('messagehub.message.forward')} title={t('messagehub.message.forward')} onClick={() => { close(); forward?.(message) }} data-testid="message-forward"><Forward size={16} /></button> : null}
+    {can.remove || can.redact ? <button type="button" className={buttonClass} aria-haspopup="menu" aria-expanded={open === 'delete'} aria-label={t('messagehub.message.deleteAction')} title={t('messagehub.message.deleteAction')} onClick={() => setOpen(value => value === 'delete' ? null : 'delete')} data-testid="message-delete"><Trash2 size={16} /></button> : null}
+  </>
+}
+
+const menuItemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
+
+/**
+ * The confirmation behind the delete icon. Deleting asks every participant to
+ * delete the message (`redact`, honoured by their clients by default); where
+ * the viewer may not ask, it only removes the message from their own view.
+ */
+function DeleteMenuItems({ message, mode, run, onDone }: { message: MessageObject; mode: ActionMode; run: (operation: () => Promise<void> | void) => void; onDone: () => void }) {
+  const { t } = useI18n()
+  const { relations, remove } = useContext(ConversationMessageActionsContext)
+  const can = useMessageActionSet(message, mode)
+  const go = (operation: () => Promise<void> | void) => { onDone(); run(operation) }
+  return <>
+    {can.redact ? <button type="button" role="menuitem" className={`${menuItemClass} text-[color:var(--cp-danger)]`} onClick={() => go(() => relations?.redact(message))}>{t(can.recall ? 'messagehub.message.recall' : 'messagehub.message.delete')}</button>
+      : can.remove ? <button type="button" role="menuitem" className={`${menuItemClass} text-[color:var(--cp-danger)]`} onClick={() => go(() => remove?.(message))}>{t('messagehub.message.deleteForMe')}</button> : null}
+  </>
+}
+
+/** The less common actions behind "more": edit and pin. */
+function MoreMenuItems({ message, mode, run, onDone }: { message: MessageObject; mode: ActionMode; run: (operation: () => Promise<void> | void) => void; onDone: () => void }) {
+  const { t } = useI18n()
+  const { relations, pin } = useContext(ConversationMessageActionsContext)
+  const can = useMessageActionSet(message, mode)
+  const go = (operation: () => Promise<void> | void) => { onDone(); run(operation) }
+  return <>
+    {can.edit ? <button type="button" role="menuitem" className={menuItemClass} onClick={() => go(() => relations?.edit(message))}>{t('messagehub.message.edit')}</button> : null}
+    {can.pin ? <button type="button" role="menuitem" className={menuItemClass} onClick={() => go(() => pin?.toggle(message))}>{t(pin?.isPinned(message) ? 'messagehub.message.unpin' : 'messagehub.message.pin')}</button> : null}
+  </>
+}
+
+/**
+ * Discord-style bar on the bubble's top edge (pointer devices only, see
+ * `messagehub.css`): quick reactions, the emoji picker, the common actions as
+ * icons and a menu for the rest.
+ */
+function MessageHoverBar({ message, isSelf, selfDid, mode }: { message: MessageObject; isSelf: boolean; selfDid?: string; mode: ActionMode }) {
+  const { t } = useI18n()
+  const [open, setOpen] = useState<ActionPopover>(null)
   const close = useCallback(() => setOpen(null), [])
   const root = useRef<HTMLDivElement>(null)
   useDismiss(open !== null, root, close)
   const { run, error } = useRelationRunner()
-  if (!relations) return null
-  const can = relations.capabilities(message)
-  const hasMenu = can.reply || can.edit || can.redact
-  if (!can.react && !hasMenu) return null
+  const can = useMessageActionSet(message, mode)
+  const hasMore = can.edit || can.pin
+  if (!can.react && !can.reply && !can.copy && !can.forward && !can.remove && !can.redact && !hasMore) return null
   const popoverClass = `absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`
   return <>
     <div ref={root} className="mh-hover-bar" data-side={isSelf ? 'self' : 'peer'} data-open={open !== null || undefined} data-testid="message-hover-bar" role="toolbar" aria-label={t('messagehub.message.actions')}>
       {can.react ? QUICK_REACTIONS.map(key => <ReactionToggle key={key} message={message} selfDid={selfDid} reactionKey={key} run={run} />) : null}
       {can.react ? <button type="button" aria-haspopup="menu" aria-expanded={open === 'picker'} aria-label={t('messagehub.message.addReaction')} title={t('messagehub.message.addReaction')} onClick={() => setOpen(value => value === 'picker' ? null : 'picker')} data-testid="add-reaction"><SmilePlus size={16} /></button> : null}
-      {hasMenu ? <button type="button" aria-haspopup="menu" aria-expanded={open === 'menu'} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => value === 'menu' ? null : 'menu')} data-testid="message-actions"><MoreHorizontal size={16} /></button> : null}
+      {can.react ? <span className="mh-hover-divider" aria-hidden /> : null}
+      <MessageActionIcons message={message} mode={mode} run={run} open={open} setOpen={setOpen} />
+      {hasMore ? <button type="button" aria-haspopup="menu" aria-expanded={open === 'menu'} aria-label={t('messagehub.message.more')} title={t('messagehub.message.more')} onClick={() => setOpen(value => value === 'menu' ? null : 'menu')} data-testid="message-actions"><MoreHorizontal size={16} /></button> : null}
       {open === 'picker' ? <div className={popoverClass} style={popoverStyle}><ReactionPicker message={message} selfDid={selfDid} run={run} onDone={close} /></div> : null}
-      {open === 'menu' ? <div className={`${popoverClass} w-44 py-1`} style={popoverStyle} data-testid="message-actions-menu"><RelationMenuItems message={message} isSelf={isSelf} run={run} onDone={close} /></div> : null}
+      {open === 'menu' ? <div role="menu" className={`${popoverClass} w-44 py-1`} style={popoverStyle} data-testid="message-actions-menu"><MoreMenuItems message={message} mode={mode} run={run} onDone={close} /></div> : null}
+      {open === 'delete' ? <div role="menu" className={`${popoverClass} w-48 py-1`} style={popoverStyle} data-testid="message-delete-menu"><DeleteMenuItems message={message} mode={mode} run={run} onDone={close} /></div> : null}
     </div>
     {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
   </>
 }
 
-/** Reply / edit / recall / delete entries shared by the hover bar and the footer menu. */
-function RelationMenuItems({ message, isSelf, run, onDone }: { message: MessageObject; isSelf: boolean; run: (operation: () => Promise<void> | void) => void; onDone: () => void }) {
+/** The footer menu for touch devices (no hover): quick reactions, the action icons and the rest. */
+function MessageActionsMenu({ message, isSelf, selfDid, mode, selfTone }: { message: MessageObject; isSelf: boolean; selfDid?: string; mode: ActionMode; selfTone: boolean }) {
   const { t } = useI18n()
-  const { relations } = useContext(ConversationMessageActionsContext)
-  if (!relations) return null
-  const can = relations.capabilities(message)
-  const itemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
-  const go = (operation: () => Promise<void> | void) => { onDone(); run(operation) }
-  return <>
-    {can.reply ? <button type="button" role="menuitem" className={itemClass} onClick={() => go(() => relations.reply(message))}>{t('messagehub.message.reply')}</button> : null}
-    {can.edit ? <button type="button" role="menuitem" className={itemClass} onClick={() => go(() => relations.edit(message))}>{t('messagehub.message.edit')}</button> : null}
-    {can.redact ? <button type="button" role="menuitem" className={`${itemClass} text-[color:var(--cp-danger)]`} onClick={() => go(() => relations.redact(message))}>{t(isSelf ? 'messagehub.message.recall' : 'messagehub.message.delete')}</button> : null}
-  </>
-}
-
-/** The footer menu for touch devices (no hover): quick reactions, the picker and the relation actions. */
-function MessageActionsMenu({ message, isSelf, selfDid }: { message: MessageObject; isSelf: boolean; selfDid?: string }) {
-  const { t } = useI18n()
-  const { relations } = useContext(ConversationMessageActionsContext)
-  const [open, setOpen] = useState<'menu' | 'picker' | null>(null)
+  const [open, setOpen] = useState<ActionPopover>(null)
   const close = useCallback(() => setOpen(null), [])
   const root = useRef<HTMLDivElement>(null)
   useDismiss(open !== null, root, close)
   const { run, error } = useRelationRunner()
-  if (!relations) return null
-  const can = relations.capabilities(message)
-  if (!can.reply && !can.react && !can.edit && !can.redact) return null
-  const itemClass = 'flex min-h-9 w-full items-center px-3 text-left text-[13px] hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
+  const can = useMessageActionSet(message, mode)
+  const hasIcons = can.reply || can.copy || can.forward || can.remove || can.redact
+  if (!can.react && !hasIcons && !can.edit && !can.pin) return null
   const quickClass = 'flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] aria-pressed:bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)]'
+  const iconClass = 'flex h-10 w-10 items-center justify-center rounded-full hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
+  const popoverClass = `absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`
   return <div ref={root} className="mh-footer-actions relative" data-testid="message-actions-touch">
-    <button type="button" aria-haspopup="menu" aria-expanded={open !== null} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => value ? null : 'menu')} className="flex h-6 w-6 items-center justify-center rounded-full opacity-70 hover:opacity-100" style={{ color: isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }}><MoreHorizontal size={14} /></button>
-    {open === 'menu' ? <div role="menu" className={`absolute bottom-full z-30 mb-1 w-44 overflow-hidden rounded-xl py-1 shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={popoverStyle}>
+    <button type="button" aria-haspopup="menu" aria-expanded={open !== null} aria-label={t('messagehub.message.actions')} title={t('messagehub.message.actions')} onClick={() => setOpen(value => value ? null : 'menu')} className="flex h-6 w-6 items-center justify-center rounded-full opacity-70 hover:opacity-100" style={{ color: selfTone ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)' }}><MoreHorizontal size={14} /></button>
+    {open === 'menu' ? <div role="menu" className={`${popoverClass} w-48 py-1`} style={popoverStyle}>
       {can.react ? <div className="flex items-center justify-around px-1 pb-1" role="group" aria-label={t('messagehub.message.react')}>{QUICK_REACTIONS.map(key => <ReactionToggle key={key} message={message} selfDid={selfDid} reactionKey={key} className={quickClass} role="menuitem" run={run} onDone={close} />)}</div> : null}
-      {can.react ? <button type="button" role="menuitem" className={itemClass} onClick={() => setOpen('picker')}>{t('messagehub.message.addReaction')}…</button> : null}
-      <RelationMenuItems message={message} isSelf={isSelf} run={run} onDone={close} />
+      {hasIcons ? <div className="flex items-center justify-around border-y px-1 py-0.5" style={{ borderColor: 'var(--cp-border)' }} role="group" aria-label={t('messagehub.message.actions')}><MessageActionIcons message={message} mode={mode} run={run} open={open} setOpen={setOpen} buttonClass={iconClass} /></div> : null}
+      {can.react ? <button type="button" role="menuitem" className={menuItemClass} onClick={() => setOpen('picker')}>{t('messagehub.message.addReaction')}…</button> : null}
+      <MoreMenuItems message={message} mode={mode} run={run} onDone={close} />
     </div> : null}
-    {open === 'picker' ? <div className={`absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`} style={popoverStyle}><ReactionPicker message={message} selfDid={selfDid} run={run} onDone={close} /></div> : null}
+    {open === 'picker' ? <div className={popoverClass} style={popoverStyle}><ReactionPicker message={message} selfDid={selfDid} run={run} onDone={close} /></div> : null}
+    {open === 'delete' ? <div role="menu" className={`${popoverClass} w-48 py-1`} style={popoverStyle} data-testid="message-delete-menu"><DeleteMenuItems message={message} mode={mode} run={run} onDone={close} /></div> : null}
     {error ? <p role="alert" className="mt-1 text-[11px]" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
   </div>
 }
@@ -349,31 +431,36 @@ function RedactedMessage({ message, context }: { message: MessageObject; context
   const redacted = messageRelations(message)?.redacted
   const who = redacted?.by === message.from ? (isSelf ? t('messagehub.you') : displayName?.(message.from) ?? getMessageSenderName(message)) : displayName?.(redacted?.by ?? '') ?? redacted?.by ?? ''
   return <div className={rowClass(isSelf, context.continued)}>
-    <div className={`${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted">
+    <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted">
       <p className="text-[13px] italic">{t(redacted?.by === message.from ? 'messagehub.message.redacted' : 'messagehub.message.deletedBy', undefined, { name: who })}</p>
       <MessageFooter message={message} isSelf={isSelf} deliveryStatus={undefined} selfDid={context.selfDid} />
     </div>
   </div>
 }
 
-function MessageFooter({ message, isSelf, deliveryStatus, selfDid }: { message: MessageObject; isSelf: boolean; deliveryStatus?: MessageDeliveryStatus; selfDid?: string }) {
+/**
+ * `frameless`: the footer sits on the canvas (media without a bubble), so it
+ * takes the canvas colours.
+ */
+function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = false, mode = 'message' }: { message: MessageObject; isSelf: boolean; deliveryStatus?: MessageDeliveryStatus; selfDid?: string; frameless?: boolean; mode?: ActionMode }) {
   const { t } = useI18n()
   const { readReceipt, displayName } = useContext(ConversationMessageActionsContext)
   const record = getRecordContext(message)
   const failedTargets = record?.delivery?.per_target?.filter(target => target.state === 'FAILED' || target.state === 'DEAD') ?? []
   const pendingTargets = record?.delivery?.per_target?.filter(target => target.state === 'WAIT' || target.state === 'SENDING') ?? []
-  const metaColor = isSelf ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
+  const selfTone = isSelf && !frameless
+  const metaColor = selfTone ? 'var(--cp-message-self-meta)' : 'var(--cp-muted)'
   const relations = messageRelations(message)
   const receipt = isSelf && !relations?.redacted ? readReceipt?.(message) ?? null : null
   const mentioned = !isSelf && !!selfDid && mentionsViewer(message, selfDid)
   return (
     <>
-      {!relations?.redacted ? <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} /> : null}
-      <ReactionChips message={message} isSelf={isSelf} selfDid={selfDid} />
+      <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} mode={relations?.redacted ? 'redacted' : mode} />
+      <ReactionChips message={message} isSelf={selfTone} selfDid={selfDid} />
       <div className="mt-1 flex items-center justify-end gap-1">
         {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}
         {mentioned ? <span className="mr-auto flex items-center gap-0.5 rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="mention-badge" style={{ background: 'color-mix(in srgb, var(--cp-accent) 14%, transparent)', color: 'var(--cp-accent)' }}><AtSign size={11} aria-hidden />{t('messagehub.message.mentionsYou')}</span> : null}
-        {!relations?.redacted ? <MessageActionsMenu message={message} isSelf={isSelf} selfDid={selfDid} /> : null}
+        <MessageActionsMenu message={message} isSelf={isSelf} selfDid={selfDid} mode={relations?.redacted ? 'redacted' : mode} selfTone={selfTone} />
         {relations?.edited ? <span className="text-[11px]" data-testid="edited-marker" style={{ color: metaColor }} title={new Date(relations.edited.at).toLocaleString()}>{t('messagehub.message.edited')}</span> : null}
         <span
           className="text-[11px] tabular-nums"
@@ -449,6 +536,16 @@ function isLikelyImageUri(uri: string): boolean {
   }
 }
 
+/** The kind a ref is expected to render as, from what is already known (resolved object, or its name). */
+function expectedKind(item: RefItem, id: string): AttachmentKind | null {
+  const attachment = attachmentOfRef(item, id)
+  if (!attachment) return null
+  if (attachment.uri) return 'image'
+  return knownAttachmentKind(attachment) ?? attachmentKindOf(attachmentMediaType(undefined, attachment.label), attachment.label)
+}
+
+const isMediaKind = (kind: AttachmentKind | null | undefined) => kind === 'image' || kind === 'video'
+
 function AttachmentMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
   const isSelf = message.from === context.selfDid
   const senderName = getMessageSenderName(message)
@@ -456,17 +553,38 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const caption = displayedContent(message).trim()
   const refs = message.content.refs ?? []
   const messageId = getMessageStableId(message, context.messageIndex)
+  // Kinds reported by the attachments once their objects resolve; until then
+  // the name decides.
+  const [resolved, setResolved] = useState<Record<number, AttachmentKind>>({})
+  const reportKind = useCallback((index: number, kind: AttachmentKind) => setResolved(previous => previous[index] === kind ? previous : { ...previous, [index]: kind }), [])
+  // Pictures and videos stand on the canvas: a coloured bubble around them only frames them.
+  const frameless = refs.length > 0 && refs.every((ref, index) => isMediaKind(resolved[index] ?? expectedKind(ref, `${messageId}#${index}`)))
+  const sender = !isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null
+  const items = refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf && !frameless} index={index} onKind={reportKind} />)
+  if (frameless) {
+    return (
+      <div className={rowClass(isSelf, context.continued)}>
+        <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media">
+          {sender}
+          <ReplyQuote message={message} />
+          <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`}>{items}</div>
+          {caption.length > 0 ? <p className={`${bodyTextClass} mt-1.5 max-w-full whitespace-pre-wrap break-words`} style={bubbleStyle(isSelf, true)} data-testid="message-media-caption">{caption}</p> : null}
+          <div className="max-w-full">
+            <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} frameless />
+          </div>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={rowClass(isSelf, context.continued)}>
       <div
-        className={`${bubbleWidthClass} min-w-[160px]`}
+        className={`mh-bubble ${bubbleWidthClass} min-w-[160px]`}
         style={bubbleStyle(isSelf, context.continued)}
       >
-        {!isSelf && context.isGroup && !context.continued ? <p className="text-[13px] font-semibold mb-1" style={{ color: 'var(--cp-accent)' }}>{senderName}</p> : null}
+        {sender}
         <ReplyQuote message={message} />
-        <div className="flex flex-col gap-2">
-          {refs.map((ref, index) => <MessageRef key={`${index}:${ref.target.type === 'data_obj' ? ref.target.obj_id : ref.target.did}`} item={ref} id={`${messageId}#${index}`} isSelf={isSelf} />)}
-        </div>
+        <div className="flex flex-col gap-2">{items}</div>
         {caption.length > 0 ? <p className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{caption}</p> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
@@ -474,13 +592,14 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   )
 }
 
-function MessageRef({ item, id, isSelf }: { item: RefItem; id: string; isSelf: boolean }) {
+function MessageRef({ item, id, isSelf, index, onKind }: { item: RefItem; id: string; isSelf: boolean; index: number; onKind: (index: number, kind: AttachmentKind) => void }) {
   const target = item.target
+  const report = useCallback((kind: AttachmentKind) => onKind(index, kind), [onKind, index])
   if (target.type === 'service_did') {
     return <span className="text-xs break-all" data-testid="attachment-service">{item.label ? `${item.label} · ` : ''}{target.did} · {item.role}</span>
   }
   const attachment = attachmentOfRef(item, id)
-  if (attachment) return <MessageAttachmentView attachment={attachment} isSelf={isSelf} />
+  if (attachment) return <MessageAttachmentView attachment={attachment} isSelf={isSelf} onKind={report} />
   const uri = target.uri_hint?.trim()
   if (uri && isHttpUri(uri)) {
     return <a href={uri} target="_blank" rel="noreferrer noopener" className="text-sm break-all underline underline-offset-2" style={{ color: isSelf ? 'var(--cp-message-self-link)' : 'var(--cp-accent)' }}>{item.label ?? uri}</a>
@@ -663,7 +782,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
           </div>
         ) : null}
         {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
-        <MessageFooter message={message} isSelf={false} />
+        <MessageFooter message={message} isSelf={false} mode="card" />
       </div>
     </div>
   )

@@ -81,6 +81,25 @@ export interface Session {
   lastDelivery?: 'sending' | 'delivered' | 'partial_failed' | 'failed'
   /** How the entity attribution was derived (real backend only). */
   attributionEvidence?: 'registered' | 'group_tag' | 'group_message' | 'direct' | 'message' | 'record' | 'none'
+  /** Custom content of the floating session panel (`UI_DATAMODEL.md` §3.3.6); wins over a pinned message. */
+  panel?: SessionPanelInfo
+}
+
+/** Host-defined content of the floating session panel, e.g. the state of a ticket. */
+export interface SessionPanelInfo {
+  title: string
+  /** Free text, shown in at most three lines until expanded. */
+  text?: string
+  fields?: Array<{ label: string; value: string; tone?: 'success' | 'warning' | 'danger' }>
+}
+
+/** Snapshot of the message a viewer pinned to the top of a session. */
+export interface PinnedMessage {
+  /** `messageObjId` of the pinned message. */
+  id: string
+  text: string
+  senderDid: string
+  createdAt: number
 }
 
 /* ── Entity Details ── */
@@ -145,6 +164,8 @@ export interface SessionPreferences {
   pinned: boolean
   muted: boolean
   showActions: boolean
+  /** The owner's pinned message of the session; null or absent when nothing is pinned. */
+  pinnedMessage?: PinnedMessage | null
 }
 
 export interface MessageHubContext {

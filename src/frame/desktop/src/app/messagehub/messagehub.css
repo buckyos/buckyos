@@ -146,7 +146,7 @@
 
 .mh-hover-bar {
   position: absolute;
-  top: -16px;
+  top: -27px;
   z-index: 5;
   display: none;
   align-items: center;
@@ -223,5 +223,60 @@
 .mh-reaction-picker button:hover,
 .mh-reaction-picker button:focus-visible {
   background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  outline: none;
+}
+
+.mh-hover-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--cp-border);
+}
+
+/* Floating session panel (pinned message / host-defined state). Collapsed it
+   holds at most three 20px text lines; expanded it scrolls inside half the
+   viewport. */
+.mh-session-panel {
+  width: 100%;
+  max-width: 720px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-session-panel[data-expanded="true"] {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.mh-session-panel-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mh-session-panel-text[data-clamped="true"] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mh-session-panel-button {
+  display: flex;
+  height: 28px;
+  width: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-muted);
+}
+
+.mh-session-panel-button:hover,
+.mh-session-panel-button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  color: var(--cp-text);
   outline: none;
 }
