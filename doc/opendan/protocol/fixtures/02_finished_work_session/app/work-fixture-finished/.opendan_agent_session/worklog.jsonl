@@ -1,8 +1,8 @@
-{"seq":1,"t":"created","session_id":"work-fixture-finished","kind":"work","by":"app:app2@alice","objective":"write notes.txt","at_ms":1791045598226}
-{"seq":2,"t":"turn_started","run_id":"20261003-093958-a69ffa","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1791045598290}
-{"seq":3,"t":"user_message","run_id":"20261003-093958-a69ffa","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-03T16:39:58Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"current_time\":\"2026-10-03T09:39:58-0700\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-finished\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"shell\":\"/usr/bin/bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"0\"},\"timezone\":\"PDT-0700\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
-{"seq":4,"t":"assistant_message","run_id":"20261003-093958-a69ffa","turn":1,"assistant":"","tool_calls":[{"call_id":"c1","tool":"shell","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
-{"seq":5,"t":"action_result","run_id":"20261003-093958-a69ffa","turn":1,"call_id":"c1","status":"ok","result":"exit=0 in 3ms"}
-{"seq":6,"t":"assistant_message","run_id":"20261003-093958-a69ffa","turn":1,"assistant":"done: notes.txt written"}
-{"seq":7,"t":"outcome","run_id":"20261003-093958-a69ffa","turn":1,"kind":"done","report":"done: notes.txt written"}
-{"seq":8,"t":"turn_ended","run_id":"20261003-093958-a69ffa","turn":1,"status":"completed","at_ms":1791045598324}
+{"seq":1,"t":"created","session_id":"work-fixture-finished","kind":"work","by":"app:app2@alice","objective":"write notes.txt","at_ms":1791104436878}
+{"seq":2,"t":"turn_started","run_id":"20261004-020036-a98d6c","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1791104436943}
+{"seq":3,"t":"user_message","run_id":"20261004-020036-a98d6c","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-04T09:00:36Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"current_time\":\"2026-10-04T02:00:36-0700\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-finished\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"shell\":\"/usr/bin/bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"0\"},\"timezone\":\"PDT-0700\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
+{"seq":4,"t":"assistant_message","run_id":"20261004-020036-a98d6c","turn":1,"assistant":"","tool_calls":[{"call_id":"c1","tool":"shell","args":{"command":"echo note > notes.txt"},"effect":"unknown"}]}
+{"seq":5,"t":"action_result","run_id":"20261004-020036-a98d6c","turn":1,"call_id":"c1","status":"ok","result":"exit=0 in 3ms"}
+{"seq":6,"t":"assistant_message","run_id":"20261004-020036-a98d6c","turn":1,"assistant":"done: notes.txt written"}
+{"seq":7,"t":"outcome","run_id":"20261004-020036-a98d6c","turn":1,"kind":"done","report":"done: notes.txt written"}
+{"seq":8,"t":"turn_ended","run_id":"20261004-020036-a98d6c","turn":1,"status":"completed","at_ms":1791104436977}

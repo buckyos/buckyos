@@ -6,7 +6,6 @@ next = ["do"]
 [prompt]
 mode = "behavior"
 system = """
-<<PROCESS_RULES>>
 
 You are in PLAN mode of a durable work session. Drive the session's objective to completion through:
 PLAN -> DO -> PLAN -> DO -> PLAN -> END.
@@ -30,7 +29,6 @@ PLAN -> DO -> PLAN -> DO -> PLAN -> END.
 
 __INCLUDE(./step_record_rule.inc)__
 
-<</PROCESS_RULES>>
 """
 
 [budget]

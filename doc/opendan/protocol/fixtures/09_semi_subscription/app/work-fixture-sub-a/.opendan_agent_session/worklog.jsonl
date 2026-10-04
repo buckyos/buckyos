@@ -1,6 +1,6 @@
-{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1791045599046}
-{"seq":2,"t":"turn_started","run_id":"20261003-093959-261e81","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1791045599110}
-{"seq":3,"t":"user_message","run_id":"20261003-093959-261e81","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-03T16:39:59Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"current_time\":\"2026-10-03T09:39:59-0700\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-sub-a\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"shell\":\"/usr/bin/bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"0\"},\"timezone\":\"PDT-0700\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
-{"seq":4,"t":"assistant_message","run_id":"20261003-093959-261e81","turn":1,"assistant":"answer"}
-{"seq":5,"t":"outcome","run_id":"20261003-093959-261e81","turn":1,"kind":"done","report":"answer"}
-{"seq":6,"t":"turn_ended","run_id":"20261003-093959-261e81","turn":1,"status":"completed","at_ms":1791045599132}
+{"seq":1,"t":"created","session_id":"work-fixture-sub-a","kind":"work","by":"app:app2@alice","objective":"A","at_ms":1791104437700}
+{"seq":2,"t":"turn_started","run_id":"20261004-020037-678726","turn":1,"input_seq":1,"inputs":[],"events":[],"hook":"on_init","at_ms":1791104437766}
+{"seq":3,"t":"user_message","run_id":"20261004-020037-678726","turn":1,"content":"<session_input hook=\"on_init\" time=\"2026-10-04T09:00:37Z\">\n<task>Start working on the objective of this session.</task>\n<runtime>{\"arch\":\"x86_64\",\"current_time\":\"2026-10-04T02:00:37-0700\",\"cwd\":\"${FIXTURE_ROOT}/app/work-fixture-sub-a\",\"hostname\":\"${FIXTURE_HOSTNAME}\",\"id\":\"rt-fixture-native\",\"kind\":\"native\",\"os\":\"linux\",\"shell\":\"/usr/bin/bash\",\"target\":{\"host\":\"${FIXTURE_HOST}\",\"uid\":\"0\"},\"timezone\":\"PDT-0700\",\"tools\":[\"bash\",\"realpath\",\"base64\"]}</runtime>\n</session_input>"}
+{"seq":4,"t":"assistant_message","run_id":"20261004-020037-678726","turn":1,"assistant":"answer"}
+{"seq":5,"t":"outcome","run_id":"20261004-020037-678726","turn":1,"kind":"done","report":"answer"}
+{"seq":6,"t":"turn_ended","run_id":"20261004-020037-678726","turn":1,"status":"completed","at_ms":1791104437788}

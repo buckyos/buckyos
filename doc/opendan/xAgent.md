@@ -1323,7 +1323,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 1. **默认：冻结范围**。入口 + meta.next 闭包，首次使用未冻结目标时补冻结；记录版本与审计，不冻结整个目录。
 2. **默认：loop_mode 归属**。使用 behavior.prompt.mode；每个 run 一种 loop。fork 沿用父配置，steps 继承遵循 llm_context 的模式约束。
-3. **默认：work 的 WAIT_USER_MSG**。FinishFailed，问题写 report，Turn failed{needs_user_input}；不影响普通 task 等待。
+3. **默认：work 的 WAIT_USER_MSG**。FinishFailed，问题写 report，Turn failed{needs_user_input}；不影响普通 task 等待。同一条规则也用于不可重试错误与预算耗尽：`wait_user_msg = finish_failed` 的 Session 没有下一条输入可以补救，Turn 失败的同时 Session 结束为 failed，父 Session 按结束事件得知（2026-10-04，DV 验收时补）。
 4. **默认：无队列 work**。保留 §4.7 的能力边界；SIGINT 走持有者取消，decide 走 artifacts，activity / perceive 不另建隐藏通道。初始输入必须持久化（§9.2）。
 5. **已实现：控制协议搭输入队列**。沿用 msg / event / control 同一通道和顺序路由，不新增控制 kRPC。
 6. **已实现：AgentEvent 限制**。summary 最多 1024 字节；data_ref 可为 ObjId 或相对 Session 的路径，按当前校验处理。

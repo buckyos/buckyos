@@ -101,3 +101,4 @@ src/rootfs/bin/workflow/workflow
 src/deno.lock
 /doc/ai-canvas/e2e/runs/
 src/frame/desktop/test-results/
+src/frame/opendan/web/test-results-zone/

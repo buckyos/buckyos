@@ -5,7 +5,7 @@ test('built UI loads from opendan and every page reads the kRPC service', async 
   const calls: string[] = []
   page.on('pageerror', (e) => errors.push(e.message))
   page.on('request', (r) => {
-    if (r.url().endsWith('/kapi/opendan')) calls.push(r.postDataJSON().method)
+    if (r.url().endsWith('/kapi/opendan') && r.method() === 'POST') calls.push(r.postDataJSON().method)
   })
 
   await page.goto('/')

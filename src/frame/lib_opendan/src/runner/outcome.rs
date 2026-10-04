@@ -186,6 +186,16 @@ fn refuse_handover(next: &mut Next, site: &CallSite, message: String) {
     next.error = Some(json!({ "kind": "behavior_config", "message": message, "recoverable": false }));
 }
 
+/// A Turn that failed for good in a session nobody answers
+/// (`wait_user_msg = finish_failed`) has no next input to recover with: the
+/// session ends as failed, which is what its parent or creator is told.
+fn fail_unattended(cfg: &SessionConfig, next: &mut Next) {
+    if cfg.session.policy.wait_user_msg == WaitPolicy::FinishFailed {
+        next.finished = true;
+        next.outcome = Some(Outcome::Failed);
+    }
+}
+
 /// Session-level meaning of a `Done` outcome (also used to rebuild the
 /// decision of a run another executor finished or left at a hand-over).
 /// `completed` = Turns completed before this outcome.
@@ -425,6 +435,7 @@ pub(super) async fn handle_context_outcome(
                 next.turn_end = Some(TurnStatus::BudgetExhausted);
                 next.error =
                     Some(json!({ "kind": "budget_exhausted", "message": format!("{which:?}") }));
+                fail_unattended(&cfg, &mut next);
             }
         }
         LLMContextOutcome::Error { error, usage, .. } => {
@@ -446,6 +457,7 @@ pub(super) async fn handle_context_outcome(
                 status = RunStatus::Failed;
                 next.run_ended = true;
                 next.turn_end = Some(TurnStatus::Failed);
+                fail_unattended(&cfg, &mut next);
             }
         }
         LLMContextOutcome::Interrupted {
@@ -630,6 +642,7 @@ async fn commit_run_end(
                     status,
                     answer: next.answer.clone(),
                     inputs: open.inputs,
+                    has_msg: open.has_msg,
                     error: next.error.clone(),
                 },
             )
@@ -924,12 +937,17 @@ fn one_line(next: &Next) -> String {
         ),
         (false, k) => k.as_str().to_string(),
     };
-    match &next.answer {
-        Some(a) if !a.trim().is_empty() => {
+    let detail = next
+        .answer
+        .as_deref()
+        .filter(|a| !a.trim().is_empty())
+        .or_else(|| next.error.as_ref()?.get("message")?.as_str());
+    match detail {
+        Some(a) => {
             let first: String = a.trim().lines().next().unwrap_or("").chars().take(160).collect();
             format!("{base}: {first}")
         }
-        _ => base,
+        None => base,
     }
 }
 

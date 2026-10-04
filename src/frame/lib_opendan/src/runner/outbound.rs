@@ -25,15 +25,16 @@ pub struct TurnReply {
     pub turn: u64,
     pub status: TurnStatus,
     pub answer: Option<String>,
-    /// Bus keys of the Turn's logical input (a message's key is its ObjId).
+    /// The Turn's logical input (`<source>#<index>`).
     pub inputs: Vec<String>,
+    /// A message (not only system events) is among the inputs.
+    pub has_msg: bool,
     pub error: Option<serde_json::Value>,
 }
 
 impl TurnReply {
-    /// Whether a message (not only system events) is among the inputs.
     pub fn answers_a_message(&self) -> bool {
-        self.inputs.iter().any(|k| k.starts_with("cymsg:"))
+        self.has_msg
     }
 }
 

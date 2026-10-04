@@ -27,6 +27,7 @@ const USAGE: &str = "\
 opendan — Agent Loader
 
   opendan [<appid>] [--app-id <id>] [--owner-id <user>] [--agent-bin <package dir>] [--service-port <n>] [--web <dir>]
+          [--trust-loopback]   local debugging: a loopback caller without a token is the owner
   opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir>
           [--who <principal>] [--agent-bin <package dir>] [--port <n>] [--web <dir>] [--poll-ms <n>]
 
@@ -51,6 +52,7 @@ struct Args {
     port: Option<u16>,
     web: Option<PathBuf>,
     poll_ms: Option<u64>,
+    trust_loopback: bool,
 }
 
 fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Args> {
@@ -73,6 +75,7 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> Result<Args> {
                 std::process::exit(0);
             }
             "--dev" => a.dev = true,
+            "--trust-loopback" => a.trust_loopback = true,
             "--appid" | "--app-id" => a.appid = Some(value(&name)?),
             "--owner-id" | "--owner-user-id" => a.owner_id = Some(value(&name)?),
             "--agent-bin" => a.agent_bin = Some(value(&name)?.into()),
@@ -230,7 +233,11 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         },
         kevent,
         mail: Some(Arc::new(ZoneMailService)),
-        access: Access::Zone { owner },
+        access: Access::Zone {
+            owner,
+            app_id: runtime.get_app_id(),
+            trust_loopback: args.trust_loopback,
+        },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),
         xllm: XllmDeps::default(),
@@ -291,8 +298,26 @@ async fn run() -> Result<()> {
     Ok(())
 }
 
+/// An app container is recreated on every start and gets a new hostname;
+/// the sessions stay bound to the app instance on its node.
+fn pin_host_identity() {
+    use agent_tool::runtime::HOST_ID_ENV;
+    if std::env::var_os(HOST_ID_ENV).is_some() {
+        return;
+    }
+    let Some(instance) = first_env(&["BUCKYOS_APP_INSTANCE_ID"]) else {
+        return;
+    };
+    let device = first_env(&["BUCKYOS_THIS_DEVICE"])
+        .and_then(|doc| serde_json::from_str::<serde_json::Value>(&doc).ok())
+        .and_then(|doc| doc.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .unwrap_or_default();
+    std::env::set_var(HOST_ID_ENV, format!("{device}/{instance}"));
+}
+
 fn main() {
     init_logging("opendan", true);
+    pin_host_identity();
     let rt = tokio::runtime::Runtime::new().expect("create tokio runtime");
     if let Err(err) = rt.block_on(run()) {
         log::error!("opendan: {err:#}");

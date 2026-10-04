@@ -142,7 +142,7 @@
           ]
         },
         "tool_whitelist": {
-          "description": "Named tools offered as native functions (`None`: the session's tools).",
+          "description": "Tools offered as native functions (`None`: the session's tools). An entry is a tool name or `group:<builtin group>`.",
           "items": {
             "type": "string"
           },

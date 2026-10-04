@@ -84,6 +84,8 @@ jobs:
     - name: Setup Docker Buildx
       id: buildx
       uses: docker/setup-buildx-action@v4
+    - name: Setup pnpm (OpenDAN WebUI)
+      run: npm install --global pnpm
     - name: Prepare AIOS Docker contexts
       id: context
       env:

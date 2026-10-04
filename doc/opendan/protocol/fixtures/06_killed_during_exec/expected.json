@@ -19,11 +19,11 @@
         "inflight": [
           "c1"
         ],
-        "run_id": "20261003-093958-3393d0",
+        "run_id": "20261004-020037-cf008a",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261003-093958-3393d0"
+        "20261004-020037-cf008a"
       ],
       "session_id": "work-fixture-kill",
       "state": {

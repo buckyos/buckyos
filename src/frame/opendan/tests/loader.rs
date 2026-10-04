@@ -22,7 +22,7 @@ use libopendan::state::krpc::{KrpcTransport, StateTransport};
 use libopendan::state::{connect, AgentStateClient, ConnectOptions, StateLocator};
 use libopendan::{OpenDanError, SessionDir, SessionTemplate};
 use llm_context::deps::{LlmClient, LlmInferenceRequest};
-use llm_context::error::LLMComputeError;
+use llm_context::error::{LLMComputeError, ProviderFailure};
 use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, ObjId};
 use opendan::loader::{Loader, LoaderEnv};
@@ -36,6 +36,8 @@ const BOB: &str = "did:bns:bob";
 
 struct Llm {
     calls: AtomicUsize,
+    /// Calls that fail before the script answers.
+    failures: AtomicUsize,
     script: Box<dyn Fn(&LlmInferenceRequest, usize) -> String + Send + Sync>,
 }
 
@@ -43,6 +45,7 @@ impl Llm {
     fn new(f: impl Fn(&LlmInferenceRequest, usize) -> String + Send + Sync + 'static) -> Arc<Self> {
         Arc::new(Self {
             calls: AtomicUsize::new(0),
+            failures: AtomicUsize::new(0),
             script: Box::new(f),
         })
     }
@@ -51,6 +54,13 @@ impl Llm {
 #[async_trait]
 impl LlmClient for Llm {
     async fn infer(&self, req: LlmInferenceRequest) -> Result<AiResponse, LLMComputeError> {
+        if self.failures.load(Ordering::SeqCst) > 0 {
+            self.failures.fetch_sub(1, Ordering::SeqCst);
+            return Err(LLMComputeError::Provider {
+                failure: ProviderFailure::Unknown,
+                message: "provider refused the request".into(),
+            });
+        }
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let mut r = AiResponse::new(AiMessage::text(AiRole::Assistant, (self.script)(&req, n)));
         r.usage = Some(AiUsage {
@@ -61,6 +71,10 @@ impl LlmClient for Llm {
         });
         Ok(r)
     }
+}
+
+fn cfg_max_tokens(llm_context: &Value) -> Option<u64> {
+    llm_context.get("max_tokens").and_then(Value::as_u64)
 }
 
 fn last_user(req: &LlmInferenceRequest) -> String {
@@ -630,6 +644,30 @@ async fn inbox_messages_are_answered_along_the_same_conversation() {
     loader.shutdown().await;
 }
 
+/// A Turn that answers a message and fails tells the speaker so; the next
+/// message is answered normally.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_turn_is_reported_to_the_speaker() {
+    let w = World::new();
+    let llm = Llm::new(|_, _| "fine now".to_string());
+    llm.failures.store(1, Ordering::SeqCst);
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    let first = chat(BOB, "hello");
+    let first_id = msg_key(&first);
+    w.mail.deliver(&session, first);
+    until("failure notice", || w.mail.sent().len() == 1).await;
+    let (_, notice) = w.mail.sent().remove(0);
+    assert_eq!(notice.to, vec![parse_did(BOB).unwrap()]);
+    assert_eq!(notice.content.content, "(something went wrong)");
+    assert_eq!(notice.thread.reply_to.as_ref().unwrap().to_string(), first_id);
+    assert_eq!(notice.meta.get("delivery_failure_fallback"), Some(&Value::Bool(true)));
+    w.mail.deliver(&session, chat(BOB, "again"));
+    until("reply", || w.mail.sent().len() == 2).await;
+    assert_eq!(w.mail.sent().remove(1).1.content.content, "fine now");
+    loader.shutdown().await;
+}
+
 /// M3: the Loader dies after the reply was committed and before msg-center
 /// took it. The next process sends the stored message — the same ObjId
 /// under the same key — and nothing is inferred or sent twice.
@@ -774,6 +812,53 @@ async fn a_sub_session_reports_through_its_ui_parent() {
     loader.shutdown().await;
 }
 
+/// A work session whose Turn fails for good ends as failed, and its UI
+/// parent hears about it like about any other result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_sub_session_is_reported_to_its_ui_parent() {
+    let w = World::new();
+    let seen = Arc::new(Mutex::new(String::new()));
+    let s2 = seen.clone();
+    let llm = Llm::new(move |req, n| {
+        if n > 0 {
+            *s2.lock().unwrap() = last_user(req);
+            "the work could not be done".to_string()
+        } else {
+            "on it".to_string()
+        }
+    });
+    let loader = w.start(llm.clone()).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "count the files"));
+    until("first reply", || w.mail.sent().len() == 1).await;
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
+        .unwrap()
+        .to_string();
+    let parent = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    llm.failures.store(1, Ordering::SeqCst);
+    let child = libopendan::api::create_sub_session(
+        loader.agent.as_ref(),
+        WHO,
+        &parent.session_id,
+        libopendan::api::SubSessionSpec {
+            objective: "count the files".into(),
+            msgs: vec!["count the files".into()],
+            key: Some("k1".into()),
+            ..Default::default()
+        },
+        w.channels().as_ref(),
+    )
+    .await
+    .unwrap();
+    until("sub session ends", || finished(&child)).await;
+    assert_eq!(child.state().unwrap().outcome, Some(Outcome::Failed));
+    until("the parent tells the user", || w.mail.sent().len() == 2).await;
+    assert_eq!(w.mail.sent().remove(1).1.content.content, "the work could not be done");
+    let told = seen.lock().unwrap().clone();
+    assert!(told.contains(child.sid()) && told.contains("provider refused the request"), "{told}");
+    loader.shutdown().await;
+}
+
 /// The Jarvis package of this repository loads under the new conventions:
 /// `agent.toml` passes the Loader's checks, the migrated behaviors parse,
 /// and a UI session created from it freezes its entry behavior and the
@@ -785,8 +870,10 @@ async fn the_jarvis_package_loads_and_answers() {
     std::fs::remove_dir_all(w.root.join("i18n")).unwrap();
     let package = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../apps/jarvis_runtime/agent");
     let seen = Arc::new(Mutex::new(String::new()));
-    let s2 = seen.clone();
+    let tools = Arc::new(Mutex::new(Vec::<String>::new()));
+    let (s2, t2) = (seen.clone(), tools.clone());
     let llm = Llm::new(move |req, _| {
+        *t2.lock().unwrap() = req.tool_specs.iter().map(|t| t.name.clone()).collect();
         *s2.lock().unwrap() = req
             .messages
             .iter()
@@ -814,6 +901,10 @@ async fn the_jarvis_package_loads_and_answers() {
     let system = seen.lock().unwrap().clone();
     assert!(system.contains("You are Jarvis"), "identity is part of the system text");
     assert!(system.contains("one-to-one UI session"), "{system}");
+    assert!(!system.contains("<<"), "{system}");
+    let tools = tools.lock().unwrap().clone();
+    assert!(tools.iter().any(|t| t == "shell") && tools.iter().any(|t| t == "call_behavior"), "{tools:?}");
+    assert_eq!(cfg_max_tokens(&loader.config.llm_context), Some(8192));
     let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
         .unwrap()
         .to_string();

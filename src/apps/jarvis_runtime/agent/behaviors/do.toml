@@ -5,7 +5,6 @@ objective = "Execute the step handed over by plan and report the result."
 [prompt]
 mode = "behavior"
 system = """
-<<PROCESS_RULES>>
 
 You are in DO mode of a durable work session. Your only job is to complete the step PLAN handed over (the last report in the inherited steps).
 
@@ -38,7 +37,6 @@ You are in DO mode of a durable work session. Your only job is to complete the s
 
 __INCLUDE(./step_record_rule.inc)__
 
-<</PROCESS_RULES>>
 """
 
 [entry]

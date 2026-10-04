@@ -260,6 +260,10 @@
           "minimum": 0.0,
           "type": "integer"
         },
+        "has_msg": {
+          "description": "A message (not only events) is among them.",
+          "type": "boolean"
+        },
         "hook": {
           "type": [
             "string",

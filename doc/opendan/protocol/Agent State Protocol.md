@@ -115,7 +115,7 @@ mode = "batch"                     # single | batch
 media = "reference"                # reference | inline
 
 [capabilities]
-tool_whitelist = ["read_file"]     # → tools.tools = [{kind: named, name}]
+tool_whitelist = ["group:bash", "call_behavior"]   # → tools.tools；`group:<内置工具组>` → {groupname}，其余 → {name}（运行环境提供的工具）
 action_whitelist = ["shell"]       # → tools.actions
 
 [budget]

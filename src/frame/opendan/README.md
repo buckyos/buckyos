@@ -19,13 +19,15 @@
 ## 运行
 
 ```bash
-# zone 内（node-daemon 启动，或 ./debug_jarvis.sh）
-opendan --app-id <appid> [--agent-bin <Agent 包目录>] [--service-port <n>] [--web <目录>]
+# zone 内（node-daemon 在容器里启动，或 ./debug_jarvis.sh 在宿主机上启动）
+opendan --app-id <appid> [--agent-bin <Agent 包目录>] [--service-port <n>] [--web <目录>] [--trust-loopback]
 
 # 开发形态：不需要 zone，文件队列，没有 msg-center
 opendan --dev --agent-root <dir> --agent-did <did> --queue-dir <dir> \
         [--who app:opendan@local] [--agent-bin <Agent 包目录>] [--port <n>] [--web <目录>] [--poll-ms <n>]
 ```
+
+`--trust-loopback` 只用于本机调试：来自回环地址、不带 token 的调用按 owner 处理（本机网关转发来的请求也是回环地址，所以不要在正式环境里用）。服务端口被占用时进程直接退出：占着端口的就是同一个 Agent 的另一个宿主。
 
 端口：`--service-port`（= `--port`）→ `$BUCKYOS_SERVICE_PORT` / `$OPENDAN_SERVICE_PORT`（调度器分配）→ 4060。`xagent` 可执行文件与 `web/` 目录取自 `opendan` 所在目录。
 
@@ -37,7 +39,33 @@ xagent new --objective "…" --llm-context "$LC" --msg "…" --no-run     # 创�
 OPENDAN_AGENT_ROOT= xagent list --state-url http://127.0.0.1:4060/kapi/opendan   # 经 kRPC
 ```
 
+## 调试流程
+
+日常调试不用容器，功能调对之后再用本地镜像确认发布后的效果。两步都要求 DV 环境已经在跑（`uv run start.py`）。
+
+**1. 宿主机上调试（快）**
+
+```bash
+cd src && ./debug_jarvis.sh            # 可选：[owner] --no-build | --installed | --port <n> | -- <opendan 参数>
+```
+
+- `cargo build`（debug）后以 Jarvis 的 app 身份在前台运行，Agent 包直接读 `src/apps/jarvis_runtime/agent`，WebUI 读 `frame/opendan/web/dist`（没有则用已安装的）。改了包里的提示词或 Rust 代码，Ctrl+C 再跑一次即可；已有 Session 冻结的 behavior 不变，发 `/stop` 开新一代 Session 才会用上新的。
+- 脚本先停掉 node-daemon 拉起的 `buckyos-app-*` 容器，再占住 app 的服务端口，容器因此起不来（node-daemon 日志里会持续有 `docker run` 失败，属于预期）。容器抢先回来时 opendan 拒绝启动，脚本再停一次容器并重试。Ctrl+C 退出后 node-daemon 会自己把容器拉回来。
+- 容器不在时 zone 网关没有到 app 的路由，WebUI 直接开 `http://127.0.0.1:<服务端口>/`，本机访问不需要登录（`--trust-loopback`）。
+- 消息收发、AICC、kmsg、kevent 都是真实服务：`test/test_opendan/test_agent_loader.ts` 可以直接用。
+
+**2. 本地测试镜像（发布前确认）**
+
+```bash
+./build_aios --local-test              # 只构建本机架构，镜像 local/aios-test，不推送
+cd src && uv run start.py --skip-update
+```
+
+`--local-test` 构建完会把 `$BUCKYOS_ROOT/etc/devenv.json` 的 `aios` 指向这个镜像，node-daemon 重启后就用它创建 app 容器，和镜像发布后的效果一样（入口脚本、包同步、容器内路径、经网关的 SSO 都走真实路径）。删掉 `devenv.json` 里的 `aios` 就回到发布镜像；`start.py --all` 全新安装会清掉它，需要重新执行一次 `--local-test`。
+
 ## kRPC 接口
+
+`GET /kapi/opendan` 不需要 token，返回 `{"app_id": "<托管本页面的 app>" | null}`：WebUI 用它向 zone 换取 session token（token 是签给这个 app 的）；`--dev` 形态返回 `null`。
 
 路径 `/kapi/opendan`，标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`）。
 
@@ -121,8 +149,17 @@ OPENDAN_AGENT_ROOT= xagent list --state-url http://127.0.0.1:4060/kapi/opendan  
 
 `hosted` 只在内存里，重启后由登记表重建，不是协议。
 
+zone 内启动时，进程把 `AGENT_TOOL_HOST_ID` 设为 `<device did>/<app instance id>`（已设置则不动）：容器每次重建都会换 hostname，Session 的 runtime 绑定与 lease 用这个稳定身份。
+
 ## 测试
 
 ```bash
 cargo test -p opendan -- --test-threads=1
+
+# 真实 zone（DV 环境）：登录、Loader 状态、一次对话往返、经 Loader 观察 Session
+cd test/test_opendan && deno run --config ../deno.json --allow-net --allow-env \
+  --unsafely-ignore-certificate-errors test_agent_loader.ts ["<消息>"]     # OPENDAN_FOLLOW_S=300 继续打印后续消息（work session 的结果）
+
+# WebUI 经 zone 网关（SSO 登录）
+cd src/frame/opendan/web && pnpm exec playwright test -c playwright.zone.config.ts
 ```

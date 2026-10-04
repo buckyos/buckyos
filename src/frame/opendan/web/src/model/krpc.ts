@@ -4,24 +4,31 @@ import type { PerceptionCursor } from './types'
 
 const SERVICE_URL = '/kapi/opendan'
 
-// The session token of the zone login (SSO cookie -> /sso_refresh), when there
-// is one. A `--dev` backend checks nothing and is not behind SSO, so every
-// failure here means "no token"; that answer is kept for a while so polling
-// does not retry the refresh on each call.
+// The session token of the zone login (SSO cookie -> /sso_refresh). The token
+// is issued to the app that serves this page; the service names it on GET.
+// Outside a zone (`--dev`) there is no app and nothing is checked. A failure
+// means "no token"; that answer is kept for a while so polling does not retry
+// the refresh on each call.
 const NO_TOKEN_TTL_MS = 60_000
 let sdkReady: Promise<boolean> | null = null
 let noTokenUntil = 0
 
+const initSdk = async (): Promise<boolean> => {
+  const response = await fetch(SERVICE_URL, { headers: { accept: 'application/json' } })
+  const { app_id: appId } = (await response.json()) as { app_id?: string | null }
+  if (!appId) return false
+  await buckyos.initBuckyOS(appId, {
+    appId,
+    zoneHost: window.location.host,
+    defaultProtocol: `${window.location.protocol}//`,
+    runtimeType: RuntimeType.Browser,
+  })
+  return true
+}
+
 const sessionToken = async (): Promise<string | null> => {
   if (Date.now() < noTokenUntil) return null
-  sdkReady ??= buckyos
-    .initBuckyOS('opendan', {
-      appId: 'opendan',
-      zoneHost: window.location.host,
-      defaultProtocol: `${window.location.protocol}//`,
-      runtimeType: RuntimeType.Browser,
-    })
-    .then(() => true, () => false)
+  sdkReady ??= initSdk().catch(() => false)
   const token = (await sdkReady) ? await getActiveSessionToken().catch(() => null) : null
   if (!token) noTokenUntil = Date.now() + NO_TOKEN_TTL_MS
   return token || null

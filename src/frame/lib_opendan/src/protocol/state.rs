@@ -261,6 +261,9 @@ pub struct OpenTurn {
     /// the opening batch, then those consumed while it was open.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub inputs: Vec<String>,
+    /// A message (not only events) is among them.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_msg: bool,
     pub at_ms: u64,
 }
 

@@ -224,6 +224,12 @@ impl Loader {
                 (_, false) => module("webui", false, false, None),
             }
             let port = env.port;
+            // Another process on the service port is another host of this
+            // agent (the app container): stop before any session is driven.
+            drop(
+                std::net::TcpListener::bind(("0.0.0.0", port))
+                    .with_context(|| format!("service port {port} is not available"))?,
+            );
             let errors = info.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = runner.run().await {

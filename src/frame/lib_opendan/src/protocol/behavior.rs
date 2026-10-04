@@ -68,7 +68,8 @@ pub struct BehaviorPromptConfig {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BehaviorCapabilities {
-    /// Named tools offered as native functions (`None`: the session's tools).
+    /// Tools offered as native functions (`None`: the session's tools). An
+    /// entry is a tool name or `group:<builtin group>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_whitelist: Option<Vec<String>>,
     /// Named tools offered as actions (behavior loop).
@@ -153,10 +154,14 @@ impl BehaviorConfig {
         if let Some(n) = self.budget.max_completion_tokens {
             over.insert("max_tokens".into(), json!(n));
         }
+        // `group:<name>` names a builtin tool group, anything else one tool.
         let named = |names: &Vec<String>| -> Value {
             names
                 .iter()
-                .map(|n| json!({ "kind": "named", "name": n }))
+                .map(|n| match n.strip_prefix("group:") {
+                    Some(g) => json!({ "groupname": g }),
+                    None => json!({ "name": n }),
+                })
                 .collect()
         };
         if self.capabilities.tool_whitelist.is_some() || self.capabilities.action_whitelist.is_some()

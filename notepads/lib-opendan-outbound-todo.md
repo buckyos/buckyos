@@ -47,3 +47,17 @@
 ## 5. 验证
 
 在 `src/` 下：`cargo test -p libopendan -- --test-threads=1`（新增 `tests/outbound.rs` 4 例）；`cargo test -p opendan -- --test-threads=1`（Supervisor、真 kRPC、出站经 Loader 的端到端）。Schema 已用 `xagent schema ../doc/opendan/protocol/schema` 重新生成（`session_state`、`session_config`、`registry_entry` 三个文件变化）；fixtures 没有重新生成（新字段都可缺省，现有 fixtures 仍通过）。
+
+## 6. DV 验收中补的下层修改（2026-10-04）
+
+真实 zone 验收（[opendan-agent-loader-refactor-todo.md](opendan-agent-loader-refactor-todo.md) §10.6）发现的问题，先于 Loader 修：
+
+1. `BehaviorConfig::overlay_llm_context`：`tool_whitelist` / `action_whitelist` 的条目生成 `{"name": …}`（原来带 `kind`，被 xllm 的配置解析按未知键拒绝）；`group:<name>` 生成 `{"groupname": …}`，behavior 才能写出“内置 bash 组 + `call_behavior`”。
+2. `OpenTurn.has_msg`（`state.json`，为 false 时省略）与 `TurnReply.has_msg`：Turn 的输入里是否有消息。原来按输入 id 前缀 `cymsg:` 判断，而 id 是 `<source>#<index>`，失败提示永远不发。
+3. `outcome.rs::fail_unattended`：`wait_user_msg = finish_failed` 的 Session 在不可重试错误 / 预算耗尽时 `finished + failed`；`one_line` 在没有答复时带 `error.message`，父 Session 的结束事件里能看到原因。
+4. `agent_tool::runtime::native_host_id`：`$AGENT_TOOL_HOST_ID` 存在时返回 `host:<值>:`。
+
+测试：`opendan/tests/loader.rs` 新增 `a_failed_turn_is_reported_to_the_speaker`、`a_failed_sub_session_is_reported_to_its_ui_parent`，`the_jarvis_package_loads_and_answers` 增加工具清单与 `max_tokens` 断言。
+
+待做（单独立项）：behavior 循环里的原生工具调用没有写进 worklog（只有 `step` 与 `outcome`）。
+

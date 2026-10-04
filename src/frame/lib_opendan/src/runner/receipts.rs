@@ -129,6 +129,7 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         .filter(|i| i.kind == "msg" || i.kind == "event")
         .map(|i| i.id())
         .collect();
+    let has_msg = r.inputs.iter().any(|i| i.kind == "msg");
     if r.opens_turn {
         state.open_turn = Some(OpenTurn {
             index: r.turn,
@@ -136,11 +137,13 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
             input_seq: r.input_seq,
             hook: Some(r.hook.clone()),
             inputs: logical,
+            has_msg,
             at_ms: r.at_ms,
         });
         state.turn_seq = state.turn_seq.max(r.turn);
     } else if let Some(t) = state.open_turn.as_mut() {
         t.inputs.extend(logical);
+        t.has_msg |= has_msg;
     }
     for i in &r.inputs {
         if i.src == INTERNAL_TASK_SRC {

@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use buckyos_http_server::{serve_http_by_rpc_handler, HttpServer, ServerError, ServerResult, StreamInfo};
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Full};
 use kRPC::{RPCErrors, RPCHandler, RPCRequest, RPCResponse, RPCResult};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
@@ -39,7 +40,14 @@ pub enum Access {
     Open { who: String },
     /// Callers present a BuckyOS session token issued by verify-hub; the
     /// agent's owner (through any app) and the zone's root are admitted.
-    Zone { owner: String },
+    /// `trust_loopback` (local debugging only): a caller on the loopback
+    /// interface without a token is the owner. A gateway on this host
+    /// forwards from loopback too.
+    Zone {
+        owner: String,
+        app_id: String,
+        trust_loopback: bool,
+    },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -96,10 +104,17 @@ fn param<T: serde::de::DeserializeOwned>(params: &Value, name: &str) -> Result<T
 }
 
 impl StateService {
-    async fn caller(&self, req: &RPCRequest) -> Result<String, RPCErrors> {
+    async fn caller(&self, req: &RPCRequest, ip_from: IpAddr) -> Result<String, RPCErrors> {
         match &self.access {
             Access::Open { who } => Ok(who.clone()),
-            Access::Zone { owner } => {
+            Access::Zone {
+                owner,
+                trust_loopback,
+                ..
+            } => {
+                if *trust_loopback && req.token.is_none() && ip_from.is_loopback() {
+                    return Ok(format!("did:bns:{owner}"));
+                }
                 let token = req.token.as_deref().ok_or_else(|| {
                     RPCErrors::NoPermission("a session token is required".to_string())
                 })?;
@@ -260,8 +275,8 @@ fn is_operation(method: &str) -> bool {
 
 #[async_trait]
 impl RPCHandler for StateService {
-    async fn handle_rpc_call(&self, req: RPCRequest, _ip_from: IpAddr) -> Result<RPCResponse, RPCErrors> {
-        let who = self.caller(&req).await?;
+    async fn handle_rpc_call(&self, req: RPCRequest, ip_from: IpAddr) -> Result<RPCResponse, RPCErrors> {
+        let who = self.caller(&req, ip_from).await?;
         if is_write(&req.method) || is_operation(&req.method) {
             log::info!("service: {} by {who}", req.method);
         }
@@ -281,6 +296,25 @@ impl HttpServer for StateService {
     ) -> ServerResult<http::Response<BoxBody<Bytes, ServerError>>> {
         if *req.method() == http::Method::POST {
             return serve_http_by_rpc_handler(req, info, self).await;
+        }
+        // What a page needs before it can ask the zone for a session token:
+        // the app it is served by (`null` outside a zone: no login).
+        if *req.method() == http::Method::GET {
+            let app_id = match &self.access {
+                Access::Zone { app_id, .. } => Some(app_id.as_str()),
+                Access::Open { .. } => None,
+            };
+            let body = json!({ "app_id": app_id }).to_string();
+            return http::Response::builder()
+                .header(http::header::CONTENT_TYPE, "application/json")
+                .header(http::header::CACHE_CONTROL, "no-store")
+                .body(Full::new(Bytes::from(body)).map_err(|e| match e {}).boxed())
+                .map_err(|e| {
+                    buckyos_http_server::server_err!(
+                        buckyos_http_server::ServerErrorCode::InvalidData,
+                        "{e}"
+                    )
+                });
         }
         Err(buckyos_http_server::server_err!(
             buckyos_http_server::ServerErrorCode::BadRequest,

@@ -1,6 +1,6 @@
 # OpenDAN 重构需求：Agent Loader
 
-- 状态：v0.6（2026-10-03）。M0–M3 已实施并通过库级与进程级验收（§10）；真实 zone 里的验收（MessageHub 收发、真实 LLM、§9.2 的权限核对）与 M5 切换还没做，需要部署到运行环境后进行。M4 与 `agent.delegate` 按 §2.2 后做。
+- 状态：v0.7（2026-10-04）。M0–M3 已实施，通过库级、进程级验收（§10.3）和 DV 环境的真实 zone 验收（§10.6）。M5 切换还没做；M4 与 `agent.delegate` 按 §2.2 后做。
 - 对象：`src/frame/opendan`（服务进程）与 `src/apps/jarvis_runtime`（Agent 包）。
 - 依据：[xAgent.md](../doc/opendan/xAgent.md) v0.4、[Agent Session SDK 实现计划](<../doc/opendan/Agent Session SDK 实现计划.md>) 附录 A、`doc/opendan/protocol/`、[lib_opendan README](../src/frame/lib_opendan/README.md)。
 - 读者：实施重构的开发者与 Code Agent。实施前先读 xAgent.md §0–§2、§4.6–§4.8、§7、§9.6、§11。
@@ -481,7 +481,7 @@ memory、workspace 以及以后的新能力，默认做成 **Agent 包里的 CLI
 | M1 / E4 | `tests/loader.rs::agent_state_over_krpc_matches_the_files`（真 HTTP kRPC） | 文件实现与 kRPC 客户端对同一组读操作结果相同；带署名的写到达；错误种类保留；驱动者写入被拒 |
 | M3 | `tests/loader.rs`（假 msg-center + 脚本化 LLM） | inbox 消息创建绑定的 UI Session 并沿原会话回复（私聊、群聊、回声丢弃、空消息确认不投递、`/stop` 后下一代）；回复已提交、msg-center 不可达时退出，重启后原样发送一次（同键、同 ObjId、不重新推理）；Session 队列满时上游记录保持未读，腾出后全部送达；子 work session 由 Supervisor 托管，结果经父 UI Session 转述；Jarvis 包能加载、冻结 `chat_route` + `task_route` 并回复 |
 
-**没有验证的**：
+**当时没有验证的**（前两项已在 §10.6 的 DV 验收里补上）：
 
 - 真实 zone：稳态 token（启动 30 秒后）下 msg-center 的 `get_next` / `update_record_state` / `post_send` 对 Loader 的 app 身份是否放行（§9.2）；kmsg / kevent 真服务；AICC 推理；tunnel 来信；容器形态。需要 `buckyos-build` + 安装后在 DV 环境跑。
 - “让它做一个需要 work session 的任务”的真实链路：`call_behavior(task_route)` → `agent-session create-worksession` → `plan` / `do`。测试里子 Session 是直接用 `create_sub_session` 创建的；迁移后的四个 behavior 只验证了能解析、冻结、进 system，没有用真实模型跑过。
@@ -495,11 +495,50 @@ memory、workspace 以及以后的新能力，默认做成 **Agent 包里的 CLI
 
 三个操作只对有输入队列的 Session 显示（它们都是投到输入总线的记录）；无队列的 work session 的产物验收走 `artifacts.decide`，WebUI 里还没有这个入口。
 
-没有验证的：zone 形态下的 token 路径（`buckyos` websdk 的 SSO 刷新；未登录时只显示服务端的权限错误，没有跳转登录）；完整的 `buckyos-build.py` + 安装。
+zone 形态下的 token 路径已在 DV 环境验证（§10.6）：页面先 `GET /kapi/opendan` 取托管它的 app id，用它初始化 websdk，再经 SSO 刷新拿 token。
+
+### 10.6 DV 环境验收（2026-10-04）
+
+环境：本机 DV（`test.buckyos.io`，`/opt/buckyos`）。清空 `data` / `logs` / `storage` / `local` 与 `buckyos-instance-*` 卷后全新安装（`start.py --all` 的两步）。Jarvis 由 node-daemon 用 worker 镜像在容器里拉起，镜像里的 opendan 是发布版本，所以验收用的是在 `paios/aios:latest-amd64` 上覆盖 `bin/opendan/`（opendan、xagent、agent_tool、web）的本地镜像 `local/aios-opendan-dv`，经 `/opt/buckyos/etc/devenv.json` 的 `{"aios": "local/aios-opendan-dv"}` 指过去。
+
+| 项 | 做法 | 结果 |
+|---|---|---|
+| 启动 | node-daemon 拉起容器 | AgentRoot 从包同步（26 个文件），HTTP 在调度器分配的端口，UI 模块开始扫描 inbox |
+| §9.2 msg-center 权限 | Loader 的 app 身份调 `get_next` / `update_record_state` / `post_send` | 都放行，按现状使用，不需要补授权。回复落在用户的 `REQUEST_BOX`（Jarvis 不是 devtest 的联系人时 msg-center 的既有行为） |
+| 对话 | `test/test_opendan/test_agent_loader.ts`：devtest 登录 → `post_send` 给 Jarvis → 等自己时间线里的回复 | 真实模型（AICC `llm.chat`）6.6 秒回复；第二条消息进同一个 UI Session，能复述上一条 |
+| 派出 work session | “请派一个 work session 完成…” | `chat_route` → `call_behavior(task_route)` → `agent-session create-worksession` → Supervisor 托管 work session → `plan` 执行并结束 → 结束事件进父 Session → 父转述给用户。先回“已派出”（约 11 秒），再回结果（约 20–30 秒）；连续 3 次都走完，产物存在 |
+| 重启恢复 | 推理进行中 `docker kill buckyos-app-jarvis` | node-daemon 约 6 秒后重建容器，Supervisor 从登记表接管同一个 run，用户收到一条完整回复，`outbox` 该条 `attempts = 1` |
+| `/stop` | 发 `/stop` | UI Session 以 `stopped` 结束、不回消息；下一条消息进新一代 Session（冻结到包里最新的 behavior） |
+| kRPC 权限 | 不带 token / 带 devtest 的 control-panel token | 前者拒绝，后者放行 |
+| WebUI | `playwright.zone.config.ts`：经网关 `https://jarvis.test.buckyos.io` → SSO 登录 → Sessions / Session 详情 / Loader | 通过，没有权限错误 |
+
+验收中发现并修掉的问题：
+
+1. **Jarvis 包**：`[llm_context]` 没给 `max_tokens`，Claude 路由直接拒绝请求；`chat_route` 没把 `call_behavior` 列进工具；提示词里残留旧格式的 `<<process_rules>>` 标记；`task_route` 会自己把活干掉而不创建 work session（提示词改为“调度员，只许运行 `agent-session create-worksession`”，`chat_route` 传给它的 `task` 加上“Route this request…”前缀）；转述前先用 `agent-session read-session <sid> --report` 读完整报告。
+2. **libopendan**（记在 [lib-opendan-outbound-todo.md](lib-opendan-outbound-todo.md) §6）：`tool_whitelist` 生成的工具条目带 `kind`，被 xllm 配置解析拒绝，现在生成 `{name}`，并支持 `group:<内置工具组>`；Turn 失败时“这一轮是否在回答消息”按输入 id 前缀判断，永远为假，失败提示从未发出，现在 `open_turn.has_msg` 记录；`wait_user_msg = finish_failed` 的 Session（work）遇到不可重试错误或预算耗尽时停在 `ready`，父 Session 永远等不到，现在同时结束为 failed，`one_line_status` 带错误信息。
+3. **agent_tool / Loader**：native runtime 与 lease 的宿主身份取 `/etc/hostname`，容器每次重建都会变，重启后所有 Session `bind_failed`。新增 `AGENT_TOOL_HOST_ID`，Loader 在 zone 内设为 `<device did>/<app instance id>`。
+4. **WebUI**：websdk 校验 token 的 appid，页面写死的 `opendan` 与实际的 `jarvis.buckyos.bns.did` 不符，拿不到 token。新增 `GET /kapi/opendan` 返回 app id。
+
+还没解决的：
+
+1. **worker 镜像**：发布的 `paios/aios` 里还是旧 opendan。`build_aios` 已经包含 `xagent` 与 `web/`，本地可以用 `--local-test` 模拟发布后的效果（§10.7）；正式镜像要等发布流程跑一次。镜像入口用的是 `--appid`，新参数解析兼容。
+2. **`llm.plan` 在 DV 的 AICC 里没有可用候选**（唯一候选是被禁用的 experimental 模型，`no_candidate_model`）。正常应该有（claude / gpt 的旗舰模型），是 AICC 的配置问题，单独定位；包里 `plan` / `do` 保持 `llm.plan` 不动。验收时在已部署的 AgentRoot 里把这两个文件改成了 `llm.chat`（本地修改会被包同步保留，定位清楚后删掉这两处本地修改即可）。
+3. **behavior 循环里的原生工具调用不进 worklog**：`plan`（`mode = "behavior"`）在一个 Step 里直接调了 `shell`，worklog 只有最后的 `step` 与 `outcome`，命令只在 `runs/<id>/exec/` 与快照里。WebUI 因此看不到 work session 做了什么。属于 libopendan 的 flush，单独立项。
+4. **work session 的工作目录是父 UI Session 的目录**（`--workspace inherit` 的缺省）。产物因此落在 UI Session 目录下。是否让 `task_route` 用 `--workspace new` 或指向 Agent 的 workspace，随 workspace 设计定。
+5. `bind_failed` 的 Session 只在 `loader.status` 的托管状态里可见，用户侧没有任何提示。
+6. `task_route` 是否创建 work session 仍然靠提示词约束（改后 3/3，改前 1/2）；要稳就得给它一个只能创建 work session 的工具，而不是 `shell`。
+7. tunnel 来信、群聊（包里没启用 `msg.group`）、附件、“已发送未标记”窗口下真 msg-center 的幂等，没有测。
+
+### 10.7 调试流程（2026-10-04）
+
+1. **宿主机调试**：`src/debug_jarvis.sh` 改为新 Loader 的入口——debug 构建、包与 WebUI 读源码目录、停掉 app 容器并占住服务端口、`--trust-loopback` 让本机直接开 WebUI。`service_debug.tsx` 的签名改成 node-daemon 现在的格式（给 system-config 的是 `aud = system-config-bootstrap` 的 bootstrap assertion，原来的格式已被拒绝），新增 `--opendan-bin` 与 `--` 之后透传给 opendan 的参数。Loader 在服务端口被占时直接退出，避免与容器里的实例同时托管一个 Agent。
+2. **本地测试镜像**：`build_aios --local-test`（本机架构、`local/aios-test`、复用 cargo 产物、不推送，并写 `$BUCKYOS_ROOT/etc/devenv.json`）。`build_aios` 同时开始把 WebUI（`frame/opendan/web` 的 `pnpm build`）打进镜像的 `bin/opendan/web/`，CI 的 `build-aios.yml` 加了安装 pnpm 的一步（CI 没有实跑过）。
+
+用法在 [opendan README](../src/frame/opendan/README.md) 的“调试流程”。
 
 ### 10.5 剩下的事
 
-1. 部署到 DV 环境做真实 zone 验收（上面“没有验证的”），按结果处理 §9.2。旧数据要先清（`remove_open_dan_data.sh` 会删除 `$BUCKYOS_ROOT/data` 与 `logs`，执行前确认）。
+1. §10.6 “还没解决的”各项。
 2. M5：删除 `src/frame/opendan_legacy`；`doc/opendan/` 里与新架构冲突的文档重写或删除；新增 Loader 设计文档与 Agent 包开发指南取代本文。
 3. M4：self-check / self-improve 模块；`self_improve_signals.toml` 仍引用已删除的 `read_session_history` / `commit_session_history_improved`，随 M4 改写。
 4. `agent.delegate`：把 `opendan_legacy/src/dispatch_adapter.rs` 一组搬过来，启动任务换成创建 work session（M5 删除 legacy 之前做，或先把这组文件留下）。
