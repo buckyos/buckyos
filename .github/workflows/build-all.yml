@@ -48,6 +48,7 @@ jobs:
           src/frame/agent_tool_cli_dev/
           src/frame/agent-did-object-lib/
           src/frame/llm_context/
+          src/frame/lib_opendan/
           src/kernel/buckyos-api/
           src/tools/buckyos-agent/
           src/patches/

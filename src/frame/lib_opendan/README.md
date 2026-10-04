@@ -40,6 +40,8 @@ RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runti
 
 设计见 [xAgent](../../../doc/opendan/xAgent.md)。xagent 是 xllm 的上一层：xllm 把一个 run 推进到一个 Outcome，xagent 把一个 Agent Session 推进到一个 Turn 关闭，或常驻地推进它。
 
+在 `src/` 下执行 `uv run buckyos-build.py -s xagent` 会构建并将二进制放入 `rootfs/bin/opendan/xagent`，随后 `uv run buckyos-install.py` 将其安装到 `$BUCKYOS_ROOT/bin/opendan/xagent`（Windows 为 `xagent.exe`），与提供 `xllm` 子命令的 `agent_tool` 同目录。`build_aios` 同样打包该二进制，paios 容器内可直接执行 `xagent`。
+
 ```bash
 export OPENDAN_AGENT_ROOT=/tmp/x/agent_root OPENDAN_AGENT_DID=did:bns:jarvis.alice LIBOPENDAN_WHO=app:app2@alice
 export LIBOPENDAN_QUEUE_DIR=/tmp/x/kmsg     # 开发用文件队列；不设则使用所在 zone 的 kmsg

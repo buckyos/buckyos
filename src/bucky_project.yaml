@@ -52,6 +52,9 @@ modules:
   agent_tool:
     type: rust
     name: agent_tool_cli_dev
+  xagent:
+    type: rust
+    name: libopendan
   # control_panel_web:
   #   type: web
   #   name: control_panel
@@ -98,6 +101,7 @@ apps:
       msg_center: bin/msg-center/
       opendan: bin/opendan/
       agent_tool: bin/opendan/
+      xagent: bin/opendan/xagent
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
       scheduler-etc: etc/scheduler/

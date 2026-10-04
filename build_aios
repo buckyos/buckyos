@@ -41,7 +41,7 @@ usage() {
   cat <<'EOF'
 Usage: ./build_aios [--push] [--prepare-context <dir>] [--image <name>] [--tag <tag>] [--runtime-only] [--arch <arch>] [--apt-package <name>] [--reuse-cargo-target] [--cargo-target-dir <dir>]
 
-Builds the OpenDAN binary with cargo for:
+Builds the OpenDAN, agent_tool and xagent binaries with cargo for:
   - amd64   -> x86_64-unknown-linux-musl
   - aarch64 -> aarch64-unknown-linux-musl
 
@@ -498,7 +498,8 @@ RUN mkdir -p \
 
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
-RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool && \
+COPY xagent /opt/buckyos/bin/opendan/xagent
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool /opt/buckyos/bin/opendan/xagent && \
     printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -
 
 # Unified entrypoint: instance-volume bootstrap + file-level upstream sync +
@@ -514,7 +515,9 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
     NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
     PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
-    PATH="/opt/buckyos/tools/bin:${PATH}"
+    PATH="/opt/buckyos/tools/bin:/opt/buckyos/bin/opendan:${PATH}"
+
+RUN xagent --help >/dev/null
 
 EXPOSE 3180
 
@@ -956,6 +959,7 @@ build_runtime_binaries() {
   local rust_target
   local source_opendan
   local source_agent_tool
+  local source_xagent
   local -a cargo_cmd
   local -a env_cmd
   local -a env_lines
@@ -980,6 +984,7 @@ build_runtime_binaries() {
 
   source_opendan="$cargo_target_dir/$rust_target/release/opendan"
   source_agent_tool="$cargo_target_dir/$rust_target/release/agent_tool"
+  source_xagent="$cargo_target_dir/$rust_target/release/xagent"
 
   cargo_cmd=(
     cargo
@@ -988,6 +993,8 @@ build_runtime_binaries() {
     opendan
     -p
     agent_tool_cli_dev
+    -p
+    libopendan
     --release
     --target
     "$rust_target"
@@ -1022,7 +1029,7 @@ build_runtime_binaries() {
     env_cmd+=("${normalized_env_lines[@]}")
   fi
 
-  log "Building opendan and agent_tool_cli_dev for $arch using target $rust_target via ${cargo_cmd[*]}"
+  log "Building opendan, agent_tool_cli_dev and libopendan for $arch using target $rust_target via ${cargo_cmd[*]}"
   (
     cd "$SRC_DIR"
     "${env_cmd[@]}" "${cargo_cmd[@]}"
@@ -1038,10 +1045,16 @@ build_runtime_binaries() {
     exit 1
   fi
 
+  if [[ ! -f "$source_xagent" ]]; then
+    echo "Expected build output not found: $source_xagent" >&2
+    exit 1
+  fi
+
   mkdir -p "$context_dir"
   cp "$source_opendan" "$context_dir/opendan"
   cp "$source_agent_tool" "$context_dir/agent_tool"
-  chmod 755 "$context_dir/opendan" "$context_dir/agent_tool"
+  cp "$source_xagent" "$context_dir/xagent"
+  chmod 755 "$context_dir/opendan" "$context_dir/agent_tool" "$context_dir/xagent"
 
   if [[ ! -f "$ENTRYPOINT_SOURCE" ]]; then
     echo "Missing paios/aios entrypoint at $ENTRYPOINT_SOURCE" >&2

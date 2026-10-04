@@ -93,7 +93,8 @@ RUN mkdir -p \
 # OpenDAN binaries shipped by the image (Agent dispatch target).
 COPY opendan /opt/buckyos/bin/opendan/opendan
 COPY agent_tool /opt/buckyos/bin/opendan/agent_tool
-RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool && \
+COPY xagent /opt/buckyos/bin/opendan/xagent
+RUN chmod 755 /opt/buckyos/bin/opendan/opendan /opt/buckyos/bin/opendan/agent_tool /opt/buckyos/bin/opendan/xagent && \
     if [ -n "${OPENDAN_SHA256}" ]; then \
       printf '%s  %s\n' "${OPENDAN_SHA256}" /opt/buckyos/bin/opendan/opendan | sha256sum -c -; \
     fi
@@ -112,7 +113,9 @@ ENV AIOS_TARGET_ARCH="${TARGET_ARCH}" \
     UV_CACHE_DIR=/opt/buckyos/instance/uv-cache \
     NPM_CONFIG_CACHE=/opt/buckyos/instance/npm-cache \
     PIP_CACHE_DIR=/opt/buckyos/instance/pip-cache \
-    PATH="/opt/buckyos/tools/bin:${PATH}"
+    PATH="/opt/buckyos/tools/bin:/opt/buckyos/bin/opendan:${PATH}"
+
+RUN xagent --help >/dev/null
 
 EXPOSE 3180
 
