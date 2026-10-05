@@ -70,6 +70,9 @@ export type ProviderProtocolContract = {
     string,
     Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
+  required_body_values?: Record<string, unknown>;
+  required_body_paths?: string[];
+  forbidden_body_paths?: string[];
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
@@ -131,6 +134,7 @@ export type ProviderProtocolCatalog = {
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
+    wire_distinct_model_ids?: Record<string, string[]>;
     official_variant_sources?: string[];
     official_variant_rules?: Array<{
       model_ids: string[];
@@ -266,6 +270,36 @@ export function validateProviderProtocolCatalog(
         }
       }
     }
+    if (provider.wire_distinct_model_ids !== undefined) {
+      const distinctModels = object(
+        provider.wire_distinct_model_ids,
+        `${driver}.wire_distinct_model_ids`,
+      );
+      for (const [apiType, rawModelIds] of Object.entries(distinctModels)) {
+        const modelIds = stringArray(
+          rawModelIds,
+          `${driver}.wire_distinct_model_ids.${apiType}`,
+        );
+        const officialPool = (provider.official_first_party_model_ids as
+          | Record<string, string[]>
+          | undefined)?.[apiType];
+        for (const modelId of modelIds) {
+          if (officialPool && !officialPool.includes(modelId)) {
+            throw new Error(
+              `${driver}.wire_distinct_model_ids.${apiType} contains ${modelId} outside its official model pool`,
+            );
+          }
+          if (!(provider.contracts as ProviderProtocolContract[]).some((contract) =>
+            contract.api_types.includes(apiType) &&
+            contract.test_model_ids?.[apiType] === modelId
+          )) {
+            throw new Error(
+              `${driver} has no distinct wire contract for ${apiType}/${modelId}`,
+            );
+          }
+        }
+      }
+    }
     if (provider.official_variant_rules !== undefined) {
       const sources = stringArray(
         provider.official_variant_sources,
@@ -379,6 +413,24 @@ export function validateProviderProtocolCatalog(
         contract.body_field_types,
         `${id}.body_field_types`,
       );
+      if (contract.required_body_values !== undefined) {
+        const requiredBodyValues = object(
+          contract.required_body_values,
+          `${id}.required_body_values`,
+        );
+        for (const pointer of Object.keys(requiredBodyValues)) {
+          if (!pointer.startsWith("/")) {
+            throw new Error(`${id}.required_body_values keys must be JSON pointers`);
+          }
+        }
+      }
+      for (const field of ["required_body_paths", "forbidden_body_paths"] as const) {
+        if (contract[field] === undefined) continue;
+        const pointers = stringArray(contract[field], `${id}.${field}`);
+        if (pointers.some((pointer) => !pointer.startsWith("/"))) {
+          throw new Error(`${id}.${field} entries must be JSON pointers`);
+        }
+      }
       for (const required of contract.required_body_fields as string[]) {
         if (!allowed.has(required)) {
           throw new Error(`${id} required field ${required} is not allowed`);
@@ -838,6 +890,30 @@ export function validateProviderRequest(
     return errors;
   }
   const body = request.body as Record<string, unknown>;
+  const pointerValue = (pointer: string): unknown =>
+    pointer.split("/").slice(1).reduce<unknown>((value, token) => {
+      const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+      return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)[key]
+        : undefined;
+    }, body);
+  for (const [pointer, expected] of Object.entries(contract.required_body_values ?? {})) {
+    const actual = pointerValue(pointer);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
+  for (const pointer of contract.required_body_paths ?? []) {
+    const actual = pointerValue(pointer);
+    if (actual === undefined || actual === null || actual === "") {
+      errors.push(`body ${pointer} is required`);
+    }
+  }
+  for (const pointer of contract.forbidden_body_paths ?? []) {
+    if (pointerValue(pointer) !== undefined) {
+      errors.push(`body ${pointer} is forbidden`);
+    }
+  }
   const requiredFields = [
     ...contract.required_body_fields,
     ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
@@ -1941,14 +2017,7 @@ export function buildT15Manifest(
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-              ? contract.async_protocol === "google_lro" ||
-                    contract.async_protocol === "minimax_video" ||
-                    contract.async_protocol === "minimax_video_v2" ||
-                    contract.async_protocol === "glm_video" ||
-                    contract.async_protocol === "doubao_video" ||
-                    contract.async_protocol === "doubao_asr"
-                  ? 3_500
-                  : 1_500
+                ? 5_000
                 : common.timeout_ms,
             } as AcceptanceCase);
           }

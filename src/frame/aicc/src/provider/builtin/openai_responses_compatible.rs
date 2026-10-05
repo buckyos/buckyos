@@ -965,7 +965,7 @@ mod tests {
                 match provider.profile.provider_profile_id.as_str() {
                     DOUBAO_PROFILE_ID => 12,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 7,
-                    QWEN_PROFILE_ID => 4,
+                    QWEN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "openai" => 4,
                     _ => 3,
                 }
             );
@@ -1125,7 +1125,7 @@ mod tests {
                 "deepseek-v4-flash",
                 "doubao-seed-2-0-lite-260215",
                 "doubao-seed-2-0-lite-260428",
-                "qwen3.8-max",
+                "qwen3.8-omni-flash",
             ])
         {
             let profile_id = provider.profile.provider_profile_id.clone();
@@ -1192,6 +1192,38 @@ mod tests {
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::Llm));
             assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+            if profile_id == DEEPSEEK_PROFILE_ID {
+                assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "reasoning-high",
+                        "reasoning-low",
+                        "reasoning-max",
+                        "reasoning-none",
+                    ]
+                );
+            }
+            if profile_id == QWEN_PROFILE_ID {
+                assert!(model.api_types.contains(&ApiType::VisionOcr));
+                assert!(model.api_types.contains(&ApiType::VisionCaption));
+                assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "reasoning-low",
+                        "reasoning-medium",
+                        "reasoning-none",
+                        "reasoning-xhigh",
+                    ]
+                );
+            }
         }
     }
 
@@ -1306,13 +1338,12 @@ mod tests {
             vec![
                 "doubao-seed-asr-2.0",
                 "doubao-seed-asr-2.0-fast",
-                "doubao-seed-icl-2.0",
                 "doubao-seed-tts-2.0"
             ]
         );
         for model in &inventory.models {
             match model.provider_model_id.as_str() {
-                "doubao-seed-tts-2.0" | "doubao-seed-icl-2.0" => {
+                "doubao-seed-tts-2.0" => {
                     assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
                     assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
                     assert!(model

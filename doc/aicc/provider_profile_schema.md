@@ -244,6 +244,7 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 ```json
 {"instance_rules":{"policy_region":"cn","exclude_models":[],"enabled_inventory_models":["doubao-seed-tts-2.0"]}}
 ```
+
 Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter；每个 Adapter 必须与声明它的内置 Provider 属于同一 protocol family，且不能被多个 Provider Rules 重复开放。
 
 ## 5. 模型规则

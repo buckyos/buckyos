@@ -52,10 +52,13 @@ import {
 import { selectSingleProviderInstances } from "./inventory_selection.ts";
 import {
   applyProviderTokens,
+  configuredProviderInstanceOverrides,
   configuredProviderTokens,
   providerTokenDrivers,
+  scopeOfficialInventoriesToInstanceRules,
   selectProviderTokens,
   type ProviderTokens,
+  type ProviderInstanceOverrides,
 } from "./provider_credentials.ts";
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import {
@@ -108,6 +111,7 @@ type Options = {
   judgeRubricVersion: string;
   judgeMinScore: number;
   providerTokens: ProviderTokens;
+  providerInstanceOverrides: ProviderInstanceOverrides;
   officialCatalogTokens: Record<string, string | undefined>;
   applyProviderCredentials: boolean;
   allowCredentialMutationCli: boolean;
@@ -481,6 +485,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     judgeRubricVersion: tomlString(config, "judge.rubric_version") ?? "2026-08-27.1",
     judgeMinScore: tomlNumber(config, "judge.min_score") ?? 0.7,
     providerTokens,
+    providerInstanceOverrides: configuredProviderInstanceOverrides(config),
     officialCatalogTokens,
     applyProviderCredentials: tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ?? false,
     allowCredentialMutationCli: false,
@@ -978,7 +983,13 @@ async function main(): Promise<void> {
         systemConfig: session.systemConfig,
         aicc: session.aicc,
         description: "AICC Provider credential override",
-        patch: (settings) => applyProviderTokens(settings, options.providerTokens, options.providerInstances),
+        patch: (settings) =>
+          applyProviderTokens(
+            settings,
+            options.providerTokens,
+            options.providerInstances,
+            options.providerInstanceOverrides,
+          ),
         execute,
         refreshClients: async () => {
           const refreshed = await loginGateway({
@@ -1145,7 +1156,10 @@ async function executeAcceptance(input: {
     ])),
   });
   const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
-  const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
+  const officialInventories = scopeOfficialInventoriesToInstanceRules(
+    bindOfficialCatalogInstances(officialCatalogs, selectedInventories),
+    options.providerInstanceOverrides,
+  );
   const matrixOfficialInventories = scopeInventoriesToRequestedCases(
     officialInventories,
     options.caseIds,

@@ -1,10 +1,11 @@
 # AICC API 设计
 
 版本：`v0.4-beta2.2-target`
-更新基线：`2026-08-31`
+更新基线：`2026-10-05`
 配套文档：
 
 
+- `doc/aicc/frozen_model_driver_and_logical_model_fs.md`
 - `doc/aicc/aicc 逻辑模型目录.md`
 - `doc/aicc/aicc_router.md`
 - `doc/aicc/driver_metadata_schema.md`
@@ -735,21 +736,21 @@ JSON 形态（注意图片块是 `type:image` + `source`，不再是 `type:resou
 | `chat.completions.create` | `llm` | `llm.chat` / `llm.*` | sync 或 async |
 | `embedding.text` | `embedding.text` | `embedding.text` | sync 或 async |
 | `embedding.multimodal` | `embedding.multimodal` | `embedding.multimodal` | sync 或 async |
-| `decision` | `decision.evaluate` | `decision` | immediate |
-| `rerank` | `rerank` | `rerank.general` | sync |
+| `decision.evaluate` | `decision` | `decision` | immediate |
+| `rerank` | `rerank` | `rerank` | sync |
 | `images.generate` | `image.txt2img` | `image.txt2img` | sync 或 async |
 | `image.img2img` | `image.img2img` | `image.img2img` | sync 或 async |
 | `image.inpaint` | `image.inpaint` | `image.inpaint` | sync 或 async |
 | `image.upscale` / `image.bg_remove` | `image.upscale` / `image.bg_remove` | 同 api_type | sync 或 async |
-| `vision.ocr` / `vision.caption` / `vision.detect` / `vision.segment` | 同名 api_type | `image.*` | sync 或 async |
+| `vision.ocr` / `vision.caption` / `vision.detect` / `vision.segment` | 同名 api_type | 对应 `vision.*` | sync 或 async |
 | `audio.tts` | `audio.tts` | `audio.tts` | sync 或 async |
 | `audio.asr` | `audio.asr` | `audio.asr` | sync 或 async |
 | `audio.music` / `audio.enhance` | `audio.music` / `audio.enhance` | 同 api_type | async 或 sync |
 | `video.txt2video` / `video.img2video` | 同名 api_type | 对应 `video.*` | async |
 | `video.video2video` / `video.extend` / `video.upscale` | `video.video2video` / `video.extend` / `video.upscale` | 同 api_type | async |
-| `agent.computer_use` | `agent.computer_use` | `agent.computer_use` | session async |
+| `agent.computer_use` | `agent.computer_use` | `agent_runtime.computer_use` | session async |
 
-命名规范：`method` 只使用本表名称，`api_type` 只使用 `ApiType` 的序列化值。两者即使文本相同也承担不同职责，调用端不得互相替代。
+命名规范：`method`、`api_type` 和 logical path 是三个独立值域。`method` 只使用本表名称，`api_type` 只使用 `ApiType` 的序列化值，logical path 以冻结逻辑目录契约为准。三者即使文本相同也承担不同职责，调用端和测试不得互相替代，也不得通过字符串相等或前缀关系推导彼此。
 
 ---
 
@@ -1771,15 +1772,17 @@ Fallback：
 
 ### 14.1 一级目录
 
-| 一级目录 | 默认 method | fallback |
+| 一级目录 | canonical api_type / builtin 逻辑入口 | fallback |
 |---|---|---|
-| `llm` | `llm.chat` | parent |
-| `embedding` | `embedding.text` / `embedding.multimodal` | strict |
-| `rerank` | `rerank` | strict |
-| `image` | `image.*` / `vision.*` | same method parent |
-| `audio` | `audio.*` | strict 或 voice contract |
-| `video` | `video.*` | same method parent |
-| `agent` | `agent.*` | strict |
+| `llm` | `llm` / `llm.chat`、`llm.plan`、`llm.code` 等 | namespace-only；无隐式 parent fallback |
+| `embedding` | `embedding.text` / `embedding.text`、`embedding.multimodal` | strict |
+| `decision` | `decision` / `decision` | strict |
+| `rerank` | `rerank` / `rerank` | strict |
+| `image` | `image.*` / 对应 `image.*` | same api_type parent |
+| `vision` | `vision.*` / 对应 `vision.*` | strict |
+| `audio` | `audio.*` / 对应 `audio.*` | strict 或 voice contract |
+| `video` | `video.*` / 对应 `video.*` | same api_type parent |
+| `agent_runtime` | `agent.computer_use` / `agent_runtime.computer_use` | parent |
 
 ### 14.2 调用方选择模型
 
@@ -1789,7 +1792,7 @@ Fallback：
 {
   "method": "helper.vision_ocr",
   "params": {
-    "logical_model": "image.ocr",
+    "logical_model": "vision.ocr",
     "image": { "kind": "named_object", "obj_id": "chunk:image" }
   }
 }

@@ -25,6 +25,7 @@ import {
 } from "./mock_provider_contract.ts";
 import {
   assertRouteExposureCompleteness,
+  loadLogicalEntrypointBaseline,
   loadRouteExposureContract,
   type RouteExposureSummary,
 } from "./route_exposure.ts";
@@ -57,9 +58,11 @@ export async function runPreflight(): Promise<PreflightResult> {
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   );
   const baseline = validateProviderBaseline(baselineRaw);
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
   const routeExposure = assertRouteExposureCompleteness(
     baseline,
     await loadRouteExposureContract(),
+    logicalEntrypoints,
   );
   const requirementsSource = await readFile(
     join(repoRoot, "doc/aicc/aicc_e2e_test_requirements.md"),
