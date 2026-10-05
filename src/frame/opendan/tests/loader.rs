@@ -12,7 +12,7 @@ use agent_tool::xllm::XllmDeps;
 use async_trait::async_trait;
 use buckyos_api::{
     AiMessage, AiResponse, AiRole, AiUsage, MailboxAddress, MailboxKind, MailboxRecord,
-    MailboxRecordWithObject, PostSendResult, RecipientState,
+    MailboxRecordWithObject, MsgEditCapability, PostSendResult, RecipientState, TaskWaitReason,
 };
 use libopendan::api::create_session;
 use libopendan::channel::{KmsgChannels, PollWaker};
@@ -27,6 +27,7 @@ use name_lib::DID;
 use ndn_lib::{MsgObjKind, MsgObject, ObjId};
 use opendan::loader::{Loader, LoaderEnv};
 use opendan::service::{Access, SERVICE_PATH};
+use opendan::tasks::{NewTask, TaskService, TaskView};
 use opendan::ui::MailService;
 use serde_json::{json, Value};
 
@@ -62,7 +63,20 @@ impl LlmClient for Llm {
             });
         }
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        let mut r = AiResponse::new(AiMessage::text(AiRole::Assistant, (self.script)(&req, n)));
+        // `TOOL:<command>` is a shell call instead of an answer.
+        let answer = (self.script)(&req, n);
+        let message = match answer.strip_prefix("TOOL:") {
+            Some(command) => AiMessage::new(
+                AiRole::Assistant,
+                vec![buckyos_api::AiContent::tool_use(
+                    format!("c{n}"),
+                    "shell",
+                    [("command".to_string(), json!(command))].into_iter().collect(),
+                )],
+            ),
+            None => AiMessage::text(AiRole::Assistant, answer),
+        };
+        let mut r = AiResponse::new(message);
         r.usage = Some(AiUsage {
             input_tokens: Some(10),
             output_tokens: Some(5),
@@ -93,6 +107,8 @@ struct Mail {
     sent: Mutex<Vec<(String, MsgObject)>>,
     send_calls: AtomicUsize,
     unreachable: AtomicBool,
+    /// The conversations can replace a message in place.
+    editable: AtomicBool,
     seq: AtomicUsize,
 }
 
@@ -196,6 +212,125 @@ impl MailService for Mail {
             reason: None,
         })
     }
+
+    async fn edit_capability(&self, _msg: MsgObject) -> Result<MsgEditCapability, String> {
+        Ok(MsgEditCapability {
+            editable: self.editable.load(Ordering::SeqCst),
+            ..Default::default()
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FakeTask {
+    id: String,
+    new: NewTask,
+    /// accepted | running | waiting | succeeded | failed | canceled.
+    state: String,
+    message: String,
+    cancel_requested: bool,
+}
+
+/// TaskMgr as far as the Loader uses it.
+#[derive(Default)]
+struct Tasks {
+    tasks: Mutex<Vec<FakeTask>>,
+}
+
+impl Tasks {
+    fn all(&self) -> Vec<FakeTask> {
+        self.tasks.lock().unwrap().clone()
+    }
+
+    fn children_of(&self, parent: &str) -> Vec<FakeTask> {
+        self.all()
+            .into_iter()
+            .filter(|t| t.new.parent_id.as_deref() == Some(parent))
+            .collect()
+    }
+
+    fn set(&self, task_id: &str, f: impl FnOnce(&mut FakeTask)) -> Result<(), String> {
+        let mut tasks = self.tasks.lock().unwrap();
+        let t = tasks
+            .iter_mut()
+            .find(|t| t.id == task_id)
+            .ok_or_else(|| format!("task_not_found: {task_id}"))?;
+        if !matches!(t.state.as_str(), "succeeded" | "failed" | "canceled") {
+            f(t);
+        }
+        Ok(())
+    }
+}
+
+fn task_view(t: &FakeTask) -> TaskView {
+    TaskView {
+        task_id: t.id.clone(),
+        terminal: matches!(t.state.as_str(), "succeeded" | "failed" | "canceled"),
+        canceled: t.state == "canceled",
+        cancel_requested: t.cancel_requested,
+    }
+}
+
+#[async_trait]
+impl TaskService for Tasks {
+    async fn create(&self, new: NewTask) -> Result<TaskView, String> {
+        let mut tasks = self.tasks.lock().unwrap();
+        if let Some(t) = tasks.iter().find(|t| t.new.idempotency_key == new.idempotency_key) {
+            if t.new.input != new.input {
+                return Err("idempotency_conflict".into());
+            }
+            return Ok(task_view(t));
+        }
+        let t = FakeTask {
+            id: format!("t-{}", tasks.len() + 1),
+            new,
+            state: "accepted".into(),
+            message: String::new(),
+            cancel_requested: false,
+        };
+        tasks.push(t.clone());
+        Ok(task_view(&t))
+    }
+
+    async fn get(&self, task_id: &str) -> Result<TaskView, String> {
+        self.all()
+            .iter()
+            .find(|t| t.id == task_id)
+            .map(task_view)
+            .ok_or_else(|| format!("task_not_found: {task_id}"))
+    }
+
+    async fn running(&self, task_id: &str, message: &str, _progress: Value) -> Result<(), String> {
+        self.set(task_id, |t| {
+            t.state = "running".into();
+            t.message = message.to_string();
+        })
+    }
+
+    async fn waiting(&self, task_id: &str, reason: TaskWaitReason) -> Result<(), String> {
+        self.set(task_id, |t| {
+            t.state = "waiting".into();
+            t.message = reason.message.unwrap_or_default();
+        })
+    }
+
+    async fn complete(&self, task_id: &str, result: Value) -> Result<(), String> {
+        self.set(task_id, |t| {
+            t.state = "succeeded".into();
+            t.message = result["summary"].as_str().unwrap_or_default().to_string();
+        })
+    }
+
+    async fn fail(&self, task_id: &str, code: &str, _message: &str, _detail: Option<Value>) -> Result<(), String> {
+        self.set(task_id, |t| {
+            t.state = "failed".into();
+            t.message = code.to_string();
+        })
+    }
+
+    async fn canceled(&self, task_id: &str) -> Result<(), String> {
+        self.set(task_id, |t| t.state = "canceled".into())
+    }
 }
 
 struct World {
@@ -203,6 +338,8 @@ struct World {
     root: PathBuf,
     queue: PathBuf,
     mail: Arc<Mail>,
+    /// `Some`: the Loader has a task service.
+    tasks: Option<Arc<Tasks>>,
 }
 
 const AGENT_TOML: &str = r#"
@@ -236,7 +373,27 @@ impl World {
             root,
             _tmp: tmp,
             mail: Arc::new(Mail::default()),
+            tasks: None,
         }
+    }
+
+    /// A world with TaskMgr, conversations that can be edited, and an agent
+    /// package that sends placeholders after 100 ms.
+    fn with_tasks() -> Self {
+        let mut w = Self::new();
+        std::fs::write(
+            w.root.join("agent.toml"),
+            format!("[loader]\nplaceholder_delay_ms = 100\n{AGENT_TOML}"),
+        )
+        .unwrap();
+        std::fs::write(
+            w.root.join("i18n/en.toml"),
+            "[outbound]\nturn_failed = \"(something went wrong)\"\naccepted = \"(working)\"\nstopped = \"(stopped)\"\n",
+        )
+        .unwrap();
+        w.mail.editable.store(true, Ordering::SeqCst);
+        w.tasks = Some(Arc::new(Tasks::default()));
+        w
     }
 
     fn channels(&self) -> Arc<KmsgChannels> {
@@ -254,6 +411,7 @@ impl World {
             waker: Arc::new(PollWaker),
             kevent: None,
             mail: Some(self.mail.clone()),
+            tasks: self.tasks.clone().map(|t| t as Arc<dyn TaskService>),
             access: Access::Open { who: WHO.into() },
             port,
             web_dir: None,
@@ -936,5 +1094,209 @@ async fn the_jarvis_package_loads_and_answers() {
     // A work session of the package starts in plan and can hand over to do.
     let template = SessionTemplate::load("work", loader.agent.agent_root()).unwrap();
     assert_eq!(template.default_behavior.as_deref(), Some("plan"));
+    loader.shutdown().await;
+}
+
+fn agent_task_of(msg: &MsgObject) -> Option<String> {
+    msg.meta
+        .get("agent_task")
+        .and_then(|t| t.get("task_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+/// Every Turn is a task of the agent, granted to its owner; a Turn that
+/// takes long sends a placeholder and replaces it with the reply, a fast one
+/// and a conversation that cannot be edited only get the reply.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_turn_is_a_task_and_a_slow_reply_replaces_its_placeholder() {
+    let w = World::with_tasks();
+    let tasks = w.tasks.clone().unwrap();
+    let llm = Llm::new(|req, n| {
+        if last_user(req).contains("slow") {
+            std::thread::sleep(Duration::from_millis(700));
+        }
+        format!("answer {n}")
+    });
+    let loader = w.start(llm).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "a slow question"));
+    until("placeholder and reply", || w.mail.sent().len() == 2).await;
+    let sent = w.mail.sent();
+    let (placeholder, reply) = (&sent[0].1, &sent[1].1);
+    assert_eq!(placeholder.content.content, "(working)");
+    let rel = reply.relates_to.as_ref().expect("the reply edits the placeholder");
+    assert_eq!(rel.target.to_string(), msg_key(placeholder));
+    assert_eq!(reply.content.content, "answer 0");
+    assert_eq!(agent_task_of(reply), None);
+    let task_id = agent_task_of(placeholder).expect("the placeholder carries the task");
+    until("task closed", || tasks.all().iter().any(|t| t.id == task_id && t.state == "succeeded")).await;
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session.clone()))
+        .unwrap()
+        .to_string();
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let task = tasks.all().into_iter().find(|t| t.id == task_id).unwrap();
+    assert_eq!(task.new.name, "a slow question");
+    assert_eq!(task.new.parent_id, None);
+    assert_eq!(task.new.grant_user.as_deref(), Some("alice"));
+    assert_eq!(task.new.idempotency_key, format!("agent_turn:{}:1", entry.session_id));
+    assert_eq!(task.new.input["session_id"], json!(entry.session_id));
+    assert_eq!(task.new.input["turn"], json!(1));
+    assert_eq!(task.message, "answer 0");
+
+    // A fast Turn: a task, no placeholder.
+    w.mail.deliver(&session, chat(BOB, "a quick one"));
+    until("fast reply", || w.mail.sent().len() == 3).await;
+    let fast = &w.mail.sent()[2].1;
+    assert!(fast.relates_to.is_none());
+    assert_eq!(fast.content.content, "answer 1");
+    let fast_task = agent_task_of(fast).expect("the reply carries its task");
+    assert_ne!(fast_task, task_id, "one task per Turn");
+    until("second task closed", || {
+        tasks.all().iter().any(|t| t.id == fast_task && t.state == "succeeded")
+    })
+    .await;
+
+    // A conversation that cannot be edited never sees a placeholder.
+    w.mail.editable.store(false, Ordering::SeqCst);
+    w.mail.deliver(&session, chat(BOB, "another slow question"));
+    until("plain reply", || w.mail.sent().len() == 4).await;
+    let plain = &w.mail.sent()[3].1;
+    assert!(plain.relates_to.is_none());
+    assert_eq!(plain.content.content, "answer 2");
+    assert!(agent_task_of(plain).is_some());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(w.mail.sent().len(), 4);
+    assert_eq!(tasks.all().len(), 3);
+    loader.shutdown().await;
+}
+
+/// The task tree follows the sessions: the Turns of the sub sessions a Turn
+/// created are its children, each with its own terminal state.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sub_sessions_are_child_tasks_of_the_turn_that_created_them() {
+    let w = World::with_tasks();
+    w.mail.editable.store(false, Ordering::SeqCst);
+    let tasks = w.tasks.clone().unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = release.clone();
+    let llm = Llm::new(move |req, _| {
+        let u = last_user(req);
+        if u.contains("split the work") {
+            // The Turn stays open while its sub sessions are created.
+            let asked = Instant::now();
+            while !gate.load(Ordering::SeqCst) && asked.elapsed() < Duration::from_secs(15) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            "two workers started".to_string()
+        } else if u.contains("part ") {
+            "part done".to_string()
+        } else {
+            "noted".to_string()
+        }
+    });
+    let loader = w.start(llm).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "split the work"));
+    until("the turn has a task", || tasks.all().len() == 1).await;
+    let root = tasks.all().remove(0);
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
+        .unwrap()
+        .to_string();
+    let parent = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let mut children = Vec::new();
+    for part in ["part one", "part two"] {
+        children.push(
+            libopendan::api::create_sub_session(
+                loader.agent.as_ref(),
+                WHO,
+                &parent.session_id,
+                libopendan::api::SubSessionSpec {
+                    objective: part.into(),
+                    msgs: vec![part.into()],
+                    key: Some(part.into()),
+                    ..Default::default()
+                },
+                w.channels().as_ref(),
+            )
+            .await
+            .unwrap(),
+        );
+    }
+    release.store(true, Ordering::SeqCst);
+    for c in &children {
+        until("sub session finishes", || finished(c)).await;
+    }
+    until("the tree is terminal", || {
+        tasks.children_of(&root.id).len() == 2
+            && tasks.children_of(&root.id).iter().all(|t| t.state == "succeeded")
+            && tasks.all().iter().any(|t| t.id == root.id && t.state == "succeeded")
+    })
+    .await;
+    let subs = tasks.children_of(&root.id);
+    let mut names: Vec<&str> = subs.iter().map(|t| t.new.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, vec!["part one", "part two"]);
+    for (t, c) in subs.iter().zip(&children) {
+        assert_eq!(t.new.input["session_kind"], json!("work"));
+        assert!(children.iter().any(|c| t.new.input["session_id"] == json!(c.sid())));
+        assert_eq!(c.config().unwrap().session.origin.unwrap().parent_task, Some(root.id.clone()));
+    }
+    // What the sub sessions report back opens new Turns of the parent:
+    // root tasks of their own, never children of the first one.
+    assert!(tasks
+        .all()
+        .iter()
+        .filter(|t| t.new.input["session_id"] == json!(parent.session_id))
+        .all(|t| t.new.parent_id.is_none()));
+    loader.shutdown().await;
+}
+
+/// A cancel requested in TaskMgr stops the session through its own control
+/// protocol; the task ends as canceled and the placeholder is closed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_canceled_task_stops_its_session() {
+    let w = World::with_tasks();
+    let tasks = w.tasks.clone().unwrap();
+    let release = Arc::new(AtomicBool::new(false));
+    let gate = release.clone();
+    let llm = Llm::new(move |_, _| {
+        let asked = Instant::now();
+        while !gate.load(Ordering::SeqCst) && asked.elapsed() < Duration::from_secs(15) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        // Not an answer: the stop is applied before the next inference.
+        "TOOL:echo hi".to_string()
+    });
+    let loader = w.start(llm).await;
+    let session = format!("dm:{BOB}");
+    w.mail.deliver(&session, chat(BOB, "a long job"));
+    until("placeholder", || w.mail.sent().len() == 1).await;
+    let task_id = agent_task_of(&w.mail.sent()[0].1).unwrap();
+    tasks
+        .tasks
+        .lock()
+        .unwrap()
+        .iter_mut()
+        .find(|t| t.id == task_id)
+        .unwrap()
+        .cancel_requested = true;
+    let route = MailboxAddress::new(parse_did(AGENT).unwrap(), Some(session))
+        .unwrap()
+        .to_string();
+    let entry = ui_entry(loader.agent.as_ref(), &route).unwrap();
+    let sd = SessionDir::open(&entry.location).unwrap();
+    until("the session heard the stop", || {
+        sd.state().map(|s| s.stop_requested || s.is_finished()).unwrap_or(false)
+    })
+    .await;
+    release.store(true, Ordering::SeqCst);
+    until("stopped", || finished(&sd)).await;
+    assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
+    until("task canceled", || tasks.all().iter().any(|t| t.id == task_id && t.state == "canceled")).await;
+    until("placeholder closed", || w.mail.sent().len() == 2).await;
+    let (_, end) = w.mail.sent().remove(1);
+    assert_eq!(end.relates_to.as_ref().unwrap().target.to_string(), msg_key(&w.mail.sent()[0].1));
+    assert_eq!(end.content.content, "(stopped)");
     loader.shutdown().await;
 }

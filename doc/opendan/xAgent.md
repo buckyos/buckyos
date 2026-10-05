@@ -404,7 +404,7 @@ bridge 必须保证：同一来源内有序、至少一次、key 唯一。Sessio
 |---|---|---|
 | kevent 桥 | xagent `run` / `serve` 进程内；以后是 OpenDAN Supervisor | 按 session 的 ObjectEvent 订阅模式订阅 kevent → `AgentEvent{subscription_id, source: Object}` |
 | timer 桥 | 同上（self_check） | `AgentEvent{source: Timer}` |
-| task_mgr 桥 | `libopendan::bridge::task::task_event`（映射已实施；接 TaskMgr 后移） | `AgentEvent{source: task:<task_id>}` |
+| task_mgr 桥 | `libopendan::bridge::task::task_event`（外部 task → 事件的映射）；Turn → task 由宿主钩子 `runner::TurnTaskSink` 上报（OpenDAN 用 TaskMgr 实现，2026-10-04） | `AgentEvent{source: task:<task_id>}` |
 | msg-center 桥 | `libopendan::bridge::msg::route_msg_record`（纯函数，已实施；接 msg-center 后移） | 过滤 / 分流后原样投递 `SessionMsg{msg, delivery}`，斜杠命令转 `control` |
 | 子 session 桥 | Runner 内置（§4.3、§4.14） | `AgentEvent{source: Session}`：订阅的 session 与本 session 的子 session |
 | CLI | `xagent post --msg / --json` | 消息构造 helper 或完整逻辑记录；`post` 只接受 msg / event，control 走 `ctl` |
@@ -1272,7 +1272,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 
 ### 11.3 后移项与保证范围
 
-- TaskMgr 接入、外部服务 dispatch intent / task 绑定；task 桥仍是映射与幂等 key helper。msg-center 接入、出站（`state.outbox` + `OutboundSink`）、正式 ui kind、真 kRPC Agent State（`state::krpc`）与常驻托管（`host::Supervisor`）已随 OpenDAN Loader 实施（2026-10-03，见 [opendan README](../../src/frame/opendan/README.md)）。
+- 外部服务 dispatch intent / task 绑定；task 桥仍是映射与幂等 key helper。Turn / 子 Session 的 TaskMgr task（`TurnTaskSink`、`state.turn_tasks`、`origin.parent_task`）与占位 / 最终 edit 已实施（2026-10-04，见 [messagehub-agent-chat-task-todo](../../notepads/messagehub-agent-chat-task-todo.md)）；xagent 不提供钩子，行为不变。msg-center 接入、出站（`state.outbox` + `OutboundSink`）、正式 ui kind、真 kRPC Agent State（`state::krpc`）与常驻托管（`host::Supervisor`）已随 OpenDAN Loader 实施（2026-10-03，见 [opendan README](../../src/frame/opendan/README.md)）。
 - 本机附件登记到 NamedStore；首版 CLI 的 --attach 仅接受 ObjId。
 - 长工具执行期间持续 activity 心跳；StopMonitor 当前仅查看 stop，不写 state。
 - 旧 Session 的显式迁移工具、TS helper / Runner、正式 UI / OpenDAN 改造。

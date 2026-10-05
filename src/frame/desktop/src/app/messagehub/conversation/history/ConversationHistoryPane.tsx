@@ -17,7 +17,9 @@ import {
   extendConversationProjection,
   materializeConversationWindow,
 } from './data-source'
+import { findMessage } from './locate'
 import { continuesMessageRun } from './messageRun'
+import { messageRelations } from './relations'
 import { ConversationListRow } from './renderers'
 import type {
   ConversationListItem,
@@ -58,6 +60,8 @@ interface ViewportProfile {
 
 export interface ConversationHistoryPaneHandle {
   scrollToBottom: () => void
+  /** Brings the row of a message (by the ObjId of its anchor) into view once it is in the loaded history. */
+  scrollToMessage: (messageId: string) => void
 }
 
 const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
@@ -107,6 +111,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
   const keepRowsInPlaceRef = useRef<() => void>(() => {})
   const compensatingRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const [focusRequest, setFocusRequest] = useState<{ messageId: string } | null>(null)
+  const [highlightKey, setHighlightKey] = useState<string | null>(null)
   const hasProjection = projection !== null
   const { isMobileViewport, visibleItemCount } = viewportProfile
   // Rows of a window materialized for an earlier projection are carried over
@@ -420,7 +426,35 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
         EXPLICIT_SCROLL_LOCK_MS,
       )
     },
+    scrollToMessage(messageId) {
+      setFocusRequest({ messageId })
+    },
   }), [])
+
+  // A requested message is looked up again on every projection until its row
+  // exists: its page may still be loading when the request is made.
+  useEffect(() => {
+    if (!focusRequest || !projection) return
+    let cancelled = false
+    void findMessage(reader, focusRequest.messageId).then((result) => {
+      if (cancelled || !result) return
+      const index = projection.entries.findIndex(entry => entry.kind === 'message' && entry.messageIndex === result.index)
+      if (index < 0) return
+      scrollModeRef.current = 'free-scroll'
+      bottomAnchorLockUntilRef.current = 0
+      cancelBottomAnchorRequest(bottomAnchorRequestIdRef)
+      virtualizer.scrollToIndex(index, { align: 'center' })
+      setHighlightKey(projection.entries[index].key)
+      setFocusRequest(null)
+    })
+    return () => { cancelled = true }
+  }, [focusRequest, projection, reader, virtualizer])
+
+  useEffect(() => {
+    if (!highlightKey) return
+    const timer = setTimeout(() => setHighlightKey(null), 2400)
+    return () => clearTimeout(timer)
+  }, [highlightKey])
 
   useEffect(() => {
     if (!projection || virtualItems.length === 0) {
@@ -467,14 +501,15 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
       void onLoadOlder().finally(() => { loadingOlderRef.current = false })
     }
     if (onVisibleMessages) {
-      const ids = virtualItems
+      const visible = virtualItems
         .map((virtualItem) => itemsByIndex.get(virtualItem.index))
         .filter((item): item is Extract<ConversationListItem, { kind: 'message' }> => item?.kind === 'message')
-        .map((item) => getMessageStableId(item.data, item.messageIndex))
-      const signature = ids.join('|')
+        .map((item) => ({ id: getMessageStableId(item.data, item.messageIndex), editedAt: messageRelations(item.data)?.edited?.at }))
+      // A newly folded edit is reported again: its own record still has to be marked read.
+      const signature = visible.map(item => `${item.id}:${item.editedAt ?? ''}`).join('|')
       if (signature && signature !== visibleReportRef.current) {
         visibleReportRef.current = signature
-        onVisibleMessages(ids)
+        onVisibleMessages(visible.map(item => item.id))
       }
     }
   }, [projection, virtualItems, itemsByIndex, hasOlder, onLoadOlder, onVisibleMessages])
@@ -603,7 +638,8 @@ const ConversationHistoryPaneInner = forwardRef<ConversationHistoryPaneHandle, {
                   ref={item ? virtualizer.measureElement : undefined}
                   data-index={virtualItem.index}
                   data-message-index={item?.kind === 'message' ? item.messageIndex : undefined}
-                  className="flow-root"
+                  data-highlight={highlightKey !== null && virtualItem.key === highlightKey ? true : undefined}
+                  className="mh-row flow-root"
                   style={{
                     height: item ? undefined : virtualItem.size,
                   }}

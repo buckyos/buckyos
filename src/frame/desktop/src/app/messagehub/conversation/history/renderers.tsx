@@ -10,6 +10,7 @@ import {
   Clock,
   Copy,
   Forward,
+  Info,
   MoreHorizontal,
   Reply,
   SmilePlus,
@@ -31,7 +32,8 @@ import { attachmentKindOf, attachmentMediaType, attachmentOfRef, isHttpUri, type
 import { ConversationMessageActionsContext } from './actions'
 import { MessageMarkdown } from './MessageMarkdown'
 import { getObjectAccess } from './objectAccess'
-import { displayedContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
+import { displayedContent, effectiveContent, mentionsViewer, messageObjId, messageRelations, messageSummaryText, ownReactionId } from './relations'
+import { MessageTaskArea } from '../tasks/MessageTask'
 import type { ConversationListItem } from './types'
 
 const QUICK_REACTIONS = ['👍', '❤️', '😂', '🎉']
@@ -94,7 +96,7 @@ const messageRenderers: readonly MessageRenderer[] = [
   (message, context) => parseGroupNotice(message) ? <GroupNoticeMessage message={message} context={context} /> : null,
   (message, context) => messageRelations(message)?.redacted ? <RedactedMessage message={message} context={context} /> : null,
   (message, context) => hasAttachmentRefs(message) ? <AttachmentMessage message={message} context={context} /> : null,
-  renderTextMessage,
+  (message, context) => isTextFormat(effectiveContent(message).format) ? <TextMessage message={message} context={context} /> : null,
   renderFallbackMessage,
 ]
 
@@ -152,34 +154,50 @@ export const ConversationListRow = memo(function ConversationListRow({
 
 ConversationListRow.displayName = 'ConversationListRow'
 
-function renderTextMessage(
-  message: MessageObject,
-  { isGroup, selfDid, continued, peerMarkdown }: MessageRenderContext,
-) {
-  const format = message.content.format ?? 'text/plain'
+function isTextFormat(format: string | undefined): boolean {
+  return format === undefined || format === 'text/plain' || format === 'text/markdown' || format === 'text/html'
+}
 
-  if (
-    format !== 'text/plain'
-    && format !== 'text/markdown'
-    && format !== 'text/html'
-  ) {
-    return null
+const DETAILS_IGNORED_TARGETS = 'a, button, input, textarea, select, summary, video, audio, [role="button"], [role="menu"], [role="menuitem"], [data-no-details]'
+
+/**
+ * Clicking a bubble (or Enter on it) opens the message details. Links,
+ * attachments, buttons and a text selection inside it keep their own behaviour.
+ */
+function useBubbleDetails(message: MessageObject): Pick<React.HTMLAttributes<HTMLDivElement>, 'tabIndex' | 'onClick' | 'onKeyDown'> {
+  const { openDetails } = useContext(ConversationMessageActionsContext)
+  if (!openDetails || !messageObjId(message)) return {}
+  return {
+    tabIndex: 0,
+    onClick: event => {
+      if (event.defaultPrevented || (event.target as HTMLElement).closest(DETAILS_IGNORED_TARGETS)) return
+      if (window.getSelection()?.toString()) return
+      openDetails(message)
+    },
+    onKeyDown: event => {
+      if (event.key !== 'Enter' || event.target !== event.currentTarget) return
+      event.preventDefault()
+      openDetails(message)
+    },
   }
+}
 
+function TextMessage({ message, context: { isGroup, selfDid, continued, peerMarkdown } }: { message: MessageObject; context: MessageRenderContext }) {
+  const details = useBubbleDetails(message)
+  const format = effectiveContent(message).format ?? 'text/plain'
   const isSelf = message.from === selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
   const asMarkdown = format === 'text/markdown' || (peerMarkdown && !isSelf && format === 'text/plain')
 
   return (
-    <div
-      className={rowClass(isSelf, continued)}
-      key={`${message.from}:${message.created_at_ms}`}
-    >
+    <div className={rowClass(isSelf, continued)}>
       <div
         className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`}
         style={bubbleStyle(isSelf, continued)}
         data-testid="message-bubble"
+        data-message-id={messageObjId(message)}
+        {...details}
       >
         {!isSelf && isGroup && !continued ? (
           <p
@@ -290,7 +308,7 @@ type ActionMode = 'message' | 'card' | 'redacted'
 
 /** What the viewer may do with one message. */
 function useMessageActionSet(message: MessageObject, mode: ActionMode) {
-  const { relations, forward, remove, pin } = useContext(ConversationMessageActionsContext)
+  const { relations, forward, remove, pin, openDetails } = useContext(ConversationMessageActionsContext)
   const can = mode === 'redacted' ? undefined : relations?.capabilities(message)
   const plain = mode === 'message'
   const sendable = plain && message.ui_delivery_status !== 'sending' && message.ui_delivery_status !== 'failed'
@@ -300,10 +318,11 @@ function useMessageActionSet(message: MessageObject, mode: ActionMode) {
     edit: can?.edit ?? false,
     redact: can?.redact ?? false,
     recall: can?.recall ?? false,
-    copy: plain && (displayedContent(message).trim().length > 0 || (message.content.refs?.length ?? 0) > 0),
+    copy: plain && (displayedContent(message).trim().length > 0 || (effectiveContent(message).refs?.length ?? 0) > 0),
     forward: sendable && !!forward,
     remove: !!remove,
     pin: sendable && !!pin && !!messageObjId(message),
+    details: mode !== 'card' && !!openDetails && !!messageObjId(message),
   }
 }
 
@@ -316,7 +335,7 @@ type ActionPopover = 'picker' | 'menu' | 'delete' | null
 /** Reply / copy / forward / delete as icon buttons, shared by the hover bar and the touch menu. */
 function MessageActionIcons({ message, mode, run, open, setOpen, buttonClass }: { message: MessageObject; mode: ActionMode; run: (operation: () => Promise<void> | void) => void; open: ActionPopover; setOpen: (update: (value: ActionPopover) => ActionPopover) => void; buttonClass?: string }) {
   const { t } = useI18n()
-  const { relations, forward } = useContext(ConversationMessageActionsContext)
+  const { relations, forward, openDetails } = useContext(ConversationMessageActionsContext)
   const can = useMessageActionSet(message, mode)
   const [copied, setCopied] = useState(false)
   useEffect(() => {
@@ -331,6 +350,7 @@ function MessageActionIcons({ message, mode, run, open, setOpen, buttonClass }: 
     {can.copy ? <button type="button" className={buttonClass} aria-label={copyLabel} title={copyLabel} onClick={() => run(async () => { await copyMessage(message); setCopied(true) })} data-testid="message-copy" data-copied={copied || undefined}>{copied ? <Check size={16} /> : <Copy size={16} />}</button> : null}
     {can.forward ? <button type="button" className={buttonClass} aria-label={t('messagehub.message.forward')} title={t('messagehub.message.forward')} onClick={() => { close(); forward?.(message) }} data-testid="message-forward"><Forward size={16} /></button> : null}
     {can.remove || can.redact ? <button type="button" className={buttonClass} aria-haspopup="menu" aria-expanded={open === 'delete'} aria-label={t('messagehub.message.deleteAction')} title={t('messagehub.message.deleteAction')} onClick={() => setOpen(value => value === 'delete' ? null : 'delete')} data-testid="message-delete"><Trash2 size={16} /></button> : null}
+    {can.details ? <button type="button" className={buttonClass} aria-label={t('messagehub.message.details')} title={t('messagehub.message.details')} onClick={() => { close(); openDetails?.(message) }} data-testid="message-details"><Info size={16} /></button> : null}
   </>
 }
 
@@ -378,7 +398,7 @@ function MessageHoverBar({ message, isSelf, selfDid, mode }: { message: MessageO
   const { run, error } = useRelationRunner()
   const can = useMessageActionSet(message, mode)
   const hasMore = can.edit || can.pin
-  if (!can.react && !can.reply && !can.copy && !can.forward && !can.remove && !can.redact && !hasMore) return null
+  if (!can.react && !can.reply && !can.copy && !can.forward && !can.remove && !can.redact && !can.details && !hasMore) return null
   const popoverClass = `absolute bottom-full z-30 mb-1 overflow-hidden rounded-xl shadow-lg ${isSelf ? 'right-0' : 'left-0'}`
   return <>
     <div ref={root} className="mh-hover-bar" data-side={isSelf ? 'self' : 'peer'} data-open={open !== null || undefined} data-testid="message-hover-bar" role="toolbar" aria-label={t('messagehub.message.actions')}>
@@ -404,7 +424,7 @@ function MessageActionsMenu({ message, isSelf, selfDid, mode, selfTone }: { mess
   useDismiss(open !== null, root, close)
   const { run, error } = useRelationRunner()
   const can = useMessageActionSet(message, mode)
-  const hasIcons = can.reply || can.copy || can.forward || can.remove || can.redact
+  const hasIcons = can.reply || can.copy || can.forward || can.remove || can.redact || can.details
   if (!can.react && !hasIcons && !can.edit && !can.pin) return null
   const quickClass = 'flex h-8 w-8 items-center justify-center rounded-full text-base hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)] aria-pressed:bg-[color:color-mix(in_srgb,var(--cp-accent)_14%,transparent)]'
   const iconClass = 'flex h-10 w-10 items-center justify-center rounded-full hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]'
@@ -426,12 +446,13 @@ function MessageActionsMenu({ message, isSelf, selfDid, mode, selfTone }: { mess
 /** Placeholder for a redacted (recalled or deleted) message. */
 function RedactedMessage({ message, context }: { message: MessageObject; context: MessageRenderContext }) {
   const { t } = useI18n()
+  const details = useBubbleDetails(message)
   const { displayName } = useContext(ConversationMessageActionsContext)
   const isSelf = message.from === context.selfDid
   const redacted = messageRelations(message)?.redacted
   const who = redacted?.by === message.from ? (isSelf ? t('messagehub.you') : displayName?.(message.from) ?? getMessageSenderName(message)) : displayName?.(redacted?.by ?? '') ?? redacted?.by ?? ''
   return <div className={rowClass(isSelf, context.continued)}>
-    <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted">
+    <div className={`mh-bubble ${bubbleWidthClass} min-w-[80px]`} style={{ ...bubbleStyle(isSelf, context.continued), opacity: 0.7 }} data-testid="message-redacted" {...details}>
       <p className="text-[13px] italic">{t(redacted?.by === message.from ? 'messagehub.message.redacted' : 'messagehub.message.deletedBy', undefined, { name: who })}</p>
       <MessageFooter message={message} isSelf={isSelf} deliveryStatus={undefined} selfDid={context.selfDid} />
     </div>
@@ -456,6 +477,7 @@ function MessageFooter({ message, isSelf, deliveryStatus, selfDid, frameless = f
   return (
     <>
       <MessageHoverBar message={message} isSelf={isSelf} selfDid={selfDid} mode={relations?.redacted ? 'redacted' : mode} />
+      {mode === 'message' && !relations?.redacted ? <MessageTaskArea message={message} /> : null}
       <ReactionChips message={message} isSelf={selfTone} selfDid={selfDid} />
       <div className="mt-1 flex items-center justify-end gap-1">
         {record?.boxKind === 'REQUEST_BOX' ? <span className="mr-auto rounded-full px-1.5 text-[11px] leading-[18px]" data-testid="request-chip" style={{ background: 'color-mix(in srgb, var(--cp-warning) 16%, transparent)', color: 'color-mix(in srgb, var(--cp-warning) 70%, var(--cp-text))' }}>{t('messagehub.requestShort')}</span> : null}
@@ -521,7 +543,7 @@ function UnavailableMessage({ message }: { message: MessageObject }) {
 
 function hasAttachmentRefs(message: MessageObject): boolean {
   const hasAccess = getObjectAccess() !== null
-  return (message.content.refs ?? []).some(ref => {
+  return (effectiveContent(message).refs ?? []).some(ref => {
     if (ref.target.type !== 'data_obj') return false
     const uri = ref.target.uri_hint?.trim()
     return uri && isHttpUri(uri) ? isLikelyImageUri(uri) : hasAccess
@@ -550,8 +572,11 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   const isSelf = message.from === context.selfDid
   const senderName = getMessageSenderName(message)
   const deliveryStatus = getMessageDeliveryStatus(message)
+  const details = useBubbleDetails(message)
   const caption = displayedContent(message).trim()
-  const refs = message.content.refs ?? []
+  const format = effectiveContent(message).format
+  const captionBody = format === 'text/markdown' || (context.peerMarkdown && !isSelf && (format ?? 'text/plain') === 'text/plain') ? <div className="whitespace-normal"><MessageMarkdown text={caption} /></div> : caption
+  const refs = effectiveContent(message).refs ?? []
   const messageId = getMessageStableId(message, context.messageIndex)
   // Kinds reported by the attachments once their objects resolve; until then
   // the name decides.
@@ -564,11 +589,11 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
   if (frameless) {
     return (
       <div className={rowClass(isSelf, context.continued)}>
-        <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media">
+        <div className={`mh-bubble ${bubbleWidthClass} flex min-w-[160px] flex-col ${isSelf ? 'items-end' : 'items-start'}`} style={framelessStyle()} data-testid="message-media" data-message-id={messageObjId(message)} {...details}>
           {sender}
           <ReplyQuote message={message} />
-          <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`}>{items}</div>
-          {caption.length > 0 ? <p className={`${bodyTextClass} mt-1.5 max-w-full whitespace-pre-wrap break-words`} style={bubbleStyle(isSelf, true)} data-testid="message-media-caption">{caption}</p> : null}
+          <div className={`flex max-w-full flex-col gap-2 ${isSelf ? 'items-end' : 'items-start'}`} data-no-details>{items}</div>
+          {caption.length > 0 ? <div className={`${bodyTextClass} mt-1.5 max-w-full whitespace-pre-wrap break-words`} style={bubbleStyle(isSelf, true)} data-testid="message-media-caption">{captionBody}</div> : null}
           <div className="max-w-full">
             <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} frameless />
           </div>
@@ -581,11 +606,14 @@ function AttachmentMessage({ message, context }: { message: MessageObject; conte
       <div
         className={`mh-bubble ${bubbleWidthClass} min-w-[160px]`}
         style={bubbleStyle(isSelf, context.continued)}
+        data-testid="message-attachments"
+        data-message-id={messageObjId(message)}
+        {...details}
       >
         {sender}
         <ReplyQuote message={message} />
-        <div className="flex flex-col gap-2">{items}</div>
-        {caption.length > 0 ? <p className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{caption}</p> : null}
+        <div className="flex flex-col gap-2" data-no-details>{items}</div>
+        {caption.length > 0 ? <div className={`${bodyTextClass} mt-2 whitespace-pre-wrap break-words`}>{captionBody}</div> : null}
         <MessageFooter message={message} isSelf={isSelf} deliveryStatus={deliveryStatus} selfDid={context.selfDid} />
       </div>
     </div>
@@ -623,10 +651,10 @@ function renderFallbackMessage(
         style={{ ...bubbleStyle(false, continued), borderRadius: '18px' }}
       >
         <p className="text-xs font-semibold mb-1" style={{ color: 'var(--cp-muted)' }}>
-          {message.content.format ?? 'unknown content'}
+          {effectiveContent(message).format ?? 'unknown content'}
         </p>
         <pre className="text-xs whitespace-pre-wrap break-words leading-relaxed">
-          {message.content.content}
+          {displayedContent(message)}
         </pre>
       </div>
     </div>

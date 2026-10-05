@@ -82,6 +82,10 @@ pub struct Origin {
     /// `<run_id>/<call_id>` of the tool call that created the session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_by_call: Option<String>,
+    /// Task of the parent's Turn that created the session: the parent of
+    /// every task this session's Turns get.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_task: Option<String>,
 }
 
 /// What a parent receives from a sub session without subscribing: the

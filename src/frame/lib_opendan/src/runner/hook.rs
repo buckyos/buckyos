@@ -76,6 +76,11 @@ impl SessionCheckpointHook {
             }
             return Ok(());
         }
+        // A Turn that reached a tool call tells the other side it is being
+        // worked on; its task follows what the session does.
+        let tool_called = sh.current_tool.lock().expect("current tool").is_some();
+        super::outbound::maybe_placeholder(sh, tool_called).await;
+        super::turn_task::sync_turn_task(sh).await;
         self.heartbeat().await
     }
 

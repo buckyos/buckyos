@@ -20,6 +20,7 @@ use crate::config::AgentConfig;
 use crate::home::Home;
 use crate::rootfs;
 use crate::service::{Access, LoaderInfo, ModuleStatus, StateService, SERVICE_PATH};
+use crate::tasks::{owner_of, CancelBridge, TaskService, TurnTasks};
 use crate::ui::{MailService, MsgCenterSink, OutboundTexts, UiModule};
 
 /// Everything the Loader takes from its surroundings.
@@ -37,6 +38,8 @@ pub struct LoaderEnv {
     pub kevent: Option<Arc<KEventClient>>,
     /// `None`: no msg-center (development host); ui rules stay idle.
     pub mail: Option<Arc<dyn MailService>>,
+    /// `None`: no TaskMgr (development host); Turns get no task.
+    pub tasks: Option<Arc<dyn TaskService>>,
     pub access: Access,
     pub port: u16,
     pub web_dir: Option<PathBuf>,
@@ -127,6 +130,10 @@ impl Loader {
         if env.session_cli.is_none() {
             log::warn!("loader: no xagent executable next to opendan; sessions get no `agent-session` command");
         }
+        let mut options = env.options.clone();
+        if let Some(ms) = config.loader.placeholder_delay_ms {
+            options.placeholder_delay = Duration::from_millis(ms);
+        }
         // Commands run by a session's shell reach the Agent State as the
         // same identity.
         std::env::set_var("LIBOPENDAN_WHO", &env.who);
@@ -139,10 +146,16 @@ impl Loader {
             assembler: Arc::new(BehaviorAssembler::default()),
             session_cli: env.session_cli.clone(),
             app_tools: Vec::new(),
-            options: env.options.clone(),
+            options,
             max_child_concurrency: 4,
             bridges,
             outbound,
+            turn_tasks: env.tasks.clone().map(|tasks| {
+                Arc::new(TurnTasks {
+                    tasks,
+                    owner: owner_of(&env.who),
+                }) as Arc<dyn libopendan::runner::TurnTaskSink>
+            }),
             runtime_id: None,
         };
         let mut supervisor = Supervisor::new(
@@ -254,6 +267,21 @@ impl Loader {
                     env.options.poll_interval.min(Duration::from_secs(5)),
                 ),
             ));
+        }
+        match &env.tasks {
+            Some(service) => {
+                module("task_mgr", true, true, None);
+                let bridge = Arc::new(CancelBridge {
+                    tasks: service.clone(),
+                    agent: agent.clone(),
+                    supervisor: supervisor.clone(),
+                    who: env.who.clone(),
+                });
+                tasks.push(tokio::spawn(
+                    bridge.run(env.options.poll_interval.min(Duration::from_secs(3))),
+                ));
+            }
+            None => module("task_mgr", false, false, Some("TaskMgr is not available to this host")),
         }
         log::info!(
             "loader: agent {} hosted by {} (root {})",

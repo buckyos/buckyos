@@ -117,6 +117,7 @@ export interface OutboxEntry {
   key: string
   msg: unknown
   turn: number
+  purpose?: 'reply' | 'placeholder' | 'final_edit'
   status: OutboxStatus
   msg_id?: string
   deliveries?: string[]

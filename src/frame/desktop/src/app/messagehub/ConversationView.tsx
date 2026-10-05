@@ -73,6 +73,10 @@ interface ConversationViewProps {
   onForward?: (message: MessageObject) => void
   /** Extra content of the session panel, shown when it is expanded (host-defined). */
   sessionPanelDetails?: ReactNode
+  /** Opens the details of a message. */
+  onOpenMessage?: (message: MessageObject) => void
+  /** ObjId of a message to bring into view (a deep link, or the message whose details are open). */
+  focusMessageId?: string | null
 }
 
 const MIN_HISTORY_PANE_HEIGHT = 180
@@ -99,6 +103,8 @@ export function ConversationView({
   onOpenEntity,
   onForward,
   sessionPanelDetails,
+  onOpenMessage,
+  focusMessageId = null,
 }: ConversationViewProps) {
   const { t } = useI18n()
   const store = useMessageHubStore()
@@ -187,6 +193,7 @@ export function ConversationView({
         react: (message: MessageObject, key: string) => sendRelation(messageObjId(message), 'reaction', key),
         unreact: (message: MessageObject, key: string) => sendRelation(ownReactionId(message, context.ownerDid, key), 'redact'),
       } : undefined,
+      openDetails: sessionId ? onOpenMessage : undefined,
       forward: isOwner && sessionId ? onForward : undefined,
       remove: isOwner && sessionId ? (message: MessageObject) => store.deleteMessage(context, sessionId, message) : undefined,
       pin: isOwner && sessionId ? {
@@ -199,7 +206,13 @@ export function ConversationView({
       } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
     }
-  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, pinnedId, t]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!focusMessageId || !sessionId) return
+    historyPaneRef.current?.scrollToMessage(focusMessageId)
+    void store.locateMessage(context, sessionId, focusMessageId).catch(() => false)
+  }, [focusMessageId, sessionId, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {

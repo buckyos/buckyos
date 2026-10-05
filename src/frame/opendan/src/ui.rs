@@ -14,8 +14,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use buckyos_api::{
-    MailboxAddress, MailboxKind, MailboxRecordWithObject, MsgCenterClient, PostSendResult,
-    RecipientState,
+    MailboxAddress, MailboxKind, MailboxRecordWithObject, MsgCenterClient, MsgEditCapability,
+    PostSendResult, RecipientState,
 };
 use libopendan::api::create_session;
 use libopendan::bridge::{route_msg_record, MsgBridgeCtx, MsgBridgeOutput, OutboundRecord, SlashCommand};
@@ -42,6 +42,9 @@ pub trait MailService: Send + Sync {
         -> Result<Option<MailboxRecordWithObject>, String>;
     async fn mark_read(&self, record_id: &str) -> Result<(), String>;
     async fn post_send(&self, msg: MsgObject, key: &str) -> Result<PostSendResult, String>;
+    /// Whether a message on the envelope `msg` could later be replaced in
+    /// place at every target it would be delivered to.
+    async fn edit_capability(&self, msg: MsgObject) -> Result<MsgEditCapability, String>;
 }
 
 /// msg-center of the zone this process runs in. The client is taken from
@@ -101,6 +104,14 @@ impl MailService for ZoneMailService {
             .await
             .map_err(|e| e.to_string())
     }
+
+    async fn edit_capability(&self, msg: MsgObject) -> Result<MsgEditCapability, String> {
+        Self::client()
+            .await?
+            .get_edit_capability(msg)
+            .await
+            .map_err(|e| e.to_string())
+    }
 }
 
 /// Texts of the agent package (`i18n/<language>.toml`, table `[outbound]`).
@@ -113,6 +124,13 @@ pub struct OutboundTexts {
     pub turn_failed: Option<String>,
     /// Sent when the reply could not be converted into a message.
     pub convert_failed: Option<String>,
+    /// The placeholder of a Turn that takes long. Without it no placeholder
+    /// is sent.
+    pub accepted: Option<String>,
+    /// Ends the placeholder of a stopped Turn.
+    pub stopped: Option<String>,
+    /// Ends the placeholder of a Turn that finished without a reply.
+    pub finished: Option<String>,
 }
 
 impl OutboundTexts {
@@ -136,6 +154,9 @@ impl OutboundTexts {
             delivery_failure_notice: get("delivery_failure_notice"),
             turn_failed: get("turn_failed"),
             convert_failed: get("convert_failed"),
+            accepted: get("accepted"),
+            stopped: get("stopped"),
+            finished: get("finished"),
         }
     }
 }
@@ -155,6 +176,11 @@ impl MsgCenterSink {
             .insert("delivery_failure_fallback".to_string(), Value::Bool(true));
         Some(base)
     }
+
+    fn text(mut base: MsgObject, text: &Option<String>) -> Option<MsgObject> {
+        base.content.content = text.clone()?;
+        Some(base)
+    }
 }
 
 #[async_trait]
@@ -167,13 +193,18 @@ impl OutboundSink for MsgCenterSink {
     ) -> libopendan::Result<Option<MsgObject>> {
         match reply.status {
             TurnStatus::Completed => {}
-            // A stop is the user's own request; nothing to add.
-            TurnStatus::Stopped => return Ok(None),
+            // A stop is the user's own request; nothing to add, except to
+            // end a placeholder.
+            TurnStatus::Stopped => {
+                return Ok(reply
+                    .has_placeholder
+                    .then(|| Self::text(base, &self.texts.stopped))
+                    .flatten());
+            }
             // Failures of Turns nobody asked for (timers, task events) have
             // nobody to be reported to.
             TurnStatus::Failed | TurnStatus::BudgetExhausted => {
-                return Ok(reply
-                    .answers_a_message()
+                return Ok((reply.answers_a_message() || reply.has_placeholder)
                     .then(|| self.notice(base, &self.texts.turn_failed))
                     .flatten());
             }
@@ -187,11 +218,39 @@ impl OutboundSink for MsgCenterSink {
                 }
                 Ok(Some(msg))
             }
-            Ok(None) => Ok(None),
+            Ok(None) => Ok(reply
+                .has_placeholder
+                .then(|| Self::text(base, &self.texts.finished))
+                .flatten()),
             Err(e) => {
                 // The reply itself stays in the worklog.
                 log::warn!("reply of turn {} could not be converted: {e}", reply.turn);
                 Ok(self.notice(base, &self.texts.convert_failed))
+            }
+        }
+    }
+
+    async fn placeholder(
+        &self,
+        _cfg: &SessionConfig,
+        base: MsgObject,
+        _turn: u64,
+    ) -> Option<MsgObject> {
+        let msg = Self::text(base, &self.texts.accepted)?;
+        // Unknown counts as not editable: the Turn then only sends its reply.
+        match self.mail.edit_capability(msg.clone()).await {
+            Ok(c) if c.editable => Some(msg),
+            Ok(c) => {
+                log::debug!(
+                    "no placeholder for {:?}: {}",
+                    msg.to,
+                    c.reason.unwrap_or_else(|| "not editable".to_string())
+                );
+                None
+            }
+            Err(e) => {
+                log::debug!("no placeholder for {:?}: edit capability unknown: {e}", msg.to);
+                None
             }
         }
     }

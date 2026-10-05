@@ -335,6 +335,9 @@
             "null"
           ]
         },
+        "purpose": {
+          "$ref": "#/definitions/OutboxPurpose"
+        },
         "status": {
           "$ref": "#/definitions/OutboxStatus"
         },
@@ -357,6 +360,32 @@
         "turn"
       ],
       "type": "object"
+    },
+    "OutboxPurpose": {
+      "description": "What an outbox entry is for.",
+      "oneOf": [
+        {
+          "description": "The reply of a Turn as a message of its own.",
+          "enum": [
+            "reply"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "\"Accepted, working on it\": sent while the Turn is open, replaced by the Turn's final edit.",
+          "enum": [
+            "placeholder"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The reply of a Turn as an edit of its placeholder.",
+          "enum": [
+            "final_edit"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "OutboxStatus": {
       "oneOf": [
@@ -775,6 +804,95 @@
       ],
       "type": "object"
     },
+    "TurnStatus": {
+      "description": "How a logical Turn ended (decided by the session from the outcome and the hand-over state, never by the waist alone).",
+      "oneOf": [
+        {
+          "description": "A result was delivered (final answer, a reply before waiting for input, or the session finished).",
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A non-recoverable error ended the run.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The run's budget was exhausted.",
+          "enum": [
+            "budget_exhausted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`control(stop)`.",
+          "enum": [
+            "stopped"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TurnTask": {
+      "description": "A Turn and the task the host's task service keeps for it. Written when the task was created (the Turn is open), closed in the commit that closes the Turn, `reported` once the task service took the terminal state.",
+      "properties": {
+        "closed": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TurnStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": true,
+        "has_msg": {
+          "description": "The batch that opened the Turn had a message: a placeholder may be sent for it.",
+          "type": "boolean"
+        },
+        "opened_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "placeholder": {
+          "description": "ObjId of the placeholder message of this Turn (the anchor its final edit targets).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reported": {
+          "type": "boolean"
+        },
+        "summary": {
+          "description": "Result summary handed to the task service with the terminal state.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "opened_at_ms",
+        "task_id",
+        "turn"
+      ],
+      "type": "object"
+    },
     "WaitingFor": {
       "properties": {
         "deadline_ms": {
@@ -1053,6 +1171,13 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "turn_tasks": {
+      "description": "Turns bound to a task of the host's task service: the open Turn's, closed ones whose terminal state is not reported yet, and the most recent settled ones.",
+      "items": {
+        "$ref": "#/definitions/TurnTask"
+      },
+      "type": "array"
     },
     "turns_completed": {
       "default": 0,

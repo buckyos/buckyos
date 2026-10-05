@@ -48,6 +48,8 @@ export interface ConversationMessageActions {
   remove?: (message: MessageObject) => Promise<void>
   /** Pins the message to the session panel, or unpins it when it is the pinned one. */
   pin?: { isPinned: (message: MessageObject) => boolean; toggle: (message: MessageObject) => Promise<void> }
+  /** Opens the details of a message (original, effective content, edits, delivery, task). */
+  openDetails?: (message: MessageObject) => void
   /** Read receipt of an own group message, when the session shows receipts. */
   readReceipt?: (message: MessageObject) => ReadReceipt | null
 }

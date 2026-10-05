@@ -21,9 +21,7 @@ pub const MSG_CENTER_RDB_INSTANCE_ID: &str = "msg-center-main";
 /// Version of the msg-center schema. Bump whenever the DDL below changes in a
 /// way that is not trivially re-idempotent.
 pub const MSG_CENTER_RDB_SCHEMA_VERSION: u64 = 12;
-pub const UI_SESSION_STATE_ACTIVE_KEY: &str = "active";
 pub const UI_SESSION_STATE_TYPING_KEY: &str = "typing";
-pub const UI_SESSION_STATE_STATUS_LINE_KEY: &str = "status_line";
 pub const UI_SESSION_PLATFORM_TELEGRAM: &str = "tg";
 
 pub fn build_msg_tunnel_ui_session_id(
@@ -389,6 +387,7 @@ pub fn msg_center_default_rdb_instance_config() -> RdbInstanceConfig {
 
 const METHOD_MSG_DISPATCH: &str = "msg.dispatch";
 const METHOD_MSG_POST_SEND: &str = "msg.post_send";
+const METHOD_MSG_GET_EDIT_CAPABILITY: &str = "msg.get_edit_capability";
 const METHOD_MSG_GET_NEXT: &str = "msg.get_next";
 const METHOD_MSG_GET_NEXT_DELIVERY: &str = "msg.get_next_delivery";
 const METHOD_MSG_PEEK_BOX: &str = "msg.peek_box";
@@ -1115,6 +1114,22 @@ pub struct PostSendResult {
     pub reason: Option<String>,
 }
 
+/// Whether a message sent with this envelope can later be replaced in place
+/// by its sender (`relates_to = edit`) at every target it is delivered to.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MsgEditCapability {
+    pub editable: bool,
+    /// Why not, e.g. `tunnel:telegram unsupported`, `group edit window`, `unknown`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Platform / group edit window, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edit_window_ms: Option<u64>,
+    /// Attachments cannot be replaced in place.
+    #[serde(default)]
+    pub text_only: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct DeliveryReportResult {
     pub ok: bool,
@@ -1342,6 +1357,21 @@ impl MsgCenterPostSendReq {
 
     pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
         parse_from_json(value, "MsgCenterPostSendReq")
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MsgCenterGetEditCapabilityReq {
+    pub msg: MsgObject,
+}
+
+impl MsgCenterGetEditCapabilityReq {
+    pub fn new(msg: MsgObject) -> Self {
+        Self { msg }
+    }
+
+    pub fn from_json(value: Value) -> std::result::Result<Self, RPCErrors> {
+        parse_from_json(value, "MsgCenterGetEditCapabilityReq")
     }
 }
 
@@ -2362,6 +2392,26 @@ impl MsgCenterClient {
                 let req_json = serialize_to_json(&req, "MsgCenterPostSendReq")?;
                 let result = client.call(METHOD_MSG_POST_SEND, req_json).await?;
                 parse_rpc_response(result, "PostSendResult")
+            }
+        }
+    }
+
+    pub async fn get_edit_capability(
+        &self,
+        msg: MsgObject,
+    ) -> std::result::Result<MsgEditCapability, RPCErrors> {
+        match self {
+            Self::InProcess(handler) => {
+                let ctx = RPCContext::default();
+                handler.handle_get_edit_capability(msg, ctx).await
+            }
+            Self::KRPC(client) => {
+                let req = MsgCenterGetEditCapabilityReq::new(msg);
+                let req_json = serialize_to_json(&req, "MsgCenterGetEditCapabilityReq")?;
+                let result = client
+                    .call(METHOD_MSG_GET_EDIT_CAPABILITY, req_json)
+                    .await?;
+                parse_rpc_response(result, "MsgEditCapability")
             }
         }
     }
@@ -3457,6 +3507,14 @@ pub trait MsgCenterHandler: Send + Sync {
         ctx: RPCContext,
     ) -> std::result::Result<PostSendResult, RPCErrors>;
 
+    /// Answer from the same route planning `post_send` would use for `msg`,
+    /// without sending or persisting anything.
+    async fn handle_get_edit_capability(
+        &self,
+        msg: MsgObject,
+        ctx: RPCContext,
+    ) -> std::result::Result<MsgEditCapability, RPCErrors>;
+
     async fn handle_list_mailboxes(
         &self,
         owner: DID,
@@ -3705,6 +3763,18 @@ pub trait MsgCenterHandler: Send + Sync {
         ))
     }
 
+    /// In-process only: tunnels read a delivery record to find the external
+    /// message id of an already delivered message.
+    async fn handle_get_delivery(
+        &self,
+        _delivery_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<DeliveryRecord>, RPCErrors> {
+        Err(RPCErrors::UnknownMethod(
+            "msg_center.get_delivery".to_string(),
+        ))
+    }
+
     async fn handle_get_tunnel_cursor(
         &self,
         _tunnel_key: String,
@@ -3923,6 +3993,14 @@ impl<T: MsgCenterHandler> RPCHandler for MsgCenterServerHandler<T> {
                 let result = self
                     .0
                     .handle_post_send(post_send_req.msg, post_send_req.idempotency_key, ctx)
+                    .await?;
+                RPCResult::Success(json!(result))
+            }
+            METHOD_MSG_GET_EDIT_CAPABILITY => {
+                let capability_req = MsgCenterGetEditCapabilityReq::from_json(req.params)?;
+                let result = self
+                    .0
+                    .handle_get_edit_capability(capability_req.msg, ctx)
                     .await?;
                 RPCResult::Success(json!(result))
             }

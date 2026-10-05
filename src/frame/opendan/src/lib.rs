@@ -17,4 +17,5 @@ pub mod home;
 pub mod loader;
 pub mod rootfs;
 pub mod service;
+pub mod tasks;
 pub mod ui;

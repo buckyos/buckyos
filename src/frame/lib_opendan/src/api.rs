@@ -589,6 +589,11 @@ pub async fn create_sub_session(
         reason_messages: Vec::new(),
         report: Some(sub.report),
         created_by_call: sub.call.as_ref().map(|(run, call)| format!("{run}/{call}")),
+        parent_task: parent_dir
+            .state()
+            .ok()
+            .and_then(|s| s.open_turn_task().map(|t| t.task_id.clone()))
+            .or_else(|| pcfg.session.origin.as_ref().and_then(|o| o.parent_task.clone())),
     });
     spec.timezone = pcfg.session.timezone.clone();
     spec.prompt.llm_context = pcfg.prompt.llm_context.clone();

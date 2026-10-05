@@ -148,6 +148,9 @@ async fn drive_locked(
         kind_lease: Mutex::new(None),
         tasks: Mutex::new(None),
         turn_closed: Mutex::new(None),
+        current_tool: Arc::new(Mutex::new(None)),
+        task_status: Mutex::new(None),
+        flush: tokio::sync::Mutex::new(()),
     });
     let r = Box::pin(drive_inner(&sh, until)).await;
     let rev = sh.session.lock().await.state.rev;
@@ -357,7 +360,23 @@ async fn stop_session(
                 next_behavior: None,
                 report: None,
             }];
-            if s.state.open_turn.take().is_some() {
+            if let Some(open) = s.state.open_turn.take() {
+                super::outbound::queue_reply(
+                    sh,
+                    &mut s,
+                    "",
+                    super::outbound::TurnReply {
+                        turn,
+                        status: TurnStatus::Stopped,
+                        answer: None,
+                        inputs: open.inputs,
+                        has_msg: open.has_msg,
+                        error: None,
+                        has_placeholder: false,
+                    },
+                )
+                .await;
+                super::turn_task::close_turn_task(&mut s, turn, TurnStatus::Stopped, None, None);
                 bodies.push(WorklogBody::TurnEnded {
                     run_id: String::new(),
                     turn,
@@ -372,6 +391,9 @@ async fn stop_session(
             }
             s.append_worklog(&sh.lease, bodies)?;
             commit_and_report(sh, &mut s).await?;
+            drop(s);
+            super::outbound::flush_outbox(sh).await;
+            super::turn_task::flush_turn_tasks(sh).await;
             Ok(())
         }
     }
@@ -754,6 +776,12 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     // Replies committed and not handed over yet (a crash after the commit,
     // a sink that was not reachable).
     super::outbound::flush_outbox(sh).await;
+    // The open Turn's task (a crash between opening the Turn and binding
+    // it), results not reported yet, a placeholder that became due while
+    // nobody drove the session.
+    super::turn_task::ensure_turn_task(sh, None).await;
+    super::turn_task::flush_turn_tasks(sh).await;
+    super::outbound::maybe_placeholder(sh, false).await;
     let pending_now = match &reconciled {
         Reconciled::Resume(_, snapshot) => pending_task_ids(snapshot),
         Reconciled::None => Vec::new(),
@@ -776,6 +804,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     let mut outcomes_handled = 0u64;
     loop {
         sh.lease.check()?;
+        super::turn_task::sync_turn_task(sh).await;
         external_stop(sh).await?;
         if sh.session.lock().await.state.stop_requested {
             Box::pin(stop_session(sh, live.take(), waiting.take(), &env)).await?;

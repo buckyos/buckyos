@@ -7,9 +7,10 @@ export function MessageHubRoute() {
   const navigate = useNavigate()
   const entityId = searchParams.get('entityId')
   const sessionId = searchParams.get('sessionId')
+  const messageId = searchParams.get('messageId')
   const exitObserver = () => setSearchParams(previous => {
     const next = new URLSearchParams(previous)
-    next.delete('ownerDid'); next.delete('mode'); next.delete('entityId'); next.delete('sessionId')
+    next.delete('ownerDid'); next.delete('mode'); next.delete('entityId'); next.delete('sessionId'); next.delete('messageId')
     return next
   }, { replace: true })
 
@@ -24,7 +25,7 @@ export function MessageHubRoute() {
           backdropFilter: 'blur(20px)',
         }}
       >
-        <MessageHubView initialEntityId={entityId} initialSessionId={sessionId} contextRequest={messageHubRouteContext(searchParams)} onHome={() => navigate('/')} onExitObserver={exitObserver} />
+        <MessageHubView initialEntityId={entityId} initialSessionId={sessionId} initialMessageId={messageId} contextRequest={messageHubRouteContext(searchParams)} onHome={() => navigate('/')} onExitObserver={exitObserver} />
       </div>
     </main>
   )

@@ -147,6 +147,15 @@ export interface MsgContent {
 }
 
 /**
+ * `agent_task`: the TaskMgr task of the Agent Turn that produced this reply.
+ * Only MessageHub reads it, and only on the anchor message (never on an
+ * `edit`); everything else passes it through as an opaque extension field.
+ */
+export interface AgentTaskRef {
+  task_id: string
+}
+
+/**
  * MsgObject v2 (`CYFS 标准对象` §16).
  *
  * Rust flattens `meta` into the top-level object, so unknown keys are allowed
@@ -175,6 +184,8 @@ export interface MsgObject {
   /** Random per message (`randomMsgNonce`) so identical messages keep distinct ObjIds. */
   nonce?: number
   content: MsgContent
+  /** Flattened `meta` extension, see `AgentTaskRef`. */
+  agent_task?: AgentTaskRef
   [key: string]: unknown
 }
 
@@ -207,6 +218,14 @@ export function randomMsgNonce(): number {
   const [high, low] = crypto.getRandomValues(new Uint32Array(2))
   return (high & 0x1f_ffff) * 0x1_0000_0000 + low
 }
+/** Task id of an anchor message; an `agent_task` carried by an edit is ignored. */
+export function messageAgentTaskId(message: MessageObject): string | undefined {
+  if (message.relates_to?.rel === 'edit') return undefined
+  const value: unknown = message.agent_task
+  const taskId = value && typeof value === 'object' ? (value as { task_id?: unknown }).task_id : undefined
+  return typeof taskId === 'string' && taskId.trim() ? taskId : undefined
+}
+
 export type MessageDeliveryStatus =
   | 'sending'
   | 'sent'

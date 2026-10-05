@@ -59,7 +59,8 @@ Schema：`schema/session_config.schema.json`。要点：
     "driver": { "principal": "app:app2@alice" },   // 推进身份，创建后不变
     "idempotency_key": null, "route_key": null,
     "origin": { "parent_session": null, "intent_ref": null, "reason_messages": [],
-                "report": "final | progress | none", "created_by_call": "<run_id>/<call_id>" },   // Sub Session：父怎么收到汇报、创建它的调用
+                "report": "final | progress | none", "created_by_call": "<run_id>/<call_id>",
+                "parent_task": "<创建它的那个 Turn 的 task id，可缺省>" },   // Sub Session：父怎么收到汇报、创建它的调用
     "objective": "...",
     "end_condition": { "type": "llm_declares_done | output_schema | max_turns", "detail": {"n": 3} },
     "scope": { "objects": [], "paths": ["ws:snake/src/"] },     // 活动视图的初始声明
@@ -188,6 +189,8 @@ Schema：`schema/session_state.schema.json`。
 - `handover_at_ms`：本 state 已提交的交接记录（run.json `handover.at_ms`）的时间戳；带相同时间戳的记录不是待办的转移（§7、§8）。
 - `live_run` = 未结束的 run；`last_run` = 最后一次结束的 run（保留其 llm context 状态）；`process_stack[].run_id` = 挂起的 process 的 run。三者之外的 run 目录可以删除（§7）。
 - `outbox`（出站，驱动者配置了出站 sink 时才产生）：Turn 关闭的那次提交里，由 `reply` 给出信封、sink 填内容，生成完整的 MsgObject 连同幂等键写入，`status = pending`；`created_at_ms` 在这里定死。提交之后驱动者把 `pending` 条目按序交给 sink：成功 → `sent`（记 `msg_id` / `deliveries`）；被拒 → `failed`（记 `error`，不重试）；没送到 → 保持 `pending`，`attempts + 1`，退避后由之后的 drive 原样重发（同一个键、同一个 MsgObject，ObjId 不变）。发送失败不让 Turn 失败，也不阻塞后续输入；排在它后面的条目等它。`channels.outbound` 存在而 `reply` 的 `to / to_session / kind` 与它不一致时，条目直接记为 `failed`（`route_mismatch`），不发送。有父 Session 的 Session、以及回复对象是 Agent 自己时不产生条目。已结束（`sent` / `failed`）的条目保留最近 16 条供展示。
+- `outbox[].purpose`（可缺省，缺省为 `reply`）与占位：`reply` 是 Turn 的回复作为独立消息；`placeholder` 是 Turn 进行中发出的占位（键 `<sid>:<turn>:placeholder`）；`final_edit` 是以 `relates_to = {rel: edit, target: <占位 ObjId>}` 替换占位的回复。占位只在 Turn 绑定了 task、由消息打开、打开超过 `placeholder_delay`（默认 3 秒）或已发生首次工具调用、且 sink 给出占位消息（宿主有文案、目标可编辑）时产生。Turn 关闭时：占位从未交给 sink（`pending` 且 `attempts = 0`）则撤销占位、回复照常独立发出；否则回复是 `final_edit`，sink 没有正文可给时用结束摘要收尾。占位被拒或放弃后，同一 Turn 的 `final_edit` 改回 `reply`。Turn 的 task id 以顶层扩展字段 `agent_task = {task_id}` 写在锚点消息上（占位，或没有占位时的回复本身），edit 不带。
+- `turn_tasks`（驱动者配置了 task 钩子 `TurnTaskSink` 时才产生）：`{turn, task_id, has_msg, opened_at_ms, placeholder?, closed?, summary?, error?, reported}`。Turn 打开后幂等创建 task（键 = `(session_id, turn)`）并写入绑定；关闭 Turn 的那次提交写 `closed`（TurnStatus）与结果摘要；task 服务收下终态后 `reported = true`，没送到则由之后的 drive 重试。绑定独立于 outbox 的清理，已上报的保留最近 64 条。task 创建失败的 Turn 没有绑定，也就没有占位，回复照常。子 Session 的 `origin.parent_task` 取自创建它时父 Session 打开的 Turn 的绑定，它的每个 Turn 的 task 都以此为父。
 - `run_state` 迁移：`created → ready ⇄ running ⇄ waiting → finished`；进入 finished 后不能回到 running。stop / decide 只能由驱动者执行，其它参与方投递 control。
 
 **逻辑 Turn**（当前实现）：Turn = AgentSession 的一次逻辑 Input → result，与 run、`LLMContext` Outcome、输入批次 `(run_id, input_seq)` 都不一一对应，不能用 run 数或 Outcome 数推算 Turn 数。

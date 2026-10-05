@@ -925,6 +925,13 @@
             "null"
           ]
         },
+        "parent_task": {
+          "description": "Task of the parent's Turn that created the session: the parent of every task this session's Turns get.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "reason_messages": {
           "items": {
             "type": "string"

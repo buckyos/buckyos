@@ -1,6 +1,6 @@
 # MessageHub Agent Chat：可编辑回复与 task 状态展示 TODO
 
-日期：2026-10-04。状态：设计已评审，§0 的决定已冻结，没有遗留的待确认项；尚未实施。
+日期：2026-10-04。状态：设计已评审，§0 的决定已冻结；P0-a、P0-b 与 P1（除动态组授权）已实施，本地测试通过，DV 环境的原生私聊验收通过（§7.5）；原生群聊与 Telegram 尚未验收。实施记录见 §7。
 
 基线：当前工作区代码（HEAD `3b05fa61`，包含已有的未提交修改）。以下“现状”以代码为准；旧版 OpenDAN TODO 中的完成记录不能直接视为当前 Loader 已具备的能力。
 
@@ -160,13 +160,13 @@ P0 门禁：能力查询落地前，凡经 tunnel 出站的目标一律视为不
 
 不要只增加一个静态 `supports_edit = true`。至少区分“目标支持编辑自己的消息”和“该条消息此刻可编辑”；还要表达文本/附件限制、编辑时间窗及最终执行错误。
 
-- [ ] 由 msg-center 按确定的出站 route/target 提供能力查询；`MailService` / `OutboundSink` 暴露给 Turn 接入路径。Agent 不从平台名称、入站 transport 或最近活跃聊天推断出站能力。
-- [ ] 原生 MessageHub 复用同一能力语义。（简化）群配置了 `edit_window_ms`（非 `None`）即视为不可编辑、跳过占位，不做服务端豁免。外部能力未知按不支持处理。
-- [ ] 同一 Turn 多个目标分别决策；一个目标不可编辑不影响另一个可编辑目标。
-- [ ] Telegram 把通用 edit 关系落到平台编辑 API：用原消息 ObjId 算出 delivery_id，读已持久化的 `external_msg_id`。禁止把 edit 正文当成新消息发出。
-- [ ] （简化）删除 Telegram 既有的 status_line / turn_nonce / `TgUiSessionTracker` 状态消息链路，不做接入，避免两套占位。
-- [ ] 处理编辑时间窗过期、原消息被删除、格式或附件无法原地替换：外部平台按能力更新占位为终态摘要，并以必要的独立消息交付完整附件/结果。确实无法编辑时发送一次普通最终回复作为兜底。
-- [ ] 暂时失败按原键重试，永久失败才进入持久化的兜底发送状态；处理“平台编辑成功但 ACK 丢失”，避免重试又发送一份最终答案。
+- [x] 由 msg-center 按确定的出站 route/target 提供能力查询；`MailService` / `OutboundSink` 暴露给 Turn 接入路径。Agent 不从平台名称、入站 transport 或最近活跃聊天推断出站能力。
+- [x] 原生 MessageHub 复用同一能力语义。（简化）群配置了 `edit_window_ms`（非 `None`）即视为不可编辑、跳过占位，不做服务端豁免。外部能力未知按不支持处理。
+- [x] 同一 Turn 多个目标分别决策；一个目标不可编辑不影响另一个可编辑目标。
+- [x] Telegram 把通用 edit 关系落到平台编辑 API：用原消息 ObjId 算出 delivery_id，读已持久化的 `external_msg_id`。禁止把 edit 正文当成新消息发出。
+- [x] （简化）删除 Telegram 既有的 status_line / turn_nonce / `TgUiSessionTracker` 状态消息链路，不做接入，避免两套占位。
+- [x] 处理编辑时间窗过期、原消息被删除、格式或附件无法原地替换：外部平台按能力更新占位为终态摘要，并以必要的独立消息交付完整附件/结果。确实无法编辑时发送一次普通最终回复作为兜底。
+- [x] 暂时失败按原键重试，永久失败才进入持久化的兜底发送状态；处理“平台编辑成功但 ACK 丢失”，避免重试又发送一份最终答案。
 
 不支持编辑的 tunnel 不需要支持 MessageHub 的两行状态、树或详情页；这是原生 UI 的增强能力。能力不足不应阻断最终答复。
 
@@ -174,38 +174,110 @@ P0 门禁：能力查询落地前，凡经 tunnel 出站的目标一律视为不
 
 ### P0-a：OpenDAN 接入 TaskMgr（D2，先做）
 
-- [ ] 确认 TaskMgr 默认 ACL 下 Agent 自建 task 对 owner 的可见性，定 grant 范围（D6）。
-- [ ] 定 Agent Turn 的 task schema（input 含 agent_did、session_id、turn、输入消息引用）与 phase / wait_reason / outcome 映射表；task 正常出现在 Task Center（D7），名称与摘要要让人在列表里看得懂。
-- [ ] libopendan 增加宿主钩子与 `origin` 里的父 task id；OpenDAN 用 TaskMgr 客户端实现创建（幂等键 = sid + turn）、状态上报、终结。
-- [ ] 子 Session 的 task 挂到创建它的 Turn task 下；已有 task_id 的长工具挂到所属 Turn task 下。
-- [ ] TaskMgr cancel → Session stop 的 bridge；重启恢复时按幂等键找回 task，不重复创建。
-- [ ] 验证：UI Session 一个 Turn 开两个子 Session，`get_task_tree` 得到正确的树与终态。
+- [x] 确认 TaskMgr 默认 ACL 下 Agent 自建 task 对 owner 的可见性，定 grant 范围（D6）。
+- [x] 定 Agent Turn 的 task schema（input 含 agent_did、session_id、turn、输入消息引用）与 phase / wait_reason / outcome 映射表；task 正常出现在 Task Center（D7），名称与摘要要让人在列表里看得懂。
+- [x] libopendan 增加宿主钩子与 `origin` 里的父 task id；OpenDAN 用 TaskMgr 客户端实现创建（幂等键 = sid + turn）、状态上报、终结。
+- [x] 子 Session 的 task 挂到创建它的 Turn task 下；已有 task_id 的长工具挂到所属 Turn task 下。
+- [x] TaskMgr cancel → Session stop 的 bridge；重启恢复时按幂等键找回 task，不重复创建。
+- [x] 验证：UI Session 一个 Turn 开两个子 Session，`get_task_tree` 得到正确的树与终态。
 
 ### P0-b：原生闭环
 
-- [ ] 冻结 `agent_task` 字段（§3.1），同步 TS 类型与协议文档。
-- [ ] libopendan / OpenDAN：延迟占位、outbox 条目用途、最终 edit、失败/停止收尾与恢复；tunnel 目标门禁。
-- [ ] MessageHub：edit 折叠替换完整 `MsgContent`；按 task 查询与默认两行状态；占位记录随 edit 标已读。
-- [ ] 跑通一条消息从占位到最终结果，刷新后 task_id 不变；快速回复不出现占位。
+- [x] 冻结 `agent_task` 字段（§3.1），同步 TS 类型与协议文档。
+- [x] libopendan / OpenDAN：延迟占位、outbox 条目用途、最终 edit、失败/停止收尾与恢复；tunnel 目标门禁。
+- [x] MessageHub：edit 折叠替换完整 `MsgContent`；按 task 查询与默认两行状态；占位记录随 edit 标已读。
+- [x] 跑通一条消息从占位到最终结果，刷新后 task_id 不变；快速回复不出现占位。
 
 ### P1：完整三层体验与通道适配
 
-- [ ] MessageHub 展开树、通用消息详情和消息级深链。
-- [ ] 事件加速、轮询兜底、终态缓存、列表摘要同步。
-- [ ] tunnel 能力查询与 Telegram 通用 edit；删除旧 status_line 链路。
-- [ ] 私聊 edit 的接收侧校验；需要时再做服务端有效投影。
+- [x] MessageHub 展开树、通用消息详情和消息级深链。
+- [x] 事件加速、轮询兜底、终态缓存、列表摘要同步。
+- [x] tunnel 能力查询与 Telegram 通用 edit；删除旧 status_line 链路。
+- [x] 私聊 edit 的接收侧校验；需要时再做服务端有效投影。
 - [ ] 动态组授权：让 owner 之外的人（群成员等）读到 task。
 
 ### 联动与验收
 
-- [ ] 协议改动同步 Rust API、Desktop 类型、实际使用的 websdk 客户端、Session 持久 schema，以及 `doc/message_hub/`、`doc/opendan/protocol/`、`doc/opendan/xAgent.md`、MessageHub `UI_DATAMODEL.md`。
-- [ ] 与 [lib-opendan-outbound-todo.md](./lib-opendan-outbound-todo.md)、[opendan-agent-loader-refactor-todo.md](./opendan-agent-loader-refactor-todo.md) 对齐接口与恢复语义。
-- [ ] Runtime 测试：快速完成（有 task、无占位）；阈值后发占位；Turn 中并入的输入；失败/预算耗尽/停止；子 Session task 的父子关系；task 创建、占位发送、响应丢失、task 终结、最终 edit 各阶段重启恢复；没有 TaskMgr 钩子的宿主行为不变。
-- [ ] 投影测试：完整 Markdown/附件替换、原消息与 edit 乱序/重放、原消息已撤回、非原作者的 edit 被忽略、edit 上的 `agent_task` 被忽略。
-- [ ] Tunnel 测试：门禁期间完全没有占位；P1 后覆盖支持/不支持/未知能力、编辑窗口过期、带附件、编辑成功但 ACK 丢失、兜底仅发一次、重启后不编辑错消息。
-- [ ] UI 测试：原气泡位置及锚点稳定；两行/展开树/详情三层贯通；断线恢复；权限不足与任务已清理时不展示任务区；观察模式；最终答案不会被旧状态覆盖。
+- [x] 协议改动同步 Rust API、Desktop 类型、实际使用的 websdk 客户端、Session 持久 schema，以及 `doc/message_hub/`、`doc/opendan/protocol/`、`doc/opendan/xAgent.md`、MessageHub `UI_DATAMODEL.md`。
+- [x] 与 [lib-opendan-outbound-todo.md](./lib-opendan-outbound-todo.md)、[opendan-agent-loader-refactor-todo.md](./opendan-agent-loader-refactor-todo.md) 对齐接口与恢复语义。
+- [x] Runtime 测试：快速完成（有 task、无占位）；阈值后发占位；Turn 中并入的输入；失败/预算耗尽/停止；子 Session task 的父子关系；task 创建、占位发送、响应丢失、task 终结、最终 edit 各阶段重启恢复；没有 TaskMgr 钩子的宿主行为不变。
+- [x] 投影测试：完整 Markdown/附件替换、原消息与 edit 乱序/重放、原消息已撤回、非原作者的 edit 被忽略、edit 上的 `agent_task` 被忽略。
+- [x] Tunnel 测试：门禁期间完全没有占位；P1 后覆盖支持/不支持/未知能力、编辑窗口过期、带附件、编辑成功但 ACK 丢失、兜底仅发一次、重启后不编辑错消息。
+- [x] UI 测试：原气泡位置及锚点稳定；两行/展开树/详情三层贯通；断线恢复；权限不足与任务已清理时不展示任务区；观察模式；最终答案不会被旧状态覆盖。
 - [ ] 真实 Zone 验收至少覆盖原生私聊、原生群聊和 Telegram。
 
 完成标准：每个含消息的 Turn 在 TaskMgr 有一个 task，子 Session 的 task 挂在正确的父节点下；正常可编辑路径从接受到终结只有一个主要回复气泡，并可由不变的 task_id 追溯本 Turn 的工作；快速回复和不支持编辑的目标只收到正常最终答复；重启、重试、多个 Turn 和编辑失败都不会造成串任务或遗失最终结果。
 
-本次验证范围：静态核对上述代码入口与文档相对链接；未修改实现，未运行构建、服务测试或真实 tunnel 验收。
+## 7. 实施记录（2026-10-04）
+
+未提交 git。§2“现状”描述的是实施前的代码。
+
+### 7.1 落点
+
+| 范围 | 文件 | 内容 |
+|---|---|---|
+| task schema | `src/kernel/buckyos-api/src/task_mgr.rs` | 内置 `opendan.agent_turn/v1`（只允许 App 执行者）；task-manager 重启后种入 |
+| Turn task 钩子 | `src/frame/lib_opendan/src/runner/turn_task.rs` | `TurnTaskSink`（open / update / close）、`ensure_turn_task`、`sync_turn_task`（去重上报）、`flush_turn_tasks`（终态重试） |
+| 持久绑定 | `lib_opendan/src/protocol/{state,config}.rs`、`api.rs` | `state.turn_tasks`、`OutboxEntry.purpose`、`origin.parent_task`（建子 Session 时取父 Session 打开的 Turn 的 task） |
+| 占位与最终 edit | `lib_opendan/src/runner/outbound.rs` | `OutboundSink::placeholder`、`maybe_placeholder`（阈值定时器 / 首次工具调用 / drive 入口）、`queue_reply` 的 edit 与撤销分支、`agent_task` 写入锚点消息 |
+| OpenDAN | `src/frame/opendan/src/tasks.rs`、`ui.rs`、`loader.rs`、`config.rs` | `ZoneTaskService`、`TurnTasks`、`CancelBridge`；`MsgCenterSink::placeholder`（文案 + 能力查询）；`[loader] placeholder_delay_ms`；模块状态 `task_mgr` |
+| Agent 包 | `src/apps/jarvis_runtime/agent/i18n/{en,zh}.toml` | `[outbound]` 的 `accepted` / `stopped` / `finished` |
+| msg-center | `src/frame/msg_center/src/{msg_center,msg_tunnel,message_hub,tg_tunnel,main}.rs`、`buckyos-api/src/msg_center_client.rs` | `msg.get_edit_capability`（与 `post_send` 同一套路由规划）；tunnel 的 `EditCapability` / `EditFailure`；Telegram 通用 edit 与一次性兜底；删除 status_line / turn_nonce / `TgUiSessionTracker`；私聊 edit 接收侧校验 |
+| MessageHub | `src/frame/desktop/src/app/messagehub/`（`protocol/msgobj.ts`、`conversation/history/{relations,renderers,locate}.ts(x)`、`conversation/tasks/`、`MessageDetails.tsx`、`launch.ts`、`api/store.ts`、`mock/`）、`src/api/task_mgr.ts` | 完整 `MsgContent` 折叠、两行任务区、共享 task 缓存与订阅、展开树、通用消息详情、`messageId` 深链、占位与 edit 一并标已读、mock 会话“Release Checklist” |
+| 文档 | `doc/opendan/protocol/`（Session Directory / Input / README、schema、fixtures）、`doc/opendan/xAgent.md`、`doc/message_hub/`、`src/frame/opendan/README.md`、MessageHub `UI_DATAMODEL.md`、[lib-opendan-outbound-todo.md](./lib-opendan-outbound-todo.md) §7 | 与上面的改动同步 |
+
+### 7.2 实施中定下的细节
+
+- **D6 的 ACL 结论**：TaskMgr 默认 preset 只认 `{user, app}` 完全相同的主体；另有一条“对 `obj://task/{owner}` 有 RBAC read 的控制面（Task Center）可读该用户全部 task”。在此之上，root task 创建时 grant 给 `User{owner}`：ReadMeta / ReadInput / ReadResult / Control，Subtree，Full。子 task 经父链继承。
+- **task 状态映射**：Running + `message`（`running <tool>` / `working (<behavior>)`）与 `progress = {behavior, tool}`；`waiting_for` children → Waiting(ChildTask)、tool → Dependency、event → External、input → Other；Completed → `commit_result({summary})`；Failed / BudgetExhausted → `fail_task(turn_failed | budget_exhausted)`；Stopped → 确认已有的 cancel 请求，没有则自己请求再确认，终态 Canceled。
+- **session_id / turn 在 task 的 input 里**：普通 `create_task` 不能写 `origin_ref`。
+- **占位的 ObjId 在入队时就能算出**（MsgObject 内容定址），所以 Turn 结束时不必等占位发送结果；占位落定后按 msg-center 返回的 `msg_id` 修正 edit 的 target。
+- **占位从未交给 sink 就结束的 Turn** 撤销占位、发普通回复；占位被拒时最终 edit 改回普通回复。
+- **回复先于 stop 到达**：推理已经返回最终答复时，Turn 以 Completed 结束，随后 Session 才 stop；task 记为成功。
+- **Telegram 兜底**是至少一次：平台已收下兜底消息、状态未落盘时进程退出，重试会再发一条（Telegram 没有幂等发送）。
+- **“处理完成，回复同步中”是 UI 侧推断**：协议里占位与快速回复无法区分（D4 只带 task_id）。task 成功、没有折叠到 edit、消息早于 task 完成 2 秒以上、完成不到 10 分钟时显示。
+- **长工具挂到 Turn task 下**：当前 Loader 的工具只产生进程内 task，没有产生 TaskMgr task 的工具，没有可挂接的对象；`parent_task` 的传递方式已就绪。
+
+### 7.3 验证
+
+- `cargo test -p libopendan -- --test-threads=1`：全部通过，新增 `tests/turn_task.rs` 10 例（快速 Turn、阈值占位、首次工具调用、不可编辑目标、占位被拒、停止收尾、task 服务不可用与终态重试、子 Session 父子关系、六个故障点的重启恢复）。
+- `cargo test -p opendan -- --test-threads=1`：全部通过，`tests/loader.rs` 新增 3 例（占位 → edit 与快速回复与不可编辑、一个 Turn 开两个子 Session 的 task 树与终态、TaskMgr cancel → Session stop → Canceled 与占位收尾），用假的 msg-center 与假的 TaskMgr。
+- `cargo test -p msg_center -- --test-threads=1`：124 通过。`cargo test -p task_manager builtin`：通过。`cargo check --workspace`：通过。
+- Desktop（`src/frame/desktop`）：`tsc -b`、`eslint`（0 error）、`pnpm run build`、deno 数据模型测试 41 例、Playwright 66 例（mock 模式）。
+- fixtures 与 JSON schema 已重新生成。
+
+### 7.4 未完成与未验证
+
+- 真实 Zone 验收只做了原生私聊（§7.5）。原生群聊没有做：Jarvis 包没有启用 `[[loader.ui]] on = "msg.group"` 规则。Telegram 没有做：需要真实 bot。
+- 动态组授权（owner 之外的人读 task）。
+- 未打开的会话，msg-center 的 `unread_count` 仍把占位与 edit 各算一条；UI 只在气泡可见时把两条一并标已读。
+- websdk / desktop 的 TS 客户端没有加 `msg.get_edit_capability`（目前只有 OpenDAN 调用）；`src/rootfs/libexec/buckyos-tool/dist/msg_center_client.d.ts` 是旧的构建产物。
+- Telegram：等待中的原消息可能让 edit 在 5 次投递后进入 DEAD；redact / reaction / thread 仍按普通消息发出。
+- MessageHub：窄屏下深链只滚动到消息、不自动打开详情；独立路由点击打开详情时不把 `messageId` 写进 URL；真实后端定位消息最多回翻 50 页；观察模式没有专门的 UI 测试；详情里的产物引用按 `result.artifacts | outputs | files` 猜测（Turn task 的 result 目前只有 `summary`）。
+- 续接关系（§3.4）按决定不做。
+
+### 7.5 DV 环境验收（2026-10-04，原生私聊）
+
+环境：本机 DV（`test.buckyos.io`），task-mgr 与 msg-center 数据已清空。`uv run buckyos-build.py` → `./build_aios --local-test`（`local/aios-test`）→ `uv run start.py`。脚本：`test/test_opendan/test_agent_chat_task.ts`（devtest 登录，`OPENDAN_URL` 指向调度器分配给 Jarvis 的端口，本次是 10032）；UI：`src/frame/desktop` 下 `MESSAGEHUB_REAL_E2E=1 MESSAGEHUB_REAL_ZONE_IP=127.0.0.1 AGENT_TASK_TREE_MSG=… pnpm exec playwright test --config=playwright.real.config.ts messagehub-agent-task`。
+
+| 项 | 做法 | 结果 |
+|---|---|---|
+| 能力查询 | `msg.get_edit_capability`（用户 → Agent 的信封） | `editable = true` |
+| 占位 → edit | “用 shell 执行 `sleep 6; date`” | 约 5 秒收到占位（带 `agent_task`），约 16 秒收到一条 edit；task Running（`working (chat_route)` → `running shell`）→ Terminal/Succeeded，result 有 `summary`；`turn_tasks.reported = true`，outbox 为 `placeholder` + `final_edit` |
+| 快速回复 | “只回复两个字：你好” | 3.6 秒，一条普通消息带 `agent_task`，没有占位，task 成功 |
+| task 树 | “请派一个 work session 完成…” | work session 的 task 是 UI Turn task 的子节点，各自成功；work session 的结果由父 Session 的新 Turn（新的 root task）转述 |
+| owner 授权 | 事件里有 `AccessGranted`；用 devtest 的 control-panel token `request_control` | 放行。`list_task_access` 需要 Grant 权限，owner 读不到授权列表（未授予，按设计） |
+| TaskMgr 取消 | 占位出现后 `request_control(Cancel, recursive)` | 约 3 秒后 Session stop，占位被 edit 为“已停止。”，task Terminal/Canceled |
+| 重启恢复 | 占位发出后 `docker kill buckyos-app-jarvis` | 容器重建后同一个 task 继续，最终一条占位、一条 edit，outbox 两条都是 `attempts = 1` |
+| MessageHub | 真实桌面页面登录后打开 Jarvis 会话 | 占位与 edit 是同一个气泡（带 edited）；任务区显示状态与“1 sub-task(s) finished”，展开有子任务节点；快速回复没有任务区；取消的气泡显示已取消；消息详情有原消息、当前内容、编辑记录、task 摘要与结果 |
+
+验收中发现并修掉的问题：
+
+1. **MessageHub 每个 task 开一条 kevent 流**，五个可见 task 加上消息流就占满浏览器对同一 host 的连接数，`get_task` 发不出去，任务区一直不出现。`createTaskWatchSource` 改为所有 task 共用一条流（订阅集合变化时 250 ms 去抖后重开），按事件路径分发。
+2. **task 结束后仍显示最后一次活动**（“Done · running shell”）。OpenDAN 在终结前把 `message` 写成空（失败时写错误信息）。
+
+验收中遇到、不属于本次改动的问题：
+
+- kmsg 队列被清掉而 AgentRoot 里的 UI Session 还在时，inbox 桥对该 Session 投递一直报 `Queue not found`，这个收件箱就卡住了。本次删掉 Jarvis 的 AgentRoot 后恢复。Loader 对“登记的 Session 的输入队列不存在”没有自愈。
+- `start.py` 重启后 cyfs-gateway 前几次启动报 3180 端口占用（旧实例尚未退出），约半分钟后自行恢复；这期间 app 容器因为连不上 verify-hub 反复重启。
+- 重启恢复时，被打断的 `sleep 25; date` 按既有语义以“executor exited”作为工具结果返回，模型自己补跑了一次 `date`。

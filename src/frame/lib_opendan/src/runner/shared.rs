@@ -37,6 +37,12 @@ pub struct Shared {
     pub tasks: Mutex<Option<Arc<dyn RunningTaskResolver>>>,
     /// The Turn this drive closed last (`StopWhen::TurnClosed`).
     pub turn_closed: Mutex<Option<ClosedTurn>>,
+    /// Tool called last in this drive (the activity shown on the Turn's task).
+    pub current_tool: Arc<Mutex<Option<String>>>,
+    /// What the Turn's task was told last by this drive.
+    pub task_status: Mutex<Option<(String, super::turn_task::TurnTaskStatus)>>,
+    /// Serializes hand-overs of the outbox.
+    pub flush: tokio::sync::Mutex<()>,
 }
 
 /// A Turn closed by a commit of this drive.
@@ -147,6 +153,7 @@ pub(super) fn counted(
 
 /// Registry report (best effort; `reported_rev` drives the catch-up).
 pub async fn report(sh: &Shared, status: SessionStatus) {
+    super::turn_task::sync_turn_task(sh).await;
     let sid = sh.dir.sid().to_string();
     let rev = status.rev;
     match sh.agent().sessions().report_state(&sh.lease, &sid, status).await {

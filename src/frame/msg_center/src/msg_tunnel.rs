@@ -21,6 +21,41 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
+/// Declared ability of an executor's targets to replace an already delivered
+/// message of its sender in place (`relates_to = edit`). This is a property
+/// of the target, known before sending; whether one specific message can
+/// still be edited is only known at execution time, see `EditFailure`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EditCapability {
+    /// The target lets a sender edit its own delivered messages.
+    pub supported: bool,
+    /// How long after delivery the platform accepts an edit, if limited.
+    pub edit_window_ms: Option<u64>,
+    /// Only the text is replaced in place; attachments are not.
+    pub text_only: bool,
+}
+
+/// Why one edit could not be applied in place although the target declares
+/// `EditCapability::supported`. All of these are final for that message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditFailure {
+    WindowExpired,
+    /// The original was never delivered to this target or no longer exists.
+    OriginalMissing,
+    /// The new content (format, size, attachments) cannot replace the original.
+    NotReplaceable(String),
+}
+
+impl std::fmt::Display for EditFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WindowExpired => f.write_str("edit window expired"),
+            Self::OriginalMissing => f.write_str("original message missing"),
+            Self::NotReplaceable(reason) => write!(f, "not replaceable in place: {}", reason),
+        }
+    }
+}
+
 #[async_trait]
 pub trait DeliveryExecutor: Send + Sync {
     /// The executor's DID: owner key of its DELIVERY_QUEUE.
@@ -34,6 +69,10 @@ pub trait DeliveryExecutor: Send + Sync {
 
     fn supports_egress(&self) -> bool {
         true
+    }
+
+    fn edit_capability(&self) -> EditCapability {
+        EditCapability::default()
     }
 
     async fn start(&self) -> AnyResult<()>;

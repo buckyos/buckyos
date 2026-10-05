@@ -10,6 +10,9 @@ import { useMessageMediaHost } from './conversation/media/context'
 import { MessageMediaHost } from './conversation/media/MessageMediaHost'
 import type { ConversationComposerSubmitPayload } from './conversation/input/ConversationComposer'
 import { EntityDetails } from './EntityDetails'
+import { MessageDetails } from './MessageDetails'
+import { messageObjId } from './conversation/history/relations'
+import { friendlyDidName } from './api/projection'
 import { EntityList } from './EntityList'
 import { CreateGroupForm } from './GroupDialogs'
 import { resolveMessageHubContext, type MessageHubContextRequest } from './launch'
@@ -45,6 +48,8 @@ interface MessageHubViewProps {
   initialEntityId?: string | null
   /** Session to open instead of the entity's default one; without an entity, the session's own entity opens. */
   initialSessionId?: string | null
+  /** ObjId of a message of that session to locate; its details open on the desktop layout. */
+  initialMessageId?: string | null
   contextRequest?: MessageHubContextRequest | MessageHubContext
   windowId?: string
   /** Standalone route only: leave MessageHub for the desktop. */
@@ -53,20 +58,20 @@ interface MessageHubViewProps {
   onExitObserver?: () => void
 }
 
-export function MessageHubView({ initialEntityId = null, initialSessionId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
+export function MessageHubView({ initialEntityId = null, initialSessionId = null, initialMessageId = null, contextRequest, windowId, onHome, onExitObserver }: MessageHubViewProps) {
   const { t } = useI18n()
   const [exitFrom, setExitFrom] = useState<string | null>(null)
   const { status, retry } = useMessageHubReady()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   if (status !== 'ready') return <div className="flex h-full items-center justify-center gap-3"><p role="status">{t(status === 'loading' ? 'messagehub.loading' : 'messagehub.loadFailed')}</p>{status === 'error' && <button type="button" className={hubButtonClass} onClick={retry}>{t('messagehub.retry')}</button>}</div>
   const exit = (value: string | null) => { setExitFrom(value); onExitObserver?.() }
-  return <MessageHubOwnerGate initialEntityId={initialEntityId} initialSessionId={initialSessionId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
+  return <MessageHubOwnerGate initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} contextRequest={contextRequest} exitFrom={exitFrom} onExit={exit} isDesktop={isDesktop} windowId={windowId} onHome={onHome} />
 }
 
 /** How long a freshly created account may wait for its mailbox permission to propagate. */
 const SELF_DENIED_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 15_000]
 
-function MessageHubOwnerGate({ initialEntityId, initialSessionId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; initialSessionId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
+function MessageHubOwnerGate({ initialEntityId, initialSessionId, initialMessageId, contextRequest, exitFrom, onExit, isDesktop, windowId, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; contextRequest?: MessageHubContextRequest | MessageHubContext; exitFrom: string | null; onExit: (value: string | null) => void; isDesktop: boolean; windowId?: string; onHome?: () => void }) {
   const { t } = useI18n()
   const store = useMessageHubStore()
   const requested = resolveMessageHubContext(store.defaultContext(), contextRequest)
@@ -96,7 +101,7 @@ function MessageHubOwnerGate({ initialEntityId, initialSessionId, contextRequest
   if (ownerStatus.phase === 'error') return <div role="alert" className="flex h-full flex-col items-center justify-center gap-3 p-6"><p>{t('messagehub.loadFailed')}</p><p className="max-w-md break-words text-xs text-[color:var(--cp-muted)]">{ownerStatus.message}</p><button type="button" className={hubButtonClass} onClick={() => void store.ensureOwner(context, true)}>{t('messagehub.retry')}</button></div>
   return <div className="relative flex h-full min-h-0 flex-col text-[color:var(--cp-text)]">
     {context.mode === 'observe' && <div className="flex shrink-0 items-center justify-between gap-2 border-b border-[color:var(--cp-border)] p-2 text-xs" data-testid="owner-banner"><span>{t('messagehub.observing')} · {context.ownerDid.split(':').at(-1)} · {t('messagehub.readOnly')}</span><button type="button" className={hubButtonClass} onClick={() => onExit(JSON.stringify(requested))}>{t('messagehub.exitObserver')}</button></div>}
-    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
+    <div className="relative min-h-0 flex-1"><MessageMediaHost windowId={windowId}><WindowDialogProvider key={JSON.stringify(context)} surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}><MessageHubContent key={`${JSON.stringify(context)}:${initialEntityId}:${initialSessionId}:${initialMessageId}`} initialEntityId={initialEntityId} initialSessionId={initialSessionId} initialMessageId={initialMessageId} context={context} onHome={onHome} /></WindowDialogProvider></MessageMediaHost></div>
   </div>
 }
 
@@ -117,7 +122,7 @@ function HomeButton({ onHome }: { onHome: () => void }) {
   )
 }
 
-function MessageHubContent({ initialEntityId, initialSessionId, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; context: MessageHubContext; onHome?: () => void }) {
+function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId, context, onHome }: { initialEntityId: string | null; initialSessionId: string | null; initialMessageId: string | null; context: MessageHubContext; onHome?: () => void }) {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
   const store = useMessageHubStore()
@@ -161,7 +166,10 @@ function MessageHubContent({ initialEntityId, initialSessionId, context, onHome 
     () => (!isDesktop && resolvedInitialEntityId ? 'conversation' : 'entity-list'),
   )
   const [showSessionSidebar, setShowSessionSidebar] = useState(false)
-  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | null>(null)
+  // A message link only applies to the session it names: without that session the message is not looked up elsewhere.
+  const [linkedMessageId] = useState(() => initialMessageId && findRequestedSession(resolvedInitialEntityId) ? initialMessageId : null)
+  const [detailsTarget, setDetailsTarget] = useState<'entity' | 'session' | 'message' | null>(() => linkedMessageId && isDesktop ? 'message' : null)
+  const [detailMessageId, setDetailMessageId] = useState<string | null>(linkedMessageId)
   const showDetails = detailsTarget !== null
   const [entityListDrilldownPath, setEntityListDrilldownPath] = useState<string[]>([])
   const [entityListWidth, setEntityListWidth] = useState(ENTITY_LIST_DEFAULT_WIDTH)
@@ -308,6 +316,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, context, onHome 
 
   const handleSelectSession = (id: string) => {
     contextEpoch.current++; setSelectedSessionId(id); setDefaultSessionError(false)
+    if (detailsTarget === 'message') setDetailsTarget(null)
     if (!isDesktop) setShowSessionSidebar(false)
   }
 
@@ -353,8 +362,17 @@ function MessageHubContent({ initialEntityId, initialSessionId, context, onHome 
   const openForward = (message: import('./protocol/msgobj').MessageObject) => {
     void dialog.open({ title: t('messagehub.forward.title'), size: 'sm', dismissible: false, renderBody: controls => <ForwardMessageForm context={context} message={message} confirmationFor={sessionId => writeConfirmations[sessionId]} onCancel={() => controls.close()} onDone={() => controls.close()} /> })
   }
+  const openMessageDetails = (message: import('./protocol/msgobj').MessageObject) => {
+    const id = messageObjId(message)
+    if (!id) return
+    setDetailMessageId(id)
+    setDetailsTarget('message')
+    if (!isDesktop) setMobileView('details')
+  }
   const conversationProps = {
     onResend: handleResend,
+    onOpenMessage: openMessageDetails,
+    focusMessageId: activeSession && activeSession.id === initialSessionId ? linkedMessageId : null,
     onForward: openForward,
     context, access, title: activeSession ? store.title(context, activeSession) : '', onCreate: () => openCreate(), creationReason: createReason,
     defaultSessionError, onRetryDefaultSession: () => { if (selectedEntityId) handleSelectEntity(selectedEntityId) },
@@ -372,7 +390,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, context, onHome 
     onDraftChange: (value: string) => { if (activeSession) return store.saveDraft(context, activeSession.id, value) },
     showActions: activeSession ? store.preferences(context, activeSession.id).showActions : true,
   }
-  const detailsPane = detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
+  const detailsPane = detailsTarget === 'message' && activeSession && selectedEntity && detailMessageId ? <MessageDetails key={`${viewerSessionKey(context, activeSession.id)}:${detailMessageId}`} context={context} entityId={selectedEntity.id} sessionId={activeSession.id} messageId={detailMessageId} reader={messageReader} displayName={did => did === context.ownerDid ? t('messagehub.you') : store.findEntity(context, did)?.name ?? friendlyDidName(did, false)} onClose={handleCloseDetails} /> : detailsTarget === 'session' && activeSession && selectedEntity && access ? <SessionDetails key={viewerSessionKey(context, activeSession.id)} session={activeSession} entity={selectedEntity} context={context} access={access} showActions={conversationProps.showActions} onShowActions={async showActions => { await store.updatePreferences(context, activeSession.id, { showActions }) }} onClose={handleCloseDetails} onManage={() => openManage(activeSession)} onWrite={enabled => setWriteConfirmations(previous => ({ ...previous, [activeSession.id]: enabled ? JSON.stringify(activeSession.binding) : '' }))} /> : detailsTarget === 'entity' && entityDetail ? <EntityDetails entity={entityDetail} context={context} onClose={handleCloseDetails} onCreateGroup={canManage ? openCreateGroup : undefined} /> : null
   const entityListExtras = { hasMore: store.hasMoreEntities(context), onLoadMore: () => store.loadMoreEntities(context), onCreateGroup: canManage ? () => openCreateGroup() : undefined }
   const newSessionLabel = t('messagehub.newSession')
   const newSessionButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreate(null)} aria-label={newSessionLabel} title={newSessionLabel}><SquarePen size={17} /></button>

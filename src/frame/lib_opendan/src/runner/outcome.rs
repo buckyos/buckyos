@@ -644,9 +644,17 @@ async fn commit_run_end(
                     inputs: open.inputs,
                     has_msg: open.has_msg,
                     error: next.error.clone(),
+                    has_placeholder: false,
                 },
             )
             .await;
+            super::turn_task::close_turn_task(
+                s,
+                turn,
+                status,
+                next.answer.as_deref(),
+                next.error.as_ref(),
+            );
             if status == TurnStatus::Completed {
                 s.state.turns_completed += 1;
             }
@@ -906,6 +914,7 @@ async fn after_run_end(
     drop(s);
     report(sh, status).await;
     super::outbound::flush_outbox(sh).await;
+    super::turn_task::flush_turn_tasks(sh).await;
     if consolidate {
         let kind_lease = sh.kind_lease.lock().expect("kind lease").clone();
         if let (Some(w), Some(l)) = (window, kind_lease) {

@@ -280,3 +280,36 @@
   color: var(--cp-text);
   outline: none;
 }
+
+.mh-bubble:focus-visible {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: 2px;
+}
+
+.mh-row[data-highlight="true"] .mh-bubble {
+  animation: mh-row-highlight 2.4s ease-out;
+}
+
+@keyframes mh-row-highlight {
+  0%, 40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--cp-accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.mh-task {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.mh-task-spin {
+  animation: mh-task-spin 1.4s linear infinite;
+}
+
+@keyframes mh-task-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mh-task-spin,
+  .mh-row[data-highlight="true"] .mh-bubble {
+    animation: none;
+  }
+}

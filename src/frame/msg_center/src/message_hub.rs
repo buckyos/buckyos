@@ -6,7 +6,7 @@
 //! delivery state machine and the idempotency key with tunnels.
 //!
 use crate::msg_center::MessageCenter;
-use crate::msg_tunnel::DeliveryExecutor;
+use crate::msg_tunnel::{DeliveryExecutor, EditCapability};
 use anyhow::{anyhow, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{DeliveryRecordWithObject, DeliveryReportResult};
@@ -53,6 +53,13 @@ impl DeliveryExecutor for MessageHubExecutor {
 
     fn supports_egress(&self) -> bool {
         true
+    }
+
+    fn edit_capability(&self) -> EditCapability {
+        EditCapability {
+            supported: true,
+            ..Default::default()
+        }
     }
 
     async fn start(&self) -> AnyResult<()> {

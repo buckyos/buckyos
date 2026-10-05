@@ -166,9 +166,9 @@ WAIT → SENDING → SENT
 
 ## 7. 流式 AI 消息
 
-- 中间态（typing/partial/status）走 SessionState 易失通道，带 `turn_nonce`/`correlation_id`；不产生 `MailboxRecord`/`DeliveryRecord`。
-- 最终回复才是 `kind=Chat/GroupMsg` 的 `MsgObject`，走正常 `post_send`。
-- 支持编辑的平台可把中间态渲染为消息编辑；不支持的降级为 typing 或只发最终消息。
+- 中间态（typing/partial）走 SessionState 易失通道；不产生 `MailboxRecord`/`DeliveryRecord`。
+- 占位与最终回复都是 `kind=Chat/GroupMsg` 的 `MsgObject`，走正常 `post_send`；最终回复用 `relates_to=edit` 指向占位。
+- 发占位前用 `msg.get_edit_capability` 查询出站目标：支持编辑的 tunnel 把 edit 落到平台编辑 API，不支持或未知的不发占位、只发最终消息（见 Message Tunnel Design §12.1）。
 
 ## 8. 典型裁剪
 

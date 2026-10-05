@@ -266,6 +266,7 @@ async fn fork_run_context(
         sh.lease.clone(),
         workdir,
         sh.touched.clone(),
+        sh.current_tool.clone(),
     );
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
@@ -428,6 +429,7 @@ async fn own_run_context(
         sh.lease.clone(),
         PathBuf::from(&binding.workdir),
         sh.touched.clone(),
+        sh.current_tool.clone(),
     );
     let mut input = vec![AiMessage::text(AiRole::System, system_prompt)];
     if let Some(h) = history {
@@ -732,6 +734,7 @@ pub(super) async fn resume_live_run(
         sh.lease.clone(),
         workdir,
         sh.touched.clone(),
+        sh.current_tool.clone(),
     );
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
     let deps = checkpoint_deps(sh, &run, &record.config, ctx_llm, tools, &resolver);
@@ -1238,6 +1241,11 @@ pub(super) async fn commit_input_batch(
         }
     }
     let opens_turn = s.state.open_turn.is_none();
+    // What the Turn is about, for its task: the first message of the batch.
+    let title = batch
+        .picked
+        .iter()
+        .find_map(|m| m.msg().map(|msg| msg.msg.content.content.clone()));
     let turn = if opens_turn {
         s.state.turn_seq + 1
     } else {
@@ -1337,5 +1345,8 @@ pub(super) async fn commit_input_batch(
     lc.run.complete_host_commit()?; // ④
     crate::fault::point("input_batch:after_gate_clear");
     confirm_inputs(&sh.sources, &s.state).await; // ⑤
+    drop(s);
+    *sh.current_tool.lock().expect("current tool") = None;
+    super::turn_task::ensure_turn_task(sh, title).await;
     Ok(())
 }

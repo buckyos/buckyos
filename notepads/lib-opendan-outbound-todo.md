@@ -61,3 +61,14 @@
 
 待做（单独立项）：behavior 循环里的原生工具调用没有写进 worklog（只有 `step` 与 `outcome`）。
 
+
+## 7. 占位 / 最终 edit 与 Turn task（2026-10-04）
+
+随 [messagehub-agent-chat-task-todo.md](messagehub-agent-chat-task-todo.md) 实施，对本文接口的增量：
+
+- `OutboxEntry.purpose`（`reply` 缺省 / `placeholder` / `final_edit`）；占位的幂等键是 `<sid>:<turn>:placeholder`，与回复的键不同。
+- `OutboundSink::placeholder(cfg, base, turn) -> Option<MsgObject>`（默认 `None`）；`TurnReply.has_placeholder`：为 true 时 sink 对任何状态都应给出收尾正文，给不出时 runner 用固定英文摘要。
+- `runner::TurnTaskSink`（`open / update / close`）与 `RunnerDeps.turn_tasks` / `HostDeps.turn_tasks`；`state.turn_tasks`、`origin.parent_task`；`RunnerOptions.placeholder_delay`。
+- `flush_outbox` 串行化（占位定时器与 drive 循环都会进来）；占位结果落定后修正同一 Turn `final_edit` 的 target（按 msg-center 返回的 `msg_id`），占位失败则把它改回 `reply`。
+- 无 live run 的 stop 现在也走 `queue_reply`（只在有占位时才会真的产生消息）。
+- 恢复语义不变：同一键、同一 MsgObject 重发；新增故障点 `turn_task:after_open`、`turn_task:after_close`、`outbound:after_placeholder_commit`（`tests/turn_task.rs`）。

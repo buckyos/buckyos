@@ -1,2 +1,2 @@
-{"seq":1,"at_ms":1791104436981,"session_id":"work-fixture-finished","kind":"run_digest","source":"session","summary":"finished: done: notes.txt written","payload":{"run_id":"20261004-020036-a98d6c","turn":1,"turn_status":"completed"},"refs":{"worklog_seq":8}}
-{"seq":2,"at_ms":1791104436981,"session_id":"work-fixture-finished","kind":"task_outcome","source":"session","summary":"finished: done: notes.txt written","payload":{"acceptance":"pending","outcome":"succeeded"}}
+{"seq":1,"at_ms":1791134682356,"session_id":"work-fixture-finished","kind":"run_digest","source":"session","summary":"finished: done: notes.txt written","payload":{"run_id":"20261004-102442-ad20ca","turn":1,"turn_status":"completed"},"refs":{"worklog_seq":8}}
+{"seq":2,"at_ms":1791134682356,"session_id":"work-fixture-finished","kind":"task_outcome","source":"session","summary":"finished: done: notes.txt written","payload":{"acceptance":"pending","outcome":"succeeded"}}

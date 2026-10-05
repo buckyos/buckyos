@@ -1,8 +1,12 @@
 import {
   buckyos,
   taskMgrErrorCode,
+  taskMgrTaskEventPath,
+  taskMgrTreeEventPath,
   HUMAN_APPROVAL_SCHEMA_ID,
   HUMAN_INPUT_TASK_SCHEMA_ID,
+  TASK_ERR_NOT_FOUND,
+  TASK_ERR_PERMISSION_DENIED,
   TASK_ERR_REVISION_CONFLICT,
   TaskExecutorKind,
   TaskPhase,
@@ -1043,5 +1047,144 @@ class BuckyOSTaskMgrProvider implements TaskCenterRpcProvider {
       this.client = buckyos.getTaskManagerClient()
     }
     return this.client
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Per-task reads (MessageHub task area)
+// ---------------------------------------------------------------------------
+//
+// A consumer that follows a handful of known task ids reads them one by one
+// with the logged-in user's own TaskMgr permissions, instead of listing every
+// task the way the Task Center does.
+
+/** One node of a task tree: what `get_subtasks` returns, with millisecond times. */
+export interface TaskWatchNode {
+  taskId: string
+  name: string
+  parentId?: string
+  rootId: string
+  phase: 'Promised' | 'Accepted' | 'Running' | 'Waiting' | 'Paused' | 'Terminal'
+  waitReason?: { kind: string; code?: string; relatedTaskId?: string; message?: string }
+  outcome?: 'Succeeded' | 'Failed' | 'Canceled'
+  /** A control request that has not been applied yet. */
+  pendingControl?: 'Pause' | 'Resume' | 'Cancel'
+  message?: string
+  revision: number
+  createdAt: number
+  updatedAt: number
+  completedAt?: number
+}
+
+/** `get_task`: the node plus its payload. */
+export interface TaskWatchDetail extends TaskWatchNode {
+  schemaId: string
+  progress?: unknown
+  result?: unknown
+  error?: { code: string; message: string }
+  originRef?: { kind: string; id: string }
+}
+
+export interface TaskWatchEvent {
+  eventId: string
+  taskId: string
+  type: string
+  revision: number
+  at: number
+}
+
+export type TaskReadFailure = 'denied' | 'missing' | 'error'
+
+export interface TaskWatchSource {
+  getTask(taskId: string): Promise<TaskWatchDetail>
+  getSubtasks(taskId: string, cursor: string | undefined, limit: number): Promise<{ tasks: TaskWatchNode[]; nextCursor?: string }>
+  /** Persisted events of the whole tree under `rootId` the reader may see, oldest first. */
+  listEvents(rootId: string, limit: number): Promise<TaskWatchEvent[]>
+  /** `task`: `/task_mgr/<id>`; `tree`: `/task_mgr/tree/<root_id>`. An event only says "read again". */
+  subscribe(scope: 'task' | 'tree', id: string, onHint: () => void): () => void
+  failure(error: unknown): TaskReadFailure
+}
+
+function toMillis(value: number): number {
+  return value > 0 && value < 10_000_000_000 ? value * 1000 : value
+}
+
+function toWatchNode(task: TaskSummary | TaskMgrTask): TaskWatchNode {
+  const pending = 'pending_control' in task ? task.pending_control?.action : (task as TaskSummary).pending_control_action
+  return {
+    taskId: task.task_id,
+    name: task.name,
+    parentId: task.parent_id,
+    rootId: task.root_id,
+    phase: task.phase,
+    waitReason: task.wait_reason ? { kind: task.wait_reason.kind, code: task.wait_reason.code, relatedTaskId: task.wait_reason.related_task_id, message: task.wait_reason.message } : undefined,
+    outcome: task.outcome,
+    pendingControl: pending,
+    message: task.message,
+    revision: task.revision,
+    createdAt: toMillis(task.created_at),
+    updatedAt: toMillis(task.updated_at),
+    completedAt: task.completed_at ? toMillis(task.completed_at) : undefined,
+  }
+}
+
+export function createTaskWatchSource(): TaskWatchSource {
+  let client: TaskManagerClient | null = null
+  const getClient = () => client ??= buckyos.getTaskManagerClient()
+  // One event stream for every watched task: a stream per task would use up
+  // the browser's connections to the zone host and starve the reads.
+  const listeners = new Map<string, Set<() => void>>()
+  let stream: { close(): Promise<void> } | null = null
+  let generation = 0
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const reopen = () => {
+    timer = null
+    const mine = ++generation
+    const previous = stream
+    stream = null
+    if (previous) void previous.close()
+    const paths = [...listeners.keys()]
+    if (paths.length === 0) return
+    void buckyos.subscribeKEvent(paths, event => {
+      if (mine !== generation) return
+      for (const [path, set] of listeners) {
+        if (event.eventid === path || event.eventid.startsWith(`${path}/`)) set.forEach(hint => hint())
+      }
+    })
+      .then(subscription => { if (mine === generation) stream = subscription; else void subscription.close() })
+      .catch(() => { /* polling remains the baseline */ })
+  }
+  const scheduleStream = () => { timer ??= setTimeout(reopen, 250) }
+  return {
+    async getTask(taskId) {
+      const task = await getClient().getTask(taskId)
+      return { ...toWatchNode(task), schemaId: task.schema_id, progress: task.progress, result: task.result, error: task.error ? { code: task.error.code, message: task.error.message } : undefined, originRef: task.origin_ref }
+    },
+    async getSubtasks(taskId, cursor, limit) {
+      const page = await getClient().getSubtasks({ task_id: taskId, cursor, limit })
+      return { tasks: (page.tasks ?? []).map(toWatchNode), nextCursor: page.next_cursor }
+    },
+    async listEvents(rootId, limit) {
+      const result = await getClient().listTaskEvents({ root_id: rootId, limit })
+      return (result.events ?? []).map(event => ({ eventId: event.event_id, taskId: event.task_id, type: event.event_type, revision: event.task_revision, at: toMillis(event.created_at) }))
+    },
+    subscribe(scope, id, onHint) {
+      const path = scope === 'tree' ? taskMgrTreeEventPath(id) : taskMgrTaskEventPath(id)
+      const set = listeners.get(path) ?? new Set<() => void>()
+      listeners.set(path, set)
+      set.add(onHint)
+      if (set.size === 1) scheduleStream()
+      return () => {
+        set.delete(onHint)
+        if (set.size === 0 && listeners.get(path) === set) {
+          listeners.delete(path)
+          scheduleStream()
+        }
+      }
+    },
+    failure(error) {
+      const code = taskMgrErrorCode(error)
+      return code === TASK_ERR_PERMISSION_DENIED ? 'denied' : code === TASK_ERR_NOT_FOUND ? 'missing' : 'error'
+    },
   }
 }

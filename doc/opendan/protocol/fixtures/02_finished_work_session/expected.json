@@ -17,13 +17,13 @@
     {
       "live_run": null,
       "runs_on_disk": [
-        "20261004-020036-a98d6c"
+        "20261004-102442-ad20ca"
       ],
       "session_id": "work-fixture-finished",
       "state": {
         "acceptance": "pending",
         "inputs": {},
-        "last_run": "20261004-020036-a98d6c",
+        "last_run": "20261004-102442-ad20ca",
         "open_turn": null,
         "outcome": "succeeded",
         "process_stack": [],

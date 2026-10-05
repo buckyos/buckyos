@@ -21,6 +21,7 @@ use libopendan::channel::{KEventWaker, KmsgChannels, PollWaker};
 use libopendan::runner::RunnerOptions;
 use opendan::loader::{Loader, LoaderEnv};
 use opendan::service::Access;
+use opendan::tasks::ZoneTaskService;
 use opendan::ui::ZoneMailService;
 
 const USAGE: &str = "\
@@ -233,6 +234,7 @@ async fn zone_env(args: &Args) -> Result<LoaderEnv> {
         },
         kevent,
         mail: Some(Arc::new(ZoneMailService)),
+        tasks: Some(Arc::new(ZoneTaskService)),
         access: Access::Zone {
             owner,
             app_id: runtime.get_app_id(),
@@ -270,6 +272,7 @@ fn dev_env(args: &Args) -> Result<LoaderEnv> {
         waker: Arc::new(PollWaker),
         kevent: None,
         mail: None,
+        tasks: None,
         access: Access::Open { who },
         port: port_of(args),
         web_dir: args.web.clone().or_else(|| beside_exe("web")),

@@ -1174,6 +1174,7 @@ async fn apply_tg_tunnel_settings(
         transport_did.clone(),
         "telegram".to_string(),
     )?;
+    center.declare_edit_capability(&transport_did, tg_tunnel.edit_capability());
 
     let mut started = false;
     let mut start_error: Option<String> = None;
@@ -1230,6 +1231,7 @@ async fn register_message_hub(
     let hub_did = resolve_message_hub_did();
     center.set_message_hub_did(hub_did.clone());
     let hub = Arc::new(MessageHubExecutor::new(hub_did.clone(), center.clone()));
+    center.declare_edit_capability(&hub_did, hub.edit_capability());
     executor_mgr
         .register(hub)
         .map_err(|err| anyhow::anyhow!("register message hub executor failed: {}", err))?;

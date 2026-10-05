@@ -488,6 +488,7 @@ fn host(c: &Ctx, a: &Args) -> R<HostDeps> {
         max_child_concurrency: a.num::<usize>("max-children")?.unwrap_or(4),
         bridges,
         outbound: None,
+        turn_tasks: None,
         runtime_id: a.get("runtime"),
     })
 }

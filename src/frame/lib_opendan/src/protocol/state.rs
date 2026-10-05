@@ -282,6 +282,26 @@ pub enum OutboxStatus {
 /// Settled outbox entries kept for display.
 pub const OUTBOX_KEEP_SETTLED: usize = 16;
 
+/// What an outbox entry is for.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutboxPurpose {
+    /// The reply of a Turn as a message of its own.
+    #[default]
+    Reply,
+    /// "Accepted, working on it": sent while the Turn is open, replaced by
+    /// the Turn's final edit.
+    Placeholder,
+    /// The reply of a Turn as an edit of its placeholder.
+    FinalEdit,
+}
+
+impl OutboxPurpose {
+    fn is_reply(&self) -> bool {
+        *self == OutboxPurpose::Reply
+    }
+}
+
 /// One outbound message of a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct OutboxEntry {
@@ -291,6 +311,8 @@ pub struct OutboxEntry {
     #[schemars(with = "Value")]
     pub msg: ndn_lib::MsgObject,
     pub turn: u64,
+    #[serde(default, skip_serializing_if = "OutboxPurpose::is_reply")]
+    pub purpose: OutboxPurpose,
     pub status: OutboxStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msg_id: Option<String>,
@@ -302,6 +324,36 @@ pub struct OutboxEntry {
     pub attempts: u32,
     #[serde(default)]
     pub updated_at_ms: u64,
+}
+
+/// Settled Turn task bindings kept (independent of the outbox trimming).
+pub const TURN_TASKS_KEEP_SETTLED: usize = 64;
+
+/// A Turn and the task the host's task service keeps for it. Written when
+/// the task was created (the Turn is open), closed in the commit that closes
+/// the Turn, `reported` once the task service took the terminal state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct TurnTask {
+    pub turn: u64,
+    pub task_id: String,
+    /// The batch that opened the Turn had a message: a placeholder may be
+    /// sent for it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_msg: bool,
+    pub opened_at_ms: u64,
+    /// ObjId of the placeholder message of this Turn (the anchor its final
+    /// edit targets).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed: Option<TurnStatus>,
+    /// Result summary handed to the task service with the terminal state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<Value>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub reported: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -637,6 +689,11 @@ pub struct SessionState {
     /// after a restart (the idempotency key and the message never change).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outbox: Vec<OutboxEntry>,
+    /// Turns bound to a task of the host's task service: the open Turn's,
+    /// closed ones whose terminal state is not reported yet, and the most
+    /// recent settled ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_tasks: Vec<TurnTask>,
     /// Background tasks of ended runs the runner follows for this session
     /// (implicit active subscriptions on `task:<task_id>`): when one ends,
     /// its completion is handled like a subscribed event.
@@ -701,6 +758,7 @@ impl SessionState {
             pending_events: Vec::new(),
             reply: None,
             outbox: Vec::new(),
+            turn_tasks: Vec::new(),
             watched_tasks: Vec::new(),
             perception_seq: 0,
             reported_rev: 0,
@@ -818,6 +876,12 @@ impl SessionState {
 
     pub fn is_finished(&self) -> bool {
         self.run_state == RunState::Finished
+    }
+
+    /// The task of the open Turn, if it has one.
+    pub fn open_turn_task(&self) -> Option<&TurnTask> {
+        let turn = self.open_turn.as_ref()?.index;
+        self.turn_tasks.iter().find(|t| t.turn == turn)
     }
 
     /// The Turn entries are attributed to: the open one, else the last one.

@@ -11,11 +11,16 @@
 | `config.rs` | `agent.toml` 里 Loader 的部分：`[loader]`、`[[loader.ui]]`、`[loader.self_check]`、`[loader.self_improve]`、`[llm_context]`；配置错误在启动时报出并退出 |
 | `rootfs.rs` | AgentRoot 目录布局、从 Agent 包同步素材（保留本地修改） |
 | `ui.rs` | UI Session + Message Tunnel：inbox 发现、绑定、入站桥、出站 sink |
+| `tasks.rs` | TaskMgr 接入：`TurnTasks`（每个 Turn 一个 `opendan.agent_turn/v1` task，Agent 自建自跑，root task grant 给 owner）、`CancelBridge`（TaskMgr 的 cancel → Session `stop`） |
 | `service.rs` | Agent State kRPC 服务、Session 观测、三个操作、Loader 状态 |
 | `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话 |
 | `web/` | WebUI：首页（资料卡、工作概况、Session 列表，按手机屏幕设计）+ 观测页（Sessions / Agent State / Loader，`#/sessions` 起），数据全部来自 kRPC |
 
 托管循环在 `libopendan::host::Supervisor`：登记表里 `driver = 本进程身份` 且未结束（或有待处理 decide）的 Session 各有一个协程循环 `drive(Idle)`；启动后的第一次扫描就是恢复；空闲超过 `idle_unload_secs` 且没有待推进工作的 Session 被卸载，有新输入时再装载。
+
+Turn 与 task：zone 形态下每个 Turn 打开时在 TaskMgr 建 task（幂等键 `agent_turn:<sid>:<turn>`，input = `{agent_did, session_id, session_kind, turn, inputs}`），子 Session 的 Turn 挂在创建它的那个 Turn 的 task 下；Session 是 task 状态的唯一写入方（Running + message、Waiting(ChildTask / Dependency / External)、Succeeded `{summary}`、Failed、Stopped → Canceled）。`--dev` 没有 TaskMgr，不建 task。
+
+占位：Agent 包 `i18n/<语言>.toml` 的 `[outbound]` 有 `accepted` 文案、msg-center `msg.get_edit_capability` 回答可编辑、且 Turn 打开超过 `[loader] placeholder_delay_ms`（默认 3000）或已有首次工具调用时，先发占位（带 `agent_task`），Turn 结束时以一条 edit 替换；`stopped` / `finished` 是停止与无正文结束时收尾占位的文案。其余情况只发最终回复（同样带 `agent_task`）。
 
 ## 运行
 
@@ -151,7 +156,7 @@ cd src && uv run start.py --skip-update
 {
   "agent_did": "…", "agent_id": "…", "who": "app:…@…", "agent_root": "…",
   "started_at_ms": 0, "now_ms": 0,
-  "modules": [ { "name": "ui | self_check | self_improve | agent_state_service | webui",
+  "modules": [ { "name": "ui | task_mgr | self_check | self_improve | agent_state_service | webui",
                  "enabled": true, "running": true, "note": "…" } ],
   "hosted":  [ { "session_id", "class", "loaded", "loaded_at_ms", "drives", "last_result": DriveResult,
                  "last_result_at_ms", "idle_unload_secs", "reason" } ],

@@ -78,7 +78,12 @@ export interface MessageHubStore {
   historyStatus(context: MessageHubContext, sessionId: string): 'idle' | 'loading' | 'ready' | 'error'
   hasOlder(context: MessageHubContext, sessionId: string): boolean
   loadOlder(context: MessageHubContext, sessionId: string): Promise<boolean>
-  /** Mark displayed inbound records read (no-op for observers). */
+  /**
+   * Makes sure the message with this ObjId is in the loaded history, loading
+   * older pages as needed; resolves to whether it is.
+   */
+  locateMessage(context: MessageHubContext, sessionId: string, messageId: string): Promise<boolean>
+  /** Mark displayed inbound records read, together with the edits folded into them (no-op for observers). */
   markRead(context: MessageHubContext, sessionId: string, recordIds: string[]): Promise<void>
   access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess
   draft(context: MessageHubContext, sessionId: string): string

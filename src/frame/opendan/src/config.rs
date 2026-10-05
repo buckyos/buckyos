@@ -47,6 +47,10 @@ pub struct LoaderSection {
     pub idle_unload_secs: u64,
     #[serde(default)]
     pub ui: Vec<UiRule>,
+    /// How long a Turn answering a message stays open before its
+    /// placeholder is sent (default: the runner's).
+    #[serde(default)]
+    pub placeholder_delay_ms: Option<u64>,
     #[serde(default)]
     pub self_check: ModuleSwitch,
     #[serde(default)]
@@ -68,6 +72,7 @@ impl Default for LoaderSection {
             webui: true,
             idle_unload_secs: default_idle(),
             ui: Vec::new(),
+            placeholder_delay_ms: None,
             self_check: ModuleSwitch::default(),
             self_improve: ModuleSwitch::default(),
         }

@@ -41,6 +41,8 @@ pub struct HostDeps {
     pub bridges: Vec<Arc<dyn EventBridge>>,
     /// Where the replies of the sessions leave the process.
     pub outbound: Option<Arc<dyn crate::runner::OutboundSink>>,
+    /// The task service Turns are reported to (`None`: no tasks).
+    pub turn_tasks: Option<Arc<dyn crate::runner::TurnTaskSink>>,
     /// Binding identity required of the sessions driven directly (not of
     /// their sub sessions).
     pub runtime_id: Option<String>,
@@ -70,6 +72,7 @@ impl HostDeps {
         deps.session_cli = self.session_cli.clone();
         deps.app_tools = self.app_tools.clone();
         deps.outbound = self.outbound.clone();
+        deps.turn_tasks = self.turn_tasks.clone();
         deps.stop = stop;
         Ok(deps)
     }
@@ -336,6 +339,7 @@ fn has_pending_work(sd: &SessionDir) -> bool {
     };
     !state.watched_tasks.is_empty()
         || crate::runner::has_pending_outbound(&state)
+        || crate::runner::has_pending_turn_tasks(&state)
         || state
             .waiting_for
             .as_ref()

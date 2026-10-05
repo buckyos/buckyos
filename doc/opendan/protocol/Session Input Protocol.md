@@ -271,7 +271,7 @@ bridge 只转换来源并可靠投递（先 `post`，成功后再确认上游；
 
 **task bridge**（`bridge/task.rs::task_event`）：把 task 状态映射成 `AgentEvent{source: task:<task_id>}`（`updated` / `finished` / `unknown`，终态 `terminal = true`）。通知只加速检查，task 状态 API 才是权威来源。
 
-**反向链路**：assistant 消息按 `state.reply` 转成 MsgObject（`bridge::outbound_base` 给出信封，`llm_context::ai_message_to_msg_object_with_base_validated_async` 填内容），出站记录 `{key: "<sid>:<turn>:<run_id>:<n>", msg}` 幂等。记录在 Turn 关闭的提交里写入 `state.outbox`，提交后交给驱动者的出站 sink（OpenDAN：msg-center `post_send(msg, idempotency_key = key)`），重启后原样重发；`channels.outbound` 是创建时固定的回复坐标，出站时核对（[Session Directory Protocol](<Session Directory Protocol.md>) §4 `outbox`）。
+**反向链路**：assistant 消息按 `state.reply` 转成 MsgObject（`bridge::outbound_base` 给出信封，`llm_context::ai_message_to_msg_object_with_base_validated_async` 填内容），出站记录 `{key: "<sid>:<turn>:<run_id>:<n>", msg}` 幂等。记录在 Turn 关闭的提交里写入 `state.outbox`，提交后交给驱动者的出站 sink（OpenDAN：msg-center `post_send(msg, idempotency_key = key)`），重启后原样重发；`channels.outbound` 是创建时固定的回复坐标，出站时核对（[Session Directory Protocol](<Session Directory Protocol.md>) §4 `outbox`）。耗时较长的 Turn 先发占位、结束时以一条 edit 替换，并在锚点消息上携带 `agent_task`（同节 `outbox[].purpose` / `turn_tasks`）。
 
 ## 9. 长任务：挂起调用与后台 task
 

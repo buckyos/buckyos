@@ -5,7 +5,7 @@ import { InMemoryConversationMessageReader } from '../conversation/history/data-
 import { registerObjectAccess } from '../conversation/history/objectAccess'
 import type { ConversationMessageReader } from '../conversation/history/types'
 import { getMessageStableId, type MessageObject, type MessageDeliveryStatus } from '../protocol/msgobj'
-import { displayedContent, foldMessageRelations, messageObjId } from '../conversation/history/relations'
+import { effectiveContent, foldMessageRelations, isHiddenRelationMessage, messageObjId, messageRelation, messageSummaryText } from '../conversation/history/relations'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, isMessageActivity, sharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionAccess, sessionKey, sessionTitle, sortSessions, viewerSessionKey } from '../sessionModel'
 import { createGroupSchema, formatInviteLink, GROUP_INVITATION_INTENT, groupSessionId, groupSessionKey, participating, withinWindow } from '../groupModel'
 import { ensureDefaultSession } from '../store/defaultSession'
@@ -196,6 +196,7 @@ export class MessageHubMockStore implements MessageHubStore {
   hasOlder() { return false }
   async loadOlder() { return false }
   async markRead() {}
+  async locateMessage() { return false }
   access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess {
     const access = sessionAccess(context, session, confirmed)
     const group = this.snapshot.groups[session.entityId]
@@ -241,12 +242,15 @@ export class MessageHubMockStore implements MessageHubStore {
     for (const [id, reader] of Object.entries(this.seeds)) {
       const ids = new Set<string>()
       const session = this.snapshot.sessions[sessionKey(MOCK_SELF_DID, id)]
+      const seeded: MessageObject[] = []
       for (let start = 0; start < reader.totalCount; start += 128) {
         const messages = await reader.readRange(start, 128)
-        messages.forEach((message, offset) => {
-          ids.add(getMessageStableId(message, start + offset))
-          if (!stored && session && isMessageActivity(message) && (!session.lastMessage || message.created_at_ms >= session.lastMessage.timestamp)) session.lastMessage = { text: message.content.content ?? '', timestamp: message.created_at_ms }
-        })
+        messages.forEach((message, offset) => ids.add(getMessageStableId(message, start + offset)))
+        seeded.push(...messages)
+      }
+      // The preview is the effective content: an edited message shows its latest edit.
+      if (!stored && session) for (const message of foldMessageRelations(seeded)) {
+        if (isMessageActivity(message) && (!session.lastMessage || message.created_at_ms >= session.lastMessage.timestamp)) session.lastMessage = { text: messageSummaryText(message), timestamp: message.created_at_ms }
       }
       this.seedIds.set(id, ids)
     }
@@ -256,6 +260,8 @@ export class MessageHubMockStore implements MessageHubStore {
       Object.assign(stored.messages, seeded.messages, stored.messages)
       Object.assign(stored.sessions, seeded.sessions, stored.sessions)
     }
+    const taskDemoKey = sessionKey(MOCK_SELF_DID, 'session-coder-task')
+    if (stored && !stored.sessions[taskDemoKey] && !stored.deleted[taskDemoKey]) stored.sessions[taskDemoKey] = this.snapshot.sessions[taskDemoKey]
     if (stored) this.snapshot = { ...stored, hidden: stored.hidden ?? {} }
     else await this.persist(this.snapshot)
     this.listeners.forEach(listener => listener())
@@ -354,8 +360,9 @@ export class MessageHubMockStore implements MessageHubStore {
     const folded = foldMessageRelations([...(seedMessages ?? []), ...raw])
     const hidden = new Set(this.snapshot.hidden[key] ?? [])
     const visible = (rows: MessageObject[]) => hidden.size ? rows.filter(message => !hidden.has(getMessageStableId(message, 0))) : rows
-    const seededRows = seedMessages ? visible(folded.slice(0, seedMessages.length)) : undefined
-    const delta = visible(seedMessages ? folded.slice(seedMessages.length) : folded)
+    const seedRowCount = seedMessages?.filter(message => !isHiddenRelationMessage(message)).length ?? 0
+    const seededRows = seedMessages ? visible(folded.slice(0, seedRowCount)) : undefined
+    const delta = visible(seedMessages ? folded.slice(seedRowCount) : folded)
     const baseCount = seededRows?.length ?? base?.totalCount ?? 0
     // Folded relations change rows without changing the row count, so the
     // raw message count serves as the reader revision the history pane watches.
@@ -457,6 +464,13 @@ export class MessageHubMockStore implements MessageHubStore {
     if (session.ownerDid === MOCK_SELF_DID && !next.withoutSeed[key] && this.seedIds.get(session.id)?.has(getMessageStableId(message, 0))) return
     if (messages.some(item => getMessageStableId(item, 0) === getMessageStableId(message, 0))) return
     next.messages[key] = [...messages, message]
+    const relation = messageRelation(message)
+    if (relation?.rel === 'edit') {
+      // The edit replaces the preview of the message it edits; it is neither a new activity nor a new unread message.
+      const seeded = session.ownerDid === MOCK_SELF_DID && !next.withoutSeed[key] && this.seeds[session.id] === mockMessageReaders[session.id] ? mockMessageSeeds[session.id] ?? [] : []
+      const target = [...seeded, ...messages].find(item => messageObjId(item) === relation.target)
+      if (target && target.from === message.from && session.lastMessage?.timestamp === target.created_at_ms) session.lastMessage = { ...session.lastMessage, text: messageSummaryText(message) }
+    }
     if (!isMessageActivity(message)) return
     if (message.created_at_ms >= session.lastActiveAt) session.lastMessage = { text: message.content.content ?? '', timestamp: message.created_at_ms }
     session.lastActiveAt = Math.max(session.lastActiveAt, message.created_at_ms)
@@ -504,9 +518,10 @@ export class MessageHubMockStore implements MessageHubStore {
   }
   forward(context: MessageHubContext, id: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.snapshot.sessions[sessionKey(context.ownerDid, id)]
-    const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: displayedContent(message), createdAtMs: this.now() })
-    const refs = (message.content.refs ?? []).filter(ref => ref.target.type === 'data_obj')
-    return this.sendMessage(context, id, { ...outgoing, content: { ...outgoing.content, format: message.content.format ?? outgoing.content.format, ...(refs.length ? { refs } : {}) } }, confirmation)
+    const effective = effectiveContent(message)
+    const outgoing = createOutgoingMockMessage({ sessionId: id, entityId: session?.entityId ?? '', content: effective.content ?? '', createdAtMs: this.now() })
+    const refs = (effective.refs ?? []).filter(ref => ref.target.type === 'data_obj')
+    return this.sendMessage(context, id, { ...outgoing, content: { ...outgoing.content, format: effective.format ?? outgoing.content.format, ...(refs.length ? { refs } : {}) } }, confirmation)
   }
   deleteMessage(context: MessageHubContext, id: string, message: MessageObject) {
     return this.mutate(next => {
@@ -954,6 +969,12 @@ export class MessageHubMockStore implements MessageHubStore {
     return { count: readers.length, readers }
   }
   /** Test hook: an invited member accepts. */
+  /** A message arrives from the session's peer (an Agent's placeholder, its final edit, …). */
+  simulateIncoming = (sessionId: string, message: Pick<MessageObject, 'content'> & Partial<MessageObject>) => this.mutate(next => {
+    const session = next.sessions[sessionKey(MOCK_SELF_DID, sessionId)]
+    if (!session) throw Error('not-found')
+    this.append(next, session, { from: session.entityId, to: [MOCK_SELF_DID], kind: 'chat', created_at_ms: this.now(), ui_message_id: `msg-in-${crypto.randomUUID()}`, ui_session_id: sessionId, ui_sender_name: this.lookup(session.entityId)?.name ?? session.entityId, ...message }, true)
+  })
   simulateJoin = (groupDid: string, memberDid: string) => this.mutate(next => {
     const group = next.groups[groupDid], member = group?.members[memberDid]
     if (!group || member?.state !== 'invited') return

@@ -55,6 +55,8 @@ pub struct SessionToolManager {
     /// Write targets inferred from tool calls (merged into activity at the
     /// next checkpoint).
     touched: Arc<Mutex<Vec<Touching>>>,
+    /// Tool called last (shown as the activity of the Turn's task).
+    current_tool: Arc<Mutex<Option<String>>>,
     /// Task ids the results of this run referred to so far.
     seen_tasks: Mutex<std::collections::BTreeSet<String>>,
 }
@@ -66,6 +68,7 @@ impl SessionToolManager {
         lease: Arc<Lease>,
         workdir: PathBuf,
         touched: Arc<Mutex<Vec<Touching>>>,
+        current_tool: Arc<Mutex<Option<String>>>,
     ) -> Self {
         let seen_tasks = Mutex::new(run.noted_tasks().into_iter().collect());
         Self {
@@ -74,6 +77,7 @@ impl SessionToolManager {
             lease,
             workdir,
             touched,
+            current_tool,
             seen_tasks,
         }
     }
@@ -120,6 +124,7 @@ impl ToolManager for SessionToolManager {
         if let Err(e) = self.run.require_execution_admitted() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
+        *self.current_tool.lock().expect("current tool") = Some(call.name.clone());
         let effect = classify_effect(&call.name);
         if effect != "read_only" {
             let action = InflightAction {

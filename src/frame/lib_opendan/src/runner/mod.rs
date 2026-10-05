@@ -19,6 +19,7 @@ mod reconcile;
 mod rounds;
 mod shared;
 mod tools;
+mod turn_task;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -40,7 +41,12 @@ pub use assembler::{
 };
 pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
-pub use outbound::{compose_text, has_pending_outbound, OutboundSink, SendResult, TurnReply};
+pub use outbound::{
+    compose_text, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
+};
+pub use turn_task::{
+    has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
+};
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
 
@@ -156,6 +162,9 @@ pub struct RunnerOptions {
     pub load_hints: bool,
     /// Snapshots kept per finished run.
     pub keep_snapshots: usize,
+    /// How long a Turn answering a message stays open before its
+    /// placeholder is sent (a first tool call sends it earlier).
+    pub placeholder_delay: Duration,
 }
 
 /// A stop requested by the driving process itself (SIGINT, a host stopping
@@ -202,6 +211,7 @@ impl Default for RunnerOptions {
             input_batch_max: 16,
             load_hints: true,
             keep_snapshots: 2,
+            placeholder_delay: Duration::from_secs(3),
         }
     }
 }
@@ -224,6 +234,8 @@ pub struct RunnerDeps {
     pub notifier: Arc<dyn Notifier>,
     /// Where replies leave the process (`None`: no outbox is kept).
     pub outbound: Option<Arc<dyn OutboundSink>>,
+    /// The host's task service (`None`: Turns get no task).
+    pub turn_tasks: Option<Arc<dyn TurnTaskSink>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
@@ -252,6 +264,7 @@ impl RunnerDeps {
             summarizer: None,
             notifier: Arc::new(NoopNotifier),
             outbound: None,
+            turn_tasks: None,
             session_cli: None,
             app_tools: Vec::new(),
             options: RunnerOptions::default(),

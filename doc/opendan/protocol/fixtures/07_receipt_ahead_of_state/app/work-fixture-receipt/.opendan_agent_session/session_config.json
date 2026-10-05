@@ -6,7 +6,7 @@
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791104437408,
+    "created_at_ms": 1791134682776,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"

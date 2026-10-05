@@ -22,7 +22,7 @@ import {
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
-import { displayedContent, messageObjId } from '../conversation/history/relations'
+import { editsOf, effectiveContent, messageObjId } from '../conversation/history/relations'
 import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
 import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
@@ -37,6 +37,8 @@ import { uploadAttachments } from './upload'
 const SESSION_PAGE_SIZE = 50
 const HISTORY_PAGE_SIZE = 64
 const SUMMARY_POLL_MS = 20_000
+/** Older pages a message lookup may load before giving up. */
+const LOCATE_MAX_PAGES = 50
 const RUNTIME_POLL_MS = 5_000
 const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
@@ -592,6 +594,17 @@ export class MessageHubApiStore implements MessageHubStore {
     }
   }
 
+  async locateMessage(context: MessageHubContext, sessionId: string, messageId: string) {
+    if (!this.canView(context)) return false
+    const data = this.owner(context.ownerDid)
+    const key = viewerSessionKey(context, sessionId)
+    const loaded = () => (data.histories.get(key)?.messages ?? []).some(message => messageObjId(message) === messageId)
+    this.reader(context, sessionId)
+    for (let wait = 0; wait < 100 && data.historyStatus.get(sessionId) === 'loading'; wait++) await new Promise(resolve => setTimeout(resolve, 100))
+    for (let page = 0; page < LOCATE_MAX_PAGES && !loaded(); page++) if (!await this.loadOlder(context, sessionId)) break
+    return loaded()
+  }
+
   async markRead(context: MessageHubContext, sessionId: string, recordIds: string[]) {
     if (context.mode !== 'self' || context.ownerDid !== this.selfDid || context.viewerDid !== this.selfDid) return
     const data = this.owner(context.ownerDid)
@@ -599,9 +612,12 @@ export class MessageHubApiStore implements MessageHubStore {
     const history = data.histories.get(key)
     if (!history) return
     const wanted = new Set(recordIds)
-    const targets = history.messages.filter(message => {
+    // An edit has no row of its own: its record is read with the bubble that
+    // shows it, so a placeholder and its final edit count as one unread message.
+    const shown = history.messages.filter(message => wanted.has(recordMeta(message)?.recordId ?? ''))
+    const targets = [...shown, ...editsOf(history.messages, shown)].filter(message => {
       const meta = recordMeta(message)
-      return meta && wanted.has(meta.recordId) && meta.direction === 'in' && meta.recipientState === 'UNREAD'
+      return meta && meta.direction === 'in' && meta.recipientState === 'UNREAD'
     })
     if (targets.length === 0) return
     // Records are marked in parallel and merged in one revision so the
@@ -896,8 +912,9 @@ export class MessageHubApiStore implements MessageHubStore {
 
   async forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined) {
     const session = this.writableSession(context, sessionId, confirmation)
-    const refs = (message.content.refs ?? []).filter(ref => ref.target.type === 'data_obj')
-    const content: MsgObject['content'] = { format: message.content.format ?? 'text/plain', content: displayedContent(message), ...(refs.length ? { refs } : {}) }
+    const effective = effectiveContent(message)
+    const refs = (effective.refs ?? []).filter(ref => ref.target.type === 'data_obj')
+    const content: MsgObject['content'] = { format: effective.format ?? 'text/plain', content: effective.content ?? '', ...(refs.length ? { refs } : {}) }
     const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:forward:${messageIdOf(message)}`
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
