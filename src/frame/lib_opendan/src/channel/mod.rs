@@ -28,6 +28,21 @@ pub trait InputSource: Send + Sync {
     async fn confirm(&self, progress: &SourceProgress) -> Result<()>;
     /// Lowest index the source still holds (`None` = empty / unknown).
     async fn first_available(&self) -> Result<Option<u64>>;
+    /// `false` only when the service reports the source gone (a kmsg queue
+    /// whose data was lost while the session directory survived).
+    async fn exists(&self) -> Result<bool> {
+        Ok(true)
+    }
+    /// Create a missing source again under its fixed name; deliveries are
+    /// numbered from the start again.
+    async fn recreate(&self) -> Result<()> {
+        Ok(())
+    }
+    /// Give the source back: the session will not consume input any more
+    /// (a missing source counts as released).
+    async fn release(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Opens the input sources declared in `session_config.channels`.

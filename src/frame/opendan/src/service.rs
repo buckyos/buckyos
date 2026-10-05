@@ -350,7 +350,14 @@ impl RPCHandler for StateService {
         }
         match self.call(&who, &req.method, &req.params).await {
             Ok(v) => Ok(RPCResponse::new(RPCResult::Success(v), req.seq)),
-            Err(e) => Err(RPCErrors::ReasonError(error_to_wire(&e))),
+            Err(e) => {
+                if let OpenDanError::QueueMissing { session_id } = &e {
+                    // Its driver recreates the queue when it drives the
+                    // session; the caller retries.
+                    self.host(session_id, "input queue missing").await;
+                }
+                Err(RPCErrors::ReasonError(error_to_wire(&e)))
+            }
         }
     }
 }

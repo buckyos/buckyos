@@ -370,8 +370,16 @@ async fn kmsg_rules(client: Arc<buckyos_api::msg_queue::MsgQueueClient>) {
     // The ack never moves back: marking lower indexes is a no-op.
     p.mark(1);
     assert_eq!(p.acked_index, 4);
+    // Producer / consumer queue: what is acknowledged is gone, the rest
+    // keeps its index.
     let first = input.first_available().await.unwrap();
-    assert_eq!(first, Some(1));
+    assert_eq!(first, Some(5));
+    let stats = client.get_queue_stats(&q1).await.unwrap();
+    assert_eq!((stats.message_count, stats.last_index), (1, 5));
+    assert_eq!(
+        input.fetch(&p, 100).await.unwrap().iter().map(|m| m.index).collect::<Vec<_>>(),
+        vec![5]
+    );
 }
 
 #[tokio::test]

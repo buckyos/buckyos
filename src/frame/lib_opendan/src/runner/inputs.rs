@@ -57,6 +57,65 @@ pub async fn confirm_inputs(sources: &[Arc<dyn InputSource>], state: &SessionSta
     }
 }
 
+/// Input sources their service lost (a kmsg queue whose node-local data
+/// was wiped while the session directory survived) are created again under
+/// their fixed names. A new queue numbers deliveries from 1 again, so the
+/// source's consumption progress is reset and committed *before* the queue
+/// is created: a crash in between finds the queue still missing and resets
+/// again; records a producer posts after the creation are never skipped.
+/// Runs after the recovery of runs and receipts (which may still mark
+/// indices of the lost queue).
+pub(super) async fn restore_sources(sh: &Shared) -> Result<()> {
+    for src in &sh.sources {
+        if src.exists().await? {
+            continue;
+        }
+        {
+            let mut s = sh.session.lock().await;
+            let lost = s.state.source(src.id());
+            if lost != SourceProgress::default() {
+                s.state.inputs.remove(src.id());
+                let rev = s.state.rev;
+                s.append_worklog(
+                    &sh.lease,
+                    vec![WorklogBody::ControlApplied {
+                        input: InputRef {
+                            src: "_runner".into(),
+                            index: 0,
+                            key: format!("input_source_reset@{rev}"),
+                            kind: INPUT_TYPE_CONTROL.into(),
+                        },
+                        command: "input_source_reset".into(),
+                        detail: json!({
+                            "src": src.id(),
+                            "reason": "input queue missing, recreated",
+                            "lost_acked_index": lost.acked_index,
+                        }),
+                    }],
+                )?;
+                commit_and_report(sh, &mut s).await?;
+            }
+        }
+        src.recreate().await?;
+        log::warn!("session {}: input source {} was missing, recreated", sh.dir.sid(), src.id());
+    }
+    Ok(())
+}
+
+/// The session finished and has no decision left to take: its queues are
+/// given back (deleted). A failure only leaves the queue behind.
+pub(super) async fn release_sources(sh: &Shared) {
+    if sh.session.lock().await.state.takes_input() {
+        return;
+    }
+    for src in &sh.sources {
+        match src.release().await {
+            Ok(()) => log::info!("session {}: input source {} released", sh.dir.sid(), src.id()),
+            Err(e) => log::warn!("session {}: release input source {}: {e}", sh.dir.sid(), src.id()),
+        }
+    }
+}
+
 pub(super) fn reject(
     s: &mut Session,
     m: &FetchedInput,

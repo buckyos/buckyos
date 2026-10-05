@@ -500,6 +500,13 @@ impl UiModule {
                             let _ = self.supervisor.ensure_task(&sid, "input queue full").await;
                             return Ok(());
                         }
+                        Err(e @ OpenDanError::QueueMissing { .. }) => {
+                            // The driver recreates the queue when it drives
+                            // the session; not acknowledged upstream.
+                            self.note(&route_key, |s| s.held = Some(e.to_string()));
+                            let _ = self.supervisor.ensure_task(&sid, "input queue missing").await;
+                            return Ok(());
+                        }
                         Err(e) => return Err(format!("post to {sid}: {e}")),
                     }
                 }

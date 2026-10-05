@@ -975,7 +975,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
 | 0 | Turn 以 `completed` 关闭，或 Session 成功完成；只读 / 投递 / 创建不运行等命令成功 |
 | 1 | Turn 以 `failed` / `budget_exhausted` 关闭（含 work 模板下的 `WAIT_USER_MSG`），或 session 结束为 Failed |
 | 2 | 参数 / 配置 / 模板 / 冻结校验错误；失败的输入批次未消费，不表示此前没有应用控制或恢复提交 |
-| 3 | Idle / TurnOpen / OutcomesHandled：未正常完成所请求的推进，或调试停止条件已达到；等待用户、工具或子 Session 可再次 run；投递 input_full 也以可重试诊断返回 3 |
+| 3 | Idle / TurnOpen / OutcomesHandled：未正常完成所请求的推进，或调试停止条件已达到；等待用户、工具或子 Session 可再次 run；投递 input_full / queue_missing 也以可重试诊断返回 3 |
 | 4 | 被 stop / 中断 |
 | 5 | Busy：session lease 或 run 锁被他人持有 |
 | 6 | 阻塞：NotDriver / Unregistered / BindFailed / RuntimeMismatch / RecoveryBlocked / session_readonly |

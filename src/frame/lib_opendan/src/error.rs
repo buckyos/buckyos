@@ -61,6 +61,11 @@ pub enum OpenDanError {
     /// The session's bus holds the maximum of pending inputs; retry later.
     #[error("session {session_id} already holds {pending} pending inputs (input_full); retry later")]
     InputFull { session_id: String, pending: usize },
+    /// The session's input queue is gone (its service lost the data). The
+    /// driver creates it again under the same name when it next drives the
+    /// session; retry later.
+    #[error("input queue of session {session_id} is missing (queue_missing); its driver recreates it, retry later")]
+    QueueMissing { session_id: String },
     /// A session of an older protocol version: read-only until migrated.
     #[error("session {session_id} is read-only: {reason}")]
     SessionReadonly { session_id: String, reason: String },
@@ -124,6 +129,7 @@ impl OpenDanError {
             OpenDanError::LeaseLost(_) => "lease_lost",
             OpenDanError::SessionFinished(_) => "session_finished",
             OpenDanError::InputFull { .. } => "input_full",
+            OpenDanError::QueueMissing { .. } => "queue_missing",
             OpenDanError::SessionReadonly { .. } => "session_readonly",
             OpenDanError::RuntimeMismatch { .. } => "runtime_mismatch",
             OpenDanError::Bind(_) => "bind_failed",

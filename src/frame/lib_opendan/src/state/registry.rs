@@ -223,8 +223,12 @@ impl SessionRegistry for FsRegistry {
         let entry = self
             .read_entry(sid)?
             .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
-        // Best-effort pre-check; the consumer is authoritative.
-        if entry.status.run_state == RunState::Finished && !input.input.allowed_after_finish() {
+        // Best-effort pre-check; the consumer is authoritative. A finished
+        // session takes only a `decide`, and only while it has a decision
+        // to take (otherwise its queue is released).
+        if entry.status.run_state == RunState::Finished
+            && !(input.input.allowed_after_finish() && entry.status.takes_input())
+        {
             return Err(OpenDanError::SessionFinished(sid.to_string()));
         }
         input.validate()?;
@@ -236,6 +240,18 @@ impl SessionRegistry for FsRegistry {
             .queue
             .as_ref()
             .ok_or_else(|| OpenDanError::Channel("no queue client configured".into()))?;
+        // A queue whose data was lost is recreated by the driver only: it
+        // resets the consumption progress first, the new queue numbering
+        // deliveries from 1 again.
+        let missing = |e: ::kRPC::RPCErrors| {
+            if crate::channel::kmsg::is_queue_not_found(&e) {
+                OpenDanError::QueueMissing {
+                    session_id: sid.to_string(),
+                }
+            } else {
+                e.into()
+            }
+        };
         // Capacity check and append are one critical section for every
         // producer that reaches the session through the registry: at most
         // `MAX_PENDING_INPUTS` records wait on the bus, a full bus refuses
@@ -266,7 +282,7 @@ impl SessionRegistry for FsRegistry {
                     .map_err(|e| OpenDanError::io(&lock_path, e))?;
                 // Re-read under the lock.
                 let state = sd.state()?;
-                let stats = client.get_queue_stats(&queue).await?;
+                let stats = client.get_queue_stats(&queue).await.map_err(missing)?;
                 let src = config.channels.kmsg().map(|(id, _, _)| id.to_string());
                 let pending = src
                     .map(|id| state.pending_inputs(&id, stats.last_index))
@@ -283,7 +299,8 @@ impl SessionRegistry for FsRegistry {
             // consumer still validates every record.
             Err(_) => None,
         };
-        let index = crate::channel::kmsg::post_to_queue(client, &queue, input).await?;
+        let msg = crate::channel::kmsg::encode_input(input)?;
+        let index = client.post_message(&queue, msg).await.map_err(missing)?;
         if let (Some(w), Some(ev)) = (&self.waker, &entry.wake_event) {
             w.notify(ev, serde_json::json!({ "sid": sid })).await;
         }

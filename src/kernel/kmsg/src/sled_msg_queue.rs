@@ -11,18 +11,38 @@ use http::{Method, Version};
 use http_body_util::combinators::BoxBody;
 use serde::{Deserialize, Serialize};
 use sled::{Db, IVec, Tree, transaction::Transactional};
+use log::{info, warn};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::task;
 
 pub struct SledMsgQueueServer {
     handler: MsgQueueServerHandler<SledMsgQueue>,
 }
 
+/// How often messages older than a queue's `retention_seconds` are swept
+/// when nothing is posted to it.
+const RETENTION_SWEEP_INTERVAL: Duration = Duration::from_secs(60);
+
 impl SledMsgQueueServer {
     pub fn new() -> Self {
         let queue = SledMsgQueue::new().expect("Failed to open kmsg sled database");
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let sweeper = queue.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(RETENTION_SWEEP_INTERVAL).await;
+                    let q = sweeper.clone();
+                    match task::spawn_blocking(move || q.sweep_retention()).await {
+                        Ok(Ok(0)) => {}
+                        Ok(Ok(n)) => info!("kmsg retention sweep removed {} messages", n),
+                        Ok(Err(err)) => warn!("kmsg retention sweep failed: {}", err),
+                        Err(err) => warn!("kmsg retention sweep panicked: {}", err),
+                    }
+                }
+            });
+        }
         Self {
             handler: MsgQueueServerHandler::new(queue),
         }
@@ -100,7 +120,16 @@ pub struct SledMsgQueue {
     queue_meta: Tree,
     messages: Tree,
     subs: Tree,
+    /// `<queue_urn>\0<sub_id>` → empty: the subscriptions of each queue.
+    queue_subs: Tree,
     meta: Tree,
+}
+
+/// Messages removed per transaction when trimming a queue.
+const TRIM_CHUNK: u64 = 512;
+
+fn storage_err(err: impl std::fmt::Display) -> RPCErrors {
+    RPCErrors::ReasonError(err.to_string())
 }
 
 impl SledMsgQueue {
@@ -113,14 +142,28 @@ impl SledMsgQueue {
         path: P,
     ) -> std::result::Result<Self, Box<dyn std::error::Error>> {
         let db = sled::open(path)?;
-        Ok(Self {
+        let queue = Self {
             queues: db.open_tree("queues")?,
             queue_meta: db.open_tree("queue_meta")?,
             messages: db.open_tree("messages")?,
             subs: db.open_tree("subs")?,
+            queue_subs: db.open_tree("queue_subs")?,
             meta: db.open_tree("meta")?,
             db: Arc::new(db),
-        })
+        };
+        // The index is derived from `subs`: rebuilt on open (databases
+        // written before it existed, interrupted updates).
+        queue.queue_subs.clear()?;
+        for item in queue.subs.iter() {
+            let (sub_id, value) = item?;
+            if let Ok(sub) = serde_json::from_slice::<SubscriptionState>(&value) {
+                queue.queue_subs.insert(
+                    Self::queue_sub_key(&sub.queue_urn, &String::from_utf8_lossy(&sub_id)),
+                    &[],
+                )?;
+            }
+        }
+        Ok(queue)
     }
 
     fn now_seconds() -> u64 {
@@ -147,14 +190,158 @@ impl SledMsgQueue {
         key
     }
 
-    fn decode_index_from_key(key: &[u8]) -> Option<MsgIndex> {
-        if key.len() < 8 {
-            return None;
+    fn queue_sub_key(queue_urn: &str, sub_id: &str) -> Vec<u8> {
+        let mut key = Self::message_prefix(queue_urn);
+        key.extend_from_slice(sub_id.as_bytes());
+        key
+    }
+
+    /// Subscription ids of a queue (from the index).
+    fn queue_sub_ids(&self, queue_urn: &str) -> std::result::Result<Vec<Vec<u8>>, RPCErrors> {
+        let prefix = Self::message_prefix(queue_urn);
+        let mut out = Vec::new();
+        for item in self.queue_subs.scan_prefix(&prefix) {
+            let (key, _) = item.map_err(storage_err)?;
+            out.push(key[prefix.len()..].to_vec());
         }
-        let start = key.len() - 8;
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&key[start..]);
-        Some(MsgIndex::from_be_bytes(buf))
+        Ok(out)
+    }
+
+    /// Lowest cursor among the queue's subscriptions: every message below it
+    /// is acknowledged by all of them. `None` without subscriptions.
+    fn acked_floor(&self, queue_urn: &str) -> std::result::Result<Option<MsgIndex>, RPCErrors> {
+        let mut floor: Option<MsgIndex> = None;
+        for sub_id in self.queue_sub_ids(queue_urn)? {
+            let Some(value) = self.subs.get(&sub_id).map_err(storage_err)? else {
+                continue;
+            };
+            let sub: SubscriptionState = serde_json::from_slice(&value).map_err(storage_err)?;
+            if sub.queue_urn != queue_urn {
+                continue;
+            }
+            floor = Some(floor.map_or(sub.cursor, |f| f.min(sub.cursor)));
+        }
+        Ok(floor)
+    }
+
+    /// Remove every message with an index below `bound`, in transactions
+    /// with the queue meta (a concurrent post is never lost, indexes are
+    /// never reused). Only `first_index` / counters change.
+    fn remove_before(&self, queue_urn: &str, bound: MsgIndex) -> std::result::Result<u64, RPCErrors> {
+        let queue_key = Self::queue_key(queue_urn);
+        let mut total = 0u64;
+        loop {
+            let (removed, done) = (&self.messages, &self.queue_meta)
+                .transaction(|(messages, queue_meta)| {
+                    let abort = |err: RPCErrors| sled::transaction::ConflictableTransactionError::Abort(err);
+                    let meta_value = queue_meta.get(&queue_key)?.ok_or_else(|| {
+                        abort(RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))
+                    })?;
+                    let mut meta = Self::decode_queue_meta(&meta_value).map_err(abort)?;
+                    if meta.first_index == 0 || meta.first_index >= bound {
+                        return Ok((0u64, true));
+                    }
+                    let stop = bound.min(meta.last_index + 1);
+                    let end = stop.min(meta.first_index + TRIM_CHUNK);
+                    let mut removed = 0u64;
+                    let mut bytes = 0u64;
+                    for index in meta.first_index..end {
+                        if let Some(value) = messages.remove(Self::message_key(queue_urn, index))? {
+                            removed += 1;
+                            if let Ok(msg) = Self::decode_message(&value) {
+                                bytes += msg.payload.len() as u64;
+                            }
+                        }
+                    }
+                    if end > meta.last_index {
+                        meta.first_index = 0;
+                        meta.message_count = 0;
+                        meta.size_bytes = 0;
+                    } else {
+                        meta.first_index = end;
+                        meta.message_count = meta.message_count.saturating_sub(removed);
+                        meta.size_bytes = meta.size_bytes.saturating_sub(bytes);
+                    }
+                    queue_meta.insert(queue_key.clone(), Self::encode_queue_meta(&meta).map_err(abort)?)?;
+                    Ok((removed, end >= stop))
+                })
+                .map_err(|err| match err {
+                    sled::transaction::TransactionError::Abort(err) => err,
+                    sled::transaction::TransactionError::Storage(err) => storage_err(err),
+                })?;
+            total += removed;
+            if done {
+                return Ok(total);
+            }
+        }
+    }
+
+    /// Unless `keep_acked`: drop what every subscription has acknowledged.
+    fn trim_acked(&self, queue_urn: &str) -> std::result::Result<u64, RPCErrors> {
+        let config = match self.get_queue_config(queue_urn) {
+            Ok(config) => config,
+            // Deleted meanwhile: nothing left to trim.
+            Err(_) => return Ok(0),
+        };
+        if config.keep_acked {
+            return Ok(0);
+        }
+        match self.acked_floor(queue_urn)? {
+            Some(floor) => self.remove_before(queue_urn, floor),
+            None => Ok(0),
+        }
+    }
+
+    /// `max_messages` / `retention_seconds`: the oldest messages beyond the
+    /// limits are dropped, consumed or not.
+    fn enforce_limits(
+        &self,
+        queue_urn: &str,
+        config: &QueueConfig,
+    ) -> std::result::Result<u64, RPCErrors> {
+        let mut removed = 0;
+        if let Some(max) = config.max_messages.filter(|max| *max > 0) {
+            let meta = self.get_queue_meta(queue_urn)?;
+            if meta.first_index != 0 && meta.last_index + 1 - meta.first_index > max {
+                removed += self.remove_before(queue_urn, meta.last_index + 1 - max)?;
+            }
+        }
+        if let Some(seconds) = config.retention_seconds.filter(|s| *s > 0) {
+            let cutoff = Self::now_seconds().saturating_sub(seconds);
+            let meta = self.get_queue_meta(queue_urn)?;
+            if meta.first_index != 0 {
+                let start = Self::message_key(queue_urn, meta.first_index);
+                let end = Self::message_key(queue_urn, u64::MAX);
+                let mut bound = meta.last_index + 1;
+                for item in self.messages.range(start..=end) {
+                    let (_, value) = item.map_err(storage_err)?;
+                    let msg = Self::decode_message(&value)?;
+                    if msg.created_at >= cutoff {
+                        bound = msg.index;
+                        break;
+                    }
+                }
+                removed += self.remove_before(queue_urn, bound)?;
+            }
+        }
+        Ok(removed)
+    }
+
+    /// Apply `retention_seconds` to every queue declaring it.
+    pub fn sweep_retention(&self) -> std::result::Result<u64, RPCErrors> {
+        let mut removed = 0;
+        for item in self.queues.iter() {
+            let (key, value) = item.map_err(storage_err)?;
+            let Ok(config) = Self::decode_queue_config(&value) else {
+                continue;
+            };
+            if config.retention_seconds.filter(|s| *s > 0).is_none() {
+                continue;
+            }
+            let queue_urn = String::from_utf8_lossy(&key).to_string();
+            removed += self.enforce_limits(&queue_urn, &config)?;
+        }
+        Ok(removed)
     }
 
     fn decode_queue_config(value: &IVec) -> std::result::Result<QueueConfig, RPCErrors> {
@@ -218,6 +405,18 @@ impl SledMsgQueue {
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
             .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
         Self::decode_queue_meta(&meta)
+    }
+
+    /// Cursor of a subscription position. On an empty queue `Earliest` is
+    /// the next index to be assigned (= `Latest`).
+    fn position_cursor(meta: &QueueMeta, position: SubPosition) -> MsgIndex {
+        let next = meta.next_index.max(1);
+        match position {
+            SubPosition::Earliest if meta.first_index == 0 => next,
+            SubPosition::Earliest => meta.first_index,
+            SubPosition::Latest => next,
+            SubPosition::At(index) => index,
+        }
     }
 
     fn get_queue_config(&self, queue_urn: &str) -> std::result::Result<QueueConfig, RPCErrors> {
@@ -322,21 +521,19 @@ impl MsgQueueHandler for SledMsgQueue {
             let _ = self.messages.remove(key);
         }
 
-        let sub_keys: Vec<Vec<u8>> = self
-            .subs
-            .iter()
-            .filter_map(|item| item.ok())
-            .filter_map(|(key, value)| {
-                let sub: SubscriptionState = serde_json::from_slice(&value).ok()?;
-                if sub.queue_urn == queue_urn {
-                    Some(key.to_vec())
-                } else {
-                    None
-                }
-            })
-            .collect();
-        for key in sub_keys {
-            let _ = self.subs.remove(key);
+        for sub_id in self.queue_sub_ids(queue_urn)? {
+            let owned = self
+                .subs
+                .get(&sub_id)
+                .map_err(storage_err)?
+                .and_then(|value| serde_json::from_slice::<SubscriptionState>(&value).ok())
+                .is_some_and(|sub| sub.queue_urn == queue_urn);
+            if owned {
+                let _ = self.subs.remove(&sub_id);
+            }
+            let _ = self
+                .queue_subs
+                .remove(Self::queue_sub_key(queue_urn, &String::from_utf8_lossy(&sub_id)));
         }
 
         let _ = self.queue_meta.remove(Self::queue_key(queue_urn));
@@ -461,6 +658,9 @@ impl MsgQueueHandler for SledMsgQueue {
                 .flush()
                 .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         }
+        if config.max_messages.is_some() || config.retention_seconds.is_some() {
+            self.enforce_limits(queue_urn, &config)?;
+        }
 
         Ok(result)
     }
@@ -475,17 +675,7 @@ impl MsgQueueHandler for SledMsgQueue {
         _ctx: RPCContext,
     ) -> std::result::Result<SubscriptionId, RPCErrors> {
         let meta = self.get_queue_meta(queue_urn)?;
-        let first_index = if meta.first_index == 0 {
-            1
-        } else {
-            meta.first_index
-        };
-        let last_index = meta.last_index;
-        let cursor = match position {
-            SubPosition::Earliest => first_index,
-            SubPosition::Latest => last_index + 1,
-            SubPosition::At(index) => index,
-        };
+        let cursor = Self::position_cursor(&meta, position);
 
         let sub_id = match sub_id {
             Some(value) => value,
@@ -509,6 +699,9 @@ impl MsgQueueHandler for SledMsgQueue {
         };
         let data =
             serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        self.queue_subs
+            .insert(Self::queue_sub_key(queue_urn, &sub_id), &[])
+            .map_err(storage_err)?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
@@ -520,16 +713,22 @@ impl MsgQueueHandler for SledMsgQueue {
         sub_id: &str,
         _ctx: RPCContext,
     ) -> std::result::Result<(), RPCErrors> {
-        if self
+        let Some(value) = self
             .subs
             .remove(sub_id.as_bytes())
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-            .is_none()
-        {
+        else {
             return Err(RPCErrors::ReasonError(format!(
                 "Subscription not found: {}",
                 sub_id
             )));
+        };
+        if let Ok(sub) = serde_json::from_slice::<SubscriptionState>(&value) {
+            self.queue_subs
+                .remove(Self::queue_sub_key(&sub.queue_urn, sub_id))
+                .map_err(storage_err)?;
+            // It may have been the slowest consumer.
+            self.trim_acked(&sub.queue_urn)?;
         }
         Ok(())
     }
@@ -569,6 +768,7 @@ impl MsgQueueHandler for SledMsgQueue {
                 self.subs
                     .insert(sub_id.as_bytes(), data)
                     .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+                self.trim_acked(&sub.queue_urn)?;
             }
         }
 
@@ -611,12 +811,32 @@ impl MsgQueueHandler for SledMsgQueue {
             .ok_or_else(|| RPCErrors::ReasonError(format!("Subscription not found: {}", sub_id)))?;
         let mut sub: SubscriptionState = serde_json::from_slice(&sub_value)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        // Cumulative: `index` and everything before it is consumed. A
+        // smaller index than already acknowledged changes nothing (moving
+        // back is `seek`); an index not assigned yet is refused.
+        let meta = self.get_queue_meta(&sub.queue_urn)?;
+        if index >= meta.next_index {
+            return Err(RPCErrors::ReasonError(format!(
+                "Invalid ack index {} for {}: the queue has assigned indexes below {}",
+                index, sub.queue_urn, meta.next_index
+            )));
+        }
+        if index + 1 <= sub.cursor {
+            return Ok(());
+        }
         sub.cursor = index + 1;
         let data =
             serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        self.trim_acked(&sub.queue_urn)?;
+        if self
+            .get_queue_config(&sub.queue_urn)
+            .is_ok_and(|config| config.sync_write)
+        {
+            self.db.flush().map_err(storage_err)?;
+        }
         Ok(())
     }
 
@@ -635,23 +855,14 @@ impl MsgQueueHandler for SledMsgQueue {
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
 
         let meta = self.get_queue_meta(&sub.queue_urn)?;
-        let first_index = if meta.first_index == 0 {
-            1
-        } else {
-            meta.first_index
-        };
-        let last_index = meta.last_index;
-        sub.cursor = match index {
-            SubPosition::Earliest => first_index,
-            SubPosition::Latest => last_index + 1,
-            SubPosition::At(value) => value,
-        };
+        sub.cursor = Self::position_cursor(&meta, index);
 
         let data =
             serde_json::to_vec(&sub).map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         self.subs
             .insert(sub_id.as_bytes(), data)
             .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
+        self.trim_acked(&sub.queue_urn)?;
         Ok(())
     }
 
@@ -662,78 +873,12 @@ impl MsgQueueHandler for SledMsgQueue {
         _ctx: RPCContext,
     ) -> std::result::Result<u64, RPCErrors> {
         let config = self.get_queue_config(queue_urn)?;
-        let queue_urn = queue_urn.to_string();
-        let messages = self.messages.clone();
-        let queue_meta = self.queue_meta.clone();
-
-        let removed = task::spawn_blocking(move || {
-            let meta_value = queue_meta
-                .get(SledMsgQueue::queue_key(&queue_urn))
-                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?
-                .ok_or_else(|| RPCErrors::ReasonError(format!("Queue not found: {}", queue_urn)))?;
-            let mut meta = SledMsgQueue::decode_queue_meta(&meta_value)?;
-
-            let start = SledMsgQueue::message_key(&queue_urn, 0);
-            let end = SledMsgQueue::message_key(&queue_urn, index);
-            let mut removed_count = 0u64;
-            let mut removed_bytes = 0u64;
-            let mut removed_indexes = Vec::new();
-
-            for item in messages.range(start..end) {
-                let (key, value) = item.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-                if let Ok(msg) = SledMsgQueue::decode_message(&value) {
-                    removed_bytes += msg.payload.len() as u64;
-                }
-                removed_count += 1;
-                removed_indexes.push(key.to_vec());
-            }
-
-            for key in removed_indexes {
-                let _ = messages.remove(key);
-            }
-
-            if removed_count == 0 {
-                return Ok(0u64);
-            }
-
-            meta.message_count = meta.message_count.saturating_sub(removed_count);
-            meta.size_bytes = meta.size_bytes.saturating_sub(removed_bytes);
-
-            if meta.message_count == 0 {
-                meta.first_index = 0;
-                meta.last_index = 0;
-            } else {
-                let scan_start = SledMsgQueue::message_key(&queue_urn, index);
-                let scan_end = SledMsgQueue::message_key(&queue_urn, u64::MAX);
-                let mut new_first = None;
-                for item in messages.range(scan_start..=scan_end) {
-                    let (key, _) = item.map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-                    if let Some(idx) = SledMsgQueue::decode_index_from_key(&key) {
-                        new_first = Some(idx);
-                        break;
-                    }
-                }
-                if let Some(idx) = new_first {
-                    meta.first_index = idx;
-                }
-            }
-
-            let meta_data = SledMsgQueue::encode_queue_meta(&meta)?;
-            queue_meta
-                .insert(SledMsgQueue::queue_key(&queue_urn), meta_data)
-                .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
-
-            Ok(removed_count)
-        })
-        .await
-        .map_err(|err| RPCErrors::ReasonError(err.to_string()))??;
-
+        let removed = self.remove_before(queue_urn, index)?;
         if config.sync_write {
             self.db
                 .flush()
                 .map_err(|err| RPCErrors::ReasonError(err.to_string()))?;
         }
-
         Ok(removed)
     }
 }
@@ -770,7 +915,11 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn test_msg_queue_end_to_end() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let (_tmp, queue) = setup_queue();
-        let config = QueueConfig::default();
+        // Log semantics: history stays readable after acks.
+        let config = QueueConfig {
+            keep_acked: true,
+            ..QueueConfig::default()
+        };
         let queue_urn = queue
             .handle_create_queue(
                 Some("inbox"),
@@ -940,7 +1089,10 @@ mod tests {
                 Some("multi"),
                 "app",
                 "owner",
-                QueueConfig::default(),
+                QueueConfig {
+                    keep_acked: true,
+                    ..QueueConfig::default()
+                },
                 RPCContext::default(),
             )
             .await?;

@@ -21,7 +21,7 @@ use libopendan::host::Supervisor;
 use libopendan::protocol::*;
 use libopendan::runner::{TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus};
 use libopendan::state::AgentStateClient;
-use libopendan::SessionDir;
+use libopendan::{OpenDanError, SessionDir};
 use serde_json::{json, Value};
 
 /// A task as far as the Loader looks at it.
@@ -428,6 +428,11 @@ impl CancelBridge {
                 Ok(_) => {
                     log::info!("task bridge: task {task_id} canceled, stopping {}", e.session_id);
                     let _ = self.supervisor.ensure_task(&e.session_id, "task canceled").await;
+                }
+                // Recreated by its driver; the next scan posts again.
+                Err(err @ OpenDanError::QueueMissing { .. }) => {
+                    log::warn!("task bridge: cannot stop {} yet: {err}", e.session_id);
+                    let _ = self.supervisor.ensure_task(&e.session_id, "input queue missing").await;
                 }
                 // A session without a queue is stopped with its parent.
                 Err(err) => log::warn!("task bridge: cannot stop {}: {err}", e.session_id),

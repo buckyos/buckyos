@@ -515,28 +515,24 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
         2,
         "{kinds:?}"
     );
-    // Re-posting the same dedup key is dropped silently…
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"))
-        .await
-        .unwrap();
-    drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
-    assert_eq!(read_worklog(&b).last().unwrap().body.kind(), "decide");
-    // …a new accept after discard is rejected (logged), not applied.
+    // Discarded is final: B gave its queue back and any decide is refused
+    // up front (a finished session takes no more input).
+    let q = queue_of(&b);
+    assert!(env.channels().client().get_queue_stats(&q).await.is_err(), "queue released");
     let again = PostedInput::control(APP, "decide-accept-2", ControlCommand::Decide {
             decision: "accept".into(),
             by: "did:user:alice".into(),
             note: None,
         },
     );
-    libopendan::post_input(agent.as_ref(), b.sid(), &again)
-        .await
-        .unwrap();
-    drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
+    for d in [decide("accept"), again] {
+        let err = libopendan::post_input(agent.as_ref(), b.sid(), &d).await.unwrap_err();
+        assert!(matches!(err, libopendan::OpenDanError::SessionFinished(_)), "{err}");
+    }
+    let n = read_worklog(&b).len();
+    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await.is_finished());
     assert_eq!(b.state().unwrap().acceptance, Acceptance::Discarded);
-    assert_eq!(
-        read_worklog(&b).last().unwrap().body.kind(),
-        "input_rejected"
-    );
+    assert_eq!(read_worklog(&b).len(), n);
 }
 
 #[tokio::test]

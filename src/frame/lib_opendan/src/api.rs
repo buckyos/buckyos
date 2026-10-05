@@ -388,7 +388,8 @@ pub async fn read_session(
 
 /// Post a record to a session's input bus through the registry (anyone
 /// with write access to its queue). Publishes the wake event when a waker
-/// is configured. `input_full` (64 pending records) is retryable.
+/// is configured. `input_full` (64 pending records) and `queue_missing`
+/// (the driver recreates a lost queue) are retryable.
 pub async fn post_input(agent: &dyn AgentStateClient, sid: &str, input: &PostedInput) -> Result<u64> {
     agent.sessions().post_input(sid, input).await
 }

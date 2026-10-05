@@ -34,7 +34,7 @@ use super::input_view::{
     event_view, media_blocks, message_view, pending_event_view, unlocated_attachments, EventView,
     InputItem, InputView,
 };
-use super::inputs::{confirm_inputs, route_inputs, stop_queued};
+use super::inputs::{confirm_inputs, release_sources, restore_sources, route_inputs, stop_queued};
 use super::live::{
     commit_input_batch, new_run_context, open_state_live_run, resume_live_run, run_compacting,
     try_fill, InputBatch,
@@ -120,16 +120,22 @@ async fn drive_locked(
         Ok(r) => deps.runtime = r,
         Err(e) => return DriveResult::BindFailed { error: e.to_json() },
     }
-    let mut sources = match deps.inputs.open(&session.config).await {
-        Ok(s) => s,
-        Err(e) => {
-            return DriveResult::Error {
-                rev: session.state.rev,
-                error: e.to_json(),
+    // A finished session that takes no more input gave its queue back.
+    let takes_input = session.state.takes_input();
+    let mut sources = if takes_input {
+        match deps.inputs.open(&session.config).await {
+            Ok(s) => s,
+            Err(e) => {
+                return DriveResult::Error {
+                    rev: session.state.rev,
+                    error: e.to_json(),
+                }
             }
         }
+    } else {
+        Vec::new()
     };
-    if !session.config.prompt.initial_inputs.is_empty() {
+    if takes_input && !session.config.prompt.initial_inputs.is_empty() {
         // Bootstrap material of a session without a queue: a read-only
         // source consumed through the same routing and receipts.
         sources.push(Arc::new(crate::channel::BootstrapSource::new(
@@ -153,6 +159,9 @@ async fn drive_locked(
         flush: tokio::sync::Mutex::new(()),
     });
     let r = Box::pin(drive_inner(&sh, until)).await;
+    if matches!(r, Ok(DriveResult::Finished { .. })) && !sh.sources.is_empty() {
+        release_sources(&sh).await;
+    }
     let rev = sh.session.lock().await.state.rev;
     match r {
         Ok(res) => res,
@@ -766,6 +775,8 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     let mut live: Option<LiveCtx> = None;
     let mut waiting: Option<WaitingRun> = None;
     let reconciled = Box::pin(reconcile_runs(sh)).await?;
+    // A queue lost by its service is created again before it is read.
+    restore_sources(sh).await?;
     {
         let s = sh.session.lock().await;
         confirm_inputs(&sh.sources, &s.state).await;

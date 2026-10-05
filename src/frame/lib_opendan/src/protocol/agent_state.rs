@@ -54,6 +54,13 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
+    /// [`super::state::SessionState::takes_input`] as last reported.
+    pub fn takes_input(&self) -> bool {
+        self.run_state != RunState::Finished
+            || matches!(self.acceptance, Acceptance::Pending | Acceptance::Accepted)
+            || self.pending_decision.is_some()
+    }
+
     pub fn created(now_ms: u64) -> Self {
         Self {
             rev: 0,

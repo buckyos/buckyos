@@ -74,8 +74,10 @@ pub trait SessionRegistry: Send + Sync {
     /// Post an input to a session's kmsg queue (+ wake event).
     /// Append a record to the session's input bus. Refused with
     /// `input_full` while the bus holds [`MAX_PENDING_INPUTS`] records that
-    /// are not consumed yet (nothing is overwritten; retry later), and with
-    /// `session_readonly` for a session of an older protocol version.
+    /// are not consumed yet (nothing is overwritten; retry later), with
+    /// `queue_missing` while the queue is lost and not yet recreated by the
+    /// driver (retry later), and with `session_readonly` for a session of an
+    /// older protocol version.
     async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64>;
 }
 

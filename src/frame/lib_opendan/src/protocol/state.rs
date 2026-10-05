@@ -878,6 +878,16 @@ impl SessionState {
         self.run_state == RunState::Finished
     }
 
+    /// Whether the session can still consume input: not finished, or
+    /// finished with a decision it can take (acceptance pending, accepted —
+    /// it can still be discarded — or a `decide` queued). A session that
+    /// does not gives its input queue back.
+    pub fn takes_input(&self) -> bool {
+        !self.is_finished()
+            || matches!(self.acceptance, Acceptance::Pending | Acceptance::Accepted)
+            || self.pending_decision.is_some()
+    }
+
     /// The task of the open Turn, if it has one.
     pub fn open_turn_task(&self) -> Option<&TurnTask> {
         let turn = self.open_turn.as_ref()?.index;

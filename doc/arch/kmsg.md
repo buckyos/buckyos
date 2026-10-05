@@ -70,6 +70,10 @@ pub struct QueueConfig {
     pub retention_seconds: Option<u64>,
     /// 是否需要同步落盘 (Write-Ahead-Log 语义)
     pub sync_write: bool,
+    /// 保留已确认的消息（日志语义，可回溯）。默认 false：生产者-消费者语义，
+    /// 一条消息被全部订阅确认（游标越过它）后即删除，消费正常时队列基本为空；
+    /// 没有订阅时不裁剪。ACK 与删除分离是使用者的选择。
+    pub keep_acked: bool,
     /// 权限控制，对非创建者的权限控制，一般是同owner_id,不同appid的情况下，允许读（订阅）
     /// TODO:需要细化设计
 }
@@ -80,6 +84,7 @@ impl Default for QueueConfig {
             max_messages: None,
             retention_seconds: None,
             sync_write: false, // 默认追求高性能
+            keep_acked: false, // 默认 ACK 即删除
         }
     }
 }
@@ -170,7 +175,8 @@ pub trait MsgQueue: Send + Sync {
     ) -> Result<Vec<Message>>;
 
     /// 显式提交游标 (配合 fetch_messages auto_commit=false 使用)
-    /// 确认 `index` 及其之前的消息已被处理。
+    /// 确认 `index` 及其之前的消息已被处理（累积）。小于已确认位置时不变（回退用 `seek`）；
+    /// `index` 尚未分配时报错。除非队列声明 `keep_acked`，全部订阅都确认过的消息随即删除。
     async fn commit_ack(&self, sub_id: &str, index: MsgIndex) -> Result<()>;
 
     /// 重置订阅者游标到指定位置
@@ -182,7 +188,8 @@ pub trait MsgQueue: Send + Sync {
     // -------------------------------------------------------------------------
 
     /// 删除指定 Index 之前的所有消息 (Log Truncation)
-    /// 通常用于 Raft Log Compact 或 磁盘空间回收。
+    /// 通常用于 Raft Log Compact 或 磁盘空间回收。与 post 在同一事务里更新队列元数据，
+    /// 不会复用 Index；只改变 `first_index` 与计数，`last_index` 保持为最后分配的 Index。
     async fn delete_message_before(&self, queue_urn: &str, index: MsgIndex) -> Result<u64>;
 }
 
@@ -220,9 +227,10 @@ AgentSession 可以独立创建 kmsg 输入队列，并配合 kevent 唤醒。�
 
 ### 持久化承诺与回收责任
 
-- 创建者没有声明明确的队列 timeout 时，kmsg 持续保留队列及未被显式删除或按创建者声明的消息保留策略裁剪的数据。ACK、队列为空、无人订阅、长期没有读写、App 退出或 session finished，都不隐含删除授权。
+- 创建者没有声明明确的队列 timeout 时，kmsg 持续保留队列及未被显式删除或按创建者声明的消息保留策略裁剪的数据。队列为空、无人订阅、长期没有读写、App 退出或 session finished，都不隐含删除队列的授权。ACK 与删除是两个语义，但大多数时候正确的语义就是 ACK 后删除：默认情况下，全部订阅都确认过的消息随即删除（只删消息，不删队列）；需要 ACK 与删除分离（日志、回溯、后加入的订阅读历史）的创建者声明 `keep_acked`。
 - 队列回收由创建者主动调用 `delete_queue`，或者由创建者明确声明 timeout，授权 timeout 服务到期 GC。timeout GC 不依据业务状态或空闲时间自行推断过期。
-- 消息保留策略与队列 timeout 分开：`retention_seconds` / `max_messages` 控制消息保留，不自动授权销毁队列及其订阅。
+- 消息保留策略与队列 timeout 分开：`keep_acked` / `retention_seconds` / `max_messages` 控制消息保留，不自动授权销毁队列及其订阅。
+- 生产者-消费者用法（如 AgentSession 输入队列）用默认配置：消费者在处理结果落盘后累积确认，确认过的消息随即删除，消费正常时队列基本为空。裁剪以该队列全部订阅中最小的游标为界，慢的订阅会让消息保留；没有订阅时不裁剪。`retention_seconds` / `max_messages` 是不看消费进度的硬上限（超出即删最旧的），不适合要求不丢输入的队列。
 - Session SDK / 创建 App 负责判断何时不再需要输入并主动释放队列；需要在 finished 后接收 `decide` 等控制输入时，应保留通道直到业务允许关闭。kmsg 不需要理解 AgentSession 的生命周期。
 
 ### 创建 App 的资源配额
@@ -241,9 +249,9 @@ AgentSession 可以独立创建 kmsg 输入队列，并配合 kevent 唤醒。�
 
 ### 当前实现与待办项
 
-当前 Sled 后端已经提供 `delete_queue`、`unsubscribe`、`delete_message_before`；`commit_ack` 只推进订阅游标，不删除消息。`QueueConfig` 中已有 `retention_seconds` 和 `max_messages` 字段，但后端尚未执行这些消息保留策略；也没有队列 timeout 或 App 资源配额机制。
+当前 Sled 后端提供 `delete_queue`、`unsubscribe`、`delete_message_before`，并执行消息保留策略：确认即删除（未声明 `keep_acked` 时；`commit_ack`、自动提交的 `fetch_messages`、`seek`、`unsubscribe` 之后按最小游标裁剪）、`max_messages`（每次 post 后）、`retention_seconds`（每次 post 后，另有每 60 秒一次的后台清扫）。删除与 post 都在 `messages` + `queue_meta` 的同一 sled 事务里更新元数据（早期实现非事务地写回元数据，会让并发 post 复用 Index、覆盖消息）。订阅按队列建索引（`queue_subs`，启动时从 `subs` 重建）。还没有队列 timeout 或 App 资源配额机制。
 
 - [ ] 明确队列 timeout 的配置与到期语义，由创建者显式声明，并持久保存到期授权。
 - [ ] 接入 timeout 服务执行队列 GC，支持重启恢复和删除重试；到期任务绑定队列实例，避免误删同名重建的队列。
 - [ ] 实现按创建 App 计量的队列数、订阅数、存储字节数配额，以及并发分配校验、超额拒绝和清理后的额度释放。
-- [ ] 补齐消息保留策略，并保持其与队列销毁授权的语义区分。
+- [x] 补齐消息保留策略（确认即删除 / `keep_acked`、`max_messages`、`retention_seconds`），并保持其与队列销毁授权的语义区分。

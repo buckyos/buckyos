@@ -63,7 +63,7 @@ identity and location (flags or environment):
   --agent-root <dir>   [$OPENDAN_AGENT_ROOT]    --state-url <url>  [$OPENDAN_AGENT_STATE_URL]
   --queue-dir <dir>    [$LIBOPENDAN_QUEUE_DIR]  development file queue; without it the zone's kmsg
 
-exit codes: 0 completed | 1 failed | 2 bad arguments / configuration | 3 not finished (idle, open Turn, input_full)
+exit codes: 0 completed | 1 failed | 2 bad arguments / configuration | 3 not finished (idle, open Turn, input_full, queue_missing)
             4 stopped | 5 busy | 6 blocked (not driver, unregistered, bind, runtime mismatch, recovery, readonly)
 ";
 
@@ -90,7 +90,7 @@ impl From<OpenDanError> for Fail {
             | OpenDanError::Json { .. }
             | OpenDanError::SessionIdConflict(_)
             | OpenDanError::Channel(_) => 2,
-            OpenDanError::InputFull { .. } => 3,
+            OpenDanError::InputFull { .. } | OpenDanError::QueueMissing { .. } => 3,
             OpenDanError::Busy { .. } | OpenDanError::RunBusy { .. } | OpenDanError::LeaseLost(_) => 5,
             OpenDanError::NotDriver { .. }
             | OpenDanError::Unregistered(_)
@@ -518,7 +518,7 @@ fn exit_code(r: &DriveResult) -> i32 {
             match error.get("kind").and_then(Value::as_str).unwrap_or_default() {
                 "invalid_argument" | "channel" | "json" => 2,
                 "session_readonly" | "runtime_mismatch" | "bind_failed" | "recovery_blocked" => 6,
-                "input_full" => 3,
+                "input_full" | "queue_missing" => 3,
                 _ => 1,
             }
         }

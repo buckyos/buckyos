@@ -8,13 +8,17 @@
 
 | 通道 | 命名 |
 |---|---|
-| kmsg 队列 | 名称 `opendan.session.<sid>`，URN `<appid>::<owner>::opendan.session.<sid>`；由创建者（驱动者 App 身份）创建，`sync_write=true`、`other_app_can_write=true` |
+| kmsg 队列 | 名称 `opendan.session.<sid>`，URN `<appid>::<owner>::opendan.session.<sid>`；由创建者（驱动者 App 身份）创建，`sync_write=true`、`keep_acked=false`（确认即删除）、`other_app_can_write=true` |
 | kmsg 订阅 | `opendan.<agent_id>.<sid>`（sub id 在全部队列与 App 间共用一个命名空间）；创建时 `Earliest` |
 | kevent 唤醒 | `/opendan/<agent_id>/session/<sid>/input`，投递后发布 `{"sid": …}`；只表示“队列可能有变化”，重复与丢失都由轮询兜底，不对应任何推理入口 |
 
 Session 不直接读 msg-center：msg bridge 消费 inbox 后投递到总线（§7）。`agent_id` 默认取 agent DID 最后一段并把字母、数字、`_ - .` 之外的字符替换为 `_`。
 
-**kmsg 使用规则**：`create_queue` / `subscribe` 返回“already exists”视为成功（并用 `get_queue_stats` 确认队列）；读取用 `read_message(queue, acked_index + 1, n)`，不依赖服务端游标；`commit_ack` 只提交 state.json 已提交的**连续**消费位置，永不小于已记录值；遇到 “Subscription not found” 以 `At(acked_index + 1)` 重新订阅；本期不删除消息。
+**kmsg 使用规则**：`create_queue` / `subscribe` 返回“already exists”视为成功（并用 `get_queue_stats` 确认队列）；读取用 `read_message(queue, acked_index + 1, n)`，不依赖服务端游标；`commit_ack` 只提交 state.json 已提交的**连续**消费位置（累积确认）；遇到 “Subscription not found” 以 `At(acked_index + 1)` 重新订阅。队列是生产者-消费者语义：确认过的记录由 kmsg 删除（不声明 `keep_acked`），消费正常时队列基本为空；Session 自己不调用 `delete_message_before`，也不设 `retention_seconds` / `max_messages`（它们不看消费进度）。
+
+**队列释放**：Session 不再接收输入时（finished，且 acceptance 不是 `pending` / `accepted`、也没有排队的 `decide`；`accepted` 仍可被 `discard`），驱动者在结束它的那次推进末尾删除队列；之后的推进不再打开输入源。向这样的 Session 投递任何记录都在登记表入口返回 `session_finished`。
+
+**队列丢失**：队列名由 `sid` 决定，kmsg 数据在节点本地，可能丢失而 Session 目录还在（如重装）。此时只由驱动者重建（仍接收输入的 Session）：每次推进在恢复 run 与 receipt 之后、读取输入之前检查队列，不存在则先把该源的消费进度（`inputs[src]`）清零并提交 state.json（worklog `control_applied{command: input_source_reset, input.src: "_runner", detail: {src, lost_acked_index}}`），再以同一名称创建队列并以 `Earliest` 订阅。新队列从 1 重新编号，所以必须先清进度再建：两步之间崩溃，下次仍看到队列不存在、再清一次；建好之后投递的记录不会被旧进度跳过。投递方不创建队列，返回可重试的 `queue_missing`（不确认上游，并唤醒驱动者）；旧队列里尚未消费的记录随数据一起丢失。
 
 ## 2. 逻辑记录
 

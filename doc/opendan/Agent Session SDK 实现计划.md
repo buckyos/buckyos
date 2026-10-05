@@ -669,8 +669,8 @@ def commit_pop(lease, s, consumed, prepared=None):           # 上下文输入�
 | `create_queue` / `subscribe` 不幂等，已存在时返回字符串错误 | 按“已存在即成功”处理，并用 `get_queue_stats` 确认队列存在 |
 | sub_id 在所有队列、所有 App 之间共用一个命名空间 | sub_id 使用 `opendan.<agent_id>.<sid>` |
 | 游标不落盘（D-09），服务重启可能丢订阅 | fetch 遇到 “Subscription not found” 时，以 `At(state.inputs.q.acked_index + 1)` 重新订阅 |
-| `commit_ack` 直接设 `cursor = index + 1`，可回退，没有 fencing | 只 ack 到 state.json 已提交的连续消费位置；永远不 ack 小于已记录的值 |
-| `delete_message_before` 与 post 有竞态，会复用 index 覆盖消息；retention 未实现（D-06） | 本期不删除消息；session 结束后整队列删除（GC 另议） |
+| `commit_ack` 累积确认、不回退（2026-10-05 起；此前直接设 `cursor = index + 1`，可回退）；除非队列声明 `keep_acked`，全部订阅确认过的消息随即删除 | 只 ack 到 state.json 已提交的连续消费位置；Session 队列不声明 `keep_acked`，消费正常时为空 |
+| `delete_message_before` 已与 post 同事务（此前有竞态，会复用 index 覆盖消息）；`retention_seconds` / `max_messages` 已实现，但不看消费进度 | Session 队列不用这两种裁剪；Session 不再接收输入时驱动者删除整个队列 |
 | 没有权限校验（D-07），`headers.from` 是自报的 | `from` 只用于审计；control 输入的认证等 D-07 补齐（§15.1） |
 
 **UI session 与 msg-center（后移，V1）**。以下是 UI session 恢复实施时要处理的现状（§1.5）：

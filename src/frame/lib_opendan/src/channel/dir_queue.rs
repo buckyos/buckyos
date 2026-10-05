@@ -2,11 +2,13 @@
 //! and tests without a kmsg service (several processes may share one
 //! directory; every operation runs under an exclusive flock).
 //!
-//! It deliberately mirrors kmsg's current behaviour — non-idempotent
-//! `create_queue` / `subscribe`, cumulative `commit_ack` that may move the
-//! cursor backwards, `Subscription not found` after `forget_subscriptions`
-//! (simulating a service restart that lost cursors, D-09) — so the session
-//! input rules are exercised against the same edge cases.
+//! It deliberately mirrors kmsg's behaviour — non-idempotent
+//! `create_queue` / `subscribe`, cumulative `commit_ack` that never moves
+//! back, acknowledged messages dropped unless `keep_acked`,
+//! `max_messages` / `retention_seconds` trimming,
+//! `Subscription not found` after `forget_subscriptions` (simulating a
+//! service restart that lost cursors, D-09) — so the session input rules
+//! are exercised against the same edge cases.
 
 use std::path::{Path, PathBuf};
 
@@ -104,11 +106,123 @@ impl DirMsgQueue {
         Ok(out)
     }
 
+    fn config(&self, urn: &str) -> Result<QueueConfig, RPCErrors> {
+        Ok(fsutil::read_json_opt::<QueueConfig>(&self.qdir(urn).join("config.json"))
+            .map_err(|e| err(e.to_string()))?
+            .unwrap_or_default())
+    }
+
+    fn subs_of(&self, urn: &str) -> Result<Vec<SubState>, RPCErrors> {
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(self.root.join("subs"))
+            .map_err(|e| err(e.to_string()))?
+            .flatten()
+        {
+            if let Ok(Some(s)) = fsutil::read_json_opt::<SubState>(&e.path()) {
+                if s.queue_urn == urn {
+                    out.push(s);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Cursor of a subscription position (on an empty queue `Earliest` is
+    /// the next index, like `Latest`).
+    fn position_cursor(m: &QueueMeta, position: SubPosition) -> u64 {
+        let next = m.next_index.max(1);
+        match position {
+            SubPosition::Earliest if m.first_index == 0 => next,
+            SubPosition::Earliest => m.first_index,
+            SubPosition::Latest => next,
+            SubPosition::At(i) => i,
+        }
+    }
+
+    /// Remove the messages below `bound` (caller holds the guard). Only
+    /// `first_index` / counters change, indexes are never reused.
+    fn remove_before(&self, urn: &str, bound: u64) -> Result<u64, RPCErrors> {
+        let mut m = self.meta(urn)?;
+        if m.first_index == 0 || m.first_index >= bound {
+            return Ok(0);
+        }
+        let end = bound.min(m.last_index + 1);
+        let mut removed = 0;
+        let mut bytes = 0;
+        for i in m.first_index..end {
+            let path = self.msg_path(urn, i);
+            if let Ok(Some(msg)) = fsutil::read_json_opt::<Message>(&path) {
+                bytes += msg.payload.len() as u64;
+            }
+            if std::fs::remove_file(path).is_ok() {
+                removed += 1;
+            }
+        }
+        if end > m.last_index {
+            m.first_index = 0;
+            m.message_count = 0;
+            m.size_bytes = 0;
+        } else {
+            m.first_index = end;
+            m.message_count = m.message_count.saturating_sub(removed);
+            m.size_bytes = m.size_bytes.saturating_sub(bytes);
+        }
+        self.write_meta(urn, &m)?;
+        Ok(removed)
+    }
+
+    /// Unless `keep_acked`: drop what every subscription acknowledged.
+    fn trim_acked(&self, urn: &str) -> Result<(), RPCErrors> {
+        if !self.qdir(urn).join("meta.json").exists() || self.config(urn)?.keep_acked {
+            return Ok(());
+        }
+        if let Some(floor) = self.subs_of(urn)?.iter().map(|s| s.cursor).min() {
+            self.remove_before(urn, floor)?;
+        }
+        Ok(())
+    }
+
+    /// `max_messages` / `retention_seconds`.
+    fn enforce_limits(&self, urn: &str, config: &QueueConfig) -> Result<(), RPCErrors> {
+        if let Some(max) = config.max_messages.filter(|m| *m > 0) {
+            let m = self.meta(urn)?;
+            if m.first_index != 0 && m.last_index + 1 - m.first_index > max {
+                self.remove_before(urn, m.last_index + 1 - max)?;
+            }
+        }
+        if let Some(seconds) = config.retention_seconds.filter(|s| *s > 0) {
+            let cutoff = (crate::now_ms() / 1000).saturating_sub(seconds);
+            let m = self.meta(urn)?;
+            if m.first_index != 0 {
+                let fresh = self
+                    .read_from(urn, m.first_index, usize::MAX)?
+                    .into_iter()
+                    .find(|msg| msg.created_at >= cutoff)
+                    .map(|msg| msg.index)
+                    .unwrap_or(m.last_index + 1);
+                self.remove_before(urn, fresh)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Simulate a kmsg restart that lost every subscription cursor (D-09).
     pub fn forget_subscriptions(&self) -> std::io::Result<()> {
         let _g = self.guard().map_err(|e| std::io::Error::other(e.to_string()))?;
         for e in std::fs::read_dir(self.root.join("subs"))?.flatten() {
             let _ = std::fs::remove_file(e.path());
+        }
+        Ok(())
+    }
+
+    /// Simulate a kmsg whose data was lost (its node-local store wiped):
+    /// every queue and subscription is gone.
+    pub fn wipe(&self) -> std::io::Result<()> {
+        let _g = self.guard().map_err(|e| std::io::Error::other(e.to_string()))?;
+        for d in ["queues", "subs"] {
+            let dir = self.root.join(d);
+            std::fs::remove_dir_all(&dir)?;
+            std::fs::create_dir_all(&dir)?;
         }
         Ok(())
     }
@@ -225,6 +339,7 @@ impl MsgQueueHandler for DirMsgQueue {
         fsutil::atomic_replace_json(&self.msg_path(queue_urn, index), &message)
             .map_err(|e| err(e.to_string()))?;
         self.write_meta(queue_urn, &m)?;
+        self.enforce_limits(queue_urn, &self.config(queue_urn)?)?;
         Ok(index)
     }
 
@@ -239,12 +354,7 @@ impl MsgQueueHandler for DirMsgQueue {
     ) -> Result<SubscriptionId, RPCErrors> {
         let _g = self.guard()?;
         let m = self.meta(queue_urn)?;
-        let first = if m.first_index == 0 { 1 } else { m.first_index };
-        let cursor = match position {
-            SubPosition::Earliest => first,
-            SubPosition::Latest => m.last_index + 1,
-            SubPosition::At(i) => i,
-        };
+        let cursor = Self::position_cursor(&m, position);
         let sub_id = sub_id.unwrap_or_else(|| format!("sub-{}", uuid::Uuid::new_v4().simple()));
         let p = self.sub_path(&sub_id);
         if p.exists() {
@@ -264,10 +374,11 @@ impl MsgQueueHandler for DirMsgQueue {
     async fn handle_unsubscribe(&self, sub_id: &str, _ctx: RPCContext) -> Result<(), RPCErrors> {
         let _g = self.guard()?;
         let p = self.sub_path(sub_id);
-        if !p.exists() {
-            return Err(err(format!("Subscription not found: {sub_id}")));
-        }
-        std::fs::remove_file(p).map_err(|e| err(e.to_string()))
+        let sub = fsutil::read_json_opt::<SubState>(&p)
+            .map_err(|e| err(e.to_string()))?
+            .ok_or_else(|| err(format!("Subscription not found: {sub_id}")))?;
+        std::fs::remove_file(p).map_err(|e| err(e.to_string()))?;
+        self.trim_acked(&sub.queue_urn)
     }
 
     async fn handle_fetch_messages(
@@ -287,6 +398,7 @@ impl MsgQueueHandler for DirMsgQueue {
             if let Some(last) = msgs.last() {
                 sub.cursor = last.index + 1;
                 fsutil::atomic_replace_json(&p, &sub).map_err(|e| err(e.to_string()))?;
+                self.trim_acked(&sub.queue_urn)?;
             }
         }
         Ok(msgs)
@@ -314,8 +426,20 @@ impl MsgQueueHandler for DirMsgQueue {
         let mut sub = fsutil::read_json_opt::<SubState>(&p)
             .map_err(|e| err(e.to_string()))?
             .ok_or_else(|| err(format!("Subscription not found: {sub_id}")))?;
-        sub.cursor = index + 1; // kmsg: may move backwards, no fencing
-        fsutil::atomic_replace_json(&p, &sub).map_err(|e| err(e.to_string()))
+        let m = self.meta(&sub.queue_urn)?;
+        if index >= m.next_index.max(1) {
+            return Err(err(format!(
+                "Invalid ack index {index} for {}: the queue has assigned indexes below {}",
+                sub.queue_urn, m.next_index
+            )));
+        }
+        // Cumulative, never moves back (that is `seek`).
+        if index + 1 <= sub.cursor {
+            return Ok(());
+        }
+        sub.cursor = index + 1;
+        fsutil::atomic_replace_json(&p, &sub).map_err(|e| err(e.to_string()))?;
+        self.trim_acked(&sub.queue_urn)
     }
 
     async fn handle_seek(
@@ -330,12 +454,9 @@ impl MsgQueueHandler for DirMsgQueue {
             .map_err(|e| err(e.to_string()))?
             .ok_or_else(|| err(format!("Subscription not found: {sub_id}")))?;
         let m = self.meta(&sub.queue_urn)?;
-        sub.cursor = match index {
-            SubPosition::Earliest => m.first_index.max(1),
-            SubPosition::Latest => m.last_index + 1,
-            SubPosition::At(i) => i,
-        };
-        fsutil::atomic_replace_json(&p, &sub).map_err(|e| err(e.to_string()))
+        sub.cursor = Self::position_cursor(&m, index);
+        fsutil::atomic_replace_json(&p, &sub).map_err(|e| err(e.to_string()))?;
+        self.trim_acked(&sub.queue_urn)
     }
 
     async fn handle_delete_message_before(
@@ -345,19 +466,6 @@ impl MsgQueueHandler for DirMsgQueue {
         _ctx: RPCContext,
     ) -> Result<u64, RPCErrors> {
         let _g = self.guard()?;
-        let mut m = self.meta(queue_urn)?;
-        let mut deleted = 0;
-        let start = m.first_index.max(1);
-        for i in start..index.min(m.last_index + 1) {
-            if std::fs::remove_file(self.msg_path(queue_urn, i)).is_ok() {
-                deleted += 1;
-            }
-        }
-        m.message_count = m.message_count.saturating_sub(deleted);
-        if index > m.first_index {
-            m.first_index = index.min(m.last_index + 1);
-        }
-        self.write_meta(queue_urn, &m)?;
-        Ok(deleted)
+        self.remove_before(queue_urn, index)
     }
 }

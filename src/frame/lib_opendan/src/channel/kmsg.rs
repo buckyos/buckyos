@@ -6,8 +6,10 @@
 //! | `create_queue` / `subscribe` not idempotent | "already exists" = success, verified with `get_queue_stats` |
 //! | sub ids share one namespace | `opendan.<agent_id>.<sid>` |
 //! | cursors are not persisted (D-09) | "Subscription not found" → re-subscribe `At(acked + 1)` |
-//! | `commit_ack` sets `cursor = index + 1`, may move back | only ack the committed contiguous position, never less than acked before |
-//! | `delete_message_before` races with post | never delete messages here |
+//! | `commit_ack` is cumulative; kmsg drops what every subscription acknowledged (unless `keep_acked`) | only ack the committed contiguous position: what is acked is gone |
+//! | `delete_message_before` / retention limits drop records regardless of consumption | never used for session queues |
+//! | a queue outlives its sessions unless deleted | the driver deletes it once the session takes no more input |
+//! | queue data is node-local and may be lost | the driver recreates the queue under its fixed name (progress reset first); producers get `queue_missing` |
 //! | no permission checks (D-07), `from` self-reported | `from` is audit only |
 
 use std::collections::HashMap;
@@ -15,7 +17,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use buckyos_api::msg_queue::{Message, MsgQueueClient, QueueConfig, SubPosition};
-use crate::error::Result;
+use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 
 use super::InputSource;
@@ -30,6 +32,11 @@ fn is_sub_not_found(e: &::kRPC::RPCErrors) -> bool {
     e.to_string().contains("Subscription not found")
 }
 
+/// The queue does not exist (never created, or its data was lost).
+pub fn is_queue_not_found(e: &::kRPC::RPCErrors) -> bool {
+    e.to_string().contains("Queue not found")
+}
+
 /// Create the session queue; "already exists" counts as success.
 pub async fn ensure_queue(
     client: &MsgQueueClient,
@@ -39,6 +46,9 @@ pub async fn ensure_queue(
 ) -> Result<String> {
     let config = QueueConfig {
         sync_write: true,
+        // Producer / consumer: what the driver acknowledged (committed to
+        // state.json first) is not kept.
+        keep_acked: false,
         other_app_can_write: true,
         other_app_can_read: false,
         ..QueueConfig::default()
@@ -218,6 +228,50 @@ impl InputSource for KmsgInput {
         } else {
             Some(stats.first_index)
         })
+    }
+
+    async fn exists(&self) -> Result<bool> {
+        match self.client.get_queue_stats(&self.queue).await {
+            Ok(_) => Ok(true),
+            Err(e) if is_queue_not_found(&e) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    async fn recreate(&self) -> Result<()> {
+        // The URN is `<appid>::<owner>::<name>` and fixed per session.
+        let mut parts = self.queue.splitn(3, "::");
+        let (Some(app), Some(owner), Some(name)) = (parts.next(), parts.next(), parts.next())
+        else {
+            return Err(OpenDanError::Channel(format!(
+                "cannot recreate queue {}: not an `<appid>::<owner>::<name>` urn",
+                self.queue
+            )));
+        };
+        let urn = ensure_queue(&self.client, name, app, owner).await?;
+        if urn != self.queue {
+            return Err(OpenDanError::Channel(format!(
+                "recreated queue {urn} instead of {}",
+                self.queue
+            )));
+        }
+        ensure_subscription(
+            &self.client,
+            &self.queue,
+            &self.subscriber,
+            &self.user,
+            &self.app,
+            SubPosition::Earliest,
+        )
+        .await
+    }
+
+    async fn release(&self) -> Result<()> {
+        match self.client.delete_queue(&self.queue).await {
+            Ok(()) => Ok(()),
+            Err(e) if is_queue_not_found(&e) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 

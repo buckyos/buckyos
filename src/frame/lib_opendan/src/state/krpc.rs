@@ -36,9 +36,13 @@ pub trait StateTransport: Send + Sync {
 /// The error of a served call as it travels (`OpenDanError::to_json`).
 pub fn error_to_wire(e: &OpenDanError) -> String {
     let mut v = e.to_json();
-    if let OpenDanError::InputFull { session_id, pending } = e {
-        v["session_id"] = json!(session_id);
-        v["pending"] = json!(pending);
+    match e {
+        OpenDanError::InputFull { session_id, pending } => {
+            v["session_id"] = json!(session_id);
+            v["pending"] = json!(pending);
+        }
+        OpenDanError::QueueMissing { session_id } => v["session_id"] = json!(session_id),
+        _ => {}
     }
     v.to_string()
 }
@@ -65,6 +69,9 @@ pub fn error_from_wire(text: &str) -> OpenDanError {
         "input_full" => OpenDanError::InputFull {
             session_id: v["session_id"].as_str().unwrap_or_default().to_string(),
             pending: v["pending"].as_u64().unwrap_or(MAX_PENDING_INPUTS as u64) as usize,
+        },
+        "queue_missing" => OpenDanError::QueueMissing {
+            session_id: v["session_id"].as_str().unwrap_or_default().to_string(),
         },
         "session_finished" => OpenDanError::SessionFinished(
             detail("session ").trim_end_matches(" is finished").to_string(),

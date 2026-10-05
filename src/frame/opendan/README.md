@@ -75,7 +75,7 @@ cd src && uv run start.py --skip-update
 
 `GET /kapi/opendan` 不需要 token，返回 `{"app_id": "<托管本页面的 app>" | null}`：WebUI 用它向 zone 换取 session token（token 是签给这个 app 的）；`--dev` 形态返回 `null`。
 
-路径 `/kapi/opendan`，标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`）。
+路径 `/kapi/opendan`，标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`、`queue_missing`）。
 
 ### Agent State（与 `AgentStateClient` 一一对应）
 
