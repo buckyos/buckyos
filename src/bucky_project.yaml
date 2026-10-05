@@ -30,6 +30,9 @@ modules:
   nfs_server:
     type: rust
     name: nfs_server
+  aiworkspace:
+    type: rust
+    name: aiworkspace
   repo_service:
     type: rust
     name: repo_service
@@ -99,6 +102,7 @@ apps:
       #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       nfs_server: bin/nfs-server/
+      aiworkspace: bin/aiworkspace/
       repo_service: bin/repo-service/
       node_active: bin/node-active/
       aicc: bin/aicc/

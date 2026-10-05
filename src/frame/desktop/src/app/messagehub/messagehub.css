@@ -313,3 +313,74 @@
     animation: none;
   }
 }
+.mh-worklog-timeline {
+  margin-left: 5px;
+  border-left: 1px solid var(--cp-border);
+}
+
+.mh-worklog-row {
+  position: relative;
+  min-width: 0;
+  padding: 0 0 28px 20px;
+}
+
+.mh-worklog-dot {
+  position: absolute;
+  top: 6px;
+  left: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cp-muted);
+}
+
+.mh-worklog-row[data-status='ok'] .mh-worklog-dot,
+.mh-worklog-row[data-status='completed'] .mh-worklog-dot {
+  background: var(--cp-success);
+}
+
+.mh-worklog-row[data-status='error'] .mh-worklog-dot,
+.mh-worklog-row[data-status='failed'] .mh-worklog-dot {
+  background: var(--cp-danger);
+}
+
+.mh-worklog-row[data-status='pending'] .mh-worklog-dot {
+  background: var(--cp-accent);
+}
+
+.mh-worklog-io {
+  overflow: hidden;
+  border: 1px solid var(--cp-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cp-text) 3%, transparent);
+}
+
+.mh-worklog-value {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mh-worklog-value + .mh-worklog-value {
+  border-top: 1px solid var(--cp-border);
+}
+
+.mh-worklog-value pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+
+.mh-worklog-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--cp-accent);
+}

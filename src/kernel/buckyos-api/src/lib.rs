@@ -7,6 +7,7 @@ mod content_mgr_client;
 mod control_panel;
 mod device_identity;
 mod msg_center_client;
+mod aiworkspace_client;
 mod nfs_server_client;
 mod nfs_copy;
 pub mod msg_queue;
@@ -67,6 +68,7 @@ pub use cyfs_gateway_api::{
 };
 pub use device_identity::*;
 pub use msg_center_client::*;
+pub use aiworkspace_client::*;
 pub use nfs_server_client::*;
 pub use repo_client::*;
 pub use scheduler_client::*;
@@ -599,6 +601,23 @@ pub fn generate_nfs_server_doc() -> AppDoc {
     )
     .show_name("Named File System Service")
     // Owns a node-local filedb + export tree: must never be multi-instanced.
+    .selector_type(SelectorType::Single)
+    .build()
+    .unwrap()
+}
+
+pub fn generate_aiworkspace_doc() -> AppDoc {
+    const VERSION: &str = env!("CARGO_PKG_VERSION");
+    let owner_did = DID::from_str("did:bns:buckyos").unwrap();
+    AppDoc::builder(
+        AppType::Service,
+        AIWORKSPACE_UNIQUE_ID,
+        VERSION,
+        "did:bns:buckyos",
+        &owner_did,
+    )
+    .show_name("AI Workspace Service")
+    // One writer per Workspace folder on this node: must never be multi-instanced.
     .selector_type(SelectorType::Single)
     .build()
     .unwrap()

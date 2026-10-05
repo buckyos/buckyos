@@ -1,0 +1,25 @@
+/* Hooks for the e2e suite, present only while the dev override of transport.ts is active
+ * (`localStorage['aiworkspace.dev']`). They expose state the DOM cannot show: the editor document JSON. */
+
+import { DEV_OVERRIDE_KEY } from './transport'
+
+interface TestHooks {
+  editors: Record<string, () => unknown>
+  canonicalize?: (ast: unknown) => unknown
+  /** Fault injection into the Replica Worker of the open workspace (replica session only). */
+  replica?: { failTransactions(kind: 'quota' | 'error', count: number): Promise<void>; killWorker(): void }
+}
+
+declare global {
+  interface Window { __aiwsTestHooks?: TestHooks }
+}
+
+function active(): boolean {
+  try { return window.localStorage.getItem(DEV_OVERRIDE_KEY) !== null } catch { return false }
+}
+
+export function testHooks(): TestHooks | null {
+  if (!active()) return null
+  window.__aiwsTestHooks ??= { editors: {} }
+  return window.__aiwsTestHooks
+}

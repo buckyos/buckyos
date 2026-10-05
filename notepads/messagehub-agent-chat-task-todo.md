@@ -1,5 +1,7 @@
 # MessageHub Agent Chat：可编辑回复与 task 状态展示 TODO
 
+2026-10-05 体验修正：Agent 消息打开后的主视图改为此 turn 的 worklog 时间线，TaskMgr 作为定位和状态入口；消息元数据与 task tree 收到「消息详情」页签。见 §8，此决定替代此前“打开详情主要展示消息元数据和 task 状态”的体验。
+
 日期：2026-10-04。状态：设计已评审，§0 的决定已冻结；P0-a、P0-b 与 P1（除动态组授权）已实施，本地测试通过，DV 环境的原生私聊验收通过（§7.5）；原生群聊与 Telegram 尚未验收。实施记录见 §7。
 
 基线：当前工作区代码（HEAD `3b05fa61`，包含已有的未提交修改）。以下“现状”以代码为准；旧版 OpenDAN TODO 中的完成记录不能直接视为当前 Loader 已具备的能力。
@@ -281,3 +283,20 @@ P0 门禁：能力查询落地前，凡经 tunnel 出站的目标一律视为不
 - kmsg 队列被清掉而 AgentRoot 里的 UI Session 还在时，inbox 桥对该 Session 投递一直报 `Queue not found`，这个收件箱就卡住了。本次删掉 Jarvis 的 AgentRoot 后恢复。Loader 对“登记的 Session 的输入队列不存在”没有自愈。
 - `start.py` 重启后 cyfs-gateway 前几次启动报 3180 端口占用（旧实例尚未退出），约半分钟后自行恢复；这期间 app 容器因为连不上 verify-hub 反复重启。
 - 重启恢复时，被打断的 `sleep 25; date` 按既有语义以“executor exited”作为工具结果返回，模型自己补跑了一次 `date`。
+
+## 8. Turn worklog 主视图（2026-10-05）
+
+- 打开 Agent 回复默认展示 `agent_task.task_id → task.input.agent_did / session_id / turn → session.worklog`。不会跟随同一 UI session 的后续 turn。消息仍只携带 task_id。
+- 工具调用按 `(run_id, call_id)` 配对为 IN/OUT 时间线，旧在上、新在下；长内容可展开。向上翻页保持位置，底部实时补读并跟随，离开底部阅读时不被新日志拉走。
+- 在创建调用中提供子 session 的点击入口，进入其首个 turn 的 worklog，可再打开 TaskMgr 详情与返回；关联依据为登记表 `origin.created_by_call`。结果顶层结构化 task_id 也提供任务入口，不解析普通文本。
+- OpenDAN 新增只读 `session.worklog`：turn 过滤、字节游标、已提交边界、倒序分页/正序补读、明确 complete。字段契约见 `src/frame/opendan/README.md`。挂载 `/kapi/<完整 AgentId>`，网关路径匹配支持域名中的点，复用调度器已有 Agent service_info。没有新增依赖或持久协议版本。
+- 代码入口：Desktop `conversation/worklog/{model,source,useWorklog,AgentWorklog}.ts(x)`；后端 `lib_opendan/src/session/worklog.rs`、`opendan/src/service.rs`；界面数据契约同步到 `UI_DATAMODEL.md`。
+- 生效需要更新 Desktop、OpenDAN 与 boot_gateway 配置；本轮不改动正在运行的 Zone。
+
+验证记录：
+
+- OpenDAN `tests/loader.rs` 12 例通过，覆盖 `session.worklog` 的返回身份、分页、增量读取与 AgentId 别名路径；另补取消轮次 `turns_completed = 0` 但 `complete = true` 的断言。
+- libopendan `tests/l1.rs` 20 例通过；分页测试覆盖跨 2100 条后续 turn 日志定位旧 turn、倒序分页顺序、2100 条增量补读、未提交尾部排除、非法游标与参数拒绝。
+- Desktop 数据模型 13 例通过；MessageHub Agent Task 原有 6 例与新增 worklog 3 例 Playwright 通过。新增覆盖桌面/手机、默认页签、跨页、子任务进入/返回、旧 turn 刷新后不串轮、实时跟随/保留阅读位置、断线恢复、终态停止轮询。
+- 网关 debug 回归 29 例通过，新增完整域名 AgentId 的同源 `/kapi` 路由。
+- 本次前端文件 ESLint 通过；HEAD 加本次 Desktop 文件的隔离副本 `tsc -b` 与 Vite build 通过。原工作区另有正在进行的 AIWorkspace 修改，其类型错误/入口缺失使整树类型检查未通过；未修改这些文件。未做真实 Zone 联调或部署。

@@ -398,7 +398,8 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
   const newGroupButton = <button type="button" disabled={!canManage} className={hubIconButtonClass} onClick={() => openCreateGroup()} aria-label={newGroupLabel} title={newGroupLabel} data-testid="new-group"><Users size={17} /></button>
   const conversationSpace = layoutWidth - (isEntityListCollapsed ? ENTITY_LIST_COLLAPSED_WIDTH : entityListWidth)
   const sessionSidebarInline = conversationSpace - sessionSidebarWidth >= CONVERSATION_MIN_READING_WIDTH
-  const detailsInline = conversationSpace - (showSessionSidebar && sessionSidebarInline ? sessionSidebarWidth : 0) - DETAILS_PANEL_WIDTH >= CONVERSATION_MIN_READING_WIDTH
+  const detailsWidth = detailsTarget === 'message' ? 640 : DETAILS_PANEL_WIDTH
+  const detailsInline = conversationSpace - (showSessionSidebar && sessionSidebarInline ? sessionSidebarWidth : 0) - detailsWidth >= CONVERSATION_MIN_READING_WIDTH
   const closeDesktopDrawer = (event: React.KeyboardEvent) => {
     if (event.key !== 'Escape' || event.defaultPrevented) return
     if (showDetails && !detailsInline) { event.preventDefault(); setDetailsTarget(null) }
@@ -654,7 +655,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
         <div
           className="h-full flex-shrink-0"
           style={{
-            width: DETAILS_PANEL_WIDTH,
+            width: detailsWidth,
             borderLeft: '1px solid var(--cp-border)',
           }}
         >
@@ -667,7 +668,7 @@ function MessageHubContent({ initialEntityId, initialSessionId, initialMessageId
           <div
             className="absolute inset-y-0 right-0 z-50"
             style={{
-              width: DETAILS_PANEL_WIDTH,
+              width: detailsWidth,
               maxWidth: '90%',
               borderLeft: '1px solid var(--cp-border)',
               background: 'var(--cp-surface-opaque)',

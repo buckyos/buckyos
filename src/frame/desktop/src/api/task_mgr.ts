@@ -1079,6 +1079,7 @@ export interface TaskWatchNode {
 /** `get_task`: the node plus its payload. */
 export interface TaskWatchDetail extends TaskWatchNode {
   schemaId: string
+  input?: unknown
   progress?: unknown
   result?: unknown
   error?: { code: string; message: string }
@@ -1158,7 +1159,7 @@ export function createTaskWatchSource(): TaskWatchSource {
   return {
     async getTask(taskId) {
       const task = await getClient().getTask(taskId)
-      return { ...toWatchNode(task), schemaId: task.schema_id, progress: task.progress, result: task.result, error: task.error ? { code: task.error.code, message: task.error.message } : undefined, originRef: task.origin_ref }
+      return { ...toWatchNode(task), schemaId: task.schema_id, input: task.input, progress: task.progress, result: task.result, error: task.error ? { code: task.error.code, message: task.error.message } : undefined, originRef: task.origin_ref }
     },
     async getSubtasks(taskId, cursor, limit) {
       const page = await getClient().getSubtasks({ task_id: taskId, cursor, limit })

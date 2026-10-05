@@ -188,6 +188,7 @@ g, system:opendan, frame
 g, system:slog-server, frame
 g, system:smb-service, frame
 g, system:nfs-server, frame
+g, system:aiworkspace, frame
 
 "#;
 

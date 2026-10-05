@@ -163,7 +163,7 @@ export function TaskDetailsSection({ message }: { message: MessageObject }) {
   return <TaskDetailsBody key={taskId} taskId={taskId} />
 }
 
-function TaskDetailsBody({ taskId }: { taskId: string }) {
+export function TaskDetailsBody({ taskId }: { taskId: string }) {
   const { t } = useI18n()
   const text = useTaskText()
   const { snapshot } = useTaskSummary(taskId)

@@ -71,6 +71,8 @@ cd src && uv run start.py --skip-update
 
 ## kRPC 接口
 
+同一服务也挂载在 `/kapi/<agent_id>`（AgentSpec 的完整 AgentId，包含域名中的点），供 Desktop 经 zone 网关的 `service_info[agent_id]` 同源访问。两条路径使用相同的 owner/root 鉴权；客户端通过 `agent.list` 的 DID → AgentId 映射定位，不把会话 token 发送到消息提供的任意 URL。
+
 `GET /kapi/opendan` 不需要 token，返回 `{"app_id": "<托管本页面的 app>" | null}`：WebUI 用它向 zone 换取 session token（token 是签给这个 app 的）；`--dev` 形态返回 `null`。
 
 路径 `/kapi/opendan`，标准 kRPC（`POST`，`{"method","params","sys":[seq, session_token]}`）。调用方身份 `who` 来自 session token（verify-hub 签发）：Agent 的 owner（经任何 app）与 zone root 可访问；`--dev` 形态不校验。错误的 `error` 字段里带 JSON 文本 `{"kind","message",…}`（kRPC 会加前缀 `Failed due to reason: `，从第一个 `{` 起解析）（`kind` 取值同 `OpenDanError::to_json`，如 `not_found`、`invalid_argument`、`input_full`）。
@@ -124,6 +126,22 @@ cd src && uv run start.py --skip-update
 ```
 
 没有任何对 Session 目录的写接口。
+
+`session.worklog {sid, turn, before?: number, after?: number, limit?: number = 50}` 按指定 turn 读取已提交的执行记录：
+
+```jsonc
+{
+  "agent_did": "…", "session_id": "…", "turn": 1,
+  "entries": [WorklogEntry],
+  "next_before": 1234, "next_after": 5678, "committed": 5678,
+  "complete": false, "task_id": "…",
+  "children": [{"created_by_call": "<run_id>/<call_id>", "session_id": "…", "name": "…"}]
+}
+```
+
+`entries` 按 seq 从旧到新排列，仅含这个 turn。首次读最近一页；`before` 反向翻页，`after` 从上一响应的 `next_after` 向前补读。游标是 worklog 的字节边界，不允许同时传入或越过 `state.worklog.committed_bytes`；`limit` 范围 1–200。单次最多检查 2000 条记录，因此空页仍可能有 `next_before`，实时补读的 `next_after` 也可能小于 `committed`，客户端需继续读取。`next_before = null` 表示该 turn 的更早记录已读尽。翻页期间日志继续追加不会改变既有游标。
+
+`complete` 根据 `turn_seq / open_turn` 判断，包括失败、停止等终态；不使用只统计成功轮次的 `turns_completed`。`task_id` 来自仍保留的 `turn_tasks` 绑定，历史绑定被清理时可为 null，日志仍可读。`children` 来自 session 登记表的 `origin.created_by_call`，按 run/call 精确挂在创建调用上；子 session 的首个 turn 是其 work task 的入口。此接口沿用整个 OpenDAN 的 owner/root 读权限，单有 TaskMgr grant 不授予 worklog 权限。
 
 ### 操作（都只是向 Session 的输入总线投一条记录）
 

@@ -216,8 +216,13 @@ impl Loader {
                     home: Home::new(&env.agent_root),
                 });
                 runner
-                    .add_http_server(SERVICE_PATH.to_string(), service)
+                    .add_http_server(SERVICE_PATH.to_string(), service.clone())
                     .map_err(|e| anyhow!("mount {SERVICE_PATH}: {e:?}"))?;
+                let agent_path = format!("/kapi/{}", agent.agent_id());
+                if agent_path != SERVICE_PATH {
+                    runner.add_http_server(agent_path.clone(), service)
+                        .map_err(|e| anyhow!("mount {agent_path}: {e:?}"))?;
+                }
             }
             module("agent_state_service", config.loader.agent_state_service, config.loader.agent_state_service, None);
             match (&env.web_dir, config.loader.webui) {

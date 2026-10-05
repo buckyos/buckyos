@@ -9,6 +9,7 @@ import App from './App.tsx'
 import { consumePendingSiteDataReset } from './app/settings/siteDataReset'
 import { isMockRuntime } from './runtime'
 import { isPublicRoute } from './publicRoutes'
+import { registerDesktopServiceWorker } from './serviceWorker'
 
 interface AccountInfo {
   session_token?: unknown
@@ -100,6 +101,9 @@ function renderBootstrapFailure(error: unknown) {
   panel.append(title, body, retry)
   root.append(panel)
 }
+
+// Application resources for a cold start without the network (production builds only).
+registerDesktopServiceWorker()
 
 // Without this, any rejection during bootstrap (SDK host discovery, site
 // data reset, session refresh) leaves a permanently blank page with the

@@ -1,0 +1,209 @@
+{
+ "protocol_version": "0.1",
+ "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
+ "operations": [
+  {
+   "op": "entity.create",
+   "class": "create",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead."
+  },
+  {
+   "op": "entity.delete",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "delete",
+   "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body references."
+  },
+  {
+   "op": "entity.restore",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "delete",
+   "note": "Clear a tombstone; the parent must be alive."
+  },
+  {
+   "op": "entity.rename",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Lookup name, unique among siblings. expect = meta_rev."
+  },
+  {
+   "op": "entity.set_keys",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Set top-level keys of a keyed document; each key is its own version cell."
+  },
+  {
+   "op": "entity.unset_keys",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Remove top-level keys."
+  },
+  {
+   "op": "entity.set_write_policy",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "manage",
+   "note": "open | lock_required. expect = meta_rev."
+  },
+  {
+   "op": "tree.move",
+   "class": "merge",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional."
+  },
+  {
+   "op": "tree.place",
+   "class": "merge",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Order/placement within the same parent. expect optional."
+  },
+  {
+   "op": "table.insert_records",
+   "class": "append",
+   "undo": "compensable",
+   "capability": "append",
+   "note": "Append records; `append` or `update` capability."
+  },
+  {
+   "op": "table.delete_records",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "delete",
+   "note": "Tombstone records. expect = record.rev."
+  },
+  {
+   "op": "table.set_values",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Batch cell writes; each item carries expect on its cell."
+  },
+  {
+   "op": "table.unset_values",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Make cells unset (not null)."
+  },
+  {
+   "op": "table.set_body",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Attach/detach a record's rich text body."
+  },
+  {
+   "op": "table.add_field",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "A required field needs a backfill value."
+  },
+  {
+   "op": "table.update_field",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Name, description, order, constraints. Tightening scans existing values."
+  },
+  {
+   "op": "table.delete_field",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Tombstone; residual values kept unreadable for lossless undo."
+  },
+  {
+   "op": "table.add_option",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Bumps def_rev only."
+  },
+  {
+   "op": "table.update_option",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Label/position; business values unchanged."
+  },
+  {
+   "op": "table.delete_option",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "on_values: reject_if_used | unset | { replace_with }."
+  },
+  {
+   "op": "table.migrate_field",
+   "class": "structural",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Typed migration in one transaction; pre-check report through doc.prepare."
+  },
+  {
+   "op": "richtext.apply_update",
+   "class": "merge",
+   "undo": "session_local",
+   "capability": "update",
+   "note": "A CRDT update of an editor session; validated on a fork before it becomes authoritative."
+  },
+  {
+   "op": "richtext.insert_blocks",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Block-level semantic insert."
+  },
+  {
+   "op": "richtext.replace_block",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "expect.hash required."
+  },
+  {
+   "op": "richtext.delete_blocks",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "expect.hash and expect.struct_rev required."
+  },
+  {
+   "op": "richtext.move_block",
+   "class": "overwrite",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "expect.struct_rev required."
+  },
+  {
+   "op": "table.restore_records",
+   "class": "internal",
+   "undo": "compensable",
+   "capability": "delete",
+   "note": "Undo of delete_records. Not accepted from callers."
+  },
+  {
+   "op": "table.restore_field",
+   "class": "internal",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Undo of delete_field. Not accepted from callers."
+  },
+  {
+   "op": "table.restore_migration",
+   "class": "internal",
+   "undo": "compensable",
+   "capability": "structure",
+   "note": "Undo of migrate_field. Not accepted from callers."
+  }
+ ]
+}

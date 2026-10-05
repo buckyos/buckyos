@@ -1,0 +1,167 @@
+{
+ "protocol_version": "0.1",
+ "description": "Stable error codes. Clients branch on `code` (and `sub_code`), never on text. `status` is how a Commit reports it. Checked against the code by core/tests/schemas.rs.",
+ "codes": [
+  {
+   "code": "INVALID_SCHEMA",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "Input does not match the type's schema."
+  },
+  {
+   "code": "INVALID_OPERATION",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The operation is malformed or not allowed in this state.",
+   "sub_codes": [
+    "ID_CONFLICT",
+    "NAME_CONFLICT",
+    "UNIQUE_VIOLATION",
+    "LINEAGE_MISMATCH",
+    "MIGRATION_UNSUPPORTED",
+    "VIEW_BROKEN",
+    "TREE_CYCLE",
+    "CHILD_NOT_ALLOWED",
+    "SOURCE_READ_ONLY"
+   ]
+  },
+  {
+   "code": "LIMIT_EXCEEDED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "A size, count or depth limit was exceeded."
+  },
+  {
+   "code": "NOT_FOUND",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The target does not exist, or the caller may not know that it does."
+  },
+  {
+   "code": "TARGET_DELETED",
+   "retryable": false,
+   "status": "conflict",
+   "meaning": "The target was deleted; a late write never resurrects it."
+  },
+  {
+   "code": "REFERENCE_BROKEN",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "A reference target is missing, or the entity is still referenced."
+  },
+  {
+   "code": "PERMISSION_DENIED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The trusted principal lacks the capability."
+  },
+  {
+   "code": "REVISION_CONFLICT",
+   "retryable": false,
+   "status": "conflict",
+   "meaning": "A version cell changed since the caller read it."
+  },
+  {
+   "code": "SCHEMA_CONFLICT",
+   "retryable": false,
+   "status": "conflict",
+   "meaning": "The write is based on a field type that changed."
+  },
+  {
+   "code": "IDEMPOTENCY_MISMATCH",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The idempotency key was used with a different request."
+  },
+  {
+   "code": "UNSUPPORTED_VERSION",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "Format, storage, schema or protocol version is not supported."
+  },
+  {
+   "code": "MISSING_EXTENSION",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The content needs a type or selector this build does not have."
+  },
+  {
+   "code": "DEPENDENCY_UNAVAILABLE",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "An asset, object or data source is not available."
+  },
+  {
+   "code": "STORAGE_FULL",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "Storage is full; nothing was saved."
+  },
+  {
+   "code": "STORAGE_IO_ERROR",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "Storage failed; nothing was saved."
+  },
+  {
+   "code": "WRITER_BUSY",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "The Workspace writer is busy or was reset."
+  },
+  {
+   "code": "BASE_UNKNOWN",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "A rich text update depends on operations the backend does not have; catch up and resend."
+  },
+  {
+   "code": "BASE_TOO_OLD",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The change stream or collaboration history no longer covers the caller's base; prepare the replica again."
+  },
+  {
+   "code": "EPOCH_MISMATCH",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The Workspace history was replaced by a restore; seq, rev and idempotency keys of the old epoch are void."
+  },
+  {
+   "code": "SNAPSHOT_EXPIRED",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "The source changed during consistent paging."
+  },
+  {
+   "code": "NOT_UNDOABLE",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The commit contains operations the backend cannot compensate."
+  },
+  {
+   "code": "RUN_CANCELLED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The processing run this commit belongs to was cancelled."
+  },
+  {
+   "code": "LOCK_REQUIRED",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The target needs a write lock the caller does not hold."
+  },
+  {
+   "code": "LOCK_HELD",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The lock is held by another session."
+  },
+  {
+   "code": "LOCK_LOST",
+   "retryable": false,
+   "status": "rejected",
+   "meaning": "The caller's lease expired, was idle-released or was broken."
+  }
+ ]
+}

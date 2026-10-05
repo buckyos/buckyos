@@ -166,6 +166,52 @@ fn kill_9_of_holder_releases_the_lease_immediately() {
 }
 
 #[tokio::test]
+async fn worklog_turn_pages_preserve_boundaries_and_live_catchup() {
+    let env = Env::new();
+    let sd = env.create_work(work_spec("paged history")).await;
+    let Acquire::Acquired(lease) = sd.acquire(holder("pages")).unwrap() else { panic!() };
+    let mut session = sd.load(&lease).unwrap();
+    let body = |turn, i| WorklogBody::UserMessage {
+        run_id: format!("r-{turn}"), turn, content: format!("message-{i}"),
+    };
+    session.append_worklog(&lease, (0..120).map(|i| body(1, i)).collect()).unwrap();
+    let first_end = session.worklog_end();
+    session.append_worklog(&lease, (0..2100).map(|i| body(2, i)).collect()).unwrap();
+    session.commit_state(&lease).unwrap();
+    let end = session.worklog_end();
+    session.append_worklog(&lease, vec![body(3, 0)]).unwrap();
+    let log = sd.worklog();
+    let mut cursor = None;
+    let mut seen = Vec::new();
+    loop {
+        let page = log.page(end, 1, cursor, None, 50).unwrap();
+        assert!(page.entries.iter().all(|e| e.body.turn() == Some(1)));
+        assert!(page.entries.windows(2).all(|w| w[0].seq < w[1].seq));
+        seen.extend(page.entries.into_iter().map(|e| e.seq));
+        cursor = page.next_before;
+        if cursor.is_none() { break; }
+    }
+    seen.sort();
+    assert_eq!(seen.len(), 120);
+    assert!(seen.windows(2).all(|w| w[0] + 1 == w[1]));
+    let mut after = first_end;
+    let mut count = 0;
+    while after < end {
+        let page = log.page(end, 2, None, Some(after), 50).unwrap();
+        assert!(page.next_after > after);
+        assert!(page.entries.iter().all(|e| e.body.turn() == Some(2)));
+        count += page.entries.len();
+        after = page.next_after;
+    }
+    assert_eq!(count, 2100);
+    assert!(log.page(end, 3, None, None, 50).unwrap().entries.is_empty());
+    assert!(log.page(end, 1, Some(end + 1), None, 50).is_err());
+    assert!(log.page(end, 1, Some(first_end - 1), None, 50).is_err());
+    assert!(log.page(end, 1, Some(end), Some(0), 50).is_err());
+    assert!(log.page(end, 1, None, None, 0).is_err());
+}
+
+#[tokio::test]
 async fn worklog_reverse_read_is_bounded_by_the_start_point() {
     let env = Env::new();
     let sd = env.create_work(work_spec("big history")).await;

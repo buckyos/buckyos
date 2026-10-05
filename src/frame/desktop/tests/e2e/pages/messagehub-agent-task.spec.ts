@@ -153,6 +153,7 @@ test('message details open by click, by the Details action and by keyboard, and 
 
   await bubble(page, 'msg-ct-10').getByText('Got it, working on it').click()
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-10')
+  await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-message-id')).toHaveText('msg-ct-10')
   await expect(details.getByTestId('detail-original-same')).toBeVisible()
   await expect(details.getByTestId('detail-task-id')).toHaveText(RUNNING)
@@ -172,6 +173,7 @@ test('message details open by click, by the Details action and by keyboard, and 
   await report.hover()
   await report.getByTestId('message-hover-bar').getByTestId('message-details').click()
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-2')
+  await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-effective')).toHaveAttribute('data-format', 'text/markdown')
   await expect(details.getByTestId('detail-effective')).toContainText('design-brief.pdf')
   await expect(details.getByTestId('detail-original')).toContainText('Got it, working on it')
@@ -184,18 +186,22 @@ test('message details open by click, by the Details action and by keyboard, and 
   await page.screenshot({ path: 'test-results/messagehub-agent-task-details.png' })
 
   // Keyboard: Enter on a focused bubble. A quick reply shows its task only here.
+  await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-4').focus()
   await page.keyboard.press('Enter')
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-4')
+  await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-task-summary')).toHaveAttribute('data-state', 'succeeded')
 
   // A task the viewer may not read says so instead of showing a state.
+  await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-8').getByText('another workspace').click()
   await expect(details.getByTestId('detail-task')).toHaveAttribute('data-status', 'denied')
   await expect(details.getByTestId('detail-task-unavailable')).toContainText('do not have access')
   await expect(details.getByTestId('detail-task-id')).toHaveText('task-turn-foreign')
 
   // A message without a task has details too, without a task section.
+  await details.getByRole('button', { name: 'Close', exact: true }).click()
   await bubble(page, 'msg-ct-9').getByText('release checklist').click()
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-9')
   await expect(details.getByTestId('detail-effective')).toContainText('Check the MessageHub release checklist.')
@@ -211,9 +217,11 @@ test('a message link locates the anchor, opens its details and survives a reload
   await page.goto(`/messagehub?sessionId=${SESSION}&messageId=msg-ct-2`)
   const details = page.getByTestId('message-details-pane')
   await expect(details).toHaveAttribute('data-message-id', 'msg-ct-2')
+  await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-task-id')).toHaveText('task-turn-report')
   await expect(bubble(page, 'msg-ct-2')).toBeVisible()
   await page.reload()
+  await details.getByTestId('detail-tab-message').click()
   await expect(details.getByTestId('detail-task-id')).toHaveText('task-turn-report')
 
   // A message deep in a long history that is not rendered yet.

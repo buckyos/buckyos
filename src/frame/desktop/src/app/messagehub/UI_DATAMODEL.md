@@ -778,10 +778,15 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 
 展开按钮显示本 Turn 的 task tree（节点状态、名称、简短活动、等待原因，逐层展开、分页加载）。task_id 不出现在气泡里。
 
-**通用消息详情（`MessageDetails.tsx`）**
+**通用消息详情与 Turn 工作日志（`MessageDetails.tsx`、`conversation/worklog/`）**
 
 - 入口：点击气泡（链接、附件、按钮、展开按钮和选中文本各自照常工作）、悬停栏 / 触屏菜单的「详情」图标（testid `message-details`）、聚焦气泡后按 Enter。观察模式同样可用（只读）。
-- 内容：发送者与时间、可复制的消息 ID 与链接、当前有效内容、原消息、编辑记录、投递状态（`ui_record` 的 box / 方向 / 阅读状态 / 各目标投递，mock 为 `ui_delivery_status`）；存在 `agent_task` 时追加实时任务区：摘要、task tree、可读事件、结果、`result.artifacts|outputs|files` 里的产物引用、`origin_ref`、可复制的 task_id。task 不可读 / 已清理 / 读取失败时显示对应说明。
+- Agent 消息默认打开「工作日志」页签：`agent_task.task_id` → `get_task.input.{agent_did,session_id,turn}` → `session.worklog`，严格定位此消息对应的 turn。只解释 `opendan.agent_turn/v1`，没有绑定或读不到 task 时给出说明；普通消息仍直接展示消息详情。
+- 日志以 seq 从旧到新排列，底部是最新进展；`step.actions` / `assistant_message.tool_calls` 和 `action_result` 按 `(run_id,call_id)` 合成 IN/OUT 卡片。跨页结果暂时独立展示，补齐输入后合并；同一 call 的后续结果覆盖 pending 结果。文本只来自已记录的 assistant/user 内容，不合成推理内容。长输入输出可展开。
+- 首次加载 50 条，滚动到顶部或点击按钮向前分页；打开中的视图每 2.5 秒按字节游标补读，终态且追平 committed 后停止。停留底部时跟随新增记录；读旧记录时保持位置并提供「最新进展」。切换消息、关闭详情时丢弃在途响应与计时器。请求失败显示说明并可重试，已有记录保留。
+- `children[].created_by_call` 把登记表中的子 session 关联到创建工具调用。点击进入同一 Agent 的子 session 首轮日志，可查看它关联的 task 详情并逐层返回；工具结果顶层的结构化 `task_id` 也可进入 task 详情。不从普通输出文本猜测 ID。
+- 同源路由：打开一个 worklog 时查询一次 `agent.list` 解析 DID → AgentId，再调用 `/kapi/<agent_id>`；不为气泡提前读取日志，不逐条查询 TaskMgr。`TaskWatchDetail.input` 保留真实 task 输入。TaskMgr 与 OpenDAN 都使用当前登录者权限。
+- 「消息详情」页签保留发送者与时间、可复制的消息 ID 与链接、当前有效内容、原消息、编辑记录、投递状态，以及实时任务摘要、task tree、可读事件、结果、产物引用、`origin_ref`、可复制的 task_id。task 不可读 / 已清理 / 读取失败时显示对应说明。Desktop 消息详情宽 640px，小屏使用现有全屏详情布局。
 - 寻址：详情以原锚点 ObjId 为键。`?sessionId=…&messageId=…`（launch payload 同名字段，`messageHubMessagePath()` 生成）进入时在桌面布局打开详情并把该行滚入视口；消息不在已加载历史里时 `store.locateMessage` 逐页向前加载（真实后端最多 50 页），仍找不到显示“找不到这条消息”。
 
 **未读**

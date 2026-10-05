@@ -29,6 +29,10 @@ members = [
     "./frame/llm_context",
     "./frame/opendan",
     "./frame/lib_opendan",
+    "./frame/aiworkspace/core",
+    "./frame/aiworkspace/store",
+    "./frame/aiworkspace/server",
+    "./frame/aiworkspace/wasm",
 
     "./test/test_rbac"
 ]

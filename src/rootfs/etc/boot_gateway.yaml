@@ -216,7 +216,7 @@ servers:
                 global SERVICE_ID="task-manager";
               else
                 map-create krpc_hp;
-                match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_-]+)(/.*)?" || return false;
+                match-reg --capture krpc_hp $REQ.path "^/kapi/([a-zA-Z0-9_.-]+)(/.*)?" || return false;
                 match-include $SERVICE_INFO $krpc_hp[1] || return false;
                 global TARGET_SERVICE_INFO=$SERVICE_INFO[$krpc_hp[1]];
                 global SERVICE_ID=$krpc_hp[1];

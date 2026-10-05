@@ -27,6 +27,7 @@ const SystestAppPanel = lazyPanel(
 )
 
 const appLoaders: Record<string, AppContentLoader> = {
+  aiworkspace: lazyPanel(() => import('./aiworkspace/AIWorkspaceAppPanel'), (m) => m.AIWorkspaceAppPanel),
   'ai-center': lazyPanel(() => import('./ai-center/AICenterAppPanel'), (m) => m.AICenterAppPanel),
   'app-service': lazyPanel(() => import('./app-service/AppServiceAppPanel'), (m) => m.AppServiceAppPanel),
   canvas: lazyPanel(() => import('./canvas/CanvasAppPanel'), (m) => m.CanvasAppPanel),

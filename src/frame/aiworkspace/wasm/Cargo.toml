@@ -1,0 +1,13 @@
+[package]
+name = "aiworkspace-wasm"
+version.workspace = true
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+aiworkspace-core = { path = "../core" }
+serde_json = { workspace = true }
+wasm-bindgen = "0.2"
+js-sys = "0.3"

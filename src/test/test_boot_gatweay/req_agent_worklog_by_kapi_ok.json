@@ -1,0 +1,11 @@
+{
+  "input": {
+    "REQ": {
+      "path": "/kapi/jarvis.test.buckyos.io",
+      "host": "test.buckyos.io",
+      "url": "https://test.buckyos.io/kapi/jarvis.test.buckyos.io"
+    }
+  },
+  "id": "server:node_gateway:main",
+  "output": ["REQ", "RESP"]
+}

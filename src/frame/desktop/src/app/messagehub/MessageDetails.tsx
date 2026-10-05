@@ -7,8 +7,9 @@ import { findMessage } from './conversation/history/locate'
 import { messageObjId, messageRelations } from './conversation/history/relations'
 import type { ConversationMessageReader } from './conversation/history/types'
 import { CopyValue, TaskDetailsSection } from './conversation/tasks/MessageTask'
+import { AgentWorklog } from './conversation/worklog/AgentWorklog'
 import { messageHubMessagePath } from './launch'
-import { getMessageDeliveryStatus, type DID, type MessageObject, type MsgContent } from './protocol/msgobj'
+import { getMessageDeliveryStatus, messageAgentTaskId, type DID, type MessageObject, type MsgContent } from './protocol/msgobj'
 import { useMessageHubStore } from './store'
 import type { MessageHubContext } from './types'
 
@@ -27,16 +28,16 @@ function ContentView({ content, testId }: { content: MsgContent; testId: string 
 }
 
 /**
- * Details of one message, addressed by the ObjId of its anchor: the original
- * message, the content currently in effect, every edit, the delivery state
- * and, for an Agent reply that carries `agent_task`, the live task. A message
- * outside the loaded history is located by loading older pages.
+ * Details of one message, addressed by its anchor ObjId. Agent replies open
+ * the Turn worklog; the message tab keeps content, edits, delivery and task
+ * metadata. Messages outside the loaded history are located in older pages.
  */
 export function MessageDetails({ context, entityId, sessionId, messageId, reader, displayName, onClose }: { context: MessageHubContext; entityId: string; sessionId: string; messageId: string; reader: ConversationMessageReader; displayName: (did: DID) => string; onClose: () => void }) {
   const { t } = useI18n()
   const store = useMessageHubStore()
   const [found, setFound] = useState<{ id: string; message: MessageObject | null } | null>(null)
   const located = useRef('')
+  const [tab, setTab] = useState<'worklog' | 'message'>('worklog')
   useEffect(() => {
     let cancelled = false
     void findMessage(reader, messageId).then(async result => {
@@ -53,13 +54,17 @@ export function MessageDetails({ context, entityId, sessionId, messageId, reader
   const current = found?.id === messageId ? found : null
   const message = current?.message
   const relations = message ? messageRelations(message) : undefined
+  const taskId = message && !relations?.redacted ? messageAgentTaskId(message) : undefined
   const record = message ? recordMeta(message) : undefined
   const deliveryStatus = message ? getMessageDeliveryStatus(message) : undefined
   const link = typeof window === 'undefined' ? '' : `${window.location.origin}${messageHubMessagePath({ entityId, sessionId, messageId }, context)}`
   return (
     <section className="flex h-full flex-col bg-[color:var(--cp-surface)]" data-testid="message-details-pane" data-message-id={messageId}>
       <header className="flex shrink-0 items-center justify-between border-b border-[color:var(--cp-border)] py-1 pl-4 pr-1"><h2 className="text-sm font-semibold">{t('messagehub.messageDetails.title')}</h2><button type="button" className="flex min-h-11 min-w-11 items-center justify-center" aria-label={t('messagehub.close')} title={t('messagehub.close')} onClick={onClose}><X size={18} /></button></header>
-      <div className="shell-scrollbar flex-1 space-y-6 overflow-y-auto p-4 text-sm">
+      {taskId ? <div className="flex shrink-0 gap-5 border-b border-[color:var(--cp-border)] px-4" role="tablist" aria-label={t('messagehub.messageDetails.title')}>
+        {(['worklog', 'message'] as const).map(value => <button key={value} role="tab" aria-selected={tab === value} className={`border-b-2 py-3 text-xs font-medium ${tab === value ? 'border-[color:var(--cp-accent)] text-[color:var(--cp-accent)]' : 'border-transparent text-[color:var(--cp-muted)]'}`} onClick={() => setTab(value)} data-testid={`detail-tab-${value}`}>{t(`messagehub.worklog.tab.${value}`)}</button>)}
+      </div> : null}
+      {taskId && tab === 'worklog' ? <AgentWorklog key={taskId} taskId={taskId} /> : <div className="shell-scrollbar min-h-0 flex-1 space-y-6 overflow-y-auto p-4 text-sm">
         {!current ? <p role="status" className="text-[13px] text-[color:var(--cp-muted)]">{t('messagehub.messageDetails.locating')}</p> : null}
         {current && !message ? <p role="alert" className="text-[13px] text-[color:var(--cp-muted)]" data-testid="message-details-missing">{t('messagehub.messageDetails.notFound')}</p> : null}
         {message ? <>
@@ -99,7 +104,7 @@ export function MessageDetails({ context, entityId, sessionId, messageId, reader
           </section>
           {relations?.redacted ? null : <TaskDetailsSection message={message} />}
         </> : null}
-      </div>
+      </div>}
     </section>
   )
 }

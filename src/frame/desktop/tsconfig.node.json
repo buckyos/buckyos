@@ -23,5 +23,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["vite.config.ts", "playwright.config.ts", "tests/e2e/**/*.ts"]
+  "include": ["vite.config.ts", "playwright.config.ts", "playwright.aiworkspace.config.ts", "tests/e2e/**/*.ts", "tests/aiworkspace/**/*.ts"]
 }

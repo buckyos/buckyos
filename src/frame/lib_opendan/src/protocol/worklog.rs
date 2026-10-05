@@ -199,6 +199,20 @@ pub enum WorklogBody {
 }
 
 impl WorklogBody {
+    pub fn turn(&self) -> Option<u64> {
+        match self {
+            Self::TurnStarted { turn, .. }
+            | Self::InputBatch { turn, .. }
+            | Self::UserMessage { turn, .. }
+            | Self::AssistantMessage { turn, .. }
+            | Self::Step { turn, .. }
+            | Self::ActionResult { turn, .. }
+            | Self::Outcome { turn, .. }
+            | Self::TurnEnded { turn, .. } => Some(*turn),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             WorklogBody::Created { .. } => "created",

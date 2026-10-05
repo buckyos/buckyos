@@ -199,6 +199,46 @@ impl StateService {
         Ok(out)
     }
 
+    async fn read_worklog(&self, params: &Value) -> Result<Value, OpenDanError> {
+        let sid: String = param(params, "sid")?;
+        let turn: u64 = param(params, "turn")?;
+        if turn == 0 {
+            return Err(OpenDanError::InvalidArgument("turn must be positive".into()));
+        }
+        let entry = self.agent.sessions().lookup(&sid).await?
+            .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
+        let sd = SessionDir::open(&entry.location)?;
+        let state = sd.state()?;
+        let page = sd.worklog().page(
+            state.worklog.committed_bytes,
+            turn,
+            param(params, "before")?,
+            param(params, "after")?,
+            param::<Option<usize>>(params, "limit")?.unwrap_or(50),
+        )?;
+        let children = self.agent.sessions().children_of(&[sid.clone()]).await?;
+        let links: Vec<Value> = children.iter().filter_map(|child| {
+            let origin = child.origin.as_ref()?;
+            Some(json!({
+                "created_by_call": origin.created_by_call.as_ref()?,
+                "session_id": child.session_id,
+                "name": child.objective,
+            }))
+        }).collect();
+        Ok(json!({
+            "agent_did": self.agent.agent_did(),
+            "session_id": sid,
+            "turn": turn,
+            "entries": page.entries,
+            "next_before": page.next_before,
+            "next_after": page.next_after,
+            "committed": state.worklog.committed_bytes,
+            "complete": state.turn_seq >= turn && state.open_turn.as_ref().is_none_or(|open| open.index != turn),
+            "task_id": state.turn_tasks.iter().find(|t| t.turn == turn).map(|t| &t.task_id),
+            "children": links,
+        }))
+    }
+
     async fn post_control(
         &self,
         who: &str,
@@ -235,6 +275,7 @@ impl StateService {
         }
         match method {
             "session.read" => self.read_session(params).await,
+            "session.worklog" => self.read_worklog(params).await,
             "session.stop" => {
                 let sid: String = param(params, "sid")?;
                 let reason = param::<Option<String>>(params, "reason")?;

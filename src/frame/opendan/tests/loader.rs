@@ -662,6 +662,20 @@ async fn agent_state_over_krpc_matches_the_files() {
     assert_eq!(view["state"]["turns_completed"], 1);
     assert_eq!(view["config"]["session"]["class"], "ui");
     assert!(view["worklog"].as_array().is_some_and(|w| !w.is_empty()));
+    let page = rpc(port, "session.worklog", json!({ "sid": ui.sid(), "turn": 1, "limit": 2 })).await.unwrap();
+    assert_eq!(page["agent_did"], AGENT);
+    assert_eq!(page["session_id"], ui.sid());
+    assert_eq!(page["complete"], true);
+    let alias = KrpcTransport::new(&format!("http://127.0.0.1:{port}/kapi/{}", local.agent_id()), None)
+        .call("session.worklog", json!({ "sid": ui.sid(), "turn": 1, "limit": 2 })).await.unwrap();
+    assert_eq!(alias["entries"], page["entries"]);
+    assert_eq!(page["entries"].as_array().unwrap().len(), 2);
+    assert!(page["entries"].as_array().unwrap().iter().all(|e| e["turn"] == 1));
+    let older = rpc(port, "session.worklog", json!({ "sid": ui.sid(), "turn": 1, "before": page["next_before"] })).await.unwrap();
+    assert!(!older["entries"].as_array().unwrap().is_empty());
+    let tail = rpc(port, "session.worklog", json!({ "sid": ui.sid(), "turn": 1, "after": page["next_after"] })).await.unwrap();
+    assert!(tail["entries"].as_array().unwrap().is_empty());
+    assert!(rpc(port, "session.worklog", json!({ "sid": ui.sid(), "turn": 0 })).await.is_err());
     assert_eq!(view["hosted"]["session_id"], ui.sid());
     let status = rpc(port, "loader.status", json!({})).await.unwrap();
     assert_eq!(status["agent_did"], AGENT);
@@ -1268,7 +1282,8 @@ async fn a_canceled_task_stops_its_session() {
         // Not an answer: the stop is applied before the next inference.
         "TOOL:echo hi".to_string()
     });
-    let loader = w.start(llm).await;
+    let port = free_port();
+    let loader = Loader::start(w.env(llm, port)).await.unwrap();
     let session = format!("dm:{BOB}");
     w.mail.deliver(&session, chat(BOB, "a long job"));
     until("placeholder", || w.mail.sent().len() == 1).await;
@@ -1298,5 +1313,9 @@ async fn a_canceled_task_stops_its_session() {
     let (_, end) = w.mail.sent().remove(1);
     assert_eq!(end.relates_to.as_ref().unwrap().target.to_string(), msg_key(&w.mail.sent()[0].1));
     assert_eq!(end.content.content, "(stopped)");
+    assert_eq!(sd.state().unwrap().turns_completed, 0);
+    let page = rpc(port, "session.worklog", json!({ "sid": sd.sid(), "turn": 1 })).await.unwrap();
+    assert_eq!(page["complete"], true);
+    assert!(page["entries"].as_array().unwrap().iter().any(|e| e["t"] == "turn_ended" && e["status"] == "stopped"));
     loader.shutdown().await;
 }

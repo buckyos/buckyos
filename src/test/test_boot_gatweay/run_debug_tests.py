@@ -101,6 +101,9 @@ def build_typical_node_gateway_info(*, remote_app: bool) -> dict:
             },
         },
         "service_info": {
+            "jarvis.test.buckyos.io": {
+                "selector": build_selector(("ood1", 10032, 10)),
+            },
             "control-panel": {
                 "selector": control_panel_selector,
             },
@@ -338,6 +341,8 @@ def request_header_equals(name, expected_value):
 
 
 def assertions_for_case(case_name: str):
+    if case_name == "req_agent_worklog_by_kapi_ok":
+        return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10032")]
     if case_name == "req_app_public_no_cookie_ok":
         return [control_matches({"return", "exit"}, expected_substring="tcp:///127.0.0.1:10161")]
     if case_name == "req_app_root_no_cookie_redirect_ok":

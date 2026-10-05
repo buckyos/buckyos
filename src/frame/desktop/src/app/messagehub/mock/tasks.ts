@@ -9,7 +9,7 @@ interface MockTask extends TaskWatchDetail {
 type TaskSeed = Partial<MockTask> & Pick<MockTask, 'taskId' | 'name' | 'phase'>
 
 function seedTasks(now: number): MockTask[] {
-  const task = (seed: TaskSeed, ageMs: number): MockTask => ({ rootId: seed.parentId ? '' : seed.taskId, revision: 1, createdAt: now - ageMs, updatedAt: now - ageMs, schemaId: 'opendan.turn/v1', grantedTo: [MOCK_SELF_DID], ...seed })
+  const task = (seed: TaskSeed, ageMs: number): MockTask => ({ rootId: seed.parentId ? '' : seed.taskId, revision: 1, createdAt: now - ageMs, updatedAt: now - ageMs, schemaId: 'opendan.agent_turn/v1', input: { agent_did: 'did:buckyos:agent:codeassistant', session_id: seed.parentId ? 'work-tests' : 'ui-session-1', turn: seed.taskId === MOCK_TASKS.running ? 16 : seed.taskId === MOCK_TASKS.done ? 12 : 1 }, grantedTo: [MOCK_SELF_DID], ...seed })
   const minutes = (value: number) => value * 60_000
   const tasks = [
     task({ taskId: MOCK_TASKS.done, name: 'Summarize yesterday\'s build failures', phase: 'Terminal', outcome: 'Succeeded', message: 'Report ready', revision: 9, completedAt: now - minutes(45), updatedAt: now - minutes(45), result: { summary: '3 failures, 2 flaky', artifacts: ['build-failures.md'] }, originRef: { kind: 'opendan.session', id: 'ui-session-1/turn-12' } }, minutes(49)),

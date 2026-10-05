@@ -1,0 +1,48 @@
+{
+  "id": "buckyos.richtext.basic.v1",
+  "encoding": "pm-loro-1",
+  "top": "doc",
+  "limits": { "max_blocks": 5000, "max_text_utf16": 500000, "max_depth": 8, "max_update_bytes": 1048576 },
+  "nodes": {
+    "doc": { "content": [{ "of": ["@block"], "min": 1 }] },
+    "paragraph": { "group": "block", "block_id": true, "content": [{ "of": ["@inline"], "min": 0 }] },
+    "heading": {
+      "group": "block", "block_id": true,
+      "attrs": { "level": { "type": "integer", "min": 1, "max": 3, "default": 1 } },
+      "content": [{ "of": ["@inline"], "min": 0 }]
+    },
+    "bullet_list": { "group": "block", "block_id": true, "content": [{ "of": ["list_item"], "min": 1 }] },
+    "ordered_list": {
+      "group": "block", "block_id": true,
+      "attrs": { "start": { "type": "integer", "min": 1, "default": 1 } },
+      "content": [{ "of": ["list_item"], "min": 1 }]
+    },
+    "list_item": {
+      "block_id": true,
+      "content": [
+        { "of": ["paragraph"], "min": 1, "max": 1 },
+        { "of": ["paragraph", "bullet_list", "ordered_list"], "min": 0 }
+      ]
+    },
+    "object_embed": {
+      "group": "block", "block_id": true, "atom": true,
+      "attrs": { "ref": { "type": "reference", "required": true, "target_types": ["buckyos.cell"] } }
+    },
+    "text": { "group": "inline", "text": true },
+    "hard_break": { "group": "inline", "atom": true },
+    "object_link": {
+      "group": "inline", "atom": true,
+      "attrs": { "ref": { "type": "reference", "required": true }, "label": { "type": "string", "default": "" } }
+    }
+  },
+  "marks": {
+    "strong": {},
+    "em": {},
+    "strike": {},
+    "code": { "inclusive": false, "exclusive": true },
+    "link": {
+      "inclusive": false,
+      "attrs": { "href": { "type": "href", "required": true, "schemes": ["http:", "https:", "mailto:", "#"] } }
+    }
+  }
+}

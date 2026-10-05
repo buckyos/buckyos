@@ -5,7 +5,7 @@ use buckyos_api::msg_queue::{
 };
 use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
-    generate_nfs_server_doc, generate_opendan_service_doc, generate_repo_service_doc,
+    generate_aiworkspace_doc, generate_nfs_server_doc, generate_opendan_service_doc, generate_repo_service_doc,
     generate_scheduler_service_doc,
     generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
     generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
@@ -21,7 +21,8 @@ use buckyos_api::{
 use buckyos_api::{
     AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
     CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
-    NfsServerSettings, NFS_SERVER_SERVICE_PORT, NFS_SERVER_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
+    AiWorkspaceSettings, AIWORKSPACE_SERVICE_PORT, AIWORKSPACE_UNIQUE_ID, NfsServerSettings,
+    NFS_SERVER_SERVICE_PORT, NFS_SERVER_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
     SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
@@ -649,6 +650,23 @@ impl SystemConfigBuilder {
 
         let settings = NfsServerSettings::default();
         self.insert_json_if_absent("services/nfs-server/settings", &settings)?;
+        Ok(self)
+    }
+
+    pub async fn add_aiworkspace(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_aiworkspace_doc();
+        // reached through the generic /kapi/aiworkspace gateway route
+        let config = build_kernel_service_spec(
+            AIWORKSPACE_UNIQUE_ID,
+            AIWORKSPACE_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/aiworkspace/spec", &config)?;
+
+        let settings = AiWorkspaceSettings::default();
+        self.insert_json_if_absent("services/aiworkspace/settings", &settings)?;
         Ok(self)
     }
 
