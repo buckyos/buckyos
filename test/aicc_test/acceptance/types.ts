@@ -127,6 +127,7 @@ export type RouteExposureMode =
 export type RouteExposureDeclaration = {
   mode: RouteExposureMode;
   logical_entrypoint?: string;
+  logical_entrypoint_ref?: "api_type_default";
   reason?: string;
 };
 
@@ -135,6 +136,7 @@ export type RouteExposureContract = {
   contract_revision: string;
   capability_baseline_revision: string;
   capability_cells_sha256: string;
+  logical_entrypoint_baseline_revision: string;
   profiles: Array<{
     provider_driver: string;
     provider_profile_id: string;

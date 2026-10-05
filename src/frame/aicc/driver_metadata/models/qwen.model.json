@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 3,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
@@ -141,6 +141,27 @@
         "max_output_tokens": 131072
       },
       "id": "qwen3.8-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["none", "low", "medium", "xhigh"],
+        "stability": "stable",
+        "weight": 38
+      }
+    },
+    {
+      "parameter_scale": "omni-flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072
+      },
+      "id": "qwen3.8-omni-flash",
       "llm": {
         "spec": "qwen-flash",
         "effort": "xhigh",

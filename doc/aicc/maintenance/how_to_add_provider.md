@@ -101,7 +101,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
 
 实例字段 `timeout_ms` 直接控制 HTTP 请求超时；`auto_sync_models=false` 只关闭周期同步，
 不跳过启动时的首次发现；`instance_rules` 是强类型对象，目前支持
-`exclude_models` 与 `model_driver_overrides`，未知字段会被拒绝。
+`exclude_models`、`model_driver_overrides` 与 `enabled_inventory_models`，未知字段会被拒绝。
 
 模型名转换的事实源按以下顺序处理：
 

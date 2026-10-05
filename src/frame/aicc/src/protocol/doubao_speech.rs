@@ -271,6 +271,10 @@ impl OperationCodec for DoubaoTtsCodec {
                     HeaderName::from_static("x-control-request-usage-tokens"),
                     HeaderValue::from_static("true"),
                 );
+                wire.headers.insert(
+                    HeaderName::from_static("x-control-require-usage-tokens-return"),
+                    HeaderValue::from_static("*"),
+                );
             }
             _ => {
                 return Err(ProtocolError::invalid_configuration(
@@ -1314,6 +1318,13 @@ mod tests {
                 .get("x-control-request-usage-tokens")
                 .unwrap(),
             "true"
+        );
+        assert_eq!(
+            agent_plan
+                .headers
+                .get("x-control-require-usage-tokens-return")
+                .unwrap(),
+            "*"
         );
         assert!(!agent_plan.headers.contains_key("x-api-request-id"));
     }

@@ -208,15 +208,15 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "qwen",
             "qwen3.7-plus",
             "thinking",
-            "/enable_thinking",
-            json!(true),
+            "/reasoning/effort",
+            json!("xhigh"),
         ),
         (
             "qwen",
             "qwen3.5-27b",
             "thinking",
-            "/enable_thinking",
-            json!(true),
+            "/reasoning/effort",
+            json!("xhigh"),
         ),
         (
             "kimi",
@@ -996,7 +996,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 308);
+    assert_eq!(pricing_count, 307);
 }
 
 #[test]
@@ -1331,12 +1331,11 @@ fn routable_builtin_unit_prices_match_operation_usage_dimensions() {
     // The standard `doubao` profile discovers its inventory dynamically and the
     // `doubao-agent-plan` profile is a prepaid plan whose per-request pricing the
     // schema cannot express, so neither contributes unit-priced dimensions to
-    // this sweep. The floor is what the remaining providers provide plus the four
-    // statically declared `doubao-speech` models (two character-priced TTS
-    // voices, two audio-second-priced ASR endpoints) across the four probed
-    // regions.
+    // this sweep. The floor is what the remaining providers provide plus the three
+    // active `doubao-speech` models (one character-priced TTS model and two
+    // audio-second-priced ASR endpoints) across the four probed regions.
     assert!(
-        checked >= 35,
+        checked >= 31,
         "pricing coverage unexpectedly shrank: {checked}"
     );
 }

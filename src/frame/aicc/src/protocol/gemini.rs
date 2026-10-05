@@ -1178,6 +1178,12 @@ fn encode_resource(
     kind: &str,
     context: &CodecContext,
 ) -> ProtocolResultValue<Value> {
+    if matches!(source, ResourceRef::NamedObject { .. }) {
+        let resource = context.materialized_resource(source)?;
+        if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
+            return Ok(provider_artifact_resource(kind, artifact_id));
+        }
+    }
     // Materialization may have handed this resource over as a URL because the
     // protocol takes one (`ResourceInputForm`). The object's own MIME is used
     // as the label, since the request carries no payload to sniff.
@@ -1197,9 +1203,6 @@ fn encode_resource(
         }
         ResourceRef::NamedObject { .. } => {
             let resource = context.materialized_resource(source)?;
-            if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
-                return Ok(provider_artifact_resource(kind, artifact_id));
-            }
             Ok(
                 json!({"type":kind, "data":STANDARD.encode(&resource.bytes), "mime_type":resource.mime}),
             )
@@ -2258,6 +2261,12 @@ fn video_extend_instance(
 }
 
 fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<Value> {
+    if matches!(resource, ResourceRef::NamedObject { .. }) {
+        let materialized = context.materialized_resource(resource)?;
+        if let Some(artifact_id) = materialized.provider_artifact_id.as_deref() {
+            return Ok(provider_video_artifact_resource(artifact_id));
+        }
+    }
     // Materialization may have handed this resource over as a URL because the
     // protocol takes one (`ResourceInputForm`). The object's own MIME is used
     // as the label, since the request carries no payload to sniff.
@@ -2275,9 +2284,6 @@ fn video_resource(resource: &ResourceRef, context: &CodecContext) -> ProtocolRes
         }
         ResourceRef::NamedObject { .. } => {
             let resource = context.materialized_resource(resource)?;
-            if let Some(artifact_id) = resource.provider_artifact_id.as_deref() {
-                return Ok(provider_video_artifact_resource(artifact_id));
-            }
             Ok(
                 json!({"bytesBase64Encoded":STANDARD.encode(&resource.bytes),"mimeType":resource.mime}),
             )
@@ -3419,6 +3425,30 @@ mod tests {
         };
         assert_eq!(body["input"][0]["id"], "gemini-video-1");
         assert!(body["input"][0].get("data").is_none());
+    }
+
+    #[test]
+    fn provider_artifact_id_takes_priority_over_materialized_url() {
+        let source = ResourceRef::named_object(ndn_lib::ObjId::new("chunk:123456").unwrap());
+        let mut context = context();
+        context.resources.insert(
+            crate::resource::ResourceKey::from_ref(&source).into_string(),
+            crate::protocol::MaterializedResource::from_url(
+                "http://test.buckyos.io/ndn/chunk:123456",
+                "image/png",
+                None,
+            )
+            .unwrap()
+            .with_provider_artifact_id(Some("gemini-image-1".to_string())),
+        );
+        assert_eq!(
+            encode_resource(&source, "image", &context).unwrap(),
+            json!({"type":"image","id":"gemini-image-1"})
+        );
+        assert_eq!(
+            video_resource(&source, &context).unwrap(),
+            json!({"id":"gemini-image-1"})
+        );
     }
 
     #[tokio::test]

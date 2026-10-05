@@ -37,8 +37,12 @@ import { buildT1Coverage } from "./coverage.ts";
 import { validateProviderBaseline } from "./manifest.ts";
 import {
   assertExactOnlyIsUnmounted,
+  assertRuntimeLogicalEntrypoint,
   buildRouteExposureRuntimeCells,
+  loadLogicalEntrypointBaseline,
   loadRouteExposureContract,
+  logicalDefinitionsFromModelsList,
+  type RuntimeLogicalDefinition,
 } from "./route_exposure.ts";
 import { queryRouteTraces, queryUsageEvents } from "./usage_audit.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
@@ -297,7 +301,7 @@ async function restartAicc(session: GatewaySession, input: Options): Promise<str
     input.restartViaDocker ? "docker" : command,
     {
       args: input.restartViaDocker
-        ? ["run", "--rm", "--pid=host", "alpine:latest", command, ...args]
+        ? ["run", "--rm", "--pid=host", "--privileged", "alpine:latest", command, ...args]
         : args,
       stdout: "piped",
       stderr: "piped",
@@ -779,13 +783,20 @@ async function runRouteExposureContractCases(args: {
   session: GatewaySession;
   runId: string;
   inventories: ProviderInventory[];
+  logicalDefinitions: RuntimeLogicalDefinition[];
   input: Options;
 }): Promise<CaseReport[]> {
   const baseline = validateProviderBaseline(JSON.parse(
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   ));
   const contract = await loadRouteExposureContract();
-  const cells = buildRouteExposureRuntimeCells({ baseline, contract, inventories: args.inventories });
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  const cells = buildRouteExposureRuntimeCells({
+    baseline,
+    contract,
+    logicalEntrypoints,
+    inventories: args.inventories,
+  });
   const reports: CaseReport[] = [];
   for (const cell of cells) {
     const caseId = routeExposureCaseId(cell);
@@ -800,6 +811,11 @@ async function runRouteExposureContractCases(args: {
       failureClass: "baseline_mismatch",
       execute: async () => {
         if (cell.exposure.mode === "logical_routable") {
+          assertRuntimeLogicalEntrypoint(
+            cell.exposure.logical_entrypoint!,
+            cell.api_type,
+            args.logicalDefinitions,
+          );
           const inventory = args.inventories.find((item) =>
             item.provider_instance_name === cell.provider_instance
           )!;
@@ -842,12 +858,12 @@ async function runRouteExposureContractCases(args: {
           return `${cell.exposure.logical_entrypoint} closed through ${String(response.selected_exact_model)}`;
         }
         if (cell.exposure.mode === "exact_only") {
-          assertExactOnlyIsUnmounted(cell);
+          assertExactOnlyIsUnmounted(cell, args.logicalDefinitions);
           try {
             const routed = await args.session.aicc.call("route.resolve", {
               request_id: `${args.runId}:${caseId}:negative-logical-probe`,
               api_type: cell.api_type,
-              logical_model: cell.api_type,
+              logical_model: logicalEntrypoints.api_type_defaults[cell.api_type],
               requirements: {},
               disable: {},
               policy: { allowed_provider_instances: [cell.provider_instance] },
@@ -1602,6 +1618,7 @@ async function runCases(
   mockBaseUrl: string,
   runId: string,
   mockInventories: ProviderInventory[],
+  logicalDefinitions: RuntimeLogicalDefinition[],
   input: Options,
 ): Promise<CaseReport[]> {
   const results: CaseReport[] = [];
@@ -1609,6 +1626,7 @@ async function runCases(
     session,
     runId,
     inventories: mockInventories,
+    logicalDefinitions,
     input,
   }));
   const cells = mockCells(mockInventories);
@@ -3349,13 +3367,23 @@ async function main(): Promise<void> {
           runId,
           execute: async () => {
             const mockInventories = await waitForMockInventories(session.aicc, runId, input.timeoutMs);
-            const quotaInventories = inventories(await session.aicc.call("models.list", {}));
+            const modelsList = await session.aicc.call("models.list", {});
+            const quotaInventories = inventories(modelsList);
+            const logicalDefinitions = logicalDefinitionsFromModelsList(modelsList);
             return await withMockQuotaTruth({
               systemConfig: sudoSystemConfig,
               userId: session.userId,
               appId: "system:control-panel",
               inventories: quotaInventories,
-              execute: () => runCases(session, sudoSystemConfig, input.mockBaseUrl, runId, mockInventories, input),
+              execute: () => runCases(
+                session,
+                sudoSystemConfig,
+                input.mockBaseUrl,
+                runId,
+                mockInventories,
+                logicalDefinitions,
+                input,
+              ),
             });
           },
           refreshClients: async () => {

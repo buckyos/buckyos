@@ -50,7 +50,9 @@ import { assertResponseShape, buildExactRequest } from "./payloads.ts";
 import { manifestCoverage, routeExposureCoverage } from "./run_t1_gateway.ts";
 import {
   applyProviderTokens,
+  configuredProviderInstanceOverrides,
   configuredProviderTokens,
+  scopeOfficialInventoriesToInstanceRules,
 } from "./provider_credentials.ts";
 import { filterPhysicalModels } from "./model_coverage.ts";
 import {
@@ -105,8 +107,12 @@ import {
 import {
   assertExactOnlyIsUnmounted,
   assertRouteExposureCompleteness,
+  assertRuntimeLogicalEntrypoint,
   buildRouteExposureRuntimeCells,
+  loadLogicalEntrypointBaseline,
   loadRouteExposureContract,
+  logicalDefinitionsFromModelsList,
+  validateLogicalEntrypointBaseline,
   validateRouteExposureContract,
 } from "./route_exposure.ts";
 import {
@@ -223,6 +229,38 @@ function t15ProviderRequest(
       t15FieldValue(field, contract, model, apiType),
     ]),
   );
+  for (const [pointer, value] of Object.entries(contract.required_body_values ?? {})) {
+    const tokens = pointer.split("/").slice(1).map((token) =>
+      token.replace(/~1/g, "/").replace(/~0/g, "~")
+    );
+    let target = fields as Record<string, unknown>;
+    for (const token of tokens.slice(0, -1)) {
+      if (
+        target[token] === null || typeof target[token] !== "object" ||
+        Array.isArray(target[token])
+      ) {
+        target[token] = {};
+      }
+      target = target[token] as Record<string, unknown>;
+    }
+    target[tokens.at(-1)!] = value;
+  }
+  for (const pointer of contract.required_body_paths ?? []) {
+    const tokens = pointer.split("/").slice(1).map((token) =>
+      token.replace(/~1/g, "/").replace(/~0/g, "~")
+    );
+    let target = fields as Record<string, unknown>;
+    for (const token of tokens.slice(0, -1)) {
+      if (
+        target[token] === null || typeof target[token] !== "object" ||
+        Array.isArray(target[token])
+      ) {
+        target[token] = {};
+      }
+      target = target[token] as Record<string, unknown>;
+    }
+    target[tokens.at(-1)!] ??= "t15-required";
+  }
   if (contract.id === "doubao.translation.responses.v3") {
     fields.input = [{
       role: "user",
@@ -1157,7 +1195,8 @@ test("preflight covers protocol, providers, and static cases", async () => {
 test("route exposure contract classifies every Provider Profile x Model Rule x API type", async () => {
   const providerBaseline = await baseline();
   const contract = await loadRouteExposureContract();
-  const summary = assertRouteExposureCompleteness(providerBaseline, contract);
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  const summary = assertRouteExposureCompleteness(providerBaseline, contract, logicalEntrypoints);
   const expectedCells = providerBaseline.providers.flatMap((provider) =>
     provider.rules.flatMap((rule) => rule.api_types)
   ).length;
@@ -1171,11 +1210,12 @@ test("route exposure contract classifies every Provider Profile x Model Rule x A
 test("route exposure cell snapshot rejects an API added under an existing model rule", async () => {
   const providerBaseline = structuredClone(await baseline());
   const contract = await loadRouteExposureContract();
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
   const rule = providerBaseline.providers.find((provider) => provider.provider_driver === "qwen")!.rules[0];
   rule.api_types.push("vision.caption");
   rule.methods.push(...methodsForApiType("vision.caption"));
   assert.throws(
-    () => assertRouteExposureCompleteness(providerBaseline, contract),
+    () => assertRouteExposureCompleteness(providerBaseline, contract, logicalEntrypoints),
     /capability cell snapshot differs/,
   );
 });
@@ -1183,10 +1223,12 @@ test("route exposure cell snapshot rejects an API added under an existing model 
 test("route exposure does not infer exact_only from a missing mount", async () => {
   const providerBaseline = await baseline();
   const contract = await loadRouteExposureContract();
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
   const openai = providerBaseline.providers.find((provider) => provider.provider_driver === "openai")!;
   const cells = buildRouteExposureRuntimeCells({
     baseline: providerBaseline,
     contract,
+    logicalEntrypoints,
     inventories: [{
       provider_instance_name: "openai-test",
       provider_driver: "openai",
@@ -1208,6 +1250,7 @@ test("route exposure does not infer exact_only from a missing mount", async () =
 test("exact_only exposure must be explicit, justified, and unmounted", async () => {
   const providerBaseline = structuredClone(await baseline());
   const raw = structuredClone(await loadRouteExposureContract());
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
   const openai = raw.profiles.find((provider) => provider.provider_driver === "openai")!;
   openai.overrides.push({
     model_pattern: "gpt-image-*",
@@ -1216,10 +1259,13 @@ test("exact_only exposure must be explicit, justified, and unmounted", async () 
     reason: "Fixture verifies the exact-only exception contract.",
   });
   const contract = validateRouteExposureContract(raw);
-  assert.doesNotThrow(() => assertRouteExposureCompleteness(providerBaseline, contract));
+  assert.doesNotThrow(() =>
+    assertRouteExposureCompleteness(providerBaseline, contract, logicalEntrypoints)
+  );
   const [cell] = buildRouteExposureRuntimeCells({
     baseline: providerBaseline,
     contract,
+    logicalEntrypoints,
     inventories: [{
       provider_instance_name: "openai-test",
       provider_driver: "openai",
@@ -1232,9 +1278,96 @@ test("exact_only exposure must be explicit, justified, and unmounted", async () 
       }],
     }],
   });
-  assert.doesNotThrow(() => assertExactOnlyIsUnmounted(cell));
+  const logicalDefinitions = [{ path: "image.txt2img.openai", api_type: "image.txt2img" }];
+  assert.doesNotThrow(() => assertExactOnlyIsUnmounted(cell, logicalDefinitions));
   cell.logical_mounts.push("image.txt2img.openai");
-  assert.throws(() => assertExactOnlyIsUnmounted(cell), /has logical mounts/);
+  assert.throws(
+    () => assertExactOnlyIsUnmounted(cell, logicalDefinitions),
+    /has logical mounts/,
+  );
+});
+
+test("logical entrypoint baseline keeps API types independent from logical paths", async () => {
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  assert.equal(logicalEntrypoints.api_type_defaults.llm, "llm.chat");
+  assert.equal(
+    logicalEntrypoints.api_type_defaults["agent.computer_use"],
+    "agent_runtime.computer_use",
+  );
+  assert.equal(
+    logicalEntrypoints.entrypoints.some((entrypoint) => entrypoint.path === "llm"),
+    false,
+  );
+
+  const invalid = structuredClone(logicalEntrypoints);
+  invalid.api_type_defaults.llm = "llm";
+  assert.throws(
+    () => validateLogicalEntrypointBaseline(invalid),
+    /default logical entrypoint llm\/llm is not declared/,
+  );
+});
+
+test("route exposure rejects undeclared bare LLM root", async () => {
+  const providerBaseline = await baseline();
+  const raw = structuredClone(await loadRouteExposureContract());
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  const openai = raw.profiles.find((provider) => provider.provider_driver === "openai")!;
+  const llmOverride = openai.overrides.find((override) =>
+    override.model_pattern === "gpt-5.6*" && override.api_type === "llm"
+  )!;
+  llmOverride.logical_entrypoint = "llm";
+  const contract = validateRouteExposureContract(raw);
+  assert.throws(
+    () => assertRouteExposureCompleteness(providerBaseline, contract, logicalEntrypoints),
+    /references undeclared logical entrypoint llm/,
+  );
+});
+
+test("runtime logical definitions validate semantic API ownership", () => {
+  const definitions = logicalDefinitionsFromModelsList({
+    logical_definitions: [
+      { path: "llm.chat", api_type: "llm" },
+      { path: "agent_runtime.computer_use", api_type: "agent.computer_use" },
+    ],
+  });
+  assert.doesNotThrow(() =>
+    assertRuntimeLogicalEntrypoint("agent_runtime.computer_use", "agent.computer_use", definitions)
+  );
+  assert.throws(
+    () => assertRuntimeLogicalEntrypoint("agent_runtime.computer_use", "llm", definitions),
+    /declares agent\.computer_use, expected llm/,
+  );
+  assert.throws(
+    () => assertRuntimeLogicalEntrypoint("agent.computer_use", "agent.computer_use", definitions),
+    /is absent from models\.list/,
+  );
+});
+
+test("exact_only mount checks use runtime node API type instead of path prefix", () => {
+  const cell = {
+    provider_driver: "openai",
+    provider_profile_id: "openai",
+    provider_instance: "openai-test",
+    model_pattern: "computer-use-preview*",
+    api_type: "agent.computer_use",
+    exposure: { mode: "exact_only" as const, reason: "fixture" },
+    exact_model: "computer-use-preview@openai-test",
+    logical_mounts: ["agent_runtime.computer_use"],
+  };
+  assert.throws(
+    () => assertExactOnlyIsUnmounted(cell, [{
+      path: "agent_runtime.computer_use",
+      api_type: "agent.computer_use",
+    }]),
+    /has logical mounts: agent_runtime\.computer_use/,
+  );
+  assert.throws(
+    () => assertExactOnlyIsUnmounted(
+      { ...cell, logical_mounts: ["agent_runtime.unknown"] },
+      [],
+    ),
+    /mounts without an API-typed logical definition: agent_runtime\.unknown/,
+  );
 });
 
 test("T1 report keeps route exposure matrix details separate from static manifest coverage", () => {
@@ -1636,6 +1769,54 @@ test("Provider credentials accept TOML values or provider-specific environment v
     doubao: "env-doubao",
     "doubao-agent-plan": "env-doubao-agent-plan",
   });
+});
+
+test("Provider credential overrides apply configured static inventory subsets", () => {
+  const rules = configuredProviderInstanceOverrides({
+    "provider_credentials.doubao-speech.enabled_inventory_models": [
+      "doubao-seed-tts-2.0",
+      "doubao-seed-asr-2.0-fast",
+    ],
+    "provider_credentials.doubao-speech.base_url": "https://openspeech.bytedance.com/api/v3",
+    "provider_credentials.doubao-speech.operation_base_urls": [
+      "tts.unidirectional=https://openspeech.bytedance.com/api/v3/tts",
+      "asr.recognize.flash=https://openspeech.bytedance.com/api/v3/auc/bigmodel",
+    ],
+  });
+  const patched = applyProviderTokens(
+    {},
+    { "doubao-speech": "speech-token" },
+    { "doubao-speech": "doubao-speech-t2" },
+    rules,
+  ) as { providers: Array<Record<string, unknown>> };
+  assert.deepEqual(patched.providers[0].instance_rules, {
+    enabled_inventory_models: [
+      "doubao-seed-asr-2.0-fast",
+      "doubao-seed-tts-2.0",
+    ],
+  });
+  assert.equal(
+    patched.providers[0].base_url,
+    "https://openspeech.bytedance.com/api/v3",
+  );
+  assert.deepEqual(patched.providers[0].operation_base_urls, {
+    "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts",
+    "asr.recognize.flash": "https://openspeech.bytedance.com/api/v3/auc/bigmodel",
+  });
+
+  const scoped = scopeOfficialInventoriesToInstanceRules([{
+    provider_driver: "doubao-speech",
+    provider_instance_name: "doubao-speech-t2",
+    models: [
+      { provider_model_id: "doubao-seed-tts-2.0", exact_model: "tts", api_types: ["audio.tts"], logical_mounts: [] },
+      { provider_model_id: "doubao-seed-icl-2.0", exact_model: "icl", api_types: ["audio.tts"], logical_mounts: [] },
+      { provider_model_id: "doubao-seed-asr-2.0-fast", exact_model: "asr", api_types: ["audio.asr"], logical_mounts: [] },
+    ],
+  }], rules);
+  assert.deepEqual(
+    scoped[0].models.map((model) => model.provider_model_id),
+    ["doubao-seed-tts-2.0", "doubao-seed-asr-2.0-fast"],
+  );
 });
 
 test("Provider credentials create one current-schema instance when the section is absent", () => {
@@ -3041,6 +3222,28 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
     () => validateProviderProtocolCatalog(invalidCatalog),
     /Provider official domain/,
   );
+  const doubaoStandardAsr = protocolContract(
+    catalog,
+    "doubao-speech",
+    "doubao-speech.asr.task.v3",
+  );
+  const doubaoStandardAsrRequest = (audio: Record<string, unknown>) =>
+    validateProviderRequest(doubaoStandardAsr, {
+      method: "POST",
+      pathname: "/api/v3/auc/bigmodel/submit",
+      query: new URLSearchParams(),
+      headers: new Headers({
+        "content-type": "application/json",
+        "x-api-key": "test-key",
+        "x-api-resource-id": "volc.seedasr.auc",
+      }),
+      body: { user: {}, audio, request: {} },
+    });
+  assert.deepEqual(doubaoStandardAsrRequest({ url: "https://example.com/a.wav" }), []);
+  assert.deepEqual(
+    doubaoStandardAsrRequest({ data: "UklGRg==" }),
+    ["body /audio/url is required", "body /audio/data is forbidden"],
+  );
   assert.ok(
     catalog.providers.flatMap((provider) => provider.contracts)
       .every((candidate) =>
@@ -3463,6 +3666,9 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
     const fixture = await response.json() as Record<string, unknown>;
     if (discovery.response_shape === "gemini") {
       assert.ok(Array.isArray(fixture.models));
+      for (const model of fixture.models as Array<Record<string, unknown>>) {
+        assert.equal(model.name, `models/${model.baseModelId}`);
+      }
     } else if (discovery.response_shape === "sn") {
       assert.ok(Array.isArray(fixture.items));
     } else {

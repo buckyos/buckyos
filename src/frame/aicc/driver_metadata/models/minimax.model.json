@@ -3,11 +3,11 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "minimax",
-  "revision_seq": 4,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
-      "id": "minimax-m3",
+      "id": "MiniMax-M3",
       "parameter_scale": "m3",
       "api_types": [
         "llm",

@@ -78,7 +78,6 @@
         },
         "selectable_inventory_models": [
           {"id": "doubao-seed-tts-2.0", "label": "Doubao Speech Synthesis 2.0"},
-          {"id": "doubao-seed-icl-2.0", "label": "Doubao Voice Clone 2.0"},
           {"id": "doubao-seed-asr-2.0", "label": "Doubao Speech Recognition 2.0"},
           {"id": "doubao-seed-asr-2.0-fast", "label": "Doubao Speech Recognition 2.0 (Flash)"}
         ]

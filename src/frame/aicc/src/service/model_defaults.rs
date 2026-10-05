@@ -1082,6 +1082,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 2.2),
                                 ("kimi_flagship", "llm.kimi-flagship", 2.2),
                                 ("gemini_pro", "llm.gemini-pro", 2.1),
+                                ("minimax_standard", "llm.minimax-standard", 2.0),
                                 ("claude_opus", "llm.claude-opus", 1.9),
                                 ("claude_sonnet", "llm.claude-sonnet", 1.8),
                                 ("qwen_max", "llm.qwen-max", 1.6),
@@ -1160,6 +1161,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
                                 ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
+                                ("minimax_standard", "llm.minimax-standard", 1.0),
                             ]),
                         ),
                         (
@@ -1194,6 +1196,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
                                 ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
+                                ("minimax_standard", "llm.minimax-standard", 1.0),
                             ]),
                         ),
                         (

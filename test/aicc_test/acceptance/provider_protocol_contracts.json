@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-04.1",
-  "checked_at": "2026-10-04",
+  "revision": "official-provider-protocols-2026-10-05.1",
+  "checked_at": "2026-10-05",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -348,11 +348,10 @@
       },
       "official_variant_sources": ["https://ai.google.dev/gemini-api/docs/thinking"],
       "official_variant_rules": [
-        { "model_ids": ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
+        { "model_ids": ["gemini-2.5-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"], "variants": { "reasoning-minimal": { "generation_config": { "thinking_level": "minimal" } }, "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
         { "model_ids": ["gemini-3.8-flash"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "high" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } },
-        { "model_ids": ["gemini-3-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
+        { "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro-preview"], "variants": { "reasoning-low": { "generation_config": { "thinking_level": "low" } }, "reasoning-medium": { "generation_config": { "thinking_level": "medium" } }, "reasoning-high": { "generation_config": { "thinking_level": "high" } } } }
       ],
       "test_model_ids": { "llm": "gemini-3.5-flash", "vision.ocr": "gemini-3.5-flash", "vision.caption": "gemini-3.5-flash", "vision.detect": "gemini-3.5-flash", "vision.segment": "gemini-3.5-flash", "audio.asr": "gemini-3.5-transcribe", "embedding.text": "gemini-embedding-2", "embedding.multimodal": "gemini-embedding-2", "image.txt2img": "gemini-3.1-flash-image", "image.img2img": "gemini-3.1-flash-image", "audio.tts": "gemini-3.1-flash-tts-preview", "audio.music": "lyria-3-clip-preview", "video.txt2video": "veo-3.1-generate-preview", "video.img2video": "veo-3.1-generate-preview", "video.video2video": "gemini-omni-1.1-flash", "video.extend": "gemini-omni-1.1-flash" },
       "contracts": [
@@ -1457,12 +1456,12 @@
       },
       "official_variant_sources": ["https://docs.bigmodel.cn/cn/guide/capabilities/thinking", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.3", "https://docs.bigmodel.cn/cn/guide/models/text/glm-5.2"],
       "official_variant_rules": [{
-        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5-flash", "glm-4.5v"],
+        "model_ids": ["glm-5.3", "glm-5.3-flash", "glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.7", "glm-4.7-flash", "glm-4.7-flashx", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-air", "glm-4.5-airx", "glm-4.5v"],
         "variants": {
           "reasoning-thinking": { "thinking": { "type": "enabled" } }
         }
       }, {
-        "model_ids": ["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x", "glm-4.5-flash"],
+        "model_ids": ["glm-5.2", "glm-5.1", "glm-5-turbo", "glm-5", "glm-4.6", "glm-4.6v", "glm-4.6v-flash", "glm-4.6v-flashx", "glm-4.5", "glm-4.5-x"],
         "variants": {
           "reasoning-none": { "thinking": { "type": "disabled" } }
         }
@@ -1829,8 +1828,16 @@
       "credential_type": "bearer",
       "official_first_party_model_ids": {
         "audio.tts": [
-          "doubao-seed-tts-2.0",
-          "doubao-seed-icl-2.0"
+          "doubao-seed-tts-2.0"
+        ],
+        "audio.asr": [
+          "doubao-seed-asr-2.0",
+          "doubao-seed-asr-2.0-fast"
+        ]
+      },
+      "wire_distinct_model_ids": {
+        "audio.tts": [
+          "doubao-seed-tts-2.0"
         ],
         "audio.asr": [
           "doubao-seed-asr-2.0",
@@ -1876,6 +1883,9 @@
             "req_params": [
               "object"
             ]
+          },
+          "required_body_values": {
+            "/req_params/speaker": "zh_female_vv_uranus_bigtts"
           },
           "success_content_type": "text/plain",
           "success_chunk_fixtures": [
@@ -2012,6 +2022,12 @@
               "object"
             ]
           },
+          "required_body_paths": [
+            "/audio/url"
+          ],
+          "forbidden_body_paths": [
+            "/audio/data"
+          ],
           "async_protocol": "doubao_asr",
           "async_steps": [
             {
@@ -2051,7 +2067,7 @@
       "provider_driver": "doubao",
       "provider_profile_id": "doubao",
       "endpoint_path": "/api/v3",
-      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3", "tts.unidirectional": "/api/v3/tts"},
+      "operation_endpoint_paths": {"ark.images.generate": "/api/v3", "ark.embeddings.multimodal": "/api/v3", "ark.contents.generate": "/api/v3"},
       "credential_type": "bearer",
       "instance_fields": {"region": "cn-beijing"},
       "official_first_party_model_ids": {
@@ -2059,7 +2075,6 @@
         "vision.ocr": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "vision.caption": ["doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"],
         "embedding.multimodal": ["doubao-embedding-vision-251215"],
-        "audio.tts": ["doubao-seed-tts-2.0"],
         "image.txt2img": ["doubao-seedream-5-0-pro-260628"],
         "image.img2img": ["doubao-seedream-5-0-pro-260628"],
         "video.txt2video": ["doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628"],
@@ -2077,7 +2092,6 @@
         "vision.ocr": "doubao-seed-2-0-lite-260428",
         "vision.caption": "doubao-seed-2-0-lite-260428",
         "embedding.multimodal": "doubao-embedding-vision-251215",
-        "audio.tts": "doubao-seed-tts-2.0",
         "image.txt2img": "doubao-seedream-5-0-pro-260628",
         "image.img2img": "doubao-seedream-5-0-pro-260628",
         "video.txt2video": "doubao-seedance-2-0-260128",
@@ -2103,29 +2117,6 @@
         "success_fixture": {"created_at": 1780000000, "id": "resp_doubao_standard_mock_1", "model": "doubao-seed-2-0-lite-260428", "object": "response", "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "BUCKYOS-AICC-4827", "annotations": []}], "status": "completed", "id": "msg_mock_1"}], "status": "completed", "store": false, "usage": {"input_tokens": 4, "output_tokens": 3, "total_tokens": 7}},
         "official_sources": ["https://www.volcengine.com/docs/82379/1585128", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
         "evidence_summary": "Standard ModelArk Responses uses the /api/v3 base URL with OpenAI-compatible JSON and SSE semantics."
-      }, {
-        "id": "doubao.tts.v3",
-        "protocol_adapter_id": "doubao-responses",
-        "error_fixture_key": "doubao-tts",
-        "api_version": "v3",
-        "api_types": ["audio.tts"],
-        "operation": "tts.unidirectional",
-        "http_method": "POST",
-        "path": "/api/v3/tts/unidirectional",
-        "auth": {"kind": "header", "name": "x-api-key", "prefix": ""},
-        "required_headers": {"x-api-resource-id": "seed-tts-2.0", "x-control-require-usage-tokens-return": "*"},
-        "content_type": "application/json",
-        "required_body_fields": ["req_params"],
-        "allowed_body_fields": ["req_params"],
-        "body_field_types": {"req_params": ["object"]},
-        "success_content_type": "text/plain",
-        "success_chunk_fixtures": [
-          {"code": 0, "message": "", "data": "SUQz"},
-          {"code": 0, "message": "", "data": "BA==", "usage": {"text_words": 5}},
-          {"code": 20000000, "message": "OK", "data": null}
-        ],
-        "official_sources": ["https://www.volcengine.com/docs/6561/1598757?lang=zh", "https://www.volcengine.com/docs/6257/2607681?lang=zh"],
-        "evidence_summary": "Standard Doubao Voice TTS uses X-Api-Key with seed-tts-2.0 against /api/v3/tts/unidirectional; Ark-created IAM API Keys may receive cross-product permissions."
       }, {
         "id": "doubao.translation.responses.v3",
         "protocol_adapter_id": "doubao-responses",
@@ -2239,15 +2230,18 @@
       },
       "official_variant_sources": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses"],
       "official_variant_rules": [{
-        "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.7-plus", "qwen3.8-omni-flash"],
+        "model_ids": ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash"],
         "variants": {
           "reasoning-none": { "reasoning": { "effort": "none" } },
-          "reasoning-mini": { "reasoning": { "effort": "minimal" } },
           "reasoning-low": { "reasoning": { "effort": "low" } },
           "reasoning-medium": { "reasoning": { "effort": "medium" } },
-          "reasoning-high": { "reasoning": { "effort": "high" } },
-          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } },
-          "reasoning-max": { "reasoning": { "effort": "max" } }
+          "reasoning-xhigh": { "reasoning": { "effort": "xhigh" } }
+        }
+      }, {
+        "model_ids": ["qwen3.7-plus"],
+        "variants": {
+          "reasoning-none": { "reasoning": { "effort": "none" } },
+          "reasoning-thinking": { "reasoning": { "effort": "xhigh" } }
         }
       }],
       "test_model_ids": {

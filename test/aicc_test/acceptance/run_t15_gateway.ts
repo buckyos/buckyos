@@ -2286,6 +2286,7 @@ async function main(): Promise<void> {
                   expected_aicc_error_code: undefined,
                   expected_provider_error_code: undefined,
                   expected_retriable: undefined,
+                  timeout_ms: 30_000,
                   tags: testCase.tags.filter((tag) => tag !== "official_error"),
                 };
                 const recovery = await executeCase(

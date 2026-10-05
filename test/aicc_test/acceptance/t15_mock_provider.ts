@@ -192,9 +192,7 @@ function discoveryFixture(
       ...provider.contracts.flatMap((contract) => Object.values(contract.test_model_ids ?? {})),
       ...officialModels,
     ]),
-  ].filter((id) =>
-    provider.provider_driver !== "doubao" || id !== "doubao-seed-tts-2.0"
-  );
+  ];
   if (shape === "sn") {
     return {
       revision: "t15-mock-1",
@@ -210,7 +208,7 @@ function discoveryFixture(
     return {
       models: modelIds.map((id) => ({
         name: `models/${id}`,
-        baseModelId: `models/${id}`,
+        baseModelId: id,
       })),
       nextPageToken: "",
     };
@@ -752,7 +750,26 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         if (errors.length) return json(response, 400, { type: "t15_mock_contract_violation", errors });
         if (selection.scenario === "async_failed") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "FAILED", code: "DataInspectionFailed", message: "Generated media was blocked" } });
         if (selection.scenario === "async_poll_timeout") return json(response, 200, { output: { task_id: "qwen_task_mock_1", task_status: "RUNNING" } });
-        return json(response, 200, rewriteMockUrls(contract.async_result_fixture ?? {}, request.headers.host ?? "127.0.0.1", ""));
+        if (
+          selection.scenario === "async_artifact_unavailable" &&
+          prior.length > 0
+        ) {
+          return json(response, 200, {
+            request_id: "qwen_request_mock_1",
+            output: {
+              task_id: "qwen_task_mock_1",
+              task_status: "UNKNOWN",
+              code: "InvalidParameter",
+              message: "TaskId does not exist or has expired.",
+            },
+          });
+        }
+        const result = rewriteMockUrls(
+          contract.async_result_fixture ?? {},
+          request.headers.host ?? "127.0.0.1",
+          "",
+        ) as Record<string, unknown>;
+        return json(response, 200, result);
       }
       if (
         contract.async_protocol === "doubao_video" &&

@@ -12,6 +12,23 @@ import type {
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+export type LogicalEntrypointBaseline = {
+  schema_version: 1;
+  baseline_revision: string;
+  source_documents: string[];
+  api_type_defaults: Record<string, string>;
+  entrypoints: Array<{
+    path: string;
+    api_type: string;
+    kind: "public_function" | "public_spec";
+  }>;
+};
+
+export type RuntimeLogicalDefinition = {
+  path: string;
+  api_type: string | null;
+};
+
 function object(value: unknown, field: string): Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${field} must be an object`);
@@ -49,20 +66,28 @@ function declaration(value: unknown, field: string): RouteExposureDeclaration {
   const logicalEntrypoint = raw.logical_entrypoint === undefined
     ? undefined
     : string(raw.logical_entrypoint, `${field}.logical_entrypoint`);
+  const logicalEntrypointRef = raw.logical_entrypoint_ref === undefined
+    ? undefined
+    : string(raw.logical_entrypoint_ref, `${field}.logical_entrypoint_ref`);
+  if (logicalEntrypointRef !== undefined && logicalEntrypointRef !== "api_type_default") {
+    throw new Error(`${field}.logical_entrypoint_ref is invalid`);
+  }
   const reason = raw.reason === undefined
     ? undefined
     : string(raw.reason, `${field}.reason`);
   if (mode === "logical_routable") {
-    if (!logicalEntrypoint) {
-      throw new Error(`${field}.logical_entrypoint is required`);
+    if ((logicalEntrypoint ? 1 : 0) + (logicalEntrypointRef ? 1 : 0) !== 1) {
+      throw new Error(
+        `${field} requires exactly one of logical_entrypoint or logical_entrypoint_ref`,
+      );
     }
     if (reason) {
       throw new Error(`${field}.reason is not valid for logical_routable`);
     }
   } else {
-    if (logicalEntrypoint) {
+    if (logicalEntrypoint || logicalEntrypointRef) {
       throw new Error(
-        `${field}.logical_entrypoint is only valid for logical_routable`,
+        `${field} logical entrypoint is only valid for logical_routable`,
       );
     }
     if (!reason) throw new Error(`${field}.reason is required for ${mode}`);
@@ -70,7 +95,78 @@ function declaration(value: unknown, field: string): RouteExposureDeclaration {
   return {
     mode: mode as RouteExposureDeclaration["mode"],
     logical_entrypoint: logicalEntrypoint,
+    logical_entrypoint_ref: logicalEntrypointRef as "api_type_default" | undefined,
     reason,
+  };
+}
+
+export async function loadLogicalEntrypointBaseline(): Promise<LogicalEntrypointBaseline> {
+  return validateLogicalEntrypointBaseline(JSON.parse(
+    await readFile(join(here, "logical_entrypoint_baseline.json"), "utf8"),
+  ));
+}
+
+export function validateLogicalEntrypointBaseline(value: unknown): LogicalEntrypointBaseline {
+  const raw = object(value, "logical entrypoint baseline");
+  if (raw.schema_version !== 1) {
+    throw new Error("unsupported logical entrypoint baseline schema_version");
+  }
+  const baselineRevision = string(raw.baseline_revision, "baseline_revision");
+  const sourceDocuments = strings(raw.source_documents, "source_documents");
+  if (sourceDocuments.length === 0) {
+    throw new Error("logical entrypoint baseline source_documents must not be empty");
+  }
+  const defaultsRaw = object(raw.api_type_defaults, "api_type_defaults");
+  const defaults = Object.fromEntries(Object.entries(defaultsRaw).map(([apiType, path]) => [
+    apiType,
+    string(path, `api_type_defaults.${apiType}`),
+  ]));
+  if (!Array.isArray(raw.entrypoints)) {
+    throw new Error("logical entrypoints must be an array");
+  }
+  const paths = new Set<string>();
+  const entrypoints = raw.entrypoints.map((value, index) => {
+    const entrypoint = object(value, `entrypoints[${index}]`);
+    const path = string(entrypoint.path, `entrypoints[${index}].path`);
+    const apiType = string(entrypoint.api_type, `entrypoints[${index}].api_type`);
+    const kind = string(entrypoint.kind, `entrypoints[${index}].kind`);
+    if (kind !== "public_function" && kind !== "public_spec") {
+      throw new Error(`entrypoints[${index}].kind is invalid`);
+    }
+    if (paths.has(path)) throw new Error(`duplicate logical entrypoint ${path}`);
+    paths.add(path);
+    return { path, api_type: apiType, kind } as LogicalEntrypointBaseline["entrypoints"][number];
+  });
+  const byPath = new Map(entrypoints.map((entrypoint) => [entrypoint.path, entrypoint]));
+  const canonical = new Set<string>(CANONICAL_API_TYPES);
+  const defaultApiTypes = new Set(Object.keys(defaults));
+  const missing = [...canonical].filter((apiType) => !defaultApiTypes.has(apiType));
+  const unknown = [...defaultApiTypes].filter((apiType) => !canonical.has(apiType));
+  if (missing.length || unknown.length) {
+    throw new Error(
+      `logical entrypoint defaults mismatch: missing=${missing.join(",")} unknown=${unknown.join(",")}`,
+    );
+  }
+  for (const [apiType, path] of Object.entries(defaults)) {
+    const entrypoint = byPath.get(path);
+    if (!entrypoint) throw new Error(`default logical entrypoint ${apiType}/${path} is not declared`);
+    if (entrypoint.api_type !== apiType) {
+      throw new Error(
+        `default logical entrypoint ${path} declares ${entrypoint.api_type}, expected ${apiType}`,
+      );
+    }
+  }
+  for (const entrypoint of entrypoints) {
+    if (!canonical.has(entrypoint.api_type)) {
+      throw new Error(`logical entrypoint ${entrypoint.path} has unknown api_type ${entrypoint.api_type}`);
+    }
+  }
+  return {
+    schema_version: 1,
+    baseline_revision: baselineRevision,
+    source_documents: sourceDocuments,
+    api_type_defaults: defaults,
+    entrypoints,
   };
 }
 
@@ -86,11 +182,15 @@ export function validateRouteExposureContract(
   value: unknown,
 ): RouteExposureContract {
   const raw = object(value, "route exposure contract");
-  if (raw.schema_version !== 1) {
+  if (raw.schema_version !== 2) {
     throw new Error("unsupported route exposure schema_version");
   }
   string(raw.contract_revision, "contract_revision");
   string(raw.capability_baseline_revision, "capability_baseline_revision");
+  string(
+    raw.logical_entrypoint_baseline_revision,
+    "logical_entrypoint_baseline_revision",
+  );
   const capabilityCellsSha256 = string(
     raw.capability_cells_sha256,
     "capability_cells_sha256",
@@ -168,20 +268,18 @@ export function validateRouteExposureContract(
     };
   });
   return {
-    schema_version: 1,
+    schema_version: 2,
     contract_revision: raw.contract_revision as string,
     capability_baseline_revision: raw.capability_baseline_revision as string,
     capability_cells_sha256: capabilityCellsSha256,
+    logical_entrypoint_baseline_revision: raw.logical_entrypoint_baseline_revision as string,
     profiles,
   };
 }
 
-function expandEntrypoint(template: string, apiType: string): string {
-  return template.replaceAll("{api_type}", apiType);
-}
-
 export function exposureFor(
   contract: RouteExposureContract,
+  logicalEntrypoints: LogicalEntrypointBaseline,
   providerDriver: string,
   modelPattern: string,
   apiType: string,
@@ -198,10 +296,17 @@ export function exposureFor(
     profile.overrides.find((item) =>
       item.model_pattern === modelPattern && item.api_type === apiType
     ) ?? profile.default_exposure;
-  return value.logical_entrypoint
+  const logicalEntrypoint = value.logical_entrypoint_ref === "api_type_default"
+    ? logicalEntrypoints.api_type_defaults[apiType]
+    : value.logical_entrypoint;
+  if (value.mode === "logical_routable" && !logicalEntrypoint) {
+    throw new Error(`no default logical entrypoint for ${apiType}`);
+  }
+  return logicalEntrypoint
     ? {
       ...value,
-      logical_entrypoint: expandEntrypoint(value.logical_entrypoint, apiType),
+      logical_entrypoint: logicalEntrypoint,
+      logical_entrypoint_ref: undefined,
     }
     : value;
 }
@@ -237,6 +342,7 @@ function capabilityCellsSha256(baseline: ProviderBaseline): string {
 export function assertRouteExposureCompleteness(
   baseline: ProviderBaseline,
   contract: RouteExposureContract,
+  logicalEntrypoints: LogicalEntrypointBaseline,
 ): RouteExposureSummary {
   if (contract.capability_baseline_revision !== baseline.baseline_revision) {
     throw new Error(
@@ -249,6 +355,17 @@ export function assertRouteExposureCompleteness(
       `route exposure capability cell snapshot differs: expected ${contract.capability_cells_sha256}, found ${cellsDigest}`,
     );
   }
+  if (
+    contract.logical_entrypoint_baseline_revision !==
+      logicalEntrypoints.baseline_revision
+  ) {
+    throw new Error(
+      `route exposure logical entrypoint baseline revision ${contract.logical_entrypoint_baseline_revision} differs from ${logicalEntrypoints.baseline_revision}`,
+    );
+  }
+  const entrypointsByPath = new Map(
+    logicalEntrypoints.entrypoints.map((entrypoint) => [entrypoint.path, entrypoint]),
+  );
   const expectedProfiles = new Map(
     baseline.providers.map((provider) => [provider.provider_driver, provider]),
   );
@@ -320,15 +437,22 @@ export function assertRouteExposureCompleteness(
       for (const apiType of rule.api_types) {
         const exposure = exposureFor(
           contract,
+          logicalEntrypoints,
           provider.provider_driver,
           rule.model_pattern,
           apiType,
         );
         if (exposure.mode === "logical_routable") {
           const entrypoint = exposure.logical_entrypoint!;
-          if (entrypoint !== apiType && !entrypoint.startsWith(`${apiType}.`)) {
+          const definition = entrypointsByPath.get(entrypoint);
+          if (!definition) {
             throw new Error(
-              `${provider.provider_driver}/${rule.model_pattern}/${apiType} has cross-API logical entrypoint ${entrypoint}`,
+              `${provider.provider_driver}/${rule.model_pattern}/${apiType} references undeclared logical entrypoint ${entrypoint}`,
+            );
+          }
+          if (definition.api_type !== apiType) {
+            throw new Error(
+              `${provider.provider_driver}/${rule.model_pattern}/${apiType} uses logical entrypoint ${entrypoint} declared for ${definition.api_type}`,
             );
           }
         }
@@ -382,6 +506,7 @@ export type RouteExposureRuntimeCell = {
 export function buildRouteExposureRuntimeCells(args: {
   baseline: ProviderBaseline;
   contract: RouteExposureContract;
+  logicalEntrypoints: LogicalEntrypointBaseline;
   inventories: ProviderInventory[];
 }): RouteExposureRuntimeCell[] {
   const cells = new Map<string, RouteExposureRuntimeCell>();
@@ -424,6 +549,7 @@ export function buildRouteExposureRuntimeCells(args: {
         const modelPattern = rule.model_pattern;
         const exposure = exposureFor(
           args.contract,
+          args.logicalEntrypoints,
           provider.provider_driver,
           modelPattern,
           apiType,
@@ -450,16 +576,65 @@ export function buildRouteExposureRuntimeCells(args: {
 
 export function assertExactOnlyIsUnmounted(
   cell: RouteExposureRuntimeCell,
+  logicalDefinitions: readonly RuntimeLogicalDefinition[],
 ): void {
   if (cell.exposure.mode !== "exact_only") return;
-  const mounts = cell.logical_mounts.filter((mount) =>
-    mount === cell.api_type || mount.startsWith(`${cell.api_type}.`)
+  const definitions = new Map(logicalDefinitions.map((definition) => [
+    definition.path,
+    definition.api_type,
+  ]));
+  const unknownMounts = cell.logical_mounts.filter((mount) =>
+    !definitions.has(mount) || definitions.get(mount) === null
   );
+  if (unknownMounts.length) {
+    throw new Error(
+      `exact_only cell ${cell.provider_driver}/${cell.model_pattern}/${cell.api_type} has mounts without an API-typed logical definition: ${
+        unknownMounts.join(", ")
+      }`,
+    );
+  }
+  const mounts = cell.logical_mounts.filter((mount) => definitions.get(mount) === cell.api_type);
   if (mounts.length) {
     throw new Error(
       `exact_only cell ${cell.provider_driver}/${cell.model_pattern}/${cell.api_type} has logical mounts: ${
         mounts.join(", ")
       }`,
+    );
+  }
+}
+
+export function logicalDefinitionsFromModelsList(value: unknown): RuntimeLogicalDefinition[] {
+  const raw = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as { logical_definitions?: unknown }).logical_definitions
+    : undefined;
+  if (!Array.isArray(raw)) {
+    throw new Error("models.list.logical_definitions must be an array");
+  }
+  const paths = new Set<string>();
+  return raw.map((value, index) => {
+    const definition = object(value, `models.list.logical_definitions[${index}]`);
+    const path = string(definition.path, `models.list.logical_definitions[${index}].path`);
+    if (paths.has(path)) throw new Error(`models.list contains duplicate logical definition ${path}`);
+    paths.add(path);
+    const apiType = definition.api_type === null || definition.api_type === undefined
+      ? null
+      : string(definition.api_type, `models.list.logical_definitions[${index}].api_type`);
+    return { path, api_type: apiType };
+  });
+}
+
+export function assertRuntimeLogicalEntrypoint(
+  entrypoint: string,
+  apiType: string,
+  logicalDefinitions: readonly RuntimeLogicalDefinition[],
+): void {
+  const definition = logicalDefinitions.find((item) => item.path === entrypoint);
+  if (!definition) {
+    throw new Error(`runtime logical entrypoint ${entrypoint} is absent from models.list`);
+  }
+  if (definition.api_type !== apiType) {
+    throw new Error(
+      `runtime logical entrypoint ${entrypoint} declares ${definition.api_type ?? "<none>"}, expected ${apiType}`,
     );
   }
 }
