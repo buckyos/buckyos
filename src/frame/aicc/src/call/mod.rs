@@ -439,10 +439,6 @@ impl<'a> CallResolver<'a> {
             "provider_model_id".into(),
             Value::String(decision.selected.provider_model_id.clone()),
         );
-        let input = CodecInput {
-            canonical_request: rewritten_request,
-            resolved_parameters,
-        };
         let descriptor = self
             .codecs
             .operation_descriptor(&decision.selected.protocol_adapter_id, &operation, api_type)
@@ -450,6 +446,27 @@ impl<'a> CallResolver<'a> {
         let binding = descriptor
             .binding(api_type)
             .map_err(|error| CallLoweringError::UnsupportedOperation(error.to_string()))?;
+        if api_type == ApiType::Llm
+            && binding
+                .supported_features
+                .contains(buckyos_api::features::WEB_SEARCH)
+        {
+            let enabled = decision
+                .selected
+                .enabled_capabilities
+                .iter()
+                .any(|feature| feature == buckyos_api::features::WEB_SEARCH)
+                && !decision
+                    .selected
+                    .disabled_capabilities
+                    .iter()
+                    .any(|feature| feature == buckyos_api::features::WEB_SEARCH);
+            resolved_parameters.insert(buckyos_api::features::WEB_SEARCH.into(), json!(enabled));
+        }
+        let input = CodecInput {
+            canonical_request: rewritten_request,
+            resolved_parameters,
+        };
         let Some(execution_mode) =
             internal_execution_mode(requested_execution_mode, &binding.execution_modes)
         else {
@@ -1609,6 +1626,7 @@ mod tests {
                 ("provider_model_id".into(), json!("gpt-5.2")),
                 ("reasoning".into(), json!({"effort": "high"})),
                 ("service_tier".into(), json!("priority")),
+                ("web_search".into(), json!(false)),
             ])
         );
         let AiccCall::ChatCompletionsCreate(rewritten) = &lowered.input.canonical_request else {
@@ -1973,6 +1991,129 @@ mod tests {
             .unwrap(),
             "responses.create"
         );
+    }
+
+    #[test]
+    fn web_search_lowering_preserves_function_tools_and_route_disables() {
+        let catalog = metadata_snapshot();
+        let codecs = all_codecs();
+        let resolver = CallResolver::new(&catalog, &codecs);
+        for (profile, adapter, model, operation, tool_type) in [
+            (
+                "openai",
+                "openai-responses",
+                "gpt-5.4",
+                "responses.create",
+                "web_search",
+            ),
+            (
+                "sn",
+                "sn-openai",
+                "gpt-5.4",
+                "responses.create",
+                "web_search",
+            ),
+            (
+                "openrouter",
+                "openrouter-responses",
+                "openai/gpt-5.4",
+                "responses.create",
+                "openrouter:web_search",
+            ),
+            (
+                "gemini",
+                "gemini-interactions",
+                "gemini-3.6-flash",
+                "interactions.create",
+                "google_search",
+            ),
+        ] {
+            for (supported, disabled) in [(true, false), (true, true), (false, false)] {
+                for stream in [false, true] {
+                    let exact = format!("{model}@primary");
+                    let mut route = decision(&exact);
+                    route.trace.requested_model = "llm.chat".into();
+                    route.trace.requested_model_type = RouteModelKind::Logical;
+                    route.trace.resolved_logical_path = Some("llm.chat".into());
+                    route.selected.provider_instance_name = "primary".into();
+                    route.selected.provider_profile_id = profile.into();
+                    route.selected.protocol_adapter_id = adapter.into();
+                    route.selected.model_driver_id = if profile == "gemini" {
+                        "gemini"
+                    } else {
+                        "openai"
+                    }
+                    .into();
+                    route.selected.origin_model_id = model.trim_start_matches("openai/").into();
+                    route.selected.provider_model_id = model.into();
+                    route.selected.operation = operation.into();
+                    route.selected.enabled_capabilities = if supported {
+                        vec!["web_search".into()]
+                    } else {
+                        vec![]
+                    };
+                    route.selected.disabled_capabilities = if disabled {
+                        vec!["web_search".into()]
+                    } else {
+                        vec![]
+                    };
+                    let mut request = LlmChatInvokeRequest::new(
+                        exact,
+                        vec![AiMessage::text(AiRole::User, "San Jose今天的天气如何？")],
+                    );
+                    request.execution_mode = if stream {
+                        AiccExecutionMode::Stream
+                    } else {
+                        AiccExecutionMode::Immediate
+                    };
+                    request.tools.push(buckyos_api::AiToolSpec {
+                        tool_type: "function".into(),
+                        name: "shell".into(),
+                        description: "Execute a command".into(),
+                        args_json_schema: json!({"type": "object", "properties": {"command": {"type": "string"}}}),
+                        output_schema: None,
+                    });
+                    let mut target = target("test-secret");
+                    target.provider_rules_id = Some(profile.into());
+                    if profile == "gemini" {
+                        target.credential =
+                            crate::protocol::gemini_api_key("secret://gemini", "test-secret")
+                                .unwrap();
+                    }
+                    let lowered = resolver
+                        .lower(&route, &AiccCall::ChatCompletionsCreate(request), target)
+                        .unwrap();
+                    let wire = codecs
+                        .encode(
+                            adapter,
+                            operation,
+                            ApiType::Llm,
+                            &lowered.input,
+                            &lowered.context,
+                        )
+                        .unwrap();
+                    let crate::protocol::HttpBody::Json(body) = wire.body else {
+                        panic!("expected JSON")
+                    };
+                    let tools = body["tools"].as_array().unwrap();
+                    assert_eq!(tools[0]["type"], "function", "{adapter}");
+                    assert_eq!(tools[0]["name"], "shell", "{adapter}");
+                    assert_eq!(
+                        tools.len(),
+                        if supported && !disabled { 2 } else { 1 },
+                        "{adapter}"
+                    );
+                    if supported && !disabled {
+                        assert_eq!(tools[1]["type"], tool_type, "{adapter}");
+                    }
+                    assert!(body.get("web_search").is_none());
+                    assert_eq!(
+                        body.get("stream").and_then(Value::as_bool).unwrap_or(false),
+                        stream
+                    );
+                }
+            }
+        }
     }
 
     #[test]

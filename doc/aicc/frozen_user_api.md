@@ -183,6 +183,10 @@ typed response 共同字段为：`task_id`、`status`、业务结果、`usage?`�
 `ModelRequirement` 用于硬需求，例如 `tool_call`、`json_schema`、`web_search`、
 `vision`、`image_generation`、`min_context_tokens` 和 canonical field 要求。`ModelDisable` 用于显式禁用能力。
 
+只有以 `llm.chat`、`llm.plan`、`llm.vision` 为入口的 LLM 请求可以启用云端联网搜索；这三个入口不把联网搜索作为硬性选模条件。本次路由的模型、Adapter 和 Provider discovery 均支持 `web_search` 且未被目录或请求禁用时，AICC 默认向云端开放搜索，由模型决定是否调用。其他逻辑入口（含 `llm.code`、规格、家族和自定义路径）及直接指定 exact model 的请求会强制禁用 `web_search`，并在 route trace 中记录；入口限制在 fallback / failover 后仍生效。OpenAI Responses（含 SN）追加 `web_search`，Gemini Interactions 追加 `google_search`，OpenRouter Responses 转换为 `openrouter:web_search`；这些服务端工具与调用方的函数工具共存。不支持搜索的模型仍可使用 Agent 提供的工具；`disable.web_search = true` 关闭云端搜索。仅使用 Responses 格式的其他 Adapter 不会因此继承搜索能力。
+
+协议依据：[OpenAI Web search](https://developers.openai.com/api/docs/guides/tools-web-search)、[Gemini Google Search](https://ai.google.dev/gemini-api/docs/google-search)、[OpenRouter Web Search](https://openrouter.ai/docs/guides/features/server-tools/web-search)。
+
 `RoutePolicy` 支持：`cheap | fast | balanced | quality` profile、local only、fallback、runtime failover、explain、Provider allow/block、最大成本和最大延迟。策略只能缩小候选或改变排序，不能赋予模型/adapter 不存在的能力。
 
 session overlay 是请求级临时配置，不能绕过上层 locked policy。显式 exact model 默认不隐式换模型；只有策略明确允许 exact fallback 且服务构造了候选时例外。

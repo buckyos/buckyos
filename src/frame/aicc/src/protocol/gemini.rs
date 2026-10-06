@@ -51,7 +51,12 @@ pub(crate) fn gemini_interactions_adapter() -> (AdapterDescriptor, CodecRegistra
             binding(
                 ApiType::Llm,
                 [ExecutionMode::Immediate, ExecutionMode::Stream],
-                [features::TOOL_CALL, features::JSON_SCHEMA, features::VISION],
+                [
+                    features::TOOL_CALL,
+                    features::JSON_SCHEMA,
+                    features::VISION,
+                    features::WEB_SEARCH,
+                ],
             ),
             binding(ApiType::VisionOcr, [ExecutionMode::Immediate], []),
             binding(ApiType::VisionCaption, [ExecutionMode::Immediate], []),
@@ -1077,7 +1082,7 @@ fn apply_interaction_parameters(
         "safety_settings",
     ];
     for (name, value) in parameters {
-        if matches!(name.as_str(), "provider_model_id" | "stream") {
+        if matches!(name.as_str(), "provider_model_id" | "stream" | "web_search") {
             continue;
         }
         if !ALLOWED.contains(&name.as_str()) {
@@ -1086,6 +1091,22 @@ fn apply_interaction_parameters(
             )));
         }
         body.insert(name.clone(), value.clone());
+    }
+    if let Some(value) = parameters.get(features::WEB_SEARCH) {
+        let enabled = value.as_bool().ok_or_else(|| {
+            ProtocolError::invalid_request("resolved web_search must be a boolean")
+        })?;
+        if enabled || body.contains_key("tools") {
+            let tools = body
+                .entry("tools")
+                .or_insert_with(|| json!([]))
+                .as_array_mut()
+                .ok_or_else(|| ProtocolError::invalid_request("tools must be an array"))?;
+            tools.retain(|tool| tool.get("type").and_then(Value::as_str) != Some("google_search"));
+            if enabled {
+                tools.push(json!({"type": "google_search"}));
+            }
+        }
     }
     Ok(())
 }

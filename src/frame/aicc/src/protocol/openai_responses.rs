@@ -54,6 +54,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
                 [
                     buckyos_api::features::TOOL_CALL,
                     buckyos_api::features::JSON_SCHEMA,
+                    buckyos_api::features::WEB_SEARCH,
                     "reasoning",
                     buckyos_api::features::VISION,
                 ],
@@ -921,6 +922,19 @@ fn apply_responses_parameters(
 ) -> ProtocolResultValue<()> {
     for (name, value) in parameters {
         if matches!(name.as_str(), "provider_model_id" | "stream") {
+            continue;
+        }
+        if name == buckyos_api::features::WEB_SEARCH {
+            let enabled = value.as_bool().ok_or_else(|| {
+                ProtocolError::invalid_request("resolved web_search must be a boolean")
+            })?;
+            if enabled {
+                body.entry("tools")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or_else(|| ProtocolError::invalid_request("tools must be an array"))?
+                    .push(json!({"type": "web_search"}));
+            }
             continue;
         }
         let valid = match name.as_str() {
