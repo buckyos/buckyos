@@ -122,6 +122,7 @@ type Options = {
   ndnNamedStoreConfigPath: string;
   ndnGatewayControlUrl: string;
   ndnSystemRoot: string;
+  ndnPublicGatewayUrl?: string;
 };
 
 type AiMethodResponse = {
@@ -500,6 +501,8 @@ async function parseOptions(args: string[]): Promise<Options> {
       env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
     ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
       env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
+    ndnPublicGatewayUrl: tomlString(config, "fixtures.ndn_public_gateway_url") ??
+      env("AICC_NDN_PUBLIC_GATEWAY_URL"),
     fixtures: {
       image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
@@ -1357,11 +1360,11 @@ async function executeAcceptance(input: {
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     const uploadFixtures = selectedCells.some((cell) =>
-      cell.resource_representation === "named_object"
+      cell.resource_representation === "named_object" || cell.resource_representation === "url"
     );
     if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
-        gatewayUrl: options.gatewayUrl,
+        gatewayUrl: options.ndnPublicGatewayUrl ?? options.gatewayUrl,
         runId,
         gatewayBinary: options.ndnGatewayBinary,
         namedStoreConfigPath: options.ndnNamedStoreConfigPath,
@@ -1386,6 +1389,7 @@ async function executeAcceptance(input: {
   const financialEntries: FinancialEntry[] = [];
   const costBudget = new CostBudget(options.maxCostUsd);
   const prerequisiteArtifactIds: string[] = [];
+  const taskManagerTaskIds = new Set<string>();
   if (executeRealModelCalls) {
     const scheduler = new ProviderScheduler(
       options.globalConcurrency,
@@ -1444,6 +1448,7 @@ async function executeAcceptance(input: {
             sourceMethod,
             prerequisiteRequest,
           ) as AiMethodResponse;
+          taskManagerTaskIds.add(initial.task_id);
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1541,6 +1546,7 @@ async function executeAcceptance(input: {
             }
             return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
           });
+          taskManagerTaskIds.add(initial.task_id);
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           assertResponseShape(cell, terminal);
           const artifacts = await validateTerminalArtifacts({
@@ -1952,9 +1958,31 @@ async function executeAcceptance(input: {
   }
   const cleanupDetails: string[] = [];
   const cleanupResidual: string[] = [];
+  const terminalArtifactIds: string[] = [];
+  const artifactDiscoveryFailures: string[] = [];
+  for (const taskId of taskManagerTaskIds) {
+    try {
+      const task = taskValue(await session.taskManager.call("get_task", { task_id: taskId }));
+      const taskResult = task.result && typeof task.result === "object" && !Array.isArray(task.result)
+        ? task.result as Record<string, unknown>
+        : undefined;
+      const result = taskResult?.result && typeof taskResult.result === "object" && !Array.isArray(taskResult.result)
+        ? taskResult.result as Record<string, unknown>
+        : undefined;
+      const output = result?.output && typeof result.output === "object" && !Array.isArray(result.output)
+        ? result.output as Record<string, unknown>
+        : undefined;
+      for (const source of artifactSources(output?.artifacts)) {
+        if (typeof source.obj_id === "string") terminalArtifactIds.push(source.obj_id);
+      }
+    } catch (error) {
+      artifactDiscoveryFailures.push(`${taskId}: ${String(error)}`);
+    }
+  }
   const generatedArtifactIds = [...new Set([
     ...prerequisiteArtifactIds,
     ...cases.flatMap((item) => item.artifact_ids),
+    ...terminalArtifactIds,
   ])]
     .filter((objId) => !uploadedFixtureIds.includes(objId));
   const removeNamed = async (objId: string): Promise<void> => {
@@ -1977,6 +2005,27 @@ async function executeAcceptance(input: {
   }
   cleanupDetails.push(`removed ${new Set(uploadedFixtureIds).size - cleanupResidual.filter((id) => uploadedFixtureIds.includes(id)).length} uploaded fixture object(s)`);
   cleanupDetails.push(`removed ${generatedArtifactIds.length - cleanupResidual.filter((id) => generatedArtifactIds.includes(id)).length} generated output object(s)`);
+  if (artifactDiscoveryFailures.length > 0) {
+    cases.push({
+      run_id: runId,
+      case_id: "t2.cleanup.artifact_discovery",
+      layer: "T2",
+      status: "failed",
+      method: "task.get",
+      outbound_message_ids: [],
+      artifact_ids: [],
+      attempts: [{
+        attempt: 1,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
+        status: "failed",
+        failure_class: "cleanup_failed",
+        diagnostic: `could not inspect ${artifactDiscoveryFailures.length} task result(s) before cleanup: ${artifactDiscoveryFailures.join("; ")}`,
+        estimated_cost_usd: 0,
+        cost_status: "not_called",
+      }],
+    });
+  }
   if (cleanupResidual.length > 0) {
     cases.push({
       run_id: runId,
@@ -2058,7 +2107,7 @@ async function executeAcceptance(input: {
     ],
     targeted_retest_command: targetedRetestCommand(cases, options.configPath, options.timeoutMs),
     cleanup: {
-      status: cleanupResidual.length === 0 ? "passed" : "failed",
+      status: cleanupResidual.length === 0 && artifactDiscoveryFailures.length === 0 ? "passed" : "failed",
       details: cleanupDetails,
     },
   };

@@ -454,8 +454,6 @@ impl RuntimeProviderExecutionPort {
         if !Self::has_inline_artifacts(&output) {
             return Ok(output);
         }
-        let mut value_resources = Vec::new();
-        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: context.tenant_id.clone(),
@@ -539,6 +537,8 @@ impl RuntimeProviderExecutionPort {
             );
             output.artifacts[index] = artifact;
         }
+        let mut value_resources = Vec::new();
+        collect_inline_base64_resource_refs(&output.value, &mut value_resources);
         for resource in value_resources {
             let buckyos_api::ResourceRef::Base64 { mime, data_base64 } = &resource else {
                 continue;
@@ -1346,6 +1346,24 @@ fn credential_fingerprint(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_materialization_does_not_recollect_replaced_value_resource() {
+        let inline = buckyos_api::ResourceRef::Base64 {
+            mime: "audio/mpeg".to_owned(),
+            data_base64: "dGVzdA==".to_owned(),
+        };
+        let named = buckyos_api::ResourceRef::NamedObject {
+            obj_id: ndn_lib::ObjId::new("cyfile:010203").unwrap(),
+        };
+        let mut value = serde_json::to_value(&inline).unwrap();
+
+        replace_resource_ref_value(&mut value, &inline, &named).unwrap();
+
+        let mut remaining = Vec::new();
+        collect_inline_base64_resource_refs(&value, &mut remaining);
+        assert!(remaining.is_empty());
+    }
 
     #[test]
     fn decision_result_is_checked_before_success_including_alias_version_drift() {

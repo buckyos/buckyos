@@ -369,7 +369,7 @@ async function addProvider(
         ([operation, path]) => [operation, `${mockBaseUrl}${path}`],
       ),
     ),
-    credentials: { api_token: { locked: `t15-mock-${driver}` } },
+    credentials: { api_token: { inline_secret: `t15-mock-${driver}` } },
     ...provider.instance_fields,
     ...(catalogDiscovery ? { discovery: catalogDiscovery } : {}),
     auto_sync_models: driver !== "google-gemini",
@@ -433,7 +433,7 @@ async function addCustomProvider(
         ([operation, path]) => [operation, `${mockBaseUrl}${path}`],
       ),
     ),
-    credentials: { api_token: { locked: `t15-mock-custom-${driver}` } },
+    credentials: { api_token: { inline_secret: `t15-mock-custom-${driver}` } },
     auth: {
       mode: "api_key",
       credential_ref: "api_token",
