@@ -9,7 +9,7 @@
       "base_url": "https://api.openai.com/v1",
       "credentials": {
         "api_token": {
-          "locked": "sk-xxx"
+          "inline_secret": "sk-xxx"
         }
       },
       "enabled": true,

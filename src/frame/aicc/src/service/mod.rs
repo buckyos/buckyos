@@ -43,7 +43,7 @@ use buckyos_api::{
     ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest, LlmChatHelperRequest,
     LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
     ProtocolAdapterListResponse, ProviderAddRequest, ProviderAddResponse, ProviderAuthSettings,
-    ProviderCatalogRequest, ProviderCatalogResponse,
+    ProviderCatalogRequest, ProviderCatalogResponse, ProviderCredential,
     ProviderCredentialKind as ApiProviderCredentialKind, ProviderCredentials,
     ProviderDeleteRequest, ProviderDeleteResponse, ProviderDiscoverySettings,
     ProviderHealthRequest, ProviderHealthResponse, ProviderInstanceAuthMode,

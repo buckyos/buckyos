@@ -33,7 +33,7 @@ Service：`aicc`
 | RuntimeSnapshot、Adapter registry、路由索引 | 从 settings、metadata 和 inventory 重建 |
 | `session_overlay` | 调用方每次请求重新传入；AICC 不持久化 |
 | Provider health/quota 短期视图 | 重新 probe/query |
-| resolved credential 和 Provider 短期 token | 从 locked reference 重新解析或登录 |
+| resolved credential 和 Provider 短期 token | 从 typed credential source 重新解析或登录 |
 | task progress/delta 的运行时缓冲 | 由 task-manager event/data 重新观察，不是 AICC 最终结果真相源 |
 
 ## 3. Storage Strategy

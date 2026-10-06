@@ -27,7 +27,7 @@
 | metadata 发布选择与目标序列 | NDN 更新链路 | 云端按客户端版本/通道/灰度分组选择兼容发布；本机 `metadata_target_seq` 等于严格递增的 manifest `revision_seq`，持续保留且不允许回退 |
 | Provider inventory LKGS | AICC RDB | 每个 Provider Instance 最近一次成功 discovery 并解析后的动态库存快照 |
 
-Provider Instance 中不保存明文凭据；只保存 system-config 现有 locked value 或 credential reference。Metadata 文件替换和刷新不能修改 Provider Instance 私有配置。
+Provider Instance 使用 `inline_secret|secret_ref|runtime_ref` 枚举描述凭据来源。`inline_secret` 是由 system-config 持久化的敏感值，另外两种只保存引用。Metadata 文件替换和刷新不能修改 Provider Instance 私有配置。
 
 ### Disposable Data（可丢弃数据）
 
@@ -193,7 +193,7 @@ Content Schema：
 - `provider_profile_id: string`，专用 Provider 或 `custom`。
 - `protocol_adapter_id: string`，必须来自运行时注册表。
 - `base_url: string`，Protocol Adapter 在此基础上构造具体 operation URL。
-- `credential_ref/locked credential fields`。
+- `credentials: map<string, ProviderCredential>`，枚举值为 `inline_secret|secret_ref|runtime_ref`。
 - `auth`：认证模式及其私有参数。SN 至少允许互斥的 `api_key` 和 `dynamic_login`；动态 token 只保存在运行时凭据缓存。
 - 可选 `region/account`。
 - 可选 `provider_rules_id` 和实例级非价格 rules override。
@@ -268,7 +268,7 @@ inventory 行迁移或重建失败不能阻止 AICC 使用已验证的内置 def
 
 - Frozen：实例名称是 Zone 内稳定主键；catalog 无权修改实例私有字段。
 - Extensible：区域、账号、折扣等 pricing context。
-- 凭据字段只能通过 locked value/credential reference 扩展。
+- 凭据来源只能通过 `ProviderCredential` 枚举扩展，不能恢复任意 JSON 外壳。
 
 ### Inventory LKGS
 
