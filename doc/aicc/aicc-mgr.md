@@ -57,7 +57,7 @@ services/control_panel/ai_models/provider_secrets
 
 本设计不继续扩大 control_panel 的 AICC 配置面。新的 AI Center 后端接口应以 `services/aicc/settings` 为主真相源。
 
-Provider credential 只存在于统一 Provider Instance 的 locked credentials/credential reference 中。Beta 2.2 不迁移或读取旧 provider family section 和 section 级 token。
+Provider credential 只存在于统一 Provider Instance 的 typed credential source 中。Beta 2.2 不迁移或读取旧 provider family section、section 级 token 或 `{locked: ...}` 包装。
 
 ### 2.3 Provider Instance 配置
 
@@ -73,7 +73,7 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
       "protocol_adapter_id": "openai-responses",
       "base_url": "https://api.openai.com/v1",
       "credentials": {
-        "api_token": { "locked": "..." }
+        "api_token": { "inline_secret": "..." }
       },
       "region": null,
       "provider_rules_id": "openai"
@@ -92,8 +92,8 @@ Provider credential 只存在于统一 Provider Instance 的 locked credentials/
 - `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
 - `custom` Provider 可以只提交协议族、`base_url` 和凭据，由 registry 选择该族默认 Adapter；也可显式提交属于该族的 Adapter。跨族组合必须拒绝，解析结果固化到 settings。
 - 只有明确的“接口不支持”结果才继续下一候选；连接、认证、限流和服务端故障直接返回，不能用旧接口测试掩盖。
-- `credentials` 是 `map<string, {locked: string}>`，`auth` 是 `api_key|dynamic_login` tagged union，静态 `discovery` 是带 typed health/model availability 的对象；管理协议和持久 settings 共用这些 DTO，不接受任意 JSON 外壳。
-- 凭据使用 system-config locked value，不进入 catalog、inventory、trace 或日志；运行时从 typed auth 的 `credential_ref` 建立引用。
+- `credentials` 是 `map<string, ProviderCredential>`；`ProviderCredential` 是 `inline_secret|secret_ref|runtime_ref` 枚举，分别表达内嵌敏感值、外部 Secret Store 引用和运行时凭据引用。
+- `inline_secret` 当前由 system-config 持久化，必须按敏感值处理；`runtime_ref` 只保存运行时来源，`secret_ref` 在配置 Secret Resolver 前明确拒绝解析。凭据不进入 catalog、inventory、trace 或日志。
 - Catalog 更新不得修改实例名称、`base_url`、凭据、区域、账号或协议选择。
 - 不读取 `instance_id`、`provider_driver`、`endpoint`、`api_key`、`apiKey` 等旧字段或别名；管理 RPC 和 UI DataModel 同样拒绝配置字段 `endpoint`，`base_url` 是各层统一使用的正式字段。
 
@@ -283,8 +283,9 @@ Response：
     "protocol_adapter_id": "openai-responses",
     "base_url": "https://api.openai.com/v1",
     "credentials": {
-      "type": "bearer",
-      "secret_ref": "system-config://secrets/aicc/openai-work"
+      "api_token": {
+        "inline_secret": "..."
+      }
     },
     "timeout_ms": 60000,
     "enabled": true
@@ -655,7 +656,7 @@ let next = config_client.get("services/aicc/settings").await?;
 3. `provider.validate` 不落盘，但会使用用户传入 token 访问外部 endpoint，应限制日志脱敏。
 4. 所有日志必须复用 `redact_settings_for_log()` 的规则，至少脱敏 `api_token`、`api_key`、`authorization`。
 5. `models.list` 不返回明文 API Key。
-6. 静态 API Key 通过 Provider Instance 的 locked credential 或 credential reference 保存；动态 token 只保存在派生 Adapter 的运行时凭据缓存，不写回 system-config。
+6. 静态 API Key 使用 Provider Instance 的 `inline_secret`；外部 Secret Store 使用 `secret_ref`；动态登录使用 `runtime_ref`，换取的动态 token 只保存在派生 Adapter 的运行时凭据缓存，不写回 system-config。
 7. SN 动态登录、刷新与认证错误必须在 `sn-openai` 层处理，不能进入 OpenAI 基础 Adapter。
 
 ## 9. 实现入口建议

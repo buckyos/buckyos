@@ -52,7 +52,7 @@ SN 的标准示例是 `sn-openai -> openai-responses`：SN 层实现 `api_key` �
       "protocol_adapter_id": "openai-responses",
       "base_url": "https://api.openai.com/v1",
       "credentials": {
-        "api_token": { "locked": "..." }
+        "api_token": { "inline_secret": "..." }
       },
       "region": "global",
       "enabled": true

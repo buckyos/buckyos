@@ -19,7 +19,7 @@ Provider Wizard 打开时通过 `provider.catalog` 一次性读取已知 Provide
 | `ProviderConfig.base_url` | `base_url` | system-config | UI、管理 RPC 和 settings 使用同一字段名 |
 | `ProviderConfig.provider_profile_id` | `provider_profile_id` | system-config | 不读取旧 `provider_driver` |
 | `ProviderConfig.protocol_adapter_id` | `protocol_adapter_id` | system-config | 后端接入测试解析并固化；自定义 Provider 用户不填写 |
-| `ProviderConfig.auth` | `auth` | system-config locked value / credential reference | SN 显式选择 `api_key` 或 `dynamic_login` |
+| `ProviderConfig.auth` | `auth` | system-config typed credential source | SN 显式选择 `api_key` 或 `dynamic_login`；凭据来源使用 `inline_secret|secret_ref|runtime_ref` |
 | `ProviderInventory.provider_profile_id` | `provider_profile_id` | inventory / LKGS | discovery 使用的 profile |
 | `ProviderInventory.protocol_adapter_id` | `protocol_adapter_id` | inventory / LKGS | 实际 wire adapter |
 | `ModelItem.model_driver` | `model_driver` | Model Driver catalog | 未知值显示 `unknown`，不回退为 profile |
