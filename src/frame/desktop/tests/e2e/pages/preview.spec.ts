@@ -94,7 +94,7 @@ test.describe('Preview App', () => {
     // Manual new window via the context menu → second, independent window.
     await page.getByTestId('window-drag-files').click()
     await win.getByRole('cell', { name: /^Kyoto Trip Plan\.md/ }).first().click({ button: 'right' })
-    await page.getByRole('menuitem', { name: 'Open in new Preview window' }).click()
+    await page.getByRole('menuitem', { name: 'Open in new window' }).click()
     await expect(page.getByTestId('window-preview')).toHaveCount(2)
     const second = page.getByTestId('window-preview').nth(1)
     await expect(second.getByTestId('content-preview')).toHaveAttribute('data-renderer', 'text', { timeout: 15_000 })

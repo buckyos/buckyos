@@ -913,7 +913,36 @@ export class DesktopUIStore {
     })
   }
 
-  closeWindow(windowId: string) {
+  async refreshApps() {
+    const result = await fetchAppList()
+    if (!result.data) throw result.error ?? new Error('apps.list unavailable')
+    const definitions = buildAuthorizedAppDefinitions(this.defaultPayload?.apps ?? [], result.data.apps)
+    this.update({ apps: resolveDesktopApps(definitions, this.snapshot.formFactor) })
+  }
+
+  private closeGuards = new Map<string, (reason?: 'user' | 'logout' | 'shell') => Promise<boolean>>()
+  private closingWindows = new Set<string>()
+
+  registerCloseGuard(windowId: string, guard: (reason?: 'user' | 'logout' | 'shell') => Promise<boolean>) {
+    this.closeGuards.set(windowId, guard)
+    return () => { this.closeGuards.delete(windowId) }
+  }
+
+  async prepareLogout(): Promise<boolean> {
+    for (const guard of this.closeGuards.values()) if (!await guard('logout')) return false
+    return true
+  }
+
+  closeWindow(windowId: string, force = false) {
+    const guard = this.closeGuards.get(windowId)
+    if (!force && guard) {
+      if (this.closingWindows.has(windowId)) return
+      this.closingWindows.add(windowId)
+      void guard().then(allow => { if (allow) this.closeWindow(windowId, true) })
+        .finally(() => this.closingWindows.delete(windowId))
+      return
+    }
+    this.closeGuards.delete(windowId)
     const closing = this.snapshot.runtime.windows.find((w) => w.id === windowId)
     if (closing) {
       // Group 2: 窗口关闭时记录位置和大小

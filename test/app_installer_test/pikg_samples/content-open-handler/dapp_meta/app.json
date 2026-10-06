@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:content-open-handler.buckyos",
+  "name": "content-open-handler",
+  "version": "0.1.0",
+  "owner": "did:bns:buckyos",
+  "author": "did:bns:buckyos",
+  "show_name": "Content Open Handler",
+  "categories": [
+    "web"
+  ],
+  "permissions": [
+    {
+      "scope_path": "user/home",
+      "required": true,
+      "actions": [
+        "read",
+        "write"
+      ],
+      "exp": null
+    }
+  ],
+  "selector_type": "static",
+  "service_config_tips": {},
+  "content_handlers": [
+    {
+      "handler_id": "markdown",
+      "version": 1,
+      "selectors": [
+        {
+          "mime": "text/markdown"
+        }
+      ],
+      "intents": {
+        "open": {
+          "entry": {
+            "type": "web",
+            "path": "/open?src={source}&mode={mode}&session={session}"
+          },
+          "window": "new",
+          "priority": 40,
+          "modes": [
+            "view"
+          ],
+          "fidelity": "partial"
+        }
+      }
+    }
+  ]
+}

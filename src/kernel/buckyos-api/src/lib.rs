@@ -638,3 +638,6 @@ pub fn generate_opendan_service_doc() -> AppDoc {
     .build()
     .unwrap()
 }
+
+pub mod content_handler;
+pub use content_handler::*;

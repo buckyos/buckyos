@@ -1,7 +1,7 @@
 # BuckyOS Text Editor
 
-> 文档状态：Draft v0.2（详细设计，未实现）
-> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策）
+> 文档状态：Draft v0.3（详细设计，未实现）
+> 日期：2026-10-06（v0.2：增加文件缓冲区与恢复区；§15 记录已确认决策。v0.3：覆盖时提供“覆盖 / 覆盖并保留冲突副本”两个选项）
 > 上游需求：[BuckyOS Preview App / Component PRD](../../../product/bucky_file/BuckyOS%20Preview%20App-Component%20PRD.md)（§4 非目标、§8 支持级别、§10.6“使用专用应用打开”、§11 Session Context、§23.8 第 10 项）、[内容扩展机制 Content Extension](../../../doc/sdk/context%20ext.md)（`open` 意图、Content Registry、调用模型）
 > 关联协议：[App 安装协议](../../../doc/App%20安装协议.md)（AppDoc v1、预装）、[路径约定](../../../doc/path_usage.md)（App 数据区）、NFSP（`cyfs-ndn/doc/NamedFileSystem_Protocol_v0.md`、[nfs_server 产品设计](../../../product/bucky_file/nfs_server.md)、`src/frame/nfs_server/README.md`）
 > 读者：BuckyOS 系统 / Desktop / buckyos-websdk / nfs_server 开发者，以及按本文实施的 Code Agent
@@ -695,6 +695,7 @@ save(doc):
 |---|---|---|
 | `external-modified` | 重新加载（放弃我的修改） | 我的版本（`side: mine`） |
 | | 覆盖 | 将被覆盖的磁盘版本（`side: disk`）：覆盖前读取当前文件字节存档，然后第 6 步失败时用已持有的租约 `overwrite:true` 再次 commit，第 3 步发现时重新执行 4–7 |
+| | 覆盖并保留冲突副本 | 同“覆盖”，另外在原文件所在目录生成被覆盖版本的冲突副本（见下文） |
 | | 另存为 | 无（两份各在其位） |
 | | 对比并合并（P1） | 合并结果保存前，双方原版本各存一份 |
 | `deleted` | 在原路径重新创建（`open_write({ parent_ref, name })`，要求 `target.exists === false`）/ 另存为 | 无 |
@@ -704,6 +705,19 @@ save(doc):
 - 文档无修改时检测到外部变化 → 自动重新加载（§8.10），不涉及恢复区，因为没有未保存的工作成果。
 - “覆盖”分支中，读取磁盘版本存档与 commit 之间若又有第三方写入，第 6 步的旁路检查会再次报冲突，回到冲突对话框；N2 落地后用 CAS 精确消除这一窗口。
 - 冲突处理完成后，编辑器以通知提示“已把被替换的版本保存到恢复区 · 查看”。
+
+**两种覆盖方式。** 冲突对话框把“覆盖”拆成两个按钮，并分别说明去向：
+
+| 选项 | 被覆盖的版本去向 | 谁能找到 |
+|---|---|---|
+| 覆盖 | 只进入我的恢复区 | 只有我 |
+| 覆盖并保留冲突副本 | 进入我的恢复区，并在原目录生成冲突副本 | 所有能访问该目录的人，包括写入那个版本的其他用户 |
+
+- 冲突副本命名为 `<原名主干> (冲突副本 YYYY-MM-DD HHmmss)<原扩展名>`，标签文字随界面语言（英文为 `conflict copy`）。扩展名留在末尾，副本仍由同一个应用打开；重名时依次追加 ` 2`、` 3`。内容是被覆盖版本的原始字节。
+- 执行顺序：① 存入我的恢复区；② 用 `open_write({ parent_ref, name })` 在原目录创建冲突副本，要求 `target.exists === false`；③ 覆盖原文件。恢复区条目记录副本路径（`conflictCopyPath`）。
+- 第 ② 步失败（目录不可写、重名重试用尽）时停下，提示“无法在原目录创建冲突副本”，让用户选择“仅覆盖（被覆盖的版本已在你的恢复区）”或“取消”。此时第 ① 步已完成，“先存档后破坏”仍然成立。
+- 冲突副本是用户目录中的普通文件，编辑器不会自动清理。
+- P0 无法判断磁盘版本是谁写的，两个按钮始终同时提供，默认选中“覆盖”。N8 落地后对话框显示“Bob 在 10:22 保存的版本”；写入者不是当前用户时，默认选中“覆盖并保留冲突副本”。
 
 已知缺口（§12 列为 nfs_server 改动）：
 
@@ -726,6 +740,7 @@ interface RecoveryEntry {
   fileName: string;                   // 同目录内容文件名
   baseEtag?: string;                  // mine：我的修改基于的磁盘版本
   diskEtag?: string;                  // disk：被覆盖时的磁盘版本
+  conflictCopyPath?: string;          // 选择“覆盖并保留冲突副本”时，原目录中副本的 cyfs 路径
   encoding: string;
   bom: boolean;
   eol: "\n" | "\r\n" | "\r";
@@ -743,7 +758,7 @@ interface RecoveryEntry {
 **边界。**
 
 - 同一用户的多窗口、多设备冲突，双方版本都进入该用户自己的恢复区，完全覆盖“用户总能找到自己被覆盖的内容”。
-- 不同用户之间的冲突：A 选择“覆盖”时，被覆盖的 B 的版本进入 **A** 的恢复区。B 无权访问 A 的数据区，只能由 A 找回后交还（§15 待确认 1）。
+- 不同用户之间的冲突：A 选择“覆盖”时，被覆盖的 B 的版本只进入 **A** 的恢复区，B 无权访问；A 选择“覆盖并保留冲突副本”时，B 能在原目录直接找到自己的版本（§8.7“两种覆盖方式”，§15.1 决策 9）。
 - 不经过本编辑器的写入（其它应用、宿主机程序）互相覆盖不在编辑器职责内；所有写入方的完整版本历史属于存储层能力（§12 N7）。
 
 ### 8.9 另存为与新建
@@ -1026,6 +1041,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 | N5 | 文件级变更事件（`node_changed`），减少父目录事件触发的 stat | P2 |
 | N6 | 原子替换时保留原文件权限位 | P1 |
 | N7 | 存储层版本历史：被替换的文件内容按 ObjId 保留一段时间，覆盖不经过编辑器的写入与跨用户覆盖（§8.8 边界） | P2 |
+| N8 | `stat` 返回最近写入者（user id、时间），用于冲突对话框显示“谁保存的版本”并选择默认覆盖方式（§8.7）；依赖 N4 识别写入身份 | P1 |
 
 ### 12.3 buckyos-websdk
 
@@ -1087,7 +1103,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 - [ ] V2：安装后 `system/content_registry` 含 `text` 与 `any-as-text` 两个条目；卸载后条目消失；全程不重新构建 Desktop。
 - [ ] V3：File Browser 双击 `.md` 在 Text Editor 窗口中打开；直接在浏览器访问 `https://text-editor.<zone>/open?src=cyfs:///…` 也能打开同一文件；目录打开时文件列表是该目录的文件，多选打开时是选中项。
 - [ ] V4：编辑保存后 File Browser / Preview 看到新内容；另一个客户端先保存同一文件后，本窗口保存进入 `external-modified` 冲突且未覆盖对方内容；宿主机直接修改文件后，未修改的标签在 30 s 内（或窗口回到前台时）自动重新加载。
-- [ ] V5：编辑后约 10 s 内 App 数据区出现对应缓冲区；强制关闭窗口后，在另一浏览器（或另一设备）打开同一文件能看到“未保存的修改”并恢复；冲突中选“重新加载”后我的版本出现在恢复区，选“覆盖”后被覆盖的磁盘版本出现在恢复区；恢复区写入失败（注入错误）时重新加载 / 覆盖不执行；原文件被删除后，修改仍能从起始页找到并另存。
+- [ ] V5：编辑后约 10 s 内 App 数据区出现对应缓冲区；强制关闭窗口后，在另一浏览器（或另一设备）打开同一文件能看到“未保存的修改”并恢复；冲突中选“重新加载”后我的版本出现在恢复区，选“覆盖”后被覆盖的磁盘版本出现在恢复区，选“覆盖并保留冲突副本”后原目录还会出现命名正确的冲突副本（重名时自动编号），且另一个用户能直接打开它；原目录不可写时提示“仅覆盖 / 取消”；恢复区写入失败（注入错误）时重新加载 / 覆盖不执行；原文件被删除后，修改仍能从起始页找到并另存。
 - [ ] V6：窗口标题随活动标签变化并显示未保存标记；关闭有未保存内容的窗口时出现确认，选“取消”窗口保留，选“保留修改”后下次打开自动恢复；再次双击另一个文本文件时在已有编辑器窗口新开标签；“在新窗口中打开”新建窗口；切换桌面主题后编辑器同步。
 - [ ] V7：卸载、停用、禁用 Handler 三种方式后，双击文本文件都进入 Preview；Preview 的“使用专用应用打开”在编辑器存在时列出它，缺席时不列出；Owner 把 App 改为仅自己可用后，其他用户双击进入 Preview。
 - [ ] V8：安装夹具 App 后，“打开方式”同时列出 Text Editor、夹具 App 和 Preview；设为“始终使用夹具 App”后双击进入夹具 App；恢复默认后回到 Text Editor。
@@ -1107,7 +1123,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 
 | 层 | 内容 | 环境 |
 |---|---|---|
-| 单元 | `codec`（编码 / BOM / 换行 / 二进制）、`saveFlow`（冲突分类与“先存档后破坏”顺序，对假 DocumentStore）、缓冲区头与恢复区条目的编解码、缓冲区生命周期、大纲提取、启动请求解析与 Session 降级、`resolveContentHandlers`（websdk） | Node |
+| 单元 | `codec`（编码 / BOM / 换行 / 二进制）、`saveFlow`（冲突分类与“先存档后破坏”顺序，对假 DocumentStore）、缓冲区头与恢复区条目的编解码、缓冲区生命周期、冲突副本命名与重名编号、大纲提取、启动请求解析与 Session 降级、`resolveContentHandlers`（websdk） | Node |
 | 编辑器 e2e | `tests/harness/` 提供模拟 Shell（`AppFrameHost`）与内存 NFSP（实现 resolve / stat / list / read / mkdir / delete / open_write / PATCH / commit_file / watch，可注入旁路修改、租约冲突、STALE、写入失败）；Playwright 覆盖打开、编辑、保存、冲突、恢复区、遗留缓冲区恢复、关闭守卫、分屏 | Vite dev |
 | 真实 NFSP | 独立 nfs_server（`--listen 127.0.0.1:3260 --data-dir … --export …`）+ Vite 代理 `/nfs/v1`（与 File Browser NFSP e2e 同法） | 本机 |
 | Desktop e2e | mock catalog 加入一个 Web App 条目（主机指向编辑器 dev server）与 mock 注册表；验证双击、打开方式、默认应用切换、回落 Preview | Desktop Playwright |
@@ -1133,7 +1149,45 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 | 6 | 注册表解析位置 | 客户端解析 |
 | 7 | 多用户 | Owner 安装，默认所有用户可用，除非手工改为仅自己可用；可见性按 `apps.list` 过滤 |
 | 8 | 工作成果保全 | 引入文件缓冲区：冲突时被替换的内容保存在 App 自己的数据区，用户总能找到（§8.1、§8.6、§8.8） |
+| 9 | 跨用户覆盖的找回 | 冲突对话框同时提供两个选项：“覆盖”（被覆盖版本只进我的恢复区）与“覆盖并保留冲突副本”（另在原目录生成冲突副本，其他用户也能找到）（§8.7） |
 
 ### 15.2 待确认
 
-1. **跨用户覆盖的找回**：用户 A 在冲突中选择“覆盖”时，被覆盖的用户 B 的版本只进入 A 的恢复区，B 自己找不到（§8.8 边界）。可选方向：(a) 接受现状，在冲突对话框中明确提示“将覆盖他人保存的版本，该版本会保存到你的恢复区”；(b) 跨用户覆盖时，在原文件同目录额外生成冲突副本（类似 Dropbox 的“冲突副本”，所有能访问该目录的人都看得到）；(c) 等待存储层版本历史（N7）。本文 P0 按 (a) 实施。
+暂无。
+
+## 16. 实现与本地验证
+
+P0 的应用、共享 SDK、系统投影和 Desktop 接入已落地。实现入口为 `src/main.tsx`、`src/model/workspace.ts`、`src/fs/`、`src/editor/` 与 `src/ui/`。状态机区分磁盘内容、编辑内容、服务端缓冲及本地预写；恢复、丢弃和覆盖均先存档，存档失败保留原状态。大文件按 4 MiB 降级、16 MiB 拒绝；旧编码只读，显式转换后保存为 UTF-8。
+
+本次变更跨三个同级仓库：`buckyos`、`buckyos-websdk`（`nfsp` / `content` / `app-frame`、设置路径、PIKG 字段）和 `buckyos-devkit`（使用构建入口指定的 CLI）。需要配套使用。前端 pnpm hook 优先链接 `BUCKYOS_SDK_TOOL_SOURCE` 或同级 SDK 源码，发布依赖仍为 Git `main`。先构建 SDK，再构建消费方；SDK 构建会清理 `dist`，不要与消费方检查并行。
+
+```bash
+# buckyos-websdk/
+pnpm install
+pnpm build
+
+# buckyos/src/apps/text_editor/
+pnpm install
+pnpm check
+pnpm test
+pnpm test:e2e
+
+# buckyos/src/：独立真实 NFSP，无需 Zone
+cargo build -p nfs_server
+# 回到 text_editor/：自动创建临时 export，结束后清理
+pnpm test:nfsp
+
+# buckyos/src/：devkit 已更新时使用标准入口
+uv run buckyos-build.py -s text_editor
+# 配套 devkit 尚在同级源码中时：
+uv run --no-project --with ../../buckyos-devkit python buckyos-build.py -s text_editor
+
+# buckyos/src/frame/desktop/
+VITE_CP_USE_MOCK=1 pnpm exec playwright test tests/e2e/pages/content-open.spec.ts tests/e2e/pages/preview.spec.ts --workers=1
+```
+
+产物为 `dapp_dist/text-editor.buckyos.bns.did-0.1.0.pikg`，并汇总到 `src/rootfs/data/cache/`。第二个 Handler 夹具位于 `test/app_installer_test/pikg_samples/content-open-handler/`；其 README 提供构建和安装验证方式。
+
+本地验证覆盖编码往返、冲突与存档顺序、较旧上传不覆盖较新预写、窗口恢复与多窗口归属、断网恢复、只读另存为、分屏同步与撤销、App Frame 握手和关闭守卫；独立真实 NFSP 验证 CRLF、宿主机写入冲突、两侧存档、冲突副本及缓冲落盘。Desktop mock 验证通用 Handler、默认切换、禁用回落与 D6；Rust 验证 AppDoc 身份、RBAC、scheduler 投影与 abort_write。
+
+§14.1 的真实 Zone 验收清单保留未勾选：尚未执行全新 Zone 预装、SSO、第二用户、卸载/升级种子及真实夹具安装的 DV。N2–N4、N6 和按次授权仍属 P1：当前 etag 检查不等同文件级原子 CAS，不能保证识别同秒同长度的旁路覆盖，也不宣称完整 NFSP 用户/App 鉴权已通过。

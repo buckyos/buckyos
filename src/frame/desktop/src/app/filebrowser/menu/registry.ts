@@ -117,8 +117,12 @@ const openProvider: FileMenuProvider = {
     }
     return [
       [
-        action('open', label('preview', 'Preview'), { icon: 'preview' }),
-        action('preview-new-window', label('previewNewWindow', 'Open in new Preview window'), {
+        action('open', label('open', 'Open'), { icon: 'preview' }),
+        { type: 'submenu', id: 'open-with', label: label('openWith', 'Open with'), icon: 'open', items: [
+          ...(ctx.contentHandlers ?? []).map(handler => action('open-handler-' + handler.key, { key: handler.label, fallback: handler.label }, { command: 'open-handler', args: { handlerKey: handler.key } })),
+          action('choose-default', label('chooseDefault', 'Choose default app…')),
+        ] },
+        action('preview-new-window', label('openNewWindow', 'Open in new window'), {
           icon: 'open-new-tab',
         }),
       ],

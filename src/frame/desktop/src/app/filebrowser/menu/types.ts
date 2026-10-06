@@ -82,6 +82,7 @@ export type FileMenuEntryItem = FileMenuAction | FileMenuSubmenu
 export type FileMenuSection = FileMenuEntryItem[]
 
 export interface FileMenuContext {
+  contentHandlers?: { key: string; label: string }[]
   clipboard?: import('../types').ClipboardState | null
   busy?: boolean
   contextToken?: string

@@ -1252,3 +1252,23 @@ async fn buckyos_mode_data_root_discovery() {
         .unwrap();
     assert_eq!(&body[..], b"hi");
 }
+
+#[tokio::test]
+async fn abort_write_releases_only_the_callers_lease_and_upload() {
+    let s = start_server().await;
+    let parent = s.path_ref("/home").await;
+    let opened = s.ok_write("open_write", json!({"args":{"parent_ref":parent,"name":"abort.txt"}})).await;
+    let lease = opened["lease"]["lease_id"].as_str().unwrap();
+    let upload = opened["fb_handle"].as_str().unwrap();
+    let other: Value = s.client.post(format!("{}/nfs/v1/hello", s.base)).json(&json!({"args":{}})).send().await.unwrap().json().await.unwrap();
+    let denied: Value = s.client.post(format!("{}/nfs/v1/abort_write", s.base))
+        .json(&json!({"session":other["result"]["session"],"seq":1,"args":{"lease_id":lease}}))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(denied["error"]["code"], "LEASE_CONFLICT");
+    s.ok_write("abort_write", json!({"args":{"lease_id":lease}})).await;
+    s.ok_write("abort_write", json!({"args":{"lease_id":lease}})).await;
+    let response = s.client.head(format!("{}/nfs/v1/uploads/{upload}", s.base)).send().await.unwrap();
+    assert!(!response.status().is_success());
+    s.ok_write("open_write", json!({"args":{"parent_ref":parent,"name":"abort.txt"}})).await;
+    assert!(!s.home.join("abort.txt").exists());
+}

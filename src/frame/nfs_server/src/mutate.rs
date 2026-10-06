@@ -459,6 +459,14 @@ impl AppState {
         }))
     }
 
+    pub fn op_abort_write(&self, args: &Value, session: &str) -> NfsResult<Value> {
+        let lease_id = args["lease_id"].as_str().ok_or_else(|| invalid("abort_write requires lease_id"))?;
+        if let Some(lease) = self.leases.abort(lease_id, session)? {
+            self.uploads.abort(&lease.fb_handle);
+        }
+        Ok(json!({ "aborted": true }))
+    }
+
     pub fn op_commit_file(&self, at: Option<&Locator>, args: &Value, session: &str) -> NfsResult<Value> {
         let parent = self.parent_dir(at, args)?;
         let name = args["name"].as_str().ok_or_else(|| invalid("commit_file requires name"))?;

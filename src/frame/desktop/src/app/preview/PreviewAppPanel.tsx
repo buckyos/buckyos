@@ -22,6 +22,8 @@ import { extensionRefField, isCyfsPathRef, isObjectIdRef } from '../../component
 import { useI18n } from '../../i18n/provider'
 import { desktopUIStore } from '../../models/DesktopUIDataModel'
 import type { AppContentLoaderProps } from '../types'
+import { contentHandlers, handlerLabel, openContent } from '../content/open'
+import type { HandlerPlan } from 'buckyos/content'
 import { openPreviewInNewWindow } from './launch'
 import { PreviewLanding } from './PreviewLanding'
 import { PreviewSettingsDialog } from './PreviewSettingsDialog'
@@ -168,27 +170,30 @@ export function PreviewAppPanel({ windowId, launch }: AppContentLoaderProps) {
           if (windowId) previewWindowManager.touch(windowId, { currentMediaType: info.mediaType })
         }}
       />
-      {openWith ? <OpenWithSheet request={openWith} onClose={() => setOpenWithState(null)} preferFullApp={settings.preferFullApp} /> : null}
+      {openWith ? <OpenWithSheet session={payload?.session} request={openWith} onClose={() => setOpenWithState(null)} preferFullApp={settings.preferFullApp} /> : null}
       {settingsOpen ? <PreviewSettingsDialog onClose={() => setSettingsOpen(false)} /> : null}
     </div>
   )
 }
 
-/**
- * "Open with…" (§8 Level 2). The Full App association protocol is not
- * frozen yet (§23.8 item 10): today the sheet offers the system fallbacks —
- * download the original and copy its reference — and states that plainly.
- */
 function OpenWithSheet({
   request,
+  session,
   onClose,
   preferFullApp,
 }: {
   request: PreviewOpenWithRequest
+  session?: PreviewOpenRequest['session']
   onClose: () => void
   preferFullApp: boolean
 }) {
   const { t } = useI18n()
+  const [handlers, setHandlers] = useState<HandlerPlan[]>([])
+  useEffect(() => {
+    let current = true
+    void contentHandlers({ source: request.item.source, session }, { name: request.item.title, mime: request.mediaType }).then(plans => { if (current) setHandlers(plans.filter(p => p.appInstanceId)) })
+    return () => { current = false }
+  }, [request, session])
   const readRef = request.resolved?.readRef
   const source = request.item.source
   const reference = isCyfsPathRef(source) ? source.path : isObjectIdRef(source) ? source.objectId : extensionRefField(source, 'reference') ?? request.item.title
@@ -222,11 +227,12 @@ function OpenWithSheet({
           </button>
         </div>
         <p className="mt-2 text-[12px] leading-5 text-[color:var(--cp-muted)]">
-          {preferFullApp
+          {!handlers.length && preferFullApp
             ? t('previewApp.openWith.noFullApp', 'No dedicated app is installed for {{type}}. You can download the original or copy its reference.', { type: request.mediaType ?? request.item.title })
             : t('previewApp.openWith.fallback', 'Download the original or copy its reference to open it elsewhere.')}
         </p>
         <div className="mt-3 flex flex-col gap-2">
+          {handlers.map(plan => <button type="button" key={plan.handlerKey} className="rounded-xl border px-3 py-2 text-left" onClick={() => { void openContent({ source: request.item.source, session }, { handlerKey: plan.handlerKey, name: request.item.title, mime: request.mediaType }); onClose() }}>{handlerLabel(plan)}</button>)}
           {readRef ? (
             <button type="button" onClick={download} className="flex items-center gap-2 rounded-xl border border-[color:var(--cp-border)] px-3 py-2 text-[13px] hover:border-[color:var(--cp-accent)]">
               <Download size={15} /> {t('preview.action.download', 'Download original')}

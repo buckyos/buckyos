@@ -22,7 +22,7 @@
     "@tanstack/react-virtual": "^3.13.23",
     "@xyflow/react": "^12.10.2",
     "autoprefixer": "^10.4.27",
-    "buckyos": "latest",
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main",
     "clsx": "^2.1.1",
     "loro-crdt": "1.16.4",
     "loro-prosemirror": "0.4.4",

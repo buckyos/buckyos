@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "did": "did:bns:text-editor.buckyos",
+  "name": "text-editor",
+  "version": "0.1.0",
+  "owner": "did:bns:buckyos",
+  "author": "did:bns:buckyos",
+  "show_name": "Text Editor",
+  "categories": [
+    "web"
+  ],
+  "permissions": [
+    {
+      "scope_path": "user/home",
+      "required": true,
+      "actions": [
+        "read",
+        "write"
+      ],
+      "exp": null
+    }
+  ],
+  "selector_type": "static",
+  "service_config_tips": {},
+  "content_handlers": [
+    {
+      "handler_id": "text",
+      "version": 1,
+      "selectors": [
+        {
+          "mime": [
+            "text/*"
+          ],
+          "maxSize": 16777216
+        },
+        {
+          "mime": [
+            "application/json",
+            "application/ld+json",
+            "application/xml",
+            "application/javascript",
+            "application/typescript",
+            "application/yaml",
+            "application/x-yaml",
+            "application/toml",
+            "application/x-sh",
+            "application/sql"
+          ],
+          "maxSize": 16777216
+        }
+      ],
+      "intents": {
+        "open": {
+          "entry": {
+            "type": "web",
+            "path": "/open?src={source}&mode={mode}&session={session}"
+          },
+          "modes": [
+            "view",
+            "edit"
+          ],
+          "fidelity": "full",
+          "window": "reuse",
+          "multiSource": true,
+          "priority": 60
+        }
+      }
+    },
+    {
+      "handler_id": "any-as-text",
+      "version": 1,
+      "selectors": [
+        {
+          "mime": "*/*",
+          "maxSize": 16777216
+        }
+      ],
+      "intents": {
+        "open": {
+          "entry": {
+            "type": "web",
+            "path": "/open?src={source}&mode={mode}&session={session}"
+          },
+          "modes": [
+            "view",
+            "edit"
+          ],
+          "fidelity": "partial",
+          "window": "reuse",
+          "multiSource": true,
+          "priority": 10
+        }
+      }
+    }
+  ]
+}

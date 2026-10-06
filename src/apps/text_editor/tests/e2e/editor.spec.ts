@@ -1,0 +1,140 @@
+import { test, expect, type Page } from '@playwright/test'
+const path = '/home/test-user/notes/demo.md'
+const open = async (page: Page) => { await page.goto('/open?src=' + encodeURIComponent('cyfs://' + path)); await expect(page.locator('.cm-content')).toContainText('Hello') }
+const replace = async (page: Page, text: string) => { const editor = page.locator('.cm-content').first(); await editor.click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText(text) }
+const state = async (page: Page) => (await page.request.get('http://127.0.0.1:3260/test/state')).json()
+const action = async (page: Page, name: string) => { await page.getByRole('button', { name: 'Actions', exact: true }).first().click(); await page.getByRole('menuitem', { name, exact: true }).click() }
+test.beforeEach(async ({ request }) => { await request.post('http://127.0.0.1:3260/test/reset') })
+test('open, outline, save, and split views share edits and undo', async ({ page }) => {
+  await open(page)
+  await expect(page.getByRole('navigation', { name: 'Outline' }).getByRole('button', { name: 'Hello' })).toBeVisible()
+  await replace(page, '# Changed\n\nMy work\n')
+  await page.keyboard.press('Control+s')
+  await expect.poll(async () => (await state(page))[path]).toBe('# Changed\n\nMy work\n')
+  await action(page, 'Split columns')
+  await expect(page.locator('.cm-content')).toHaveCount(2)
+  await page.locator('.cm-content').last().click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('shared')
+  await expect(page.locator('.cm-content').first()).toContainText('shared')
+  await page.keyboard.press('Control+z')
+  await expect(page.locator('.cm-content').first()).not.toContainText('shared')
+  await expect(page.locator('.cm-content').last()).not.toContainText('shared')
+})
+test('conflict reload archives mine; overwrite archives disk and creates copy', async ({ page }) => {
+  await open(page); await replace(page, '# Mine\n')
+  await page.request.post('http://127.0.0.1:3260/test/modify', { data: { path, text: '# Theirs\n' } })
+  await page.keyboard.press('Control+s')
+  await expect(page.getByRole('alertdialog')).toBeVisible()
+  await page.getByRole('button', { name: 'Reload (archive my changes)', exact: true }).click()
+  await expect(page.locator('.cm-content')).toContainText('Theirs')
+  await expect.poll(async () => Object.entries(await state(page)).some(([p, text]) => p.includes('/recovery/') && text === '# Mine\n')).toBe(true)
+  await replace(page, '# Mine again\n')
+  await page.request.post('http://127.0.0.1:3260/test/modify', { data: { path, text: '# Latest disk\n' } })
+  await page.keyboard.press('Control+s'); await page.getByRole('button', { name: 'Overwrite and keep conflict copy', exact: true }).click()
+  await expect.poll(async () => (await state(page))[path]).toBe('# Mine again\n')
+  await expect.poll(async () => Object.entries(await state(page)).some(([p, text]) => p.includes('conflict copy') && text === '# Latest disk\n')).toBe(true)
+})
+test('archive failure prevents destructive reload and preserves the buffer', async ({ page }) => {
+  await open(page); await replace(page, '# Precious\n')
+  await page.request.post('http://127.0.0.1:3260/test/modify', { data: { path, text: '# Disk\n' } })
+  await page.request.post('http://127.0.0.1:3260/test/fail', { data: { path: '/recovery/' } })
+  await page.keyboard.press('Control+s'); await page.getByRole('button', { name: 'Reload (archive my changes)', exact: true }).click()
+  await expect(page.locator('.cm-content')).toContainText('Precious')
+  expect((await state(page))[path]).toBe('# Disk\n')
+  expect(Object.entries(await state(page)).some(([p, text]) => p.endsWith('.buf') && String(text).includes('Precious'))).toBe(true)
+})
+test('kept buffer recovers in another browser context', async ({ page, browser }) => {
+  await open(page); await replace(page, '# Cross device\n')
+  await action(page, 'Close tab')
+  await page.getByRole('button', { name: 'Keep changes', exact: true }).click()
+  await expect(page.locator('.cm-content')).toHaveCount(0)
+  const context = await browser.newContext(); const other = await context.newPage()
+  await other.goto('http://127.0.0.1:5178/open?src=' + encodeURIComponent('cyfs://' + path))
+  await other.getByRole('button', { name: 'Restore', exact: true }).click()
+  await expect(other.locator('.cm-content')).toContainText('Cross device')
+  await context.close()
+})
+test('clean file refreshes after external changes and binary is refused', async ({ page }) => {
+  await open(page)
+  await page.request.post('http://127.0.0.1:3260/test/modify', { data: { path, text: '# Changed outside\n' } })
+  await expect(page.locator('.cm-content')).toContainText('Changed outside', { timeout: 20000 })
+  await page.goto('/open?src=cyfs:///home/test-user/notes/binary.bin')
+  await expect(page.getByRole('status')).toContainText('not a text file')
+})
+
+test('App Frame handshake, open reuse, theme and pending close guard', async ({ page }) => {
+  await page.goto('/tests/harness/shell.html')
+  const editor = page.frameLocator('#app')
+  await expect(editor.locator('.cm-content')).toContainText('Hello')
+  await editor.locator('.cm-content').click(); await page.keyboard.press('Control+End'); await page.keyboard.insertText('dirty')
+  await expect(page.locator('#title')).toContainText('●')
+  await page.getByRole('button', { name: 'Close window' }).click()
+  await expect(editor.getByRole('alertdialog')).toBeVisible()
+  await editor.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(page.locator('#app')).toHaveCount(1)
+  await page.evaluate(async () => {
+    const host = (window as any).host
+    host.send('frame.themeChanged', { mode: 'dark' })
+    await host.open({ requestId: crypto.randomUUID(), source: { kind: 'cyfs-path', path: 'cyfs:///home/test-user/notes/other.txt' } })
+  })
+  await expect(editor.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expect(editor.getByRole('tab')).toHaveCount(2)
+  await page.getByRole('button', { name: 'Close window' }).click()
+  await editor.getByRole('button', { name: 'Keep changes', exact: true }).click()
+  await expect(page.locator('#app')).toHaveCount(0)
+})
+
+test('offline editing keeps local prewrite and reconnect synchronizes', async ({ page }) => {
+  await open(page)
+  await page.route('**/nfs/v1/**', route => route.abort('internetdisconnected'))
+  await replace(page, '# Offline draft\n')
+  await expect(page.locator('.disk-state')).toContainText('not synced')
+  await expect.poll(async () => page.evaluate(async () => {
+    const w = (window as any).editorWorkspace
+    return (await w.local.entries('buffer:')).some(([, b]: any) => b.text.includes('Offline draft'))
+  })).toBe(true)
+  await page.unroute('**/nfs/v1/**')
+  await page.evaluate(() => window.dispatchEvent(new Event('online')))
+  await expect.poll(async () => Object.entries(await state(page)).some(([p, text]) => p.endsWith('.buf') && String(text).includes('Offline draft'))).toBe(true)
+  await expect(page.locator('.disk-state')).toHaveText('Unsaved (synced)')
+})
+
+test('view mode stays read only and Save as creates a separate file', async ({ page }) => {
+  await page.goto('/open?src=' + encodeURIComponent('cyfs://' + path) + '&mode=view')
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false')
+  await expect(page.getByRole('button', { name: 'Convert to UTF-8 and edit', exact: true })).toHaveCount(0)
+  await action(page, 'Save as…')
+  await page.getByLabel('File name', { exact: true }).fill('copy.md')
+  await page.getByRole('button', { name: 'Choose', exact: true }).click()
+  await expect.poll(async () => (await state(page))['/home/test-user/notes/copy.md']).toContain('# Hello')
+  expect((await state(page))[path]).toContain('# Hello')
+})
+
+test('destructive reload blocks typing until the archived version is safe', async ({ page }) => {
+  await open(page); await replace(page, 'Preserve me')
+  await page.evaluate(async () => {
+    const w = (window as any).editorWorkspace
+    const archive = w.recovery.archive.bind(w.recovery)
+    w.recovery.archive = async (...args: any[]) => { await new Promise(resolve => (window as any).finishArchive = resolve); return archive(...args) }
+    w.run(w.reload(w.active))
+  })
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false')
+  await expect.poll(() => page.evaluate(() => typeof (window as any).finishArchive)).toBe('function')
+  await page.locator('.cm-content').click(); await page.keyboard.insertText('must not replace pending archive')
+  await page.evaluate(() => (window as any).finishArchive())
+  await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'true')
+  await expect(page.locator('.cm-content')).toContainText('Hello')
+  expect(Object.entries(await state(page)).some(([p, text]) => p.includes('/recovery/') && text === 'Preserve me')).toBe(true)
+})
+
+test('primary window restores a kept workspace; secondary window starts empty', async ({ page, context }) => {
+  await open(page); await replace(page, '# Recover my workspace')
+  await expect(page.locator('.disk-state')).toHaveText('Unsaved (synced)')
+  const other = await context.newPage(); await other.goto('/')
+  await expect(other.locator('.cm-content')).toHaveCount(0)
+  await other.close()
+  await expect.poll(() => page.evaluate(async () => { const w = (window as any).editorWorkspace; const snapshot = await w.local.get('workspace'); return snapshot?.groups[0]?.tabs[0]?.bufferId })).toBeTruthy()
+  await page.reload()
+  await page.waitForFunction(() => (window as any).editorWorkspace)
+  await expect(page.locator('.cm-content')).toContainText('Recover my workspace')
+  await page.screenshot({ path: '/tmp/text-editor-workspace.png', fullPage: true })
+})

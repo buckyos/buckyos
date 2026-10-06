@@ -6,6 +6,9 @@ import {
   useMediaQuery,
 } from '@mui/material'
 import { buckyos } from 'buckyos'
+import { isTransferableRef } from 'buckyos/content'
+import { openContent } from '../app/content/open'
+import { openPreview } from '../app/preview/launch'
 import clsx from 'clsx'
 import {
   memo,
@@ -240,6 +243,17 @@ export function DesktopRoute() {
     (searchParams.get('scenario') as MockScenario | null) ?? 'normal'
   const [scenario] = useState<MockScenario>(initialScenario)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const launchHandled = useRef(false)
+  useEffect(() => {
+    const value = searchParams.get('open')
+    if (snap.status !== 'success' || !value || launchHandled.current) return
+    const source = value.startsWith('obj://') ? { kind: 'object-id' as const, objectId: value.slice(6) } : { kind: 'cyfs-path' as const, path: value }
+    if (!isTransferableRef(source)) return
+    launchHandled.current = true
+    if (searchParams.get('intent') === 'preview') openPreview({ source })
+    else void openContent({ source })
+  }, [snap.status, searchParams])
+
 
   // Refs for drag suppression (view-only concern)
   const suppressOpenItemId = useRef<string | null>(null)
@@ -502,6 +516,7 @@ export function DesktopRoute() {
 
     setIsLoggingOut(true)
     try {
+      if (!await store.prepareLogout()) { setIsLoggingOut(false); return }
       const response = await fetch('/sso_logout', {
         method: 'POST',
         credentials: 'include',

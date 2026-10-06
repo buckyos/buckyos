@@ -1971,6 +1971,74 @@ pub(crate) async fn refresh_rbac() -> Result<SchedulerRefreshRbacResponse> {
     })
 }
 
+fn content_registry_action(input: &HashMap<String, String>) -> Option<(String, KVAction)> {
+    let mut handlers = serde_json::Map::new();
+    handlers.insert("system#preview".into(), buckyos_api::preview_content_handler());
+    for (key, value) in input {
+        let parts: Vec<_> = key.split('/').collect();
+        if parts.len() != 5 || parts[0] != "users" || parts[2] != "apps" || parts[4] != "spec" { continue; }
+        let Ok(spec) = serde_json::from_str::<AppServiceSpec>(value) else { continue; };
+        if !spec.enable || matches!(spec.state, ServiceState::Deleted | ServiceState::Stopped | ServiceState::Stopping) { continue; }
+        if let Err(error) = buckyos_api::validate_content_handlers(&spec.app_doc) {
+            log::warn!("invalid content handlers at {key}: {error}");
+            continue;
+        }
+        for handler in &spec.app_doc.content_handlers {
+            let id = handler["handler_id"].as_str().unwrap();
+            let instance = spec.app_instance_id.to_string();
+            handlers.insert(format!("{instance}#{id}"), json!({
+                "provider":"app", "app_instance_id": instance,
+                "app_doc_object_id": spec.deployment.app_doc_object_id,
+                "app_version": spec.app_doc.version,
+                "handler_id": id, "handler_version": handler["version"],
+                "selectors": handler["selectors"], "intents": handler["intents"],
+                "permissions": handler.get("permissions").cloned().unwrap_or(json!([])),
+                "enabled": true, "registered_at": spec.app_doc.create_time,
+            }));
+        }
+    }
+    let key = "system/content_registry".to_string();
+    let registry = json!({"schema_version":1, "handlers":handlers});
+    if input.get(&key).and_then(|s| serde_json::from_str::<Value>(s).ok()).as_ref() == Some(&registry) { return None; }
+    Some((key, KVAction::Update(registry.to_string())))
+}
+
+#[cfg(test)]
+mod content_registry_tests {
+    use super::*;
+
+    #[test]
+    fn registry_tracks_lifecycle_visibility_and_is_idempotent() {
+        let mut spec = app_lifecycle_tests::app_spec();
+        spec.app_doc.pkg_list.web = Some(serde_json::from_value(json!({"pkg_id":"notes.web#0.1.2"})).unwrap());
+        spec.app_doc.content_handlers = vec![json!({"handler_id":"text","version":1,"selectors":[{"mime":"text/*"}],"intents":{"open":{"entry":{"type":"web","path":"/open?src={source}"},"priority":60}}})];
+        let key = buckyos_api::user_app_spec_key("alice", spec.app_id());
+        let mut input = HashMap::from([(key.clone(), serde_json::to_string(&spec).unwrap())]);
+        let (registry_key, KVAction::Update(body)) = content_registry_action(&input).unwrap() else { panic!() };
+        let registry: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(registry["handlers"].as_object().unwrap().len(), 2);
+        assert_eq!(registry["handlers"][format!("{}#text", spec.app_instance_id)]["app_instance_id"], spec.app_instance_id.to_string());
+        input.insert(registry_key, body);
+        assert!(content_registry_action(&input).is_none());
+        for state in [ServiceState::Stopped, ServiceState::Stopping, ServiceState::Deleted] {
+            spec.state = state;
+            input.insert(key.clone(), serde_json::to_string(&spec).unwrap());
+            let (_, KVAction::Update(body)) = content_registry_action(&input).unwrap() else { panic!() };
+            assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["handlers"].as_object().unwrap().len(), 1);
+        }
+        spec.state = ServiceState::Running;
+        spec.enable = false;
+        input.insert(key.clone(), serde_json::to_string(&spec).unwrap());
+        let (_, KVAction::Update(body)) = content_registry_action(&input).unwrap() else { panic!() };
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["handlers"].as_object().unwrap().len(), 1);
+        spec.enable = true;
+        spec.app_doc.content_handlers[0]["intents"]["open"]["priority"] = json!(81);
+        input.insert(key, serde_json::to_string(&spec).unwrap());
+        let (_, KVAction::Update(body)) = content_registry_action(&input).unwrap() else { panic!() };
+        assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["handlers"].as_object().unwrap().len(), 1);
+    }
+}
+
 pub(crate) async fn build_schedule_plan(
     input_system_config: &HashMap<String, String>,
     is_boot: bool,
@@ -2005,6 +2073,7 @@ pub(crate) async fn build_schedule_plan(
     info!("scheduler.schedule produced {} actions", action_list.len());
 
     let mut tx_actions = HashMap::new();
+    if let Some((key, action)) = content_registry_action(input_system_config) { tx_actions.insert(key, action); }
     let mut need_update_gateway_node_list: HashSet<String> = HashSet::new();
     let mut need_update_rbac = false;
     for action in action_list {

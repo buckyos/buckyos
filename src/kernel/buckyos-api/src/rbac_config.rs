@@ -86,6 +86,16 @@ m = (g(r.sub, p.sub) || r.sub == p.sub) && ((r.sub == keyGet3(r.obj, p.obj, p.su
 
  */
 pub const DEFAULT_RBAC_POLICY: &str = r#"
+p, system:scheduler, obj://config/system/content_registry,all,allow
+p, kernel, obj://config/system/content_registry,write|create|delete,deny
+p, system, obj://config/system/content_registry,write|create|delete,deny
+p, frame, obj://config/system/content_registry,write|create|delete,deny
+p, app, obj://config/system/content_registry,write|create|delete,deny
+p, system:control-panel, obj://config/users/{user}/content_defaults,read|write,allow
+p, kernel, obj://config/users/{user}/content_defaults,write,deny
+p, system, obj://config/users/{user}/content_defaults,write,deny
+p, frame, obj://config/users/{user}/content_defaults,write,deny
+p, app, obj://config/users/{user}/content_defaults,write,deny
 p, kernel, obj://*, all,allow
 p, ood, obj://*, all,allow
 p, root, obj://*, all,allow
@@ -102,6 +112,12 @@ p, frame, obj://config/services/{frame}/*,all,allow
 p, frame, obj://config/services/{service}/info,read,allow
 p, frame, obj://config/users*,read,allow
 
+p, app, obj://config/system/content_registry,read,allow
+p, app, obj://config/users/{user}/content_defaults,read,allow
+p, users, obj://config/system/content_registry,read,allow
+p, users, obj://config/users/{users}/content_defaults,read|write,allow
+p, admin, obj://config/users/{admin}/content_defaults,read|write,allow
+p, app, obj://config/users/{user}/content_defaults,write,deny
 p, app, obj://config/boot/*, read,allow
 p, app, obj://config/users/{user}/apps/{app}/settings,read|write,allow
 p, app, obj://config/users/{user}/apps/{app}/spec,read,allow
@@ -1155,4 +1171,19 @@ g, app:gallery, app
             .await
         );
     }
+    #[tokio::test]
+    async fn content_preferences_are_shell_only_and_registry_scheduler_only() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, alice, users\ng, app:editor, app\ng, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy).await.unwrap();
+        let registry = "obj://config/system/content_registry";
+        let defaults = "obj://config/users/alice/content_defaults";
+        assert!(rbac::enforce("alice", "app:editor", registry, "read", None).await);
+        assert!(rbac::enforce("alice", "system:control-panel", defaults, "write", None).await);
+        assert!(!rbac::enforce("alice", "app:editor", defaults, "write", None).await);
+        assert!(!rbac::enforce("alice", "system:control-panel", "obj://config/users/bob/content_defaults", "write", None).await);
+        assert!(rbac::enforce("ood1", "system:scheduler", registry, "write", None).await);
+        assert!(!rbac::enforce("ood1", "system:control-panel", registry, "write", None).await);
+    }
+
 }
