@@ -1273,7 +1273,7 @@ function toProviderInstanceRules(draft: WizardDraft): Record<string, unknown> | 
 }
 
 function toCredential(apiKey: string): Record<string, unknown> {
-  return { api_token: { locked: apiKey.trim() } }
+  return { api_token: { inline_secret: apiKey.trim() } }
 }
 
 function toUsageSummary(raw: {
