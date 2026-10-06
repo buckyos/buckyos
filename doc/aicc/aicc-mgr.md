@@ -175,8 +175,7 @@ Request：
   "protocol_adapter_id": "openai-responses",
   "base_url": "https://api.openai.com/v1",
   "credentials": {
-    "type": "bearer",
-    "secret": "sk-..."
+    "api_token": { "inline_secret": "sk-..." }
   },
   "auto_sync_models": true
 }
@@ -223,8 +222,7 @@ Request：
   "protocol_adapter_id": "openai-responses",
   "base_url": "https://api.openai.com/v1",
   "credentials": {
-    "type": "bearer",
-    "secret": "sk-..."
+    "api_token": { "inline_secret": "sk-..." }
   },
   "auto_sync_models": true
 }
@@ -315,8 +313,7 @@ Request 使用 `provider_instance_name` 定位实例，其余字段为需要替�
   "enabled": false,
   "base_url": "https://api.openai.com/v1",
   "credentials": {
-    "type": "bearer",
-    "secret": "sk-..."
+    "api_token": { "inline_secret": "sk-..." }
   }
 }
 ```
