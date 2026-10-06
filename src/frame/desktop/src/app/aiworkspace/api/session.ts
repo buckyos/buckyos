@@ -13,6 +13,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
+  type AnnotationRead, type ListAnnotationsParams,
 } from './types'
 
 export type SessionStatus =
@@ -96,6 +97,8 @@ export interface WorkspaceSession {
   outline(): Promise<EntityEnvelope[]>
   read<C>(entityId: string, selector?: Selector): Promise<ReadOk<C>>
   readMany(targets: { entity_id: string; selector?: Selector }[]): Promise<(ReadOk<unknown> | { error: { code: string; detail?: string } })[]>
+  /** Annotations anchored to `target_ids` and/or placed under `parent_id`, each with its anchor. */
+  listAnnotations(params: ListAnnotationsParams): Promise<AnnotationRead[]>
   query(params: QueryParams): Promise<QueryPage>
   getCollabState(entityId: string): Promise<CollabState>
 
@@ -333,6 +336,10 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
         return entry.error ? { error: entry.error } : (result as ReadOk<unknown>)
       })
     } catch (error) { return this.fail(error) }
+  }
+
+  async listAnnotations(params: ListAnnotationsParams) {
+    try { return unwrap(await this.client.listAnnotations(this.ws, params)).annotations } catch (error) { return this.fail(error) }
   }
 
   async query(params: QueryParams) {

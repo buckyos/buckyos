@@ -6,9 +6,10 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type {
-  CellPayload, FieldDef, FilterNode, Json, KeyedContent, Operation, QueryRow, Reference, SortSpec, TableSourceContent,
+  CellPayload, FieldDef, FilterNode, Json, KeyedContent, Operation, QueryRow, SortSpec, TableSourceContent,
 } from '../api/types'
 import { EDIT_STATE_LABEL } from '../state/edits'
+import type { CapturedAnchor } from '../anchors/registry'
 import { useEdit, useLoad, useStore, useVersion, type AnnotationMark } from '../state/hooks'
 import type { WorkspaceStore } from '../state/store'
 import { FieldManager } from './FieldManager'
@@ -25,7 +26,8 @@ interface Props {
   readOnly: boolean
   compact?: boolean
   annotations: AnnotationMark[]
-  onAnnotate?: (target: Reference, label: string) => void
+  onAnnotate?: (anchor: CapturedAnchor) => void
+  onActivateAnnotation?: (entityId: string | null) => void
 }
 
 type CellRead = ReadOk<KeyedContent<CellPayload>>
@@ -33,17 +35,17 @@ type SourceRead = ReadOk<TableSourceContent>
 
 interface SessionView { filter: FilterNode | null; sorts: SortSpec[] | null }
 
-export function TableViewCell({ cellId, readOnly, compact, annotations, onAnnotate }: Props) {
+export function TableViewCell({ cellId, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Props) {
   const store = useStore()
   const cellVersion = useVersion(`e:${cellId}`)
   const loadCell = useCallback(() => store.session.read<KeyedContent<CellPayload>>(cellId), [store, cellId])
   const cell = useLoad<CellRead>(loadCell, cellVersion)
   if (cell.error && !cell.data) return <div className="aiws-error" role="alert">无法读取视图：{cell.error}</div>
   if (!cell.data) return <div className="aiws-muted">正在载入视图…</div>
-  return <TableViewBody key={cell.data.content.payload.source_ref.entity_id} cell={cell.data} readOnly={readOnly} compact={compact} annotations={annotations} onAnnotate={onAnnotate} />
+  return <TableViewBody key={cell.data.content.payload.source_ref.entity_id} cell={cell.data} readOnly={readOnly} compact={compact} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation} />
 }
 
-function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate }: Omit<Props, 'cellId'> & { cell: CellRead }) {
+function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Omit<Props, 'cellId'> & { cell: CellRead }) {
   const store = useStore()
   const cellId = cell.entity_id
   const payload = cell.content.payload
@@ -194,6 +196,7 @@ function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate }: Omi
                           annotation={annotations.find((mark) => mark.payload.target.entity_id === sourceId && mark.payload.target.selector?.kind === 'table_cell'
                             && mark.payload.target.selector.record_id === row.record_id && mark.payload.target.selector.field_id === field.field_id)}
                           onAnnotate={onAnnotate}
+                          onActivateAnnotation={onActivateAnnotation}
                         />
                       ))}
                       {canDelete && <div className="aiws-td" style={{ width: 56 }}><DeleteRecordButton sourceId={sourceId} row={row} /></div>}
@@ -244,10 +247,11 @@ interface TableCellProps {
   width: number
   editable: boolean
   annotation?: AnnotationMark
-  onAnnotate?: (target: Reference, label: string) => void
+  onAnnotate?: (anchor: CapturedAnchor) => void
+  onActivateAnnotation?: (entityId: string | null) => void
 }
 
-function TableCell({ pager, sourceId, field, row, width, editable, annotation, onAnnotate }: TableCellProps) {
+function TableCell({ pager, sourceId, field, row, width, editable, annotation, onAnnotate, onActivateAnnotation }: TableCellProps) {
   const store = useStore()
   const editId = cellEditId(sourceId, row.record_id, field.field_id)
   const entry = useEdit(editId)
@@ -311,10 +315,21 @@ function TableCell({ pager, sourceId, field, row, width, editable, annotation, o
         </span>
       )}
       {!editing && meta?.manual_override && <span className="aiws-chip aiws-chip-warn" data-testid="aiws-manual-override" title="人工修改覆盖了程序写入的值">人工覆盖</span>}
-      {!editing && annotation && <span className="aiws-chip aiws-chip-note" title={annotation.payload.body} data-testid="aiws-cell-annotation">注</span>}
+      {!editing && annotation && (
+        <button type="button" className="aiws-chip aiws-chip-note" title={annotation.payload.body} data-testid="aiws-cell-annotation"
+          {...{ [`data-anno-${annotation.entityId}`]: '' }} onClick={() => onActivateAnnotation?.(annotation.entityId)}>注</button>
+      )}
       {!editing && onAnnotate && !annotation && (
         <button type="button" className="aiws-cell-annotate" title="添加批注" aria-label={`批注 ${field.name} ${row.record_id}`}
-          onClick={() => onAnnotate({ entity_id: sourceId, selector: { kind: 'table_cell', record_id: row.record_id, field_id: field.field_id } }, `${field.name} · ${row.record_id}`)}>✎</button>
+          onClick={() => {
+            const label = `${field.name} · ${row.record_id}`
+            const exact = Array.from(formatValue(field, value)).slice(0, 200).join('')
+            onAnnotate({
+              target: { entity_id: sourceId, selector: { kind: 'table_cell', record_id: row.record_id, field_id: field.field_id } },
+              context: exact.trim() ? { quote: { exact }, label } : { label },
+              label,
+            })
+          }}>✎</button>
       )}
       {entry && !editing && (
         <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state" title={entry.detail}>{EDIT_STATE_LABEL[entry.state]}</span>

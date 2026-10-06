@@ -1,11 +1,15 @@
 /* Hooks for the e2e suite, present only while the dev override of transport.ts is active
  * (`localStorage['aiworkspace.dev']`). They expose state the DOM cannot show: the editor document JSON. */
 
+import type { RichTextAnchorHost, RichTextHit } from '../anchors/richtext'
+import type { AnchorRegistry } from '../anchors/registry'
 import { DEV_OVERRIDE_KEY } from './transport'
 
 interface TestHooks {
   editors: Record<string, () => unknown>
   canonicalize?: (ast: unknown) => unknown
+  /** The rich text anchor registry, so a test can play an application registering its own range kind. */
+  richTextAnchors?: AnchorRegistry<RichTextAnchorHost, RichTextHit>
   /** Fault injection into the Replica Worker of the open workspace (replica session only). */
   replica?: { failTransactions(kind: 'quota' | 'error', count: number): Promise<void>; killWorker(): void }
 }

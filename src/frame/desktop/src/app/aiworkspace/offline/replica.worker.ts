@@ -19,7 +19,7 @@ import sqlite3InitModule, { type Database, type SAHPoolUtil, type Sqlite3Static,
 import sqliteWasmUrl from '@sqlite.org/sqlite-wasm/sqlite3.wasm?url'
 import initCore, { Replica } from '../wasm/aiworkspace_wasm.js'
 import coreWasmUrl from '../wasm/aiworkspace_wasm_bg.wasm?url'
-import type { CommitEvent, CommitRequest, EntityEnvelope, Json, QueryPage, QueryParams, Selector, WorkspaceInfo } from '../api/types'
+import type { AnnotationContent, CommitEvent, CommitRequest, EntityEnvelope, Json, ListAnnotationsParams, QueryPage, QueryParams, Selector, WorkspaceInfo } from '../api/types'
 import {
   CLIENT_SCHEMA,
   type AssetRow, type InitResult, type LocalExport, type LocalRefused, type LocalSaved, type PendingMeta, type PendingRow, type PendingState,
@@ -386,6 +386,11 @@ const handlers: Handlers = {
         throw error
       }
     })
+  },
+
+  listAnnotations(params: ListAnnotationsParams) {
+    const { annotations } = JSON.parse(engine(() => core().list_annotations(JSON.stringify(params)))) as { annotations: (EntityEnvelope & { content: AnnotationContent })[] }
+    return annotations.map((entry) => ({ ...entry, head_seq: core().confirmed_seq }))
   },
 
   query(params: QueryParams) {

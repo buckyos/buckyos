@@ -134,7 +134,7 @@ fn v05_fork() {
     assert!(fork.read(&bob(), "tasks", None).is_err(), "grants are not copied");
     assert!(fork.read(&alice(), "bob-private", None).is_err(), "personal entities are not copied");
     assert_eq!(fork.list_grants(&alice()).unwrap()["grants"].as_array().unwrap().len(), 1);
-    assert_eq!(fork.read(&alice(), "note-budget", None).unwrap()["content"]["anchor_state"], "resolved");
+    assert_eq!(fork.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
     // diverge
     let rv = cell_rev(&fork, &alice(), "task-42", "owner");
     ok(&mut fork, &alice(), set_cell("task-42", "owner", json!("fork 里改的"), rv));
@@ -205,7 +205,7 @@ fn v14_privacy_of_exports_and_replicas() {
         let h = other.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         let n = ws.read(&alice(), "alice-note", None).unwrap();
-        assert_eq!((n["scope"].as_str(), n["content"]["anchor_state"].as_str()), (Some("personal"), Some("resolved")));
+        assert_eq!((n["scope"].as_str(), n["content"]["anchor"]["state"].as_str()), (Some("personal"), Some("resolved")));
         ws.grant(&alice(), "bob", None, &["read".into()]).unwrap();
         assert!(ws.read(&bob(), "alice-note", None).is_err());
     }

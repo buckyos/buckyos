@@ -357,10 +357,11 @@ fn permissions_append_only_and_personal_scope() {
     let req = MemWorkspace::request(json!([{ "op": "entity.set_keys", "entity_id": "note-budget",
         "keys": [{ "key": "body", "value": "hijack", "expect": { "rev": 4 } }] }]));
     assert_eq!(code(&ws.commit_with(&alice, &env, &req).err().unwrap().to_json()), "NOT_FOUND");
-    // anchors do not block deletion and never re-attach
+    // anchors do not block deletion and never re-attach: the note falls back to its table
     let rev = ws.store.records[&("tasks".into(), "task-42".into())].rev;
     ws.ok(json!([{ "op": "table.delete_records", "source_id": "tasks", "records": [{ "record_id": "task-42", "expect": { "rev": rev } }] }]));
-    let target = ws.store.entities["note-budget"].payload["target"].clone();
-    assert_eq!(aiworkspace_core::types::anchor_state(&ws.store, &target).unwrap(), "target_deleted");
-    assert_eq!(target["selector"]["record_id"], "task-42");
+    let note = &ws.store.entities["note-budget"].payload;
+    let a = aiworkspace_core::anchor::resolve(&ws.store, note).unwrap();
+    assert_eq!((a.state, a.level), (aiworkspace_core::anchor::State::Degraded, aiworkspace_core::anchor::Level::Entity));
+    assert_eq!(note["target"]["selector"]["record_id"], "task-42");
 }

@@ -226,6 +226,13 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             }).collect::<Vec<_>>() })),
             None => ws.read(caller, s(p, "entity_id")?, p.get("selector")),
         })?,
+        "doc.list_annotations" => state.with_ws(ws_id()?, |ws| {
+            let targets = match p.get("target_ids") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(_) => strings(p, "target_ids")?,
+            };
+            ws.list_annotations(caller, &targets, p.get("parent_id").and_then(Value::as_str))
+        })?,
         "doc.list_children" => state.with_ws(ws_id()?, |ws| {
             ws.list_children(caller, s(p, "entity_id")?, p.get("include_deleted").and_then(Value::as_bool).unwrap_or(false))
         })?,

@@ -1,11 +1,12 @@
 import { createContext, useContext, useEffect, useState, useSyncExternalStore } from 'react'
 import { SW_UPDATE_EVENT, serviceWorkerState, type ServiceWorkerState } from '../../../serviceWorker'
 import { describeError, type SessionStatus } from '../api/session'
-import type { AnnotationPayload, EntityEnvelope, Reference } from '../api/types'
+import type { CapturedAnchor } from '../anchors/registry'
+import type { AnchorInfo, AnnotationPayload, AnnotationRead, EntityEnvelope } from '../api/types'
 import type { EditEntry } from './edits'
 import type { WorkspaceStore } from './store'
 
-export interface AnnotationMark { entityId: string; payload: AnnotationPayload; anchorState: string }
+export interface AnnotationMark { entityId: string; payload: AnnotationPayload; anchor: AnchorInfo; envelope: AnnotationRead }
 
 export const StoreContext = createContext<WorkspaceStore | null>(null)
 
@@ -72,9 +73,14 @@ export function useLoad<T>(load: () => Promise<T>, version: number | string = 0)
 export interface WorkspaceUi {
   entities: EntityEnvelope[]
   byId: ReadonlyMap<string, EntityEnvelope>
+  /** Annotations of the open page: anchored to what it shows, or placed on it. */
   annotations: AnnotationMark[]
   openEntity: (entityId: string) => void
-  annotate: (target: Reference, label: string) => void
+  /** Start writing an annotation; null without the `comment` capability. */
+  annotate: ((anchor: CapturedAnchor) => void) | null
+  activeAnnotation: string | null
+  /** Select an annotation: its place in the content and its entry in the panel light up. */
+  setActiveAnnotation: (entityId: string | null) => void
 }
 
 export const WorkspaceUiContext = createContext<WorkspaceUi | null>(null)

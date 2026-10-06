@@ -4,6 +4,7 @@
 //! them — so the same code runs in the backend and (as WASM) in the browser replica.
 
 pub mod access;
+pub mod anchor;
 pub mod canonical;
 pub mod error;
 pub mod filter;

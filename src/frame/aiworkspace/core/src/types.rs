@@ -296,53 +296,57 @@ fn validate_asset(p: &mut Planner, e: &mut EntityRow) -> WsResult<()> {
 
 // ---- Annotation ----
 
-/// `resolved` or `target_deleted`: anchors hold stable ids only and never re-attach.
-pub fn anchor_state(ctx: &dyn ReadCtx, target: &Value) -> WsResult<&'static str> {
-    let Some(id) = reference_entity_id(target) else { return Ok("target_deleted") };
-    let Some(e) = ctx.entity(id)?.filter(|e| e.alive()) else { return Ok("target_deleted") };
-    let s = &target["selector"];
-    let record_ok = |rid: &str| -> WsResult<bool> { Ok(ctx.record(&e.entity_id, rid)?.is_some_and(|r| r.alive())) };
-    let field_ok = |fid: &str| -> WsResult<bool> { Ok(ctx.field(&e.entity_id, fid)?.is_some_and(|f| f.alive())) };
-    let ok = match s.get("kind").and_then(Value::as_str).unwrap_or("entity") {
-        "entity" => true,
-        "table_record" => record_ok(s["record_id"].as_str().unwrap_or(""))?,
-        "table_field" => field_ok(s["field_id"].as_str().unwrap_or(""))?,
-        "table_cell" => record_ok(s["record_id"].as_str().unwrap_or(""))? && field_ok(s["field_id"].as_str().unwrap_or(""))?,
-        "richtext_block" => ctx
-            .richtext(&e.entity_id)?
-            .is_some_and(|rt| rt.meta.block_index.contains_key(s["block_id"].as_str().unwrap_or(""))),
-        _ => false,
-    };
-    Ok(if ok { "resolved" } else { "target_deleted" })
-}
+const ANCHOR_KEYS: &[&str] = &["target", "range", "context"];
 
-fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["target", "kind", "body", "style", "author"], "annotation")?;
-    match before {
-        None => {
-            let target = e.payload.get("target").ok_or_else(|| bad("annotation needs target"))?;
-            let mut norm = normalize_reference(&json!({ "entity_id": target.get("entity_id").cloned().unwrap_or(Value::Null),
-                                                         "selector": target.get("selector").cloned().unwrap_or(json!({ "kind": "entity" })) }))?;
-            norm.as_object_mut().unwrap().remove("version");
-            let kind = norm.get("selector").and_then(|s| s["kind"].as_str()).unwrap_or("entity").to_string();
-            if !matches!(kind.as_str(), "entity" | "table_record" | "table_cell" | "table_field" | "richtext_block") {
-                return Err(bad(format!("annotation anchor kind {kind} is not supported")));
-            }
-            p.check_ref_target(&json!({ "entity_id": norm["entity_id"] }), None)?;
-            if !p.env.import && anchor_state(&p.ov, &norm)? != "resolved" {
-                return Err(WsError::new(Code::ReferenceBroken, "annotation target does not exist"));
-            }
-            e.payload.insert("target".into(), norm);
-            e.payload.insert("author".into(), json!(p.env.principal));
-        }
+/// Anchor keys (`target`, `range`, `context`) are checked by `anchor`; changing them later
+/// re-anchors the annotation, which only its author may do.
+fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>, changed: Option<&[String]>) -> WsResult<()> {
+    // replay keeps what a newer backend accepted
+    let strict = !p.env.import;
+    if strict {
+        check_keys(&e.payload, &["target", "range", "context", "kind", "body", "style", "author"], "annotation")?;
+    }
+    let anchor_changed = match before {
+        None => true,
         Some(b) => {
-            if e.payload.get("target") != b.payload.get("target") || e.payload.get("author") != b.payload.get("author") {
-                return Err(WsError::invalid_op("annotation target and author cannot be changed"));
+            if e.payload.get("author") != b.payload.get("author") {
+                return Err(WsError::invalid_op("annotation author cannot be changed"));
+            }
+            let changed = changed.unwrap_or(&[]);
+            let has = |k: &str| changed.iter().any(|c| c == k);
+            if !ANCHOR_KEYS.iter().any(|k| has(k)) {
+                false
+            } else {
+                if !p.env.internal && annotation_author(b) != Some(p.env.principal.as_str()) {
+                    return Err(WsError::denied("only the author can re-anchor an annotation"));
+                }
+                // a range or quote of the old target means nothing on a new one
+                if e.payload.get("target") != b.payload.get("target") {
+                    if let Some(k) = ["range", "context"].into_iter().find(|k| b.payload.contains_key(*k) && !has(k)) {
+                        return Err(WsError::invalid_op(format!("re-anchoring to another target must restate {k} (null clears it)")));
+                    }
+                }
+                true
             }
         }
+    };
+    if anchor_changed {
+        for k in ["range", "context"] {
+            if e.payload.get(k).is_some_and(Value::is_null) {
+                e.payload.remove(k);
+            }
+        }
+        if let Some(id) = e.payload.get("target").and_then(|t| t.get("entity_id")).and_then(Value::as_str) {
+            p.check_ref_target(&json!({ "entity_id": id }), None)?;
+        }
+        crate::anchor::check(&p.ov, &mut e.payload, strict)?;
+    }
+    if before.is_none() {
+        e.payload.insert("author".into(), json!(p.env.principal));
     }
     match e.payload.get("kind").and_then(Value::as_str) {
         Some("note") | Some("highlight") => {}
+        _ if !strict => {}
         _ => return Err(bad("annotation kind must be note or highlight")),
     }
     opt_text(&e.payload, "body", 4000)?;
@@ -458,7 +462,7 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             }
             let author = payload.remove("author");
             row.payload = payload;
-            validate_annotation(p, row, None)?;
+            validate_annotation(p, row, None, None)?;
             if let (Some(a), true) = (author, p.env.internal) {
                 row.payload.insert("author".into(), a); // import keeps the original author
             }
@@ -532,7 +536,7 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
             }
             validate_asset(p, e)
         }
-        TYPE_ANNOTATION => validate_annotation(p, e, Some(before)),
+        TYPE_ANNOTATION => validate_annotation(p, e, Some(before), Some(changed)),
         TYPE_TABLE => {
             // a URL table's query definition is local document state; its remote rows are not
             if changed.iter().any(|k| k == "source_ref") {

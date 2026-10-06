@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError, type ReadOk } from '../api/session'
-import type { AnnotationContent, CellPayload, EntityEnvelope, KeyedContent, Reference } from '../api/types'
+import type { CapturedAnchor } from '../anchors/registry'
+import type { CellPayload, EntityEnvelope, KeyedContent } from '../api/types'
 import { orderKeyBetween } from '../api/wasm'
 import { EDIT_STATE_LABEL } from '../state/edits'
 import { applyServiceWorkerUpdate } from '../../../serviceWorker'
@@ -27,21 +28,29 @@ export function WorkspaceView({ store, offline, onClose }: { store: WorkspaceSto
   )
 }
 
-function useAnnotations(entities: EntityEnvelope[] | undefined): AnnotationMark[] {
+/** Annotations of `page`: anchored to anything the page shows (its entities and the sources of its cells) or placed on it. */
+function useAnnotations(page: EntityEnvelope | null, entities: EntityEnvelope[] | undefined): AnnotationMark[] {
   const store = useStore()
   const any = useVersion('any')
-  const ids = useMemo(() => (entities ?? []).filter((entity) => entity.type_id === 'buckyos.annotation' && !entity.deleted).map((entity) => entity.entity_id), [entities])
-  const key = ids.join(',')
+  const pageId = page?.entity_id ?? null
+  const key = useMemo(() => {
+    if (!pageId || !entities) return ''
+    const shown = new Set<string>()
+    const under = new Set([pageId])
+    for (const entity of entities) {
+      if (entity.deleted || entity.type_id === 'buckyos.annotation' || !entity.parent_id || !under.has(entity.parent_id)) continue
+      under.add(entity.entity_id)
+      shown.add(entity.entity_id)
+      const source = (entity as EntityEnvelope & { source_id?: string }).source_id
+      if (source) shown.add(source)
+    }
+    return [...shown].sort().join(',')
+  }, [pageId, entities])
   const load = useCallback(async (): Promise<AnnotationMark[]> => {
-    const list = key === '' ? [] : key.split(',')
-    if (list.length === 0) return []
-    const results = await store.session.readMany(list.map((entity_id) => ({ entity_id })))
-    return results.flatMap((result, index) => {
-      if ('error' in result) return []
-      const content = result.content as AnnotationContent
-      return [{ entityId: list[index], payload: content.payload, anchorState: content.anchor_state }]
-    })
-  }, [store, key])
+    if (!pageId) return []
+    const annotations = await store.session.listAnnotations({ target_ids: key === '' ? [] : key.split(','), parent_id: pageId })
+    return annotations.map((read) => ({ entityId: read.entity_id, payload: read.content.payload, anchor: read.content.anchor, envelope: read }))
+  }, [store, key, pageId])
   return useLoad(load, any).data ?? []
 }
 
@@ -51,10 +60,14 @@ function WorkspaceShell({ onClose, offline }: { onClose: () => void; offline: Of
   const loadOutline = useCallback(() => store.session.outline(), [store])
   const outline = useLoad(loadOutline, outlineVersion)
   const entities = outline.data
-  const annotations = useAnnotations(entities)
+  const pages = entities ? sortedChildren(entities, 'root').filter((entity) => entity.kind === 'page') : []
+  const page = pages[0] ?? null
+  const annotations = useAnnotations(page, entities)
   const [selected, setSelected] = useState<string | null>(null)
-  const [draft, setDraft] = useState<{ target: Reference; label: string } | null>(null)
+  const [draft, setDraft] = useState<CapturedAnchor | null>(null)
+  const [activeAnnotation, setActiveAnnotation] = useState<string | null>(null)
   const [side, setSide] = useState<'annotations' | 'mock'>('annotations')
+  const canComment = store.session.info().capabilities.includes('comment')
 
   const lockRequired = (entities ?? []).some((entity) => entity.write_policy === 'lock_required')
   useEffect(() => {
@@ -66,10 +79,11 @@ function WorkspaceShell({ onClose, offline }: { onClose: () => void; offline: Of
     setSelected(entityId)
     document.querySelector(`[data-cell-source="${CSS.escape(entityId)}"], [data-cell-id="${CSS.escape(entityId)}"]`)?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [])
-  const annotate = useCallback((target: Reference, label: string) => { setDraft({ target, label }); setSide('annotations') }, [])
+  const annotate = useCallback((anchor: CapturedAnchor) => { setDraft(anchor); setSide('annotations') }, [])
   const ui = useMemo<WorkspaceUi | null>(() => entities ? {
-    entities, byId: new Map(entities.map((entity) => [entity.entity_id, entity])), annotations, openEntity, annotate,
-  } : null, [entities, annotations, openEntity, annotate])
+    entities, byId: new Map(entities.map((entity) => [entity.entity_id, entity])), annotations, openEntity,
+    annotate: canComment ? annotate : null, activeAnnotation, setActiveAnnotation,
+  } : null, [entities, annotations, openEntity, annotate, canComment, activeAnnotation])
 
   // Ctrl/Cmd+Z goes to the UndoCoordinator: exactly one step per key press (design §2.7). The listener
   // is on the window because focus falls back to <body> when an inline editor closes; it only acts
@@ -100,9 +114,6 @@ function WorkspaceShell({ onClose, offline }: { onClose: () => void; offline: Of
       window.removeEventListener('keydown', onKey)
     }
   }, [store])
-
-  const pages = entities ? sortedChildren(entities, 'root').filter((entity) => entity.kind === 'page') : []
-  const page = pages[0] ?? null
 
   return (
     <div ref={rootRef} className="aiws-workspace" data-testid="aiws-workspace" data-workspace-id={store.session.workspaceId} data-session-id={store.session.sessionId}>

@@ -731,7 +731,7 @@ CREATE TABLE lock_events (                -- 申请、释放、过期接手、�
 
 1. 删除是 tombstone：`entities.deleted_seq` 置为本次 `seq`，行保留。被删实体的 `read` 返回 `TARGET_DELETED`。
 2. `subtree: "reject_if_children"`（缺省）下有未删除子节点即拒绝并返回子节点列表。要连同子树删除，调用方必须**显式列出它打算删除的全部后代** `{ "delete": [...] }`；后台计算实际子树，若其中有不在清单里的节点 → `REVISION_CONFLICT`，返回多出来的节点。因为移动是自动合并的，别人可能刚把一个对象拖进这个容器；显式清单保证没有人会因此删掉自己没见过的东西。清单中已不在该子树下的节点（被人移走了）被忽略，不被删除。
-3. 引用检查：被删集合之外的实体若通过 `bind`、`embed`、`value`、`body` 引用了被删集合中的实体，拒绝并返回 `REFERENCE_BROKEN` 与引用方列表（来源实体 + 选择器）。`anchor` 引用（注释）不阻止删除，注释随后显示“目标已删除”。调用方要么先解除引用，要么把引用方纳入同一批删除。
+3. 引用检查：被删集合之外的实体若通过 `bind`、`embed`、`value`、`body` 引用了被删集合中的实体，拒绝并返回 `REFERENCE_BROKEN` 与引用方列表（来源实体 + 选择器）。`anchor` 引用（注释）不阻止删除，注释随后按 §3.7 降级显示。调用方要么先解除引用，要么把引用方纳入同一批删除。
 4. 对已删除实体的迟到写入返回 `TARGET_DELETED`，写入不被应用，实体不被复活（V11）。只有显式 `entity.restore` 能恢复。
 5. 第一期不做物理清除。
 
@@ -949,7 +949,7 @@ pub fn diff_blocks(base: &Ast, target: &Ast) -> Vec<BlockOp>;              // �
 - **普通分享导出**只含内容对象，不含任何 CRDT 字节。导入方用 `build_doc` 建立**新的 lineage**。因此被删除的文字、作者、编辑顺序都不会随包泄露（V14）。Loro 的“仅状态”导出仍然携带原 peer 与操作 ID，不能当作新 lineage 使用。
 - **Fork**：与普通导入相同，新 Workspace 中的富文本是新 lineage。`block_id` 保持不变，因此锚定在块上的注释和 `object_embed` 引用继续有效。
 - **个人恢复备份**：额外包含 `collab/<entity_id>.loro`（完整历史快照）和 `lineage_id`；恢复到同一 `workspace_id` 时沿用原 lineage，离线客户端此后提交的旧更新仍可合并（V06）。
-- 锚点重映射：第一期注释只锚定到 `block_id`（§3.7），不依赖 CRDT 相对位置，所以新 lineage 不需要重映射。字符范围锚点的结构已保留但未实现，实现时必须同时实现重映射或显式失效。
+- 锚点重映射：块级锚点只含 `block_id`，不受 lineage 影响。字符范围（`richtext_text`）的 Loro 游标属于原 lineage，在新 lineage 中不再解析，读取时由 `context.quote` 在原块内找回（`relocated`），找不回则显式降级为块级（`lost`）——这就是它的重映射与失效规则（§3.7），导入时不改写注释。
 
 #### 3.3.10 Fixtures 与测试要点
 
@@ -1282,24 +1282,74 @@ Filter := { "op": "and" | "or", "args": [Filter, ...] }      // args 1..32 个
 
 ### 3.7 Annotation：最小 Overlay
 
-**用途与边界。** 证明“附加层不污染业务数据、锚点不随显示变化漂移、权限与正文独立”。不是完整评论系统。
+**用途与边界。** 证明“附加层不污染业务数据、锚点不随显示变化漂移、权限与正文独立”，并为以后的内容类型（新的富文本块、应用扩展的对象）留出**精确定位的扩展点**。不是完整评论系统。
 
 ```json
-{ "target": { "entity_id": "tasks",
-              "selector": { "kind": "table_cell", "record_id": "task-42", "field_id": "budget" } },
-  "kind": "note", "body": "请核对预算来源", "style": { "color": "#FFF2CC" } }
+{ "target":  { "entity_id": "notes", "selector": { "kind": "richtext_block", "block_id": "n-intro" } },
+  "range":   { "kind": "richtext_text",
+               "start": { "block_id": "n-intro", "cursor": "<base64 Loro Cursor>" },
+               "end":   { "block_id": "n-intro", "cursor": "<base64 Loro Cursor>" } },
+  "context": { "quote": { "exact": "文档格式", "prefix": "第一期围绕", "suffix": "、Command Engine" },
+               "label": "「文档格式」" },
+  "kind": "note", "body": "术语要和设计文档统一", "style": { "color": "#FFF2CC" } }
 ```
 
-- `target.selector.kind` 第一期：`entity`、`table_record`、`table_cell`、`table_field`、`richtext_block`。字符范围锚点（`richtext_range`）的结构保留、不实现。
-- `kind`：`note` | `highlight`。`body` 是纯文本（≤ 4000 字符）。
+**三层锚点，从粗到细。**【裁决】
+
+| 层 | 键 | 内容 | 谁解释 |
+| --- | --- | --- | --- |
+| 目标 | `target` | 实体 + 选择器，只含稳定 ID（V08） | 后台，按目标实体类型的锚点适配器 |
+| 范围 | `range`（可选） | 目标内部更细的位置。内置种类，或应用自定义的 `<app>/<name>` 种类 | 内置种类：后台与前端；应用种类：只有应用 |
+| 上下文 | `context`（可选） | `quote: { exact, prefix?, suffix? }` 批注时的原文；`label` 人可读的位置说明 | 任何文本类适配器都可以用它重新定位；界面在原位置消失后用它说明“批注的是什么” |
+
+- 选择器第一期：`entity`（所有类型）、`table_record`、`table_cell`、`table_field`（TableSource）、`richtext_block`（RichText）。
+- 内置范围种类第一期只有 `richtext_text`：选择器必须是 `richtext_block`，`start.block_id` 等于选择器的块；`start`/`end` 各带一个编码后的 Loro 游标（可缺省）。跨块的选区以起点所在块为目标。不保存裸 offset（第一期文档 §5.2）。
+- **应用种类**：`range.kind` 形如 `<app>/<name>`（小写字母、数字、`.`、`-`、`_`），后台只检查它是对象且规范 JSON ≤ 4 KiB，原样保存，读回时 `range_status: "unchecked"`。应用为新的块类型（或自己的对象类型）注册前端适配器即可让批注精确落在自己的数据上，后台无需改动。
+- 大小限制：`selector` 与 `range` 各 ≤ 4 KiB；`quote.exact` ≤ 2000 字符，`prefix`/`suffix` ≤ 64，`label` ≤ 200。
+
+**锚点适配器。** 每个内容类型提供一个 `AnchorAdapter`（`core/src/anchor.rs`）：它认识哪些选择器与内置范围种类、它们的结构校验、以及“现在在哪里”的解析。新增类型只需新增适配器，不修改公共的解析与降级逻辑。前端对应地有 `AnchorRegistry`（`anchors/registry.ts`）：适配器拥有一个范围种类，负责把视图的选区变成锚点（`capture`）和把范围在视图里找回来（`locate`）；内置种类与应用种类注册方式完全相同，应用的适配器优先认领选区。
+
+**解析与降级。** `read`（及 `doc.list_annotations`）对每个注释返回 `anchor`：
+
+```json
+{ "state": "resolved | degraded | target_deleted | unsupported",
+  "level": "range | target | entity | none",
+  "range_status": "exact | relocated | lost | unchecked",
+  "position": { "block_id": "…", "end_block_id": "…", "text": "现在覆盖的文字" } }
+```
+
+| 情形 | `state` / `level` |
+| --- | --- |
+| 目标在，范围按稳定位置找到（`exact`）或在目标内按原文找回（`relocated`） | `resolved` / `range` |
+| 目标在，无范围；或范围是应用种类（`unchecked`，应用自己定位） | `resolved` / `target` |
+| 目标在，范围找不到（`lost`） | `degraded` / `target` |
+| 目标没了，但原文在实体内唯一出现（按原文找回） | `degraded` / `range`（有范围）或 `target`（`position` 给出现在的块） |
+| 目标没了，找不回 | `degraded` / `entity` |
+| 实体被删除 | `target_deleted` / `none` |
+| 本后台不认识该选择器 | `unsupported` / `entity` |
+
+- `richtext_text` 的解析顺序：两端 Loro 游标（跟随并发输入；只有起点仍在所选块、且范围非空才算 `exact`）→ 记录的块范围内按原文找最佳匹配（与 `prefix`/`suffix` 吻合最多者，其次最早）→ 块已不在时在全文按原文找**唯一**匹配（原文 ≥ 4 字符，或只有一处与前后文完全吻合）。块级语义操作（§3.3.5 的 replace/move）会重建块内容，游标随之失效，由原文找回；剪切粘贴得到新 `block_id`，也由原文找回。
+- 块级注释（无范围）的块不在时，若有 `context.quote`，按同样的“全文唯一”规则找回所在块。
+- 降级只发生在读取时，**从不改写**记录的锚点；目标恢复后自动回到原级别。前端在工作文档上做同样的解析（规则相同，文本偏移用 UTF-16），因此编辑器里的显示随本地输入即时更新。
+- anchor 文本：文本原样，行内原子节点（`hard_break`、`object_link`）各计一个 U+FFFC，跨块时以 `\n` 连接。
+
+**写严读宽。**【裁决】除重放与导入外的所有写入（`env.import == false`）都严格：选择器必须被目标类型认识、内置范围种类必须适用于该选择器、`context` 结构合法、目标此刻存在（`REFERENCE_BROKEN`）。重放与导入（离线副本应用已接受的提交、包导入）只检查最基本的形状：较新版本后台接受的锚点种类、未知的 payload 键都原样保留，读回为 `unsupported` 或 `unchecked`，**不能让旧副本因此停止同步**。
+
+**重新挂锚。** 用 `entity.set_keys` 修改 `target`/`range`/`context`，只有作者可以做（他人即使有 `manage` 也只能改正文或删除），新锚点按创建时的规则严格校验。换到另一个目标时，原有的 `range`、`context` 必须在同一操作中重写或置 `null`（`null` 即清除），这样撤销可以完整恢复旧锚点。
+
+**其他规则。**
+
+- `kind`：`note` | `highlight`。`body` 是纯文本（≤ 4000 字符）。`author` 由后台写入。
 - 实体的 `scope`（§2.9）：`shared` 或 `user:<主体>`，创建时确定，不可更改。个人注释的结构父节点记录为其目标所在的页面，但它不出现在其他主体的 `list_children`、变化流和导出中。
 - 权限：创建需要对目标有 `read` 且对 Workspace 有 `comment`；修改/删除自己的注释需要 `comment`，他人的共享注释需要 `manage`。对业务数据只读的主体可以有 `comment`。
-- 引用种类 `anchor`：不阻止目标删除。目标（实体、记录、字段、块）被删除后，`read` 注释返回 `anchor_state: "target_deleted"` 并保留原 `target`，**不**尝试改挂到相邻对象。目标恢复后自动回到 `resolved`。
-- 排序、过滤、改列名、插入其他行、移动块都不影响锚点，因为锚点只含稳定 ID（V08）。
+- 引用种类 `anchor`：边只记录目标实体，不阻止目标删除。
+- 排序、过滤、改列名、插入其他行、移动块都不使锚点挂到别的对象上，因为锚点的身份部分只含稳定 ID（V08）。
 
-操作：`entity.create`、`entity.set_keys`（`body`、`style`）、`entity.delete`。`target` 创建后不可改（要改就删除重建），避免“把别人的注释挪到另一条记录”这类路径。
+**查询。** `doc.list_annotations { target_ids?, parent_id? }`：锚定在任一 `target_ids` 上（经 `refs` 的 `anchor` 边）或结构上位于 `parent_id` 下的注释，按创建顺序，每条与 `read` 的结果相同（含 `anchor`），个人注释只对其所有者出现。界面按页面取：页面下的实体及其单元的数据源作为 `target_ids`，页面本身作为 `parent_id`（因此目标已删除的注释仍然列出）。
 
-物化：共享注释的 `content` = payload；个人注释不进入快照。
+**显示（Desktop）。** 富文本编辑器中，`range` 级的注释高亮所选文字，`target` 级的注释在块左侧加色条，卡片排在正文右侧与锚点同高（窄时排在正文下方）；`entity` 级的卡片排在最前并注明“原位置已不存在”。适配器返回节点命中时，节点装饰的 spec 携带 `{ annotations: [{ id, detail }] }`，应用的 NodeView 可据此在自己的块内画出范围。表格单元格上的注释仍以标记显示。
+
+操作：`entity.create`、`entity.set_keys`（`body`、`style`；作者另可改 `target`、`range`、`context`）、`entity.delete`。
 
 ### 3.8 贯穿样例 fixture：`project-workspace`
 
@@ -1570,6 +1620,7 @@ example.bcanvas/                      # 展开目录；打包时为不压缩或 
 | `doc.resolve` | `read` | 引用或路径 → 已解析引用、`type_id`、`content_rev`、有效能力 |
 | `doc.read` | `read` | §2.5.4；可批量 |
 | `doc.list_children` | `read` | 子节点的信封（不含内容）与树边 |
+| `doc.list_annotations` | `read` | §3.7：按锚定目标和/或结构父节点列出注释及其锚点解析 |
 | `doc.query` | `read` | §2.5.4、§3.5.3 |
 | `doc.get_collab_state` | `read` | §3.3.6 |
 | `doc.prepare` | 按操作 | §2.6 |
@@ -2014,3 +2065,4 @@ M2 出口：不启动任何前端，通过服务接口重放 fixture、修改、
 | 2026-10-05 | §6.3 工作视图 | 采用“确认层 + 按序重放待提交操作”（第一期文档 §3.4 末段允许的做法），不记录前像；引擎是 `core::replica`，后台测试与浏览器 Worker 共用 | 实施；见第一期文档 §11-12 |
 | 2026-10-05 | §6 离线副本 | `opfs-sahpool` 在无 COOP/COEP 的静态服务下可用；Service Worker 冷启动在 `vite preview` 下通过。CommitTransport 留在页面而非 Worker；无 `preimage_json`/`richtext_working`；`blocked_asset` 未实现。仅 Chromium 验证 | 实施；见验收报告 §5.2 |
 | 2026-10-05 | §3.4.11 URL 源 | 服务只访问已注册的 Source Adapter（按 URL scheme）；内置仅测试用 `fixture://` 生成源，没有通用 HTTP 抓取。未注册的 scheme：定义照常保存，查询返回 `DEPENDENCY_UNAVAILABLE` | 实施：文档中的 URL 不能驱使服务发起任意网络请求 |
+| 2026-10-06 | §3.7 注释锚点 | 三层锚点（target / range / context.quote）与锚点适配器；内置 `richtext_text`（Loro 游标 + 原文）；应用种类 `<app>/<name>` 原样保存、由应用定位；读取时逐级降级、不改写；写严读宽（重放与导入不因未知锚点失败）；作者可经 `set_keys` 重新挂锚；新增 `doc.list_annotations` | 负责人要求：以后扩展的块类型可以放入应用自己的范围数据并给出定位 |

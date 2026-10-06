@@ -2,11 +2,13 @@
 
 import { useState } from 'react'
 import { describeError } from '../api/session'
-import type { CommitResult, EntityEnvelope, Operation, Reference, RunView, ServiceError, Touched } from '../api/types'
+import type { CommitResult, EntityEnvelope, Operation, RunView, ServiceError, Touched } from '../api/types'
 import { orderKeyBetween } from '../api/wasm'
 import { EDIT_STATE_LABEL } from '../state/edits'
 import { useEdits, useStore, useWorkspaceUi } from '../state/hooks'
-import { annotationOp, describeTarget, descendants, entityLabel, sortedChildren } from './creators'
+import type { CapturedAnchor } from '../anchors/registry'
+import { anchorStatus, annotationLabel, revealAnnotation } from './annotationInfo'
+import { annotationOp, descendants, entityLabel, sortedChildren } from './creators'
 
 const TYPE_LABEL: Record<string, string> = {
   'buckyos.container': '容器', 'buckyos.record': '记录', 'buckyos.richtext': '富文本', 'buckyos.table-source': '表',
@@ -126,9 +128,9 @@ function EntityActions({ entity }: { entity: EntityEnvelope }) {
 
 // ---- annotations (design §3.7)
 
-export function AnnotationsPanel({ pageId, draft, onDraftDone }: { pageId: string | null; draft: { target: Reference; label: string } | null; onDraftDone: () => void }) {
+export function AnnotationsPanel({ pageId, draft, onDraftDone }: { pageId: string | null; draft: CapturedAnchor | null; onDraftDone: () => void }) {
   const store = useStore()
-  const { annotations, entities, byId } = useWorkspaceUi()
+  const { annotations, entities, annotate, activeAnnotation, setActiveAnnotation } = useWorkspaceUi()
   const [body, setBody] = useState('')
   return (
     <div className="aiws-annotations" data-testid="aiws-annotations">
@@ -137,28 +139,43 @@ export function AnnotationsPanel({ pageId, draft, onDraftDone }: { pageId: strin
         <form className="aiws-annotation-draft" onSubmit={(event) => {
           event.preventDefault()
           if (!pageId || body.trim() === '') return
-          void store.submit({ editId: `annotation:new`, label: `批注 ${draft.label}`, mine: body, hasMine: true, operations: [annotationOp(store.core, entities, pageId, draft.target, body.trim())] })
+          void store.submit({ editId: `annotation:new`, label: `批注 ${draft.label}`, mine: body, hasMine: true, operations: [annotationOp(store.core, entities, pageId, draft, body.trim())] })
             .then((outcome) => { if (outcome.status === 'accepted') { setBody(''); onDraftDone() } })
         }}>
-          <div>批注对象：{describeTarget(draft.target)}</div>
+          <div data-testid="aiws-annotation-draft-target">批注对象：{draft.label}</div>
+          {draft.context?.quote && draft.range && <div className="aiws-annotation-quote">{draft.context.quote.exact}</div>}
           <textarea aria-label="批注内容" autoFocus rows={2} value={body} onChange={(event) => setBody(event.target.value)} maxLength={4000} />
           <button type="submit" data-testid="aiws-annotation-save">保存批注</button>
           <button type="button" onClick={() => { setBody(''); onDraftDone() }}>取消</button>
         </form>
       )}
-      {annotations.length === 0 && !draft && <div className="aiws-muted">还没有批注。在表格单元格上点 ✎，或在富文本里点“批注当前块”。</div>}
+      {annotations.length === 0 && !draft && (
+        <div className="aiws-muted">{annotate ? '还没有批注。在表格单元格上点 ✎，或在富文本里选中文字（或把光标放在某一块）后点“批注”。' : '还没有批注。'}</div>
+      )}
       {annotations.map((mark) => {
-        const envelope = byId.get(mark.entityId)
+        const capabilities = mark.envelope.capabilities
+        const quote = mark.payload.context?.quote?.exact
         return (
-          <div key={mark.entityId} className="aiws-annotation" data-testid="aiws-annotation" data-anchor-state={mark.anchorState} style={{ background: typeof mark.payload.style?.color === 'string' ? mark.payload.style.color : undefined }}>
+          <div
+            key={mark.entityId}
+            className={`aiws-annotation${mark.entityId === activeAnnotation ? ' is-active' : ''}`}
+            data-testid="aiws-annotation"
+            data-annotation-id={mark.entityId}
+            data-anchor-state={mark.anchor.state}
+            data-anchor-level={mark.anchor.level}
+            style={{ background: typeof mark.payload.style?.color === 'string' ? mark.payload.style.color : undefined }}
+            onClick={() => { setActiveAnnotation(mark.entityId); revealAnnotation(mark.entityId) }}
+          >
             <div className="aiws-annotation-body">{mark.payload.body}</div>
+            {quote && mark.payload.range && mark.anchor.level !== 'range' && <div className="aiws-annotation-quote" title="批注时选中的原文">{quote}</div>}
             <div className="aiws-annotation-meta">
-              <span>{describeTarget(mark.payload.target)}</span>
-              <span data-testid="aiws-anchor-state">{mark.anchorState === 'resolved' ? '锚点有效' : mark.anchorState === 'target_deleted' ? '目标已删除' : mark.anchorState}</span>
+              <span>{annotationLabel(mark)}</span>
+              <span data-testid="aiws-anchor-state">{anchorStatus(mark.anchor)}</span>
               {mark.payload.author && <span>{mark.payload.author}</span>}
-              {envelope && (envelope.capabilities.includes('comment') || envelope.capabilities.includes('manage')) && (
-                <button type="button" className="aiws-link" onClick={() => {
-                  void store.submit({ editId: `entity:${mark.entityId}`, label: '删除批注', operations: [{ op: 'entity.delete', entity_id: mark.entityId, expect: { rev: envelope.life_rev } }] })
+              {(capabilities.includes('comment') || capabilities.includes('manage')) && (
+                <button type="button" className="aiws-link" onClick={(event) => {
+                  event.stopPropagation()
+                  void store.submit({ editId: `entity:${mark.entityId}`, label: '删除批注', operations: [{ op: 'entity.delete', entity_id: mark.entityId, expect: { rev: mark.envelope.life_rev } }] })
                 }}>删除</button>
               )}
             </div>

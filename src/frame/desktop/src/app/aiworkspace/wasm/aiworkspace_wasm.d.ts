@@ -21,6 +21,10 @@ export class Replica {
     confirmed_rows(): string;
     discard(key: string): boolean;
     lineage_id(entity_id: string): string | undefined;
+    /**
+     * `doc.list_annotations` on the working view: `{ target_ids?, parent_id? }`.
+     */
+    list_annotations(params_json: string): string;
     mark(key: string, state: string, result_json?: string | null): void;
     /**
      * `tables_json`: `{ entities, tree_edges, table_fields, table_records, richtext_states, refs, assets }`
@@ -135,6 +139,7 @@ export interface InitOutput {
     readonly replica_confirmed_seq: (a: number) => number;
     readonly replica_discard: (a: number, b: number, c: number) => number;
     readonly replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
+    readonly replica_list_annotations: (a: number, b: number, c: number, d: number) => void;
     readonly replica_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly replica_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
     readonly replica_next_to_send: (a: number, b: number) => void;

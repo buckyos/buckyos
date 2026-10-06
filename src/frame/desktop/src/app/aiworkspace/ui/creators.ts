@@ -1,6 +1,7 @@
 /* Operations that create the built-in objects (design §3). A content entity and the cell that shows
  * it are created in one commit, so there is never a cell without a source or the reverse. */
 
+import type { CapturedAnchor } from '../anchors/registry'
 import { randomId } from '../api/ids'
 import type { EntityEnvelope, Json, Operation, Reference } from '../api/types'
 import { orderKeyBetween, type AiwsCore } from '../api/wasm'
@@ -89,9 +90,12 @@ export function assetOps(core: AiwsCore, entities: EntityEnvelope[], parentId: s
   ]
 }
 
-export function annotationOp(core: AiwsCore, entities: EntityEnvelope[], pageId: string, target: Reference, body: string): Operation {
+export function annotationOp(core: AiwsCore, entities: EntityEnvelope[], pageId: string, anchor: CapturedAnchor, body: string): Operation {
   const [key] = appendKeys(core, entities, pageId, 1)
-  return create(randomId('n'), 'buckyos.annotation', pageId, key, { target: target as unknown as Json, kind: 'note', body })
+  const payload: Record<string, Json> = { target: anchor.target as unknown as Json, kind: 'note', body }
+  if (anchor.range) payload.range = anchor.range
+  if (anchor.context) payload.context = anchor.context as unknown as Json
+  return create(randomId('n'), 'buckyos.annotation', pageId, key, payload)
 }
 
 export function describeTarget(target: Reference): string {

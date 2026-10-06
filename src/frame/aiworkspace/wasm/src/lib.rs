@@ -253,6 +253,15 @@ impl Replica {
         read::read(&self.inner.working, &access, entity_id, selector.as_ref()).map(|v| v.to_string()).map_err(fail)
     }
 
+    /// `doc.list_annotations` on the working view: `{ target_ids?, parent_id? }`.
+    pub fn list_annotations(&self, params_json: &str) -> Result<String, JsError> {
+        let p = parse(params_json)?;
+        let targets: Vec<String> = p.get("target_ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        let access = Access::full(&self.inner.principal);
+        let annotations = read::list_annotations(&self.inner.working, &access, &targets, p.get("parent_id").and_then(Value::as_str)).map_err(fail)?;
+        Ok(json!({ "ok": true, "annotations": annotations, "head_seq": self.inner.confirmed_seq }).to_string())
+    }
+
     /// `doc.query` on the working view (embedded tables only; URL tables need the network).
     pub fn query(&self, params_json: &str) -> Result<String, JsError> {
         use aiworkspace_core::filter::{run_query, QuerySpec};

@@ -2,6 +2,7 @@
 //! carries its `rev`, so clients can build `expect` from what they read.
 
 use crate::access::{Access, Cap};
+use crate::anchor;
 use crate::error::{Code, WsError, WsResult};
 use crate::filter::live_fields;
 use crate::model::*;
@@ -9,7 +10,7 @@ use crate::richtext;
 use crate::types;
 use crate::value::FieldDef;
 use serde_json::{json, Map, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Look an entity up for reading. Without `read`: `PERMISSION_DENIED` if the
 /// caller can see the parent (so it already knows the entity exists),
@@ -185,13 +186,7 @@ fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Value> {
             v
         }
         TYPE_CELL => json!({ "payload": e.payload, "key_revs": revs, "diagnostics": cell_diagnostics(ctx, e)? }),
-        TYPE_ANNOTATION => {
-            let state = match e.payload.get("target") {
-                Some(t) => types::anchor_state(ctx, t)?,
-                None => "target_deleted",
-            };
-            json!({ "payload": e.payload, "key_revs": revs, "anchor_state": state })
-        }
+        TYPE_ANNOTATION => json!({ "payload": e.payload, "key_revs": revs, "anchor": anchor::resolve(ctx, &e.payload)?.to_json() }),
         TYPE_TABLE => {
             let mut count = 0u64;
             ctx.scan_records(&e.entity_id, &mut |r| {
@@ -210,6 +205,35 @@ fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow) -> WsResult<Value> {
         }
         _ => json!({ "payload": e.payload, "key_revs": revs }),
     })
+}
+
+/// Readable annotations anchored to any of `targets` or placed under `parent_id`, in creation
+/// order, each with its content as `read` returns it (incl. `anchor`).
+pub fn list_annotations(ctx: &dyn ReadCtx, access: &Access, targets: &[String], parent_id: Option<&str>) -> WsResult<Vec<Value>> {
+    let mut ids = BTreeSet::new();
+    for t in targets {
+        ids.extend(ctx.refs_to(t)?.into_iter().filter(|r| r.kind == "anchor").map(|r| r.src_entity_id));
+    }
+    if let Some(parent) = parent_id {
+        readable_entity(ctx, access, parent)?;
+        ids.extend(ctx.children(parent)?.into_iter().map(|edge| edge.child_id));
+    }
+    let mut rows = Vec::new();
+    for id in ids {
+        if let Some(e) = ctx.entity(&id)? {
+            if e.type_id == TYPE_ANNOTATION && e.alive() && access.can_read(ctx, &e)? {
+                rows.push(e);
+            }
+        }
+    }
+    rows.sort_by(|a, b| (a.created_seq, &a.entity_id).cmp(&(b.created_seq, &b.entity_id)));
+    rows.iter()
+        .map(|e| {
+            let mut v = envelope(ctx, access, e)?;
+            v["content"] = entity_content(ctx, e)?;
+            Ok(v)
+        })
+        .collect()
 }
 
 /// Child envelopes (no content) of a container, in sibling order.

@@ -37,6 +37,12 @@ state/
   undo.ts                 UndoCoordinator (design §2.7), incl. `pending` entries (unsent submissions)
   locks.ts                write-lock leases (design §2.11)
   hooks.ts
+anchors/                  annotation anchors (design §3.7), the same model as core/src/anchor.rs
+  registry.ts             AnchorRegistry: one adapter per range kind — capture(selection) / locate(range);
+                          built-in kinds and applications' `<app>/<name>` kinds register the same way
+  quote.ts                `context.quote` matching (best inside the target, unmistakable elsewhere)
+  richtext.ts             built-in `richtext_text` (Loro cursors + quote), block fallback, capture, and the
+                          ProseMirror plugin placing every annotation at the deepest level that resolves
 richtext/
   schema.ts               ProseMirror Schema generated from the schema JSON (`richtext_schema()` of the core)
   collab.ts               confirmed doc + working doc, debounced `richtext.apply_update`, remote imports,
@@ -47,11 +53,13 @@ richtext/
 ui/
   WorkspaceList.tsx       list / create / sample / import / export / fork / delete
   WorkspaceView.tsx       top bar, flow page, add menu, reorder
-  panels.tsx              outline, annotations, Mock run, edit states
+  panels.tsx              outline, annotations of the page (doc.list_annotations), Mock run, edit states
   cells.tsx               cell bodies per view type, lock bar, record, asset
   TableViewCell.tsx       virtualised table view, inline editing, filter / sort, conflicts
   tablePager.ts           keyset paging through doc.query, refresh from the change stream
   FieldManager.tsx        fields, options, migration pre-check
+  annotations.tsx         cards next to a rich text, aligned with their anchors
+  annotationInfo.ts       anchor states in words, labels, jump to an annotation
   ValueEditor.tsx, values.ts, creators.ts
 fixtures/project-workspace.commits.json   copy of the backend fixture (the e2e suite asserts they are identical)
 wasm/                     wasm-bindgen output of aiworkspace-wasm (src/frame/aiworkspace/wasm/build.sh)
@@ -204,8 +212,9 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - TableView: no grouping, no manual order, no column resizing; the filter editor builds one condition
   (saving ANDs it with the saved filter); `object_ref` values are displayed but not editable; URL query
   tables are not treated specially (writes are refused by the backend and shown as such).
-- Record schemas cannot be edited. Annotations cannot be edited after creation, are always shared and of
-  kind `note`.
+- Record schemas cannot be edited. Annotations cannot be edited after creation (re-anchoring exists in the
+  protocol, not in the UI), are always shared and of kind `note`. Annotation cards are drawn next to rich
+  text only; table cells show a mark. Embedded (read-only, static) rich text shows no annotations.
 - No UI for grants (`ws.grant` / `ws.revoke`), checkpoints, `diag.*`; no partial undo (`mode: "partial"`):
   an undo that conflicts is reported and does nothing.
 - Rich text: no UI to create a `link` mark or set an ordered list's start; no remote cursors; the caret is

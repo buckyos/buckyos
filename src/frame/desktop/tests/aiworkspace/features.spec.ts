@@ -174,12 +174,13 @@ test('annotations, field and option management, migration pre-check, broken view
   await page.getByTestId('aiws-annotation-save').click()
   await expect(page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })).toContainText('锚点有效')
   await expect(all.getByTestId('aiws-cell-task-41-owner').getByTestId('aiws-cell-annotation')).toBeVisible()
-  // annotation on a rich text block
+  // annotation on a rich text block: nothing selected, the block around the caret
   await notesBlock(page, 'n-intro').click()
-  await page.getByTestId('aiws-annotate-block').click()
+  await page.getByTestId('aiws-cell-frame-cell-notes').getByTestId('aiws-annotate').click()
   await page.getByLabel('批注内容').fill('这一段需要更新')
   await page.getByTestId('aiws-annotation-save').click()
-  await expect(page.getByTestId('aiws-annotation').filter({ hasText: '这一段需要更新' })).toContainText('块 n-intro')
+  await expect(page.getByTestId('aiws-annotation').filter({ hasText: '这一段需要更新' })).toContainText('块「第一期围绕文档格式')
+  await expect(page.getByTestId('aiws-richtext-notes').locator('[data-block-id="n-intro"].aiws-anno-block')).toBeVisible()
   await expect(page.getByTestId('aiws-annotation')).toHaveCount(3)
 
   // rename a field: same field_id, both views and the annotation keep pointing at it (V08)
@@ -247,10 +248,12 @@ test('annotations, field and option management, migration pre-check, broken view
   await expect(open.getByTestId('aiws-row')).toHaveCount(4)
   await expect(open.getByTestId('aiws-table-error-cell-open-tasks')).toHaveCount(0)
 
-  // deleting an annotated record: the annotation stays and reports its target as deleted
+  // deleting an annotated record: the annotation stays, falls back to its table and keeps what it was about
   await all.getByTestId('aiws-row').filter({ has: page.getByTestId('aiws-cell-task-41-title') }).getByRole('button', { name: '删除' }).click()
   await expect(all.getByTestId('aiws-row')).toHaveCount(4)
-  await expect(page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })).toContainText('目标已删除')
+  const orphan = page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })
+  await expect(orphan.getByTestId('aiws-anchor-state')).toHaveText('原位置已删除，显示在对象上')
+  await expect(orphan).toContainText('负责人 · task-41')
 })
 
 test('session filter and sort stay local until "save view"; structure edits: create, rename, reorder, move, delete', async ({ page, api }) => {

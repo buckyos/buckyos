@@ -17,11 +17,11 @@ use crate::id::is_valid_id;
 use crate::model::{BlockIndex, BlockInfo};
 use crate::value::normalize_reference;
 use loro::{
-    Container, ExpandType, ExportMode, LoroDoc, LoroList, LoroMap, LoroText, LoroValue, StyleConfig, StyleConfigMap,
-    ValueOrContainer, VersionVector,
+    Container, ContainerID, ContainerTrait, ExpandType, ExportMode, LoroDoc, LoroList, LoroMap, LoroText, LoroValue, StyleConfig,
+    StyleConfigMap, ValueOrContainer, VersionVector,
 };
 use serde_json::{json, Map, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::OnceLock;
 
 pub const ENGINE: &str = "loro";
@@ -930,6 +930,109 @@ pub fn diff_blocks(entity_id: &str, base: &Value, target: &Value, base_index: &B
 /// The smallest valid document: one empty paragraph.
 pub fn empty_ast(block_id: &str) -> Value {
     json!({ "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": block_id } }] })
+}
+
+// ---- plain text positions (annotation anchors, design doc §3.7) ----
+
+/// An inline atom (`hard_break`, `object_link`) is one U+FFFC in anchor text.
+pub const ATOM_CHAR: char = '\u{FFFC}';
+/// Text that spans textblocks joins them with this.
+pub const BLOCK_SEPARATOR: char = '\n';
+
+fn is_textblock(name: &str) -> bool {
+    node_spec(name).and_then(|s| s["content"].as_array()).is_some_and(|items| items.iter().any(|i| matches_of(&i["of"], "text")))
+}
+
+/// A position in anchor text: `(textblock index in document order, char offset in that block)`.
+pub type TextPos = (usize, usize);
+
+pub struct TextBlock {
+    pub block_id: String,
+    pub chars: Vec<char>,
+}
+
+/// The anchor text of every textblock that is part of the document now, in document order.
+pub struct TextIndex {
+    pub blocks: Vec<TextBlock>,
+    by_id: BTreeMap<String, usize>,
+    /// text container → (block, char offset of its run in the block, run length)
+    runs: HashMap<ContainerID, (usize, usize, usize)>,
+}
+
+impl TextIndex {
+    pub fn build(doc: &LoroDoc) -> TextIndex {
+        let mut idx = TextIndex { blocks: Vec::new(), by_id: BTreeMap::new(), runs: HashMap::new() };
+        idx.walk(&doc.get_map("doc"));
+        idx
+    }
+
+    fn walk(&mut self, map: &LoroMap) {
+        let Some(children) = as_list(map.get("children")) else { return };
+        for i in 0..children.len() {
+            let Some(m) = as_map(children.get(i)) else { continue };
+            if !is_textblock(&node_name(&m).unwrap_or_default()) {
+                self.walk(&m);
+                continue;
+            }
+            let block = self.blocks.len();
+            let mut chars = Vec::new();
+            if let Some(inline) = as_list(m.get("children")) {
+                for j in 0..inline.len() {
+                    match inline.get(j) {
+                        Some(ValueOrContainer::Container(Container::Text(t))) => {
+                            let run: Vec<char> = t.to_string().chars().collect();
+                            self.runs.insert(t.id(), (block, chars.len(), run.len()));
+                            chars.extend(run);
+                        }
+                        Some(ValueOrContainer::Container(Container::Map(_))) => chars.push(ATOM_CHAR),
+                        _ => {}
+                    }
+                }
+            }
+            let block_id = map_block_id(&m).unwrap_or_default();
+            self.by_id.insert(block_id.clone(), block);
+            self.blocks.push(TextBlock { block_id, chars });
+        }
+    }
+
+    pub fn block(&self, block_id: &str) -> Option<usize> {
+        self.by_id.get(block_id).copied()
+    }
+
+    /// Where an encoded Loro cursor points now. `None` once its text container left the
+    /// document — a block replaced or moved by a block operation is built anew.
+    pub fn cursor(&self, doc: &LoroDoc, encoded: &[u8]) -> Option<TextPos> {
+        let cursor = loro::cursor::Cursor::decode(encoded).ok()?;
+        let (block, base, len) = *self.runs.get(&cursor.container)?;
+        let pos = doc.get_cursor_pos(&cursor).ok()?.current.pos;
+        Some((block, base + pos.min(len)))
+    }
+
+    /// Anchor text of `lo..=hi` and the offset of each block in it.
+    pub fn flat(&self, lo: usize, hi: usize) -> (String, Vec<usize>) {
+        let (mut text, mut starts, mut at) = (String::new(), Vec::new(), 0);
+        for (k, b) in self.blocks[lo..=hi].iter().enumerate() {
+            if k > 0 {
+                text.push(BLOCK_SEPARATOR);
+                at += 1;
+            }
+            starts.push(at);
+            text.extend(b.chars.iter());
+            at += b.chars.len();
+        }
+        (text, starts)
+    }
+
+    /// A char offset into `flat(lo, _)` as a position.
+    pub fn unflat(&self, lo: usize, starts: &[usize], offset: usize) -> TextPos {
+        let k = starts.iter().rposition(|s| *s <= offset).unwrap_or(0);
+        (lo + k, (offset - starts[k]).min(self.blocks[lo + k].chars.len()))
+    }
+
+    pub fn text_between(&self, from: TextPos, to: TextPos) -> String {
+        let (flat, starts) = self.flat(from.0, to.0);
+        flat.chars().skip(from.1).take(starts[to.0 - from.0] + to.1 - from.1).collect()
+    }
 }
 
 #[cfg(test)]

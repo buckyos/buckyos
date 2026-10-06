@@ -10,7 +10,7 @@
 
 - **后台内核已按正式实现完成并通过验收测试**：`src/frame/aiworkspace` 的 `core`（纯逻辑，可编译为 WASM）、`store`（SQLite 与对象存储）、`server`（独立进程与服务协议）。V01–V14、V18–V25 中属于后台的部分全部有自动化测试，共 58 个测试通过，其中 2 个针对真实进程（含三个位置的崩溃恢复）。
 - **系统接入点已改完并能编译**（服务规格、RBAC、构建清单、启停脚本、端口表），scheduler 的启动配置测试通过。**没有在真实 Zone 中启动验证**。
-- **Desktop 应用与浏览器离线已完成并通过端到端测试**：32 个 Playwright 用例对真实后台进程运行通过，覆盖 V01、V06–V08、V11、V13、V15–V18、V23、V25 的浏览器部分。只在 Chromium 上验证；系统模式下的传输只通过了类型检查。详见 §5。
+- **Desktop 应用与浏览器离线已完成并通过端到端测试**：34 个 Playwright 用例对真实后台进程运行通过，覆盖 V01、V06–V08、V11、V13、V15–V18、V23、V25 的浏览器部分与注释锚点（§11-13）。只在 Chromium 上验证；系统模式下的传输只通过了类型检查。详见 §5。
 - 第一期文档 §10 的七项门槛逐项对照见 §7。
 
 ## 2. 交付物
@@ -48,6 +48,8 @@ cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace
 
 2026-10-05 结果：`core` 19 + 7 + 3 + 1、`store` 6 + 12 + 6 + 2（另 1 个性能探测默认忽略）、`server` 2，**58 通过，0 失败**。
 
+2026-10-06 加入注释锚点（第一期文档 §11-13）后：`core` 19 + 7（`anchor.rs`）+ 7 + 3 + 1、`store` 6 + 12 + 6 + 3、`server` 2，**66 通过，0 失败**。
+
 | 编号 | 覆盖的断言（摘要） | 测试 |
 | --- | --- | --- |
 | V01 | 同输入得到与 ndn-lib 相同的 canonical 文本、`jobj`/`cyfile` ObjectId、`mix256` chunk id；重复键、超 2^53 整数、负零、非有限数被拒绝；篡改内容校验失败；非 NFC 字符串原样进入哈希 | `store/tests/kernel.rs::v01_*`、`core/tests/vectors.rs`、`core/src/canonical.rs` 单测 |
@@ -74,6 +76,7 @@ cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace
 | V25 | 写锁（第一期文档 §11-9 的全部条目） | `kernel.rs::write_locks`、`collab.rs::v18_*` 第 8 步、`replica.rs` 第 4 步 |
 | 崩溃恢复 | 提交混合批次时在事务前、事务中、落盘后应答前分别 `abort()`；重启后前两处无任何痕迹、第三处完整存在；原键重发恰好生效一次；内存 CRDT 文档与库一致 | `process.rs::crash_recovery_at_three_positions` |
 | 离线引擎（V15/V17 的内核部分） | 离线编辑、链式依赖占位、关闭重开后由“确认层 + 待提交”重建工作视图；追赶后确认层 ContentRoot 与后台相等；同格冲突与目标被删的待提交转为冲突并保留；响应丢失按键识别不重复应用；权限撤回后输入保留；`lock_required` 对象不可离线编辑；恢复换代次后旧待提交不被重放 | `store/tests/replica.rs` |
+| 注释锚点（§11-13） | 富文本字符范围随并发输入跟随（含跨块、含代理对字符）；块被 move/replace 重建后按原文找回，改写后降级为块级，块删除后按原文全文唯一匹配找回，实体删除为 `target_deleted`；块级注释剪切粘贴后按原文找到新块、无原文则降级为实体、撤销删除后复原；应用种类原样保存且 `unchecked`；严格写入拒绝未知种类、格式错误的游标与 context、超限、不存在的目标；重放与导入保留较新后台的锚点并读回 `unsupported`；离线副本应用这样的提交不停止同步；只有作者能重新挂锚、换目标须重写旧 range/context、撤销复原；`list_annotations` 按目标/页面与个人作用域过滤 | `core/tests/anchor.rs`、`planner.rs`、`kernel.rs::v19_*`、`replica.rs::replica_keeps_anchors_it_does_not_know` |
 
 ## 5. Desktop 应用与浏览器离线
 
@@ -89,6 +92,8 @@ PATH=<cargo bin>:$PATH pnpm exec playwright test --config=playwright.aiworkspace
 ```
 
 2026-10-05 结果：`tsc -b` 通过，构建通过，新代码 ESLint 0 问题；Playwright **18 通过**（由实现者运行两次、由本文作者独立复跑一次）。
+
+2026-10-06 加入注释锚点后：`tsc -b`、ESLint 通过；全部 aiworkspace 用例 **34 通过**（新增 `annotations.spec.ts` 2 个：选中文字批注、就近显示、随输入跟随、move/replace/delete 后逐级降级；应用自定义范围种类由应用定位、后台原样保存）；`annotations.spec.ts` 另连续复跑 5 次均通过。
 
 | 验收 | 覆盖 |
 | --- | --- |
@@ -114,7 +119,7 @@ PATH=<cargo bin>:$PATH pnpm exec playwright test --config=playwright.aiworkspace
 - 变化通知只有长轮询，未接 kevent；锁持有者每 5 秒随大纲刷新。
 - 版面只渲染第一个页面的 `flow` 布局，忽略 `placement`；重排用按钮，无拖拽。
 - 表格：无分组、手工顺序、列宽调整；筛选编辑器只能构造单个条件；`object_ref` 值只显示不可编辑；URL 查询表没有专门界面。
-- 记录 schema 不可编辑；注释只能创建/删除、总是共享、类型 `note`。
+- 记录 schema 不可编辑；注释可对选中的文字或光标所在块创建，就近显示在富文本右侧，但创建后不能编辑（重新挂锚只有接口没有界面）、总是共享、类型 `note`；静态嵌入的富文本不显示注释。
 - 没有授权、检查点、`diag.*` 的界面；撤销没有“部分撤销”界面（冲突时如实报告且不执行）。
 - 富文本没有链接地址与有序列表起始值的界面、没有远端光标；真实操作系统输入法未测（只测了 CDP 模拟的组合输入）。
 - 锁在焦点离开 30 秒后释放而不是失焦即释放；没有“请求交接”；20 秒续约路径未被测试覆盖。
@@ -225,3 +230,4 @@ PATH=<cargo bin>:$PATH pnpm exec playwright test --config=playwright.aiworkspace
 | --- | --- |
 | 2026-10-05 | 初版：后台内核、服务、系统接入点、性能探测 |
 | 2026-10-05 | 补 §5：Desktop 应用与浏览器离线的结果 |
+| 2026-10-06 | 注释锚点（第一期文档 §11-13、详细设计 §3.7）：三层锚点与适配器、`doc.list_annotations`、编辑器内高亮与批注卡片；验收矩阵增行，后台测试 66 项 |

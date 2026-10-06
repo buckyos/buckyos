@@ -1,6 +1,6 @@
 /* Cell bodies: what a `buckyos.cell` shows for each `view.type` (design §3.5.1), plus the write-lock bar. */
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ServiceFailure } from '../api/client'
 import { describeError, type ReadOk } from '../api/session'
 import type { AssetContent, CellPayload, EntityEnvelope, Json, KeyedContent, RecordContent, RecordPropDef, Reference } from '../api/types'
@@ -133,7 +133,8 @@ function TableCellHost({ cellId, source, embedded }: { cellId: string; source: E
   const lockBlocks = (access.required && !access.held) || readOnlyNow
   return (
     <LockScope entity={embedded ? undefined : source}>
-      <TableViewCell cellId={cellId} readOnly={embedded || lockBlocks} compact={embedded} annotations={ui.annotations} onAnnotate={embedded ? undefined : ui.annotate} />
+      <TableViewCell cellId={cellId} readOnly={embedded || lockBlocks} compact={embedded} annotations={ui.annotations}
+        onAnnotate={embedded ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
     </LockScope>
   )
 }
@@ -159,8 +160,7 @@ function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelop
   const access = useWriteAccess(entity)
   const collabRef = useRef<RichTextCollab | null>(null)
   const onCollab = useCallback((collab: RichTextCollab | null) => { collabRef.current = collab }, [])
-  const annotateBlock = useCallback((blockId: string) => ui.annotate({ entity_id: entityId, selector: { kind: 'richtext_block', block_id: blockId } }, `块 ${blockId}`), [ui, entityId])
-  const blockNotes = ui.annotations.filter((mark) => mark.payload.target.entity_id === entityId && mark.payload.target.selector?.kind === 'richtext_block')
+  const marks = useMemo(() => ui.annotations.filter((mark) => mark.payload.target.entity_id === entityId), [ui.annotations, entityId])
   return (
     <LockScope entity={entity} onAcquired={() => collabRef.current?.resume()}>
       <RichTextEditor
@@ -169,18 +169,12 @@ function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelop
         entities={ui.entities}
         renderEmbed={renderEmbed}
         onOpenEntity={ui.openEntity}
-        onAnnotateBlock={access.editable ? annotateBlock : undefined}
+        annotations={marks}
+        activeAnnotation={ui.activeAnnotation}
+        onActivateAnnotation={ui.setActiveAnnotation}
+        onAnnotate={ui.annotate ?? undefined}
         onCollab={onCollab}
       />
-      {blockNotes.length > 0 && (
-        <div className="aiws-block-notes">
-          {blockNotes.map((mark) => (
-            <span key={mark.entityId} className="aiws-chip aiws-chip-note" title={mark.payload.body}>
-              注 · 块 {mark.payload.target.selector?.block_id}{mark.anchorState === 'target_deleted' ? '（目标已删除）' : ''}
-            </span>
-          ))}
-        </div>
-      )}
     </LockScope>
   )
 }

@@ -15,6 +15,7 @@ export const replica_confirmed_rows: (a: number, b: number) => void;
 export const replica_confirmed_seq: (a: number) => number;
 export const replica_discard: (a: number, b: number, c: number) => number;
 export const replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
+export const replica_list_annotations: (a: number, b: number, c: number, d: number) => void;
 export const replica_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
 export const replica_new: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
 export const replica_next_to_send: (a: number, b: number) => void;

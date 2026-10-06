@@ -143,8 +143,29 @@ export interface RecordContent { schema: { properties: RecordPropDef[] }; props:
 export interface AssetPayload { object_id: string; media_type?: string; size?: number; file_name?: string; image?: { width: number; height: number } }
 export interface AssetContent extends KeyedContent<AssetPayload> { availability: 'available' | 'missing' | 'corrupt' }
 
-export interface AnnotationPayload { target: Reference; kind: 'note' | 'highlight'; body: string; style?: Record<string, Json>; author?: string }
-export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor_state: 'resolved' | 'target_deleted' }
+/** A position inside an annotation's target: a built-in kind (`richtext_text`) or an application's `<app>/<name>`. */
+export interface AnnotationRange { kind: string; [key: string]: Json }
+export interface AnnotationQuote { exact: string; prefix?: string; suffix?: string }
+export interface AnnotationContext { quote?: AnnotationQuote; label?: string }
+export interface AnnotationPayload {
+  target: Reference
+  range?: AnnotationRange
+  context?: AnnotationContext
+  kind: 'note' | 'highlight'
+  body: string
+  style?: Record<string, Json>
+  author?: string
+}
+/** Where an annotation can be shown now (design §3.7): resolved at the recorded depth, degraded to a coarser one, … */
+export interface AnchorInfo {
+  state: 'resolved' | 'degraded' | 'target_deleted' | 'unsupported'
+  level: 'range' | 'target' | 'entity' | 'none'
+  range_status?: 'exact' | 'relocated' | 'lost' | 'unchecked'
+  position?: { block_id?: string; end_block_id?: string; text?: string }
+}
+export interface AnnotationContent extends KeyedContent<AnnotationPayload> { anchor: AnchorInfo }
+export type AnnotationRead = EntityEnvelope & { content: AnnotationContent }
+export interface ListAnnotationsParams { target_ids?: string[]; parent_id?: string }
 
 export interface AstNode { type: string; attrs?: Record<string, Json>; content?: AstNode[]; marks?: { type: string; attrs?: Record<string, Json> }[]; text?: string }
 export interface RichTextContent { editor_schema: string; content: AstNode; content_rev?: number; blocks: Record<string, { hash: string; struct_rev: number }> }

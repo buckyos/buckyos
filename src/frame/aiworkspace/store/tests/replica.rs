@@ -284,3 +284,24 @@ fn unknown_results_revoked_permission_and_epoch_change() {
     assert_eq!(ws.commit(&req, &bob(), &CommitOpts::default())["code"], "EPOCH_MISMATCH");
     assert_eq!(rep.pending.len(), 1, "pending input is kept for the user, not discarded");
 }
+
+/// A commit accepted by a newer backend (an anchor kind this core does not know) must not stop
+/// the replica: it is applied as it is and reads back as `unsupported`.
+#[test]
+fn replica_keeps_anchors_it_does_not_know() {
+    let env = env();
+    let id = project(&env);
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    let mut rep = bootstrap(&mut ws, &alice(), 4343);
+    // stand-in for a newer backend: the import path keeps what a strict write would refuse
+    let req = json!({ "protocol_version": "0.1", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
+        "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "page-main",
+            "order_key": "zz", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_line", "line": 2 } },
+                "range": { "kind": "richtext_columns", "from": 1 }, "kind": "note", "body": "来自新版本" } }] });
+    let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None });
+    assert_eq!(r["status"], "accepted", "{r}");
+    catch_up(&ws, &alice(), &mut rep);
+    let read = aiworkspace_core::read::read(&rep.working, &aiworkspace_core::access::Access::full("alice"), "note-future", None).unwrap();
+    assert_eq!(read["content"]["anchor"], json!({ "state": "unsupported", "level": "entity" }));
+}

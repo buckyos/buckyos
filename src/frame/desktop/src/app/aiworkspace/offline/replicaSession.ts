@@ -26,6 +26,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo,
+  type AnnotationContent, type ListAnnotationsParams,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -433,6 +434,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
 
   async readMany(targets: { entity_id: string; selector?: Selector }[]) {
     return (await this.replica.call('readMany', targets)).map((entry) => ('error' in entry ? entry : this.shape<unknown>(entry)))
+  }
+
+  async listAnnotations(params: ListAnnotationsParams) {
+    return (await this.replica.call('listAnnotations', params)).map((entry) => this.shape<AnnotationContent>(entry))
   }
 
   async query(params: QueryParams): Promise<QueryPage> {

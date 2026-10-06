@@ -56,7 +56,7 @@ fn fixture_replays_and_reads_back() {
     let notes = ws.read(&alice(), "notes", None).unwrap();
     assert_eq!(notes["content"]["content"]["content"][0]["content"][0]["text"], "本周项目进展");
     assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "available");
-    assert_eq!(ws.read(&alice(), "note-budget", None).unwrap()["content"]["anchor_state"], "resolved");
+    assert_eq!(ws.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
     assert_eq!(ws.resolve(&alice(), None, Some("/项目工作区/任务")).unwrap()["reference"]["entity_id"], "tasks");
     let refs = ws.verify_refs().unwrap();
     assert_eq!(refs["ok"], true, "{refs}");
@@ -100,7 +100,7 @@ fn v02_v08_identity_survives_rename_move_sort() {
     let cell = ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_cell", "record_id": "task-42", "field_id": "budget" }))).unwrap();
     assert_eq!(cell["content"]["value"], "1200.00");
     let note = ws.read(&alice(), "note-budget", None).unwrap();
-    assert_eq!(note["content"]["anchor_state"], "resolved");
+    assert_eq!(note["content"]["anchor"]["state"], "resolved");
     assert_eq!(note["content"]["payload"]["target"]["selector"]["record_id"], "task-42");
     assert_eq!(ws.resolve(&alice(), Some(&json!({ "entity_id": "tasks" })), None).unwrap()["type_id"], "buckyos.table-source");
     // fixed_revision resolves the immutable content even after the entity changed
@@ -286,6 +286,15 @@ fn v19_change_stream() {
     let for_bob = ws.get_changes(&bob(), &epoch, head, 100, true).unwrap();
     assert!(for_bob["changes"][0].get("idempotency_key").is_none(), "other people's keys are not visible");
     assert_eq!(for_bob["changes"][3]["ops"][0]["entity_id"], "bob-note");
+    // doc.list_annotations: by target and by page, personal ones only for their owner
+    let listed = |caller: aiworkspace_store::workspace::Caller, parent: Option<&str>| -> Vec<String> {
+        let v = ws.list_annotations(&caller, &["notes".into(), "tasks".into()], parent).unwrap();
+        v["annotations"].as_array().unwrap().iter().map(|a| a["entity_id"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(listed(alice(), None), ["note-budget"]);
+    assert_eq!(listed(bob(), Some("page-main")), ["note-budget", "bob-note"]);
+    let v = ws.list_annotations(&bob(), &[], Some("page-main")).unwrap();
+    assert_eq!(v["annotations"][1]["content"]["anchor"], json!({ "state": "resolved", "level": "target" }));
     assert_eq!(ws.get_changes(&alice(), "ep_other", 0, 10, true).unwrap_err().code.as_str(), "EPOCH_MISMATCH");
     // paging: `more` until the head is reached
     let page = ws.get_changes(&alice(), &epoch, 0, 2, false).unwrap();

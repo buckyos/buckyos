@@ -13,9 +13,12 @@ import { EditorView } from 'prosemirror-view'
 import { describeError } from '../api/session'
 import { testHooks } from '../api/testHooks'
 import type { AstNode, EntityEnvelope, Reference, RichTextContent } from '../api/types'
-import { useLoad, useStore, useVersion } from '../state/hooks'
+import { useLoad, useStore, useVersion, type AnnotationMark } from '../state/hooks'
 import type { WorkspaceStore } from '../state/store'
-import { blockIdAt, blockIdPlugin } from './blockId'
+import type { CapturedAnchor } from '../anchors/registry'
+import { annotationsPlugin, captureAnchor, makeHost, richTextAnchors, selectionOf, setAnnotations, type Placement } from '../anchors/richtext'
+import { AnnotationGutter } from '../ui/annotations'
+import { blockIdPlugin } from './blockId'
 import { RichTextCollab } from './collab'
 import { astPlainText, deleteDraft, listDrafts, type RichTextDraft } from './drafts'
 
@@ -26,7 +29,12 @@ export interface RichTextEditorProps {
   entities: EntityEnvelope[]
   renderEmbed: (reference: Reference) => ReactNode
   onOpenEntity: (entityId: string) => void
-  onAnnotateBlock?: (blockId: string) => void
+  /** Annotations of this rich text, shown where they resolve. */
+  annotations?: AnnotationMark[]
+  activeAnnotation?: string | null
+  onActivateAnnotation?: (entityId: string | null) => void
+  /** Start an annotation on the selection (absent without the `comment` capability). */
+  onAnnotate?: (anchor: CapturedAnchor) => void
   /** Called with the collab once it is open (the host uses it to resume after a lock was re-acquired). */
   onCollab?: (collab: RichTextCollab | null) => void
 }
@@ -107,6 +115,7 @@ function insertLink(schema: Schema, entityId: string, label: string): Command {
 function buildView(
   host: HTMLElement, store: WorkspaceStore, collab: RichTextCollab, isEditable: () => boolean,
   setEmbeds: (update: (previous: Embeds) => Embeds) => void, onOpenEntity: (entityId: string) => void,
+  annotations: { onPlaced: (placements: Placement[]) => void; onClick: (annotationId: string) => void },
 ): { view: EditorView; dispose: () => void } {
   const schema = store.pmSchema
   const working = collab.working
@@ -154,6 +163,7 @@ function buildView(
         LoroSyncPlugin({ doc: working as LoroDocType, mapping }),
         undoState,
         blockIdPlugin(),
+        annotationsPlugin({ entityId: collab.entityId, loro: () => working, ...annotations }),
         keymap({
           // The editor has no undo history of its own: these keys go to the UndoCoordinator (design §2.7).
           'Mod-z': coordinatorUndo,
@@ -216,6 +226,7 @@ function buildView(
   if (hooks) {
     hooks.editors[collab.entityId] = () => view.state.doc.toJSON()
     hooks.canonicalize = (ast) => JSON.parse(store.core.richtext_canonicalize(JSON.stringify(ast))) as unknown
+    hooks.richTextAnchors = richTextAnchors
   }
   return {
     view,
@@ -230,32 +241,61 @@ function buildView(
   }
 }
 
-function EditorSurface({ collab, editable, entities, renderEmbed, onOpenEntity, onAnnotateBlock }: RichTextEditorProps & { collab: RichTextCollab }) {
+const NO_ANNOTATIONS: AnnotationMark[] = []
+
+function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) {
+  const { collab, editable, entities, renderEmbed, onOpenEntity, onAnnotate } = props
+  const annotations = props.annotations ?? NO_ANNOTATIONS
+  const activeAnnotation = props.activeAnnotation ?? null
   const store = useStore()
   const hostRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const editableRef = useRef(editable)
   const openEntityRef = useRef(onOpenEntity)
+  const activateRef = useRef(props.onActivateAnnotation)
   const [embeds, setEmbeds] = useState<Embeds>(new Map())
   const [pick, setPick] = useState<'embed' | 'link' | null>(null)
   const [showDrafts, setShowDrafts] = useState(false)
+  const [built, setBuilt] = useState<{ view: EditorView; host: HTMLElement } | null>(null)
+  const [placements, setPlacements] = useState<Placement[]>([])
 
   useEffect(() => {
     editableRef.current = editable
     openEntityRef.current = onOpenEntity
+    activateRef.current = props.onActivateAnnotation
     viewRef.current?.setProps({ editable: () => editable })
-  }, [editable, onOpenEntity])
+  }, [editable, onOpenEntity, props.onActivateAnnotation])
 
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
-    const built = buildView(host, store, collab, () => editableRef.current, setEmbeds, (id) => openEntityRef.current(id))
-    viewRef.current = built.view
+    const result = buildView(host, store, collab, () => editableRef.current, setEmbeds, (id) => openEntityRef.current(id), {
+      onPlaced: setPlacements,
+      onClick: (id) => activateRef.current?.(id),
+    })
+    viewRef.current = result.view
+    setBuilt({ view: result.view, host })
     return () => {
       viewRef.current = null
-      built.dispose()
+      setBuilt(null)
+      result.dispose()
     }
   }, [store, collab])
+
+  useEffect(() => {
+    if (built && !built.view.isDestroyed) setAnnotations(built.view, annotations, activeAnnotation)
+  }, [built, annotations, activeAnnotation])
+
+  const annotate = () => {
+    const view = viewRef.current
+    if (!view || !onAnnotate) return
+    const anchor = captureAnchor(makeHost(collab.entityId, view.state.doc, collab.working, selectionOf(view)))
+    if (anchor) onAnnotate(anchor)
+    else store.notify('info', '请先选中要批注的文字，或把光标放在要批注的块里。')
+  }
+  const annotateButton = onAnnotate && (
+    <button type="button" data-testid="aiws-annotate" title="批注选中的文字；没有选中时批注光标所在的块" onMouseDown={(event) => event.preventDefault()} onClick={annotate}>批注</button>
+  )
 
   const run = (command: Command) => {
     const view = viewRef.current
@@ -287,21 +327,10 @@ function EditorSurface({ collab, editable, entities, renderEmbed, onOpenEntity, 
           <span className="aiws-toolbar-sep" />
           <button type="button" onClick={() => setPick(pick === 'embed' ? null : 'embed')}>嵌入单元…</button>
           <button type="button" onClick={() => setPick(pick === 'link' ? null : 'link')}>对象链接…</button>
-          {onAnnotateBlock && (
-            <button
-              type="button"
-              data-testid="aiws-annotate-block"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => {
-                const view = viewRef.current
-                const blockId = view ? blockIdAt(view.state.doc, view.state.selection.from) : null
-                if (blockId) onAnnotateBlock(blockId)
-                else store.notify('info', '请先把光标放在要批注的块里。')
-              }}
-            >批注当前块</button>
-          )}
+          {annotateButton}
         </div>
       )}
+      {!editable && annotateButton && <div className="aiws-anno-bar">{annotateButton}</div>}
       {pick && (
         <div className="aiws-inline-form">
           <span>{pick === 'embed' ? '嵌入哪个单元：' : '链接到哪个对象：'}</span>
@@ -322,7 +351,11 @@ function EditorSurface({ collab, editable, entities, renderEmbed, onOpenEntity, 
           <button type="button" onClick={() => setPick(null)}>取消</button>
         </div>
       )}
-      <div ref={hostRef} className="aiws-prose-host" />
+      <div className="aiws-richtext-body">
+        <div ref={hostRef} className="aiws-prose-host" />
+        <AnnotationGutter container={built?.host ?? null} marks={annotations} placements={placements} active={activeAnnotation}
+          onActivate={(id) => props.onActivateAnnotation?.(id)} version={placements.length} />
+      </div>
       {[...embeds].map(([dom, reference]) => createPortal(renderEmbed(reference), dom))}
       <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} />
     </div>

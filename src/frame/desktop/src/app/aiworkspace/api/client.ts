@@ -2,7 +2,7 @@
  * method, no behaviour of its own: retries, idempotency and the change stream live in session.ts. */
 
 import type {
-  ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, Grant, LockInfo, PrepareResult,
+  AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, Grant, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
 } from './types'
 import type { Transport } from './transport'
@@ -45,6 +45,7 @@ export class AiwsClient {
   readMany(ws: Ws, targets: { entity_id: string; selector?: Selector }[]) {
     return this.call<Result<{ results: ReadResult[] }>>('doc.read', { ...ws, targets })
   }
+  listAnnotations(ws: Ws, params: ListAnnotationsParams) { return this.call<Result<{ annotations: AnnotationRead[] }>>('doc.list_annotations', { ...ws, ...params }) }
   listChildren(ws: Ws, entity_id: string) { return this.call<Result<{ children: EntityEnvelope[] }>>('doc.list_children', { ...ws, entity_id }) }
   query(ws: Ws, params: QueryParams) { return this.call<Result<QueryPage>>('doc.query', { ...ws, ...params }) }
   getCollabState(ws: Ws, entity_id: string) { return this.call<Result<CollabState>>('doc.get_collab_state', { ...ws, entity_id }) }

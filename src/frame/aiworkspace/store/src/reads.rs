@@ -49,6 +49,17 @@ impl Workspace {
         Ok(json!({ "ok": true, "parent_id": parent_id, "children": children, "head_seq": self.head_seq }))
     }
 
+    /// `doc.list_annotations`: annotations anchored to `target_ids` and/or placed under `parent_id`.
+    pub fn list_annotations(&self, caller: &Caller, target_ids: &[String], parent_id: Option<&str>) -> WsResult<Value> {
+        let access = self.require_ws_any(caller)?;
+        if target_ids.len() > 1000 {
+            return Err(WsError::limit("at most 1000 target_ids"));
+        }
+        let now = self.now();
+        let annotations = read::list_annotations(&self.ctx(&now), &access, target_ids, parent_id)?;
+        Ok(json!({ "ok": true, "annotations": annotations, "head_seq": self.head_seq }))
+    }
+
     /// The whole readable tree as envelopes (the "outline"): one call for UIs.
     pub fn outline(&self, caller: &Caller) -> WsResult<Value> {
         let access = self.require_ws_any(caller)?;

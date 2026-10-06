@@ -5,7 +5,8 @@ Backend of the BuckyOS AI Workspace (phase one). Design:
 [第一期内置对象详细设计](<../../../doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md>) (called "the design" below).
 
 ```text
-core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no tokio/fs/sqlite/clock/random)
+core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no tokio/fs/sqlite/clock/random);
+                              anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters
 store/     aiworkspace-store  SQLite storage, object store, packages, Mock runs, URL sources
 server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth
 wasm/      aiworkspace-wasm   wasm-bindgen facade of core for the browser replica (`wasm/build.sh` writes it into the Desktop app)
@@ -33,7 +34,7 @@ generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the
 ## Tests
 
 ```bash
-cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner
+cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors
 cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
 cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP
@@ -70,6 +71,7 @@ string is used only for an invalid token, an unknown method or an unparsable req
 | `doc.resolve` | `reference` or `path` |
 | `doc.read` | `entity_id`, `selector?` — or `targets: [{ entity_id, selector? }]` |
 | `doc.list_children` | `entity_id`, `include_deleted?` |
+| `doc.list_annotations` | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
 | `doc.query` | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `limit`, `cursor?`, `consistency?`, `source_revision?` |
 | `doc.source_capabilities` | `source_id` (URL query tables) |
 | `doc.get_collab_state` | `entity_id` |
