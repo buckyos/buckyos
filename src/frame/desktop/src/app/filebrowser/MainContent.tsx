@@ -632,7 +632,7 @@ function DesktopListView({
 // ─── Icon grid (virtualized by row, column count tracks container width) ───
 
 const GRID_CELL_WIDTH = 172
-const GRID_ROW_HEIGHT = 152
+const GRID_ROW_HEIGHT = 160
 
 function IconGridView({
   presentation,
@@ -778,7 +778,7 @@ function IconGridCell({
   const { entry } = item
   const broken = isBrokenItem(item)
   return (
-    <div className="relative">
+    <div className="relative min-w-0">
       <button
         type="button"
         {...handlers}
@@ -809,7 +809,10 @@ function IconGridCell({
           <EntryThumbnail entry={entry} size={28} />
           {isReferenceItem(item) ? <LinkBadge /> : null}
         </div>
-        <span className="line-clamp-2 text-[12px] font-medium text-[color:var(--cp-text)]">
+        <span
+          title={entry.name}
+          className="line-clamp-2 w-full break-words text-[12px] font-medium text-[color:var(--cp-text)]"
+        >
           {entry.name}
         </span>
         <span className="text-[10px] text-[color:var(--cp-muted)]">
