@@ -3478,6 +3478,93 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
   assert.match(await invalid.text(), /unknown body field invented/);
 });
 
+test("T1.5 all URL artifact fixtures use the separate artifact authority", async () => {
+  const catalog = await loadProviderProtocolCatalog();
+  const contracts = catalog.providers.flatMap((provider) =>
+    provider.contracts.flatMap((contract) => {
+      const urls = JSON.stringify(contract).match(/http:\/\/[^"\\]+\/artifacts\/[^"\\]+/g) ?? [];
+      return urls.length === 0
+        ? []
+        : [{ provider: provider.provider_driver, contract: contract.id, urls }];
+    })
+  );
+  assert.ok(contracts.length > 0);
+  assert.deepEqual(
+    new Set(contracts.map((entry) => entry.provider)),
+    new Set(["fal", "minimax", "glm", "doubao-agent-plan", "doubao", "qwen"]),
+  );
+  for (const entry of contracts) {
+    for (const url of entry.urls) {
+      assert.equal(
+        new URL(url).hostname,
+        "mock-artifact",
+        `${entry.provider}/${entry.contract} URL artifact must use the separate artifact authority`,
+      );
+    }
+  }
+});
+
+test("T1.5 URL artifact server preserves signed URLs and rejects Provider credentials", async (context) => {
+  const catalog = await loadProviderProtocolCatalog();
+  let handler: ReturnType<typeof createT15MockHandler>;
+  const artifactServer = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    artifactServer.once("error", reject);
+    artifactServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  const artifactAddress = artifactServer.address();
+  assert.ok(artifactAddress && typeof artifactAddress === "object");
+  handler = createT15MockHandler(catalog, { artifactPort: artifactAddress.port });
+  const providerServer = createServer((request, response) => void handler(request, response));
+  await new Promise<void>((resolvePromise, reject) => {
+    providerServer.once("error", reject);
+    providerServer.listen(0, "127.0.0.1", resolvePromise);
+  });
+  context.after(() => Promise.all([
+    new Promise<void>((resolvePromise, reject) =>
+      artifactServer.close((error) => error ? reject(error) : resolvePromise())),
+    new Promise<void>((resolvePromise, reject) =>
+      providerServer.close((error) => error ? reject(error) : resolvePromise())),
+  ]).then(() => undefined));
+  const providerAddress = providerServer.address();
+  assert.ok(providerAddress && typeof providerAddress === "object");
+  const providerBase = `http://127.0.0.1:${providerAddress.port}`;
+  const genericArtifactUrl = `http://127.0.0.1:${artifactAddress.port}/artifacts/result.png`;
+  assert.equal((await fetch(genericArtifactUrl)).status, 200);
+  assert.equal((await fetch(genericArtifactUrl, {
+    headers: { authorization: "Bearer leaked-provider-token" },
+  })).status, 400);
+  assert.equal((await fetch(`${providerBase}/__mock/select`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider_driver: "doubao",
+      contract_id: "doubao.images.v3",
+      api_type: "image.txt2img",
+      scenario: "success",
+    }),
+  })).status, 200);
+  const generated = await fetch(`${providerBase}/api/v3/images/generations`, {
+    method: "POST",
+    headers: { authorization: "Bearer t15-secret", "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "doubao-seedream-5-0-pro-260628",
+      prompt: "a fox",
+      response_format: "url",
+    }),
+  });
+  assert.equal(generated.status, 200);
+  const artifactUrl = ((await generated.json()) as { data: Array<{ url: string }> }).data[0].url;
+  assert.equal(new URL(artifactUrl).port, String(artifactAddress.port));
+  assert.notEqual(new URL(artifactUrl).origin, providerBase);
+  const artifact = await fetch(artifactUrl);
+  assert.equal(artifact.status, 200);
+  assert.deepEqual([...new Uint8Array(await artifact.arrayBuffer())], [0xff, 0xd8, 0xff, 0xd9]);
+  assert.equal((await fetch(artifactUrl, {
+    headers: { authorization: "Bearer leaked-provider-token" },
+  })).status, 400);
+});
+
 test("T1.5 Provider mock serves every contract for all Provider profiles", async (context) => {
   const catalog = await loadProviderProtocolCatalog();
   assert.equal(catalog.providers.length, 15);
@@ -4040,10 +4127,11 @@ test("T1.5 Provider mock completes every declared async lifecycle", async (conte
         /http:\/\/127\.0\.0\.1:\d+\/artifacts\/[^"\\]+/,
       )?.[0];
       if (artifactUrl) {
+        const artifactResponse = await fetch(artifactUrl);
         assert.equal(
-          (await fetch(artifactUrl)).status,
+          artifactResponse.status,
           200,
-          `${contract.id} artifact`,
+          `${contract.id} artifact ${artifactUrl}: ${await artifactResponse.clone().text()}`,
         );
       }
     }

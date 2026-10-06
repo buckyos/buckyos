@@ -157,22 +157,23 @@ function rewriteMockUrls(
   value: unknown,
   authority: string,
   endpoint: string,
+  artifactAuthority = authority,
 ): unknown {
   if (typeof value === "string") {
-    return value.replaceAll(
+    return value.replaceAll("http://mock-artifact", `http://${artifactAuthority}`).replaceAll(
       "http://mock/{endpoint}",
       `http://${authority}/${endpoint}`,
     )
       .replaceAll("http://mock", `http://${authority}`);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => rewriteMockUrls(item, authority, endpoint));
+    return value.map((item) => rewriteMockUrls(item, authority, endpoint, artifactAuthority));
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map((
         [key, item],
-      ) => [key, rewriteMockUrls(item, authority, endpoint)]),
+      ) => [key, rewriteMockUrls(item, authority, endpoint, artifactAuthority)]),
     );
   }
   return value;
@@ -360,7 +361,10 @@ function streamFixture(contract: ProviderProtocolContract): string {
   }
 }
 
-export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
+export function createT15MockHandler(
+  catalog: ProviderProtocolCatalog,
+  options: { artifactPort?: number } = {},
+) {
   const catalogDrivers = new Set(
     catalog.providers.map((provider) => provider.provider_driver),
   );
@@ -388,6 +392,34 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
   ): Promise<void> => {
     try {
       const url = new URL(request.url ?? "/", "http://mock.invalid");
+      if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
+        if (request.headers.authorization) {
+          return json(response, 400, { error: "artifact request leaked Provider authorization" });
+        }
+        if (
+          url.pathname.startsWith("/artifacts/doubao") &&
+          url.searchParams.get("X-Tos-Signature") !== "t15-signature"
+        ) {
+          return json(response, 403, { error: "signed artifact query was not preserved" });
+        }
+        if (url.pathname.includes("unavailable")) {
+          return json(response, 404, { error: "artifact unavailable" });
+        }
+        const mime = url.pathname.endsWith(".png")
+          ? "image/png"
+          : url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg")
+          ? "image/jpeg"
+          : url.pathname.endsWith(".wav")
+          ? "audio/wav"
+          : "video/mp4";
+        response.writeHead(200, { "content-type": mime });
+        response.end(url.pathname.startsWith("/artifacts/doubao")
+          ? url.pathname.endsWith(".mp4")
+            ? Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0])
+            : Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+          : Buffer.from("mock-artifact"));
+        return;
+      }
       if (url.pathname === "/__mock/health") {
         return json(response, 200, { ok: true, revision: catalog.revision });
       }
@@ -635,6 +667,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
               contract.async_result_fixture ?? {},
               request.headers.host ?? "127.0.0.1",
               url.pathname.replace(/^\//, ""),
+              artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
             ),
           );
         }
@@ -679,13 +712,18 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           contract.async_result_fixture ?? {},
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
         ) as Record<string, unknown>;
         const task = (result.task ?? {}) as Record<string, unknown>;
         task.status = status;
         if (status === "failed") task.error = { code: "content_rejected", message: "Video content was rejected" };
         if (selection.scenario === "async_artifact_unavailable") {
           task.content = {
-            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+            url: artifactUrl(
+              request.headers.host ?? "127.0.0.1",
+              options.artifactPort,
+              "/artifacts/unavailable.mp4",
+            ),
           };
         }
         result.task = task;
@@ -768,6 +806,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           contract.async_result_fixture ?? {},
           request.headers.host ?? "127.0.0.1",
           "",
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
         ) as Record<string, unknown>;
         return json(response, 200, result);
       }
@@ -806,8 +845,12 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
             status: "succeeded",
             duration: 5, usage: { completion_tokens: 100, total_tokens: 100 },
             content: { video_url: selection.scenario === "async_artifact_unavailable"
-              ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-              : `http://${request.headers.host}/artifacts/doubao.mp4` },
+              ? artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/unavailable.mp4",
+              )
+              : `http://${artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort)}/artifacts/doubao.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature` },
           });
       }
       if (
@@ -849,10 +892,15 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
           contract.async_result_fixture ?? {},
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
+          artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
         ) as Record<string, unknown>;
         if (selection.scenario === "async_artifact_unavailable") {
           result.video_result = [{
-            url: `http://${request.headers.host}/artifacts/unavailable.mp4`,
+            url: artifactUrl(
+              request.headers.host ?? "127.0.0.1",
+              options.artifactPort,
+              "/artifacts/unavailable.mp4",
+            ),
           }];
         }
         return json(response, 200, result);
@@ -890,8 +938,16 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
               generatedSamples: [{
                 video: {
                   uri: selection.scenario === "async_artifact_unavailable"
-                    ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-                    : `http://${request.headers.host}/artifacts/result.mp4`,
+                    ? artifactUrl(
+                      request.headers.host ?? "127.0.0.1",
+                      options.artifactPort,
+                      "/artifacts/unavailable.mp4",
+                    )
+                    : artifactUrl(
+                      request.headers.host ?? "127.0.0.1",
+                      options.artifactPort,
+                      "/artifacts/result.mp4",
+                    ),
                 },
               }],
             },
@@ -958,28 +1014,20 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         return json(response, 200, {
           file: {
             download_url: selection.scenario === "async_artifact_unavailable"
-              ? `http://${request.headers.host}/artifacts/unavailable.mp4`
-              : `http://${request.headers.host}/artifacts/result.mp4`,
+              ? artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/unavailable.mp4",
+              )
+              : artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/result.mp4",
+              ),
           },
           base_resp: { status_code: 0, status_msg: "success" },
         });
       }
-      if (url.pathname.startsWith("/artifacts/") && request.method === "GET") {
-        if (url.pathname.includes("unavailable")) {
-          return json(response, 404, { error: "artifact unavailable" });
-        }
-        const mime = url.pathname.endsWith(".png")
-          ? "image/png"
-          : url.pathname.endsWith(".jpg") || url.pathname.endsWith(".jpeg")
-          ? "image/jpeg"
-          : url.pathname.endsWith(".wav")
-          ? "audio/wav"
-          : "video/mp4";
-        response.writeHead(200, { "content-type": mime });
-        response.end(Buffer.from("mock-artifact"));
-        return;
-      }
-
       if (
         contract.async_protocol === "doubao_asr" &&
         (url.pathname === contract.path ||
@@ -1311,6 +1359,7 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
         rawFixture,
         request.headers.host ?? "127.0.0.1",
         url.pathname.replace(/^\//, ""),
+        artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
       );
       return json(response, 200, fixture);
     } catch (error) {
@@ -1319,11 +1368,21 @@ export function createT15MockHandler(catalog: ProviderProtocolCatalog) {
   };
 }
 
-function port(args: string[]): number {
-  const index = args.indexOf("--port");
-  const value = index >= 0 ? Number(args[index + 1]) : 18081;
+function artifactAuthority(authority: string, artifactPort?: number): string {
+  if (!artifactPort) return authority;
+  const hostname = new URL(`http://${authority}`).hostname;
+  return hostname.includes(":") ? `[${hostname}]:${artifactPort}` : `${hostname}:${artifactPort}`;
+}
+
+function artifactUrl(authority: string, artifactPort: number | undefined, path: string): string {
+  return `http://${artifactAuthority(authority, artifactPort)}${path}`;
+}
+
+function port(args: string[], name = "--port", fallback = 18081): number {
+  const index = args.indexOf(name);
+  const value = index >= 0 ? Number(args[index + 1]) : fallback;
   if (!Number.isInteger(value) || value < 1 || value > 65535) {
-    throw new Error("--port must be 1..65535");
+    throw new Error(`${name} must be 1..65535`);
   }
   return value;
 }
@@ -1334,13 +1393,22 @@ if (
 ) {
   const catalog = await loadProviderProtocolCatalog();
   const listenPort = port(process.argv.slice(2));
-  const handler = createT15MockHandler(catalog);
+  const artifactPort = port(process.argv.slice(2), "--artifact-port", listenPort + 1);
+  const handler = createT15MockHandler(catalog, { artifactPort });
   const server = createServer((request, response) =>
+    void handler(request, response)
+  );
+  const artifactServer = createServer((request, response) =>
     void handler(request, response)
   );
   server.listen(listenPort, "127.0.0.1", () => {
     process.stdout.write(
       `T1.5 Provider protocol mock listening on http://127.0.0.1:${listenPort}\n`,
+    );
+  });
+  artifactServer.listen(artifactPort, "127.0.0.1", () => {
+    process.stdout.write(
+      `T1.5 artifact mock listening on http://127.0.0.1:${artifactPort}\n`,
     );
   });
 }
