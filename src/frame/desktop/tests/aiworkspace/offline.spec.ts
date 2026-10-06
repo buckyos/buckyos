@@ -148,7 +148,7 @@ test('persistent storage refused by the browser: offline is unavailable with the
 
 test('a reader without workspace-level read cannot prepare: the backend\'s refusal is shown', async ({ page, api, net }) => {
   const ws = await api.sample(ALICE, `scoped ${Date.now()}`)
-  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'page-main', capabilities: ['read'] })
+  await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'surface-main', capabilities: ['read'] })
   await openDesktop(page, net, 'tok-bob')
   await grantPersistence(page.context(), page)
   await openCard(page, ws.workspace_id)
@@ -164,10 +164,10 @@ test('offline: undo removes an unsent submission without the network; Mock run a
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_write_policy', entity_id: 'project-info', policy: 'lock_required', expect: { rev: meta } }])).status).toBe('accepted')
   // a URL query table: its rows live at the source, the replica holds only the definition
   expect((await api.commit(ALICE, ws, [
-    { op: 'entity.create', entity_id: 'events', type_id: 'buckyos.table-source', parent_id: 'page-main', order_key: 'v', payload: {
+    { op: 'entity.create', entity_id: 'events', type_id: 'buckyos.table-source', parent_id: 'data', order_key: 'v', payload: {
       data_mode: 'url_query', source_ref: { kind: 'url_query', source_url: 'fixture://events?rows=1000&snapshot=1', query: {} },
       fields: [{ field_id: 'event_id', name: '事件', type: 'text' }] } },
-    { op: 'entity.create', entity_id: 'cell-events', type_id: 'buckyos.cell', parent_id: 'page-main', order_key: 'w', payload: { source_ref: { entity_id: 'events' }, view: { type: 'table' }, title: '事件（URL 查询表）' } },
+    { op: 'entity.create', entity_id: 'cell-events', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'w', payload: { source_ref: { entity_id: 'events' }, view: { type: 'table' }, title: '事件（URL 查询表）' } },
   ])).status).toBe('accepted')
   await prepareOffline(page, net, ALICE, ws.workspace_id)
   const head = await api.headSeq(ALICE, ws.workspace_id)

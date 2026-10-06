@@ -99,8 +99,9 @@ impl Workspace {
             match fresh {
                 Some(id) => {
                     let _ = self.doc.execute(
-                        "INSERT OR REPLACE INTO entity_versions (entity_id, content_rev, object_id) VALUES (?1, ?2, ?3)",
-                        params![e.entity_id, e.content_rev, id],
+                        "INSERT INTO entity_versions (entity_id, content_rev, object_id, derived_json, kind, created_at) VALUES (?1, ?2, ?3, ?4, 'checkpoint', ?5) \
+                         ON CONFLICT(entity_id, content_rev) DO UPDATE SET object_id = excluded.object_id",
+                        params![e.entity_id, e.content_rev, id, e.derived.as_ref().map(Value::to_string), now],
                     );
                     None
                 }

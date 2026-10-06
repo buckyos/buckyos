@@ -44,6 +44,9 @@ pub fn envelope(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<V
     if let Some(d) = e.degraded() {
         m.insert("degraded".into(), json!(d));
     }
+    if let Some(d) = &e.derived {
+        m.insert("derived".into(), d.clone());
+    }
     if let Some(edge) = ctx.edge(&e.entity_id)? {
         m.insert("parent_id".into(), json!(edge.parent_id));
         m.insert("order_key".into(), json!(edge.order_key));
@@ -236,6 +239,65 @@ pub fn list_annotations(ctx: &dyn ReadCtx, access: &Access, targets: &[String], 
         .collect()
 }
 
+/// Outline decoration shared by the service and the replica: enough of the content to draw the two
+/// trees without N further reads (container kind / layout / system role, a Block's renderer, source
+/// and definition, a wish's executor).
+pub fn outline_extras(env: &mut Value, e: &EntityRow) {
+    env["title"] = e.payload.get("title").cloned().unwrap_or(Value::Null);
+    match e.type_id.as_str() {
+        TYPE_CONTAINER => {
+            env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
+            env["layout"] = e.payload.get("layout").cloned().unwrap_or(Value::Null);
+            for k in ["system", "surface_id", "content_folder_id"] {
+                if let Some(v) = e.payload.get(k) {
+                    env[k] = v.clone();
+                }
+            }
+        }
+        TYPE_CELL => {
+            env["view_type"] = e.payload.get("view").and_then(|v| v.get("type")).cloned().unwrap_or(Value::Null);
+            env["view_version"] = e.payload.get("view").and_then(|v| v.get("version")).cloned().unwrap_or(Value::Null);
+            env["source_id"] = e.payload.get("source_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
+            env["def_id"] = e.payload.get("def_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
+        }
+        TYPE_WISH => {
+            env["executor"] = e.payload.get("executor").cloned().unwrap_or(Value::Null);
+            env["output_mode"] = e.payload.get("output_mode").cloned().unwrap_or(Value::Null);
+        }
+        TYPE_BLOCK_DEF => {
+            env["def_id"] = e.payload.get("def_id").cloned().unwrap_or(Value::Null);
+            env["def_kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
+        }
+        TYPE_ANNOTATION => {
+            env["target_id"] = e.payload.get("target").and_then(|t| t.get("entity_id")).cloned().unwrap_or(Value::Null);
+            env["annotation_kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
+        }
+        TYPE_ASSET => {
+            env["media_type"] = e.payload.get("media_type").cloned().unwrap_or(Value::Null);
+        }
+        _ => {}
+    }
+}
+
+/// All readable, alive entities in tree order (the "outline"), decorated with `outline_extras`.
+pub fn outline(ctx: &dyn ReadCtx, access: &Access) -> WsResult<Vec<Value>> {
+    let mut out = Vec::new();
+    let mut stack = vec![ROOT_ID.to_string()];
+    while let Some(id) = stack.pop() {
+        let Some(e) = ctx.entity(&id)? else { continue };
+        if !e.alive() || !access.can_read(ctx, &e)? {
+            continue;
+        }
+        let mut env = envelope(ctx, access, &e)?;
+        outline_extras(&mut env, &e);
+        out.push(env);
+        for edge in ctx.children(&id)?.into_iter().rev() {
+            stack.push(edge.child_id);
+        }
+    }
+    Ok(out)
+}
+
 /// Child envelopes (no content) of a container, in sibling order.
 pub fn list_children(ctx: &dyn ReadCtx, access: &Access, parent_id: &str, include_deleted: bool) -> WsResult<Vec<Value>> {
     readable_entity(ctx, access, parent_id)?;
@@ -250,8 +312,8 @@ pub fn list_children(ctx: &dyn ReadCtx, access: &Access, parent_id: &str, includ
     Ok(out)
 }
 
-/// `/page name/entity name` → entity id. Paths are for lookup only; anything
-/// persistent stores the id.
+/// `/data/entity name` → entity id (the system nodes are named `data` / `surfaces`). Paths are for
+/// lookup only; anything persistent stores the id.
 pub fn resolve_path(ctx: &dyn ReadCtx, access: &Access, path: &str) -> WsResult<String> {
     let mut cur = ROOT_ID.to_string();
     for seg in path.split('/').filter(|s| !s.is_empty()) {

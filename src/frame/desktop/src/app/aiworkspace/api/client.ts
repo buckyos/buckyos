@@ -2,8 +2,9 @@
  * method, no behaviour of its own: retries, idempotency and the change stream live in session.ts. */
 
 import type {
-  AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, Grant, ListAnnotationsParams, LockInfo, PrepareResult,
+  AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
+  DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo,
 } from './types'
 import type { Transport } from './transport'
 
@@ -31,7 +32,10 @@ export class AiwsClient {
   wsRevoke(ws: Ws, subject: string, scope_entity_id?: string) {
     return this.call<Result<object>>('ws.revoke', { ...ws, subject, ...(scope_entity_id ? { scope_entity_id } : {}) })
   }
-  wsListGrants(ws: Ws) { return this.call<Result<{ grants: Grant[] }>>('ws.list_grants', ws) }
+  wsListGrants(ws: Ws) { return this.call<Result<GrantList>>('ws.list_grants', ws) }
+  wsListSubjects(ws: Ws) { return this.call<Result<{ subjects: Subject[] }>>('ws.list_subjects', ws) }
+  wsGetUserState(ws: Ws) { return this.call<Result<{ entries: Record<string, Json>; updated_at: Record<string, string> }>>('ws.get_user_state', ws) }
+  wsSetUserState(ws: Ws, entries: Record<string, Json | null>) { return this.call<Result<{ updated_at: string }>>('ws.set_user_state', { ...ws, entries }) }
   wsBeginImport() { return this.call<Result<{ upload_id: string }>>('ws.begin_import', {}) }
   wsImport(upload_id: string, semantics: 'restore' | 'new', replace: boolean) {
     return this.call<Result<{ workspace_id: string; epoch: string; content_root?: string }>>('ws.import', { upload_id, semantics, ...(replace ? { replace: true } : {}) })
@@ -49,6 +53,10 @@ export class AiwsClient {
   listChildren(ws: Ws, entity_id: string) { return this.call<Result<{ children: EntityEnvelope[] }>>('doc.list_children', { ...ws, entity_id }) }
   query(ws: Ws, params: QueryParams) { return this.call<Result<QueryPage>>('doc.query', { ...ws, ...params }) }
   getCollabState(ws: Ws, entity_id: string) { return this.call<Result<CollabState>>('doc.get_collab_state', { ...ws, entity_id }) }
+  freshness(ws: Ws, entity_ids: string[]) { return this.call<Result<{ items: FreshnessInfo[]; head_seq: number }>>('doc.freshness', { ...ws, entity_ids }) }
+  relations(ws: Ws, entity_id: string) { return this.call<Result<RelationsInfo>>('doc.relations', { ...ws, entity_id }) }
+  listVersions(ws: Ws, entity_id: string) { return this.call<Result<{ versions: VersionInfo[]; content_rev: number }>>('doc.list_versions', { ...ws, entity_id }) }
+  restoreVersion(ws: Ws, entity_id: string, content_rev: number) { return this.call<Result<{ operations: Operation[]; derived: DerivedRecord | null }>>('doc.restore_version', { ...ws, entity_id, content_rev }) }
 
   // ---- writes
   commit(request: CommitRequest) { return this.call<CommitResult>('doc.commit', request as unknown as Record<string, unknown>) }

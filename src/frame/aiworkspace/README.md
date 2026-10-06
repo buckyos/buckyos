@@ -1,12 +1,14 @@
 # aiworkspace — AI Workspace artifact management service
 
-Backend of the BuckyOS AI Workspace (phase one). Design:
-[第一期核心架构设计与验证](<../../../doc/workspace/BuckyOS AI Workspace 第一期核心架构设计与验证.md>) and
-[第一期内置对象详细设计](<../../../doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md>) (called "the design" below).
+Backend of the BuckyOS AI Workspace (phase one kernel, phase two structure). Design:
+[第一期核心架构设计与验证](<../../../doc/workspace/BuckyOS AI Workspace 第一期核心架构设计与验证.md>),
+[第一期内置对象详细设计](<../../../doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md>) (called "the design" below) and
+[第二期规划](<../../../doc/workspace/BuckyOS AI Workspace 第二期规划.md>) (the two trees, wishes, dependency records, freshness).
 
 ```text
 core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no tokio/fs/sqlite/clock/random);
-                              anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters
+                              anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters;
+                              freshness.rs: dependency-based freshness and relation queries (shared with the replica)
 store/     aiworkspace-store  SQLite storage, object store, packages, Mock runs, URL sources
 server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth
 wasm/      aiworkspace-wasm   wasm-bindgen facade of core for the browser replica (`wasm/build.sh` writes it into the Desktop app)
@@ -34,11 +36,33 @@ generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the
 ## Tests
 
 ```bash
-cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors
+cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness)
 cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
 cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP
 ```
+
+## The two trees (phase two §4)
+
+Every Workspace has the fixed system nodes `root` → `data` (the data tree) and `surfaces` (the Surface
+collection); `canvas-content` is a system folder under `data` holding one folder per Surface. They exist from
+`seq` 0 and cannot be created, deleted, moved or renamed by operations. Structure rules (`core/src/plan.rs`
+`child_allowed`): `data` / `folder` take folders and data entities (TableSource, RichText, Record, AssetRef,
+Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
+take Cells and groups only. A Surface names its content folder (`content_folder_id`); the folder may point back
+(`surface_id`). `placement` is `{ x, y, w, h }` relative to the parent; stacking order is `order_key`. Free
+notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
+decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
+Block definition entity (blocks its deletion).
+
+Results of a wish carry a **dependency record** (`entity.set_derived`): wish, run, executor and the read-set
+versions; it is stored in `entities.derived_json`, indexed as `derived` / `produced` references (never blocking
+deletion), travels in packages (rebased onto the package's own versions on import; a stale result stays stale)
+and gets an addressable version in `entity_versions` at every application. Freshness (`doc.freshness`) compares
+A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
+those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
+
+Format version is `0.2`; packages of `0.1` are refused with `UNSUPPORTED_VERSION` (no migration).
 
 ## Storage
 
@@ -65,7 +89,9 @@ string is used only for an invalid token, an unknown method or an unparsable req
 | --- | --- |
 | `ws.create` | `title`, `workspace_id?` |
 | `ws.list`, `ws.get_info`, `ws.delete`, `ws.fork` | |
-| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]` |
+| `ws.grant` / `ws.revoke` / `ws.list_grants` | `subject`, `scope_entity_id?`, `capabilities[]`; `list_grants` returns every row and the `owner` to a manager, only the caller's own rows otherwise (`complete: false`, no owner) |
+| `ws.list_subjects` | principals a grant can name (static identities / zone users) |
+| `ws.get_user_state` / `ws.set_user_state` | `entries: { key: value \| null }` — user work state per subject and Workspace in `local.sqlite`; never a Commit |
 | `ws.begin_import` → PUT → `ws.import` | `upload_id`, `semantics: "restore" \| "new"`, `replace?` |
 | `doc.outline` | — all readable entity envelopes in tree order |
 | `doc.resolve` | `reference` or `path` |
@@ -73,6 +99,10 @@ string is used only for an invalid token, an unknown method or an unparsable req
 | `doc.list_children` | `entity_id`, `include_deleted?` |
 | `doc.list_annotations` | `target_ids?`, `parent_id?` — annotations anchored to those entities and/or placed under that parent, each with its resolved `anchor` |
 | `doc.query` | `view_id` or `source_id`; `filter?`, `sorts?`, `fields?`, `group?`, `limit`, `cursor?`, `consistency?`, `source_revision?` |
+| `doc.freshness` | `entity_ids[]` — dependency-based freshness of results and wishes (computed in core) |
+| `doc.relations` | `entity_id` — outgoing / incoming references, Blocks showing it, produced results; unreadable referrers only as `hidden_incoming` |
+| `doc.list_versions` | `entity_id` — addressable versions (generated results, checkpoints) with their commits |
+| `doc.restore_version` | `entity_id`, `content_rev` — the operations restoring that version (submitted as an ordinary Commit) |
 | `doc.source_capabilities` | `source_id` (URL query tables) |
 | `doc.get_collab_state` | `entity_id` |
 | `doc.prepare` / `doc.commit` | the Commit request (design §2.6) |
@@ -97,7 +127,7 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 | `GET /kapi/aiworkspace/replica/<workspace_id>/<replica_id>` | replica database built by `replica.bootstrap` |
 | `GET /kapi/aiworkspace/schemas/richtext.basic.v1.json` | rich text schema definition (no auth) |
 
-Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy`,
+Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy|set_derived`,
 `tree.move|place`, `table.insert_records|delete_records|set_values|unset_values|set_body|add_field|update_field|delete_field|add_option|update_option|delete_option|migrate_field`,
 `richtext.apply_update|insert_blocks|replace_block|delete_blocks|move_block`. Parameters are exactly those of the design §3;
 `core/tests/planner.rs` and `store/tests/*.rs` are executable examples of every one of them.

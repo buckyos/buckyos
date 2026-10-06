@@ -59,7 +59,7 @@ fn big_table(ws: &mut Workspace) {
         };
         fields.push(f);
     }
-    ok(ws, &alice(), json!([{ "op": "entity.create", "entity_id": "big", "type_id": "buckyos.table-source", "parent_id": "page-main",
+    ok(ws, &alice(), json!([{ "op": "entity.create", "entity_id": "big", "type_id": "buckyos.table-source", "parent_id": "data",
         "order_key": "p", "payload": { "title_field_id": "title", "fields": fields } }]));
     let mut rng = Rng(0x5eed_1234);
     for chunk in 0..ROWS / 1000 {
@@ -165,7 +165,7 @@ fn scale_probes() {
         .collect();
     let chars: usize = blocks.iter().map(|b| b["content"][0]["text"].as_str().unwrap().chars().count()).sum();
     let t = Instant::now();
-    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "bigdoc", "type_id": "buckyos.richtext", "parent_id": "page-main",
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "bigdoc", "type_id": "buckyos.richtext", "parent_id": "data",
         "order_key": "q", "payload": { "content": { "type": "doc", "content": blocks } } }]));
     println!("create ({chars} chars)                  {:>9.1} ms", ms(t));
     let st = ws.get_collab_state(&alice(), "bigdoc").unwrap();
@@ -197,7 +197,7 @@ fn scale_probes() {
     let mut ops = Vec::new();
     let mut key = None::<String>;
     for g in 0..20 {
-        ops.push(json!({ "op": "entity.create", "entity_id": format!("g{g}"), "type_id": "buckyos.container", "parent_id": "page-main",
+        ops.push(json!({ "op": "entity.create", "entity_id": format!("g{g}"), "type_id": "buckyos.container", "parent_id": "data",
                          "order_key": format!("r{g:02}x"), "payload": { "kind": "group", "layout": { "mode": "free" } } }));
         for c in 0..49 {
             let k = aiworkspace_core::order_key::order_key_between(key.as_deref(), None).unwrap();

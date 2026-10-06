@@ -1,8 +1,10 @@
-# AI Workspace — Desktop app (phase one)
+# AI Workspace — Desktop app (phase one + phase two UI framework)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
-`doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below). App id `aiworkspace`,
-panel `AIWorkspaceAppPanel.tsx`. It is unrelated to the `canvas` prototype next to it.
+`doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below) and
+`doc/workspace/BuckyOS AI Workspace 第二期规划.md` (the UI framework: data-source and canvas modes, Blocks,
+wishes). App id `aiworkspace`, panel `AIWorkspaceAppPanel.tsx`. The `canvas` prototype next to it is the
+source of the migrated demos only; nothing runs through it.
 
 There is **no mock backend**. In the Desktop's mock runtime the app says so and stays empty unless the
 dev override below points it at a real backend process.
@@ -50,17 +52,38 @@ richtext/
   blockId.ts              block_id plugin
   RichTextEditor.tsx      editor view, toolbar, object_embed node view, static (read-only) renderer
   drafts.ts, loro.ts
+state/outline.ts          OutlineModel: the two trees kept up to date from the change stream's operations (no full
+                          re-read on a move); per-entity subscriptions for Blocks
+state/userState.ts        user work state (mode, sub-mode, active Surface, viewports, panels…): IndexedDB + server
+state/freshness.ts        subscribes to `doc.freshness`; the front end never derives freshness itself
 ui/
-  WorkspaceList.tsx       list / create / sample / import / export / fork / delete
-  WorkspaceView.tsx       top bar, flow page, add menu, reorder
-  panels.tsx              outline, annotations of the page (doc.list_annotations), Mock run, edit states
-  cells.tsx               cell bodies per view type, lock bar, record, asset
-  TableViewCell.tsx       virtualised table view, inline editing, filter / sort, conflicts
+  WorkspaceList.tsx       list / create / sample / two demos / import / export / fork / delete
+  WorkspaceView.tsx       store context + shell; registers the shipped Block definitions
+  shell/                  WorkspaceShell (top-level modes, save/sync state, undo, notices), panels, annotations panel
+  sources/                data-source mode: DataTree (canvas content collapsed, filters), DataDetail (editors without a
+                          Block), RelationsPanel (doc.relations), PropertiesPanel (versions, restore), PermissionsPanel
+                          (presets, canvas permissions, subjects)
+  canvas/                 CanvasView (sub-modes edit / view / presentation-edit placeholder, selection, keyboard,
+                          near tools, insert, group, cross-Surface move), FlowSurface, layout.ts, tools.tsx
+  canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
+                          placeholders, mount budget, overlay, gestures that commit once), camera.ts, spatialIndex.ts
+  blocks/                 registry.ts (BlockDefinition, mode policy), BlockHost (lifecycle, mode dispatch, budget,
+                          error boundary, generic fallback), builtin.tsx (table / richtext / record / asset / note /
+                          frame / shape), editors.tsx (the data editors shared with the data-source view), samples.tsx
+                          (extension sample 1: metric, bar chart, frame-sequence video)
+  extensions/             declarative.tsx (interpreter of `buckyos.block-def` declarative definitions),
+                          HtmlBlockHost.tsx + htmlRuntime.ts + bridge.ts (HTML extension Blocks: same-origin iframe,
+                          `window.aiws` JS API, snapshots, local fallback)
+  wish/                   WishService (analyze / execute / apply with read-set preconditions, overwrite or new results,
+                          dependency records, manual-modification choices), WishPanel, wishBlock, mockWishDef (the
+                          Mock executor as an HTML definition entity)
+  TableViewCell.tsx       virtualised table view, inline editing, filter / sort, conflicts; also the source mode
   tablePager.ts           keyset paging through doc.query, refresh from the change stream
   FieldManager.tsx        fields, options, migration pre-check
   annotations.tsx         cards next to a rich text, aligned with their anchors
   annotationInfo.ts       anchor states in words, labels, jump to an annotation
   ValueEditor.tsx, values.ts, creators.ts
+api/demos.ts              the two phase-two demos as commit sequences (季度经营分析, AI 短片工作流)
 fixtures/project-workspace.commits.json   copy of the backend fixture (the e2e suite asserts they are identical)
 wasm/                     wasm-bindgen output of aiworkspace-wasm (src/frame/aiworkspace/wasm/build.sh)
 ```
@@ -157,6 +180,25 @@ preview server through its own TCP relay (`offline-fixtures.ts`): closing the re
 cut — connection refused for the page, the Worker and the service worker — and gives every test its
 own origin, i.e. its own OPFS, service worker and localStorage.
 
+## Phase two in short
+
+- **Two top-level modes** on one session, one undo stack and one pending queue: 数据源 (three columns) and 画布
+  (Surfaces, edit / 查看 / 播放编辑 placeholder). Modes, sub-modes, the active Surface and every Surface's viewport are
+  user work state (server + IndexedDB), never document commits.
+- **Canvas**: the camera is a CSS transform, not React state; Blocks are culled in three levels with hysteresis;
+  small Blocks get placeholders; editors and HTML runtimes have a mount budget; a drag or resize is one commit
+  (Esc = none), auto-merged (later arrival wins) with a "位置已被修改 / 重新应用" notice. Insert creates data in the
+  Surface's content folder plus its Block in one commit; frame / shape are pure UI Blocks.
+- **Blocks**: a front-end registry decides which Renderer shows which data; unknown renderers, unsupported versions,
+  unreadable data and thrown renderers fall back inside the Block. Declarative and HTML definitions are document
+  entities. HTML Blocks run same-origin (no sandbox, D16) through `window.aiws`.
+- **Wishes**: analyze (context prompt + inputs written back) → execute (read set fixed, candidate in memory) →
+  apply (one commit with preconditions, dependency records, result Blocks in a group; overwrite with version
+  history or a new group each run; manual edits ask keep / replace / new). Only the Mock executor exists; it is an
+  HTML definition entity and labels everything "模拟".
+- **Freshness** comes from `doc.freshness` (core) and is shown identically on wish Blocks, result Blocks, the data
+  tree and the detail panels.
+
 ## What is implemented
 
 - Registration as a built-in app; workspace list with create, sample, open, import (semantics must be
@@ -207,8 +249,15 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - Only the `immediate` commit strategy; no explicit drafts (`richtext_diff` is not used).
 - Wake-ups use the `doc.wait_changes` long poll only (no kevent). Lock holders are refreshed by re-reading
   the outline every 5 s while some entity requires a lock.
-- Reordering is by buttons, not drag and drop. Only `flow` layout is rendered; `placement` is ignored.
-  Only the first page of a workspace is shown.
+- Flow Surfaces reorder by buttons, not drag and drop.
+- Phase two, not done: play mode and presentation editing (entry and placeholder only); Notion-style layout
+  containers and canvas templates; connectors; real executors (xllm, agent-work-session); table version restore;
+  drag from the data tree onto the canvas (use "添加已有数据…"); multi-user cursors; coordinate comment pins;
+  an extension marketplace or AI-generated extension pipeline (HTML definitions are hand-made); plan §15 R1 is
+  accepted as is (an HTML definition added by any editor or carried by an imported package runs in the opening
+  user's session). Verified only against the standalone backend with the Desktop shell on its mock runtime, in
+  Chromium; no real-Zone run. The render probe (`tests/aiworkspace/probe.spec.ts`) measures the production build
+  served by `vite preview` and writes `test-results/aiworkspace-probe-*.json`; the acceptance report quotes it.
 - TableView: no grouping, no manual order, no column resizing; the filter editor builds one condition
   (saving ANDs it with the saved filter); `object_ref` values are displayed but not editable; URL query
   tables are not treated specially (writes are refused by the backend and shown as such).

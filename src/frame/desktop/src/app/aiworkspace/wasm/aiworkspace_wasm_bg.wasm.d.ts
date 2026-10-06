@@ -14,6 +14,7 @@ export const replica_collab_snapshot: (a: number, b: number, c: number, d: numbe
 export const replica_confirmed_rows: (a: number, b: number) => void;
 export const replica_confirmed_seq: (a: number) => number;
 export const replica_discard: (a: number, b: number, c: number) => number;
+export const replica_freshness: (a: number, b: number, c: number, d: number) => void;
 export const replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
 export const replica_list_annotations: (a: number, b: number, c: number, d: number) => void;
 export const replica_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
@@ -24,6 +25,7 @@ export const replica_pending: (a: number, b: number) => void;
 export const replica_pending_richtext_updates: (a: number, b: number, c: number, d: number) => void;
 export const replica_query: (a: number, b: number, c: number, d: number) => void;
 export const replica_read: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+export const replica_relations: (a: number, b: number, c: number, d: number) => void;
 export const replica_restore_pending: (a: number, b: number, c: number, d: number) => void;
 export const replica_submit_local: (a: number, b: number, c: number, d: number) => void;
 export const replica_take_confirmed_delta: (a: number, b: number) => void;

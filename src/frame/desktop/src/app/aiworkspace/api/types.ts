@@ -41,6 +41,43 @@ export type TypeId =
   | 'buckyos.cell'
   | 'buckyos.asset-ref'
   | 'buckyos.annotation'
+  | 'buckyos.wish'
+  | 'buckyos.block-def'
+
+/** Fixed ids of the two trees (phase two §4): data tree root, Surface collection, canvas content area. */
+export const ROOT_ID = 'root'
+export const DATA_ID = 'data'
+export const SURFACES_ID = 'surfaces'
+export const CANVAS_CONTENT_ID = 'canvas-content'
+export const SYSTEM_IDS: ReadonlySet<string> = new Set([ROOT_ID, DATA_ID, SURFACES_ID, CANVAS_CONTENT_ID])
+
+/** Free-layout placement relative to the parent container; stacking order is the sibling `order_key`. */
+export interface Placement { x: number; y: number; w: number; h: number }
+
+/** Container kinds of phase two: `folder` (data tree), `surface`, `group` (BlockTree); `root` / `data` / `surfaces` are system nodes. */
+export type ContainerKind = 'root' | 'data' | 'surfaces' | 'folder' | 'surface' | 'group'
+
+/** Generation dependency record of a result entity (phase two §7.3). */
+export interface DerivedInput {
+  entity_id: string
+  selector?: Selector
+  version: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }
+  label?: string
+}
+export interface DerivedRecord {
+  wish_id: string
+  run_id: string
+  executor: string
+  inputs: DerivedInput[]
+  generated_rev: number
+  simulated?: boolean
+  at?: string
+  output_mode?: 'overwrite' | 'new'
+  group?: string
+  stale_at_import?: boolean
+  /** The user kept their manual version against a later run: it stands for that run's inputs. */
+  kept_manual?: boolean
+}
 
 export interface LockHolder {
   principal: string
@@ -56,9 +93,16 @@ export interface EntityEnvelope {
   schema_version: number
   name: string | null
   title?: string | null
-  kind?: string
+  kind?: ContainerKind | string
+  layout?: { mode: 'flow' | 'free' } | null
+  /** Folders: `canvas_content` (the area) or `surface_content` (one Surface's folder). */
+  system?: 'canvas_content' | 'surface_content' | null
+  /** A content folder's Surface; a Surface's content folder. */
+  surface_id?: string | null
+  content_folder_id?: string | null
   parent_id?: string
   order_key?: string
+  placement?: Placement
   scope: string
   deleted: boolean
   content_rev: number
@@ -69,6 +113,19 @@ export interface EntityEnvelope {
   lock_holder?: LockHolder | null
   capabilities: Capability[]
   degraded?: string
+  derived?: DerivedRecord | null
+  /** Cells (outline only). */
+  view_type?: string | null
+  view_version?: number | null
+  source_id?: string | null
+  def_id?: string | null
+  /** Wishes / definitions / annotations / assets (outline only). */
+  executor?: string | null
+  output_mode?: string | null
+  def_kind?: string | null
+  target_id?: string | null
+  annotation_kind?: string | null
+  media_type?: string | null
 }
 
 export interface Selector {
@@ -125,15 +182,133 @@ export type FilterNode =
 export interface SortSpec { field_id: string; direction: 'asc' | 'desc' }
 
 export interface CellPayload {
-  source_ref: Reference
-  view: { type: 'table' | 'richtext' | 'record' | 'asset' }
+  /** Absent on a pure UI Block (frame, shape…). */
+  source_ref?: Reference
+  /** Renderer id and version (D6: the backend checks the format only; the registry decides support). */
+  view: { type: string; version?: number }
   title?: string
   fields?: { field_id: string; width?: number }[]
   filter?: FilterNode | null
   sorts?: SortSpec[]
   group?: { field_id: string } | null
   options?: Record<string, Json>
+  /** Renderer configuration (≤ 64 KiB). */
+  config?: Record<string, Json>
+  /** A Block definition entity this Block uses (blocks its deletion). */
+  def_ref?: Reference
 }
+
+export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'
+export interface WishInput { entity_id: string; selector?: Selector; version?: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }; label?: string }
+export interface WishAnalysis { prompt: string; context_prompt: string; at?: string; warnings?: string[]; executor?: string }
+export interface WishLastRun {
+  run_id: string
+  state: 'succeeded' | 'failed' | 'cancelled'
+  at?: string
+  read_set?: DerivedInput[]
+  produced?: string[]
+  /** Result names that existed in the previous run but were not generated this time (§7.3). */
+  missing?: string[]
+  group?: string
+  simulated?: boolean
+  error?: string
+}
+export interface WishPayload {
+  title?: string
+  prompt: string
+  analysis?: WishAnalysis
+  inputs?: WishInput[]
+  executor: WishExecutor
+  output?: { container_id?: string; surface_id?: string; name: string; type?: string }
+  output_mode?: 'overwrite' | 'new'
+  executor_config?: Record<string, Json>
+  last_run?: WishLastRun
+}
+
+export interface BlockDefPayload {
+  def_id: string
+  version?: number
+  kind: 'declarative' | 'html'
+  title?: string
+  description?: string
+  accepts?: string[]
+  allow_no_source?: boolean
+  default_size?: { w: number; h: number }
+  declarative?: Record<string, Json>
+  html?: { html: string; css?: string; js?: string; api_version?: number }
+  config_schema?: Json
+  actions?: Json
+  inspector?: Json
+}
+
+export type FreshnessStatus = 'current' | 'stale' | 'upstream_stale' | 'unavailable' | 'unknown' | 'none'
+export interface FreshnessInputLine {
+  entity_id: string
+  selector?: Selector
+  label?: string
+  mode: 'follow' | 'fixed'
+  readable?: boolean
+  type_id?: string
+  name?: string
+  reason?: string
+  recorded?: Json
+  current?: Json
+  changed?: boolean
+  newer?: boolean
+}
+export interface FreshnessInfo {
+  entity_id: string
+  status: FreshnessStatus
+  inputs?: FreshnessInputLine[]
+  changed_inputs?: FreshnessInputLine[]
+  upstream?: { entity_id: string; status: FreshnessStatus; changed_inputs?: FreshnessInputLine[] }[]
+  manual_modified?: boolean
+  imported_stale?: boolean
+  generated_rev?: number
+  content_rev?: number
+  wish_id?: string | null
+  run_id?: string | null
+  executor?: string | null
+  simulated?: boolean
+  /** Wishes only. */
+  wish?: boolean
+  needs_analysis?: boolean
+  input_problems?: { entity_id: string; reason: string }[]
+  last_run?: WishLastRun | null
+  produced?: string[]
+  error?: ServiceError
+}
+
+export interface EntityBrief { entity_id: string; type_id: string; name: string | null; title?: string | null; deleted: boolean; parent_id?: string; kind?: string; view_type?: string }
+export interface RelationLine { kind: string; selector: string; entity_id: string; target?: EntityBrief; source?: EntityBrief; readable?: boolean; missing?: boolean; external?: boolean; blocks_delete?: boolean; object_id?: string; workspace_id?: string }
+export interface RelationsInfo {
+  entity_id: string
+  entity: EntityBrief
+  outgoing: RelationLine[]
+  incoming: RelationLine[]
+  hidden_incoming: boolean
+  blocks: EntityBrief[]
+  produced: EntityBrief[]
+  dependents: { kind: string; entity: EntityBrief }[]
+  derived: DerivedRecord | null
+  freshness?: FreshnessInfo
+}
+
+export interface VersionInfo {
+  content_rev: number
+  object_id: string
+  derived: DerivedRecord | null
+  kind: 'generated' | 'checkpoint'
+  created_at: string
+  commit_id?: string | null
+  author?: string | null
+  origin?: string | null
+  run_id?: string | null
+  message?: string | null
+  accepted_at?: string | null
+}
+
+export interface Subject { subject: string; kind: 'user' | 'agent' | string }
 
 export interface KeyedContent<P> { payload: P; key_revs: Record<string, number>; diagnostics?: Diagnostic[] }
 
@@ -303,3 +478,8 @@ export interface RunView {
 export interface ExportResult { export_id: string; manifest: { export_mode: string; content_root: string; self_contained: boolean; missing: unknown[]; excluded_entities: number; [key: string]: unknown } }
 
 export interface Grant { subject: string; scope_entity_id: string | null; capabilities: Capability[] }
+/** `complete`: the caller is a manager and saw every row; otherwise only the rows that apply to them. */
+export interface GrantList { grants: Grant[]; complete: boolean; owner: string | null; principal: string }
+
+export type WishPayloadRead = KeyedContent<WishPayload>
+export type BlockDefRead = KeyedContent<BlockDefPayload>

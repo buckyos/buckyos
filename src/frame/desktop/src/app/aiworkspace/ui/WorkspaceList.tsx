@@ -3,6 +3,7 @@
 import { useCallback, useState } from 'react'
 import { unwrap, type AiwsClient } from '../api/client'
 import { createSampleWorkspace } from '../api/sample'
+import { createDemoWorkspace } from '../api/demos'
 import { describeError } from '../api/session'
 import type { ExportResult, WorkspaceSummary } from '../api/types'
 import { preparedIndex } from '../offline/holder'
@@ -73,6 +74,8 @@ export function WorkspaceList({ client, onOpen, opening }: Props) {
         <input aria-label="工作区标题" placeholder="新工作区标题" value={title} onChange={(event) => setTitle(event.target.value)} />
         <button type="submit" data-testid="aiws-create" disabled={busy !== null}>创建空白工作区</button>
         <button type="button" data-testid="aiws-create-sample" disabled={busy !== null} onClick={() => { void act('创建样例', async () => { await createSampleWorkspace(client, title.trim() || '项目工作区（样例）'); setTitle('') }) }}>创建样例</button>
+        <button type="button" data-testid="aiws-create-demo-quarterly" disabled={busy !== null} title="季度经营分析：销售表、两张画布、Mock 许愿格与声明式指标卡" onClick={() => { void act('创建 demo', async () => { await createDemoWorkspace(client, 'quarterly', title.trim() || '季度经营分析（demo）'); setTitle('') }) }}>季度经营分析 demo</button>
+        <button type="button" data-testid="aiws-create-demo-film" disabled={busy !== null} title="AI 短片工作流：剧本/角色表/风格 → 三个串联的 Mock 许愿格" onClick={() => { void act('创建 demo', async () => { await createDemoWorkspace(client, 'film', title.trim() || 'AI 短片工作流（demo）'); setTitle('') }) }}>AI 短片工作流 demo</button>
         {busy && <span className="aiws-muted" data-testid="aiws-list-busy">{busy}中…</span>}
       </form>
       <div className="aiws-cards">

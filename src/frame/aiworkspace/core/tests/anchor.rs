@@ -20,9 +20,7 @@ fn para(id: &str, text: &str) -> Value {
 fn setup(blocks: Value) -> MemWorkspace {
     let mut ws = MemWorkspace::new();
     ws.ok(json!([
-        { "op": "entity.create", "entity_id": "page-main", "type_id": TYPE_CONTAINER, "parent_id": "root", "order_key": "a",
-          "payload": { "kind": "page" } },
-        { "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "page-main", "order_key": "b",
+        { "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "data", "order_key": "b",
           "payload": { "content": { "type": "doc", "content": blocks } } }
     ]));
     ws
@@ -30,7 +28,7 @@ fn setup(blocks: Value) -> MemWorkspace {
 
 fn tasks(ws: &mut MemWorkspace) {
     ws.ok(json!([
-        { "op": "entity.create", "entity_id": "tasks", "type_id": TYPE_TABLE, "parent_id": "page-main", "order_key": "c",
+        { "op": "entity.create", "entity_id": "tasks", "type_id": TYPE_TABLE, "parent_id": "data", "order_key": "c",
           "payload": { "fields": [{ "field_id": "title", "name": "任务", "type": "text" }] } },
         { "op": "table.insert_records", "source_id": "tasks", "records": [{ "record_id": "task-1", "values": { "title": "盘点" } }] }
     ]));
@@ -40,7 +38,7 @@ fn note(id: &str, payload: Value) -> Value {
     let mut payload = payload;
     payload["kind"] = json!("note");
     payload["body"] = json!(format!("body of {id}"));
-    json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_ANNOTATION, "parent_id": "page-main", "order_key": "n", "payload": payload })
+    json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_ANNOTATION, "parent_id": "data", "order_key": "n", "payload": payload })
 }
 
 fn block(id: &str) -> Value {
@@ -296,7 +294,7 @@ fn list_annotations_by_target_and_page() {
     let alice = Access::full("alice");
     assert_eq!(ids(read::list_annotations(&ws.store, &alice, &["notes".into()], None).unwrap()), ["n1"]);
     assert_eq!(ids(read::list_annotations(&ws.store, &carol, &["notes".into()], None).unwrap()), ["n1", "n3"]);
-    let all = read::list_annotations(&ws.store, &carol, &[], Some("page-main")).unwrap();
+    let all = read::list_annotations(&ws.store, &carol, &[], Some("data")).unwrap();
     assert_eq!(ids(all.clone()), ["n1", "n2", "n3"]);
     assert_eq!(all[2]["scope"], "personal");
     assert_eq!(all[0]["content"]["anchor"]["state"], "resolved");

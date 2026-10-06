@@ -25,15 +25,20 @@ test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keep
   await openWorkspace(bob, BOB, ws.workspace_id)
   const editable = (page: Page) => page.getByTestId('aiws-richtext-notes').getAttribute('contenteditable')
 
-  // the manager turns the policy on for the rich text
-  await alice.locator('[data-testid="aiws-outline-item"][data-entity-id="notes"] > button').click()
+  // the manager turns the policy on for the rich text (properties in the data-source view), then returns to the canvas
+  await alice.getByTestId('aiws-top-sources').click()
+  await alice.getByTestId('aiws-tree-notes').click()
   await alice.getByTestId('aiws-toggle-policy').click()
+  await alice.getByTestId('aiws-top-canvas').click()
   await expect(alice.getByTestId('aiws-lock-notes')).toBeVisible()
   await expect(bob.getByTestId('aiws-lock-notes')).toBeVisible()
   // nobody holds it: read-only for both; a manager UI only for alice
   expect(await editable(alice)).toBe('false')
   expect(await editable(bob)).toBe('false')
+  await bob.getByTestId('aiws-top-sources').click()
+  await bob.getByTestId('aiws-tree-notes').click()
   await expect(bob.getByTestId('aiws-lock-admin')).toHaveCount(0)
+  await bob.getByTestId('aiws-top-canvas').click()
 
   // bob acquires and edits
   await bob.getByTestId('aiws-lock-notes').getByTestId('aiws-lock-acquire').click()
@@ -51,10 +56,11 @@ test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keep
   await expect(alice.getByTestId('aiws-richtext-notes')).toContainText('乙持锁写入。')
 
   // the manager breaks the lock; bob's next edit is refused with LOCK_LOST and is kept, not dropped
-  await alice.locator('[data-testid="aiws-outline-item"][data-entity-id="notes"] > button').click()
-  await alice.locator('[data-testid="aiws-outline-item"][data-entity-id="notes"] > button').click()
+  await alice.getByTestId('aiws-top-sources').click()
+  await expect(alice.getByTestId('aiws-break-lock')).toBeVisible({ timeout: 20_000 })
   await alice.getByTestId('aiws-break-lock').click()
   await expect(alice.getByTestId('aiws-notice').filter({ hasText: '已强制解除' })).toBeVisible()
+  await alice.getByTestId('aiws-top-canvas').click()
   await bob.getByTestId('aiws-richtext-notes').locator('[data-block-id="n-end"]').click()
   await bob.keyboard.press('End')
   await bob.keyboard.type('失锁后的输入')
@@ -76,8 +82,10 @@ test('write locks: policy toggle, acquire, holder display, break, LOCK_LOST keep
   await bob.getByTestId('aiws-lock-release').click()
   await expect(bob.getByTestId('aiws-lock-notes')).toHaveAttribute('data-held', 'false')
   expect((await api.rpc(ALICE, 'lock.list', { workspace_id: ws.workspace_id })).locks).toEqual([])
-  await alice.locator('[data-testid="aiws-outline-item"][data-entity-id="tasks"] > button').click()
+  await alice.getByTestId('aiws-top-sources').click()
+  await alice.getByTestId('aiws-tree-tasks').click()
   await alice.getByTestId('aiws-toggle-policy').click()
+  await alice.getByTestId('aiws-top-canvas').click()
   const all = alice.getByTestId('aiws-cell-frame-cell-all-tasks')
   await expect(all.getByTestId('aiws-lock-tasks')).toBeVisible()
   await expect(all.getByTestId('aiws-cell-task-41-title')).toHaveAttribute('data-editable', 'false')
@@ -287,9 +295,9 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   expect((await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: 'tasks' })).content_rev).toBe(2)
 
   // ---- structure
-  const order = async () => (await api.rpc(ALICE, 'doc.list_children', { workspace_id: ws.workspace_id, entity_id: 'page-main' })).children
+  const order = async () => (await api.rpc(ALICE, 'doc.list_children', { workspace_id: ws.workspace_id, entity_id: 'surface-main' })).children
     .filter((child: { type_id: string; kind?: string }) => child.type_id === 'buckyos.cell' || child.kind === 'group').map((child: { entity_id: string }) => child.entity_id) as string[]
-  const frames = () => page.locator('[data-testid="aiws-page"] > .aiws-flow > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
+  const frames = () => page.locator('[data-testid="aiws-flow"] > [data-cell-id]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
   expect(await order()).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
   // reorder with the buttons (tree.place, order key from the WASM core)
   await page.getByTestId('aiws-down-cell-notes').click()
@@ -298,15 +306,14 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   await page.getByTestId('aiws-up-cell-diagram').click()
   await expect.poll(order).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-diagram', 'cell-info'])
 
-  // create a group and a rich text in the page
-  await page.getByTestId('aiws-add-open-page-main').click()
-  await page.getByLabel('标题', { exact: true }).fill('附录')
-  await page.getByTestId('aiws-new-group').click()
+  // create a group and a rich text in the Surface (insert menu; titles are asked for)
+  page.on('dialog', (dialog) => { void dialog.accept(dialog.message().includes('分组') ? '附录' : '会议纪要') })
+  await page.getByTestId('aiws-add-open-surface-main').click()
+  await page.getByTestId('aiws-menu-insert-group').click()
   await expect(page.locator('[data-testid^="aiws-group-"]')).toHaveCount(1)
   const groupId = await page.locator('[data-testid^="aiws-group-"]').getAttribute('data-cell-id') as string
-  await page.getByTestId('aiws-add-open-page-main').click()
-  await page.getByLabel('标题', { exact: true }).fill('会议纪要')
-  await page.getByTestId('aiws-new-richtext').click()
+  await page.getByTestId('aiws-add-open-surface-main').click()
+  await page.getByTestId('aiws-menu-insert-richtext').click()
   const newCell = page.locator('[data-testid^="aiws-cell-frame-"]').filter({ hasText: '会议纪要' })
   await expect(newCell).toBeVisible()
   await newCell.locator('.aiws-prose').click()
@@ -316,23 +323,28 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   const newTextId = await newCell.getAttribute('data-cell-source') as string
   expect(JSON.stringify(await api.ast(ALICE, ws.workspace_id, newTextId))).toContain('今天的结论')
 
-  // move the new cell into the group through the outline (tree.move), rename its source, then delete the group with its subtree
-  await page.locator(`[data-testid="aiws-outline-item"][data-entity-id="${newCellId}"] > button`).click()
-  await page.getByLabel('移动到').selectOption(groupId)
+  // move the new Block into the group (tree.move, auto-merge): the flow page follows the structure event incrementally
+  expect((await api.commit(ALICE, ws, [{ op: 'tree.move', entity_id: newCellId, new_parent_id: groupId, order_key: 'a' }])).status).toBe('accepted')
   await expect(page.locator(`[data-testid="aiws-group-${groupId}"] [data-cell-id="${newCellId}"]`)).toBeVisible()
   await expect.poll(async () => (await api.rpc(ALICE, 'doc.read', { workspace_id: ws.workspace_id, entity_id: newCellId })).parent_id).toBe(groupId)
-  await page.locator(`[data-testid="aiws-outline-item"][data-entity-id="${newTextId}"] > button`).click()
+  // rename its source in the data-source view (the text lives in the Surface's content folder), then delete the group with its subtree
+  await page.getByTestId('aiws-top-sources').click()
+  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="canvas-content"] .aiws-tree-toggle').first().click()
+  await page.locator('[data-testid="aiws-tree-item"][data-entity-id="surface-main-content"] .aiws-tree-toggle').first().click()
+  await page.getByTestId(`aiws-tree-${newTextId}`).click()
   await page.getByLabel('查找名').fill('纪要正文')
   await page.getByTestId('aiws-rename').click()
-  await expect.poll(async () => (await api.rpc(ALICE, 'doc.resolve', { workspace_id: ws.workspace_id, path: '/项目工作区/纪要正文' })).reference?.entity_id).toBe(newTextId)
-  await page.locator(`[data-testid="aiws-outline-item"][data-entity-id="${groupId}"] > button`).click()
-  await page.getByTestId('aiws-delete-entity').click()
+  await expect.poll(async () => (await api.rpc(ALICE, 'doc.resolve', { workspace_id: ws.workspace_id, path: '/data/canvas-content/项目工作区/纪要正文' })).reference?.entity_id).toBe(newTextId)
+  await page.getByTestId('aiws-top-canvas').click()
+  await page.getByTestId(`aiws-delete-group-${groupId}`).click()
   await expect(page.locator('[data-testid^="aiws-group-"]')).toHaveCount(0)
   await expect(page.locator(`[data-cell-id="${newCellId}"]`)).toHaveCount(0)
-  // a source that a cell still shows cannot be deleted: the refusal is reported, nothing is lost
-  await page.locator('[data-testid="aiws-outline-item"][data-entity-id="tasks"] > button').click()
+  // a source that a Block still shows cannot be deleted: the pre-check names the Block, nothing is lost
+  await page.getByTestId('aiws-top-sources').click()
+  await page.getByTestId('aiws-tree-tasks').click()
   await page.getByTestId('aiws-delete-entity').click()
-  await expect(page.getByTestId('aiws-edit-entry').filter({ hasText: '删除 任务' })).toContainText('REFERENCE_BROKEN')
+  await expect(page.getByTestId('aiws-delete-blocked')).toContainText('仍被引用')
+  await page.getByTestId('aiws-top-canvas').click()
   await expect(all.getByTestId('aiws-row')).toHaveCount(2)
 })
 
@@ -358,7 +370,7 @@ test('packages: export, import as new, fork, and a restore that replaces history
   await expect(list.getByTestId('aiws-list-message')).toContainText('已导入为新的工作区')
   const imported = (await list.getByTestId('aiws-list-message').innerText()).match(/ws_[a-z0-9]+/)?.[0] as string
   expect(imported).not.toBe(ws.workspace_id)
-  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(13)
+  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(17)
   expect((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: imported })).content_root).toBe((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: ws.workspace_id })).content_root)
 
   // fork
@@ -474,9 +486,10 @@ test('record properties, asset upload, object embed and object link', async ({ p
 
   // asset: upload → verified object → asset-ref + cell in one commit; shown through the authenticated route
   const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII=', 'base64')
-  await page.getByTestId('aiws-add-open-page-main').click()
+  await page.getByTestId('aiws-top-sources').click()
   await page.getByTestId('aiws-new-image').setInputFiles({ name: '新图.png', mimeType: 'image/png', buffer: png })
-  await expect(page.getByTestId('aiws-asset-image')).toHaveCount(2)
+  await expect(page.locator('[data-testid^="aiws-detail-"]').getByTestId('aiws-asset-image')).toHaveCount(1)
+  await page.getByTestId('aiws-top-canvas').click()
   const outline = (await api.rpc(ALICE, 'doc.outline', { workspace_id: ws.workspace_id })).entities as { entity_id: string; type_id: string }[]
   const assets = outline.filter((entity) => entity.type_id === 'buckyos.asset-ref')
   expect(assets).toHaveLength(2)
@@ -505,9 +518,9 @@ test('record properties, asset upload, object embed and object link', async ({ p
   await page.getByLabel('负责人', { exact: true }).fill('赵')
   await page.getByLabel('负责人', { exact: true }).press('Enter')
   await expect(page.getByTestId('aiws-embed-cell-info')).toContainText('赵')
-  // clicking an object link selects its target in the outline
-  await page.getByTestId('aiws-richtext-notes').locator('.aiws-object-link', { hasText: '任务 42 详情' }).click()
-  await expect(page.locator('[data-testid="aiws-outline-item"][data-entity-id="task-42-details"]')).toHaveAttribute('aria-selected', 'true')
+  // while editing, an object link opens with Ctrl+click (a plain click only places the caret)
+  await page.getByTestId('aiws-richtext-notes').locator('.aiws-object-link', { hasText: '任务 42 详情' }).click({ modifiers: ['Control'] })
+  await expect(page.locator('[data-testid="aiws-tree-item"][data-entity-id="task-42-details"]')).toHaveAttribute('aria-selected', 'true')
 })
 
 test('an unreachable backend is shown as such, edits stay unsaved, and work resumes when it is back', async ({ page, api }) => {
@@ -542,12 +555,11 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   const card = page.getByTestId('aiws-workspace-card').filter({ hasText: title })
   const workspaceId = await card.getAttribute('data-workspace-id') as string
   await card.getByTestId('aiws-open').click()
-  // an empty workspace has only the root: the page is created explicitly
-  await expect(page.getByTestId('aiws-outline-item')).toHaveCount(1)
-  await page.getByTestId('aiws-create-page').click()
-  await page.getByTestId('aiws-add-open-page-main').click()
-  await page.getByLabel('标题', { exact: true }).fill('清单')
-  await page.getByTestId('aiws-new-table').click()
+  // an empty workspace has no Surface: a first flow page is created explicitly, then a table is inserted (its title is asked for)
+  await page.getByTestId('aiws-create-first-flow').click()
+  page.on('dialog', (dialog) => { void dialog.accept('清单') })
+  await page.locator('[data-testid^="aiws-add-open-"]').click()
+  await page.getByTestId('aiws-menu-insert-table').click()
   const frame = page.locator('[data-testid^="aiws-cell-frame-"]').filter({ hasText: '清单' })
   await expect(frame).toBeVisible()
   const sourceId = await frame.getAttribute('data-cell-source') as string

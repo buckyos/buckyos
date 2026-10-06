@@ -206,6 +206,13 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         })?,
         "ws.revoke" => state.with_ws(ws_id()?, |ws| ws.revoke(caller, s(p, "subject")?, p.get("scope_entity_id").and_then(Value::as_str)))?,
         "ws.list_grants" => state.with_ws(ws_id()?, |ws| ws.list_grants(caller))?,
+        "ws.get_user_state" => state.with_ws(ws_id()?, |ws| ws.get_user_state(caller))?,
+        "ws.set_user_state" => state.with_ws(ws_id()?, |ws| ws.set_user_state(caller, p.get("entries").unwrap_or(&Value::Null)))?,
+        "ws.list_subjects" => {
+            // zone-level: any authenticated principal may ask (the list itself is as public as the zone makes it)
+            let subjects = tokio::runtime::Handle::current().block_on(state.auth.subjects());
+            json!({ "ok": true, "subjects": subjects })
+        }
         "ws.fork" => svc.fork(caller, ws_id()?)?,
         "ws.begin_import" => begin_upload(state, "import", None, caller)?,
         "ws.import" => {
@@ -232,6 +239,12 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
                 Some(_) => strings(p, "target_ids")?,
             };
             ws.list_annotations(caller, &targets, p.get("parent_id").and_then(Value::as_str))
+        })?,
+        "doc.freshness" => state.with_ws(ws_id()?, |ws| ws.freshness(caller, &strings(p, "entity_ids")?))?,
+        "doc.relations" => state.with_ws(ws_id()?, |ws| ws.relations(caller, s(p, "entity_id")?))?,
+        "doc.list_versions" => state.with_ws(ws_id()?, |ws| ws.list_versions(caller, s(p, "entity_id")?))?,
+        "doc.restore_version" => state.with_ws(ws_id()?, |ws| {
+            ws.restore_version_plan(caller, s(p, "entity_id")?, p.get("content_rev").and_then(Value::as_u64).ok_or_else(|| WsError::invalid_op("content_rev required"))?)
         })?,
         "doc.list_children" => state.with_ws(ws_id()?, |ws| {
             ws.list_children(caller, s(p, "entity_id")?, p.get("include_deleted").and_then(Value::as_bool).unwrap_or(false))

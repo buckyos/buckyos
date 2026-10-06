@@ -164,8 +164,9 @@ impl Workspace {
         let now = self.now();
         let ctx = self.ctx(&now);
         let p = |k: &str, d: &str| params.get(k).and_then(Value::as_str).unwrap_or(d).to_string();
-        let (source_id, summary_id, parent_id) = (p("source_id", "tasks"), p("summary_id", "summary"), p("parent_id", "page-main"));
-        let cell_id = p("cell_id", "cell-summary");
+        // the summary is data (under `data`), its Block goes on a Surface (phase two §4)
+        let (source_id, summary_id, parent_id) = (p("source_id", "tasks"), p("summary_id", "summary"), p("parent_id", DATA_ID));
+        let (cell_id, surface_id) = (p("cell_id", "cell-summary"), p("surface_id", "surface-main"));
         let today = parse_date(&p("today", "")).ok_or_else(|| WsError::invalid_op("params.today must be YYYY-MM-DD"))?;
         let today_days = days_from_civil(today.0, today.1, today.2);
         let source = readable_entity(&ctx, &access, &source_id)?;
@@ -236,7 +237,7 @@ impl Workspace {
                                  "order_key": p("summary_order_key", "y"), "name": "任务摘要",
                                  "payload": { "content": { "type": "doc", "content": blocks } } }));
                 if ctx.entity(&cell_id)?.is_none() {
-                    ops.push(json!({ "op": "entity.create", "entity_id": cell_id, "type_id": TYPE_CELL, "parent_id": parent_id,
+                    ops.push(json!({ "op": "entity.create", "entity_id": cell_id, "type_id": TYPE_CELL, "parent_id": surface_id,
                                      "order_key": p("cell_order_key", "z"),
                                      "payload": { "source_ref": { "entity_id": summary_id }, "view": { "type": "richtext" }, "title": "任务摘要" } }));
                 }

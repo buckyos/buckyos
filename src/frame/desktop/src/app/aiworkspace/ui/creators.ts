@@ -1,6 +1,5 @@
-/* Operations that create the built-in objects (design §3). A content entity and the cell that shows
- * it are created in one commit, so there is never a cell without a source or the reverse. */
-
+/* Shared helpers around entities (labels, sibling order, keys) and the annotation operation. Block
+ * creation moved into the Block definitions (ui/blocks); data creation into the data tree (ui/sources). */
 import type { CapturedAnchor } from '../anchors/registry'
 import { randomId } from '../api/ids'
 import type { EntityEnvelope, Json, Operation, Reference } from '../api/types'
@@ -43,59 +42,14 @@ export function appendKeys(core: AiwsCore, entities: EntityEnvelope[], parentId:
   return keys
 }
 
-function create(entityId: string, typeId: string, parentId: string, orderKey: string, payload: Record<string, Json>, name?: string): Operation {
-  return { op: 'entity.create', entity_id: entityId, type_id: typeId, parent_id: parentId, order_key: orderKey, ...(name ? { name } : {}), payload }
-}
-
-function cell(parentId: string, orderKey: string, sourceId: string, view: string, title?: string): Operation {
-  return create(randomId('c'), 'buckyos.cell', parentId, orderKey, { source_ref: { entity_id: sourceId }, view: { type: view }, ...(title ? { title } : {}) })
-}
-
-export type NewKind = 'group' | 'richtext' | 'table' | 'record' | 'view'
-
-export function creationOps(core: AiwsCore, entities: EntityEnvelope[], parentId: string, kind: NewKind, title: string, existingSourceId?: string): Operation[] {
-  const [first, second] = appendKeys(core, entities, parentId, 2)
-  switch (kind) {
-    case 'group':
-      return [create(randomId('g'), 'buckyos.container', parentId, first, { kind: 'group', layout: { mode: 'flow' }, title })]
-    case 'richtext': {
-      const id = randomId('t')
-      const content = { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: randomId('b') } }] }
-      return [create(id, 'buckyos.richtext', parentId, first, { content }), cell(parentId, second, id, 'richtext', title)]
-    }
-    case 'table': {
-      const id = randomId('s')
-      const fields: Json = [
-        { field_id: 'title', name: '标题', type: 'text', required: true },
-        { field_id: 'done', name: '完成', type: 'boolean' },
-      ]
-      return [create(id, 'buckyos.table-source', parentId, first, { title_field_id: 'title', fields }), cell(parentId, second, id, 'table', title)]
-    }
-    case 'record': {
-      const id = randomId('o')
-      const schema: Json = { properties: [{ key: 'name', name: '名称', type: 'text' }, { key: 'date', name: '日期', type: 'date' }, { key: 'amount', name: '金额', type: 'decimal', scale: 2 }] }
-      return [create(id, 'buckyos.record', parentId, first, { schema, props: {} }), cell(parentId, second, id, 'record', title)]
-    }
-    case 'view':
-      return existingSourceId ? [cell(parentId, first, existingSourceId, 'table', title)] : []
-  }
-}
-
-export function assetOps(core: AiwsCore, entities: EntityEnvelope[], parentId: string, objectId: string, fileName: string): Operation[] {
-  const [first, second] = appendKeys(core, entities, parentId, 2)
-  const id = randomId('a')
-  return [
-    create(id, 'buckyos.asset-ref', parentId, first, { object_id: objectId, file_name: fileName }),
-    { ...cell(parentId, second, id, 'asset'), payload: { source_ref: { entity_id: id }, view: { type: 'asset' }, options: { fit: 'contain' } } },
-  ]
-}
-
-export function annotationOp(core: AiwsCore, entities: EntityEnvelope[], pageId: string, anchor: CapturedAnchor, body: string): Operation {
-  const [key] = appendKeys(core, entities, pageId, 1)
+/** An annotation placed under `parentId` (a folder of the data tree, phase two §4.5), anchored by `anchor`. */
+export function annotationOp(core: AiwsCore, siblings: EntityEnvelope[], parentId: string, anchor: CapturedAnchor, body: string): Operation {
+  const last = siblings.length > 0 ? siblings[siblings.length - 1].order_key ?? null : null
+  const key = orderKeyBetween(core, last, null)
   const payload: Record<string, Json> = { target: anchor.target as unknown as Json, kind: 'note', body }
   if (anchor.range) payload.range = anchor.range
   if (anchor.context) payload.context = anchor.context as unknown as Json
-  return create(randomId('n'), 'buckyos.annotation', pageId, key, payload)
+  return { op: 'entity.create', entity_id: randomId('n'), type_id: 'buckyos.annotation', parent_id: parentId, order_key: key, payload }
 }
 
 export function describeTarget(target: Reference): string {

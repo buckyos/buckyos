@@ -428,6 +428,10 @@ pub fn load_rows(tables: &Value) -> WsResult<MemStore> {
             write_policy: text(&r, "write_policy")?,
             payload: parsed(&r, "payload_json")?,
             key_revs: parsed(&r, "key_revs_json")?,
+            derived: match col(&r, "derived_json") {
+                Value::Null => None,
+                _ => Some(parsed::<Value>(&r, "derived_json")?),
+            },
             created_seq: num(&r, "created_seq"),
             meta_rev: num(&r, "meta_rev"),
             content_rev: num(&r, "content_rev"),
@@ -511,7 +515,7 @@ fn entity_row(e: &EntityRow) -> Value {
     json!({
         "entity_id": e.entity_id, "type_id": e.type_id, "schema_version": e.schema_version, "scope": e.scope, "name": e.name,
         "write_policy": e.write_policy, "payload_json": jtext(&e.payload), "key_revs_json": jtext(&e.key_revs),
-        "created_seq": e.created_seq, "meta_rev": e.meta_rev, "content_rev": e.content_rev, "life_rev": e.life_rev, "deleted_seq": e.deleted_seq
+        "derived_json": e.derived.as_ref().map(jtext), "created_seq": e.created_seq, "meta_rev": e.meta_rev, "content_rev": e.content_rev, "life_rev": e.life_rev, "deleted_seq": e.deleted_seq
     })
 }
 fn edge_row(e: &TreeEdge) -> Value {

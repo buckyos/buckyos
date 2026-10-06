@@ -265,7 +265,11 @@ fn text_at(v: &Value, key: &str, max: usize, what: &str) -> WsResult<()> {
 /// Where the annotation in `payload` can be shown now.
 pub fn resolve(ctx: &dyn ReadCtx, payload: &JsonMap) -> WsResult<Anchor> {
     let mut a = Anchor { state: State::TargetDeleted, level: Level::None, range: None, position: None, target_found: false };
-    let Some(target) = payload.get("target") else { return Ok(a) };
+    // a free note (no target) is shown wherever it is placed: nothing to resolve, nothing lost
+    let Some(target) = payload.get("target") else {
+        a.state = State::Resolved;
+        return Ok(a);
+    };
     let Some(e) = reference_entity_id(target).map(|id| ctx.entity(id)).transpose()?.flatten().filter(EntityRow::alive) else {
         return Ok(a);
     };

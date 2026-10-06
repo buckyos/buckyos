@@ -18,17 +18,36 @@ pub const TYPE_TABLE: &str = "buckyos.table-source";
 pub const TYPE_CELL: &str = "buckyos.cell";
 pub const TYPE_ASSET: &str = "buckyos.asset-ref";
 pub const TYPE_ANNOTATION: &str = "buckyos.annotation";
+/// A wish cell: what one AI inference run needs (phase two §7).
+pub const TYPE_WISH: &str = "buckyos.wish";
+/// A Block definition saved as a document entity (declarative or HTML; phase two §10.3).
+pub const TYPE_BLOCK_DEF: &str = "buckyos.block-def";
 pub const ROOT_ID: &str = "root";
+/// System nodes of the two trees (phase two §4): the data tree root, the Surface collection and the
+/// canvas content area (a system folder under `data` holding one folder per Surface).
+pub const DATA_ID: &str = "data";
+pub const SURFACES_ID: &str = "surfaces";
+pub const CANVAS_CONTENT_ID: &str = "canvas-content";
 pub const SCOPE_SHARED: &str = "shared";
 pub const POLICY_OPEN: &str = "open";
 pub const POLICY_LOCK: &str = "lock_required";
 /// Reserved key of `key_revs` holding `source.members_rev`.
 pub const MEMBERS_KEY: &str = "#members";
-pub const FORMAT_VERSION: &str = "0.1";
+pub const FORMAT_VERSION: &str = "0.2";
 pub const PROTOCOL_VERSION: &str = "0.1";
 
 pub fn is_known_type(t: &str) -> bool {
-    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION)
+    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF)
+}
+
+/// Types that live in the data tree (everything that is neither a container nor a Block).
+pub fn is_data_type(t: &str) -> bool {
+    matches!(t, TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF)
+}
+
+/// Fixed entities every Workspace has; they cannot be created, deleted, moved or renamed by operations.
+pub fn is_system_id(id: &str) -> bool {
+    matches!(id, ROOT_ID | DATA_ID | SURFACES_ID | CANVAS_CONTENT_ID)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +60,10 @@ pub struct EntityRow {
     pub write_policy: String,
     pub payload: JsonMap,
     pub key_revs: BTreeMap<String, u64>,
+    /// Generation dependency record (phase two §7.3): which wish run produced this content and
+    /// which input versions it read. Entity-level metadata, not part of the type's payload.
+    #[serde(default)]
+    pub derived: Option<Value>,
     pub created_seq: u64,
     pub meta_rev: u64,
     pub content_rev: u64,
@@ -144,9 +167,10 @@ impl RefEdge {
             dst_query_json: String::new(),
         }
     }
-    /// Reference kinds that block deletion of their target.
+    /// Reference kinds that block deletion of their target. `input` (wish inputs) and `derived`
+    /// (generation dependencies) do not: the target may go, the result then reads "引用不可用".
     pub fn blocks_delete(&self) -> bool {
-        matches!(self.kind.as_str(), "bind" | "embed" | "value" | "body")
+        matches!(self.kind.as_str(), "bind" | "embed" | "value" | "body" | "def")
     }
 }
 
@@ -425,10 +449,15 @@ pub struct MemStore {
 }
 
 impl MemStore {
-    /// A store holding only the root container, as a freshly created Workspace.
+    /// A store holding the root and the system nodes, as a freshly created Workspace.
     pub fn with_root() -> MemStore {
         let mut m = MemStore::default();
-        m.entities.insert(ROOT_ID.into(), root_entity());
+        for (e, edge) in system_entities(None) {
+            m.entities.insert(e.entity_id.clone(), e);
+            if let Some(edge) = edge {
+                m.edges.insert(edge.child_id.clone(), edge);
+            }
+        }
         m
     }
 
@@ -446,26 +475,60 @@ impl MemStore {
     }
 }
 
-/// The root container every Workspace starts with (`seq` 0).
-pub fn root_entity() -> EntityRow {
+fn system_container(id: &str, kind: &str, name: Option<&str>, title: Option<&str>) -> EntityRow {
     let mut payload = Map::new();
-    payload.insert("kind".into(), Value::String("root".into()));
-    payload.insert("layout".into(), serde_json::json!({ "mode": "flow" }));
+    payload.insert("kind".into(), Value::String(kind.into()));
+    if let Some(t) = title {
+        payload.insert("title".into(), Value::String(t.into()));
+    }
+    if id == CANVAS_CONTENT_ID {
+        payload.insert("system".into(), Value::String("canvas_content".into()));
+    }
+    let mut key_revs = BTreeMap::new();
+    for k in payload.keys() {
+        key_revs.insert(k.clone(), 0);
+    }
     EntityRow {
-        entity_id: ROOT_ID.into(),
+        entity_id: id.into(),
         type_id: TYPE_CONTAINER.into(),
         schema_version: 1,
         scope: SCOPE_SHARED.into(),
-        name: None,
+        name: name.map(str::to_string),
         write_policy: POLICY_OPEN.into(),
         payload,
-        key_revs: BTreeMap::new(),
+        key_revs,
+        derived: None,
         created_seq: 0,
         meta_rev: 0,
         content_rev: 0,
         life_rev: 0,
         deleted_seq: None,
     }
+}
+
+/// The root container every Workspace starts with (`seq` 0).
+pub fn root_entity() -> EntityRow {
+    let mut root = system_container(ROOT_ID, "root", None, None);
+    root.payload.insert("layout".into(), serde_json::json!({ "mode": "flow" }));
+    root.key_revs.insert("layout".into(), 0);
+    root
+}
+
+/// Root plus the system nodes of the two trees (phase two §4.5), with their edges, in
+/// parent-before-child order. `title` becomes the root's title.
+pub fn system_entities(title: Option<&str>) -> Vec<(EntityRow, Option<TreeEdge>)> {
+    let edge = |child: &str, parent: &str, key: &str| TreeEdge { child_id: child.into(), parent_id: parent.into(), order_key: key.into(), placement: None, struct_rev: 0 };
+    let mut root = root_entity();
+    if let Some(t) = title.filter(|t| !t.is_empty()) {
+        root.payload.insert("title".into(), Value::String(t.into()));
+        root.key_revs.insert("title".into(), 0);
+    }
+    vec![
+        (root, None),
+        (system_container(DATA_ID, "data", Some("data"), Some("数据")), Some(edge(DATA_ID, ROOT_ID, "a"))),
+        (system_container(SURFACES_ID, "surfaces", Some("surfaces"), Some("画布")), Some(edge(SURFACES_ID, ROOT_ID, "b"))),
+        (system_container(CANVAS_CONTENT_ID, "folder", Some("canvas-content"), Some("画布内容")), Some(edge(CANVAS_CONTENT_ID, DATA_ID, "zz"))),
+    ]
 }
 
 impl ReadCtx for MemStore {

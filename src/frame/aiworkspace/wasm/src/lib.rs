@@ -217,31 +217,26 @@ impl Replica {
 
     pub fn outline(&self) -> Result<String, JsError> {
         let access = Access::full(&self.inner.principal);
-        let m = &self.inner.working;
-        let mut out = Vec::new();
-        let mut stack = vec!["root".to_string()];
-        use aiworkspace_core::model::ReadCtx;
-        while let Some(id) = stack.pop() {
-            let Some(e) = m.entity(&id).map_err(fail)? else { continue };
-            if !e.alive() {
-                continue;
-            }
-            let mut env = read::envelope(m, &access, &e).map_err(fail)?;
-            env["title"] = e.payload.get("title").cloned().unwrap_or(Value::Null);
-            if e.type_id == aiworkspace_core::model::TYPE_CONTAINER {
-                env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
-                env["layout"] = e.payload.get("layout").cloned().unwrap_or(Value::Null);
-            }
-            if e.type_id == aiworkspace_core::model::TYPE_CELL {
-                env["view_type"] = e.payload.get("view").and_then(|v| v.get("type")).cloned().unwrap_or(Value::Null);
-                env["source_id"] = e.payload.get("source_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
-            }
-            out.push(env);
-            for edge in m.children(&id).map_err(fail)?.into_iter().rev() {
-                stack.push(edge.child_id);
-            }
-        }
+        let out = read::outline(&self.inner.working, &access).map_err(fail)?;
         Ok(json!({ "ok": true, "epoch": self.inner.epoch, "head_seq": self.inner.confirmed_seq, "entities": out }).to_string())
+    }
+
+    /// `doc.freshness` on the working view: `{ entity_ids }` → `{ items }` (same shape as the backend).
+    pub fn freshness(&self, params_json: &str) -> Result<String, JsError> {
+        let p = parse(params_json)?;
+        let ids: Vec<String> = p.get("entity_ids").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
+        let access = Access::full(&self.inner.principal);
+        let items = aiworkspace_core::freshness::freshness_many(&self.inner.working, &access, &ids).map_err(fail)?;
+        Ok(json!({ "ok": true, "head_seq": self.inner.confirmed_seq, "items": items }).to_string())
+    }
+
+    /// `doc.relations` on the working view.
+    pub fn relations(&self, entity_id: &str) -> Result<String, JsError> {
+        let access = Access::full(&self.inner.principal);
+        let mut v = aiworkspace_core::freshness::relations(&self.inner.working, &access, entity_id).map_err(fail)?;
+        v["ok"] = json!(true);
+        v["head_seq"] = json!(self.inner.confirmed_seq);
+        Ok(v.to_string())
     }
 
     pub fn read(&self, entity_id: &str, selector_json: Option<String>) -> Result<String, JsError> {

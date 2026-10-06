@@ -13,7 +13,8 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
-  type AnnotationRead, type ListAnnotationsParams,
+  type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
+  type Subject, type VersionInfo,
 } from './types'
 
 export type SessionStatus =
@@ -28,6 +29,10 @@ export type SessionStatus =
 export interface CommitOptions {
   message?: string
   undoGroup?: string
+  /** Read-set preconditions (design §2.6): the commit applies only if these version cells are unchanged. */
+  preconditions?: unknown[]
+  origin?: 'human' | 'agent' | 'program'
+  runId?: string
   /** Label of the edit in the save-state list. */
   label?: string
   /** Replica session: stored with the pending row so the edit can be shown again after a restart. */
@@ -101,6 +106,24 @@ export interface WorkspaceSession {
   listAnnotations(params: ListAnnotationsParams): Promise<AnnotationRead[]>
   query(params: QueryParams): Promise<QueryPage>
   getCollabState(entityId: string): Promise<CollabState>
+  /** Dependency-based freshness of results and wishes (computed by the core, phase two §7.5). */
+  freshness(entityIds: string[]): Promise<FreshnessInfo[]>
+  /** What an entity references / is referenced by / was generated from (phase two §6.2). */
+  relations(entityId: string): Promise<RelationsInfo>
+  /** Addressable versions of an entity (needs the backend). */
+  listVersions(entityId: string): Promise<{ versions: VersionInfo[]; content_rev: number }>
+  /** The operations restoring a stored version, to be submitted as an ordinary commit (needs the backend). */
+  restoreVersionPlan(entityId: string, contentRev: number): Promise<{ operations: Operation[]; derived: DerivedRecord | null }>
+
+  /** User work state on the server (phase two §4.4): per subject, per Workspace; never a document Commit. Needs the backend. */
+  getUserState(): Promise<Record<string, Json>>
+  setUserState(entries: Record<string, Json | null>): Promise<void>
+
+  /** Deployment management (online only; never queued, never undoable). */
+  listGrants(): Promise<GrantList>
+  grant(subject: string, capabilities: Capability[], scopeEntityId?: string): Promise<void>
+  revoke(subject: string, scopeEntityId?: string): Promise<void>
+  listSubjects(): Promise<Subject[]>
 
   commit(operations: Operation[], options?: CommitOptions): Promise<CommitOutcome>
   /** Resend a submission whose result is still unknown: same key, same content. */
@@ -350,6 +373,44 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     try { return unwrap(await this.client.getCollabState(this.ws, entityId)) } catch (error) { return this.fail(error) }
   }
 
+  async freshness(entityIds: string[]) {
+    if (entityIds.length === 0) return []
+    try { return unwrap(await this.client.freshness(this.ws, entityIds)).items } catch (error) { return this.fail(error) }
+  }
+
+  async relations(entityId: string) {
+    try { return unwrap(await this.client.relations(this.ws, entityId)) } catch (error) { return this.fail(error) }
+  }
+
+  async listVersions(entityId: string) {
+    try { const r = unwrap(await this.client.listVersions(this.ws, entityId)); return { versions: r.versions, content_rev: r.content_rev } } catch (error) { return this.fail(error) }
+  }
+
+  async restoreVersionPlan(entityId: string, contentRev: number) {
+    try { const r = unwrap(await this.client.restoreVersion(this.ws, entityId, contentRev)); return { operations: r.operations, derived: r.derived } } catch (error) { return this.fail(error) }
+  }
+
+  async getUserState() {
+    try { return unwrap(await this.client.wsGetUserState(this.ws)).entries } catch (error) { return this.fail(error) }
+  }
+
+  async setUserState(entries: Record<string, Json | null>) {
+    try { unwrap(await this.client.wsSetUserState(this.ws, entries)) } catch (error) { return this.fail(error) }
+  }
+
+  async listGrants() {
+    try { const r = unwrap(await this.client.wsListGrants(this.ws)); return { grants: r.grants, complete: r.complete, owner: r.owner, principal: r.principal } } catch (error) { return this.fail(error) }
+  }
+  async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
+    try { unwrap(await this.client.wsGrant(this.ws, subject, capabilities, scopeEntityId)) } catch (error) { return this.fail(error) }
+  }
+  async revoke(subject: string, scopeEntityId?: string) {
+    try { unwrap(await this.client.wsRevoke(this.ws, subject, scopeEntityId)) } catch (error) { return this.fail(error) }
+  }
+  async listSubjects() {
+    try { return unwrap(await this.client.wsListSubjects(this.ws)).subjects } catch (error) { return this.fail(error) }
+  }
+
   // ---- writes (design §2.6)
 
   private nextKey() {
@@ -370,9 +431,10 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       epoch: this.epoch,
       idempotency_key: key,
       session_id: this.sessionId,
-      origin: 'human',
+      origin: options?.origin ?? 'human',
       ...(options?.undoGroup ? { undo_group: options.undoGroup } : {}),
       ...(options?.message ? { message: options.message } : {}),
+      ...(options?.preconditions && options.preconditions.length > 0 ? { preconditions: options.preconditions } : {}),
       operations,
     }
   }

@@ -26,7 +26,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo,
-  type AnnotationContent, type ListAnnotationsParams,
+  type AnnotationContent, type ListAnnotationsParams, type Capability,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -451,6 +451,44 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     }
   }
 
+  freshness(entityIds: string[]) {
+    if (entityIds.length === 0) return Promise.resolve([])
+    return this.replica.call('freshness', entityIds)
+  }
+  relations(entityId: string) { return this.replica.call('relations', entityId) }
+  async listVersions(entityId: string) {
+    if (!this.isLive()) throw this.offlineFailure('版本历史保存在后台，现在无法读取')
+    return this.direct.listVersions(entityId)
+  }
+  async restoreVersionPlan(entityId: string, contentRev: number) {
+    if (!this.isLive()) throw this.offlineFailure('恢复历史版本需要连接后台')
+    return this.direct.restoreVersionPlan(entityId, contentRev)
+  }
+  async getUserState() {
+    if (!this.isLive()) throw this.offlineFailure('服务端的工作状态现在无法读取')
+    return this.direct.getUserState()
+  }
+  async setUserState(entries: Record<string, Json | null>) {
+    if (!this.isLive()) throw this.offlineFailure('服务端的工作状态现在无法写入')
+    return this.direct.setUserState(entries)
+  }
+  async listGrants() {
+    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在无法读取授权')
+    return this.direct.listGrants()
+  }
+  async grant(subject: string, capabilities: Capability[], scopeEntityId?: string) {
+    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在没有修改任何授权')
+    return this.direct.grant(subject, capabilities, scopeEntityId)
+  }
+  async revoke(subject: string, scopeEntityId?: string) {
+    if (!this.isLive()) throw this.offlineFailure('权限管理在线执行，现在没有修改任何授权')
+    return this.direct.revoke(subject, scopeEntityId)
+  }
+  async listSubjects() {
+    if (!this.isLive()) throw this.offlineFailure('主体列表需要连接后台')
+    return this.direct.listSubjects()
+  }
+
   async getCollabState(entityId: string): Promise<CollabState> {
     const state = await this.replica.call('collab', entityId)
     return {
@@ -484,9 +522,10 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
       epoch: this.epoch,
       idempotency_key: key,
       session_id: this.sessionId,
-      origin: 'human',
+      origin: options?.origin ?? 'human',
       ...(options?.undoGroup ? { undo_group: options.undoGroup } : {}),
       ...(options?.message ? { message: options.message } : {}),
+      ...(options?.preconditions && options.preconditions.length > 0 ? { preconditions: options.preconditions } : {}),
       operations,
     }
     const outcome = await this.exclusive(async (): Promise<CommitOutcome | 'direct'> => {

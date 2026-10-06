@@ -134,7 +134,7 @@ async fn v23_service_api_end_to_end() {
     // reads, queries, structured business errors in `result`
     let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
     assert_eq!((info["head_seq"].as_u64(), info["title"].as_str()), (Some(6), Some("项目工作区")));
-    assert_eq!(s.rpc("tok-alice", "doc.outline", w.clone()).await["entities"].as_array().unwrap().len(), 13);
+    assert_eq!(s.rpc("tok-alice", "doc.outline", w.clone()).await["entities"].as_array().unwrap().len(), 17);
     let open = s.rpc("tok-alice", "doc.query", json!({ "workspace_id": id, "view_id": "cell-open-tasks" })).await;
     assert_eq!(open["total"], 4);
     let batch = s.rpc("tok-alice", "doc.read", json!({ "workspace_id": id, "targets": [{ "entity_id": "notes" }, { "entity_id": "ghost" }] })).await;
@@ -179,7 +179,7 @@ async fn v23_service_api_end_to_end() {
     let undone = s.rpc("tok-alice", "doc.undo", json!({ "workspace_id": id, "epoch": epoch, "commit_id": applied["result"]["commit_id"], "idempotency_key": "undo-run" })).await;
     assert_eq!(undone["status"], "accepted", "{undone}");
     let r = s.rpc("tok-alice", "doc.commit", commit_req(&id, &epoch, "url", json!([{ "op": "entity.create", "entity_id": "events", "type_id": "buckyos.table-source",
-        "parent_id": "page-main", "order_key": "v", "payload": { "data_mode": "url_query",
+        "parent_id": "data", "order_key": "v", "payload": { "data_mode": "url_query",
         "source_ref": { "kind": "url_query", "source_url": "fixture://events?rows=100000&snapshot=1", "query": {} },
         "fields": [{ "field_id": "event_id", "name": "事件", "type": "text" }] } }]))).await;
     assert_eq!(r["status"], "accepted", "{r}");

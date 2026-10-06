@@ -10,7 +10,7 @@ import { Emitter } from '../state/emitter'
 const PAGE = 200
 const MAX_PAGE = 1000
 
-export interface PagerQuery { viewId: string; sourceId: string; filter: FilterNode | null; sorts: SortSpec[] | null; orderDependsOnData: boolean }
+export interface PagerQuery { viewId?: string; sourceId: string; filter: FilterNode | null; sorts: SortSpec[] | null; orderDependsOnData: boolean }
 
 export interface PagerSnapshot {
   rows: readonly QueryRow[]
@@ -91,7 +91,7 @@ export class TablePager {
 
   private params(limit: number, cursor: string | null): QueryParams {
     return {
-      view_id: this.query.viewId,
+      ...(this.query.viewId ? { view_id: this.query.viewId } : { source_id: this.query.sourceId }),
       ...(this.query.filter ? { filter: this.query.filter } : {}),
       ...(this.query.sorts ? { sorts: this.query.sorts } : {}),
       limit,

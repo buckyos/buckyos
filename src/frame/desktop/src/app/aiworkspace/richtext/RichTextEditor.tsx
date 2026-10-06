@@ -204,8 +204,10 @@ function buildView(
         }
       },
     },
-    handleClickOn: (_view, _pos, node) => {
+    handleClickOn: (view, _pos, node, _nodePos, event) => {
       if (node.type.name !== 'object_link') return false
+      // while editing, a plain click places the caret; Ctrl/Cmd+click opens the linked object (read-only: a plain click opens it)
+      if (view.editable && !(event.ctrlKey || event.metaKey)) return false
       onOpenEntity(String((node.attrs.ref as Reference).entity_id))
       return true
     },

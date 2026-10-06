@@ -8,6 +8,7 @@ pub mod anchor;
 pub mod canonical;
 pub mod error;
 pub mod filter;
+pub mod freshness;
 pub mod id;
 pub mod materialize;
 pub mod model;

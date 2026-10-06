@@ -2,20 +2,27 @@
  * the change stream, save states, the UndoCoordinator, the lock manager and user-visible notices. */
 
 import type { Schema } from 'prosemirror-model'
-import type { SubmissionEvent, WorkspaceSession } from '../api/session'
+import type { ReadOk, SubmissionEvent, WorkspaceSession } from '../api/session'
+import { ServiceFailure } from '../api/client'
 import { testHooks } from '../api/testHooks'
-import type { CommitConflict, CommitOutcome, CommitRejected, Json, Operation } from '../api/types'
+import type { CommitConflict, CommitOutcome, CommitRejected, EntityEnvelope, Json, Operation, Placement } from '../api/types'
 import type { PendingMeta, PendingRow } from '../offline/protocol'
 import { richTextSchemaDef, type AiwsCore } from '../api/wasm'
 import { buildRichTextSchema, type RichTextSchemaDef } from '../richtext/schema'
 import { EditStore } from './edits'
 import { Emitter, VersionMap } from './emitter'
+import { FreshnessService } from './freshness'
 import { LockManager } from './locks'
+import { OutlineModel } from './outline'
 import { UndoCoordinator } from './undo'
+import { UserWorkState } from './userState'
+import { WishService } from '../ui/wish/WishService'
 
 const STRUCTURAL = new Set(['created', 'deleted', 'restored', 'renamed', 'moved', 'placed', 'view'])
+/** A remote move of a Block this window placed within this many ms is reported as a layout conflict (D1). */
+const LAYOUT_INTENT_MS = 20_000
 
-export interface Notice { id: number; kind: 'info' | 'error'; text: string }
+export interface Notice { id: number; kind: 'info' | 'error'; text: string; action?: { label: string; run: () => void } }
 
 export interface SubmitOptions {
   /** Key of the edit in the save-state list; a later edit of the same target replaces the earlier entry. */
@@ -27,6 +34,9 @@ export interface SubmitOptions {
   hasMine?: boolean
   /** Push the accepted commit on the undo stack (default true). */
   undoable?: boolean
+  /** Read-set preconditions guarding the commit (wish application, §7.2). */
+  preconditions?: unknown[]
+  origin?: 'human' | 'agent' | 'program'
 }
 
 /** An input that is saved nowhere but in this window's memory (storage failure, unknown result): exportable. */
@@ -52,6 +62,14 @@ export class WorkspaceStore {
   readonly edits = new EditStore()
   readonly undo: UndoCoordinator
   readonly locks: LockManager
+  /** The two trees, maintained incrementally from the change stream (phase two §9.3). */
+  readonly outline: OutlineModel
+  readonly userState: UserWorkState
+  readonly freshness: FreshnessService
+  /** Wish passes and application (phase two §7). */
+  readonly wish: WishService
+  /** Last placement this window submitted per Block, for the layout-conflict notice (D1). */
+  private readonly layoutIntents = new Map<string, { placement: Placement; orderKey?: string; parentId?: string; at: number }>()
   private notices: Notice[] = []
   private noticeId = 0
   private readonly noticeEmitter = new Emitter()
@@ -72,17 +90,34 @@ export class WorkspaceStore {
     this.pmSchema = buildRichTextSchema(this.schemaDef)
     this.undo = new UndoCoordinator(session)
     this.locks = new LockManager(session)
+    this.outline = new OutlineModel(
+      () => session.outline(),
+      async (ids) => (await session.readMany(ids.map((entity_id) => ({ entity_id })))).map((entry) => ('error' in entry ? null : (entry as EntityEnvelope))),
+      session.principal,
+    )
+    this.outline.onRemoteLayoutChange = (entityId, author, placement) => this.onRemoteLayoutChange(entityId, author, placement)
+    this.userState = new UserWorkState(session)
+    this.freshness = new FreshnessService(session)
+    this.wish = new WishService(this)
+    void this.userState.init()
     this.unsubscribe = session.subscribeChanges((event) => {
       const keys = new Set<string>(['any'])
       for (const touched of event.touched ?? []) {
         keys.add(`e:${touched.entity_id}`)
         if (STRUCTURAL.has(touched.change)) keys.add('outline')
       }
+      // the outline is patched from the event; only an uninterpretable event re-reads it
+      this.outline.applyEvent(event)
+      if ((event.touched ?? []).length > 0) this.freshness.invalidate()
       this.versions.bump(keys)
     })
     const offline = session.offline
     const hooks = testHooks()
-    if (hooks) hooks.replica = offline?.test ?? undefined
+    if (hooks) {
+      hooks.replica = offline?.test ?? undefined
+      hooks.outline = () => this.outline.all()
+      hooks.commits = 0
+    }
     if (offline) {
       // pending submissions of earlier runs of this replica: they are saved on this device, show them again
       for (const row of offline.pending()) this.showPending(row.idempotency_key, row.state, row.result, row.meta, false)
@@ -93,6 +128,41 @@ export class WorkspaceStore {
   }
 
   unsavedSnapshot = (): ReadonlyMap<string, UnsavedInput> => this.unsaved
+
+  /** Reads of many Blocks issued in the same tick go out as one `doc.read` batch (phase two §9.3 rule 6). */
+  private batch: { ids: Map<string, { resolve: (value: ReadOk<unknown>) => void; reject: (error: Error) => void }[]>; timer: number } | null = null
+  readBatched<C>(entityId: string): Promise<ReadOk<C>> {
+    return new Promise<ReadOk<unknown>>((resolve, reject) => {
+      if (!this.batch) {
+        this.batch = { ids: new Map(), timer: window.setTimeout(() => void this.flushBatch(), 8) }
+      }
+      const waiters = this.batch.ids.get(entityId) ?? []
+      waiters.push({ resolve, reject })
+      this.batch.ids.set(entityId, waiters)
+      if (this.batch.ids.size >= 200) { window.clearTimeout(this.batch.timer); void this.flushBatch() }
+    }) as Promise<ReadOk<C>>
+  }
+
+  private async flushBatch() {
+    const batch = this.batch
+    this.batch = null
+    if (!batch) return
+    const ids = [...batch.ids.keys()]
+    try {
+      const results = await this.session.readMany(ids.map((entity_id) => ({ entity_id })))
+      results.forEach((result, index) => {
+        const waiters = batch.ids.get(ids[index]) ?? []
+        if ('error' in result) {
+          const error = new ServiceFailure({ code: result.error.code, detail: result.error.detail })
+          for (const waiter of waiters) waiter.reject(error)
+        } else {
+          for (const waiter of waiters) waiter.resolve(result)
+        }
+      })
+    } catch (error) {
+      for (const waiters of batch.ids.values()) for (const waiter of waiters) waiter.reject(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
 
   private setUnsaved(editId: string, input: UnsavedInput | null) {
     if (!input && !this.unsaved.has(editId)) return
@@ -202,10 +272,35 @@ export class WorkspaceStore {
 
   noticeSnapshot = (): readonly Notice[] => this.notices
 
-  notify(kind: Notice['kind'], text: string) {
+  notify(kind: Notice['kind'], text: string, action?: Notice['action']) {
     this.noticeId += 1
-    this.notices = [...this.notices, { id: this.noticeId, kind, text }]
+    this.notices = [...this.notices, { id: this.noticeId, kind, text, action }]
     this.noticeEmitter.emit()
+  }
+
+  /** Remember what this window just placed, so a remote overwrite can be reported and re-applied (D1). */
+  noteLayoutIntent(entityId: string, placement: Placement, orderKey?: string, parentId?: string) {
+    this.layoutIntents.set(entityId, { placement, orderKey, parentId, at: Date.now() })
+  }
+
+  private onRemoteLayoutChange(entityId: string, author: string | null, placement: Placement | undefined) {
+    const intent = this.layoutIntents.get(entityId)
+    if (!intent || Date.now() - intent.at > LAYOUT_INTENT_MS) return
+    if (placement && JSON.stringify(placement) === JSON.stringify(intent.placement)) return
+    this.layoutIntents.delete(entityId)
+    const entity = this.outline.get(entityId)
+    const label = entity?.title ?? entity?.name ?? entityId
+    this.notify('info', `「${label}」的位置已被${author ? ` ${author}` : '他人'}修改（后到者生效）。`, {
+      label: '重新应用我的位置',
+      run: () => {
+        const current = this.outline.get(entityId)
+        const operations: Operation[] = [current && intent.parentId && current.parent_id !== intent.parentId
+          ? { op: 'tree.move', entity_id: entityId, new_parent_id: intent.parentId, order_key: intent.orderKey ?? current.order_key, placement: intent.placement }
+          : { op: 'tree.place', entity_id: entityId, placement: intent.placement, ...(intent.orderKey ? { order_key: intent.orderKey } : {}) }]
+        this.noteLayoutIntent(entityId, intent.placement, intent.orderKey, intent.parentId)
+        void this.submit({ editId: `layout:${entityId}`, label: `重新应用位置 ${label}`, operations })
+      },
+    })
   }
 
   dismissNotice(id: number) {
@@ -215,7 +310,7 @@ export class WorkspaceStore {
 
   /** Lock holders are not part of the change stream: while some entity requires a lock, re-read the outline now and then. */
   setLockPolling(active: boolean) {
-    if (active && this.lockPoll === null) this.lockPoll = window.setInterval(() => this.versions.bump(['outline']), 5000)
+    if (active && this.lockPoll === null) this.lockPoll = window.setInterval(() => { this.versions.bump(['outline']); void this.outline.reload().catch(() => undefined) }, 5000)
     if (!active && this.lockPoll !== null) { window.clearInterval(this.lockPoll); this.lockPoll = null }
   }
 
@@ -229,8 +324,10 @@ export class WorkspaceStore {
     }
     this.edits.set({ id: editId, label, state: 'unsaved', mine, hasMine })
     let outcome: CommitOutcome
+    const hooks = testHooks()
+    if (hooks) hooks.commits = (hooks.commits ?? 0) + 1
     try {
-      outcome = await this.session.commit(options.operations, { message: label, meta: { editId, label, mine, hasMine, undoable: options.undoable !== false } })
+      outcome = await this.session.commit(options.operations, { message: label, preconditions: options.preconditions, origin: options.origin, meta: { editId, label, mine, hasMine, undoable: options.undoable !== false } })
     } catch (error) {
       outcome = { status: 'unknown', idempotency_key: '', detail: error instanceof Error ? error.message : String(error) }
     }
@@ -306,6 +403,10 @@ export class WorkspaceStore {
     this.setLockPolling(false)
     this.locks.dispose()
     this.edits.dispose()
+    this.outline.dispose()
+    this.userState.dispose()
+    this.freshness.dispose()
+    this.wish.dispose()
     this.session.close()
     return this.session.whenClosed()
   }

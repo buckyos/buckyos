@@ -1,6 +1,6 @@
 //! Storage DDL (design doc §4.2, §2.11, §7). `storage_schema_version = 1`.
 
-pub const STORAGE_SCHEMA_VERSION: u32 = 1;
+pub const STORAGE_SCHEMA_VERSION: u32 = 2;
 
 /// The document database: the working form of one portable Workspace.
 pub const DOC_DDL: &str = r#"
@@ -18,6 +18,7 @@ CREATE TABLE entities (
   write_policy   TEXT NOT NULL DEFAULT 'open',
   payload_json   TEXT NOT NULL DEFAULT '{}',
   key_revs_json  TEXT NOT NULL DEFAULT '{}',
+  derived_json   TEXT,
   created_seq    INTEGER NOT NULL,
   meta_rev       INTEGER NOT NULL,
   content_rev    INTEGER NOT NULL,
@@ -127,9 +128,12 @@ CREATE TABLE assets (
 ) WITHOUT ROWID;
 
 CREATE TABLE entity_versions (
-  entity_id   TEXT NOT NULL,
-  content_rev INTEGER NOT NULL,
-  object_id   TEXT NOT NULL,
+  entity_id    TEXT NOT NULL,
+  content_rev  INTEGER NOT NULL,
+  object_id    TEXT NOT NULL,
+  derived_json TEXT,
+  kind         TEXT NOT NULL DEFAULT 'checkpoint',
+  created_at   TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (entity_id, content_rev)
 ) WITHOUT ROWID;
 CREATE INDEX entity_versions_object ON entity_versions(object_id);
@@ -199,6 +203,14 @@ CREATE TABLE runs (
   created_at     TEXT NOT NULL,
   updated_at     TEXT NOT NULL,
   UNIQUE (principal, idem_key)
+) WITHOUT ROWID;
+
+CREATE TABLE user_state (
+  subject    TEXT NOT NULL,
+  key        TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (subject, key)
 ) WITHOUT ROWID;
 
 CREATE TABLE staged_assets (

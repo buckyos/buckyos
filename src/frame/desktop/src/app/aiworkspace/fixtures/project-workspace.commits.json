@@ -1,5 +1,5 @@
 {
- "description": "The project workspace of design doc §3.8 as the commit sequence that creates it. Replayed through the service interface; commit N gets seq N.",
+ "description": "The project workspace of design doc §3.8 (phase-two structure: data tree + one Surface) as the commit sequence that creates it. Replayed through the service interface; commit N gets seq N.",
  "assets": [
   {
    "placeholder": "$asset:diagram",
@@ -9,21 +9,36 @@
  ],
  "commits": [
   {
-   "message": "创建工作页",
+   "message": "创建画布",
    "operations": [
     {
      "op": "entity.create",
-     "entity_id": "page-main",
+     "entity_id": "surface-main-content",
      "type_id": "buckyos.container",
-     "parent_id": "root",
+     "parent_id": "canvas-content",
      "order_key": "a",
      "name": "项目工作区",
      "payload": {
-      "kind": "page",
+      "kind": "folder",
+      "title": "项目工作区",
+      "system": "surface_content",
+      "surface_id": "surface-main"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "surface-main",
+     "type_id": "buckyos.container",
+     "parent_id": "surfaces",
+     "order_key": "a",
+     "name": "项目工作区",
+     "payload": {
+      "kind": "surface",
       "layout": {
        "mode": "flow"
       },
-      "title": "项目工作区"
+      "title": "项目工作区",
+      "content_folder_id": "surface-main-content"
      }
     }
    ]
@@ -35,7 +50,7 @@
      "op": "entity.create",
      "entity_id": "tasks",
      "type_id": "buckyos.table-source",
-     "parent_id": "page-main",
+     "parent_id": "data",
      "order_key": "b",
      "name": "任务",
      "payload": {
@@ -206,7 +221,7 @@
      "op": "entity.create",
      "entity_id": "project-info",
      "type_id": "buckyos.record",
-     "parent_id": "page-main",
+     "parent_id": "data",
      "order_key": "c",
      "name": "项目信息",
      "payload": {
@@ -242,7 +257,7 @@
      "op": "entity.create",
      "entity_id": "diagram",
      "type_id": "buckyos.asset-ref",
-     "parent_id": "page-main",
+     "parent_id": "data",
      "order_key": "d",
      "name": "架构图",
      "payload": {
@@ -263,7 +278,7 @@
      "op": "entity.create",
      "entity_id": "cell-all-tasks",
      "type_id": "buckyos.cell",
-     "parent_id": "page-main",
+     "parent_id": "surface-main",
      "order_key": "f",
      "payload": {
       "source_ref": {
@@ -305,7 +320,7 @@
      "op": "entity.create",
      "entity_id": "cell-open-tasks",
      "type_id": "buckyos.cell",
-     "parent_id": "page-main",
+     "parent_id": "surface-main",
      "order_key": "g",
      "payload": {
       "source_ref": {
@@ -347,7 +362,7 @@
      "op": "entity.create",
      "entity_id": "cell-info",
      "type_id": "buckyos.cell",
-     "parent_id": "page-main",
+     "parent_id": "surface-main",
      "order_key": "h",
      "payload": {
       "source_ref": {
@@ -363,7 +378,7 @@
      "op": "entity.create",
      "entity_id": "cell-diagram",
      "type_id": "buckyos.cell",
-     "parent_id": "page-main",
+     "parent_id": "surface-main",
      "order_key": "i",
      "payload": {
       "source_ref": {
@@ -386,7 +401,7 @@
      "op": "entity.create",
      "entity_id": "notes",
      "type_id": "buckyos.richtext",
-     "parent_id": "page-main",
+     "parent_id": "data",
      "order_key": "e",
      "name": "项目说明",
      "payload": {
@@ -565,7 +580,7 @@
      "op": "entity.create",
      "entity_id": "cell-notes",
      "type_id": "buckyos.cell",
-     "parent_id": "page-main",
+     "parent_id": "surface-main",
      "order_key": "e1",
      "payload": {
       "source_ref": {
@@ -585,7 +600,7 @@
      "op": "entity.create",
      "entity_id": "note-budget",
      "type_id": "buckyos.annotation",
-     "parent_id": "page-main",
+     "parent_id": "data",
      "order_key": "j",
      "payload": {
       "target": {

@@ -148,7 +148,7 @@ fn offline_edit_rebase_and_send() {
     let (_, r41) = working_cell(&rep, "task-41", "owner");
     rep.submit_local(&local(&rep, "a/4", set_cell("task-41", "owner", json!("给已删记录的修改"), r41)));
     rep.submit_local(&local(&rep, "a/5", json!([
-        { "op": "entity.create", "entity_id": "offline-grp", "type_id": "buckyos.container", "parent_id": "page-main", "order_key": "n", "payload": { "kind": "group" } },
+        { "op": "entity.create", "entity_id": "offline-grp", "type_id": "buckyos.container", "parent_id": "surface-main", "order_key": "n", "payload": { "kind": "group" } },
         { "op": "richtext.insert_blocks", "entity_id": "notes", "position": { "after": "n-title" },
           "blocks": [{ "type": "paragraph", "attrs": { "block_id": "offline-p" }, "content": [{ "type": "text", "text": "离线写的段落" }] }] }])));
     // invalid local input is refused locally by the same rules and is not queued
@@ -296,7 +296,7 @@ fn replica_keeps_anchors_it_does_not_know() {
     let mut rep = bootstrap(&mut ws, &alice(), 4343);
     // stand-in for a newer backend: the import path keeps what a strict write would refuse
     let req = json!({ "protocol_version": "0.1", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
-        "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "page-main",
+        "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "zz", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_line", "line": 2 } },
                 "range": { "kind": "richtext_columns", "from": 1 }, "kind": "note", "body": "来自新版本" } }] });
     let r = ws.commit(&req, &alice(), &CommitOpts { internal: true, import: true, undoes: None });

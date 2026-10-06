@@ -25,7 +25,7 @@ export function anchorStatus(anchor: AnchorInfo): string {
 }
 
 export function annotationLabel(mark: AnnotationMark): string {
-  return mark.payload.context?.label ?? describeTarget(mark.payload.target)
+  return mark.payload.context?.label ?? (mark.payload.target ? describeTarget(mark.payload.target) : '便签')
 }
 
 /** Scroll to where the annotation is shown, if it is shown. */

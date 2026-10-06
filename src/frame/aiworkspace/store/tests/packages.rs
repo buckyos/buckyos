@@ -114,7 +114,7 @@ fn v05_fork() {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
         ws.grant(&alice(), "bob", None, &["read".into(), "comment".into(), "export".into()]).unwrap();
-        ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-private", "type_id": "buckyos.annotation", "parent_id": "page-main",
+        ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-private", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "r", "scope": "personal", "payload": { "target": { "entity_id": "tasks" }, "kind": "note", "body": "私人" } }]));
     }
     let source_root = env.svc.workspace(&id).unwrap().lock().unwrap().checkpoint(&alice()).unwrap().content_root;
@@ -170,7 +170,7 @@ fn v14_privacy_of_exports_and_replicas() {
         ok(&mut ws, &alice(), json!([{ "op": "richtext.delete_blocks", "entity_id": "notes",
             "blocks": [{ "block_id": "n-end", "expect": { "hash": idx["hash"], "struct_rev": idx["struct_rev"] } }] }]));
         // bob's personal annotation: created, edited, deleted
-        ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-note", "type_id": "buckyos.annotation", "parent_id": "page-main",
+        ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-note", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "r", "scope": "personal", "payload": { "target": { "entity_id": "tasks" }, "kind": "note", "body": private } }]));
         let n = ws.read(&bob(), "bob-note", None).unwrap();
         ok(&mut ws, &bob(), json!([{ "op": "entity.set_keys", "entity_id": "bob-note",
@@ -192,7 +192,7 @@ fn v14_privacy_of_exports_and_replicas() {
     {
         let h = env.svc.workspace(&id).unwrap();
         let mut ws = h.lock().unwrap();
-        ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "alice-note", "type_id": "buckyos.annotation", "parent_id": "page-main",
+        ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "alice-note", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "s", "scope": "personal", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_block", "block_id": "n-intro" } },
             "kind": "highlight", "body": "alice 自己的批注" } }]));
     }
@@ -247,10 +247,10 @@ fn v20_unknown_content_is_preserved() {
         conn.execute_batch(
             "INSERT INTO entities (entity_id,type_id,schema_version,payload_json,key_revs_json,created_seq,meta_rev,content_rev,life_rev)
                VALUES ('chart-1','acme.chart',3,'{\"series\":[1,2,3],\"future\":{\"x\":null}}','{}',6,6,6,6);
-             INSERT INTO tree_edges VALUES ('chart-1','page-main','p',NULL,6);
+             INSERT INTO tree_edges VALUES ('chart-1','data','p',NULL,6);
              INSERT INTO entities (entity_id,type_id,schema_version,payload_json,key_revs_json,created_seq,meta_rev,content_rev,life_rev)
                VALUES ('rec-v9','buckyos.record',9,'{\"shape\":\"unknown\"}','{}',6,6,6,6);
-             INSERT INTO tree_edges VALUES ('rec-v9','page-main','q',NULL,6);",
+             INSERT INTO tree_edges VALUES ('rec-v9','data','q',NULL,6);",
         )
         .unwrap();
     }
@@ -261,7 +261,7 @@ fn v20_unknown_content_is_preserved() {
     assert_eq!(ws.read(&alice(), "rec-v9", None).unwrap()["degraded"], "UNSUPPORTED_VERSION");
     assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "chart-1", "keys": [{ "key": "series", "value": [], "expect": { "rev": 0 } }] }]))), "MISSING_EXTENSION");
     assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "rec-v9", "keys": [{ "key": "shape", "value": 1, "expect": { "rev": 0 } }] }]))), "UNSUPPORTED_VERSION");
-    assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c2", "type_id": "acme.chart", "parent_id": "page-main", "order_key": "s" }]))), "MISSING_EXTENSION");
+    assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c2", "type_id": "acme.chart", "parent_id": "data", "order_key": "s" }]))), "MISSING_EXTENSION");
     ok(&mut ws, &alice(), json!([{ "op": "tree.place", "entity_id": "chart-1", "order_key": "p5" }]));
     // export → import keeps the raw payload byte-for-byte in meaning
     let pkg = PathBuf::from(ws.export(&alice(), "share", true).unwrap()["path"].as_str().unwrap());
@@ -292,7 +292,7 @@ fn v22_assets() {
     let id = project(&env);
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
-    let asset = |id: &str, obj: &str| json!([{ "op": "entity.create", "entity_id": id, "type_id": "buckyos.asset-ref", "parent_id": "page-main",
+    let asset = |id: &str, obj: &str| json!([{ "op": "entity.create", "entity_id": id, "type_id": "buckyos.asset-ref", "parent_id": "data",
         "order_key": "u", "payload": { "object_id": obj, "media_type": "text/html", "size": 1 } }]);
     assert_eq!(code(&commit(&mut ws, &alice(), asset("a-none", "cyfile:00ff"))), "DEPENDENCY_UNAVAILABLE");
     assert!(ws.read(&alice(), "a-none", None).is_err(), "no dangling reference was created");
@@ -353,7 +353,7 @@ fn with_source(env: &mut Env) -> Arc<GeneratedSource> {
 }
 
 fn url_table(ws: &mut aiworkspace_store::Workspace, id: &str, url: &str, query: Value) {
-    ok(ws, &alice(), json!([{ "op": "entity.create", "entity_id": id, "type_id": "buckyos.table-source", "parent_id": "page-main", "order_key": "v",
+    ok(ws, &alice(), json!([{ "op": "entity.create", "entity_id": id, "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "v",
         "payload": { "data_mode": "url_query", "title_field_id": "event_id",
             "source_ref": { "kind": "url_query", "source_url": url, "query": query, "version": { "mode": "live_head" }, "consistency": "best_effort" },
             "fields": [ { "field_id": "event_id", "name": "事件", "type": "text" }, { "field_id": "created_at", "name": "时间", "type": "datetime" },
@@ -371,7 +371,7 @@ fn v24_url_query_table() {
     ws.grant(&alice(), "bob", None, &["read".into()]).unwrap();
     let url = "fixture://events?rows=1000000&row_key=1&snapshot=1&deny=bob";
     url_table(&mut ws, "events", url, json!({ "fields": ["event_id", "created_at", "amount", "project_id"] }));
-    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "cell-events", "type_id": "buckyos.cell", "parent_id": "page-main", "order_key": "w",
+    ok(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "cell-events", "type_id": "buckyos.cell", "parent_id": "surface-main", "order_key": "w",
         "payload": { "source_ref": { "entity_id": "events" }, "view": { "type": "table" }, "title": "项目 42 的事件",
                      "filter": { "op": "cmp", "field_id": "project_id", "operator": "eq", "value": "project-42" } } }]));
     assert_eq!(src.rows_generated.load(Ordering::Relaxed), 0, "saving the definition and the view fetched nothing");
@@ -417,7 +417,7 @@ fn v24_url_query_table() {
     url_table(&mut ws, "events-http", "https://data.example.com/datasets/events", json!({}));
     assert_eq!(ws.source_capabilities(&alice(), "events-http", &env.svc.sources).unwrap()["available"], false);
     assert_eq!(ws.query(&alice(), &json!({ "source_id": "events-http" }), &env.svc.sources).unwrap_err().code.as_str(), "DEPENDENCY_UNAVAILABLE");
-    assert!(commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "bad-url", "type_id": "buckyos.table-source", "parent_id": "page-main", "order_key": "x",
+    assert!(commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "bad-url", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "x",
         "payload": { "data_mode": "url_query", "source_ref": { "kind": "url_query", "source_url": "https://user:pw@host/x" } } }]))["status"] == "rejected", "credentials never go into a document");
 
     // export keeps the definition, not the data; import does not go online
@@ -446,7 +446,7 @@ fn v24_url_query_table() {
     let page = ws2.query(&alice(), &json!({ "view_id": "cell-events", "limit": 3 }), &other.svc.sources).unwrap();
     let records: Vec<Value> = page["rows"].as_array().unwrap().iter().map(|r| json!({ "record_id": r["record_id"], "values": r["values"] })).collect();
     ok(&mut ws2, &alice(), json!([
-        { "op": "entity.create", "entity_id": "events-slice", "type_id": "buckyos.table-source", "parent_id": "page-main", "order_key": "y",
+        { "op": "entity.create", "entity_id": "events-slice", "type_id": "buckyos.table-source", "parent_id": "data", "order_key": "y",
           "payload": { "description": format!("slice of {url} @ {}", page["source_revision"]), "fields": [
               { "field_id": "event_id", "name": "事件", "type": "text" }, { "field_id": "created_at", "name": "时间", "type": "datetime" },
               { "field_id": "amount", "name": "金额", "type": "decimal", "scale": 2 }, { "field_id": "project_id", "name": "项目", "type": "text" }] } },

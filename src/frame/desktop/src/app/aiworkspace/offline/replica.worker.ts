@@ -19,7 +19,7 @@ import sqlite3InitModule, { type Database, type SAHPoolUtil, type Sqlite3Static,
 import sqliteWasmUrl from '@sqlite.org/sqlite-wasm/sqlite3.wasm?url'
 import initCore, { Replica } from '../wasm/aiworkspace_wasm.js'
 import coreWasmUrl from '../wasm/aiworkspace_wasm_bg.wasm?url'
-import type { AnnotationContent, CommitEvent, CommitRequest, EntityEnvelope, Json, ListAnnotationsParams, QueryPage, QueryParams, Selector, WorkspaceInfo } from '../api/types'
+import type { AnnotationContent, CommitEvent, CommitRequest, EntityEnvelope, FreshnessInfo, Json, ListAnnotationsParams, QueryPage, QueryParams, RelationsInfo, Selector, WorkspaceInfo } from '../api/types'
 import {
   CLIENT_SCHEMA,
   type AssetRow, type InitResult, type LocalExport, type LocalRefused, type LocalSaved, type PendingMeta, type PendingRow, type PendingState,
@@ -395,6 +395,14 @@ const handlers: Handlers = {
 
   query(params: QueryParams) {
     return JSON.parse(engine(() => core().query(JSON.stringify(params)))) as QueryPage
+  },
+
+  freshness(entityIds: string[]) {
+    return (JSON.parse(engine(() => core().freshness(JSON.stringify({ entity_ids: entityIds })))) as { items: FreshnessInfo[] }).items
+  },
+
+  relations(entityId: string) {
+    return JSON.parse(engine(() => core().relations(entityId))) as RelationsInfo
   },
 
   collab(entityId: string) {

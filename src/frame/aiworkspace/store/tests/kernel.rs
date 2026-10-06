@@ -46,7 +46,7 @@ fn fixture_replays_and_reads_back() {
     let h = env.svc.workspace(&id).unwrap();
     let ws = h.lock().unwrap();
     let outline = ws.outline(&alice()).unwrap();
-    assert_eq!(outline["entities"].as_array().unwrap().len(), 13);
+    assert_eq!(outline["entities"].as_array().unwrap().len(), 17);
     let t = ws.read(&alice(), "tasks", None).unwrap();
     assert_eq!(t["content"]["record_count"], 5);
     assert_eq!(t["content"]["fields"].as_array().unwrap().len(), 6);
@@ -57,7 +57,7 @@ fn fixture_replays_and_reads_back() {
     assert_eq!(notes["content"]["content"]["content"][0]["content"][0]["text"], "本周项目进展");
     assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "available");
     assert_eq!(ws.read(&alice(), "note-budget", None).unwrap()["content"]["anchor"]["state"], "resolved");
-    assert_eq!(ws.resolve(&alice(), None, Some("/项目工作区/任务")).unwrap()["reference"]["entity_id"], "tasks");
+    assert_eq!(ws.resolve(&alice(), None, Some("/data/任务")).unwrap()["reference"]["entity_id"], "tasks");
     let refs = ws.verify_refs().unwrap();
     assert_eq!(refs["ok"], true, "{refs}");
     assert!(refs["count"].as_u64().unwrap() >= 9);
@@ -81,7 +81,7 @@ fn v02_v08_identity_survives_rename_move_sort() {
     ok(&mut ws, &alice(), json!([
         { "op": "entity.rename", "entity_id": "tasks", "name": "任务清单", "expect": { "rev": tasks["meta_rev"] } },
         { "op": "tree.place", "entity_id": "tasks", "order_key": "zz" },
-        { "op": "entity.create", "entity_id": "grp", "type_id": "buckyos.container", "parent_id": "page-main", "order_key": "k", "payload": { "kind": "group" } },
+        { "op": "entity.create", "entity_id": "grp", "type_id": "buckyos.container", "parent_id": "surface-main", "order_key": "k", "payload": { "kind": "group" } },
         { "op": "tree.move", "entity_id": "cell-diagram", "new_parent_id": "grp", "order_key": "a" }
     ]));
     let after = ws.checkpoint(&alice()).unwrap();
@@ -177,7 +177,7 @@ fn v12_idempotency_and_unknown_result() {
     let h = env.svc.workspace(&id).unwrap();
     let mut ws = h.lock().unwrap();
     let mut req = request(&ws, json!([{ "op": "entity.create", "entity_id": "grp-1", "type_id": "buckyos.container",
-        "parent_id": "page-main", "order_key": "m", "payload": { "kind": "group" } }]));
+        "parent_id": "surface-main", "order_key": "m", "payload": { "kind": "group" } }]));
     // durable, then the "response is lost"
     ws.failpoint = Some(FailPoint { at: FailAt::AfterCommit, abort: false, countdown: 1 });
     let lost = ws.commit(&req, &alice(), &CommitOpts::default());
@@ -271,7 +271,7 @@ fn v19_change_stream() {
     ok(&mut ws, &alice(), json!([{ "op": "tree.place", "entity_id": "cell-open-tasks", "order_key": "g5" }]));
     let rv = cell_rev(&ws, &alice(), "task-42", "due");
     ok(&mut ws, &alice(), set_cell("task-42", "due", json!("2026-10-25"), rv));
-    ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-note", "type_id": "buckyos.annotation", "parent_id": "page-main",
+    ok(&mut ws, &bob(), json!([{ "op": "entity.create", "entity_id": "bob-note", "type_id": "buckyos.annotation", "parent_id": "data",
         "order_key": "q", "scope": "personal", "payload": { "target": { "entity_id": "notes" }, "kind": "note", "body": "bob 的私人笔记" } }]));
     let changes = ws.get_changes(&alice(), &epoch, head, 100, true).unwrap();
     let evs = changes["changes"].as_array().unwrap();
@@ -292,8 +292,8 @@ fn v19_change_stream() {
         v["annotations"].as_array().unwrap().iter().map(|a| a["entity_id"].as_str().unwrap().to_string()).collect()
     };
     assert_eq!(listed(alice(), None), ["note-budget"]);
-    assert_eq!(listed(bob(), Some("page-main")), ["note-budget", "bob-note"]);
-    let v = ws.list_annotations(&bob(), &[], Some("page-main")).unwrap();
+    assert_eq!(listed(bob(), Some("data")), ["note-budget", "bob-note"]);
+    let v = ws.list_annotations(&bob(), &[], Some("data")).unwrap();
     assert_eq!(v["annotations"][1]["content"]["anchor"], json!({ "state": "resolved", "level": "target" }));
     assert_eq!(ws.get_changes(&alice(), "ep_other", 0, 10, true).unwrap_err().code.as_str(), "EPOCH_MISMATCH");
     // paging: `more` until the head is reached
@@ -326,9 +326,9 @@ fn v21_permissions() {
     let stream = ws.get_changes(&dave, &ws.epoch.clone(), 0, 100, true).unwrap();
     assert!(stream["changes"].as_array().unwrap().iter().all(|e| e.get("ops").is_none()), "no content events without read");
     assert_eq!(ws.replica_bootstrap(&dave).unwrap_err().code.as_str(), "PERMISSION_DENIED");
-    // subtree grant: read only what lies under the group
+    // subtree grant: read only what lies under the folder (data lives in the data tree, phase two §4.5)
     ok(&mut ws, &alice(), json!([
-        { "op": "entity.create", "entity_id": "grp", "type_id": "buckyos.container", "parent_id": "page-main", "order_key": "k", "payload": { "kind": "group" } },
+        { "op": "entity.create", "entity_id": "grp", "type_id": "buckyos.container", "parent_id": "data", "order_key": "k", "payload": { "kind": "folder" } },
         { "op": "tree.move", "entity_id": "project-info", "new_parent_id": "grp", "order_key": "a" }]));
     let erin = aiworkspace_store::Caller::user("erin");
     ws.grant(&alice(), "erin", Some("grp"), &["read".into()]).unwrap();
@@ -380,8 +380,8 @@ fn write_locks() {
     let lost = ws.lock_renew(&alice(), &[l]).unwrap_err();
     assert_eq!((lost.code.as_str(), lost.data.unwrap()["lost"][0]["reason"].as_str().map(str::to_string)), ("LOCK_LOST", Some("idle".to_string())));
     // a locked container protects membership of its direct children, not their content
-    let page_meta = ws.read(&alice(), "page-main", None).unwrap()["meta_rev"].clone();
-    ok(&mut ws, &alice(), json!([{ "op": "entity.set_write_policy", "entity_id": "page-main", "policy": "lock_required", "expect": { "rev": page_meta } }]));
+    let page_meta = ws.read(&alice(), "surface-main", None).unwrap()["meta_rev"].clone();
+    ok(&mut ws, &alice(), json!([{ "op": "entity.set_write_policy", "entity_id": "surface-main", "policy": "lock_required", "expect": { "rev": page_meta } }]));
     assert_eq!(code(&commit(&mut ws, &bob(), json!([{ "op": "tree.place", "entity_id": "cell-info", "order_key": "h5" }]))), "LOCK_REQUIRED");
     let rv = cell_rev(&ws, &bob(), "task-42", "owner");
     ok(&mut ws, &bob(), set_cell("task-42", "owner", json!("内容不受容器锁影响"), rv));
@@ -436,15 +436,15 @@ fn v03_structure_and_limits() {
     let head = ws.head_seq;
     let grp = |id: &str, parent: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": "buckyos.container", "parent_id": parent, "order_key": "t", "payload": { "kind": "group" } });
     // dangling parent, illegal child type, bad id, bad order key, a cycle within one batch
-    assert_eq!(code(&commit(&mut ws, &alice(), json!([grp("ok-1", "page-main"), grp("bad-1", "no-such-parent")]))), "NOT_FOUND");
+    assert_eq!(code(&commit(&mut ws, &alice(), json!([grp("ok-1", "surface-main"), grp("bad-1", "no-such-parent")]))), "NOT_FOUND");
     assert_eq!(commit(&mut ws, &alice(), json!([grp("x-1", "tasks")]))["sub_code"], "CHILD_NOT_ALLOWED");
-    assert_eq!(code(&commit(&mut ws, &alice(), json!([grp("Bad ID", "page-main")]))), "INVALID_OPERATION");
-    assert_eq!(commit(&mut ws, &alice(), json!([grp("a-1", "page-main"), grp("a-2", "a-1"),
+    assert_eq!(code(&commit(&mut ws, &alice(), json!([grp("Bad ID", "surface-main")]))), "INVALID_OPERATION");
+    assert_eq!(commit(&mut ws, &alice(), json!([grp("a-1", "surface-main"), grp("a-2", "a-1"),
         { "op": "tree.move", "entity_id": "a-1", "new_parent_id": "a-2", "order_key": "a" }]))["sub_code"], "TREE_CYCLE");
-    assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c-1", "type_id": "buckyos.cell", "parent_id": "page-main", "order_key": "u",
+    assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c-1", "type_id": "buckyos.cell", "parent_id": "surface-main", "order_key": "u",
         "payload": { "source_ref": { "entity_id": "ghost" }, "view": { "type": "table" } } }]))), "REFERENCE_BROKEN");
     ws.limits.max_ops = 50;
-    let many: Vec<Value> = (0..51).map(|i| grp(&format!("m-{i}"), "page-main")).collect();
+    let many: Vec<Value> = (0..51).map(|i| grp(&format!("m-{i}"), "surface-main")).collect();
     assert_eq!(code(&commit(&mut ws, &alice(), json!(many))), "LIMIT_EXCEEDED");
     assert_eq!(ws.head_seq, head, "none of the rejected batches left anything behind");
     assert!(ws.read(&alice(), "ok-1", None).is_err());

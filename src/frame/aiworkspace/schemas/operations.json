@@ -52,6 +52,13 @@
    "note": "open | lock_required. expect = meta_rev."
   },
   {
+   "op": "entity.set_derived",
+   "class": "merge",
+   "undo": "compensable",
+   "capability": "update",
+   "note": "Record (or clear) the generation dependency of a result entity: wish, run, executor, read-set versions. Auto-merge; the application guards consistency with read-set preconditions."
+  },
+  {
    "op": "tree.move",
    "class": "merge",
    "undo": "compensable",

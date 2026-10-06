@@ -170,15 +170,14 @@ impl Workspace {
         ] {
             meta_set(&doc, k, &v)?;
         }
-        let mut root = root_entity();
-        if !title.is_empty() {
-            root.payload.insert("title".into(), json!(title));
-            root.key_revs.insert("title".into(), 0);
-        }
-        root.key_revs.insert("kind".into(), 0);
-        root.key_revs.insert("layout".into(), 0);
+        // the root and the system nodes of the two trees (phase two §4.5) exist from `seq` 0
         let mut changes = Overlay::new(&MemStore::default()).into_changes();
-        changes.entities.insert(ROOT_ID.into(), root);
+        for (e, edge) in system_entities(Some(title)) {
+            changes.entities.insert(e.entity_id.clone(), e);
+            if let Some(edge) = edge {
+                changes.edges.insert(edge.child_id.clone(), edge);
+            }
+        }
         apply_changes(&doc, &changes, 0)?;
         local
             .execute("INSERT INTO grants (subject, scope_entity_id, capabilities) VALUES (?1, '', ?2)", params![owner, CapSet::ALL.0])
@@ -300,11 +299,22 @@ impl Workspace {
         Ok(json!({ "ok": true, "removed": n }))
     }
 
+    /// `ws.list_grants`: the whole list for a manager; anyone else only sees the rows that apply to
+    /// them (their own subject and `*`), never the complete name list (phase two §6.3).
     pub fn list_grants(&self, caller: &Caller) -> WsResult<Value> {
-        self.require_ws(caller, Cap::Manage)?;
-        let mut st = self.local.prepare("SELECT subject, scope_entity_id, capabilities FROM grants ORDER BY subject, scope_entity_id").map_err(db_err)?;
+        let access = self.require_ws_any(caller)?;
+        let manage = access.ws_caps.has(Cap::Manage);
+        let sql = if manage {
+            "SELECT subject, scope_entity_id, capabilities FROM grants ORDER BY subject, scope_entity_id"
+        } else {
+            "SELECT subject, scope_entity_id, capabilities FROM grants WHERE subject = ?1 OR subject = '*' ORDER BY subject, scope_entity_id"
+        };
+        let mut st = self.local.prepare(sql).map_err(db_err)?;
+        let params: Vec<&dyn rusqlite::ToSql> = if manage { vec![] } else { vec![&caller.principal] };
+        let owner: Option<String> =
+            self.local.query_row("SELECT value FROM local_meta WHERE key = 'owner'", [], |r| r.get(0)).optional().map_err(db_err)?;
         let rows: Vec<Value> = st
-            .query_map([], |r| {
+            .query_map(params.as_slice(), |r| {
                 let scope: String = r.get(1)?;
                 Ok(json!({ "subject": r.get::<_, String>(0)?, "scope_entity_id": if scope.is_empty() { Value::Null } else { json!(scope) },
                            "capabilities": CapSet(r.get::<_, u16>(2)?).names() }))
@@ -312,7 +322,59 @@ impl Workspace {
             .map_err(db_err)?
             .collect::<rusqlite::Result<_>>()
             .map_err(db_err)?;
-        Ok(json!({ "ok": true, "grants": rows }))
+        Ok(json!({ "ok": true, "grants": rows, "complete": manage, "owner": if manage { owner } else { None }, "principal": caller.principal }))
+    }
+
+    // ---- user work state (phase two §4.4): per subject, per Workspace, in local.sqlite ----
+
+    /// `ws.get_user_state`: every entry of the caller.
+    pub fn get_user_state(&self, caller: &Caller) -> WsResult<Value> {
+        self.require_ws_any(caller)?;
+        let mut st = self.local.prepare("SELECT key, value_json, updated_at FROM user_state WHERE subject = ?1 ORDER BY key").map_err(db_err)?;
+        let rows: Vec<(String, String, String)> = st
+            .query_map([&caller.principal], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(db_err)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(db_err)?;
+        let mut entries = serde_json::Map::new();
+        let mut updated = serde_json::Map::new();
+        for (k, v, at) in rows {
+            entries.insert(k.clone(), serde_json::from_str(&v).unwrap_or(Value::Null));
+            updated.insert(k, json!(at));
+        }
+        Ok(json!({ "ok": true, "entries": entries, "updated_at": updated }))
+    }
+
+    /// `ws.set_user_state`: `entries: { key: value | null }` — null removes. Last writer wins per
+    /// entry. Not a document Commit: no history, no change-stream event, no undo.
+    pub fn set_user_state(&mut self, caller: &Caller, entries: &Value) -> WsResult<Value> {
+        self.require_ws_any(caller)?;
+        let o = entries.as_object().ok_or_else(|| WsError::invalid_op("entries must be an object"))?;
+        if o.len() > 500 {
+            return Err(WsError::limit("at most 500 entries per call"));
+        }
+        let now = self.now();
+        let tx = self.local.unchecked_transaction().map_err(db_err)?;
+        for (k, v) in o {
+            if k.is_empty() || k.len() > 256 {
+                return Err(WsError::invalid_op("invalid user state key"));
+            }
+            if v.is_null() {
+                tx.execute("DELETE FROM user_state WHERE subject = ?1 AND key = ?2", params![caller.principal, k]).map_err(db_err)?;
+            } else {
+                let text = v.to_string();
+                if text.len() > 256 * 1024 {
+                    return Err(WsError::limit("a user state entry is limited to 256 KiB"));
+                }
+                tx.execute(
+                    "INSERT OR REPLACE INTO user_state (subject, key, value_json, updated_at) VALUES (?1, ?2, ?3, ?4)",
+                    params![caller.principal, k, text, now],
+                )
+                .map_err(db_err)?;
+            }
+        }
+        tx.commit().map_err(db_err)?;
+        Ok(json!({ "ok": true, "updated_at": now }))
     }
 
     pub fn info(&self, caller: &Caller) -> WsResult<Value> {
@@ -521,6 +583,27 @@ impl Workspace {
         };
         let tx = self.doc.unchecked_transaction().map_err(db_err)?;
         let stats = apply_changes(&tx, changes, seq)?;
+        // a generated result gets an addressable version right away (phase two §7.4): its content is
+        // materialized and listed in entity_versions together with the dependency record
+        let versioned: Vec<String> = ops
+            .iter()
+            .filter(|o| o.op["op"] == json!("entity.set_derived"))
+            .filter_map(|o| o.op["entity_id"].as_str().map(str::to_string))
+            .collect();
+        if !versioned.is_empty() {
+            let ctx = SqlCtx { conn: &tx, local: Some(&self.local), cache: &self.cache, now };
+            let mut sink = crate::objects::StoreSink::new(&self.objects);
+            for id in versioned {
+                let Some(e) = changes.entities.get(&id) else { continue };
+                let object_id = aiworkspace_core::materialize::content_object(&ctx, e, &mut sink)?;
+                tx.execute(
+                    "INSERT INTO entity_versions (entity_id, content_rev, object_id, derived_json, kind, created_at) VALUES (?1, ?2, ?3, ?4, 'generated', ?5) \
+                     ON CONFLICT(entity_id, content_rev) DO UPDATE SET object_id = excluded.object_id, derived_json = excluded.derived_json, kind = 'generated', created_at = excluded.created_at",
+                    params![id, e.content_rev, object_id, e.derived.as_ref().map(Value::to_string), now],
+                )
+                .map_err(db_err)?;
+            }
+        }
         tx.execute(
             "INSERT INTO commits (seq, commit_id, principal, app_id, session_id, origin, run_id, undo_group, undoes, idem_key, \
              request_digest, message, accepted_at, result_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",

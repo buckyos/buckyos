@@ -1,41 +1,24 @@
-/* Cell bodies: what a `buckyos.cell` shows for each `view.type` (design §3.5.1), plus the write-lock bar. */
+/* Data editors (phase two §6.1, §8.3): editing a TableSource, RichText, Record, AssetRef or note is one
+ * implementation, used by the data-source detail directly and by Blocks after explicit activation.
+ * The write-lock bar lives here too. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { ServiceFailure } from '../api/client'
-import { describeError, type ReadOk } from '../api/session'
-import type { AssetContent, CellPayload, EntityEnvelope, Json, KeyedContent, RecordContent, RecordPropDef, Reference } from '../api/types'
-import type { RichTextCollab } from '../richtext/collab'
-import { RichTextEditor, StaticRichText } from '../richtext/RichTextEditor'
-import { EDIT_STATE_LABEL } from '../state/edits'
-import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi } from '../state/hooks'
-import { ConflictBox, TableViewCell } from './TableViewCell'
-import { ValueEditor } from './ValueEditor'
-import { UNSET, formatValue, type Input } from './values'
+import { ServiceFailure } from '../../api/client'
+import { describeError, type ReadOk } from '../../api/session'
+import type { AnnotationContent, AssetContent, EntityEnvelope, Json, RecordContent, RecordPropDef, Reference } from '../../api/types'
+import type { RichTextCollab } from '../../richtext/collab'
+import { RichTextEditor } from '../../richtext/RichTextEditor'
+import { EDIT_STATE_LABEL } from '../../state/edits'
+import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVersion, useWorkspaceUi, useWriteAccess } from '../../state/hooks'
+import { ConflictBox, TableViewCell } from '../TableViewCell'
+import { ValueEditor } from '../ValueEditor'
+import { UNSET, formatValue, type Input } from '../values'
 
-const MAX_EMBED_DEPTH = 3
 
 // ---- write locks (design §2.11)
 
-interface WriteAccess {
-  /** The entity may be edited right now (capability present and, if required, the lock is held). */
-  editable: boolean
-  held: boolean
-  required: boolean
-}
-
-function useWriteAccess(entity: EntityEnvelope | undefined, capability: 'update' | 'append' = 'update'): WriteAccess {
-  const store = useStore()
-  useLocksVersion()
-  const readOnlyNow = useDirectReadOnly()
-  if (!entity) return { editable: false, held: false, required: false }
-  const capable = entity.capabilities.includes(capability) && !readOnlyNow
-  const required = entity.write_policy === 'lock_required'
-  const held = store.locks.isHeld(entity.entity_id)
-  return { editable: capable && (!required || held), held, required }
-}
-
 /** Lock bar + focus scope: the lock is released a moment after focus leaves the cell, and on close. */
-function LockScope({ entity, onAcquired, children }: { entity: EntityEnvelope | undefined; onAcquired?: () => void; children: ReactNode }) {
+export function LockScope({ entity, onAcquired, children }: { entity: EntityEnvelope | undefined; onAcquired?: () => void; children: ReactNode }) {
   const store = useStore()
   useLocksVersion()
   const releaseTimer = useRef<number | null>(null)
@@ -93,74 +76,30 @@ function LockScope({ entity, onAcquired, children }: { entity: EntityEnvelope | 
   )
 }
 
-// ---- dispatcher
+// ---- table (the editor of a TableSource, with or without a Block)
 
-interface CellBodyProps { cellId: string; depth?: number }
-
-export function CellBody({ cellId, depth = 0 }: CellBodyProps) {
-  const store = useStore()
-  const ui = useWorkspaceUi()
-  const version = useVersion(`e:${cellId}`)
-  const load = useCallback(() => store.session.read<KeyedContent<CellPayload>>(cellId), [store, cellId])
-  const cell = useLoad<ReadOk<KeyedContent<CellPayload>>>(load, version)
-  const renderEmbed = useCallback((reference: Reference) => <EmbeddedCell reference={reference} depth={depth + 1} />, [depth])
-  if (cell.error && !cell.data) return <div className="aiws-error" role="alert">无法读取单元：{cell.error}</div>
-  if (!cell.data) return <div className="aiws-muted">载入中…</div>
-  const payload = cell.data.content.payload
-  const sourceId = payload.source_ref.entity_id
-  const source = ui.byId.get(sourceId)
-  const embedded = depth > 0
-  switch (payload.view.type) {
-    case 'table':
-      return <TableCellHost cellId={cellId} source={source} embedded={embedded} />
-    case 'richtext':
-      return embedded
-        ? <StaticRichText entityId={sourceId} renderEmbed={renderEmbed} />
-        : <RichTextCell key={sourceId} entity={source} entityId={sourceId} renderEmbed={renderEmbed} />
-    case 'record':
-      return <LockScope entity={embedded ? undefined : source}><RecordCell entityId={sourceId} entity={source} readOnly={embedded} /></LockScope>
-    case 'asset':
-      return <AssetCell entityId={sourceId} fit={payload.options?.fit === 'cover' ? 'cover' : 'contain'} readOnly={embedded} />
-    default:
-      return <div className="aiws-warning">此版本不支持的视图类型：{String((payload.view as { type: string }).type)}</div>
-  }
-}
-
-function TableCellHost({ cellId, source, embedded }: { cellId: string; source: EntityEnvelope | undefined; embedded: boolean }) {
+/** The table editor: through a table-view Cell (saved view configuration) or the source itself (data-source view). */
+export function TableEditor({ cellId, sourceId, source, readOnly, compact }: { cellId?: string; sourceId: string; source: EntityEnvelope | undefined; readOnly: boolean; compact?: boolean }) {
   const ui = useWorkspaceUi()
   const access = useWriteAccess(source)
   const readOnlyNow = useDirectReadOnly()
   const lockBlocks = (access.required && !access.held) || readOnlyNow
   return (
-    <LockScope entity={embedded ? undefined : source}>
-      <TableViewCell cellId={cellId} readOnly={embedded || lockBlocks} compact={embedded} annotations={ui.annotations}
-        onAnnotate={embedded ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
+    <LockScope entity={readOnly ? undefined : source}>
+      <TableViewCell cellId={cellId} sourceId={cellId ? undefined : sourceId} readOnly={readOnly || lockBlocks} compact={compact} annotations={ui.annotations}
+        onAnnotate={readOnly ? undefined : ui.annotate ?? undefined} onActivateAnnotation={ui.setActiveAnnotation} />
     </LockScope>
-  )
-}
-
-function EmbeddedCell({ reference, depth }: { reference: Reference; depth: number }) {
-  const ui = useWorkspaceUi()
-  const target = ui.byId.get(reference.entity_id)
-  if (depth > MAX_EMBED_DEPTH) return <div className="aiws-muted">嵌入层级过深，未展开（{reference.entity_id}）</div>
-  if (!target || target.deleted) return <div className="aiws-warning">嵌入的单元不存在或已删除（{reference.entity_id}）</div>
-  if (target.type_id !== 'buckyos.cell') return <div className="aiws-warning">嵌入目标不是单元（{reference.entity_id}）</div>
-  return (
-    <div className="aiws-embedded" data-testid={`aiws-embed-${reference.entity_id}`}>
-      <div className="aiws-embedded-title">嵌入 · {target.title ?? target.name ?? reference.entity_id}（只读）</div>
-      <CellBody cellId={reference.entity_id} depth={depth} />
-    </div>
   )
 }
 
 // ---- rich text
 
-function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelope | undefined; entityId: string; renderEmbed: (reference: Reference) => ReactNode }) {
+export function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelope | undefined; entityId: string; renderEmbed: (reference: Reference) => ReactNode }) {
   const ui = useWorkspaceUi()
   const access = useWriteAccess(entity)
   const collabRef = useRef<RichTextCollab | null>(null)
   const onCollab = useCallback((collab: RichTextCollab | null) => { collabRef.current = collab }, [])
-  const marks = useMemo(() => ui.annotations.filter((mark) => mark.payload.target.entity_id === entityId), [ui.annotations, entityId])
+  const marks = useMemo(() => ui.annotations.filter((mark) => mark.payload.target?.entity_id === entityId), [ui.annotations, entityId])
   return (
     <LockScope entity={entity} onAcquired={() => collabRef.current?.resume()}>
       <RichTextEditor
@@ -181,7 +120,7 @@ function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelop
 
 // ---- record (design §3.2)
 
-function RecordCell({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
+export function RecordCell({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
   const store = useStore()
   const access = useWriteAccess(entity)
   const version = useVersion(`e:${entityId}`)
@@ -245,7 +184,7 @@ function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string
 
 const AVAILABILITY_TEXT: Record<string, string> = { available: '可用', missing: '内容缺失（对象存储中取不到）', corrupt: '内容损坏（校验失败）' }
 
-function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean }) {
+export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean }) {
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AssetContent>(entityId), [store, entityId])
@@ -259,12 +198,19 @@ function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 'contai
     let live = true
     let url: string | null = null
     // The asset route needs the session token, so the bytes are fetched here and shown through a blob URL.
+    const mediaType = asset.data?.content.payload.media_type
     store.session.fetchAsset(objectId).then(
-      (blob) => { if (!live) return; url = URL.createObjectURL(blob); setImage({ objectId, url, error: null }) },
+      (blob) => {
+        if (!live) return
+        // the asset route serves unlisted types as octet-stream (e.g. SVG); the <img> needs the real type
+        const typed = mediaType && blob.type !== mediaType ? new Blob([blob], { type: mediaType }) : blob
+        url = URL.createObjectURL(typed)
+        setImage({ objectId, url, error: null })
+      },
       (error: unknown) => { if (live) setImage({ objectId, url: null, error: describeError(error) }) },
     )
     return () => { live = false; if (url) URL.revokeObjectURL(url) }
-  }, [store, objectId, availability])
+  }, [store, objectId, availability, asset.data?.content.payload.media_type])
   if (asset.error && !asset.data) return <div className="aiws-error" role="alert">无法读取资产：{asset.error}</div>
   if (!asset.data) return <div className="aiws-muted">载入中…</div>
   const payload = asset.data.content.payload
@@ -310,6 +256,48 @@ function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 'contai
           </label>
         )}
         {uploading && <span>{uploading}</span>}
+      </div>
+    </div>
+  )
+}
+
+
+// ---- note (an annotation's body; free notes have no target)
+
+export function NoteEditor({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
+  const store = useStore()
+  const version = useVersion(`e:${entityId}`)
+  const load = useCallback(() => store.session.read<AnnotationContent>(entityId), [store, entityId])
+  const note = useLoad<ReadOk<AnnotationContent>>(load, version)
+  const editId = `key:${entityId}:body`
+  const entry = useEdit(editId)
+  const [text, setText] = useState<string | null>(null)
+  if (note.error && !note.data) return <div className="aiws-error" role="alert">无法读取便签：{note.error}</div>
+  if (!note.data) return <div className="aiws-muted">载入中…</div>
+  const payload = note.data.content.payload
+  const mine = store.session.principal !== null && payload.author === store.session.principal
+  const editable = !readOnly && Boolean(entity) && (mine ? (entity?.capabilities.includes('comment') ?? false) : (entity?.capabilities.includes('manage') ?? false))
+  const save = () => {
+    if (text === null || text === payload.body) { setText(null); return }
+    void store.submit({
+      editId, label: '便签内容', mine: text, hasMine: true,
+      operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [{ key: 'body', value: text, expect: { rev: note.data?.content.key_revs.body ?? 0 } }] }],
+    })
+    setText(null)
+  }
+  return (
+    <div className="aiws-note" data-testid={`aiws-note-${entityId}`} style={{ background: typeof payload.style?.color === 'string' ? payload.style.color : undefined }}>
+      {text !== null ? (
+        <textarea aria-label="便签内容" autoFocus value={text} rows={4} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
+          onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setText(null) } }} />
+      ) : (
+        <div className="aiws-note-body" onDoubleClick={() => { if (editable) setText(payload.body) }}>{payload.body || <span className="aiws-muted">（空便签）</span>}</div>
+      )}
+      <div className="aiws-note-meta">
+        {payload.target && <span title="贴在数据上的便签">📎 {payload.target.entity_id}</span>}
+        {payload.author && <span>{payload.author}</span>}
+        {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
+        {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>编辑</button>}
       </div>
     </div>
   )

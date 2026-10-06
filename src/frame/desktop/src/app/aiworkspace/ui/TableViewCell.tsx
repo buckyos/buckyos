@@ -10,7 +10,7 @@ import type {
 } from '../api/types'
 import { EDIT_STATE_LABEL } from '../state/edits'
 import type { CapturedAnchor } from '../anchors/registry'
-import { useEdit, useLoad, useStore, useVersion, type AnnotationMark } from '../state/hooks'
+import { useEdit, useLoad, useStore, useUserState, useVersion, type AnnotationMark } from '../state/hooks'
 import type { WorkspaceStore } from '../state/store'
 import { FieldManager } from './FieldManager'
 import { TablePager, type PagerQuery } from './tablePager'
@@ -21,7 +21,9 @@ const ROW_HEIGHT = 34
 const DEFAULT_WIDTH = 150
 
 interface Props {
-  cellId: string
+  /** A table-view Cell; or, without one, the table itself (data-source view, phase two §6.1). */
+  cellId?: string
+  sourceId?: string
   /** No editing at all (embedded rendering, missing capability, write lock not held). */
   readOnly: boolean
   compact?: boolean
@@ -35,26 +37,46 @@ type SourceRead = ReadOk<TableSourceContent>
 
 interface SessionView { filter: FilterNode | null; sorts: SortSpec[] | null }
 
-export function TableViewCell({ cellId, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Props) {
+export function TableViewCell({ cellId, sourceId, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Props) {
   const store = useStore()
-  const cellVersion = useVersion(`e:${cellId}`)
-  const loadCell = useCallback(() => store.session.read<KeyedContent<CellPayload>>(cellId), [store, cellId])
-  const cell = useLoad<CellRead>(loadCell, cellVersion)
+  const id = cellId ?? ''
+  const cellVersion = useVersion(`e:${id}`)
+  const loadCell = useCallback(() => (cellId ? store.session.read<KeyedContent<CellPayload>>(cellId) : Promise.resolve(null)), [store, cellId])
+  const cell = useLoad<CellRead | null>(loadCell, cellVersion)
+  if (!cellId && sourceId) {
+    // no Block: the table itself, with the sort / filter kept in the user work state (§4.4)
+    const synthetic: CellRead = {
+      entity_id: `source:${sourceId}`, type_id: 'buckyos.cell', schema_version: 1, name: null, scope: 'shared', deleted: false, content_rev: 0, meta_rev: 0, life_rev: 0,
+      write_policy: 'open', capabilities: [], head_seq: 0,
+      content: { payload: { source_ref: { entity_id: sourceId }, view: { type: 'table' } }, key_revs: {} },
+    }
+    return <TableViewBody key={sourceId} cell={synthetic} sourceMode readOnly={readOnly} compact={compact} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation} />
+  }
   if (cell.error && !cell.data) return <div className="aiws-error" role="alert">无法读取视图：{cell.error}</div>
   if (!cell.data) return <div className="aiws-muted">正在载入视图…</div>
-  return <TableViewBody key={cell.data.content.payload.source_ref.entity_id} cell={cell.data} readOnly={readOnly} compact={compact} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation} />
+  const sourceRef = cell.data.content.payload.source_ref
+  if (!sourceRef) return <div className="aiws-warning">这个表格视图没有绑定数据。</div>
+  return <TableViewBody key={sourceRef.entity_id} cell={cell.data} readOnly={readOnly} compact={compact} annotations={annotations} onAnnotate={onAnnotate} onActivateAnnotation={onActivateAnnotation} />
 }
 
-function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Omit<Props, 'cellId'> & { cell: CellRead }) {
+function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnnotate, onActivateAnnotation }: Omit<Props, 'cellId' | 'sourceId'> & { cell: CellRead; sourceMode?: boolean }) {
   const store = useStore()
   const cellId = cell.entity_id
   const payload = cell.content.payload
-  const sourceId = payload.source_ref.entity_id
+  const sourceId = payload.source_ref?.entity_id ?? ''
   const sourceVersion = useVersion(`e:${sourceId}`)
   const loadSource = useCallback(() => store.session.read<TableSourceContent>(sourceId), [store, sourceId])
   const source = useLoad<SourceRead>(loadSource, sourceVersion)
-  // Session-level filter and sort (design §3.5.2): not a commit until "save view".
-  const [sessionView, setSessionView] = useState<SessionView>({ filter: null, sorts: null })
+  // Session-level filter and sort (design §3.5.2): not a commit until "save view". Without a Block they
+  // live in the user work state instead (phase two §6.1).
+  const stateKey = `tableview:${sourceId}`
+  const remembered = useUserState<Json>(stateKey) as SessionView | undefined
+  const [localView, setLocalView] = useState<SessionView>({ filter: null, sorts: null })
+  const sessionView = sourceMode ? (remembered ?? localView) : localView
+  const setSessionView = useCallback((view: SessionView) => {
+    setLocalView(view)
+    if (sourceMode) store.userState.set(stateKey, (view.filter || view.sorts) ? (view as unknown as Json) : null)
+  }, [sourceMode, store, stateKey])
   const [panel, setPanel] = useState<'none' | 'filter' | 'fields' | 'add'>('none')
 
   const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null])
@@ -63,11 +85,11 @@ function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate, onAct
     const saved = JSON.parse(savedKey) as [FilterNode | null, SortSpec[] | null, unknown]
     const session = JSON.parse(sessionKey) as SessionView
     const query: PagerQuery = {
-      viewId: cellId, sourceId, filter: session.filter, sorts: session.sorts,
+      viewId: sourceMode ? undefined : cellId, sourceId, filter: session.filter, sorts: session.sorts,
       orderDependsOnData: Boolean(saved[0] || (saved[1] && saved[1].length > 0) || session.filter || (session.sorts && session.sorts.length > 0)),
     }
     return new TablePager(store.session, query)
-  }, [store, cellId, sourceId, savedKey, sessionKey])
+  }, [store, cellId, sourceId, savedKey, sessionKey, sourceMode])
   const rows = useSyncExternalStore(pager.subscribe, pager.snapshot)
   // A schema change (field added, renamed, deleted, migrated) changes what a row means: read again.
   const schemaKey = (source.data?.content.fields ?? []).map((field) => `${field.field_id}:${field.def_rev}`).join(',')
@@ -92,7 +114,7 @@ function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate, onAct
   const canAppend = !readOnly && Boolean(source.data?.capabilities.some((capability) => capability === 'append' || capability === 'update'))
   const canDelete = !readOnly && (source.data?.capabilities.includes('delete') ?? false)
   const canStructure = !readOnly && (source.data?.capabilities.includes('structure') ?? false)
-  const canEditView = !readOnly && cell.capabilities.includes('update')
+  const canEditView = !readOnly && !sourceMode && cell.capabilities.includes('update')
 
   const scrollRef = useRef<HTMLDivElement>(null)
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual returns unstable functions by design; nothing here is memoised on them.
@@ -193,7 +215,7 @@ function TableViewBody({ cell, readOnly, compact, annotations, onAnnotate, onAct
                           row={row}
                           width={width}
                           editable={canUpdate}
-                          annotation={annotations.find((mark) => mark.payload.target.entity_id === sourceId && mark.payload.target.selector?.kind === 'table_cell'
+                          annotation={annotations.find((mark) => mark.payload.target?.entity_id === sourceId && mark.payload.target.selector?.kind === 'table_cell'
                             && mark.payload.target.selector.record_id === row.record_id && mark.payload.target.selector.field_id === field.field_id)}
                           onAnnotate={onAnnotate}
                           onActivateAnnotation={onActivateAnnotation}

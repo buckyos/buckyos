@@ -21,6 +21,20 @@ pub fn change_class(type_id: &str) -> &'static str {
     }
 }
 
+/// `^[a-z0-9][a-z0-9._-]{0,63}$`: Renderer / Block definition identifiers (D6: the backend checks the
+/// format only; whether a Renderer supports a data type is the front-end registry's judgement).
+pub fn is_renderer_id(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 64
+        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
+        && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'.' | b'_' | b'-'))
+}
+
+fn canonical_len(v: &Value) -> usize {
+    crate::canonical::canonical_json(v).map(|s| s.len()).unwrap_or(usize::MAX)
+}
+
 pub fn annotation_author(e: &EntityRow) -> Option<&str> {
     e.payload.get("author").and_then(Value::as_str)
 }
@@ -122,8 +136,13 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 
 // ---- Cell / TableView ----
 
-const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options"];
+const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref"];
+/// Largest canonical size of a Block's `config` / a definition's body.
+pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
+pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
 
+/// The four built-in views bind one fixed data type each; any other Renderer id is accepted with a
+/// known data type as source, or without a source (D6: the registry decides what it supports).
 fn view_source_type(view_type: &str) -> Option<&'static str> {
     Some(match view_type {
         "table" => TYPE_TABLE,
@@ -134,33 +153,66 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
     })
 }
 
+const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF];
+
 fn validate_cell(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     check_keys(&e.payload, CELL_KEYS, "cell")?;
     // a package may legitimately carry dangling view configuration; it is preserved, not re-judged
     let importing = p.env.import;
     let is_changed = |k: &str| !importing && changed.map_or(true, |c| c.iter().any(|x| x == k));
-    let view_type = e
-        .payload
-        .get("view")
-        .and_then(|v| v.get("type"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| bad("cell needs view.type"))?
-        .to_string();
-    let source_type = view_source_type(&view_type).ok_or_else(|| bad(format!("unknown view.type {view_type}")))?;
-    let source_ref = normalize_reference(e.payload.get("source_ref").ok_or_else(|| bad("cell needs source_ref"))?)?;
-    e.payload.insert("source_ref".into(), source_ref.clone());
-    let source = if importing || is_changed("source_ref") || is_changed("view") {
-        p.check_ref_target(&source_ref, Some(&[source_type]))?
+    let view = e.payload.get("view").cloned().ok_or_else(|| bad("cell needs view"))?;
+    let view_type = view.get("type").and_then(Value::as_str).ok_or_else(|| bad("cell needs view.type"))?.to_string();
+    if !is_renderer_id(&view_type) {
+        return Err(bad(format!("view.type {view_type:?} is not a valid renderer id")));
+    }
+    if view.as_object().is_some_and(|o| o.keys().any(|k| !matches!(k.as_str(), "type" | "version"))) {
+        return Err(bad("view: unknown key"));
+    }
+    if view.get("version").is_some_and(|v| !v.as_u64().is_some_and(|n| n >= 1 && n <= 1_000_000)) {
+        return Err(bad("view.version must be a positive integer"));
+    }
+    let builtin = view_source_type(&view_type);
+    let source_ref = match e.payload.get("source_ref") {
+        Some(r) if !r.is_null() => Some(normalize_reference(r)?),
+        _ if builtin.is_some() => return Err(bad("cell needs source_ref")),
+        _ => None,
+    };
+    if let Some(r) = &source_ref {
+        e.payload.insert("source_ref".into(), r.clone());
     } else {
+        e.payload.remove("source_ref");
+    }
+    let source = match &source_ref {
+        None => None,
+        Some(source_ref) if importing || is_changed("source_ref") || is_changed("view") => {
+            p.check_ref_target(source_ref, Some(builtin.map(|t| vec![t]).unwrap_or_else(|| DATA_SOURCE_TYPES.to_vec()).as_slice()))?
+        }
         // dangling configuration must stay editable: do not re-require the source here
-        match reference_entity_id(&source_ref).filter(|_| reference_is_local(&source_ref)) {
+        Some(source_ref) => match reference_entity_id(source_ref).filter(|_| reference_is_local(source_ref)) {
             Some(id) => p.ov.entity(id)?,
             None => None,
-        }
+        },
     };
+    if let Some(d) = e.payload.get("def_ref").filter(|v| !v.is_null()) {
+        let d = normalize_reference(d)?;
+        if is_changed("def_ref") || importing {
+            p.check_ref_target(&d, Some(&[TYPE_BLOCK_DEF]))?;
+        }
+        e.payload.insert("def_ref".into(), d);
+    } else {
+        e.payload.remove("def_ref");
+    }
     opt_text(&e.payload, "title", 256)?;
     if e.payload.get("options").is_some_and(|o| !o.is_object()) {
         return Err(bad("options must be an object"));
+    }
+    if let Some(c) = e.payload.get("config") {
+        if !c.is_object() {
+            return Err(bad("config must be an object"));
+        }
+        if canonical_len(c) > MAX_CONFIG_BYTES {
+            return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
+        }
     }
     if view_type != "table" {
         for k in ["filter", "sorts", "group", "manual_order"] {
@@ -242,13 +294,17 @@ fn validate_cell(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> 
 
 // ---- Container ----
 
+/// Container kinds (phase two §4.5): `folder` in the data tree, `surface` under `surfaces`, `group`
+/// in a BlockTree. `root` / `data` / `surfaces` exist only as system nodes. A Surface names its
+/// canvas content folder (`content_folder_id`, a folder under `canvas-content`); the folder may
+/// point back (`surface_id`, informative).
 fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["kind", "layout", "title"], "container")?;
-    let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?;
-    match (kind, before) {
-        ("page" | "group", None) => {}
-        ("root", None) if p.env.internal => {}
-        (_, None) => return Err(bad("container kind must be page or group")),
+    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id"], "container")?;
+    let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
+    match (kind.as_str(), before) {
+        ("folder" | "surface" | "group", None) => {}
+        ("root" | "data" | "surfaces", None) if p.env.internal => {}
+        (_, None) => return Err(bad("container kind must be folder, surface or group")),
         (k, Some(b)) if b.payload.get("kind").and_then(Value::as_str) == Some(k) => {}
         _ => return Err(WsError::invalid_op("container kind cannot be changed")),
     }
@@ -263,7 +319,37 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
         }
     };
     e.payload.insert("layout".into(), json!({ "mode": mode }));
-    opt_text(&e.payload, "title", 256)
+    opt_text(&e.payload, "title", 256)?;
+    match e.payload.get("system") {
+        None => {}
+        Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content") => {}
+        Some(_) => return Err(bad("system must be canvas_content or surface_content on a folder")),
+    }
+    if let Some(sid) = e.payload.get("surface_id") {
+        if kind != "folder" || !sid.as_str().is_some_and(is_valid_id) {
+            return Err(bad("surface_id must be an entity id on a folder"));
+        }
+    }
+    match e.payload.get("content_folder_id") {
+        None if kind == "surface" => return Err(bad("a surface needs content_folder_id (its folder under canvas-content)")),
+        None => {}
+        Some(v) => {
+            let fid = v.as_str().filter(|s| is_valid_id(s)).ok_or_else(|| bad("content_folder_id must be an entity id"))?;
+            if kind != "surface" {
+                return Err(bad("content_folder_id is only valid on a surface"));
+            }
+            // a package creates surfaces before their (deeper) folders: judged once the whole batch is staged
+            if !p.env.import && before.is_none_or(|b| b.payload.get("content_folder_id") != Some(v)) {
+                let folder = p.ov.entity(fid)?.filter(EntityRow::alive).ok_or_else(|| bad(format!("content folder {fid} does not exist")))?;
+                let is_folder = folder.type_id == TYPE_CONTAINER && folder.payload.get("kind").and_then(Value::as_str) == Some("folder");
+                let under_content = p.ov.edge(fid)?.is_some_and(|edge| edge.parent_id == CANVAS_CONTENT_ID);
+                if !is_folder || !under_content {
+                    return Err(bad(format!("content folder {fid} must be a folder under {CANVAS_CONTENT_ID}")));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---- AssetRef ----
@@ -331,15 +417,20 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         }
     };
     if anchor_changed {
-        for k in ["range", "context"] {
+        for k in ["target", "range", "context"] {
             if e.payload.get(k).is_some_and(Value::is_null) {
                 e.payload.remove(k);
             }
         }
-        if let Some(id) = e.payload.get("target").and_then(|t| t.get("entity_id")).and_then(Value::as_str) {
-            p.check_ref_target(&json!({ "entity_id": id }), None)?;
+        if e.payload.contains_key("target") {
+            if let Some(id) = e.payload.get("target").and_then(|t| t.get("entity_id")).and_then(Value::as_str) {
+                p.check_ref_target(&json!({ "entity_id": id }), None)?;
+            }
+            crate::anchor::check(&p.ov, &mut e.payload, strict)?;
+        } else if strict && (e.payload.contains_key("range") || e.payload.contains_key("context")) {
+            // a free note (phase two §4.2) has nothing to range over or quote
+            return Err(bad("range and context need a target"));
         }
-        crate::anchor::check(&p.ov, &mut e.payload, strict)?;
     }
     if before.is_none() {
         e.payload.insert("author".into(), json!(p.env.principal));
@@ -354,6 +445,262 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
         return Err(bad("style must be an object"));
     }
     Ok(())
+}
+
+// ---- Wish (phase two §7.1) ----
+
+const WISH_KEYS: &[&str] = &["title", "prompt", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "last_run"];
+pub const MAX_PROMPT_CHARS: usize = 20_000;
+
+/// One input reference of a wish or of a dependency record: `{ entity_id, selector?, version: { mode: follow | fixed, rev? } }`.
+fn check_input(p: &Planner, v: &Value, require_target: bool) -> WsResult<Value> {
+    let o = v.as_object().ok_or_else(|| bad("input must be an object"))?;
+    for k in o.keys() {
+        if !matches!(k.as_str(), "entity_id" | "selector" | "version" | "label") {
+            return Err(bad(format!("input: unknown key {k}")));
+        }
+    }
+    let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("input.entity_id required"))?;
+    let mut out = Map::new();
+    out.insert("entity_id".into(), json!(id));
+    if let Some(sel) = o.get("selector").filter(|s| !s.is_null()) {
+        if !sel.is_object() || sel.get("kind").and_then(Value::as_str).is_none() || canonical_len(sel) > 4096 {
+            return Err(bad("input.selector must be an object with kind"));
+        }
+        out.insert("selector".into(), sel.clone());
+    }
+    let version = match o.get("version") {
+        None => json!({ "mode": "follow" }),
+        Some(ver) => {
+            let mode = ver.get("mode").and_then(Value::as_str).unwrap_or("");
+            let keys_ok = ver.as_object().is_some_and(|m| m.keys().all(|k| matches!(k.as_str(), "mode" | "rev" | "hash" | "object_id")));
+            if !keys_ok || !matches!(mode, "follow" | "fixed") {
+                return Err(bad("input.version must be { mode: follow | fixed, rev? | hash? }"));
+            }
+            ver.clone()
+        }
+    };
+    out.insert("version".into(), version);
+    if let Some(l) = o.get("label") {
+        if !l.as_str().is_some_and(|s| s.chars().count() <= 256) {
+            return Err(bad("input.label must be a short string"));
+        }
+        out.insert("label".into(), l.clone());
+    }
+    if require_target {
+        p.check_ref_target(&json!({ "entity_id": id }), None)?;
+    }
+    Ok(Value::Object(out))
+}
+
+fn validate_wish(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    check_keys(&e.payload, WISH_KEYS, "wish")?;
+    let importing = p.env.import;
+    let is_changed = |k: &str| !importing && changed.map_or(true, |c| c.iter().any(|x| x == k));
+    opt_text(&e.payload, "title", 256)?;
+    opt_text(&e.payload, "prompt", MAX_PROMPT_CHARS)?;
+    if !e.payload.get("prompt").is_some_and(Value::is_string) {
+        return Err(bad("wish needs prompt"));
+    }
+    match e.payload.get("executor").and_then(Value::as_str) {
+        Some("mock" | "xllm" | "agent-work-session") => {}
+        _ => return Err(bad("executor must be mock, xllm or agent-work-session")),
+    }
+    match e.payload.get("output_mode") {
+        None => {
+            e.payload.insert("output_mode".into(), json!("overwrite"));
+        }
+        Some(Value::String(m)) if m == "overwrite" || m == "new" => {}
+        Some(_) => return Err(bad("output_mode must be overwrite or new")),
+    }
+    if let Some(a) = e.payload.get("analysis").filter(|v| !v.is_null()) {
+        let o = a.as_object().ok_or_else(|| bad("analysis must be an object"))?;
+        for k in o.keys() {
+            if !matches!(k.as_str(), "context_prompt" | "prompt" | "at" | "warnings" | "executor") {
+                return Err(bad(format!("analysis: unknown key {k}")));
+            }
+        }
+        if !o.get("context_prompt").is_some_and(|v| v.as_str().is_some_and(|s| s.chars().count() <= MAX_PROMPT_CHARS * 2)) {
+            return Err(bad("analysis.context_prompt required"));
+        }
+        if !o.get("prompt").is_some_and(|v| v.as_str().is_some_and(|s| s.chars().count() <= MAX_PROMPT_CHARS)) {
+            return Err(bad("analysis.prompt (the prompt it was derived from) required"));
+        }
+    } else {
+        e.payload.remove("analysis");
+    }
+    if let Some(inputs) = e.payload.get("inputs").filter(|v| !v.is_null()).cloned() {
+        let list = inputs.as_array().ok_or_else(|| bad("inputs must be an array"))?;
+        if list.len() > 200 {
+            return Err(WsError::limit("at most 200 inputs"));
+        }
+        let mut norm = Vec::new();
+        for item in list {
+            norm.push(check_input(p, item, is_changed("inputs") || importing)?);
+        }
+        e.payload.insert("inputs".into(), Value::Array(norm));
+    } else {
+        e.payload.remove("inputs");
+    }
+    if let Some(out) = e.payload.get("output").filter(|v| !v.is_null()) {
+        let o = out.as_object().ok_or_else(|| bad("output must be an object"))?;
+        for k in o.keys() {
+            if !matches!(k.as_str(), "container_id" | "name" | "type" | "surface_id") {
+                return Err(bad(format!("output: unknown key {k}")));
+            }
+        }
+        if let Some(c) = o.get("container_id") {
+            if !c.as_str().is_some_and(is_valid_id) {
+                return Err(bad("output.container_id must be an entity id"));
+            }
+        }
+        if let Some(sid) = o.get("surface_id") {
+            if !sid.as_str().is_some_and(is_valid_id) {
+                return Err(bad("output.surface_id must be an entity id"));
+            }
+        }
+        if !o.get("name").is_some_and(|n| n.as_str().is_some_and(|s| !s.is_empty() && s.chars().count() <= 128 && !s.contains('/'))) {
+            return Err(bad("output.name required (1-128 chars, no '/')"));
+        }
+        if o.get("type").is_some_and(|t| !t.as_str().is_some_and(|s| s.chars().count() <= 64)) {
+            return Err(bad("output.type must be a short string"));
+        }
+    } else {
+        e.payload.remove("output");
+    }
+    if e.payload.get("executor_config").is_some_and(|c| !c.is_object() || canonical_len(c) > MAX_CONFIG_BYTES) {
+        return Err(bad("executor_config must be a small object"));
+    }
+    if e.payload.get("last_run").is_some_and(|c| !c.is_object() || canonical_len(c) > MAX_CONFIG_BYTES) {
+        return Err(bad("last_run must be a small object"));
+    }
+    Ok(())
+}
+
+// ---- Block definition (phase two §10.3) ----
+
+fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
+    check_keys(&e.payload, &["def_id", "version", "kind", "title", "accepts", "allow_no_source", "default_size", "declarative", "html", "config_schema", "actions", "inspector", "description"], "block_def")?;
+    let def_id = e.payload.get("def_id").and_then(Value::as_str).ok_or_else(|| bad("block_def needs def_id"))?;
+    if !is_renderer_id(def_id) {
+        return Err(bad("def_id must be a renderer id"));
+    }
+    match e.payload.get("version") {
+        None => {
+            e.payload.insert("version".into(), json!(1));
+        }
+        Some(v) if v.as_u64().is_some_and(|n| n >= 1 && n <= 1_000_000) => {}
+        Some(_) => return Err(bad("version must be a positive integer")),
+    }
+    let kind = e.payload.get("kind").and_then(Value::as_str).unwrap_or("");
+    match kind {
+        "declarative" => {
+            if !e.payload.get("declarative").is_some_and(Value::is_object) {
+                return Err(bad("a declarative definition needs `declarative`"));
+            }
+        }
+        "html" => {
+            let h = e.payload.get("html").and_then(Value::as_object).ok_or_else(|| bad("an html definition needs `html`"))?;
+            if !h.get("html").is_some_and(Value::is_string) {
+                return Err(bad("html.html (the markup) required"));
+            }
+            for k in h.keys() {
+                if !matches!(k.as_str(), "html" | "css" | "js" | "api_version") {
+                    return Err(bad(format!("html: unknown key {k}")));
+                }
+            }
+        }
+        _ => return Err(bad("kind must be declarative or html")),
+    }
+    opt_text(&e.payload, "title", 256)?;
+    opt_text(&e.payload, "description", 4000)?;
+    if let Some(a) = e.payload.get("accepts") {
+        let ok = a.as_array().is_some_and(|l| l.iter().all(|t| t.as_str().is_some_and(is_data_type)));
+        if !ok {
+            return Err(bad("accepts must list known data types"));
+        }
+    }
+    if e.payload.get("allow_no_source").is_some_and(|v| !v.is_boolean()) {
+        return Err(bad("allow_no_source must be a boolean"));
+    }
+    if let Some(d) = e.payload.get("default_size") {
+        let dim = |k: &str| d.get(k).and_then(Value::as_f64).is_some_and(|n| n > 0.0 && n.is_finite());
+        if !(dim("w") && dim("h")) {
+            return Err(bad("default_size must be { w, h }"));
+        }
+    }
+    for k in ["config_schema", "actions", "inspector"] {
+        if e.payload.get(k).is_some_and(|v| !(v.is_object() || v.is_array())) {
+            return Err(bad(format!("{k} must be an object or array")));
+        }
+    }
+    if canonical_len(&Value::Object(e.payload.clone())) > MAX_BLOCK_DEF_BYTES {
+        return Err(WsError::limit(format!("a block definition is limited to {MAX_BLOCK_DEF_BYTES} bytes")));
+    }
+    Ok(())
+}
+
+// ---- dependency record (phase two §7.3) ----
+
+/// `{ wish_id, run_id, executor, inputs: [{ entity_id, selector?, version: { mode, rev? | hash? } }], generated_rev }`.
+/// The version cells are the read set the application was guarded with; `generated_rev` is set here.
+pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value> {
+    let o = v.as_object().ok_or_else(|| bad("derived must be an object"))?;
+    for k in o.keys() {
+        if !matches!(k.as_str(), "wish_id" | "run_id" | "executor" | "inputs" | "generated_rev" | "simulated" | "at" | "output_mode" | "group" | "stale" | "stale_at_import" | "kept_manual") {
+            return Err(bad(format!("derived: unknown key {k}")));
+        }
+    }
+    let mut out = Map::new();
+    let wish = o.get("wish_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("derived.wish_id required"))?;
+    out.insert("wish_id".into(), json!(wish));
+    let run = o.get("run_id").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 128).ok_or_else(|| bad("derived.run_id required"))?;
+    out.insert("run_id".into(), json!(run));
+    let executor = o.get("executor").and_then(Value::as_str).filter(|s| !s.is_empty() && s.len() <= 64).ok_or_else(|| bad("derived.executor required"))?;
+    out.insert("executor".into(), json!(executor));
+    let inputs = o.get("inputs").and_then(Value::as_array).ok_or_else(|| bad("derived.inputs must be an array"))?;
+    if inputs.len() > 200 {
+        return Err(WsError::limit("at most 200 derived inputs"));
+    }
+    let mut norm = Vec::new();
+    for i in inputs {
+        let mut input = check_input(p, i, false)?;
+        if p.env.import {
+            // a package's revisions belong to another deployment (§7.5 rule 4): the record is rebased onto
+            // the versions the package itself carries, which were captured together with the result
+            let target = json!({ "entity_id": input["entity_id"], "selector": input.get("selector").cloned().unwrap_or(json!({ "kind": "entity" })) });
+            if let Some(ver) = input.get_mut("version").and_then(Value::as_object_mut) {
+                ver.remove("rev");
+                ver.remove("hash");
+                if let Ok(cur) = crate::plan::resolve_cell(&p.ov, &target) {
+                    ver.insert(if cur.is_string() { "hash".into() } else { "rev".into() }, cur);
+                }
+            }
+        }
+        norm.push(input);
+    }
+    out.insert("inputs".into(), Value::Array(norm));
+    out.insert("generated_rev".into(), json!(content_rev));
+    for k in ["simulated", "at", "output_mode", "group"] {
+        if let Some(x) = o.get(k) {
+            out.insert(k.into(), x.clone());
+        }
+    }
+    if o.get("kept_manual") == Some(&json!(true)) {
+        out.insert("kept_manual".into(), json!(true));
+    }
+    if p.env.import {
+        // what was stale when exported stays stale until the wish runs again
+        if o.get("stale") == Some(&json!(true)) || o.get("stale_at_import") == Some(&json!(true)) {
+            out.insert("stale_at_import".into(), json!(true));
+        }
+    } else if o.get("stale_at_import") == Some(&json!(true)) {
+        out.insert("stale_at_import".into(), json!(true));
+    }
+    if canonical_len(&Value::Object(out.clone())) > MAX_CONFIG_BYTES {
+        return Err(WsError::limit("derived record too large"));
+    }
+    Ok(Value::Object(out))
 }
 
 // ---- TableSource metadata ----
@@ -517,6 +864,14 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             return Ok(Value::Object(out));
         }
         TYPE_RICHTEXT => return crate::plan_richtext::create(p, row, payload),
+        TYPE_WISH => {
+            row.payload = payload;
+            validate_wish(p, row, None)?;
+        }
+        TYPE_BLOCK_DEF => {
+            row.payload = payload;
+            validate_block_def(row)?;
+        }
         _ => row.payload = payload,
     }
     Ok(Value::Object(row.payload.clone()))
@@ -544,6 +899,8 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
             }
             validate_table_meta(p, e, Some(before))
         }
+        TYPE_WISH => validate_wish(p, e, Some(changed)),
+        TYPE_BLOCK_DEF => validate_block_def(e),
         _ => Err(WsError::invalid_op("this type has no keyed content")),
     }
 }
@@ -563,10 +920,30 @@ fn ref_edge(src: &str, selector: &str, kind: &str, reference: &Value) -> RefEdge
 /// bodies and rich text references are maintained by their own planners.)
 pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     let mut out = BTreeSet::new();
+    // generation dependencies: result → each input it read, and result → the wish that produced it
+    // (neither blocks deletion)
+    if let Some(d) = &e.derived {
+        for (i, input) in d.get("inputs").and_then(Value::as_array).into_iter().flatten().enumerate() {
+            let s = selector_string(&json!({ "kind": "derived_input", "index": i }));
+            out.insert(ref_edge(&e.entity_id, &s, "derived", input));
+        }
+        if let Some(w) = d.get("wish_id").and_then(Value::as_str) {
+            out.insert(RefEdge::local(&e.entity_id, "", "produced", w));
+        }
+    }
     match e.type_id.as_str() {
         TYPE_CELL => {
             if let Some(r) = e.payload.get("source_ref") {
                 out.insert(ref_edge(&e.entity_id, "", "bind", r));
+            }
+            if let Some(d) = e.payload.get("def_ref") {
+                out.insert(ref_edge(&e.entity_id, "", "def", d));
+            }
+        }
+        TYPE_WISH => {
+            for (i, input) in e.payload.get("inputs").and_then(Value::as_array).into_iter().flatten().enumerate() {
+                let s = selector_string(&json!({ "kind": "wish_input", "index": i }));
+                out.insert(ref_edge(&e.entity_id, &s, "input", input));
             }
         }
         TYPE_ANNOTATION => {

@@ -102,6 +102,32 @@ pub fn entity_content(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSin
     })
 }
 
+/// A dependency record without deployment-local revisions (what a package carries).
+pub fn portable_derived(ctx: &dyn ReadCtx, e: &EntityRow, d: &Value) -> WsResult<Value> {
+    let mut out = d.clone();
+    if let Some(o) = out.as_object_mut() {
+        o.remove("generated_rev");
+        o.remove("stale_at_import");
+        if let Some(inputs) = o.get_mut("inputs").and_then(Value::as_array_mut) {
+            for input in inputs {
+                if let Some(v) = input.get_mut("version").and_then(Value::as_object_mut) {
+                    v.remove("rev");
+                    v.remove("hash");
+                }
+            }
+        }
+        let status = crate::freshness::entity_freshness(ctx, &crate::access::Access::full("system"), &e.entity_id)
+            .map(|f| f["status"].as_str().unwrap_or("none").to_string())
+            .unwrap_or_default();
+        if matches!(status.as_str(), "stale" | "upstream_stale" | "unavailable") {
+            o.insert("stale".into(), json!(true));
+        } else {
+            o.remove("stale");
+        }
+    }
+    Ok(out)
+}
+
 pub fn content_object(ctx: &dyn ReadCtx, e: &EntityRow, sink: &mut dyn ObjectSink) -> WsResult<ObjId> {
     let content = entity_content(ctx, e, sink)?;
     put_json(sink, &json!({ "ws_type": e.type_id, "schema_version": e.schema_version, "content": content }))
@@ -180,6 +206,12 @@ pub fn materialize(
         }
         if e.write_policy != POLICY_OPEN {
             line.insert("write_policy".into(), json!(e.write_policy));
+        }
+        if let Some(d) = &e.derived {
+            // the dependency record travels with the entity entry, not inside the hashed content. Its
+            // revisions are this deployment's and are dropped; the importer rebases the record onto the
+            // package's own versions, so only "was it stale" has to be said explicitly.
+            line.insert("derived".into(), portable_derived(ctx, &e, d)?);
         }
         line.insert("object_id".into(), json!(object_id));
         lines.push(Value::Object(line));
@@ -287,14 +319,16 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
     // creation order: containers by depth, then data, then things that reference data
     let rank = |t: &str| match t {
         TYPE_CONTAINER => 0,
-        TYPE_TABLE => 1,
+        TYPE_TABLE | TYPE_BLOCK_DEF => 1,
         TYPE_RICHTEXT => 2,
         TYPE_RECORD | TYPE_ASSET => 3,
+        TYPE_WISH => 4,
         TYPE_CELL => 5,
         TYPE_ANNOTATION => 6,
         _ => 4,
     };
-    let mut order: Vec<&String> = by_id.keys().filter(|id| id.as_str() != ROOT_ID).collect();
+    // the system nodes exist in every Workspace already; a package only carries them as parents
+    let mut order: Vec<&String> = by_id.keys().filter(|id| !is_system_id(id)).collect();
     order.sort_by_key(|id| (rank(by_id[*id]["type_id"].as_str().unwrap_or("")), depth[*id], (*id).clone()));
     let (mut ops, mut inserts, mut later, mut types, mut assets) = (Vec::new(), Vec::new(), Vec::new(), BTreeMap::new(), Vec::new());
     for id in order {
@@ -357,6 +391,14 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
         ops.push(op);
         if let Some(policy) = entry.get("write_policy") {
             later.push(json!({ "op": "entity.set_write_policy", "entity_id": id, "policy": policy, "expect": "any" }));
+        }
+        if let Some(d) = entry.get("derived") {
+            later.push(json!({ "op": "entity.set_derived", "entity_id": id, "derived": d }));
+        }
+    }
+    for id in by_id.keys().filter(|id| is_system_id(id) && id.as_str() != ROOT_ID) {
+        if !matches!(by_id[id]["type_id"].as_str(), Some(TYPE_CONTAINER)) {
+            return Err(WsError::invalid_schema(format!("system entity {id} has the wrong type")));
         }
     }
     // the root's own keys (layout/title) and policy

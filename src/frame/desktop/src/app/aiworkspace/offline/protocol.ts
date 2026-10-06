@@ -2,7 +2,7 @@
  * database (SQLite WASM on the `opfs-sahpool` VFS) and the engine (the WASM `Replica`); the page
  * owns the network. Everything here is structured-clone friendly. */
 
-import type { AnnotationContent, CommitEvent, CommitRequest, EntityEnvelope, Json, ListAnnotationsParams, QueryPage, QueryParams, Selector, WorkspaceInfo } from '../api/types'
+import type { AnnotationContent, CommitEvent, CommitRequest, EntityEnvelope, FreshnessInfo, Json, ListAnnotationsParams, QueryPage, QueryParams, RelationsInfo, Selector, WorkspaceInfo } from '../api/types'
 
 export const REPLICA_LOCK_PREFIX = 'aiworkspace-replica:'
 /** Version of the client tables this build writes (`replica_meta.client_schema`). */
@@ -79,6 +79,8 @@ export interface ReplicaApi {
   readMany(targets: { entity_id: string; selector?: Selector }[]): ReadEntry[]
   listAnnotations(params: ListAnnotationsParams): (EntityEnvelope & { content: AnnotationContent; head_seq: number })[]
   query(params: QueryParams): QueryPage
+  freshness(entityIds: string[]): FreshnessInfo[]
+  relations(entityId: string): RelationsInfo
   collab(entityId: string): { lineage_id: string; snapshot: string; pending_updates: string[] }
   submit(request: CommitRequest, meta: PendingMeta | null): LocalSaved | LocalRefused
   nextToSend(): CommitRequest | null

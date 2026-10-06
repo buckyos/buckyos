@@ -18,14 +18,17 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   await card.getByTestId('aiws-open').click()
   await expect(page.getByTestId('aiws-workspace')).toBeVisible()
 
-  // outline: the 13 entities of design §3.8 (root included), content entities too
-  const items = page.getByTestId('aiws-outline-item')
-  await expect(items).toHaveCount(13)
+  // the data tree (data-source mode): the data of design §3.8 (no Blocks, no system nodes), the canvas content area collapsed
+  await page.getByTestId('aiws-top-sources').click()
+  const items = page.getByTestId('aiws-tree-item')
+  await expect(items).toHaveCount(7)
   const ids = await items.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-entity-id')))
-  expect([...ids].sort()).toEqual(['cell-all-tasks', 'cell-diagram', 'cell-info', 'cell-notes', 'cell-open-tasks', 'diagram', 'note-budget', 'notes', 'page-main', 'project-info', 'root', 'task-42-details', 'tasks'].sort())
-  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(13)
+  expect([...ids].sort()).toEqual(['canvas-content', 'diagram', 'note-budget', 'notes', 'project-info', 'task-42-details', 'tasks'].sort())
+  // the outline has the 17 entities: root, the three system nodes, the Surface with its content folder, and the 11 of §3.8
+  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(17)
+  await page.getByTestId('aiws-top-canvas').click()
 
-  // the flow page shows cells in (order_key, entity_id) order; content entities are not on the page
+  // the flow Surface shows cells in (order_key, entity_id) order; content entities are not on the page
   const frames = await page.locator('[data-testid^="aiws-cell-frame-"]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-cell-id')))
   expect(frames).toEqual(['cell-notes', 'cell-all-tasks', 'cell-open-tasks', 'cell-info', 'cell-diagram'])
 
@@ -41,7 +44,8 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   expect(await image.getAttribute('src')).toMatch(/^blob:/)
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(16)
   await expect(page.getByTestId('aiws-asset-availability')).toHaveText('可用')
-  // annotation with its anchor state, and the mark on the annotated cell
+  // annotation with its anchor state (annotations side panel), and the mark on the annotated cell
+  await page.getByTestId('aiws-side-annotations').click()
   await expect(page.getByTestId('aiws-annotation')).toContainText('请核对预算来源')
   await expect(page.getByTestId('aiws-anchor-state')).toHaveText('锚点有效')
   await expect(page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-42-budget').getByTestId('aiws-cell-annotation')).toBeVisible()
@@ -162,9 +166,10 @@ test('(h) a 10 000 row table scrolls with a bounded number of row nodes', async 
   const ws = await api.rpc(ALICE, 'ws.create', { title: `h ${Date.now()}` })
   const fields = [{ field_id: 'title', name: '标题', type: 'text', required: true }, { field_id: 'n', name: '序号', type: 'number' }, { field_id: 'done', name: '完成', type: 'boolean' }]
   let result = await api.commit(ALICE, ws, [
-    { op: 'entity.create', entity_id: 'page-main', type_id: 'buckyos.container', parent_id: 'root', order_key: 'a', payload: { kind: 'page', layout: { mode: 'flow' }, title: '大表' } },
-    { op: 'entity.create', entity_id: 'big', type_id: 'buckyos.table-source', parent_id: 'page-main', order_key: 'a', payload: { title_field_id: 'title', fields } },
-    { op: 'entity.create', entity_id: 'cell-big', type_id: 'buckyos.cell', parent_id: 'page-main', order_key: 'b', payload: { source_ref: { entity_id: 'big' }, view: { type: 'table' }, title: '一万行' } },
+    { op: 'entity.create', entity_id: 'surface-main-content', type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'a', payload: { kind: 'folder', system: 'surface_content', surface_id: 'surface-main', title: '大表' } },
+    { op: 'entity.create', entity_id: 'surface-main', type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'a', payload: { kind: 'surface', layout: { mode: 'flow' }, title: '大表', content_folder_id: 'surface-main-content' } },
+    { op: 'entity.create', entity_id: 'big', type_id: 'buckyos.table-source', parent_id: 'data', order_key: 'a', payload: { title_field_id: 'title', fields } },
+    { op: 'entity.create', entity_id: 'cell-big', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'b', payload: { source_ref: { entity_id: 'big' }, view: { type: 'table' }, title: '一万行' } },
   ])
   expect(result.status).toBe('accepted')
   for (let batch = 0; batch < 10; batch++) {

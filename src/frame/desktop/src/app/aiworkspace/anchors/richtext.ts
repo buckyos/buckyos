@@ -13,7 +13,7 @@
 
 import { Cursor, LoroList, LoroMap, LoroText, type LoroDoc } from 'loro-crdt'
 import type { Node as PMNode } from 'prosemirror-model'
-import { Plugin, PluginKey, type EditorState } from 'prosemirror-state'
+import { Plugin, PluginKey, type EditorState, NodeSelection } from 'prosemirror-state'
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view'
 import { base64ToBytes, bytesToBase64 } from '../api/ids'
 import type { AnnotationRange, Json } from '../api/types'
@@ -224,6 +224,8 @@ export function captureAnchor(host: RichTextAnchorHost): CapturedAnchor | null {
 
 /** The selection, read from the DOM when it is there (a read-only view does not track it). */
 export function selectionOf(view: EditorView): { from: number; to: number } {
+  // a selected atom (an object link or embed clicked in the editor) is not a text selection: annotate the block around it
+  if (view.state.selection instanceof NodeSelection) return { from: view.state.selection.from, to: view.state.selection.from }
   const dom = window.getSelection()
   if (dom && dom.rangeCount > 0 && !dom.isCollapsed && dom.anchorNode && dom.focusNode && view.dom.contains(dom.anchorNode) && view.dom.contains(dom.focusNode)) {
     try {

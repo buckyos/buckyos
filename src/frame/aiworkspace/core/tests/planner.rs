@@ -6,15 +6,20 @@ use aiworkspace_core::model::*;
 use aiworkspace_core::testkit::MemWorkspace;
 use serde_json::{json, Value};
 
+/// One Surface (flow layout) with its canvas content folder: the phase-two shape of the sample page.
 fn page(ws: &mut MemWorkspace) {
-    ws.ok(json!([{ "op": "entity.create", "entity_id": "page-main", "type_id": TYPE_CONTAINER, "parent_id": "root",
-                   "order_key": "a", "name": "项目工作区", "payload": { "kind": "page", "title": "项目工作区" } }]));
+    ws.ok(json!([
+        { "op": "entity.create", "entity_id": "surface-main-content", "type_id": TYPE_CONTAINER, "parent_id": "canvas-content", "order_key": "a",
+          "payload": { "kind": "folder", "system": "surface_content", "surface_id": "surface-main", "title": "项目工作区" } },
+        { "op": "entity.create", "entity_id": "surface-main", "type_id": TYPE_CONTAINER, "parent_id": "surfaces", "order_key": "a", "name": "项目工作区",
+          "payload": { "kind": "surface", "layout": { "mode": "flow" }, "title": "项目工作区", "content_folder_id": "surface-main-content" } }
+    ]));
 }
 
 fn tasks(ws: &mut MemWorkspace) {
     page(ws);
     ws.ok(json!([
-        { "op": "entity.create", "entity_id": "tasks", "type_id": TYPE_TABLE, "parent_id": "page-main", "order_key": "b", "name": "任务",
+        { "op": "entity.create", "entity_id": "tasks", "type_id": TYPE_TABLE, "parent_id": "data", "order_key": "b", "name": "任务",
           "payload": { "title_field_id": "title", "fields": [
             { "field_id": "title", "name": "任务", "type": "text", "required": true },
             { "field_id": "status", "name": "状态", "type": "select", "options": [
@@ -41,16 +46,18 @@ fn tree_rules_and_auto_merge() {
     page(&mut ws);
     let grp = |id: &str, parent: &str, key: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_CONTAINER,
         "parent_id": parent, "order_key": key, "payload": { "kind": "group" } });
-    ws.ok(json!([grp("g-a", "page-main", "a"), grp("g-b", "page-main", "b"), grp("g-c", "g-a", "a")]));
-    // root only takes pages; ids are never reused; the root is fixed
+    ws.ok(json!([grp("g-a", "surface-main", "a"), grp("g-b", "surface-main", "b"), grp("g-c", "g-a", "a")]));
+    // root only holds the system nodes; a group belongs to a BlockTree, not to the data tree; ids are never reused; the root is fixed
     assert_eq!(sub(&ws.fail(json!([grp("g-x", "root", "c")]))), "CHILD_NOT_ALLOWED");
-    assert_eq!(sub(&ws.fail(json!([grp("g-a", "page-main", "c")]))), "ID_CONFLICT");
+    assert_eq!(sub(&ws.fail(json!([grp("g-x", "data", "c")]))), "CHILD_NOT_ALLOWED");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.delete", "entity_id": "data", "expect": { "rev": 0 } }]))), "INVALID_OPERATION");
+    assert_eq!(sub(&ws.fail(json!([grp("g-a", "surface-main", "c")]))), "ID_CONFLICT");
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.delete", "entity_id": "root", "expect": { "rev": 0 } }]))), "INVALID_OPERATION");
     assert_eq!(code(&ws.fail(json!([grp("g-y", "nope", "c")]))), "NOT_FOUND");
     // two movers of the same node: both accepted, the later one wins
     let s1 = ws.ok(json!([{ "op": "tree.move", "entity_id": "g-c", "new_parent_id": "g-b", "order_key": "a" }]));
-    let s2 = ws.ok(json!([{ "op": "tree.move", "entity_id": "g-c", "new_parent_id": "page-main", "order_key": "c" }]));
-    assert_eq!(ws.store.edges["g-c"].parent_id, "page-main");
+    let s2 = ws.ok(json!([{ "op": "tree.move", "entity_id": "g-c", "new_parent_id": "surface-main", "order_key": "c" }]));
+    assert_eq!(ws.store.edges["g-c"].parent_id, "surface-main");
     assert_eq!(ws.store.edges["g-c"].struct_rev, s2);
     // undoing the earlier move must not drag the node back over the later move
     let f = ws.undo(s1).err().expect("conflict").to_json();
@@ -60,15 +67,15 @@ fn tree_rules_and_auto_merge() {
     ws.ok(json!([{ "op": "tree.move", "entity_id": "g-a", "new_parent_id": "g-b", "order_key": "a" }]));
     assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-b", "new_parent_id": "g-a", "order_key": "a" }]))), "TREE_CYCLE");
     // equal order keys still give a total order
-    ws.ok(json!([grp("g-d", "page-main", "c")]));
-    let order: Vec<String> = ws.store.children("page-main").unwrap().into_iter().map(|e| e.child_id).collect();
+    ws.ok(json!([grp("g-d", "surface-main", "c")]));
+    let order: Vec<String> = ws.store.children("surface-main").unwrap().into_iter().map(|e| e.child_id).collect();
     assert_eq!(order, vec!["g-b", "g-c", "g-d"]);
     // names are unique among siblings, also when moving in
     ws.ok(json!([{ "op": "entity.rename", "entity_id": "g-c", "name": "同名", "expect": { "rev": 2 } }]));
     ws.ok(json!([grp("g-e", "g-b", "b")]));
     let rev = ws.store.entities["g-e"].meta_rev;
     ws.ok(json!([{ "op": "entity.rename", "entity_id": "g-e", "name": "同名", "expect": { "rev": rev } }]));
-    assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-e", "new_parent_id": "page-main", "order_key": "d" }]))), "NAME_CONFLICT");
+    assert_eq!(sub(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-e", "new_parent_id": "surface-main", "order_key": "d" }]))), "NAME_CONFLICT");
     // delete: children must be listed; a node moved in meanwhile is a conflict, not a silent victim
     let life = ws.store.entities["g-b"].life_rev;
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.delete", "entity_id": "g-b", "expect": { "rev": life } }]))), "INVALID_OPERATION");
@@ -78,7 +85,7 @@ fn tree_rules_and_auto_merge() {
     let del = ws.ok(json!([{ "op": "entity.delete", "entity_id": "g-b", "subtree": { "delete": ["g-a", "g-e", "gone"] }, "expect": { "rev": life } }]));
     assert!(!ws.store.entities["g-a"].alive() && !ws.store.entities["g-e"].alive());
     // moving a deleted node or into a deleted parent never resurrects anything
-    assert_eq!(code(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-a", "new_parent_id": "page-main", "order_key": "x" }]))), "TARGET_DELETED");
+    assert_eq!(code(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-a", "new_parent_id": "surface-main", "order_key": "x" }]))), "TARGET_DELETED");
     assert_eq!(code(&ws.fail(json!([{ "op": "tree.move", "entity_id": "g-d", "new_parent_id": "g-b", "order_key": "x" }]))), "TARGET_DELETED");
     // undo of the subtree delete restores the same set
     ws.undo(del).ok().expect("undo delete");
@@ -225,10 +232,10 @@ fn mixed_batch_is_atomic_and_richtext_blocks_use_tokens() {
     let mut ws = MemWorkspace::new();
     tasks(&mut ws);
     ws.ok(json!([
-        { "op": "entity.create", "entity_id": "cell-open", "type_id": TYPE_CELL, "parent_id": "page-main", "order_key": "c",
+        { "op": "entity.create", "entity_id": "cell-open", "type_id": TYPE_CELL, "parent_id": "surface-main", "order_key": "c",
           "payload": { "source_ref": { "entity_id": "tasks" }, "view": { "type": "table" }, "title": "未完成任务",
                        "filter": { "op": "cmp", "field_id": "status", "operator": "ne", "value": "option-done" } } },
-        { "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "page-main", "order_key": "d",
+        { "op": "entity.create", "entity_id": "notes", "type_id": TYPE_RICHTEXT, "parent_id": "data", "order_key": "d",
           "payload": { "content": { "type": "doc", "content": [
               para("intro", "项目说明"),
               { "type": "object_embed", "attrs": { "block_id": "emb", "ref": { "entity_id": "cell-open" } } }] } } }
@@ -296,12 +303,12 @@ fn keyed_documents_and_views() {
     let mut ws = MemWorkspace::new();
     tasks(&mut ws);
     ws.ok(json!([
-        { "op": "entity.create", "entity_id": "project-info", "type_id": TYPE_RECORD, "parent_id": "page-main", "order_key": "c",
+        { "op": "entity.create", "entity_id": "project-info", "type_id": TYPE_RECORD, "parent_id": "data", "order_key": "c",
           "payload": { "schema": { "properties": [
               { "key": "owner", "name": "负责人", "type": "text", "required": true },
               { "key": "budget", "name": "预算", "type": "decimal", "scale": 2 }] },
             "props": { "owner": "林", "budget": "1200" } } },
-        { "op": "entity.create", "entity_id": "cell-all", "type_id": TYPE_CELL, "parent_id": "page-main", "order_key": "d",
+        { "op": "entity.create", "entity_id": "cell-all", "type_id": TYPE_CELL, "parent_id": "surface-main", "order_key": "d",
           "payload": { "source_ref": { "entity_id": "tasks" }, "view": { "type": "table" }, "title": "全部任务" } }
     ]));
     let s = ws.head_seq;
@@ -323,7 +330,7 @@ fn keyed_documents_and_views() {
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "cell-all", "keys": [
         { "key": "filter", "value": { "op": "cmp", "field_id": "title", "operator": "lt", "value": "a" }, "expect": { "rev": ws.head_seq - 1 } }] }]))), "INVALID_OPERATION");
     // a cell cannot bind a source of the wrong type
-    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "cell-bad", "type_id": TYPE_CELL, "parent_id": "page-main",
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "cell-bad", "type_id": TYPE_CELL, "parent_id": "surface-main",
         "order_key": "e", "payload": { "source_ref": { "entity_id": "project-info" }, "view": { "type": "table" } } }]))), "INVALID_SCHEMA");
 }
 
@@ -345,7 +352,7 @@ fn permissions_append_only_and_personal_scope() {
     let carol = Access { principal: "carol".into(), ws_caps: CapSet(Cap::Read as u16 | Cap::Comment as u16), scoped: Default::default() };
     let env = ws.env("carol", "human", None, false);
     let req = MemWorkspace::request(json!([{ "op": "entity.create", "entity_id": "note-budget", "type_id": TYPE_ANNOTATION,
-        "parent_id": "page-main", "order_key": "z", "scope": "personal",
+        "parent_id": "data", "order_key": "z", "scope": "personal",
         "payload": { "target": { "entity_id": "tasks", "selector": { "kind": "table_cell", "record_id": "task-42", "field_id": "budget" } },
                      "kind": "note", "body": "请核对预算来源" } }]));
     ws.commit_with(&carol, &env, &req).ok().expect("annotate");

@@ -156,7 +156,7 @@ impl Conflict {
 pub struct Touched {
     pub entity_id: String,
     pub selector: Option<Value>,
-    /// created | deleted | restored | renamed | moved | placed | value | schema | view | text
+    /// created | deleted | restored | renamed | moved | placed | value | schema | view | text | derived
     pub change: &'static str,
     pub rev: u64,
 }
@@ -553,6 +553,7 @@ pub const OPERATIONS: &[(&str, &str, &str, &str)] = &[
     ("entity.set_keys", "overwrite", "compensable", "update"),
     ("entity.unset_keys", "overwrite", "compensable", "update"),
     ("entity.set_write_policy", "overwrite", "compensable", "manage"),
+    ("entity.set_derived", "merge", "compensable", "update"),
     ("tree.move", "merge", "compensable", "structure"),
     ("tree.place", "merge", "compensable", "structure"),
     ("table.insert_records", "append", "compensable", "append"),
@@ -670,6 +671,7 @@ fn dispatch(p: &mut Planner, name: &str, op: &Value) -> OpResult {
         "entity.set_keys" => entity_set_keys(p, op, false),
         "entity.unset_keys" => entity_set_keys(p, op, true),
         "entity.set_write_policy" => entity_set_write_policy(p, op),
+        "entity.set_derived" => entity_set_derived(p, op),
         "tree.move" => tree_move(p, op),
         "tree.place" => tree_place(p, op),
         n if n.starts_with("table.") => crate::plan_table::dispatch(p, n, op),
@@ -686,15 +688,26 @@ fn container_kind(e: &EntityRow) -> &str {
     e.payload.get("kind").and_then(Value::as_str).unwrap_or("")
 }
 
-/// Which entities may be children of which (design doc §3.1).
+/// Which entities may be children of which (phase two §4.5: two trees).
+///
+/// * `root` holds only the system nodes (created with the Workspace, never by an operation).
+/// * `data` / `folder`: folders and data entities (annotations of any scope); the data tree.
+/// * `surfaces`: Surfaces only.
+/// * `surface` / `group`: Cells and UI groups only; the BlockTree holds no data.
+/// * a TableSource holds the rich text bodies of its records.
 pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
     match parent.type_id.as_str() {
         TYPE_CONTAINER => match container_kind(parent) {
-            "root" => child_type == TYPE_CONTAINER && child_kind == Some("page"),
-            "page" | "group" => match child_type {
-                TYPE_CONTAINER => child_kind == Some("group"),
+            "data" | "folder" => match child_type {
+                TYPE_CONTAINER => child_kind == Some("folder"),
                 TYPE_ANNOTATION => true,
-                _ => child_scope == SCOPE_SHARED,
+                t => is_data_type(t) && child_scope == SCOPE_SHARED,
+            },
+            "surfaces" => child_type == TYPE_CONTAINER && child_kind == Some("surface"),
+            "surface" | "group" => match child_type {
+                TYPE_CONTAINER => child_kind == Some("group"),
+                TYPE_CELL => child_scope == SCOPE_SHARED,
+                _ => false,
             },
             _ => false,
         },
@@ -703,20 +716,36 @@ pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&s
     }
 }
 
+/// Free-layout placement: `{ x, y, w, h }` relative to the parent container (phase two §8.2).
+/// Stacking order is the sibling `order_key`; there is no `z`.
 fn check_placement(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| WsError::invalid_schema("placement must be an object"))?;
     let num = |k: &str| o.get(k).and_then(Value::as_f64).filter(|f| f.is_finite());
-    let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h" | "z"))
+    let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h"))
         && num("x").is_some()
         && num("y").is_some()
         && num("w").is_some_and(|w| w > 0.0)
-        && num("h").is_some_and(|h| h > 0.0)
-        && o.get("z").map_or(true, |z| z.as_i64().is_some());
+        && num("h").is_some_and(|h| h > 0.0);
     if ok {
         Ok(())
     } else {
-        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0, z? } with finite numbers"))
+        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0 } with finite numbers (stacking order is order_key)"))
     }
+}
+
+/// Is `id` inside the data tree (under `data`)? Used by annotation rules and the UI's "move to" checks.
+pub fn in_data_tree(ctx: &dyn ReadCtx, id: &str) -> WsResult<bool> {
+    let mut cur = id.to_string();
+    for _ in 0..4096 {
+        if cur == DATA_ID {
+            return Ok(true);
+        }
+        match ctx.edge(&cur)? {
+            Some(e) => cur = e.parent_id,
+            None => return Ok(false),
+        }
+    }
+    Ok(false)
 }
 
 fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
@@ -735,6 +764,9 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
     };
     if p.ov.entity(id)?.is_some() {
         return Err(WsError::sub(Code::InvalidOperation, "ID_CONFLICT", format!("entity_id {id} already exists")));
+    }
+    if is_system_id(id) {
+        return Err(WsError::invalid_op(format!("{id} is a system entity")));
     }
     let scope = match op.get("scope").and_then(Value::as_str) {
         None | Some("shared") => SCOPE_SHARED.to_string(),
@@ -785,6 +817,7 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         write_policy: POLICY_OPEN.to_string(),
         payload: Map::new(),
         key_revs: BTreeMap::new(),
+        derived: None,
         created_seq: seq,
         meta_rev: seq,
         content_rev: seq,
@@ -829,8 +862,8 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "subtree", "expect"])?;
     let id = get_str(op, "entity_id")?;
     let e = p.entity_alive(id)?;
-    if id == ROOT_ID {
-        return Err(WsError::invalid_op("the root cannot be deleted"));
+    if is_system_id(id) {
+        return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be deleted")));
     }
     if e.type_id == TYPE_ANNOTATION {
         // own annotations need `comment`; other people's shared ones need `manage`
@@ -871,18 +904,24 @@ fn entity_delete(p: &mut Planner, op: &Value) -> OpResult {
     let mut doomed = vec![e];
     doomed.extend(descendants);
     let doomed_ids: BTreeSet<String> = doomed.iter().map(|d| d.entity_id.clone()).collect();
-    let mut referrers = Vec::new();
+    // the pre-check names only referrers the caller may read; the rest is reported as a fact without
+    // ids, names or counts (phase two §4.3)
+    let (mut referrers, mut hidden) = (Vec::new(), false);
     for d in &doomed {
         for r in p.ov.refs_to(&d.entity_id)? {
             if r.blocks_delete() && !doomed_ids.contains(&r.src_entity_id) {
-                if p.ov.entity(&r.src_entity_id)?.is_some_and(|s| s.alive()) {
-                    referrers.push(json!({ "entity_id": r.src_entity_id, "selector": r.src_selector, "kind": r.kind, "target": d.entity_id }));
+                if let Some(src) = p.ov.entity(&r.src_entity_id)?.filter(|s| s.alive()) {
+                    if p.access.can_read(&p.ov, &src)? {
+                        referrers.push(json!({ "entity_id": r.src_entity_id, "selector": r.src_selector, "kind": r.kind, "target": d.entity_id }));
+                    } else {
+                        hidden = true;
+                    }
                 }
             }
         }
     }
-    if !referrers.is_empty() {
-        return Err(WsError::new(Code::ReferenceBroken, "entity is still referenced").with_data(json!({ "referrers": referrers })));
+    if !referrers.is_empty() || hidden {
+        return Err(WsError::new(Code::ReferenceBroken, "entity is still referenced").with_data(json!({ "referrers": referrers, "hidden_referrers": hidden })));
     }
     let seq = p.seq();
     let mut inverse = Vec::new();
@@ -936,6 +975,9 @@ fn entity_rename(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "name", "expect"])?;
     let id = get_str(op, "entity_id")?;
     let mut e = p.entity_alive(id)?;
+    if is_system_id(id) {
+        return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be renamed")));
+    }
     p.require(id, Cap::Structure)?;
     p.need_parent_lock(id)?;
     let old = e.name.clone();
@@ -1073,6 +1115,40 @@ fn entity_set_keys(p: &mut Planner, op: &Value, unset: bool) -> OpResult {
     Ok((norm, Some(inverse)))
 }
 
+/// `entity.set_derived`: record (or clear) the generation dependency of a result entity
+/// (phase two §7.3). Auto-merge: the wish application guards consistency with its read-set
+/// preconditions, and a later record simply replaces the earlier one. `generated_rev` is the
+/// entity's content version at this point (the content written in the same commit has `seq`).
+fn entity_set_derived(p: &mut Planner, op: &Value) -> OpResult {
+    only_keys(op, &["entity_id", "derived", "expect"])?;
+    let id = get_str(op, "entity_id")?;
+    let mut e = p.entity_alive(id)?;
+    if e.type_id == TYPE_CONTAINER || e.type_id == TYPE_CELL {
+        return Err(WsError::invalid_op("only data entities carry a dependency record"));
+    }
+    p.require(id, Cap::Update)?;
+    p.need_lock(&e);
+    if !p.check_rev_opt(op.get("expect"), e.meta_rev, None, id, None, || None)? {
+        return Ok((op.clone(), None));
+    }
+    let derived = match op.get("derived") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(crate::types::check_derived(p, v, e.content_rev)?),
+    };
+    let seq = p.seq();
+    let old_refs = crate::types::entity_refs(&e)?;
+    let inverse = json!({ "op": "entity.set_derived", "entity_id": id, "derived": e.derived.clone().unwrap_or(Value::Null), "expect": { "rev": seq } });
+    e.derived = derived;
+    e.meta_rev = seq;
+    let new_refs = crate::types::entity_refs(&e)?;
+    p.ov.set_refs(&old_refs, &new_refs);
+    let mut norm = op.clone();
+    norm["derived"] = e.derived.clone().unwrap_or(Value::Null);
+    p.ov.put_entity(e);
+    p.touch(id, None, "derived");
+    Ok((norm, Some(vec![inverse])))
+}
+
 fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "new_parent_id", "order_key", "placement", "expect"])?;
     let id = get_str(op, "entity_id")?;
@@ -1080,8 +1156,8 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     let order_key = get_str(op, "order_key")?;
     check_order_key(order_key)?;
     let e = p.entity_alive(id)?;
-    if id == ROOT_ID {
-        return Err(WsError::invalid_op("the root cannot be moved"));
+    if is_system_id(id) {
+        return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be moved")));
     }
     let new_parent = p.entity_alive(new_parent_id)?;
     let kind = e.payload.get("kind").and_then(Value::as_str);
@@ -1135,6 +1211,9 @@ fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "order_key", "placement", "expect"])?;
     let id = get_str(op, "entity_id")?;
     p.entity_alive(id)?;
+    if is_system_id(id) {
+        return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be placed")));
+    }
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("the root cannot be placed"))?;
     p.require(&edge.parent_id, Cap::Structure)?;
     p.need_parent_lock(id)?;

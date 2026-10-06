@@ -20,6 +20,10 @@ export class Replica {
      */
     confirmed_rows(): string;
     discard(key: string): boolean;
+    /**
+     * `doc.freshness` on the working view: `{ entity_ids }` → `{ items }` (same shape as the backend).
+     */
+    freshness(params_json: string): string;
     lineage_id(entity_id: string): string | undefined;
     /**
      * `doc.list_annotations` on the working view: `{ target_ids?, parent_id? }`.
@@ -47,6 +51,10 @@ export class Replica {
      */
     query(params_json: string): string;
     read(entity_id: string, selector_json?: string | null): string;
+    /**
+     * `doc.relations` on the working view.
+     */
+    relations(entity_id: string): string;
     /**
      * Restore persisted pending submissions: `[{ idempotency_key, request, state, result? }]`.
      */
@@ -138,6 +146,7 @@ export interface InitOutput {
     readonly replica_confirmed_rows: (a: number, b: number) => void;
     readonly replica_confirmed_seq: (a: number) => number;
     readonly replica_discard: (a: number, b: number, c: number) => number;
+    readonly replica_freshness: (a: number, b: number, c: number, d: number) => void;
     readonly replica_lineage_id: (a: number, b: number, c: number, d: number) => void;
     readonly replica_list_annotations: (a: number, b: number, c: number, d: number) => void;
     readonly replica_mark: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
@@ -148,6 +157,7 @@ export interface InitOutput {
     readonly replica_pending_richtext_updates: (a: number, b: number, c: number, d: number) => void;
     readonly replica_query: (a: number, b: number, c: number, d: number) => void;
     readonly replica_read: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly replica_relations: (a: number, b: number, c: number, d: number) => void;
     readonly replica_restore_pending: (a: number, b: number, c: number, d: number) => void;
     readonly replica_submit_local: (a: number, b: number, c: number, d: number) => void;
     readonly replica_take_confirmed_delta: (a: number, b: number) => void;
