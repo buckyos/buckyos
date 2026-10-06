@@ -157,6 +157,7 @@ export type CapabilityRule = {
   methods: string[];
   input_kinds: string[];
   output_kinds: string[];
+  resource_representation?: "url" | "base64" | "named_object";
   document_formats?: string[];
   api_io?: Record<string, {
     input_combinations: string[][];

@@ -1586,6 +1586,7 @@
           "output_kinds": [
             "text"
           ],
+          "resource_representation": "url",
           "source_urls": [
             "https://www.volcengine.com/docs/6561/1354868?lang=zh",
             "https://www.volcengine.com/docs/6561/1354869?lang=zh"

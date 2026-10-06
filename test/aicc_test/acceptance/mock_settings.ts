@@ -24,7 +24,7 @@ function provider(input: {
       ? {}
       : { provider_rules_id: input.providerRulesId ?? input.profile }),
     base_url: input.baseUrl,
-    credentials: { api_token: { locked: input.token } },
+    credentials: { api_token: { inline_secret: input.token } },
     enabled: true,
     timeout_ms: input.timeoutMs,
     auto_sync_models: true,

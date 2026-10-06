@@ -68,7 +68,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     provider_profile_id: profile,
     protocol_adapter_id: adapters[driver],
     base_url: endpoints[driver],
-    credentials: { api_token: { locked: token } },
+    credentials: { api_token: { inline_secret: token } },
     provider_rules_id: profile,
     enabled: true,
     timeout_ms: 300_000,
@@ -212,7 +212,7 @@ export function applyProviderTokens(
         instance.provider_instance_name === selectedName
       );
       if (selected) {
-        selected.credentials = { api_token: { locked: token } };
+        selected.credentials = { api_token: { inline_secret: token } };
         applyInstanceOverrides(selected, instanceOverrides[driver]);
         continue;
       }
@@ -222,7 +222,7 @@ export function applyProviderTokens(
       continue;
     }
     if (candidates.length === 1) {
-      candidates[0].credentials = { api_token: { locked: token } };
+      candidates[0].credentials = { api_token: { inline_secret: token } };
       applyInstanceOverrides(candidates[0], instanceOverrides[driver]);
       continue;
     }

@@ -1584,7 +1584,7 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
   );
   assert.equal(providers.length, 13);
   assert.deepEqual(providers[1].credentials, {
-    api_token: { locked: "mock-a-run-one" },
+    api_token: { inline_secret: "mock-a-run-one" },
   });
   assert.deepEqual(
     providers.slice(10).map((
@@ -1713,22 +1713,22 @@ test("Provider credentials patch only the selected runtime instance without muta
       {
         provider_instance_name: "openai-one",
         provider_profile_id: "openai",
-        credentials: { api_token: { locked: "old-one" } },
+        credentials: { api_token: { inline_secret: "old-one" } },
       },
       {
         provider_instance_name: "openai-two",
         provider_profile_id: "openai",
-        credentials: { api_token: { locked: "old-two" } },
+        credentials: { api_token: { inline_secret: "old-two" } },
       },
       {
         provider_instance_name: "router",
         provider_profile_id: "openrouter",
-        credentials: { api_token: { locked: "old-router" } },
+        credentials: { api_token: { inline_secret: "old-router" } },
       },
       {
         provider_instance_name: "gemini",
         provider_profile_id: "gemini",
-        credentials: { api_token: { locked: "old-gemini" } },
+        credentials: { api_token: { inline_secret: "old-gemini" } },
       },
     ],
   };
@@ -1741,11 +1741,11 @@ test("Provider credentials patch only the selected runtime instance without muta
     openrouter: "router",
     "google-gemini": "gemini",
   }) as typeof original;
-  assert.equal(original.providers[1].credentials.api_token.locked, "old-two");
-  assert.equal(patched.providers[0].credentials.api_token.locked, "old-one");
-  assert.equal(patched.providers[1].credentials.api_token.locked, "new-openai");
-  assert.equal(patched.providers[2].credentials.api_token.locked, "new-router");
-  assert.equal(patched.providers[3].credentials.api_token.locked, "new-gemini");
+  assert.equal(original.providers[1].credentials.api_token.inline_secret, "old-two");
+  assert.equal(patched.providers[0].credentials.api_token.inline_secret, "old-one");
+  assert.equal(patched.providers[1].credentials.api_token.inline_secret, "new-openai");
+  assert.equal(patched.providers[2].credentials.api_token.inline_secret, "new-router");
+  assert.equal(patched.providers[3].credentials.api_token.inline_secret, "new-gemini");
   assert.throws(
     () => applyProviderTokens(original, { openai: "secret" }, {}),
     /multiple configured instances/,
@@ -1864,7 +1864,7 @@ test("Provider credentials create an explicitly named run-scoped instance withou
       provider_profile_id: "doubao",
       protocol_adapter_id: "doubao-responses",
       base_url: "https://ark.cn-beijing.volces.com/api/plan/v3",
-      credentials: { api_token: { locked: "agent-plan-token" } },
+      credentials: { api_token: { inline_secret: "agent-plan-token" } },
     }],
   };
   const patched = applyProviderTokens(original, { doubao: "standard-token" }, {
@@ -1879,7 +1879,7 @@ test("Provider credentials create an explicitly named run-scoped instance withou
     provider_profile_id: "doubao",
     protocol_adapter_id: "doubao-responses",
     base_url: "https://ark.cn-beijing.volces.com/api/v3",
-    credentials: { api_token: { locked: "standard-token" } },
+    credentials: { api_token: { inline_secret: "standard-token" } },
     provider_rules_id: "doubao",
     enabled: true,
     timeout_ms: 300_000,
@@ -2258,6 +2258,24 @@ test("T2 provider matrix has one minimal cell per physical model and API type", 
   assert.equal(cells[0].method, "image.upscale");
   assert.equal(cells[0].resource_representation, undefined);
   assert.equal(cells[0].variant, undefined);
+});
+
+test("Doubao standard ASR T2 uses the official URL-only input form", async () => {
+  const cells = buildProviderMatrix({
+    baseline: await baseline(),
+    ...matrixInputs([{
+      provider_instance_name: "doubao-speech-t2",
+      provider_driver: "doubao-speech",
+      models: [{
+        exact_model: "doubao-seed-asr-2.0@doubao-speech-t2",
+        provider_model_id: "doubao-seed-asr-2.0",
+        api_types: ["audio.asr"],
+        logical_mounts: [],
+      }],
+    }]),
+  });
+  assert.equal(cells.length, 1);
+  assert.equal(cells[0].resource_representation, "url");
 });
 
 test("T2 selects one configured instance per provider and rejects ambiguity", () => {

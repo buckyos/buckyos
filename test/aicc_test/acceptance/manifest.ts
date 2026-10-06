@@ -269,6 +269,10 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
       requireStringArray(rule.methods, `${driver}.methods`);
       requireStringArray(rule.input_kinds, `${driver}.input_kinds`);
       requireStringArray(rule.output_kinds, `${driver}.output_kinds`);
+      if (rule.resource_representation !== undefined &&
+        !["url", "base64", "named_object"].includes(String(rule.resource_representation))) {
+        throw new Error(`${driver}.${String(rule.model_pattern)}.resource_representation is invalid`);
+      }
       if ((rule.input_kinds as string[]).includes("document")) {
         const formats = requireStringArray(rule.document_formats, `${driver}.document_formats`);
         if (formats.length === 0 || new Set(formats).size !== formats.length) {
@@ -528,6 +532,7 @@ export function analyzeProviderMatrix(args: {
           baseline_status: normalizedStatus(rule, model.provider_model_id),
           input_kinds: inputKinds,
           output_kinds: outputKinds,
+          resource_representation: rule.resource_representation,
           source_urls: rule.source_urls,
           estimated_cost_usd: model.pricing?.currency?.toUpperCase() === "USD" &&
               typeof model.pricing.estimated_cost === "number" &&

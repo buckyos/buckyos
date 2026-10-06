@@ -2912,7 +2912,7 @@ async function runCases(
     providersIn(settings).push({
       ...structuredClone(template),
       provider_instance_name: addedProviderName,
-      credentials: { api_token: { locked: `mock-added-${runId}` } },
+      credentials: { api_token: { inline_secret: `mock-added-${runId}` } },
       base_url: `${mockBaseUrl}/instance-a/v1`,
     });
     return settings;
@@ -3084,7 +3084,7 @@ async function runCases(
         protocol_adapter_id: "openai-responses",
         provider_rules_id: CLOUD_TEST_RULES_ID,
         base_url: `${mockBaseUrl}/instance-a/v1`,
-        credentials: { api_token: { locked: `cloud-mock-${runId}` } },
+        credentials: { api_token: { inline_secret: `cloud-mock-${runId}` } },
         auto_sync_models: true,
       };
       const validation = await session.aicc.call("provider.validate", dynamicProvider) as Record<string, unknown>;

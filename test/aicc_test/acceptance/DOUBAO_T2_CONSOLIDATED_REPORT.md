@@ -1,6 +1,6 @@
 # AICC T1 / T1.5 / 豆包语音 T2 最终测试报告
 
-测试日期：2026-10-05
+测试日期：2026-10-06
 
 测试环境：Ubuntu，BuckyOS `/opt/buckyos`。T1、T1.5 为全量测试；T2 仅覆盖 `doubao-speech`。凭证未写入报告。
 
@@ -10,34 +10,35 @@
 |---|---|---:|
 | T1 | AICC 全量静态、路由与配置契约 | 178 / 178 通过 |
 | T1.5 | 全 Provider 高保真协议矩阵 | 1605 / 1605 通过 |
-| T2 | 豆包语音 3 个非 ICL 物理模型 | 2 通过 / 1 环境失败 |
+| T2 | 豆包语音 3 个非 ICL 物理模型 | 3 / 3 技术验收通过 |
 
-T1 与 T1.5 全量通过。T2 的 TTS 与极速 ASR 真实调用通过；标准 ASR 因 devtest 无法向豆包服务端提供可下载的公网音频 URL 而失败，不属于 AICC Provider 协议缺陷。
+T1、T1.5 和 T2 均通过本轮规定的技术验收。T2 未启用 Judge，因此自动报告将带语义规则的成功用例标记为 `review`；两个 ASR 结果已人工核对转写内容，TTS 的协议、任务、制品、归因和清理断言通过，语音内容与听感仍需人工复核。
 
 ## T2 最终结果
 
 | 模型 | API | 最终状态 | 结果证据 |
 |---|---|---|---|
-| `doubao-seed-tts-2.0` | `audio.tts` | 通过 | 真实任务成功；生成 30,765 字节 `audio/mpeg` 制品，SHA-256 为 `40b466505b073316ab5d9f2c6ea07636207c3eb575dd2aa48cde14a49ad9a62b`；请求数、字符数及人民币成本均完成归因。自动报告保留语义人工复核标记。 |
-| `doubao-seed-asr-2.0-fast` | `audio.asr` | 通过 | 真实任务成功；转写为“今天的测试编号是4827。”，命中测试标记 `4827`；音频时长、请求数及人民币成本均完成归因。 |
-| `doubao-seed-asr-2.0` | `audio.asr` | 环境失败 | Provider 返回 `45000006`：`[Invalid audio URI] ... audio download failed`。devtest 无法向外部 Provider 提供音频下载服务。 |
+| `doubao-seed-tts-2.0` | `audio.tts` | 技术验收通过，语义待人工复核 | 真实任务成功；生成且仅生成 1 个 `audio/mpeg` 制品，大小 27,885 字节，SHA-256 为 `9443003faa0df0dfd0ed235de9101f34ba06cac74b7b8941e98befe3e1f48e27`；40 字符、1 请求，任务持久化成本为 `¥0.012`。 |
+| `doubao-seed-asr-2.0-fast` | `audio.asr` | 通过 | 真实任务成功；转写为“今天的测试编号是4827。”，人工核对通过；音频 3.533 秒、1 请求，任务持久化成本为 `¥0.00441625`。 |
+| `doubao-seed-asr-2.0` | `audio.asr` | 通过 | 真实异步任务成功；通过 SN 公网 NDN URL 下载输入音频，转写为“今天的测试编号是4827。”，人工核对通过；音频 3.533 秒、1 请求，任务持久化成本为 `¥0.0007851110326`。 |
 
-`doubao-seed-icl-2.0` 已从本轮范围排除。克隆音色属于需要单独设计的完整新功能，后续应统一设计音色资源、配置、协议参数和 AICC 接口后再纳入测试。
+`doubao-seed-icl-2.0` 不在本轮范围内。克隆音色需要独立的音色资源、配置、协议参数和 AICC 接口设计，未纳入本轮验收。
 
 ## 调用、费用与清理
 
-- T2 计划 3 次、实际 3 次真实调用，无重试或额外 Judge 调用。
-- 成功任务持久化计费记录：极速 ASR `¥0.00441625`，TTS `¥0.012`。标准 ASR 失败任务没有可核验的持久化金额。
-- T1、T1.5、T2 cleanup 均通过；T2 临时 Provider 凭据已恢复，运行器记录的生成制品已清理。
+- 最终结果证据包含 3 次成功真实调用，每个物理模型各 1 次。
+- 本轮全部授权真实调用共 8 次；按运行器预算口径，累计估算暴露为 `$0.08`。成功任务可核验的持久化成本合计为 `¥0.0172013610326`；未成功调用没有可核验的 Provider 结算金额。
+- T1、T1.5 和最终 T2 清理状态均通过；临时 Provider 凭据已恢复，已知输入夹具、生成制品和临时 NDN 路由均已清理。
 
 ## 最终报告证据
 
-- T1：[`reports/acceptance/aicc-t1-2026-10-05T10-54-46-298Z-9630db6c/summary.json`](reports/acceptance/aicc-t1-2026-10-05T10-54-46-298Z-9630db6c/summary.json)
-- T1.5：[`../reports/acceptance/t15-20261005115443-3294721/summary.json`](../reports/acceptance/t15-20261005115443-3294721/summary.json)
-- T2：[`../reports/acceptance/aicc-2026-10-05T12-20-39-830Z-62047f7f/summary.json`](../reports/acceptance/aicc-2026-10-05T12-20-39-830Z-62047f7f/summary.json)
+- T1：[`aicc-t1-2026-10-06T04-47-04-394Z-e2401706/summary.json`](../reports/acceptance/aicc-t1-2026-10-06T04-47-04-394Z-e2401706/summary.json)
+- T1.5：[`t15-20261006045107-3604117/summary.json`](../reports/acceptance/t15-20261006045107-3604117/summary.json)
+- T2 极速 ASR：[`aicc-2026-10-06T05-15-40-681Z-9717009a/summary.json`](../reports/acceptance/aicc-2026-10-06T05-15-40-681Z-9717009a/summary.json)
+- T2 标准 ASR：[`aicc-2026-10-06T05-45-44-208Z-5dc6285b/summary.json`](../reports/acceptance/aicc-2026-10-06T05-45-44-208Z-5dc6285b/summary.json)
+- T2 TTS：[`aicc-2026-10-06T06-03-48-529Z-1e8d8861/summary.json`](../reports/acceptance/aicc-2026-10-06T06-03-48-529Z-1e8d8861/summary.json)
 
-## 未通过项与风险
+## 剩余风险与未覆盖项
 
-- 标准 ASR 需要豆包服务端可访问的公网 HTTPS 音频 URL；当前 devtest 环境不具备该条件，因此该项维持环境失败。
-- TTS 自动报告的协议、任务、制品和计费断言已通过，但未启用 Judge，语音内容与听感质量仍保留人工复核风险。
+- TTS 未启用 Judge，也未进行人工听感验收；语音内容准确性、自然度和音质不属于本轮已通过结论。
 - ICL 音色复刻能力未设计、未实现、未测试。
