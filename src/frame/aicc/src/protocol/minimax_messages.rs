@@ -33,7 +33,7 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
             "provider_state_namespace",
         ]),
         unsupported_parameters: BTreeSet::new(),
-        unsupported_capabilities: BTreeSet::new(),
+        unsupported_capabilities: BTreeSet::from([buckyos_api::features::WEB_SEARCH]),
     }
 }
 
@@ -46,6 +46,11 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
             ApiType::Llm | ApiType::VisionOcr | ApiType::VisionCaption
         )
     });
+    for binding in &mut operation.bindings {
+        binding
+            .supported_features
+            .remove(buckyos_api::features::WEB_SEARCH);
+    }
     let (media_operations, media_registration) = super::minimax_media_registration();
     let mut operations = BTreeMap::from([(operation.operation_id.clone(), operation.clone())]);
     operations.extend(
@@ -348,6 +353,7 @@ mod tests {
         CodecInput {
             canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest {
                 exact_model: "logical.model".to_owned(),
+                web_search: false,
                 trace_id: None,
                 execution_mode: Default::default(),
                 messages: vec![AiMessage::new(AiRole::User, vec![AiContent::text("hello")])],
@@ -405,6 +411,12 @@ mod tests {
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
         assert_eq!(descriptor.operations.len(), 7);
+        assert!(contract.unsupported_capabilities.contains(buckyos_api::features::WEB_SEARCH));
+        for codec in &registration.operation_codecs {
+            assert!(codec.descriptor().bindings.iter().all(|binding| !binding
+                .supported_features
+                .contains(buckyos_api::features::WEB_SEARCH)));
+        }
         let request = registration.operation_codecs[0]
             .encode(&CodecCall {
                 api_type: ApiType::Llm,

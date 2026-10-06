@@ -3027,6 +3027,8 @@ pub struct RouteResolveResponse {
 #[serde(deny_unknown_fields)]
 pub struct LlmChatInvokeRequest {
     pub exact_model: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub web_search: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(default)]
@@ -3175,6 +3177,7 @@ impl LlmChatInvokeRequest {
     pub fn new(exact_model: impl Into<String>, messages: Vec<AiMessage>) -> Self {
         Self {
             exact_model: exact_model.into(),
+            web_search: false,
             trace_id: None,
             execution_mode: AiccExecutionMode::Immediate,
             messages,

@@ -279,6 +279,7 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
         features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
         features::PLAN.to_string(),
+        features::WEB_SEARCH.to_string(),
     ]);
     OperationDescriptor {
         operation_id: CLAUDE_MESSAGES_OPERATION_ID.to_string(),
@@ -811,6 +812,19 @@ fn apply_resolved_parameters(
     ];
     for (name, value) in parameters {
         if matches!(name.as_str(), "provider_model_id" | "stream") {
+            continue;
+        }
+        if name == "web_search" {
+            let enabled = value.as_bool().ok_or_else(|| {
+                ProtocolError::invalid_request("resolved Claude web_search must be a boolean")
+            })?;
+            if enabled {
+                body.entry("tools")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or_else(|| ProtocolError::invalid_request("Claude tools must be an array"))?
+                    .push(json!({"type": "web_search_20250305", "name": "web_search"}));
+            }
             continue;
         }
         if !ALLOWED.contains(&name.as_str()) {
@@ -1903,6 +1917,51 @@ mod tests {
             "sig"
         );
         assert_eq!(output.value["message"]["content"][3]["provider"], "claude");
+    }
+
+    #[test]
+    fn web_search_requests_and_results_remain_provider_state() {
+        let search = json!({
+            "type": "server_tool_use", "id": "srvtoolu-search", "name": "web_search",
+            "input": {"query": "巴克云 BuckyOS"}
+        });
+        for result in [
+            json!([{"type": "web_search_result", "url": "https://buckyos.org", "title": "BuckyOS", "encrypted_content": "opaque"}]),
+            json!({"type": "web_search_tool_result_error", "error_code": "unavailable"}),
+        ] {
+            let search_result = json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu-search", "content": result});
+            let output = normalize_message(&json!({
+                "type": "message", "role": "assistant", "content": [search, search_result, {"type": "text", "text": "搜索结果"}],
+                "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 8}
+            }))
+            .unwrap();
+            assert_eq!(output.value["message"]["content"][0]["type"], "provider_state");
+            assert_eq!(output.value["message"]["content"][0]["value"], search);
+            assert_eq!(output.value["message"]["content"][1]["value"], search_result);
+            assert_eq!(output.value["message"]["content"][2]["text"], "搜索结果");
+            assert!(output.value["tool_calls"].as_array().unwrap().is_empty());
+            let mut state = ClaudeStreamState::default();
+            let mut final_output = None;
+            for event in [
+                json!({"type": "message_start", "message": {"type": "message", "role": "assistant", "usage": {"input_tokens": 5, "output_tokens": 0}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srvtoolu-search", "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": search["input"].to_string()}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1, "content_block": search_result}),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": "搜索结果"}}),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 8}}),
+                json!({"type": "message_stop"}),
+            ] {
+                for decoded in decode_stream_event(None, &event.to_string(), &mut state).unwrap() {
+                    if let ProtocolEvent::Final(output) = decoded {
+                        final_output = Some(output);
+                    }
+                }
+            }
+            assert_eq!(final_output.unwrap().value, output.value);
+        }
     }
 
     #[tokio::test]

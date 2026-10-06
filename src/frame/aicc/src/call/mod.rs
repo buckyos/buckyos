@@ -2027,6 +2027,13 @@ mod tests {
                 "interactions.create",
                 "google_search",
             ),
+            (
+                "claude",
+                "claude-messages",
+                "claude-sonnet-5",
+                "messages.create",
+                "web_search_20250305",
+            ),
         ] {
             for (supported, disabled) in [(true, false), (true, true), (false, false)] {
                 for stream in [false, true] {
@@ -2038,10 +2045,10 @@ mod tests {
                     route.selected.provider_instance_name = "primary".into();
                     route.selected.provider_profile_id = profile.into();
                     route.selected.protocol_adapter_id = adapter.into();
-                    route.selected.model_driver_id = if profile == "gemini" {
-                        "gemini"
-                    } else {
-                        "openai"
+                    route.selected.model_driver_id = match profile {
+                        "gemini" => "gemini",
+                        "claude" => "claude",
+                        _ => "openai",
                     }
                     .into();
                     route.selected.origin_model_id = model.trim_start_matches("openai/").into();
@@ -2061,6 +2068,8 @@ mod tests {
                         exact,
                         vec![AiMessage::text(AiRole::User, "San Jose今天的天气如何？")],
                     );
+                    request.max_output_tokens = Some(128);
+                    request.web_search = supported && !disabled;
                     request.execution_mode = if stream {
                         AiccExecutionMode::Stream
                     } else {
@@ -2079,6 +2088,13 @@ mod tests {
                         target.credential =
                             crate::protocol::gemini_api_key("secret://gemini", "test-secret")
                                 .unwrap();
+                    } else if profile == "claude" {
+                        target.credential = crate::protocol::ResolvedCredential::named_header(
+                            "secret://claude",
+                            "x-api-key",
+                            "test-secret",
+                        )
+                        .unwrap();
                     }
                     let lowered = resolver
                         .lower(&route, &AiccCall::ChatCompletionsCreate(request), target)
@@ -2096,7 +2112,9 @@ mod tests {
                         panic!("expected JSON")
                     };
                     let tools = body["tools"].as_array().unwrap();
-                    assert_eq!(tools[0]["type"], "function", "{adapter}");
+                    if profile != "claude" {
+                        assert_eq!(tools[0]["type"], "function", "{adapter}");
+                    }
                     assert_eq!(tools[0]["name"], "shell", "{adapter}");
                     assert_eq!(
                         tools.len(),

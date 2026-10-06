@@ -383,7 +383,8 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
             && !matches!(
                 request.model.as_str(),
                 "llm.chat" | "llm.plan" | "llm.vision"
-            );
+            )
+            && !(request.model.contains('@') && request.requirements.web_search);
         let request = &request;
         validate_request(request)?;
         if request.model.contains('@') {
@@ -2507,7 +2508,7 @@ mod tests {
                     "llm.gpt-5-4:medium",
                     "gpt-5.4:reasoning-medium@openai",
                 ] {
-                    let request = RoutingRequest::new(
+                    let mut request = RoutingRequest::new(
                         "trace-search",
                         "request-search",
                         model,
@@ -2531,6 +2532,19 @@ mod tests {
                             .any(|feature| feature == "web_search"),
                         "{model}"
                     );
+                    request.requirements.web_search = true;
+                    let explicit = router.route(&request);
+                    assert_eq!(explicit.is_ok(), model.contains('@'), "{model}");
+                    if let Ok(route) = explicit {
+                        assert!(route.selected.enabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"));
+                        assert!(!route.trace.disabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"));
+                    }
+                    request.disable.web_search = true;
+                    assert!(router.route(&request).is_err(), "{model}");
                 }
             }
         }
