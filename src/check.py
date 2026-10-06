@@ -201,7 +201,7 @@ def collect_processes() -> list[ProcessInfo]:
             processes.append(ProcessInfo(pid=pid, command=raw_name, args=raw_command_line or raw_name))
         return processes
 
-    result = run_command(["ps", "-axo", "pid=,comm=,args="])
+    result = run_command(["ps", "-axo", "pid=,stat=,comm=,args="])
     if result is None or result.returncode != 0:
         return []
 
@@ -210,15 +210,15 @@ def collect_processes() -> list[ProcessInfo]:
         line = raw_line.strip()
         if not line:
             continue
-        parts = line.split(None, 2)
-        if len(parts) < 2:
+        parts = line.split(None, 3)
+        if len(parts) < 3 or parts[1].startswith("Z"):
             continue
         try:
             pid = int(parts[0])
         except ValueError:
             continue
-        command = parts[1]
-        args = parts[2] if len(parts) > 2 else command
+        command = parts[2]
+        args = parts[3] if len(parts) > 3 else command
         processes.append(ProcessInfo(pid=pid, command=command, args=args))
     return processes
 
@@ -228,11 +228,7 @@ def process_matches(proc: ProcessInfo, aliases: Iterable[str]) -> bool:
     base_command = normalize_name(Path(proc.command).name)
     args0 = normalize_name(Path(proc.args.split()[0]).name) if proc.args.strip() else base_command
 
-    if base_command in normalized_aliases or args0 in normalized_aliases:
-        return True
-
-    haystack = normalize_name(proc.args)
-    return any(alias in haystack for alias in normalized_aliases)
+    return base_command in normalized_aliases or args0 in normalized_aliases
 
 
 def find_processes(processes: list[ProcessInfo], aliases: Iterable[str]) -> list[ProcessInfo]:

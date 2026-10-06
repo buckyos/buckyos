@@ -478,13 +478,16 @@ mod test {
                 .expect("install settings should be preserved"),
         )
         .expect("install settings should use the pre-install seed schema");
-        assert_eq!(install_settings.pre_install_apps.len(), 2);
+        assert_eq!(install_settings.pre_install_apps.len(), 3);
         assert!(install_settings
             .pre_install_apps
             .contains_key("jarvis.buckyos.bns.did"));
         assert!(install_settings
             .pre_install_apps
             .contains_key("buckyos-systest.buckyos.bns.did"));
+        assert!(install_settings
+            .pre_install_apps
+            .contains_key("text-editor.buckyos.bns.did"));
         let registry: AppRegistry = serde_json::from_str(
             init_map
                 .get(APP_REGISTRY_KEY)
@@ -530,6 +533,11 @@ mod test {
         println!("this_snapshot: {}", this_snapshot);
 
         assert!(!schedule_plan.tx_actions.is_empty());
+        assert!(!schedule_plan.tx_actions.contains_key("system/content_registry"));
+        let running_plan = build_schedule_plan(&init_map, false)
+            .await
+            .expect("normal schedule should succeed");
+        assert!(running_plan.tx_actions.contains_key("system/content_registry"));
         assert_eq!(schedule_plan.schedule_snapshot.nodes.len(), 1);
         assert!(schedule_plan
             .schedule_snapshot

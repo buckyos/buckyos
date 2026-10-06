@@ -2073,7 +2073,11 @@ pub(crate) async fn build_schedule_plan(
     info!("scheduler.schedule produced {} actions", action_list.len());
 
     let mut tx_actions = HashMap::new();
-    if let Some((key, action)) = content_registry_action(input_system_config) { tx_actions.insert(key, action); }
+    if !is_boot {
+        if let Some((key, action)) = content_registry_action(input_system_config) {
+            tx_actions.insert(key, action);
+        }
+    }
     let mut need_update_gateway_node_list: HashSet<String> = HashSet::new();
     let mut need_update_rbac = false;
     for action in action_list {

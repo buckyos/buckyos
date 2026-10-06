@@ -1183,6 +1183,7 @@ g, app:gallery, app
         assert!(!rbac::enforce("alice", "app:editor", defaults, "write", None).await);
         assert!(!rbac::enforce("alice", "system:control-panel", "obj://config/users/bob/content_defaults", "write", None).await);
         assert!(rbac::enforce("ood1", "system:scheduler", registry, "write", None).await);
+        assert!(!rbac::enforce("kernel", "system:node-daemon", registry, "write", None).await);
         assert!(!rbac::enforce("ood1", "system:control-panel", registry, "write", None).await);
     }
 
