@@ -70,7 +70,7 @@ export function RoutingPage() {
     { refreshInterval: 30000, keepPreviousData: true },
   )
   const [query, setQuery] = useState('')
-  const [filter, setFilter] = useState<ListFilter>('available')
+  const [filter, setFilter] = useState<ListFilter>('task')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
@@ -233,10 +233,10 @@ function DirectoryList({
     return [...map.entries()].sort(([left], [right]) => (left === 'llm' ? -1 : right === 'llm' ? 1 : left.localeCompare(right)))
   }, [directories])
   const filters: [ListFilter, string][] = [
-    ['all', t('aiCenter.routing.filter.all', 'All')],
+    ['task', t('aiCenter.routing.filter.task', 'Use cases')],
     ['available', t('aiCenter.routing.filter.available', 'Available')],
     ['spec', t('aiCenter.routing.filter.spec', 'Specifications')],
-    ['task', t('aiCenter.routing.filter.task', 'Use cases')],
+    ['all', t('aiCenter.routing.filter.all', 'All')],
   ]
 
   return (
