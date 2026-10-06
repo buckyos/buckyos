@@ -175,8 +175,11 @@ async function readUrlArtifact(
     };
   }
   if (aiccResponse.status !== 404) {
+    const detail = (await aiccResponse.text()).trim().slice(0, 4096);
     throw new Error(
-      `AICC failed to open Provider artifact: ${aiccResponse.status} ${aiccResponse.statusText}`,
+      `AICC failed to open Provider artifact: ${aiccResponse.status} ${aiccResponse.statusText}${
+        detail ? `: ${detail}` : ""
+      }`,
     );
   }
   const publicResponse = await fetch(url);

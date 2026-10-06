@@ -8,6 +8,7 @@ import {
   type GatewaySession,
   loginGateway,
   loginSudoSystemConfig,
+  openAiccArtifact,
   type RpcClient,
 } from "./gateway.ts";
 import {
@@ -1156,6 +1157,22 @@ function firstReusableArtifact(value: unknown): Record<string, unknown> {
   return source;
 }
 
+async function downloadUrlArtifacts(
+  value: unknown,
+  gatewayUrl: string,
+  sessionToken: string,
+): Promise<number> {
+  const urls = [...new Set(artifactSources(value)
+    .map((source) => source.url)
+    .filter((url): url is string => typeof url === "string"))];
+  for (const url of urls) {
+    const response = await openAiccArtifact({ gatewayUrl, sessionToken, url });
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.length === 0) throw new Error(`artifact URL returned an empty body: ${url}`);
+  }
+  return urls.length;
+}
+
 function containsString(value: unknown, needle: string): boolean {
   if (typeof value === "string") return value.includes(needle);
   if (Array.isArray(value)) {
@@ -1231,6 +1248,7 @@ async function executeCase(
   catalog: ProviderProtocolCatalog,
   testCase: AcceptanceCase,
   inventory: ProviderInventory,
+  gatewayUrl: string,
   controlUrl: string,
   runId: string,
   timeoutMs: number,
@@ -1330,6 +1348,7 @@ async function executeCase(
               }`,
             );
           }
+          await downloadUrlArtifacts(resultPayload, gatewayUrl, session.sessionToken);
         }
       }
     }
@@ -2235,6 +2254,7 @@ async function main(): Promise<void> {
                 catalog,
                 testCase,
                 effectiveInventory,
+                input.gatewayUrl,
                 input.mockControlUrl,
                 runId,
                 input.timeoutMs,
@@ -2294,6 +2314,7 @@ async function main(): Promise<void> {
                   catalog,
                   recoveryCase,
                   inventory,
+                  input.gatewayUrl,
                   input.mockControlUrl,
                   `${runId}:health-recovery`,
                   input.timeoutMs,
@@ -2479,6 +2500,7 @@ async function main(): Promise<void> {
               catalog,
               testCase,
               inventory,
+              input.gatewayUrl,
               input.mockControlUrl,
               runId,
               input.timeoutMs,

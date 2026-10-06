@@ -10,6 +10,7 @@ use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE};
 use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -422,27 +423,33 @@ pub(crate) trait ArtifactDownloadProtocol: Send + Sync {
             .map_err(|_| ProtocolError::invalid_request("artifact URL is invalid"))?;
         let base = reqwest::Url::parse(&context.base_url)
             .map_err(|_| ProtocolError::invalid_configuration("codec base URL is invalid"))?;
+        let same_origin = target.scheme() == base.scheme()
+            && target.host_str() == base.host_str()
+            && target.port_or_known_default() == base.port_or_known_default();
+        let local_mock = base.scheme() == "http"
+            && target.scheme() == "http"
+            && target.host_str() == base.host_str();
         if !matches!(target.scheme(), "http" | "https")
             || !target.username().is_empty()
             || target.password().is_some()
             || target.fragment().is_some()
-            || target.scheme() != base.scheme()
-            || target.host_str() != base.host_str()
-            || target.port_or_known_default() != base.port_or_known_default()
+            || (!same_origin && !local_mock && !is_public_https_url(&target))
         {
             return Err(ProtocolError::invalid_request(
-                "artifact URL is outside the Provider origin",
+                "artifact URL is not a permitted Provider artifact URL",
             ));
         }
         let mut request = HttpRequest::new(Method::GET, target.to_string());
         context.validate()?;
-        let credential = context.credential.as_ref().ok_or_else(|| {
-            ProtocolError::new(
-                ProtocolErrorKind::Authentication,
-                "artifact download credential is missing",
-            )
-        })?;
-        credential.apply(&mut request.headers)?;
+        if same_origin {
+            let credential = context.credential.as_ref().ok_or_else(|| {
+                ProtocolError::new(
+                    ProtocolErrorKind::Authentication,
+                    "artifact download credential is missing",
+                )
+            })?;
+            credential.apply(&mut request.headers)?;
+        }
         request.timeout = Some(context.limits.request_timeout);
         request.max_request_bytes = Some(context.limits.max_request_bytes);
         request.max_response_bytes = Some(context.limits.max_response_bytes);
@@ -476,6 +483,40 @@ pub(crate) trait ArtifactDownloadProtocol: Send + Sync {
             content_length,
             body: response.body,
         })
+    }
+}
+
+fn is_public_https_url(url: &reqwest::Url) -> bool {
+    if url.scheme() != "https" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
+        return false;
+    }
+    host.parse::<IpAddr>().map_or(true, ip_is_public)
+}
+
+fn ip_is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.is_multicast())
+        }
+        IpAddr::V6(ip) => {
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_multicast()
+                || ip.is_unique_local()
+                || ip.is_unicast_link_local())
+        }
     }
 }
 
@@ -2269,25 +2310,46 @@ mod tests {
     }
 
     #[test]
-    fn default_artifact_download_is_same_origin_and_applies_provider_credential() {
-        let mut context = context("https://generativelanguage.googleapis.com/v1beta", "unused");
-        context.credential = Some(
+    fn default_artifact_download_uses_returned_url_and_scopes_provider_credential() {
+        let mut provider_context =
+            context("https://generativelanguage.googleapis.com/v1beta", "unused");
+        provider_context.credential = Some(
             ResolvedCredential::named_header("test", "x-goog-api-key", "gemini-secret").unwrap(),
         );
         let request = DefaultArtifactDownloadProtocol
             .encode_download(
                 "https://generativelanguage.googleapis.com/v1beta/files/file-1:download?alt=media",
-                &context,
+                &provider_context,
             )
             .unwrap();
         assert_eq!(request.method, Method::GET);
         assert_eq!(request.headers["x-goog-api-key"], "gemini-secret");
         assert_eq!(
             request.max_response_bytes,
-            Some(context.limits.max_response_bytes)
+            Some(provider_context.limits.max_response_bytes)
         );
+
+        let signed_url =
+            "https://cdn.example/artifacts/video.mp4?signature=opaque&expires=1770000000";
+        let request = DefaultArtifactDownloadProtocol
+            .encode_download(signed_url, &provider_context)
+            .unwrap();
+        assert_eq!(request.url, signed_url);
+        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(request.headers.get("x-goog-api-key").is_none());
+
+        let mut mock_context = context("http://127.0.0.1:18081/v1", "mock-secret");
+        mock_context.credential = Some(ResolvedCredential::bearer("test", "mock-secret").unwrap());
+        let request = DefaultArtifactDownloadProtocol
+            .encode_download("http://127.0.0.1:18082/artifacts/result.png", &mock_context)
+            .unwrap();
+        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
+
         assert!(DefaultArtifactDownloadProtocol
-            .encode_download("https://example.com/private", &context)
+            .encode_download("http://cdn.example/private", &provider_context)
+            .is_err());
+        assert!(DefaultArtifactDownloadProtocol
+            .encode_download("https://127.0.0.1/private", &provider_context)
             .is_err());
     }
 
@@ -2330,6 +2392,25 @@ mod tests {
             )
             .unwrap();
         assert_eq!(request.headers["x-artifact-protocol"], "custom");
+    }
+
+    #[test]
+    fn builtin_doubao_responses_uses_generic_artifact_download_protocol() {
+        let mut registry = CodecRegistry::default();
+        super::super::register_builtin_adapter_plugins(&mut registry).unwrap();
+        assert!(registry
+            .artifact_download_protocol(
+                super::super::derived_responses::DOUBAO_RESPONSES_ADAPTER_ID,
+            )
+            .unwrap()
+            .is_none());
+        let request = DefaultArtifactDownloadProtocol
+            .encode_download(
+                "https://ark-content-generation-v2-cn-beijing.tos-cn-beijing.volces.com/generated/image.jpeg?X-Tos-Signature=opaque",
+                &context("https://ark.cn-beijing.volces.com/api/v3", "provider-secret"),
+            )
+            .unwrap();
+        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
     }
 
     #[test]

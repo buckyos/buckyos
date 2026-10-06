@@ -253,18 +253,41 @@ impl RuntimeProviderExecutionPort {
                 "artifact ProviderInstance Adapter has changed",
             ));
         }
+        let artifact_origin = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|parsed| {
+                let host = parsed.host_str()?;
+                Some(match parsed.port() {
+                    Some(port) => format!("{}://{}:{}", parsed.scheme(), host, port),
+                    None => format!("{}://{}", parsed.scheme(), host),
+                })
+            })
+            .unwrap_or_else(|| "<invalid>".to_owned());
         let mut reader = provider
             .open_artifact_url_reader(self.codecs.as_ref(), url)
             .await
-            .map_err(|error| AiccError {
-                code: AiccErrorCode::ProviderError,
-                message: error.message,
-                provider_code: error.provider_code,
-                retriable: matches!(
+            .map_err(|error| {
+                log::warn!(
+                    "open Provider artifact failed: provider={} adapter={} artifact_origin={} error_kind={:?} http_status={:?} provider_code={:?} request_id={:?} message={}",
+                    source.provider_instance_name,
+                    source.protocol_adapter_id,
+                    artifact_origin,
                     error.kind,
-                    ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
-                ),
-                details: None,
+                    error.http_status,
+                    error.provider_code,
+                    error.request_id,
+                    error.message
+                );
+                AiccError {
+                    code: AiccErrorCode::ProviderError,
+                    message: error.message,
+                    provider_code: error.provider_code,
+                    retriable: matches!(
+                        error.kind,
+                        ProtocolErrorKind::Timeout | ProtocolErrorKind::Transport
+                    ),
+                    details: None,
+                }
             })?;
         if source.content_digest.is_none() {
             let storage = self.storage.clone();

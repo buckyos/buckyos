@@ -553,7 +553,7 @@
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/esrgan/requests/{request_id}/cancel" }
           ],
           "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
-          "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 1024, "height": 1024 } },
+          "async_result_fixture": { "image": { "url": "http://mock-artifact/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 1024, "height": 1024 } },
           "official_sources": ["https://fal.ai/models/fal-ai/esrgan/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "ESRGAN queue submit requires image_url at /fal-ai/esrgan and returns an image result after queue completion."
         },
@@ -578,7 +578,7 @@
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/imageutils/rembg/requests/{request_id}/cancel" }
           ],
           "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
-          "async_result_fixture": { "image": { "url": "http://mock/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 512, "height": 512 } },
+          "async_result_fixture": { "image": { "url": "http://mock-artifact/artifacts/result.png", "content_type": "image/png", "file_name": "result.png", "file_size": 1024, "width": 512, "height": 512 } },
           "official_sources": ["https://fal.ai/docs/model-api-reference/image-generation-api/imageutils", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "Imageutils rembg queue submit requires image_url at /fal-ai/imageutils/rembg and returns an image result after queue completion."
         },
@@ -603,7 +603,7 @@
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/deepfilternet3/requests/{request_id}/cancel" }
           ],
           "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
-          "async_result_fixture": { "audio_file": { "url": "http://mock/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "preprocess": 0.01, "inference": 0.01, "postprocess": 0.01 } },
+          "async_result_fixture": { "audio_file": { "url": "http://mock-artifact/artifacts/result.wav", "content_type": "audio/wav", "file_name": "result.wav", "file_size": 2048 }, "timings": { "preprocess": 0.01, "inference": 0.01, "postprocess": 0.01 } },
           "official_sources": ["https://fal.ai/models/fal-ai/deepfilternet3/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "DeepFilterNet 3 queue submit requires audio_url at /fal-ai/deepfilternet3 and returns audio_file plus timings after completion."
         },
@@ -628,7 +628,7 @@
             { "name": "cancel", "http_method": "PUT", "path": "/fal-ai/video-upscaler/requests/{request_id}/cancel" }
           ],
           "success_fixture": { "request_id": "fal_mock_1", "response_url": "http://mock/{endpoint}/requests/fal_mock_1/response", "status_url": "http://mock/{endpoint}/requests/fal_mock_1/status", "cancel_url": "http://mock/{endpoint}/requests/fal_mock_1/cancel", "queue_position": 0 },
-          "async_result_fixture": { "video": { "url": "http://mock/artifacts/result.mp4", "content_type": "video/mp4", "file_name": "result.mp4", "file_size": 4096 } },
+          "async_result_fixture": { "video": { "url": "http://mock-artifact/artifacts/result.mp4", "content_type": "video/mp4", "file_name": "result.mp4", "file_size": 4096 } },
           "official_sources": ["https://fal.ai/models/fal-ai/video-upscaler/api", "https://fal.ai/docs/documentation/model-apis/inference/queue"],
           "evidence_summary": "Video Upscaler queue submit requires video_url at /fal-ai/video-upscaler, accepts scale, and returns a video result after completion."
         }
@@ -757,7 +757,7 @@
           "required_body_fields_by_api_type": { "image.img2img": ["subject_reference"] },
           "allowed_body_fields": ["model", "prompt", "aspect_ratio", "height", "width", "response_format", "n", "prompt_optimizer", "subject_reference"],
           "body_field_types": { "model": ["string"], "prompt": ["string"], "subject_reference": ["array"] },
-          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock-artifact/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i", "https://platform.minimax.io/docs/api-reference/image-generation-i2i"],
           "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
         },
@@ -781,7 +781,7 @@
             { "name": "cancel", "http_method": "DELETE", "path": "/v2/video_generation/minimax_video_mock_1" }
           ],
           "success_fixture": { "task_id": "minimax_video_mock_1" },
-          "async_result_fixture": { "task": { "id": "minimax_video_mock_1", "model": "MiniMax-H3", "status": "succeeded", "content": { "url": "http://mock/artifacts/result.mp4" }, "resolution": "768P", "duration": 5, "ratio": "16:9", "usage": { "total_seconds": 5, "input_seconds": 0, "output_seconds": 5, "input_image_count": 0 }, "task_type": "generation", "modality": "video" } },
+          "async_result_fixture": { "task": { "id": "minimax_video_mock_1", "model": "MiniMax-H3", "status": "succeeded", "content": { "url": "http://mock-artifact/artifacts/result.mp4" }, "resolution": "768P", "duration": 5, "ratio": "16:9", "usage": { "total_seconds": 5, "input_seconds": 0, "output_seconds": 5, "input_image_count": 0 }, "task_type": "generation", "modality": "video" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/video-generation-v2-create", "https://platform.minimax.io/docs/api-reference/video-generation-v2-query", "https://platform.minimax.io/docs/api-reference/video-generation-v2-delete"],
           "evidence_summary": "MiniMax H3 video generation submits V2 multimodal content, queries the task by path ID, and supports queued-task cancellation with DELETE."
         },
@@ -1524,7 +1524,7 @@
         "required_body_fields": ["model", "prompt"],
         "allowed_body_fields": ["model", "prompt", "n", "quality", "size", "style", "response_format", "user"],
         "body_field_types": { "model": ["string"], "prompt": ["string"] },
-        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/glm.png" }], "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 } },
+        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock-artifact/artifacts/glm.png" }], "usage": { "input_tokens": 2, "output_tokens": 1, "total_tokens": 3 } },
         "official_sources": ["https://docs.z.ai/api-reference/image-generation/generate-image"],
         "evidence_summary": "GLM image generation uses the v4 images/generations endpoint with an OpenAI-compatible JSON envelope."
       }, {
@@ -1581,7 +1581,7 @@
           "task_status": "SUCCESS",
           "video_result": [
             {
-              "url": "http://mock/artifacts/result.mp4"
+              "url": "http://mock-artifact/artifacts/result.mp4"
             }
           ],
           "request_id": "glm_request_mock_1"
@@ -1734,7 +1734,7 @@
         "required_body_fields": ["model", "prompt", "response_format"],
         "allowed_body_fields": ["model", "prompt", "image", "response_format", "size", "seed", "sequential_image_generation", "sequential_image_generation_options"],
         "body_field_types": { "model": ["string"], "prompt": ["string"], "image": ["array"], "response_format": ["string"], "size": ["string"], "seed": ["number"] },
-        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock/artifacts/doubao.jpeg" }], "usage": { "generated_images": 1 } },
+        "success_fixture": { "created": 1770000000, "data": [{ "url": "http://mock-artifact/artifacts/doubao.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature" }], "usage": { "generated_images": 1 } },
         "official_sources": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"],
         "evidence_summary": "Agent Plan Seedream image generation uses POST /api/plan/v3/images/generations for text-to-image and image-to-image."
       }, {
@@ -1770,7 +1770,7 @@
           "id": "doubao_video_mock_1",
           "status": "succeeded",
           "content": {
-            "video_url": "http://mock/artifacts/doubao.mp4"
+            "video_url": "http://mock-artifact/artifacts/doubao.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature"
           },
           "usage": {
             "completion_tokens": 100,
@@ -2156,7 +2156,7 @@
           {"name": "cancel", "http_method": "DELETE", "path": "/api/v3/contents/generations/tasks/doubao_video_v3_mock_1"}
         ],
         "success_fixture": {"id": "doubao_video_v3_mock_1", "status": "queued"},
-        "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": "http://mock/artifacts/doubao-v3.mp4"}},
+        "async_result_fixture": {"id": "doubao_video_v3_mock_1", "status": "succeeded", "content": {"video_url": "http://mock-artifact/artifacts/doubao-v3.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature"}},
         "official_sources": ["https://docs.volcengine.com/docs/ark/get-video-generation-task-api?lang=zh", "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh", "https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
         "evidence_summary": "Standard Seedance uses /api/v3 asynchronous content-generation tasks and returns the result URL as content.video_url; Seedance 2.5 uses omni_reference_task_type for edit and extend validation."
       }, {
@@ -2190,7 +2190,7 @@
         "required_body_fields": ["model", "prompt", "response_format"],
         "allowed_body_fields": ["model", "prompt", "image", "response_format", "size", "seed", "sequential_image_generation", "sequential_image_generation_options"],
         "body_field_types": {"model": ["string"], "prompt": ["string"], "image": ["array"], "response_format": ["string"], "size": ["string"], "seed": ["number"]},
-        "success_fixture": {"created": 1780000000, "data": [{"url": "http://mock/artifacts/doubao-standard.jpeg"}], "usage": {"generated_images": 1}},
+        "success_fixture": {"created": 1780000000, "data": [{"url": "http://mock-artifact/artifacts/doubao-standard.jpeg?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature"}], "usage": {"generated_images": 1}},
         "official_sources": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
         "evidence_summary": "Standard Seedream image generation uses POST /api/v3/images/generations for text-to-image and image-to-image."
       }]
@@ -2341,7 +2341,7 @@
               "task_status": "SUCCEEDED",
               "results": [
                 {
-                  "url": "http://mock/artifacts/result.png"
+                  "url": "http://mock-artifact/artifacts/result.png"
                 },
                 {
                   "code": "DataInspectionFailed",
@@ -2403,7 +2403,7 @@
                     "role": "assistant",
                     "content": [
                       {
-                        "image": "http://mock/artifacts/result.png"
+                        "image": "http://mock-artifact/artifacts/result.png"
                       }
                     ]
                   }
@@ -2483,7 +2483,7 @@
             "output": {
               "task_id": "qwen_task_mock_1",
               "task_status": "SUCCEEDED",
-              "video_url": "http://mock/artifacts/result.mp4"
+              "video_url": "http://mock-artifact/artifacts/result.mp4"
             },
             "usage": {
               "video_count": 1,
