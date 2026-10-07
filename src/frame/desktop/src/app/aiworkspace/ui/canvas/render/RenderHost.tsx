@@ -10,7 +10,12 @@
  * (mounted / hidden / unmounted) and never culls selected, editing or hovered Blocks; pointermove
  * is coalesced per animation frame and moves DOM transforms, never state or the network; a gesture
  * ends in exactly one commit (or none, on Esc). Hit testing is geometric through the spatial index.
- * Touch has its own gestures (touch.ts, UI improvement §16): pan, pinch, taps, long press. */
+ * Touch has its own gestures (touch.ts, UI improvement §16): pan, pinch, taps, long press.
+ *
+ * Stacking: painting and hit testing follow one order, the BlockTree pre-order (`Laid.paint`: a parent
+ * before its children, siblings by `order_key`), and the Block being edited above all. The order is a
+ * z-index; the frames keep a stable DOM order (by id) so that culling or a reorder never moves a frame,
+ * which would reload an embedded document or drop an editor's focus. */
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react'
 import type { Placement } from '../../../api/types'
@@ -166,6 +171,8 @@ export function RenderHost(props: RenderHostProps) {
     setInputsSeen({ laid, index, pinned })
     setMounts((prev) => computeMounts(prev, camera, laid, index, pinned))
   }
+  // frames in a stable DOM order (by id): mounting, culling or a reorder inserts and removes, never moves
+  const frameOrder = useMemo(() => [...mounts.keys()].sort(), [mounts])
 
   // ---- stats for the render probe (dev override only)
   useEffect(() => {
@@ -204,6 +211,12 @@ export function RenderHost(props: RenderHostProps) {
   const insideEditor = (target: EventTarget | null) => {
     const el = target as HTMLElement | null
     return Boolean(el?.closest?.('[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu, button'))
+  }
+  /** The top-most Block at a world point, as painted: the Block being edited first, then the paint order. */
+  const hitAt = (x: number, y: number) => {
+    const top = editing ? index.get(editing) : undefined
+    if (top && x >= top.rect.x && x <= top.rect.x + top.rect.w && y >= top.rect.y && y <= top.rect.y + top.rect.h) return top
+    return index.hit(x, y)
   }
 
   const flushMoveRef = useRef<(() => void) | null>(null)
@@ -292,7 +305,7 @@ export function RenderHost(props: RenderHostProps) {
       return
     }
     const hand = props.tool === 'hand'
-    const hit = policy.select && !hand ? index.hit(w.x, w.y) : null
+    const hit = policy.select && !hand ? hitAt(w.x, w.y) : null
     const pan = event.button === 1 || event.button === 2 || spaceHeld.current || hand || (!policy.select && event.button === 0) || (mode === 'view' && !hit && event.button === 0)
     if (event.button === 2 && !spaceHeld.current) return // context menu
     rootRef.current?.setPointerCapture(event.pointerId)
@@ -335,7 +348,7 @@ export function RenderHost(props: RenderHostProps) {
       if (!policy.select || props.tool === 'hand') return
       const p = screenPoint(event)
       const w = camera.toWorld(p.x, p.y)
-      const hit = insideEditor(event.target) ? null : index.hit(w.x, w.y)
+      const hit = insideEditor(event.target) ? null : hitAt(w.x, w.y)
       const id = hit?.id ?? null
       if (id !== hover) setHover(id)
       return
@@ -436,7 +449,7 @@ export function RenderHost(props: RenderHostProps) {
   /** The context menu of the Block at `p` (selecting it first) or of the blank spot. */
   const openMenuAt = (p: Point) => {
     const w = camera.toWorld(p.x, p.y)
-    const hit = policy.select ? index.hit(w.x, w.y) : null
+    const hit = policy.select ? hitAt(w.x, w.y) : null
     if (hit && !selection.has(hit.id)) props.onSelectionChange(new Set([hit.id]))
     props.onContextMenu({ screenX: p.x, screenY: p.y, worldX: w.x, worldY: w.y }, hit?.id ?? null)
   }
@@ -455,7 +468,7 @@ export function RenderHost(props: RenderHostProps) {
     const w = camera.toWorld(p.x, p.y)
     if (props.placing && !spaceHeld.current) { event.preventDefault(); props.onPlace?.(w); return null }
     const tappable = Boolean(target?.closest(TAPPABLE))
-    const hit = policy.select && props.tool !== 'hand' ? index.hit(w.x, w.y) : null
+    const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     // edit mode: a drag that starts on a Block moves it, as with the mouse
     if (hit && !tappable && policy.layout && canLayout) { beginPointer(event); return { kind: 'delegate' } }
     // the selected Block's own scrollable content scrolls under the finger
@@ -465,14 +478,14 @@ export function RenderHost(props: RenderHostProps) {
   const tapAt = (p: Point, target: Element | null) => {
     if (props.tool === 'hand' || (target?.closest(TAPPABLE) && target.closest('.aiws-frame-block'))) return // a control in a Block took the tap
     const w = camera.toWorld(p.x, p.y)
-    const hit = policy.select ? index.hit(w.x, w.y) : null
+    const hit = policy.select ? hitAt(w.x, w.y) : null
     if (editing && editing !== hit?.id) endEditing()
     if (hit) props.onSelectionChange(new Set([hit.id]))
     else if (selection.size > 0) props.onSelectionChange(new Set())
   }
   const doubleTapAt = (p: Point) => {
     const w = camera.toWorld(p.x, p.y)
-    const hit = policy.select && props.tool !== 'hand' ? index.hit(w.x, w.y) : null
+    const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     const l = hit ? laid.get(hit.id) : undefined
     if (hit && l && !l.isGroup && policy.editContent) { props.onEditingChange(hit.id); props.onSelectionChange(new Set([hit.id])); return }
     camera.animateTo(l ? camera.fitted(l.rect, 24) : camera.zoomedAt(p.x, p.y, 2))
@@ -523,9 +536,10 @@ export function RenderHost(props: RenderHostProps) {
   useSyncExternalStore(store.outline.subscribe, store.outline.snapshot)
   const zoom = camera.settledZoom
   const frameList: ReactNode[] = []
-  for (const [id, state] of mounts) {
+  for (const id of frameOrder) {
+    const state = mounts.get(id)
     const l = laid.get(id)
-    if (!l) continue
+    if (!l || !state) continue
     const isPinned = pinned.has(id)
     const lod = l.isGroup ? 'full' : lodFor(l.rect, zoom, isPinned)
     frameList.push(
@@ -537,7 +551,7 @@ export function RenderHost(props: RenderHostProps) {
         data-testid={`aiws-canvas-block-${id}`}
         data-lod={lod}
         data-mount={state}
-        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, display: state === 'hidden' ? 'none' : undefined, zIndex: l.depth }}
+        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, display: state === 'hidden' ? 'none' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
       >
         {l.isGroup ? (
           <div className="aiws-group-chrome"><span className="aiws-group-title">{l.entity.title ?? l.entity.name ?? '分组'}</span></div>
@@ -586,7 +600,7 @@ export function RenderHost(props: RenderHostProps) {
         if (!policy.editContent || insideEditor(event.target)) return
         const p = screenPoint(event)
         const w = camera.toWorld(p.x, p.y)
-        const hit = index.hit(w.x, w.y)
+        const hit = hitAt(w.x, w.y)
         if (!hit || laid.get(hit.id)?.isGroup) return
         props.onEditingChange(hit.id)
         props.onSelectionChange(new Set([hit.id]))

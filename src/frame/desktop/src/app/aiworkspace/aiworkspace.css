@@ -322,12 +322,12 @@
 .aiws-canvas-main { flex: 1 1 auto; min-width: 0; position: relative; overflow: clip; }
 .aiws-canvas { position: absolute; inset: 0; z-index: 0; isolation: isolate; overflow: clip; background: var(--cp-bg); background-image: radial-gradient(circle, color-mix(in srgb, var(--cp-border) 45%, transparent) 1px, transparent 1px); background-size: 24px 24px; touch-action: none; user-select: none; cursor: default; outline: none; }
 .aiws-canvas-mode-view { cursor: grab; }
-.aiws-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: auto; }
+.aiws-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: auto; isolation: isolate; }
 .aiws-world.is-moving { will-change: transform; }
 .aiws-frame-block { position: absolute; box-sizing: border-box; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
 .aiws-frame-block.is-group { background: color-mix(in srgb, var(--cp-surface-2) 60%, transparent); border-style: dashed; overflow: visible; pointer-events: none; }
 .aiws-frame-block.is-group > .aiws-group-chrome { pointer-events: auto; }
-.aiws-frame-block.is-editing { overflow: visible; z-index: 100 !important; box-shadow: var(--cp-shadow); }
+.aiws-frame-block.is-editing { overflow: visible; box-shadow: var(--cp-shadow); }
 .aiws-frame-block.is-selected { border-color: var(--cp-accent); }
 .aiws-group-chrome { position: absolute; left: 0; top: 0; padding: 2px 8px; font-size: 12px; color: var(--cp-muted); border-bottom-right-radius: 6px; background: var(--cp-surface-2); }
 .aiws-frame-block > .aiws-block-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 8px; user-select: text; }

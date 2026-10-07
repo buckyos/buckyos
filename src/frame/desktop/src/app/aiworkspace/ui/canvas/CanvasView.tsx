@@ -120,7 +120,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const laid = useMemo(() => layoutSurface(store.outline, surfaceId), [store, surfaceId, outlineVersion])
   const index = useMemo(() => {
     const idx = new SpatialIndex()
-    for (const [id, l] of laid) idx.insert({ id, rect: l.rect, order: l.order, depth: l.depth })
+    for (const [id, l] of laid) idx.insert({ id, rect: l.rect, paint: l.paint })
     return idx
   }, [laid])
   const phone = shell.phone

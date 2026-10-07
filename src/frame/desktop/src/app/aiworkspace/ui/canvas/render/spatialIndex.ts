@@ -4,7 +4,7 @@
 
 import { intersects, type Rect } from './camera'
 
-export interface Item { id: string; rect: Rect; /** Stacking order among siblings (sort key, higher on top). */ order: string; depth: number }
+export interface Item { id: string; rect: Rect; /** Stacking rank (BlockTree pre-order, higher on top): the paint order. */ paint: number }
 
 const CELL = 512
 
@@ -69,13 +69,11 @@ export class SpatialIndex {
     return out
   }
 
-  /** The top-most item under a world point (deepest in the tree first, then by stacking order). */
+  /** The top-most item under a world point: the one painted last. */
   hit(x: number, y: number): Item | null {
     const candidates = this.query({ x, y, w: 0.001, h: 0.001 })
     let best: Item | null = null
-    for (const item of candidates) {
-      if (!best || item.depth > best.depth || (item.depth === best.depth && (item.order > best.order || (item.order === best.order && item.id > best.id)))) best = item
-    }
+    for (const item of candidates) if (!best || item.paint > best.paint) best = item
     return best
   }
 

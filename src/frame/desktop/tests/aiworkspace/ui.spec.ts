@@ -536,3 +536,56 @@ test('UI-P15 a workspace in a browser tab of its own: the address names what is 
   await expect.poll(() => pathOf(tab)).toBe(`/workspace/${b.workspace_id}`)
   await tab.close()
 })
+
+test('P0 stacking (connector plan §9.3): painting and hit testing follow the BlockTree order; front / back change both and move no frame', async ({ page, api }) => {
+  const ws = await blankCanvas(api, `stack ${Date.now()}`)
+  const shape = (id: string, parent: string, key: string, placement: { x: number; y: number; w: number; h: number }, fill: string) =>
+    ({ op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: parent, order_key: key, placement, payload: { view: { type: 'shape' }, title: id, config: { shape: 'rect', fill, stroke: '#4f8df7' } } })
+  const r = await api.commit(ALICE, ws, [
+    shape('shp-a', 'sf-p', 'b', { x: 200, y: 200, w: 200, h: 140 }, '#fde68a'),
+    shape('shp-b', 'sf-p', 'c', { x: 300, y: 260, w: 200, h: 140 }, '#bfdbfe'),
+    // a group first in sibling order: its child sits above the group, not above the group's later siblings
+    { op: 'entity.create', entity_id: 'grp-g', type_id: 'buckyos.container', parent_id: 'sf-p', order_key: 'a', placement: { x: 650, y: 150, w: 320, h: 260 }, payload: { kind: 'group', layout: { mode: 'free' }, title: '分组' } },
+    shape('shp-c', 'grp-g', 'a', { x: 20, y: 40, w: 200, h: 140 }, '#bbf7d0'),
+    shape('shp-d', 'sf-p', 'd', { x: 780, y: 260, w: 200, h: 140 }, '#fecaca'),
+  ])
+  expect(r.status, JSON.stringify(r)).toBe('accepted')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await expect(page.getByTestId('aiws-canvas-block-shp-d')).toBeVisible()
+  /** The Block drawn on top at a world point (what the eye sees). */
+  const paintedAt = async (world: { x: number; y: number }) => {
+    const p = await screenOf(page, world)
+    return page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest('[data-block-id]')?.getAttribute('data-block-id') ?? null, p)
+  }
+  /** Click a world point and return what got selected (what the hit test picked). */
+  const selectedBy = async (world: { x: number; y: number }) => {
+    const p = await screenOf(page, world)
+    await page.mouse.click(p.x, p.y)
+    await expect(page.locator('[data-testid^="aiws-selection-"]')).toHaveCount(1)
+    return (await page.locator('[data-testid^="aiws-selection-"]').getAttribute('data-testid'))!.replace('aiws-selection-', '')
+  }
+  const frameOrder = () => page.locator('[data-testid="aiws-world"] > [data-block-id]').evaluateAll((els) => els.map((el) => el.getAttribute('data-block-id')))
+  const ab = { x: 350, y: 300 }
+  const cd = { x: 825, y: 295 }
+  // siblings: the later order_key is drawn and hit on top
+  expect(await paintedAt(ab)).toBe('shp-b')
+  expect(await selectedBy(ab)).toBe('shp-b')
+  // across depths: a later sibling of the group is above the group's child
+  expect(await paintedAt(cd)).toBe('shp-d')
+  expect(await selectedBy(cd)).toBe('shp-d')
+  // bring A to front: one commit; drawing and hit testing both follow, and no frame moves in the DOM
+  const before = await frameOrder()
+  const head = await api.headSeq(ALICE, ws.workspace_id)
+  const aOnly = await screenOf(page, { x: 240, y: 300 })
+  await page.mouse.click(aOnly.x, aOnly.y, { button: 'right' })
+  await page.getByTestId('aiws-menu-front').click()
+  await expect.poll(async () => api.headSeq(ALICE, ws.workspace_id)).toBe(head + 1)
+  await expect.poll(() => paintedAt(ab)).toBe('shp-a')
+  expect(await selectedBy(ab)).toBe('shp-a')
+  expect(await frameOrder()).toEqual(before)
+  // and send it back
+  await page.mouse.click(aOnly.x, aOnly.y, { button: 'right' })
+  await page.getByTestId('aiws-menu-back').click()
+  await expect.poll(() => paintedAt(ab)).toBe('shp-b')
+  expect(await selectedBy(ab)).toBe('shp-b')
+})

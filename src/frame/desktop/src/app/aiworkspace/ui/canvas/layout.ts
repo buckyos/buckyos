@@ -6,13 +6,16 @@ import type { EntityEnvelope, Placement } from '../../api/types'
 import type { OutlineModel } from '../../state/outline'
 import { union, type Rect } from './render/camera'
 
-export interface Laid { entity: EntityEnvelope; rect: Rect; depth: number; parentId: string; isGroup: boolean; order: string }
+/** `paint` is the stacking rank: BlockTree pre-order (a parent before its children, siblings by `order_key`),
+ * higher is drawn on top. Painting and hit testing both follow it. */
+export interface Laid { entity: EntityEnvelope; rect: Rect; depth: number; parentId: string; isGroup: boolean; paint: number }
 
 export const DEFAULT_PLACEMENT: Placement = { x: 0, y: 0, w: 320, h: 200 }
 
-/** World rectangles of every Block and group of `surfaceId`, parents before children. */
+/** World rectangles of every Block and group of `surfaceId`, in paint order (parents before children). */
 export function layoutSurface(outline: OutlineModel, surfaceId: string): Map<string, Laid> {
   const out = new Map<string, Laid>()
+  let paint = 0
   const walk = (parentId: string, origin: { x: number; y: number }, depth: number) => {
     let autoY = origin.y
     for (const entity of outline.childrenOf(parentId)) {
@@ -21,7 +24,7 @@ export function layoutSurface(outline: OutlineModel, surfaceId: string): Map<str
       autoY += p.h + 24
       const rect = { x: origin.x + p.x, y: origin.y + p.y, w: p.w, h: p.h }
       const isGroup = entity.type_id === 'buckyos.container'
-      out.set(entity.entity_id, { entity, rect, depth, parentId, isGroup, order: entity.order_key ?? '' })
+      out.set(entity.entity_id, { entity, rect, depth, parentId, isGroup, paint: paint++ })
       if (isGroup) walk(entity.entity_id, { x: rect.x, y: rect.y }, depth + 1)
     }
   }

@@ -79,7 +79,9 @@ ui/
                           (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface, layout.ts,
                           tools.tsx (near toolbar, context menu, inspector)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
-                          placeholders, mount budget, overlay, gestures that commit once), camera.ts, spatialIndex.ts
+                          placeholders, mount budget, overlay, gestures that commit once; painting and hit testing
+                          share one order, BlockTree pre-order as a z-index, frames in a stable DOM order by id),
+                          camera.ts, spatialIndex.ts
   blocks/                 registry.ts (BlockDefinition, mode policy), BlockHost (lifecycle, mode dispatch, budget,
                           error boundary, generic fallback), useBlockContext (shared renderer / inspector / action
                           context), builtin.tsx (table / richtext / record / asset / note /
