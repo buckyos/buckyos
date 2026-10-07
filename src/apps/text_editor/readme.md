@@ -251,6 +251,7 @@ UI 框架用 React + Vite（与 Desktop 一致）；编辑内核用 CodeMirror 6
 - 页面公开（static-web 默认 `allow_guest=true`，gateway `access_mode=public`），没有会话时只显示外壳和“登录”状态，不读任何内容。
 - 启动时 `initBuckyOS("text-editor.buckyos.bns.did")`，没有会话则 `login()` 走 SSO（`sys.<zone>/login` → App 源 `/sso_callback` → `/sso_refresh`）。桌面内用户已登录，嵌入的 iframe 按 sys_test 的先例完成静默跳转。
 - 若 iframe 内 SSO 被浏览器策略阻断（第三方 Cookie、登录页禁止嵌入），编辑器显示“需要登录”，按钮用顶层弹窗完成登录，然后回到 iframe 重试 `/sso_refresh`。这是 V1/V3 的验证项。
+- **Shell origin 不写死。** App Frame 消息只发给嵌入方：被嵌入时取 `document.referrer` 的 origin（限本 Zone 根域或其子域），独立标签页/无 referrer 时回退 `sys.<zone>`。DV 上桌面跑在 Zone 根域而非 `sys.`，写死 `sys.<zone>` 会让握手静默失败（`frame.init` 收不到、`window: reuse` 失效、标题/关闭守卫都不工作）。
 - **会话保活与失效。** 浏览器 runtime 的 token 续期由 websdk 自己完成（`getAccountInfo()` 在 access token 临近过期时调 `/sso_refresh`，并维持续期定时器），App 不另做刷新。编辑器只处理两件事：① 启动时在 `getAccountInfo()` 返回前只显示“正在连接…”，不显示登录按钮，避免用户在会话仍有效时误触发整套 SSO；② 运行中一旦 `getAccountInfo()` 返回空（refresh token 失效、Zone 重装、verify-hub 重启等都会让 gateway 清掉 SSO Cookie），顶部显示“登录已失效”横幅，点“登录”先把所有文档落到本地缓冲区再跳 SSO，回来后按 `restoreSession` 恢复工作区。
 - **多用户（已确认的安装策略）**：Owner 安装 App，默认所有用户可用，除非手工改为仅自己可用。预装实例 `text-editor.buckyos.bns.did@<owner>` 与主机 `text-editor` 由全体可用用户共用；每个用户以自己的会话登录，读写都以自己的身份进行。设置、缓冲区、恢复区都放在**当前用户**自己的路径下（`users/<当前用户>/apps/...`、`cyfs:///home/<当前用户>/.local/share/...`），用户之间互不可见。
 

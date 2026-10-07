@@ -232,6 +232,9 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
   workspaceSize,
 }: WindowSlotProps) {
   const isMaximized = windowItem.state === 'maximized'
+  // Minimized windows stay mounted (an iframe app would otherwise reload on
+  // restore); they are only hidden from layout and from assistive technology.
+  const isMinimized = windowItem.state === 'minimized'
   const windowId = windowItem.id
   const registerNode = useCallback(
     (node: HTMLDivElement | null) => onRegisterNode(windowId, node),
@@ -250,6 +253,7 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
       onResizePointerDown={(direction) => (event) =>
         onResizePointerDown(windowItem, direction, event)}
       style={{
+        display: isMinimized ? 'none' : undefined,
         zIndex: windowItem.zIndex,
         transform: desktopWindowTransform(
           isMaximized ? safeArea.left : windowItem.x,
@@ -484,7 +488,7 @@ export function DesktopWindowLayer({
         <DesktopWindowSlot
           key={windowItem.id}
           activityLog={activityLog}
-          isFront={windowItem.zIndex === topZIndex}
+          isFront={windowItem.state !== 'minimized' && windowItem.zIndex === topZIndex}
           layoutState={layoutState}
           locale={locale}
           onClose={onClose}

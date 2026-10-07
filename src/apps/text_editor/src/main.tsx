@@ -19,7 +19,23 @@ let workspace: Workspace | undefined
 let initial: FrameInit | undefined
 const pending: OpenRequest[] = []
 const t = (key: string) => translate(navigator.language, key)
-const shellOrigin = import.meta.env.DEV ? (import.meta.env.VITE_SHELL_ORIGIN || location.origin) : `${location.protocol}//sys.${location.hostname.split('.').slice(1).join('.')}${location.port ? `:${location.port}` : ''}`
+// The shell that embeds us is the only window we talk to over the App Frame protocol. Its origin is
+// not fixed: the desktop is served from `sys.<zone>` on some deployments and from the zone root on
+// others, so when we are embedded we take the embedder's origin from the referrer, as long as it is
+// inside our own zone. Otherwise (standalone tab, or no referrer) fall back to `sys.<zone>`.
+const zoneHost = location.hostname.split('.').slice(1).join('.')
+const portSuffix = location.port ? `:${location.port}` : ''
+function resolveShellOrigin(): string {
+  if (import.meta.env.DEV) return import.meta.env.VITE_SHELL_ORIGIN || location.origin
+  if (window.parent !== window && document.referrer) {
+    try {
+      const referrer = new URL(document.referrer)
+      if (referrer.protocol === location.protocol && (referrer.hostname === zoneHost || referrer.hostname.endsWith(`.${zoneHost}`))) return referrer.origin
+    } catch {}
+  }
+  return `${location.protocol}//sys.${zoneHost}${portSuffix}`
+}
+const shellOrigin = resolveShellOrigin()
 const frame = new AppFrameClient({ shellOrigin,
   onInit: init => { initial = init; if (workspace) { applyFrame(init); if (init.launch) workspace.run(open(init.launch)) } },
   onOpen: async request => { if (!workspace) pending.push(request); else await open(request); return { accepted: true } },

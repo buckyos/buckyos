@@ -55,6 +55,15 @@ export function WebAppFramePanel({ app, windowId, launch, themeMode, locale }: A
     return () => { unregister(); appFrames.delete(windowId); frame.dispose(); host.current = undefined }
   }, [origin, src, windowId, app.id, app.appInstanceId, nonce, payload?.handlerKey])
   useEffect(() => { host.current?.update({ theme: { mode: themeMode }, locale }); host.current?.send('frame.themeChanged', { mode: themeMode }); host.current?.send('frame.localeChanged', { locale }) }, [themeMode, locale])
+  // A click inside the (cross-origin) iframe never reaches the shell document, so the window
+  // container's pointer handling cannot raise this window. What the shell does observe is that
+  // its own window loses focus while the iframe element becomes the active element.
+  useEffect(() => {
+    if (!windowId) return
+    const onBlur = () => { if (document.activeElement === iframe.current) desktopUIStore.focusWindow(windowId) }
+    window.addEventListener('blur', onBlur)
+    return () => window.removeEventListener('blur', onBlur)
+  }, [windowId])
   useEffect(() => {
     const top = [...runtime.windows].filter(w => w.state !== 'minimized').sort((a, b) => b.zIndex - a.zIndex)[0]
     host.current?.send('frame.focusChanged', { focused: top?.id === windowId })
