@@ -5,6 +5,7 @@
 
 import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
+import { workspaceUrl } from '../../links'
 import type { WorkspaceStore } from '../../state/store'
 import { CANVAS_MODE_LABEL, CANVAS_MODES, CATALOG_GROUP_LABEL, type CanvasMode, type CatalogGroup } from '../blocks/registry'
 import { extensionEntries, registryEntries, type CatalogEntry } from '../canvas/catalog'
@@ -66,6 +67,9 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     { id: 'new-canvas', label: '新建画布…', disabled: !caps.includes('structure'), reason: '没有新建画布的权限', run: () => shell.openDialog({ kind: 'new', tab: 'canvas' }) },
     { id: 'new', label: '新建…', hint: '画布 / 工作区 / 模板', run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) },
     { id: 'open-workspace', label: '打开工作区…', hint: '返回工作区列表', run: shell.close },
+    shell.home
+      ? { id: 'home', label: '返回 BuckyOS 桌面', run: shell.home }
+      : { id: 'new-tab', label: '在新标签页中打开', run: () => { window.open(workspaceUrl(store.session.workspaceId, { surfaceId: shell.topMode === 'canvas' ? shell.activeSurface?.entity_id ?? null : null }), '_blank', 'noopener') } },
     { id: 'sep-1', separator: true },
     { id: 'insert', label: '插入', disabled: insertReason !== null, reason: insertReason, explain: true, items: insertItems },
     { id: 'insert-catalog', label: '插入对象…', disabled: insertReason !== null, reason: insertReason, run: () => canvas?.openCatalog('all') },

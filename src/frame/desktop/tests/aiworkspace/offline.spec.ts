@@ -32,6 +32,20 @@ test('Block snapshots are cached and displayed after an offline cold start', asy
   await expect(cold.locator('.aiws-html-frame')).toHaveCount(0)
 })
 
+test('an offline cold start of a workspace address opens the prepared replica in a tab of its own', async ({ page, context, api, net }) => {
+  const ws = await api.sample(ALICE, `tab-offline ${Date.now()}`)
+  await prepareOffline(page, net, ALICE, ws.workspace_id)
+  await serviceWorkerReady(page)
+  await page.close()
+  await net.down()
+  await context.setOffline(true)
+  const cold = await context.newPage()
+  await cold.goto(`${net.origin}/workspace/${ws.workspace_id}`)
+  expect(await cold.evaluate(() => navigator.serviceWorker.controller !== null)).toBe(true)
+  await expect(cold.getByTestId('aiws-tab').getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
+  await expect(cold.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica')
+})
+
 test('V15 prepare offline, cut the network, edit, close, cold start offline, reconnect: accepted exactly once', async ({ page, context, api, net }) => {
   const ws = await api.sample(ALICE, `v15 ${Date.now()}`)
   await prepareOffline(page, net, ALICE, ws.workspace_id)

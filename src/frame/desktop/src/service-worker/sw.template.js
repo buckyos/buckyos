@@ -7,8 +7,8 @@
  *
  * What it does, and nothing else:
  *   - install: download every built file into one versioned cache (all or nothing);
- *   - a navigation to the Desktop entry: network first (so a new deployment is picked up at once),
- *     the cached index.html when the network is not there;
+ *   - a navigation to the Desktop entry or to an app route that works offline (`workspace/…`): network
+ *     first (so a new deployment is picked up at once), the cached index.html when the network is not there;
  *   - a built file: cache first;
  *   - everything else (kRPC, uploads, other paths, other origins, non-GET) is not touched.
  * It never stores user data: the offline replica lives in OPFS, managed by the app.
@@ -25,6 +25,13 @@ const SCOPE = new URL(self.registration.scope)
 const INDEX = new URL('index.html', SCOPE).href
 const ASSETS = new Map(PRECACHE.map((path) => [new URL(path, SCOPE).href, path]))
 const NAVIGATION_TIMEOUT_MS = 4000
+const OFFLINE_ROUTES = ['workspace']
+
+function isEntry(pathname) {
+  if (!pathname.startsWith(SCOPE.pathname)) return false
+  const rest = pathname.slice(SCOPE.pathname.length)
+  return rest === '' || rest === 'index.html' || OFFLINE_ROUTES.some((route) => rest === route || rest.startsWith(route + '/'))
+}
 
 async function precache() {
   const cache = await caches.open(CACHE)
@@ -118,7 +125,7 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url)
   if (url.origin !== SCOPE.origin) return
   if (request.mode === 'navigate') {
-    if (url.pathname === SCOPE.pathname || url.pathname === SCOPE.pathname + 'index.html') event.respondWith(navigation(request))
+    if (isEntry(url.pathname)) event.respondWith(navigation(request))
     return
   }
   const key = url.origin + url.pathname

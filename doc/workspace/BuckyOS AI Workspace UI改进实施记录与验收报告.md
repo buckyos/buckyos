@@ -25,8 +25,9 @@
 | 弹层与键盘菜单、右侧面板、对话框（新建、导出、导入、帮助、Mock、离开检查） | `ui/shell/{popover,SidePanel,dialogs}.tsx` |
 | 画布：对象工具栏、插入目录、剪贴板、画布管理、预设图标；`CanvasView` 重写，`RenderHost` 增加手形工具与放置预览，`Camera` 增加安全区 | `ui/canvas/{ObjectToolbar,InsertCatalog,catalog,clipboard,surfaceManage,icons,CanvasView,tools}.tsx`、`ui/canvas/render/{RenderHost.tsx,camera.ts}` |
 | Block 定义的目录元信息；图片/附件可以插入；扩展 Block 的 `def_id` 不再写进 `config` | `ui/blocks/{registry,builtin,samples}.ts(x)`、`ui/wish/wishBlock.tsx`、`ui/extensions/{HtmlBlockHost,declarative}.tsx` |
-| 打开规则（链接、最近工作区、离开检查、关闭窗口与退出登录） | `AIWorkspaceAppPanel.tsx`、`state/recent.ts`、`state/store.ts`（`prepareLeave`、提示自动消失）、`api/transport.ts`（`target`、`principal()`） |
-| Desktop 接入：访问链接 → 启动请求；应用请求退出登录 | `src/frame/desktop/src/desktop/DesktopRoute.tsx` |
+| 打开规则（最近工作区、离开检查、关闭窗口与退出登录；独立标签页按地址打开） | `AIWorkspaceAppPanel.tsx`、`state/recent.ts`、`state/store.ts`（`prepareLeave`、提示自动消失）、`api/transport.ts`（`target`、`principal()`） |
+| 独立标签页（设计 §4 规则 7、15-2、15-18）：路由 `/workspace/:workspaceId?`、地址格式、标签页退出登录、离线导航、构建 `base` | `AIWorkspaceRoute.tsx`、`links.ts`、`src/App.tsx`、`src/auth/signOut.ts`、`src/service-worker/sw.template.js`、`vite.config.ts`、`src/mock/data.ts`（`mobileRedirectPath`） |
+| Desktop 接入：应用请求退出登录 | `src/frame/desktop/src/desktop/DesktopRoute.tsx` |
 | 工作区列表改用统一的新建对话框；导入、导出表单与 Shell 共用 | `ui/WorkspaceList.tsx`、`ui/shell/dialogs.tsx` |
 | 用户工作状态对齐规则修正 | `state/userState.ts` |
 | 端到端用例 | 新增 `tests/aiworkspace/ui.spec.ts`；`fixtures.ts` 新增主菜单、缩放、模式、面板、状态、返回列表等辅助函数；其余用例按新入口改写 |
@@ -68,13 +69,14 @@ PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=<aiworkspace 调试构建> pnp
 | `eslint`（AI Workspace、`DesktopRoute.tsx`、e2e 用例） | 0 问题 |
 | `pnpm build` | 通过（只有原有的 chunk 体积提示） |
 | Playwright `playwright.aiworkspace.config.ts` | **80 通过，0 失败**（7.7 分钟）；`probe.spec.ts` 的渲染性能门槛不变，同样通过 |
+| 独立标签页（UI-P15、离线冷启动工作区地址）之后 | 全套 **82 通过，0 失败**（7.9 分钟）；`pnpm check`、`eslint`（含 `src/auth`、`src/App.tsx`）、`pnpm build` 通过，构建产物的资源地址为绝对路径 `/assets/…` |
 | 状态区移到右下角之后 | 全套重跑 79 通过；唯一失败的 5,000 Block 渲染探针原因是拖动起点落在对象工具栏上（对象工具栏随之上移）。探针改为选一个中心确实在画布上的已选 Block 作起点后，`probe.spec.ts` 与 `ui.spec.ts` 共 15 个通过 |
 
 改写原有用例时只改入口，不放宽断言：缩放和“适应全部”改从演讲工具栏的比例菜单操作；画布模式、受控加工、关闭工作区改从主菜单操作；准备离线、接管副本和处于“已保存到本设备”的修改改在“修改状态”面板中操作；“移动到画布…”改在就近工具栏的“更多”中操作；删除画布改在画布下拉每一项的“⋯”中操作；新建工作区和样例改用新建对话框；插入时不再弹出标题输入，需要标题时在插入目录里填写。原有的两处点击坐标 `(20,20)` 现在落在主工具栏上，已改为空白处。夹具 `openApp` 会把窗口最大化，并关闭启动时自动恢复的工作区；重新载入或冷启动后先调用 `backToList`，再从列表打开，原有断言保持不变。
 
 | 编号 | 场景 | 用例 |
 | --- | --- | --- |
-| UI-P01 | 重新载入后恢复上次的工作区和画布；关闭后本次不再自动恢复；访问链接优先于最近记录，用后从地址栏清除；链接指向的画布已删除时回到第一张画布并提示；无权限的身份打开链接时说明原因并留在列表；最近记录按身份隔离 | `ui.spec.ts` UI-P01 |
+| UI-P01 | 重新载入后恢复上次的工作区和画布；关闭后本次不再自动恢复；访问链接（`/workspace/<工作区>?surface=`）在独立标签页中打开目标画布，`surface` 用后从地址栏清除；链接指向的画布已删除时回到第一张画布并提示；无权限的身份打开链接时说明原因并留在列表；最近记录按身份隔离 | `ui.spec.ts` UI-P01 |
 | UI-P02 | 三个工具栏都存在，右下角没有导航区；在应用宽度不限、1024、768、390 下，主工具栏、演讲工具栏、对象工具栏、状态摘要互不重叠，且状态摘要位于工作区右下角；右侧面板宽档占布局宽度，中、窄档为抽屉，都能关闭；“适应全部”后点击对象能选中该对象 | UI-P02 |
 | UI-P03 | 按 Esc 零提交；按 Enter 只产生一次提交，标题与名称同时更新；名称为空时恢复原名；他人并发改名时保留我的输入并说明原因；图标被另一客户端看到，只读客户端不能修改；导出、导入后图标保留 | UI-P03 |
 | UI-P04 | 新建流式页带图标，画布和内容区在同一次提交中创建；模板标明含模拟内容，创建新工作区并打开，原工作区的提交数不变 | UI-P04 |
@@ -83,6 +85,7 @@ PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=<aiworkspace 调试构建> pnp
 | UI-P07 | 复制分组后粘贴，新分组和成员都是新 id，数据仍是原来的；一次提交，可整体撤销；剪切后跨画布粘贴，一次提交，id 和绑定不变；在富文本里复制、粘贴由编辑器处理，不会新建 Block | UI-P07 |
 | UI-P08 | 查看模式隐藏插入入口，主菜单的“插入”禁用；Esc 关闭菜单后焦点回到触发按钮；查看模式下可以批注；播放编辑是占位，“开始演示”禁用并说明原因；重开工作区时从播放编辑回到查看模式并提示；切换数据源时会话保持，按钮显示“返回画布” | UI-P08 |
 | UI-P10/P11 | “协作”打开权限面板；分享链接指向当前画布，不含令牌，说明“不会授予权限”；只读成员用链接打开时落在同一画布，只看到自己的授权，没有插入入口；身份面板说明在线状态尚未接入，开发身份不能退出 | UI-P10/P11 |
+| UI-P15 | `/workspace` 显示列表，不自动恢复；从列表打开、关闭、再打开另一个时地址随之变化，标题为“工作区名 - AI Workspace”，工作区铺满标签页；后退、前进按地址切换；重新载入直接打开地址中的工作区，中间不出现列表；“返回 BuckyOS 桌面”回到 `/`；Desktop 窗口主菜单“在新标签页中打开”在新标签页打开同一工作区和当前画布；准备离线后断网冷启动 `/workspace/<工作区>`，由 service worker 应答并直接打开离线副本 | `ui.spec.ts` UI-P15、`offline.spec.ts`“an offline cold start of a workspace address” |
 | UI-P12 | 选中许愿格后点 AI 入口打开它的任务，不新建；未选中时放置新的许愿格并打开任务界面，不自动运行 | UI-P12 |
 | UI-P13 | 菜单支持方向键、Enter、Esc，关闭后焦点回到触发按钮；可从主菜单打开快捷键帮助；在编辑器里输入 v、h 不会切换工具；画布获得焦点时 V/H 生效 | UI-P13 |
 | 原有用例 | 第一期、第二期和许愿格的全部用例按新入口改写（主菜单、缩放面板、模式子菜单、修改状态面板、更多菜单、新建对话框、启动恢复），断言保持不变 | `basics / blocks / canvas / collab / features / annotations / permissions / wish / probe / offline*.spec.ts` |
@@ -103,7 +106,7 @@ PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=<aiworkspace 调试构建> pnp
 - **P2 未做：** presence（在线成员、头像、断线、跟随、远端指针）、演示场次（主讲、观众、公共屏）、互动按钮及其配置。相应入口不显示，或禁用并说明原因。UI-P14 没有用例。
 - **设计中写明暂缓的内容：** 纯 UI 对象和画布空白点的批注锚点（点选这类目标时会提示）；跨工作区粘贴（会提示暂不支持）；画布图标不支持上传图片。
 - **未自动化的检查：** 浏览器缩放到 200% 的布局；中文输入法组合输入期间的快捷键行为只在代码中通过 `isComposing` 判断，没有用例。窄宽度用例是在桌面窗口内限制应用容器宽度后测量的；Desktop 在浏览器宽度 ≤ 768 时切换为移动外壳，从移动外壳启动本应用不在本次范围内。
-- **访问链接：** 只在开发直连身份下验证。真实 Zone 中“未登录 → 登录页 → 回到链接”依赖 Desktop 已有的 `redirect_url`，本次没有在 DV 环境运行。通过链接离线冷启动也没有验证。
+- **访问链接与独立标签页：** 只在开发直连身份下验证（Desktop 模拟运行时）。真实 Zone 中“未登录 → 登录页 → 回到 `/workspace/<工作区>`”依赖 Desktop 已有的 `redirect_url`，本次没有在 DV 环境运行；DV 网关对 `/workspace/<任意>` 已由 control-panel 的 index.html 回退应答（`curl` 验证 200 text/html）。真实运行时的离线冷启动还要经过 `main.tsx` 的 `initBuckyOS` / 登录检查，断网时能否通过没有验证（模拟运行时不经过这一步）。浏览器询问离开（`beforeunload`）没有用例。
 - **没有在真实 Zone / DV 环境运行。** 所有结论都来自独立后台进程加 Desktop 的模拟运行时，浏览器只测了 Chromium。
 
 ## 7. 已知风险

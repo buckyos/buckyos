@@ -58,11 +58,12 @@ export interface ShellProps {
   offline: OfflineActions
   identity: { principal: string | null; dev: boolean }
   onLogout: () => void
+  onHome: (() => void) | null
   devTools: boolean
   target?: LaunchTarget | null
 }
 
-export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, identity, onLogout, devTools, target }: ShellProps) {
+export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, identity, onLogout, onHome, devTools, target }: ShellProps) {
   const store = useStore()
   const outlineVersion = useOutlineVersion()
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -198,7 +199,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
 
   const shell: ShellApi = {
     client, close: onClose, openWorkspace: onOpenWorkspace, offline, topMode: mode, setTopMode, surfaces, activeSurface, selectSurface,
-    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, devTools, identity, logout: onLogout,
+    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, devTools, identity, logout: onLogout, home: onHome,
     runOffline, offlineBusy, offlineError, clearOfflineError: () => setOfflineError(null),
   }
 

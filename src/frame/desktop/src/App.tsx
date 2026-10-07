@@ -19,6 +19,9 @@ const HomeStationRoute = lazy(() =>
 const MessageHubRoute = lazy(() =>
   import('./app/messagehub/MessageHubRoute').then((m) => ({ default: m.MessageHubRoute })),
 )
+const AIWorkspaceRoute = lazy(() =>
+  import('./app/aiworkspace/AIWorkspaceRoute').then((m) => ({ default: m.AIWorkspaceRoute })),
+)
 const TaskCenterRoute = lazy(() =>
   import('./app/task-center/TaskCenterRoute').then((m) => ({ default: m.TaskCenterRoute })),
 )
@@ -55,6 +58,14 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <MessageHubRoute />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/workspace/:workspaceId?',
+    element: (
+      <Suspense fallback={null}>
+        <AIWorkspaceRoute />
       </Suspense>
     ),
   },

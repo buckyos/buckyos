@@ -6,6 +6,7 @@
 import { createContext, useContext } from 'react'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
+import { workspaceUrl } from '../../links'
 import { useUserState } from '../../state/hooks'
 import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
 import type { OfflineActions } from '../WorkspaceView'
@@ -59,6 +60,7 @@ export interface ShellApi {
   identity: { principal: string | null; dev: boolean }
   /** Log out through the Desktop's sign-in flow (after the workspace's leave check). */
   logout: () => void
+  home: (() => void) | null
   /** Offline actions (prepare, take over, reopen) run one at a time; their failure stays visible. */
   runOffline: (label: string, work: () => Promise<void>) => void
   offlineBusy: string | null
@@ -78,10 +80,7 @@ export const ZOOM_PRESETS = [25, 50, 75, 100, 150, 200]
 
 /** An access link (§8.3): it names the workspace and Surface, carries no credential and grants nothing. */
 export function shareLink(workspaceId: string, surfaceId: string | null): string {
-  const url = new URL('/', window.location.origin)
-  url.searchParams.set('aiws', workspaceId)
-  if (surfaceId) url.searchParams.set('aiwsSurface', surfaceId)
-  return url.toString()
+  return workspaceUrl(workspaceId, { surfaceId })
 }
 
 export function useShell(): ShellApi {

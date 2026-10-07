@@ -81,7 +81,7 @@ export default defineConfig(() => {
       }]))
     : {}
   return {
-    base: './',
+    base: '/',
     plugins: [react(), desktopServiceWorker()],
     // The Replica Worker (src/app/aiworkspace/offline/replica.worker.ts) is a module worker.
     worker: { format: 'es' as const },

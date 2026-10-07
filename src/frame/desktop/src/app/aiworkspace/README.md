@@ -12,8 +12,10 @@ dev override below points it at a real backend process.
 ## Structure
 
 ```text
-AIWorkspaceAppPanel.tsx   entry: what opens (link target > most recent workspace > list), the leave check,
-                          the Desktop close / logout guard
+AIWorkspaceAppPanel.tsx   entry: what opens (Desktop window: most recent workspace > list; tab: the address),
+                          the leave check, the Desktop close / logout guard, the tab's beforeunload
+AIWorkspaceRoute.tsx      the browser tab of its own: Desktop route `/workspace/:workspaceId?`
+links.ts                  the only definition of the tab / share address `/workspace/<id>?surface=&block=`
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
   client.ts               one typed method per kRPC method of the backend README
@@ -146,8 +148,10 @@ text typed offline survives as pending rows (there is no separate `richtext_work
 
 **Application resources.** A production build has `sw.js` next to `index.html` (scope = the Desktop's
 directory, so the control-panel directory handler needs no extra headers). It precaches every built
-file into a cache named by a hash of the build, serves the entry network-first with the cached copy as
-fallback, built files cache-first, and touches nothing else. A new build installs in the background
+file into a cache named by a hash of the build, serves the entry — the Desktop root and the tab addresses
+`/workspace`, `/workspace/…` — network-first with the cached index.html as fallback, built files
+cache-first, and touches nothing else. The build's `base` is `/` (absolute asset URLs), so the entry
+works under a two-level path. A new build installs in the background
 and takes over when the old pages are closed (or on "现在更新并重新载入"); old caches are deleted on
 activation. If the entry or any built file is missing at an offline start, the worker answers with a
 page that says so instead of starting a broken application. The Vite dev server registers no service
@@ -167,7 +171,7 @@ AIWS_BACKEND=http://127.0.0.1:4120 pnpm run dev
 ```
 
 Open `http://localhost:5174/?scenario=normal&aiwsDevToken=tok-alice` and start "AI Workspace" from the
-desktop. `aiwsDevToken` stores `localStorage['aiworkspace.dev'] = {"token":"tok-alice"}` (optional
+desktop, or `http://localhost:5174/workspace?aiwsDevToken=tok-alice` for the app in a tab of its own. `aiwsDevToken` stores `localStorage['aiworkspace.dev'] = {"token":"tok-alice"}` (optional
 `baseUrl`, `principal`); remove that key to go back to the zone path. Without `AIWS_BACKEND` the Vite
 config is unchanged.
 
@@ -216,12 +220,15 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 
 ## UI improvement (doc/workspace/BuckyOS AI Workspace UI改进.md)
 
-- **What opens.** A link `/?aiws=<workspace>&aiwsSurface=<surface>&aiwsBlock=<block>` is turned by the Desktop
-  route into a launch of this app (`kind: 'aiworkspace-target'`) and wins; otherwise a normal start reopens the
-  workspace this identity last opened successfully (`state/recent.ts`, keyed `mode|target|principal`) on its
-  remembered Surface (`surface:active`); a gone Surface falls back to the first readable one and says so;
-  closing a workspace pauses the restore for the rest of the app session. A workspace never reopens into the
-  presentation-edit placeholder.
+- **What opens.** The usual way is a browser tab of its own: `https://<zone host>/workspace` (the list) or
+  `/workspace/<workspace>` (one workspace, also the share link, with `?surface=<surface>&block=<block>`; the
+  two are removed from the address once the workspace is open). In a tab the address is the state: opening,
+  switching and closing change it (after the leave check), back / forward / reload follow it, and nothing is
+  restored automatically. In a Desktop window a normal start reopens the workspace this identity last opened
+  successfully (`state/recent.ts`, keyed `mode|target|principal`) on its remembered Surface (`surface:active`);
+  closing a workspace pauses the restore for the rest of the app session; the main menu's "在新标签页中打开"
+  opens the workspace and its Surface in a tab. A gone Surface falls back to the first readable one and says so.
+  A workspace never reopens into the presentation-edit placeholder.
 - **Chrome.** The canvas fills the window; the main toolbar (top left), the presenter toolbar (top right: add
   annotation, zoom ▾ with presets / fit, identity, share) and the vertical object toolbar float in screen space
   (`camera.setInsets` keeps fitting and centring out from under them). There is no bottom-right navigation area:
@@ -235,8 +242,10 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   entries that need data or a file ask for it first.
 - **Clipboard.** Per window, in memory, same workspace only: copy = new Block / group ids, same data references,
   one commit; cut = mark, paste moves in one commit (identity kept). Editors keep the text clipboard.
-- **Leaving.** Close, switch, link, window close and log out run `store.prepareLeave()`; what would be lost is asked
-  about (返回处理 / 导出后离开 / 仍然离开). The identity menu logs out through the Desktop (`buckyos:request-logout`).
+- **Leaving.** Close, switch, a changed tab address, window close and log out run `store.prepareLeave()`; what would
+  be lost is asked about (返回处理 / 导出后离开 / 仍然离开). Closing or reloading a tab with such edits makes the
+  browser ask (`beforeunload`). In a Desktop window the identity menu logs out through the Desktop
+  (`buckyos:request-logout`); in a tab it signs out itself (`src/auth/signOut.ts`, the same `/sso_logout` flow).
 - **Layout preferences** live in the user work state under `ui:` (`ui:object-toolbar`, `ui:presenter-toolbar`,
   `ui:grid`, `ui:side`, `ui:pinned-defs`); "恢复默认布局" clears them, never the document.
 
@@ -336,8 +345,7 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
 - UI improvement, not done (doc §13 P2 and the gaps it names): online members / presence, follow, remote
   pointers; starting a presentation, presentation sessions and interaction buttons (the menu entry is disabled and
   says why); annotation anchors on pure UI Blocks or blank canvas points; cross-workspace paste; image upload as a
-  canvas icon. The access link is opened by the Desktop route; a cold offline start through a link is not covered
-  (the service worker serves only the scope root, which the link uses). Browser zoom 200% was not automated.
+  canvas icon. Browser zoom 200% was not automated.
 - The app's own UI text is Chinese only (the app name and summary are in the Desktop dictionaries).
 - The zone transport follows the SDK's normal service path but has only been type-checked here; the e2e
   suite runs through the dev override.

@@ -5,7 +5,6 @@ import {
   MenuItem,
   useMediaQuery,
 } from '@mui/material'
-import { buckyos } from 'buckyos'
 import { isTransferableRef } from 'buckyos/content'
 import { openContent } from '../app/content/open'
 import { openPreview } from '../app/preview/launch'
@@ -59,7 +58,6 @@ import {
   type StatusTip,
 } from './shell'
 import { useI18n } from '../i18n/provider'
-import { isMockRuntime } from '../runtime'
 import type {
   AppDefinition,
   FormFactor,
@@ -71,7 +69,7 @@ import type {
   WindowRecord,
 } from '../models/ui'
 import { supportedLocales } from '../models/ui'
-import { clearMessageHubLocalState } from '../app/messagehub/api/local'
+import { signOutToLogin } from '../auth/signOut'
 import { useThemeMode } from '../theme/provider'
 
 // --- New unified store ---
@@ -93,17 +91,6 @@ import {
 // ---------------------------------------------------------------------------
 // Hooks that remain in the view layer (DOM / browser APIs)
 // ---------------------------------------------------------------------------
-
-const clearDesktopAuthState = () => {
-  if (!isMockRuntime()) {
-    buckyos.logout(true)
-  }
-
-  window.localStorage.removeItem('user_info')
-  window.localStorage.removeItem('buckyos.account_info')
-  window.localStorage.removeItem('buckyos.account_info.control-panel')
-  document.cookie = 'control-panel_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax'
-}
 
 /**
  * Reads env(safe-area-inset-*) values for immersive fullscreen on mobile.
@@ -253,19 +240,6 @@ export function DesktopRoute() {
     if (searchParams.get('intent') === 'preview') openPreview({ source })
     else void openContent({ source })
   }, [snap.status, searchParams])
-  // an AI Workspace access link: /?aiws=<workspace>&aiwsSurface=<surface>&aiwsBlock=<block> (the sign-in redirect keeps it)
-  const aiwsLinkHandled = useRef(false)
-  useEffect(() => {
-    const workspaceId = searchParams.get('aiws')
-    if (snap.status !== 'success' || !workspaceId || aiwsLinkHandled.current) return
-    aiwsLinkHandled.current = true
-    store.openAppWindow('aiworkspace', {
-      launch: { requestId: crypto.randomUUID(), payload: { kind: 'aiworkspace-target', workspaceId, surfaceId: searchParams.get('aiwsSurface'), blockId: searchParams.get('aiwsBlock') } },
-    })
-    const params = new URLSearchParams(searchParams)
-    for (const key of ['aiws', 'aiwsSurface', 'aiwsBlock']) params.delete(key)
-    setSearchParams(params, { replace: true })
-  }, [snap.status, searchParams, setSearchParams, store])
 
 
   // Refs for drag suppression (view-only concern)
@@ -530,24 +504,7 @@ export function DesktopRoute() {
     setIsLoggingOut(true)
     try {
       if (!await store.prepareLogout()) { setIsLoggingOut(false); return }
-      const response = await fetch('/sso_logout', {
-        method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: {
-          Accept: 'application/json',
-        },
-      })
-      if (!response.ok) {
-        throw new Error(`Logout failed: ${response.status} ${response.statusText}`)
-      }
-
-      clearDesktopAuthState()
-      await clearMessageHubLocalState()
-
-      const loginUrl = new URL('/login', window.location.origin)
-      loginUrl.searchParams.set('redirect_url', window.location.href)
-      window.location.assign(loginUrl.toString())
+      await signOutToLogin()
     } catch (error) {
       console.error('[logout] failed:', error)
       store.setSnackbar(t('shell.logoutFailed', 'Log out failed. Please try again.'))

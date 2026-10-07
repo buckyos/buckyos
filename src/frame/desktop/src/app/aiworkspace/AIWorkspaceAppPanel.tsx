@@ -23,15 +23,17 @@ import type { LaunchTarget } from './ui/shell/WorkspaceShell'
 import { WorkspaceList } from './ui/WorkspaceList'
 import { WorkspaceView, type OfflineActions } from './ui/WorkspaceView'
 
-/** The Desktop's launch payload for a link `/?aiws=<workspace>&aiwsSurface=<surface>&aiwsBlock=<block>`. */
-export interface AiwsLaunch { kind: 'aiworkspace-target'; workspaceId: string; surfaceId?: string | null; blockId?: string | null }
 /** Asked by the identity menu: the Desktop runs its own sign-out flow (close guards included). */
 export const LOGOUT_REQUEST_EVENT = 'buckyos:request-logout'
 
-function launchTarget(launch: AppContentLoaderProps['launch']): (AiwsLaunch & { requestId: string }) | null {
-  const payload = launch?.payload as Partial<AiwsLaunch> | undefined
-  if (!launch || payload?.kind !== 'aiworkspace-target' || typeof payload.workspaceId !== 'string') return null
-  return { kind: 'aiworkspace-target', workspaceId: payload.workspaceId, surfaceId: payload.surfaceId ?? null, blockId: payload.blockId ?? null, requestId: launch.requestId }
+export interface TabHost {
+  workspaceId: string | null
+  target: LaunchTarget | null
+  navigate: (workspaceId: string | null, options?: { replace?: boolean }) => void
+  consumeTarget: () => void
+  onShown: (workspace: { workspaceId: string; title: string } | null) => void
+  home: () => void
+  signOut: () => Promise<void>
 }
 
 function isGone(failure: unknown): boolean {
@@ -39,24 +41,27 @@ function isGone(failure: unknown): boolean {
   return [failure, cause].some((error) => error instanceof ServiceFailure && (error.code === 'NOT_FOUND' || error.code === 'PERMISSION_DENIED'))
 }
 
-export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) {
+export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> & { tab?: TabHost } = {}) {
+  const tab = props.tab ?? null
   const [availability] = useState(resolveTransport)
   const [client] = useState(() => (availability.ok ? new AiwsClient(availability.transport) : null))
   const [store, setStore] = useState<WorkspaceStore | null>(null)
   const [target, setTarget] = useState<LaunchTarget | null>(null)
-  const [opening, setOpening] = useState<string | null>(null)
+  const [opening, setOpening] = useState<string | null>(() => tab?.workspaceId ?? null)
   const [error, setError] = useState<string | null>(null)
   const [report, setReport] = useState<PrepareReport | null>(null)
   const [leave, setLeave] = useState<{ summary: LeaveSummary; reason: string; resolve: (go: boolean) => void } | null>(null)
   /** A normal start looks for the most recent workspace first: the list is not flashed before it reopens. */
-  const [checkingRecent, setCheckingRecent] = useState(() => availability.ok && !launchTarget(props.launch))
+  const [checkingRecent, setCheckingRecent] = useState(() => availability.ok && !tab)
   /** The previous session letting go of its replica (database closed, holder lock released). */
   const closing = useRef<Promise<void>>(Promise.resolve())
   /** Closing a workspace pauses the automatic restore for the rest of this app session. */
-  const autoRestore = useRef(true)
-  const handledLaunch = useRef<string | null>(null)
+  const autoRestore = useRef(!tab)
   const storeRef = useRef<WorkspaceStore | null>(null)
   useEffect(() => { storeRef.current = store }, [store])
+  const openSeq = useRef(0)
+  const tabRef = useRef(tab)
+  useEffect(() => { tabRef.current = tab })
 
   useEffect(() => {
     if (!store) return
@@ -66,8 +71,9 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
 
   /** The session is the only thing the views use. A prepared replica whose holder lock this window gets is
    * opened without the network; every other case is online direct mode, which says why it is not offline. */
-  const open = useCallback(async (workspaceId: string, how: { target?: LaunchTarget | null; auto?: boolean } = {}) => {
+  const open = useCallback(async (workspaceId: string, how: { target?: LaunchTarget | null; auto?: boolean; link?: boolean } = {}) => {
     if (!client) return
+    const seq = ++openSeq.current
     setOpening(workspaceId)
     setError(null)
     try {
@@ -88,15 +94,20 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
           throw failure
         }
       }
+      const next = new WorkspaceStore(session, core)
+      if (seq !== openSeq.current) { closing.current = next.dispose().catch(() => undefined); return }
       setTarget(how.target ?? null)
-      setStore(new WorkspaceStore(session, core))
+      storeRef.current = next
+      setStore(next)
       void rememberRecent(client.transport, workspaceId)
+      if (how.target) tabRef.current?.consumeTarget()
     } catch (failure) {
+      if (seq !== openSeq.current) return
       if (how.auto && isGone(failure)) void forgetRecent(client.transport, workspaceId)
-      setError(how.target ? `无法打开链接中的工作区：${isGone(failure) ? '它不存在，或你没有访问权限' : describeError(failure)}`
+      setError(how.link ? `无法打开链接中的工作区：${isGone(failure) ? '它不存在，或你没有访问权限' : describeError(failure)}`
         : how.auto ? `没有恢复上次打开的工作区：${describeError(failure)}` : `无法打开工作区：${describeError(failure)}`)
     } finally {
-      setOpening(null)
+      if (seq === openSeq.current) setOpening(null)
     }
   }, [client])
 
@@ -104,6 +115,7 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
   const dispose = useCallback(() => {
     const current = storeRef.current
     if (!current) return
+    storeRef.current = null
     setStore(null)
     setTarget(null)
     closing.current = current.dispose().catch(() => undefined)
@@ -122,21 +134,48 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
     void confirmLeave(reason).then((go) => { if (go) then() })
   }, [confirmLeave])
 
-  // an explicit target from the Desktop (a link) — every new launch request is handled once
-  const launch = launchTarget(props.launch)
+  const routed = tab?.workspaceId ?? null
+  const handledRoute = useRef<string | null | undefined>(undefined)
   useEffect(() => {
-    if (!client || !launch || handledLaunch.current === launch.requestId) return
-    handledLaunch.current = launch.requestId
-    autoRestore.current = false
-    const go = () => { dispose(); void open(launch.workspaceId, { target: { surfaceId: launch.surfaceId, blockId: launch.blockId } }) }
-    if (storeRef.current) leaveThen('打开链接', go)
-    else go()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the launch request id
-  }, [client, launch?.requestId, open, dispose, leaveThen])
+    const host = tabRef.current
+    if (!client || !host || handledRoute.current === routed) return
+    const first = handledRoute.current === undefined
+    handledRoute.current = routed
+    const current = storeRef.current?.session.workspaceId ?? null
+    if (routed === current) return
+    const go = () => {
+      dispose()
+      setReport(null)
+      if (routed) void open(routed, { target: host.target, link: first || host.target !== null })
+      else { openSeq.current += 1; setOpening(null) }
+    }
+    if (!storeRef.current) { go(); return }
+    void confirmLeave(routed ? '切换工作区' : '关闭工作区').then((ok) => {
+      if (ok) go()
+      else host.navigate(current, { replace: true })
+    })
+  }, [client, routed, open, dispose, confirmLeave])
+
+  const shownId = store?.session.workspaceId ?? null
+  const shownTitle = store?.session.info().title ?? null
+  useEffect(() => {
+    tabRef.current?.onShown(shownId ? { workspaceId: shownId, title: shownTitle ?? shownId } : null)
+  }, [shownId, shownTitle])
+
+  const isTab = tab !== null
+  useEffect(() => {
+    if (!isTab) return
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const summary = storeRef.current?.leaveSummary()
+      if (summary && (summary.memoryOnly > 0 || summary.unsaved > 0 || summary.attention > 0)) event.preventDefault()
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [isTab])
 
   // a normal start restores this identity's most recent workspace
   useEffect(() => {
-    if (!client || launch) return
+    if (!client || isTab) return
     let live = true
     void readRecent(client.transport).then((recent) => {
       if (!live) return
@@ -180,9 +219,26 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
     describe: (failure) => (failure instanceof OfflineUnavailable ? `离线不可用：${failure.message}` : `准备离线失败：${describeError(failure)}`),
   }
 
-  const closeWorkspace = () => leaveThen('关闭工作区', () => { autoRestore.current = false; dispose(); setReport(null) })
-  const switchTo = (workspaceId: string) => leaveThen('切换工作区', () => { dispose(); setReport(null); void open(workspaceId) })
-  const logout = () => window.dispatchEvent(new CustomEvent(LOGOUT_REQUEST_EVENT))
+  const closeWorkspace = () => leaveThen('关闭工作区', () => {
+    autoRestore.current = false
+    dispose()
+    setReport(null)
+    tab?.navigate(null)
+  })
+  const show = (workspaceId: string) => {
+    if (tab && workspaceId !== tab.workspaceId) tab.navigate(workspaceId)
+    else void open(workspaceId)
+  }
+  const switchTo = (workspaceId: string) => leaveThen('切换工作区', () => {
+    dispose()
+    setReport(null)
+    show(workspaceId)
+  })
+  const pick = (workspaceId: string) => show(workspaceId)
+  const logout = tab
+    ? () => leaveThen('退出登录', () => { tab.signOut().catch((failure: unknown) => setError(`退出登录失败：${describeError(failure)}`)) })
+    : () => window.dispatchEvent(new CustomEvent(LOGOUT_REQUEST_EVENT))
+  const goHome = tab ? () => leaveThen('返回桌面', () => { dispose(); tab.home() }) : null
 
   return (
     <div className="aiws-root" data-testid="aiws-root">
@@ -198,12 +254,12 @@ export function AIWorkspaceAppPanel(props: Partial<AppContentLoaderProps> = {}) 
       )}
       {store
         ? <WorkspaceView key={store.session.workspaceId + store.session.sessionId} store={store} client={client} offline={actions} target={target}
-            onClose={closeWorkspace} onOpenWorkspace={switchTo} onLogout={logout}
+            onClose={closeWorkspace} onOpenWorkspace={switchTo} onLogout={logout} onHome={goHome}
             identity={{ principal: store.session.principal, dev: client.transport.mode === 'dev-override' }}
             devTools={import.meta.env.DEV || client.transport.mode === 'dev-override'} />
         : (opening || checkingRecent) && !error
           ? <div className="aiws-opening" role="status" data-testid="aiws-opening">正在打开工作区…</div>
-          : <WorkspaceList client={client} onOpen={(id) => { void open(id) }} opening={opening} />}
+          : <WorkspaceList client={client} onOpen={pick} opening={opening} />}
       {leave && (
         <LeaveDialog summary={leave.summary} reason={leave.reason}
           onStay={() => { leave.resolve(false); setLeave(null) }}
