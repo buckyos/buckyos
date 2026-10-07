@@ -1,5 +1,7 @@
 # AI Canvas E2E 验收文档
 
+> 归档说明：Canvas 探索性原型已删除。本目录保留原型的历史验收需求与记录；下文的原型启动和执行步骤仅适用于删除前的版本。当前工作区实现见 [AI Workspace](../../../src/frame/desktop/src/app/aiworkspace/README.md)。
+
 本目录是 BuckyOS Desktop AI Canvas 通用 E2E 需求的维护入口。2026-09-28 从原应用侧测试文档
 迁入；后续修改通用原型验收直接改本目录，不在下游应用仓库保留第二份规范。
 
@@ -13,8 +15,8 @@
 6. [长文交付场景](long-form-writing.md)：两万字网络短篇小说与研究论文初稿的用户任务包、浏览器旅程、分层判据和证据要求。
 7. [交付物型场景目录](user-goal-scenarios.md)：W03–W20 的用户目标、输入变化、主要步骤、交付判据与原型能力边界。
 
-[产品 PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 与
-[原型 README](../../../src/frame/desktop/src/app/canvas/README.md) 是产品范围和当前实现入口。
+[产品 PRD](../BuckyOS%20AI%20Canvas%20PRD.md) 与
+[原型 README](https://github.com/buckyos/buckyos/blob/9ff98e613dd3133b447175726b47e70300a32652/src/frame/desktop/src/app/canvas/README.md) 记录原型的产品范围和当时的实现。
 UI 改版时更新当次操作轨迹，不随意改变场景的成功标准。2026-09-28 的整理只调整文档组织，
 当时没有新增执行结果；后续试跑见下文。文件交接不等于在线共享，双窗口竞争不等于真正多人协作通过。
 

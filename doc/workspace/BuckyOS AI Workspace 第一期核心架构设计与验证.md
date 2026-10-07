@@ -38,7 +38,7 @@
 
 ### 1.2 产品 PoC 与正式实现的关系
 
-现有 [Canvas 原型](<../../src/frame/desktop/src/app/canvas/README.md>)是产品体验 PoC，目的是感受 AI 驱动的 Workspace 如何工作。**新的实现可以完全不参考它的代码。** 原型中的数据结构、reducer、命令、存储格式、UI 组件和技术选择均不构成正式实现的起点或约束。
+已归档的 [Canvas 原型](https://github.com/buckyos/buckyos/blob/9ff98e613dd3133b447175726b47e70300a32652/src/frame/desktop/src/app/canvas/README.md)是产品体验 PoC，目的是感受 AI 驱动的 Workspace 如何工作。**新的实现可以完全不参考它的代码。** 原型中的数据结构、reducer、命令、存储格式、UI 组件和技术选择均不构成正式实现的起点或约束。
 
 本期不要求迁移旧 Canvas、兼容 `.aicanvas.json`、复用旧 UI 或为原型保留适配层。CodeAgent 应从本文定义的契约设计正式实现，直接在 `buckyos/src/frame/aiworkspace` 建立 Rust 后台；前端作为 BuckyOS Desktop 的默认应用接入。是否借用原型中的产品体验样例是可选事项，不影响架构验收。
 
