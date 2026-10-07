@@ -139,6 +139,15 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedViewport])
   useEffect(() => camera.onSettle(() => { if (restored.current) store.userState.set(viewportKey, { x: Math.round(camera.x), y: Math.round(camera.y), zoom: Number(camera.zoom.toFixed(3)) }) }), [camera, store, viewportKey])
+  // the task location of a wish run (许愿格 §5.2): this Surface, the last selection that was not only a wish, the viewport
+  useEffect(() => {
+    const ids = [...selection]
+    store.setCanvasFocus(ids.length > 0 && !ids.every((id) => laid.get(id)?.entity.view_type === 'wish') ? { surfaceId, selection: ids } : { surfaceId })
+  }, [store, surfaceId, selection, laid])
+  useEffect(() => camera.onSettle(() => {
+    const r = camera.visibleRect
+    store.setCanvasFocus({ viewport: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) } })
+  }), [camera, store])
   useEffect(() => {
     if (!focus || focus.surfaceId !== surfaceId || !focus.blockId) return
     const rect = laid.get(focus.blockId)?.rect

@@ -506,6 +506,19 @@ pub fn resolve_cell(ctx: &dyn ReadCtx, target: &Value) -> WsResult<Value> {
             let f = field(true)?;
             json!(record()?.value_rev(&f.field_id))
         }
+        // the identities of the live direct children (a folder input: a new member makes it stale)
+        "tree_children" => {
+            let mut ids: Vec<String> = Vec::new();
+            for edge in ctx.children(entity_id)? {
+                if ctx.entity(&edge.child_id)?.is_some_and(|c| c.alive()) {
+                    ids.push(edge.child_id);
+                }
+            }
+            ids.sort();
+            json!(crate::canonical::sha256_hex(ids.join("\n").as_bytes())[..32].to_string())
+        }
+        // where the node sits (parent, order, placement)
+        "tree_edge" => json!(ctx.edge(entity_id)?.map_or(0, |e| e.struct_rev)),
         "richtext_block" => {
             let b = get_str(s, "block_id")?;
             let rt = ctx.richtext(entity_id)?.ok_or_else(|| WsError::invalid_op("not a rich text"))?;

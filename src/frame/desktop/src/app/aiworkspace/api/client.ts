@@ -4,7 +4,7 @@
 import type {
   AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
-  DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo,
+  DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
 } from './types'
 import type { Transport } from './transport'
 
@@ -102,6 +102,18 @@ export class AiwsClient {
   procGet(ws: Ws, run_id: string) { return this.call<Result<RunView>>('proc.get', { ...ws, run_id }) }
   procApply(ws: Ws, run_id: string, session_id: string) { return this.call<Result<RunView>>('proc.apply', { ...ws, run_id, session_id }) }
   procCancel(ws: Ws, run_id: string) { return this.call<Result<{ state: string; already_applied: boolean; commit_id?: string }>>('proc.cancel', { ...ws, run_id }) }
+
+  // ---- wish runs (wish.xllm@1 / wish.mock@1, 许愿格 §13.1)
+  wishStart(ws: Ws, program: string, params: Record<string, Json>, idempotency_key: string) {
+    return this.call<Result<WishRunView>>('proc.start', { ...ws, program, params, idempotency_key })
+  }
+  wishGet(ws: Ws, run_id: string, choices?: WishChoices) {
+    return this.call<Result<WishRunView>>('proc.get', { ...ws, run_id, ...(choices ? { choices: choices as unknown as Json } : {}) })
+  }
+  wishApply(ws: Ws, run_id: string, plan_digest: string, session_id: string) {
+    return this.call<Result<WishRunView>>('proc.apply', { ...ws, run_id, plan_digest, session_id })
+  }
+  wishList(ws: Ws, wish_id: string, limit: number) { return this.call<Result<{ runs: WishRunView[] }>>('proc.list', { ...ws, wish_id, limit }) }
 
   // ---- write locks
   lockAcquire(ws: Ws, entity_ids: string[], session_id: string) {

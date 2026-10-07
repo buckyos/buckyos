@@ -267,7 +267,7 @@ export const MOCK_WISH_SOURCE = {
   html: '<div class="mock"><b>Mock 许愿格执行器</b><div id="status">初始化…</div></div>',
   css: 'body{margin:0;font:12px system-ui,sans-serif;color:#334155;background:#f8fafc}.mock{padding:8px}',
   js: MOCK_JS,
-  api_version: 1,
+  api_version: 2,
 }
 
 /** The payload of the `buckyos.block-def` entity that carries the Mock executor. */

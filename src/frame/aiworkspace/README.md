@@ -3,14 +3,19 @@
 Backend of the BuckyOS AI Workspace (phase one kernel, phase two structure). Design:
 [第一期核心架构设计与验证](<../../../doc/workspace/BuckyOS AI Workspace 第一期核心架构设计与验证.md>),
 [第一期内置对象详细设计](<../../../doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md>) (called "the design" below) and
-[第二期规划](<../../../doc/workspace/BuckyOS AI Workspace 第二期规划.md>) (the two trees, wishes, dependency records, freshness).
+[第二期规划](<../../../doc/workspace/BuckyOS AI Workspace 第二期规划.md>) (the two trees, wishes, dependency records, freshness) and
+[许愿格详细设计](<../../../doc/workspace/BuckyOS AI  Workspace 许愿格详细设计.md>) v0.2 (the real wish executor, W0–W4).
 
 ```text
 core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no tokio/fs/sqlite/clock/random);
                               anchor.rs: annotation anchors (target / range / quote) and per-type anchor adapters;
-                              freshness.rs: dependency-based freshness and relation queries (shared with the replica)
-store/     aiworkspace-store  SQLite storage, object store, packages, Mock runs, URL sources
-server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth
+                              freshness.rs: dependency-based freshness and relation queries (shared with the replica);
+                              wish.rs: wish v2 contracts and digests; markdown.rs: Markdown ⇄ rich text
+store/     aiworkspace-store  SQLite storage, object store, packages, Mock runs, URL sources;
+                              wish/: snapshot, context map, read tools, result collector, planner, run records
+server/    aiworkspace        process entry, kRPC dispatch, upload/download routes, auth;
+                              wish/: run orchestration, xllm adapter and host tools, Deno program runner, llm.map
+aiws/      aiws v2 package    program host (aiws.js, run.js), API doc for the model, prompts, renderer catalog (deno test)
 wasm/      aiworkspace-wasm   wasm-bindgen facade of core for the browser replica (`wasm/build.sh` writes it into the Desktop app)
 schemas/   richtext.basic.v1.json (single source for the Rust validator and the ProseMirror schema)
 fixtures/  project-workspace/commits.json (the shared sample as a commit sequence), vectors/
@@ -39,7 +44,10 @@ generic gateway route `/kapi/aiworkspace`. Every request is authenticated by the
 cargo test -p aiworkspace-core      # values, canonical ids, filters, rich text codec, planner, annotation anchors, phase2 (two trees, wishes, freshness)
 cargo test -p aiworkspace-store     # V01–V22, V24, write locks, Mock — against real SQLite files;
                                     # tests/replica.rs: the offline engine incl. the incremental rows a replica persists
-cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP
+cargo test -p aiworkspace           # V23 + crash recovery — against the real process over HTTP;
+                                    # tests/wish.rs, tests/quality.rs: wish runs through the real xllm loop and Deno
+                                    # with a scripted model (needs `deno` on PATH or AIWS_DENO)
+(cd frame/aiworkspace/aiws && deno test -A)   # the program host (temp dirs, a local test server)
 ```
 
 ## The two trees (phase two §4)
@@ -71,6 +79,39 @@ A result the user keeps against a later run ("保留人工修改") is re-recorde
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
 Format version is `0.2`; packages of `0.1` are refused with `UNSUPPORTED_VERSION` (no migration).
+
+## Wish runs (许愿格 v0.2)
+
+Two `proc` programs (design §13). Runs live in `local.sqlite` `runs` (never exported); working files in
+`<ws>/runs/<run_id>/{work,xllm}`, the `llm.map` cache in `<ws>/cache/llm_map/`.
+
+| Program | `params` |
+| --- | --- |
+| `wish.xllm@1` | `wish_id`, `stage: analyze \| execute \| rerun_program \| repair_program`, `parent_run_id?` + `feedback?` (a feedback round), `location?` (`{ surface_id, cell_id, selection, viewport }`, the task location of the map), `request?` (`aiws.request`) |
+| `wish.mock@1` | `wish_id`, `stage: execute`, `provided` — the browser Mock executor's results, planned and applied like a real run |
+
+States: `queued → snapshotting → running → validating → waiting_confirmation → applying → succeeded`, or
+`failed | cancelled | interrupted | conflict | rejected`. A service restart marks running runs `interrupted`
+(no automatic re-run); an `applying` run is reconciled through the Commit idempotency record
+`run/<run_id>/<plan_digest>`. `proc.get { run_id, choices? }` returns progress, the candidate and — while
+waiting — the preview of the plan for `choices` (`{ results: { <name>: keep | replace | new }, confirm_structure? }`);
+`proc.apply { run_id, plan_digest }` applies exactly that previewed plan in one Commit (origin `program`).
+
+- **Analyze** (`llm.plan`): the model reads `WORKSPACE.md` (the context map) and the read-only tools
+  `ws_outline / ws_find / ws_profile / ws_neighbors / ws_read / ws_query`, and delivers through
+  `submit_analysis` (checked on the spot). Applying writes `analysis` (`wish.analysis.v2`; `basis.digest`
+  is computed by core) and the named `inputs`.
+- **Execute** (`llm.code`): bash tool group plus the read tools and `run_program / put_result / check_results /
+  finish`. The program (`program/main.js`, `export default async function main(aiws)`) runs under Deno:
+  `--allow-read=<work> --allow-write=<work>/output --allow-net`, time and memory limits from the config.
+  Reads of undeclared data are appended to the inputs. Feedback rounds start from the parent's program
+  and direct results on a new snapshot; `repair_program` changes only the program.
+- **Rerun program**: no model; `llm.map` calls only for items not in the cache.
+
+Configuration: in service mode `AiWorkspaceSettings.wish` (models `llm.plan / llm.code / llm.chat` through
+AICC, iterations, timeouts, program memory, `llm.map` item limit, `deno`). Standalone:
+`--wish-config <json>` with `{ provider: { type: "openai", base_url, api_key_env }, analyze_model, … }`.
+Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` → `PATH`.
 
 ## Storage
 
@@ -121,7 +162,8 @@ string is used only for an invalid token, an unknown method or an unparsable req
 | `doc.checkpoint`, `doc.export` | `mode: "share" \| "personal_backup"`, `self_contained` |
 | `asset.begin_upload` → PUT → `asset.finish_upload` | `size`, `upload_id` |
 | `replica.bootstrap` | — then `GET /replica/<workspace_id>/<replica_id>` |
-| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` |
+| `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
+| `proc.list` | `wish_id?`, `limit?` — wish runs, newest first |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
 | `diag.list_unretained`, `diag.verify_refs` | |
 
@@ -134,6 +176,7 @@ HTTP routes (same port, `Authorization: Bearer <session token>`):
 | `GET /kapi/aiworkspace/export/<workspace_id>/<export_id>` | export package (zip) |
 | `GET /kapi/aiworkspace/replica/<workspace_id>/<replica_id>` | replica database built by `replica.bootstrap` |
 | `GET /kapi/aiworkspace/schemas/richtext.basic.v1.json` | rich text schema definition (no auth) |
+| `POST /kapi/aiworkspace/wish-host/<token>/llm_map` | `aiws.llm.map` of a running wish program; the token is the run's (no session) |
 
 Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|set_keys|unset_keys|set_write_policy|set_derived`,
 `tree.move|place`, `table.insert_records|delete_records|set_values|unset_values|set_body|add_field|update_field|delete_field|add_option|update_option|delete_option|migrate_field`,

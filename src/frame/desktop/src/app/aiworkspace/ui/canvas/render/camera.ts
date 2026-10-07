@@ -32,6 +32,9 @@ export class Camera {
 
   get viewport(): Viewport { return { x: this.x, y: this.y, zoom: this.zoom } }
 
+  /** The world rectangle the viewport shows. */
+  get visibleRect(): Rect { return { x: this.x, y: this.y, w: this.viewportSize.w / this.zoom, h: this.viewportSize.h / this.zoom } }
+
   /** Stable zoom used for LOD decisions (the value at the last settle). */
   settledZoom = 1
 

@@ -68,6 +68,13 @@ export class WorkspaceStore {
   readonly freshness: FreshnessService
   /** Wish passes and application (phase two §7). */
   readonly wish: WishService
+  /** Where the user works on the canvas: the task location a wish run starts from (许愿格 §5.2). The
+   * selection is the last one that was not just a wish Block (clicking the wish must not lose it). */
+  readonly canvasFocus: { surfaceId: string | null; selection: string[]; viewport: Placement | null } = { surfaceId: null, selection: [], viewport: null }
+
+  setCanvasFocus(patch: Partial<WorkspaceStore['canvasFocus']>) {
+    Object.assign(this.canvasFocus, patch)
+  }
   /** Last placement this window submitted per Block, for the layout-conflict notice (D1). */
   private readonly layoutIntents = new Map<string, { placement: Placement; orderKey?: string; parentId?: string; at: number }>()
   private notices: Notice[] = []

@@ -27,6 +27,8 @@ http = { workspace = true }
 bytes = { workspace = true }
 buckyos-kit = { workspace = true }
 buckyos-api = { path = "../../../kernel/buckyos-api" }
+agent_tool = { path = "../../agent_tool" }
+llm_context = { path = "../../llm_context" }
 
 [dev-dependencies]
 tempfile = { workspace = true }

@@ -3,6 +3,7 @@
 //! each Workspace has exactly one writer behind its mutex.
 
 pub mod auth;
+pub mod wish;
 
 use aiworkspace_core::{Code, WsError, WsResult};
 use aiworkspace_store::workspace::{CommitOpts, Workspace};
@@ -57,13 +58,14 @@ pub struct AppState {
     pub svc: Service,
     pub auth: Arc<dyn Authenticator>,
     pub limits: Limits,
+    pub wish: Arc<wish::WishRuntime>,
     heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     uploads: Mutex<HashMap<String, Upload>>,
 }
 
 impl AppState {
     /// `wake` receives hints for an external event channel (kevent in system mode).
-    pub fn new(mut svc: Service, auth: Arc<dyn Authenticator>, limits: Limits, wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>) -> Arc<AppState> {
+    pub fn new(mut svc: Service, auth: Arc<dyn Authenticator>, limits: Limits, wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: wish::WishConfig) -> Arc<AppState> {
         let heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>> = Arc::default();
         let hook_heads = heads.clone();
         svc.on_open = Some(Box::new(move |ws: &mut Workspace| {
@@ -91,10 +93,10 @@ impl AppState {
                 }
             }));
         }));
-        Arc::new(AppState { svc, auth, limits, heads, uploads: Mutex::new(HashMap::new()) })
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), heads, uploads: Mutex::new(HashMap::new()) })
     }
 
-    fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
+    pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
         let handle = self.svc.workspace(id)?;
         let mut guard = match handle.lock() {
             Ok(g) => g,
@@ -124,6 +126,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route(&format!("{HTTP_PATH}/replica/{{workspace_id}}/{{replica_id}}"), get(download_replica))
         .route(&format!("{HTTP_PATH}/schemas/richtext.basic.v1.json"), get(schema))
         .route(&format!("{HTTP_PATH}/healthz"), get(|| async { "ok" }))
+        .route(&format!("{HTTP_PATH}/wish-host/{{token}}/llm_map"), post(wish_llm_map))
         .with_state(state)
 }
 
@@ -296,12 +299,19 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
             r.as_object_mut().unwrap().remove("path");
             Ok(r)
         })?,
+        "proc.start" if wish::is_wish(s(p, "program")?) => {
+            wish::start(state, caller, ws_id()?, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)?
+        }
         "proc.start" => state.with_ws(ws_id()?, |ws| {
             ws.proc_start(caller, s(p, "program")?, p.get("params").unwrap_or(&Value::Null), s(p, "idempotency_key")?)
         })?,
+        "proc.get" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::get(state, caller, ws_id()?, s(p, "run_id")?, p.get("choices").unwrap_or(&Value::Null))?,
         "proc.get" => state.with_ws(ws_id()?, |ws| ws.proc_get(caller, s(p, "run_id")?))?,
+        "proc.apply" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::apply(state, caller, ws_id()?, p)?,
         "proc.apply" => state.with_ws(ws_id()?, |ws| ws.proc_apply(caller, s(p, "run_id")?, p.get("session_id").and_then(Value::as_str)))?,
+        "proc.cancel" if is_wish_run(state, ws_id()?, s(p, "run_id")?) => wish::cancel(state, caller, ws_id()?, s(p, "run_id")?)?,
         "proc.cancel" => state.with_ws(ws_id()?, |ws| ws.proc_cancel(caller, s(p, "run_id")?))?,
+        "proc.list" => wish::list(state, caller, ws_id()?, p)?,
         "lock.acquire" => state.with_ws(ws_id()?, |ws| ws.lock_acquire(caller, &strings(p, "entity_ids")?, s(p, "session_id")?))?,
         "lock.renew" => state.with_ws(ws_id()?, |ws| ws.lock_renew(caller, &strings(p, "lock_ids")?))?,
         "lock.release" => state.with_ws(ws_id()?, |ws| ws.lock_release(caller, &strings(p, "lock_ids")?))?,
@@ -317,6 +327,25 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         })?,
         _ => return Err(WsError::invalid_op(UNKNOWN_METHOD)),
     }))
+}
+
+/// Whether a run is a wish run (those are served by `wish::*`).
+fn is_wish_run(state: &Arc<AppState>, ws_id: &str, run_id: &str) -> bool {
+    state.with_ws(ws_id, |ws| Ok(ws.run_program(run_id))).ok().flatten().is_some_and(|p| wish::is_wish(&p))
+}
+
+/// `POST /kapi/aiworkspace/wish-host/<token>/llm_map`: a running wish program asks for per-item model
+/// judgements. The token names the stage (and proves it); nothing else is reachable through it.
+async fn wish_llm_map(State(state): State<Arc<AppState>>, Path(token): Path<String>, headers: HeaderMap, body: bytes::Bytes) -> Response {
+    let Some(stage) = state.wish.stage_by_token(&token) else { return (StatusCode::NOT_FOUND, Json(json!({ "error": "no running stage" }))).into_response() };
+    if headers.get("x-aiws-token").and_then(|v| v.to_str().ok()) != Some(token.as_str()) {
+        return (StatusCode::FORBIDDEN, Json(json!({ "error": "token mismatch" }))).into_response();
+    }
+    let req: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("invalid body: {e}") }))).into_response(),
+    };
+    Json(wish::llm::llm_map(&stage, &req).await).into_response()
 }
 
 /// `doc.wait_changes`: long poll; returns as soon as `head_seq > after_seq` or on timeout.
@@ -520,6 +549,10 @@ async fn download_replica(State(state): State<Arc<AppState>>, Path((workspace_id
 
 pub async fn serve(state: Arc<AppState>, listen: &str) -> std::io::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen).await?;
-    log::info!("aiworkspace listening on http://{}{}", listener.local_addr()?, HTTP_PATH);
+    let addr = listener.local_addr()?;
+    log::info!("aiworkspace listening on http://{}{}", addr, HTTP_PATH);
+    // wish programs call back over loopback for `llm.map`
+    let host = if addr.ip().is_unspecified() { format!("127.0.0.1:{}", addr.port()) } else { addr.to_string() };
+    *state.wish.host_base.lock().unwrap() = Some(format!("http://{host}{HTTP_PATH}"));
     axum::serve(listener, build_router(state)).await
 }

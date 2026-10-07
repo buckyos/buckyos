@@ -48,7 +48,7 @@ const blockAttrs = (node: PMNode): Record<string, string> => (node.attrs.block_i
 const blockIdFromDom = (dom: HTMLElement) => dom.getAttribute('data-block-id')
 
 /** Presentation only, keyed by node name. A node of the JSON without an entry here is rendered generically. */
-const nodeDom: Record<string, Pick<NodeSpec, 'toDOM' | 'parseDOM' | 'selectable' | 'draggable' | 'defining' | 'isolating'>> = {
+const nodeDom: Record<string, Pick<NodeSpec, 'toDOM' | 'parseDOM' | 'selectable' | 'draggable' | 'defining' | 'isolating' | 'code' | 'marks'>> = {
   paragraph: {
     toDOM: (node): DOMOutputSpec => ['p', blockAttrs(node), 0],
     parseDOM: [{ tag: 'p', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom) }) }],
@@ -70,6 +70,37 @@ const nodeDom: Record<string, Pick<NodeSpec, 'toDOM' | 'parseDOM' | 'selectable'
     defining: true,
     toDOM: (node): DOMOutputSpec => ['li', blockAttrs(node), 0],
     parseDOM: [{ tag: 'li', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom) }) }],
+  },
+  blockquote: {
+    defining: true,
+    toDOM: (node): DOMOutputSpec => ['blockquote', blockAttrs(node), 0],
+    parseDOM: [{ tag: 'blockquote', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom) }) }],
+  },
+  code_block: {
+    code: true,
+    marks: '',
+    defining: true,
+    toDOM: (node): DOMOutputSpec => ['pre', { ...blockAttrs(node), ...(node.attrs.language ? { 'data-language': String(node.attrs.language) } : {}) }, ['code', 0]],
+    parseDOM: [{ tag: 'pre', preserveWhitespace: 'full', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom), language: dom.getAttribute('data-language') ?? '' }) }],
+  },
+  horizontal_rule: {
+    selectable: true,
+    toDOM: (node): DOMOutputSpec => ['hr', blockAttrs(node)],
+    parseDOM: [{ tag: 'hr', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom) }) }],
+  },
+  table: {
+    isolating: true,
+    toDOM: (node): DOMOutputSpec => ['table', { ...blockAttrs(node), class: 'aiws-rt-table' }, ['tbody', 0]],
+    parseDOM: [{ tag: 'table', getAttrs: (dom) => ({ block_id: blockIdFromDom(dom) }) }],
+  },
+  table_row: {
+    toDOM: (): DOMOutputSpec => ['tr', 0],
+    parseDOM: [{ tag: 'tr' }],
+  },
+  table_cell: {
+    isolating: true,
+    toDOM: (node): DOMOutputSpec => [node.attrs.header === 1 ? 'th' : 'td', 0],
+    parseDOM: [{ tag: 'th', getAttrs: () => ({ header: 1 }) }, { tag: 'td', getAttrs: () => ({ header: 0 }) }],
   },
   object_embed: {
     selectable: true,

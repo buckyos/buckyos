@@ -25,7 +25,7 @@ import { TransportError } from '../api/transport'
 import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
-  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo,
+  type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
   type AnnotationContent, type ListAnnotationsParams, type Capability,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
@@ -634,6 +634,26 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   async procCancel(runId: string) {
     if (!this.isLive()) throw this.offlineFailure('无法取消运行')
     return this.direct.procCancel(runId)
+  }
+
+  // wish runs happen on the service: offline nothing is started, read or applied (许愿格 §14.2)
+  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>) {
+    if (!this.isLive()) throw this.offlineFailure('分析与执行在后台进行，现在没有开始')
+    // the service must see what this device saved first: a run never works from an older wish
+    if (this.offline.pending().some((row) => row.state === 'queued' || row.state === 'sending' || row.state === 'unknown')) throw new ServiceFailure({ code: 'PENDING_LOCAL_EDITS', retryable: true, detail: '本机还有未同步的修改：同步完成后再运行，避免后台按旧配置执行' })
+    return this.direct.wishStart(program, params)
+  }
+  async wishGet(runId: string, choices?: WishChoices) {
+    if (!this.isLive()) throw this.offlineFailure('无法读取运行状态')
+    return this.direct.wishGet(runId, choices)
+  }
+  async wishApply(runId: string, planDigest: string) {
+    if (!this.isLive()) throw this.offlineFailure('结果由后台应用，现在没有应用')
+    return this.direct.wishApply(runId, planDigest)
+  }
+  async wishList(wishId: string, limit?: number) {
+    if (!this.isLive()) throw this.offlineFailure('无法读取运行列表')
+    return this.direct.wishList(wishId, limit)
   }
 
   close() {

@@ -24,6 +24,22 @@
         { "of": ["paragraph", "bullet_list", "ordered_list"], "min": 0 }
       ]
     },
+    "blockquote": {
+      "group": "block", "block_id": true,
+      "content": [{ "of": ["paragraph", "heading", "bullet_list", "ordered_list", "code_block"], "min": 1 }]
+    },
+    "code_block": {
+      "group": "block", "block_id": true,
+      "attrs": { "language": { "type": "string", "default": "" } },
+      "content": [{ "of": ["text"], "min": 0 }]
+    },
+    "horizontal_rule": { "group": "block", "block_id": true, "atom": true },
+    "table": { "group": "block", "block_id": true, "content": [{ "of": ["table_row"], "min": 1 }] },
+    "table_row": { "content": [{ "of": ["table_cell"], "min": 1 }] },
+    "table_cell": {
+      "attrs": { "header": { "type": "integer", "min": 0, "max": 1, "default": 0 } },
+      "content": [{ "of": ["@inline"], "min": 0 }]
+    },
     "object_embed": {
       "group": "block", "block_id": true, "atom": true,
       "attrs": { "ref": { "type": "reference", "required": true, "target_types": ["buckyos.cell"] } }

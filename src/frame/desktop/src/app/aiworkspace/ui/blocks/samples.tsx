@@ -152,10 +152,56 @@ export const chartBlock: BlockDefinition = {
   create: (args) => [cellOp(args, 'sample.bar-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
 }
 
+/** A line over an ordered x field (dates, months, numbers): time series and trends. */
+function LineChart(context: RenderContext) {
+  const { data, error } = useTable(context)
+  const config = context.payload.config ?? {}
+  const xField = fieldId(data, typeof config.x === 'string' ? config.x : undefined, 'date') ?? fieldId(data, undefined, 'text')
+  const yField = fieldId(data, typeof config.y === 'string' ? config.y : undefined, 'number') ?? fieldId(data, undefined, 'decimal')
+  const points = useMemo(() => {
+    if (!data || !xField || !yField) return [] as { x: string; y: number }[]
+    const sums = new Map<string, number>()
+    for (const row of data.rows) { const x = String(row[xField] ?? ''); sums.set(x, (sums.get(x) ?? 0) + num(row[yField])) }
+    return [...sums].map(([x, y]) => ({ x, y })).sort((a, b) => a.x.localeCompare(b.x, 'zh-CN', { numeric: true }))
+  }, [data, xField, yField])
+  const name = (id: string | undefined) => data?.fields.find((f) => f.field_id === id)?.name ?? id ?? ''
+  const W = 400, H = 180, pad = 28
+  const max = Math.max(1, ...points.map((p) => p.y))
+  const min = Math.min(0, ...points.map((p) => p.y))
+  const sx = (i: number) => pad + (points.length <= 1 ? (W - 2 * pad) / 2 : (i * (W - 2 * pad)) / (points.length - 1))
+  const sy = (y: number) => H - pad - ((y - min) / (max - min || 1)) * (H - 2 * pad)
+  const color = typeof config.color === 'string' ? config.color : 'var(--cp-accent)'
+  return (
+    <div className="aiws-chart" data-testid={`aiws-line-${context.cell.entity_id}`}>
+      <div className="aiws-decl-label">{context.payload.title ?? `${name(yField)} 随 ${name(xField)}`}</div>
+      {error && <div className="aiws-error">{error}</div>}
+      <svg viewBox={`0 0 ${W} ${H}`} width="100%" role="img" aria-label={`${name(yField)} 折线图`}>
+        <line x1={pad} y1={H - pad} x2={W - pad} y2={H - pad} stroke="currentColor" opacity="0.3" />
+        <polyline fill="none" stroke={color} strokeWidth="2" points={points.map((p, i) => `${sx(i)},${sy(p.y)}`).join(' ')} />
+        {points.map((p, i) => (
+          <g key={p.x}>
+            <circle cx={sx(i)} cy={sy(p.y)} r="3" fill={color}><title>{`${p.x}：${p.y.toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`}</title></circle>
+            {(points.length <= 12 || i % Math.ceil(points.length / 12) === 0) && <text x={sx(i)} y={H - 8} fontSize="9" textAnchor="middle" fill="currentColor" opacity="0.7">{p.x}</text>}
+          </g>
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+export const lineChartBlock: BlockDefinition = {
+  type: 'sample.line-chart', version: 1, title: '折线图（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
+  defaultSize: { w: 420, h: 260 }, cost: { editor: false, html: false },
+  Static: LineChart,
+  actions: [{ id: 'open-source', label: '打开数据表', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
+  create: (args) => [cellOp(args, 'sample.line-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
+}
+
 export function registerSampleBlocks(): () => void {
   const offMetric = blockRegistry.register(metricBlock)
   const offChart = blockRegistry.register(chartBlock)
-  return () => { offMetric(); offChart() }
+  const offLine = blockRegistry.register(lineChartBlock)
+  return () => { offMetric(); offChart(); offLine() }
 }
 
 // ---- frame-sequence video preview (the AIGC demo's "final video"): static poster, explicit playback in view mode

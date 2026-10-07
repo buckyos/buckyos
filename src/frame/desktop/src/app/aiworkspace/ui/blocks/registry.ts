@@ -185,7 +185,7 @@ class BlockRegistry {
     if (definition.definitionKind) {
       if (!documentDefinition) return { ok: false, reason: 'definition_missing', detail: 'Block 定义不存在或无法读取' }
       if (documentDefinition.kind !== definition.definitionKind) return { ok: false, reason: 'invalid_definition', detail: `需要 ${definition.definitionKind} 定义` }
-      if (documentDefinition.kind === 'html' && (documentDefinition.html?.api_version ?? 1) !== HTML_API_VERSION) {
+      if (documentDefinition.kind === 'html' && (documentDefinition.html?.api_version ?? HTML_API_VERSION) !== HTML_API_VERSION) {
         return { ok: false, reason: 'unsupported_api', detail: `不支持 HTML API 版本 ${documentDefinition.html?.api_version}` }
       }
       definition = {

@@ -14,7 +14,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
-  type Subject, type VersionInfo,
+  type Subject, type VersionInfo, type WishChoices, type WishRunView,
 } from './types'
 
 export type SessionStatus =
@@ -144,6 +144,12 @@ export interface WorkspaceSession {
   procGet(runId: string): Promise<RunView>
   procApply(runId: string): Promise<RunView>
   procCancel(runId: string): Promise<{ state: string; already_applied: boolean; commit_id?: string }>
+
+  /** Wish runs on the service (need the backend): start a stage, read it (with a preview for `choices`), apply a previewed plan, list. */
+  wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>): Promise<WishRunView>
+  wishGet(runId: string, choices?: WishChoices): Promise<WishRunView>
+  wishApply(runId: string, planDigest: string): Promise<WishRunView>
+  wishList(wishId: string, limit?: number): Promise<WishRunView[]>
 
   close(): void
   /** Resolves once a closed session released what it held exclusively (replica database, holder lock). */
@@ -555,6 +561,17 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     return run
   }
   async procCancel(runId: string) { return unwrap(await this.client.procCancel(this.ws, runId)) }
+
+  async wishStart(program: 'wish.xllm@1' | 'wish.mock@1', params: Record<string, Json>) {
+    return unwrap(await this.client.wishStart(this.ws, program, params, `${this.sessionId}/wish/${randomId()}`))
+  }
+  async wishGet(runId: string, choices?: WishChoices) { return unwrap(await this.client.wishGet(this.ws, runId, choices)) }
+  async wishApply(runId: string, planDigest: string) {
+    const run = unwrap(await this.client.wishApply(this.ws, runId, planDigest, this.sessionId))
+    if (run.applied?.status === 'accepted') this.poke()
+    return run
+  }
+  async wishList(wishId: string, limit = 10) { return unwrap(await this.client.wishList(this.ws, wishId, limit)).runs }
 
   close() {
     this.closed = true

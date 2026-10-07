@@ -404,3 +404,36 @@
 .aiws-wish-candidate ul { margin: 2px 0; padding-left: 18px; }
 .aiws-wish-card { display: flex; flex-direction: column; gap: 4px; }
 .aiws-wish-card-prompt { white-space: pre-wrap; max-height: 120px; overflow: hidden; }
+
+/* rich text: quotes, code, rules and tables (Markdown results, 许愿格 §8.5) */
+.aiws-prose blockquote, .aiws-md blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--cp-border); color: var(--cp-text-secondary, inherit); }
+.aiws-prose pre, .aiws-md pre { background: var(--cp-surface-2); border-radius: 6px; padding: 6px 8px; overflow-x: auto; font-size: 12px; white-space: pre; }
+.aiws-prose hr, .aiws-md hr { border: none; border-top: 1px solid var(--cp-border); margin: 8px 0; }
+.aiws-rt-table, .aiws-md table { border-collapse: collapse; margin: 4px 0; font-size: 12px; }
+.aiws-rt-table td, .aiws-rt-table th, .aiws-md td, .aiws-md th { border: 1px solid var(--cp-border); padding: 2px 6px; text-align: left; vertical-align: top; }
+.aiws-rt-table th, .aiws-md th { background: var(--cp-surface-2); font-weight: 600; }
+
+/* wish v2 (许愿格 §14.1) */
+.aiws-wish-results { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.aiws-wish-result-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.aiws-wish-table-preview { overflow-x: auto; max-width: 100%; }
+.aiws-wish-record-preview { display: grid; grid-template-columns: max-content 1fr; gap: 2px 8px; margin: 2px 0; font-size: 12px; }
+.aiws-wish-record-preview div { display: contents; }
+.aiws-wish-record-preview dt { color: var(--cp-text-secondary, inherit); }
+.aiws-wish-record-preview dd { margin: 0; }
+.aiws-wish-image-preview img { max-width: 100%; max-height: 220px; }
+.aiws-wish-html-preview { width: 100%; height: 160px; border: 1px solid var(--cp-border); border-radius: 6px; background: #fff; }
+.aiws-wish-checks { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.aiws-wish-check.is-failed { color: var(--cp-danger, #d33); }
+.aiws-wish-check.is-passed .aiws-chip { color: var(--cp-success, #2a7); }
+.aiws-wish-progress { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.aiws-wish-feedback { display: flex; gap: 6px; align-items: flex-end; }
+.aiws-wish-feedback textarea { flex: 1 1 auto; }
+.aiws-wish-knowledge textarea { width: 100%; box-sizing: border-box; }
+.aiws-wish-oneline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aiws-wish-contract { width: 100%; }
+.aiws-wish-checklist { margin: 2px 0; padding-left: 18px; font-size: 12px; }
+.aiws-wish-program textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, monospace; font-size: 12px; }
+.aiws-md { font-size: 13px; }
+.aiws-md p { margin: 4px 0; }
+.aiws-md h3, .aiws-md h4, .aiws-md h5 { margin: 6px 0 4px; }

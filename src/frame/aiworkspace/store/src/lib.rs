@@ -8,6 +8,7 @@ pub mod reads;
 pub mod schema;
 pub mod service;
 pub mod urlsource;
+pub mod wish;
 pub mod workspace;
 
 pub use service::{Service, WsHandle};

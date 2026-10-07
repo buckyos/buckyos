@@ -24,18 +24,18 @@ function WishStatic(context: RenderContext) {
     <div className="aiws-wish-card aiws-block-static" data-testid={`aiws-wish-card-${id}`}>
       <div className="aiws-wish-head">
         <b>{context.payload.title ?? payload?.title ?? '许愿格'}</b>
-        <span className="aiws-chip aiws-chip-derived">{payload?.executor === 'mock' ? '模拟' : payload?.executor ?? ''}</span>
+        <span className="aiws-chip aiws-chip-derived">{payload?.executor === 'mock' ? '模拟' : payload?.executor === 'xllm' ? '模型' : payload?.executor ?? ''}</span>
         <FreshnessBadge entityId={id} />
       </div>
       <div className="aiws-wish-card-prompt">{payload?.prompt ?? '…'}</div>
-      <div className="aiws-muted">{payload?.inputs?.length ?? 0} 个输入 · {payload?.last_run ? `上次运行 ${payload.last_run.produced?.length ?? 0} 项结果` : '尚未运行'}{context.mode === 'edit' ? ' · 双击或“打开许愿格”进入流程' : ''}</div>
+      <div className="aiws-muted">{payload?.inputs?.length ?? 0} 个输入 · {payload?.last_run ? `上次运行 ${Object.keys(payload.last_run.result_bindings?.results ?? {}).length || (payload.last_run.produced?.length ?? 0)} 项结果${payload.last_run.checks?.failed ? `，${payload.last_run.checks.failed} 项检查未通过` : ''}` : '尚未运行'}{context.mode === 'edit' ? ' · 双击或“打开许愿格”进入流程' : ''}</div>
     </div>
   )
 }
 
 function WishEditorView(context: RenderContext) {
   if (!context.source) return null
-  return <WishPanel wishId={context.source.entity_id} readOnly={context.readOnlyReason !== null} compact />
+  return <WishPanel wishId={context.source.entity_id} cellId={context.cell.entity_id} readOnly={context.readOnlyReason !== null} compact />
 }
 
 export const wishBlock: BlockDefinition = {
@@ -52,7 +52,7 @@ export const wishBlock: BlockDefinition = {
     if (!args.store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(args.store.core.order_key_between(args.store.outline.childrenOf('data').filter((e) => e.entity_id !== 'canvas-content').at(-1)?.order_key ?? undefined, undefined)))
     if (args.existingSourceId) return [...ops, cellOp(args, 'wish', args.existingSourceId)]
     const payload: Record<string, Json> = {
-      title: args.title || '许愿格', prompt: args.title || '', executor: 'mock', output_mode: 'overwrite',
+      title: args.title || '许愿格', prompt: args.title || '', executor: 'xllm', output_mode: 'overwrite',
       output: { container_id: args.contentFolderId, surface_id: args.surfaceId, name: `${args.title || '许愿格'}的结果` },
     }
     return [...ops, createOp(args.dataId, 'buckyos.wish', args.contentFolderId, args.dataOrderKey, payload, args.title || `wish-${randomId().slice(0, 6)}`), cellOp(args, 'wish', args.dataId)]

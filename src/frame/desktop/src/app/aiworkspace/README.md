@@ -74,10 +74,12 @@ ui/
                           (extension sample 1: metric, bar chart, frame-sequence video)
   extensions/             declarative.tsx (interpreter of `buckyos.block-def` declarative definitions),
                           HtmlBlockHost.tsx + htmlRuntime.ts + bridge.ts (HTML extension Blocks: same-origin iframe,
-                          `window.aiws` JS API, snapshots, local fallback)
-  wish/                   WishService (analyze / execute / apply with read-set preconditions, overwrite or new results,
-                          dependency records, manual-modification choices), WishPanel, wishBlock, mockWishDef (the
-                          Mock executor as an HTML definition entity)
+                          `window.aiws` v2 API — named bindings, watch, typed writes in one batch —, snapshots,
+                          local fallback)
+  wish/                   WishService (service runs `wish.xllm@1` / `wish.mock@1`: analyze, execute, feedback,
+                          re-run / repair the program, preview with choices, apply by plan digest, history),
+                          WishPanel + WishCandidate + WishPreviews, wishBlock, mockWishDef (the Mock executor as an
+                          HTML definition entity)
   TableViewCell.tsx       virtualised table view, inline editing, filter / sort, conflicts; also the source mode
   tablePager.ts           keyset paging through doc.query, refresh from the change stream
   FieldManager.tsx        fields, options, migration pre-check
@@ -193,10 +195,11 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - **Blocks**: a front-end registry decides which Renderer shows which data; unknown renderers, unsupported versions,
   unreadable data and thrown renderers fall back inside the Block. Declarative and HTML definitions are document
   entities. HTML Blocks run same-origin (no sandbox, D16) through `window.aiws`.
-- **Wishes**: analyze (context prompt + inputs written back) → execute (read set fixed, candidate in memory) →
-  apply (one commit with preconditions, dependency records, result Blocks in a group; overwrite with version
-  history or a new group each run; manual edits ask keep / replace / new). Only the Mock executor exists; it is an
-  HTML definition entity and labels everything "模拟".
+- **Wishes** (许愿格 v0.2) run on the service: analyze (task description, named inputs, output contract, checks) →
+  execute (the model writes a program, the service runs it under Deno; candidate with previews and checks) →
+  feedback rounds → apply exactly the previewed plan (one commit: results, Blocks, program, refinements,
+  dependency records; manual edits ask keep / replace / new). "只重跑程序" needs no model. The Mock executor stays an
+  HTML definition entity; its results are planned and applied by the service (`wish.mock@1`) and labelled "模拟".
 - **Freshness** comes from `doc.freshness` (core) and is shown identically on wish Blocks, result Blocks, the data
   tree and the detail panels.
 

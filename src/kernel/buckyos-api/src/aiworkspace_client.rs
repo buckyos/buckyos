@@ -27,6 +27,45 @@ pub struct AiWorkspaceSettings {
     pub max_wait_ms: u64,
     /// Upper bound of one uploaded asset, in bytes (single chunk in this phase).
     pub max_asset_bytes: u64,
+    /// Wish runs (xllm executor, program runner).
+    pub wish: AiWorkspaceWishSettings,
+}
+
+/// Wish execution settings (doc/workspace 许愿格详细设计 §13.3). Models are AICC selectors (logical
+/// names such as `llm.code`, or exact `model@provider`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AiWorkspaceWishSettings {
+    pub analyze_model: String,
+    pub execute_model: String,
+    /// Model of `aiws.llm.map` (per-item judgements inside programs).
+    pub map_model: String,
+    /// Deno used to run wish programs; empty = `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno`, then `PATH`.
+    pub deno: String,
+    pub analyze_tool_iterations: u32,
+    pub execute_tool_iterations: u32,
+    /// Wall clock of one stage, seconds.
+    pub stage_timeout_secs: u64,
+    pub program_timeout_secs: u64,
+    pub program_memory_mb: u32,
+    pub llm_map_max_items: u32,
+}
+
+impl Default for AiWorkspaceWishSettings {
+    fn default() -> Self {
+        AiWorkspaceWishSettings {
+            analyze_model: "llm.plan".into(),
+            execute_model: "llm.code".into(),
+            map_model: "llm.chat".into(),
+            deno: String::new(),
+            analyze_tool_iterations: 30,
+            execute_tool_iterations: 60,
+            stage_timeout_secs: 1800,
+            program_timeout_secs: 120,
+            program_memory_mb: 1024,
+            llm_map_max_items: 2000,
+        }
+    }
 }
 
 impl Default for AiWorkspaceSettings {
@@ -36,6 +75,7 @@ impl Default for AiWorkspaceSettings {
             max_ops: 10_000,
             max_wait_ms: 30_000,
             max_asset_bytes: 32 * 1024 * 1024,
+            wish: AiWorkspaceWishSettings::default(),
         }
     }
 }

@@ -157,7 +157,7 @@ fn in_group(name: &str, group: &str) -> bool {
 }
 /// Container blocks hold child blocks (lists, list items); leaf blocks hold inline content.
 pub fn is_container_block(name: &str) -> bool {
-    matches!(name, "bullet_list" | "ordered_list" | "list_item")
+    matches!(name, "bullet_list" | "ordered_list" | "list_item" | "blockquote")
 }
 
 fn matches_of(of: &Value, child: &str) -> bool {
@@ -962,16 +962,18 @@ pub struct TextIndex {
 impl TextIndex {
     pub fn build(doc: &LoroDoc) -> TextIndex {
         let mut idx = TextIndex { blocks: Vec::new(), by_id: BTreeMap::new(), runs: HashMap::new() };
-        idx.walk(&doc.get_map("doc"));
+        idx.walk(&doc.get_map("doc"), "");
         idx
     }
 
-    fn walk(&mut self, map: &LoroMap) {
+    /// `owner`: the nearest block id above (table cells are textblocks without one of their own).
+    fn walk(&mut self, map: &LoroMap, owner: &str) {
         let Some(children) = as_list(map.get("children")) else { return };
         for i in 0..children.len() {
             let Some(m) = as_map(children.get(i)) else { continue };
             if !is_textblock(&node_name(&m).unwrap_or_default()) {
-                self.walk(&m);
+                let own = map_block_id(&m);
+                self.walk(&m, own.as_deref().unwrap_or(owner));
                 continue;
             }
             let block = self.blocks.len();
@@ -989,8 +991,8 @@ impl TextIndex {
                     }
                 }
             }
-            let block_id = map_block_id(&m).unwrap_or_default();
-            self.by_id.insert(block_id.clone(), block);
+            let block_id = map_block_id(&m).unwrap_or_else(|| owner.to_string());
+            self.by_id.entry(block_id.clone()).or_insert(block);
             self.blocks.push(TextBlock { block_id, chars });
         }
     }

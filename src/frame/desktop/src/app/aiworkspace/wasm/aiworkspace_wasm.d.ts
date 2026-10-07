@@ -88,6 +88,12 @@ export function core_version(): string;
 export function file_object_id(data: Uint8Array): string;
 
 /**
+ * Markdown → canonical rich text AST (the same conversion the service applies to written wish
+ * results). `links_json` maps `scheme:target` link destinations (e.g. `input:orders`) to references.
+ */
+export function markdown_to_richtext(markdown: string, prefix: string, links_json?: string | null): string;
+
+/**
  * Normalize a value for a field definition (same rules as a write).
  */
 export function normalize_value(field_def_json: string, value_json: string): string;
@@ -127,7 +133,22 @@ export function richtext_diff(entity_id: string, base_ast_json: string, target_a
  */
 export function richtext_schema(): string;
 
+/**
+ * Rich text AST → Markdown (what programs and models read back).
+ */
+export function richtext_to_markdown(ast_json: string): string;
+
 export function verify_object(id: string, canonical_text: string): void;
+
+/**
+ * Configuration digest of a wish payload (results record it; §4.3).
+ */
+export function wish_config_digest(payload_json: string): string;
+
+/**
+ * Whether a wish payload must be analysed before it can execute (§4.1).
+ */
+export function wish_needs_analysis(payload_json: string): boolean;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -138,6 +159,7 @@ export interface InitOutput {
     readonly chunk_id: (a: number, b: number, c: number) => void;
     readonly core_version: (a: number) => void;
     readonly file_object_id: (a: number, b: number, c: number) => void;
+    readonly markdown_to_richtext: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly normalize_value: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly object_id: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly order_key_between: (a: number, b: number, c: number, d: number, e: number) => void;
@@ -167,7 +189,10 @@ export interface InitOutput {
     readonly richtext_decode: (a: number, b: number, c: number) => void;
     readonly richtext_diff: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly richtext_schema: (a: number) => void;
+    readonly richtext_to_markdown: (a: number, b: number, c: number) => void;
     readonly verify_object: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly wish_config_digest: (a: number, b: number, c: number) => void;
+    readonly wish_needs_analysis: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export: (a: number) => void;
     readonly __wbindgen_add_to_stack_pointer: (a: number) => number;
     readonly __wbindgen_export2: (a: number, b: number) => number;

@@ -10,6 +10,7 @@ pub mod error;
 pub mod filter;
 pub mod freshness;
 pub mod id;
+pub mod markdown;
 pub mod materialize;
 pub mod model;
 pub mod order_key;
@@ -22,5 +23,6 @@ pub mod richtext;
 pub mod testkit;
 pub mod types;
 pub mod value;
+pub mod wish;
 
 pub use error::{Code, WsError, WsResult};

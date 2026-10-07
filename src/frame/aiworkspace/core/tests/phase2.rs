@@ -130,6 +130,11 @@ fn cells_without_source_and_block_definitions() {
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "kpi-1", "keys": [{ "key": "config", "value": { "blob": big }, "expect": { "rev": ws.head_seq } }] }]))), "LIMIT_EXCEEDED");
 }
 
+fn analysis(prompt: &str, context: &str) -> Value {
+    json!({ "schema_version": "wish.analysis.v2", "status": "ready", "prompt": prompt, "context_prompt": context,
+            "output_contract": { "results": [{ "name": "摘要", "type": "richtext", "approach": "direct" }] }, "checks": [], "blockers": [], "warnings": [] })
+}
+
 fn wish(id: &str, parent: &str, inputs: Value) -> Value {
     json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_WISH, "parent_id": parent, "order_key": "w", "name": id,
             "payload": { "title": "许愿格", "prompt": "总结表格", "executor": "mock", "inputs": inputs,
@@ -143,14 +148,14 @@ fn wishes_dependency_records_freshness_and_relations() {
     ws.ok(json!([table("t1", DATA_ID), record("r1", DATA_ID, "林")]));
     ws.ok(json!([{ "op": "table.insert_records", "source_id": "t1", "records": [{ "record_id": "row-1", "values": { "title": "a", "n": 1 } }] }]));
     // a wish declares its inputs; they are indexed (kind input) but do not block deletion
-    ws.ok(json!([wish("w1", "s1-content", json!([{ "entity_id": "t1" }, { "entity_id": "r1", "selector": { "kind": "doc_key", "key": "p:owner" } }]))]));
+    ws.ok(json!([wish("w1", "s1-content", json!([{ "entity_id": "t1", "name": "rows" }, { "entity_id": "r1", "name": "owner" }]))]));
     assert!(ws.store.refs.iter().any(|r| r.src_entity_id == "w1" && r.kind == "input" && r.dst_entity_id == "t1"));
     assert_eq!(code(&ws.fail(json!([wish("w-bad", "s1-content", json!([{ "entity_id": "ghost" }]))]))), "REFERENCE_BROKEN");
     assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "w-bad", "type_id": TYPE_WISH, "parent_id": "s1-content", "order_key": "w",
         "payload": { "prompt": "x", "executor": "gpt" } }]))), "INVALID_SCHEMA");
     // the analysis records which prompt it was derived from: editing the prompt flags "needs re-analysis"
     let a = ws.store.entities["w1"].key_rev("analysis");
-    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "analysis", "value": { "prompt": "总结表格", "context_prompt": "读取 t1 全部行与 r1.owner 后总结" }, "expect": { "rev": a } }] }]));
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "analysis", "value": analysis("总结表格", "读取 rows 全部行与 owner 后总结"), "expect": { "rev": a } }] }]));
     let alice = Access::full("alice");
     assert_eq!(entity_freshness(&ws.store, &alice, "w1").unwrap()["needs_analysis"], false);
     let pr = ws.store.entities["w1"].key_rev("prompt");
@@ -172,7 +177,8 @@ fn wishes_dependency_records_freshness_and_relations() {
           "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" }, "content": [{ "type": "text", "text": "共 1 行（模拟）" }] }] } } },
         { "op": "entity.set_derived", "entity_id": "sum-1", "derived": derived },
         cell("c-sum", "s1", Some("sum-1"), "richtext", json!({ "x": 0, "y": 0, "w": 300, "h": 200 })),
-        { "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "last_run", "value": { "run_id": "run-1", "state": "succeeded", "read_set": read_set, "produced": ["sum-1"] }, "expect": { "rev": 0 } }] }
+        { "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "last_run", "value": { "run_id": "run-1", "state": "succeeded", "read_set": read_set, "produced": ["sum-1"],
+            "result_bindings": { "results": { "摘要": { "type": "richtext", "entity_id": "sum-1", "approach": "direct" } } } }, "expect": { "rev": 0 } }] }
     ]));
     let d = ws.store.entities["sum-1"].derived.clone().unwrap();
     assert_eq!(d["generated_rev"], json!(apply));
@@ -328,4 +334,94 @@ fn packages_carry_dependency_records_and_refuse_old_formats() {
     let (old_id, text) = aiworkspace_core::canonical::named_object(aiworkspace_core::canonical::OBJ_TYPE_JSON, &old).unwrap();
     sink.0.insert(old_id.clone(), text);
     assert_eq!(load_ops(&sink, &old_id, &|_| None).err().map(|e| e.code.as_str().to_string()), Some("UNSUPPORTED_VERSION".to_string()));
+}
+
+/// 许愿格 v0.2 (§4, §6.2, §9.4, §12.1): input names and selectors, the core-computed analysis basis,
+/// configuration staleness, the current result group, the program asset, Block bindings and the
+/// folder-membership version cell.
+#[test]
+fn wish_v2_basis_config_groups_bindings() {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!(surface("s1", "free")));
+    ws.ok(json!([table("t1", DATA_ID), cell("view-1", "s1", Some("t1"), "table", json!({ "x": 0, "y": 0, "w": 300, "h": 200 }))]));
+    let alice = Access::full("alice");
+    // inputs: names are identifiers and unique; a table view must be a view of that table
+    ws.ok(json!([wish("w1", "s1-content", json!([{ "entity_id": "t1", "name": "sales", "selector": { "kind": "table_view", "cell_id": "view-1" } }]))]));
+    assert_eq!(code(&ws.fail(json!([wish("w2", "s1-content", json!([{ "entity_id": "t1", "name": "a" }, { "entity_id": "t1", "name": "a" }]))]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([wish("w2", "s1-content", json!([{ "entity_id": "t1", "name": "销售" }]))]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([wish("w2", "s1-content", json!([{ "entity_id": "t1", "selector": { "kind": "table_view", "cell_id": "s1" } }]))]))), "INVALID_OPERATION");
+    assert_eq!(code(&ws.fail(json!([wish("w2", "s1-content", json!([{ "entity_id": "t1", "selector": { "kind": "table_cell", "record_id": "r", "field_id": "n" } }]))]))), "INVALID_SCHEMA");
+    // the basis is computed by the core: a writer's digest is ignored
+    let mut a = analysis("总结表格", "读取 sales 后总结");
+    a["basis"] = json!({ "digest": "forged" });
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [
+        { "key": "analysis", "value": a, "expect": { "rev": 0 } },
+        { "key": "knowledge", "value": "销售额含税", "expect": { "rev": 0 } }] }]));
+    assert_ne!(ws.store.entities["w1"].payload["analysis"]["basis"]["digest"], "forged");
+    let f = entity_freshness(&ws.store, &alice, "w1").unwrap();
+    assert_eq!(f["needs_analysis"], false);
+    assert_eq!(f["status"], "none");
+    // knowledge changes the meaning: re-analysis needed; output mode does not
+    let om = ws.store.entities["w1"].key_rev("output_mode");
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "output_mode", "value": "new", "expect": { "rev": om } }] }]));
+    assert_eq!(entity_freshness(&ws.store, &alice, "w1").unwrap()["needs_analysis"], false);
+    let kr = ws.store.entities["w1"].key_rev("knowledge");
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "knowledge", "value": "销售额不含税", "expect": { "rev": kr } }] }]));
+    assert_eq!(entity_freshness(&ws.store, &alice, "w1").unwrap()["needs_analysis"], true);
+    // re-writing the analysis (as the host does when it appends inputs) refreshes the basis
+    let ar = ws.store.entities["w1"].key_rev("analysis");
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "analysis", "value": analysis("总结表格", "读取 sales 后总结"), "expect": { "rev": ar } }] }]));
+    assert_eq!(entity_freshness(&ws.store, &alice, "w1").unwrap()["needs_analysis"], false);
+    // a program needs its uploaded source
+    let program = json!({ "language": "js", "api_version": 2, "source": "not an object id", "digest": "b".repeat(64), "produces": ["摘要"] });
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "program", "value": program, "expect": { "rev": 0 } }] }]))), "INVALID_SCHEMA");
+    let object_id = "mix256:".to_string() + &"c".repeat(64);
+    let program = json!({ "language": "js", "api_version": 2, "source": object_id, "digest": "b".repeat(64), "produces": ["摘要"] });
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "program", "value": program, "expect": { "rev": 0 } }] }]))), "DEPENDENCY_UNAVAILABLE");
+    ws.store.assets.insert(object_id.clone(), AssetInfo { object_id: object_id.clone(), media_type: "text/plain".into(), size: 10 });
+
+    // two result groups: the wish follows the current one (result_bindings), not every group it ever produced
+    let members = ws.store.entities["t1"].key_rev(MEMBERS_KEY);
+    let read_set = json!([{ "entity_id": "t1", "selector": { "kind": "table_members" }, "version": { "mode": "follow", "rev": members } }]);
+    let config = aiworkspace_core::wish::config_digest(&ws.store.entities["w1"].payload);
+    let derived = |run: &str| json!({ "wish_id": "w1", "run_id": run, "executor": "xllm", "inputs": read_set, "config_digest": config, "approach": "direct", "result_key": "摘要" });
+    let doc = |id: &str| json!({ "op": "entity.create", "entity_id": id, "type_id": TYPE_RICHTEXT, "parent_id": "s1-content", "order_key": "x",
+        "payload": { "content": { "type": "doc", "content": [{ "type": "paragraph", "attrs": { "block_id": "p1" } }] } } });
+    // the old group was generated before a knowledge change (another configuration)
+    let mut old = derived("run-old");
+    old["config_digest"] = json!("0".repeat(32));
+    ws.ok(json!([doc("old"), { "op": "entity.set_derived", "entity_id": "old", "derived": old }]));
+    let lr = ws.store.entities["w1"].key_rev("last_run");
+    ws.ok(json!([doc("new"), { "op": "entity.set_derived", "entity_id": "new", "derived": derived("run-new") },
+        { "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "last_run", "value": { "run_id": "run-new", "read_set": read_set, "config_digest": config,
+            "result_bindings": { "results": { "摘要": { "type": "richtext", "entity_id": "new", "approach": "direct" } } } }, "expect": { "rev": lr } }] }]));
+    assert_eq!(entity_freshness(&ws.store, &alice, "old").unwrap()["config_changed"], true);
+    assert_eq!(entity_freshness(&ws.store, &alice, "old").unwrap()["status"], "stale");
+    let f = entity_freshness(&ws.store, &alice, "w1").unwrap();
+    assert_eq!(f["status"], "current", "{f}");
+    assert_eq!(f["results"][0]["entity_id"], "new");
+    // a new configuration (the program) makes the current group stale through its recorded digest
+    let pr = ws.store.entities["w1"].key_rev("program");
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "w1", "keys": [{ "key": "program", "value": program, "expect": { "rev": pr } }] }]));
+    assert!(ws.store.refs.iter().any(|r| r.src_entity_id == "w1" && r.kind == "asset" && r.dst_object_id == object_id));
+    let f = entity_freshness(&ws.store, &alice, "w1").unwrap();
+    assert_eq!((f["status"].as_str(), f["config_changed"].as_bool(), f["needs_analysis"].as_bool()), (Some("stale"), Some(true), Some(false)));
+    assert_eq!(entity_freshness(&ws.store, &alice, "new").unwrap()["config_changed"], true);
+
+    // Block bindings: indexed like source_ref (they block deleting the data), names are identifiers
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "html-1", "type_id": TYPE_CELL, "parent_id": "s1", "order_key": "h", "placement": { "x": 0, "y": 0, "w": 10, "h": 10 },
+        "payload": { "view": { "type": "acme.dash" }, "bindings": { "orders": { "entity_id": "t1" }, "summary": { "entity_id": "new" } } } }]));
+    assert!(ws.store.refs.iter().any(|r| r.src_entity_id == "html-1" && r.kind == "bind" && r.dst_entity_id == "new"));
+    let life = ws.store.entities["new"].life_rev;
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.delete", "entity_id": "new", "expect": { "rev": life } }]))), "REFERENCE_BROKEN");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "html-1", "keys": [{ "key": "bindings", "value": { "source": { "entity_id": "t1" } }, "expect": { "rev": ws.head_seq } }] }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "html-1", "keys": [{ "key": "bindings", "value": { "x": { "entity_id": "ghost" } }, "expect": { "rev": ws.head_seq } }] }]))), "REFERENCE_BROKEN");
+
+    // folder membership is a version cell: a new member changes it, a moved Block does not
+    let cell_of = |ws: &MemWorkspace| aiworkspace_core::plan::resolve_cell(&ws.store, &json!({ "entity_id": "s1-content", "selector": { "kind": "tree_children" } })).unwrap();
+    let before = cell_of(&ws);
+    ws.ok(json!([{ "op": "tree.place", "entity_id": "view-1", "placement": { "x": 9, "y": 9, "w": 300, "h": 200 } }]));
+    assert_eq!(cell_of(&ws), before);
+    ws.ok(json!([record("r-new", "s1-content", "王")]));
+    assert_ne!(cell_of(&ws), before);
 }

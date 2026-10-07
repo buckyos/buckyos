@@ -136,10 +136,14 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 
 // ---- Cell / TableView ----
 
-const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref"];
+const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings"];
+/// Named data bindings of a Block (`aiws` v2): at most this many names.
+pub const MAX_BINDINGS: usize = 32;
 /// Largest canonical size of a Block's `config` / a definition's body.
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_BLOCK_DEF_BYTES: usize = 512 * 1024;
+/// Version of the `window.aiws` Block host API (`aiws` v2) the wish planner writes into html results.
+pub const HTML_API_VERSION: u64 = 2;
 
 /// The four built-in views bind one fixed data type each; any other Renderer id is accepted with a
 /// known data type as source, or without a source (D6: the registry decides what it supports).
@@ -193,6 +197,42 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
             None => None,
         },
     };
+    match e.payload.get("bindings").cloned() {
+        None => {}
+        Some(Value::Null) => {
+            e.payload.remove("bindings");
+        }
+        Some(Value::Object(b)) => {
+            if b.len() > MAX_BINDINGS {
+                return Err(WsError::limit(format!("at most {MAX_BINDINGS} bindings")));
+            }
+            let mut norm = Map::new();
+            for (name, target) in b {
+                if !crate::wish::is_input_name(&name) || name == "source" {
+                    return Err(bad(format!("binding name {name:?} must be an identifier other than source")));
+                }
+                let t = target.as_object().ok_or_else(|| bad("binding must be { entity_id, selector? }"))?;
+                if t.keys().any(|k| !matches!(k.as_str(), "entity_id" | "selector")) {
+                    return Err(bad("binding: unknown key"));
+                }
+                if t.get("selector").is_some_and(|s| !s.is_object() || s.get("kind").and_then(Value::as_str).is_none()) {
+                    return Err(bad("binding.selector must be an object with kind"));
+                }
+                let r = normalize_reference(&json!({ "entity_id": t.get("entity_id").cloned().unwrap_or(Value::Null) }))?;
+                if importing || is_changed("bindings") {
+                    p.check_ref_target(&r, Some(DATA_SOURCE_TYPES))?;
+                }
+                let mut nt = Map::new();
+                nt.insert("entity_id".into(), r["entity_id"].clone());
+                if let Some(sel) = t.get("selector") {
+                    nt.insert("selector".into(), sel.clone());
+                }
+                norm.insert(name, Value::Object(nt));
+            }
+            e.payload.insert("bindings".into(), Value::Object(norm));
+        }
+        Some(_) => return Err(bad("bindings must be an object")),
+    }
     if let Some(d) = e.payload.get("def_ref").filter(|v| !v.is_null()) {
         let d = normalize_reference(d)?;
         if is_changed("def_ref") || importing {
@@ -458,14 +498,18 @@ fn validate_annotation(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow
 
 // ---- Wish (phase two §7.1) ----
 
-const WISH_KEYS: &[&str] = &["title", "prompt", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "last_run"];
+const WISH_KEYS: &[&str] = &["title", "prompt", "knowledge", "refinements", "analysis", "inputs", "executor", "output", "output_mode", "executor_config", "program", "last_run"];
 pub const MAX_PROMPT_CHARS: usize = 20_000;
 
-/// One input reference of a wish or of a dependency record: `{ entity_id, selector?, version: { mode: follow | fixed, rev? } }`.
-fn check_input(p: &Planner, v: &Value, require_target: bool) -> WsResult<Value> {
+/// One input reference of a wish or of a dependency record:
+/// `{ entity_id, selector?, version: { mode: follow | fixed, rev? }, label?, name?, appended_by? }`.
+/// A wish input (`wish`) selects *what* is read — the whole entity, a saved table view
+/// (`table_view { cell_id }`) or a table query (`table_query { filter?, sorts?, fields? }`); a
+/// dependency record lists the version cells that were read.
+fn check_input(p: &Planner, v: &Value, require_target: bool, wish: bool) -> WsResult<Value> {
     let o = v.as_object().ok_or_else(|| bad("input must be an object"))?;
     for k in o.keys() {
-        if !matches!(k.as_str(), "entity_id" | "selector" | "version" | "label") {
+        if !matches!(k.as_str(), "entity_id" | "selector" | "version" | "label" | "name" | "appended_by") {
             return Err(bad(format!("input: unknown key {k}")));
         }
     }
@@ -475,6 +519,31 @@ fn check_input(p: &Planner, v: &Value, require_target: bool) -> WsResult<Value> 
     if let Some(sel) = o.get("selector").filter(|s| !s.is_null()) {
         if !sel.is_object() || sel.get("kind").and_then(Value::as_str).is_none() || canonical_len(sel) > 4096 {
             return Err(bad("input.selector must be an object with kind"));
+        }
+        if wish {
+            match sel["kind"].as_str().unwrap_or("") {
+                "entity" => {}
+                "table_view" => {
+                    let cell = sel.get("cell_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("table_view selector needs cell_id"))?;
+                    if require_target {
+                        let c = p.ov.entity(cell)?.filter(|c| c.alive()).ok_or_else(|| WsError::invalid_op(format!("view {cell} does not exist")))?;
+                        let bound = c.payload.get("source_ref").and_then(reference_entity_id);
+                        if c.type_id != TYPE_CELL || c.payload.get("view").and_then(|v| v["type"].as_str()) != Some("table") || bound != Some(id) {
+                            return Err(WsError::invalid_op(format!("{cell} is not a table view of {id}")));
+                        }
+                    }
+                }
+                "table_query" => {
+                    let so = sel.as_object().unwrap();
+                    if so.keys().any(|k| !matches!(k.as_str(), "kind" | "filter" | "sorts" | "fields")) {
+                        return Err(bad("table_query selector: unknown key"));
+                    }
+                    if so.get("sorts").is_some_and(|x| !x.is_array()) || so.get("fields").is_some_and(|x| !x.as_array().is_some_and(|a| a.iter().all(Value::is_string))) {
+                        return Err(bad("table_query: sorts / fields must be arrays"));
+                    }
+                }
+                k => return Err(bad(format!("a wish input selects entity, table_view or table_query, not {k}"))),
+            }
         }
         out.insert("selector".into(), sel.clone());
     }
@@ -496,13 +565,25 @@ fn check_input(p: &Planner, v: &Value, require_target: bool) -> WsResult<Value> 
         }
         out.insert("label".into(), l.clone());
     }
+    if let Some(n) = o.get("name") {
+        if !n.as_str().is_some_and(crate::wish::is_input_name) {
+            return Err(bad("input.name must be an identifier ([A-Za-z_][A-Za-z0-9_]*)"));
+        }
+        out.insert("name".into(), n.clone());
+    }
+    if let Some(r) = o.get("appended_by") {
+        if !r.as_str().is_some_and(|s| !s.is_empty() && s.len() <= 128) {
+            return Err(bad("input.appended_by must be a run id"));
+        }
+        out.insert("appended_by".into(), r.clone());
+    }
     if require_target {
         p.check_ref_target(&json!({ "entity_id": id }), None)?;
     }
     Ok(Value::Object(out))
 }
 
-fn validate_wish(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+fn validate_wish(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     check_keys(&e.payload, WISH_KEYS, "wish")?;
     let importing = p.env.import;
     let is_changed = |k: &str| !importing && changed.map_or(true, |c| c.iter().any(|x| x == k));
@@ -522,21 +603,28 @@ fn validate_wish(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> 
         Some(Value::String(m)) if m == "overwrite" || m == "new" => {}
         Some(_) => return Err(bad("output_mode must be overwrite or new")),
     }
-    if let Some(a) = e.payload.get("analysis").filter(|v| !v.is_null()) {
-        let o = a.as_object().ok_or_else(|| bad("analysis must be an object"))?;
-        for k in o.keys() {
-            if !matches!(k.as_str(), "context_prompt" | "prompt" | "at" | "warnings" | "executor") {
-                return Err(bad(format!("analysis: unknown key {k}")));
+    for k in ["knowledge", "refinements", "analysis", "program"] {
+        if e.payload.get(k).is_some_and(Value::is_null) {
+            e.payload.remove(k);
+        }
+    }
+    if let Some(k) = e.payload.get("knowledge") {
+        crate::wish::check_knowledge(k)?;
+    }
+    if let Some(r) = e.payload.get("refinements") {
+        crate::wish::check_refinements(r)?;
+    }
+    if let Some(prog) = e.payload.get("program").cloned() {
+        let source = crate::wish::check_program(&prog)?.to_string();
+        if is_changed("program") || importing {
+            match p.ov.asset(&source)? {
+                Some(info) => {
+                    p.ov.assets.insert(source, info);
+                }
+                None if importing => {}
+                None => return Err(WsError::new(Code::DependencyUnavailable, format!("program source {source} has not been uploaded"))),
             }
         }
-        if !o.get("context_prompt").is_some_and(|v| v.as_str().is_some_and(|s| s.chars().count() <= MAX_PROMPT_CHARS * 2)) {
-            return Err(bad("analysis.context_prompt required"));
-        }
-        if !o.get("prompt").is_some_and(|v| v.as_str().is_some_and(|s| s.chars().count() <= MAX_PROMPT_CHARS)) {
-            return Err(bad("analysis.prompt (the prompt it was derived from) required"));
-        }
-    } else {
-        e.payload.remove("analysis");
     }
     if let Some(inputs) = e.payload.get("inputs").filter(|v| !v.is_null()).cloned() {
         let list = inputs.as_array().ok_or_else(|| bad("inputs must be an array"))?;
@@ -544,12 +632,26 @@ fn validate_wish(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> 
             return Err(WsError::limit("at most 200 inputs"));
         }
         let mut norm = Vec::new();
+        let mut names = BTreeSet::new();
         for item in list {
-            norm.push(check_input(p, item, is_changed("inputs") || importing)?);
+            let input = check_input(p, item, is_changed("inputs") || importing, true)?;
+            if let Some(n) = input.get("name").and_then(Value::as_str) {
+                if !names.insert(n.to_string()) {
+                    return Err(bad(format!("duplicate input name {n}")));
+                }
+            }
+            norm.push(input);
         }
         e.payload.insert("inputs".into(), Value::Array(norm));
     } else {
         e.payload.remove("inputs");
+    }
+    if let Some(a) = e.payload.get("analysis") {
+        crate::wish::check_analysis(a)?;
+    }
+    if e.payload.contains_key("analysis") && is_changed("analysis") {
+        // the basis is the core's statement of what the analysis was made from, never the writer's
+        crate::wish::with_basis(&mut e.payload);
     }
     if let Some(out) = e.payload.get("output").filter(|v| !v.is_null()) {
         let o = out.as_object().ok_or_else(|| bad("output must be an object"))?;
@@ -581,7 +683,10 @@ fn validate_wish(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> 
         return Err(bad("executor_config must be a small object"));
     }
     if e.payload.get("last_run").is_some_and(|c| !c.is_object() || canonical_len(c) > MAX_CONFIG_BYTES) {
-        return Err(bad("last_run must be a small object"));
+        return Err(WsError::limit("last_run must be an object of at most 64 KiB"));
+    }
+    if e.payload.get("analysis").is_some_and(|c| canonical_len(c) > MAX_CONFIG_BYTES * 2) {
+        return Err(WsError::limit("analysis is limited to 128 KiB"));
     }
     Ok(())
 }
@@ -617,6 +722,11 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
                 if !matches!(k.as_str(), "html" | "css" | "js" | "api_version") {
                     return Err(bad(format!("html: unknown key {k}")));
                 }
+            }
+            // format only: whether a version runs is the Block host's decision (D6), so a definition
+            // written for a newer host still travels and falls back locally
+            if h.get("api_version").is_some_and(|v| v.as_u64().is_none_or(|n| n == 0)) {
+                return Err(bad("html.api_version must be a positive integer"));
             }
         }
         _ => return Err(bad("kind must be declarative or html")),
@@ -656,7 +766,11 @@ fn validate_block_def(e: &mut EntityRow) -> WsResult<()> {
 pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value> {
     let o = v.as_object().ok_or_else(|| bad("derived must be an object"))?;
     for k in o.keys() {
-        if !matches!(k.as_str(), "wish_id" | "run_id" | "executor" | "inputs" | "generated_rev" | "simulated" | "at" | "output_mode" | "group" | "stale" | "stale_at_import" | "kept_manual") {
+        if !matches!(
+            k.as_str(),
+            "wish_id" | "run_id" | "executor" | "inputs" | "generated_rev" | "simulated" | "at" | "output_mode" | "group" | "stale" | "stale_at_import" | "kept_manual"
+                | "config_digest" | "result_key" | "approach" | "program_digest" | "model_judgment" | "external_data" | "mode"
+        ) {
             return Err(bad(format!("derived: unknown key {k}")));
         }
     }
@@ -673,7 +787,7 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
     }
     let mut norm = Vec::new();
     for i in inputs {
-        let mut input = check_input(p, i, false)?;
+        let mut input = check_input(p, i, false, false)?;
         if p.env.import {
             // a package's revisions belong to another deployment (§7.5 rule 4): the record is rebased onto
             // the versions the package itself carries, which were captured together with the result
@@ -690,10 +804,24 @@ pub fn check_derived(p: &Planner, v: &Value, content_rev: u64) -> WsResult<Value
     }
     out.insert("inputs".into(), Value::Array(norm));
     out.insert("generated_rev".into(), json!(content_rev));
-    for k in ["simulated", "at", "output_mode", "group"] {
+    for k in ["simulated", "at", "output_mode", "group", "model_judgment", "external_data"] {
         if let Some(x) = o.get(k) {
             out.insert(k.into(), x.clone());
         }
+    }
+    for k in ["config_digest", "result_key", "program_digest", "mode"] {
+        if let Some(x) = o.get(k) {
+            if !x.as_str().is_some_and(|s| !s.is_empty() && s.chars().count() <= 128) {
+                return Err(bad(format!("derived.{k} must be a short string")));
+            }
+            out.insert(k.into(), x.clone());
+        }
+    }
+    if let Some(a) = o.get("approach") {
+        if !matches!(a.as_str(), Some("program" | "direct")) {
+            return Err(bad("derived.approach must be program or direct"));
+        }
+        out.insert("approach".into(), a.clone());
     }
     if o.get("kept_manual") == Some(&json!(true)) {
         out.insert("kept_manual".into(), json!(true));
@@ -953,6 +1081,10 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             if let Some(d) = e.payload.get("def_ref") {
                 out.insert(ref_edge(&e.entity_id, "", "def", d));
             }
+            for (name, target) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
+                let s = selector_string(&json!({ "kind": "binding", "name": name }));
+                out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+            }
         }
         TYPE_WISH => {
             for (i, input) in e.payload.get("inputs").and_then(Value::as_array).into_iter().flatten().enumerate() {
@@ -993,6 +1125,7 @@ pub fn asset_object_id<'a>(type_id: &str, payload: &'a JsonMap) -> Option<&'a st
     match type_id {
         TYPE_ASSET => payload.get("object_id").and_then(Value::as_str),
         TYPE_CELL => payload.get("config")?.get("snapshot")?.get("object_id")?.as_str(),
+        TYPE_WISH => payload.get("program")?.get("source")?.as_str(),
         _ => None,
     }
 }

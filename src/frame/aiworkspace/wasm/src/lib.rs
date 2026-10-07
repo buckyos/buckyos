@@ -121,6 +121,38 @@ pub fn richtext_diff(entity_id: &str, base_ast_json: &str, target_ast_json: &str
     richtext::diff_blocks(entity_id, &base, &target, &index).map(|ops| json!(ops).to_string()).map_err(fail)
 }
 
+/// Markdown → canonical rich text AST (the same conversion the service applies to written wish
+/// results). `links_json` maps `scheme:target` link destinations (e.g. `input:orders`) to references.
+#[wasm_bindgen]
+pub fn markdown_to_richtext(markdown: &str, prefix: &str, links_json: Option<String>) -> Result<String, JsError> {
+    let links = match links_json {
+        Some(t) => parse(&t)?,
+        None => json!({}),
+    };
+    let resolve = |s: &str| links.get(s).cloned();
+    aiworkspace_core::markdown::to_richtext(markdown, prefix, &resolve).map(|v| v.to_string()).map_err(fail)
+}
+
+/// Rich text AST → Markdown (what programs and models read back).
+#[wasm_bindgen]
+pub fn richtext_to_markdown(ast_json: &str) -> Result<String, JsError> {
+    Ok(aiworkspace_core::markdown::from_richtext(&parse(ast_json)?))
+}
+
+/// Configuration digest of a wish payload (results record it; §4.3).
+#[wasm_bindgen]
+pub fn wish_config_digest(payload_json: &str) -> Result<String, JsError> {
+    let p = parse(payload_json)?;
+    Ok(aiworkspace_core::wish::config_digest(p.as_object().ok_or_else(|| JsError::new("payload must be an object"))?))
+}
+
+/// Whether a wish payload must be analysed before it can execute (§4.1).
+#[wasm_bindgen]
+pub fn wish_needs_analysis(payload_json: &str) -> Result<bool, JsError> {
+    let p = parse(payload_json)?;
+    Ok(aiworkspace_core::wish::needs_analysis(p.as_object().ok_or_else(|| JsError::new("payload must be an object"))?))
+}
+
 /// The offline replica: confirmed layer + pending submissions (design §6.3).
 #[wasm_bindgen]
 pub struct Replica {

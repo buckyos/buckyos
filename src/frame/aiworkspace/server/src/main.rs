@@ -17,6 +17,7 @@
 //! into the N-th commit (crash tests).
 
 use aiworkspace_server::auth::{Authenticator, RuntimeAuth, StaticTokens};
+use aiworkspace_server::wish::WishConfig;
 use aiworkspace_server::{AppState, Limits, Wake};
 use aiworkspace_store::urlsource::GeneratedSource;
 use aiworkspace_store::workspace::FailPoint;
@@ -37,9 +38,11 @@ fn main() {
         .arg(Arg::new("listen").long("listen").help("Address to listen on (standalone; default 127.0.0.1:4120)"))
         .arg(Arg::new("auth-file").long("auth-file").help("Static test identities JSON (standalone mode)"))
         .arg(Arg::new("fixture-sources").long("fixture-sources").action(ArgAction::SetTrue).help("Register the generated fixture:// data source (dev/test)"))
+        .arg(Arg::new("wish-config").long("wish-config").help("Wish runs (standalone): JSON { provider: { type, base_url, api_key_env }, analyze_model, execute_model, map_model, deno, … }"))
         .arg(Arg::new("log-level").long("log-level").default_value("info"))
         .get_matches();
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("tokio runtime");
+    // wish runs drive the xllm loop on worker threads: deep futures need more than the default stack
+    let rt = tokio::runtime::Builder::new_multi_thread().thread_stack_size(8 * 1024 * 1024).enable_all().build().expect("tokio runtime");
     if let Some(data_dir) = matches.get_one::<String>("data-dir") {
         let level = matches.get_one::<String>("log-level").unwrap().clone();
         env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
@@ -56,7 +59,17 @@ fn main() {
             });
         let listen = matches.get_one::<String>("listen").cloned().unwrap_or_else(|| "127.0.0.1:4120".to_string());
         let fixtures = matches.get_flag("fixture-sources");
-        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), Limits::default(), fixtures, None));
+        let mut wish = WishConfig::default();
+        if let Some(f) = matches.get_one::<String>("wish-config") {
+            match std::fs::read(f).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
+                Some(v) => wish.apply_json(&v),
+                None => {
+                    eprintln!("error: cannot read --wish-config {f}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        rt.block_on(run(PathBuf::from(data_dir), listen, Arc::new(tokens), Limits::default(), fixtures, None, wish));
     } else {
         init_logging("aiworkspace", true);
         rt.block_on(buckyos_service_main(matches.get_flag("fixture-sources")));
@@ -121,11 +134,13 @@ async fn buckyos_service_main(fixtures: bool) {
     });
     let listen = format!("127.0.0.1:{}", AIWORKSPACE_SERVICE_PORT);
     log::info!("aiworkspace buckyos mode: data in {}", data_dir.display());
-    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx)).await;
+    // models are reached through AICC with this service's own session
+    let wish = WishConfig::from_settings(&settings.wish, serde_json::json!({ "type": "buckyos" }));
+    run(data_dir, listen, Arc::new(RuntimeAuth), limits, fixtures, Some(tx), wish).await;
 }
 
 async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, limits: Limits, fixtures: bool,
-             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>) {
+             wake: Option<tokio::sync::mpsc::UnboundedSender<Wake>>, wish: WishConfig) {
     let mut svc = match Service::open(&data_dir) {
         Ok(s) => s,
         Err(e) => {
@@ -141,7 +156,7 @@ async fn run(data_dir: PathBuf, listen: String, auth: Arc<dyn Authenticator>, li
         svc.failpoint = FailPoint::parse(&spec);
         log::warn!("failpoint armed: {spec}");
     }
-    let state = AppState::new(svc, auth, limits, wake);
+    let state = AppState::new(svc, auth, limits, wake, wish);
     if let Err(e) = aiworkspace_server::serve(state, &listen).await {
         log::error!("server error on {listen}: {e}");
         eprintln!("server error on {listen}: {e}");

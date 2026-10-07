@@ -77,6 +77,13 @@ export interface DerivedRecord {
   stale_at_import?: boolean
   /** The user kept their manual version against a later run: it stands for that run's inputs. */
   kept_manual?: boolean
+  config_digest?: string
+  result_key?: string
+  approach?: 'program' | 'direct'
+  program_digest?: string
+  model_judgment?: boolean
+  external_data?: boolean
+  mode?: 'generate' | 'program'
 }
 
 export interface LockHolder {
@@ -198,34 +205,166 @@ export interface CellPayload {
   config?: Record<string, Json> & { snapshot?: BlockSnapshot }
   /** A Block definition entity this Block uses (blocks its deletion). */
   def_ref?: Reference
+  /** Named data bindings (`aiws` v2): `source_ref` is the binding called `source`. */
+  bindings?: Record<string, { entity_id: string; selector?: Selector }>
 }
 
 export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'
-export interface WishInput { entity_id: string; selector?: Selector; version?: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }; label?: string }
-export interface WishAnalysis { prompt: string; context_prompt: string; at?: string; warnings?: string[]; executor?: string }
+/** A wish input: what is read (`entity`, a saved table view, a table query) and the stable name programs use (许愿格 §4.1). */
+export interface WishInput { entity_id: string; selector?: Selector; version?: { mode: 'follow' | 'fixed'; rev?: number; hash?: string }; label?: string; name?: string; appended_by?: string }
+export type WishResultType = 'richtext' | 'record' | 'table' | 'table_columns' | 'image' | 'asset' | 'html' | 'video'
+export interface WishView { renderer: string; config?: Record<string, Json>; title?: string; size?: { w: number; h: number } }
+export interface WishContractResult { name: string; type: WishResultType; title?: string; approach: 'program' | 'direct'; key?: string[]; target?: string; views?: WishView[]; description?: string; fields?: string[] }
+export interface WishCheckDef { id: string; kind: 'program' | 'review'; text: string }
+export interface WishBlocker { code: string; message: string; input_label?: string; candidates?: string[] }
+/** `wish.analysis.v2` as persisted (handles already bound to ids; `basis.digest` computed by the core). */
+export interface WishAnalysis {
+  schema_version: 'wish.analysis.v2'
+  status: 'ready' | 'needs_input'
+  prompt: string
+  context_prompt: string
+  output_contract: { results: WishContractResult[]; placement?: string; dynamic?: boolean }
+  checks: WishCheckDef[]
+  blockers: WishBlocker[]
+  warnings: string[]
+  basis?: { digest?: string; reads?: DerivedInput[] }
+  run_id?: string
+  at?: string
+  executor?: string
+  summary?: string
+}
+export interface WishRefinement { text: string; at?: string; run_id?: string }
+export interface WishProgram { language: 'js'; api_version: number; source: string; digest: string; produces: string[]; run_id?: string; edited_by?: string }
+export interface WishResultBinding { type: WishResultType; entity_id: string; approach?: 'program' | 'direct'; title?: string; cells?: string[]; key?: string[]; fields?: Record<string, string>; def_id?: string; target?: string }
+export interface WishCheckSummary { passed: number; failed: number; not_run: number; review: number; items: { id: string; kind: string; status: string; text: string }[] }
 export interface WishLastRun {
   run_id: string
   state: 'succeeded' | 'failed' | 'cancelled'
   at?: string
+  seq?: number
+  mode?: 'generate' | 'program'
+  executor?: string
   read_set?: DerivedInput[]
   produced?: string[]
-  /** Result names that existed in the previous run but were not generated this time (§7.3). */
+  /** Results of the previous group that were not generated this time (not deleted, §10.2). */
   missing?: string[]
   group?: string
   simulated?: boolean
+  config_digest?: string
+  program_digest?: string
+  checks?: WishCheckSummary
+  result_bindings?: { group?: string; folder?: string; results: Record<string, WishResultBinding> }
   error?: string
 }
 export interface WishPayload {
   title?: string
   prompt: string
+  knowledge?: string
+  refinements?: WishRefinement[]
   analysis?: WishAnalysis
   inputs?: WishInput[]
   executor: WishExecutor
   output?: { container_id?: string; surface_id?: string; name: string; type?: string }
   output_mode?: 'overwrite' | 'new'
   executor_config?: Record<string, Json>
+  program?: WishProgram
   last_run?: WishLastRun
 }
+
+// ---- wish runs on the service (proc.* with wish.xllm@1 / wish.mock@1)
+
+export type WishStage = 'analyze' | 'execute' | 'rerun_program' | 'repair_program'
+export type WishRunState = 'queued' | 'snapshotting' | 'running' | 'validating' | 'waiting_confirmation' | 'applying' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted' | 'conflict' | 'rejected'
+export interface WishRunProgress {
+  phase?: string
+  activity?: string
+  tool_calls?: number
+  program_runs?: number
+  llm_requests?: number
+  waiting_model?: boolean
+  model?: string
+  last_tool?: string
+  last_command?: string
+  llm_map?: { calls: number; cached: number; items: number }
+  warning?: string
+}
+export interface WishResult {
+  name: string
+  type: WishResultType
+  title?: string
+  approach?: 'program' | 'direct'
+  views?: WishView[]
+  table?: { fields: { name: string; type?: string; options?: string[] }[]; key: string[]; rows: Record<string, Json>[] }
+  columns?: { target: string; target_id: string; fields: { name: string; type?: string }[]; values: Record<string, Record<string, Json>> }
+  record?: { properties: { name: string; type: string }[]; props: Record<string, Json> }
+  markdown?: string
+  file?: { media_type: string; size: number; image?: { width: number; height: number }; object_id?: string; file_name?: string }
+  html?: { html: string; css?: string; js?: string; bindings?: Record<string, string> }
+}
+export interface WishCheckResult { id: string; kind: 'program' | 'review'; text: string; status: 'passed' | 'failed' | 'not_run' | 'review'; detail?: Json; self_assessment?: Json }
+export interface WishCandidate {
+  results?: WishResult[]
+  facts?: Record<string, Json>
+  checks?: WishCheckResult[]
+  summary?: string
+  assumptions?: string[]
+  warnings?: string[]
+  review_notes?: Json[]
+  uncited_numbers?: { result: string; numbers: string[] }[]
+  external_data?: string[]
+  model_judgment?: string[]
+  refinements?: WishRefinement[]
+  program?: { digest: string; object_id?: string; produces?: string[] } | null
+  appended_inputs?: WishInput[]
+  mode?: 'generate' | 'program'
+  simulated?: boolean
+  /** Analysis stage. */
+  analysis?: WishAnalysis
+  inputs?: WishInput[]
+}
+export interface WishPlanChange { kind: string; field?: string; count?: number; destructive?: boolean; from?: string; to?: string; type?: string }
+export interface WishPlanSummary {
+  kind?: 'analysis'
+  mode?: 'overwrite' | 'new'
+  simulated?: boolean
+  group?: { group_id: string; folder_id: string; surface_id: string | null; exists: boolean; rect: Placement | null; title: string }
+  results?: { name: string; type: WishResultType; title?: string; entity_id: string; action: 'create' | 'update' | 'unchanged' | 'keep_manual' | 'new_copy'; approach?: string; blocks?: number }[]
+  missing?: { name: string; entity_id: string }[]
+  manual?: { name: string; entity_id: string; cells?: number; field_deleted?: string }[]
+  structure?: { name: string; entity_id: string; changes: WishPlanChange[]; rows_before?: number; rows_after?: number }[]
+  destructive?: boolean
+  appended_inputs?: WishInput[]
+  program?: { from: string | null; to: string } | null
+  refinements?: WishRefinement[]
+  checks?: WishCheckResult[]
+  failed_checks?: number
+  problems: string[]
+  operations?: number
+  status?: string
+  inputs?: WishInput[]
+}
+export interface WishRunView {
+  run_id: string
+  program: 'wish.xllm@1' | 'wish.mock@1'
+  state: WishRunState
+  stage: WishStage
+  wish_id: string
+  params: Record<string, Json>
+  simulated: boolean
+  created_at: string
+  updated_at: string
+  warnings?: Json
+  error?: (ServiceError & { data?: Json }) | null
+  usage?: Json
+  progress?: WishRunProgress | null
+  candidate?: WishCandidate | null
+  preview?: { plan_digest: string; ready: boolean; summary: WishPlanSummary }
+  applied?: { plan_digest: string; status: 'accepted' | 'conflict' | 'rejected'; commit: CommitResult }
+  parent_run_id?: string | null
+  feedback?: string | null
+  program_log?: string | null
+}
+export interface WishChoices { results?: Record<string, 'keep' | 'replace' | 'new'>; confirm_structure?: boolean }
 
 export interface BlockDefPayload {
   def_id: string
@@ -272,12 +411,24 @@ export interface FreshnessInfo {
   run_id?: string | null
   executor?: string | null
   simulated?: boolean
+  /** Generated under another configuration than the wish has now. */
+  config_changed?: boolean
+  approach?: 'program' | 'direct' | null
+  result_key?: string | null
+  external_data?: boolean
+  model_judgment?: boolean
   /** Wishes only. */
   wish?: boolean
   needs_analysis?: boolean
+  analysis_status?: 'ready' | 'needs_input' | null
   input_problems?: { entity_id: string; reason: string }[]
   last_run?: WishLastRun | null
   produced?: string[]
+  /** The current result group, per logical result. */
+  results?: { name: string; type: string; entity_id?: string; approach?: string | null; status: FreshnessStatus; manual_modified?: boolean; external_data?: boolean; model_judgment?: boolean }[]
+  /** Program results are current but written ones are not: the text needs regenerating. */
+  direct_stale?: boolean
+  checks?: WishCheckSummary | null
   error?: ServiceError
 }
 

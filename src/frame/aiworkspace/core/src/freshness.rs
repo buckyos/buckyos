@@ -151,6 +151,25 @@ fn record_freshness(ctx: &dyn ReadCtx, access: &Access, inputs: &[Value], visite
     Ok((status, lines, upstream))
 }
 
+fn status_of(s: &str) -> Status {
+    match s {
+        "stale" => Status::Stale,
+        "upstream_stale" => Status::UpstreamStale,
+        "unavailable" => Status::Unavailable,
+        "unknown" => Status::Unknown,
+        "none" => Status::None,
+        _ => Status::Current,
+    }
+}
+
+/// The configuration digest of the wish now, when it exists and may be read.
+fn wish_config_now(ctx: &dyn ReadCtx, access: &Access, wish_id: &str) -> WsResult<Option<String>> {
+    match ctx.entity(wish_id)? {
+        Some(w) if w.alive() && w.type_id == TYPE_WISH && access.can_read(ctx, &w)? => Ok(Some(crate::wish::config_digest(&w.payload))),
+        _ => Ok(None),
+    }
+}
+
 fn entity_freshness_inner(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, visited: &mut BTreeSet<String>, depth: usize) -> WsResult<Value> {
     let Some(derived) = &e.derived else { return Ok(json!({ "entity_id": e.entity_id, "status": Status::None.as_str() })) };
     let inputs: Vec<Value> = derived.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
@@ -159,6 +178,16 @@ fn entity_freshness_inner(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, vis
     let imported_stale = derived.get("stale_at_import") == Some(&json!(true));
     if imported_stale {
         status = worse(status, Status::Stale);
+    }
+    // generated under another configuration (prompt, knowledge, refinements, inputs, program…)
+    let mut config_changed = false;
+    if let (Some(recorded), Some(wish)) = (derived.get("config_digest").and_then(Value::as_str), derived.get("wish_id").and_then(Value::as_str)) {
+        if let Some(now) = wish_config_now(ctx, access, wish)? {
+            if now != recorded {
+                config_changed = true;
+                status = worse(status, Status::Stale);
+            }
+        }
     }
     let generated_rev = derived.get("generated_rev").and_then(Value::as_u64).unwrap_or(0);
     let changed: Vec<Value> = lines.iter().filter(|l| l["changed"] == json!(true)).cloned().collect();
@@ -171,11 +200,17 @@ fn entity_freshness_inner(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow, vis
         // the content moved on after generation and not through the wish (a later run re-records)
         "manual_modified": e.content_rev > generated_rev,
         "imported_stale": imported_stale,
+        "config_changed": config_changed,
         "generated_rev": generated_rev,
         "content_rev": e.content_rev,
         "wish_id": derived.get("wish_id"),
         "run_id": derived.get("run_id"),
         "executor": derived.get("executor"),
+        "approach": derived.get("approach"),
+        "result_key": derived.get("result_key"),
+        // read from outside the Workspace by the program: that part cannot be confirmed (§9.3)
+        "external_data": derived.get("external_data").cloned().unwrap_or(json!(false)),
+        "model_judgment": derived.get("model_judgment").cloned().unwrap_or(json!(false)),
         "simulated": derived.get("simulated").cloned().unwrap_or(json!(false)),
     }))
 }
@@ -192,71 +227,114 @@ pub fn entity_freshness(ctx: &dyn ReadCtx, access: &Access, id: &str) -> WsResul
     entity_freshness_inner(ctx, access, &e, &mut visited, 0)
 }
 
-/// A wish: its `last_run.read_set` (the versions its last execution read) against now, plus whether
-/// its analysis still matches its prompt.
+/// A wish: the state of its **current** result group (`last_run.result_bindings`; earlier
+/// comparison groups keep their own state and do not make the newest one look stale), whether its
+/// analysis still matches what it was made from, and whether its declared inputs are still there.
+/// The documents whose rules or values the analysis wrote into its task description
+/// (`analysis.basis.reads`, §8.1): changed since → the analysis must be made again.
+pub fn analysis_sources_changed(ctx: &dyn ReadCtx, payload: &JsonMap) -> WsResult<Vec<Value>> {
+    let mut changed = Vec::new();
+    for r in payload.get("analysis").and_then(|a| a.get("basis")).and_then(|b| b.get("reads")).and_then(Value::as_array).into_iter().flatten() {
+        let target = json!({ "entity_id": r.get("entity_id").cloned().unwrap_or(Value::Null), "selector": r.get("selector").cloned().unwrap_or(json!({ "kind": "entity" })) });
+        let now = resolve_cell(ctx, &target).ok();
+        if now.is_none() || now != recorded_cell(r) {
+            changed.push(r.clone());
+        }
+    }
+    Ok(changed)
+}
+
 fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult<Value> {
-    let prompt = e.payload.get("prompt").and_then(Value::as_str).unwrap_or("");
-    let analysis = e.payload.get("analysis");
-    let needs_analysis = match analysis {
-        None => true,
-        Some(a) => a.get("prompt").and_then(Value::as_str) != Some(prompt),
-    };
+    let sources_changed = analysis_sources_changed(ctx, &e.payload)?;
+    let needs_analysis = crate::wish::needs_analysis(&e.payload) || !sources_changed.is_empty();
+    let analysis_status = e.payload.get("analysis").and_then(|a| a.get("status")).cloned().unwrap_or(Value::Null);
     let declared: Vec<Value> = e.payload.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
     // declared inputs: are they all still there and readable?
     let mut input_problems = Vec::new();
     for input in &declared {
         let id = input.get("entity_id").and_then(Value::as_str).unwrap_or("");
         match ctx.entity(id)? {
-            Some(t) if t.alive() && access.can_read(ctx, &t)? => {}
+            Some(t) if t.alive() && access.can_read(ctx, &t)? => {
+                if let Some(cell) = input.get("selector").filter(|s| s["kind"] == json!("table_view")).and_then(|s| s["cell_id"].as_str()) {
+                    if !ctx.entity(cell)?.is_some_and(|c| c.alive()) {
+                        input_problems.push(json!({ "entity_id": id, "reason": "view_missing", "cell_id": cell }));
+                    }
+                }
+            }
             Some(t) if t.alive() => input_problems.push(json!({ "entity_id": id, "reason": "unreadable" })),
             _ => input_problems.push(json!({ "entity_id": id, "reason": "missing" })),
         }
     }
     let last_run = e.payload.get("last_run");
     let read_set: Vec<Value> = last_run.and_then(|r| r.get("read_set")).and_then(Value::as_array).cloned().unwrap_or_default();
+    let config_now = crate::wish::config_digest(&e.payload);
+    let config_changed = last_run.and_then(|r| r.get("config_digest")).and_then(Value::as_str).is_some_and(|d| d != config_now);
     let mut visited = BTreeSet::new();
     visited.insert(e.entity_id.clone());
-    // the results it produced carry the authoritative records (they survive import; the wish's own
-    // read set holds this deployment's revisions only)
-    let mut produced = Vec::new();
-    for r in ctx.refs_to(&e.entity_id)? {
-        if r.kind == "produced" {
-            if let Some(res) = ctx.entity(&r.src_entity_id)?.filter(|x| x.alive() && x.derived.is_some()) {
-                if access.can_read(ctx, &res)? {
-                    produced.push(res);
-                }
+    let bindings = crate::wish::current_results(&e.payload);
+    let mut results = Vec::new();
+    let (mut status, mut lines, mut upstream) = (Status::Current, Vec::<Value>::new(), Vec::<Value>::new());
+    let mut merge = |st: Status, ls: &Value, up: &Value, status: &mut Status| {
+        *status = worse(*status, st);
+        for l in ls.as_array().into_iter().flatten() {
+            if !lines.contains(l) {
+                lines.push(l.clone());
             }
         }
-    }
-    let (status, lines, upstream) = if !produced.is_empty() {
-        let (mut st, mut ls, mut up) = (Status::Current, Vec::new(), Vec::new());
-        for res in &produced {
-            let f = entity_freshness_inner(ctx, access, res, &mut visited.clone(), 0)?;
-            let s = match f["status"].as_str() {
-                Some("stale") => Status::Stale,
-                Some("upstream_stale") => Status::UpstreamStale,
-                Some("unavailable") => Status::Unavailable,
-                Some("unknown") => Status::Unknown,
-                _ => Status::Current,
-            };
-            st = worse(st, s);
-            for l in f["inputs"].as_array().into_iter().flatten() {
-                if !ls.contains(l) {
-                    ls.push(l.clone());
-                }
-            }
-            for u in f["upstream"].as_array().into_iter().flatten() {
-                if !up.contains(u) {
-                    up.push(u.clone());
-                }
+        for u in up.as_array().into_iter().flatten() {
+            if !upstream.contains(u) {
+                upstream.push(u.clone());
             }
         }
-        (st, ls, up)
-    } else if last_run.is_none() {
-        (Status::None, Vec::new(), Vec::new())
-    } else {
-        record_freshness(ctx, access, &read_set, &mut visited, 0)?
     };
+    let mut produced = Vec::new();
+    if !bindings.is_empty() {
+        for (name, b) in &bindings {
+            let ty = b.get("type").and_then(Value::as_str).unwrap_or("");
+            let id = b.get("entity_id").and_then(Value::as_str).unwrap_or("");
+            let approach = b.get("approach").cloned().unwrap_or(Value::Null);
+            if ty == "table_columns" {
+                // derived columns live on an input table: their record is the run's read set
+                let (mut st, ls, up) = record_freshness(ctx, access, &read_set, &mut visited.clone(), 0)?;
+                if config_changed {
+                    st = worse(st, Status::Stale);
+                }
+                merge(st, &json!(ls), &json!(up), &mut status);
+                results.push(json!({ "name": name, "type": ty, "entity_id": id, "approach": approach, "status": st.as_str() }));
+                continue;
+            }
+            match ctx.entity(id)? {
+                Some(res) if res.alive() && res.derived.is_some() && access.can_read(ctx, &res)? => {
+                    let f = entity_freshness_inner(ctx, access, &res, &mut visited.clone(), 0)?;
+                    let st = status_of(f["status"].as_str().unwrap_or("none"));
+                    merge(st, &f["inputs"], &f["upstream"], &mut status);
+                    produced.push(res.entity_id.clone());
+                    results.push(json!({ "name": name, "type": ty, "entity_id": id, "approach": f["approach"].clone(), "status": st.as_str(),
+                                         "manual_modified": f["manual_modified"], "external_data": f["external_data"], "model_judgment": f["model_judgment"] }));
+                }
+                Some(res) if res.alive() && !access.can_read(ctx, &res)? => {
+                    status = worse(status, Status::Unknown);
+                    results.push(json!({ "name": name, "type": ty, "approach": approach, "status": "unknown" }));
+                }
+                _ => {
+                    status = worse(status, Status::Unavailable);
+                    results.push(json!({ "name": name, "type": ty, "entity_id": id, "approach": approach, "status": "unavailable", "reason": "missing" }));
+                }
+            }
+        }
+    } else if last_run.is_none() {
+        status = Status::None;
+    } else {
+        let (st, ls, up) = record_freshness(ctx, access, &read_set, &mut visited, 0)?;
+        merge(st, &json!(ls), &json!(up), &mut status);
+    }
+    if config_changed && status != Status::None {
+        status = worse(status, Status::Stale);
+    }
+    // only re-running the program refreshes program results; written text then needs regenerating (§9.2)
+    let direct_stale = results.iter().any(|r| r["approach"] == json!("direct") && r["status"] == json!("stale"))
+        && results.iter().filter(|r| r["approach"] == json!("program")).all(|r| r["status"] == json!("current"))
+        && results.iter().any(|r| r["approach"] == json!("program"));
     let changed: Vec<Value> = lines.iter().filter(|l| l["changed"] == json!(true)).cloned().collect();
     Ok(json!({
         "entity_id": e.entity_id,
@@ -265,9 +343,16 @@ fn wish_freshness(ctx: &dyn ReadCtx, access: &Access, e: &EntityRow) -> WsResult
         "changed_inputs": changed,
         "upstream": upstream,
         "needs_analysis": needs_analysis,
+        "analysis_sources_changed": sources_changed,
+        "analysis_status": analysis_status,
+        "config_changed": config_changed,
+        "config_digest": config_now,
         "input_problems": input_problems,
         "last_run": last_run,
-        "produced": produced.iter().map(|r| json!(r.entity_id)).collect::<Vec<_>>(),
+        "results": results,
+        "direct_stale": direct_stale,
+        "checks": last_run.and_then(|r| r.get("checks")).cloned().unwrap_or(Value::Null),
+        "produced": produced,
         "wish": true,
     }))
 }

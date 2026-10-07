@@ -13,6 +13,8 @@ export function FreshnessBadge({ entityId, showManual = true }: { entityId: stri
       <span className={`aiws-chip ${tone}`} title={freshnessDetail(info)}>{FRESHNESS_LABEL[info.status]}</span>
       {showManual && info.manual_modified && <span className="aiws-chip aiws-chip-warn" title="结果的当前内容版本不等于生成版本，且变化不来自许愿格的后续运行">人工已修改</span>}
       {info.simulated && <span className="aiws-chip aiws-chip-derived">模拟</span>}
+      {info.external_data && <span className="aiws-chip" title="程序联网读取了数据：这部分无法确认是否最新">含外部数据</span>}
+      {info.model_judgment && <span className="aiws-chip" title="使用了逐项模型判断，请抽查">含模型判断</span>}
     </span>
   )
 }
