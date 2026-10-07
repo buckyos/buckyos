@@ -42,6 +42,7 @@ export const wishBlock: BlockDefinition = {
   type: 'wish', version: 1, title: '许愿格', accepts: ['buckyos.wish'], allowNoSource: false,
   defaultSize: { w: 420, h: 300 }, cost: { editor: true, html: false },
   Static: WishStatic, Editor: WishEditorView,
+  catalog: { group: 'ai', description: '描述要完成的任务，AI 分析当前画布和选中的数据后给出候选结果；预览、反馈后再应用，整次应用可撤销。', needs: 'none', editAfterInsert: true, standard: true },
   actions: [
     { id: 'open', label: '打开许愿格', modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
     { id: 'detail', label: '在数据源中查看', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } },

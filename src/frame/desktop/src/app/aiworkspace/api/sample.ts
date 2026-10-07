@@ -4,6 +4,7 @@
 
 import fixture from '../fixtures/project-workspace.commits.json'
 import { unwrap, type AiwsClient } from './client'
+import { TemplateFailure } from './demos'
 import { base64ToBytes } from './ids'
 import { PROTOCOL_VERSION, type Operation, type WorkspaceSummary } from './types'
 
@@ -13,8 +14,17 @@ interface Fixture {
 }
 
 export async function createSampleWorkspace(client: AiwsClient, title: string): Promise<WorkspaceSummary> {
-  const data = fixture as unknown as Fixture
   const workspace = unwrap(await client.wsCreate(title))
+  try {
+    await fillSample(client, workspace)
+  } catch (error) {
+    throw new TemplateFailure(workspace, '写入样例内容时失败', error)
+  }
+  return workspace
+}
+
+async function fillSample(client: AiwsClient, workspace: WorkspaceSummary) {
+  const data = fixture as unknown as Fixture
   const ws = { workspace_id: workspace.workspace_id }
   let text = JSON.stringify(data.commits)
   for (const asset of data.assets) {
@@ -33,5 +43,4 @@ export async function createSampleWorkspace(client: AiwsClient, title: string): 
     })
     if (result.status !== 'accepted') throw new Error(`样例的第 ${index + 1} 个提交未被接受：${result.code}`)
   }
-  return workspace
 }

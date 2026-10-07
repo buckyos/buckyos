@@ -1,4 +1,5 @@
 import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffline, saveSummary, serviceWorkerReady, test } from './offline-fixtures'
+import { closeWorkspace, openMock, openStatus, backToList } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -22,6 +23,7 @@ test('Block snapshots are cached and displayed after an offline cold start', asy
   const cold = await context.newPage()
   await cold.goto(`${net.origin}/?scenario=normal`)
   await cold.getByTestId('desktop-app-aiworkspace').click()
+  await backToList(cold)
   await expect(cold.getByTestId('aiws-prepared-list')).toBeVisible({ timeout: 30_000 })
   await openCard(cold, ws.workspace_id)
   const snapshot = cold.getByTestId('aiws-html-static-snapshot-cell').locator('img')
@@ -56,6 +58,7 @@ test('V15 prepare offline, cut the network, edit, close, cold start offline, rec
   await end.click()
   await page.keyboard.press('End')
   await page.keyboard.type(' 离线写的文字')
+  await openStatus(page)
   await expect(page.locator('[data-testid="aiws-edit-entry"][data-edit-id="rt:notes"]')).toHaveAttribute('data-state', 'saved_locally')
   expect((await saveSummary(page)).unsaved).toBe(0)
   const queued = (await saveSummary(page)).pending
@@ -68,6 +71,7 @@ test('V15 prepare offline, cut the network, edit, close, cold start offline, rec
   const cold = await context.newPage()
   await cold.goto(`${net.origin}/?scenario=normal`)
   await cold.getByTestId('desktop-app-aiworkspace').click()
+  await backToList(cold)
   await expect(cold.getByTestId('aiws-prepared-list')).toBeVisible({ timeout: 30_000 })
   await expect(cold.getByTestId('aiws-list-error')).toBeVisible()
   // the page did not come from the network: there is none
@@ -114,6 +118,7 @@ test('opening the app offline without anything prepared says so; it is not a bla
   const cold = await context.newPage()
   await cold.goto(`${net.origin}/?scenario=normal`)
   await cold.getByTestId('desktop-app-aiworkspace').click()
+  await backToList(cold)
   await expect(cold.getByTestId('aiws-list-error')).toBeVisible({ timeout: 30_000 })
   await expect(cold.getByTestId('aiws-prepared-list')).toContainText('浏览器网络在线，但连接不到 BuckyOS 后台')
   await expect(cold.getByTestId('aiws-prepared-list')).toContainText('本设备上没有准备过离线的工作区')
@@ -152,6 +157,7 @@ test('V15 application resources missing from the cache: a clear state instead of
   await net.up()
   await cold.getByRole('button', { name: /重新载入/ }).click()
   await cold.getByTestId('desktop-app-aiworkspace').click()
+  await backToList(cold)
   await openCard(cold, ws.workspace_id)
   await expect(cold.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica')
   await expect.poll(async () => (await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-40', 'owner')).value, { timeout: 30_000 }).toBe('资源丢失前的输入')
@@ -163,6 +169,7 @@ test('persistent storage refused by the browser: offline is unavailable with the
   await openDesktop(page, net, ALICE)
   await openCard(page, ws.workspace_id)
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await openStatus(page)
   await page.getByTestId('aiws-prepare-offline').click()
   await expect(page.getByTestId('aiws-offline-unavailable')).toContainText('离线不可用')
   await expect(page.getByTestId('aiws-offline-unavailable')).toContainText('持久化存储')
@@ -181,6 +188,7 @@ test('a reader without workspace-level read cannot prepare: the backend\'s refus
   await grantPersistence(page.context(), page)
   await openCard(page, ws.workspace_id)
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await openStatus(page)
   await page.getByTestId('aiws-prepare-offline').click()
   await expect(page.getByTestId('aiws-offline-unavailable')).toContainText('PERMISSION_DENIED')
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'direct')
@@ -228,14 +236,14 @@ test('offline: undo removes an unsent submission without the network; Mock run a
   await expect(page.getByTestId('aiws-record-project-info').getByRole('button').first()).toBeDisabled()
 
   // the Mock run happens on the backend: offline it says so and produces nothing
-  await page.getByTestId('aiws-side-mock').click()
+  await openMock(page)
   await page.getByTestId('aiws-mock-start').click()
   await expect(page.getByTestId('aiws-mock-message')).toContainText('没有运行')
   await expect(page.getByTestId('aiws-mock-run')).toHaveCount(0)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
 
   // a URL query table opened offline: no rows are invented, the view says its data needs the backend
-  await page.getByTestId('aiws-back').click()
+  await closeWorkspace(page)
   await openCard(page, ws.workspace_id)
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica')
   await expect(page.getByTestId('aiws-table-error-cell-events')).toContainText('URL 查询表')

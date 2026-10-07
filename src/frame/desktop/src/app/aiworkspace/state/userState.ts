@@ -5,7 +5,10 @@
  *
  * Open: the local copy is applied immediately, then corrected by the server's entries (an entry this
  * window changed since is not overwritten). Writes: local at once, server throttled per key (high
- * frequency values such as viewports) and queued while offline; conflicts are last writer wins per entry. */
+ * frequency values such as viewports) and queued while offline; conflicts are last writer wins per entry.
+ * A local entry the server does not have is dropped only when the server had confirmed it before (another
+ * device removed it); one it never saw — written just before a reload or a close — is uploaded instead.
+ * Closing flushes what is still waiting (best effort). */
 
 import type { Json } from '../api/types'
 import type { WorkspaceSession } from '../api/session'
@@ -72,9 +75,10 @@ export class UserWorkState {
   private readonly keyListeners = new Map<string, Set<() => void>>()
   private readonly prefix: string
   private db: IDBDatabase | null = null
-  private serverLoaded = false
   /** Entries changed locally and not yet accepted by the server. */
   private readonly dirty = new Map<string, Json | null>()
+  /** Keys the server is known to hold (seen in a pull or accepted by a flush). */
+  private readonly onServer = new Set<string>()
   private flushTimer: number | null = null
   private readonly session: WorkspaceSession
   private readonly offStatus: () => void
@@ -125,14 +129,16 @@ export class UserWorkState {
     try { server = await this.session.getUserState() } catch { this.syncState = this.dirty.size > 0 ? 'offline' : this.syncState; return }
     const changed: string[] = []
     for (const [key, value] of Object.entries(server)) {
+      this.onServer.add(key)
       if (this.dirty.has(key)) continue
       if (JSON.stringify(this.entries.get(key)) !== JSON.stringify(value)) { this.entries.set(key, value); changed.push(key) }
     }
-    // entries the server no longer has (another device removed them) are dropped locally too
     for (const key of [...this.entries.keys()]) {
-      if (!(key in server) && !this.dirty.has(key) && this.serverLoaded) { this.entries.delete(key); changed.push(key) }
+      if (key in server || this.dirty.has(key)) continue
+      // removed by another device: dropped here too; never seen by the server: sent to it
+      if (this.onServer.has(key)) { this.onServer.delete(key); this.entries.delete(key); changed.push(key) } else this.dirty.set(key, this.entries.get(key) ?? null)
     }
-    this.serverLoaded = true
+    if (this.dirty.size > 0 && this.flushTimer === null) this.flushTimer = window.setTimeout(() => { this.flushTimer = null; void this.flush() }, THROTTLE_MS)
     this.syncState = this.dirty.size > 0 ? 'offline' : 'synced'
     if (this.db) void idbWrite(this.db, changed.map((key) => [this.prefix + key, this.entries.get(key) ?? null]))
     this.bump(changed)
@@ -156,6 +162,7 @@ export class UserWorkState {
     this.dirty.clear()
     try {
       await this.session.setUserState(batch)
+      for (const [key, value] of Object.entries(batch)) { if (value === null) this.onServer.delete(key); else this.onServer.add(key) }
       this.syncState = this.dirty.size > 0 ? 'offline' : 'synced'
     } catch {
       // keep them for the next attempt unless a newer write replaced them meanwhile
@@ -165,20 +172,26 @@ export class UserWorkState {
     this.emitter.emit()
   }
 
-  /** Drop entries of Surfaces that no longer exist or are unreadable (phase two §4.4). */
+  /** Drop entries of Surfaces that no longer exist or are unreadable (phase two §4.4; UI improvement §12.1):
+   * per-Surface keys (`viewport:<id>`, `selection:<id>`) and the active Surface pointing at one of them.
+   * Workspace-wide layout preferences live under `ui:` and are cleared only by "restore default layout". */
   pruneSurfaces(existing: ReadonlySet<string>) {
     const gone: string[] = []
     for (const key of this.entries.keys()) {
-      const match = /^(viewport|selection|mode):(.+)$/.exec(key)
+      const match = /^(viewport|selection):(.+)$/.exec(key)
       if (match && !existing.has(match[2])) gone.push(key)
     }
+    const active = this.entries.get('surface:active')
+    if (typeof active === 'string' && !existing.has(active)) gone.push('surface:active')
     for (const key of gone) this.set(key, null)
   }
 
   dispose() {
+    if (this.flushTimer !== null) { window.clearTimeout(this.flushTimer); this.flushTimer = null }
+    // what is still waiting goes out now (best effort): a close right after a change keeps it
+    if (this.dirty.size > 0 && this.session.status().kind === 'live') void this.session.setUserState(Object.fromEntries(this.dirty)).catch(() => undefined)
     this.disposed = true
     this.offStatus()
-    if (this.flushTimer !== null) { window.clearTimeout(this.flushTimer); this.flushTimer = null }
     this.db?.close()
   }
 }

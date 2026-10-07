@@ -264,7 +264,8 @@ export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 
 
 // ---- note (an annotation's body; free notes have no target)
 
-export function NoteEditor({ entityId, entity, readOnly }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean }) {
+/** `startEditing`: opened by an explicit activation on the canvas (a new note included), so the text box opens at once. */
+export function NoteEditor({ entityId, entity, readOnly, startEditing = false }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean; startEditing?: boolean }) {
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AnnotationContent>(entityId), [store, entityId])
@@ -272,11 +273,16 @@ export function NoteEditor({ entityId, entity, readOnly }: { entityId: string; e
   const editId = `key:${entityId}:body`
   const entry = useEdit(editId)
   const [text, setText] = useState<string | null>(null)
+  const [started, setStarted] = useState(false)
   if (note.error && !note.data) return <div className="aiws-error" role="alert">无法读取便签：{note.error}</div>
   if (!note.data) return <div className="aiws-muted">载入中…</div>
   const payload = note.data.content.payload
   const mine = store.session.principal !== null && payload.author === store.session.principal
   const editable = !readOnly && Boolean(entity) && (mine ? (entity?.capabilities.includes('comment') ?? false) : (entity?.capabilities.includes('manage') ?? false))
+  if (startEditing && editable && !started) {
+    setStarted(true)
+    setText(payload.body)
+  }
   const save = () => {
     if (text === null || text === payload.body) { setText(null); return }
     void store.submit({

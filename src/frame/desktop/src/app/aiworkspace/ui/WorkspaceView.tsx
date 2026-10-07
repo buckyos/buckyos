@@ -4,20 +4,20 @@
 import { StoreContext } from '../state/hooks'
 import type { WorkspaceStore } from '../state/store'
 import { registerDefaultBlocks } from './blocks/registerAll'
-import { WorkspaceShell } from './shell/WorkspaceShell'
+import { WorkspaceShell, type ShellProps } from './shell/WorkspaceShell'
 
-/** What the top bar can ask of the app panel: prepare the offline replica, reopen the workspace in the mode that is possible now. */
+/** What the shell can ask of the app panel: prepare the offline replica, reopen the workspace in the mode that is possible now. */
 export interface OfflineActions {
   prepare(workspaceId: string, discardLocal: boolean): Promise<void>
   reopen(workspaceId: string): Promise<void>
   describe(failure: unknown): string
 }
 
-export function WorkspaceView({ store, offline, onClose }: { store: WorkspaceStore; offline: OfflineActions; onClose: () => void }) {
+export function WorkspaceView({ store, ...shell }: { store: WorkspaceStore } & ShellProps) {
   registerDefaultBlocks()
   return (
     <StoreContext.Provider value={store}>
-      <WorkspaceShell onClose={onClose} offline={offline} />
+      <WorkspaceShell {...shell} />
     </StoreContext.Provider>
   )
 }

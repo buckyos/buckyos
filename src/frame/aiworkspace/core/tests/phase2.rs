@@ -99,6 +99,25 @@ fn two_trees_and_system_nodes() {
     assert_eq!(find("s1")["content_folder_id"], "s1-content");
     assert_eq!(find("c1")["view_type"], "table");
     assert_eq!(find("c1")["source_id"], "t1");
+    assert!(find("s1").get("icon").is_none());
+}
+
+#[test]
+fn surface_icon_is_a_shared_preset_id() {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!(surface("s1", "free")));
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "icon", "value": "rocket", "expect": { "rev": 0 } }] }]));
+    let outline = aiworkspace_core::read::outline(&ws.store, &Access::full("alice")).unwrap();
+    assert_eq!(outline.iter().find(|e| e["entity_id"] == "s1").unwrap()["icon"], "rocket");
+    let rev = aiworkspace_core::read::read(&ws.store, &Access::full("alice"), "s1", None).unwrap()["content"]["key_revs"]["icon"].clone();
+    // only a preset-shaped id, and only on a Surface
+    for value in [json!("Rocket"), json!("a b"), json!(""), json!(3), json!("x".repeat(33))] {
+        assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "icon", "value": value, "expect": { "rev": rev } }] }]))), "INVALID_SCHEMA");
+    }
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.create", "entity_id": "f-icon", "type_id": TYPE_CONTAINER, "parent_id": DATA_ID, "order_key": "a",
+        "payload": { "kind": "folder", "icon": "rocket" } }]))), "INVALID_SCHEMA");
+    ws.ok(json!([{ "op": "entity.unset_keys", "entity_id": "s1", "keys": [{ "key": "icon", "expect": { "rev": rev } }] }]));
+    assert!(ws.store.entities["s1"].payload.get("icon").is_none());
 }
 
 #[test]

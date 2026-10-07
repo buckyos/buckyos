@@ -1,0 +1,91 @@
+/* What the chrome of one open workspace shares (UI improvement §3, §12.1): the top-level view, the
+ * active Surface, the right panel, dialogs, the personal layout preferences and the window size
+ * class. Layout preferences live in the user work state under the `ui:` prefix; none of this is a
+ * document write. */
+
+import { createContext, useContext } from 'react'
+import type { AiwsClient } from '../../api/client'
+import type { EntityEnvelope } from '../../api/types'
+import { useUserState } from '../../state/hooks'
+import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
+import type { OfflineActions } from '../WorkspaceView'
+
+export type TopMode = 'sources' | 'canvas'
+
+/** The right panel shows one kind of content at a time (§3.2). */
+export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits'
+export const SIDE_TAB_LABEL: Record<SideTab, string> = { inspector: '属性', relations: '引用与依赖', annotations: '批注', collab: '协作', edits: '修改状态' }
+export const CANVAS_SIDE_TABS: SideTab[] = ['inspector', 'relations', 'annotations', 'collab', 'edits']
+export const SOURCES_SIDE_TABS: SideTab[] = ['collab', 'edits']
+
+export type DialogRequest =
+  | { kind: 'new'; tab: 'canvas' | 'workspace' | 'template' }
+  | { kind: 'export' }
+  | { kind: 'import' }
+  | { kind: 'help' }
+  | { kind: 'mock' }
+
+/** Personal layout preferences (user work state, `ui:*`); "restore default layout" clears them. */
+export interface LayoutPrefs { objectToolbar: boolean; presenterToolbar: boolean; grid: boolean }
+export const PREF_KEYS = { objectToolbar: 'ui:object-toolbar', presenterToolbar: 'ui:presenter-toolbar', grid: 'ui:grid' } as const
+export const LAYOUT_KEYS = ['ui:object-toolbar', 'ui:presenter-toolbar', 'ui:grid', 'ui:side', 'ui:pinned-defs'] as const
+
+/** Size class of the application container (not the browser): §11 responsive rules. */
+export type SizeClass = 'wide' | 'medium' | 'narrow'
+
+export interface ShellApi {
+  /** Workspace-level calls outside the open session (create, fork, import, export). */
+  client: AiwsClient
+  /** Leave the workspace (after the leave check) and show the list. */
+  close: () => void
+  /** Leave this workspace and open another one (new workspace, template result, fork). */
+  openWorkspace: (workspaceId: string) => void
+  offline: OfflineActions
+  topMode: TopMode
+  setTopMode: (mode: TopMode) => void
+  surfaces: EntityEnvelope[]
+  activeSurface: EntityEnvelope | null
+  selectSurface: (surfaceId: string) => void
+  side: SideTab | null
+  setSide: (tab: SideTab | null) => void
+  openDialog: (request: DialogRequest) => void
+  prefs: LayoutPrefs
+  setPref: (key: keyof LayoutPrefs, value: boolean) => void
+  resetLayout: () => void
+  size: SizeClass
+  /** The Mock processing panel and other developer tools are shown (dev server or dev override). */
+  devTools: boolean
+  /** Who this window acts as; a dev-override identity has no login session to end. */
+  identity: { principal: string | null; dev: boolean }
+  /** Log out through the Desktop's sign-in flow (after the workspace's leave check). */
+  logout: () => void
+  /** Offline actions (prepare, take over, reopen) run one at a time; their failure stays visible. */
+  runOffline: (label: string, work: () => Promise<void>) => void
+  offlineBusy: string | null
+  offlineError: string | null
+  clearOfflineError: () => void
+}
+
+export const ShellContext = createContext<ShellApi | null>(null)
+
+/** The canvas sub-mode (user work state `canvas:mode`). */
+export function useCanvasMode(): CanvasMode {
+  const state = useUserState<CanvasMode>('canvas:mode')
+  return state && CANVAS_MODES.includes(state) ? state : 'edit'
+}
+
+export const ZOOM_PRESETS = [25, 50, 75, 100, 150, 200]
+
+/** An access link (§8.3): it names the workspace and Surface, carries no credential and grants nothing. */
+export function shareLink(workspaceId: string, surfaceId: string | null): string {
+  const url = new URL('/', window.location.origin)
+  url.searchParams.set('aiws', workspaceId)
+  if (surfaceId) url.searchParams.set('aiwsSurface', surfaceId)
+  return url.toString()
+}
+
+export function useShell(): ShellApi {
+  const shell = useContext(ShellContext)
+  if (!shell) throw new Error('aiworkspace: no workspace shell in context')
+  return shell
+}

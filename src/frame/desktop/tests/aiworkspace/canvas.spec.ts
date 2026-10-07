@@ -2,7 +2,7 @@
  * Blocks sharing data, gestures as single commits, layout concurrency, mode dispatch and fallbacks.
  * Persistence is asserted through kRPC, not only through the DOM. */
 
-import { blockCenter, expect, hooks, openCanvas, openWorkspace, test } from './fixtures'
+import { blockCenter, expect, hooks, openCanvas, openWorkspace, test, fitAll, setCanvasMode, zoomIn } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -23,12 +23,12 @@ test('UI01/UI18 mode switches keep the session, the undo stack and drafts; switc
   expect(afterEdit).toBe(before + 1)
   // sub-modes: view, presentation-edit placeholder, back to edit; the session id and undo stack stay
   const sessionId = await page.getByTestId('aiws-workspace').getAttribute('data-session-id')
-  await page.getByTestId('aiws-mode-view').click()
+  await setCanvasMode(page, 'view')
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
-  await page.getByTestId('aiws-mode-presentation_edit').click()
+  await setCanvasMode(page, 'presentation_edit')
   await expect(page.getByTestId('aiws-presentation-placeholder')).toBeVisible()
   await expect(page.getByTestId('aiws-presentation-placeholder')).toContainText('尚未实现')
-  await page.getByTestId('aiws-mode-edit').click()
+  await setCanvasMode(page, 'edit')
   // top-level modes
   await page.getByTestId('aiws-top-sources').click()
   await expect(page.getByTestId('aiws-sources')).toBeVisible()
@@ -88,7 +88,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await page.getByTestId('aiws-surface-new').click()
   await page.getByLabel('新画布标题').fill('第三张')
   await page.getByTestId('aiws-surface-create').click()
-  await expect(page.getByTestId('aiws-surface-switch')).toContainText('第三张')
+  await expect(page.getByTestId('aiws-surface-name')).toContainText('第三张')
   const outline = await api.outline(ALICE, ws.workspace_id)
   const third = outline.find((e: { title?: string; kind?: string }) => e.title === '第三张' && e.kind === 'surface') as { entity_id: string; content_folder_id: string }
   expect(third).toBeTruthy()
@@ -97,6 +97,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await page.getByTestId('aiws-surface-switch').click()
   await page.getByTestId('aiws-surface-item-sf-analysis').getByRole('menuitem').click()
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
+  await page.getByTestId('aiws-near-more').click()
   await page.getByTestId('aiws-near-move-surface').click()
   await page.getByTestId('aiws-picker-surface').selectOption(third.entity_id)
   await page.getByTestId('aiws-picker-confirm').click()
@@ -119,6 +120,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   // delete the third Surface: its content folder goes with it
   await page.getByTestId('aiws-top-canvas').click()
   await page.getByTestId('aiws-surface-switch').click()
+  await page.getByTestId(`aiws-surface-more-${third.entity_id}`).click()
   await page.getByTestId(`aiws-surface-delete-${third.entity_id}`).click()
   await page.getByTestId('aiws-surface-delete-confirm').click()
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).some((e: { entity_id: string }) => e.entity_id === third.entity_id)).toBe(false)
@@ -161,7 +163,7 @@ test('UI05 a drag is one commit and one undo step; Esc cancels with zero commits
   await page.getByTestId('aiws-undo').click()
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi').placement.x).toBe(980)
   // resize through a handle: one commit (the KPI card's right edge is past the window: pan first, at zoom 1)
-  await page.getByTestId('aiws-canvas').click({ position: { x: 20, y: 20 } })
+  await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } }) // a blank spot clear of the floating toolbars
   const box = (await page.getByTestId('aiws-canvas').boundingBox())!
   await page.mouse.move(box.x + 700, box.y + box.height - 50) // empty canvas: a scrollable table keeps its own wheel
   await page.mouse.wheel(300, 0)
@@ -178,7 +180,7 @@ test('UI05 a drag is one commit and one undo step; Esc cancels with zero commits
   expect((await api.outline(ALICE, ws.workspace_id)).find((e: { entity_id: string }) => e.entity_id === 'blk-kpi').placement.w).toBe(420 + 60)
   // zoom is the user's viewport only
   const beforeZoom = await api.headSeq(ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-zoom').locator('..').getByRole('button', { name: '+' }).click()
+  await zoomIn(page)
   await expect(page.getByTestId('aiws-zoom')).not.toHaveText('100%')
   await page.waitForTimeout(400)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(beforeZoom)
@@ -234,7 +236,7 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   ])
   expect(r.status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-block-fallback-blk-unknown')).toHaveAttribute('data-reason', 'unknown_renderer')
   await expect(page.getByTestId('aiws-block-fallback-blk-wrong')).toHaveAttribute('data-reason', 'type_not_accepted')
   // the rest of the canvas works: the chart Block renders through the registry
@@ -256,7 +258,7 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   await expect(page.getByTestId('aiws-decl-action-open-def')).toHaveCount(0)
   const head = await api.headSeq(ALICE, ws.workspace_id)
   // view mode: different rendering, no handles, no drag, the view-only action present, annotation allowed
-  await page.getByTestId('aiws-mode-view').click()
+  await setCanvasMode(page, 'view')
   await expect(kpi.getByTestId('aiws-decl-blk-kpi')).toHaveAttribute('data-variant', 'view')
   await expect(kpi).toContainText('查看模式')
   await kpi.click()
@@ -273,7 +275,8 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   await page.keyboard.press('Delete')
   await page.waitForTimeout(400)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
-  // the chart's view variant: values on hover
+  // the chart's view variant: values on hover (the right panel stays open across Surfaces: close it to give the canvas its width)
+  await page.getByTestId('aiws-side-close').click()
   await page.getByTestId('aiws-surface-switch').click()
   await page.getByTestId('aiws-surface-item-sf-detail').getByRole('menuitem').click()
   await expect(page.getByTestId('aiws-chart-blk-chart-2')).toHaveAttribute('data-interactive', 'true')
@@ -290,7 +293,7 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   const note = outline.find((e: { type_id: string; target_id?: string }) => e.type_id === 'buckyos.annotation' && e.target_id === 'sales')
   expect(note?.parent_id).toBe('sf-detail-content')
   // presentation edit: static, no selection, nothing written
-  await page.getByTestId('aiws-mode-presentation_edit').click()
+  await setCanvasMode(page, 'presentation_edit')
   await expect(page.getByTestId('aiws-presentation-placeholder')).toBeVisible()
   await page.getByTestId('aiws-canvas-block-blk-sales-2').click({ force: true })
   await expect(page.locator('[data-testid^="aiws-selection-"]')).toHaveCount(0)
@@ -307,7 +310,7 @@ test('UI10 a deleted source and a crashing renderer are localised; the workspace
     { op: 'entity.create', entity_id: 'blk-note-x', type_id: 'buckyos.cell', parent_id: 'sf-analysis', order_key: 'zq', placement: { x: 40, y: 700, w: 220, h: 160 }, payload: { view: { type: 'note' }, source_ref: { entity_id: 'note-x' } } },
   ])
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-note-note-x')).toBeVisible()
   // delete the data through the API (the Block's bind reference does not block an annotation... it does: delete the Block first? No: deleting data referenced by a Block is refused; so delete both and recreate the Block alone)
   const life = (await api.read(ALICE, ws.workspace_id, 'note-x')).life_rev
@@ -341,7 +344,7 @@ test('UI10 a deleted source and a crashing renderer are localised; the workspace
 test('UI17 both demos open through the normal UI with every Block rendered by the registry', async ({ page, api }) => {
   const film = await api.demo(ALICE, 'film', `film ${Date.now()}`)
   await openCanvas(page, ALICE, film.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   for (const id of ['blk-script', 'blk-characters', 'blk-style', 'blk-wish-1', 'blk-wish-2', 'blk-wish-3', 'blk-frame-a']) {
     await expect(page.getByTestId(`aiws-canvas-block-${id}`)).toBeVisible()
   }

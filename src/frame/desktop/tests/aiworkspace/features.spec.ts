@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { expect, expectAllCommitted, openApp, openWorkspace, test } from './fixtures'
+import { expect, expectAllCommitted, openApp, openWorkspace, test, closeWorkspace, openSide } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -259,6 +259,8 @@ test('annotations, field and option management, migration pre-check, broken view
   // deleting an annotated record: the annotation stays, falls back to its table and keeps what it was about
   await all.getByTestId('aiws-row').filter({ has: page.getByTestId('aiws-cell-task-41-title') }).getByRole('button', { name: '删除' }).click()
   await expect(all.getByTestId('aiws-row')).toHaveCount(4)
+  // the refused option delete opened 修改状态 (one panel at a time): back to the annotations
+  await openSide(page, 'annotations')
   const orphan = page.getByTestId('aiws-annotation').filter({ hasText: '请确认负责人' })
   await expect(orphan.getByTestId('aiws-anchor-state')).toHaveText('原位置已删除，显示在对象上')
   await expect(orphan).toContainText('负责人 · task-41')
@@ -306,14 +308,16 @@ test('session filter and sort stay local until "save view"; structure edits: cre
   await page.getByTestId('aiws-up-cell-diagram').click()
   await expect.poll(order).toEqual(['cell-all-tasks', 'cell-notes', 'cell-open-tasks', 'cell-diagram', 'cell-info'])
 
-  // create a group and a rich text in the Surface (insert menu; titles are asked for)
-  page.on('dialog', (dialog) => { void dialog.accept(dialog.message().includes('分组') ? '附录' : '会议纪要') })
+  // create a group (quick insert, default title) and a rich text with a title (the insert catalog; nothing is prompted)
   await page.getByTestId('aiws-add-open-surface-main').click()
   await page.getByTestId('aiws-menu-insert-group').click()
   await expect(page.locator('[data-testid^="aiws-group-"]')).toHaveCount(1)
   const groupId = await page.locator('[data-testid^="aiws-group-"]').getAttribute('data-cell-id') as string
   await page.getByTestId('aiws-add-open-surface-main').click()
-  await page.getByTestId('aiws-menu-insert-richtext').click()
+  await page.getByTestId('aiws-menu-catalog').click()
+  await page.getByTestId('aiws-catalog-entry-block-richtext').click()
+  await page.getByTestId('aiws-catalog-title').fill('会议纪要')
+  await page.getByTestId('aiws-catalog-insert').click()
   const newCell = page.locator('[data-testid^="aiws-cell-frame-"]').filter({ hasText: '会议纪要' })
   await expect(newCell).toBeVisible()
   await newCell.locator('.aiws-prose').click()
@@ -550,16 +554,19 @@ test('an unreachable backend is shown as such, edits stay unsaved, and work resu
 test('a new table from the UI: add record, boolean / multi-select / datetime / number editors; delete a workspace', async ({ page, api }) => {
   const title = `空白 ${Date.now()}`
   await openApp(page, ALICE)
+  // New → blank workspace: created and opened at once
+  await page.getByTestId('aiws-new').click()
   await page.getByLabel('工作区标题', { exact: true }).fill(title)
   await page.getByTestId('aiws-create').click()
-  const card = page.getByTestId('aiws-workspace-card').filter({ hasText: title })
-  const workspaceId = await card.getAttribute('data-workspace-id') as string
-  await card.getByTestId('aiws-open').click()
-  // an empty workspace has no Surface: a first flow page is created explicitly, then a table is inserted (its title is asked for)
+  await expect(page.getByTestId('aiws-workspace')).toBeVisible({ timeout: 30_000 })
+  const workspaceId = await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id') as string
+  // an empty workspace has no Surface: a first flow page is created explicitly, then a titled table is inserted from the catalog
   await page.getByTestId('aiws-create-first-flow').click()
-  page.on('dialog', (dialog) => { void dialog.accept('清单') })
   await page.locator('[data-testid^="aiws-add-open-"]').click()
-  await page.getByTestId('aiws-menu-insert-table').click()
+  await page.getByTestId('aiws-menu-catalog').click()
+  await page.getByTestId('aiws-catalog-entry-block-table').click()
+  await page.getByTestId('aiws-catalog-title').fill('清单')
+  await page.getByTestId('aiws-catalog-insert').click()
   const frame = page.locator('[data-testid^="aiws-cell-frame-"]').filter({ hasText: '清单' })
   await expect(frame).toBeVisible()
   const sourceId = await frame.getAttribute('data-cell-source') as string
@@ -622,7 +629,7 @@ test('a new table from the UI: add record, boolean / multi-select / datetime / n
   expect(stored[id('数量')]).toBe(3)
 
   // delete the workspace from the list (explicit confirmation)
-  await page.getByTestId('aiws-back').click()
+  await closeWorkspace(page)
   const again = page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${workspaceId}"]`)
   await again.getByTestId('aiws-delete').click()
   await again.getByTestId('aiws-delete-confirm').click()

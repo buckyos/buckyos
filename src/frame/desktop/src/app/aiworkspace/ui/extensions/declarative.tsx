@@ -204,7 +204,12 @@ export const declarativeBlock: BlockDefinition = {
   type: 'declarative', version: 1, definitionKind: 'declarative', title: '声明式 Block', accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 320, h: 200 }, cost: { editor: false, html: false },
   Static: DeclarativeStatic, View: DeclarativeView, Inspector: DeclarativeInspector, actions: declarativeActions,
-  create: (args) => [cellOp(args, 'declarative', args.existingSourceId, { def_ref: { entity_id: String(args.config?.def_id ?? '') } as unknown as Json })],
+  catalog: { group: 'extension', description: '按工作区中的声明式定义展示数据。', needs: 'definition' },
+  create: (args) => {
+    // the definition reference is the Cell's `def_ref`, never part of its configuration
+    const { def_id: defId, ...config } = args.config ?? {}
+    return [cellOp({ ...args, config: Object.keys(config).length > 0 ? config : undefined }, 'declarative', args.existingSourceId, { def_ref: { entity_id: String(defId ?? '') } as unknown as Json })]
+  },
 }
 
 export function registerDeclarativeBlock() {

@@ -54,6 +54,11 @@ export interface RenderHostProps {
   renderNear?: (bbox: Rect) => ReactNode
   /** Something outside the canvas wants the pointer (e.g. an open menu): gestures are refused. */
   gesturesPaused?: boolean
+  /** The pointer tool (UI improvement §7.2): `hand` pans with the primary button and never selects. */
+  tool?: 'select' | 'hand'
+  /** A one-shot placement: the pointer carries a preview of this size; a primary click places it. */
+  placing?: { w: number; h: number; label: string } | null
+  onPlace?: (world: { x: number; y: number }) => void
 }
 
 type Drag =
@@ -168,6 +173,12 @@ export function RenderHost(props: RenderHostProps) {
   const setTransform = (ids: Iterable<string>, dx: number, dy: number) => {
     for (const id of ids) { const el = frames.current.get(id); if (el) el.style.transform = dx === 0 && dy === 0 ? '' : `translate(${dx}px, ${dy}px)` }
   }
+  /** Leaving an editor from the canvas ends its input first (its blur saves), before the editor unmounts. */
+  const endEditing = () => {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && rootRef.current?.contains(active)) active.blur()
+    props.onEditingChange(null)
+  }
   const insideEditor = (target: EventTarget | null) => {
     const el = target as HTMLElement | null
     return Boolean(el?.closest?.('[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu, button'))
@@ -246,8 +257,14 @@ export function RenderHost(props: RenderHostProps) {
     if (insideEditor(event.target)) return
     const p = screenPoint(event)
     const w = camera.toWorld(p.x, p.y)
-    const hit = policy.select ? index.hit(w.x, w.y) : null
-    const pan = event.button === 1 || event.button === 2 || spaceHeld.current || (!policy.select && event.button === 0) || (mode === 'view' && !hit && event.button === 0)
+    if (props.placing && event.button === 0 && !spaceHeld.current) {
+      event.preventDefault()
+      props.onPlace?.(w)
+      return
+    }
+    const hand = props.tool === 'hand'
+    const hit = policy.select && !hand ? index.hit(w.x, w.y) : null
+    const pan = event.button === 1 || event.button === 2 || spaceHeld.current || hand || (!policy.select && event.button === 0) || (mode === 'view' && !hit && event.button === 0)
     if (event.button === 2 && !spaceHeld.current) return // context menu
     event.currentTarget.setPointerCapture(event.pointerId)
     window.getSelection()?.removeAllRanges()
@@ -262,17 +279,30 @@ export function RenderHost(props: RenderHostProps) {
       const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
       if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
       dragRef.current = { kind: 'move', ids, affected, startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected }
-      if (editing && editing !== id) props.onEditingChange(null)
+      if (editing && editing !== id) endEditing()
       return
     }
-    if (editing) props.onEditingChange(null)
+    if (editing) endEditing()
     dragRef.current = { kind: 'marquee', startX: p.x, startY: p.y, current: null, additive: event.shiftKey, moved: false }
   }
 
+  const ghostRef = useRef<HTMLDivElement>(null)
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current
+    if (!drag && props.placing) {
+      // the placement preview follows the pointer in the DOM: no React work per move
+      const ghost = ghostRef.current
+      if (ghost) {
+        const p = screenPoint(event)
+        ghost.style.transform = `translate(${p.x}px, ${p.y}px)`
+        ghost.style.width = `${props.placing.w * camera.zoom}px`
+        ghost.style.height = `${props.placing.h * camera.zoom}px`
+        ghost.style.visibility = 'visible'
+      }
+      return
+    }
     if (!drag) {
-      if (!policy.select) return
+      if (!policy.select || props.tool === 'hand') return
       const p = screenPoint(event)
       const w = camera.toWorld(p.x, p.y)
       const hit = insideEditor(event.target) ? null : index.hit(w.x, w.y)
@@ -433,10 +463,11 @@ export function RenderHost(props: RenderHostProps) {
   return (
     <div
       ref={rootRef}
-      className={`aiws-canvas aiws-canvas-mode-${mode}`}
+      className={`aiws-canvas aiws-canvas-mode-${mode}${props.tool === 'hand' ? ' is-hand' : ''}${props.placing ? ' is-placing' : ''}`}
       data-testid="aiws-canvas"
       data-surface-id={props.surfaceId}
       data-mode={mode}
+      data-tool={props.placing ? 'place' : props.tool ?? 'select'}
       data-zoom={zoom.toFixed(2)}
       data-settled={settled}
       onPointerDown={onPointerDown}
@@ -446,7 +477,10 @@ export function RenderHost(props: RenderHostProps) {
       onDragStart={(event) => { if (!insideEditor(event.target)) event.preventDefault() }}
       onWheel={onWheel}
       onContextMenu={onContextMenu}
-      onPointerLeave={() => { if (!dragRef.current && hover) setHover(null) }}
+      onPointerLeave={() => {
+        if (!dragRef.current && hover) setHover(null)
+        if (ghostRef.current) ghostRef.current.style.visibility = 'hidden'
+      }}
       onDoubleClick={(event) => {
         // pointer capture retargets clicks to the root: the double-click is resolved geometrically here
         if (!policy.editContent || insideEditor(event.target)) return
@@ -469,6 +503,7 @@ export function RenderHost(props: RenderHostProps) {
         </g>
         {marquee && <rect className="aiws-marquee" data-testid="aiws-marquee" x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.h} />}
       </svg>
+      {props.placing && <div ref={ghostRef} className="aiws-place-ghost" data-testid="aiws-place-ghost" style={{ visibility: 'hidden' }}><span>{props.placing.label}</span></div>}
       {bbox && props.renderNear && !resizePreview && !dragging && props.renderNear({ x: bbox.x, y: bbox.y, w: bbox.x2 - bbox.x, h: bbox.y2 - bbox.y })}
     </div>
   )

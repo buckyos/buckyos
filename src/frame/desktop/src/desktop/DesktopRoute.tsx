@@ -253,6 +253,19 @@ export function DesktopRoute() {
     if (searchParams.get('intent') === 'preview') openPreview({ source })
     else void openContent({ source })
   }, [snap.status, searchParams])
+  // an AI Workspace access link: /?aiws=<workspace>&aiwsSurface=<surface>&aiwsBlock=<block> (the sign-in redirect keeps it)
+  const aiwsLinkHandled = useRef(false)
+  useEffect(() => {
+    const workspaceId = searchParams.get('aiws')
+    if (snap.status !== 'success' || !workspaceId || aiwsLinkHandled.current) return
+    aiwsLinkHandled.current = true
+    store.openAppWindow('aiworkspace', {
+      launch: { requestId: crypto.randomUUID(), payload: { kind: 'aiworkspace-target', workspaceId, surfaceId: searchParams.get('aiwsSurface'), blockId: searchParams.get('aiwsBlock') } },
+    })
+    const params = new URLSearchParams(searchParams)
+    for (const key of ['aiws', 'aiwsSurface', 'aiwsBlock']) params.delete(key)
+    setSearchParams(params, { replace: true })
+  }, [snap.status, searchParams, setSearchParams, store])
 
 
   // Refs for drag suppression (view-only concern)
@@ -541,6 +554,12 @@ export function DesktopRoute() {
       setIsLoggingOut(false)
     }
   }, [isLoggingOut, store, t])
+  // apps ask for the Desktop's own sign-out (the AI Workspace identity menu)
+  useEffect(() => {
+    const onRequest = () => { void handleLogout() }
+    window.addEventListener('buckyos:request-logout', onRequest)
+    return () => window.removeEventListener('buckyos:request-logout', onRequest)
+  }, [handleLogout])
   const handleCycleLocale = useCallback(
     () => setLocale(nextSupportedLocale(locale)),
     [setLocale, locale],

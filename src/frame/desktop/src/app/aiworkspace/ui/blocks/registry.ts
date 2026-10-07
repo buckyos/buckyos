@@ -67,6 +67,22 @@ export interface BlockAction {
   key?: string
 }
 
+/** Insert catalog groups (UI improvement §6.3): standard objects, samples kept apart, workspace extensions. */
+export type CatalogGroup = 'text' | 'data' | 'layout' | 'ai' | 'sample' | 'extension'
+export const CATALOG_GROUP_LABEL: Record<CatalogGroup, string> = { text: '文本与便签', data: '数据与媒体', layout: '布局', ai: 'AI', sample: '样本', extension: '工作区扩展' }
+
+export interface CatalogInfo {
+  group: CatalogGroup
+  description: string
+  /** What insertion needs first: nothing (the definition creates its own data, or is pure UI), existing data of
+   * an accepted type, a file, or a workspace Block definition (`buckyos.block-def`). */
+  needs: 'none' | 'data' | 'file' | 'definition'
+  /** Inserted without a title prompt, then the editor opens at once (text, notes, wishes). */
+  editAfterInsert?: boolean
+  /** Offered directly on the object toolbar. */
+  standard?: boolean
+}
+
 export interface BlockDefinition {
   /** Stable renderer id (`view.type`), e.g. `table`, `frame`, `acme.kpi`. */
   type: string
@@ -97,6 +113,8 @@ export interface BlockDefinition {
   configFields?: ConfigField[]
   configSchema?: Json
   definitionKind?: BlockDefPayload['kind']
+  /** Listed by the insert catalog (and the toolbars built on it); a definition without it is not offered for insertion. */
+  catalog?: CatalogInfo
 }
 
 export interface ConfigField { key: string; label: string; kind: 'text' | 'number' | 'select' | 'boolean' | 'color'; options?: { value: string; label: string }[] }

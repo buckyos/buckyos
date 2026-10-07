@@ -1,28 +1,11 @@
-/* Shell panels shared by both top-level modes: notices (with actions), the save-state list and the
- * phase-one controlled-processing panel kept as a kernel regression tool. */
+/* Shell panels shared by both top-level modes: the save-state list and the phase-one
+ * controlled-processing panel kept as a kernel regression tool (a developer tool, UI improvement §6.1). */
 
-import { useState, useSyncExternalStore } from 'react'
+import { useState } from 'react'
 import { describeError } from '../../api/session'
 import type { CommitResult, RunView, ServiceError, Touched } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdits, useStore } from '../../state/hooks'
-
-export function Notices() {
-  const store = useStore()
-  const notices = useSyncExternalStore(store.subscribeNotices, store.noticeSnapshot)
-  if (notices.length === 0) return null
-  return (
-    <div className="aiws-notices">
-      {notices.map((notice) => (
-        <div key={notice.id} className={notice.kind === 'error' ? 'aiws-error' : 'aiws-warning'} role={notice.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-notice">
-          {notice.text}
-          {notice.action && <button type="button" className="aiws-link" data-testid="aiws-notice-action" onClick={() => { notice.action?.run(); store.dismissNotice(notice.id) }}>{notice.action.label}</button>}
-          <button type="button" className="aiws-link" onClick={() => store.dismissNotice(notice.id)}>关闭</button>
-        </div>
-      ))}
-    </div>
-  )
-}
 
 /** Save states (design §6.5): entries that need attention, unsaved inputs, local-only saves. */
 export function EditsPanel() {

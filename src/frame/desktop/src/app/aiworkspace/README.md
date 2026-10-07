@@ -1,9 +1,9 @@
-# AI Workspace — Desktop app (phase one + phase two UI framework)
+# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
-`doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below) and
+`doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
 `doc/workspace/BuckyOS AI Workspace 第二期规划.md` (the UI framework: data-source and canvas modes, Blocks,
-wishes). App id `aiworkspace`, panel `AIWorkspaceAppPanel.tsx`. The `canvas` prototype next to it is the
+wishes) and `doc/workspace/BuckyOS AI Workspace UI改进.md` (the floating canvas chrome, see "UI improvement"). App id `aiworkspace`, panel `AIWorkspaceAppPanel.tsx`. The `canvas` prototype next to it is the
 source of the migrated demos only; nothing runs through it.
 
 There is **no mock backend**. In the Desktop's mock runtime the app says so and stays empty unless the
@@ -12,7 +12,8 @@ dev override below points it at a real backend process.
 ## Structure
 
 ```text
-AIWorkspaceAppPanel.tsx   entry: workspace list ↔ one open workspace
+AIWorkspaceAppPanel.tsx   entry: what opens (link target > most recent workspace > list), the leave check,
+                          the Desktop close / logout guard
 api/
   transport.ts            the only module that knows how to reach the service (zone path / dev override)
   client.ts               one typed method per kRPC method of the backend README
@@ -54,17 +55,27 @@ richtext/
   drafts.ts, loro.ts
 state/outline.ts          OutlineModel: the two trees kept up to date from the change stream's operations (no full
                           re-read on a move); per-entity subscriptions for Blocks
-state/userState.ts        user work state (mode, sub-mode, active Surface, viewports, panels…): IndexedDB + server
+state/userState.ts        user work state (mode, sub-mode, active Surface, viewports, `ui:*` layout preferences…):
+                          IndexedDB + server
+state/recent.ts           the most recent workspace per service target and principal (app-level, localStorage)
 state/freshness.ts        subscribes to `doc.freshness`; the front end never derives freshness itself
 ui/
-  WorkspaceList.tsx       list / create / sample / two demos / import / export / fork / delete
+  WorkspaceList.tsx       list / New (blank or template) / import / export / fork / delete
   WorkspaceView.tsx       store context + shell; registers the shipped Block definitions
-  shell/                  WorkspaceShell (top-level modes, save/sync state, undo, notices), panels, annotations panel
+  shell/                  WorkspaceShell (top-level views, active Surface, right panel, dialogs, layout preferences),
+                          MainToolbar (icon, name, Surface switcher, data source, main menu, collaboration),
+                          MainMenu (the function index), PresenterToolbar (annotation, zoom and view navigation,
+                          identity, share link), StatusSummary (the bottom-right status area: save / sync /
+                          connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, Mock, leave check),
+                          popover.tsx (popovers and keyboard menus), shellContext.ts, panels, annotations panel
   sources/                data-source mode: DataTree (canvas content collapsed, filters), DataDetail (editors without a
                           Block), RelationsPanel (doc.relations), PropertiesPanel (versions, restore), PermissionsPanel
                           (presets, canvas permissions, subjects)
-  canvas/                 CanvasView (sub-modes edit / view / presentation-edit placeholder, selection, keyboard,
-                          near tools, insert, group, cross-Surface move), FlowSurface, layout.ts, tools.tsx
+  canvas/                 CanvasView (sub-modes edit / view / presentation-edit placeholder, selection, pointer tool,
+                          one-shot placement, insert, clipboard, group, cross-Surface move, keyboard), ObjectToolbar,
+                          InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx
+                          (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface, layout.ts,
+                          tools.tsx (near toolbar, context menu, inspector)
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once), camera.ts, spatialIndex.ts
   blocks/                 registry.ts (BlockDefinition, mode policy), BlockHost (lifecycle, mode dispatch, budget,
@@ -203,6 +214,32 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - **Freshness** comes from `doc.freshness` (core) and is shown identically on wish Blocks, result Blocks, the data
   tree and the detail panels.
 
+## UI improvement (doc/workspace/BuckyOS AI Workspace UI改进.md)
+
+- **What opens.** A link `/?aiws=<workspace>&aiwsSurface=<surface>&aiwsBlock=<block>` is turned by the Desktop
+  route into a launch of this app (`kind: 'aiworkspace-target'`) and wins; otherwise a normal start reopens the
+  workspace this identity last opened successfully (`state/recent.ts`, keyed `mode|target|principal`) on its
+  remembered Surface (`surface:active`); a gone Surface falls back to the first readable one and says so;
+  closing a workspace pauses the restore for the rest of the app session. A workspace never reopens into the
+  presentation-edit placeholder.
+- **Chrome.** The canvas fills the window; the main toolbar (top left), the presenter toolbar (top right: add
+  annotation, zoom ▾ with presets / fit, identity, share) and the vertical object toolbar float in screen space
+  (`camera.setInsets` keeps fitting and centring out from under them). There is no bottom-right navigation area:
+  the bottom-right corner of the work area is the status area (`StatusDock`: the save / sync summary, alerts and
+  notices stacked above it; expandable work logs are meant to live there too).
+  The right panel shows one tab at a time (属性 / 引用与依赖 / 批注 / 协作 / 修改状态): layout width when the
+  application container is ≥ 1100 px, a drawer below. Size classes: wide ≥ 1100, medium ≥ 760, narrow.
+- **One action per function.** Menus, toolbar buttons, the context menu and shortcuts call the same functions in
+  `CanvasView` (`CanvasCommands`). Insertion entries come from `BlockDefinition.catalog`; workspace extensions
+  from `buckyos.block-def` entities. Nothing prompts for a title: text, notes and wishes open their editor at once;
+  entries that need data or a file ask for it first.
+- **Clipboard.** Per window, in memory, same workspace only: copy = new Block / group ids, same data references,
+  one commit; cut = mark, paste moves in one commit (identity kept). Editors keep the text clipboard.
+- **Leaving.** Close, switch, link, window close and log out run `store.prepareLeave()`; what would be lost is asked
+  about (返回处理 / 导出后离开 / 仍然离开). The identity menu logs out through the Desktop (`buckyos:request-logout`).
+- **Layout preferences** live in the user work state under `ui:` (`ui:object-toolbar`, `ui:presenter-toolbar`,
+  `ui:grid`, `ui:side`, `ui:pinned-defs`); "恢复默认布局" clears them, never the document.
+
 ## Block extension contract
 
 Register a `BlockDefinition` in `ui/blocks/registry.ts`. `useBlockContext` loads the Cell payload and key
@@ -296,6 +333,11 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
   JSON, but cannot be re-applied to the editor with one click.
 - Lock: no "request hand-over"; the lock is released 30 s after focus leaves the cell (and on close), not
   on the blur itself.
+- UI improvement, not done (doc §13 P2 and the gaps it names): online members / presence, follow, remote
+  pointers; starting a presentation, presentation sessions and interaction buttons (the menu entry is disabled and
+  says why); annotation anchors on pure UI Blocks or blank canvas points; cross-workspace paste; image upload as a
+  canvas icon. The access link is opened by the Desktop route; a cold offline start through a link is not covered
+  (the service worker serves only the scope root, which the link uses). Browser zoom 200% was not automated.
 - The app's own UI text is Chinese only (the app name and summary are in the Desktop dictionaries).
 - The zone transport follows the SDK's normal service path but has only been type-checked here; the e2e
   suite runs through the dev override.

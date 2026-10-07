@@ -49,6 +49,7 @@ const table: BlockDefinition = {
   type: 'table', version: 1, title: '表格视图', accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 640, h: 320 }, cost: { editor: true, html: false },
   Static: TableStatic, Simplified: TableSimplified, Editor: TableEditorView,
+  catalog: { group: 'data', description: '行与字段组成的数据表；新建时带“标题”“完成”两个字段，可在表格中继续加字段和记录。', needs: 'none', standard: true },
   actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'table', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.table-source', args.contentFolderId, args.dataOrderKey, {
@@ -96,6 +97,7 @@ const richtext: BlockDefinition = {
   type: 'richtext', version: 1, title: '富文本', accepts: ['buckyos.richtext'], allowNoSource: false,
   defaultSize: { w: 420, h: 220 }, cost: { editor: true, html: false },
   Static: RichTextStatic, Simplified: RichTextSimplified, Editor: RichTextEditorView,
+  catalog: { group: 'text', description: '段落、标题、列表等格式化文本，支持多人同时编辑和按文字范围批注。', needs: 'none', editAfterInsert: true, standard: true },
   actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'richtext', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.richtext', args.contentFolderId, args.dataOrderKey, {
@@ -125,6 +127,7 @@ const record: BlockDefinition = {
   type: 'record', version: 1, title: '记录', accepts: ['buckyos.record'], allowNoSource: false,
   defaultSize: { w: 360, h: 180 }, cost: { editor: false, html: false },
   Static: RecordStatic, Editor: RecordEditorView,
+  catalog: { group: 'data', description: '一组带名称的属性（名称、值），适合记录项目信息、参数等结构化内容。', needs: 'none', editAfterInsert: true },
   actions: [{ id: 'edit', label: '编辑内容', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'record', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.record', args.contentFolderId, args.dataOrderKey, {
@@ -171,8 +174,20 @@ const asset: BlockDefinition = {
   type: 'asset', version: 1, title: '图片 / 附件', accepts: ['buckyos.asset-ref'], allowNoSource: false,
   defaultSize: { w: 320, h: 240 }, cost: { editor: false, html: false },
   Static: AssetStatic, Editor: AssetEditorView, View: AssetView,
+  catalog: { group: 'data', description: '上传图片或文件，作为工作区里的资产显示；文件先上传，再放到画布上。', needs: 'file', standard: true },
   actions: [{ id: 'replace', label: '替换文件', modes: ['edit'], needs: ['update'], onSource: true, run: (context) => context.activateEditor() }],
   configFields: [{ key: 'fit', label: '填充方式', kind: 'select', options: [{ value: 'contain', label: '完整显示' }, { value: 'cover', label: '填满' }] }],
+  create: (args) => {
+    if (args.existingSourceId) return [cellOp(args, 'asset', args.existingSourceId)]
+    const file = args.config?.file as { object_id: string; file_name: string } | undefined
+    if (!file) throw new Error('图片 / 附件需要先选择文件')
+    const { file: _file, ...rest } = args.config ?? {}
+    void _file
+    return [
+      createOp(args.dataId, 'buckyos.asset-ref', args.contentFolderId, args.dataOrderKey, { object_id: file.object_id, file_name: file.file_name }, file.file_name),
+      cellOp({ ...args, config: Object.keys(rest).length > 0 ? rest : undefined }, 'asset', args.dataId),
+    ]
+  },
 }
 
 // ---- note (a free or attached annotation shown on the canvas)
@@ -194,13 +209,14 @@ function NoteStatic(context: RenderContext) {
 }
 function NoteEditorView(context: RenderContext) {
   if (!context.source) return null
-  return <NoteEditor entityId={context.source.entity_id} entity={context.source} readOnly={context.readOnlyReason !== null} />
+  return <NoteEditor entityId={context.source.entity_id} entity={context.source} readOnly={context.readOnlyReason !== null} startEditing={context.view === 'canvas'} />
 }
 
 const note: BlockDefinition = {
   type: 'note', version: 1, title: '便签', accepts: ['buckyos.annotation'], allowNoSource: false,
   defaultSize: { w: 220, h: 160 }, cost: { editor: false, html: false },
   Static: NoteStatic, Editor: NoteEditorView,
+  catalog: { group: 'text', description: '画布上的自由便签，插入后直接输入内容。', needs: 'none', editAfterInsert: true, standard: true },
   actions: [{ id: 'edit', label: '编辑便签', modes: ['edit'], needs: ['comment'], onSource: true, run: (context) => context.activateEditor(), key: 'Enter' }],
   create: (args) => (args.existingSourceId ? [cellOp(args, 'note', args.existingSourceId)] : [
     createOp(args.dataId, 'buckyos.annotation', args.contentFolderId, args.dataOrderKey, { kind: 'note', body: args.title ?? '', style: { color: '#fff2cc' } }),
@@ -223,6 +239,7 @@ const frame: BlockDefinition = {
   type: 'frame', version: 1, title: '框', accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 600, h: 400 }, cost: { editor: false, html: false },
   Static: FrameStatic,
+  catalog: { group: 'layout', description: '带标题的区域框，用来在画布上圈出一组内容。', needs: 'none', standard: true },
   configFields: [{ key: 'color', label: '颜色', kind: 'color' }],
   create: (args) => [cellOp(args, 'frame', undefined, { config: { color: (args.config?.color as string) ?? '#4f8df7' } })],
 }
@@ -243,6 +260,7 @@ const shape: BlockDefinition = {
   type: 'shape', version: 1, title: '形状', accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false },
   Static: ShapeStatic,
+  catalog: { group: 'layout', description: '矩形或椭圆，可在属性中改颜色和形状。', needs: 'none', standard: true },
   configFields: [
     { key: 'shape', label: '形状', kind: 'select', options: [{ value: 'rect', label: '矩形' }, { value: 'ellipse', label: '椭圆' }] },
     { key: 'fill', label: '填充', kind: 'color' }, { key: 'stroke', label: '边框', kind: 'color' },

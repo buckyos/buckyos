@@ -248,7 +248,7 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         TYPE_CONTAINER => {
             env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
             env["layout"] = e.payload.get("layout").cloned().unwrap_or(Value::Null);
-            for k in ["system", "surface_id", "content_folder_id"] {
+            for k in ["system", "surface_id", "content_folder_id", "icon"] {
                 if let Some(v) = e.payload.get(k) {
                     env[k] = v.clone();
                 }

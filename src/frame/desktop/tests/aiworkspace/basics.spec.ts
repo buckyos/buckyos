@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { BACKEND_FIXTURE, BUNDLED_FIXTURE, VECTORS_PATH, expect, expectAllCommitted, openApp, openWorkspace, test } from './fixtures'
+import { BACKEND_FIXTURE, BUNDLED_FIXTURE, VECTORS_PATH, expect, expectAllCommitted, openApp, openWorkspace, test, openSide } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -10,13 +10,13 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   await openApp(page, ALICE)
   await expect(page.getByTestId('window-aiworkspace')).toBeVisible()
   const title = `样例 ${Date.now()}`
+  // New → template: the sample is created as a new workspace and opened
+  await page.getByTestId('aiws-new-template').click()
+  await page.getByTestId('aiws-template-sample').click()
   await page.getByLabel('工作区标题', { exact: true }).fill(title)
-  await page.getByTestId('aiws-create-sample').click()
-  const card = page.getByTestId('aiws-workspace-card').filter({ hasText: title })
-  await expect(card).toBeVisible({ timeout: 30_000 })
-  const workspaceId = await card.getAttribute('data-workspace-id') as string
-  await card.getByTestId('aiws-open').click()
-  await expect(page.getByTestId('aiws-workspace')).toBeVisible()
+  await page.getByTestId('aiws-create-template').click()
+  await expect(page.getByTestId('aiws-workspace')).toBeVisible({ timeout: 30_000 })
+  const workspaceId = await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id') as string
 
   // the data tree (data-source mode): the data of design §3.8 (no Blocks, no system nodes), the canvas content area collapsed
   await page.getByTestId('aiws-top-sources').click()
@@ -45,7 +45,7 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(16)
   await expect(page.getByTestId('aiws-asset-availability')).toHaveText('可用')
   // annotation with its anchor state (annotations side panel), and the mark on the annotated cell
-  await page.getByTestId('aiws-side-annotations').click()
+  await openSide(page, 'annotations')
   await expect(page.getByTestId('aiws-annotation')).toContainText('请核对预算来源')
   await expect(page.getByTestId('aiws-anchor-state')).toHaveText('锚点有效')
   await expect(page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-42-budget').getByTestId('aiws-cell-annotation')).toBeVisible()

@@ -346,9 +346,10 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 /// Container kinds (phase two §4.5): `folder` in the data tree, `surface` under `surfaces`, `group`
 /// in a BlockTree. `root` / `data` / `surfaces` exist only as system nodes. A Surface names its
 /// canvas content folder (`content_folder_id`, a folder under `canvas-content`); the folder may
-/// point back (`surface_id`, informative).
+/// point back (`surface_id`, informative). A Surface may carry `icon`, the stable id of a preset
+/// icon chosen by the client (the client owns the preset list; an unknown id shows its default).
 fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id"], "container")?;
+    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon"], "container")?;
     let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
     match (kind.as_str(), before) {
         ("folder" | "surface" | "group", None) => {}
@@ -377,6 +378,14 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
     if let Some(sid) = e.payload.get("surface_id") {
         if kind != "folder" || !sid.as_str().is_some_and(is_valid_id) {
             return Err(bad("surface_id must be an entity id on a folder"));
+        }
+    }
+    if let Some(icon) = e.payload.get("icon") {
+        let valid = icon.as_str().is_some_and(|s| {
+            (1..=32).contains(&s.len()) && s.starts_with(|c: char| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        });
+        if kind != "surface" || !valid {
+            return Err(bad("icon must be a preset id ([a-z][a-z0-9-]{0,31}) on a surface"));
         }
     }
     match e.payload.get("content_folder_id") {

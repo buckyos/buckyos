@@ -80,6 +80,7 @@ function MetricInspector(context: RenderContext) {
 export const metricBlock: BlockDefinition = {
   type: 'sample.metric', version: 1, title: '指标（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 220, h: 120 }, cost: { editor: false, html: false },
+  catalog: { group: 'sample', description: '把表格的一列汇总成一个数字（样本渲染器）。', needs: 'data' },
   Static: MetricStatic, Inspector: MetricInspector,
   create: (args) => [cellOp(args, 'sample.metric', args.existingSourceId, args.config ? { config: args.config } : {})],
 }
@@ -147,6 +148,7 @@ function ChartInspector(context: RenderContext) {
 export const chartBlock: BlockDefinition = {
   type: 'sample.bar-chart', version: 1, title: '柱状图（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 420, h: 260 }, cost: { editor: false, html: false },
+  catalog: { group: 'sample', description: '把表格数据画成柱状图（样本渲染器）。', needs: 'data' },
   Static: ChartStatic, View: ChartView, Inspector: ChartInspector,
   actions: [{ id: 'open-source', label: '打开数据表', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
   create: (args) => [cellOp(args, 'sample.bar-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
@@ -192,6 +194,7 @@ function LineChart(context: RenderContext) {
 export const lineChartBlock: BlockDefinition = {
   type: 'sample.line-chart', version: 1, title: '折线图（样本）', accepts: ['buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 420, h: 260 }, cost: { editor: false, html: false },
+  catalog: { group: 'sample', description: '把表格数据画成折线图（样本渲染器）。', needs: 'data' },
   Static: LineChart,
   actions: [{ id: 'open-source', label: '打开数据表', modes: ['edit', 'view'], run: (context) => { if (context.source) context.openEntity(context.source.entity_id) } }],
   create: (args) => [cellOp(args, 'sample.line-chart', args.existingSourceId, args.config ? { config: args.config } : {})],
@@ -260,6 +263,7 @@ function VideoView(context: RenderContext) {
 export const videoBlock: BlockDefinition = {
   type: 'sample.video', version: 1, title: '逐帧预览（样本）', accepts: ['buckyos.record'], allowNoSource: false,
   defaultSize: { w: 640, h: 452 }, cost: { editor: false, html: false },
+  catalog: { group: 'sample', description: '按记录中的帧列表逐帧预览（样本渲染器）。', needs: 'data' },
   Static: VideoStatic, View: VideoView,
 }
 

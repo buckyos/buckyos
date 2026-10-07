@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test'
-import { test, expect, openCanvas, type Api } from './fixtures'
+import { test, expect, openCanvas, type Api, fitAll, setCanvasMode } from './fixtures'
 import type { BlockDefPayload } from '../../src/app/aiworkspace/api/types'
 
 const ALICE = 'tok-alice', BOB = 'tok-bob'
@@ -11,7 +11,7 @@ async function htmlSetup(page: Page, api: Api, extra: Partial<BlockDefPayload> =
   ])
   expect(r.status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await page.getByTestId('aiws-canvas-block-blk-ext').click()
   return ws
 }
@@ -98,7 +98,7 @@ test('HTML retry mounts a new runtime', async ({ page, api }) => {
 test('unregistering a renderer switches mounted blocks to fallback', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `unregister ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-decl-blk-kpi')).toBeVisible()
   await page.evaluate(async () => {
     const path = '/src/app/aiworkspace/ui/blocks/registry.ts'
@@ -120,7 +120,7 @@ test('unregistering a renderer switches mounted blocks to fallback', async ({ pa
 test('a throwing Inspector is isolated to its block', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `inspector ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-decl-blk-kpi')).toBeVisible()
   await page.evaluate(async () => {
     const path = '/src/app/aiworkspace/ui/blocks/registry.ts'
@@ -149,7 +149,7 @@ test('nested richtext blocks respect MAX_EMBED_DEPTH', async ({ page, api }) => 
   const committed = await api.commit(ALICE, ws, ops)
   expect(committed.status, JSON.stringify(committed)).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-canvas-block-deep-c-0')).toContainText('嵌入层级过深')
   await expect(page.getByTestId('aiws-embed-deep-c-6')).toHaveCount(0)
   const count = await page.locator('[data-testid^="aiws-embed-deep-c-"]').count()
@@ -161,7 +161,7 @@ test('actions use the current payload and key revisions and respect view mode', 
   const read = await api.read(ALICE, ws.workspace_id, 'blk-kpi')
   expect((await api.commit(ALICE, ws, [{ op: 'entity.set_keys', entity_id: 'blk-kpi', keys: [{ key: 'config', value: { accent: '#123456' }, expect: { rev: read.content.key_revs.config ?? 0 } }] }])).status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await page.evaluate(async () => {
     const path = '/src/app/aiworkspace/ui/blocks/registry.ts'
     const { blockRegistry } = await import(path) as typeof import('../../src/app/aiworkspace/ui/blocks/registry')
@@ -176,9 +176,9 @@ test('actions use the current payload and key revisions and respect view mode', 
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
   await page.getByTestId('aiws-near-write-config').click()
   await expect.poll(async () => (await api.read(ALICE, ws.workspace_id, 'blk-kpi')).content.payload.config).toEqual({ accent: '#123456', note: 'from action' })
-  await page.getByTestId('aiws-mode-view').click()
+  await setCanvasMode(page, 'view')
   await expect(page.getByTestId('aiws-near-write-config')).toHaveCount(0)
-  await page.getByTestId('aiws-mode-edit').click()
+  await setCanvasMode(page, 'edit')
   await expect(page.getByTestId('aiws-near-write-config')).toBeVisible()
 })
 

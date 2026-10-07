@@ -87,12 +87,74 @@ export class Api {
   }
 }
 
-/** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`. */
+/** Open the Desktop shell and the AI Workspace app in it, talking to the standalone backend as `token`, and
+ * end on the workspace list (a normal start restores the last workspace: it is closed again here). */
 export async function openApp(page: Page, token: string) {
   await page.addInitScript((value) => window.localStorage.setItem('aiworkspace.dev', JSON.stringify({ token: value })), token)
   await page.goto('/?scenario=normal')
   await page.getByTestId('desktop-app-aiworkspace').click()
+  // the window opens maximised: the canvas has the room the specs' coordinates assume
+  await page.getByTestId('window-aiworkspace').getByRole('button', { name: 'Maximize' }).click()
+  await backToList(page)
+}
+
+/** After the app started: a restored workspace (UI improvement §4) is closed so the list shows; returns its id. */
+export async function backToList(page: Page): Promise<string | null> {
+  await expect(page.getByTestId('aiws-list').or(page.getByTestId('aiws-workspace'))).toBeVisible({ timeout: 30_000 })
+  let restored: string | null = null
+  if (await page.getByTestId('aiws-workspace').isVisible()) {
+    restored = await page.getByTestId('aiws-workspace').getAttribute('data-workspace-id')
+    await closeWorkspace(page)
+  }
   await expect(page.getByTestId('aiws-list')).toBeVisible({ timeout: 30_000 })
+  return restored
+}
+
+/** Open the main menu and click through items by test id (an item with a submenu opens it on click). */
+export async function mainMenu(page: Page, ...testIds: string[]) {
+  await page.getByTestId('aiws-main-menu').click()
+  for (const id of testIds) await page.getByTestId(id).click()
+}
+
+/** Main menu → 关闭工作区 (the leave check passes when nothing is unsaved). */
+export async function closeWorkspace(page: Page) {
+  await mainMenu(page, 'aiws-back')
+}
+
+/** The zoom control of the presenter toolbar → 适应全部. */
+export async function fitAll(page: Page) {
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-all').click()
+}
+
+export async function zoomIn(page: Page) {
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-zoom-in').click()
+  await page.keyboard.press('Escape')
+}
+
+/** Main menu → 画布模式 → edit / view / presentation_edit. */
+export async function setCanvasMode(page: Page, mode: 'edit' | 'view' | 'presentation_edit') {
+  await mainMenu(page, 'aiws-menu-canvas-mode', `aiws-mode-${mode}`)
+}
+
+/** Show one tab of the right panel (main menu → 视图 → tab), unless it is already shown. */
+export async function openSide(page: Page, tab: 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits') {
+  if (await page.locator(`[data-testid="aiws-side-panel"][data-tab="${tab}"]`).isVisible()) return
+  await mainMenu(page, 'aiws-menu-view', `aiws-menu-side-${tab}`)
+  await expect(page.locator(`[data-testid="aiws-side-panel"][data-tab="${tab}"]`)).toBeVisible()
+}
+
+/** The save-state panel: connection, offline actions and the edits that are not committed. */
+export async function openStatus(page: Page) {
+  if (await page.getByTestId('aiws-status-detail').isVisible()) return
+  await page.getByTestId('aiws-status').click()
+  await expect(page.getByTestId('aiws-status-detail')).toBeVisible()
+}
+
+/** Main menu → 开发工具 → 受控加工（Mock）. */
+export async function openMock(page: Page) {
+  await mainMenu(page, 'aiws-menu-dev', 'aiws-side-mock')
 }
 
 export async function openWorkspace(page: Page, token: string, workspaceId: string) {
@@ -108,10 +170,10 @@ export async function expectAllCommitted(page: Page) {
   await expect(page.getByTestId('aiws-save-summary')).toHaveAttribute('data-attention', '0')
 }
 
-/** Open a workspace and switch to the canvas top-level mode. */
+/** Open a workspace and make sure the canvas (the default top-level view) is shown. */
 export async function openCanvas(page: Page, token: string, workspaceId: string) {
   await openWorkspace(page, token, workspaceId)
-  await page.getByTestId('aiws-top-canvas').click()
+  if (await page.getByTestId('aiws-top-canvas').isVisible()) await page.getByTestId('aiws-top-canvas').click()
   await expect(page.getByTestId('aiws-canvas-view')).toBeVisible()
 }
 

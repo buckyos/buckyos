@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { expect, editCell, prepareOffline, saveSummary, test } from './offline-fixtures'
+import { openStatus } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -72,6 +73,7 @@ test('V17 permission revoked while offline: the old right is not honoured, the i
   await end.click()
   await page.keyboard.press('End')
   await page.keyboard.type(' bob 离线写的文字')
+  await openStatus(page)
   const rich = page.locator('[data-testid="aiws-edit-entry"][data-edit-id="rt:notes"]')
   await expect(rich).toHaveAttribute('data-state', 'saved_locally')
   expect((await saveSummary(page)).pending).toBe(2)

@@ -149,17 +149,33 @@ export function filmDemoCommits(): DemoCommit[] {
   ]
 }
 
+/** A template stopped after its workspace was created: the partial workspace exists and is named here. */
+export class TemplateFailure extends Error {
+  readonly workspace: WorkspaceSummary
+  readonly stage: string
+  constructor(workspace: WorkspaceSummary, stage: string, cause: unknown) {
+    super(`${stage}：${cause instanceof Error ? cause.message : String(cause)}`, { cause })
+    this.name = 'TemplateFailure'
+    this.workspace = workspace
+    this.stage = stage
+  }
+}
+
 export type DemoKind = 'quarterly' | 'film'
 
 export async function createDemoWorkspace(client: AiwsClient, kind: DemoKind, title: string): Promise<WorkspaceSummary> {
   const commits = kind === 'quarterly' ? quarterlyDemoCommits() : filmDemoCommits()
   const workspace = unwrap(await client.wsCreate(title))
   for (const [index, commit] of commits.entries()) {
-    const result = await client.commit({
-      protocol_version: PROTOCOL_VERSION, workspace_id: workspace.workspace_id, epoch: workspace.epoch,
-      idempotency_key: `demo/${kind}/${index + 1}`, session_id: 'demo', origin: 'human', message: commit.message, operations: commit.operations,
-    })
-    if (result.status !== 'accepted') throw new Error(`demo 的第 ${index + 1} 个提交未被接受：${result.code} ${JSON.stringify(result)}`)
+    try {
+      const result = await client.commit({
+        protocol_version: PROTOCOL_VERSION, workspace_id: workspace.workspace_id, epoch: workspace.epoch,
+        idempotency_key: `demo/${kind}/${index + 1}`, session_id: 'demo', origin: 'human', message: commit.message, operations: commit.operations,
+      })
+      if (result.status !== 'accepted') throw new Error(`提交未被接受：${result.code} ${JSON.stringify(result)}`)
+    } catch (error) {
+      throw new TemplateFailure(workspace, `写入模板内容的第 ${index + 1}/${commits.length} 步失败`, error)
+    }
   }
   return workspace
 }

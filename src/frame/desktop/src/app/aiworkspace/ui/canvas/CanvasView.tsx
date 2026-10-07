@@ -1,93 +1,114 @@
-/* CanvasView (phase two §5, §8, §10.2): Surface navigation, the canvas sub-mode controller
- * (edit / view / presentation-edit placeholder), selection, keyboard, near tools, insertion,
- * grouping, cross-Surface moves, and the side panels (inspector, relations, annotations). It owns
- * the camera and the user's per-Surface viewport; the RenderHost owns rendering and gestures. */
+/* CanvasView (phase two §5, §8, §10.2; UI improvement §3, §7–§9): the canvas fills the application
+ * area and the tools float above it in screen space — the main toolbar top left, the presenter toolbar
+ * (annotation, zoom and view navigation, identity, share) top right, the vertical object toolbar on the
+ * left — with the right panel taking layout width (a drawer in narrow windows). This view owns the
+ * selection, the pointer tool, one-shot placement, insertion, the object clipboard, grouping,
+ * cross-Surface moves and the per-Surface viewport; the RenderHost owns rendering and gestures. Menus,
+ * buttons, context menus and shortcuts call the same actions. */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { EntityEnvelope, Json, Operation, Placement } from '../../api/types'
-import { useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { useDirectReadOnly, useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
-import { defaultRendererFor } from '../blocks/ops'
-import { blockRegistry, CANVAS_MODE_LABEL, CANVAS_MODES, modePolicy, type BlockDefinition, type CanvasMode, type RenderContext } from '../blocks/registry'
+import { blockRegistry, modePolicy, type CanvasMode, type RenderContext } from '../blocks/registry'
+import { PermissionsPanel } from '../sources/PermissionsPanel'
 import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
+import type { CanvasCommands, Command } from '../shell/MainMenu'
+import { MainToolbar } from '../shell/MainToolbar'
+import { useOverlayOpen } from '../shell/popover'
+import { PresenterToolbar } from '../shell/PresenterToolbar'
+import { CANVAS_SIDE_TABS, useCanvasMode, useShell, type SideTab } from '../shell/shellContext'
+import { SidePanel } from '../shell/SidePanel'
+import { StatusDetail, StatusDock } from '../shell/StatusSummary'
+import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
+import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
 import { FlowSurface } from './FlowSurface'
-import { boundsOf, freeSpot, layoutSurface, relativeTo, surfaceBounds, topLevel } from './layout'
+import { InsertCatalog, type CatalogTab } from './InsertCatalog'
+import { boundsOf, layoutSurface, relativeTo, surfaceBounds, topLevel } from './layout'
+import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
 import { RenderHost, type LayoutChange } from './render/RenderHost'
 import { SpatialIndex } from './render/spatialIndex'
-import { BlockInspector, ContextMenu, NearToolbar, SurfaceNav, type NearAction } from './tools'
-import { createSurfaceOps, insertChoices, surfacesOf } from './surfaceOps'
+import { createSurfaceOps, surfacesOf } from './surfaceOps'
+import { BlockInspector, ContextMenu, NearToolbar, type NearAction } from './tools'
 
 export interface CanvasFocus { surfaceId: string; blockId: string | null; nonce: number }
 
 interface Viewport { x: number; y: number; zoom: number }
 
+/** Screen space the floating toolbars and the status area cover (fit, centring and the near toolbar avoid it);
+ * narrow windows stack the two top toolbars. */
+const TOP_INSET = 68
+const TOP_INSET_NARROW = 124
+const LEFT_INSET = 68
+const BOTTOM_INSET = 52
+
 export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
+  const shell = useShell()
+  const mode = useCanvasMode()
+  const active = shell.activeSurface
+  if (!active) return <EmptyCanvas mode={mode} />
+  return <SurfaceView key={active.entity_id} surface={active} mode={mode} focus={focus} />
+}
+
+function EmptyCanvas({ mode }: { mode: CanvasMode }) {
   const store = useStore()
-  useOutlineVersion()
-  const surfaces = surfacesOf(store)
-  const remembered = useUserState<string>('surface:active')
-  const [activeId, setActiveId] = useState<string | null>(null)
-  // a focus request (open a Block from the data-source view) selects its Surface: derived during render
-  const [focusSeen, setFocusSeen] = useState<CanvasFocus | null>(null)
-  if (focus !== focusSeen) {
-    setFocusSeen(focus)
-    if (focus) setActiveId(focus.surfaceId)
-  }
-  const active = surfaces.find((s) => s.entity_id === (activeId ?? remembered)) ?? surfaces[0] ?? null
-  const selectSurface = (id: string) => setActiveId(id)
-  useEffect(() => { if (activeId) store.userState.set('surface:active', activeId) }, [activeId, store])
-  const modeState = useUserState<CanvasMode>('canvas:mode')
-  const mode: CanvasMode = modeState && CANVAS_MODES.includes(modeState) ? modeState : 'edit'
-  const setMode = (next: CanvasMode) => store.userState.set('canvas:mode', next)
+  const shell = useShell()
   const canStructure = store.session.info().capabilities.includes('structure')
+  const create = async (layout: 'free' | 'flow') => {
+    const { ops, surfaceId } = createSurfaceOps(store, layout === 'free' ? '画布 1' : '页 1', layout)
+    const outcome = await store.submit({ editId: 'surface:new', label: '创建画布', operations: ops })
+    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') shell.selectSurface(surfaceId)
+  }
   return (
     <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
-      <div className="aiws-canvas-top">
-        <SurfaceNav active={active?.entity_id ?? null} onSelect={selectSurface} />
-        <div className="aiws-mode-tabs" role="tablist" aria-label="画布子模式" data-testid="aiws-mode-tabs">
-          {CANVAS_MODES.map((m) => (
-            <button key={m} type="button" role="tab" aria-selected={mode === m} data-testid={`aiws-mode-${m}`} onClick={() => setMode(m)}>{CANVAS_MODE_LABEL[m]}</button>
-          ))}
+      <div className="aiws-canvas-body">
+        <div className="aiws-canvas-main is-empty">
+          <div className="aiws-empty" data-testid="aiws-no-surface">
+            <p>这个工作区还没有画布。</p>
+            {canStructure ? (
+              <div className="aiws-dialog-actions">
+                <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>新建自由画布</button>
+                <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>新建流式页</button>
+              </div>
+            ) : <p className="aiws-muted">你没有新建画布的权限；数据源中的数据仍可查看。</p>}
+          </div>
+          <div className="aiws-chrome-top"><MainToolbar canvas={null} /></div>
+          <StatusDock />
         </div>
-        <span className="aiws-grow" />
-        <span className="aiws-muted" data-testid="aiws-mode-note">{mode === 'view' ? '查看模式：除批注外不修改文档' : mode === 'presentation_edit' ? '播放编辑：尚未实现，只读占位' : '编辑模式'}</span>
+        <SidePanel tabs={['collab', 'edits']} render={(tab) => (tab === 'collab' ? <PermissionsPanel /> : <StatusDetail />)} />
       </div>
-      {!active ? (
-        <div className="aiws-empty" data-testid="aiws-no-surface">
-          <p>这个工作区还没有画布。</p>
-          {canStructure && <button type="button" data-testid="aiws-create-first-surface" onClick={() => { void createFirstSurface(store, selectSurface, 'free') }}>创建第一张自由画布</button>}
-          {canStructure && <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void createFirstSurface(store, selectSurface, 'flow') }}>创建第一张流式页</button>}
-        </div>
-      ) : (
-        <SurfaceView key={active.entity_id} surface={active} mode={mode} focus={focus} />
-      )}
     </div>
   )
 }
 
-async function createFirstSurface(store: ReturnType<typeof useStore>, select: (id: string) => void, layout: 'free' | 'flow') {
-  const { ops, surfaceId } = createSurfaceOps(store, layout === 'free' ? '画布 1' : '页 1', layout)
-  const outcome = await store.submit({ editId: 'surface:new', label: '创建画布', operations: ops })
-  if (outcome.status === 'accepted' || outcome.status === 'saved_locally') select(surfaceId)
-}
+type MenuState = { at: { x: number; y: number }; world: { x: number; y: number } | null; blockId: string | null; parentId?: string }
 
 function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: CanvasMode; focus: CanvasFocus | null }) {
   const store = useStore()
   const ui = useWorkspaceUi()
+  const shell = useShell()
   const outlineVersion = useOutlineVersion()
+  const readOnlyNow = useDirectReadOnly()
+  const overlayOpen = useOverlayOpen()
+  const clip = useSyncExternalStore(canvasClipboard.subscribe, canvasClipboard.snapshot)
   const surfaceId = surface.entity_id
   const policy = modePolicy(mode)
   const [selection, setSelectionState] = useState<Set<string>>(new Set())
   const [editing, setEditingState] = useState<string | null>(null)
-  const [menu, setMenu] = useState<{ at: { x: number; y: number }; world: { x: number; y: number }; blockId: string | null; parentId?: string } | null>(null)
-  const [side, setSide] = useState<'inspector' | 'relations' | 'annotations' | null>(null)
-  const [picker, setPicker] = useState<{ kind: 'add-data' | 'add-view' | 'move-surface'; world: { x: number; y: number } } | null>(null)
+  const [menu, setMenu] = useState<MenuState | null>(null)
+  const [picker, setPicker] = useState<{ kind: 'add-view' | 'move-surface' } | null>(null)
+  const [catalog, setCatalog] = useState<{ tab: CatalogTab; key?: string; world: { x: number; y: number } | null; parentId?: string } | null>(null)
+  const [tool, setTool] = useState<PointerTool>('select')
+  const [placing, setPlacing] = useState<InsertRequest | null>(null)
+  const [annotatePick, setAnnotatePick] = useState(false)
+  const [collapsedChoice, setCollapsed] = useState<boolean | null>(null)
+  const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
   const isFree = surface.layout?.mode === 'free'
@@ -98,16 +119,34 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const [id, l] of laid) idx.insert({ id, rect: l.rect, order: l.order, depth: l.depth })
     return idx
   }, [laid])
+  const showObjectToolbar = shell.prefs.objectToolbar && mode !== 'presentation_edit'
+  const topInset = shell.size === 'narrow' ? TOP_INSET_NARROW : TOP_INSET
+  const leftInset = showObjectToolbar && !collapsed ? LEFT_INSET : 12
+  const insets = { top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }
+  useEffect(() => { camera.setInsets({ top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }) }, [camera, topInset, leftInset])
+
+  const canComment = store.session.info().capabilities.includes('comment')
+  /** One block picked while "add annotation" waits for a target. */
+  const pickForAnnotation = (next: Set<string>) => {
+    if (!annotatePick || next.size !== 1) return
+    const picked = store.outline.get([...next][0])
+    const source = picked?.source_id ? store.outline.get(picked.source_id) : undefined
+    if (!source) { store.notify('info', '这个对象没有数据，暂不支持批注：请点选表格、富文本、记录等数据对象。'); return }
+    setAnnotatePick(false)
+    ui.annotate?.({ target: { entity_id: source.entity_id }, label: source.title ?? source.name ?? source.entity_id })
+  }
   // selection survives mode switches when the policy still allows it (§10.2); editors are released
-  const setSelection = useCallback((next: Set<string>) => { setSelectionState(next) }, [])
+  const setSelection = (next: Set<string>) => { setSelectionState(next); pickForAnnotation(next) }
   // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen)
   const setEditing = useCallback((id: string | null) => { setEditingState(id); if (id) { const l = laid.get(id); if (l) camera.ensureVisible(l.rect) } }, [laid, camera])
-  const policyKey = `${policy.select}:${policy.editContent}`
+  const policyKey = `${policy.select}:${policy.editContent}:${policy.insert}`
   const [policySeen, setPolicySeen] = useState(policyKey)
   if (policySeen !== policyKey) {
     setPolicySeen(policyKey)
     if (!policy.select) setSelectionState(new Set())
     if (!policy.editContent) setEditingState(null)
+    if (!policy.insert) { setPlacing(null); setCatalog(null) }
+    if (!policy.annotate) setAnnotatePick(false)
   }
   const [laidSeen, setLaidSeen] = useState(laid)
   if (laidSeen !== laid) {
@@ -116,25 +155,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (kept.length !== selection.size) setSelectionState(new Set(kept))
     if (editing && !laid.has(editing)) setEditingState(null)
   }
-  // an annotation draft (from a table cell, a rich text selection or the near tool) opens the annotations side
-  const uiDraft = (ui as unknown as { draft?: unknown }).draft ?? null
-  const [draftSeen, setDraftSeen] = useState<unknown>(null)
-  if (uiDraft !== draftSeen) {
-    setDraftSeen(uiDraft)
-    if (uiDraft) setSide('annotations')
-  }
   const [blockFocusSeen, setBlockFocusSeen] = useState(0)
   if (focus && focus.surfaceId === surfaceId && focus.nonce !== blockFocusSeen) {
     setBlockFocusSeen(focus.nonce)
     if (focus.blockId && laid.has(focus.blockId)) setSelectionState(new Set([focus.blockId]))
   }
-  // per-Surface viewport in the user work state (§4.4)
+  // per-Surface viewport in the user work state (§4.4); a first visit puts the world origin at the top left of the clear area
   const viewportKey = `viewport:${surfaceId}`
   const savedViewport = useUserState<Json>(viewportKey) as Viewport | undefined
   const restored = useRef(false)
   useEffect(() => {
     if (restored.current) return
-    if (savedViewport) camera.set(savedViewport)
+    camera.set(savedViewport ?? { x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 })
     restored.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedViewport])
@@ -157,8 +189,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
 
   const [viewportSize, setViewportSize] = useState({ w: 800, h: 600 })
   const hostRef = useRef<HTMLDivElement>(null)
+  const mainRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    const el = hostRef.current
+    const el = mainRef.current
     if (!el) return
     // the observer reports once on observe, which is the initial measurement
     const observer = new ResizeObserver(() => setViewportSize({ w: el.clientWidth, h: el.clientHeight }))
@@ -181,27 +214,69 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     void store.submit({ editId: `layout:${surfaceId}:${randomId().slice(0, 8)}`, label, operations: ops })
   }, [store, laid, policy.layout, surfaceId])
 
-  const canLayout = policy.layout && surface.capabilities.includes('structure')
+  const canLayout = policy.layout && surface.capabilities.includes('structure') && !readOnlyNow
+  const insertReason = !policy.insert ? (mode === 'view' ? '查看模式不能插入' : '播放编辑占位中不能插入')
+    : !surface.capabilities.includes('structure') ? '没有在这张画布上添加对象的权限'
+      : readOnlyNow ? '后台不可达且此窗口未启用离线：当前只读' : null
 
-  // ---- insertion (§4.2, §8.1)
-  const insert = useCallback(async (definition: BlockDefinition, world: { x: number; y: number } | null, existingSourceId?: string, config?: Record<string, Json>, parentId?: string) => {
-    if (!definition.create) return
+  /** World point at the centre of the unobstructed visible area (top-left of a Block of `size` centred there). */
+  const centreSpot = (size: { w: number; h: number }) => {
+    const c = camera.center
+    const w = camera.toWorld(c.x, c.y)
+    const spot = { x: Math.round(w.x - size.w / 2), y: Math.round(w.y - size.h / 2) }
+    while ([...laid.values()].some((l) => !l.isGroup && Math.abs(l.rect.x - spot.x) < 4 && Math.abs(l.rect.y - spot.y) < 4)) { spot.x += 24; spot.y += 24 }
+    return spot
+  }
+
+  // ---- insertion (§4.2, §8.1; UI improvement §7.2): no title prompt; text and notes open their editor at once
+  const insert = useCallback(async (request: InsertRequest, world: { x: number; y: number } | null, parentId?: string) => {
+    const definition = request.entry.definition
+    if (!definition.create || insertReason) return
+    let config = request.config
+    if (request.file) {
+      try {
+        const uploaded = await store.session.uploadAsset(request.file, request.file.name)
+        config = { ...(config ?? {}), file: { object_id: uploaded.object_id, file_name: request.file.name } }
+      } catch (error) {
+        store.notify('error', `上传“${request.file.name}”失败：${describeError(error)}。没有插入任何对象。`)
+        return
+      }
+    }
     const contentFolderId = surface.content_folder_id ?? ''
     const parent = parentId ?? surfaceId
     const size = definition.defaultSize
-    const spot = world ? { x: world.x, y: world.y, ...size } : freeSpot(laid, size, boundsOf(laid, selection))
-    const placement: Placement = isFree ? relativeTo(laid, parent, spot) : { x: 0, y: 0, ...size }
+    const spot = world ?? centreSpot(size)
+    const placement: Placement = isFree ? relativeTo(laid, parent, { ...spot, ...size }) : { x: 0, y: 0, ...size }
     const cellId = randomId('c')
     const dataId = randomId('d')
     const orderKey = store.core.order_key_between(store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined)
     const dataOrderKey = store.core.order_key_between(store.outline.childrenOf(contentFolderId).at(-1)?.order_key ?? undefined, undefined)
-    const title = existingSourceId ? undefined : prompt(`${definition.title}的标题（可留空）`) ?? undefined
-    if (title === undefined && !existingSourceId && definition.type !== 'frame' && definition.type !== 'shape') return
-    const operations = definition.create({ store, surfaceId, contentFolderId, cellId, dataId, parentId: parent, orderKey, dataOrderKey, placement: isFree ? placement : { x: 0, y: 0, ...size }, title: title ?? undefined, existingSourceId, config })
+    let operations: Operation[]
+    try {
+      operations = definition.create({ store, surfaceId, contentFolderId, cellId, dataId, parentId: parent, orderKey, dataOrderKey, placement, title: request.title, existingSourceId: request.sourceId, config })
+    } catch (error) {
+      store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`)
+      return
+    }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
-    const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${definition.title}`, operations })
-    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set([cellId]))
-  }, [store, surface.content_folder_id, surfaceId, laid, selection, isFree])
+    const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
+    if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
+      setSelectionState(new Set([cellId]))
+      if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) setEditing(cellId)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
+  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, policy.editContent, setEditing])
+
+  /** The toolbar's pick: a one-shot placement on a free Surface, an append on a flow page. */
+  const pick = (request: InsertRequest) => {
+    if (insertReason) { store.notify('info', insertReason); return }
+    if (isFree) { setPlacing(request); setTool('select') } else void insert(request, null)
+  }
+  const pickEntry = (entry: CatalogEntry) => {
+    if (entry.definition.type === 'wish' && single?.view_type === 'wish' && policy.editContent) { setEditing(single.entity_id); return }
+    pick({ entry })
+  }
+  const openCatalog = (tab: CatalogTab, key?: string, world: { x: number; y: number } | null = null, parentId?: string) => setCatalog({ tab, key, world, parentId })
 
   // ---- actions on the selection
   const selectedEntities = [...selection].map((id) => store.outline.get(id)).filter((e): e is EntityEnvelope => Boolean(e))
@@ -212,7 +287,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     onActivate: () => { if (single) setEditing(single.entity_id) }, onDeactivate: () => setEditing(null),
   })
   const deleteSelection = async () => {
-    if (!policy.layout) return
+    if (!canLayout) return
     const ops: Operation[] = []
     for (const id of topLevel(laid, selection)) {
       const entity = store.outline.get(id)
@@ -236,6 +311,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (outcome.status === 'rejected' && outcome.code === 'REFERENCE_BROKEN') {
       const data = outcome.errors?.[0]?.data as { referrers?: { entity_id: string }[]; hidden_referrers?: boolean } | undefined
       store.notify('error', `数据仍被引用，没有删除：${(data?.referrers ?? []).map((r) => store.outline.get(r.entity_id)?.title ?? r.entity_id).join('、')}${data?.hidden_referrers ? '（另有无权查看的引用）' : ''}。先删除引用它的 Block，或只删除 Block。`)
+    } else if (outcome.status === 'rejected') {
+      store.notify('error', `没有删除：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
     } else if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set())
   }
   const reorder = (direction: 'front' | 'back') => {
@@ -304,26 +381,80 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const source = store.outline.get(single.source_id)
     if (!source) return
     ui.annotate?.({ target: { entity_id: source.entity_id }, label: source.title ?? source.name ?? source.entity_id })
-    setSide('annotations')
   }
 
-  // ---- keyboard (§8.2): Esc exits layer by layer; core actions do not depend on hover
+  // ---- clipboard (UI improvement §6.4)
+  const copy: Command = {
+    reason: !policy.select ? '当前模式不能选择对象' : selection.size === 0 ? '没有选中的对象' : null,
+    run: () => {
+      void copyToClipboard(store, surfaceId, laid, selection, 'copy').then(
+        (n) => { if (n > 0) store.notify('info', `已复制 ${n} 个对象。粘贴得到新的视图，数据与原对象共享。`) },
+        (error: unknown) => store.notify('error', `复制失败：${describeError(error)}`))
+    },
+  }
+  const cut: Command = {
+    reason: !canLayout ? (policy.layout ? '没有调整这张画布的权限' : '当前模式不能移动对象') : selection.size === 0 ? '没有选中的对象' : null,
+    run: () => { void copyToClipboard(store, surfaceId, laid, selection, 'cut').then((n) => { if (n > 0) store.notify('info', `已剪切 ${n} 个对象：粘贴时移动到目标位置，取消或粘贴失败时原对象保留。`) }) },
+  }
+  const pasteAt = (at: { x: number; y: number } | null) => {
+    const current = canvasClipboard.snapshot()
+    if (!current) return
+    if (current.workspaceId !== store.session.workspaceId) { store.notify('info', '暂不支持跨工作区粘贴：需要完整导入与引用重映射。'); return }
+    const c = camera.center
+    const { operations, newIds, label } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y) })
+    if (operations.length === 0) { store.notify('info', '剪切的对象已不存在。'); canvasClipboard.set(null); return }
+    void store.submit({ editId: `paste:${randomId().slice(0, 8)}`, label, operations }).then((outcome) => {
+      if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
+        setSelectionState(new Set(newIds))
+        if (current.kind === 'cut') canvasClipboard.set(null)
+        else canvasClipboard.notePaste()
+      } else if (outcome.status === 'rejected' || outcome.status === 'conflict') {
+        store.notify('error', `粘贴没有完成（${outcome.code}）${current.kind === 'cut' ? '：原对象保留在原处。' : '。'}`)
+      }
+    })
+  }
+  const paste: Command = {
+    reason: !clip ? '剪贴板是空的' : clip.workspaceId !== store.session.workspaceId ? '剪贴板中的对象来自另一个工作区' : insertReason ?? (canLayout ? null : '没有调整这张画布的权限'),
+    run: () => pasteAt(null),
+  }
+  const remove: Command = { reason: !canLayout ? (policy.layout ? '没有调整这张画布的权限' : '当前模式不能删除对象') : selection.size === 0 ? '没有选中的对象' : null, run: () => { void deleteSelection() } }
+
+  const fitAll = () => { const b = surfaceBounds(laid); if (b) camera.fit(b); else camera.set({ x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 }) }
+  const fitSelection = () => { const b = boundsOf(laid, selection); if (b) camera.fit(b, 80) }
+
+  // ---- keyboard (§8.2; UI improvement §7.2, §11): Esc exits layer by layer; shortcuts need the canvas focus and never take text input
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
-      if (target?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
+      if (event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
+      // a placement or target pick started from a toolbar button is cancelled by Esc even while that button has the focus
+      if (event.key === 'Escape' && (placing || annotatePick) && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) { setPlacing(null); setAnnotatePick(false); return }
+      if (target?.closest('.aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return
       if (!hostRef.current?.contains(target) && target !== document.body) return
+      const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
         if (menu) { setMenu(null); return }
         if (picker) { setPicker(null); return }
+        if (placing) { setPlacing(null); return }
+        if (annotatePick) { setAnnotatePick(false); return }
         if (editing) { setEditing(null); return }
         if (selection.size > 0) { setSelectionState(new Set()); return }
+        if (clip?.kind === 'cut') { canvasClipboard.set(null); return }
         return
       }
+      if (placing && event.key === 'Enter') { event.preventDefault(); void insert(placing, null); setPlacing(null); return }
+      if (!mod && !event.altKey && isFree && (event.key === 'v' || event.key === 'V')) { setTool('select'); setPlacing(null); return }
+      if (!mod && !event.altKey && isFree && (event.key === 'h' || event.key === 'H')) { setTool('hand'); setPlacing(null); return }
+      if (mod && !event.altKey && !event.shiftKey) {
+        const key = event.key.toLowerCase()
+        if (key === 'c' && copy.reason === null) { event.preventDefault(); copy.run(); return }
+        if (key === 'x' && cut.reason === null) { event.preventDefault(); cut.run(); return }
+        if (key === 'v' && paste.reason === null) { event.preventDefault(); paste.run(); return }
+      }
       if (!policy.select) return
-      if ((event.key === 'Delete' || event.key === 'Backspace') && policy.layout && selection.size > 0) { event.preventDefault(); void deleteSelection(); return }
+      if ((event.key === 'Delete' || event.key === 'Backspace') && remove.reason === null) { event.preventDefault(); remove.run(); return }
       if (event.key === 'Enter' && single && policy.editContent && !editing) { event.preventDefault(); setEditing(single.entity_id); return }
-      if (event.key.startsWith('Arrow') && policy.layout && selection.size > 0 && canLayout) {
+      if (event.key.startsWith('Arrow') && selection.size > 0 && canLayout) {
         event.preventDefault()
         const step = event.shiftKey ? 10 : 1
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
@@ -331,15 +462,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l ? [{ id, placement: relativeTo(laid, l.parentId, { ...l.rect, x: l.rect.x + dx, y: l.rect.y + dy }) }] : [] }))
         return
       }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'g' && policy.layout) { event.preventDefault(); if (event.shiftKey) ungroup(); else group(); return }
-      if (event.key === 'F2' && single && policy.layout) { event.preventDefault(); setSide('inspector') }
+      if (mod && event.key.toLowerCase() === 'g' && canLayout) { event.preventDefault(); if (event.shiftKey) ungroup(); else group(); return }
+      if (event.key === 'F2' && single && policy.layout) { event.preventDefault(); shell.setSide('inspector') }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  // ---- near toolbar actions
+  // ---- near toolbar: common actions next to the object, the rest under "more" (§9.2)
   const nearActions: NearAction[] = []
+  const moreActions: NearAction[] = []
   if (single && policy.select) {
     const context = selectedBlock.context
     const definition = selectedBlock.resolution?.ok ? context?.definition : undefined
@@ -362,89 +494,129 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         }
       }
     }
-    if (source) nearActions.push({ id: 'relations', label: '查看依赖', run: () => setSide('relations') })
-    if (source && policy.layout) nearActions.push({ id: 'add-view', label: '增加视图', run: () => setPicker({ kind: 'add-view', world: { x: 0, y: 0 } }) })
-    if (definition?.Inspector || definition?.configFields) nearActions.push({ id: 'inspector', label: '属性', key: 'F2', run: () => setSide('inspector') })
-    if (single.kind === 'group' && policy.layout) nearActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
+    if (definition?.Inspector || definition?.configFields) nearActions.push({ id: 'inspector', label: '属性', key: 'F2', run: () => shell.setSide('inspector') })
     if (policy.annotate && source && ui.annotate) nearActions.push({ id: 'annotate', label: '批注', run: annotateSelection })
+    if (source) moreActions.push({ id: 'relations', label: '查看数据与依赖', run: () => shell.setSide('relations') })
+    if (source && canLayout) moreActions.push({ id: 'add-view', label: '增加视图…', run: () => setPicker({ kind: 'add-view' }) })
+    if (single.kind === 'group' && canLayout) moreActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
   }
-  if (selection.size > 1 && policy.layout) nearActions.push({ id: 'group', label: '分组', key: 'Ctrl+G', run: group })
-  if (selection.size > 0 && policy.layout && canLayout) {
-    nearActions.push({ id: 'front', label: '置顶', run: () => reorder('front') }, { id: 'back', label: '置底', run: () => reorder('back') })
-    if (surfacesOf(store).length > 1) nearActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface', world: { x: 0, y: 0 } }) })
+  if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: '分组', key: 'Ctrl+G', run: group })
+  if (selection.size > 0 && policy.select) {
+    moreActions.push({ id: 'copy', label: '复制', key: 'Ctrl+C', run: copy.run })
+    if (cut.reason === null) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
+  }
+  if (selection.size > 0 && canLayout) {
+    moreActions.push({ id: 'front', label: '置顶', run: () => reorder('front') }, { id: 'back', label: '置底', run: () => reorder('back') })
+    if (surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface' }) })
     nearActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
   }
 
   // ---- context menu items
-  const menuItems = menu ? (menu.blockId ? nearActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })) : [
-    ...(policy.insert && canLayout ? insertChoices().map((choice) => ({ id: `insert-${choice.definition.type}`, label: `插入${choice.label}`, run: () => { void insert(choice.definition, isFree ? menu.world : null, undefined, undefined, menu.parentId) } })) : []),
-    ...(policy.insert && canLayout && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => {
+  const quickEntries = registryEntries().filter((entry) => entry.catalog.standard && entry.catalog.needs === 'none')
+  const menuItems = menu ? (menu.blockId ? [...nearActions, ...moreActions].map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })) : [
+    ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })) : []),
+    ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => {
       const parent = menu.parentId ?? surfaceId
-      const title = window.prompt('分组标题（可留空）')
-      if (title === null) return
       const groupId = randomId('g')
-      void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: store.core.order_key_between(store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined), payload: { kind: 'group', layout: { mode: 'flow' }, title: title || '分组' } }] })
+      void store.submit({ editId: `insert:${groupId}`, label: '插入分组', operations: [{ op: 'entity.create', entity_id: groupId, type_id: 'buckyos.container', parent_id: parent, order_key: store.core.order_key_between(store.outline.childrenOf(parent).at(-1)?.order_key ?? undefined, undefined), payload: { kind: 'group', layout: { mode: 'flow' }, title: '分组' } }] })
     } }] : []),
-    ...(policy.insert && canLayout ? [{ id: 'sep', label: '', run: () => undefined, separator: true }, { id: 'add-data', label: '添加已有数据…', run: () => setPicker({ kind: 'add-data', world: menu.world }) }] : []),
-    { id: 'fit', label: '适应全部', run: () => { const b = surfaceBounds(laid); if (b) camera.fit(b) } },
+    ...(insertReason === null ? [
+      { id: 'catalog', label: '插入对象…', run: () => openCatalog('all', undefined, menu.world, menu.parentId) },
+      { id: 'add-data', label: '添加已有数据…', run: () => openCatalog('existing', undefined, menu.world, menu.parentId) },
+    ] : []),
+    ...(paste.reason === null ? [{ id: 'paste', label: '粘贴', run: () => pasteAt(menu.world) }] : []),
+    ...(isFree ? [{ id: 'sep', label: '', run: () => undefined, separator: true }, { id: 'fit', label: '适应全部', run: fitAll }] : []),
   ]) : []
 
-  const canvasModeStyle = mode === 'presentation_edit' ? ' is-placeholder' : ''
+  const commands: CanvasCommands = {
+    isFree, insertReason,
+    insert: (entry) => {
+      if (entry.catalog.needs === 'none') void insert({ entry }, null)
+      else openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key)
+    },
+    openCatalog: (tab, key) => openCatalog(tab, key),
+    copy, cut, paste, remove,
+    view: isFree ? { camera, fitAll, fitSelection, hasSelection: selection.size > 0 } : null,
+    canvasTabs: CANVAS_SIDE_TABS,
+  }
+  const annotateCommand = {
+    reason: !canComment ? '没有批注权限' : !policy.annotate ? '当前模式不能批注' : null,
+    active: annotatePick,
+    run: () => {
+      if (single?.source_id) { annotateSelection(); return }
+      setAnnotatePick((value) => !value)
+      shell.setSide('annotations')
+    },
+  }
+  const sideContent = (tab: SideTab) => {
+    switch (tab) {
+      case 'inspector': return single ? <SelectionInspector cell={single} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个对象查看属性。</div>
+      case 'relations': return single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据对象查看它的引用与依赖。</div>
+      case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} />
+      case 'collab': return <PermissionsPanel />
+      case 'edits': return <StatusDetail />
+    }
+  }
+
+  const placingTitle = placing?.entry.title ?? ''
   return (
     <BudgetContext.Provider value={budget}>
-      <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
-        <div className={`aiws-canvas-main${canvasModeStyle}`}>
-          {isFree ? (
-            <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
-              canLayout={canLayout} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker)}
-              onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
-              renderNear={(bbox) => <NearToolbar bbox={bbox} actions={nearActions} viewport={viewportSize} />} />
-          ) : (
-            <div className="aiws-flow-host" data-testid="aiws-flow-host"><FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection} editing={editing} onEditingChange={setEditing} onInsert={(parentId) => setMenu({ at: { x: 200, y: 120 }, world: { x: 0, y: 0 }, blockId: null, parentId })} /></div>
-          )}
-          {mode === 'presentation_edit' && (
-            <div className="aiws-presentation-placeholder" role="status" data-testid="aiws-presentation-placeholder">
-              <b>播放编辑尚未实现</b>
-              <div>这里将来编排演示路径、时间轴与镜头。本期只提供入口：画布保持静态显示，不选中、不写文档。</div>
+      <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
+        <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
+          <div ref={mainRef} className={`aiws-canvas-main${mode === 'presentation_edit' ? ' is-placeholder' : ''}${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}>
+            {isFree ? (
+              <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
+                canLayout={canLayout} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
+                tool={tool} placing={placing ? { ...placing.entry.definition.defaultSize, label: placingTitle } : null}
+                onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
+                onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
+                renderNear={(bbox) => <NearToolbar bbox={bbox} actions={nearActions} more={moreActions} viewport={viewportSize} insets={insets} />} />
+            ) : (
+              <div className="aiws-flow-host" data-testid="aiws-flow-host"><FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection} editing={editing} onEditingChange={setEditing} onInsert={(parentId) => setMenu({ at: { x: 200, y: 120 }, world: null, blockId: null, parentId })} /></div>
+            )}
+            {mode === 'presentation_edit' && (
+              <div className="aiws-presentation-placeholder" role="status" data-testid="aiws-presentation-placeholder">
+                <b>播放编辑尚未实现</b>
+                <div>这里将来编排演示路径、镜头、备注和互动。现在只是入口：画布保持静态显示，不选中、不写文档。</div>
+              </div>
+            )}
+            <div className="aiws-chrome-top">
+              <MainToolbar canvas={commands} />
+              {shell.prefs.presenterToolbar && <PresenterToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
             </div>
-          )}
-          {isFree && (
-            <div className="aiws-canvas-tools" data-testid="aiws-canvas-tools">
-              {policy.insert && canLayout && <button type="button" data-testid="aiws-insert-open" onClick={(event) => { const r = (event.currentTarget.parentElement as HTMLElement).getBoundingClientRect(); const host = hostRef.current?.getBoundingClientRect(); setMenu({ at: { x: r.left - (host?.left ?? 0), y: r.top - (host?.top ?? 0) + 28 }, world: camera.toWorld(viewportSize.w / 2 - 160, viewportSize.h / 2 - 100), blockId: null }) }}>插入 ▾</button>}
-              <button type="button" data-testid="aiws-fit-all" onClick={() => { const b = surfaceBounds(laid); if (b) camera.fit(b); else camera.set({ x: 0, y: 0, zoom: 1 }) }}>适应全部</button>
-              <button type="button" data-testid="aiws-fit-selection" disabled={selection.size === 0} onClick={() => { const b = boundsOf(laid, selection); if (b) camera.fit(b, 80) }}>适应选区</button>
-              <button type="button" onClick={() => camera.zoomAt(viewportSize.w / 2, viewportSize.h / 2, 1 / 1.25)}>−</button>
-              <span className="aiws-muted aiws-zoom" data-testid="aiws-zoom">{Math.round(camera.zoom * 100)}%</span>
-              <button type="button" onClick={() => camera.zoomAt(viewportSize.w / 2, viewportSize.h / 2, 1.25)}>+</button>
-              <span className="aiws-muted">{laid.size} 个对象</span>
-              <button type="button" aria-pressed={side === 'inspector'} onClick={() => setSide(side === 'inspector' ? null : 'inspector')}>属性</button>
-              <button type="button" aria-pressed={side === 'relations'} onClick={() => setSide(side === 'relations' ? null : 'relations')}>依赖</button>
-              <button type="button" aria-pressed={side === 'annotations'} data-testid="aiws-side-annotations" onClick={() => setSide(side === 'annotations' ? null : 'annotations')}>批注</button>
-            </div>
-          )}
-          {!isFree && mode !== 'presentation_edit' && (
-            <div className="aiws-canvas-tools" data-testid="aiws-canvas-tools">
-              <span className="aiws-muted">{laid.size} 个对象</span>
-              <button type="button" aria-pressed={side === 'inspector'} onClick={() => setSide(side === 'inspector' ? null : 'inspector')}>属性</button>
-              <button type="button" aria-pressed={side === 'relations'} onClick={() => setSide(side === 'relations' ? null : 'relations')}>依赖</button>
-              <button type="button" aria-pressed={side === 'annotations'} data-testid="aiws-side-annotations" onClick={() => setSide(side === 'annotations' ? null : 'annotations')}>批注</button>
-            </div>
-          )}
-          {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
-          {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
-            if (picker.kind === 'move-surface') moveToSurface(choice.id)
-            else if (picker.kind === 'add-view' && single?.source_id) { const def = blockRegistry.get(choice.id); if (def) void insert(def, null, single.source_id); setPicker(null) }
-            else if (picker.kind === 'add-data') { const source = store.outline.get(choice.id); const def = source ? blockRegistry.get(choice.renderer ?? defaultRendererFor(source.type_id) ?? '') : undefined; if (def && source) void insert(def, picker.world, source.entity_id); setPicker(null) }
-          }} />}
+            {showObjectToolbar && (
+              <div className="aiws-chrome-left">
+                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? null} insertReason={insertReason}
+                  onPick={pickEntry} onPickFile={(entry, file) => pick({ entry, file })} onOpenCatalog={(tab, key) => openCatalog(tab, key)} collapsed={collapsed} onCollapsed={setCollapsed} />
+              </div>
+            )}
+            {(placing || annotatePick) && (
+              <div className="aiws-hint" role="status" data-testid="aiws-tool-hint">
+                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : '点选要批注的对象；Esc 取消'}
+              </div>
+            )}
+            <StatusDock />
+            {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
+            {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {
+              if (picker.kind === 'move-surface') moveToSurface(choice)
+              else if (picker.kind === 'add-view' && single?.source_id) {
+                const def = blockRegistry.get(choice)
+                if (def?.catalog) void insert({ entry: { key: `block:${def.type}`, definition: def, catalog: def.catalog, title: def.title, group: def.catalog.group }, sourceId: single.source_id }, null)
+                setPicker(null)
+              }
+            }} />}
+            {catalog && (
+              <InsertCatalog initialTab={catalog.tab} initialKey={catalog.key} canPlace={isFree} onClose={() => setCatalog(null)} onInsert={(request, how) => {
+                const at = catalog.world
+                const parentId = catalog.parentId
+                setCatalog(null)
+                if (how === 'place') pick(request)
+                else void insert(request, at, parentId)
+              }} />
+            )}
+          </div>
+          <SidePanel tabs={CANVAS_SIDE_TABS} render={sideContent} />
         </div>
-        {side && (
-          <aside className="aiws-canvas-side" data-testid="aiws-canvas-side">
-            <div className="aiws-inline-form"><b>{side === 'inspector' ? '属性' : side === 'relations' ? '引用与依赖' : '批注'}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={() => setSide(null)}>关闭</button></div>
-            {side === 'inspector' && (single ? <SelectionInspector cell={single} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个 Block 查看属性。</div>)}
-            {side === 'relations' && (single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据 Block 查看它的引用与依赖。</div>)}
-            {side === 'annotations' && <AnnotationsPanel parentId={surface.content_folder_id ?? null} />}
-          </aside>
-        )}
       </div>
     </BudgetContext.Provider>
   )
@@ -474,7 +646,6 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
       {payload && (
         <label className="aiws-inline-form">标题 <input aria-label="Block 标题" defaultValue={payload.title ?? ''} disabled={readOnly} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
       )}
-      {live.placement && <div className="aiws-muted">位置 {live.placement.x}, {live.placement.y} · 尺寸 {live.placement.w} × {live.placement.h} · 顺序 {live.order_key}</div>}
       {source && <div className="aiws-muted">数据：<button type="button" className="aiws-link" onClick={() => ui.openEntity(source.entity_id)}>{source.title ?? source.name ?? source.entity_id}</button>（{source.type_id.replace('buckyos.', '')}）</div>}
       {definition?.configFields && payload && definition.configFields.map((field) => (
         <label key={field.key} className="aiws-inline-form">{field.label}
@@ -492,50 +663,41 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
           <Inspector {...context} />
         </BlockBoundary>
       )}
+      <details className="aiws-details">
+        <summary>详情</summary>
+        {live.placement && <div className="aiws-muted">位置 {live.placement.x}, {live.placement.y} · 尺寸 {live.placement.w} × {live.placement.h} · 顺序 {live.order_key}</div>}
+      </details>
     </BlockInspector>
   )
 }
 
-function Picker({ kind, selection, surfaceId, onClose, onPick }: { kind: 'add-data' | 'add-view' | 'move-surface'; selection: EntityEnvelope[]; surfaceId: string; onClose: () => void; onPick: (choice: { id: string; renderer?: string }) => void }) {
+function Picker({ kind, selection, surfaceId, onClose, onPick }: { kind: 'add-view' | 'move-surface'; selection: EntityEnvelope[]; surfaceId: string; onClose: () => void; onPick: (id: string) => void }) {
   const store = useStore()
-  const [renderer, setRenderer] = useState('')
   const [chosen, setChosen] = useState('')
   const single = selection[0]
   const source = single?.source_id ? store.outline.get(single.source_id) : undefined
-  const data = store.outline.all().filter((e) => !e.deleted && e.type_id !== 'buckyos.cell' && e.type_id !== 'buckyos.container' && e.type_id !== 'buckyos.block-def' && store.outline.ancestors(e.entity_id).includes('data'))
-  const chosenEntity = store.outline.get(chosen)
-  const renderers = kind === 'add-view' && source ? blockRegistry.forSource(source.type_id) : chosenEntity ? blockRegistry.forSource(chosenEntity.type_id) : []
+  const renderers = kind === 'add-view' && source ? blockRegistry.forSource(source.type_id).filter((def) => def.create && def.catalog && def.catalog.needs !== 'definition') : []
   const targets = surfacesOf(store).filter((s) => s.entity_id !== surfaceId)
   return (
-    <div className="aiws-dialog" role="dialog" aria-label={kind === 'add-data' ? '添加已有数据' : kind === 'add-view' ? '增加视图' : '移动到画布'} data-testid={`aiws-picker-${kind}`}>
-      {kind === 'add-data' && (
-        <>
-          <b>添加已有数据到画布</b>
-          <div className="aiws-muted">只创建引用该数据的 Block，不复制数据（§4.3）。</div>
-          <select aria-label="数据" data-testid="aiws-picker-data" value={chosen} onChange={(event) => { setChosen(event.target.value); setRenderer('') }}>
-            <option value="">选择数据…</option>
-            {data.map((e) => <option key={e.entity_id} value={e.entity_id}>{e.title ?? e.name ?? e.entity_id}（{e.type_id.replace('buckyos.', '')}）</option>)}
-          </select>
-          {renderers.length > 1 && <select aria-label="展现方式" data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}><option value="">默认展现</option>{renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}</select>}
-          <div className="aiws-inline-form"><button type="button" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick({ id: chosen, renderer: renderer || undefined })}>添加</button><button type="button" onClick={onClose}>取消</button></div>
-        </>
-      )}
-      {kind === 'add-view' && (
-        <>
-          <b>为「{source?.title ?? source?.name ?? ''}」增加视图</b>
-          <div className="aiws-muted">新 Block 复用同一数据，视图配置独立。</div>
-          <select aria-label="展现方式" data-testid="aiws-picker-renderer" value={renderer} onChange={(event) => setRenderer(event.target.value)}><option value="">选择展现…</option>{renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}</select>
-          <div className="aiws-inline-form"><button type="button" data-testid="aiws-picker-confirm" disabled={!renderer} onClick={() => onPick({ id: renderer })}>增加</button><button type="button" onClick={onClose}>取消</button></div>
-        </>
-      )}
-      {kind === 'move-surface' && (
-        <>
-          <b>移动 {selection.length} 个 Block 到另一张画布</b>
-          <div className="aiws-muted">Block 的身份、数据绑定和依赖记录不变；数据留在原画布内容区（§4.3）。</div>
-          <select aria-label="目标画布" data-testid="aiws-picker-surface" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">选择画布…</option>{targets.map((s) => <option key={s.entity_id} value={s.entity_id}>{s.title ?? s.name ?? s.entity_id}</option>)}</select>
-          <div className="aiws-inline-form"><button type="button" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick({ id: chosen })}>移动</button><button type="button" onClick={onClose}>取消</button></div>
-        </>
-      )}
+    <div className="aiws-modal-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="aiws-dialog" role="dialog" aria-modal="true" aria-label={kind === 'add-view' ? '增加视图' : '移动到画布'} data-testid={`aiws-picker-${kind}`} onKeyDown={(event) => { if (event.key === 'Escape') onClose() }}>
+        {kind === 'add-view' && (
+          <>
+            <b>为「{source?.title ?? source?.name ?? ''}」增加视图</b>
+            <div className="aiws-muted">新 Block 与原视图共享数据，视图配置独立。</div>
+            <select aria-label="展现方式" data-testid="aiws-picker-renderer" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">选择展现…</option>{renderers.map((d) => <option key={d.type} value={d.type}>{d.title}</option>)}</select>
+            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>增加</button><button type="button" onClick={onClose}>取消</button></div>
+          </>
+        )}
+        {kind === 'move-surface' && (
+          <>
+            <b>移动 {selection.length} 个对象到另一张画布</b>
+            <div className="aiws-muted">对象的身份、数据绑定和依赖记录不变；数据留在原画布内容区。</div>
+            <select aria-label="目标画布" data-testid="aiws-picker-surface" value={chosen} onChange={(event) => setChosen(event.target.value)}><option value="">选择画布…</option>{targets.map((s) => <option key={s.entity_id} value={s.entity_id}>{s.title ?? s.name ?? s.entity_id}</option>)}</select>
+            <div className="aiws-dialog-actions"><button type="button" className="is-primary" data-testid="aiws-picker-confirm" disabled={!chosen} onClick={() => onPick(chosen)}>移动</button><button type="button" onClick={onClose}>取消</button></div>
+          </>
+        )}
+      </div>
     </div>
   )
 }

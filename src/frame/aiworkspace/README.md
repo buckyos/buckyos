@@ -58,7 +58,8 @@ collection); `canvas-content` is a system folder under `data` holding one folder
 `child_allowed`): `data` / `folder` take folders and data entities (TableSource, RichText, Record, AssetRef,
 Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
 take Cells and groups only. A Surface names its content folder (`content_folder_id`); the folder may point back
-(`surface_id`). `placement` is `{ x, y, w, h }` relative to the parent; stacking order is `order_key`. Free
+(`surface_id`). A Surface may carry `icon`: the id of a client-side preset icon (`[a-z][a-z0-9-]{0,31}`, Surfaces
+only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. `placement` is `{ x, y, w, h }` relative to the parent; stacking order is `order_key`. Free
 notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).

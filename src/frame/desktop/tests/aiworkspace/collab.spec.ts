@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 import type {} from '../../src/app/aiworkspace/api/testHooks'
-import { expect, expectAllCommitted, openWorkspace, test, type Api } from './fixtures'
+import { expect, expectAllCommitted, openWorkspace, test, type Api, openMock } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -81,8 +81,9 @@ test('(c) Chinese IME input into the rich text survives a reload; backend AST eq
   expect(last.content).toEqual([{ type: 'text', marks: [{ type: 'strong' }], text: '加粗' }, { type: 'text', text: '常规' }])
 
   await page.reload()
+  // a normal start reopens the workspace this identity last opened (UI improvement §4 rule 2)
   await page.getByTestId('desktop-app-aiworkspace').click()
-  await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
+  await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-workspace-id', ws.workspace_id, { timeout: 30_000 })
   await expect(page.getByTestId('aiws-richtext-notes')).toContainText('中文输入测试 OK 😀')
   await expect(page.getByTestId('aiws-richtext-notes')).toContainText('新的一段')
   await expectEditorMatchesBackend(page, api, ALICE, ws.workspace_id, 'notes')
@@ -97,7 +98,7 @@ test('(d) two users: rich text converges, different fields both succeed, same fi
   const bob = await bobContext.newPage()
   await openWorkspace(alice, ALICE, ws.workspace_id)
   await openWorkspace(bob, BOB, ws.workspace_id)
-  await expect(bob.getByTestId('aiws-principal')).toHaveText('bob')
+  await expect(bob.getByTestId('aiws-principal')).toHaveAttribute('data-principal', 'bob')
 
   // ---- rich text: both type at the same time, into the same paragraph and into different blocks
   await caretToEnd(alice, 'n-end')
@@ -250,7 +251,7 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   await openWorkspace(page, ALICE, ws.workspace_id)
   const all = page.getByTestId('aiws-table-cell-all-tasks')
   await expect(all.getByTestId('aiws-cell-task-41-risk')).toBeVisible()
-  await page.getByTestId('aiws-side-mock').click()
+  await openMock(page)
   await expect(page.getByTestId('aiws-mock-simulated')).toHaveText('模拟结果')
   await page.getByTestId('aiws-mock-today').fill('2026-10-13')
   await page.getByTestId('aiws-mock-start').click()

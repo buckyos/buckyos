@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { Page } from '@playwright/test'
 import { expect, editCell, openCard, prepareOffline, saveSummary, test } from './offline-fixtures'
+import { openStatus, backToList } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -21,6 +22,7 @@ test('V16 a second tab is not a second writer: online direct, read-only without 
   const second = await context.newPage()
   await second.goto(`${net.origin}/?scenario=normal`)
   await second.getByTestId('desktop-app-aiworkspace').click()
+  await backToList(second)
   await openCard(second, ws.workspace_id)
   // the lock is taken: this window does not open the replica at all
   await expect(second.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'direct')
@@ -36,6 +38,7 @@ test('V16 a second tab is not a second writer: online direct, read-only without 
   await expect(page.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-41-owner')).toContainText('第二窗口直连')
   // asking to take over while the holder is alive changes nothing
   const sessionBefore = await second.getByTestId('aiws-workspace').getAttribute('data-session-id') as string
+  await openStatus(second)
   await second.getByTestId('aiws-takeover').click()
   await expect(second.getByTestId('aiws-workspace')).not.toHaveAttribute('data-session-id', sessionBefore, { timeout: 30_000 })
   await expect(second.getByTestId('aiws-mode')).toHaveAttribute('data-reason', 'not_holder')
@@ -58,6 +61,7 @@ test('V16 a second tab is not a second writer: online direct, read-only without 
 
   // ---- the holder closes: the lock is released and the other window may take over on the user's action (still offline)
   await page.close()
+  await openStatus(second)
   await second.getByTestId('aiws-takeover').click()
   await expect(second.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica', { timeout: 30_000 })
   const adopted = second.getByTestId('aiws-table-cell-all-tasks').getByTestId('aiws-cell-task-40-owner')
@@ -92,6 +96,7 @@ test('V16 storage failure (quota / transaction error): never "saved" without a d
   await end.click()
   await page.keyboard.press('End')
   await page.keyboard.type(' 写满时的文字')
+  await openStatus(page)
   const rich = page.locator('[data-testid="aiws-edit-entry"][data-edit-id="rt:notes"]')
   await expect(rich).toHaveAttribute('data-state', 'unsaved')
   await expect(rich).toContainText('没有保存')
@@ -116,6 +121,8 @@ test('V16 storage failure (quota / transaction error): never "saved" without a d
   await expect(cell).toHaveAttribute('data-state', 'unsaved')
   await page.reload()
   await page.getByTestId('desktop-app-aiworkspace').click()
+  // the replica reopens by itself (UI improvement §4 rule 5); it is closed and opened again from the list as before
+  await backToList(page)
   await openCard(page, ws.workspace_id)
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica')
   const all = page.getByTestId('aiws-table-cell-all-tasks')

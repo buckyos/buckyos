@@ -20,6 +20,8 @@ export class Camera {
   private readonly settleListeners = new Set<() => void>()
   private settleTimer: number | null = null
   private viewportSize = { w: 800, h: 600 }
+  /** Screen margins covered by the floating toolbars (UI improvement §3.1): fitting and centring use the rest. */
+  private insets = { top: 0, right: 0, bottom: 0, left: 0 }
 
   attach(world: HTMLElement | null) {
     this.world = world
@@ -28,6 +30,31 @@ export class Camera {
 
   setViewportSize(w: number, h: number) {
     this.viewportSize = { w, h }
+  }
+
+  setInsets(insets: { top: number; right: number; bottom: number; left: number }) {
+    this.insets = insets
+  }
+
+  /** The unobstructed part of the viewport, in screen coordinates. */
+  get clearArea(): Rect {
+    const { w, h } = this.viewportSize
+    const { top, right, bottom, left } = this.insets
+    const cw = Math.max(80, w - left - right)
+    const ch = Math.max(80, h - top - bottom)
+    return { x: Math.min(left, w - cw), y: Math.min(top, h - ch), w: cw, h: ch }
+  }
+
+  /** Centre of the unobstructed area (button zoom anchor, insertion point). */
+  get center(): { x: number; y: number } {
+    const area = this.clearArea
+    return { x: area.x + area.w / 2, y: area.y + area.h / 2 }
+  }
+
+  /** Zoom to an absolute value around the centre of the unobstructed area. */
+  zoomTo(zoom: number) {
+    const c = this.center
+    this.zoomAt(c.x, c.y, Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom)) / this.zoom)
   }
 
   get viewport(): Viewport { return { x: this.x, y: this.y, zoom: this.zoom } }
@@ -104,27 +131,27 @@ export class Camera {
     return { x: this.x - ww * margin, y: this.y - wh * margin, w: ww * (1 + 2 * margin), h: wh * (1 + 2 * margin) }
   }
 
-  /** Fit `rect` into the viewport with padding. */
-  /** The smallest pan that brings `rect` (world) fully into view; a rect larger than the viewport is fitted. */
+  /** The smallest pan that brings `rect` (world) fully into the unobstructed area; a rect larger than it is fitted. */
   ensureVisible(rect: Rect, margin = 24) {
-    const { w, h } = this.viewportSize
+    const area = this.clearArea
     const r = this.rectToScreen(rect)
-    if (r.w > w - 2 * margin || r.h > h - 2 * margin) { this.fit(rect); return }
+    if (r.w > area.w - 2 * margin || r.h > area.h - 2 * margin) { this.fit(rect); return }
     let dx = 0
     let dy = 0
-    if (r.x < margin) dx = margin - r.x
-    else if (r.x + r.w > w - margin) dx = w - margin - (r.x + r.w)
-    if (r.y < margin) dy = margin - r.y
-    else if (r.y + r.h > h - margin) dy = h - margin - (r.y + r.h)
+    if (r.x < area.x + margin) dx = area.x + margin - r.x
+    else if (r.x + r.w > area.x + area.w - margin) dx = area.x + area.w - margin - (r.x + r.w)
+    if (r.y < area.y + margin) dy = area.y + margin - r.y
+    else if (r.y + r.h > area.y + area.h - margin) dy = area.y + area.h - margin - (r.y + r.h)
     if (dx !== 0 || dy !== 0) this.panBy(dx, dy)
   }
 
+  /** Fit `rect` into the unobstructed area with padding. */
   fit(rect: Rect, padding = 40) {
-    const { w, h } = this.viewportSize
-    const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((w - 2 * padding) / Math.max(1, rect.w), (h - 2 * padding) / Math.max(1, rect.h))))
+    const area = this.clearArea
+    const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((area.w - 2 * padding) / Math.max(1, rect.w), (area.h - 2 * padding) / Math.max(1, rect.h))))
     this.zoom = zoom
-    this.x = rect.x - (w / zoom - rect.w) / 2
-    this.y = rect.y - (h / zoom - rect.h) / 2
+    this.x = rect.x - (area.x + area.w / 2) / zoom + rect.w / 2
+    this.y = rect.y - (area.y + area.h / 2) / zoom + rect.h / 2
     this.apply()
   }
 }

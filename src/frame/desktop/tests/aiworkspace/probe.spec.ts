@@ -7,7 +7,7 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs'
 import type { Page } from '@playwright/test'
-import { blockCenter, expect, hooks, openCanvas, test, type Api } from './fixtures'
+import { blockCenter, expect, hooks, openCanvas, test, type Api, fitAll, setCanvasMode } from './fixtures'
 
 const ALICE = 'tok-alice'
 
@@ -138,13 +138,12 @@ for (const scale of [1000, 5000]) {
     await page.keyboard.up('Control')
     await page.waitForTimeout(500)
     const zoomedOut = await hooks(page)
-    await page.getByTestId('aiws-fit-all').click()
+    await fitAll(page)
     await page.waitForTimeout(500)
     const fitted = await hooks(page)
     expect(fitted.canvas!.mounted + fitted.canvas!.placeholders).toBeLessThanOrEqual(400 + 50)
     // 500 selected and dragged: one commit, no writes during the gesture
-    await page.getByTestId('aiws-mode-edit').click()
-    await page.getByTestId('aiws-zoom').locator('..').getByTestId('aiws-fit-selection').isVisible()
+    await setCanvasMode(page, 'edit')
     const before = await api.headSeq(ALICE, ws.workspace_id)
     const commitsBefore = (await hooks(page)).commits
     // marquee from the top-left over roughly 500 Blocks (zoomed to fit all, the grid is dense)
@@ -156,12 +155,20 @@ for (const scale of [1000, 5000]) {
     await page.waitForTimeout(300)
     const selected = await page.locator('[data-testid^="aiws-selection-"]').count()
     expect(selected).toBeGreaterThan(100)
-    const anyId = (await page.locator('[data-testid^="aiws-selection-"]').first().getAttribute('data-testid'))!.replace('aiws-selection-', '')
-    const from = await blockCenter(page, anyId)
+    // grab a selected Block whose centre is on the canvas itself, not under a floating toolbar or the near tools
+    const selectedIds = await page.locator('[data-testid^="aiws-selection-"]').evaluateAll((nodes) => nodes.map((node) => (node.getAttribute('data-testid') ?? '').replace('aiws-selection-', '')))
+    let from: { x: number; y: number } | null = null
+    for (const id of selectedIds) {
+      const point = await blockCenter(page, id)
+      const onCanvas = await page.evaluate(({ x, y }) => { const hit = document.elementFromPoint(x, y); return Boolean(hit?.closest('[data-testid="aiws-world"]')) }, point)
+      if (onCanvas) { from = point; break }
+    }
+    if (!from) throw new Error('no selected Block is reachable on the canvas')
+    const start = from
     const drag = await measureFrames(page, async () => {
-      await page.mouse.move(from.x, from.y)
+      await page.mouse.move(start.x, start.y)
       await page.mouse.down()
-      for (let i = 1; i <= 20; i++) await page.mouse.move(from.x + i * 6, from.y + i * 4)
+      for (let i = 1; i <= 20; i++) await page.mouse.move(start.x + i * 6, start.y + i * 4)
       await page.mouse.up()
     })
     await expect.poll(async () => api.headSeq(ALICE, ws.workspace_id)).toBe(before + 1)

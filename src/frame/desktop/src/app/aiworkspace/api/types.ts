@@ -107,6 +107,8 @@ export interface EntityEnvelope {
   /** A content folder's Surface; a Surface's content folder. */
   surface_id?: string | null
   content_folder_id?: string | null
+  /** A Surface's preset icon id (UI improvement §5.1); absent means the default of its layout. */
+  icon?: string | null
   parent_id?: string
   order_key?: string
   placement?: Placement

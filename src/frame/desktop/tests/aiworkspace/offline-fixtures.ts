@@ -1,6 +1,6 @@
 import { createServer, connect, type Server, type Socket } from 'node:net'
 import { chromium, type BrowserContext, type Page } from '@playwright/test'
-import { expect, test as base, type Api } from './fixtures'
+import { backToList, expect, test as base, type Api, openStatus } from './fixtures'
 
 /**
  * The network between the browser and BuckyOS, for real: a TCP relay in front of the production
@@ -73,6 +73,7 @@ export async function openDesktop(page: Page, net: Network, token: string) {
   await page.goto(`${net.origin}/?scenario=normal`)
   await page.getByTestId('desktop-app-aiworkspace').click()
   await expect(page.getByTestId('aiws-root')).toBeVisible({ timeout: 30_000 })
+  await backToList(page)
 }
 
 /** The service worker controls the page and has every application resource in its cache. */
@@ -93,6 +94,7 @@ export async function prepareOffline(page: Page, net: Network, token: string, wo
   await openCard(page, workspaceId)
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'direct')
   await expect(page.getByTestId('aiws-conn')).toHaveAttribute('data-status', 'live')
+  await openStatus(page)
   await page.getByTestId('aiws-prepare-offline').click()
   await expect(page.getByTestId('aiws-mode')).toHaveAttribute('data-mode', 'replica', { timeout: 60_000 })
   await expect(page.getByTestId('aiws-prepare-report')).toBeVisible()

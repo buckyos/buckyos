@@ -65,6 +65,8 @@ export class WorkspaceStore {
   /** The two trees, maintained incrementally from the change stream (phase two §9.3). */
   readonly outline: OutlineModel
   readonly userState: UserWorkState
+  /** Settles when the user work state was loaded (this browser's copy, then the server's when reachable). */
+  readonly userReady: Promise<void>
   readonly freshness: FreshnessService
   /** Wish passes and application (phase two §7). */
   readonly wish: WishService
@@ -106,7 +108,7 @@ export class WorkspaceStore {
     this.userState = new UserWorkState(session)
     this.freshness = new FreshnessService(session)
     this.wish = new WishService(this)
-    void this.userState.init()
+    this.userReady = this.userState.init()
     this.unsubscribe = session.subscribeChanges((event) => {
       const keys = new Set<string>(['any'])
       for (const touched of event.touched ?? []) {
@@ -279,10 +281,13 @@ export class WorkspaceStore {
 
   noticeSnapshot = (): readonly Notice[] => this.notices
 
+  /** Errors and notices that offer an action stay until dismissed; plain information goes away by itself (UI improvement §10). */
   notify(kind: Notice['kind'], text: string, action?: Notice['action']) {
     this.noticeId += 1
-    this.notices = [...this.notices, { id: this.noticeId, kind, text, action }]
+    const id = this.noticeId
+    this.notices = [...this.notices, { id, kind, text, action }]
     this.noticeEmitter.emit()
+    if (kind === 'info' && !action) window.setTimeout(() => this.dismissNotice(id), 10_000)
   }
 
   /** Remember what this window just placed, so a remote overwrite can be reported and re-applied (D1). */
@@ -387,6 +392,31 @@ export class WorkspaceStore {
   }
 
   private disposeTimer: number | null = null
+  /** What would be lost by leaving now (UI improvement §10): inputs only in this window's memory, edits still
+   * being sent, and decisions pending that live nowhere else (a replica keeps its own on the device). */
+  leaveSummary(): { unsaved: number; attention: number; memoryOnly: number } {
+    let unsaved = 0
+    let attention = 0
+    for (const entry of this.edits.snapshot().values()) {
+      if (entry.state === 'unsaved') unsaved += 1
+      else if (entry.state === 'needs_attention' && !entry.pendingKey) attention += 1
+    }
+    return { unsaved, attention, memoryOnly: this.unsaved.size }
+  }
+
+  /** Before closing, switching or logging out: end the current edit (its blur flushes it) and wait a little for
+   * the saves that can still complete. Resolves with what would still be lost. */
+  async prepareLeave(timeoutMs = 4000): Promise<{ unsaved: number; attention: number; memoryOnly: number }> {
+    const active = document.activeElement
+    if (active instanceof HTMLElement && active !== document.body) active.blur()
+    const deadline = Date.now() + timeoutMs
+    await new Promise((resolve) => window.setTimeout(resolve, 50))
+    while (Date.now() < deadline && this.leaveSummary().unsaved > 0 && this.session.status().kind === 'live') {
+      await new Promise((resolve) => window.setTimeout(resolve, 100))
+    }
+    return this.leaveSummary()
+  }
+
   private disposed = false
 
   /** Mount/unmount pairing that survives React's development double-mount: a release is undone by a retain that follows at once. */

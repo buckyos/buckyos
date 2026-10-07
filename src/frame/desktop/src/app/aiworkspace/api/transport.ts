@@ -31,6 +31,10 @@ export interface Transport {
   readonly mode: 'zone' | 'dev-override'
   /** Display name of the caller when the transport knows it (the service never trusts it). */
   readonly principalHint: string | null
+  /** The service this transport reaches (zone host or dev backend): app-level local state is kept per target. */
+  readonly target: string
+  /** The caller once known (the Zone account is looked up asynchronously). */
+  principal(): Promise<string | null>
   /** kRPC call; resolves with `result` (business results live there), rejects with TransportError. */
   call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T>
   /** `PUT /upload/<upload_id>`. */
@@ -71,6 +75,9 @@ class DevOverrideTransport implements Transport {
     this.base = (override.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '')
     this.principalHint = override.principal ?? override.token.replace(/^tok-/, '')
   }
+
+  get target(): string { return `${window.location.host}${this.base}` }
+  async principal(): Promise<string | null> { return this.principalHint }
 
   async call<T>(method: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<T> {
     let response: Response
@@ -120,6 +127,14 @@ class DevOverrideTransport implements Transport {
 class ZoneTransport implements Transport {
   readonly mode = 'zone' as const
   principalHint: string | null = null
+  readonly target = window.location.host
+  private principalLookup: Promise<void> | null = null
+
+  async principal(): Promise<string | null> {
+    this.principalLookup ??= zonePrincipal(this)
+    await this.principalLookup
+    return this.principalHint
+  }
 
   private client() {
     return buckyos.getServiceRpcClient(SERVICE_NAME)
@@ -194,6 +209,6 @@ export function resolveTransport(): TransportAvailability {
     }
   }
   const transport = new ZoneTransport()
-  void zonePrincipal(transport)
+  void transport.principal()
   return { ok: true, transport }
 }

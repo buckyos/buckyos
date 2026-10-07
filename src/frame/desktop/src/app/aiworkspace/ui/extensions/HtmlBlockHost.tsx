@@ -76,11 +76,16 @@ export const htmlBlock: BlockDefinition = {
   type: 'html', version: 1, definitionKind: 'html', title: 'HTML 扩展', accepts: ['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.wish', 'buckyos.annotation'], allowNoSource: true,
   defaultSize: { w: 480, h: 320 }, cost: { editor: true, html: true },
   Static: HtmlStatic, Editor: HtmlActive,
+  catalog: { group: 'extension', description: '运行工作区中的 HTML 扩展定义。', needs: 'definition' },
   actions: [
     { id: 'run', label: '运行扩展', modes: ['edit'], run: (context) => context.activateEditor(), key: 'Enter' },
     { id: 'open-def', label: '打开定义', modes: ['edit', 'view'], when: (context) => Boolean(context.payload.def_ref), run: (context) => { if (context.payload.def_ref) context.openEntity(context.payload.def_ref.entity_id) } },
   ],
-  create: (args) => [cellOp(args, 'html', args.existingSourceId, { def_ref: { entity_id: String(args.config?.def_id ?? '') } as unknown as Json })],
+  create: (args) => {
+    // the definition reference is the Cell's `def_ref`, never part of its configuration
+    const { def_id: defId, ...config } = args.config ?? {}
+    return [cellOp({ ...args, config: Object.keys(config).length > 0 ? config : undefined }, 'html', args.existingSourceId, { def_ref: { entity_id: String(defId ?? '') } as unknown as Json })]
+  },
 }
 
 export function registerHtmlBlock() {

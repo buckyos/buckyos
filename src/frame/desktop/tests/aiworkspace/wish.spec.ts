@@ -5,7 +5,7 @@
  * export/import, feedback rounds, re-running only the program, and the HTML extension API (v1 calls
  * and `aiws` v2 bindings, typed writes, batch, watch). */
 
-import { expect, openCanvas, openWorkspace, test } from './fixtures'
+import { expect, openCanvas, openWorkspace, test, closeWorkspace, fitAll } from './fixtures'
 
 const ALICE = 'tok-alice'
 const BOB = 'tok-bob'
@@ -230,9 +230,9 @@ test('UI16 export and import carry Surfaces, Blocks, definitions, wishes and dep
   const fresh = await api.rpc(ALICE, 'doc.freshness', { workspace_id: imported.workspace_id, entity_ids: results.map((r: { entity_id: string }) => r.entity_id) })
   expect(fresh.items.every((i: { status: string }) => i.status === 'stale')).toBe(true)
   // the imported workspace opens on the canvas with the result group in place
-  await page.getByTestId('aiws-back').click()
+  await closeWorkspace(page)
   await openCanvas(page, ALICE, imported.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await expect(page.getByTestId('aiws-canvas-block-wish-analysis-out')).toBeVisible()
   await expect(page.getByTestId('aiws-freshness-wish-analysis').first()).toHaveAttribute('data-status', 'stale')
 })
@@ -257,7 +257,7 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
   ])
   expect(r.status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   // static until activated
   await expect(page.getByTestId('aiws-html-static-blk-ext')).toBeVisible()
   await page.getByTestId('aiws-canvas-block-blk-ext').click()
@@ -367,7 +367,7 @@ test('aiws v2: an HTML Block reads by binding name, writes typed values in one b
   ])
   expect(r.status).toBe('accepted')
   await openCanvas(page, ALICE, ws.workspace_id)
-  await page.getByTestId('aiws-fit-all').click()
+  await fitAll(page)
   await page.getByTestId('aiws-canvas-block-blk-v2').click()
   await page.getByTestId('aiws-near-run').click()
   const frame = page.frameLocator('.aiws-html-frame')
