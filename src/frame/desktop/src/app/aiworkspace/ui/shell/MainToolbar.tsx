@@ -1,10 +1,11 @@
 /* The main toolbar, top left (UI improvement §5): canvas icon | canvas name + a separate drop-down |
  * data source | main menu (⋯) | collaboration. The save state is in the status area, bottom right. Name editing
  * and switching are separate controls; the icon and the name are shared Surface properties written
- * through the store (permission, version and undo rules apply). */
+ * through the store (permission, version and undo rules apply). A phone has no main toolbar: its one
+ * toolbar starts with the view-only canvas switcher (§16). */
 
 import { useState } from 'react'
-import { ChevronDown, Database, Ellipsis, LayoutDashboard, Search, Users } from 'lucide-react'
+import { ArrowLeftRight, ChevronDown, Database, Ellipsis, LayoutDashboard, Search, Users } from 'lucide-react'
 import type { EntityEnvelope } from '../../api/types'
 import { describeError } from '../../api/session'
 import { useDirectReadOnly, useOutlineVersion, useStore } from '../../state/hooks'
@@ -152,14 +153,18 @@ function SurfaceName({ surface, reason }: { surface: EntityEnvelope; reason: str
   )
 }
 
-function SurfaceSwitcher() {
+/** The canvas drop-down. On a phone (§16) its trigger is the current canvas's icon and name, the list only switches
+ * (no rename, delete or new canvas) and its head leads back to the workspace list. */
+export function SurfaceSwitcher({ phone = false }: { phone?: boolean }) {
   const store = useStore()
   const shell = useShell()
   const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
   const [query, setQuery] = useState('')
   const [renaming, setRenaming] = useState<{ id: string; base: Promise<RenameBase>; value: string } | null>(null)
   const [deleting, setDeleting] = useState<EntityEnvelope | null>(null)
-  const canStructure = store.session.info().capabilities.includes('structure')
+  const canStructure = store.session.info().capabilities.includes('structure') && !phone
+  const active = shell.activeSurface
+  const workspaceTitle = store.session.info().title
   const q = query.trim().toLowerCase()
   const surfaces = shell.surfaces.filter((s) => !q || (s.title ?? s.name ?? '').toLowerCase().includes(q))
   const rename = async () => {
@@ -174,15 +179,32 @@ function SurfaceSwitcher() {
     if (!accepted(outcome)) store.notify('error', `改名未被接受：${'code' in outcome ? outcome.code : outcome.status}`)
   }
   return (
-    <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className="aiws-tool aiws-tool-narrow" aria-label="切换画布" title="切换画布" aria-haspopup="dialog" aria-expanded={open} data-testid="aiws-surface-switch" onClick={toggle}>
-        <ChevronDown size={16} />
-      </button>
+    <span ref={bindAnchor} className={`aiws-anchor${phone ? ' aiws-surface-anchor' : ''}`}>
+      {phone ? (
+        <button ref={bindTrigger} type="button" className="aiws-surface-trigger" aria-label={`切换画布：${active ? active.title ?? active.name ?? '' : workspaceTitle}`} title="切换画布" aria-haspopup="dialog" aria-expanded={open}
+          data-testid="aiws-surface-switch" data-icon={active?.icon ?? ''} onClick={toggle}>
+          {active ? <SurfaceIcon surface={active} size={20} /> : <LayoutDashboard size={20} aria-hidden="true" />}
+          <span className="aiws-surface-trigger-name" data-testid="aiws-surface-name">{active ? active.title ?? active.name ?? active.entity_id : workspaceTitle}</span>
+          <ChevronDown size={16} aria-hidden="true" />
+        </button>
+      ) : (
+        <button ref={bindTrigger} type="button" className="aiws-tool aiws-tool-narrow" aria-label="切换画布" title="切换画布" aria-haspopup="dialog" aria-expanded={open} data-testid="aiws-surface-switch" onClick={toggle}>
+          <ChevronDown size={16} />
+        </button>
+      )}
       {open && (
         <PopoverPanel label="画布" testId="aiws-surface-list" className="aiws-surface-list">
           <div className="aiws-surface-list-head">
             <span className="aiws-muted">工作区</span>
-            <b data-testid="aiws-workspace-title">{store.session.info().title}</b>
+            <b data-testid="aiws-workspace-title">{workspaceTitle}</b>
+            {phone && (
+              <>
+                <button type="button" className="aiws-popover-item" data-testid="aiws-switch-workspace" onClick={() => { close(); shell.close() }}>
+                  <ArrowLeftRight size={16} aria-hidden="true" /> 切换工作区
+                </button>
+                <span className="aiws-muted" data-testid="aiws-phone-note">手机上只能查看；编辑请在电脑上打开。</span>
+              </>
+            )}
           </div>
           {shell.surfaces.length > 6 && (
             <label className="aiws-search"><Search size={14} aria-hidden="true" /><input type="search" aria-label="搜索画布" placeholder="搜索画布…" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
@@ -200,7 +222,7 @@ function SurfaceSwitcher() {
                     <span className="aiws-chip">{surface.layout?.mode === 'free' ? '自由画布' : '流式页'}</span>
                   </button>
                 )}
-                {(surface.capabilities.includes('structure') || surface.capabilities.includes('delete')) && (
+                {!phone && (surface.capabilities.includes('structure') || surface.capabilities.includes('delete')) && (
                   <MenuButton label={`「${surface.title ?? surface.name ?? ''}」的更多操作`} className="aiws-tool aiws-tool-small" testId={`aiws-surface-more-${surface.entity_id}`} align="end"
                     items={[
                       { id: `rename-${surface.entity_id}`, label: '重命名', disabled: !surface.capabilities.includes('structure'), reason: '没有修改这张画布的权限',

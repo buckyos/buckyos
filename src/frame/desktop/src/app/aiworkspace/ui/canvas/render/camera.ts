@@ -1,6 +1,8 @@
 /* Camera (phase two §9.2, §9.3 rule 1): the viewport of a free Surface. It lives outside React:
  * panning and zooming change one CSS transform on the world layer and notify listeners; nothing
- * re-renders per frame. `onSettle` fires once the gesture stopped (LOD, culling, persistence). */
+ * re-renders per frame. `onSettle` fires once the gesture stopped (LOD, culling, persistence).
+ * Touch gestures (UI improvement §16) also animate it: a glide after a flick and a smooth move to a
+ * target; any other camera change stops them. */
 
 import type { Placement } from '../../../api/types'
 
@@ -10,6 +12,13 @@ export interface Rect { x: number; y: number; w: number; h: number }
 export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 4
 const SETTLE_MS = 120
+/** A glide loses this share of its speed per 16 ms frame and stops below the minimum speed (px/ms). */
+const GLIDE_DECAY = 0.95
+const GLIDE_MIN_SPEED = 0.02
+
+function clampZoom(zoom: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom))
+}
 
 export class Camera {
   x = 0
@@ -19,6 +28,7 @@ export class Camera {
   private readonly changeListeners = new Set<() => void>()
   private readonly settleListeners = new Set<() => void>()
   private settleTimer: number | null = null
+  private animation = 0
   private viewportSize = { w: 800, h: 600 }
   /** Screen margins covered by the floating toolbars (UI improvement §3.1): fitting and centring use the rest. */
   private insets = { top: 0, right: 0, bottom: 0, left: 0 }
@@ -87,13 +97,15 @@ export class Camera {
   }
 
   set(viewport: Partial<Viewport>) {
+    this.stopAnimation()
     if (viewport.x !== undefined) this.x = viewport.x
     if (viewport.y !== undefined) this.y = viewport.y
-    if (viewport.zoom !== undefined) this.zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, viewport.zoom))
+    if (viewport.zoom !== undefined) this.zoom = clampZoom(viewport.zoom)
     this.apply()
   }
 
   panBy(dxScreen: number, dyScreen: number) {
+    this.stopAnimation()
     this.x -= dxScreen / this.zoom
     this.y -= dyScreen / this.zoom
     this.apply()
@@ -101,13 +113,72 @@ export class Camera {
 
   /** Zoom keeping the world point under (sx, sy) fixed. */
   zoomAt(sx: number, sy: number, factor: number) {
-    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, this.zoom * factor))
+    this.stopAnimation()
+    const next = this.zoomedAt(sx, sy, factor)
+    this.zoom = next.zoom
+    this.x = next.x
+    this.y = next.y
+    this.apply()
+  }
+
+  /** The viewport `zoomAt` would give. */
+  zoomedAt(sx: number, sy: number, factor: number): Viewport {
+    const zoom = clampZoom(this.zoom * factor)
     const wx = this.x + sx / this.zoom
     const wy = this.y + sy / this.zoom
-    this.zoom = next
-    this.x = wx - sx / next
-    this.y = wy - sy / next
-    this.apply()
+    return { x: wx - sx / zoom, y: wy - sy / zoom, zoom }
+  }
+
+  /** Stop a running glide or animated move (the camera stays where it is). */
+  stopAnimation() {
+    if (this.animation) cancelAnimationFrame(this.animation)
+    this.animation = 0
+  }
+
+  /** Move smoothly to `target`. A zoom change scales about the one screen point both viewports agree on, so a
+   * zoom at a point keeps that point still all the way. */
+  animateTo(target: Viewport, duration = 240) {
+    this.stopAnimation()
+    const from = this.viewport
+    const zoom = clampZoom(target.zoom)
+    const scaling = Math.abs(zoom - from.zoom) > 1e-9
+    const k = 1 / from.zoom - 1 / zoom
+    const anchor = scaling ? { x: (target.x - from.x) / k, y: (target.y - from.y) / k } : { x: 0, y: 0 }
+    const world = { x: from.x + anchor.x / from.zoom, y: from.y + anchor.y / from.zoom }
+    const start = performance.now()
+    const step = (now: number) => {
+      const t = Math.min(1, (now - start) / duration)
+      const e = 1 - (1 - t) ** 3
+      if (scaling) {
+        this.zoom = from.zoom * (zoom / from.zoom) ** e
+        this.x = world.x - anchor.x / this.zoom
+        this.y = world.y - anchor.y / this.zoom
+      } else {
+        this.x = from.x + (target.x - from.x) * e
+        this.y = from.y + (target.y - from.y) * e
+      }
+      this.animation = t < 1 ? requestAnimationFrame(step) : 0
+      this.apply()
+    }
+    this.animation = requestAnimationFrame(step)
+  }
+
+  /** Keep panning after a flick at `vx`, `vy` screen px/ms, slowing down until it stops. */
+  glide(vx: number, vy: number) {
+    this.stopAnimation()
+    let last = performance.now()
+    let speed = { x: vx, y: vy }
+    const step = (now: number) => {
+      const dt = Math.min(64, now - last)
+      last = now
+      this.x -= (speed.x * dt) / this.zoom
+      this.y -= (speed.y * dt) / this.zoom
+      const decay = GLIDE_DECAY ** (dt / 16)
+      speed = { x: speed.x * decay, y: speed.y * decay }
+      this.animation = Math.hypot(speed.x, speed.y) > GLIDE_MIN_SPEED ? requestAnimationFrame(step) : 0
+      this.apply()
+    }
+    this.animation = requestAnimationFrame(step)
   }
 
   toWorld(sx: number, sy: number): { x: number; y: number } {
@@ -147,12 +218,19 @@ export class Camera {
 
   /** Fit `rect` into the unobstructed area with padding. */
   fit(rect: Rect, padding = 40) {
-    const area = this.clearArea
-    const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min((area.w - 2 * padding) / Math.max(1, rect.w), (area.h - 2 * padding) / Math.max(1, rect.h))))
-    this.zoom = zoom
-    this.x = rect.x - (area.x + area.w / 2) / zoom + rect.w / 2
-    this.y = rect.y - (area.y + area.h / 2) / zoom + rect.h / 2
+    this.stopAnimation()
+    const next = this.fitted(rect, padding)
+    this.zoom = next.zoom
+    this.x = next.x
+    this.y = next.y
     this.apply()
+  }
+
+  /** The viewport `fit` would give. */
+  fitted(rect: Rect, padding = 40): Viewport {
+    const area = this.clearArea
+    const zoom = clampZoom(Math.min((area.w - 2 * padding) / Math.max(1, rect.w), (area.h - 2 * padding) / Math.max(1, rect.h)))
+    return { x: rect.x - (area.x + area.w / 2) / zoom + rect.w / 2, y: rect.y - (area.y + area.h / 2) / zoom + rect.h / 2, zoom }
   }
 }
 

@@ -4,7 +4,9 @@
  * left — with the right panel taking layout width (a drawer in narrow windows). This view owns the
  * selection, the pointer tool, one-shot placement, insertion, the object clipboard, grouping,
  * cross-Surface moves and the per-Surface viewport; the RenderHost owns rendering and gestures. Menus,
- * buttons, context menus and shortcuts call the same actions. */
+ * buttons, context menus and shortcuts call the same actions. A phone (§16) gets the canvas in view mode
+ * with one toolbar (canvas switcher, annotation, zoom, identity, share) and touch gestures, and keeps a
+ * viewport of its own. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError } from '../../api/session'
@@ -42,7 +44,7 @@ export interface CanvasFocus { surfaceId: string; blockId: string | null; nonce:
 interface Viewport { x: number; y: number; zoom: number }
 
 /** Screen space the floating toolbars and the status area cover (fit, centring and the near toolbar avoid it);
- * narrow windows stack the two top toolbars. */
+ * narrow windows stack the two top toolbars (a phone has only one). */
 const TOP_INSET = 68
 const TOP_INSET_NARROW = 124
 const LEFT_INSET = 68
@@ -59,7 +61,7 @@ export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
 function EmptyCanvas({ mode }: { mode: CanvasMode }) {
   const store = useStore()
   const shell = useShell()
-  const canStructure = store.session.info().capabilities.includes('structure')
+  const canStructure = store.session.info().capabilities.includes('structure') && !shell.phone
   const create = async (layout: 'free' | 'flow') => {
     const { ops, surfaceId } = createSurfaceOps(store, layout === 'free' ? '画布 1' : '页 1', layout)
     const outcome = await store.submit({ editId: 'surface:new', label: '创建画布', operations: ops })
@@ -76,9 +78,11 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
                 <button type="button" className="is-primary" data-testid="aiws-create-first-surface" onClick={() => { void create('free') }}>新建自由画布</button>
                 <button type="button" data-testid="aiws-create-first-flow" onClick={() => { void create('flow') }}>新建流式页</button>
               </div>
-            ) : <p className="aiws-muted">你没有新建画布的权限；数据源中的数据仍可查看。</p>}
+            ) : <p className="aiws-muted">{shell.phone ? '手机上只能查看；新建画布请在电脑上打开这个工作区。' : '你没有新建画布的权限；数据源中的数据仍可查看。'}</p>}
           </div>
-          <div className="aiws-chrome-top"><MainToolbar canvas={null} /></div>
+          <div className="aiws-chrome-top">
+            {shell.phone ? <PresenterToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}
+          </div>
           <StatusDock />
         </div>
         <SidePanel tabs={['collab', 'edits']} render={(tab) => (tab === 'collab' ? <PermissionsPanel /> : <StatusDetail />)} />
@@ -119,8 +123,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const [id, l] of laid) idx.insert({ id, rect: l.rect, order: l.order, depth: l.depth })
     return idx
   }, [laid])
-  const showObjectToolbar = shell.prefs.objectToolbar && mode !== 'presentation_edit'
-  const topInset = shell.size === 'narrow' ? TOP_INSET_NARROW : TOP_INSET
+  const phone = shell.phone
+  const showObjectToolbar = shell.prefs.objectToolbar && mode !== 'presentation_edit' && !phone
+  const topInset = shell.size === 'narrow' && !phone ? TOP_INSET_NARROW : TOP_INSET
   const leftInset = showObjectToolbar && !collapsed ? LEFT_INSET : 12
   const insets = { top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }
   useEffect(() => { camera.setInsets({ top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }) }, [camera, topInset, leftInset])
@@ -160,13 +165,15 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     setBlockFocusSeen(focus.nonce)
     if (focus.blockId && laid.has(focus.blockId)) setSelectionState(new Set([focus.blockId]))
   }
-  // per-Surface viewport in the user work state (§4.4); a first visit puts the world origin at the top left of the clear area
-  const viewportKey = `viewport:${surfaceId}`
+  // per-Surface viewport in the user work state (§4.4); a first visit puts the world origin at the top left of the clear area.
+  // A phone keeps its own viewport (a phone's zoom would be odd on the desktop and back) and first sees the whole canvas.
+  const viewportKey = `${phone ? 'phone-viewport' : 'viewport'}:${surfaceId}`
   const savedViewport = useUserState<Json>(viewportKey) as Viewport | undefined
   const restored = useRef(false)
   useEffect(() => {
     if (restored.current) return
-    camera.set(savedViewport ?? { x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 })
+    const bounds = phone && !savedViewport ? surfaceBounds(laid) : null
+    if (bounds) { camera.fit(bounds); if (camera.zoom > 1) camera.zoomTo(1) } else camera.set(savedViewport ?? { x: -camera.clearArea.x, y: -camera.clearArea.y, zoom: 1 })
     restored.current = true
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [savedViewport])
@@ -501,7 +508,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (single.kind === 'group' && canLayout) moreActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
   }
   if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: '分组', key: 'Ctrl+G', run: group })
-  if (selection.size > 0 && policy.select) {
+  if (selection.size > 0 && policy.select && !phone) {
     moreActions.push({ id: 'copy', label: '复制', key: 'Ctrl+C', run: copy.run })
     if (cut.reason === null) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
   }
@@ -526,7 +533,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     ] : []),
     ...(paste.reason === null ? [{ id: 'paste', label: '粘贴', run: () => pasteAt(menu.world) }] : []),
     ...(isFree ? [{ id: 'sep', label: '', run: () => undefined, separator: true }, { id: 'fit', label: '适应全部', run: fitAll }] : []),
-  ]) : []
+  ].filter((item, i) => !(i === 0 && 'separator' in item))) : []
 
   const commands: CanvasCommands = {
     isFree, insertReason,
@@ -581,8 +588,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               </div>
             )}
             <div className="aiws-chrome-top">
-              <MainToolbar canvas={commands} />
-              {shell.prefs.presenterToolbar && <PresenterToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
+              {!phone && <MainToolbar canvas={commands} />}
+              {(shell.prefs.presenterToolbar || phone) && <PresenterToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
@@ -592,7 +599,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             )}
             {(placing || annotatePick) && (
               <div className="aiws-hint" role="status" data-testid="aiws-tool-hint">
-                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : '点选要批注的对象；Esc 取消'}
+                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : phone ? '点按要批注的对象；再点一次“批注”取消' : '点选要批注的对象；Esc 取消'}
               </div>
             )}
             <StatusDock />

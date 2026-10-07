@@ -49,6 +49,14 @@ export function NearToolbar({ bbox, actions, more = [], viewport, insets = { top
 
 export function ContextMenu({ at, items, onClose }: { at: { x: number; y: number }; items: { id: string; label: string; run: () => void; disabled?: boolean; separator?: boolean }[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
+  // opened near an edge (a long press on a phone), the menu moves back inside the canvas area
+  const [spot, setSpot] = useState(at)
+  useLayoutEffect(() => {
+    const el = ref.current
+    const area = el?.offsetParent
+    if (!el || !(area instanceof HTMLElement)) return
+    setSpot({ x: Math.max(8, Math.min(at.x, area.clientWidth - el.offsetWidth - 8)), y: Math.max(8, Math.min(at.y, area.clientHeight - el.offsetHeight - 8)) })
+  }, [at.x, at.y, items.length])
   useEffect(() => {
     const onDown = (event: PointerEvent) => { if (!ref.current?.contains(event.target as Node)) onClose() }
     const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
@@ -57,7 +65,7 @@ export function ContextMenu({ at, items, onClose }: { at: { x: number; y: number
     return () => { window.removeEventListener('pointerdown', onDown, true); window.removeEventListener('keydown', onKey) }
   }, [onClose])
   return (
-    <div ref={ref} className="aiws-menu aiws-context-menu" role="menu" data-testid="aiws-context-menu" style={{ left: at.x, top: at.y }}>
+    <div ref={ref} className="aiws-menu aiws-context-menu" role="menu" data-testid="aiws-context-menu" style={{ left: spot.x, top: spot.y }}>
       {items.map((item) => item.separator ? <hr key={item.id} /> : (
         <button key={item.id} type="button" role="menuitem" data-testid={`aiws-menu-${item.id}`} disabled={item.disabled} onClick={() => { onClose(); item.run() }}>{item.label}</button>
       ))}

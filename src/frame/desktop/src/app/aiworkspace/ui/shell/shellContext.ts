@@ -1,9 +1,9 @@
 /* What the chrome of one open workspace shares (UI improvement §3, §12.1): the top-level view, the
- * active Surface, the right panel, dialogs, the personal layout preferences and the window size
- * class. Layout preferences live in the user work state under the `ui:` prefix; none of this is a
- * document write. */
+ * active Surface, the right panel, dialogs, the personal layout preferences, the window size class and
+ * whether this is a phone (§16). Layout preferences live in the user work state under the `ui:` prefix;
+ * none of this is a document write. */
 
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useSyncExternalStore } from 'react'
 import type { AiwsClient } from '../../api/client'
 import type { EntityEnvelope } from '../../api/types'
 import { workspaceUrl } from '../../links'
@@ -34,6 +34,28 @@ export const LAYOUT_KEYS = ['ui:object-toolbar', 'ui:presenter-toolbar', 'ui:gri
 /** Size class of the application container (not the browser): §11 responsive rules. */
 export type SizeClass = 'wide' | 'medium' | 'narrow'
 
+// ---- phone (§16): touch is the primary pointer and the screen is small. Tablets and touch laptops are not phones.
+
+const COARSE_POINTER = '(pointer: coarse)'
+/** The short side of a phone screen is below this (CSS px); tablets start around 740. */
+const PHONE_SHORT_SIDE = 600
+
+function phoneNow(): boolean {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+  return window.matchMedia(COARSE_POINTER).matches && Math.min(window.screen.width, window.screen.height) < PHONE_SHORT_SIDE
+}
+
+function subscribePhone(listener: () => void): () => void {
+  const query = window.matchMedia(COARSE_POINTER)
+  query.addEventListener('change', listener)
+  window.addEventListener('resize', listener)
+  return () => { query.removeEventListener('change', listener); window.removeEventListener('resize', listener) }
+}
+
+export function usePhone(): boolean {
+  return useSyncExternalStore(subscribePhone, phoneNow, () => false)
+}
+
 export interface ShellApi {
   /** Workspace-level calls outside the open session (create, fork, import, export). */
   client: AiwsClient
@@ -54,6 +76,8 @@ export interface ShellApi {
   setPref: (key: keyof LayoutPrefs, value: boolean) => void
   resetLayout: () => void
   size: SizeClass
+  /** A phone (§16): the canvas only, in view mode, with one toolbar; nothing about it is written to the shared work state. */
+  phone: boolean
   /** The Mock processing panel and other developer tools are shown (dev server or dev override). */
   devTools: boolean
   /** Who this window acts as; a dev-override identity has no login session to end. */
@@ -70,9 +94,11 @@ export interface ShellApi {
 
 export const ShellContext = createContext<ShellApi | null>(null)
 
-/** The canvas sub-mode (user work state `canvas:mode`). */
+/** The canvas sub-mode (user work state `canvas:mode`); a phone always views (§16) and leaves the stored mode alone. */
 export function useCanvasMode(): CanvasMode {
+  const phone = useContext(ShellContext)?.phone ?? false
   const state = useUserState<CanvasMode>('canvas:mode')
+  if (phone) return 'view'
   return state && CANVAS_MODES.includes(state) ? state : 'edit'
 }
 

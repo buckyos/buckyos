@@ -1,13 +1,15 @@
 /* The presenter toolbar, top right (UI improvement §8.1, §9.1): add annotation | interactions | zoom ▾ |
  * identity and online members | share link. Zoom and view navigation live only here (and in the main
  * menu): there is no bottom-right navigation area. Interactions are not shown — there is no global
- * interaction system yet — and online members only appear once presence exists. */
+ * interaction system yet — and online members only appear once presence exists. On a phone (§16) it is
+ * the only toolbar and starts with the canvas switcher (icon, name, the workspace's canvases). */
 
 import { useEffect, useState } from 'react'
 import { Link2, LogOut, MessageSquarePlus, Minus, Plus } from 'lucide-react'
 import { useStore } from '../../state/hooks'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
+import { SurfaceSwitcher } from './MainToolbar'
 import { PopoverPanel, usePopover } from './popover'
 import { shareLink, useShell, ZOOM_PRESETS } from './shellContext'
 
@@ -17,15 +19,20 @@ export function PresenterToolbar({ camera, hasSelection, onFitAll, onFitSelectio
   hasSelection: boolean
   onFitAll: () => void
   onFitSelection: () => void
-  annotate: { reason: string | null; active: boolean; run: () => void }
+  /** Absent where there is nothing to annotate (a workspace without canvases). */
+  annotate: { reason: string | null; active: boolean; run: () => void } | null
 }) {
   const shell = useShell()
+  const compact = shell.size === 'narrow' || shell.phone
   return (
-    <div className="aiws-panel aiws-presenter-toolbar" role="toolbar" aria-label="演讲工具" data-testid="aiws-presenter-toolbar">
-      <button type="button" className={`aiws-tool${shell.size === 'narrow' ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null} data-testid="aiws-annotate-start"
-        title={annotate.reason ?? (annotate.active ? '点选要批注的对象（Esc 取消）' : '添加批注：选中对象后批注；未选中时先点选目标')} aria-label="添加批注" onClick={annotate.run}>
-        <MessageSquarePlus size={18} />{shell.size !== 'narrow' && <span>批注</span>}
-      </button>
+    <div className="aiws-panel aiws-presenter-toolbar" role="toolbar" aria-label={shell.phone ? '画布工具' : '演讲工具'} data-testid="aiws-presenter-toolbar">
+      {shell.phone && <SurfaceSwitcher phone />}
+      {annotate && (
+        <button type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null} data-testid="aiws-annotate-start"
+          title={annotate.reason ?? (annotate.active ? '点选要批注的对象（Esc 取消）' : '添加批注：选中对象后批注；未选中时先点选目标')} aria-label="添加批注" onClick={annotate.run}>
+          <MessageSquarePlus size={18} />{!compact && <span>批注</span>}
+        </button>
+      )}
       {camera && <ZoomControl camera={camera} hasSelection={hasSelection} onFitAll={onFitAll} onFitSelection={onFitSelection} />}
       <IdentityButton />
       <ShareButton />
@@ -122,8 +129,8 @@ function ShareButton() {
   }
   return (
     <span ref={bindAnchor} className="aiws-anchor">
-      <button ref={bindTrigger} type="button" className={`aiws-tool${shell.size === 'narrow' ? '' : ' aiws-tool-text'} is-primary`} aria-label="分享链接" title="复制访问链接" data-testid="aiws-share" onClick={() => { void copy() }}>
-        <Link2 size={18} />{shell.size !== 'narrow' && <span>分享</span>}
+      <button ref={bindTrigger} type="button" className={`aiws-tool${shell.size === 'narrow' || shell.phone ? '' : ' aiws-tool-text'} is-primary`} aria-label="分享链接" title="复制访问链接" data-testid="aiws-share" onClick={() => { void copy() }}>
+        <Link2 size={18} />{shell.size !== 'narrow' && !shell.phone && <span>分享</span>}
       </button>
       {open && (
         <PopoverPanel align="end" label="分享链接" testId="aiws-share-panel" className="aiws-share-panel">

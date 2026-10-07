@@ -9,7 +9,8 @@
  * Rules kept here: the camera is not React state; culling has three levels with hysteresis
  * (mounted / hidden / unmounted) and never culls selected, editing or hovered Blocks; pointermove
  * is coalesced per animation frame and moves DOM transforms, never state or the network; a gesture
- * ends in exactly one commit (or none, on Esc). Hit testing is geometric through the spatial index. */
+ * ends in exactly one commit (or none, on Esc). Hit testing is geometric through the spatial index.
+ * Touch has its own gestures (touch.ts, UI improvement §16): pan, pinch, taps, long press. */
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react'
 import type { Placement } from '../../../api/types'
@@ -21,6 +22,7 @@ import { modePolicy, type CanvasMode } from '../../blocks/registry'
 import { relativeTo, topLevel, type Laid } from '../layout'
 import { Camera, intersects, type Rect } from './camera'
 import { SpatialIndex } from './spatialIndex'
+import { TouchGestures, type OneFingerDrag, type Point, type TouchActions } from './touch'
 
 /** Blocks within this many viewports of the visible area stay mounted; within the next band they stay in the DOM but hidden. */
 const MOUNT_MARGIN = 0.5
@@ -69,6 +71,24 @@ type Drag =
 
 type MountState = 'mounted' | 'hidden'
 
+/** What starting a mouse-path gesture needs: a React pointer event, or a native one handed over by a touch. */
+type PointerStart = Pick<PointerEvent, 'pointerId' | 'button' | 'clientX' | 'clientY' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'target' | 'preventDefault'>
+
+/** Controls inside a Block that take a tap themselves (their click must survive). */
+const TAPPABLE = 'button, a[href], summary, label'
+/** Touches here stay with the browser: editors, fields, the near toolbar and menus. */
+const TOUCH_EXEMPT = '[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu'
+
+/** The nearest element between `target` and `frame` whose own content scrolls. */
+function scrollerWithin(target: Element | null, frame: HTMLElement | undefined): HTMLElement | null {
+  for (let el = target; el && frame && el !== frame && frame.contains(el); el = el.parentElement) {
+    if (!(el instanceof HTMLElement)) continue
+    const style = getComputedStyle(el)
+    if ((el.scrollHeight > el.clientHeight + 1 && /auto|scroll/.test(style.overflowY)) || (el.scrollWidth > el.clientWidth + 1 && /auto|scroll/.test(style.overflowX))) return el
+  }
+  return null
+}
+
 /** Three culling levels with hysteresis (§9.3 rule 3): mounted near the viewport, hidden in the DOM further out, unmounted beyond. */
 function computeMounts(prev: Map<string, MountState>, camera: Camera, laid: Map<string, Laid>, index: SpatialIndex, pinned: Set<string>): Map<string, MountState> {
   const near = camera.visibleWorld(MOUNT_MARGIN)
@@ -116,6 +136,8 @@ export function RenderHost(props: RenderHostProps) {
   const [resizePreview, setResizePreview] = useState<{ id: string; rect: Rect } | null>(null)
   const [, forceOverlay] = useState(0)
   const [settled, setSettled] = useState(0)
+  const pointerTypeRef = useRef('mouse')
+  const [touch] = useState(() => new TouchGestures(camera))
 
   // ---- camera attach and overlay subscriptions
   useLayoutEffect(() => {
@@ -253,8 +275,15 @@ export function RenderHost(props: RenderHostProps) {
 
   // ---- pointer gestures
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    pointerTypeRef.current = event.pointerType
+    if (event.pointerType === 'touch') { touch.down(event.nativeEvent); return }
     if (props.gesturesPaused || dragRef.current) return
     if (insideEditor(event.target)) return
+    beginPointer(event)
+  }
+
+  /** The mouse path: place, pan, move, or marquee. */
+  const beginPointer = (event: PointerStart) => {
     const p = screenPoint(event)
     const w = camera.toWorld(p.x, p.y)
     if (props.placing && event.button === 0 && !spaceHeld.current) {
@@ -266,7 +295,7 @@ export function RenderHost(props: RenderHostProps) {
     const hit = policy.select && !hand ? index.hit(w.x, w.y) : null
     const pan = event.button === 1 || event.button === 2 || spaceHeld.current || hand || (!policy.select && event.button === 0) || (mode === 'view' && !hit && event.button === 0)
     if (event.button === 2 && !spaceHeld.current) return // context menu
-    event.currentTarget.setPointerCapture(event.pointerId)
+    rootRef.current?.setPointerCapture(event.pointerId)
     window.getSelection()?.removeAllRanges()
     setDragging(true)
     if (pan) { dragRef.current = { kind: 'pan', lastX: event.clientX, lastY: event.clientY, moved: false }; worldRef.current?.classList.add('is-moving'); return }
@@ -288,6 +317,7 @@ export function RenderHost(props: RenderHostProps) {
 
   const ghostRef = useRef<HTMLDivElement>(null)
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'touch') return // window listeners follow touches
     const drag = dragRef.current
     if (!drag && props.placing) {
       // the placement preview follows the pointer in the DOM: no React work per move
@@ -310,7 +340,12 @@ export function RenderHost(props: RenderHostProps) {
       if (id !== hover) setHover(id)
       return
     }
-    pendingMove.current = { x: event.clientX, y: event.clientY }
+    trackPointer(event.clientX, event.clientY)
+  }
+
+  /** The running mouse-path gesture follows this position at the next frame. */
+  const trackPointer = (clientX: number, clientY: number) => {
+    pendingMove.current = { x: clientX, y: clientY }
     if (rafRef.current) return
     rafRef.current = requestAnimationFrame(flushMove)
   }
@@ -369,7 +404,7 @@ export function RenderHost(props: RenderHostProps) {
   useLayoutEffect(() => { flushMoveRef.current = flushMove })
 
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return
+    if (event.pointerType === 'touch' || !dragRef.current) return
     try { event.currentTarget.releasePointerCapture(event.pointerId) } catch { /* already released */ }
     finishDrag(false)
   }
@@ -397,15 +432,80 @@ export function RenderHost(props: RenderHostProps) {
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
   }, [finishDrag])
 
-  const onContextMenu = (event: ReactPointerEvent<HTMLDivElement> | React.MouseEvent<HTMLDivElement>) => {
-    if (insideEditor(event.target)) return
-    event.preventDefault()
-    const p = screenPoint(event)
+
+  /** The context menu of the Block at `p` (selecting it first) or of the blank spot. */
+  const openMenuAt = (p: Point) => {
     const w = camera.toWorld(p.x, p.y)
     const hit = policy.select ? index.hit(w.x, w.y) : null
     if (hit && !selection.has(hit.id)) props.onSelectionChange(new Set([hit.id]))
     props.onContextMenu({ screenX: p.x, screenY: p.y, worldX: w.x, worldY: w.y }, hit?.id ?? null)
   }
+  const onContextMenu = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (insideEditor(event.target)) return
+    event.preventDefault()
+    // a long touch opens the menu itself (touch.ts); the browser's own long-press menu is dropped
+    if (pointerTypeRef.current === 'touch') return
+    openMenuAt(screenPoint(event))
+  }
+
+  // ---- touch (UI improvement §16): what a touch gesture means here; touch.ts recognises the gestures
+  const beginTouch = (event: PointerEvent, p: Point): OneFingerDrag | null => {
+    const target = event.target instanceof Element ? event.target : null
+    if (props.gesturesPaused || dragRef.current || target?.closest(TOUCH_EXEMPT)) return null
+    const w = camera.toWorld(p.x, p.y)
+    if (props.placing && !spaceHeld.current) { event.preventDefault(); props.onPlace?.(w); return null }
+    const tappable = Boolean(target?.closest(TAPPABLE))
+    const hit = policy.select && props.tool !== 'hand' ? index.hit(w.x, w.y) : null
+    // edit mode: a drag that starts on a Block moves it, as with the mouse
+    if (hit && !tappable && policy.layout && canLayout) { beginPointer(event); return { kind: 'delegate' } }
+    // the selected Block's own scrollable content scrolls under the finger
+    const scroller = hit && selection.has(hit.id) ? scrollerWithin(target, frames.current.get(hit.id)) : null
+    return scroller ? { kind: 'scroll', element: scroller } : { kind: 'pan' }
+  }
+  const tapAt = (p: Point, target: Element | null) => {
+    if (props.tool === 'hand' || (target?.closest(TAPPABLE) && target.closest('.aiws-frame-block'))) return // a control in a Block took the tap
+    const w = camera.toWorld(p.x, p.y)
+    const hit = policy.select ? index.hit(w.x, w.y) : null
+    if (editing && editing !== hit?.id) endEditing()
+    if (hit) props.onSelectionChange(new Set([hit.id]))
+    else if (selection.size > 0) props.onSelectionChange(new Set())
+  }
+  const doubleTapAt = (p: Point) => {
+    const w = camera.toWorld(p.x, p.y)
+    const hit = policy.select && props.tool !== 'hand' ? index.hit(w.x, w.y) : null
+    const l = hit ? laid.get(hit.id) : undefined
+    if (hit && l && !l.isGroup && policy.editContent) { props.onEditingChange(hit.id); props.onSelectionChange(new Set([hit.id])); return }
+    camera.animateTo(l ? camera.fitted(l.rect, 24) : camera.zoomedAt(p.x, p.y, 2))
+  }
+  useLayoutEffect(() => {
+    const actions: TouchActions = {
+      local: (clientX, clientY) => screenPoint({ clientX, clientY }),
+      begin: beginTouch,
+      delegateMove: (event) => trackPointer(event.clientX, event.clientY),
+      delegateEnd: finishDrag,
+      moving: (on) => { setDragging(on); worldRef.current?.classList.toggle('is-moving', on) },
+      tap: tapAt,
+      doubleTap: doubleTapAt,
+      twoFingerTap: (p) => camera.animateTo(camera.zoomedAt(p.x, p.y, 0.5)),
+      longPress: openMenuAt,
+    }
+    touch.setActions(actions)
+  })
+  // touches are followed from the window: a finger whose target left the DOM still moves and ends the gesture
+  useEffect(() => {
+    const move = (event: PointerEvent) => { if (event.pointerType === 'touch') touch.move(event) }
+    const up = (event: PointerEvent) => { if (event.pointerType === 'touch') touch.up(event, false) }
+    const cancel = (event: PointerEvent) => { if (event.pointerType === 'touch') touch.up(event, true) }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+    window.addEventListener('pointercancel', cancel)
+    return () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      window.removeEventListener('pointercancel', cancel)
+      touch.reset()
+    }
+  }, [touch])
 
   const beginResize = (event: ReactPointerEvent<SVGRectElement>, id: string, handle: string) => {
     if (!policy.layout || !canLayout || dragRef.current) return
@@ -473,7 +573,7 @@ export function RenderHost(props: RenderHostProps) {
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onPointerCancel={() => finishDrag(true)}
+      onPointerCancel={(event) => { if (event.pointerType !== 'touch') finishDrag(true) }}
       onDragStart={(event) => { if (!insideEditor(event.target)) event.preventDefault() }}
       onWheel={onWheel}
       onContextMenu={onContextMenu}

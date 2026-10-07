@@ -17,7 +17,7 @@ import { PermissionsPanel } from '../sources/PermissionsPanel'
 import type { OfflineActions } from '../WorkspaceView'
 import { ExportDialog, HelpDialog, ImportDialog, MockDialog, NewDialog } from './dialogs'
 import { MainToolbar } from './MainToolbar'
-import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, type DialogRequest, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
+import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type DialogRequest, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 
@@ -78,9 +78,11 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   // eslint-disable-next-line react-hooks/exhaustive-deps -- outlineVersion is the invalidation signal of the outline model
   const surfaces = useMemo(() => surfacesOf(store), [store, outlineVersion])
 
-  // ---- top-level view and the active Surface (§4 rules 2–4: the remembered Surface, else the first readable one)
+  // ---- top-level view and the active Surface (§4 rules 2–4: the remembered Surface, else the first readable one);
+  // a phone shows the canvas only (§16) and leaves the stored view alone
+  const phone = usePhone()
   const modeState = useUserState<TopMode>('mode')
-  const mode: TopMode = modeState === 'sources' ? 'sources' : 'canvas'
+  const mode: TopMode = modeState === 'sources' && !phone ? 'sources' : 'canvas'
   const setTopMode = useCallback((next: TopMode) => store.userState.set('mode', next), [store])
   const remembered = useUserState<string>('surface:active')
   const activeSurface = surfaces.find((s) => s.entity_id === remembered) ?? surfaces[0] ?? null
@@ -158,19 +160,31 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     return () => observer.disconnect()
   }, [])
 
-  /** Show an entity: a Block focuses its Surface on the canvas; data opens in the data-source view. */
+  /** Show an entity: a Block focuses its Surface on the canvas; data opens in the data-source view (on a phone,
+   * which has no data-source view, a Block that shows the data — the one on the current canvas first). */
   const openEntity = useCallback((entityId: string) => {
     const entity = store.outline.get(entityId)
     if (!entity) return
-    if (entity.type_id === 'buckyos.cell' || entity.kind === 'group') {
-      const surfaceId = store.outline.ancestors(entityId).map((id) => store.outline.get(id)).find((e) => e?.kind === 'surface')?.entity_id
-      if (surfaceId) { setFocus({ surfaceId, blockId: entityId, nonce: Date.now() }); store.userState.set('surface:active', surfaceId); setTopMode('canvas') }
+    const surfaceOf = (id: string) => store.outline.ancestors(id).map((a) => store.outline.get(a)).find((e) => e?.kind === 'surface')?.entity_id
+    const focusBlock = (blockId: string) => {
+      const surfaceId = surfaceOf(blockId)
+      if (!surfaceId) return
+      setFocus({ surfaceId, blockId, nonce: Date.now() })
+      store.userState.set('surface:active', surfaceId)
+      if (!phone) setTopMode('canvas')
+    }
+    if (entity.type_id === 'buckyos.cell' || entity.kind === 'group') { focusBlock(entityId); return }
+    if (entity.kind === 'surface') { setFocus({ surfaceId: entityId, blockId: null, nonce: Date.now() }); store.userState.set('surface:active', entityId); if (!phone) setTopMode('canvas'); return }
+    if (phone) {
+      const views = store.outline.all().filter((e) => e.type_id === 'buckyos.cell' && e.source_id === entityId && !e.deleted && surfaceOf(e.entity_id))
+      const view = views.find((e) => surfaceOf(e.entity_id) === store.userState.get('surface:active')) ?? views[0]
+      if (view) focusBlock(view.entity_id)
+      else store.notify('info', `「${entity.title ?? entity.name ?? entityId}」没有显示在任何画布上；手机上不提供数据源视图，请在电脑上查看。`)
       return
     }
-    if (entity.kind === 'surface') { setFocus({ surfaceId: entityId, blockId: null, nonce: Date.now() }); store.userState.set('surface:active', entityId); setTopMode('canvas'); return }
     setSelected(entityId)
     setTopMode('sources')
-  }, [store, setTopMode])
+  }, [store, setTopMode, phone])
   const annotate = useCallback((anchor: CapturedAnchor) => {
     setDraft(anchor)
     if (store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
@@ -199,7 +213,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
 
   const shell: ShellApi = {
     client, close: onClose, openWorkspace: onOpenWorkspace, offline, topMode: mode, setTopMode, surfaces, activeSurface, selectSurface,
-    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, devTools, identity, logout: onLogout, home: onHome,
+    side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, phone, devTools, identity, logout: onLogout, home: onHome,
     runOffline, offlineBusy, offlineError, clearOfflineError: () => setOfflineError(null),
   }
 
@@ -228,7 +242,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
 
   const workspaceInfo = store.session.info()
   return (
-    <div ref={rootRef} className="aiws-workspace" data-testid="aiws-workspace" data-workspace-id={store.session.workspaceId} data-session-id={store.session.sessionId} data-top-mode={mode} data-size={size}>
+    <div ref={rootRef} className="aiws-workspace" data-testid="aiws-workspace" data-workspace-id={store.session.workspaceId} data-session-id={store.session.sessionId} data-top-mode={mode} data-size={size} data-phone={phone ? 'true' : undefined}>
       <ShellContext.Provider value={shell}>
         {loadError && !loaded && <div className="aiws-error" role="alert">无法读取工作区：{loadError}</div>}
         {loaded && (

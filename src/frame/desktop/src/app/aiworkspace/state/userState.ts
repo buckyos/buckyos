@@ -173,12 +173,12 @@ export class UserWorkState {
   }
 
   /** Drop entries of Surfaces that no longer exist or are unreadable (phase two §4.4; UI improvement §12.1):
-   * per-Surface keys (`viewport:<id>`, `selection:<id>`) and the active Surface pointing at one of them.
+   * per-Surface keys (`viewport:<id>`, the phone's `phone-viewport:<id>`, `selection:<id>`) and the active Surface pointing at one of them.
    * Workspace-wide layout preferences live under `ui:` and are cleared only by "restore default layout". */
   pruneSurfaces(existing: ReadonlySet<string>) {
     const gone: string[] = []
     for (const key of this.entries.keys()) {
-      const match = /^(viewport|selection):(.+)$/.exec(key)
+      const match = /^(viewport|phone-viewport|selection):(.+)$/.exec(key)
       if (match && !existing.has(match[2])) gone.push(key)
     }
     const active = this.entries.get('surface:active')

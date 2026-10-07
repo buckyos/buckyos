@@ -11,7 +11,7 @@ export function SidePanel({ tabs, render }: { tabs: SideTab[]; render: (tab: Sid
   const shell = useShell()
   const tab = shell.side
   if (!tab || !tabs.includes(tab)) return null
-  const drawer = shell.size !== 'wide'
+  const drawer = shell.size !== 'wide' || shell.phone
   return (
     <aside className={`aiws-side${drawer ? ' is-drawer' : ''}`} aria-label={SIDE_TAB_LABEL[tab]} data-testid="aiws-side-panel" data-tab={tab}>
       <div className="aiws-side-head">

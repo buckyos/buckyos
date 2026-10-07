@@ -630,4 +630,28 @@
 @media (pointer: coarse) {
   .aiws-root .aiws-tool { min-width: 44px; height: 44px; }
   .aiws-root .aiws-menu-entry > button { min-height: 44px; }
+  .aiws-root .aiws-popover-item, .aiws-root .aiws-context-menu > button, .aiws-root button.aiws-surface-pick { min-height: 44px; }
+  /* a long press opens the canvas's own menu: no text selection or callout inside Blocks that are not being edited */
+  .aiws-canvas .aiws-frame-block:not(.is-editing) > .aiws-block-body { user-select: none; -webkit-user-select: none; }
 }
+
+/* touch (§16): the canvas takes every touch itself (pan, pinch, taps) — no native scrolling, zoom or callout
+   inside it; a Block being edited keeps its own touch behaviour */
+.aiws-canvas, .aiws-canvas * { touch-action: none; }
+.aiws-canvas { -webkit-touch-callout: none; }
+.aiws-canvas .aiws-frame-block.is-editing * { touch-action: auto; }
+
+/* phone (§16): one toolbar across the top (canvas switcher, annotation, zoom, identity, share), view only;
+   the page itself never pinch-zooms (iOS ignores user-scalable=no) */
+.aiws-workspace[data-phone='true'] { touch-action: pan-x pan-y; }
+.aiws-workspace[data-phone='true'] .aiws-chrome-top { top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); right: calc(8px + env(safe-area-inset-right)); }
+.aiws-workspace[data-phone='true'] .aiws-presenter-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
+.aiws-workspace[data-phone='true'] .aiws-flow-host { padding: 64px 8px 56px; }
+.aiws-workspace[data-phone='true'] .aiws-hint { top: calc(64px + env(safe-area-inset-top)); max-width: calc(100% - 24px); white-space: normal; text-align: center; }
+.aiws-workspace[data-phone='true'] .aiws-status-dock { right: calc(8px + env(safe-area-inset-right)); bottom: calc(8px + env(safe-area-inset-bottom)); }
+.aiws-workspace[data-phone='true'] .aiws-surface-list { width: min(320px, calc(100vw - 32px)); }
+.aiws-surface-anchor { flex: 1 1 auto; min-width: 0; }
+.aiws-root button.aiws-surface-trigger { display: inline-flex; align-items: center; gap: 6px; flex: 1 1 auto; min-width: 0; height: 44px; padding: 0 8px; border: none; border-radius: 8px; background: none; font-weight: 600; font-size: 14px; }
+.aiws-surface-trigger > svg { flex: none; }
+.aiws-surface-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-surface-list-head .aiws-popover-item { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; }
