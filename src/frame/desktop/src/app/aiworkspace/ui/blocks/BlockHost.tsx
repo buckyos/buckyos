@@ -5,9 +5,13 @@
  * throwing component becomes a fallback inside this Block, never a broken workspace. */
 
 import { Component, type ErrorInfo, type ReactNode, memo, useContext, useEffect, useState } from 'react'
+import { TriangleAlert } from 'lucide-react'
 import { describeError } from '../../api/session'
 import type { CellPayload, EntityEnvelope } from '../../api/types'
+import { useStore } from '../../state/hooks'
+import { shapeOf, sourceLabel } from './affordances'
 import { BudgetContext, type MountBudget } from './budget'
+import { BlockMetaContext } from './editorToolbar'
 import type { CanvasMode, RenderContext } from './registry'
 import { useBlockContext } from './useBlockContext'
 
@@ -61,12 +65,14 @@ export class BlockBoundary extends Component<BoundaryProps, BoundaryState> {
   }
 }
 
-/** The generic read-only fallback (D6, §10.3): raw content stays visible and exportable. */
+/** The generic read-only fallback (D6, §10.3): raw content stays visible and exportable; the warning is a corner
+ * badge whose explanation shows on hover (标准对象的交互改进 §4.1). */
 export function GenericFallback({ cell, payload, reason, detail, source }: { cell: EntityEnvelope; payload: CellPayload | null; reason: string; detail: string; source?: EntityEnvelope }) {
   return (
     <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${cell.entity_id}`} data-reason={reason}>
+      <span className="aiws-fallback-badge" title={detail} aria-label={detail}><TriangleAlert size={12} aria-hidden="true" /></span>
       <div className="aiws-block-fallback-title">{cell.title ?? payload?.title ?? cell.entity_id}</div>
-      <div className="aiws-warning">{detail}</div>
+      <div className="aiws-fallback-detail">{detail}</div>
       {payload && <div className="aiws-muted">渲染器 {payload.view.type}{payload.view.version ? ` v${payload.view.version}` : ''}{source ? ` · 数据 ${source.name ?? source.entity_id}（${source.type_id}）` : ''}</div>}
       {payload?.config && <details><summary>原始配置</summary><pre>{JSON.stringify(payload.config, null, 2)}</pre></details>}
     </div>
@@ -85,10 +91,22 @@ export const BlockHost = memo(function BlockHost(props: BlockHostProps) {
 
 function ResolvedBlock({ context: base, lod, registryVersion }: { context: RenderContext; lod: Lod; registryVersion: number }) {
   const { cell, mode, definition: def, dataState, depth } = base
+  const store = useStore()
+  const metaSink = useContext(BlockMetaContext)
   const wantsEditor = base.editorActive && Boolean(def.Editor)
   const budgetKind: keyof MountBudget | null = wantsEditor ? (def.cost.html ? 'html' : def.cost.editor ? 'editors' : null) : null
   const slot = useBudgetSlot(budgetKind)
   const context = { ...base, editorActive: wantsEditor && slot }
+  // a hovered or selected Block tells the overlay its outline, resize rule and affordances (§4.2)
+  const published = metaSink !== null && depth === 0 && (base.hovered || base.selected)
+  useEffect(() => {
+    if (!metaSink) return
+    if (!published) { metaSink.set(cell.entity_id, null); return }
+    let affordances = def.hover ? [] : sourceLabel(context)
+    try { if (def.hover) affordances = def.hover(context, store) } catch (error) { console.error('[aiworkspace] hover affordances failed', error) }
+    metaSink.set(cell.entity_id, { shape: shapeOf(context), aspect: def.resize?.aspect ?? 'free', affordances, context })
+  })
+  useEffect(() => () => metaSink?.set(cell.entity_id, null), [metaSink, cell.entity_id])
   let Impl = def.Static
   let role: 'static' | 'simplified' | 'view' | 'editor' = 'static'
   if (lod === 'simplified' && def.Simplified) { Impl = def.Simplified; role = 'simplified' }
@@ -96,7 +114,7 @@ function ResolvedBlock({ context: base, lod, registryVersion }: { context: Rende
   else if (depth === 0 && mode === 'view' && def.View && lod !== 'simplified') { Impl = def.View; role = 'view' }
   const budgetNote = wantsEditor && !slot ? '同时激活的编辑器已达上限，此 Block 保持静态显示' : null
   return (
-    <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState}>
+    <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState} data-chrome={def.chrome ?? 'clip'}>
       {budgetNote && <div className="aiws-warning" data-testid="aiws-block-budget">{budgetNote}</div>}
       <BlockBoundary resetKey={`${cell.entity_id}:${role}:${cell.content_rev}:${registryVersion}`} fallback={(error, reset) => (
         <div className="aiws-block-fallback" data-testid={`aiws-block-fallback-${cell.entity_id}`} data-reason="renderer_error">

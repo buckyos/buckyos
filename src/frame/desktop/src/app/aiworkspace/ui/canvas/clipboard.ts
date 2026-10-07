@@ -59,12 +59,21 @@ async function snapshotItem(store: WorkspaceStore, id: string, placement: Placem
       if (item) children.push(item)
     }
   }
-  return { id, isGroup, placement, payload: { ...read.content.payload }, children }
+  // a copy is never locked (标准对象的交互改进 §7.2)
+  const { locked: _locked, ...payload } = read.content.payload
+  void _locked
+  return { id, isGroup, placement, payload, children }
+}
+
+/** The world placement of a laid-out object, rotation included. */
+function worldPlacement(l: Laid): Placement {
+  return { x: Math.round(l.rect.x), y: Math.round(l.rect.y), w: Math.round(l.rect.w), h: Math.round(l.rect.h), ...(l.rotation ? { rotation: l.rotation } : {}) }
 }
 
 /** Put the top-level selection on the clipboard. Copy snapshots the view payloads now. */
 export async function copyToClipboard(store: WorkspaceStore, surfaceId: string, laid: Map<string, Laid>, selection: ReadonlySet<string>, kind: 'copy' | 'cut'): Promise<number> {
-  const ids = topLevel(laid, new Set(selection))
+  // a cut moves the objects: locked ones stay out of it
+  const ids = topLevel(laid, new Set(selection)).filter((id) => kind === 'copy' || !laid.get(id)?.locked)
   const bounds = boundsOf(laid, ids)
   if (ids.length === 0 || !bounds) return 0
   const items: ClipItem[] = []
@@ -72,13 +81,13 @@ export async function copyToClipboard(store: WorkspaceStore, surfaceId: string, 
     for (const id of ids) {
       const l = laid.get(id)
       if (!l) continue
-      const item = await snapshotItem(store, id, { x: Math.round(l.rect.x), y: Math.round(l.rect.y), w: Math.round(l.rect.w), h: Math.round(l.rect.h) })
+      const item = await snapshotItem(store, id, worldPlacement(l))
       if (item) items.push(item)
     }
   } else {
     for (const id of ids) {
       const l = laid.get(id)
-      if (l) items.push({ id, isGroup: l.isGroup, placement: { x: Math.round(l.rect.x), y: Math.round(l.rect.y), w: Math.round(l.rect.w), h: Math.round(l.rect.h) }, payload: {}, children: [] })
+      if (l) items.push({ id, isGroup: l.isGroup, placement: worldPlacement(l), payload: {}, children: [] })
     }
   }
   canvasClipboard.set({ workspaceId: store.session.workspaceId, surfaceId, kind, ids, items, bounds, pastes: 0 })

@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
+import { Bold, Code, Heading, Italic, Link2, List, ListOrdered, MessageSquarePlus, Pilcrow, Strikethrough } from 'lucide-react'
 import { UndoManager } from 'loro-crdt'
 import { createNodeFromLoroObj, LoroSyncPlugin, loroUndoPluginKey, type LoroDocType, type LoroNodeMapping } from 'loro-prosemirror'
 import { baseKeymap, chainCommands, exitCode, toggleMark } from 'prosemirror-commands'
 import { keymap } from 'prosemirror-keymap'
-import { DOMSerializer, Node as PMNode, type NodeType, type Schema } from 'prosemirror-model'
+import { DOMSerializer, Node as PMNode, type MarkType, type NodeType, type Schema } from 'prosemirror-model'
 import { liftListItem, sinkListItem, splitListItem, wrapInList } from 'prosemirror-schema-list'
-import { EditorState, Plugin, type Command } from 'prosemirror-state'
+import { EditorState, Plugin, Selection, TextSelection, type Command } from 'prosemirror-state'
 import { EditorView } from 'prosemirror-view'
 import { describeError } from '../api/session'
 import { testHooks } from '../api/testHooks'
@@ -18,6 +19,9 @@ import type { WorkspaceStore } from '../state/store'
 import type { CapturedAnchor } from '../anchors/registry'
 import { annotationsPlugin, captureAnchor, makeHost, richTextAnchors, selectionOf, setAnnotations, type Placement } from '../anchors/richtext'
 import { AnnotationGutter } from '../ui/annotations'
+import { consumeIntent, useEditorToolbar, useIntent } from '../ui/blocks/editorToolbar'
+import type { ToolbarItem } from '../ui/blocks/registry'
+import { InlineTools } from '../ui/canvas/tools'
 import { blockIdPlugin } from './blockId'
 import { RichTextCollab } from './collab'
 import { astPlainText, deleteDraft, listDrafts, type RichTextDraft } from './drafts'
@@ -37,6 +41,8 @@ export interface RichTextEditorProps {
   onAnnotate?: (anchor: CapturedAnchor) => void
   /** Called with the collab once it is open (the host uses it to resume after a lock was re-acquired). */
   onCollab?: (collab: RichTextCollab | null) => void
+  /** A canvas Block's id: where the canvas sends "type this" / "put the caret here" when it opens the editor. */
+  intentKey?: string
 }
 
 export function RichTextEditor(props: RichTextEditorProps) {
@@ -104,6 +110,29 @@ function insertEmbed(schema: Schema, entityId: string): Command {
   }
 }
 
+function markActive(state: EditorState, type: MarkType): boolean {
+  const { from, to, empty, $from } = state.selection
+  if (empty) return Boolean(type.isInSet(state.storedMarks ?? $from.marks()))
+  return state.doc.rangeHasMark(from, to, type)
+}
+
+/** The text block kind at the caret: `p`, `h1`–`h3`. */
+function blockKind(state: EditorState): string {
+  const parent = state.selection.$from.parent
+  return parent.type.name === 'heading' ? `h${String(parent.attrs.level)}` : 'p'
+}
+
+/** The innermost list around the caret: `bullet`, `ordered` or ''. */
+function listKind(state: EditorState): string {
+  const $from = state.selection.$from
+  for (let depth = $from.depth; depth > 0; depth--) {
+    const name = $from.node(depth).type.name
+    if (name === 'bullet_list') return 'bullet'
+    if (name === 'ordered_list') return 'ordered'
+  }
+  return ''
+}
+
 function insertLink(schema: Schema, entityId: string, label: string): Command {
   return (state, dispatch) => {
     if (!state.selection.$from.parent.isTextblock) return false
@@ -116,6 +145,7 @@ function buildView(
   host: HTMLElement, store: WorkspaceStore, collab: RichTextCollab, isEditable: () => boolean,
   setEmbeds: (update: (previous: Embeds) => Embeds) => void, onOpenEntity: (entityId: string) => void,
   annotations: { onPlaced: (placements: Placement[]) => void; onClick: (annotationId: string) => void },
+  onUpdate: () => void,
 ): { view: EditorView; dispose: () => void } {
   const schema = store.pmSchema
   const working = collab.working
@@ -164,6 +194,8 @@ function buildView(
         undoState,
         blockIdPlugin(),
         annotationsPlugin({ entityId: collab.entityId, loro: () => working, ...annotations }),
+        // the format tools show what applies at the caret: they follow every state change
+        new Plugin({ view: () => ({ update: onUpdate }) }),
         keymap({
           // The editor has no undo history of its own: these keys go to the UndoCoordinator (design §2.7).
           'Mod-z': coordinatorUndo,
@@ -246,7 +278,7 @@ function buildView(
 const NO_ANNOTATIONS: AnnotationMark[] = []
 
 function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) {
-  const { collab, editable, entities, renderEmbed, onOpenEntity, onAnnotate } = props
+  const { collab, editable, entities, renderEmbed, onOpenEntity, onAnnotate, intentKey } = props
   const annotations = props.annotations ?? NO_ANNOTATIONS
   const activeAnnotation = props.activeAnnotation ?? null
   const store = useStore()
@@ -256,10 +288,11 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const openEntityRef = useRef(onOpenEntity)
   const activateRef = useRef(props.onActivateAnnotation)
   const [embeds, setEmbeds] = useState<Embeds>(new Map())
-  const [pick, setPick] = useState<'embed' | 'link' | null>(null)
   const [showDrafts, setShowDrafts] = useState(false)
   const [built, setBuilt] = useState<{ view: EditorView; host: HTMLElement } | null>(null)
   const [placements, setPlacements] = useState<Placement[]>([])
+  /** What applies at the caret, for the format tools (recomputed on every editor state change). */
+  const [at, setAt] = useState({ strong: false, em: false, strike: false, code: false, block: 'p', list: '' })
 
   useEffect(() => {
     editableRef.current = editable
@@ -268,12 +301,34 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
     viewRef.current?.setProps({ editable: () => editable })
   }, [editable, onOpenEntity, props.onActivateAnnotation])
 
+  // the canvas opened this editor by typing or by double-clicking a spot: the text goes in, the caret goes there
+  const applyIntent = (view: EditorView, intent: string) => {
+    if (!editableRef.current) return
+    if (intent.startsWith('type:')) {
+      const end = Selection.atEnd(view.state.doc)
+      view.dispatch(view.state.tr.setSelection(end).insertText(intent.slice(5)))
+    } else if (intent.startsWith('caret:')) {
+      const [left, top] = intent.slice(6).split(',').map(Number)
+      const pos = view.posAtCoords({ left, top })
+      view.dispatch(view.state.tr.setSelection(pos ? TextSelection.near(view.state.doc.resolve(pos.pos)) : Selection.atEnd(view.state.doc)))
+    } else view.dispatch(view.state.tr.setSelection(Selection.atEnd(view.state.doc)))
+    view.focus()
+  }
+  const intent = useIntent(intentKey ?? '')
+
   useEffect(() => {
     const host = hostRef.current
     if (!host) return
     const result = buildView(host, store, collab, () => editableRef.current, setEmbeds, (id) => openEntityRef.current(id), {
       onPlaced: setPlacements,
       onClick: (id) => activateRef.current?.(id),
+    }, () => {
+      const view = viewRef.current
+      if (!view) return
+      const state = view.state
+      const marks = store.pmSchema.marks
+      const next = { strong: markActive(state, marks.strong), em: markActive(state, marks.em), strike: markActive(state, marks.strike), code: markActive(state, marks.code), block: blockKind(state), list: listKind(state) }
+      setAt((previous) => (Object.entries(next).every(([key, value]) => previous[key as keyof typeof previous] === value) ? previous : next))
     })
     viewRef.current = result.view
     setBuilt({ view: result.view, host })
@@ -285,23 +340,26 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   }, [store, collab])
 
   useEffect(() => {
+    if (!built || built.view.isDestroyed || !intent || !intentKey) return
+    consumeIntent(intentKey, intent)
+    applyIntent(built.view, intent.value)
+  }, [built, intent, intentKey])
+
+  useEffect(() => {
     if (built && !built.view.isDestroyed) setAnnotations(built.view, annotations, activeAnnotation)
   }, [built, annotations, activeAnnotation])
 
   const annotate = () => {
-    const view = viewRef.current
-    if (!view || !onAnnotate) return
+    const view = built?.view
+    if (!view || view.isDestroyed || !onAnnotate) return
     const anchor = captureAnchor(makeHost(collab.entityId, view.state.doc, collab.working, selectionOf(view)))
     if (anchor) onAnnotate(anchor)
     else store.notify('info', '请先选中要批注的文字，或把光标放在要批注的块里。')
   }
-  const annotateButton = onAnnotate && (
-    <button type="button" data-testid="aiws-annotate" title="批注选中的文字；没有选中时批注光标所在的块" onMouseDown={(event) => event.preventDefault()} onClick={annotate}>批注</button>
-  )
 
   const run = (command: Command) => {
-    const view = viewRef.current
-    if (!view) return
+    const view = built?.view
+    if (!view || view.isDestroyed) return
     command(view.state, view.dispatch, view)
     view.focus()
   }
@@ -310,49 +368,32 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
   const linkable = entities.filter((entity) => entity.type_id !== 'buckyos.container' && !entity.deleted)
   const nameOf = (entity: EntityEnvelope) => entity.name ?? entity.title ?? entity.entity_id
 
+  // the format tools (标准对象的交互改进 §5.2): in the near toolbar on a canvas, inline elsewhere
+  const tools: ToolbarItem[] = []
+  if (editable) {
+    tools.push(
+      { kind: 'button', id: 'bold', icon: Bold, label: '加粗', key: 'Ctrl+B', active: at.strong, run: () => run(toggleMark(schema.marks.strong)) },
+      { kind: 'button', id: 'italic', icon: Italic, label: '斜体', key: 'Ctrl+I', active: at.em, run: () => run(toggleMark(schema.marks.em)) },
+      { kind: 'button', id: 'strike', icon: Strikethrough, label: '删除线', active: at.strike, run: () => run(toggleMark(schema.marks.strike)) },
+      { kind: 'button', id: 'code', icon: Code, label: '行内代码', key: 'Ctrl+`', active: at.code, run: () => run(toggleMark(schema.marks.code)) },
+      { kind: 'separator', id: 'sep-block' },
+      { kind: 'menu', id: 'block-type', icon: at.block === 'p' ? Pilcrow : Heading, label: '段落格式', value: at.block,
+        items: [{ value: 'p', label: '正文' }, { value: 'h1', label: '标题 1' }, { value: 'h2', label: '标题 2' }, { value: 'h3', label: '标题 3' }],
+        onPick: (value) => run(value === 'p' ? setBlock(schema.nodes.paragraph, {}) : setBlock(schema.nodes.heading, { level: Number(value.slice(1)) })) },
+      { kind: 'menu', id: 'list', icon: at.list === 'ordered' ? ListOrdered : List, label: '列表', value: at.list,
+        items: [{ value: 'bullet', label: '无序列表', icon: List }, { value: 'ordered', label: '有序列表', icon: ListOrdered }, { value: 'lift', label: '移出列表' }],
+        onPick: (value) => run(value === 'lift' ? liftListItem(schema.nodes.list_item) : wrapInList(value === 'ordered' ? schema.nodes.ordered_list : schema.nodes.bullet_list)) },
+      { kind: 'panel', id: 'link', icon: Link2, label: '链接对象或嵌入单元', render: (close) => (
+        <LinkPicker objects={linkable} cells={cells} nameOf={nameOf} onPick={(kind, target) => { close(); run(kind === 'embed' ? insertEmbed(schema, target.entity_id) : insertLink(schema, target.entity_id, nameOf(target))) }} />
+      ) },
+    )
+  }
+  if (onAnnotate) tools.push(...(tools.length ? [{ kind: 'separator' as const, id: 'sep-annotate' }] : []), { kind: 'button', id: 'annotate-text', icon: MessageSquarePlus, label: '批注选中的文字（没有选中时批注光标所在的块）', run: annotate })
+  const inNearToolbar = useEditorToolbar('richtext', tools)
+
   return (
     <div className="aiws-richtext" data-editable={editable ? 'true' : 'false'}>
-      {editable && (
-        <div className="aiws-toolbar" role="toolbar" aria-label="富文本格式">
-          <button type="button" title="加粗 (Ctrl+B)" onMouseDown={(event) => event.preventDefault()} onClick={() => run(toggleMark(schema.marks.strong))}><b>B</b></button>
-          <button type="button" title="斜体 (Ctrl+I)" onMouseDown={(event) => event.preventDefault()} onClick={() => run(toggleMark(schema.marks.em))}><i>I</i></button>
-          <button type="button" title="删除线" onMouseDown={(event) => event.preventDefault()} onClick={() => run(toggleMark(schema.marks.strike))}><s>S</s></button>
-          <button type="button" title="行内代码" onMouseDown={(event) => event.preventDefault()} onClick={() => run(toggleMark(schema.marks.code))}>{'</>'}</button>
-          <span className="aiws-toolbar-sep" />
-          <button type="button" title="正文" onMouseDown={(event) => event.preventDefault()} onClick={() => run(setBlock(schema.nodes.paragraph, {}))}>正文</button>
-          {[1, 2, 3].map((level) => (
-            <button key={level} type="button" title={`标题 ${level}`} onMouseDown={(event) => event.preventDefault()} onClick={() => run(setBlock(schema.nodes.heading, { level }))}>H{level}</button>
-          ))}
-          <button type="button" title="无序列表" onMouseDown={(event) => event.preventDefault()} onClick={() => run(wrapInList(schema.nodes.bullet_list))}>• 列表</button>
-          <button type="button" title="有序列表" onMouseDown={(event) => event.preventDefault()} onClick={() => run(wrapInList(schema.nodes.ordered_list))}>1. 列表</button>
-          <button type="button" title="移出列表" onMouseDown={(event) => event.preventDefault()} onClick={() => run(liftListItem(schema.nodes.list_item))}>⇤</button>
-          <span className="aiws-toolbar-sep" />
-          <button type="button" onClick={() => setPick(pick === 'embed' ? null : 'embed')}>嵌入单元…</button>
-          <button type="button" onClick={() => setPick(pick === 'link' ? null : 'link')}>对象链接…</button>
-          {annotateButton}
-        </div>
-      )}
-      {!editable && annotateButton && <div className="aiws-anno-bar">{annotateButton}</div>}
-      {pick && (
-        <div className="aiws-inline-form">
-          <span>{pick === 'embed' ? '嵌入哪个单元：' : '链接到哪个对象：'}</span>
-          <select
-            aria-label={pick === 'embed' ? '嵌入单元' : '对象链接'}
-            defaultValue=""
-            onChange={(event) => {
-              const id = event.target.value
-              const target = entities.find((entity) => entity.entity_id === id)
-              if (!target) return
-              run(pick === 'embed' ? insertEmbed(schema, id) : insertLink(schema, id, nameOf(target)))
-              setPick(null)
-            }}
-          >
-            <option value="" disabled>请选择…</option>
-            {(pick === 'embed' ? cells : linkable).map((entity) => <option key={entity.entity_id} value={entity.entity_id}>{nameOf(entity)}（{entity.entity_id}）</option>)}
-          </select>
-          <button type="button" onClick={() => setPick(null)}>取消</button>
-        </div>
-      )}
+      {!inNearToolbar && <InlineTools items={tools} label="富文本格式" />}
       <div className="aiws-richtext-body">
         <div ref={hostRef} className="aiws-prose-host" />
         <AnnotationGutter container={built?.host ?? null} marks={annotations} placements={placements} active={activeAnnotation}
@@ -360,6 +401,30 @@ function EditorSurface(props: RichTextEditorProps & { collab: RichTextCollab }) 
       </div>
       {[...embeds].map(([dom, reference]) => createPortal(renderEmbed(reference), dom))}
       <DraftsBar entityId={collab.entityId} open={showDrafts} onToggle={() => setShowDrafts((value) => !value)} generation={collab.generation} />
+    </div>
+  )
+}
+
+/** "Link an object" / "embed a Block": a searchable list instead of a native select (§4.4). */
+function LinkPicker({ objects, cells, nameOf, onPick }: { objects: EntityEnvelope[]; cells: EntityEnvelope[]; nameOf: (entity: EntityEnvelope) => string; onPick: (kind: 'link' | 'embed', target: EntityEnvelope) => void }) {
+  const [kind, setKind] = useState<'link' | 'embed'>('link')
+  const [query, setQuery] = useState('')
+  const list = (kind === 'embed' ? cells : objects).filter((entity) => !query || `${nameOf(entity)} ${entity.entity_id}`.toLowerCase().includes(query.toLowerCase())).slice(0, 80)
+  return (
+    <div className="aiws-near-panel" data-testid="aiws-link-picker">
+      <div className="aiws-tabs" role="tablist">
+        <button type="button" role="tab" aria-selected={kind === 'link'} data-testid="aiws-link-kind-link" onClick={() => setKind('link')}>对象链接</button>
+        <button type="button" role="tab" aria-selected={kind === 'embed'} data-testid="aiws-link-kind-embed" onClick={() => setKind('embed')}>嵌入单元</button>
+      </div>
+      <input type="search" aria-label="搜索对象" placeholder="搜索名称或 ID" autoFocus value={query} data-testid="aiws-link-search" onChange={(event) => setQuery(event.target.value)} />
+      <div className="aiws-near-panel-list">
+        {list.map((entity) => (
+          <button key={entity.entity_id} type="button" className="aiws-popover-item" data-testid={`aiws-link-pick-${entity.entity_id}`} onClick={() => onPick(kind, entity)}>
+            {nameOf(entity)} <span className="aiws-muted">{entity.type_id === 'buckyos.cell' ? entity.view_type : entity.type_id.replace('buckyos.', '')}</span>
+          </button>
+        ))}
+        {list.length === 0 && <div className="aiws-muted">没有匹配的对象</div>}
+      </div>
     </div>
   )
 }

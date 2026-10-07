@@ -4,11 +4,12 @@
  * the service works; the candidate with its preview; and the state of the applied results. Shown by
  * the data-source detail and by the wish Block after activation. */
 
-import { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError, type ReadOk } from '../../api/session'
 import type { Json, WishInput, WishPayloadRead, WishRunView } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useEntity, useFreshness, useLoad, useOutlineVersion, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { consumeIntent, useIntent } from '../blocks/editorToolbar'
 import { FreshnessBadge } from '../sources/FreshnessBadge'
 import { WishCandidate } from './WishCandidate'
 import { isActive, isWaiting, type WishBusy } from './WishService'
@@ -74,7 +75,9 @@ function ProgramView({ wishId, canEdit }: { wishId: string; canEdit: boolean }) 
   )
 }
 
-export function WishPanel({ wishId, readOnly, compact, cellId }: { wishId: string; readOnly: boolean; compact?: boolean; cellId?: string }) {
+/** `canvasSelection`: what is selected on the canvas while the wish is open in the right panel — offered as inputs.
+ * A "start" sent to `cellId` (the Block's "run") runs the next step once the wish is loaded. */
+export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }: { wishId: string; readOnly: boolean; compact?: boolean; cellId?: string; canvasSelection?: string[] }) {
   const store = useStore()
   const ui = useWorkspaceUi()
   const entity = useEntity(wishId)
@@ -89,7 +92,22 @@ export function WishPanel({ wishId, readOnly, compact, cellId }: { wishId: strin
   const [message, setMessage] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [showKnowledge, setShowKnowledge] = useState(false)
   const editEntry = useEdit(`wish:${wishId}:apply`)
+  const startIntent = useIntent(cellId ?? '')
+  const startsDone = useRef(0)
   useEffect(() => { void store.wish.restore(wishId) }, [store, wishId])
+  // "run" from the canvas: the next step of the two passes — analyse first, execute once the analysis is ready
+  useEffect(() => {
+    const payload = read.data?.content.payload
+    if (!cellId || startIntent?.value !== 'start' || startIntent.seq <= startsDone.current || !payload || !entity || freshness === undefined) return
+    startsDone.current = startIntent.seq
+    consumeIntent(cellId, startIntent)
+    if (readOnly || !entity.capabilities.includes('update') || isActive(store.wish.run(wishId)) || store.wish.busy.get(wishId)) return
+    const analysis = payload.analysis
+    const work = (freshness.needs_analysis ?? !analysis) || analysis?.status !== 'ready'
+      ? store.wish.analyze(wishId, cellId).then(() => setMessage({ kind: 'info', text: '分析已写回。' }))
+      : store.wish.execute(wishId, { cellId })
+    work.catch((error: unknown) => setMessage({ kind: 'error', text: describeError(error) }))
+  }, [startIntent, read.data, entity, freshness, readOnly, store, wishId, cellId])
   const run = store.wish.run(wishId)
   const busy = store.wish.busy.get(wishId)
   const flowError = store.wish.errors.get(wishId)
@@ -138,6 +156,8 @@ export function WishPanel({ wishId, readOnly, compact, cellId }: { wishId: strin
   }
   const analyze = () => act(async () => { await store.wish.analyze(wishId, cellId); setMessage({ kind: 'info', text: '分析已写回。' }) })
   const execute = () => act(() => store.wish.execute(wishId, { cellId }))
+  const selectedInputs = canEdit ? [...new Set((canvasSelection ?? []).map((id) => { const e = store.outline.get(id); return e?.type_id === 'buckyos.cell' ? e.source_id ?? null : e && e.type_id !== 'buckyos.container' ? e.entity_id : null })
+    .filter((id): id is string => Boolean(id) && id !== wishId && !inputs.some((input) => input.entity_id === id)))] : []
   const rerun = () => act(() => store.wish.rerunProgram(wishId, cellId))
   const repair = () => act(async () => { if (run) await store.wish.repairProgram(wishId, run.run_id, cellId) })
   const cancel = () => act(async () => { if (run) await store.wish.cancel(run) })
@@ -193,6 +213,11 @@ export function WishPanel({ wishId, readOnly, compact, cellId }: { wishId: strin
             )
           })}
         </ul>
+        {selectedInputs.length > 0 && (
+          <button type="button" data-testid="aiws-wish-add-selection" onClick={() => { void setInputs([...inputs, ...selectedInputs.map((id) => ({ entity_id: id, label: title(id), version: { mode: 'follow' as const } }))], '添加画布上选中的对象为输入') }}>
+            添加画布上选中的 {selectedInputs.length} 项为输入
+          </button>
+        )}
         {canEdit && (
           <select aria-label="添加输入" value="" data-testid="aiws-wish-add-input" onChange={(event) => addInput(event.target.value)}>
             <option value="">添加输入…</option>

@@ -9,8 +9,10 @@
  * the data availability. A definition may give edit- and view-mode specific implementations; what it
  * does not give falls back to its static renderer — never to another mode's write behaviour. */
 
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
+import type { LucideIcon } from 'lucide-react'
 import { z } from 'zod'
+import type { CapturedAnchor } from '../../anchors/registry'
 import type { BlockDefPayload, Capability, CellPayload, EntityEnvelope, Json, Operation, Placement } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
 import { HTML_API_VERSION } from '../extensions/htmlRuntime'
@@ -49,6 +51,39 @@ export interface RenderContext {
   deactivateEditor: () => void
   /** Open another entity (data-source detail or canvas focus). */
   openEntity: (entityId: string) => void
+  /** An Editor hands its format tools to the near toolbar (null removes them); without a near toolbar
+   * (flow page, data-source view) the call does nothing and the Editor shows its own tools. */
+  setEditorToolbar: (items: ToolbarItem[] | null) => void
+  pointerType: 'mouse' | 'touch'
+  /** Start an annotation (null without the `comment` capability); show the annotations targeting an entity. */
+  annotate: ((anchor: CapturedAnchor) => void) | null
+  showAnnotations: (targetId: string) => void
+}
+
+/** One control of the near toolbar (标准对象的交互改进 §5.4). `disabled` is the reason, shown as the tooltip.
+ * `panel` opens a popover with its own content (link search, lock state). */
+export type ToolbarItem =
+  | { kind: 'button'; id: string; /** Without an icon the label is shown (an extension's actions until it declares tools). */ icon?: LucideIcon; label: string; key?: string; active?: boolean; disabled?: string | false; ai?: boolean; run: () => void }
+  | { kind: 'menu'; id: string; icon?: LucideIcon; label: string; value?: string; items: { value: string; label: string; icon?: LucideIcon }[]; onPick: (value: string) => void; disabled?: string | false }
+  | { kind: 'color'; id: string; label: string; value: string | undefined; palette?: 'fill' | 'ink'; onPick: (hex: string) => void; disabled?: string | false }
+  | { kind: 'panel'; id: string; icon: LucideIcon; label: string; active?: boolean; disabled?: string | false; render: (close: () => void) => ReactNode }
+  | { kind: 'separator'; id: string }
+
+/** What hovering a Block floats next to it (§4.2): a name label or an icon button, placed by the host. */
+export interface HoverAffordance {
+  id: string
+  kind: 'label' | 'button'
+  /** Outside above the left edge / inside the top-right corner / outside below the middle / inside the bottom-right corner. */
+  at: 'top-left-out' | 'top-right-in' | 'bottom-out' | 'bottom-right-in'
+  label: string
+  icon?: LucideIcon
+  /** Show this entity's freshness badge after the label. */
+  freshness?: string
+  /** A BlockAction id, or `run`. */
+  action?: string
+  run?: (context: RenderContext) => void
+  /** Sub-modes where it shows; edit only by default. */
+  modes?: CanvasMode[]
 }
 
 export interface BlockAction {
@@ -115,6 +150,17 @@ export interface BlockDefinition {
   definitionKind?: BlockDefPayload['kind']
   /** Listed by the insert catalog (and the toolbars built on it); a definition without it is not offered for insertion. */
   catalog?: CatalogInfo
+  /** The host frame draws nothing (§4.1); `clip` (default) cuts off and scrolls content larger than the Block,
+   * `none` lets it draw outside (titles, shadows). */
+  chrome?: 'none' | 'clip'
+  /** The outline the hover state follows (and, later, connector points). */
+  shape?: 'rect' | 'ellipse' | ((context: RenderContext) => 'rect' | 'ellipse')
+  /** `locked`: corner handles keep the proportions (Shift frees them); `free`: Shift keeps them. */
+  resize?: { aspect?: 'free' | 'locked' }
+  /** Hover affordances (§4.2); without it a Block with data shows the data's name. */
+  hover?: (context: RenderContext, store: WorkspaceStore) => HoverAffordance[]
+  /** The type section of the near toolbar for the current state (§5.2). */
+  toolbar?: (context: RenderContext, store: WorkspaceStore) => ToolbarItem[]
 }
 
 export interface ConfigField { key: string; label: string; kind: 'text' | 'number' | 'select' | 'boolean' | 'color'; options?: { value: string; label: string }[] }

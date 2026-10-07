@@ -1,6 +1,6 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/commit-request/0.1",
+ "$id": "buckyos.ai-workspace/commit-request/0.2",
  "title": "Commit request (doc.commit / doc.prepare)",
  "type": "object",
  "additionalProperties": false,
@@ -13,7 +13,7 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "0.1"
+   "const": "0.2"
   },
   "workspace_id": {
    "type": "string",

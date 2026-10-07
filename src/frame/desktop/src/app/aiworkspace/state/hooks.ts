@@ -130,6 +130,9 @@ export interface WorkspaceUi {
   setActiveAnnotation: (entityId: string | null) => void
   /** Render an embedded Cell (rich text `object_embed`) read-only at `depth`. */
   renderCell: (cellId: string, depth: number) => ReactNode
+  /** The annotations panel shows only those targeting this entity (a note's replies), or all of them. */
+  annotationFilter: string | null
+  showAnnotations: (targetId: string | null) => void
 }
 
 export const WorkspaceUiContext = createContext<WorkspaceUi | null>(null)

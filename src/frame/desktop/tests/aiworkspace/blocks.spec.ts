@@ -129,6 +129,7 @@ test('a throwing Inspector is isolated to its block', async ({ page, api }) => {
     blockRegistry.register({ ...original, Inspector: () => { throw new Error('review inspector crash') } })
   })
   await page.getByTestId('aiws-canvas-block-blk-kpi').click()
+  await page.getByTestId('aiws-near-more').click()
   await page.getByTestId('aiws-near-inspector').click()
   await expect(page.getByTestId('aiws-inspector-error')).toContainText('review inspector crash')
   await expect(page.getByTestId('aiws-workspace')).toBeVisible()

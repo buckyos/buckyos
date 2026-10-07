@@ -1,4 +1,4 @@
-# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement)
+# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
 `doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
@@ -251,11 +251,46 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 - **Layout preferences** live in the user work state under `ui:` (`ui:object-toolbar`, `ui:presenter-toolbar`,
   `ui:grid`, `ui:side`, `ui:pinned-defs`); "恢复默认布局" clears them, never the document.
 
+## Standard object interaction (doc/workspace/标准对象的交互改进.md, S1–S3)
+
+- **Object = content, host = state.** A canvas frame (`.aiws-frame-block`) draws nothing: each type draws its own
+  look (notes a coloured sheet, wishes a card, text straight on the canvas). `BlockDefinition.chrome` only says
+  whether content larger than the Block is clipped (`clip`, the default) or drawn outside (`none`: frame, shape,
+  note). Hover, selection, editing, the cut marker, lock badge and gesture hints are drawn by the RenderHost
+  overlay (SVG for outlines and handles, an HTML layer for affordances, the rotation handle and hints).
+- **Hover** shows a solid outline at once and the Block's affordances after 150 ms (`BlockDefinition.hover`; by
+  default the data's name): at most one label and two buttons, buttons only when the Block is ≥ 64 px on
+  screen. A hovered or selected Block publishes its outline shape, resize rule and affordances to the overlay
+  through `BlockMetaContext` (no extra reads). On touch the affordances come with the selection.
+- **Selection** (edit mode, layout allowed, not locked, not editing): round corner handles (Shift keeps / frees
+  the proportions per `resize.aspect`), edge zones, a rotation handle outside the bottom-left corner (Shift
+  snaps 15°, a double press resets), sizes by pointer type (`usePointerType`). Several Blocks: member outlines
+  and one group box.
+- **Near toolbar** (`tools.tsx`): `ToolbarItem`s — the Editor's tools while editing (from `EditorToolbarContext`:
+  editors call `useEditorToolbar(owner, items)`, extension Editors `RenderContext.setEditorToolbar`), the type's
+  tools (`BlockDefinition.toolbar`; an extension without one shows its actions as words), the common ones
+  (annotate, lock / unlock, AI) and "more" (= the context menu). Items that do not fit move into "more". Where
+  there is no near toolbar (flow page, data-source view) the same items are drawn inline (`InlineTools`) and the
+  lock stays a bar.
+- **Intents** (`editorToolbar.ts`): `requestIntent(cellId, value)` carries "open this panel", "type this", "put the
+  caret here", "start" or "preview" from the canvas into an Editor that mounts later; the receiver consumes it.
+- **Wish** on a free canvas opens in the right panel (`wish` tab); its Block stays a card (`OpenWishContext`).
+  "Run" opens it and starts the next pass (analysis, or execution once the analysis is current).
+- **Rotation** is `placement.rotation` (degrees, `[0, 360)`): `Laid.rotation` / `Laid.bounds` (`layout.ts`), the
+  frame's CSS `rotate` (drags use `translate`, which composes with it), hit tests in the turned shape
+  (`spatialIndex.ts`, `geometry.ts`), resizing in the Block's own coordinates. Groups do not rotate yet.
+- **Lock** is the shared `locked` key of a Block or group (inherited by a group's members): no handles, no moves,
+  Delete / cut / grouping skip it with a notice; the core never enforces it.
+- **Version check**: a service on another `protocol_version` (at open, after an outage, on a refused commit, or
+  when a replica cannot replay a commit) stops the session with "please refresh" (`VERSION_MISMATCH`), keeping
+  what is pending.
+
 ## Block extension contract
 
 Register a `BlockDefinition` in `ui/blocks/registry.ts`. `useBlockContext` loads the Cell payload and key
 revisions, resolves its exact renderer version and supplies the same definition, configuration, mode and
-read-only state to the renderer, Inspector and near-toolbar actions. Registry changes invalidate resolution
+read-only state to the renderer, Inspector and near-toolbar actions; `chrome`, `shape`, `resize`, `hover` and
+`toolbar` (previous section) are optional, a definition without them still works. Registry changes invalidate resolution
 for mounted Blocks. Renderers and custom Inspectors have local error boundaries; failed actions report a
 notice. Rich-text embeds pass their depth through this context and stop at `MAX_EMBED_DEPTH` (3).
 
@@ -348,6 +383,11 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
   pointers; starting a presentation, presentation sessions and interaction buttons (the menu entry is disabled and
   says why); annotation anchors on pure UI Blocks or blank canvas points; cross-workspace paste; image upload as a
   canvas icon. Browser zoom 200% was not automated.
+- Standard object interaction, not done: connector handles, "next object" catalog and connector tools (S4, with
+  the connectors themselves); whole-selection resizing, align / distribute, snapping guides, remote selections,
+  HTML API v3 (`aiws.hover` / `aiws.toolbar`), touch editing beyond the handle sizes, keyboard rotation, rotating
+  groups (S5). Typing on a selected text starts editing only for keys that produce a keydown (an IME composition
+  does not; double-click instead). A note's colour is not a hover affordance (the toolbar has it).
 - The app's own UI text is Chinese only (the app name and summary are in the Desktop dictionaries).
 - The zone transport follows the SDK's normal service path but has only been type-checked here; the e2e
   suite runs through the dev override.

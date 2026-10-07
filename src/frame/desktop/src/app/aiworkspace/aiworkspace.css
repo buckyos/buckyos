@@ -324,18 +324,22 @@
 .aiws-canvas-mode-view { cursor: grab; }
 .aiws-world { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: auto; isolation: isolate; }
 .aiws-world.is-moving { will-change: transform; }
-.aiws-frame-block { position: absolute; box-sizing: border-box; background: var(--cp-surface); border: 1px solid var(--cp-border); border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
-.aiws-frame-block.is-group { background: color-mix(in srgb, var(--cp-surface-2) 60%, transparent); border-style: dashed; overflow: visible; pointer-events: none; }
+/* a frame draws nothing (标准对象的交互改进 §4.1): the type draws its own look, the overlay draws the states */
+.aiws-frame-block { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; }
+.aiws-frame-block:has(> .aiws-block-body[data-chrome='none']) { overflow: visible; }
+.aiws-frame-block.is-group { overflow: visible; pointer-events: none; }
 .aiws-frame-block.is-group > .aiws-group-chrome { pointer-events: auto; }
-.aiws-frame-block.is-editing { overflow: visible; box-shadow: var(--cp-shadow); }
-.aiws-frame-block.is-selected { border-color: var(--cp-accent); }
-.aiws-group-chrome { position: absolute; left: 0; top: 0; padding: 2px 8px; font-size: 12px; color: var(--cp-muted); border-bottom-right-radius: 6px; background: var(--cp-surface-2); }
-.aiws-frame-block > .aiws-block-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 6px 8px; user-select: text; }
+.aiws-frame-block.is-editing { overflow: visible; }
+.aiws-group-chrome { position: absolute; left: 0; top: 0; padding: 2px 6px; font-size: 12px; color: var(--cp-muted); white-space: nowrap; }
+.aiws-frame-block > .aiws-block-body { flex: 1 1 auto; min-height: 0; overflow: auto; user-select: text; }
+.aiws-frame-block > .aiws-block-body[data-chrome='none'] { overflow: visible; }
 .aiws-frame-block[data-lod='simplified'] > .aiws-block-body { overflow: hidden; }
-.aiws-block-placeholder { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--cp-muted); background: var(--cp-surface-2); }
+.aiws-block-placeholder { flex: 1 1 auto; display: flex; align-items: center; justify-content: center; font-size: 11px; color: var(--cp-muted); border: 1px solid var(--cp-border); border-radius: 4px; overflow: hidden; }
 .aiws-block-simplified { font-weight: 600; color: var(--cp-muted); padding: 4px; }
 .aiws-block-loading { color: var(--cp-muted); padding: 8px; }
-.aiws-block-fallback { padding: 6px 8px; border: 1px dashed var(--cp-warning); border-radius: 6px; background: color-mix(in srgb, var(--cp-warning) 8%, transparent); }
+.aiws-block-fallback { position: relative; padding: 4px 8px 4px 22px; }
+.aiws-fallback-badge { position: absolute; left: 2px; top: 4px; width: 16px; height: 16px; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; color: var(--cp-warning); background: color-mix(in srgb, var(--cp-warning) 16%, transparent); cursor: help; }
+.aiws-fallback-detail { font-size: 12px; color: var(--cp-muted); }
 .aiws-block-fallback-title { font-weight: 600; }
 /* a static table inside a canvas Block fills the Block's height and stays virtualised: the height chain is definite (flex), never "100% of auto" */
 .aiws-frame-block > .aiws-block-body { display: flex; flex-direction: column; }
@@ -343,30 +347,98 @@
 .aiws-block-static > .aiws-table { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 .aiws-block-static .aiws-table-scroll { flex: 1 1 auto; min-height: 0; max-height: none !important; }
 .aiws-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
-.aiws-overlay .aiws-handle { pointer-events: auto; fill: var(--cp-surface-opaque, #fff); stroke: var(--cp-accent); stroke-width: 1.5; }
+/* object states in the overlay (§4.2–§4.5) */
+.aiws-overlay .aiws-handle-group { pointer-events: auto; }
+.aiws-overlay .aiws-handle { fill: var(--cp-surface-opaque, #fff); stroke: var(--cp-accent); stroke-width: 1.5; transition: r 80ms; }
+.aiws-overlay .aiws-handle-group:hover .aiws-handle { r: 6px; }
+.aiws-canvas[data-pointer='touch'] .aiws-overlay .aiws-handle-group:hover .aiws-handle { r: 8px; }
+.aiws-overlay .aiws-handle-hit { fill: transparent; }
+.aiws-overlay .aiws-edge { stroke: transparent; pointer-events: stroke; }
 .aiws-selection-box { fill: none; stroke: var(--cp-accent); stroke-width: 1.5; }
-.aiws-hover-outline { fill: none; stroke: var(--cp-accent); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.7; }
+.aiws-selection-box.is-member { stroke-width: 1; opacity: 0.7; }
+.aiws-selection-box.is-locked { stroke: var(--cp-muted); }
+.aiws-selection-group { fill: none; stroke: var(--cp-accent); stroke-width: 1.5; }
+.aiws-hover-outline { fill: none; stroke: var(--cp-accent); stroke-width: 1; opacity: 0.55; }
+.aiws-hover-outline.is-group { stroke-dasharray: 5 4; opacity: 0.8; }
+.aiws-cut-outline { fill: none; stroke: var(--cp-muted); stroke-width: 1; stroke-dasharray: 4 3; opacity: 0.6; }
+.aiws-overlay-html { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
+.aiws-overlay-html > * { position: absolute; }
+.aiws-rotate-handle { pointer-events: auto; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; border-radius: 50%; color: var(--cp-accent); background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--aiws-selected-border); box-shadow: 0 1px 3px rgb(0 0 0 / 0.12); box-sizing: border-box;
+  cursor: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23333' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8'/%3E%3Cpath d='M21 3v5h-5'/%3E%3C/svg%3E") 12 12, grab; }
+.aiws-rotate-handle:hover { background: var(--aiws-selected-bg); }
+.aiws-lock-badge { transform: translate(0, calc(-100% - 4px)); display: inline-flex; align-items: center; gap: 2px; padding: 1px 4px; border-radius: 4px; font-size: 11px; color: var(--cp-muted); background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); }
+.aiws-gesture-hint { padding: 1px 6px; border-radius: 4px; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--cp-bg); background: color-mix(in srgb, var(--cp-text) 82%, transparent); white-space: nowrap; }
+.aiws-afford { box-sizing: border-box; white-space: nowrap; animation: aiws-afford-in 120ms ease-out; }
+@keyframes aiws-afford-in { from { opacity: 0; } to { opacity: 1; } }
+.aiws-afford-label { display: inline-flex; align-items: center; gap: 4px; max-width: 280px; padding: 1px 6px; border-radius: 6px; font-size: 11px; color: var(--cp-muted); background: color-mix(in srgb, var(--cp-surface-opaque, var(--cp-surface)) 88%, transparent); }
+.aiws-afford-label .aiws-chip { margin-left: 0; }
+.aiws-afford-text { overflow: hidden; text-overflow: ellipsis; }
+.aiws-root button.aiws-afford-button { pointer-events: auto; width: 24px; height: 24px; padding: 0; justify-content: center; border-radius: 6px; color: var(--cp-text); background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); box-shadow: var(--cp-shadow); }
+.aiws-root button.aiws-afford-button:hover:not(:disabled) { background: var(--aiws-selected-bg); color: var(--cp-accent); }
+.aiws-canvas[data-pointer='touch'] button.aiws-afford-button { width: 36px; height: 36px; }
+.aiws-afford.at-top-left-out { transform: translateY(-100%); }
+.aiws-afford.at-top-right-in { transform: translateX(-100%); }
+.aiws-afford.at-bottom-out { transform: translateX(-50%); }
+.aiws-afford.at-bottom-right-in { transform: translate(-100%, -100%); }
 .aiws-marquee { fill: color-mix(in srgb, var(--cp-accent) 12%, transparent); stroke: var(--cp-accent); stroke-dasharray: 4 3; }
-.aiws-near { position: absolute; z-index: 20; display: flex; gap: 2px; padding: 2px; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 8px; box-shadow: var(--cp-shadow); white-space: nowrap; }
-.aiws-root .aiws-near button { border: none; background: none; padding: 2px 8px; font-size: 12px; }
-.aiws-root .aiws-near button:hover:not(:disabled) { background: var(--cp-surface-2); }
+/* the near toolbar (§5.1): 32 px icon buttons, groups split by thin rules, dropdowns the only text */
+.aiws-near { position: absolute; z-index: 20; display: flex; align-items: center; gap: 2px; padding: 3px; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 10px; box-shadow: var(--cp-shadow); white-space: nowrap; }
+.aiws-near-slot { display: inline-flex; align-items: center; }
+.aiws-near .aiws-toolbar-sep { margin: 4px 3px; }
+.aiws-root button.aiws-near-btn { min-width: 32px; height: 32px; padding: 0 6px; gap: 2px; justify-content: center; border: none; border-radius: 6px; background: none; color: var(--cp-text); font-size: 12px; }
+.aiws-root button.aiws-near-btn:hover:not(:disabled) { background: var(--cp-surface-2); }
+.aiws-root button.aiws-near-btn[aria-pressed='true'], .aiws-root button.aiws-near-btn[aria-expanded='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
+.aiws-root button.aiws-near-btn.is-ai { color: var(--aiws-ai); }
+.aiws-root button.aiws-near-btn.is-text { padding: 0 8px; }
+.aiws-near-value { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+.aiws-swatch { width: 16px; height: 16px; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--cp-text) 22%, transparent); box-sizing: border-box; }
+.aiws-palette { width: 176px; }
+.aiws-palette-grid { display: grid; grid-template-columns: repeat(4, 32px); gap: 8px; padding: 2px; }
+.aiws-root button.aiws-palette-swatch { width: 32px; height: 32px; padding: 0; border-radius: 50%; border: 1px solid color-mix(in srgb, var(--cp-text) 18%, transparent); }
+.aiws-root button.aiws-palette-swatch[aria-pressed='true'] { box-shadow: 0 0 0 2px var(--cp-surface-opaque, var(--cp-surface)), 0 0 0 4px var(--cp-accent); }
+.aiws-palette-custom { display: flex; align-items: center; justify-content: space-between; margin-top: 8px; font-size: 12px; color: var(--cp-muted); }
+.aiws-palette-custom input[type='color'] { width: 36px; height: 24px; padding: 0; border: none; background: none; }
+.aiws-inline-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; padding-bottom: 4px; margin-bottom: 6px; border-bottom: 1px solid var(--cp-border); }
+.aiws-near-panel { display: flex; flex-direction: column; gap: 6px; width: 300px; }
+.aiws-near-panel-list { display: flex; flex-direction: column; gap: 1px; max-height: 260px; overflow: auto; }
 .aiws-canvas-main.is-placeholder .aiws-canvas { filter: grayscale(0.4); pointer-events: none; }
 .aiws-presentation-placeholder { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); z-index: 15; background: var(--cp-surface-opaque, var(--cp-surface)); border: 1px solid var(--cp-border); border-radius: 12px; padding: 16px 20px; max-width: 420px; text-align: center; box-shadow: var(--cp-shadow); }
 .aiws-flow-host { position: absolute; inset: 0; overflow: auto; padding: 70px 16px 64px 16px; }
 .aiws-canvas-main.has-left-tools .aiws-flow-host { padding-left: 80px; }
 .aiws-flow .aiws-cell-body > .aiws-block-body { padding: 0; }
 .aiws-frame { position: absolute; inset: 0; border: 2px solid; border-radius: 8px; }
+.aiws-frame-title.is-editing, .aiws-title-input { pointer-events: auto; }
+.aiws-root input.aiws-title-input { border: none; background: transparent; color: inherit; padding: 0; min-width: 40px; font: inherit; box-shadow: none; }
+.aiws-frame-title input.aiws-title-input { width: 160px; }
+.aiws-shape input.aiws-title-input { width: 80%; text-align: center; }
 .aiws-frame-title { position: absolute; left: -2px; top: -2px; color: #fff; font-size: 12px; padding: 1px 8px; border-radius: 6px 0 6px 0; }
 .aiws-shape { position: absolute; inset: 0; border: 2px solid; display: flex; align-items: center; justify-content: center; }
 .aiws-shape-ellipse { border-radius: 50%; }
-.aiws-frame-block:has(> .aiws-block-body > .aiws-frame), .aiws-frame-block:has(> .aiws-block-body > .aiws-shape) { background: transparent; border: none; overflow: visible; }
-.aiws-frame-block:has(> .aiws-block-body > .aiws-frame) > .aiws-block-body, .aiws-frame-block:has(> .aiws-block-body > .aiws-shape) > .aiws-block-body { padding: 0; overflow: visible; }
 .aiws-frame-block:has(> .aiws-block-body > .aiws-frame) { pointer-events: none; }
-.aiws-note { background: #fff2cc; color: #3a3000; border-radius: 6px; padding: 6px 8px; min-height: 60px; }
+/* the note is a coloured sheet; author and save state sit in its corners (§4.1) */
+.aiws-note { position: relative; box-sizing: border-box; background: #fff2cc; color: #3a3000; border-radius: 6px; padding: 8px 10px 18px; min-height: 60px; box-shadow: 0 1px 2px color-mix(in srgb, var(--cp-text) 12%, transparent); }
+.aiws-frame-block .aiws-note { height: 100%; }
 .aiws-note-body { white-space: pre-wrap; word-break: break-word; }
-.aiws-note textarea { width: 100%; box-sizing: border-box; }
+.aiws-note[data-size='s'] .aiws-note-body, .aiws-note[data-size='s'] textarea { font-size: 12px; }
+.aiws-note[data-size='l'] .aiws-note-body, .aiws-note[data-size='l'] textarea { font-size: 17px; }
+.aiws-note[data-size='xl'] .aiws-note-body, .aiws-note[data-size='xl'] textarea { font-size: 22px; line-height: 1.35; }
+.aiws-root .aiws-note textarea { display: block; width: 100%; height: 100%; min-height: 40px; box-sizing: border-box; padding: 0; border: none; background: transparent; resize: none; line-height: inherit; color: inherit; }
+.aiws-root .aiws-note textarea:focus-visible { box-shadow: none; }
+.aiws-note-author { position: absolute; right: 8px; bottom: 3px; font-size: 10px; opacity: 0.7; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-note-replies { position: absolute; left: 8px; bottom: 2px; font-size: 10px; }
+.aiws-root button.aiws-note-replies { border: none; background: none; padding: 0; color: inherit; opacity: 0.8; text-decoration: underline; }
+.aiws-note-dot { position: absolute; right: 4px; top: 4px; width: 6px; height: 6px; border-radius: 50%; background: var(--cp-warning); }
+.aiws-note-dot[data-state='needs_attention'] { background: var(--cp-danger); }
+.aiws-note-dot[data-state='saved_locally'] { background: var(--cp-accent); }
 .aiws-note-meta { display: flex; gap: 6px; font-size: 11px; opacity: 0.8; margin-top: 4px; align-items: center; }
-.aiws-block-asset img.aiws-blob-image, .aiws-block-asset .aiws-asset img { max-height: none; width: 100%; height: 100%; object-fit: contain; }
+.aiws-block-asset img.aiws-blob-image, .aiws-block-asset .aiws-asset img { max-height: none; width: 100%; height: 100%; object-fit: contain; border: none; border-radius: 0; background: none; min-width: 0; min-height: 0; }
+.aiws-block-asset, .aiws-block-asset .aiws-asset { height: 100%; }
+/* rich text on the canvas: text straight on the canvas, sized by the Block's text size */
+.aiws-frame-block .aiws-block-body[data-renderer='richtext'] .aiws-prose { padding: 4px; }
+.aiws-richtext[data-size='s'] .aiws-prose { font-size: 12px; }
+.aiws-richtext[data-size='l'] .aiws-prose { font-size: 17px; }
+.aiws-richtext[data-size='xl'] .aiws-prose { font-size: 22px; line-height: 1.35; }
+.aiws-frame-block .aiws-block-body[data-renderer='record'] .aiws-record { margin: 2px 4px; }
 .aiws-media-preview { position: fixed; inset: 0; z-index: 200; background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; }
 .aiws-media-preview-body { background: var(--cp-surface-opaque, #fff); padding: 12px; border-radius: 10px; max-width: 90vw; max-height: 90vh; overflow: auto; }
 .aiws-block-view-action { display: block; margin-top: 4px; }
@@ -399,8 +471,11 @@
 .aiws-wish-context { white-space: pre-wrap; font-size: 12px; background: var(--cp-surface-2); border-radius: 6px; padding: 4px 6px; }
 .aiws-wish-candidate { border: 1px solid var(--cp-accent); border-radius: 8px; padding: 6px 8px; }
 .aiws-wish-candidate ul { margin: 2px 0; padding-left: 18px; }
-.aiws-wish-card { display: flex; flex-direction: column; gap: 4px; }
+/* the wish is an action object: it keeps a card of its own (§4.1) */
+.aiws-wish-card { display: flex; flex-direction: column; gap: 4px; box-sizing: border-box; height: 100%; padding: 8px 10px; background: var(--cp-surface); border: 1px solid color-mix(in srgb, var(--aiws-ai) 40%, transparent); border-radius: 8px; overflow: hidden; }
+.aiws-wish-card[data-open='true'] { border-color: var(--aiws-ai); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aiws-ai) 50%, transparent); }
 .aiws-wish-card-prompt { white-space: pre-wrap; max-height: 120px; overflow: hidden; }
+.aiws-wish-card-state { font-size: 12px; color: var(--aiws-ai); }
 
 /* rich text: quotes, code, rules and tables (Markdown results, 许愿格 §8.5) */
 .aiws-prose blockquote, .aiws-md blockquote { margin: 4px 0; padding: 2px 10px; border-left: 3px solid var(--cp-border); color: var(--cp-text-secondary, inherit); }
@@ -516,7 +591,6 @@
 .aiws-canvas-main.no-grid .aiws-canvas { background-image: none; }
 .aiws-place-ghost { position: absolute; left: 0; top: 0; z-index: 30; pointer-events: none; box-sizing: border-box; border: 2px dashed var(--cp-accent); border-radius: 8px; background: color-mix(in srgb, var(--cp-accent) 8%, transparent); display: flex; align-items: center; justify-content: center; color: var(--cp-accent); font-size: 12px; }
 .aiws-hint { position: absolute; top: 70px; left: 50%; transform: translateX(-50%); z-index: 26; padding: 6px 14px; border-radius: 999px; background: color-mix(in srgb, var(--cp-text) 86%, transparent); color: var(--cp-bg); font-size: 12px; white-space: nowrap; pointer-events: none; }
-.aiws-root .aiws-near button.aiws-near-more { padding: 2px 6px; }
 .aiws-empty .aiws-dialog-actions { justify-content: center; }
 .aiws-canvas-main.is-empty { display: flex; align-items: center; justify-content: center; }
 

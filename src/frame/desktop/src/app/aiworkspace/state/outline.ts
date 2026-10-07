@@ -24,7 +24,10 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.kind = payload.kind as string
     out.layout = (payload.layout as EntityEnvelope['layout']) ?? { mode: 'flow' }
     for (const key of ['system', 'surface_id', 'content_folder_id'] as const) if (payload[key] !== undefined) (out as Record<string, unknown>)[key] = payload[key]
+    out.icon = (payload.icon as string | undefined) ?? null
+    out.locked = payload.locked === true ? true : null
   } else if (typeId === 'buckyos.cell') {
+    out.locked = payload.locked === true ? true : null
     const view = payload.view as { type?: string; version?: number } | undefined
     out.view_type = view?.type ?? null
     out.view_version = view?.version ?? null
@@ -269,13 +272,14 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id'].includes(key.key)) touchedExtras = true
+              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked'].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
               // the ops carry only the changed keys: rebuild extras from the known envelope plus the change
               const known: Record<string, unknown> = {
                 title: current.title, kind: current.kind, layout: current.layout, system: current.system, surface_id: current.surface_id, content_folder_id: current.content_folder_id,
+                icon: current.icon ?? undefined, locked: current.locked ?? undefined,
                 view: current.view_type ? { type: current.view_type, version: current.view_version ?? undefined } : undefined,
                 source_ref: current.source_id ? { entity_id: current.source_id } : undefined,
                 def_ref: current.def_id ? { entity_id: current.def_id } : undefined,

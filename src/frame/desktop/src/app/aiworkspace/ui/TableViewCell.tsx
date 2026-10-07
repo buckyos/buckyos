@@ -3,6 +3,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import { Columns3, ListFilter, Plus } from 'lucide-react'
 import { randomId } from '../api/ids'
 import type { ReadOk } from '../api/session'
 import type {
@@ -12,6 +13,8 @@ import { EDIT_STATE_LABEL } from '../state/edits'
 import type { CapturedAnchor } from '../anchors/registry'
 import { useEdit, useLoad, useStore, useUserState, useVersion, type AnnotationMark } from '../state/hooks'
 import type { WorkspaceStore } from '../state/store'
+import { consumeIntent, useEditorToolbar, useIntent } from './blocks/editorToolbar'
+import type { ToolbarItem } from './blocks/registry'
 import { FieldManager } from './FieldManager'
 import { TablePager, type PagerQuery } from './tablePager'
 import { ValueEditor } from './ValueEditor'
@@ -77,7 +80,16 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
     setLocalView(view)
     if (sourceMode) store.userState.set(stateKey, (view.filter || view.sorts) ? (view as unknown as Json) : null)
   }, [sourceMode, store, stateKey])
-  const [panel, setPanel] = useState<'none' | 'filter' | 'fields' | 'add'>('none')
+  // a toolbar button pressed while the Block was only selected names the panel to open (标准对象的交互改进 §5.2)
+  type Panel = 'none' | 'filter' | 'fields' | 'add'
+  const asPanel = (intent: string | undefined): Panel => (intent === 'filter' || intent === 'fields' || intent === 'add' ? intent : 'none')
+  // only the editor takes "open this panel" (the static table of the same Block must not use it up)
+  const intentKey = sourceMode || compact ? '' : cellId
+  const intent = useIntent(intentKey)
+  const [panel, setPanel] = useState<Panel>('none')
+  const [intentSeen, setIntentSeen] = useState(0)
+  if (intent && intent.seq !== intentSeen) { setIntentSeen(intent.seq); setPanel(asPanel(intent.value)) }
+  useEffect(() => { if (intent) consumeIntent(intentKey, intent) }, [intent, intentKey])
 
   const savedKey = JSON.stringify([payload.filter ?? null, payload.sorts ?? null, payload.fields ?? null])
   const sessionKey = JSON.stringify(sessionView)
@@ -116,6 +128,15 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
   const canStructure = !readOnly && (source.data?.capabilities.includes('structure') ?? false)
   const canEditView = !readOnly && !sourceMode && cell.capabilities.includes('update')
 
+  // on a canvas the bar's controls are tools of the near toolbar; elsewhere the bar stays above the table
+  const toggle = (next: Panel) => setPanel(panel === next ? 'none' : next)
+  const tools: ToolbarItem[] | null = compact || !source.data ? null : [
+    { kind: 'button', id: 'table-filter', icon: ListFilter, label: `筛选 / 排序${sessionView.filter || sessionView.sorts ? '（本会话有未保存的临时条件）' : payload.filter || payload.sorts?.length ? '（视图已保存条件）' : ''}`, active: panel === 'filter' || Boolean(sessionView.filter || sessionView.sorts), run: () => toggle('filter') },
+    ...(canStructure ? [{ kind: 'button' as const, id: 'table-fields', icon: Columns3, label: '字段', active: panel === 'fields', run: () => toggle('fields') }] : []),
+    ...(canAppend ? [{ kind: 'button' as const, id: 'table-add', icon: Plus, label: '新增记录', active: panel === 'add', run: () => toggle('add') }] : []),
+  ]
+  const inNearToolbar = useEditorToolbar('table', tools)
+
   const scrollRef = useRef<HTMLDivElement>(null)
   // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual returns unstable functions by design; nothing here is memoised on them.
   const virtualizer = useVirtualizer({ count: rows.total, getScrollElement: () => scrollRef.current, estimateSize: () => ROW_HEIGHT, overscan: 8 })
@@ -149,7 +170,7 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
 
   return (
     <div className="aiws-table" data-testid={`aiws-table-${cellId}`} data-total={rows.total}>
-      {!compact && (
+      {!compact && !inNearToolbar && (
         <div className="aiws-table-bar">
           <span className="aiws-muted" data-testid={`aiws-table-count-${cellId}`}>{rows.total} 条记录{rows.loading ? ' · 载入中' : ''}</span>
           {payload.filter && <span className="aiws-chip">视图已保存筛选</span>}
@@ -517,7 +538,7 @@ function AddRecordForm({ store, source, onDone }: { store: WorkspaceStore; sourc
   return (
     <form className="aiws-inline-form" onSubmit={(event) => { event.preventDefault(); void submit() }}>
       {asked.length === 0 && <span className="aiws-muted">此表没有必填字段，将插入一条空记录。</span>}
-      {asked.map((field) => (
+      {asked.map((field, index) => (
         <label key={field.field_id}>{field.name}{field.required ? ' *' : ''}
           {field.type === 'select' ? (
             <select value={texts[field.field_id] ?? ''} onChange={(event) => setTexts({ ...texts, [field.field_id]: event.target.value })}>
@@ -525,7 +546,7 @@ function AddRecordForm({ store, source, onDone }: { store: WorkspaceStore; sourc
               {(field.options ?? []).map((option) => <option key={option.option_id} value={option.option_id}>{option.label}</option>)}
             </select>
           ) : (
-            <input aria-label={`新记录 ${field.name}`} type={field.type === 'date' ? 'date' : 'text'} value={texts[field.field_id] ?? ''} onChange={(event) => setTexts({ ...texts, [field.field_id]: event.target.value })} />
+            <input aria-label={`新记录 ${field.name}`} autoFocus={index === 0} type={field.type === 'date' ? 'date' : 'text'} value={texts[field.field_id] ?? ''} onChange={(event) => setTexts({ ...texts, [field.field_id]: event.target.value })} />
           )}
         </label>
       ))}

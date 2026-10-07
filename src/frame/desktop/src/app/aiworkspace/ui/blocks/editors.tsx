@@ -1,8 +1,11 @@
 /* Data editors (phase two §6.1, §8.3): editing a TableSource, RichText, Record, AssetRef or note is one
  * implementation, used by the data-source detail directly and by Blocks after explicit activation.
- * The write-lock bar lives here too. */
+ * The write lock lives here too: a bar above the editor, or — on a canvas, where the near toolbar shows
+ * the Editor's tools — a lock control in that toolbar, with only a lost lock left as an alert in the Block
+ * (标准对象的交互改进 §4.4). */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Lock, LockKeyhole, LockOpen } from 'lucide-react'
 import { ServiceFailure } from '../../api/client'
 import { describeError, type ReadOk } from '../../api/session'
 import type { AnnotationContent, AssetContent, EntityEnvelope, Json, RecordContent, RecordPropDef, Reference } from '../../api/types'
@@ -13,6 +16,9 @@ import { useDirectReadOnly, useEdit, useLoad, useLocksVersion, useStore, useVers
 import { ConflictBox, TableViewCell } from '../TableViewCell'
 import { ValueEditor } from '../ValueEditor'
 import { UNSET, formatValue, type Input } from '../values'
+import { consumeIntent, useEditorToolbar, useIntent } from './editorToolbar'
+import { replaceAsset } from './ops'
+import type { ToolbarItem } from './registry'
 
 
 // ---- write locks (design §2.11)
@@ -28,14 +34,14 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
     if (releaseTimer.current !== null) window.clearTimeout(releaseTimer.current)
     if (entityId) void store.locks.release(entityId)
   }, [store, entityId])
-  if (!entity || !required) return <>{children}</>
-  const held = store.locks.isHeld(entity.entity_id)
-  const holder = entity.lock_holder
-  const lost = store.locks.lostReason(entity.entity_id)
-  const canWrite = entity.capabilities.some((capability) => capability === 'update' || capability === 'append' || capability === 'delete' || capability === 'structure')
+  const held = entity ? store.locks.isHeld(entity.entity_id) : false
+  const holder = entity?.lock_holder
+  const lost = entity ? store.locks.lostReason(entity.entity_id) : null
+  const canWrite = Boolean(entity?.capabilities.some((capability) => capability === 'update' || capability === 'append' || capability === 'delete' || capability === 'structure'))
   const acquire = async () => {
     try {
-      await store.locks.acquire(entity.entity_id)
+      if (!entityId) return
+      await store.locks.acquire(entityId)
       store.versions.bump(['outline'])
       onAcquired?.()
     } catch (error) {
@@ -48,7 +54,26 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
       }
     }
   }
-  const release = () => { void store.locks.release(entity.entity_id).then(() => store.versions.bump(['outline'])) }
+  const release = () => { if (entityId) void store.locks.release(entityId).then(() => store.versions.bump(['outline'])) }
+  // on a canvas the lock is one control of the near toolbar: take it, or see who has it and give it back
+  const lockItems: ToolbarItem[] | null = !entity || !required ? null : held
+    ? [{ kind: 'panel', id: 'lock-state', icon: LockKeyhole, label: '你持有写锁', active: true, render: (close) => (
+        <div className="aiws-near-panel" data-testid={`aiws-lock-${entity.entity_id}`} data-held="true">
+          <span>你持有写锁，正在编辑（每 20 秒续约）。</span>
+          <button type="button" data-testid="aiws-lock-release" onClick={() => { close(); release() }}>结束编辑</button>
+        </div>
+      ) }]
+    : holder
+      ? [{ kind: 'panel', id: 'lock-state', icon: Lock, label: `由 ${holder.principal} 编辑中`, render: (close) => (
+          <div className="aiws-near-panel" data-testid={`aiws-lock-${entity.entity_id}`} data-held="false">
+            <span data-testid="aiws-lock-holder">由 {holder.principal} 编辑中{holder.expires_at ? `（租约至 ${new Date(holder.expires_at).toLocaleTimeString()}）` : ''}，当前只读。</span>
+            {canWrite && <button type="button" onClick={() => { close(); void acquire() }}>再试一次</button>}
+          </div>
+        ) }]
+      : canWrite ? [{ kind: 'button', id: 'lock-acquire', icon: LockOpen, label: '此对象启用了写锁：开始编辑（同一时间只有一人可以修改）', run: () => { void acquire() } }] : null
+  const inNearToolbar = useEditorToolbar('lock', lockItems)
+  if (!entity || !required) return <>{children}</>
+  const lostAlert = lost && !held ? <span className="aiws-error" role="alert" data-testid="aiws-lock-lost">{lost}。未被接受的修改保留在“需要处理”中。</span> : null
   return (
     <div
       className="aiws-lock-scope"
@@ -59,18 +84,20 @@ export function LockScope({ entity, onAcquired, children }: { entity: EntityEnve
         releaseTimer.current = window.setTimeout(release, 30_000)
       }}
     >
-      <div className="aiws-lock-bar" data-testid={`aiws-lock-${entity.entity_id}`} data-held={held ? 'true' : 'false'}>
-        {held ? (
-          <><span>🔒 你持有写锁，正在编辑（每 20 秒续约）</span><button type="button" data-testid="aiws-lock-release" onClick={release}>结束编辑</button></>
-        ) : holder ? (
-          <><span data-testid="aiws-lock-holder">🔒 由 {holder.principal} 编辑中{holder.expires_at ? `（租约至 ${new Date(holder.expires_at).toLocaleTimeString()}）` : ''}，当前只读</span>
-            {canWrite && <button type="button" onClick={() => { void acquire() }}>再试一次</button>}</>
-        ) : (
-          <><span>🔒 此对象启用了写锁：同一时间只有一人可以修改</span>
-            {canWrite && <button type="button" data-testid="aiws-lock-acquire" onClick={() => { void acquire() }}>开始编辑</button>}</>
-        )}
-        {lost && !held && <span className="aiws-error" role="alert" data-testid="aiws-lock-lost">{lost}。未被接受的修改保留在“需要处理”中。</span>}
-      </div>
+      {inNearToolbar ? (lostAlert && <div className="aiws-lock-lost-row">{lostAlert}</div>) : (
+        <div className="aiws-lock-bar" data-testid={`aiws-lock-${entity.entity_id}`} data-held={held ? 'true' : 'false'}>
+          {held ? (
+            <><span>🔒 你持有写锁，正在编辑（每 20 秒续约）</span><button type="button" data-testid="aiws-lock-release" onClick={release}>结束编辑</button></>
+          ) : holder ? (
+            <><span data-testid="aiws-lock-holder">🔒 由 {holder.principal} 编辑中{holder.expires_at ? `（租约至 ${new Date(holder.expires_at).toLocaleTimeString()}）` : ''}，当前只读</span>
+              {canWrite && <button type="button" onClick={() => { void acquire() }}>再试一次</button>}</>
+          ) : (
+            <><span>🔒 此对象启用了写锁：同一时间只有一人可以修改</span>
+              {canWrite && <button type="button" data-testid="aiws-lock-acquire" onClick={() => { void acquire() }}>开始编辑</button>}</>
+          )}
+          {lostAlert}
+        </div>
+      )}
       {children}
     </div>
   )
@@ -94,7 +121,7 @@ export function TableEditor({ cellId, sourceId, source, readOnly, compact }: { c
 
 // ---- rich text
 
-export function RichTextCell({ entity, entityId, renderEmbed }: { entity: EntityEnvelope | undefined; entityId: string; renderEmbed: (reference: Reference) => ReactNode }) {
+export function RichTextCell({ entity, entityId, renderEmbed, intentKey }: { entity: EntityEnvelope | undefined; entityId: string; renderEmbed: (reference: Reference) => ReactNode; intentKey?: string }) {
   const ui = useWorkspaceUi()
   const access = useWriteAccess(entity)
   const collabRef = useRef<RichTextCollab | null>(null)
@@ -113,6 +140,7 @@ export function RichTextCell({ entity, entityId, renderEmbed }: { entity: Entity
         onActivateAnnotation={ui.setActiveAnnotation}
         onAnnotate={ui.annotate ?? undefined}
         onCollab={onCollab}
+        intentKey={intentKey}
       />
     </LockScope>
   )
@@ -184,7 +212,8 @@ function RecordProp({ entityId, prop, value, rev, editable }: { entityId: string
 
 const AVAILABILITY_TEXT: Record<string, string> = { available: '可用', missing: '内容缺失（对象存储中取不到）', corrupt: '内容损坏（校验失败）' }
 
-export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean }) {
+/** `bare`: the picture only (a canvas Block, §4.1); the file facts and "replace" stay in the data-source view. */
+export function AssetCell({ entityId, fit, readOnly, bare = false }: { entityId: string; fit: 'contain' | 'cover'; readOnly: boolean; bare?: boolean }) {
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AssetContent>(entityId), [store, entityId])
@@ -219,20 +248,7 @@ export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 
   const canReplace = !readOnly && asset.data.capabilities.includes('update')
   const replace = async (file: File) => {
     setUploading('上传中…')
-    try {
-      const uploaded = await store.session.uploadAsset(file, file.name)
-      const revs = asset.data?.content.key_revs ?? {}
-      const outcome = await store.submit({
-        editId: `key:${entityId}:object_id`, label: `替换资产 ${payload.file_name ?? entityId}`,
-        operations: [{ op: 'entity.set_keys', entity_id: entityId, keys: [
-          { key: 'object_id', value: uploaded.object_id, expect: { rev: revs.object_id ?? 0 } },
-          { key: 'file_name', value: file.name, expect: { rev: revs.file_name ?? 0 } },
-        ] }],
-      })
-      setUploading(outcome.status === 'accepted' ? null : '替换未被接受，见“需要处理”')
-    } catch (error) {
-      setUploading(`上传失败：${describeError(error)}`)
-    }
+    setUploading(await replaceAsset(store, entityId, file))
   }
   return (
     <div className="aiws-asset" data-testid={`aiws-asset-${entityId}`} data-availability={availability}>
@@ -245,7 +261,7 @@ export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 
       ) : current?.error ? (
         <div className="aiws-error" role="alert">图片读取失败：{current.error}</div>
       ) : <div className="aiws-muted">读取图片…</div>}
-      <div className="aiws-asset-meta">
+      {!bare && <div className="aiws-asset-meta">
         <span>{payload.file_name ?? entityId}</span>
         <span>{payload.media_type}</span>
         {typeof payload.size === 'number' && <span>{payload.size} 字节</span>}
@@ -256,7 +272,7 @@ export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 
           </label>
         )}
         {uploading && <span>{uploading}</span>}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -264,8 +280,18 @@ export function AssetCell({ entityId, fit, readOnly }: { entityId: string; fit: 
 
 // ---- note (an annotation's body; free notes have no target)
 
-/** `startEditing`: opened by an explicit activation on the canvas (a new note included), so the text box opens at once. */
-export function NoteEditor({ entityId, entity, readOnly, startEditing = false }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean; startEditing?: boolean }) {
+/** The replies of a note: annotations targeting it (标准对象的交互改进 §7.3). */
+export function NoteReplies({ noteId }: { noteId: string }) {
+  const ui = useWorkspaceUi()
+  const count = ui.annotations.filter((mark) => mark.payload.target?.entity_id === noteId).length
+  if (count === 0) return null
+  return <button type="button" className="aiws-note-replies" data-testid={`aiws-note-replies-${noteId}`} onClick={() => ui.showAnnotations(noteId)}>{count} 条回复</button>
+}
+
+/** `startEditing`: opened by an explicit activation on the canvas (a new note included), so the text box opens at once.
+ * `intentKey`: the canvas Block, whose "type this" arrives as the first characters. On a canvas the note stays the same
+ * sheet while editing: no frame, no status row; the save state is a dot in the corner (§4.1, §4.4). */
+export function NoteEditor({ entityId, entity, readOnly, startEditing = false, intentKey }: { entityId: string; entity: EntityEnvelope | undefined; readOnly: boolean; startEditing?: boolean; intentKey?: string }) {
   const store = useStore()
   const version = useVersion(`e:${entityId}`)
   const load = useCallback(() => store.session.read<AnnotationContent>(entityId), [store, entityId])
@@ -274,15 +300,21 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false }:
   const entry = useEdit(editId)
   const [text, setText] = useState<string | null>(null)
   const [started, setStarted] = useState(false)
+  // characters typed on the canvas while the note was only selected arrive as an intent
+  const intent = useIntent(intentKey ?? '')
+  const [intentSeen, setIntentSeen] = useState(0)
+  useEffect(() => { if (intent && intentKey && intent.seq === intentSeen) consumeIntent(intentKey, intent) }, [intent, intentKey, intentSeen])
   if (note.error && !note.data) return <div className="aiws-error" role="alert">无法读取便签：{note.error}</div>
   if (!note.data) return <div className="aiws-muted">载入中…</div>
   const payload = note.data.content.payload
   const mine = store.session.principal !== null && payload.author === store.session.principal
   const editable = !readOnly && Boolean(entity) && (mine ? (entity?.capabilities.includes('comment') ?? false) : (entity?.capabilities.includes('manage') ?? false))
+  const typed = intent && intent.seq !== intentSeen && intent.value.startsWith('type:') ? intent.value.slice(5) : ''
+  if (intent && intent.seq !== intentSeen) setIntentSeen(intent.seq)
   if (startEditing && editable && !started) {
     setStarted(true)
-    setText(payload.body)
-  }
+    setText(payload.body + typed)
+  } else if (typed && editable) setText((text ?? payload.body) + typed)
   const save = () => {
     if (text === null || text === payload.body) { setText(null); return }
     void store.submit({
@@ -291,20 +323,31 @@ export function NoteEditor({ entityId, entity, readOnly, startEditing = false }:
     })
     setText(null)
   }
+  const size = typeof payload.style?.size === 'string' ? payload.style.size : 'm'
+  const onCanvas = intentKey !== undefined
   return (
-    <div className="aiws-note" data-testid={`aiws-note-${entityId}`} style={{ background: typeof payload.style?.color === 'string' ? payload.style.color : undefined }}>
+    <div className="aiws-note" data-testid={`aiws-note-${entityId}`} data-size={size} style={{ background: typeof payload.style?.color === 'string' ? payload.style.color : undefined }}>
       {text !== null ? (
-        <textarea aria-label="便签内容" autoFocus value={text} rows={4} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
-          onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); setText(null) } }} />
+        <textarea aria-label="便签内容" autoFocus value={text} maxLength={4000} onChange={(event) => setText(event.target.value)} onBlur={save}
+          onFocus={(event) => { const end = event.target.value.length; event.target.setSelectionRange(end, end) }}
+          onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); save() } }} />
       ) : (
         <div className="aiws-note-body" onDoubleClick={() => { if (editable) setText(payload.body) }}>{payload.body || <span className="aiws-muted">（空便签）</span>}</div>
       )}
-      <div className="aiws-note-meta">
-        {payload.target && <span title="贴在数据上的便签">📎 {payload.target.entity_id}</span>}
-        {payload.author && <span>{payload.author}</span>}
-        {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
-        {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>编辑</button>}
-      </div>
+      {onCanvas ? (
+        <>
+          <NoteReplies noteId={entityId} />
+          {payload.author && <span className="aiws-note-author">{payload.author}</span>}
+          {entry && entry.state !== 'committed' && <span className="aiws-note-dot" data-testid="aiws-edit-state" data-state={entry.state} title={EDIT_STATE_LABEL[entry.state]} />}
+        </>
+      ) : (
+        <div className="aiws-note-meta">
+          {payload.target && <span title="贴在数据上的便签">📎 {payload.target.entity_id}</span>}
+          {payload.author && <span>{payload.author}</span>}
+          {entry && <span className={`aiws-state aiws-state-${entry.state}`} data-testid="aiws-edit-state">{EDIT_STATE_LABEL[entry.state]}</span>}
+          {editable && text === null && <button type="button" className="aiws-link" onClick={() => setText(payload.body)}>编辑</button>}
+        </div>
+      )}
     </div>
   )
 }

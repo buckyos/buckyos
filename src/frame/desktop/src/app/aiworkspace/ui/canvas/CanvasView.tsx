@@ -9,6 +9,7 @@
  * viewport of its own. */
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { EntityEnvelope, Json, Operation, Placement } from '../../api/types'
@@ -16,7 +17,8 @@ import { useDirectReadOnly, useOutlineVersion, useStore, useUserState, useWorksp
 import { BlockBoundary } from '../blocks/BlockHost'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
-import { blockRegistry, modePolicy, type CanvasMode, type RenderContext } from '../blocks/registry'
+import { EditorToolbarContext, requestIntent, ToolbarSink } from '../blocks/editorToolbar'
+import { blockRegistry, modePolicy, type CanvasMode, type RenderContext, type ToolbarItem } from '../blocks/registry'
 import { PermissionsPanel } from '../sources/PermissionsPanel'
 import { RelationsPanel } from '../sources/RelationsPanel'
 import { AnnotationsPanel } from '../shell/AnnotationsPanel'
@@ -27,11 +29,13 @@ import { PresenterToolbar } from '../shell/PresenterToolbar'
 import { CANVAS_SIDE_TABS, useCanvasMode, useShell, type SideTab } from '../shell/shellContext'
 import { SidePanel } from '../shell/SidePanel'
 import { StatusDetail, StatusDock } from '../shell/StatusSummary'
+import { OpenWishContext } from '../wish/wishBlock'
+import { WishPanel } from '../wish/WishPanel'
 import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
 import { FlowSurface } from './FlowSurface'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
-import { boundsOf, layoutSurface, relativeTo, surfaceBounds, topLevel } from './layout'
+import { boundsOf, layoutSurface, movedPlacement, relativeTo, surfaceBounds, topLevel } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
 import { RenderHost, type LayoutChange } from './render/RenderHost'
@@ -120,9 +124,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const laid = useMemo(() => layoutSurface(store.outline, surfaceId), [store, surfaceId, outlineVersion])
   const index = useMemo(() => {
     const idx = new SpatialIndex()
-    for (const [id, l] of laid) idx.insert({ id, rect: l.rect, paint: l.paint })
+    for (const [id, l] of laid) idx.insert({ id, rect: l.bounds, paint: l.paint, ...(l.rotation ? { turned: { rect: l.rect, rotation: l.rotation } } : {}) })
     return idx
   }, [laid])
+  // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
+  const [toolbarSink] = useState(() => new ToolbarSink())
+  useSyncExternalStore(toolbarSink.subscribe, toolbarSink.snapshot)
+  /** The wish whose flow is open in the right panel (R6): its Block stays a card. */
+  const [wishOpen, setWishOpen] = useState<{ wishId: string; cellId: string } | null>(null)
   const phone = shell.phone
   const showObjectToolbar = shell.prefs.objectToolbar && mode !== 'presentation_edit' && !phone
   const topInset = shell.size === 'narrow' && !phone ? TOP_INSET_NARROW : TOP_INSET
@@ -142,8 +151,24 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
   // selection survives mode switches when the policy still allows it (§10.2); editors are released
   const setSelection = (next: Set<string>) => { setSelectionState(next); pickForAnnotation(next) }
-  // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen)
-  const setEditing = useCallback((id: string | null) => { setEditingState(id); if (id) { const l = laid.get(id); if (l) camera.ensureVisible(l.rect) } }, [laid, camera])
+  // activating an editor brings its Block into view (§8.2: the active Block is never half off-screen);
+  // on a free canvas a wish opens in the right panel instead (its Block stays a card)
+  const { setSide } = shell
+  const setEditing = useCallback((id: string | null) => {
+    const l = id ? laid.get(id) : undefined
+    // a Block inserted a moment ago may not be laid out yet: the outline knows what it is
+    const entity = l?.entity ?? (id ? store.outline.get(id) : undefined)
+    if (id && isFree && entity?.view_type === 'wish' && entity.source_id) {
+      setWishOpen({ wishId: entity.source_id, cellId: id })
+      setSelectionState(new Set([id]))
+      setSide('wish')
+      return
+    }
+    setEditingState(id)
+    // editing is "selected + typing" (§4.4): an editor opened from an affordance selects its Block too
+    if (id) setSelectionState((current) => (current.size === 1 && current.has(id) ? current : new Set([id])))
+    if (l) camera.ensureVisible(l.bounds)
+  }, [laid, camera, isFree, setSide, store])
   const policyKey = `${policy.select}:${policy.editContent}:${policy.insert}`
   const [policySeen, setPolicySeen] = useState(policyKey)
   if (policySeen !== policyKey) {
@@ -189,7 +214,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }), [camera, store])
   useEffect(() => {
     if (!focus || focus.surfaceId !== surfaceId || !focus.blockId) return
-    const rect = laid.get(focus.blockId)?.rect
+    const rect = laid.get(focus.blockId)?.bounds
     if (rect) camera.fit({ x: rect.x - 80, y: rect.y - 80, w: rect.w + 160, h: rect.h + 160 })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the camera moves once per focus request, not per layout change
   }, [focus?.nonce, surfaceId, camera])
@@ -269,10 +294,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
       setSelectionState(new Set([cellId]))
-      if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) setEditing(cellId)
+      if (request.entry.catalog.editAfterInsert && !request.sourceId && policy.editContent) {
+        // a new wish opens its task in the right panel (it is not laid out yet when this runs)
+        if (isFree && definition.type === 'wish') { setWishOpen({ wishId: dataId, cellId }); setSide('wish') } else { requestIntent(cellId, 'end'); setEditing(cellId) }
+      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- centreSpot reads the camera at call time
-  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, policy.editContent, setEditing])
+  }, [store, surface.content_folder_id, surfaceId, laid, isFree, insertReason, policy.editContent, setEditing, setSide])
 
   /** The toolbar's pick: a one-shot placement on a free Surface, an append on a flow page. */
   const pick = (request: InsertRequest) => {
@@ -293,10 +321,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     editorActive: Boolean(single && editing === single.entity_id), zoom: camera.zoom,
     onActivate: () => { if (single) setEditing(single.entity_id) }, onDeactivate: () => setEditing(null),
   })
+  /** Locked objects stay where they are (§7.2): skipped by delete, moves and grouping, with a note. */
+  const unlocked = (ids: string[], what: string) => {
+    const kept = ids.filter((id) => !laid.get(id)?.locked)
+    if (kept.length < ids.length) store.notify('info', `${ids.length - kept.length} 个已锁定的对象没有${what}；先解锁。`)
+    return kept
+  }
   const deleteSelection = async () => {
     if (!canLayout) return
     const ops: Operation[] = []
-    for (const id of topLevel(laid, selection)) {
+    for (const id of unlocked(topLevel(laid, selection), '删除')) {
       const entity = store.outline.get(id)
       if (!entity || !entity.capabilities.includes('delete')) continue
       const descendants = store.outline.descendants(id)
@@ -322,6 +356,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       store.notify('error', `没有删除：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
     } else if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set())
   }
+  /** Lock or unlock the selection: the shared `locked` key of each Block or group (written with `update`). */
+  const setLocked = async (ids: string[], locked: boolean) => {
+    const ops: Operation[] = []
+    for (const id of ids) {
+      const entity = store.outline.get(id)
+      if (!entity || !entity.capabilities.includes('update') || Boolean(entity.locked) === locked) continue
+      const read = await store.session.read<{ key_revs: Record<string, number> }>(id)
+      const expect = { rev: read.content.key_revs.locked ?? 0 }
+      ops.push(locked ? { op: 'entity.set_keys', entity_id: id, keys: [{ key: 'locked', value: true, expect }] } : { op: 'entity.unset_keys', entity_id: id, keys: [{ key: 'locked', expect }] })
+    }
+    if (ops.length) void store.submit({ editId: `lock:${randomId().slice(0, 8)}`, label: locked ? `锁定 ${ops.length} 个对象` : `解锁 ${ops.length} 个对象`, operations: ops })
+  }
   const reorder = (direction: 'front' | 'back') => {
     const ops: Operation[] = []
     for (const id of topLevel(laid, selection)) {
@@ -334,7 +380,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (ops.length) void store.submit({ editId: `order:${randomId().slice(0, 8)}`, label: direction === 'front' ? '置顶' : '置底', operations: ops })
   }
   const group = () => {
-    const ids = topLevel(laid, selection)
+    const ids = unlocked(topLevel(laid, selection), '加入分组')
     if (ids.length < 2) return
     const bounds = boundsOf(laid, ids)
     if (!bounds) return
@@ -346,7 +392,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     for (const id of ids) {
       const l = laid.get(id)!
       key = store.core.order_key_between(key, undefined)
-      ops.push({ op: 'tree.move', entity_id: id, new_parent_id: groupId, order_key: key, placement: { x: Math.round(l.rect.x - rect.x), y: Math.round(l.rect.y - rect.y), w: l.rect.w, h: l.rect.h } })
+      ops.push({ op: 'tree.move', entity_id: id, new_parent_id: groupId, order_key: key, placement: { x: Math.round(l.rect.x - rect.x), y: Math.round(l.rect.y - rect.y), w: l.rect.w, h: l.rect.h, ...(l.rotation ? { rotation: l.rotation } : {}) } })
     }
     void store.submit({ editId: `group:${groupId}`, label: `分组 ${ids.length} 个 Block`, operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set([groupId])) })
   }
@@ -361,7 +407,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const cl = laid.get(child.entity_id)
       if (!cl) continue
       key = store.core.order_key_between(key, undefined)
-      ops.push({ op: 'tree.move', entity_id: child.entity_id, new_parent_id: l.parentId, order_key: key, placement: relativeTo(laid, l.parentId, cl.rect) })
+      ops.push({ op: 'tree.move', entity_id: child.entity_id, new_parent_id: l.parentId, order_key: key, placement: relativeTo(laid, l.parentId, cl.rect, cl.rotation) })
       moved.push(child.entity_id)
     }
     ops.push({ op: 'entity.delete', entity_id: single.entity_id, expect: { rev: single.life_rev } })
@@ -372,11 +418,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!target) return
     const ops: Operation[] = []
     let key = store.outline.childrenOf(targetId).at(-1)?.order_key
-    for (const id of topLevel(laid, selection)) {
+    for (const id of unlocked(topLevel(laid, selection), '移动')) {
       const l = laid.get(id)
       if (!l) continue
       key = store.core.order_key_between(key, undefined)
-      const placement = { x: Math.round(l.rect.x), y: Math.round(l.rect.y), w: l.rect.w, h: l.rect.h }
+      const placement = movedPlacement(laid, l, 0, 0, '')
       store.noteLayoutIntent(id, placement, key, targetId)
       ops.push({ op: 'tree.move', entity_id: id, new_parent_id: targetId, order_key: key, placement })
     }
@@ -450,6 +496,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         return
       }
       if (placing && event.key === 'Enter') { event.preventDefault(); void insert(placing, null); setPlacing(null); return }
+      // a selected text or note takes typing at once (§4.4): the key starts the editor (single-letter shortcuts yield)
+      const typable = single && !editing && policy.editContent && (single.view_type === 'richtext' || single.view_type === 'note') && !laid.get(single.entity_id)?.locked
+      if (typable && !mod && !event.altKey && event.key.length === 1 && event.key !== ' ') { event.preventDefault(); requestIntent(single.entity_id, `type:${event.key}`); setEditing(single.entity_id); return }
       if (!mod && !event.altKey && isFree && (event.key === 'v' || event.key === 'V')) { setTool('select'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'h' || event.key === 'H')) { setTool('hand'); setPlacing(null); return }
       if (mod && !event.altKey && !event.shiftKey) {
@@ -460,15 +509,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
       if (!policy.select) return
       if ((event.key === 'Delete' || event.key === 'Backspace') && remove.reason === null) { event.preventDefault(); remove.run(); return }
-      if (event.key === 'Enter' && single && policy.editContent && !editing) { event.preventDefault(); setEditing(single.entity_id); return }
+      if (event.key === 'Enter' && single && policy.editContent && !editing) { event.preventDefault(); requestIntent(single.entity_id, 'end'); setEditing(single.entity_id); return }
       if (event.key.startsWith('Arrow') && selection.size > 0 && canLayout) {
         event.preventDefault()
         const step = event.shiftKey ? 10 : 1
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
         const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
-        commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l ? [{ id, placement: relativeTo(laid, l.parentId, { ...l.rect, x: l.rect.x + dx, y: l.rect.y + dy }) }] : [] }))
+        commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l && !l.locked ? [{ id, placement: movedPlacement(laid, l, dx, dy) }] : [] }))
         return
       }
+      if (mod && (event.key === ']' || event.key === '[') && selection.size > 0 && canLayout) { event.preventDefault(); reorder(event.key === ']' ? 'front' : 'back'); return }
       if (mod && event.key.toLowerCase() === 'g' && canLayout) { event.preventDefault(); if (event.shiftKey) ungroup(); else group(); return }
       if (event.key === 'F2' && single && policy.layout) { event.preventDefault(); shell.setSide('inspector') }
     }
@@ -476,14 +526,22 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     return () => window.removeEventListener('keydown', onKey)
   })
 
-  // ---- near toolbar: common actions next to the object, the rest under "more" (§9.2)
-  const nearActions: NearAction[] = []
+  // ---- near toolbar (§9.2; 标准对象的交互改进 §5): the Editor's tools while editing → the type's tools → common
+  // tools (annotate, lock, AI) → "more" (the same list as the context menu)
   const moreActions: NearAction[] = []
+  const typeItems: ToolbarItem[] = []
+  const commonItems: ToolbarItem[] = []
+  const topIds = topLevel(laid, selection)
+  const lockable = canLayout && topIds.length > 0 && topIds.every((id) => store.outline.get(id)?.capabilities.includes('update'))
+  const allLocked = topIds.length > 0 && topIds.every((id) => laid.get(id)?.locked)
+  const lockedHere = topIds.every((id) => store.outline.get(id)?.locked)
+  const singleLocked = single ? Boolean(laid.get(single.entity_id)?.locked) : false
+  const wishEntry = registryEntries().find((entry) => entry.definition.type === 'wish' && entry.catalog.standard)
   if (single && policy.select) {
     const context = selectedBlock.context
     const definition = selectedBlock.resolution?.ok ? context?.definition : undefined
     const source = single.source_id ? store.outline.get(single.source_id) : undefined
-    if (definition?.actions && context) {
+    if (definition?.actions && context && !singleLocked) {
       for (const action of definition.actions) {
         if (!action.modes.includes(mode) || (action.views && !action.views.includes('canvas'))) continue
         const needs = action.needs ?? []
@@ -491,36 +549,61 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         if (needs.some((cap) => !(target?.capabilities ?? []).includes(cap))) continue
         const writes = needs.some((cap) => ['update', 'append', 'structure', 'delete', 'manage'].includes(cap))
         if (writes && context.readOnlyReason) continue
+        // the actions of a definition that declares no tools of its own (an extension, until S5) stay on the toolbar as words
+        const asTool = !definition.toolbar
         try {
           if (action.when && !action.when(context)) continue
-          nearActions.push({ id: action.id, label: action.label, key: action.key, run: () => {
-            void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', `扩展动作失败：${describeError(error)}`))
-          } })
+          const run = () => { void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', `扩展动作失败：${describeError(error)}`)) }
+          if (asTool) typeItems.push({ kind: 'button', id: action.id, label: action.label, key: action.key, run })
+          else moreActions.push({ id: action.id, label: action.label, key: action.key, run })
         } catch (error) {
-          nearActions.push({ id: action.id, label: action.label, disabled: true, title: describeError(error), run: () => undefined })
+          if (asTool) typeItems.push({ kind: 'button', id: action.id, label: action.label, disabled: describeError(error), run: () => undefined })
+          else moreActions.push({ id: action.id, label: action.label, disabled: true, title: describeError(error), run: () => undefined })
         }
       }
     }
-    if (definition?.Inspector || definition?.configFields) nearActions.push({ id: 'inspector', label: '属性', key: 'F2', run: () => shell.setSide('inspector') })
-    if (policy.annotate && source && ui.annotate) nearActions.push({ id: 'annotate', label: '批注', run: annotateSelection })
+    // the type's own tools: edit mode only, never on a locked object (§5.3)
+    if (definition?.toolbar && context && mode === 'edit' && !singleLocked) {
+      try { typeItems.push(...definition.toolbar(context, store)) } catch (error) { console.error('[aiworkspace] block toolbar failed', error) }
+    }
+    if (single.kind === 'group' && canLayout && !singleLocked) typeItems.push({ kind: 'button', id: 'ungroup', icon: Ungroup, label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
+    if (definition?.Inspector || definition?.configFields || single.kind === 'group') moreActions.push({ id: 'inspector', label: '属性', key: 'F2', run: () => shell.setSide('inspector') })
+    if (policy.annotate && source && ui.annotate) commonItems.push({ kind: 'button', id: 'annotate', icon: MessageSquarePlus, label: '批注', run: annotateSelection })
     if (source) moreActions.push({ id: 'relations', label: '查看数据与依赖', run: () => shell.setSide('relations') })
-    if (source && canLayout) moreActions.push({ id: 'add-view', label: '增加视图…', run: () => setPicker({ kind: 'add-view' }) })
-    if (single.kind === 'group' && canLayout) moreActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
+    if (source && canLayout && !singleLocked) moreActions.push({ id: 'add-view', label: '增加视图…', run: () => setPicker({ kind: 'add-view' }) })
+    if (single.kind === 'group' && canLayout && !singleLocked) moreActions.push({ id: 'ungroup', label: '解组', key: 'Ctrl+Shift+G', run: ungroup })
   }
+  if (selection.size > 1 && canLayout && mode === 'edit') typeItems.push({ kind: 'button', id: 'group', icon: Group, label: '分组', key: 'Ctrl+G', run: group })
   if (selection.size > 1 && canLayout) moreActions.push({ id: 'group', label: '分组', key: 'Ctrl+G', run: group })
+  if (lockable && mode === 'edit') commonItems.push(allLocked
+    ? { kind: 'button', id: 'unlock', icon: LockOpen, label: '解锁', disabled: lockedHere ? false : '所在分组已锁定：先解锁分组', run: () => { void setLocked(topIds, false) } }
+    : { kind: 'button', id: 'lock', icon: Lock, label: '锁定（不能移动、缩放或删除）', run: () => { void setLocked(topIds, true) } })
+  if (wishEntry && selection.size > 0 && policy.insert && insertReason === null && !allLocked) commonItems.push({ kind: 'button', id: 'ai', icon: Sparkles, label: single?.view_type === 'wish' ? '打开许愿格' : '对选中的对象许愿', ai: true, run: () => pickEntry(wishEntry) })
   if (selection.size > 0 && policy.select && !phone) {
     moreActions.push({ id: 'copy', label: '复制', key: 'Ctrl+C', run: copy.run })
-    if (cut.reason === null) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
+    if (cut.reason === null && !allLocked) moreActions.push({ id: 'cut', label: '剪切', key: 'Ctrl+X', run: cut.run })
   }
-  if (selection.size > 0 && canLayout) {
-    moreActions.push({ id: 'front', label: '置顶', run: () => reorder('front') }, { id: 'back', label: '置底', run: () => reorder('back') })
+  if (selection.size > 0 && canLayout && !allLocked) {
+    moreActions.push({ id: 'front', label: '置顶', key: 'Ctrl+]', run: () => reorder('front') }, { id: 'back', label: '置底', key: 'Ctrl+[', run: () => reorder('back') })
     if (surfacesOf(store).length > 1) moreActions.push({ id: 'move-surface', label: '移动到画布…', run: () => setPicker({ kind: 'move-surface' }) })
-    nearActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
+    moreActions.push({ id: 'delete', label: '删除', key: 'Delete', run: () => { void deleteSelection() } })
+  }
+  // a locked object offers "unlock" and reading only (§4.3): no type tools, nothing that moves or removes it
+  const editorItems = single && editing === single.entity_id ? toolbarSink.items() : []
+  const nearItems: ToolbarItem[] = []
+  for (const part of [editorItems, typeItems, commonItems]) {
+    if (part.length === 0) continue
+    if (nearItems.length > 0) nearItems.push({ kind: 'separator', id: `sep-${nearItems.length}` })
+    nearItems.push(...part)
   }
 
   // ---- context menu items
   const quickEntries = registryEntries().filter((entry) => entry.catalog.standard && entry.catalog.needs === 'none')
-  const menuItems = menu ? (menu.blockId ? [...nearActions, ...moreActions].map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })) : [
+  const blockMenu = [
+    ...commonItems.flatMap((item) => (item.kind === 'button' && item.id !== 'ai' ? [{ id: item.id, label: item.label, run: item.run, disabled: Boolean(item.disabled) }] : [])),
+    ...moreActions.map((a) => ({ id: a.id, label: a.label, run: a.run, disabled: a.disabled })),
+  ]
+  const menuItems = menu ? (menu.blockId ? blockMenu : [
     ...(insertReason === null ? quickEntries.map((entry) => ({ id: `insert-${entry.definition.type}`, label: `插入${entry.title}`, run: () => { void insert({ entry }, menu.world, menu.parentId) } })) : []),
     ...(insertReason === null && !isFree ? [{ id: 'insert-group', label: '插入分组', run: () => {
       const parent = menu.parentId ?? surfaceId
@@ -562,8 +645,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       case 'annotations': return <AnnotationsPanel parentId={surface.content_folder_id ?? null} />
       case 'collab': return <PermissionsPanel />
       case 'edits': return <StatusDetail />
+      case 'wish': return wishOpen && store.outline.get(wishOpen.wishId)
+        ? <WishPanel key={wishOpen.wishId} wishId={wishOpen.wishId} cellId={wishOpen.cellId} readOnly={readOnlyNow || !policy.writes} canvasSelection={[...selection].filter((id) => id !== wishOpen.cellId)} />
+        : <div className="aiws-muted">在画布上双击许愿格，或点它的“打开”，在这里编辑和运行。</div>
     }
   }
+  const sideTabs = wishOpen ? [...CANVAS_SIDE_TABS, 'wish' as const] : CANVAS_SIDE_TABS
+  const clipIds = clip?.kind === 'cut' && clip.surfaceId === surfaceId ? clip.ids.join(',') : ''
+  const cutIds = useMemo(() => (clipIds ? new Set(clipIds.split(',')) : undefined), [clipIds])
 
   const placingTitle = placing?.entry.title ?? ''
   return (
@@ -572,12 +661,16 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
           <div ref={mainRef} className={`aiws-canvas-main${mode === 'presentation_edit' ? ' is-placeholder' : ''}${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}>
             {isFree ? (
+              <EditorToolbarContext.Provider value={toolbarSink}>
+              <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
               <RenderHost surfaceId={surfaceId} mode={mode} camera={camera} laid={laid} index={index} selection={selection} onSelectionChange={setSelection} editing={editing} onEditingChange={setEditing}
                 canLayout={canLayout} onCommitLayout={commitLayout} onOpenEntity={ui.openEntity} gesturesPaused={Boolean(menu || picker || catalog || overlayOpen)}
                 tool={tool} placing={placing ? { ...placing.entry.definition.defaultSize, label: placingTitle } : null}
                 onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
-                renderNear={(bbox) => <NearToolbar bbox={bbox} actions={nearActions} more={moreActions} viewport={viewportSize} insets={insets} />} />
+                cutIds={cutIds} renderNear={(bbox) => <NearToolbar bbox={bbox} items={nearItems} more={moreActions} viewport={viewportSize} insets={insets} />} />
+              </OpenWishContext.Provider>
+              </EditorToolbarContext.Provider>
             ) : (
               <div className="aiws-flow-host" data-testid="aiws-flow-host"><FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection} editing={editing} onEditingChange={setEditing} onInsert={(parentId) => setMenu({ at: { x: 200, y: 120 }, world: null, blockId: null, parentId })} /></div>
             )}
@@ -622,7 +715,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
               }} />
             )}
           </div>
-          <SidePanel tabs={CANVAS_SIDE_TABS} render={sideContent} />
+          <SidePanel tabs={sideTabs} render={sideContent} />
         </div>
       </div>
     </BudgetContext.Provider>

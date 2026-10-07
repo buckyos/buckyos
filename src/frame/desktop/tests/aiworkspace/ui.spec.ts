@@ -410,8 +410,11 @@ test('UI-P12 the AI entry creates a wish where it is placed and opens its task; 
   const head = await api.headSeq(ALICE, ws.workspace_id)
   await page.getByTestId('aiws-canvas-block-blk-wish').click()
   await page.getByTestId('aiws-tool-insert-wish').click()
-  await expect(page.getByTestId('aiws-canvas-block-blk-wish').getByTestId('aiws-wish-prompt')).toBeVisible()
+  // on a free canvas the task opens in the right panel (标准对象的交互改进 R6)
+  const wishPanel = page.locator('[data-testid="aiws-side-panel"][data-tab="wish"]')
+  await expect(wishPanel.getByTestId('aiws-wish-prompt')).toHaveValue(/经营分析/)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
+  await page.getByTestId('aiws-side-close').click()
   await page.keyboard.press('Escape')
   await page.getByTestId('aiws-canvas').click({ position: { x: 600, y: 750 } })
   // nothing selected: place a new wish; its panel opens for the task, nothing runs by itself
@@ -422,7 +425,9 @@ test('UI-P12 the AI entry creates a wish where it is placed and opens its task; 
   await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).filter((e: { type_id: string }) => e.type_id === 'buckyos.wish').length).toBe(2)
   const created = (await api.outline(ALICE, ws.workspace_id)).find((e: { type_id: string; entity_id: string }) => e.type_id === 'buckyos.wish' && e.entity_id !== 'wish-analysis')
   const block = (await cells(api, ws.workspace_id, 'sf-analysis')).find((c: { source_id: string }) => c.source_id === created.entity_id)
-  await expect(page.getByTestId(`aiws-canvas-block-${block.entity_id}`).getByTestId('aiws-wish-prompt')).toBeVisible()
+  await expect(page.getByTestId(`aiws-canvas-block-${block.entity_id}`)).toBeVisible()
+  await expect(wishPanel.getByTestId(`aiws-wish-${created.entity_id}`)).toBeVisible()
+  await expect(wishPanel.getByTestId('aiws-wish-prompt')).toBeVisible()
   expect((await api.read(ALICE, ws.workspace_id, created.entity_id)).content.payload.last_run ?? null).toBeNull()
 })
 

@@ -156,8 +156,9 @@ export interface WorkspaceSession {
   whenClosed(): Promise<void>
 }
 
-const STOP_CODES = new Set(['EPOCH_MISMATCH', 'BASE_TOO_OLD'])
+const STOP_CODES = new Set(['EPOCH_MISMATCH', 'BASE_TOO_OLD', 'VERSION_MISMATCH'])
 const STOP_TEXT: Record<string, string> = {
+  VERSION_MISMATCH: '后台已升级到新版本的 AI Workspace，本页面是旧版本：已停止同步，未提交的修改仍保留在本窗口。请刷新页面。',
   EPOCH_MISMATCH: '此工作区的历史已被恢复操作替换。本窗口基于旧历史的版本号与未提交修改不再适用，已停止同步；请重新打开工作区。',
   BASE_TOO_OLD: '变化流已不覆盖本窗口的基准，已停止同步；请重新打开工作区。',
   PERMISSION_DENIED: '你对此工作区的访问权限已被撤回，已停止同步。',
@@ -169,6 +170,15 @@ export const SESSION_STOP_TEXT: Readonly<Record<string, string>> = STOP_TEXT
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms))
+}
+
+/** A different protocol version on the other side (标准对象的交互改进 §7.1, 连接线方案 §10.3): this page must be
+ * reloaded, which is not the same as a broken replica. A refusal of a request's own version says the same. */
+export function versionMismatch(info: { protocol_version?: string }): boolean {
+  return Boolean(info.protocol_version) && info.protocol_version !== PROTOCOL_VERSION
+}
+export function refusedVersion(code: string | undefined, detail: string | undefined): boolean {
+  return code === 'UNSUPPORTED_VERSION' && /protocol_version/.test(detail ?? '')
 }
 
 export function browserOffline(): boolean {
@@ -214,7 +224,8 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: '尚未为此工作区准备离线' }): Promise<OnlineWorkspaceSession> {
     const info = unwrap(await client.wsGetInfo({ workspace_id: workspaceId }))
     const session = new OnlineWorkspaceSession(client, info, mode, null)
-    void session.follow()
+    if (versionMismatch(info)) session.noteCode('VERSION_MISMATCH')
+    else void session.follow()
     return session
   }
 
@@ -272,6 +283,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
 
   /** A stop code makes every later request pointless or harmful: remember it and tell the user. */
   private noteCode(code: string | undefined, detail?: string) {
+    if (refusedVersion(code, detail)) code = 'VERSION_MISMATCH'
     if (!code) return
     if (!STOP_CODES.has(code)) return
     this.setStatus({ kind: 'stopped', code, detail: STOP_TEXT[code] ?? detail ?? code })
@@ -289,6 +301,11 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     let backoff = 500
     while (!this.closed && !this.isStopped()) {
       try {
+        // back after an outage: the service may have been upgraded meanwhile
+        if (this.currentStatus.kind === 'offline') {
+          const info = await this.client.wsGetInfo(this.ws)
+          if (info.ok && versionMismatch(info)) { this.noteCode('VERSION_MISMATCH'); break }
+        }
         await this.catchUp()
         if (this.closed || this.isStopped()) break
         this.setStatus({ kind: 'live' })
@@ -509,7 +526,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       if (result) {
         this.unknown.delete(key)
         if (result.status === 'accepted') this.poke()
-        else this.noteCode(result.code, STOP_TEXT[result.code])
+        else this.noteCode(result.code, STOP_TEXT[result.code] ?? result.detail)
         const refused = result.status !== 'accepted' ? this.refused(key) : null
         return refused ?? { ...result, idempotency_key: key }
       }

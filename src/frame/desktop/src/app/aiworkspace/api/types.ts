@@ -1,7 +1,7 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '0.1'
+export const PROTOCOL_VERSION = '0.2'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -52,7 +52,8 @@ export const CANVAS_CONTENT_ID = 'canvas-content'
 export const SYSTEM_IDS: ReadonlySet<string> = new Set([ROOT_ID, DATA_ID, SURFACES_ID, CANVAS_CONTENT_ID])
 
 /** Free-layout placement relative to the parent container; stacking order is the sibling `order_key`. */
-export interface Placement { x: number; y: number; w: number; h: number }
+/** `rotation`: degrees clockwise about the centre, `[0, 360)`, absent = 0 (标准对象的交互改进 §7.1). */
+export interface Placement { x: number; y: number; w: number; h: number; rotation?: number }
 
 /** Container kinds of phase two: `folder` (data tree), `surface`, `group` (BlockTree); `root` / `data` / `surfaces` are system nodes. */
 export type ContainerKind = 'root' | 'data' | 'surfaces' | 'folder' | 'surface' | 'group'
@@ -109,6 +110,8 @@ export interface EntityEnvelope {
   content_folder_id?: string | null
   /** A Surface's preset icon id (UI improvement §5.1); absent means the default of its layout. */
   icon?: string | null
+  /** A Block or group the user locked (标准对象的交互改进 §7.2): the client does not move, resize or delete it. */
+  locked?: boolean | null
   parent_id?: string
   order_key?: string
   placement?: Placement

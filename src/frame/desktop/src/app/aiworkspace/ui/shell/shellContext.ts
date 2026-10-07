@@ -14,8 +14,8 @@ import type { OfflineActions } from '../WorkspaceView'
 export type TopMode = 'sources' | 'canvas'
 
 /** The right panel shows one kind of content at a time (§3.2). */
-export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits'
-export const SIDE_TAB_LABEL: Record<SideTab, string> = { inspector: '属性', relations: '引用与依赖', annotations: '批注', collab: '协作', edits: '修改状态' }
+export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits' | 'wish'
+export const SIDE_TAB_LABEL: Record<SideTab, string> = { inspector: '属性', relations: '引用与依赖', annotations: '批注', collab: '协作', edits: '修改状态', wish: '许愿格' }
 export const CANVAS_SIDE_TABS: SideTab[] = ['inspector', 'relations', 'annotations', 'collab', 'edits']
 export const SOURCES_SIDE_TABS: SideTab[] = ['collab', 'edits']
 

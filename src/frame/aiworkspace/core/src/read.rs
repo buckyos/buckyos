@@ -248,7 +248,7 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         TYPE_CONTAINER => {
             env["kind"] = e.payload.get("kind").cloned().unwrap_or(Value::Null);
             env["layout"] = e.payload.get("layout").cloned().unwrap_or(Value::Null);
-            for k in ["system", "surface_id", "content_folder_id", "icon"] {
+            for k in ["system", "surface_id", "content_folder_id", "icon", "locked"] {
                 if let Some(v) = e.payload.get(k) {
                     env[k] = v.clone();
                 }
@@ -259,6 +259,9 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             env["view_version"] = e.payload.get("view").and_then(|v| v.get("version")).cloned().unwrap_or(Value::Null);
             env["source_id"] = e.payload.get("source_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
             env["def_id"] = e.payload.get("def_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null);
+            if let Some(v) = e.payload.get("locked") {
+                env["locked"] = v.clone();
+            }
         }
         TYPE_WISH => {
             env["executor"] = e.payload.get("executor").cloned().unwrap_or(Value::Null);

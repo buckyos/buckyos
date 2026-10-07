@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.1",
+ "protocol_version": "0.2",
  "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
  "operations": [
   {

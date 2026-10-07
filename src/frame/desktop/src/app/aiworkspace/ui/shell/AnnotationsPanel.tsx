@@ -10,14 +10,23 @@ import { anchorStatus, annotationLabel, revealAnnotation } from '../annotationIn
 
 export function AnnotationsPanel({ parentId, draft, onDraftDone }: { parentId: string | null; draft?: CapturedAnchor | null; onDraftDone?: () => void }) {
   const store = useStore()
-  const { annotations, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
+  const { annotations: all, annotate, activeAnnotation, setActiveAnnotation, draft: uiDraft, clearDraft, annotationFilter, showAnnotations } = useWorkspaceUi() as ReturnType<typeof useWorkspaceUi> & { draft?: CapturedAnchor | null; clearDraft?: () => void }
   const [body, setBody] = useState('')
   const pending = draft ?? uiDraft ?? null
   const done = onDraftDone ?? clearDraft ?? (() => undefined)
   const target = parentId ?? 'data'
+  // a note's replies (标准对象的交互改进 §7.3): the annotations targeting it, oldest first
+  const annotations = annotationFilter ? all.filter((mark) => mark.payload.target?.entity_id === annotationFilter).sort((a, b) => a.envelope.life_rev - b.envelope.life_rev) : all
+  const filterLabel = annotationFilter ? store.outline.get(annotationFilter) : undefined
   return (
     <div className="aiws-annotations" data-testid="aiws-annotations">
       <div className="aiws-panel-title">批注 <span className="aiws-muted">{annotations.length}</span></div>
+      {annotationFilter && (
+        <div className="aiws-inline-form" data-testid="aiws-annotations-filter">
+          <span className="aiws-muted">只看「{filterLabel?.title ?? '便签'}」的回复</span>
+          <button type="button" className="aiws-link" data-testid="aiws-annotations-filter-clear" onClick={() => showAnnotations(null)}>显示全部</button>
+        </div>
+      )}
       {pending && (
         <form className="aiws-annotation-draft" onSubmit={(event) => {
           event.preventDefault()

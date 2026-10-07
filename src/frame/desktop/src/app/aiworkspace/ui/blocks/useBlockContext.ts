@@ -1,7 +1,19 @@
-import { useCallback, useMemo, useSyncExternalStore } from 'react'
+import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import type { BlockDefRead, CellPayload, EntityEnvelope, KeyedContent } from '../../api/types'
 import { useDirectReadOnly, useEntity, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
-import { blockRegistry, modePolicy, type BlockDefinition, type CanvasMode, type DataState, type RenderContext, type Resolution } from './registry'
+import { EditorToolbarContext } from './editorToolbar'
+import { blockRegistry, modePolicy, type BlockDefinition, type CanvasMode, type DataState, type RenderContext, type Resolution, type ToolbarItem } from './registry'
+
+const COARSE = '(pointer: coarse)'
+function subscribePointer(listener: () => void) {
+  const query = window.matchMedia(COARSE)
+  query.addEventListener('change', listener)
+  return () => query.removeEventListener('change', listener)
+}
+/** Touch when the primary pointer is coarse (handle sizes, affordances on selection, §4.3). */
+export function usePointerType(): 'mouse' | 'touch' {
+  return useSyncExternalStore(subscribePointer, () => (window.matchMedia(COARSE).matches ? 'touch' : 'mouse'), () => 'mouse')
+}
 
 export interface BlockContextOptions {
   cellId: string | null
@@ -57,6 +69,8 @@ export function useBlockContext(options: BlockContextOptions) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload, source?.type_id, documentDefinition, definitionRead.error, definitionRead.data?.degraded, defId, registryVersion])
   const readOnlyNow = useDirectReadOnly()
+  const toolbarSink = useContext(EditorToolbarContext)
+  const pointerType = usePointerType()
   if (!cell || !payload) return { context: null, resolution, error: read.error, registryVersion }
   const dataState = dataStateOf(payload, source)
   const policy = modePolicy(mode)
@@ -72,6 +86,8 @@ export function useBlockContext(options: BlockContextOptions) {
     capabilities: cell.capabilities, readOnlyReason, dataState, size: options.size ?? { w: cell.placement?.w ?? 320, h: cell.placement?.h ?? 200 }, zoom: options.zoom ?? 1,
     activateEditor: () => { if (policy.editContent && depth === 0 && resolution?.ok) options.onActivate?.() },
     deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
+    setEditorToolbar: (items: ToolbarItem[] | null) => toolbarSink?.set(`block:${cellId}`, items), pointerType,
+    annotate: ui.annotate, showAnnotations: ui.showAnnotations,
   }
   const availableResolution: Resolution | null = dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded'
     ? { ok: false, reason: 'data_unavailable', detail: `绑定数据${dataState === 'missing' ? '不存在或已删除' : dataState === 'unreadable' ? '无读取权限' : '的 Schema 版本不受支持'}` }

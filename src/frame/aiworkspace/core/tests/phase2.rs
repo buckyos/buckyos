@@ -120,6 +120,41 @@ fn surface_icon_is_a_shared_preset_id() {
     assert!(ws.store.entities["s1"].payload.get("icon").is_none());
 }
 
+/// 标准对象的交互改进 §7.1–§7.2: `placement.rotation` is layout (same operations, same capability),
+/// `locked` is a boolean flag of Blocks and groups that the core checks but never enforces.
+#[test]
+fn rotation_is_layout_and_locked_is_a_flag() {
+    let mut ws = MemWorkspace::new();
+    ws.ok(json!(surface("s1", "free")));
+    ws.ok(json!([table("t1", DATA_ID), cell("c1", "s1", Some("t1"), "table", json!({ "x": 0, "y": 0, "w": 300, "h": 200, "rotation": 30 }))]));
+    let placement = |ws: &MemWorkspace, id: &str| {
+        let outline = aiworkspace_core::read::outline(&ws.store, &Access::full("alice")).unwrap();
+        outline.iter().find(|e| e["entity_id"] == id).unwrap()["placement"].clone()
+    };
+    assert_eq!(placement(&ws, "c1")["rotation"], 30);
+    ws.ok(json!([{ "op": "tree.place", "entity_id": "c1", "placement": { "x": 10, "y": 0, "w": 300, "h": 200, "rotation": 359.5 } }]));
+    assert_eq!(placement(&ws, "c1")["rotation"], 359.5);
+    for rotation in [json!(360), json!(-1), json!("90"), json!(null)] {
+        assert_eq!(code(&ws.fail(json!([{ "op": "tree.place", "entity_id": "c1", "placement": { "x": 0, "y": 0, "w": 300, "h": 200, "rotation": rotation } }]))), "INVALID_SCHEMA");
+    }
+    // a group carries the rotation of its children relative to itself, like x / y
+    ws.ok(json!([{ "op": "entity.create", "entity_id": "g1", "type_id": TYPE_CONTAINER, "parent_id": "s1", "order_key": "e",
+        "placement": { "x": 0, "y": 0, "w": 400, "h": 300, "rotation": 90 }, "payload": { "kind": "group", "layout": { "mode": "free" }, "locked": true } }]));
+    ws.ok(json!([{ "op": "tree.move", "entity_id": "c1", "new_parent_id": "g1", "order_key": "a", "placement": { "x": 0, "y": 0, "w": 300, "h": 200, "rotation": 15 } }]));
+    assert_eq!(placement(&ws, "c1")["rotation"], 15);
+    // locked: projected into the outline, boolean only, Blocks and groups only, never enforced
+    ws.ok(json!([{ "op": "entity.set_keys", "entity_id": "c1", "keys": [{ "key": "locked", "value": true, "expect": { "rev": 0 } }] }]));
+    let outline = aiworkspace_core::read::outline(&ws.store, &Access::full("alice")).unwrap();
+    assert_eq!(outline.iter().find(|e| e["entity_id"] == "c1").unwrap()["locked"], true);
+    assert_eq!(outline.iter().find(|e| e["entity_id"] == "g1").unwrap()["locked"], true);
+    let rev = aiworkspace_core::read::read(&ws.store, &Access::full("alice"), "c1", None).unwrap()["content"]["key_revs"]["locked"].clone();
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "c1", "keys": [{ "key": "locked", "value": "yes", "expect": { "rev": rev } }] }]))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(json!([{ "op": "entity.set_keys", "entity_id": "s1", "keys": [{ "key": "locked", "value": true, "expect": { "rev": 0 } }] }]))), "INVALID_SCHEMA");
+    ws.ok(json!([{ "op": "tree.place", "entity_id": "c1", "placement": { "x": 5, "y": 5, "w": 300, "h": 200 } }]));
+    ws.ok(json!([{ "op": "entity.unset_keys", "entity_id": "c1", "keys": [{ "key": "locked", "expect": { "rev": rev } }] }]));
+    assert!(ws.store.entities["c1"].payload.get("locked").is_none());
+}
+
 #[test]
 fn cells_without_source_and_block_definitions() {
     let mut ws = MemWorkspace::new();

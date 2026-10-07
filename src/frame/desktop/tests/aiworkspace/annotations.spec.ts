@@ -44,7 +44,7 @@ test('a text range: shown next to the selection, follows edits, found again by i
   // select a few characters of the first paragraph and annotate them
   await expect(prose.locator('[data-block-id="n-intro"] strong', { hasText: '文档格式' })).toBeVisible()
   await selectInBlock(page, 'n-intro', 'strong', '文档格式')
-  await frame.getByTestId('aiws-annotate').click()
+  await frame.getByTestId('aiws-near-annotate-text').click()
   await expect(page.getByTestId('aiws-annotation-draft-target')).toContainText('「文档格式」')
   await page.getByLabel('批注内容').fill('术语要统一')
   await page.getByTestId('aiws-annotation-save').click()
@@ -137,7 +137,7 @@ test('an application range kind: captured and located by the application, kept v
   const engine = prose.locator('[data-block-id="n-intro"] em', { hasText: 'Command Engine' })
   const size = await engine.boundingBox()
   await engine.click({ position: { x: (size?.width ?? 10) - 6, y: (size?.height ?? 10) / 2 } })
-  await frame.getByTestId('aiws-annotate').click()
+  await frame.getByTestId('aiws-near-annotate-text').click()
   await expect(page.getByTestId('aiws-annotation-draft-target')).toHaveText('批注对象：第 2 个英文词')
   await page.getByLabel('批注内容').fill('应用自己定位')
   await page.getByTestId('aiws-annotation-save').click()

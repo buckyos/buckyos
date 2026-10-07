@@ -731,18 +731,21 @@ pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&s
 
 /// Free-layout placement: `{ x, y, w, h }` relative to the parent container (phase two §8.2).
 /// Stacking order is the sibling `order_key`; there is no `z`.
+/// `rotation` (optional, degrees clockwise about the centre, `[0, 360)`) is layout like x / y: it is
+/// relative to the parent, written with the same capability and merged the same way.
 fn check_placement(v: &Value) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| WsError::invalid_schema("placement must be an object"))?;
     let num = |k: &str| o.get(k).and_then(Value::as_f64).filter(|f| f.is_finite());
-    let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h"))
+    let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h" | "rotation"))
         && num("x").is_some()
         && num("y").is_some()
         && num("w").is_some_and(|w| w > 0.0)
-        && num("h").is_some_and(|h| h > 0.0);
+        && num("h").is_some_and(|h| h > 0.0)
+        && (!o.contains_key("rotation") || num("rotation").is_some_and(|r| (0.0..360.0).contains(&r)));
     if ok {
         Ok(())
     } else {
-        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0 } with finite numbers (stacking order is order_key)"))
+        Err(WsError::invalid_schema("placement must be { x, y, w > 0, h > 0, rotation? in [0, 360) } with finite numbers (stacking order is order_key)"))
     }
 }
 

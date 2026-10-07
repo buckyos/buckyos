@@ -52,6 +52,15 @@ fn check_keys(payload: &JsonMap, allowed: &[&str], what: &str) -> WsResult<()> {
     Ok(())
 }
 
+/// `locked` on a Block or a group: a shared UI flag (the client stops moving, resizing and deleting it).
+/// The core only checks the value; it never refuses an operation because of it.
+fn check_locked(payload: &JsonMap) -> WsResult<()> {
+    match payload.get("locked") {
+        None | Some(Value::Bool(_)) => Ok(()),
+        Some(_) => Err(bad("locked must be a boolean")),
+    }
+}
+
 fn opt_text(payload: &JsonMap, key: &str, max: usize) -> WsResult<()> {
     match payload.get(key) {
         None => Ok(()),
@@ -136,7 +145,7 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 
 // ---- Cell / TableView ----
 
-const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings"];
+const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked"];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
 /// Largest canonical size of a Block's `config` / a definition's body.
@@ -243,6 +252,7 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
         e.payload.remove("def_ref");
     }
     opt_text(&e.payload, "title", 256)?;
+    check_locked(&e.payload)?;
     if e.payload.get("options").is_some_and(|o| !o.is_object()) {
         return Err(bad("options must be an object"));
     }
@@ -349,7 +359,7 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
 /// point back (`surface_id`, informative). A Surface may carry `icon`, the stable id of a preset
 /// icon chosen by the client (the client owns the preset list; an unknown id shows its default).
 fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>) -> WsResult<()> {
-    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon"], "container")?;
+    check_keys(&e.payload, &["kind", "layout", "title", "content_folder_id", "system", "surface_id", "icon", "locked"], "container")?;
     let kind = e.payload.get("kind").and_then(Value::as_str).ok_or_else(|| bad("container needs kind"))?.to_string();
     match (kind.as_str(), before) {
         ("folder" | "surface" | "group", None) => {}
@@ -380,6 +390,10 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
             return Err(bad("surface_id must be an entity id on a folder"));
         }
     }
+    if e.payload.contains_key("locked") && kind != "group" {
+        return Err(bad("locked is only valid on a group"));
+    }
+    check_locked(&e.payload)?;
     if let Some(icon) = e.payload.get("icon") {
         let valid = icon.as_str().is_some_and(|s| {
             (1..=32).contains(&s.len()) && s.starts_with(|c: char| c.is_ascii_lowercase()) && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')

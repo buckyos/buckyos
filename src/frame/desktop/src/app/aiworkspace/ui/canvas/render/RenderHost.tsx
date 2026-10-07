@@ -15,16 +15,29 @@
  * Stacking: painting and hit testing follow one order, the BlockTree pre-order (`Laid.paint`: a parent
  * before its children, siblings by `order_key`), and the Block being edited above all. The order is a
  * z-index; the frames keep a stable DOM order (by id) so that culling or a reorder never moves a frame,
- * which would reload an embedded document or drop an editor's focus. */
+ * which would reload an embedded document or drop an editor's focus.
+ *
+ * Object states (标准对象的交互改进 §4): a frame draws nothing of its own; hover, selection, editing and
+ * dragging live in the overlay only — a solid hover outline with the Block's affordances after a short
+ * delay, a selection box with round corner handles, edge resize zones and a rotation handle, a group box
+ * for several Blocks, a lock badge, the cut marker and a size / angle hint while a gesture runs. Handle
+ * sizes follow the pointer type. A rotated Block turns its frame about the centre; hit tests and resizing
+ * work in its own coordinates. */
 
 import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from 'react'
+import { Lock, RotateCw } from 'lucide-react'
 import type { Placement } from '../../../api/types'
+import { describeError } from '../../../api/session'
 import { testHooks } from '../../../api/testHooks'
 import { useStore } from '../../../state/hooks'
 import { BlockHost, type Lod } from '../../blocks/BlockHost'
 import { BudgetContext } from '../../blocks/budget'
-import { modePolicy, type CanvasMode } from '../../blocks/registry'
-import { relativeTo, topLevel, type Laid } from '../layout'
+import { BlockMetaContext, BlockMetaSink, requestIntent, type BlockMeta } from '../../blocks/editorToolbar'
+import { modePolicy, type CanvasMode, type HoverAffordance } from '../../blocks/registry'
+import { usePointerType } from '../../blocks/useBlockContext'
+import { FreshnessBadge } from '../../sources/FreshnessBadge'
+import { angleFrom, centerOf, containsPoint, corners, normalizeRotation, resizeRotated, rotatePoint } from '../geometry'
+import { movedPlacement, relativeTo, topLevel, type Laid } from '../layout'
 import { Camera, intersects, type Rect } from './camera'
 import { SpatialIndex } from './spatialIndex'
 import { TouchGestures, type OneFingerDrag, type Point, type TouchActions } from './touch'
@@ -36,8 +49,16 @@ const HIDE_MARGIN = 2
 const MAX_MOUNTED = 400
 const PLACEHOLDER_PX = 48
 const SIMPLIFIED_ZOOM = 0.4
-const HANDLE = 8
 const MIN_SIZE = 40
+/** Handle sizes in screen px by pointer type (§4.3): what is drawn and what takes the pointer. */
+const HANDLES = {
+  mouse: { corner: 10, cornerHit: 14, edge: 10, rotate: 22, rotateOffset: 18 },
+  touch: { corner: 14, cornerHit: 44, edge: 24, rotate: 36, rotateOffset: 26 },
+}
+/** Hover affordances wait this long, and need this much Block on screen for their buttons (§4.2). */
+const AFFORD_DELAY = 150
+const AFFORD_BUTTON_MIN = 64
+const ROTATE_SNAP = 15
 /** Above this many moved frames a drag shows outlines only (one hide, one restore) instead of per-frame transforms. */
 const GHOST_DRAG_LIMIT = 24
 
@@ -66,13 +87,27 @@ export interface RenderHostProps {
   /** A one-shot placement: the pointer carries a preview of this size; a primary click places it. */
   placing?: { w: number; h: number; label: string } | null
   onPlace?: (world: { x: number; y: number }) => void
+  /** Objects marked by "cut" (dashed until pasted or cancelled). */
+  cutIds?: ReadonlySet<string>
 }
 
 type Drag =
   | { kind: 'pan'; lastX: number; lastY: number; moved: boolean }
   | { kind: 'move'; ids: string[]; affected: string[]; startX: number; startY: number; dx: number; dy: number; moved: boolean; clicked: string; additive: boolean; wasSelected: boolean; ghost?: boolean }
-  | { kind: 'resize'; id: string; handle: string; startX: number; startY: number; start: Rect; current: Rect }
+  | { kind: 'resize'; id: string; handle: string; startX: number; startY: number; start: Rect; rotation: number; aspect: 'free' | 'locked'; current: Rect }
+  | { kind: 'rotate'; id: string; center: Point; startAngle: number; start: number; current: number }
   | { kind: 'marquee'; startX: number; startY: number; current: Rect | null; additive: boolean; moved: boolean }
+
+/** What a gesture shows next to the pointer: the size while resizing, the angle while rotating. */
+interface Hint { x: number; y: number; text: string }
+
+/** A cursor for a resize zone, turned with the Block. */
+function resizeCursor(handle: string, rotation: number): string {
+  const base: Record<string, number> = { n: 0, ne: 45, e: 90, se: 135, s: 180, sw: 225, w: 270, nw: 315 }
+  const names = ['ns-resize', 'nesw-resize', 'ew-resize', 'nwse-resize']
+  const angle = ((base[handle] ?? 0) + rotation + 360 + 22.5) % 180
+  return names[Math.floor(angle / 45) % 4]
+}
 
 type MountState = 'mounted' | 'hidden'
 
@@ -80,7 +115,7 @@ type MountState = 'mounted' | 'hidden'
 type PointerStart = Pick<PointerEvent, 'pointerId' | 'button' | 'clientX' | 'clientY' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'target' | 'preventDefault'>
 
 /** Controls inside a Block that take a tap themselves (their click must survive). */
-const TAPPABLE = 'button, a[href], summary, label'
+const TAPPABLE = 'button:not(:disabled), a[href], summary, label'
 /** Touches here stay with the browser: editors, fields, the near toolbar and menus. */
 const TOUCH_EXEMPT = '[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu'
 
@@ -134,15 +169,34 @@ export function RenderHost(props: RenderHostProps) {
   const rafRef = useRef<number>(0)
   const pendingMove = useRef<{ x: number; y: number } | null>(null)
   const spaceHeld = useRef(false)
+  const shiftHeld = useRef(false)
   const policy = modePolicy(mode)
   const [marquee, setMarquee] = useState<Rect | null>(null)
   const [dragging, setDragging] = useState(false)
   const [hover, setHover] = useState<string | null>(null)
+  /** The hovered Block whose affordances show (after AFFORD_DELAY). */
+  const [shownHover, setShownHover] = useState<string | null>(null)
+  const hoverTimer = useRef(0)
   const [resizePreview, setResizePreview] = useState<{ id: string; rect: Rect } | null>(null)
+  const [rotatePreview, setRotatePreview] = useState<{ id: string; rotation: number } | null>(null)
+  const [hint, setHint] = useState<Hint | null>(null)
   const [, forceOverlay] = useState(0)
   const [settled, setSettled] = useState(0)
   const pointerTypeRef = useRef('mouse')
+  const pointer = usePointerType()
+  const sizes = HANDLES[pointer]
   const [touch] = useState(() => new TouchGestures(camera))
+  const [metaSink] = useState(() => new BlockMetaSink())
+  useSyncExternalStore(metaSink.subscribe, metaSink.snapshot)
+  /** Hover changes at once (the outline); affordances follow after a short delay and leave at once. */
+  const changeHover = (id: string | null) => {
+    if (id === hover) return
+    setHover(id)
+    window.clearTimeout(hoverTimer.current)
+    setShownHover(null)
+    if (id) hoverTimer.current = window.setTimeout(() => setShownHover(id), AFFORD_DELAY)
+  }
+  useEffect(() => () => window.clearTimeout(hoverTimer.current), [])
 
   // ---- camera attach and overlay subscriptions
   useLayoutEffect(() => {
@@ -199,8 +253,9 @@ export function RenderHost(props: RenderHostProps) {
     for (const [cid, l] of laid) { let cur: string | undefined = l.parentId; while (cur) { if (cur === id) { out.push(cid); break } cur = laid.get(cur)?.parentId } }
     return out
   }, [laid])
+  // `translate` composes with a Block's own `rotate` (it is applied after it), unlike `transform`
   const setTransform = (ids: Iterable<string>, dx: number, dy: number) => {
-    for (const id of ids) { const el = frames.current.get(id); if (el) el.style.transform = dx === 0 && dy === 0 ? '' : `translate(${dx}px, ${dy}px)` }
+    for (const id of ids) { const el = frames.current.get(id); if (el) el.style.translate = dx === 0 && dy === 0 ? '' : `${dx}px ${dy}px` }
   }
   /** Leaving an editor from the canvas ends its input first (its blur saves), before the editor unmounts. */
   const endEditing = () => {
@@ -210,12 +265,13 @@ export function RenderHost(props: RenderHostProps) {
   }
   const insideEditor = (target: EventTarget | null) => {
     const el = target as HTMLElement | null
-    return Boolean(el?.closest?.('[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu, button'))
+    // a disabled button (a read-only table cell) is content, not a control: the canvas takes the gesture
+    return Boolean(el?.closest?.('[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu, button:not(:disabled)'))
   }
   /** The top-most Block at a world point, as painted: the Block being edited first, then the paint order. */
   const hitAt = (x: number, y: number) => {
     const top = editing ? index.get(editing) : undefined
-    if (top && x >= top.rect.x && x <= top.rect.x + top.rect.w && y >= top.rect.y && y <= top.rect.y + top.rect.h) return top
+    if (top && (top.turned ? containsPoint(top.turned.rect, top.turned.rotation, x, y) : x >= top.rect.x && x <= top.rect.x + top.rect.w && y >= top.rect.y && y <= top.rect.y + top.rect.h)) return top
     return index.hit(x, y)
   }
 
@@ -254,7 +310,7 @@ export function RenderHost(props: RenderHostProps) {
         for (const id of drag.ids) {
           const l = laid.get(id)
           if (!l) continue
-          changes.push({ id, placement: relativeTo(laid, l.parentId, { ...l.rect, x: l.rect.x + drag.dx, y: l.rect.y + drag.dy }) })
+          changes.push({ id, placement: movedPlacement(laid, l, drag.dx, drag.dy) })
         }
         if (changes.length > 0) props.onCommitLayout(changes)
       } else if (!drag.moved && !cancel) {
@@ -266,12 +322,20 @@ export function RenderHost(props: RenderHostProps) {
       }
     } else if (drag.kind === 'resize') {
       setResizePreview(null)
+      setHint(null)
       const el = frames.current.get(drag.id)
       const l = laid.get(drag.id)
       if (el && l) { el.style.left = `${l.rect.x}px`; el.style.top = `${l.rect.y}px`; el.style.width = `${l.rect.w}px`; el.style.height = `${l.rect.h}px` }
       if (!cancel && l && (drag.current.w !== drag.start.w || drag.current.h !== drag.start.h || drag.current.x !== drag.start.x || drag.current.y !== drag.start.y)) {
-        props.onCommitLayout([{ id: drag.id, placement: relativeTo(laid, l.parentId, drag.current) }])
+        props.onCommitLayout([{ id: drag.id, placement: relativeTo(laid, l.parentId, drag.current, l.rotation) }])
       }
+    } else if (drag.kind === 'rotate') {
+      setRotatePreview(null)
+      setHint(null)
+      const el = frames.current.get(drag.id)
+      const l = laid.get(drag.id)
+      if (el && l) el.style.rotate = l.rotation ? `${l.rotation}deg` : ''
+      if (!cancel && l && drag.current !== l.rotation) props.onCommitLayout([{ id: drag.id, placement: relativeTo(laid, l.parentId, l.rect, drag.current) }])
     } else if (drag.kind === 'marquee') {
       setMarquee(null)
       if (!cancel && drag.current && drag.moved) {
@@ -317,7 +381,8 @@ export function RenderHost(props: RenderHostProps) {
       const id = hit.id
       const wasSelected = selection.has(id)
       const additive = event.shiftKey || event.metaKey || event.ctrlKey
-      const ids = policy.layout && canLayout ? topLevel(laid, wasSelected && !additive ? new Set(selection) : new Set([id])) : []
+      // locked Blocks are selected but never moved, also as part of a selection (§7.2)
+      const ids = policy.layout && canLayout ? topLevel(laid, wasSelected && !additive ? new Set(selection) : new Set([id])).filter((moved) => !laid.get(moved)?.locked) : []
       const affected = ids.flatMap((moved) => [moved, ...descendantsOf(moved)])
       if (!wasSelected && !additive) props.onSelectionChange(new Set([id]))
       dragRef.current = { kind: 'move', ids, affected, startX: event.clientX, startY: event.clientY, dx: 0, dy: 0, moved: false, clicked: id, additive, wasSelected }
@@ -331,6 +396,7 @@ export function RenderHost(props: RenderHostProps) {
   const ghostRef = useRef<HTMLDivElement>(null)
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'touch') return // window listeners follow touches
+    shiftHeld.current = event.shiftKey
     const drag = dragRef.current
     if (!drag && props.placing) {
       // the placement preview follows the pointer in the DOM: no React work per move
@@ -346,11 +412,14 @@ export function RenderHost(props: RenderHostProps) {
     }
     if (!drag) {
       if (!policy.select || props.tool === 'hand') return
+      // the pointer on an affordance keeps its Block hovered
+      if ((event.target as Element | null)?.closest?.('.aiws-afford')) return
+      // a Block's own buttons (table cells, links) keep it hovered; an editor, a field or a menu does not
+      const typing = Boolean((event.target as Element | null)?.closest?.('[data-role="editor"], input, textarea, select, [contenteditable="true"], .aiws-near, .aiws-menu, .aiws-popover'))
       const p = screenPoint(event)
       const w = camera.toWorld(p.x, p.y)
-      const hit = insideEditor(event.target) ? null : hitAt(w.x, w.y)
-      const id = hit?.id ?? null
-      if (id !== hover) setHover(id)
+      const hit = typing ? null : hitAt(w.x, w.y)
+      changeHover(hit?.id ?? null)
       return
     }
     trackPointer(event.clientX, event.clientY)
@@ -391,18 +460,29 @@ export function RenderHost(props: RenderHostProps) {
         return
       }
       if (current.kind === 'resize') {
-        const dx = (point.x - current.startX) / camera.zoom
-        const dy = (point.y - current.startY) / camera.zoom
-        const s = current.start
-        let { x, y, w, h } = s
-        if (current.handle.includes('e')) w = Math.max(MIN_SIZE, s.w + dx)
-        if (current.handle.includes('s')) h = Math.max(MIN_SIZE, s.h + dy)
-        if (current.handle.includes('w')) { w = Math.max(MIN_SIZE, s.w - dx); x = s.x + s.w - w }
-        if (current.handle.includes('n')) { h = Math.max(MIN_SIZE, s.h - dy); y = s.y + s.h - h }
+        const delta = { x: (point.x - current.startX) / camera.zoom, y: (point.y - current.startY) / camera.zoom }
+        // corner handles of an image or note keep the proportions; Shift switches the rule either way
+        const aspect = (current.aspect === 'locked') !== shiftHeld.current
+        const r = resizeRotated(current.start, current.rotation, current.handle, delta, { min: MIN_SIZE, aspect })
+        const { x, y, w, h } = { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.w), h: Math.round(r.h) }
         current.current = { x, y, w, h }
         const el = frames.current.get(current.id)
         if (el) { el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.width = `${w}px`; el.style.height = `${h}px` }
         setResizePreview({ id: current.id, rect: current.current })
+        const p = screenPoint({ clientX: point.x, clientY: point.y })
+        setHint({ x: p.x, y: p.y, text: `${w} × ${h}` })
+        return
+      }
+      if (current.kind === 'rotate') {
+        const p = screenPoint({ clientX: point.x, clientY: point.y })
+        const w = camera.toWorld(p.x, p.y)
+        let deg = current.start + angleFrom(current.center, w) - current.startAngle
+        if (shiftHeld.current) deg = Math.round(deg / ROTATE_SNAP) * ROTATE_SNAP
+        current.current = normalizeRotation(deg)
+        const el = frames.current.get(current.id)
+        if (el) el.style.rotate = current.current ? `${current.current}deg` : ''
+        setRotatePreview({ id: current.id, rotation: current.current })
+        setHint({ x: p.x, y: p.y, text: `${Math.round(current.current)}°` })
         return
       }
       if (current.kind === 'marquee') {
@@ -436,10 +516,11 @@ export function RenderHost(props: RenderHostProps) {
 
   useEffect(() => {
     const down = (event: KeyboardEvent) => {
+      shiftHeld.current = event.shiftKey
       if (event.code === 'Space' && !insideEditor(event.target)) { spaceHeld.current = true }
       if (event.key === 'Escape' && dragRef.current) { event.preventDefault(); finishDrag(true) }
     }
-    const up = (event: KeyboardEvent) => { if (event.code === 'Space') spaceHeld.current = false }
+    const up = (event: KeyboardEvent) => { shiftHeld.current = event.shiftKey; if (event.code === 'Space') spaceHeld.current = false }
     window.addEventListener('keydown', down)
     window.addEventListener('keyup', up)
     return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up) }
@@ -469,8 +550,8 @@ export function RenderHost(props: RenderHostProps) {
     if (props.placing && !spaceHeld.current) { event.preventDefault(); props.onPlace?.(w); return null }
     const tappable = Boolean(target?.closest(TAPPABLE))
     const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
-    // edit mode: a drag that starts on a Block moves it, as with the mouse
-    if (hit && !tappable && policy.layout && canLayout) { beginPointer(event); return { kind: 'delegate' } }
+    // edit mode: a drag that starts on a Block moves it, as with the mouse (a locked one is only selected)
+    if (hit && !tappable && policy.layout && canLayout && !laid.get(hit.id)?.locked) { beginPointer(event); return { kind: 'delegate' } }
     // the selected Block's own scrollable content scrolls under the finger
     const scroller = hit && selection.has(hit.id) ? scrollerWithin(target, frames.current.get(hit.id)) : null
     return scroller ? { kind: 'scroll', element: scroller } : { kind: 'pan' }
@@ -488,7 +569,7 @@ export function RenderHost(props: RenderHostProps) {
     const hit = policy.select && props.tool !== 'hand' ? hitAt(w.x, w.y) : null
     const l = hit ? laid.get(hit.id) : undefined
     if (hit && l && !l.isGroup && policy.editContent) { props.onEditingChange(hit.id); props.onSelectionChange(new Set([hit.id])); return }
-    camera.animateTo(l ? camera.fitted(l.rect, 24) : camera.zoomedAt(p.x, p.y, 2))
+    camera.animateTo(l ? camera.fitted(l.bounds, 24) : camera.zoomedAt(p.x, p.y, 2))
   }
   useLayoutEffect(() => {
     const actions: TouchActions = {
@@ -520,16 +601,53 @@ export function RenderHost(props: RenderHostProps) {
     }
   }, [touch])
 
-  const beginResize = (event: ReactPointerEvent<SVGRectElement>, id: string, handle: string) => {
+  /** Double-clicking the rotation handle turns the Block back upright. */
+  const resetRotation = (id: string) => {
+    const l = laid.get(id)
+    if (l && l.rotation && !l.locked && policy.layout && canLayout) props.onCommitLayout([{ id, placement: relativeTo(laid, l.parentId, l.rect, 0) }])
+  }
+  /** When a handle was last pressed: the root's double-click (retargeted there by pointer capture) is not an "edit". */
+  const handleDownAt = useRef(0)
+  const rotateDownAt = useRef(-1000)
+  const beginResize = (event: ReactPointerEvent<Element>, id: string, handle: string) => {
     if (!policy.layout || !canLayout || dragRef.current) return
     const l = laid.get(id)
-    if (!l) return
+    if (!l || l.locked) return
+    handleDownAt.current = event.timeStamp
     event.stopPropagation()
     event.preventDefault()
     rootRef.current?.setPointerCapture(event.pointerId)
     setDragging(true)
-    dragRef.current = { kind: 'resize', id, handle, startX: event.clientX, startY: event.clientY, start: { ...l.rect }, current: { ...l.rect } }
+    shiftHeld.current = event.shiftKey
+    dragRef.current = { kind: 'resize', id, handle, startX: event.clientX, startY: event.clientY, start: { ...l.rect }, rotation: l.rotation, aspect: metaSink.get(id)?.aspect ?? 'free', current: { ...l.rect } }
     worldRef.current?.classList.add('is-moving')
+  }
+  const beginRotate = (event: ReactPointerEvent<Element>, id: string) => {
+    if (!policy.layout || !canLayout || dragRef.current) return
+    const l = laid.get(id)
+    if (!l || l.locked || l.isGroup) return
+    event.stopPropagation()
+    event.preventDefault()
+    // a second press soon after the first is the double-click that turns the Block upright
+    const again = event.timeStamp - rotateDownAt.current < 400
+    handleDownAt.current = event.timeStamp
+    rotateDownAt.current = again ? -1000 : event.timeStamp
+    if (again) { resetRotation(id); return }
+    rootRef.current?.setPointerCapture(event.pointerId)
+    setDragging(true)
+    const p = screenPoint(event)
+    const center = centerOf(l.rect)
+    dragRef.current = { kind: 'rotate', id, center, startAngle: angleFrom(center, camera.toWorld(p.x, p.y)), start: l.rotation, current: l.rotation }
+  }
+  /** A hover affordance was pressed: its own `run`, or the Block action it names. */
+  const runAffordance = (meta: BlockMeta, affordance: HoverAffordance) => {
+    try {
+      if (affordance.run) { affordance.run(meta.context); return }
+      const action = meta.context.definition.actions?.find((candidate) => candidate.id === affordance.action)
+      if (action) void Promise.resolve(action.run(meta.context, store)).catch((error: unknown) => store.notify('error', `动作失败：${describeError(error)}`))
+    } catch (error) {
+      store.notify('error', `动作失败：${describeError(error)}`)
+    }
   }
 
   // ---- render
@@ -551,7 +669,9 @@ export function RenderHost(props: RenderHostProps) {
         data-testid={`aiws-canvas-block-${id}`}
         data-lod={lod}
         data-mount={state}
-        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, display: state === 'hidden' ? 'none' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
+        data-rotation={l.rotation || undefined}
+        data-locked={l.locked ? 'true' : undefined}
+        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, rotate: l.rotation ? `${l.rotation}deg` : undefined, display: state === 'hidden' ? 'none' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
       >
         {l.isGroup ? (
           <div className="aiws-group-chrome"><span className="aiws-group-title">{l.entity.title ?? l.entity.name ?? '分组'}</span></div>
@@ -564,16 +684,66 @@ export function RenderHost(props: RenderHostProps) {
       </div>,
     )
   }
-  const screenRects = [...selection].flatMap((id) => { const l = laid.get(id); return l ? [{ id, rect: camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : l.rect) }] : [] })
-  const bbox = screenRects.length > 0 ? screenRects.reduce((acc, { rect }) => ({ x: Math.min(acc.x, rect.x), y: Math.min(acc.y, rect.y), x2: Math.max(acc.x2, rect.x + rect.w), y2: Math.max(acc.y2, rect.y + rect.h) }), { x: Infinity, y: Infinity, x2: -Infinity, y2: -Infinity }) : null
-  const hoverRect = hover && !selection.has(hover) ? laid.get(hover) : undefined
-  const single = screenRects.length === 1 && policy.layout && canLayout ? screenRects[0] : null
-  const handles = single ? ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].map((h) => {
-    const r = single.rect
-    const cx = h.includes('w') ? r.x : h.includes('e') ? r.x + r.w : r.x + r.w / 2
-    const cy = h.includes('n') ? r.y : h.includes('s') ? r.y + r.h : r.y + r.h / 2
-    return { h, cx, cy }
+
+  // ---- overlay geometry (screen space): every state is drawn around the same (turned) rectangle
+  const shapeFor = (id: string): { rect: Rect; rotation: number } | null => {
+    const l = laid.get(id)
+    if (!l) return null
+    const rect = camera.rectToScreen(resizePreview?.id === id ? resizePreview.rect : l.rect)
+    return { rect, rotation: rotatePreview?.id === id ? rotatePreview.rotation : l.rotation }
+  }
+  const turned = (rect: Rect, rotation: number) => (rotation ? `rotate(${rotation} ${rect.x + rect.w / 2} ${rect.y + rect.h / 2})` : undefined)
+  const selected = [...selection].flatMap((id) => { const s = shapeFor(id); return s ? [{ id, ...s, locked: laid.get(id)?.locked ?? false }] : [] })
+  const screenBounds = (s: { rect: Rect; rotation: number }): Rect => {
+    if (!s.rotation) return s.rect
+    const pts = corners(s.rect, s.rotation)
+    const x = Math.min(...pts.map((p) => p.x)), y = Math.min(...pts.map((p) => p.y))
+    return { x, y, w: Math.max(...pts.map((p) => p.x)) - x, h: Math.max(...pts.map((p) => p.y)) - y }
+  }
+  const bbox = selected.length > 0 ? selected.map(screenBounds).reduce((acc, r) => ({ x: Math.min(acc.x, r.x), y: Math.min(acc.y, r.y), x2: Math.max(acc.x2, r.x + r.w), y2: Math.max(acc.y2, r.y + r.h) }), { x: Infinity, y: Infinity, x2: -Infinity, y2: -Infinity }) : null
+  const hoverLaid = hover && !selection.has(hover) ? laid.get(hover) : undefined
+  const hoverShape = hoverLaid ? shapeFor(hoverLaid.entity.entity_id) : null
+  const hoverMeta = hover ? metaSink.get(hover) : undefined
+  const single = selected.length === 1 && policy.layout && canLayout && !selected[0].locked && editing !== selected[0].id && !dragging ? selected[0] : null
+  const singleLaid = single ? laid.get(single.id) : undefined
+  const handles = single ? (['nw', 'ne', 'se', 'sw'] as const).map((h, i) => ({ h, ...corners(single.rect, single.rotation)[i] })) : []
+  const edges = single ? (['n', 'e', 's', 'w'] as const).map((h, i) => {
+    const pts = corners(single.rect, single.rotation)
+    return { h, a: pts[i], b: pts[(i + 1) % 4] }
   }) : []
+  const rotateAt = single && singleLaid && !singleLaid.isGroup ? (() => {
+    const sw = corners(single.rect, single.rotation)[3]
+    return rotatePoint({ x: sw.x - sizes.rotateOffset * 0.72, y: sw.y + sizes.rotateOffset * 0.72 }, sw, single.rotation)
+  })() : null
+  // affordances (§4.2): the hovered Block after the delay; on touch, the selected Block (no hover there)
+  const affordId = pointer === 'touch' ? (selected.length === 1 ? selected[0].id : null) : shownHover
+  const affordMeta = affordId && affordId === (pointer === 'touch' ? affordId : hover) && editing !== affordId && !dragging && !props.placing ? metaSink.get(affordId) : undefined
+  const affordShape = affordMeta && affordId ? shapeFor(affordId) : null
+  const affordances = (() => {
+    if (!affordMeta || !affordShape) return []
+    const box = screenBounds(affordShape)
+    const buttons = Math.min(box.w, box.h) >= AFFORD_BUTTON_MIN
+    const shown = affordMeta.affordances.filter((a) => (a.modes ?? ['edit']).includes(mode) && (a.kind === 'label' || buttons))
+    const labels = shown.filter((a) => a.kind === 'label').slice(0, 1)
+    const actions = shown.filter((a) => a.kind === 'button').slice(0, 2)
+    if (import.meta.env.DEV && shown.length > labels.length + actions.length) console.warn('[aiworkspace] at most one label and two buttons per Block', affordMeta.context.definition.type)
+    return [...labels, ...actions].map((a) => {
+      const at = a.at === 'top-left-out' ? { left: box.x, top: box.y - 6 } : a.at === 'top-right-in' ? { left: box.x + box.w - 6, top: box.y + 6 }
+        : a.at === 'bottom-out' ? { left: box.x + box.w / 2, top: box.y + box.h + 6 } : { left: box.x + box.w - 6, top: box.y + box.h - 6 }
+      return { a, at }
+    })
+  })()
+  const lockBadge = selected.length === 1 && selected[0].locked ? screenBounds(selected[0]) : null
+  /** What the near toolbar keeps clear of: the selection and, on a turned Block, its rotation handle. */
+  const nearBox = (b: { x: number; y: number; x2: number; y2: number }): Rect => {
+    const r = rotateAt ? sizes.rotate / 2 + 2 : 0
+    const x = rotateAt ? Math.min(b.x, rotateAt.x - r) : b.x
+    const y = rotateAt ? Math.min(b.y, rotateAt.y - r) : b.y
+    const x2 = rotateAt ? Math.max(b.x2, rotateAt.x + r) : b.x2
+    const y2 = rotateAt ? Math.max(b.y2, rotateAt.y + r) : b.y2
+    return { x, y, w: x2 - x, h: y2 - y }
+  }
+  const cutShapes = props.cutIds ? [...props.cutIds].flatMap((id) => { const s = shapeFor(id); return s ? [{ id, ...s }] : [] }) : []
   return (
     <div
       ref={rootRef}
@@ -584,6 +754,7 @@ export function RenderHost(props: RenderHostProps) {
       data-tool={props.placing ? 'place' : props.tool ?? 'select'}
       data-zoom={zoom.toFixed(2)}
       data-settled={settled}
+      data-pointer={pointer}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -592,33 +763,72 @@ export function RenderHost(props: RenderHostProps) {
       onWheel={onWheel}
       onContextMenu={onContextMenu}
       onPointerLeave={() => {
-        if (!dragRef.current && hover) setHover(null)
+        if (!dragRef.current) changeHover(null)
         if (ghostRef.current) ghostRef.current.style.visibility = 'hidden'
       }}
       onDoubleClick={(event) => {
         // pointer capture retargets clicks to the root: the double-click is resolved geometrically here
-        if (!policy.editContent || insideEditor(event.target)) return
+        if (!policy.editContent || insideEditor(event.target) || (event.target as Element).closest('.aiws-overlay-html') || event.timeStamp - handleDownAt.current < 600) return
         const p = screenPoint(event)
         const w = camera.toWorld(p.x, p.y)
         const hit = hitAt(w.x, w.y)
-        if (!hit || laid.get(hit.id)?.isGroup) return
+        const l = hit ? laid.get(hit.id) : undefined
+        if (!hit || !l || l.isGroup) return
+        // rich text opens with the caret where the double-click was (§4.4)
+        if (l.entity.view_type === 'richtext') requestIntent(hit.id, `caret:${event.clientX},${event.clientY}`)
         props.onEditingChange(hit.id)
         props.onSelectionChange(new Set([hit.id]))
       }}
     >
-      <div ref={worldRef} className="aiws-world" data-testid="aiws-world">{frameList}</div>
+      <BlockMetaContext.Provider value={metaSink}>
+        <div ref={worldRef} className="aiws-world" data-testid="aiws-world">{frameList}</div>
+      </BlockMetaContext.Provider>
       <svg className="aiws-overlay" data-testid="aiws-overlay">
-        {hoverRect && policy.select && (() => { const r = camera.rectToScreen(hoverRect.rect); return <rect className="aiws-hover-outline" x={r.x} y={r.y} width={r.w} height={r.h} /> })()}
+        {cutShapes.map(({ id, rect, rotation }) => <rect key={`cut:${id}`} className="aiws-cut-outline" data-testid={`aiws-cut-${id}`} x={rect.x} y={rect.y} width={rect.w} height={rect.h} transform={turned(rect, rotation)} />)}
+        {hoverShape && hoverLaid && policy.select && !dragging && (hoverMeta?.shape === 'ellipse'
+          ? <ellipse className="aiws-hover-outline" data-testid="aiws-hover-outline" cx={hoverShape.rect.x + hoverShape.rect.w / 2} cy={hoverShape.rect.y + hoverShape.rect.h / 2} rx={hoverShape.rect.w / 2} ry={hoverShape.rect.h / 2} transform={turned(hoverShape.rect, hoverShape.rotation)} />
+          : <rect className={`aiws-hover-outline${hoverLaid.isGroup ? ' is-group' : ''}`} data-testid="aiws-hover-outline" x={hoverShape.rect.x} y={hoverShape.rect.y} width={hoverShape.rect.w} height={hoverShape.rect.h} transform={turned(hoverShape.rect, hoverShape.rotation)} />)}
         <g ref={selectionLayerRef}>
-          {screenRects.map(({ id, rect }) => <rect key={id} className="aiws-selection-box" data-testid={`aiws-selection-${id}`} x={rect.x} y={rect.y} width={rect.w} height={rect.h} />)}
-          {handles.map(({ h, cx, cy }) => (
-            <rect key={h} className="aiws-handle" data-testid={`aiws-handle-${h}`} x={cx - HANDLE / 2} y={cy - HANDLE / 2} width={HANDLE} height={HANDLE} style={{ cursor: `${h}-resize` }} onPointerDown={(event) => beginResize(event, single!.id, h)} />
+          {selected.map(({ id, rect, rotation, locked }) => (
+            <rect key={id} className={`aiws-selection-box${selected.length > 1 ? ' is-member' : ''}${locked ? ' is-locked' : ''}${laid.get(id)?.isGroup ? ' is-group' : ''}`} data-testid={`aiws-selection-${id}`} x={rect.x} y={rect.y} width={rect.w} height={rect.h} transform={turned(rect, rotation)} />
+          ))}
+          {selected.length > 1 && bbox && <rect className="aiws-selection-group" data-testid="aiws-multi-selection" x={bbox.x} y={bbox.y} width={bbox.x2 - bbox.x} height={bbox.y2 - bbox.y} />}
+          {edges.map(({ h, a, b }) => (
+            <line key={h} className="aiws-edge" data-testid={`aiws-edge-${h}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} strokeWidth={sizes.edge} style={{ cursor: resizeCursor(h, single?.rotation ?? 0) }} onPointerDown={(event) => beginResize(event, single!.id, h)} />
+          ))}
+          {handles.map(({ h, x, y }) => (
+            <g key={h} className="aiws-handle-group" style={{ cursor: resizeCursor(h, single?.rotation ?? 0) }} onPointerDown={(event) => beginResize(event, single!.id, h)}>
+              <circle className="aiws-handle-hit" cx={x} cy={y} r={sizes.cornerHit / 2} />
+              <circle className="aiws-handle" data-testid={`aiws-handle-${h}`} cx={x} cy={y} r={sizes.corner / 2} />
+            </g>
           ))}
         </g>
         {marquee && <rect className="aiws-marquee" data-testid="aiws-marquee" x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.h} />}
       </svg>
+      <div className="aiws-overlay-html">
+        {rotateAt && single && (
+          <div className="aiws-rotate-handle" role="button" aria-label="旋转（Shift 吸附 15°，双击归零）" title="旋转（Shift 吸附 15°，双击归零）" data-testid="aiws-rotate-handle"
+            style={{ left: rotateAt.x, top: rotateAt.y, width: sizes.rotate, height: sizes.rotate }}
+            onPointerDown={(event) => beginRotate(event, single.id)}>
+            <RotateCw size={pointer === 'touch' ? 18 : 14} aria-hidden="true" />
+          </div>
+        )}
+        {lockBadge && <div className="aiws-lock-badge" data-testid="aiws-lock-badge" title="已锁定：不能移动、缩放或删除" style={{ left: lockBadge.x, top: lockBadge.y }}><Lock size={12} aria-hidden="true" /></div>}
+        {affordMeta && affordances.map(({ a, at }) => a.kind === 'label' ? (
+          <div key={a.id} className={`aiws-afford aiws-afford-label at-${a.at}`} data-testid={`aiws-afford-${a.id}`} style={at}>
+            {a.icon && <a.icon size={12} aria-hidden="true" />}<span className="aiws-afford-text">{a.label}</span>
+            {a.freshness && <FreshnessBadge entityId={a.freshness} showManual={false} />}
+          </div>
+        ) : (
+          <button key={a.id} type="button" className={`aiws-afford aiws-afford-button at-${a.at}`} data-testid={`aiws-afford-${a.id}`} aria-label={a.label} title={a.label} style={at}
+            onPointerDown={(event) => event.stopPropagation()} onClick={() => runAffordance(affordMeta, a)}>
+            {a.icon ? <a.icon size={14} aria-hidden="true" /> : a.label}
+          </button>
+        ))}
+        {hint && <div className="aiws-gesture-hint" data-testid="aiws-gesture-hint" style={{ left: hint.x + 14, top: hint.y + 14 }}>{hint.text}</div>}
+      </div>
       {props.placing && <div ref={ghostRef} className="aiws-place-ghost" data-testid="aiws-place-ghost" style={{ visibility: 'hidden' }}><span>{props.placing.label}</span></div>}
-      {bbox && props.renderNear && !resizePreview && !dragging && props.renderNear({ x: bbox.x, y: bbox.y, w: bbox.x2 - bbox.x, h: bbox.y2 - bbox.y })}
+      {bbox && props.renderNear && !resizePreview && !rotatePreview && !dragging && props.renderNear(nearBox(bbox))}
     </div>
   )
 }

@@ -2,9 +2,12 @@
  * of a Surface's Blocks, for visibility culling, hit testing, marquee selection and snapping. Hit
  * tests are geometric — no DOM event per Block. Self-implemented (no new dependency). */
 
+import { containsPoint } from '../geometry'
 import { intersects, type Rect } from './camera'
 
-export interface Item { id: string; rect: Rect; /** Stacking rank (BlockTree pre-order, higher on top): the paint order. */ paint: number }
+/** `rect` is the axis-aligned box the grid indexes; a rotated Block also gives its own rect and rotation
+ * (`turned`), and a point hits it only inside the rotated shape. */
+export interface Item { id: string; rect: Rect; /** Stacking rank (BlockTree pre-order, higher on top): the paint order. */ paint: number; turned?: { rect: Rect; rotation: number } }
 
 const CELL = 512
 
@@ -73,7 +76,10 @@ export class SpatialIndex {
   hit(x: number, y: number): Item | null {
     const candidates = this.query({ x, y, w: 0.001, h: 0.001 })
     let best: Item | null = null
-    for (const item of candidates) if (!best || item.paint > best.paint) best = item
+    for (const item of candidates) {
+      if (item.turned && !containsPoint(item.turned.rect, item.turned.rotation, x, y)) continue
+      if (!best || item.paint > best.paint) best = item
+    }
     return best
   }
 

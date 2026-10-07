@@ -49,7 +49,7 @@ pub fn bob() -> Caller {
 static KEY: AtomicU64 = AtomicU64::new(0);
 
 pub fn request(ws: &Workspace, ops: Value) -> Value {
-    json!({ "protocol_version": "0.1", "workspace_id": ws.workspace_id, "epoch": ws.epoch,
+    json!({ "protocol_version": "0.2", "workspace_id": ws.workspace_id, "epoch": ws.epoch,
             "idempotency_key": format!("t/{}", KEY.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })
 }
 
@@ -87,7 +87,7 @@ pub fn replay_fixture(ws: &mut Workspace, who: &Caller) {
     }
     let commits: Vec<Value> = serde_json::from_str(&text).unwrap();
     for (i, c) in commits.iter().enumerate() {
-        let req = json!({ "protocol_version": "0.1", "workspace_id": ws.workspace_id, "epoch": ws.epoch,
+        let req = json!({ "protocol_version": "0.2", "workspace_id": ws.workspace_id, "epoch": ws.epoch,
                           "idempotency_key": format!("fixture/{}", i + 1), "message": c["message"], "operations": c["operations"] });
         let r = ws.commit(&req, who, &CommitOpts::default());
         assert_eq!(r["status"], "accepted", "fixture commit {}: {r}", i + 1);

@@ -73,6 +73,7 @@ test('UI02/UI03 the data-source view edits data without a Block; three Blocks on
   await expect(page.getByTestId('aiws-canvas-block-blk-chart-2')).toContainText('华东')
   // removing a Block does not delete first-level data
   await page.getByTestId('aiws-canvas-block-blk-metric-2').click()
+  await page.getByTestId('aiws-near-more').click()
   await page.getByTestId('aiws-near-delete').click()
   await expect(page.getByTestId('aiws-canvas-block-blk-metric-2')).toHaveCount(0)
   const outline = await api.outline(ALICE, ws.workspace_id)
@@ -112,7 +113,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await expect(page.getByTestId('aiws-delete-confirm')).toHaveCount(0)
   // bob reads only the data tree: the same pre-check tells him nothing about the Blocks
   await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'data', capabilities: ['read', 'delete'] })
-  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.1', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
+  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.2', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
   expect(prepared.status).toBe('rejected')
   expect(prepared.errors[0].data.referrers).toEqual([])
   expect(prepared.errors[0].data.hidden_referrers).toBe(true)
@@ -252,6 +253,7 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   await kpi.hover()
   await expect(page.locator('.aiws-hover-outline')).toHaveCount(0) // selected wins over hovered
   // the declarative sample: an inspector field only in edit mode, a view-only action
+  await page.getByTestId('aiws-near-more').click()
   await page.getByTestId('aiws-near-inspector').click()
   await expect(page.getByTestId('aiws-decl-inspector')).toHaveAttribute('data-mode', 'edit')
   await expect(page.getByTestId('aiws-decl-inspector').getByLabel('主色')).toBeVisible()

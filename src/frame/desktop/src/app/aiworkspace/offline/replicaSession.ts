@@ -19,7 +19,7 @@
  * `EPOCH_MISMATCH` / `BASE_TOO_OLD` / lost access stop everything; nothing is discarded. */
 
 import { ServiceFailure, type AiwsClient } from '../api/client'
-import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, browserOffline } from '../api/session'
+import { OnlineWorkspaceSession, SESSION_STOP_CODES, SESSION_STOP_TEXT, browserOffline, refusedVersion, versionMismatch } from '../api/session'
 import type { CommitOptions, OfflineControls, ReadOk, SessionMode, SessionStatus, SubmissionEvent, WorkspaceSession } from '../api/session'
 import { TransportError } from '../api/transport'
 import {
@@ -38,6 +38,7 @@ const STOP_TEXT: Record<string, string> = {
   PERMISSION_DENIED: '你对此工作区的访问权限已被撤回：已停止发送，本机的待提交修改全部保留，可以查看和导出。',
   NOT_FOUND: '此工作区在后台已不存在，或你已无权访问：已停止发送，本机的待提交修改全部保留，可以查看和导出。',
   REPLICA_BROKEN: '本机副本无法应用后台已接受的提交：已停止同步，什么都没有丢弃。请导出待提交内容，然后删除本机副本并重新准备离线。',
+  VERSION_MISMATCH: '后台已升级到新版本的 AI Workspace，本页面是旧版本：已停止同步，本机的待提交修改全部保留。请刷新页面。',
 }
 
 function wait(ms: number, signal: AbortSignal): Promise<void> {
@@ -308,6 +309,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
     // 2. still allowed, same history?
     const info = await this.client.wsGetInfo(this.ws)
     if (!info.ok) { this.streamError(info.error.code, info.error.detail); return }
+    if (versionMismatch(info)) { this.stop('VERSION_MISMATCH'); return }
     if (info.epoch !== this.epoch) { this.stop('EPOCH_MISMATCH'); return }
     if (info.title !== this.wsInfo.title || info.capabilities.join() !== this.wsInfo.capabilities.join()) {
       this.wsInfo = { ...info, head_seq: this.confirmedSeq }
@@ -352,9 +354,9 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
       if (result.status === 'accepted') {
         // not removed here: the change stream brings it back by key — the only path that advances the confirmed layer
         await this.catchUp()
-      } else if (SESSION_STOP_CODES.has(result.code)) {
-        await this.mark(key, 'queued', null) // not judged: it was written against a history that is gone
-        this.stop(result.code)
+      } else if (SESSION_STOP_CODES.has(result.code) || refusedVersion(result.code, typeof result.detail === 'string' ? result.detail : undefined)) {
+        await this.mark(key, 'queued', null) // not judged: it was written against a history (or a protocol) that is gone
+        this.stop(refusedVersion(result.code, typeof result.detail === 'string' ? result.detail : undefined) ? 'VERSION_MISMATCH' : result.code)
       } else {
         await this.mark(key, result.status, result as unknown as Json)
       }
@@ -379,7 +381,12 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
           try {
             applied = await this.replica.call('applyRemote', page.changes)
           } catch (error) {
-            if (error instanceof ServiceFailure) { this.stop('REPLICA_BROKEN'); return }
+            if (error instanceof ServiceFailure) {
+              // a newer service's commits do not replay on this page's older kernel: that asks for a reload, not a new replica
+              const info = await this.client.wsGetInfo(this.ws).catch(() => null)
+              this.stop(info?.ok && versionMismatch(info) ? 'VERSION_MISMATCH' : 'REPLICA_BROKEN')
+              return
+            }
             throw error
           }
           this.clearStorageIssue()

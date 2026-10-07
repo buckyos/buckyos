@@ -189,6 +189,11 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     setDraft(anchor)
     if (store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
   }, [store])
+  const [annotationFilter, setAnnotationFilter] = useState<string | null>(null)
+  const showAnnotations = useCallback((targetId: string | null) => {
+    setAnnotationFilter(targetId)
+    if (targetId && store.userState.get('mode') !== 'sources') store.userState.set('ui:side', 'annotations')
+  }, [store])
   const renderCell = useCallback((cellId: string, depth: number) => {
     const embedded = store.outline.get(cellId)
     if (!embedded || embedded.deleted) return <div className="aiws-warning">嵌入的 Block 不存在或已删除（{cellId}）</div>
@@ -203,7 +208,8 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   const ui = useMemo<WorkspaceUi & { draft: CapturedAnchor | null; clearDraft: () => void }>(() => ({
     entities, byId: new Map(entities.map((entity) => [entity.entity_id, entity])), annotations, openEntity,
     annotate: canComment ? annotate : null, activeAnnotation, setActiveAnnotation, renderCell, draft, clearDraft: () => setDraft(null),
-  }), [entities, annotations, openEntity, annotate, canComment, activeAnnotation, renderCell, draft])
+    annotationFilter, showAnnotations,
+  }), [entities, annotations, openEntity, annotate, canComment, activeAnnotation, renderCell, draft, annotationFilter, showAnnotations])
 
   const runOffline = useCallback((label: string, work: () => Promise<void>) => {
     setOfflineBusy(label)

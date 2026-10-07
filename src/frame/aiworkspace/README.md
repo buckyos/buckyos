@@ -59,7 +59,11 @@ collection); `canvas-content` is a system folder under `data` holding one folder
 Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
 take Cells and groups only. A Surface names its content folder (`content_folder_id`); the folder may point back
 (`surface_id`). A Surface may carry `icon`: the id of a client-side preset icon (`[a-z][a-z0-9-]{0,31}`, Surfaces
-only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. `placement` is `{ x, y, w, h }` relative to the parent; stacking order is `order_key`. Free
+only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
+`[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
+the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
+`PROTOCOL_VERSION` is 0.2 and `FORMAT_VERSION` 0.3 since these two keys (older kernels would refuse them on
+replay or import); stores and packages of format 0.2 are refused like any other version. Free
 notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).
@@ -79,7 +83,7 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `0.2`; packages of `0.1` are refused with `UNSUPPORTED_VERSION` (no migration).
+Format version is `0.3`; packages of an older format (`0.1`, `0.2`) are refused with `UNSUPPORTED_VERSION` (no migration).
 
 ## Wish runs (许愿格 v0.2)
 
