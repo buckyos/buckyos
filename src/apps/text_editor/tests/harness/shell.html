@@ -3,6 +3,6 @@ import { AppFrameHost } from 'buckyos/app-frame'
 const iframe = document.querySelector('#app'), nonce = crypto.randomUUID()
 const request = { requestId: crypto.randomUUID(), source: { kind:'cyfs-path',path:'cyfs:///home/test-user/notes/demo.md' } }
 window.host = new AppFrameHost({target:()=>iframe.contentWindow,origin:location.origin,init:{nonce,windowId:'test-window',theme:{mode:'light'},locale:'en',formFactor:'desktop',launch:request,shellCapabilities:['content.open']},onTitle:(title,dirty)=>document.querySelector('#title').textContent=(dirty?'● ':'')+title,onRequestClose:()=>iframe.remove()})
-iframe.src='/open#bfp='+nonce
+iframe.src='/#bfp='+nonce
 document.querySelector('#close').onclick=async()=>{if(await window.host.beforeClose()==='allow')iframe.remove()}
 </script></body></html>

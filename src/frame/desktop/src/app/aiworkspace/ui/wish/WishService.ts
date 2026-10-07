@@ -137,6 +137,7 @@ class HtmlExecutor implements Executor {
   private readonly defId: string
   private readonly wish: EntityEnvelope
   private mountPromise: Promise<HtmlRuntime> | null = null
+  private disposed = false
 
   constructor(id: string, store: WorkspaceStore, defId: string, wish: EntityEnvelope) {
     this.id = id
@@ -146,17 +147,22 @@ class HtmlExecutor implements Executor {
   }
 
   private async mount(): Promise<HtmlRuntime> {
-    if (this.runtime) return this.runtime
+    if (this.disposed) throw new Error('执行器已卸载')
     this.mountPromise ??= (async () => {
-      const def = await this.store.session.read<KeyedContent<{ html?: { html: string; css?: string; js?: string } }>>(this.defId)
+      const def = await this.store.session.read<KeyedContent<{ html?: { html: string; css?: string; js?: string; api_version?: number } }>>(this.defId)
+      if (this.disposed) throw new Error('执行器已卸载')
       const html = def.content.payload.html
       if (!html) throw new Error(`定义 ${this.defId} 不是 HTML 定义`)
       const cell: EntityEnvelope = { ...this.wish, entity_id: `exec:${this.wish.entity_id}`, type_id: 'buckyos.cell' }
       const payload: CellPayload = { view: { type: 'html' }, source_ref: { entity_id: this.wish.entity_id }, title: this.wish.title ?? undefined }
       const runtime = new HtmlRuntime(html, makeBridge(this.store, { cell, payload, keyRevs: {}, source: this.wish, mode: 'edit', extra: { role: 'executor', wish_id: this.wish.entity_id } }))
-      runtime.onCrash = (message) => this.store.notify('error', `执行器出错：${message}`)
-      await runtime.mount(null)
       this.runtime = runtime
+      runtime.onCrash = (message) => {
+        this.runtime = null
+        this.mountPromise = null
+        this.store.notify('error', `执行器出错：${message}`)
+      }
+      await runtime.mount(null)
       return runtime
     })()
     try { return await this.mountPromise } catch (error) { this.mountPromise = null; throw error }
@@ -179,7 +185,7 @@ class HtmlExecutor implements Executor {
     return { ...result, warnings: result.warnings ?? [], assumptions: result.assumptions ?? [], summary: result.summary ?? '' }
   }
 
-  dispose() { this.runtime?.dispose(); this.runtime = null }
+  dispose() { this.disposed = true; this.runtime?.dispose(); this.runtime = null; this.mountPromise = null }
 }
 
 // ---- the service

@@ -2,6 +2,34 @@ import { expect, editCell, grantPersistence, openCard, openDesktop, prepareOffli
 
 const ALICE = 'tok-alice'
 
+test('Block snapshots are cached and displayed after an offline cold start', async ({ page, context, api, net }) => {
+  const ws = await api.sample(ALICE, `snapshot-offline ${Date.now()}`)
+  const bytes = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><rect width="40" height="40" fill="red"/></svg>')
+  const begin = await api.rpc(ALICE, 'asset.begin_upload', { workspace_id: ws.workspace_id, size: bytes.length })
+  await fetch(`${api.base}/upload/${begin.upload_id}`, { method: 'PUT', headers: { authorization: `Bearer ${ALICE}` }, body: bytes })
+  const asset = await api.rpc(ALICE, 'asset.finish_upload', { workspace_id: ws.workspace_id, upload_id: begin.upload_id })
+  expect((await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: 'snapshot-def', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zz', payload: { def_id: 'test.snapshot', kind: 'html', allow_no_source: true, html: { html: '<div/>', js: 'aiws.ready()' } } },
+    { op: 'entity.create', entity_id: 'snapshot-cell', type_id: 'buckyos.cell', parent_id: 'surface-main', order_key: 'zz', payload: { view: { type: 'html' }, def_ref: { entity_id: 'snapshot-def' }, config: { snapshot: { object_id: asset.object_id } } } },
+  ])).status).toBe('accepted')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'canvas:mode': 'view' } })
+  await prepareOffline(page, net, ALICE, ws.workspace_id)
+  await serviceWorkerReady(page)
+  await expect(page.getByTestId('aiws-prepare-report')).toContainText('资产已缓存 2 个')
+  await net.down()
+  await context.setOffline(true)
+  await page.close()
+  const cold = await context.newPage()
+  await cold.goto(`${net.origin}/?scenario=normal`)
+  await cold.getByTestId('desktop-app-aiworkspace').click()
+  await expect(cold.getByTestId('aiws-prepared-list')).toBeVisible({ timeout: 30_000 })
+  await openCard(cold, ws.workspace_id)
+  const snapshot = cold.getByTestId('aiws-html-static-snapshot-cell').locator('img')
+  await expect(snapshot).toBeVisible()
+  await expect.poll(() => snapshot.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(40)
+  await expect(cold.locator('.aiws-html-frame')).toHaveCount(0)
+})
+
 test('V15 prepare offline, cut the network, edit, close, cold start offline, reconnect: accepted exactly once', async ({ page, context, api, net }) => {
   const ws = await api.sample(ALICE, `v15 ${Date.now()}`)
   await prepareOffline(page, net, ALICE, ws.workspace_id)

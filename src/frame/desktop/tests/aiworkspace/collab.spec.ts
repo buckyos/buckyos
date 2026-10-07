@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test'
+import type {} from '../../src/app/aiworkspace/api/testHooks'
 import { expect, expectAllCommitted, openWorkspace, test, type Api } from './fixtures'
 
 const ALICE = 'tok-alice'
@@ -36,16 +37,6 @@ async function expectEditorMatchesBackend(page: Page, api: Api, token: string, w
   await expectAllCommitted(page)
   await expect.poll(async () => JSON.stringify(await editorJson(page, entityId)) === JSON.stringify(await api.ast(token, workspaceId, entityId)), { timeout: 15_000 }).toBe(true)
   expect(await editorJson(page, entityId)).toEqual(await api.ast(token, workspaceId, entityId))
-}
-
-declare global {
-  interface Window {
-    __aiwsTestHooks?: {
-      editors: Record<string, () => unknown>
-      canonicalize?: (ast: unknown) => unknown
-      replica?: { failTransactions(kind: 'quota' | 'error', count: number): Promise<void>; killWorker(): void }
-    }
-  }
 }
 
 test('(c) Chinese IME input into the rich text survives a reload; backend AST equals the editor document', async ({ page, api }) => {

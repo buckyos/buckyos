@@ -245,6 +245,7 @@ test('UI19 an HTML extension Block reads data, submits through the store (undoab
     });
     window.__run = function (p) { return new Promise(function (resolve) { document.getElementById('out').textContent = 'running'; aiws.on('ping', function () { return 1; }); resolve(); }); };
     document.getElementById('out').textContent = 'ready';
+    aiws.ready();
   `
   const r = await api.commit(ALICE, ws, [
     { op: 'entity.create', entity_id: 'def-ext', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zx', payload: { def_id: 'test.ext', kind: 'html', title: '测试扩展', html: { html: '<div id="out">init</div>', js } } },

@@ -344,6 +344,9 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
         let mut content = object["content"].as_object().cloned().unwrap_or_default();
         let mut payload = content.clone();
         if known {
+            if let Some(object_id) = types::asset_object_id(type_id, &content) {
+                assets.push(object_id.to_string());
+            }
             match type_id {
                 TYPE_TABLE => {
                     let records = content.remove("records").unwrap_or(Value::Null);
@@ -371,11 +374,6 @@ pub fn load_ops(src: &dyn ObjectSource, content_root: &str, collab: &dyn Fn(&str
                             // a plain import builds a new lineage: no CRDT history travels with a share package
                             payload.insert("content".into(), ast);
                         }
-                    }
-                }
-                TYPE_ASSET => {
-                    if let Some(o) = content.get("object_id").and_then(Value::as_str) {
-                        assets.push(o.to_string());
                     }
                 }
                 _ => {}

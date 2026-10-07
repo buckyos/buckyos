@@ -53,7 +53,7 @@
         "open": {
           "entry": {
             "type": "web",
-            "path": "/open?src={source}&mode={mode}&session={session}"
+            "path": "/?src={source}&mode={mode}&session={session}"
           },
           "modes": [
             "view",
@@ -79,7 +79,7 @@
         "open": {
           "entry": {
             "type": "web",
-            "path": "/open?src={source}&mode={mode}&session={session}"
+            "path": "/?src={source}&mode={mode}&session={session}"
           },
           "modes": [
             "view",

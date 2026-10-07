@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 const path = '/home/test-user/notes/demo.md'
-const open = async (page: Page) => { await page.goto('/open?src=' + encodeURIComponent('cyfs://' + path)); await expect(page.locator('.cm-content')).toContainText('Hello') }
+const open = async (page: Page) => { await page.goto('/?src=' + encodeURIComponent('cyfs://' + path)); await expect(page.locator('.cm-content')).toContainText('Hello') }
 const replace = async (page: Page, text: string) => { const editor = page.locator('.cm-content').first(); await editor.click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText(text) }
 const state = async (page: Page) => (await page.request.get('http://127.0.0.1:3260/test/state')).json()
 const action = async (page: Page, name: string) => { await page.getByRole('button', { name: 'Actions', exact: true }).first().click(); await page.getByRole('menuitem', { name, exact: true }).click() }
@@ -48,7 +48,7 @@ test('kept buffer recovers in another browser context', async ({ page, browser }
   await page.getByRole('button', { name: 'Keep changes', exact: true }).click()
   await expect(page.locator('.cm-content')).toHaveCount(0)
   const context = await browser.newContext(); const other = await context.newPage()
-  await other.goto('http://127.0.0.1:5178/open?src=' + encodeURIComponent('cyfs://' + path))
+  await other.goto('http://127.0.0.1:5178/?src=' + encodeURIComponent('cyfs://' + path))
   await other.getByRole('button', { name: 'Restore', exact: true }).click()
   await expect(other.locator('.cm-content')).toContainText('Cross device')
   await context.close()
@@ -57,7 +57,7 @@ test('clean file refreshes after external changes and binary is refused', async 
   await open(page)
   await page.request.post('http://127.0.0.1:3260/test/modify', { data: { path, text: '# Changed outside\n' } })
   await expect(page.locator('.cm-content')).toContainText('Changed outside', { timeout: 20000 })
-  await page.goto('/open?src=cyfs:///home/test-user/notes/binary.bin')
+  await page.goto('/?src=cyfs:///home/test-user/notes/binary.bin')
   await expect(page.getByRole('status')).toContainText('not a text file')
 })
 
@@ -99,7 +99,7 @@ test('offline editing keeps local prewrite and reconnect synchronizes', async ({
 })
 
 test('view mode stays read only and Save as creates a separate file', async ({ page }) => {
-  await page.goto('/open?src=' + encodeURIComponent('cyfs://' + path) + '&mode=view')
+  await page.goto('/?src=' + encodeURIComponent('cyfs://' + path) + '&mode=view')
   await expect(page.locator('.cm-content')).toHaveAttribute('contenteditable', 'false')
   await expect(page.getByRole('button', { name: 'Convert to UTF-8 and edit', exact: true })).toHaveCount(0)
   await action(page, 'Save as…')
@@ -137,4 +137,16 @@ test('primary window restores a kept workspace; secondary window starts empty', 
   await page.waitForFunction(() => (window as any).editorWorkspace)
   await expect(page.locator('.cm-content')).toContainText('Recover my workspace')
   await page.screenshot({ path: '/tmp/text-editor-workspace.png', fullPage: true })
+})
+
+test('expired sign-in shows a banner that can be muted and clears when the session returns', async ({ page }) => {
+  await open(page); await replace(page, '# Still editable while signed out')
+  await page.evaluate(() => { const w = (window as any).editorWorkspace; w.sessionLost = true; w.emit() })
+  const banner = page.getByRole('alert')
+  await expect(banner).toContainText('Your sign-in has expired')
+  await expect(page.locator('.cm-content')).toContainText('Still editable while signed out')
+  await banner.getByRole('button', { name: 'Later' }).click()
+  await expect(page.getByRole('alert')).toHaveCount(0)
+  await page.evaluate(() => { const w = (window as any).editorWorkspace; w.sessionLost = false; w.sessionLostMuted = false; w.emit(); w.sessionLost = true; w.emit() })
+  await expect(page.getByRole('alert')).toContainText('Your sign-in has expired')
 })

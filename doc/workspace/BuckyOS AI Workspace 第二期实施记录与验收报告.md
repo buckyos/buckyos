@@ -5,6 +5,8 @@
 > 读者：审查第二期交付、或在其上继续开发的人。
 >
 > 本文只记录**已经运行过的事实**：每一项结论后面是产生它的命令或测试。没有运行过的，写在 §7“未完成与未验证”；本期接受而不处理的风险在 §8。
+>
+> §1–§6 保留初版验收记录；后续 Block Review 修复与回归结果见 §9。
 
 ## 1. 结论
 
@@ -148,8 +150,45 @@ PATH=/tmp/dev-cache-root/cargo/bin:$PATH AIWS_BIN=<cargo 构建的 aiworkspace> 
 
 另记两项实现层面的已知弱点：`doc.restore_version` 的回滚对富文本按块级差分生成操作，长文档一次回滚可能是很多块操作；`kept_manual` 结果的内容没有重新生成，鲜度“最新”表示用户的决定而不是内容与输入一致。
 
+## 9. Block Review 修复
+
+本次修复覆盖 Review 提出的七项问题：
+
+| 问题 | 修复 | 回归证据 |
+| --- | --- | --- |
+| HTML 快照只有配置中的 object id，未纳入资产链路 | `config.snapshot` 保留 `{ object_id, media_type, size }`，通过已有资产校验归一化并建立 Cell → asset 引用；物化、导出闭包、权限、离线 bootstrap、保留与撤销都处理该引用 | `store/tests/packages.rs` 的 `block_snapshots_are_assets_in_grants_packages_and_replicas`；`blocks.spec.ts` 协作者读取及包导入；`offline.spec.ts` 快照断网冷启动 |
+| 富文本嵌入每层从深度 0 开始 | `RenderContext.depth` 逐层传递，超过 3 层停止展开 | `blocks.spec.ts` 六层嵌入只展开到上限 |
+| 自定义 Inspector 抛错导致工作区崩溃 | 属性面板使用现有 `BlockBoundary`，错误局限在面板内，可重试 | `blocks.spec.ts` 实际注册抛错 Inspector，并继续操作其他 Block |
+| HTML 启动超时后原 Promise 不结束 | 超时、崩溃和 dispose 都拒绝原始 mount 与等待中的请求、释放 iframe；重试创建新 runtime；许愿执行器同步管理生命周期 | `blocks.spec.ts` 启动超时、就绪前卸载、崩溃后重新运行 |
+| 文档内 BlockDef 约束被通用 HTML/声明式注册覆盖 | 解析 `def_ref` 后按 kind、accepts、allow_no_source、config_schema、HTML api_version 校验；不满足时通用只读回退 | `blocks.spec.ts` 五组不合法定义/绑定用例；原声明式 demo 用例 |
+| 就近动作拿到伪造的不完整上下文 | 提取 `useBlockContext`，宿主、Inspector 和动作共享真实 payload、keyRevs、定义与模式/权限状态 | `blocks.spec.ts` “打开定义”、携带配置及 expect rev 的动作、查看模式隐藏写动作 |
+| 注册表更新没有使已挂载 Block 重新解析 | 注册表 revision 纳入解析依赖与错误边界重置条件 | `blocks.spec.ts` 注销后回退、重新注册后恢复 |
+
+`config_schema` 使用现有 Zod 的 `fromJSONSchema`，依赖下限更新为 4.4.3；只支持该转换器支持的 JSON Schema 子集，转换失败会显示 `invalid_definition`。快照是宿主保留字段，不参与扩展配置 Schema 校验。后台操作协议与 SQLite 表结构没有增加；已重建 WASM 产物，使浏览器副本使用同一份资产引用逻辑。共享 Rust 客户端和 Web SDK 未定义 Cell 配置结构，无对应类型变更。
+
+原 UI10 测试改为实际注册抛错 Renderer；HTML API 测试补齐 `aiws.ready()` 握手；协作测试使用源码的调试接口类型。锁的获取和续约继续由既有编辑器负责，保留未持锁时的“开始编辑”入口。
+
+本轮实际验证结果：
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo test -p aiworkspace-core -p aiworkspace-store -p aiworkspace` | 76 passed，0 failed，1 个已有性能探测 ignored |
+| `PATH=/tmp/dev-cache-root/cargo/bin:$PATH bash frame/aiworkspace/wasm/build.sh`（在 `src/`） | 重建成功 |
+| `pnpm check`、`pnpm exec eslint src/app/aiworkspace tests/aiworkspace`、`pnpm build` | 全部成功；Vite 保留大 chunk 提示 |
+| 全套 `pnpm exec playwright test --config=playwright.aiworkspace.config.ts` | 66 项中 64 passed；两个写锁入口用例失败，原因是统一只读判断隐藏了编辑器的取得写锁入口；1,000 / 5,000 Block 和多 Surface 探针均通过 |
+| 修复锁入口后的针对性复测（下列命令） | **17 passed (1.4m)**：全部 14 项 Block 回归、上述两项失败用例、快照离线冷启动 |
+
+```bash
+# 在 src/frame/desktop
+pnpm exec playwright test --config=playwright.aiworkspace.config.ts \
+  blocks.spec.ts features.spec.ts:17 offline.spec.ts:5 offline.spec.ts:189
+```
+
+验证环境仍为独立 aiworkspace 后台 + Desktop 壳模拟运行时、Chromium；未运行完整 `buckyos-build.py`、全 Rust workspace 测试或真实 Zone / DV。
+
 ## 修订记录
 
 | 日期 | 内容 |
 | --- | --- |
 | 2026-10-06 | 初版：M0–M4 实施记录、后台与 Desktop 验收结果、冻结的性能门槛与探针数据、未完成项与风险 |
+| 2026-10-06 | Block Review 七项修复、扩展契约与快照资产说明、针对性回归与原测试修正 |

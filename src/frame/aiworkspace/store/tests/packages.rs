@@ -346,6 +346,57 @@ fn v22_assets() {
     assert_eq!(h2.lock().unwrap().read(&alice(), "diagram", None).unwrap()["content"]["availability"], "missing");
 }
 
+#[test]
+fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
+    let env = env();
+    let id = project(&env);
+    let h = env.svc.workspace(&id).unwrap();
+    let mut ws = h.lock().unwrap();
+    let bytes = b"<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"4\" height=\"4\"/>";
+    let staged = ws.stage_asset(&alice(), bytes).unwrap();
+    let object_id = staged["object_id"].as_str().unwrap();
+    let create = |snapshot: Value| json!([{ "op": "entity.create", "entity_id": "snapshot-cell", "type_id": "buckyos.cell",
+        "parent_id": "surface-main", "order_key": "zz", "payload": { "view": { "type": "frame" }, "config": { "snapshot": snapshot } } }]);
+    assert_eq!(code(&commit(&mut ws, &alice(), create(json!({ "object_id": "cyfile:00ff" })))), "DEPENDENCY_UNAVAILABLE");
+    ok(&mut ws, &alice(), create(json!({ "object_id": object_id, "media_type": "text/plain", "size": 1 })));
+    let read = ws.read(&alice(), "snapshot-cell", None).unwrap();
+    let snapshot = &read["content"]["payload"]["config"]["snapshot"];
+    assert_eq!(snapshot["size"], bytes.len());
+    assert_eq!(snapshot["media_type"], staged["media_type"]);
+    ws.grant(&alice(), "bob", Some("data"), &["read".into()]).unwrap();
+    assert!(!ws.can_read_asset(&bob(), object_id).unwrap());
+    ws.grant(&alice(), "bob", Some("surface-main"), &["read".into()]).unwrap();
+    assert!(ws.can_read_asset(&bob(), object_id).unwrap());
+    assert_eq!(ws.verify_refs().unwrap()["ok"], true);
+    let replica = ws.replica_bootstrap(&alice()).unwrap();
+    let db = rusqlite::Connection::open(replica["path"].as_str().unwrap()).unwrap();
+    assert_eq!(db.query_row("SELECT size FROM assets WHERE object_id = ?1", [object_id], |r| r.get::<_, usize>(0)).unwrap(), bytes.len());
+    assert_eq!(db.query_row("SELECT src_entity_id FROM refs WHERE dst_object_id = ?1 AND kind = 'asset'", [object_id], |r| r.get::<_, String>(0)).unwrap(), "snapshot-cell");
+    env.advance(25 * 3600 * 1000);
+    assert_eq!(ws.list_unretained(&alice()).unwrap()["unretained"], json!([]));
+    let exported = ws.export(&alice(), "share", true).unwrap();
+    assert_eq!(exported["manifest"]["self_contained"], true);
+    assert!(exported["manifest"]["objects"].as_array().unwrap().iter().any(|o| o["id"] == object_id));
+    let other = common::env();
+    let imported = other.svc.import(&bob(), std::path::Path::new(exported["path"].as_str().unwrap()), "new", false).unwrap();
+    let h2 = other.svc.workspace(imported["workspace_id"].as_str().unwrap()).unwrap();
+    let imported_ws = h2.lock().unwrap();
+    assert!(imported_ws.can_read_asset(&bob(), object_id).unwrap());
+    assert_eq!(aiworkspace_core::materialize::ObjectSource::get_file(imported_ws.objects.as_ref(), object_id).unwrap(), bytes);
+    assert_eq!(imported_ws.verify_refs().unwrap()["ok"], true);
+    let without_assets = ws.export(&alice(), "share", false).unwrap();
+    assert_eq!(without_assets["manifest"]["self_contained"], false);
+    assert!(without_assets["manifest"]["missing"].as_array().unwrap().iter().any(|o| o["id"] == object_id));
+    let removed = ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "snapshot-cell", "keys": [
+        { "key": "config", "value": {}, "expect": { "rev": read["content"]["key_revs"]["config"] } }
+    ] }]));
+    assert!(!ws.can_read_asset(&bob(), object_id).unwrap());
+    let undo_request = json!({ "epoch": ws.epoch, "commit_id": removed["commit_id"], "idempotency_key": "undo-snapshot-removal" });
+    let undo = ws.undo(&alice(), &undo_request);
+    assert_eq!(undo["status"], "accepted");
+    assert!(ws.can_read_asset(&bob(), object_id).unwrap());
+}
+
 fn with_source(env: &mut Env) -> Arc<GeneratedSource> {
     let src = Arc::new(GeneratedSource::default());
     env.svc.sources.register("fixture", src.clone());

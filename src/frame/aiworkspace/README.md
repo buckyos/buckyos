@@ -55,6 +55,14 @@ notes are annotations without `target`. A Cell's `view.type` is any renderer id 
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).
 
+`Cell.config.snapshot` is reserved for a static Block preview: `{ object_id, media_type, size }`.
+The core verifies it through the AssetRef upload path and normalizes media type and size from the uploaded
+content. It creates an `asset` reference owned by the Cell, so access follows the Cell's read permission.
+Materialization, package closure, retention, replica bootstrap and undo include this reference. A package
+without the snapshot bytes lists the asset in `missing`; a self-contained package includes the bytes.
+The Desktop validates renderer-specific definition metadata; the core keeps accepting unknown renderers
+and their configuration for generic fallback.
+
 Results of a wish carry a **dependency record** (`entity.set_derived`): wish, run, executor and the read-set
 versions; it is stored in `entities.derived_json`, indexed as `derived` / `produced` references (never blocking
 deletion), travels in packages (rebased onto the package's own versions on import; a stale result stays stale)

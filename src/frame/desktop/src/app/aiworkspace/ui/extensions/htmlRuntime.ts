@@ -25,7 +25,7 @@ export interface HostBridge {
   notify: (text: string) => void
 }
 
-export interface HtmlSource { html: string; css?: string; js?: string }
+export interface HtmlSource { html: string; css?: string; js?: string; api_version?: number }
 
 type Pending = { resolve: (value: Json) => void; reject: (error: Error) => void; timer: number }
 
@@ -77,7 +77,9 @@ export class HtmlRuntime {
   private readonly pending = new Map<number, Pending>()
   private seq = 0
   private readyResolve: (() => void) | null = null
-  private readyPromise: Promise<void>
+  private readyReject: ((error: Error) => void) | null = null
+  private readyTimer: number | null = null
+  private readonly readyPromise: Promise<void>
   private disposed = false
   private readonly bridge: HostBridge
   private readonly source: HtmlSource
@@ -86,9 +88,11 @@ export class HtmlRuntime {
   onCrash: ((message: string) => void) | null = null
 
   constructor(source: HtmlSource, bridge: HostBridge) {
+    if ((source.api_version ?? 1) !== HTML_API_VERSION) throw new Error(`不支持 HTML API 版本 ${source.api_version}`)
     this.source = source
     this.bridge = bridge
-    this.readyPromise = new Promise((resolve) => { this.readyResolve = resolve })
+    this.readyPromise = new Promise((resolve, reject) => { this.readyResolve = resolve; this.readyReject = reject })
+    void this.readyPromise.catch(() => undefined)
   }
 
   /** Build the document: markup + style + bootstrap + the definition's script. */
@@ -102,6 +106,7 @@ export class HtmlRuntime {
 
   /** Mount into `container` (visible) or into the body hidden (headless executor). */
   mount(container: HTMLElement | null): Promise<void> {
+    if (this.disposed) return Promise.reject(new Error('扩展已卸载'))
     if (this.frame) return this.readyPromise
     const frame = document.createElement('iframe')
     frame.className = 'aiws-html-frame'
@@ -111,26 +116,35 @@ export class HtmlRuntime {
     frame.srcdoc = this.document()
     ;(container ?? document.body).appendChild(frame)
     this.frame = frame
-    const timer = window.setTimeout(() => { if (this.readyResolve) { this.readyResolve = null; this.failAll(new Error('扩展在 8 秒内没有报告就绪（无响应）')) } }, READY_TIMEOUT_MS)
-    return this.readyPromise.then(() => window.clearTimeout(timer))
+    this.readyTimer = window.setTimeout(() => this.failAll(new Error('扩展在 8 秒内没有报告就绪（无响应）')), READY_TIMEOUT_MS)
+    return this.readyPromise
   }
 
   get ready(): Promise<void> { return this.readyPromise }
 
   private failAll(error: Error) {
+    this.rejectWaiting(error)
+    this.dispose()
+    this.onCrash?.(error.message)
+  }
+
+  private rejectWaiting(error: Error) {
+    this.readyReject?.(error)
+    this.readyResolve = null
+    this.readyReject = null
+    if (this.readyTimer !== null) window.clearTimeout(this.readyTimer)
+    this.readyTimer = null
     for (const [, waiter] of this.pending) { window.clearTimeout(waiter.timer); waiter.reject(error) }
     this.pending.clear()
-    this.readyPromise = Promise.reject(error)
-    this.readyPromise.catch(() => undefined)
-    this.onCrash?.(error.message)
   }
 
   /** Ask the extension to handle `name` (e.g. `analyze`, `execute`, `render`). */
   request(name: string, payload: Json, timeoutMs = CALL_TIMEOUT_MS): Promise<Json> {
     if (this.disposed) return Promise.reject(new Error('扩展已卸载'))
     return this.readyPromise.then(() => new Promise<Json>((resolve, reject) => {
+      if (this.disposed) { reject(new Error('扩展已卸载')); return }
       const id = ++this.seq
-      const timer = window.setTimeout(() => { this.pending.delete(id); reject(new Error(`扩展处理 ${name} 超时（${Math.round(timeoutMs / 1000)} 秒无响应）`)) }, timeoutMs)
+      const timer = window.setTimeout(() => this.failAll(new Error(`扩展处理 ${name} 超时（${Math.round(timeoutMs / 1000)} 秒无响应）`)), timeoutMs)
       this.pending.set(id, { resolve, reject, timer })
       this.frame?.contentWindow?.postMessage({ aiws: this.nonce, type: 'request', id, name, payload }, '*')
     }))
@@ -145,7 +159,11 @@ export class HtmlRuntime {
     if (!message || message.aiws !== this.nonce || event.source !== this.frame?.contentWindow) return
     switch (message.type) {
       case 'ready':
-        if (this.readyResolve) { this.readyResolve(); this.readyResolve = null }
+        if (this.readyResolve) {
+          this.readyResolve(); this.readyResolve = null; this.readyReject = null
+          if (this.readyTimer !== null) window.clearTimeout(this.readyTimer)
+          this.readyTimer = null
+        }
         return
       case 'response': {
         const waiter = message.id !== undefined ? this.pending.get(message.id) : undefined
@@ -158,7 +176,7 @@ export class HtmlRuntime {
         return
       }
       case 'crash':
-        this.onCrash?.(String((message.payload as { message?: string } | undefined)?.message ?? 'error'))
+        this.failAll(new Error(String((message.payload as { message?: string } | undefined)?.message ?? 'error')))
         return
       case 'notify':
         this.bridge.notify(String((message.payload as { text?: string } | undefined)?.text ?? ''))
@@ -197,8 +215,7 @@ export class HtmlRuntime {
     if (this.disposed) return
     this.disposed = true
     window.removeEventListener('message', this.listener)
-    for (const [, waiter] of this.pending) { window.clearTimeout(waiter.timer); waiter.reject(new Error('扩展已卸载')) }
-    this.pending.clear()
+    this.rejectWaiting(new Error('扩展已卸载'))
     this.frame?.remove()
     this.frame = null
   }

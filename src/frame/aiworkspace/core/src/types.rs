@@ -155,7 +155,7 @@ fn view_source_type(view_type: &str) -> Option<&'static str> {
 
 const DATA_SOURCE_TYPES: &[&str] = &[TYPE_TABLE, TYPE_RICHTEXT, TYPE_RECORD, TYPE_ASSET, TYPE_WISH, TYPE_ANNOTATION, TYPE_BLOCK_DEF];
 
-fn validate_cell(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
     check_keys(&e.payload, CELL_KEYS, "cell")?;
     // a package may legitimately carry dangling view configuration; it is preserved, not re-judged
     let importing = p.env.import;
@@ -210,6 +210,15 @@ fn validate_cell(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> 
         if !c.is_object() {
             return Err(bad("config must be an object"));
         }
+        if let Some(snapshot) = c.get("snapshot") {
+            let mut asset = e.clone();
+            asset.payload = snapshot.as_object().cloned().ok_or_else(|| bad("config.snapshot must be an asset object"))?;
+            if importing || is_changed("config") {
+                validate_asset(p, &mut asset)?;
+                e.payload.get_mut("config").unwrap().as_object_mut().unwrap().insert("snapshot".into(), Value::Object(asset.payload));
+            }
+        }
+        let c = &e.payload["config"];
         if canonical_len(c) > MAX_CONFIG_BYTES {
             return Err(WsError::limit(format!("config is limited to {MAX_CONFIG_BYTES} bytes")));
         }
@@ -920,6 +929,11 @@ fn ref_edge(src: &str, selector: &str, kind: &str, reference: &Value) -> RefEdge
 /// bodies and rich text references are maintained by their own planners.)
 pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
     let mut out = BTreeSet::new();
+    if let Some(object_id) = asset_object_id(&e.type_id, &e.payload) {
+        let mut edge = RefEdge::local(&e.entity_id, "", "asset", "");
+        edge.dst_object_id = object_id.to_string();
+        out.insert(edge);
+    }
     // generation dependencies: result → each input it read, and result → the wish that produced it
     // (neither blocks deletion)
     if let Some(d) = &e.derived {
@@ -951,13 +965,6 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
                 out.insert(ref_edge(&e.entity_id, "", "anchor", t));
             }
         }
-        TYPE_ASSET => {
-            if let Some(o) = e.payload.get("object_id").and_then(Value::as_str) {
-                let mut edge = RefEdge::local(&e.entity_id, "", "asset", "");
-                edge.dst_object_id = o.to_string();
-                out.insert(edge);
-            }
-        }
         TYPE_RECORD => {
             if let Ok(schema) = record_schema(&e.payload) {
                 for (key, def) in schema {
@@ -980,6 +987,14 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
         _ => {}
     }
     Ok(out)
+}
+
+pub fn asset_object_id<'a>(type_id: &str, payload: &'a JsonMap) -> Option<&'a str> {
+    match type_id {
+        TYPE_ASSET => payload.get("object_id").and_then(Value::as_str),
+        TYPE_CELL => payload.get("config")?.get("snapshot")?.get("object_id")?.as_str(),
+        _ => None,
+    }
 }
 
 pub fn value_ref_edge(source_id: &str, record_id: &str, field_id: &str, reference: &Value) -> RefEdge {

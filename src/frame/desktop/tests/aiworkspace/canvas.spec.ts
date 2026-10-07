@@ -320,7 +320,12 @@ test('UI10 a deleted source and a crashing renderer are localised; the workspace
   expect(r.status).toBe('accepted')
   await expect(page.getByTestId('aiws-canvas-block-blk-note-y')).toBeVisible()
   // a renderer that throws: the chart asked to render a record it cannot use is a type fallback; a thrown error is caught by the boundary
-  await page.evaluate(() => { (window as unknown as { __aiwsThrow?: boolean }).__aiwsThrow = true })
+  await page.evaluate(async () => {
+    const path = '/src/app/aiworkspace/ui/blocks/registry.ts'
+    const { blockRegistry } = await import(path) as typeof import('../../src/app/aiworkspace/ui/blocks/registry')
+    blockRegistry.register({ ...blockRegistry.get('table', 1)!, Static: () => { throw new Error('renderer failure') } })
+  })
+  await expect(page.getByTestId('aiws-block-fallback-blk-sales')).toHaveAttribute('data-reason', 'renderer_error')
   await expect(page.getByTestId('aiws-canvas-block-blk-sales')).toBeVisible()
   await expect(page.getByTestId('aiws-canvas-block-blk-intro')).toContainText('经营分析')
   // the canvas still edits

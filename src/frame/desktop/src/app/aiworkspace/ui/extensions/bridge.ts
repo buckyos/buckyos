@@ -46,21 +46,21 @@ export function makeBridge(store: WorkspaceStore, target: BridgeTarget, onSnapsh
       return store.session.uploadAsset(blob, fileName)
     },
     snapshot: async (dataUrl) => {
+      if (!policy.writes) throw new Error(`当前子模式（${target.mode}）不允许扩展写入文档`)
       // the static snapshot is an asset: what the Block shows before it is activated (§10.4 lifecycle)
       const match = /^data:([^;,]+)(;base64)?,(.*)$/s.exec(dataUrl)
       if (!match) throw new Error('snapshot 需要 data URL')
       const mediaType = match[1]
-      const raw = match[2] ? atob(match[3]) : decodeURIComponent(match[3])
-      const bytes = new Uint8Array(raw.length)
-      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i)
+      const bytes = match[2] ? Uint8Array.from(atob(match[3]), (c) => c.charCodeAt(0)) : new TextEncoder().encode(decodeURIComponent(match[3]))
       const uploaded = await store.session.uploadAsset(new Blob([bytes], { type: mediaType }), `snapshot.${mediaType.includes('svg') ? 'svg' : mediaType.includes('png') ? 'png' : 'bin'}`)
-      const config = { ...(target.payload.config ?? {}), snapshot: { object_id: uploaded.object_id, media_type: uploaded.media_type } }
+      const snapshot = { object_id: uploaded.object_id, media_type: uploaded.media_type, size: uploaded.size }
       // the snapshot is bookkeeping of the Block, not a user edit: no undo entry; a concurrent config edit wins
       const current = await store.session.read<KeyedContent<CellPayload>>(target.cell.entity_id)
-      await store.submit({
+      const outcome = await store.submit({
         editId: `ext-snapshot:${target.cell.entity_id}`, label: '扩展快照', undoable: false,
-        operations: [{ op: 'entity.set_keys', entity_id: target.cell.entity_id, keys: [{ key: 'config', value: { ...(current.content.payload.config ?? {}), snapshot: config.snapshot } as Json, expect: { rev: current.content.key_revs.config ?? 0 } }] }],
+        operations: [{ op: 'entity.set_keys', entity_id: target.cell.entity_id, keys: [{ key: 'config', value: { ...(current.content.payload.config ?? {}), snapshot } as Json, expect: { rev: current.content.key_revs.config ?? 0 } }] }],
       })
+      if (outcome.status !== 'accepted' && outcome.status !== 'saved_locally') throw new Error('扩展快照未保存，请查看保存状态后重试')
       onSnapshot?.(uploaded.object_id, uploaded.media_type)
     },
     notify: (text) => store.notify('info', text),

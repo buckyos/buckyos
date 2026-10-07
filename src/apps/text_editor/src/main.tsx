@@ -45,18 +45,46 @@ async function open(request: OpenRequest): Promise<void> {
   try { await workspace!.open(request) }
   catch (error) { workspace!.notify(String(error instanceof Error ? error.message : error)); throw error }
 }
+// The SDK renews the browser session by itself (`getAccountInfo()` refreshes the token when it is
+// about to expire and keeps a renew timer). The app only has to notice when that fails for good:
+// the gateway then clears the SSO cookies, `getAccountInfo()` turns null and nothing short of a new
+// sign-in brings the session back.
+let leavingForLogin = false
+function setSessionLost(lost: boolean): void {
+  if (!workspace || workspace.sessionLost === lost) return
+  workspace.sessionLost = lost
+  if (!lost) workspace.sessionLostMuted = false
+  workspace.emit()
+}
+async function sessionToken(test: boolean): Promise<string | null> {
+  if (test) return 'test-token'
+  const token = (await buckyos.getAccountInfo())?.session_token ?? null
+  setSessionLost(!token)
+  return token
+}
+async function relogin(): Promise<void> {
+  if (workspace) for (const doc of workspace.documents.values()) await workspace.persistLocal(doc)
+  leavingForLogin = true
+  await buckyos.login()
+}
+function renderLogin(): void {
+  root.render(<div className="welcome"><h1>{t('title')}</h1><p>{t('loginNeeded')}</p><button onClick={() => { void buckyos.login().catch(showError) }}>{t('login')}</button><button onClick={() => window.open(location.href, '_blank', 'noopener')}>{t('loginPopup')}</button></div>)
+}
 async function start(): Promise<void> {
   const test = import.meta.env.MODE === 'test'
-  root.render(<div className="welcome"><h1>{t('title')}</h1><p>{t('loginNeeded')}</p><button onClick={() => { void buckyos.login().then(start).catch(showError) }}>{t('login')}</button><button onClick={() => window.open(location.href, '_blank', 'noopener')}>{t('loginPopup')}</button></div>)
+  // Do not show the sign-in screen before the session has actually been checked: the SDK may still be
+  // refreshing a valid session, and a "Sign in" click at that moment forces a needless full SSO round trip.
+  root.render(<div className="welcome"><h1>{t('title')}</h1><p className="muted">{t('connecting')}</p></div>)
   if (!test) await buckyos.initBuckyOS(APP_ID)
   const account = test ? { user_id: 'test-user', session_token: 'test-token' } : await buckyos.getAccountInfo()
-  if (!account?.user_id) { if (window.parent !== window) await buckyos.login(); return }
-  const client = new NfspClient({ baseUrl: location.origin, uploadChunkSize: 4 * 1024 * 1024, sessionToken: async () => test ? 'test-token' : (await buckyos.getAccountInfo())?.session_token ?? null })
+  if (!account?.user_id) { if (window.parent !== window) await buckyos.login(); else renderLogin(); return }
+  const client = new NfspClient({ baseUrl: location.origin, uploadChunkSize: 4 * 1024 * 1024, sessionToken: () => sessionToken(test) })
   const store = new NfspDocumentStore(client)
   const data = await initializeAppData(store, account.user_id)
   const local = new LocalStore(account.user_id)
   const config = test ? { get: async (key: string) => ({ value: localStorage.getItem(key) ?? '{}' }), set: async (key: string, value: string) => { localStorage.setItem(key, value) } } : buckyos.getSystemConfigClient()
   workspace = new Workspace(store, new BufferStore(data, store, local), new RecoveryStore(data, store), local, new SettingsStore(config, account.user_id))
+  workspace.onLogin = relogin
   root.render(<App workspace={workspace} />)
   workspace.onExternalOpen = (source, target) => {
     if (frame.init) frame.openContent({ source, session: workspace?.session }, target)
@@ -74,12 +102,12 @@ async function start(): Promise<void> {
   if (request) workspace.run(open(request))
   for (const request of pending.splice(0)) workspace.run(open(request))
   workspace.run(workspace.recovery.cleanup(workspace.settings.recoveryRetentionDays))
-  const recheck = () => { if (document.visibilityState === 'visible') workspace!.run(workspace!.checkDisk()) }
+  const recheck = () => { if (document.visibilityState !== 'visible') return; workspace!.run(workspace!.checkDisk()); if (!test) void sessionToken(test).catch(() => {}) }
   document.addEventListener('visibilitychange', recheck)
   window.addEventListener('focus', recheck)
   window.addEventListener('online', () => { for (const doc of workspace!.documents.values()) workspace!.run(workspace!.flush(doc)) })
   window.addEventListener('beforeunload', event => {
-    if ([...workspace!.documents.values()].some(dirty)) { for (const doc of workspace!.documents.values()) workspace!.run(workspace!.persistLocal(doc)); event.preventDefault(); event.returnValue = '' }
+    if (!leavingForLogin && [...workspace!.documents.values()].some(dirty)) { for (const doc of workspace!.documents.values()) workspace!.run(workspace!.persistLocal(doc)); event.preventDefault(); event.returnValue = '' }
   })
   window.addEventListener('pagehide', () => { for (const doc of workspace!.documents.values()) workspace!.run(workspace!.persistLocal(doc)) })
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => { if (!frame.init) { workspace!.theme = event.matches ? 'dark' : 'light'; workspace!.emit() } })

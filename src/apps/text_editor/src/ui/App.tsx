@@ -96,6 +96,7 @@ export function App({ workspace: w }: { workspace: Workspace }) {
     element.addEventListener('pointerup', () => element.removeEventListener('pointermove', move), { once: true })
   }
   return <main className="workspace">
+    {w.sessionLost && !w.sessionLostMuted && <div role="alert" className="session-banner"><span>{t('sessionLost')}</span><button className="primary" onClick={() => { if (w.onLogin) w.run(w.onLogin()) }}>{t('login')}</button><button onClick={() => { w.sessionLostMuted = true; w.emit() }}>{t('later')}</button></div>}
     <div className="body">
       {w.sidebar && <aside style={{ width: w.sidebarWidth }}>
         <details open className="file-section" style={{ flexBasis: `${w.outlineRatio}%` }}><summary>{t('files')} <button onClick={openLocation} aria-label={t('open')}>＋</button></summary>

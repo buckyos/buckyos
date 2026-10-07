@@ -4,9 +4,12 @@
  * the camera and the user's per-Surface viewport; the RenderHost owns rendering and gestures. */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { EntityEnvelope, Json, Operation, Placement } from '../../api/types'
-import { useEntity, useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { BlockBoundary } from '../blocks/BlockHost'
+import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
 import { defaultRendererFor } from '../blocks/ops'
 import { blockRegistry, CANVAS_MODE_LABEL, CANVAS_MODES, modePolicy, type BlockDefinition, type CanvasMode, type RenderContext } from '../blocks/registry'
@@ -194,6 +197,11 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- actions on the selection
   const selectedEntities = [...selection].map((id) => store.outline.get(id)).filter((e): e is EntityEnvelope => Boolean(e))
   const single = selectedEntities.length === 1 ? selectedEntities[0] : null
+  const selectedBlock = useBlockContext({
+    cellId: single?.entity_id ?? null, mode, view: 'canvas', selected: true,
+    editorActive: Boolean(single && editing === single.entity_id), zoom: camera.zoom,
+    onActivate: () => { if (single) setEditing(single.entity_id) }, onDeactivate: () => setEditing(null),
+  })
   const deleteSelection = async () => {
     if (!policy.layout) return
     const ops: Operation[] = []
@@ -324,21 +332,25 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   // ---- near toolbar actions
   const nearActions: NearAction[] = []
   if (single && policy.select) {
-    const definition = single.view_type ? blockRegistry.get(single.view_type, single.view_version ?? undefined) : undefined
+    const context = selectedBlock.context
+    const definition = selectedBlock.resolution?.ok ? context?.definition : undefined
     const source = single.source_id ? store.outline.get(single.source_id) : undefined
-    if (definition?.actions) {
+    if (definition?.actions && context) {
       for (const action of definition.actions) {
         if (!action.modes.includes(mode) || (action.views && !action.views.includes('canvas'))) continue
         const needs = action.needs ?? []
         const target = action.onSource ? source : single
         if (needs.some((cap) => !(target?.capabilities ?? []).includes(cap))) continue
-        const context: RenderContext = {
-          cell: single, payload: { view: { type: single.view_type ?? '' }, ...(single.source_id ? { source_ref: { entity_id: single.source_id } } : {}) }, keyRevs: {}, source, definition, mode, view: 'canvas',
-          selected: true, hovered: false, editorActive: editing === single.entity_id, capabilities: single.capabilities, readOnlyReason: null, dataState: 'ready', size: { w: 0, h: 0 }, zoom: camera.zoom,
-          activateEditor: () => setEditing(single.entity_id), deactivateEditor: () => setEditing(null), openEntity: ui.openEntity,
+        const writes = needs.some((cap) => ['update', 'append', 'structure', 'delete', 'manage'].includes(cap))
+        if (writes && context.readOnlyReason) continue
+        try {
+          if (action.when && !action.when(context)) continue
+          nearActions.push({ id: action.id, label: action.label, key: action.key, run: () => {
+            void Promise.resolve().then(() => action.run(context, store)).catch((error: unknown) => store.notify('error', `扩展动作失败：${describeError(error)}`))
+          } })
+        } catch (error) {
+          nearActions.push({ id: action.id, label: action.label, disabled: true, title: describeError(error), run: () => undefined })
         }
-        if (action.when && !action.when(context)) continue
-        nearActions.push({ id: action.id, label: action.label, key: action.key, run: () => { void action.run(context, store) } })
       }
     }
     if (source) nearActions.push({ id: 'relations', label: '查看依赖', run: () => setSide('relations') })
@@ -419,7 +431,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         {side && (
           <aside className="aiws-canvas-side" data-testid="aiws-canvas-side">
             <div className="aiws-inline-form"><b>{side === 'inspector' ? '属性' : side === 'relations' ? '引用与依赖' : '批注'}</b><span className="aiws-grow" /><button type="button" className="aiws-link" onClick={() => setSide(null)}>关闭</button></div>
-            {side === 'inspector' && (single ? <SelectionInspector cell={single} mode={mode} /> : <div className="aiws-muted">选中一个 Block 查看属性。</div>)}
+            {side === 'inspector' && (single ? <SelectionInspector cell={single} mode={mode} context={selectedBlock.context} resolved={Boolean(selectedBlock.resolution?.ok)} registryVersion={selectedBlock.registryVersion} /> : <div className="aiws-muted">选中一个 Block 查看属性。</div>)}
             {side === 'relations' && (single?.source_id ? <RelationsPanel entityId={single.source_id} /> : <div className="aiws-muted">选中一个数据 Block 查看它的引用与依赖。</div>)}
             {side === 'annotations' && <AnnotationsPanel parentId={surface.content_folder_id ?? null} />}
           </aside>
@@ -429,51 +441,48 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   )
 }
 
-function SelectionInspector({ cell, mode }: { cell: EntityEnvelope; mode: CanvasMode }) {
+function SelectionInspector({ cell, mode, context, resolved, registryVersion }: { cell: EntityEnvelope; mode: CanvasMode; context: RenderContext | null; resolved: boolean; registryVersion: number }) {
   const store = useStore()
   const ui = useWorkspaceUi()
-  const live = useEntity(cell.entity_id) ?? cell
-  const definition = live.view_type ? blockRegistry.get(live.view_type, live.view_version ?? undefined) : undefined
-  const source = live.source_id ? store.outline.get(live.source_id) : undefined
-  const policy = modePolicy(mode)
-  const [payload, setPayload] = useState<{ config?: Record<string, Json>; title?: string; def_ref?: { entity_id: string }; key_revs: Record<string, number> } | null>(null)
-  useEffect(() => {
-    let liveFlag = true
-    void store.session.read<{ payload: { config?: Record<string, Json>; title?: string; def_ref?: { entity_id: string } }; key_revs: Record<string, number> }>(cell.entity_id).then((read) => { if (liveFlag) setPayload({ config: read.content.payload.config, title: read.content.payload.title, def_ref: read.content.payload.def_ref, key_revs: read.content.key_revs }) }).catch(() => undefined)
-    return () => { liveFlag = false }
-  }, [store, cell.entity_id, live.content_rev])
+  const live = context?.cell ?? cell
+  const definition = resolved ? context?.definition : undefined
+  const source = context?.source
+  const payload = context?.payload
+  const keyRevs = context?.keyRevs ?? {}
+  const readOnly = !context || context.readOnlyReason !== null
   const setConfig = (key: string, value: Json) => {
-    if (!payload) return
+    if (!payload || readOnly) return
     const config = { ...(payload.config ?? {}), [key]: value }
-    void store.submit({ editId: `config:${cell.entity_id}`, label: `属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: payload.key_revs.config ?? 0 } }] }] })
+    void store.submit({ editId: `config:${cell.entity_id}`, label: `属性 ${key}`, operations: [{ op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'config', value: config as Json, expect: { rev: keyRevs.config ?? 0 } }] }] })
   }
   const setTitle = (title: string) => {
-    if (!payload || title === (payload.title ?? '')) return
-    void store.submit({ editId: `key:${cell.entity_id}:title`, label: `Block 标题 → ${title || '（清除）'}`, operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: payload.key_revs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: payload.key_revs.title ?? 0 } }] }] })
+    if (!payload || readOnly || title === (payload.title ?? '')) return
+    void store.submit({ editId: `key:${cell.entity_id}:title`, label: `Block 标题 → ${title || '（清除）'}`, operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: keyRevs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: keyRevs.title ?? 0 } }] }] })
   }
-  const context: RenderContext | null = definition && payload ? {
-    cell: live, payload: { view: { type: live.view_type ?? '' }, ...(live.source_id ? { source_ref: { entity_id: live.source_id } } : {}), ...(payload.def_ref ? { def_ref: payload.def_ref } : {}), config: payload.config, title: payload.title }, keyRevs: payload.key_revs, source, definition, mode, view: 'canvas',
-    selected: true, hovered: false, editorActive: false, capabilities: live.capabilities, readOnlyReason: policy.writes && live.capabilities.includes('update') ? null : (policy.writes ? '没有修改权限' : '当前子模式不允许修改'), dataState: 'ready', size: { w: live.placement?.w ?? 0, h: live.placement?.h ?? 0 }, zoom: 1,
-    activateEditor: () => undefined, deactivateEditor: () => undefined, openEntity: ui.openEntity,
-  } : null
   const Inspector = definition?.Inspector
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
       {payload && (
-        <label className="aiws-inline-form">标题 <input aria-label="Block 标题" defaultValue={payload.title ?? ''} disabled={!policy.writes || !live.capabilities.includes('update')} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
+        <label className="aiws-inline-form">标题 <input aria-label="Block 标题" defaultValue={payload.title ?? ''} disabled={readOnly} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
       )}
       {live.placement && <div className="aiws-muted">位置 {live.placement.x}, {live.placement.y} · 尺寸 {live.placement.w} × {live.placement.h} · 顺序 {live.order_key}</div>}
       {source && <div className="aiws-muted">数据：<button type="button" className="aiws-link" onClick={() => ui.openEntity(source.entity_id)}>{source.title ?? source.name ?? source.entity_id}</button>（{source.type_id.replace('buckyos.', '')}）</div>}
       {definition?.configFields && payload && definition.configFields.map((field) => (
         <label key={field.key} className="aiws-inline-form">{field.label}
           {field.kind === 'select'
-            ? <select value={String(payload.config?.[field.key] ?? field.options?.[0]?.value ?? '')} disabled={!policy.writes} onChange={(event) => setConfig(field.key, event.target.value)}>{(field.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+            ? <select value={String(payload.config?.[field.key] ?? field.options?.[0]?.value ?? '')} disabled={readOnly} onChange={(event) => setConfig(field.key, event.target.value)}>{(field.options ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
             : field.kind === 'boolean'
-              ? <input type="checkbox" checked={Boolean(payload.config?.[field.key])} disabled={!policy.writes} onChange={(event) => setConfig(field.key, event.target.checked)} />
-              : <input type={field.kind === 'color' ? 'color' : field.kind === 'number' ? 'number' : 'text'} value={String(payload.config?.[field.key] ?? (field.kind === 'color' ? '#4f8df7' : ''))} disabled={!policy.writes} onChange={(event) => setConfig(field.key, field.kind === 'number' ? Number(event.target.value) : event.target.value)} />}
+              ? <input type="checkbox" checked={Boolean(payload.config?.[field.key])} disabled={readOnly} onChange={(event) => setConfig(field.key, event.target.checked)} />
+              : <input type={field.kind === 'color' ? 'color' : field.kind === 'number' ? 'number' : 'text'} value={String(payload.config?.[field.key] ?? (field.kind === 'color' ? '#4f8df7' : ''))} disabled={readOnly} onChange={(event) => setConfig(field.key, field.kind === 'number' ? Number(event.target.value) : event.target.value)} />}
         </label>
       ))}
-      {Inspector && context && <Inspector {...context} />}
+      {Inspector && context && (
+        <BlockBoundary resetKey={`${cell.entity_id}:${mode}:${live.content_rev}:${registryVersion}`} fallback={(error, reset) => (
+          <div className="aiws-block-fallback" data-testid="aiws-inspector-error"><div className="aiws-error" role="alert">属性面板出错：{describeError(error)}</div><button type="button" onClick={reset}>重试</button></div>
+        )}>
+          <Inspector {...context} />
+        </BlockBoundary>
+      )}
     </BlockInspector>
   )
 }

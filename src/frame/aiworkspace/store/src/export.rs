@@ -76,8 +76,8 @@ pub fn closure(store: &FsObjectStore, content_root: &str, assets: bool) -> WsRes
         for f in [content["content"]["records"]["file"].as_str(), content["content"]["doc"]["file"].as_str()].into_iter().flatten() {
             add_file(f, &mut objects, &mut chunks)?;
         }
-        if e["type_id"] == json!(TYPE_ASSET) {
-            if let Some(a) = content["content"]["object_id"].as_str() {
+        if let Some(payload) = content["content"].as_object() {
+            if let Some(a) = aiworkspace_core::types::asset_object_id(e["type_id"].as_str().unwrap_or(""), payload) {
                 if !assets || !add_file(a, &mut objects, &mut chunks)? {
                     missing.push(a.to_string());
                 }

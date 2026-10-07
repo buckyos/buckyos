@@ -6,8 +6,7 @@
  * dispatch without touching the host. */
 
 import { useCallback, useMemo, type ReactNode } from 'react'
-import type { ReadOk } from '../../api/session'
-import type { BlockDefRead, Json, QueryPage, RecordContent } from '../../api/types'
+import type { Json, QueryPage, RecordContent } from '../../api/types'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import { blockRegistry, type BlockAction, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
@@ -141,13 +140,8 @@ function Items({ items, data, accent, context }: { items: Item[]; data: DataView
 }
 
 function useSpec(context: RenderContext): { spec: Spec | null; error: string | null; title: string } {
-  const store = useStore()
-  const id = context.payload.def_ref?.entity_id ?? ''
-  const version = useVersion(`e:${id}`)
-  const load = useCallback(() => (id ? store.readBatched<BlockDefRead>(id) : Promise.resolve(null)), [store, id])
-  const def = useLoad<ReadOk<BlockDefRead> | null>(load, version)
-  const payload = def.data?.content.payload
-  return { spec: (payload?.declarative as Spec | undefined) ?? null, error: def.error, title: payload?.title ?? context.payload.title ?? '声明式 Block' }
+  const payload = context.documentDefinition
+  return { spec: (payload?.declarative as Spec | undefined) ?? null, error: null, title: payload?.title ?? context.payload.title ?? '声明式 Block' }
 }
 
 function DeclarativeBody(context: RenderContext & { variant: 'edit' | 'view' }) {
@@ -207,7 +201,7 @@ const declarativeActions: BlockAction[] = [
 ]
 
 export const declarativeBlock: BlockDefinition = {
-  type: 'declarative', version: 1, title: '声明式 Block', accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: false,
+  type: 'declarative', version: 1, definitionKind: 'declarative', title: '声明式 Block', accepts: ['buckyos.record', 'buckyos.table-source'], allowNoSource: false,
   defaultSize: { w: 320, h: 200 }, cost: { editor: false, html: false },
   Static: DeclarativeStatic, View: DeclarativeView, Inspector: DeclarativeInspector, actions: declarativeActions,
   create: (args) => [cellOp(args, 'declarative', args.existingSourceId, { def_ref: { entity_id: String(args.config?.def_id ?? '') } as unknown as Json })],

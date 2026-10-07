@@ -181,6 +181,8 @@ export type FilterNode =
 
 export interface SortSpec { field_id: string; direction: 'asc' | 'desc' }
 
+export type BlockSnapshot = { object_id: string; media_type: string; size: number }
+
 export interface CellPayload {
   /** Absent on a pure UI Block (frame, shape…). */
   source_ref?: Reference
@@ -193,7 +195,7 @@ export interface CellPayload {
   group?: { field_id: string } | null
   options?: Record<string, Json>
   /** Renderer configuration (≤ 64 KiB). */
-  config?: Record<string, Json>
+  config?: Record<string, Json> & { snapshot?: BlockSnapshot }
   /** A Block definition entity this Block uses (blocks its deletion). */
   def_ref?: Reference
 }

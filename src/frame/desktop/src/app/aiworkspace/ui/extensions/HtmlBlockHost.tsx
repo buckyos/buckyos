@@ -4,47 +4,37 @@
  * explicit activation; while mounted, the extension talks to the host through `window.aiws`.
  * Crashes and silence fall back to the snapshot; other Blocks are unaffected. */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ReadOk } from '../../api/session'
-import type { BlockDefRead, Json } from '../../api/types'
-import { useLoad, useStore, useVersion } from '../../state/hooks'
+import { useEffect, useRef, useState } from 'react'
+import type { Json } from '../../api/types'
+import { useStore } from '../../state/hooks'
 import { AssetBlobImage } from './AssetBlobImage'
 import { blockRegistry, type BlockDefinition, type RenderContext } from '../blocks/registry'
 import { cellOp } from '../blocks/ops'
 import { makeBridge } from './bridge'
 import { HtmlRuntime } from './htmlRuntime'
 
-function useDefinitionEntity(defId: string | undefined) {
-  const store = useStore()
-  const id = defId ?? ''
-  const version = useVersion(`e:${id}`)
-  const load = useCallback(() => (id ? store.readBatched<BlockDefRead>(id) : Promise.resolve(null)), [store, id])
-  return useLoad<ReadOk<BlockDefRead> | null>(load, version)
-}
-
 function Snapshot(context: RenderContext & { label?: string }) {
-  const snapshot = context.payload.config?.snapshot as { object_id?: string; media_type?: string } | undefined
+  const snapshot = context.payload.config?.snapshot
   return (
     <div className="aiws-html-static" data-testid={`aiws-html-static-${context.cell.entity_id}`}>
       {snapshot?.object_id
-        ? <AssetBlobImage objectId={snapshot.object_id} mediaType={snapshot.media_type ?? 'image/svg+xml'} alt={context.payload.title ?? 'snapshot'} />
+        ? <AssetBlobImage objectId={snapshot.object_id} mediaType={snapshot.media_type} alt={context.payload.title ?? 'snapshot'} />
         : <div className="aiws-html-placeholder">{context.label ?? 'HTML 扩展'}<div className="aiws-muted">尚无静态快照；在编辑模式中激活后运行</div></div>}
     </div>
   )
 }
 
 function HtmlStatic(context: RenderContext) {
-  const def = useDefinitionEntity(context.payload.def_ref?.entity_id)
-  return <Snapshot {...context} label={def.data?.content.payload.title ?? context.payload.title ?? 'HTML 扩展'} />
+  return <Snapshot {...context} label={context.documentDefinition?.title ?? context.payload.title ?? 'HTML 扩展'} />
 }
 
 /** Mounted after activation: the real runtime. */
 function HtmlActive(context: RenderContext) {
   const store = useStore()
-  const def = useDefinitionEntity(context.payload.def_ref?.entity_id)
   const hostRef = useRef<HTMLDivElement>(null)
   const [failure, setFailure] = useState<string | null>(null)
-  const source = def.data?.content.payload
+  const [attempt, setAttempt] = useState(0)
+  const source = context.documentDefinition
   const html = source?.kind === 'html' ? source.html : undefined
   const htmlKey = html ? JSON.stringify(html) : ''
   const cellId = context.cell.entity_id
@@ -55,26 +45,21 @@ function HtmlActive(context: RenderContext) {
     if (!host || !htmlKey) return
     const src = JSON.parse(htmlKey) as { html: string; css?: string; js?: string }
     const cell = store.outline.get(cellId)
-    const read = store.readBatched
-    void read
     if (!cell) return
     const runtime = new HtmlRuntime(src, makeBridge(store, { cell, payload: context.payload, keyRevs: context.keyRevs, source: context.source, mode }))
     let cancelled = false
-    runtime.onCrash = (message) => { if (!cancelled) setFailure(message) }
+    runtime.onCrash = (message) => { if (!cancelled) { runtime.dispose(); setFailure(message) } }
     runtime.mount(host).catch((error: unknown) => { if (!cancelled) setFailure(error instanceof Error ? error.message : String(error)) })
     return () => { cancelled = true; runtime.dispose() }
-    // the runtime is rebuilt only when the definition, the cell or the mode changes
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, htmlKey, cellId, mode])
-  if (def.error && !def.data) return <div className="aiws-error" role="alert">无法读取 Block 定义：{def.error}</div>
-  if (!def.data) return <div className="aiws-muted">载入定义…</div>
-  if (!html) return <div className="aiws-warning">定义 {def.data.entity_id} 不是 HTML 定义。</div>
+  }, [store, htmlKey, cellId, mode, attempt])
+  if (!html) return <div className="aiws-warning">HTML 定义不可用。</div>
   if (failure) {
     return (
       <div className="aiws-block-fallback" data-testid={`aiws-html-failed-${context.cell.entity_id}`} data-reason="html_failed">
         <div className="aiws-error" role="alert">HTML 扩展出错或无响应：{failure}</div>
         <Snapshot {...context} />
-        <button type="button" className="aiws-link" onClick={() => setFailure(null)}>重新运行</button>
+        <button type="button" className="aiws-link" onClick={() => { setFailure(null); setAttempt((n) => n + 1) }}>重新运行</button>
         <button type="button" className="aiws-link" onClick={deactivate}>回到静态显示</button>
       </div>
     )
@@ -82,13 +67,13 @@ function HtmlActive(context: RenderContext) {
   return (
     <div className="aiws-html-active" data-testid={`aiws-html-active-${context.cell.entity_id}`}>
       <div ref={hostRef} className="aiws-html-host" />
-      <div className="aiws-html-bar"><span className="aiws-muted">HTML 扩展已挂载 · {def.data.content.payload.title ?? def.data.entity_id}</span><button type="button" className="aiws-link" onClick={deactivate}>停止</button></div>
+      <div className="aiws-html-bar"><span className="aiws-muted">HTML 扩展已挂载 · {source?.title ?? context.payload.def_ref?.entity_id}</span><button type="button" className="aiws-link" onClick={deactivate}>停止</button></div>
     </div>
   )
 }
 
 export const htmlBlock: BlockDefinition = {
-  type: 'html', version: 1, title: 'HTML 扩展', accepts: ['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.wish', 'buckyos.annotation'], allowNoSource: true,
+  type: 'html', version: 1, definitionKind: 'html', title: 'HTML 扩展', accepts: ['buckyos.table-source', 'buckyos.richtext', 'buckyos.record', 'buckyos.asset-ref', 'buckyos.wish', 'buckyos.annotation'], allowNoSource: true,
   defaultSize: { w: 480, h: 320 }, cost: { editor: true, html: true },
   Static: HtmlStatic, Editor: HtmlActive,
   actions: [

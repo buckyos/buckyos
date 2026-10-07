@@ -31,6 +31,8 @@ export class Workspace {
   locale = navigator.language; theme: 'dark' | 'light' = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   message = ''; choice?: Choice; recoveries: RecoveryRecord[] = []; abandoned: BufferRecord[] = []; recent: TransferableContentRef[] = []
   failedSource?: TransferableContentRef
+  sessionLost = false; sessionLostMuted = false
+  onLogin?: () => Promise<void>
   panel?: 'recovery' | 'buffers' | 'settings' | 'quick' | 'location'
   locationAction?: (path: string) => Promise<void>
   store: DocumentStore; buffers: BufferStore; recovery: RecoveryStore; local: LocalStore; settingsStore: SettingsStore

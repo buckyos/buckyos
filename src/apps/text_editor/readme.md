@@ -251,6 +251,7 @@ UI 框架用 React + Vite（与 Desktop 一致）；编辑内核用 CodeMirror 6
 - 页面公开（static-web 默认 `allow_guest=true`，gateway `access_mode=public`），没有会话时只显示外壳和“登录”状态，不读任何内容。
 - 启动时 `initBuckyOS("text-editor.buckyos.bns.did")`，没有会话则 `login()` 走 SSO（`sys.<zone>/login` → App 源 `/sso_callback` → `/sso_refresh`）。桌面内用户已登录，嵌入的 iframe 按 sys_test 的先例完成静默跳转。
 - 若 iframe 内 SSO 被浏览器策略阻断（第三方 Cookie、登录页禁止嵌入），编辑器显示“需要登录”，按钮用顶层弹窗完成登录，然后回到 iframe 重试 `/sso_refresh`。这是 V1/V3 的验证项。
+- **会话保活与失效。** 浏览器 runtime 的 token 续期由 websdk 自己完成（`getAccountInfo()` 在 access token 临近过期时调 `/sso_refresh`，并维持续期定时器），App 不另做刷新。编辑器只处理两件事：① 启动时在 `getAccountInfo()` 返回前只显示“正在连接…”，不显示登录按钮，避免用户在会话仍有效时误触发整套 SSO；② 运行中一旦 `getAccountInfo()` 返回空（refresh token 失效、Zone 重装、verify-hub 重启等都会让 gateway 清掉 SSO Cookie），顶部显示“登录已失效”横幅，点“登录”先把所有文档落到本地缓冲区再跳 SSO，回来后按 `restoreSession` 恢复工作区。
 - **多用户（已确认的安装策略）**：Owner 安装 App，默认所有用户可用，除非手工改为仅自己可用。预装实例 `text-editor.buckyos.bns.did@<owner>` 与主机 `text-editor` 由全体可用用户共用；每个用户以自己的会话登录，读写都以自己的身份进行。设置、缓冲区、恢复区都放在**当前用户**自己的路径下（`users/<当前用户>/apps/...`、`cyfs:///home/<当前用户>/.local/share/...`），用户之间互不可见。
 
 ---
@@ -289,7 +290,7 @@ Preview 首版已经完成，Preview PRD 中“首版不接入 `content_handlers
     ],
     "intents": {
       "open": {
-        "entry": { "type": "web", "path": "/open?src={source}&mode={mode}&session={session}" },
+        "entry": { "type": "web", "path": "/?src={source}&mode={mode}&session={session}" },
         "modes": ["view", "edit"],
         "fidelity": "full",
         "window": "reuse",
@@ -304,7 +305,7 @@ Preview 首版已经完成，Preview PRD 中“首版不接入 `content_handlers
     "selectors": [{ "mime": "*/*", "maxSize": 16777216 }],
     "intents": {
       "open": {
-        "entry": { "type": "web", "path": "/open?src={source}&mode={mode}&session={session}" },
+        "entry": { "type": "web", "path": "/?src={source}&mode={mode}&session={session}" },
         "modes": ["view", "edit"],
         "fidelity": "partial",
         "window": "reuse",
@@ -329,6 +330,8 @@ Preview 首版已经完成，Preview PRD 中“首版不接入 `content_handlers
 | `multiSource` | bool | 是否接受一次打开多个 Source（File Browser 多选“打开方式”）。P0 Shell 对多选按顺序逐个投递 `frame.open`。 |
 
 **入口路径模板：** `entry.path` 相对 App 的 Web host，占位符按下表展开；Shell 另在 URL fragment 追加 `#bfp=<nonce>`（App Frame 握手用，fragment 不发往服务器）。
+
+> App 的 Web 包由 gateway 的静态目录服务器直接按文件路径提供，**没有 SPA 回退**（`/open` 这类不存在的路径会得到 `404 Not found`）。因此 `entry.path` 的路径部分必须是包里真实存在的文件（通常就是 `/`，即 `index.html`），参数全部放在 query 里；编辑器的 `parseLaunch` 只看 query，不看路径。
 
 | 占位符 | 展开规则 |
 |---|---|
@@ -441,7 +444,7 @@ interface OpenContentOptions {
 | Preview“使用专用应用打开” | `OpenWithSheet` 列出 `resolve(open)` 中除 Preview 外的候选，保留下载与复制引用 |
 | 编辑器内“在 Preview 中打开” / 点击非文本文件 | App Frame `content.open`（§7.3），由 Shell 解析 |
 | 桌面启动器图标 | 打开 App 窗口，无 OpenRequest，编辑器显示起始页（§9.11） |
-| 独立浏览器标签页 | 直接访问 `https://text-editor.<zone>/open?src=…`；没有 App Frame，只用 URL 通道 |
+| 独立浏览器标签页 | 直接访问 `https://text-editor.<zone>/?src=…`；没有 App Frame，只用 URL 通道 |
 
 ### 6.4 两条通道的分工
 
@@ -1101,7 +1104,7 @@ Text Editor 推动的全部系统改动。每项都是通用能力，任何第�
 
 - [ ] V1：`uv run buckyos-build.py -s text_editor` 产出 PIKG；全新 Zone 启动后 Text Editor 自动预装并出现在桌面；`buckyos app uninstall` 可卸载，之后预装 reconciler 状态为 `user_removed` 且无错误；替换为新版本种子后仍不重装。
 - [ ] V2：安装后 `system/content_registry` 含 `text` 与 `any-as-text` 两个条目；卸载后条目消失；全程不重新构建 Desktop。
-- [ ] V3：File Browser 双击 `.md` 在 Text Editor 窗口中打开；直接在浏览器访问 `https://text-editor.<zone>/open?src=cyfs:///…` 也能打开同一文件；目录打开时文件列表是该目录的文件，多选打开时是选中项。
+- [ ] V3：File Browser 双击 `.md` 在 Text Editor 窗口中打开；直接在浏览器访问 `https://text-editor.<zone>/?src=cyfs:///…` 也能打开同一文件；目录打开时文件列表是该目录的文件，多选打开时是选中项。
 - [ ] V4：编辑保存后 File Browser / Preview 看到新内容；另一个客户端先保存同一文件后，本窗口保存进入 `external-modified` 冲突且未覆盖对方内容；宿主机直接修改文件后，未修改的标签在 30 s 内（或窗口回到前台时）自动重新加载。
 - [ ] V5：编辑后约 10 s 内 App 数据区出现对应缓冲区；强制关闭窗口后，在另一浏览器（或另一设备）打开同一文件能看到“未保存的修改”并恢复；冲突中选“重新加载”后我的版本出现在恢复区，选“覆盖”后被覆盖的磁盘版本出现在恢复区，选“覆盖并保留冲突副本”后原目录还会出现命名正确的冲突副本（重名时自动编号），且另一个用户能直接打开它；原目录不可写时提示“仅覆盖 / 取消”；恢复区写入失败（注入错误）时重新加载 / 覆盖不执行；原文件被删除后，修改仍能从起始页找到并另存。
 - [ ] V6：窗口标题随活动标签变化并显示未保存标记；关闭有未保存内容的窗口时出现确认，选“取消”窗口保留，选“保留修改”后下次打开自动恢复；再次双击另一个文本文件时在已有编辑器窗口新开标签；“在新窗口中打开”新建窗口；切换桌面主题后编辑器同步。

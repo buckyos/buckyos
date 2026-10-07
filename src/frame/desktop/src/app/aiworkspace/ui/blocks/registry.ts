@@ -10,8 +10,10 @@
  * does not give falls back to its static renderer — never to another mode's write behaviour. */
 
 import type { ComponentType } from 'react'
-import type { Capability, CellPayload, EntityEnvelope, Json, Operation, Placement } from '../../api/types'
+import { z } from 'zod'
+import type { BlockDefPayload, Capability, CellPayload, EntityEnvelope, Json, Operation, Placement } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
+import { HTML_API_VERSION } from '../extensions/htmlRuntime'
 
 export type CanvasMode = 'edit' | 'view' | 'presentation_edit'
 export const CANVAS_MODES: CanvasMode[] = ['edit', 'view', 'presentation_edit']
@@ -28,6 +30,8 @@ export interface RenderContext {
   /** The bound data entity's envelope (undefined for a pure UI Block or a missing source). */
   source: EntityEnvelope | undefined
   definition: BlockDefinition
+  documentDefinition?: BlockDefPayload
+  depth: number
   mode: CanvasMode
   /** Where the Block is shown: on a canvas, or as the detail of the data-source view. */
   view: 'canvas' | 'source'
@@ -91,6 +95,8 @@ export interface BlockDefinition {
   create?: (args: CreateArgs) => Operation[]
   /** Config schema for the generic inspector (simple key → control). */
   configFields?: ConfigField[]
+  configSchema?: Json
+  definitionKind?: BlockDefPayload['kind']
 }
 
 export interface ConfigField { key: string; label: string; kind: 'text' | 'number' | 'select' | 'boolean' | 'color'; options?: { value: string; label: string }[] }
@@ -113,7 +119,7 @@ export interface CreateArgs {
 
 export type Resolution =
   | { ok: true; definition: BlockDefinition; warning?: string }
-  | { ok: false; reason: 'unknown_renderer' | 'unsupported_version' | 'type_not_accepted' | 'source_required'; detail: string; definition?: BlockDefinition }
+  | { ok: false; reason: 'unknown_renderer' | 'unsupported_version' | 'type_not_accepted' | 'source_required' | 'definition_missing' | 'invalid_definition' | 'unsupported_api' | 'invalid_config' | 'data_unavailable'; detail: string; definition?: BlockDefinition }
 
 class BlockRegistry {
   private readonly defs = new Map<string, Map<number, BlockDefinition>>()
@@ -167,20 +173,47 @@ class BlockRegistry {
   }
 
   /** Resolve what a Cell asks for. A version the registry lacks is never silently replaced (§10.3). */
-  resolve(payload: Pick<CellPayload, 'view' | 'source_ref'>, sourceType: string | undefined): Resolution {
+  resolve(payload: CellPayload, sourceType: string | undefined, documentDefinition?: BlockDefPayload): Resolution {
     const versions = this.defs.get(payload.view.type)
     if (!versions) return { ok: false, reason: 'unknown_renderer', detail: `未知的渲染器 ${payload.view.type}` }
     const wanted = payload.view.version ?? 1
-    const definition = versions.get(wanted)
+    let definition = versions.get(wanted)
     if (!definition) {
       const latest = this.get(payload.view.type)
       return { ok: false, reason: 'unsupported_version', detail: `渲染器 ${payload.view.type} 的版本 ${wanted} 在此版本中不可用${latest ? `（可用：${[...versions.keys()].join('、')}）` : ''}`, definition: latest }
+    }
+    if (definition.definitionKind) {
+      if (!documentDefinition) return { ok: false, reason: 'definition_missing', detail: 'Block 定义不存在或无法读取' }
+      if (documentDefinition.kind !== definition.definitionKind) return { ok: false, reason: 'invalid_definition', detail: `需要 ${definition.definitionKind} 定义` }
+      if (documentDefinition.kind === 'html' && (documentDefinition.html?.api_version ?? 1) !== HTML_API_VERSION) {
+        return { ok: false, reason: 'unsupported_api', detail: `不支持 HTML API 版本 ${documentDefinition.html?.api_version}` }
+      }
+      definition = {
+        ...definition,
+        title: documentDefinition.title ?? definition.title,
+        accepts: documentDefinition.accepts ?? definition.accepts,
+        allowNoSource: documentDefinition.allow_no_source ?? definition.allowNoSource,
+        defaultSize: documentDefinition.default_size ?? definition.defaultSize,
+        configSchema: documentDefinition.config_schema,
+      }
+    }
+    if (definition.configSchema !== undefined) {
+      try {
+        const schema = definition.configSchema
+        if (schema === null || Array.isArray(schema) || (typeof schema !== 'object' && typeof schema !== 'boolean')) throw new Error('config_schema 必须是 JSON Schema 对象或布尔值')
+        const { snapshot: _snapshot, ...config } = payload.config ?? {}
+        void _snapshot
+        const parsed = z.fromJSONSchema(schema).safeParse(config)
+        if (!parsed.success) return { ok: false, reason: 'invalid_config', detail: `Block 配置不符合定义：${parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('；')}` }
+      } catch (error) {
+        return { ok: false, reason: 'invalid_definition', detail: `无法解析配置 Schema：${error instanceof Error ? error.message : String(error)}` }
+      }
     }
     if (!payload.source_ref) {
       if (!definition.allowNoSource) return { ok: false, reason: 'source_required', detail: `${definition.title} 需要绑定数据`, definition }
       return { ok: true, definition }
     }
-    if (sourceType && definition.accepts.length > 0 && !definition.accepts.includes(sourceType)) {
+    if (sourceType && !definition.accepts.includes(sourceType)) {
       return { ok: false, reason: 'type_not_accepted', detail: `${definition.title} 不支持数据类型 ${sourceType}`, definition }
     }
     return { ok: true, definition }

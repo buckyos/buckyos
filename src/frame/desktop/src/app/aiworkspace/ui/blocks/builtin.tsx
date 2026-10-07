@@ -61,13 +61,13 @@ const table: BlockDefinition = {
 // ---- rich text
 
 function RichTextStatic(context: RenderContext) {
-  const renderEmbed = useEmbedRenderer(0)
+  const renderEmbed = useEmbedRenderer(context.depth)
   if (!context.source) return null
   return <div className="aiws-block-static"><StaticRichText entityId={context.source.entity_id} renderEmbed={renderEmbed} /></div>
 }
 
 function RichTextEditorView(context: RenderContext) {
-  const renderEmbed = useEmbedRenderer(0)
+  const renderEmbed = useEmbedRenderer(context.depth)
   if (!context.source) return null
   return <RichTextCell key={context.source.entity_id} entity={context.source} entityId={context.source.entity_id} renderEmbed={renderEmbed} />
 }

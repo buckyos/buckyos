@@ -5,7 +5,7 @@ import { join } from 'node:path'
 test('real NFSP saves CRLF bytes, detects host writes, archives both conflict sides and persists buffers', async ({ page }) => {
   const home = join(process.env.TEXT_EDITOR_NFSP_ROOT!, 'home/test-user')
   const file = join(home, 'notes/demo.md')
-  await page.goto('/open?src=cyfs:///home/test-user/notes/demo.md')
+  await page.goto('/?src=cyfs:///home/test-user/notes/demo.md')
   const editor = page.locator('.cm-content')
   await expect(editor).toContainText('Hello')
   await editor.click(); await page.keyboard.press('Control+a'); await page.keyboard.insertText('# Saved\nText\n'); await page.keyboard.press('Control+s')

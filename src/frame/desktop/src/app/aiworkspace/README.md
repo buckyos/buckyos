@@ -68,7 +68,8 @@ ui/
   canvas/render/          RenderHost (world layer + camera transform, three-level culling with hysteresis, LOD
                           placeholders, mount budget, overlay, gestures that commit once), camera.ts, spatialIndex.ts
   blocks/                 registry.ts (BlockDefinition, mode policy), BlockHost (lifecycle, mode dispatch, budget,
-                          error boundary, generic fallback), builtin.tsx (table / richtext / record / asset / note /
+                          error boundary, generic fallback), useBlockContext (shared renderer / inspector / action
+                          context), builtin.tsx (table / richtext / record / asset / note /
                           frame / shape), editors.tsx (the data editors shared with the data-source view), samples.tsx
                           (extension sample 1: metric, bar chart, frame-sequence video)
   extensions/             declarative.tsx (interpreter of `buckyos.block-def` declarative definitions),
@@ -198,6 +199,27 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   HTML definition entity and labels everything "模拟".
 - **Freshness** comes from `doc.freshness` (core) and is shown identically on wish Blocks, result Blocks, the data
   tree and the detail panels.
+
+## Block extension contract
+
+Register a `BlockDefinition` in `ui/blocks/registry.ts`. `useBlockContext` loads the Cell payload and key
+revisions, resolves its exact renderer version and supplies the same definition, configuration, mode and
+read-only state to the renderer, Inspector and near-toolbar actions. Registry changes invalidate resolution
+for mounted Blocks. Renderers and custom Inspectors have local error boundaries; failed actions report a
+notice. Rich-text embeds pass their depth through this context and stop at `MAX_EMBED_DEPTH` (3).
+
+The `html` and `declarative` registrations declare `definitionKind` and load `def_ref`. Resolution checks
+the document definition's kind, `accepts`, `allow_no_source`, `config_schema` and HTML `api_version`
+before mounting an implementation. `accepts: []` accepts no bound source; use `allow_no_source: true`
+for a pure UI Block. Omitted `accepts`, `allow_no_source` and `default_size` use registered defaults. Validation uses the
+existing Zod dependency's `fromJSONSchema` (minimum 4.4.3); its supported JSON Schema subset applies,
+and conversion errors become a local `invalid_definition` fallback. Invalid values become `invalid_config`.
+
+`config.snapshot` is reserved host metadata, excluded from the extension's configuration schema. It stores
+`{ object_id, media_type, size }` and is indexed as an asset reference by the shared Rust core. Snapshot bytes
+follow Cell read permissions and travel through export/import and offline preparation (subject to the
+normal asset-size limit). `aiws.snapshot()` reports failed saves and refuses writes in view mode. HTML
+startup timeouts, crashes and disposal reject waiting calls and release the iframe; retry creates a new runtime.
 
 ## What is implemented
 
