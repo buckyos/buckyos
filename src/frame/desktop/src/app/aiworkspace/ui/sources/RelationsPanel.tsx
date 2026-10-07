@@ -8,7 +8,7 @@ import type { RelationsInfo } from '../../api/types'
 import { FRESHNESS_LABEL, freshnessDetail } from './freshnessText'
 import { TYPE_LABEL } from './dataOps'
 
-const KIND_LABEL: Record<string, string> = { bind: '展现绑定', embed: '富文本嵌入', value: '对象引用', body: '记录正文', anchor: '标注锚点', input: '许愿格输入', derived: '生成依赖', produced: '生成自', def: '使用 Block 定义', asset: '资产内容' }
+const KIND_LABEL: Record<string, string> = { bind: '展现绑定', embed: '富文本嵌入', value: '对象引用', body: '记录正文', anchor: '标注锚点', input: '许愿格输入', derived: '生成依赖', produced: '生成自', def: '使用 Block 定义', asset: '资产内容', connector_endpoint: '连接线端点' }
 
 export function RelationsPanel({ entityId }: { entityId: string }) {
   const store = useStore()

@@ -214,3 +214,103 @@ test('UI21 three Surfaces with 1,000 Blocks: switching Surfaces stays bounded', 
   writeFileSync('test-results/aiworkspace-probe-multi.json', JSON.stringify({ switchMs: times, at: new Date().toISOString() }, null, 2))
   expect(Math.max(...times)).toBeLessThan(THRESHOLDS.firstViewMs)
 })
+
+/** 连接线方案 §11: 1,000 Blocks with 1,000 lines between neighbours, plus a hub Block with 200 lines. */
+async function buildLineSurface(api: Api, ws: { workspace_id: string; epoch: string }, surfaceId: string) {
+  await api.commit(ALICE, ws, [
+    { op: 'entity.create', entity_id: `${surfaceId}-content`, type_id: 'buckyos.container', parent_id: 'canvas-content', order_key: 'lnz', name: '连线探针', payload: { kind: 'folder', title: '连线探针', system: 'surface_content', surface_id: surfaceId } },
+    { op: 'entity.create', entity_id: surfaceId, type_id: 'buckyos.container', parent_id: 'surfaces', order_key: 'lnz', name: '连线探针', payload: { kind: 'surface', layout: { mode: 'free' }, title: '连线探针', content_folder_id: `${surfaceId}-content` } },
+  ])
+  const count = 1000
+  const cols = 32
+  const at = (i: number) => ({ x: (i % cols) * 260, y: Math.floor(i / cols) * 200 })
+  const key = (i: number) => `k${i.toString(36).padStart(3, '0')}z`
+  const batches: unknown[][] = []
+  let batch: unknown[] = []
+  const push = (op: unknown) => { batch.push(op); if (batch.length >= 400) { batches.push(batch); batch = [] } }
+  for (let i = 0; i < count; i++) push({ op: 'entity.create', entity_id: `n${i}`, type_id: 'buckyos.cell', parent_id: surfaceId, order_key: key(i), placement: { ...at(i), w: 180, h: 100 }, payload: { view: { type: 'shape' }, title: `${i}` } })
+  push({ op: 'entity.create', entity_id: 'hub', type_id: 'buckyos.cell', parent_id: surfaceId, order_key: 'kzzz', placement: { x: 16 * 260 + 40, y: 16 * 200 + 120, w: 160, h: 80 }, payload: { view: { type: 'shape' }, title: 'HUB', config: { shape: 'ellipse' } } })
+  if (batch.length) { batches.push(batch); batch = [] }
+  const line = (id: string, a: string, b: string, from: { x: number; y: number }, to: { x: number; y: number }, extra: Record<string, unknown> = {}) => ({
+    op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: surfaceId, order_key: `l${id}z`,
+    placement: { x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), w: Math.abs(to.x - from.x), h: Math.abs(to.y - from.y) },
+    payload: { view: { type: 'connector', version: 1 }, start: { entity_id: a, anchor: { kind: 'point', x: 1, y: 0.5 } }, end: { entity_id: b, anchor: { kind: 'auto' } }, ...(from.x > to.x || from.y > to.y ? { flip: { ...(from.x > to.x ? { h: true } : {}), ...(from.y > to.y ? { v: true } : {}) } } : {}), ...extra },
+  })
+  for (let i = 0; i < count - 200; i++) {
+    const j = (i % cols === cols - 1) ? i + cols : i + 1
+    if (j >= count) continue
+    const p = at(i), q = at(j)
+    push(line(`e${i}`, `n${i}`, `n${j}`, { x: p.x + 180, y: p.y + 50 }, { x: q.x, y: q.y + 50 }, i % 3 === 1 ? { route: 'elbow' } : i % 3 === 2 ? { route: 'curve' } : {}))
+  }
+  const hub = { x: 16 * 260 + 200, y: 16 * 200 + 160 }
+  for (let i = 0; i < 200; i++) { const q = at(i * 4); push(line(`h${i}`, 'hub', `n${i * 4}`, hub, { x: q.x, y: q.y + 50 })) }
+  if (batch.length) batches.push(batch)
+  for (const b of batches) { const r = await api.commit(ALICE, ws, b); expect(r.status, JSON.stringify(r).slice(0, 300)).toBe('accepted') }
+}
+
+test('CN probe: 1,000 Blocks with 1,000 lines; dragging a Block with 200 lines', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `probe lines ${Date.now()}`)
+  await buildLineSurface(api, ws, 'sf-lines')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'surface:active': 'sf-lines', mode: 'canvas' } })
+  await openProductionApp(page, ALICE)
+  const t0 = Date.now()
+  await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-lines')
+  await expect(page.locator('[data-renderer="connector"]').first()).toBeAttached()
+  const firstViewMs = Date.now() - t0
+  await page.waitForTimeout(800)
+  const lines0 = await page.locator('[data-renderer="connector"]:visible').count()
+  const canvas = page.getByTestId('aiws-canvas')
+  const box = (await canvas.boundingBox())!
+  const cx = box.x + box.width / 2, cy = box.y + box.height / 2
+  const pan = await measureFrames(page, async () => {
+    for (let round = 0; round < 3; round++) {
+      await page.mouse.move(cx, cy)
+      await page.mouse.down({ button: 'middle' })
+      for (let i = 0; i < 30; i++) await page.mouse.move(cx - i * 12, cy - i * 8)
+      await page.mouse.up({ button: 'middle' })
+      await page.waitForTimeout(150)
+    }
+  })
+  await fitAll(page)
+  await page.waitForTimeout(600)
+  // zoomed out over everything: every line is drawn (lines are not under the Renderer budget)
+  const fitted = await page.locator('[data-renderer="connector"]:visible').count()
+  const panFitted = await measureFrames(page, async () => {
+    for (let round = 0; round < 2; round++) {
+      await page.mouse.move(cx, cy)
+      await page.mouse.down({ button: 'middle' })
+      for (let i = 0; i < 30; i++) await page.mouse.move(cx - i * 6, cy - i * 4)
+      await page.mouse.up({ button: 'middle' })
+      await page.waitForTimeout(150)
+    }
+  })
+  // the hub: bring it into view at a usable zoom and drag it (its 200 lines re-route every frame)
+  await page.getByTestId('aiws-zoom-menu').click()
+  await page.getByTestId('aiws-fit-all').click()
+  await page.waitForTimeout(300)
+  const hubBox = await page.getByTestId('aiws-canvas-block-hub').boundingBox()
+  if (!hubBox) throw new Error('hub not on screen')
+  await page.mouse.move(hubBox.x + hubBox.width / 2, hubBox.y + hubBox.height / 2)
+  for (let i = 0; i < 6; i++) { await page.keyboard.down('Control'); await page.mouse.wheel(0, -120); await page.keyboard.up('Control'); await page.waitForTimeout(40) }
+  await page.waitForTimeout(500)
+  const hub = await blockCenter(page, 'hub')
+  const commitsBefore = (await hooks(page)).commits
+  const seqBefore = await api.headSeq(ALICE, ws.workspace_id)
+  const hubDrag = await measureFrames(page, async () => {
+    await page.mouse.move(hub.x, hub.y)
+    await page.mouse.down()
+    for (let i = 1; i <= 30; i++) await page.mouse.move(hub.x + i * 5, hub.y + i * 3)
+    await page.mouse.up()
+  })
+  await expect.poll(async () => api.headSeq(ALICE, ws.workspace_id)).toBe(seqBefore + 1)
+  expect((await hooks(page)).commits - commitsBefore).toBe(1)
+  const dom = await domStats(page)
+  const report = { firstViewMs, linesShownAtOpen: lines0, linesShownFitted: fitted, pan, panFitted, hubDrag, dom, environment: { userAgent: await page.evaluate(() => navigator.userAgent), viewport: page.viewportSize(), build: 'vite preview (production build)', at: new Date().toISOString() } }
+  mkdirSync('test-results', { recursive: true })
+  writeFileSync('test-results/aiworkspace-probe-lines.json', JSON.stringify(report, null, 2))
+  test.info().annotations.push({ type: 'probe', description: JSON.stringify({ firstViewMs, pan, panFitted, hubDrag }) })
+  expect(fitted).toBeGreaterThanOrEqual(1000)
+  expect(firstViewMs).toBeLessThan(THRESHOLDS.firstViewMs * 2)
+  expect(pan.p95).toBeLessThan(THRESHOLDS.panP95Ms * 2)
+})

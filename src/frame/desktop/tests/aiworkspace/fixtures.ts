@@ -29,7 +29,7 @@ export class Api {
   }
 
   async commit(token: string, ws: { workspace_id: string; epoch: string }, operations: Json[], key = `test/${Date.now()}/${Math.random().toString(36).slice(2)}`): Promise<Json> {
-    return this.rpc(token, 'doc.commit', { protocol_version: '0.2', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: key, session_id: 'test-api', operations })
+    return this.rpc(token, 'doc.commit', { protocol_version: '0.3', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: key, session_id: 'test-api', operations })
   }
 
   /** The shared sample of design §3.8, replayed through the public interface (same as the Rust tests). */

@@ -733,9 +733,29 @@ pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&s
 /// Stacking order is the sibling `order_key`; there is no `z`.
 /// `rotation` (optional, degrees clockwise about the centre, `[0, 360)`) is layout like x / y: it is
 /// relative to the parent, written with the same capability and merged the same way.
-fn check_placement(v: &Value) -> WsResult<()> {
+///
+/// A connector (`connector` = its payload) stores the bounding box of its two stored endpoint positions
+/// (连接线方案 §4.2): a horizontal or vertical line has `w` or `h` 0, there is no rotation, and two coordinate
+/// ends must not collapse into one point. That last rule depends on the payload at the time, so it is not
+/// applied to internal callers: undo may put back a box written while the ends were still bound.
+fn check_placement(v: &Value, connector: Option<&JsonMap>, internal: bool) -> WsResult<()> {
     let o = v.as_object().ok_or_else(|| WsError::invalid_schema("placement must be an object"))?;
     let num = |k: &str| o.get(k).and_then(Value::as_f64).filter(|f| f.is_finite());
+    if let Some(payload) = connector {
+        let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h"))
+            && num("x").is_some()
+            && num("y").is_some()
+            && num("w").is_some_and(|w| w >= 0.0)
+            && num("h").is_some_and(|h| h >= 0.0);
+        if !ok {
+            return Err(WsError::invalid_schema("a connector's placement must be { x, y, w >= 0, h >= 0 } with finite numbers and no rotation"));
+        }
+        let coordinate = |k: &str| payload.get(k).is_none_or(Value::is_null);
+        if !internal && coordinate("start") && coordinate("end") && num("w").unwrap_or(0.0) + num("h").unwrap_or(0.0) <= 0.0 {
+            return Err(WsError::invalid_schema("a connector with two coordinate ends cannot be a single point"));
+        }
+        return Ok(());
+    }
     let ok = o.keys().all(|k| matches!(k.as_str(), "x" | "y" | "w" | "h" | "rotation"))
         && num("x").is_some()
         && num("y").is_some()
@@ -762,6 +782,36 @@ pub fn in_data_tree(ctx: &dyn ReadCtx, id: &str) -> WsResult<bool> {
         }
     }
     Ok(false)
+}
+
+/// The Surface `id` is drawn on: the first `surface` container walking up the tree (the entity itself
+/// included). `None` outside the BlockTree.
+pub fn surface_of(ctx: &dyn ReadCtx, id: &str) -> WsResult<Option<EntityRow>> {
+    let mut cur = id.to_string();
+    for _ in 0..4096 {
+        if let Some(e) = ctx.entity(&cur)? {
+            if e.type_id == TYPE_CONTAINER && container_kind(&e) == "surface" {
+                return Ok(Some(e));
+            }
+        }
+        match ctx.edge(&cur)? {
+            Some(edge) => cur = edge.parent_id,
+            None => return Ok(None),
+        }
+    }
+    Ok(None)
+}
+
+/// A connector needs its box everywhere it is placed: the line is drawn from it.
+fn connector_placement(op: &Value, connector: Option<&JsonMap>, internal: bool) -> WsResult<Option<Value>> {
+    match op.get("placement") {
+        None | Some(Value::Null) if connector.is_some() => Err(WsError::invalid_schema("a connector needs a placement").at("/placement")),
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            check_placement(v, connector, internal)?;
+            Ok(Some(v.clone()))
+        }
+    }
 }
 
 fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
@@ -816,13 +866,8 @@ fn entity_create(p: &mut Planner, op: &Value) -> OpResult {
         }
         Some(_) => return Err(WsError::invalid_op("name must be a string")),
     };
-    let placement = match op.get("placement") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            check_placement(v)?;
-            Some(v.clone())
-        }
-    };
+    let connector = crate::types::is_connector(type_id, &payload).then_some(&payload);
+    let placement = connector_placement(op, connector, p.env.internal)?;
     let seq = p.seq();
     let mut row = EntityRow {
         entity_id: id.to_string(),
@@ -1204,13 +1249,8 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
     }
     p.need_parent_lock(id)?;
     p.need_lock(&new_parent);
-    let placement = match op.get("placement") {
-        None | Some(Value::Null) => None,
-        Some(v) => {
-            check_placement(v)?;
-            Some(v.clone())
-        }
-    };
+    // a connector moved into a flow page keeps its data (not rendered there, §8.3): only the box is judged
+    let placement = connector_placement(op, crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload), p.env.internal)?;
     let seq = p.seq();
     let inverse = json!({ "op": "tree.move", "entity_id": id, "new_parent_id": edge.parent_id, "order_key": edge.order_key,
                           "placement": edge.placement, "expect": { "rev": seq } });
@@ -1226,10 +1266,11 @@ fn tree_move(p: &mut Planner, op: &Value) -> OpResult {
 fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
     only_keys(op, &["entity_id", "order_key", "placement", "expect"])?;
     let id = get_str(op, "entity_id")?;
-    p.entity_alive(id)?;
+    let e = p.entity_alive(id)?;
     if is_system_id(id) {
         return Err(WsError::invalid_op(format!("{id} is a system entity and cannot be placed")));
     }
+    let connector = crate::types::is_connector(&e.type_id, &e.payload).then_some(&e.payload);
     let mut edge = p.ov.edge(id)?.ok_or_else(|| WsError::invalid_op("the root cannot be placed"))?;
     p.require(&edge.parent_id, Cap::Structure)?;
     p.need_parent_lock(id)?;
@@ -1246,14 +1287,9 @@ fn tree_place(p: &mut Planner, op: &Value) -> OpResult {
         edge.order_key = k.to_string();
         change = "moved";
     }
-    if let Some(v) = op.get("placement") {
+    if op.get("placement").is_some() {
         inverse["placement"] = edge.placement.clone().unwrap_or(Value::Null);
-        if v.is_null() {
-            edge.placement = None;
-        } else {
-            check_placement(v)?;
-            edge.placement = Some(v.clone());
-        }
+        edge.placement = connector_placement(op, connector, p.env.internal)?;
     }
     if op.get("order_key").map_or(true, Value::is_null) && op.get("placement").is_none() {
         return Err(WsError::invalid_op("tree.place needs order_key or placement"));

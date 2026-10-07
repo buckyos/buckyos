@@ -262,6 +262,17 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             if let Some(v) = e.payload.get("locked") {
                 env["locked"] = v.clone();
             }
+            // the geometry a canvas needs to draw a line (连接线方案 §9.2); appearance stays in `config`
+            if types::is_connector(&e.type_id, &e.payload) {
+                let mut c = json!({ "start": e.payload.get("start").cloned().unwrap_or(Value::Null),
+                                    "end": e.payload.get("end").cloned().unwrap_or(Value::Null) });
+                for k in ["flip", "route", "controls", "label"] {
+                    if let Some(v) = e.payload.get(k) {
+                        c[k] = v.clone();
+                    }
+                }
+                env["connector"] = c;
+            }
         }
         TYPE_WISH => {
             env["executor"] = e.payload.get("executor").cloned().unwrap_or(Value::Null);

@@ -113,7 +113,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await expect(page.getByTestId('aiws-delete-confirm')).toHaveCount(0)
   // bob reads only the data tree: the same pre-check tells him nothing about the Blocks
   await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'data', capabilities: ['read', 'delete'] })
-  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.2', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
+  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.3', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
   expect(prepared.status).toBe('rejected')
   expect(prepared.errors[0].data.referrers).toEqual([])
   expect(prepared.errors[0].data.hidden_referrers).toBe(true)

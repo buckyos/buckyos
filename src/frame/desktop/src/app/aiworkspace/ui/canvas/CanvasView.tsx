@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'lucide-react'
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
-import type { EntityEnvelope, Json, Operation, Placement } from '../../api/types'
+import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
 import { useDirectReadOnly, useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { useBlockContext } from '../blocks/useBlockContext'
@@ -33,9 +33,12 @@ import { OpenWishContext } from '../wish/wishBlock'
 import { WishPanel } from '../wish/WishPanel'
 import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
+import { anchorWorld, axisOf, boxOf, distanceTo } from './connectors/geometry'
+import { hasBoundEnd, isConnector, ShapeBook } from './connectors/layout'
+import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
 import { FlowSurface } from './FlowSurface'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
-import { boundsOf, layoutSurface, movedPlacement, relativeTo, surfaceBounds, topLevel } from './layout'
+import { boundsOf, layoutSurface, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
 import { RenderHost, type LayoutChange } from './render/RenderHost'
@@ -49,6 +52,8 @@ interface Viewport { x: number; y: number; zoom: number }
 
 /** Screen space the floating toolbars and the status area cover (fit, centring and the near toolbar avoid it);
  * narrow windows stack the two top toolbars (a phone has only one). */
+/** What a line drawn to blank space offers to create at its end (Miro's "next object"). */
+const NEXT_OBJECTS = ['note', 'richtext', 'shape', 'wish']
 const TOP_INSET = 68
 const TOP_INSET_NARROW = 124
 const LEFT_INSET = 68
@@ -115,16 +120,31 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [tool, setTool] = useState<PointerTool>('select')
   const [placing, setPlacing] = useState<InsertRequest | null>(null)
   const [annotatePick, setAnnotatePick] = useState(false)
+  /** A line just drawn to blank space offers to create the next object at its end (标准对象的交互改进 §6.1, R11). */
+  const [nextObject, setNextObject] = useState<{ connectorId: string; at: { x: number; y: number }; from: { x: number; y: number }; end: { x: number; y: number } } | null>(null)
   const [collapsedChoice, setCollapsed] = useState<boolean | null>(null)
   const collapsed = collapsedChoice ?? shell.size === 'narrow'
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
   const isFree = surface.layout?.mode === 'free'
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- outlineVersion is the invalidation signal of the outline model
-  const laid = useMemo(() => layoutSurface(store.outline, surfaceId), [store, surfaceId, outlineVersion])
+  // connector ends meet the outline a Block declares; a shape decided by its payload is read once (连接线实现方案 §4.3)
+  const [shapeBook] = useState(() => new ShapeBook(store))
+  const shapesVersion = useSyncExternalStore(shapeBook.subscribe, shapeBook.snapshot)
+  const laid = useMemo(() => layoutSurface(store.outline, surfaceId, (id) => shapeBook.get(store.outline.get(id))),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- outlineVersion / shapesVersion are the invalidation signals
+    [store, surfaceId, outlineVersion, shapesVersion, shapeBook])
+  useEffect(() => {
+    const targets: EntityEnvelope[] = []
+    for (const l of laid.values()) for (const end of [l.connector?.data.start, l.connector?.data.end]) { const target = end ? laid.get(end.entity_id)?.entity : undefined; if (target) targets.push(target) }
+    shapeBook.ensure(targets)
+  }, [laid, shapeBook])
   const index = useMemo(() => {
     const idx = new SpatialIndex()
-    for (const [id, l] of laid) idx.insert({ id, rect: l.bounds, paint: l.paint, ...(l.rotation ? { turned: { rect: l.rect, rotation: l.rotation } } : {}) })
+    for (const [id, l] of laid) {
+      const line = l.connector
+      idx.insert({ id, rect: l.bounds, paint: l.paint, ...(l.rotation ? { turned: { rect: l.rect, rotation: l.rotation } } : {}),
+        ...(line ? { line: { flat: line.geom.flat, label: line.geom.label.box, distance: (p: { x: number; y: number }) => distanceTo(line.geom, p) } } : {}) })
+    }
     return idx
   }, [laid])
   // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
@@ -175,7 +195,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     setPolicySeen(policyKey)
     if (!policy.select) setSelectionState(new Set())
     if (!policy.editContent) setEditingState(null)
-    if (!policy.insert) { setPlacing(null); setCatalog(null) }
+    if (!policy.insert) { setPlacing(null); setCatalog(null); setTool((t) => (t === 'connector' ? 'select' : t)) }
     if (!policy.annotate) setAnnotatePick(false)
   }
   const [laidSeen, setLaidSeen] = useState(laid)
@@ -261,9 +281,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   }
 
   // ---- insertion (§4.2, §8.1; UI improvement §7.2): no title prompt; text and notes open their editor at once
-  const insert = useCallback(async (request: InsertRequest, world: { x: number; y: number } | null, parentId?: string) => {
+  const insert = useCallback(async (request: InsertRequest, world: { x: number; y: number } | null, parentId?: string,
+    /** Operations committed together with the insertion, given the new Block and its world rect (e.g. a line's end). */
+    also?: (cellId: string, rect: { x: number; y: number; w: number; h: number }) => Promise<Operation[]>) => {
     const definition = request.entry.definition
     if (!definition.create || insertReason) return
+    // a flow page shows no connectors (连接线实现方案 §8.3)
+    if (definition.type === 'connector' && !isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return }
     let config = request.config
     if (request.file) {
       try {
@@ -291,6 +315,9 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       return
     }
     if (!isFree) for (const op of operations) if (op.op === 'entity.create' && op.entity_id === cellId) delete (op as Record<string, unknown>).placement
+    if (also) {
+      try { operations = [...operations, ...await also(cellId, { ...spot, ...size })] } catch (error) { store.notify('error', `无法插入${request.entry.title}：${describeError(error)}`); return }
+    }
     const outcome = await store.submit({ editId: `insert:${cellId}`, label: `插入${request.entry.title}`, operations })
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
       setSelectionState(new Set([cellId]))
@@ -305,10 +332,20 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   /** The toolbar's pick: a one-shot placement on a free Surface, an append on a flow page. */
   const pick = (request: InsertRequest) => {
     if (insertReason) { store.notify('info', insertReason); return }
+    // a line is drawn, not placed (标准对象的交互改进 §6.1)
+    if (request.entry.definition.type === 'connector' && isFree) { setPlacing(null); setTool('connector'); return }
     if (isFree) { setPlacing(request); setTool('select') } else void insert(request, null)
   }
   const pickEntry = (entry: CatalogEntry) => {
     if (entry.definition.type === 'wish' && single?.view_type === 'wish' && policy.editContent) { setEditing(single.entity_id); return }
+    // the connector entry is a tool: press and drag on the canvas draws a line (标准对象的交互改进 §6.1)
+    if (entry.definition.type === 'connector') {
+      if (insertReason) { store.notify('info', insertReason); return }
+      if (!isFree) { store.notify('info', '流式页不显示连接线：连接线只能放在自由画布上。'); return }
+      setPlacing(null)
+      setTool((current) => (current === 'connector' ? 'select' : 'connector'))
+      return
+    }
     pick({ entry })
   }
   const openCatalog = (tab: CatalogTab, key?: string, world: { x: number; y: number } | null = null, parentId?: string) => setCatalog({ tab, key, world, parentId })
@@ -330,7 +367,14 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const deleteSelection = async () => {
     if (!canLayout) return
     const ops: Operation[] = []
-    for (const id of unlocked(topLevel(laid, selection), '删除')) {
+    const doomed = new Set<string>()
+    const targets = unlocked(topLevel(laid, selection), '删除')
+    for (const id of targets) {
+      if (store.outline.get(id)?.capabilities.includes('delete')) for (const e of [id, ...store.outline.descendants(id).map((d) => d.entity_id)]) doomed.add(e)
+    }
+    // the lines of deleted Blocks stay where they are now, still bound (连接线实现方案 §6.2, R3)
+    try { ops.push(...await freezeOps(store, laid, doomed)) } catch { /* the lines fall back to their stored spot */ }
+    for (const id of targets) {
       const entity = store.outline.get(id)
       if (!entity || !entity.capabilities.includes('delete')) continue
       const descendants = store.outline.descendants(id)
@@ -348,13 +392,17 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       }
     }
     if (ops.length === 0) return
+    if (!ops.some((op) => op.op === 'entity.delete')) return
     const outcome = await store.submit({ editId: `delete:${randomId().slice(0, 8)}`, label: `删除 ${ops.filter((o) => o.op === 'entity.delete').length} 项`, operations: ops })
     if (outcome.status === 'rejected' && outcome.code === 'REFERENCE_BROKEN') {
       const data = outcome.errors?.[0]?.data as { referrers?: { entity_id: string }[]; hidden_referrers?: boolean } | undefined
       store.notify('error', `数据仍被引用，没有删除：${(data?.referrers ?? []).map((r) => store.outline.get(r.entity_id)?.title ?? r.entity_id).join('、')}${data?.hidden_referrers ? '（另有无权查看的引用）' : ''}。先删除引用它的 Block，或只删除 Block。`)
     } else if (outcome.status === 'rejected') {
       store.notify('error', `没有删除：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
-    } else if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set())
+    } else if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
+      // only what was deleted leaves the selection (something picked meanwhile stays picked)
+      setSelectionState((current) => { const next = new Set([...current].filter((id) => !doomed.has(id))); return next.size === current.size ? current : next })
+    }
   }
   /** Lock or unlock the selection: the shared `locked` key of each Block or group (written with `update`). */
   const setLocked = async (ids: string[], locked: boolean) => {
@@ -407,7 +455,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const cl = laid.get(child.entity_id)
       if (!cl) continue
       key = store.core.order_key_between(key, undefined)
-      ops.push({ op: 'tree.move', entity_id: child.entity_id, new_parent_id: l.parentId, order_key: key, placement: relativeTo(laid, l.parentId, cl.rect, cl.rotation) })
+      ops.push({ op: 'tree.move', entity_id: child.entity_id, new_parent_id: l.parentId, order_key: key, placement: placementOf(laid, cl, l.parentId) })
       moved.push(child.entity_id)
     }
     ops.push({ op: 'entity.delete', entity_id: single.entity_id, expect: { rev: single.life_rev } })
@@ -418,9 +466,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!target) return
     const ops: Operation[] = []
     let key = store.outline.childrenOf(targetId).at(-1)?.order_key
+    const toFlow = target.layout?.mode !== 'free'
+    const carried = (l: Laid) => [l.entity, ...store.outline.descendants(l.entity.entity_id)].some((e) => isConnector(e))
     for (const id of unlocked(topLevel(laid, selection), '移动')) {
       const l = laid.get(id)
       if (!l) continue
+      if (toFlow && carried(l)) { store.notify('info', '流式页不显示连接线：连接线（及含连接线的分组）没有移动。'); continue }
       key = store.core.order_key_between(key, undefined)
       const placement = movedPlacement(laid, l, 0, 0, '')
       store.noteLayoutIntent(id, placement, key, targetId)
@@ -429,6 +480,60 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (ops.length) void store.submit({ editId: `move-surface:${randomId().slice(0, 8)}`, label: `移动到画布 ${target.title ?? target.name ?? ''}`, operations: ops }).then((outcome) => { if (outcome.status === 'accepted' || outcome.status === 'saved_locally') setSelectionState(new Set()) })
     setPicker(null)
   }
+  // ---- connectors (连接线实现方案 §7): drawing one is one commit; an edit of one is one commit
+  const createConnector = (spec: NewConnector, release: { blank: boolean; screen: { x: number; y: number } }) => {
+    setTool('select')
+    if (insertReason) { store.notify('info', insertReason); return }
+    const { op, id } = createConnectorOp(store, laid, surfaceId, spec)
+    void store.submit({ editId: `insert:${id}`, label: '插入连接线', operations: [op] }).then((outcome) => {
+      if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
+        setSelectionState(new Set([id]))
+        if (release.blank && policy.insert) setNextObject({ connectorId: id, at: release.screen, from: spec.start.point, end: spec.end.point })
+      } else if (outcome.status === 'rejected') store.notify('error', `没有创建连接线：${outcome.code}${outcome.detail ? `（${outcome.detail}）` : ''}`)
+    })
+  }
+  const changeConnector = (id: string, change: ConnectorChange) => {
+    const l = laid.get(id)
+    if (!l) return
+    void connectorChangeOps(store, laid, l, change).then(async (write) => {
+      if (!write) return
+      if (write.placement) store.noteLayoutIntent(id, write.placement)
+      // the line shows its new shape at once; a refused commit puts the old one back
+      store.outline.patchLocal(id, write.patch)
+      const outcome = await store.submit({ editId: `line:${id}:${randomId().slice(0, 6)}`, label: write.label, operations: write.operations })
+      if (outcome.status === 'rejected' || outcome.status === 'conflict') store.outline.patchLocal(id, write.before)
+    }, (error: unknown) => store.notify('error', `连接线没有修改：${describeError(error)}`))
+  }
+  /** The "next object" picked at the end of a line drawn to blank space: created there, the line's end bound to it. */
+  const insertAtLineEnd = (entry: CatalogEntry) => {
+    const next = nextObject
+    setNextObject(null)
+    if (!next) return
+    const size = entry.definition.defaultSize
+    const dir = axisOf(next.end.x - next.from.x, next.end.y - next.from.y)
+    const spot = dir.x > 0 ? { x: next.end.x, y: next.end.y - size.h / 2 } : dir.x < 0 ? { x: next.end.x - size.w, y: next.end.y - size.h / 2 }
+      : dir.y > 0 ? { x: next.end.x - size.w / 2, y: next.end.y } : { x: next.end.x - size.w / 2, y: next.end.y - size.h }
+    void insert({ entry }, { x: Math.round(spot.x), y: Math.round(spot.y) }, undefined, async (cellId, rect) => {
+      const line = store.outline.get(next.connectorId)
+      if (!line || line.deleted) return []
+      const read = await store.session.read<KeyedContent<CellPayload>>(next.connectorId)
+      const revs = read.content.key_revs ?? {}
+      const anchor = { kind: 'auto' as const }
+      const end = anchorWorld({ rect, rotation: 0, shape: 'rect' }, anchor, next.from)
+      const box = boxOf(next.from, end)
+      const flipped = Boolean(box.flip.h) !== Boolean(read.content.payload.flip?.h) || Boolean(box.flip.v) !== Boolean(read.content.payload.flip?.v)
+      const placement = relativeTo(laid, surfaceId, box.rect, 0, 0)
+      store.noteLayoutIntent(next.connectorId, placement)
+      return [
+        { op: 'entity.set_keys', entity_id: next.connectorId, keys: [
+          { key: 'end', value: { entity_id: cellId, anchor }, expect: { rev: revs.end ?? 0 } },
+          ...(flipped ? [{ key: 'flip', value: { ...(box.flip.h ? { h: true } : {}), ...(box.flip.v ? { v: true } : {}) }, expect: { rev: revs.flip ?? 0 } }] : []),
+        ] },
+        { op: 'tree.place', entity_id: next.connectorId, placement },
+      ]
+    })
+  }
+
   const annotateSelection = () => {
     if (!single?.source_id) return
     const source = store.outline.get(single.source_id)
@@ -454,7 +559,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     if (!current) return
     if (current.workspaceId !== store.session.workspaceId) { store.notify('info', '暂不支持跨工作区粘贴：需要完整导入与引用重映射。'); return }
     const c = camera.center
-    const { operations, newIds, label } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y) })
+    const { operations, newIds, label, refused } = pasteOperations(store, current, { surfaceId, isFree, at, center: camera.toWorld(c.x, c.y) })
+    if (refused) { store.notify('info', refused); return }
     if (operations.length === 0) { store.notify('info', '剪切的对象已不存在。'); canvasClipboard.set(null); return }
     void store.submit({ editId: `paste:${randomId().slice(0, 8)}`, label, operations }).then((outcome) => {
       if (outcome.status === 'accepted' || outcome.status === 'saved_locally') {
@@ -481,11 +587,13 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       const target = event.target as HTMLElement | null
       if (event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
       // a placement or target pick started from a toolbar button is cancelled by Esc even while that button has the focus
-      if (event.key === 'Escape' && (placing || annotatePick) && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) { setPlacing(null); setAnnotatePick(false); return }
+      if (event.key === 'Escape' && (placing || annotatePick || tool === 'connector') && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) { setPlacing(null); setAnnotatePick(false); setTool((t) => (t === 'connector' ? 'select' : t)); return }
       if (target?.closest('.aiws-panel, .aiws-popover, .aiws-dialog, .aiws-menu, .aiws-side, .aiws-near')) return
       if (!hostRef.current?.contains(target) && target !== document.body) return
       const mod = event.ctrlKey || event.metaKey
       if (event.key === 'Escape') {
+        if (nextObject) { setNextObject(null); return }
+        if (tool === 'connector') { setTool('select'); return }
         if (menu) { setMenu(null); return }
         if (picker) { setPicker(null); return }
         if (placing) { setPlacing(null); return }
@@ -501,6 +609,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (typable && !mod && !event.altKey && event.key.length === 1 && event.key !== ' ') { event.preventDefault(); requestIntent(single.entity_id, `type:${event.key}`); setEditing(single.entity_id); return }
       if (!mod && !event.altKey && isFree && (event.key === 'v' || event.key === 'V')) { setTool('select'); setPlacing(null); return }
       if (!mod && !event.altKey && isFree && (event.key === 'h' || event.key === 'H')) { setTool('hand'); setPlacing(null); return }
+      if (!mod && !event.altKey && isFree && (event.key === 'l' || event.key === 'L') && insertReason === null) { setTool('connector'); setPlacing(null); return }
       if (mod && !event.altKey && !event.shiftKey) {
         const key = event.key.toLowerCase()
         if (key === 'c' && copy.reason === null) { event.preventDefault(); copy.run(); return }
@@ -515,7 +624,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
         const step = event.shiftKey ? 10 : 1
         const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
         const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
-        commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l && !l.locked ? [{ id, placement: movedPlacement(laid, l, dx, dy) }] : [] }))
+        // a line with a bound end moves only by its ends (连接线实现方案 §7)
+        commitLayout(topLevel(laid, selection).flatMap((id) => { const l = laid.get(id); return l && !l.locked && !hasBoundEnd(l) ? [{ id, placement: movedPlacement(laid, l, dx, dy) }] : [] }))
         return
       }
       if (mod && (event.key === ']' || event.key === '[') && selection.size > 0 && canLayout) { event.preventDefault(); reorder(event.key === ']' ? 'front' : 'back'); return }
@@ -621,7 +731,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const commands: CanvasCommands = {
     isFree, insertReason,
     insert: (entry) => {
-      if (entry.catalog.needs === 'none') void insert({ entry }, null)
+      if (entry.definition.type === 'connector' && isFree) pickEntry(entry)
+      else if (entry.catalog.needs === 'none') void insert({ entry }, null)
       else openCatalog(entry.group === 'extension' ? 'extension' : 'all', entry.key)
     },
     openCatalog: (tab, key) => openCatalog(tab, key),
@@ -668,7 +779,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 tool={tool} placing={placing ? { ...placing.entry.definition.defaultSize, label: placingTitle } : null}
                 onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
-                cutIds={cutIds} renderNear={(bbox) => <NearToolbar bbox={bbox} items={nearItems} more={moreActions} viewport={viewportSize} insets={insets} />} />
+                cutIds={cutIds} renderNear={(bbox) => <NearToolbar bbox={bbox} items={nearItems} more={moreActions} viewport={viewportSize} insets={insets} />}
+                shapeOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
               </OpenWishContext.Provider>
               </EditorToolbarContext.Provider>
             ) : (
@@ -686,15 +798,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
-                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? null} insertReason={insertReason}
+                <ObjectToolbar isFree={isFree} tool={tool} onTool={(next) => { setTool(next); setPlacing(null) }} placingKey={placing?.entry.key ?? (tool === 'connector' ? 'block:connector' : null)} insertReason={insertReason}
                   onPick={pickEntry} onPickFile={(entry, file) => pick({ entry, file })} onOpenCatalog={(tab, key) => openCatalog(tab, key)} collapsed={collapsed} onCollapsed={setCollapsed} />
               </div>
             )}
-            {(placing || annotatePick) && (
+            {(placing || annotatePick || tool === 'connector') && (
               <div className="aiws-hint" role="status" data-testid="aiws-tool-hint">
-                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : phone ? '点按要批注的对象；再点一次“批注”取消' : '点选要批注的对象；Esc 取消'}
+                {placing ? `点击画布放置${placingTitle}；Enter 放到视图中央，Esc 取消` : tool === 'connector' ? '按下并拖动画连接线；从对象上开始或松开在对象上即连到该对象；Esc 取消'
+                  : phone ? '点按要批注的对象；再点一次“批注”取消' : '点选要批注的对象；Esc 取消'}
               </div>
             )}
+            {nextObject && <ContextMenu at={nextObject.at} onClose={() => setNextObject(null)}
+              items={NEXT_OBJECTS.flatMap((type) => { const entry = registryEntries().find((e) => e.definition.type === type); return entry ? [{ id: `next-${type}`, label: entry.title, run: () => insertAtLineEnd(entry) }] : [] })} />}
             <StatusDock />
             {menu && <ContextMenu at={menu.at} items={menuItems} onClose={() => setMenu(null)} />}
             {picker && <Picker kind={picker.kind} selection={selectedEntities} surfaceId={surfaceId} onClose={() => setPicker(null)} onPick={(choice) => {

@@ -42,7 +42,8 @@ function ContainerFlow({ container, mode, selected, onSelect, editing, onEditing
 }) {
   const store = useStore()
   const policy = modePolicy(mode)
-  const shown = store.outline.childrenOf(container.entity_id).filter((entity) => entity.type_id === 'buckyos.cell' || (entity.type_id === 'buckyos.container' && entity.kind === 'group'))
+  // a flow page shows no connectors: their data stays, a free layout shows them again (连接线实现方案 §8.3)
+  const shown = store.outline.childrenOf(container.entity_id).filter((entity) => (entity.type_id === 'buckyos.cell' && entity.view_type !== 'connector') || (entity.type_id === 'buckyos.container' && entity.kind === 'group'))
   return (
     <>
       {shown.map((entity, index) => (

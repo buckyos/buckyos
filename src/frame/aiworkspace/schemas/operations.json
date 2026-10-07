@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.2",
+ "protocol_version": "0.3",
  "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
  "operations": [
   {
@@ -7,14 +7,14 @@
    "class": "create",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead."
+   "note": "Create an entity and attach it to the tree in one step. Annotations need `comment` instead. A connector Cell needs a placement and a free-layout Surface."
   },
   {
    "op": "entity.delete",
    "class": "structural",
    "undo": "compensable",
    "capability": "delete",
-   "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body references."
+   "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body/def references (input, derived, produced, anchor and connector_endpoint references never block)."
   },
   {
    "op": "entity.restore",
@@ -63,14 +63,14 @@
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional."
+   "note": "Auto-merge: later arrival wins; cycles, deleted targets and name clashes are rejected. expect optional. A connector must keep a placement (see $defs.placement in commit-request.schema.json)."
   },
   {
    "op": "tree.place",
    "class": "merge",
    "undo": "compensable",
    "capability": "structure",
-   "note": "Order/placement within the same parent. expect optional."
+   "note": "Order/placement within the same parent. expect optional. `placement: null` clears a Block's placement; it is refused for a connector."
   },
   {
    "op": "table.insert_records",

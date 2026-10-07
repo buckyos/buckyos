@@ -1,4 +1,4 @@
-# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction)
+# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction + connectors)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
 `doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
@@ -285,6 +285,34 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   when a replica cannot replay a commit) stops the session with "please refresh" (`VERSION_MISMATCH`), keeping
   what is pending.
 
+## Connectors (doc/workspace/连接线实现方案讨论.md; 标准对象的交互改进 §6, S4)
+
+- **Data**: a Cell with `view.type = connector`. The placement is the box around the two stored ends (`w` / `h` may
+  be 0) and `flip` says which corner is which; `start` / `end` are null (a coordinate) or `{ entity_id, anchor }`
+  (`auto`, or `point` at a normalised spot of the target); `route` (straight / elbow / curve), `controls`
+  (`{u, v, dx, dy}` in the endpoint frame), `label` (`{t, offset}`; the text is the Cell `title`), `config` (look).
+  The outline projects all but `config` as `EntityEnvelope.connector` (`state/outline.ts` mirrors the core).
+- **Geometry** (`ui/canvas/connectors/geometry.ts`, pure): stored ends, connection points (rect / ellipse, turned
+  targets), the endpoint-frame decomposition, the three routers (automatic elbow adapted from React Flow's
+  smoothstep; curves as Hermite pieces through the points), arc length, label point, nearest point, bounds. Part
+  of `connector@1`: a change that alters existing drawings needs a new `view.version`.
+- **Layout** (`connectors/layout.ts`): the second pass of `layoutSurface` routes every line against the Blocks'
+  world rectangles; `Laid.rect` stays the stored box (all placement writes use it) and `Laid.bounds` covers the
+  path and label. A target's outline comes from `BlockDefinition.shape` (now a function of the payload);
+  `ShapeBook` reads the payload of targets whose shape depends on it. Lines enter the spatial index along their
+  path and hit within 6 px (or half their width).
+- **Drawing** (`ConnectorFrame.tsx`, `paint.ts`): one frame per line in the paint order, `pointer-events: none`,
+  SVG from one markup function that gestures also use to repaint in place (`LineRegistry`); caps scale with the
+  width; the label breaks the line (a mask) unless it has a fill; low zoom drops the label and simplifies caps.
+- **Gestures** (`RenderHost.tsx`): connection handles on one selected Block (mouse), the connector tool (L),
+  a dragged end snapping to side midpoints (`point`) or the Block under it (`auto`), end / bend / segment / label
+  handles on a selected line, a double press on a line to edit its label, edge panning while dragging. Moving,
+  resizing or turning Blocks re-routes their lines per frame without React. One gesture, one commit
+  (`connectors/ops.ts`); payload keys are written with `expect`, placements auto-merge.
+- **Lifecycle** (`CanvasView.tsx`, `clipboard.ts`): deleting Blocks freezes their lines in the same commit; copy
+  keeps only bindings inside the copied set; flow pages neither show nor accept lines; a line drawn to blank
+  canvas offers the "next object" (note, text, shape, wish) bound to its end.
+
 ## Block extension contract
 
 Register a `BlockDefinition` in `ui/blocks/registry.ts`. `useBlockContext` loads the Cell payload and key
@@ -383,8 +411,10 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
   pointers; starting a presentation, presentation sessions and interaction buttons (the menu entry is disabled and
   says why); annotation anchors on pure UI Blocks or blank canvas points; cross-workspace paste; image upload as a
   canvas icon. Browser zoom 200% was not automated.
-- Standard object interaction, not done: connector handles, "next object" catalog and connector tools (S4, with
-  the connectors themselves); whole-selection resizing, align / distribute, snapping guides, remote selections,
+- Connectors, not done: named ports, lines between lines, obstacle avoidance and line jumps, lines across
+  Surfaces, several or rich labels, touch editing (touch selects lines only), wish-generated lines, explicit
+  business relations (连接线方案 §3.2).
+- Standard object interaction, not done: whole-selection resizing, align / distribute, snapping guides, remote selections,
   HTML API v3 (`aiws.hover` / `aiws.toolbar`), touch editing beyond the handle sizes, keyboard rotation, rotating
   groups (S5). Typing on a selected text starts editing only for keys that produce a keydown (an IME composition
   does not; double-click instead). A note's colour is not a hover affordance (the toolbar has it).

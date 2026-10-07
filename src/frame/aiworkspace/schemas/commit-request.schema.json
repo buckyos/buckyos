@@ -1,6 +1,6 @@
 {
  "$schema": "https://json-schema.org/draft/2020-12/schema",
- "$id": "buckyos.ai-workspace/commit-request/0.2",
+ "$id": "buckyos.ai-workspace/commit-request/0.3",
  "title": "Commit request (doc.commit / doc.prepare)",
  "type": "object",
  "additionalProperties": false,
@@ -13,7 +13,7 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "0.2"
+   "const": "0.3"
   },
   "workspace_id": {
    "type": "string",
@@ -282,6 +282,208 @@
       "snapshot",
       "best_effort"
      ]
+    }
+   }
+  },
+  "placement": {
+   "description": "Free-layout placement of a Block or group (entity.create / tree.move / tree.place), relative to the parent; stacking order is order_key. A connector's placement is the bounding box of its two stored endpoint positions: w and h may be 0, rotation is not allowed, it is required (never null), and with two coordinate ends (start and end absent or null) it must not be a single point (w + h > 0; not re-judged for undo, which may restore a box written while the ends were bound).",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "x",
+    "y",
+    "w",
+    "h"
+   ],
+   "properties": {
+    "x": {
+     "type": "number"
+    },
+    "y": {
+     "type": "number"
+    },
+    "w": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "description": "> 0; >= 0 for a connector"
+    },
+    "h": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "description": "> 0; >= 0 for a connector"
+    },
+    "rotation": {
+     "type": "number",
+     "minimum": 0,
+     "exclusiveMaximum": 360,
+     "description": "degrees clockwise about the centre; not on a connector"
+    }
+   }
+  },
+  "connector_endpoint": {
+   "description": "A bound endpoint of a connector. null (or an absent key) is a coordinate endpoint: the corresponding corner of the placement box (start = top-left, end = bottom-right, mirrored by flip). The target is a live, readable Cell (not a connector) or group on the same free-layout Surface; checked when written, not on import. Indexed as a `connector_endpoint` reference (src_selector {kind: connector_end, end: start|end}) that never blocks deleting the target.",
+   "type": [
+    "object",
+    "null"
+   ],
+   "additionalProperties": false,
+   "required": [
+    "entity_id",
+    "anchor"
+   ],
+   "properties": {
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "anchor": {
+     "oneOf": [
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "kind"
+       ],
+       "properties": {
+        "kind": {
+         "const": "auto"
+        }
+       }
+      },
+      {
+       "type": "object",
+       "additionalProperties": false,
+       "required": [
+        "kind",
+        "x",
+        "y"
+       ],
+       "properties": {
+        "kind": {
+         "const": "point"
+        },
+        "x": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1
+        },
+        "y": {
+         "type": "number",
+         "minimum": 0,
+         "maximum": 1
+        }
+       }
+      }
+     ]
+    }
+   }
+  },
+  "connector_payload": {
+   "description": "Payload of a buckyos.cell with view.type = connector (a line). The connector keys (flip, start, end, route, controls, label) are refused on any other view; a connector refuses source_ref, bindings, def_ref and the table-only keys, and its view.type can never change (nor can another Cell become a connector). config is appearance, checked by the front-end registry (<= 64 KiB). Self loop (start and end bound to the same entity): both anchors are distinct points and route is not straight. Creating one needs a free-layout Surface.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "view"
+   ],
+   "properties": {
+    "view": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "type"
+     ],
+     "properties": {
+      "type": {
+       "const": "connector"
+      },
+      "version": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "1 = connector@1 (its routing and interpolation); the core checks the format only"
+      }
+     }
+    },
+    "title": {
+     "type": "string",
+     "maxLength": 256,
+     "description": "label text"
+    },
+    "config": {
+     "type": "object"
+    },
+    "locked": {
+     "type": "boolean"
+    },
+    "flip": {
+     "type": [
+      "object",
+      "null"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "h": {
+       "type": "boolean"
+      },
+      "v": {
+       "type": "boolean"
+      }
+     }
+    },
+    "start": {
+     "$ref": "#/$defs/connector_endpoint"
+    },
+    "end": {
+     "$ref": "#/$defs/connector_endpoint"
+    },
+    "route": {
+     "enum": [
+      "straight",
+      "elbow",
+      "curve"
+     ],
+     "default": "straight"
+    },
+    "controls": {
+     "type": "array",
+     "maxItems": 64,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "u",
+       "v"
+      ],
+      "properties": {
+       "u": {
+        "type": "number"
+       },
+       "v": {
+        "type": "number"
+       },
+       "dx": {
+        "type": "number"
+       },
+       "dy": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "label": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "t"
+     ],
+     "properties": {
+      "t": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 1
+      },
+      "offset": {
+       "type": "number"
+      }
+     }
     }
    }
   }

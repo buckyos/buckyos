@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.2",
+ "protocol_version": "0.3",
  "description": "Stable error codes. Clients branch on `code` (and `sub_code`), never on text. `status` is how a Commit reports it. Checked against the code by core/tests/schemas.rs.",
  "codes": [
   {

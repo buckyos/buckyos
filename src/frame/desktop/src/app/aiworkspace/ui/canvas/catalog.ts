@@ -18,7 +18,7 @@ export interface CatalogEntry {
   defEntity?: EntityEnvelope
 }
 
-export const STANDARD_ORDER = ['richtext', 'note', 'shape', 'frame', 'table', 'asset', 'wish']
+export const STANDARD_ORDER = ['richtext', 'note', 'shape', 'connector', 'frame', 'table', 'asset', 'wish']
 
 /** Registered definitions offered for insertion; the HTML / declarative hosts are reached through workspace definitions. */
 export function registryEntries(): CatalogEntry[] {

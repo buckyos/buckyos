@@ -326,7 +326,8 @@
 .aiws-world.is-moving { will-change: transform; }
 /* a frame draws nothing (标准对象的交互改进 §4.1): the type draws its own look, the overlay draws the states */
 .aiws-frame-block { position: absolute; box-sizing: border-box; overflow: hidden; display: flex; flex-direction: column; }
-.aiws-frame-block:has(> .aiws-block-body[data-chrome='none']) { overflow: visible; }
+/* set by the RenderHost from the definition (a `:has()` here made every restyle inside a frame re-check all frames) */
+.aiws-frame-block[data-chrome='none'] { overflow: visible; }
 .aiws-frame-block.is-group { overflow: visible; pointer-events: none; }
 .aiws-frame-block.is-group > .aiws-group-chrome { pointer-events: auto; }
 .aiws-frame-block.is-editing { overflow: visible; }
@@ -414,7 +415,7 @@
 .aiws-frame-title { position: absolute; left: -2px; top: -2px; color: #fff; font-size: 12px; padding: 1px 8px; border-radius: 6px 0 6px 0; }
 .aiws-shape { position: absolute; inset: 0; border: 2px solid; display: flex; align-items: center; justify-content: center; }
 .aiws-shape-ellipse { border-radius: 50%; }
-.aiws-frame-block:has(> .aiws-block-body > .aiws-frame) { pointer-events: none; }
+.aiws-frame-block[data-view='frame'] { pointer-events: none; }
 /* the note is a coloured sheet; author and save state sit in its corners (§4.1) */
 .aiws-note { position: relative; box-sizing: border-box; background: #fff2cc; color: #3a3000; border-radius: 6px; padding: 8px 10px 18px; min-height: 60px; box-shadow: 0 1px 2px color-mix(in srgb, var(--cp-text) 12%, transparent); }
 .aiws-frame-block .aiws-note { height: 100%; }
@@ -729,3 +730,35 @@
 .aiws-surface-trigger > svg { flex: none; }
 .aiws-surface-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .aiws-surface-list-head .aiws-popover-item { display: inline-flex; align-items: center; gap: 6px; margin-top: 4px; }
+
+/* ---- connectors (连接线实现方案 §9.4; 标准对象的交互改进 §6): a line's frame takes no pointer (hit tests are
+ * geometric); its state lives in the overlay — a halo when hovered or selected, end / bend / segment / label
+ * handles, connection handles on a selected Block, the Block a dragged end would attach to. */
+.aiws-frame-block.is-connector { overflow: visible; pointer-events: none; display: block; }
+.aiws-connector-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.aiws-connector-label { position: absolute; transform: translate(-50%, -50%); width: max-content; max-width: 240px; padding: 1px 4px; border-radius: 3px; line-height: 1.35; color: var(--cp-text); white-space: pre-wrap; overflow-wrap: anywhere; text-align: center; user-select: none; }
+.aiws-root textarea.aiws-connector-label-edit { pointer-events: auto; min-width: 80px; field-sizing: content; resize: none; border: 1px solid var(--cp-accent); background: var(--cp-surface-opaque, var(--cp-surface)); font: inherit; outline: none; box-shadow: 0 1px 4px rgb(0 0 0 / 0.12); }
+.aiws-canvas[data-tool='connector'] { cursor: crosshair; }
+.aiws-canvas.is-line-hover { cursor: pointer; }
+.aiws-line-hover { fill: none; stroke: var(--cp-accent); stroke-opacity: 0.3; stroke-linecap: round; stroke-linejoin: round; }
+.aiws-line-halo { fill: none; stroke: var(--cp-accent); stroke-opacity: 0.25; stroke-linecap: round; stroke-linejoin: round; }
+.aiws-line-halo.is-locked { stroke: var(--cp-muted); }
+.aiws-cut-outline[d] { fill: none; }
+.aiws-line-preview { fill: none; stroke: var(--cp-accent); stroke-width: 2; stroke-dasharray: 6 4; }
+.aiws-overlay .aiws-line-handle, .aiws-overlay .aiws-connect-handle, .aiws-overlay .aiws-line-label-handle { pointer-events: auto; }
+.aiws-line-handle-hit, .aiws-connect-hit { fill: transparent; }
+.aiws-line-handle { cursor: move; }
+.aiws-line-dot { fill: var(--cp-accent); stroke: var(--cp-surface-opaque, #fff); stroke-width: 1.5; transition: r 80ms; }
+.aiws-line-handle:hover .aiws-line-dot { r: 6px; }
+.aiws-line-mid .aiws-line-dot { opacity: 0.5; }
+.aiws-line-mid:hover .aiws-line-dot { opacity: 1; }
+.aiws-line-end.is-free .aiws-line-dot { fill: var(--cp-surface-opaque, #fff); stroke: var(--cp-accent); }
+.aiws-line-end.is-broken .aiws-line-dot { fill: var(--cp-surface-opaque, #fff); stroke: var(--cp-muted); }
+.aiws-line-bang { font-size: 8px; font-weight: 700; fill: var(--cp-muted); text-anchor: middle; dominant-baseline: central; pointer-events: none; }
+.aiws-line-label-handle { fill: transparent; stroke: var(--cp-accent); stroke-width: 1; stroke-dasharray: 3 2; cursor: move; }
+.aiws-connect-handle { cursor: crosshair; }
+.aiws-connect-dot { fill: var(--cp-accent); transition: r 80ms; }
+.aiws-connect-handle:hover .aiws-connect-dot { r: 5px; }
+.aiws-snap-outline { fill: color-mix(in srgb, var(--cp-accent) 6%, transparent); stroke: var(--cp-accent); stroke-width: 1.5; }
+.aiws-snap-point { fill: var(--cp-surface-opaque, #fff); stroke: var(--cp-accent); stroke-width: 1.5; }
+.aiws-snap-point.is-on { fill: var(--cp-accent); }

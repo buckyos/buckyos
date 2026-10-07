@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState, type CSSProperties, type ReactNode } 
 import { ALargeSmall, Baseline, Circle, Columns3, Eye, Image as ImageIcon, ListFilter, ListTree, Pencil, Plus, Replace, Reply, Scan, Square, Table, Type } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { AnnotationContent, Json, Reference, RichTextContent } from '../../api/types'
+import type { AnnotationContent, CellPayload, Json, Reference, RichTextContent } from '../../api/types'
 import { StaticRichText } from '../../richtext/RichTextEditor'
 import { useEdit, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
@@ -417,11 +417,15 @@ function inkOn(fill: string): string {
   return luminance > 0.6 ? '#1f2328' : '#ffffff'
 }
 
+function shapeKind(payload: CellPayload): 'rect' | 'ellipse' {
+  return payload.config?.shape === 'ellipse' ? 'ellipse' : 'rect'
+}
+
 function shapeLook(context: RenderContext) {
   const config = context.payload.config ?? {}
   const fill = typeof config.fill === 'string' ? config.fill : '#e8f0fe'
   return {
-    kind: config.shape === 'ellipse' ? 'ellipse' as const : 'rect' as const,
+    kind: shapeKind(context.payload),
     fill,
     stroke: typeof config.stroke === 'string' ? config.stroke : '#4f8df7',
     ink: inkOn(fill),
@@ -449,7 +453,7 @@ const shape: BlockDefinition = {
   type: 'shape', version: 1, title: '形状', accepts: [], allowNoSource: true, pureUi: true,
   defaultSize: { w: 160, h: 120 }, cost: { editor: false, html: false },
   Static: ShapeStatic, Editor: ShapeEditor, chrome: 'none',
-  shape: (context) => shapeLook(context).kind,
+  shape: shapeKind,
   catalog: { group: 'layout', description: '矩形或椭圆，可在属性中改颜色和形状。', needs: 'none', standard: true },
   actions: [{ id: 'label', label: '编辑文字', modes: ['edit'], needs: ['update'], run: (context) => context.activateEditor(), key: 'Enter' }],
   toolbar: (context, store) => {

@@ -3,14 +3,15 @@
  * an object on a free Surface starts a one-shot placement; on a flow page it appends. */
 
 import { useRef, useSyncExternalStore } from 'react'
-import { ChevronsLeft, ChevronsRight, Frame, Hand, Image, MousePointer2, Plus, Puzzle, Redo2, Shapes, Sparkles, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
+import { ChevronsLeft, ChevronsRight, Frame, Hand, Image, MousePointer2, Plus, Puzzle, Redo2, Shapes, Sparkles, Spline, StickyNote, Table, Type, Undo2, type LucideIcon } from 'lucide-react'
 import { useOutlineVersion, useStore, useUserState } from '../../state/hooks'
 import { blockRegistry } from '../blocks/registry'
 import { extensionEntries, registryEntries, type CatalogEntry } from './catalog'
 
-const ICONS: Record<string, LucideIcon> = { richtext: Type, note: StickyNote, shape: Shapes, frame: Frame, table: Table, asset: Image, wish: Sparkles }
+const ICONS: Record<string, LucideIcon> = { richtext: Type, note: StickyNote, shape: Shapes, connector: Spline, frame: Frame, table: Table, asset: Image, wish: Sparkles }
 
-export type PointerTool = 'select' | 'hand'
+/** `connector`: press and drag draws a line (标准对象的交互改进 §6.1), one line at a time. */
+export type PointerTool = 'select' | 'hand' | 'connector'
 
 export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, onPick, onPickFile, onOpenCatalog, collapsed, onCollapsed }: {
   isFree: boolean
@@ -33,7 +34,8 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
   const pinned = useUserState<string[]>('ui:pinned-defs') ?? []
   const fileRef = useRef<HTMLInputElement>(null)
   const fileEntry = useRef<CatalogEntry | null>(null)
-  const standard = registryEntries().filter((entry) => entry.catalog.standard)
+  // a flow page shows no connectors (连接线实现方案 §8.3)
+  const standard = registryEntries().filter((entry) => entry.catalog.standard && (isFree || entry.definition.type !== 'connector'))
   const extensions = extensionEntries(store)
   const pinnedEntries = extensions.filter((entry) => pinned.includes(entry.defEntity?.entity_id ?? ''))
   const top = undo.undo.at(-1)
@@ -62,7 +64,7 @@ export function ObjectToolbar({ isFree, tool, onTool, placingKey, insertReason, 
                 const ai = entry.group === 'ai'
                 return (
                   <button key={entry.key} type="button" className={`aiws-tool${ai ? ' is-ai' : ''}`} aria-pressed={placingKey === entry.key} aria-label={entry.title}
-                    title={ai ? `${entry.title}：描述任务，预览候选，再应用结果` : isFree ? `${entry.title}：点击后在画布上放置（Esc 取消）` : `插入${entry.title}`}
+                    title={ai ? `${entry.title}：描述任务，预览候选，再应用结果` : entry.definition.type === 'connector' ? `${entry.title}：在画布上按下并拖动画线，从对象上开始即连到该对象（L，Esc 取消）` : isFree ? `${entry.title}：点击后在画布上放置（Esc 取消）` : `插入${entry.title}`}
                     data-testid={`aiws-tool-insert-${entry.definition.type}`} onClick={() => pick(entry)}>
                     <Icon size={20} />
                   </button>

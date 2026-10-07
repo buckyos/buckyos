@@ -153,8 +153,9 @@ export interface BlockDefinition {
   /** The host frame draws nothing (§4.1); `clip` (default) cuts off and scrolls content larger than the Block,
    * `none` lets it draw outside (titles, shadows). */
   chrome?: 'none' | 'clip'
-  /** The outline the hover state follows (and, later, connector points). */
-  shape?: 'rect' | 'ellipse' | ((context: RenderContext) => 'rect' | 'ellipse')
+  /** The outline the hover state follows and connector ends meet (连接线实现方案 §4.3); a function reads the
+   * Cell's payload only, so the canvas can resolve a target that is not mounted. */
+  shape?: 'rect' | 'ellipse' | ((payload: CellPayload) => 'rect' | 'ellipse')
   /** `locked`: corner handles keep the proportions (Shift frees them); `free`: Shift keeps them. */
   resize?: { aspect?: 'free' | 'locked' }
   /** Hover affordances (§4.2); without it a Block with data shows the data's name. */

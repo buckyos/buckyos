@@ -1,7 +1,7 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '0.2'
+export const PROTOCOL_VERSION = '0.3'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -112,6 +112,8 @@ export interface EntityEnvelope {
   icon?: string | null
   /** A Block or group the user locked (标准对象的交互改进 §7.2): the client does not move, resize or delete it. */
   locked?: boolean | null
+  /** A connector's geometry keys as the outline projects them (连接线实现方案 §9.2; `config` is not projected). */
+  connector?: ConnectorProjection | null
   parent_id?: string
   order_key?: string
   placement?: Placement
@@ -195,6 +197,17 @@ export interface SortSpec { field_id: string; direction: 'asc' | 'desc' }
 
 export type BlockSnapshot = { object_id: string; media_type: string; size: number }
 
+/** The connector keys of a Cell with `view.type = connector` (连接线实现方案 §4.2). */
+export interface ConnectorProjection {
+  start: ConnectorEnd | null
+  end: ConnectorEnd | null
+  flip?: { h?: boolean; v?: boolean }
+  route?: 'straight' | 'elbow' | 'curve'
+  controls?: { u: number; v: number; dx?: number; dy?: number }[]
+  label?: { t: number; offset?: number }
+}
+export interface ConnectorEnd { entity_id: string; anchor: { kind: 'auto' } | { kind: 'point'; x: number; y: number } }
+
 export interface CellPayload {
   /** Absent on a pure UI Block (frame, shape…). */
   source_ref?: Reference
@@ -212,6 +225,13 @@ export interface CellPayload {
   def_ref?: Reference
   /** Named data bindings (`aiws` v2): `source_ref` is the binding called `source`. */
   bindings?: Record<string, { entity_id: string; selector?: Selector }>
+  /** Connector keys (only with `view.type = connector`). */
+  start?: ConnectorEnd | null
+  end?: ConnectorEnd | null
+  flip?: ConnectorProjection['flip']
+  route?: ConnectorProjection['route']
+  controls?: ConnectorProjection['controls']
+  label?: ConnectorProjection['label']
 }
 
 export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'

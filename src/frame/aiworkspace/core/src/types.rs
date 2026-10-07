@@ -145,7 +145,10 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 
 // ---- Cell / TableView ----
 
-const CELL_KEYS: &[&str] = &["source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked"];
+const CELL_KEYS: &[&str] = &[
+    "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
+    "flip", "start", "end", "route", "controls", "label",
+];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
 /// Largest canonical size of a Block's `config` / a definition's body.
@@ -183,6 +186,14 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     }
     if view.get("version").is_some_and(|v| !v.as_u64().is_some_and(|n| n >= 1 && n <= 1_000_000)) {
         return Err(bad("view.version must be a positive integer"));
+    }
+    if view_type == "connector" {
+        // a line shows no data and runs no definition: what it binds are Blocks, through `start` / `end`
+        if let Some(k) = ["source_ref", "bindings", "def_ref"].into_iter().find(|k| e.payload.get(*k).is_some_and(|v| !v.is_null())) {
+            return Err(bad(format!("a connector cannot carry {k}")));
+        }
+    } else if let Some(k) = CONNECTOR_KEYS.iter().find(|k| e.payload.contains_key(**k)) {
+        return Err(bad(format!("{k} is only valid on connectors")));
     }
     let builtin = view_source_type(&view_type);
     let source_ref = match e.payload.get("source_ref") {
@@ -346,6 +357,133 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
                 return Err(bad("manual_order: invalid record_id"));
             }
             check_order_key(key.as_str().unwrap_or(""))?;
+        }
+    }
+    if view_type == "connector" {
+        validate_connector(p, e, changed)?;
+    }
+    Ok(())
+}
+
+// ---- Connector (连接线方案 §4, §6) ----
+
+/// Payload keys only a connector (`view.type = connector`) carries; each is its own version cell, so two
+/// people editing different aspects of one line merge.
+pub const CONNECTOR_KEYS: &[&str] = &["flip", "start", "end", "route", "controls", "label"];
+pub const MAX_CONNECTOR_CONTROLS: usize = 64;
+
+/// A connector is a Cell drawn as a line between the two corners of its placement box.
+pub fn is_connector(type_id: &str, payload: &JsonMap) -> bool {
+    type_id == TYPE_CELL && payload.get("view").and_then(|v| v.get("type")).and_then(Value::as_str) == Some("connector")
+}
+
+fn finite(v: Option<&Value>) -> Option<f64> {
+    v.and_then(Value::as_f64).filter(|f| f.is_finite())
+}
+
+/// `start` / `end`: absent or `null` is a coordinate endpoint (its corner of the box); a bound endpoint is
+/// `{ entity_id, anchor }` with anchor `{ kind: auto }` or `{ kind: point, x, y }` (x, y in [0, 1] of the
+/// target's layout box). Returns the bound target's id.
+fn connector_end<'v>(payload: &'v JsonMap, key: &str) -> WsResult<Option<&'v str>> {
+    let v = match payload.get(key) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(v) => v,
+    };
+    let shape = || bad(format!("{key} must be null or {{ entity_id, anchor }}"));
+    let o = v.as_object().filter(|o| o.len() == 2).ok_or_else(shape)?;
+    let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(shape)?;
+    let a = o.get("anchor").and_then(Value::as_object).ok_or_else(shape)?;
+    let unit = |k: &str| finite(a.get(k)).is_some_and(|f| (0.0..=1.0).contains(&f));
+    match a.get("kind").and_then(Value::as_str) {
+        Some("auto") if a.len() == 1 => Ok(Some(id)),
+        Some("point") if a.len() == 3 && unit("x") && unit("y") => Ok(Some(id)),
+        _ => Err(bad(format!("{key}.anchor must be {{ kind: auto }} or {{ kind: point, x, y }} with x, y in [0, 1]"))),
+    }
+}
+
+/// Shapes always; bindings only when written (create, or `start` / `end` / `route` changed). Import and
+/// replay keep dangling endpoints verbatim (写严读宽), and an endpoint that was not touched is not
+/// re-judged, so a line whose target went away stays editable.
+fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    let pl = &e.payload;
+    match pl.get("flip") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(f)) if f.iter().all(|(k, v)| matches!(k.as_str(), "h" | "v") && v.is_boolean()) => {}
+        Some(_) => return Err(bad("flip must be null or { h?, v? } with booleans")),
+    }
+    let start = connector_end(pl, "start")?;
+    let end = connector_end(pl, "end")?;
+    let route = match pl.get("route") {
+        None => "straight",
+        Some(Value::String(s)) if matches!(s.as_str(), "straight" | "elbow" | "curve") => s.as_str(),
+        Some(_) => return Err(bad("route must be straight, elbow or curve")),
+    };
+    if let Some(c) = pl.get("controls") {
+        let list = c.as_array().ok_or_else(|| bad("controls must be an array"))?;
+        if list.len() > MAX_CONNECTOR_CONTROLS {
+            return Err(WsError::limit(format!("at most {MAX_CONNECTOR_CONTROLS} controls")));
+        }
+        for pt in list {
+            let ok = pt.as_object().is_some_and(|o| {
+                o.keys().all(|k| matches!(k.as_str(), "u" | "v" | "dx" | "dy"))
+                    && o.iter().all(|(_, v)| finite(Some(v)).is_some())
+                    && o.contains_key("u")
+                    && o.contains_key("v")
+            });
+            if !ok {
+                return Err(bad("controls[] must be { u, v, dx?, dy? } with finite numbers"));
+            }
+        }
+    }
+    if let Some(l) = pl.get("label") {
+        let ok = l.as_object().is_some_and(|o| {
+            o.keys().all(|k| matches!(k.as_str(), "t" | "offset"))
+                && finite(o.get("t")).is_some_and(|t| (0.0..=1.0).contains(&t))
+                && (!o.contains_key("offset") || finite(o.get("offset")).is_some())
+        });
+        if !ok {
+            return Err(bad("label must be { t in [0, 1], offset? } with finite numbers"));
+        }
+    }
+    if p.env.import {
+        return Ok(());
+    }
+    let is_changed = |k: &str| changed.map_or(true, |c| c.iter().any(|x| x == k));
+    let surface = crate::plan::surface_of(&p.ov, &e.entity_id)?;
+    let free = surface.as_ref().is_some_and(|s| s.payload.get("layout").and_then(|l| l["mode"].as_str()) == Some("free"));
+    // a flow page does not draw lines (§8.3): creating one there is refused; a later move or layout switch
+    // is not checked — the line is kept and simply not rendered
+    if changed.is_none() && !free {
+        return Err(WsError::invalid_op("a connector can only be created on a free-layout Surface"));
+    }
+    for (key, target) in [("start", start), ("end", end)] {
+        let Some(id) = target.filter(|_| is_changed(key)) else { continue };
+        if id == e.entity_id {
+            return Err(bad(format!("{key}: a connector cannot be bound to itself")));
+        }
+        // unreadable targets read as missing (REFERENCE_BROKEN): an id must not bypass the read check
+        let Some(t) = p.check_ref_target(&json!({ "entity_id": id }), None)? else { continue };
+        let group = t.type_id == TYPE_CONTAINER && t.payload.get("kind").and_then(Value::as_str) == Some("group");
+        if !group && (t.type_id != TYPE_CELL || is_connector(&t.type_id, &t.payload)) {
+            return Err(bad(format!("{key}: {id} is not a Block or a group (connectors bind Blocks and groups, not data, Surfaces or other lines)")));
+        }
+        // Blocks are bound, not data: the target must sit on this very canvas (an ancestor group is fine)
+        if crate::plan::surface_of(&p.ov, id)?.map(|s| s.entity_id) != surface.as_ref().map(|s| s.entity_id.clone()) {
+            return Err(bad(format!("{key}: {id} is not on the connector's Surface")));
+        }
+        if !free {
+            return Err(WsError::invalid_op(format!("{key}: connectors are bound only on a free-layout Surface")));
+        }
+    }
+    // a self loop needs two distinct fixed points and a route that can leave and come back
+    if start.is_some() && start == end && ["start", "end", "route"].iter().any(|k| is_changed(k)) {
+        let point = |key: &str| {
+            let a = &pl[key]["anchor"];
+            (a["kind"] == json!("point")).then(|| (a["x"].as_f64(), a["y"].as_f64()))
+        };
+        match (point("start"), point("end")) {
+            (Some(a), Some(b)) if a != b && route != "straight" => {}
+            _ => return Err(bad("a self loop needs two different point anchors and a route other than straight")),
         }
     }
     Ok(())
@@ -1049,7 +1187,14 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
     match e.type_id.as_str() {
         TYPE_CONTAINER => validate_container(p, e, Some(before)),
         TYPE_RECORD => validate_record(p, e, Some(changed)),
-        TYPE_CELL => validate_cell(p, e, Some(changed)),
+        TYPE_CELL => {
+            // a line and a box are different geometries over the same placement: one object never turns into the other
+            let view_type = |r: &EntityRow| r.payload.get("view").and_then(|v| v.get("type")).cloned();
+            if view_type(before) != view_type(e) && (is_connector(&before.type_id, &before.payload) || is_connector(&e.type_id, &e.payload)) {
+                return Err(WsError::invalid_op("view.type cannot change to or from connector"));
+            }
+            validate_cell(p, e, Some(changed))
+        }
         TYPE_ASSET => {
             // new content: dimensions of the old image do not describe it
             let has = |k: &str| changed.iter().any(|c| c == k);
@@ -1114,6 +1259,15 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
             for (name, target) in e.payload.get("bindings").and_then(Value::as_object).into_iter().flatten() {
                 let s = selector_string(&json!({ "kind": "binding", "name": name }));
                 out.insert(ref_edge(&e.entity_id, &s, "bind", target));
+            }
+            // endpoint bindings: listed in relations, never blocking deletion (the line freezes instead, §6)
+            if is_connector(&e.type_id, &e.payload) {
+                for end in ["start", "end"] {
+                    if let Some(id) = e.payload.get(end).and_then(|b| b.get("entity_id")).and_then(Value::as_str) {
+                        let s = selector_string(&json!({ "kind": "connector_end", "end": end }));
+                        out.insert(ref_edge(&e.entity_id, &s, "connector_endpoint", &json!({ "entity_id": id })));
+                    }
+                }
             }
         }
         TYPE_WISH => {

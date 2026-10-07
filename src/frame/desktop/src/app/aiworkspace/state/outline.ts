@@ -6,7 +6,7 @@
  * Every Block subscribes to its own entry (`subscribeEntity`), so one Block's change re-renders
  * that Block alone. Children lists are kept per parent for the trees and the RenderHost. */
 
-import type { CommitEvent, EntityEnvelope, Operation, Placement } from '../api/types'
+import type { CommitEvent, ConnectorProjection, EntityEnvelope, Operation, Placement } from '../api/types'
 import { Emitter } from './emitter'
 
 type Listener = () => void
@@ -15,6 +15,14 @@ function compareSiblings(a: EntityEnvelope, b: EntityEnvelope): number {
   const ka = a.order_key ?? ''
   const kb = b.order_key ?? ''
   return ka < kb ? -1 : ka > kb ? 1 : a.entity_id < b.entity_id ? -1 : a.entity_id > b.entity_id ? 1 : 0
+}
+
+const CONNECTOR_KEYS = ['flip', 'route', 'controls', 'label'] as const
+
+function connectorProjection(payload: Record<string, unknown>): ConnectorProjection {
+  const out: Record<string, unknown> = { start: payload.start ?? null, end: payload.end ?? null }
+  for (const key of CONNECTOR_KEYS) if (payload[key] !== undefined && payload[key] !== null) out[key] = payload[key]
+  return out as unknown as ConnectorProjection
 }
 
 /** Outline fields derived from a payload (what the backend's `outline_extras` adds). */
@@ -31,6 +39,8 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     const view = payload.view as { type?: string; version?: number } | undefined
     out.view_type = view?.type ?? null
     out.view_version = view?.version ?? null
+    // a connector's geometry keys, as the backend's `outline_extras` projects them (连接线实现方案 §9.2)
+    out.connector = view?.type === 'connector' ? connectorProjection(payload) : null
     out.source_id = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
   } else if (typeId === 'buckyos.wish') {
@@ -272,7 +282,7 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked'].includes(key.key)) touchedExtras = true
+              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
@@ -285,6 +295,7 @@ export class OutlineModel {
                 def_ref: current.def_id ? { entity_id: current.def_id } : undefined,
                 executor: current.executor, output_mode: current.output_mode, def_id: current.def_id, media_type: current.media_type,
                 target: current.target_id ? { entity_id: current.target_id } : undefined,
+                ...(current.connector ?? {}),
               }
               for (const op of keyed) if (op.op === 'entity.unset_keys') for (const key of (op.keys as { key: string }[] | undefined) ?? []) delete known[key.key]
               Object.assign(update, extras(current.type_id, { ...known, ...payload }))

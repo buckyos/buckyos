@@ -62,8 +62,8 @@ take Cells and groups only. A Surface names its content folder (`content_folder_
 only; the client owns the preset list), a shared, undoable key projected into the outline like `title`. `placement` is `{ x, y, w, h, rotation? }` relative to the parent (`rotation`: degrees clockwise about the centre,
 `[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
 the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
-`PROTOCOL_VERSION` is 0.2 and `FORMAT_VERSION` 0.3 since these two keys (older kernels would refuse them on
-replay or import); stores and packages of format 0.2 are refused like any other version. Free
+`FORMAT_VERSION` is 0.3 since these two keys (older kernels would refuse them on replay or import); stores and
+packages of format 0.2 are refused like any other version. `PROTOCOL_VERSION` is 0.3 since connectors (below). Free
 notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).
@@ -84,6 +84,41 @@ A result the user keeps against a later run ("保留人工修改") is re-recorde
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
 Format version is `0.3`; packages of an older format (`0.1`, `0.2`) are refused with `UNSUPPORTED_VERSION` (no migration).
+
+## Connector (连接线方案 C1)
+
+Design: [连接线实现方案讨论](<../../../doc/workspace/连接线实现方案讨论.md>) §4, §6, §8.3. A connector is a Cell with
+`view.type = "connector"` (`view.version` 1): a line from the top-left to the bottom-right corner of its placement
+box, mirrored by `flip`. Its own payload keys, each a separate version cell, are refused on any other view:
+
+| Key | Shape |
+| --- | --- |
+| `flip` | absent, `null` or `{ h?: bool, v?: bool }` |
+| `start` / `end` | absent or `null` = coordinate endpoint (the corner); bound = `{ entity_id, anchor }`, anchor `{ kind: "auto" }` or `{ kind: "point", x, y }` with x, y in [0, 1] |
+| `route` | absent (= `straight`), `straight`, `elbow`, `curve` |
+| `controls` | absent or ≤ 64 × `{ u, v, dx?, dy? }` (more → `LIMIT_EXCEEDED`) |
+| `label` | absent or `{ t in [0, 1], offset? }` |
+
+It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not inspected) and `locked`; never
+`source_ref`, `bindings`, `def_ref` or the table keys. All numbers are finite; unknown sub-keys are refused.
+`view.type` never changes to or from `connector` (`INVALID_OPERATION`).
+
+- **Placement** (`plan.rs` `check_placement`): required on `entity.create` and `tree.move`, `placement: null`
+  refused on `tree.place` (`order_key` alone is fine); `{ x, y, w ≥ 0, h ≥ 0 }`, no `rotation`; with two coordinate
+  ends the box is not a point (internal callers — undo — may restore one written while the ends were bound).
+- **Bindings** (`types.rs` `validate_connector`), judged when written — on create, and for the endpoint whose key
+  changed (an untouched dangling end stays editable): the target passes `check_ref_target` (alive and readable,
+  else `REFERENCE_BROKEN`), is a Cell that is not a connector or a `group` (not the line itself, data, a Surface),
+  and sits on the line's Surface (`plan::surface_of`, an ancestor group included) — else `INVALID_SCHEMA`. A
+  self loop needs two different `point` anchors and a route other than `straight`. Creating a connector needs a
+  free-layout Surface, and so does a new binding (`INVALID_OPERATION`); a later move into a flow page or a layout
+  switch is not checked (the line is kept, just not drawn). Import and replay check shapes only and keep dangling
+  endpoints verbatim.
+- **References**: each bound end is a `connector_endpoint` edge with selector `{ kind: "connector_end", end }`. It
+  never blocks deletion (the client freezes the line's corner in the deleting commit), takes no part in
+  freshness, and is listed as an incoming reference by `doc.relations`.
+- **Outline**: a connector's envelope carries `connector: { start, end, flip?, route?, controls?, label? }`
+  (`start` / `end` always present, `null` when free); `config` is read with `doc.read`.
 
 ## Wish runs (许愿格 v0.2)
 

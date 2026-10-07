@@ -16,5 +16,5 @@ export function sourceLabel(context: RenderContext, icon: LucideIcon = Database)
 
 export function shapeOf(context: RenderContext): 'rect' | 'ellipse' {
   const shape = context.definition.shape
-  return typeof shape === 'function' ? shape(context) : shape ?? 'rect'
+  return typeof shape === 'function' ? shape(context.payload) : shape ?? 'rect'
 }

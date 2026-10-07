@@ -34,7 +34,7 @@ pub const POLICY_LOCK: &str = "lock_required";
 /// Reserved key of `key_revs` holding `source.members_rev`.
 pub const MEMBERS_KEY: &str = "#members";
 pub const FORMAT_VERSION: &str = "0.3";
-pub const PROTOCOL_VERSION: &str = "0.2";
+pub const PROTOCOL_VERSION: &str = "0.3";
 
 pub fn is_known_type(t: &str) -> bool {
     matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF)
@@ -167,8 +167,9 @@ impl RefEdge {
             dst_query_json: String::new(),
         }
     }
-    /// Reference kinds that block deletion of their target. `input` (wish inputs) and `derived`
-    /// (generation dependencies) do not: the target may go, the result then reads "引用不可用".
+    /// Reference kinds that block deletion of their target. `input` (wish inputs), `derived`
+    /// (generation dependencies) and `connector_endpoint` (a line's bound end) do not: the target may go,
+    /// the result then reads "引用不可用" and the line keeps its stored end position.
     pub fn blocks_delete(&self) -> bool {
         matches!(self.kind.as_str(), "bind" | "embed" | "value" | "body" | "def")
     }
