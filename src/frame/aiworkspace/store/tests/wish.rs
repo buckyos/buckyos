@@ -196,7 +196,7 @@ fn execute_collect_plan_apply_and_refresh() {
         "output_contract": { "results": [
             { "name": "monthly", "type": "table", "title": "月度汇总", "approach": "program", "key": ["月份"],
               "views": [{ "renderer": "table" }, { "renderer": "sample.bar-chart", "config": { "value": "销售额", "by": "月份" } }] },
-            { "name": "commentary", "type": "richtext", "title": "解读", "approach": "direct" }] } });
+            { "name": "commentary", "type": "richtext", "title": "解读", "approach": "direct" }], "placement": "frame:frame-1" } });
     ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "wish-q3", "keys": [
         { "key": "analysis", "value": analysis, "expect": { "rev": 0 } },
         { "key": "inputs", "value": [{ "entity_id": "orders", "name": "sales", "selector": { "kind": "table_view", "cell_id": "blk-orders" } }], "expect": { "rev": 0 } }] }]));
@@ -256,6 +256,11 @@ fn execute_collect_plan_apply_and_refresh() {
     let monthly = b["results"]["monthly"]["entity_id"].as_str().unwrap().to_string();
     let commentary = b["results"]["commentary"]["entity_id"].as_str().unwrap().to_string();
     assert_eq!(b["results"]["monthly"]["fields"]["销售额"], "f2");
+    let table_cell = b["results"]["monthly"]["cells"][0].as_str().unwrap().to_string();
+    assert_eq!(view_months(&ws, &table_cell), ["2026-07-01", "2026-08-01", "2026-09-01"], "the table Block shows the program's row order");
+    // the contract names a frame: the result group sits inside it, below its title
+    let group = ws.read(&alice(), b["group"].as_str().unwrap(), None).unwrap();
+    assert_eq!((group["placement"]["x"].as_f64(), group["placement"]["y"].as_f64()), (Some(20.0), Some(40.0)), "{group}");
     assert_eq!(wish["inputs"].as_array().unwrap().len(), 2, "the appended input joined the wish");
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["needs_analysis"], false, "the host re-stated the analysis");
     let t = ws.query(&alice(), &json!({ "source_id": monthly, "limit": 10 }), &Default::default()).unwrap();
@@ -282,7 +287,7 @@ fn execute_collect_plan_apply_and_refresh() {
     let st2 = stage(&ws, StageKind::Program, &p2, work2.path());
     let mut c2 = Collector { contract: analysis_contract(&ws), checks_def: analysis_checks(&ws), workdir: work2.path().join(&p2), inputs: st2.input_infos().unwrap(),
                              program_only: true, prev_bindings: bindings(&ws), ..Default::default() };
-    let out = monthly_output(&[("2026-07-01", 1040.0, 8), ("2026-08-01", 1100.5, 7), ("2026-09-01", 1200.5, 7), ("2026-10-01", 10.0, 1)], 3351.0);
+    let out = monthly_output(&[("2026-10-01", 10.0, 1), ("2026-09-01", 1200.5, 7), ("2026-08-01", 1100.5, 7), ("2026-07-01", 1040.0, 8)], 3351.0);
     c2.program = Some(program_output(&c2, &out, "export default async function main(aiws) {}", "").unwrap());
     assert!(c2.blocking().is_empty(), "{:?}", c2.blocking());
     let mut cand2 = build_candidate(&c2, &st2, &p2);
@@ -295,6 +300,12 @@ fn execute_collect_plan_apply_and_refresh() {
     let rec_ids_after = ids(&ws, &monthly);
     assert!(rec_ids_before.iter().all(|i| rec_ids_after.contains(i)), "record ids kept");
     assert_eq!(rec_ids_after.len(), 4);
+    // the program sorts newest first now: the Block follows
+    assert_eq!(view_months(&ws, &table_cell), ["2026-10-01", "2026-09-01", "2026-08-01", "2026-07-01"]);
+    assert!(plan2.summary["results"].as_array().unwrap().iter().any(|r| r["name"] == "monthly" && r["reordered"] == true), "{}", plan2.summary);
+    // the user sorts the Block: later runs leave its order alone
+    let rev = ws.read(&alice(), &table_cell, None).unwrap()["content"]["key_revs"]["sorts"].as_u64().unwrap_or(0);
+    ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": table_cell, "keys": [{ "key": "sorts", "value": [{ "field_id": "f2", "direction": "desc" }], "expect": { "rev": rev } }] }]));
     let f = ws.freshness(&alice(), &["wish-q3".into(), commentary.clone(), monthly.clone()]).unwrap();
     assert_eq!(f["items"][2]["status"], "current");
     assert_eq!(f["items"][1]["status"], "stale", "the text was not regenerated");
@@ -323,6 +334,8 @@ fn execute_collect_plan_apply_and_refresh() {
     let plan3 = ws.wish_plan(&alice(), &PlanRequest { run_id: &p3, candidate: &cand3, choices: &json!({ "results": { "monthly": "replace" }, "confirm_structure": true }), location: &json!({}) }).unwrap();
     assert!(plan3.ready, "{}", plan3.summary);
     apply(&mut ws, &p3, &plan3);
+    assert!(plan3.summary["results"].as_array().unwrap().iter().any(|r| r["name"] == "monthly" && r["reordered"] == false));
+    assert_eq!(view_months(&ws, &table_cell), ["2026-09-01", "2026-08-01", "2026-07-01"], "the user's sort stays");
     assert_eq!(ids(&ws, &monthly).len(), 3);
     // the stale preview of an older run cannot be applied: the wish's last run moved on
     let again = ws.wish_plan(&alice(), &PlanRequest { run_id: &p2, candidate: &cand2, choices: &json!({}), location: &json!({}) }).unwrap();
@@ -386,7 +399,7 @@ fn derived_columns_are_owned_and_do_not_stale_themselves() {
     let c2 = run_of(&plan);
     apply(&mut ws, &c2, &plan);
     let kept = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o0", "field_id": fid }))).unwrap();
-    assert_eq!(kept["content"]["value"], "1.00");
+    assert_eq!(kept["content"]["value"].as_str().and_then(|v| v.parse::<f64>().ok()), Some(1.0), "{kept}");
     let filled = ws.read(&alice(), "orders", Some(&json!({ "kind": "table_cell", "record_id": "o99", "field_id": fid }))).unwrap();
     assert!(filled["content"]["value"].is_string());
     assert_eq!(ws.freshness(&alice(), &["wish-q3".into()]).unwrap()["items"][0]["status"], "current");
@@ -405,6 +418,11 @@ fn analysis_checks(ws: &Workspace) -> Vec<Value> {
 }
 fn bindings(ws: &Workspace) -> std::collections::BTreeMap<String, Value> {
     aiworkspace_core::wish::current_results(ws.read(&alice(), "wish-q3", None).unwrap()["content"]["payload"].as_object().unwrap()).into_iter().collect()
+}
+/// 月份 (field f1) of the rows as a table Block shows them.
+fn view_months(ws: &Workspace, cell: &str) -> Vec<String> {
+    let q = ws.query(&alice(), &json!({ "view_id": cell, "limit": 100 }), &Default::default()).unwrap();
+    q["rows"].as_array().unwrap().iter().map(|r| r["values"]["f1"].as_str().unwrap().to_string()).collect()
 }
 fn ids(ws: &Workspace, table: &str) -> Vec<String> {
     let q = ws.query(&alice(), &json!({ "source_id": table, "limit": 100 }), &Default::default()).unwrap();

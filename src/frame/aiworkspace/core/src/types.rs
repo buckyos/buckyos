@@ -526,10 +526,17 @@ fn check_input(p: &Planner, v: &Value, require_target: bool, wish: bool) -> WsRe
                 "table_view" => {
                     let cell = sel.get("cell_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("table_view selector needs cell_id"))?;
                     if require_target {
-                        let c = p.ov.entity(cell)?.filter(|c| c.alive()).ok_or_else(|| WsError::invalid_op(format!("view {cell} does not exist")))?;
-                        let bound = c.payload.get("source_ref").and_then(reference_entity_id);
-                        if c.type_id != TYPE_CELL || c.payload.get("view").and_then(|v| v["type"].as_str()) != Some("table") || bound != Some(id) {
-                            return Err(WsError::invalid_op(format!("{cell} is not a table view of {id}")));
+                        match p.ov.entity(cell)?.filter(|c| c.alive()) {
+                            // a package stages the Surfaces after the data tree: the view comes later
+                            // (a view that never comes is reported by freshness as `view_missing`)
+                            None if p.env.import => {}
+                            None => return Err(WsError::invalid_op(format!("view {cell} does not exist"))),
+                            Some(c) => {
+                                let bound = c.payload.get("source_ref").and_then(reference_entity_id);
+                                if c.type_id != TYPE_CELL || c.payload.get("view").and_then(|v| v["type"].as_str()) != Some("table") || bound != Some(id) {
+                                    return Err(WsError::invalid_op(format!("{cell} is not a table view of {id}")));
+                                }
+                            }
                         }
                     }
                 }

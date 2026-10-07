@@ -109,7 +109,9 @@ waiting — the preview of the plan for `choices` (`{ results: { <name>: keep | 
 - **Rerun program**: no model; `llm.map` calls only for items not in the cache.
 
 Configuration: in service mode `AiWorkspaceSettings.wish` (models `llm.plan / llm.code / llm.chat` through
-AICC, iterations, timeouts, program memory, `llm.map` item limit, `deno`). Standalone:
+AICC, iterations, `max_output_tokens` (every stage sends it; Claude requires one), timeouts, program memory,
+`llm.map` item limit, `deno`). The service exchanges its startup assertion at verify-hub before it listens:
+AICC accepts only verify-hub sessions. Standalone:
 `--wish-config <json>` with `{ provider: { type: "openai", base_url, api_key_env }, analyze_model, … }`.
 Deno: `deno` setting → `AIWS_DENO` → `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` → `PATH`.
 

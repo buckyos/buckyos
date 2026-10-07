@@ -30,6 +30,8 @@ pub struct ScriptedModel {
     pub calls: AtomicUsize,
     pub map_calls: AtomicUsize,
     pub delay_ms: AtomicU64,
+    /// Output limit of the last stage request (not `llm.map`).
+    pub max_tokens: Mutex<Option<u32>>,
 }
 
 pub fn call(name: &str, args: Value) -> AiResponse {
@@ -70,6 +72,7 @@ impl LlmClient for ScriptedModel {
             let out: Vec<Value> = items.iter().map(|i| json!(if i.as_str().unwrap_or("").contains('好') { "正面" } else { "负面" })).collect();
             return Ok(text(&serde_json::to_string(&out).unwrap()));
         }
+        *self.max_tokens.lock().unwrap() = req.max_completion_tokens;
         let script = if turn.system.contains("的**分析阶段**") { self.analyze.lock().unwrap() } else { self.execute.lock().unwrap() };
         Ok(script(&turn))
     }
@@ -166,7 +169,7 @@ pub fn handle(map: &str, needle: &str) -> String {
 
 /// Scripts by default answer the stage with a plain sentence.
 pub fn model() -> Arc<ScriptedModel> {
-    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0) })
+    Arc::new(ScriptedModel { analyze: Mutex::new(Box::new(|_| text("没有可做的。"))), execute: Mutex::new(Box::new(|_| text("没有可做的。"))), calls: AtomicUsize::new(0), map_calls: AtomicUsize::new(0), delay_ms: AtomicU64::new(0), max_tokens: Mutex::new(None) })
 }
 
 /// The tool results so far contain `needle`.

@@ -9,7 +9,7 @@ import { FIELD_TYPE_LABEL } from './values'
 
 const CREATABLE: FieldType[] = ['text', 'number', 'decimal', 'date', 'datetime', 'boolean', 'select', 'multi_select']
 /** Conversions the backend implements (anything else answers MIGRATION_UNSUPPORTED). */
-const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal'], select: ['text'] }
+const MIGRATIONS: Partial<Record<FieldType, FieldType[]>> = { text: ['date', 'number', 'decimal'], number: ['decimal'], decimal: ['decimal'], select: ['text'] }
 
 interface MigrationReport { total: number; convertible: number; unset: number; failing: { count: number; sample: { record_id: string; value: Json }[] } }
 

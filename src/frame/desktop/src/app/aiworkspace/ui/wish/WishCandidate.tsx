@@ -77,7 +77,7 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
                   <button type="button" className="aiws-link" onClick={() => setOpen((o) => ({ ...o, [r.name]: !isOpen }))}>{isOpen ? '▾' : '▸'} {r.title ?? r.name}</button>
                   <span className="aiws-muted">{TYPE_LABEL[r.type] ?? r.type}</span>
                   <span className="aiws-chip" title={r.approach === 'program' ? '由程序产生，数字可复算' : '由模型直接书写'}>{r.approach === 'program' ? '程序' : '书写'}</span>
-                  {p && <span className="aiws-chip aiws-chip-derived">{ACTION_LABEL[p.action] ?? p.action}</span>}
+                  {p && <span className="aiws-chip aiws-chip-derived">{ACTION_LABEL[p.action] ?? p.action}{p.reordered ? ' · 行序更新' : ''}</span>}
                   {cand.model_judgment?.includes(r.name) && <span className="aiws-chip aiws-chip-warn" title="使用了逐项模型判断（llm.map），请抽查">含模型判断</span>}
                   {r.approach === 'program' && (cand.external_data?.length ?? 0) > 0 && <span className="aiws-chip aiws-chip-warn" title={cand.external_data?.join('\n')}>含外部数据</span>}
                 </div>
@@ -116,7 +116,7 @@ export function WishCandidate({ run, canApply, onMessage }: { run: WishRunView; 
         <div className="aiws-wish-section" data-testid="aiws-wish-structure">
           <div className="aiws-muted">结构变化</div>
           {summary?.structure?.map((s) => (
-            <div key={s.name}>{s.name}：{s.changes.map((c) => `${{ add_field: '新增字段', delete_field: '删除字段', change_type: '改类型', delete_rows: '删除行', insert_rows: '新增行', update_values: '更新值', clear_values: '清空值', key_changed: '键改变', recreate_field: '重建字段' }[c.kind] ?? c.kind}${c.field ? ` ${c.field}` : ''}${c.count ? ` ${c.count}` : ''}${c.from ? `（${c.from} → ${c.to}）` : ''}`).join('，')}{s.rows_before !== undefined ? `（${s.rows_before} → ${s.rows_after} 行）` : ''}</div>
+            <div key={s.name}>{s.name}：{s.changes.map((c) => `${{ add_field: '新增字段', delete_field: '删除字段', change_type: '改类型', delete_rows: '删除行', insert_rows: '新增行', update_values: '更新值', clear_values: '清空值', key_changed: '键改变', recreate_field: '重建字段', widen_scale: '增加小数位' }[c.kind] ?? c.kind}${c.field ? ` ${c.field}` : ''}${c.count ? ` ${c.count}` : ''}${c.from ? `（${c.from} → ${c.to}）` : c.kind === 'widen_scale' ? `（${c.to} 位）` : ''}`).join('，')}{s.rows_before !== undefined ? `（${s.rows_before} → ${s.rows_after} 行）` : ''}</div>
           ))}
           {destructive && (
             <label className="aiws-warning"><input type="checkbox" data-testid="aiws-wish-confirm-structure" checked={Boolean(choices.confirm_structure)} onChange={(e) => choose({ ...choices, confirm_structure: e.target.checked })} /> 我已看过：会删除行或字段</label>

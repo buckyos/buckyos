@@ -37,7 +37,7 @@ function Progress({ run, onCancel }: { run: WishRunView; onCancel: () => void })
       <span className="aiws-chip">{PHASE_LABEL[p.phase ?? run.state] ?? p.phase ?? run.state}</span>
       {doing && <span>{doing}</span>}
       <span className="aiws-muted">
-        {elapsed}s{p.llm_requests ? ` · 模型调用 ${p.llm_requests} 次` : ''}{p.tool_calls ? ` · 工具 ${p.tool_calls} 次` : ''}{p.program_runs ? ` · 程序运行 ${p.program_runs} 次` : ''}
+        {elapsed}s{p.tool_calls ? ` · 工具 ${p.tool_calls} 次` : ''}{p.program_runs ? ` · 程序运行 ${p.program_runs} 次` : ''}
         {p.llm_map ? ` · 逐项判断 ${p.llm_map.items} 项（缓存 ${p.llm_map.cached}）` : ''}{p.model ? ` · ${p.model}` : ''}
       </span>
       {p.last_command && <code className="aiws-muted" title={p.last_command}>{p.last_command.slice(0, 60)}</code>}

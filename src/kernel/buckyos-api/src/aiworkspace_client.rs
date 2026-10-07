@@ -44,6 +44,9 @@ pub struct AiWorkspaceWishSettings {
     pub deno: String,
     pub analyze_tool_iterations: u32,
     pub execute_tool_iterations: u32,
+    /// Output limit of one model turn (thinking included). Some providers (Claude) require one; AICC
+    /// routes only to models whose output limit reaches it.
+    pub max_output_tokens: u32,
     /// Wall clock of one stage, seconds.
     pub stage_timeout_secs: u64,
     pub program_timeout_secs: u64,
@@ -60,6 +63,7 @@ impl Default for AiWorkspaceWishSettings {
             deno: String::new(),
             analyze_tool_iterations: 30,
             execute_tool_iterations: 60,
+            max_output_tokens: 32_000,
             stage_timeout_secs: 1800,
             program_timeout_secs: 120,
             program_memory_mb: 1024,

@@ -280,7 +280,6 @@ export interface WishRunProgress {
   activity?: string
   tool_calls?: number
   program_runs?: number
-  llm_requests?: number
   waiting_model?: boolean
   model?: string
   last_tool?: string
@@ -322,13 +321,13 @@ export interface WishCandidate {
   analysis?: WishAnalysis
   inputs?: WishInput[]
 }
-export interface WishPlanChange { kind: string; field?: string; count?: number; destructive?: boolean; from?: string; to?: string; type?: string }
+export interface WishPlanChange { kind: string; field?: string; count?: number; destructive?: boolean; from?: string; to?: string | number; type?: string }
 export interface WishPlanSummary {
   kind?: 'analysis'
   mode?: 'overwrite' | 'new'
   simulated?: boolean
   group?: { group_id: string; folder_id: string; surface_id: string | null; exists: boolean; rect: Placement | null; title: string }
-  results?: { name: string; type: WishResultType; title?: string; entity_id: string; action: 'create' | 'update' | 'unchanged' | 'keep_manual' | 'new_copy'; approach?: string; blocks?: number }[]
+  results?: { name: string; type: WishResultType; title?: string; entity_id: string; action: 'create' | 'update' | 'unchanged' | 'keep_manual' | 'new_copy'; approach?: string; blocks?: number; reordered?: boolean }[]
   missing?: { name: string; entity_id: string }[]
   manual?: { name: string; entity_id: string; cells?: number; field_deleted?: string }[]
   structure?: { name: string; entity_id: string; changes: WishPlanChange[]; rows_before?: number; rows_after?: number }[]

@@ -43,6 +43,7 @@ pub struct WishConfig {
     pub deno: String,
     pub analyze_tool_iterations: u32,
     pub execute_tool_iterations: u32,
+    pub max_output_tokens: u32,
     pub stage_timeout_secs: u64,
     pub program_timeout_secs: u64,
     pub program_memory_mb: u32,
@@ -70,6 +71,7 @@ impl WishConfig {
             deno: s.deno.clone(),
             analyze_tool_iterations: s.analyze_tool_iterations,
             execute_tool_iterations: s.execute_tool_iterations,
+            max_output_tokens: s.max_output_tokens,
             stage_timeout_secs: s.stage_timeout_secs,
             program_timeout_secs: s.program_timeout_secs,
             program_memory_mb: s.program_memory_mb,
@@ -104,6 +106,9 @@ impl WishConfig {
         }
         if let Some(x) = n("execute_tool_iterations") {
             self.execute_tool_iterations = x as u32;
+        }
+        if let Some(x) = n("max_output_tokens") {
+            self.max_output_tokens = x as u32;
         }
         if let Some(x) = n("stage_timeout_secs") {
             self.stage_timeout_secs = x;

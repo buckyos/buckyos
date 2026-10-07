@@ -540,6 +540,8 @@ pub fn migrate_value(from: &FieldDef, to: &FieldDef, v: &Value) -> Result<Value,
         (FieldType::Select, FieldType::Text) => {
             json!(from.option_label(v.as_str().unwrap_or("")).ok_or("unknown option")?)
         }
+        // another scale: widening pads, narrowing fails for values with more fraction digits
+        (FieldType::Decimal, FieldType::Decimal) => v.clone(),
         _ => return Err("unsupported".into()),
     };
     to.normalize(&conv).map_err(|e| e.detail)
@@ -552,6 +554,7 @@ pub fn migration_supported(from: FieldType, to: FieldType) -> bool {
             | (FieldType::Text, FieldType::Number)
             | (FieldType::Text, FieldType::Decimal)
             | (FieldType::Number, FieldType::Decimal)
+            | (FieldType::Decimal, FieldType::Decimal)
             | (FieldType::Select, FieldType::Text)
     )
 }

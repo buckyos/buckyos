@@ -51,6 +51,7 @@ pub fn llm_context(cfg: &WishConfig, model: &str, iterations: u32, runs_dir: &Pa
         "provider": provider,
         "model": model,
         "loop_model": "function_call",
+        "max_tokens": cfg.max_output_tokens,
         "max_tool_iterations": iterations,
         "timeout": cfg.stage_timeout_secs,
         "runs_dir": runs_dir.display().to_string(),

@@ -471,10 +471,11 @@ impl Workspace {
                 }
             }
             let parent = folder_id.clone();
+            let mut row_order: Option<Vec<String>> = None;
             let changed = match it.ty.as_str() {
                 "richtext" => plan_richtext(&mut p, it, &parent)?,
                 "record" | "video" => plan_record(&mut p, it, &parent)?,
-                "table" => plan_table(&mut p, it, &parent, &mut binding)?,
+                "table" => plan_table(&mut p, it, &parent, &mut binding, &mut row_order)?,
                 "table_columns" => plan_columns(&mut p, it, &wish_id, req.run_id, it.choice.as_deref(), &mut binding)?,
                 "image" | "asset" => plan_asset(&mut p, it, &parent)?,
                 "html" => plan_html(&mut p, it, &parent, &wish_id, &mut binding)?,
@@ -492,6 +493,13 @@ impl Workspace {
             if it.ty != "table_columns" {
                 p.ops.push(json!({ "op": "entity.set_derived", "entity_id": it.entity_id, "derived": derived_base(&it.name, &approach) }));
                 produced.push(it.entity_id.clone());
+            }
+            // the program's row order is shown by its table Blocks (records have no order of their own)
+            let order = row_order.filter(|ids| ids.len() <= MAX_ORDERED_ROWS).map(|ids| manual_order(&ids));
+            let order_digest = order.as_ref().map(|o| sha256_hex(canonical_json(o).unwrap_or_default().as_bytes())[..16].to_string());
+            let mut reordered = false;
+            if let Some(d) = &order_digest {
+                binding["order_digest"] = json!(d);
             }
             // Blocks: existing ones keep their place, size and view settings (§10.2)
             cells.retain(|c| p.alive(c).ok().flatten().is_some());
@@ -528,8 +536,25 @@ impl Workspace {
                     if renderer == "asset" {
                         cp["options"] = json!({ "fit": "contain" });
                     }
+                    if let (true, Some(o)) = (renderer == "table", &order) {
+                        cp["manual_order"] = o.clone();
+                    }
                     cells_to_place.push((cell_id.clone(), cp, (w, h)));
                     cells.push(cell_id);
+                }
+            } else if let Some(o) = &order {
+                // a table Block follows the new row order unless the user sorted or reordered it
+                let prev = it.binding.as_ref().and_then(|b| b.get("order_digest")).and_then(Value::as_str);
+                for c in &cells {
+                    let Some(cell) = p.alive(c)? else { continue };
+                    let is_table = cell.payload.get("view").and_then(|v| v["type"].as_str()) == Some("table");
+                    let sorted = cell.payload.get("sorts").and_then(Value::as_array).is_some_and(|a| !a.is_empty());
+                    let current = cell.payload.get("manual_order").filter(|m| !m.is_null());
+                    let current_digest = current.map(|m| sha256_hex(canonical_json(m).unwrap_or_default().as_bytes())[..16].to_string());
+                    if is_table && !sorted && current_digest.as_deref() == prev && current != Some(o) {
+                        p.ops.push(json!({ "op": "entity.set_keys", "entity_id": c, "keys": [{ "key": "manual_order", "value": o, "expect": { "rev": cell.key_rev("manual_order") } }] }));
+                        reordered = true;
+                    }
                 }
             } else if it.ty == "html" {
                 // a regenerated HTML Block keeps its place; its bindings follow the result
@@ -544,7 +569,7 @@ impl Workspace {
             }
             binding["cells"] = json!(cells);
             p.results_summary.push(json!({ "name": it.name, "type": it.ty, "title": it.r.get("title"), "entity_id": it.entity_id, "action": action,
-                                           "approach": approach, "blocks": binding["cells"].as_array().map_or(0, Vec::len) }));
+                                           "approach": approach, "blocks": binding["cells"].as_array().map_or(0, Vec::len), "reordered": reordered }));
             bindings_out.insert(it.name.clone(), binding);
         }
         // results produced earlier and not this time: listed, never deleted (§10.2); a program re-run
@@ -607,8 +632,14 @@ impl Workspace {
                     col += 1;
                 }
                 if !group_exists {
-                    let (gx, gy) = match placement_hint {
-                        "below_wish" => (ax, ay + ah + 60.0),
+                    // `frame:<id>`: inside that frame (below its title) when it is on this Surface
+                    let frame = match placement_hint.strip_prefix("frame:") {
+                        Some(f) if p.alive(f)?.is_some() && surface_of(&p.ctx, f)?.as_deref() == Some(s.as_str()) => Some(abs_rect(&p.ctx, f)?),
+                        _ => None,
+                    };
+                    let (gx, gy) = match (frame, placement_hint) {
+                        (Some((fx, fy, _, _)), _) => (fx + 20.0, fy + 40.0),
+                        (None, "below_wish") => (ax, ay + ah + 60.0),
                         _ => (ax + aw + 60.0, ay),
                     };
                     let offset = if mode == "new" { (seq.saturating_sub(1)) as f64 * 40.0 } else { 0.0 };
@@ -902,7 +933,22 @@ struct FieldPlan {
     options: BTreeMap<String, String>,
     new_options: Vec<(String, String)>,
     exists: bool,
+    /// An existing decimal field too narrow for the values: its `def_rev`, migrated to `scale`.
+    widen: Option<u64>,
     def: Value,
+}
+
+/// Fraction digits a decimal column needs so that no program value is rounded (at most 6).
+fn needed_scale(rows: &[&Map<String, Value>], name: &str) -> u8 {
+    let digits = |v: &Value| {
+        let s = match v {
+            Value::Number(n) => n.as_f64().map(|f| format!("{f}")).unwrap_or_default(),
+            Value::String(s) => s.trim().to_string(),
+            _ => String::new(),
+        };
+        s.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len())
+    };
+    rows.iter().filter_map(|r| r.get(name)).map(digits).max().unwrap_or(0).min(6) as u8
 }
 
 fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRow], prefix: &str, taken_ids: &BTreeSet<String>) -> Vec<FieldPlan> {
@@ -924,10 +970,17 @@ fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRo
                 }
             },
         };
-        let scale = if ty == FieldType::Decimal {
-            Some(cur.and_then(|c| c.def.scale).or_else(|| f["scale"].as_u64().map(|s| s.min(18) as u8)).unwrap_or(2))
+        // decimals are never rounded silently: the declared scale, else what the values need; an
+        // existing field keeps its scale unless that is too small
+        let (scale, widen) = if ty == FieldType::Decimal {
+            let need = f["scale"].as_u64().map_or_else(|| needed_scale(rows, &name), |s| s.min(18) as u8);
+            match cur.and_then(|c| c.def.scale.map(|s| (s, c.def_rev))) {
+                Some((s, rev)) if s < need => (Some(need), Some(rev)),
+                Some((s, _)) => (Some(s), None),
+                None => (Some(need), None),
+            }
         } else {
-            None
+            (None, None)
         };
         let mut options: BTreeMap<String, String> = cur.and_then(|c| c.def.options.as_ref()).map(|o| o.iter().map(|x| (x.label.clone(), x.option_id.clone())).collect()).unwrap_or_default();
         let mut new_options = Vec::new();
@@ -963,12 +1016,29 @@ fn field_plans(spec: &[Value], rows: &[&Map<String, Value>], existing: &[FieldRo
             opts.sort_by_key(|(_, id)| id[1..].parse::<u64>().unwrap_or(u64::MAX));
             def["options"] = json!(opts.iter().map(|(l, id)| json!({ "option_id": id, "label": l })).collect::<Vec<_>>());
         }
-        out.push(FieldPlan { field_id, name, ty, scale, options, new_options, exists: cur.is_some(), def });
+        out.push(FieldPlan { field_id, name, ty, scale, options, new_options, exists: cur.is_some(), widen, def });
     }
     out
 }
 
-fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value) -> WsResult<bool> {
+/// A decimal field that must hold more fraction digits is migrated before its values are written.
+fn widen_op(f: &FieldPlan, source_id: &str, changes: &mut Vec<Value>, ops: &mut Vec<Value>) {
+    if let (Some(rev), Some(scale)) = (f.widen, f.scale) {
+        changes.push(json!({ "kind": "widen_scale", "field": f.name, "to": scale }));
+        ops.push(json!({ "op": "table.migrate_field", "source_id": source_id, "field_id": f.field_id, "expect": { "rev": rev }, "to": { "type": "decimal", "scale": scale } }));
+    }
+}
+
+/// Table results keep the program's row order on their Blocks up to this many rows.
+const MAX_ORDERED_ROWS: usize = 1000;
+
+/// A table Block's `manual_order` for rows in this order (fixed-width keys sort as listed).
+fn manual_order(ids: &[String]) -> Value {
+    let width = format!("{:x}", ids.len()).len();
+    Value::Object(ids.iter().enumerate().map(|(i, id)| (id.clone(), json!(format!("{:0>w$x}x", i, w = width)))).collect())
+}
+
+fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value, row_order: &mut Option<Vec<String>>) -> WsResult<bool> {
     let t = &it.r()["table"];
     let rows: Vec<&Map<String, Value>> = t["rows"].as_array().into_iter().flatten().filter_map(Value::as_object).collect();
     let key: Vec<String> = t["key"].as_array().into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect();
@@ -1005,6 +1075,7 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value) -> 
     }
     binding["key"] = json!(key);
     binding["fields"] = json!(fps.iter().map(|f| (f.name.clone(), json!(f.field_id))).collect::<Map<String, Value>>());
+    *row_order = Some(desired.iter().map(|(id, _)| id.clone()).collect());
     let sid = it.entity_id().to_string();
     match it.existing() {
         None => {
@@ -1056,6 +1127,7 @@ fn plan_table(p: &mut Planner, it: &Item, parent: &str, binding: &mut Value) -> 
                     }
                     ops.push(json!({ "op": "table.add_field", "source_id": sid, "field": f.def }));
                 } else {
+                    widen_op(f, &sid, &mut changes, &mut ops);
                     for (label, oid) in &f.new_options {
                         ops.push(json!({ "op": "table.add_option", "source_id": sid, "field_id": f.field_id, "option": { "option_id": oid, "label": label } }));
                     }
@@ -1185,6 +1257,7 @@ fn plan_columns(p: &mut Planner, it: &Item, wish_id: &str, run_id: &str, choice:
             changes.push(json!({ "kind": "add_field", "field": f.name, "type": f.ty.as_str() }));
             ops.push(json!({ "op": "table.add_field", "source_id": tid, "field": f.def }));
         } else {
+            widen_op(&f, &tid, &mut changes, &mut ops);
             for (label, oid) in &f.new_options {
                 ops.push(json!({ "op": "table.add_option", "source_id": tid, "field_id": f.field_id, "option": { "option_id": oid, "label": label } }));
             }

@@ -104,6 +104,15 @@ async fn drive_inner(state: &Arc<AppState>, caller: &Caller, ws_id: &str, run_id
     let snap = with_ws(state, ws_id, move |ws| ws.wish_snapshot(&c)).await?;
     let (wid, rid, wd) = (wish_id.clone(), run_id.to_string(), workdir.clone());
     let stage = blocking(move || Stage::open(snap, &wid, &rid, &wd, &opts)).await?;
+    // the snapshot is fixed: the stage runs from here on (a cancel that came first stays)
+    let (c, rid) = (caller.clone(), run_id.to_string());
+    with_ws(state, ws_id, move |ws| {
+        if ws.wish_run(&c, &rid)?["state"] == json!("snapshotting") {
+            ws.wish_run_set(&rid, Some("running"), None, None, None, None)?;
+        }
+        Ok(())
+    })
+    .await?;
     // the program host the model debugs with is the one the service runs
     write(&workdir.join("lib/aiws.js"), AIWS_JS)?;
     write(&workdir.join("lib/run.js"), RUN_JS)?;
@@ -184,15 +193,17 @@ impl RunObserver for Observer {
     fn on_event(&self, _run_id: &str, event: RunEvent) {
         let mut p = self.active.progress.lock().unwrap();
         match event {
+            // the loop as a whole starts / ends (llm_context has no per-request event): between
+            // tool calls the model is working
             RunEvent::LlmStarted { model } => {
                 p["phase"] = json!("running");
                 p["waiting_model"] = json!(true);
                 p["model"] = json!(model);
-                let n = p["llm_requests"].as_u64().unwrap_or(0) + 1;
-                p["llm_requests"] = json!(n);
             }
             RunEvent::LlmFinished { .. } => p["waiting_model"] = json!(false),
+            RunEvent::ToolFinished { .. } => p["waiting_model"] = json!(true),
             RunEvent::ToolStarted { name, command, .. } => {
+                p["waiting_model"] = json!(false);
                 if name == "shell" {
                     p["activity"] = json!("shell");
                     p["last_command"] = json!(command.map(|c| c.chars().take(200).collect::<String>()));

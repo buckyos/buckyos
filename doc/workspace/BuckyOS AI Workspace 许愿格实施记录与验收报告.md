@@ -4,7 +4,7 @@
 >
 > 读者：审查许愿格交付、或在其上继续开发的人。
 >
-> 本文只记录**已经运行过的事实**：每项结论后面是产生它的命令或测试。没有运行过的写在 §6“未完成与未验证”。所有模型调用都来自脚本化的模型（OpenAI 兼容），**没有在真实 Zone 中经 AICC 运行过**。
+> 本文只记录**已经运行过的事实**：每项结论后面是产生它的命令或测试。没有运行过的写在 §6“未完成与未验证”。§3–§5 的模型调用来自脚本化的模型（OpenAI 兼容）；§8 是在本机 DV Test Zone 中经 AICC 调用真实模型的验证，以及由它发现并修正的问题。
 
 ## 1. 结论
 
@@ -12,6 +12,7 @@
 - **后台**：aiworkspace 三个 package 共 **102 个测试通过，0 失败**（另有 1 个性能探测默认忽略），其中许愿格新增 23 个（core 6、store 6、server 11）；`aiws` 程序宿主 Deno 测试 3 个通过；共享类型所在的 `buckyos-api` 237 个通过，scheduler 编译通过。见 §3。
 - **Desktop**：aiworkspace Playwright 全套 **68 个用例对真实后台进程通过**（许愿格 2 个新用例，原有 Mock 许愿格用例按服务端规划改写后继续通过）。见 §4。
 - 设计 §15 的质量任务 Q01–Q11 与 §16.2 的 W 场景，在脚本化模型下的覆盖逐项列在 §5。**真实模型的任务集通过率尚无数据**。
+- **DV Test Zone 真实环境**（§8）：季度经营分析 demo 的许愿格经 AICC（Claude）跑通分析 → 执行 → 应用 → 只重跑程序 → 反馈轮；验证中发现并修正了 7 个问题，其中 3 个会直接让结果出错（小数被舍入到 2 位、表格行序丢失、结果不放进分析指定的框），1 个让 Fork / 导入失败。
 
 ## 2. 交付物
 
@@ -139,8 +140,8 @@ AIWS_BIN=<cargo-target>/debug/aiworkspace pnpm exec playwright test --config=pla
 ## 6. 未完成与未验证
 
 - **W5 全部**：fixed 输入读取历史对象、表格历史恢复与结果组回滚、`proc.resume`。
-- **真实环境**：没有在真实 Zone 中运行；服务模式下 provider 为 `buckyos`（经 AICC，模型 `llm.plan` / `llm.code` / `llm.chat`），这一路径只编译通过，未运行。Deno 在 Zone 中按 `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno` 查找，未在部署环境中确认。
-- **真实模型质量**：设计 §15 要求记录任务集通过率；本次只有脚本化模型的结果。
+- **真实环境**：只在本机 DV Test Zone 中跑了 §8 的一个任务（季度经营分析）；`llm.map`、html 结果、修程序、取消没有在 DV 中运行。
+- **真实模型质量**：设计 §15 要求记录任务集通过率；真实模型只跑了 §8 的单个任务，Q01–Q12 没有逐项在真实模型上运行。
 - **设计中未实施的 UI**：画布上的候选预览层、分析后在画布上高亮输入（改为面板中预览与列表，见设计 §19.2）。
 - 反馈轮使用新快照、没有单独的轮次预算（设计 §19.2）。
 - §5 中标为“部分”“未验证”的场景。
@@ -151,8 +152,47 @@ AIWS_BIN=<cargo-target>/debug/aiworkspace pnpm exec playwright test --config=pla
 - 程序回调 `llm.map` 用每个阶段的临时 token，阶段运行期间任何持有该 token 的本机进程都可以调用。
 - `llm.map` 缓存没有保留期清理。
 
+## 8. DV Test Zone 真实环境验证（2026-10-07）
+
+环境：本机 DV Test Zone（`test.buckyos.io`，devtest），aiworkspace 以 `uv run buckyos-build.py --skip-web -s aiworkspace` 构建（release、musl）后替换 `/opt/buckyos/bin/aiworkspace/aiworkspace` 并由 node-daemon 重启；Desktop 以 `-s desktop` 构建后同步到 `/opt/buckyos/bin/control-panel/web/`。模型经 AICC：分析 `llm.plan`、执行 `llm.code`，实际路由到 `claude-fable-5-1:reasoning-high@claude-default`。驱动方式：与面板相同的 kRPC（`proc.start` / `proc.get` / `proc.apply`），并用 Playwright 登录真实 Desktop 查看画布。Deno 使用 `$BUCKYOS_ROOT/libexec/buckyos-tool/runtime/deno`（2.9.4）。
+
+### 8.1 运行记录
+
+| 步骤 | 结果 | 耗时 / 模型请求 / 费用 |
+| --- | --- | --- |
+| 分析 | `ready`：「原始销售数据」按表格视图绑定、「说明」作为口径来源；任务说明含指标口径与分步处理；4 项程序检查 + 1 项人工检查；两条如实的警告（没有月份字段、异常阈值是默认口径） | 42 s / 3 / $0.46 |
+| 执行 | 5 个结果（kpi、各区域、各产品、异常明细、管理层总结）；合计 770,000 与 demo 指标卡一致；总结中的数字全部来自 facts；`ratio_range` 检查**如实报告未通过**（华南·桌面音箱毛利率 −8.7%） | 66 s / 7 / $0.75 |
+| 应用 | 结果组放进 demo 的“运行后结果将出现在这里”框；表格、柱状图、文本 Block 在 Desktop 中正常显示 | — |
+| 只重跑程序 | 改一个销售额后重跑：不调用模型，合计变为 780,000 | 3 s / 0 / $0 |
+| 反馈轮（“两张对比表按毛利率从高到低排”） | 在已有程序上最小修改；整理出 3 条 refinements；应用后两张表按毛利率降序显示 | 63 s / 10 / $1.34 |
+
+### 8.2 发现并修正的问题
+
+| 问题 | 原因 | 修正 | 验证 |
+| --- | --- | --- | --- |
+| 分析失败：`aicc helper.llm_chat failed`，没有原因 | 生成的 `.llm_context` 没有输出上限，Claude 要求 `max_tokens`；xllm 的 AICC 适配丢掉了响应里的 `error` | 新设置 `wish.max_output_tokens`（默认 32,000，主流旗舰模型的输出上限都不低于它）写入 `.llm_context`；xllm 失败信息带上 AICC 错误（记录在 `notepads/llm-context-aicc-error-todo.md`） | server `wish` 测试断言请求带 32,000；DV 分析成功 |
+| 服务重启后约 5 秒内调用 AICC 报 `ordinary session tokens must be issued by verify-hub` | aiworkspace 登录后没有像 AICC、control-panel 那样先向 verify-hub 换取会话 | 启动时 `renew_token_from_verify_hub()` 后再监听 | DV 日志：换取在 listening 之前 |
+| 结果没有放进分析指定的框 | 分析校验接受 `placement: frame:<句柄>`，规划器却只认 `right_of_wish` / `below_wish` | 规划器把结果组放进该框（同一 Surface 时） | store 测试断言组位置；DV 中组位于框内 |
+| 比率被舍入到 2 位（0.3835 → 0.38，各区域占比合计变成 1.01） | 程序声明 `decimal` 未给 `scale` 时默认 2 位并四舍五入 | 未声明时按值所需的小数位（最多 6 位）；已有字段位数不够时用 `table.migrate_field` 扩大（core 允许 decimal → decimal 迁移，缩小时逐值失败而不舍入），预览列出“增加小数位” | Q05 扩展（0 → 2 位）；DV 在副本上重跑后存为 0.3835 / 0.9211 |
+| 表格不按程序的行序显示，反馈“按毛利率排序”应用后看不出变化 | 记录没有顺序，程序排好的行序被丢弃 | 结果表格 Block 写 `manual_order`（≤ 1000 行）；以后的运行只在用户没有自己排序或拖动时更新，预览标出“行序更新” | store 测试（首次、换序、用户排序后不动）；DV 两张表按毛利率降序 |
+| Fork / 导入失败：`view blk-sales does not exist` | 包按数据树在前、Surface 在后的顺序重放，绑定表格视图的输入在视图之前被校验 | 导入时视图尚未出现则跳过（与其他引用的延后校验一致；真缺失时新鲜度报 `view_missing`） | Q01 扩展：Fork 后输入仍是该视图（去掉修正时该断言失败）；DV Fork 成功 |
+| 程序型检查被放宽后报“通过” | 程序把“所有毛利率在 0–1”改成只看汇总层 | 执行提示词：检查按分析写下的文字判定，不满足就报失败并在 warnings 说明，是否接受由用户决定 | DV 重跑后该检查如实失败，候选要求确认 |
+
+另外修正的显示问题：运行状态在模型工作期间一直显示“固定数据快照”（现在快照固定后为“运行中”）；进度中的“模型调用 N 次”实际是整个循环的计数（llm_context 只在循环开始与结束时发事件），改为不在运行中显示；整张由许愿格生成的表格每个单元格都带“派生”标记（现在只在用户自己的表格中标出程序写入的单元格）。
+
+修正后的回归（2026-10-07）：aiworkspace 三个 package 102 个测试通过；`aiws` Deno 3 个、xllm SDK（`cargo test -p agent_tool --lib xllm`）46 个通过；Desktop `pnpm check`、eslint、生产构建（`buckyos-build.py -s desktop`）通过，Playwright 全套 68 个通过，最后一处 UI 修改后重跑 `collab.spec.ts`、`wish.spec.ts` 11 个通过。
+
+### 8.3 观察到但未处理
+
+- **费用与缓存**：每次请求都重发完整上下文，AICC 报告的 `cache_read_input_tokens` 为 0；两次执行分别用了约 15 万和 26 万输入 token。需要在 llm_context / AICC 层确认 Claude 的提示词缓存是否生效。
+- **新鲜度按版本比较**：改一个值再改回原值，结果仍显示“需要刷新”（单元格版本变了）。用户手工编辑后撤销也会这样（设计 §6.2 的选择）。
+- **混合单位的指标表**：kpi 表把金额和比率放在同一个 `decimal` 列，按最大的 4 位小数显示为 `770000.0000`；精度正确但不好看。
+- **结果组大于框**：组按内容排成两列，可能超出框的范围，不会调整框的大小。
+- 本次验证在原工作区留下的改动：分析与执行结果已应用（结果组 #1，其中比率字段是修正前写入的 2 位小数；该许愿格的输出方式是“每次新建”，再执行会新建一组）；为验证“只重跑程序”改过并已改回一个销售额，因此结果显示“需要刷新”。副本工作区已删除。
+
 ## 修订记录
 
 | 日期 | 内容 |
 | --- | --- |
 | 2026-10-07 | 初版：W0–W4 实施记录与验收 |
+| 2026-10-07 | 新增 §8 DV Test Zone 真实环境验证与由此修正的问题 |

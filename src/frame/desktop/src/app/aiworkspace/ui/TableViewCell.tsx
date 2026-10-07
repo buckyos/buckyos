@@ -215,6 +215,7 @@ function TableViewBody({ cell, sourceMode, readOnly, compact, annotations, onAnn
                           row={row}
                           width={width}
                           editable={canUpdate}
+                          resultTable={Boolean(source.data?.derived)}
                           annotation={annotations.find((mark) => mark.payload.target?.entity_id === sourceId && mark.payload.target.selector?.kind === 'table_cell'
                             && mark.payload.target.selector.record_id === row.record_id && mark.payload.target.selector.field_id === field.field_id)}
                           onAnnotate={onAnnotate}
@@ -268,12 +269,14 @@ interface TableCellProps {
   row: QueryRow
   width: number
   editable: boolean
+  /** The table is itself a wish result: per-cell provenance would mark every cell. */
+  resultTable: boolean
   annotation?: AnnotationMark
   onAnnotate?: (anchor: CapturedAnchor) => void
   onActivateAnnotation?: (entityId: string | null) => void
 }
 
-function TableCell({ pager, sourceId, field, row, width, editable, annotation, onAnnotate, onActivateAnnotation }: TableCellProps) {
+function TableCell({ pager, sourceId, field, row, width, editable, resultTable, annotation, onAnnotate, onActivateAnnotation }: TableCellProps) {
   const store = useStore()
   const editId = cellEditId(sourceId, row.record_id, field.field_id)
   const entry = useEdit(editId)
@@ -331,7 +334,7 @@ function TableCell({ pager, sourceId, field, row, width, editable, annotation, o
           {shown || <span className="aiws-muted">&nbsp;</span>}
         </button>
       )}
-      {!editing && meta?.derived && (
+      {!editing && meta?.derived && !resultTable && (
         <span className="aiws-chip aiws-chip-derived" data-testid="aiws-derived" title={`由 ${meta.derived.program ?? '加工程序'} 写入${meta.derived.program?.startsWith('mock.') ? '（模拟结果）' : ''}`}>
           {meta.derived.program?.startsWith('mock.') ? '模拟' : '派生'}
         </span>

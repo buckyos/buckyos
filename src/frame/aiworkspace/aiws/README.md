@@ -37,7 +37,7 @@ aiws.result.file('chart', 'output/chart.svg', 'image/svg+xml')
 aiws.result.html('dashboard', { html, css, js, bindings: { orders: 'input:sales', summary: 'result:monthly' } })
 ```
 
-字段类型：`text | number | decimal | boolean | date | datetime | select | multi_select`；不声明时按值推断。一个结果名只能写一次；结果名必须是输出约定中的名称。
+字段类型：`text | number | decimal | boolean | date | datetime | select | multi_select`；不声明时按值推断。`decimal` 按值所需的小数位保存（最多 6 位，不会四舍五入到更少）；要固定小数位时写成数组形式 `fields: [{ name: '毛利率', type: 'decimal', scale: 4 }]`，此时程序自己负责舍入。表格按 `rows` 的顺序显示（不超过 1000 行时；用户在 Block 上自己排序后以用户为准），需要排序就在程序里排好。一个结果名只能写一次；结果名必须是输出约定中的名称。
 
 ## 数字、检查与逐项判断
 

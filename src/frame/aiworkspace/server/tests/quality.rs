@@ -214,6 +214,11 @@ fn q01_q04_q06_q07_reference_rules_numbers_views() {
         let chart = srv.rpc("doc.read", json!({ "entity_id": chart })).await;
         assert_eq!(chart["content"]["payload"]["view"]["type"], "sample.line-chart");
         assert_eq!(chart["content"]["payload"]["config"], json!({ "x": b["fields"]["月份"], "y": b["fields"]["销售额"] }));
+        // W18: a wish bound to a table view travels: the package stages the view's Surface after the wish
+        let fork = srv.rpc("ws.fork", json!({ "title": "副本" })).await;
+        assert_eq!(fork["ok"], true, "{fork}");
+        let copy = srv.rpc("doc.read", json!({ "workspace_id": fork["workspace_id"], "entity_id": "w" })).await;
+        assert_eq!(copy["content"]["payload"]["inputs"][0]["selector"], json!({ "kind": "table_view", "cell_id": "v-east" }));
     });
 }
 
@@ -316,16 +321,22 @@ export default async function main(aiws) {
         let schema = srv.rpc("doc.read", json!({ "entity_id": "salary" })).await;
         assert_eq!(schema["content"]["fields"].as_array().unwrap().len(), 3);
         assert_eq!(srv.rpc("doc.freshness", json!({ "entity_ids": ["w"] })).await["items"][0]["status"], "current");
-        srv.commit(json!([{ "op": "table.insert_records", "source_id": "salary", "records": [{ "record_id": "s4", "values": { "who": "丁", "pay": 14000 } }] }])).await;
+        // whole-number differences: the column needs no fraction digits yet
+        let fid = srv.wish_of("w").await["last_run"]["result_bindings"]["results"]["差值"]["fields"]["差值"].clone();
+        let field = |schema: &Value| schema["content"]["fields"].as_array().unwrap().iter().find(|f| f["field_id"] == fid).unwrap()["scale"].clone();
+        assert_eq!(field(&schema), 0);
+        srv.commit(json!([{ "op": "table.insert_records", "source_id": "salary", "records": [{ "record_id": "s4", "values": { "who": "丁", "pay": 14001 } }] }])).await;
         assert_eq!(srv.rpc("doc.freshness", json!({ "entity_ids": ["w"] })).await["items"][0]["status"], "stale");
         let calls = srv.model.calls.load(Ordering::SeqCst);
         let p = srv.run("wish.xllm@1", json!({ "wish_id": "w", "stage": "rerun_program" })).await;
         assert_eq!(p["state"], "waiting_confirmation", "{p}");
         assert_eq!(srv.model.calls.load(Ordering::SeqCst), calls);
+        // the average is 11000.25 now: the column is widened, never rounded
+        assert!(p["preview"]["summary"]["structure"].to_string().contains("widen_scale"), "{}", p["preview"]);
         srv.apply(&p, json!({})).await;
-        let fid = srv.wish_of("w").await["last_run"]["result_bindings"]["results"]["差值"]["fields"]["差值"].clone();
         let cell = srv.rpc("doc.read", json!({ "entity_id": "salary", "selector": { "kind": "table_cell", "record_id": "s4", "field_id": fid } })).await;
-        assert_eq!(cell["content"]["value"], "3000.00");
+        assert_eq!(cell["content"]["value"], "3000.75");
+        assert_eq!(field(&srv.rpc("doc.read", json!({ "entity_id": "salary" })).await), 2);
         assert_eq!(srv.rpc("doc.freshness", json!({ "entity_ids": ["w"] })).await["items"][0]["status"], "current");
     });
 }

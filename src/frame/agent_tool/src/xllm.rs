@@ -4890,7 +4890,8 @@ impl AiccLlmClient {
             AiMethodStatus::Failed => Err(LLMComputeError::provider(
                 ProviderFailure::Unknown,
                 format!(
-                    "aicc {method} failed: task_id={}, event_ref={}",
+                    "aicc {method} failed{}: task_id={}, event_ref={}",
+                    response.error.as_ref().map(|e| format!(" ({e})")).unwrap_or_default(),
                     response.task_id,
                     response.event_ref.as_deref().unwrap_or("")
                 ),

@@ -88,6 +88,11 @@ async fn buckyos_service_main(fixtures: bool) {
         log::error!("aiworkspace login to system failed: {:?}", e);
         std::process::exit(1);
     }
+    // the startup assertion is not accepted by other services (AICC): exchange it before serving
+    if let Err(e) = runtime.renew_token_from_verify_hub().await {
+        log::error!("aiworkspace exchange login assertion failed: {:?}", e);
+        std::process::exit(1);
+    }
     runtime.set_main_service_port(AIWORKSPACE_SERVICE_PORT).await;
     // a zone booted before this service existed has no settings key yet
     let settings: AiWorkspaceSettings = match runtime.get_my_settings().await {

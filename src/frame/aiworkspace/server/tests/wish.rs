@@ -148,6 +148,8 @@ fn analyze_execute_apply_rerun_feedback() {
     // ---- analysis: bound to the view, written back by the UI's apply
     let a = srv.run("wish.xllm@1", json!({ "wish_id": "wish-q3", "stage": "analyze", "location": loc(), "request": { "today": "2026-10-06", "timezone": "Asia/Shanghai" } })).await;
     assert_eq!(a["state"], "waiting_confirmation", "{a}");
+    // every stage request carries an output limit (Claude requires one)
+    assert_eq!(*m.max_tokens.lock().unwrap(), Some(32_000));
     assert_eq!(a["candidate"]["inputs"][0]["selector"]["kind"], "table_view");
     assert!(!a["candidate"]["analysis"]["context_prompt"].as_str().unwrap().contains('@'));
     srv.apply(&a, json!({})).await;
@@ -266,6 +268,9 @@ export default async function main(aiws) {
     let start = srv.rpc("proc.start", json!({ "program": "wish.xllm@1", "params": { "wish_id": "wish-q3", "stage": "analyze" }, "idempotency_key": "slow" })).await;
     let id = start["run_id"].as_str().unwrap().to_string();
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // the snapshot is fixed and the model is working
+    let r = srv.rpc("proc.get", json!({ "run_id": id })).await;
+    assert_eq!((r["state"].as_str(), r["progress"]["waiting_model"].as_bool()), (Some("running"), Some(true)), "{r}");
     let head = srv.rpc("ws.get_info", json!({})).await["head_seq"].clone();
     let c = srv.rpc("proc.cancel", json!({ "run_id": id })).await;
     assert_eq!(c["state"], "cancelled");
