@@ -131,12 +131,10 @@ impl OperationCodec for QwenImageEditCodec {
                 "Qwen image edit requires one to three images",
             ));
         }
-        if request.strength.is_some() {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Qwen image edit does not support canonical strength",
-            ));
-        }
+        call.context.ignore_unsupported_options(
+            "Qwen image edit",
+            &[("strength", request.strength.is_some())],
+        );
         let mut content = request
             .images
             .iter()

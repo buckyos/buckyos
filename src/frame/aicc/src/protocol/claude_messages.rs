@@ -30,6 +30,9 @@ pub(crate) const CLAUDE_MESSAGES_VERSION: &str = "2023-06-01";
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+// `max_tokens` is mandatory on the wire; this ceiling (clamped to the model's
+// own limit during call lowering) leaves room for thinking plus a long answer.
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_000;
 const CLAUDE_PROVIDER_NAMESPACE: &str = "claude";
 
 pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegistration) {
@@ -104,6 +107,8 @@ impl ClaudeMessagesCodec {
         }
         validate_message_sequence(&request.messages)?;
         validate_canonical_options(request)?;
+        call.context
+            .ignore_unsupported_options("Claude Messages", &[("seed", request.seed.is_some())]);
 
         let provider_model_id =
             required_string(&call.input.resolved_parameters, "provider_model_id")?;
@@ -281,6 +286,7 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
         features::PLAN.to_string(),
         features::WEB_SEARCH.to_string(),
     ]);
+    binding.default_max_output_tokens = Some(DEFAULT_MAX_OUTPUT_TOKENS);
     OperationDescriptor {
         operation_id: CLAUDE_MESSAGES_OPERATION_ID.to_string(),
         bindings: vec![
@@ -386,12 +392,6 @@ fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultV
                 "Claude Messages codec does not map canonical structured output",
             ));
         }
-    }
-    if request.seed.is_some() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "Claude Messages does not support seed",
-        ));
     }
     if request.output.is_some() {
         return Err(ProtocolError::new(
@@ -2135,22 +2135,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unmapped_hard_constraints_before_http() {
+    fn ignores_seed_but_rejects_output_media_before_http() {
         let mut request = LlmChatInvokeRequest::new(
             "ignored@instance",
             vec![AiMessage::text(AiRole::User, "hello")],
         );
         request.max_output_tokens = Some(16);
         request.seed = Some(7);
-        let input = input(request, &[]);
         let context = context();
-        let error = codec()
-            .encode(&CodecCall {
+        let encode = |request: LlmChatInvokeRequest| {
+            codec().encode(&CodecCall {
                 api_type: ApiType::Llm,
-                input: &input,
+                input: &input(request, &[]),
                 context: &context,
             })
-            .unwrap_err();
+        };
+        let wire = encode(request.clone()).unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert!(body.get("seed").is_none());
+
+        request.output = Some(buckyos_api::AiOutputOptions::default());
+        let error = encode(request).unwrap_err();
         assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
     }
 

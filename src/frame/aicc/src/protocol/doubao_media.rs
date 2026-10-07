@@ -114,12 +114,10 @@ impl OperationCodec for DoubaoMultimodalEmbeddingCodec {
                 "Doubao multimodal embedding requires exactly one canonical sequence item",
             ));
         }
-        if request.normalize == Some(false) {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Doubao multimodal embedding does not expose normalization control",
-            ));
-        }
+        call.context.ignore_unsupported_options(
+            "Doubao multimodal embedding",
+            &[("normalize", request.normalize == Some(false))],
+        );
         let item = &request.items[0];
         if item.text.is_none() && item.image.is_none() {
             return Err(ProtocolError::invalid_request(
@@ -288,7 +286,14 @@ impl OperationCodec for DoubaoImageCodec {
             if let Some(size) = &request.size {
                 body.insert("size".to_owned(), json!(size));
             } else if let Some(ratio) = &request.aspect_ratio {
-                body.insert("size".to_owned(), json!(seedream_size(ratio)?));
+                match seedream_size(ratio) {
+                    Some(size) => {
+                        body.insert("size".to_owned(), json!(size));
+                    }
+                    None => call
+                        .context
+                        .ignore_unsupported_options("Seedream", &[("aspect_ratio", true)]),
+                }
             }
             if let Some(seed) = request.seed {
                 body.insert("seed".to_owned(), json!(seed));
@@ -532,20 +537,18 @@ fn video_options(
     Ok(())
 }
 
-fn seedream_size(ratio: &str) -> ProtocolResultValue<&'static str> {
-    match ratio {
-        "1:1" => Ok("2048x2048"),
-        "4:3" => Ok("2304x1728"),
-        "3:4" => Ok("1728x2304"),
-        "16:9" => Ok("2848x1600"),
-        "9:16" => Ok("1600x2848"),
-        "3:2" => Ok("2496x1664"),
-        "2:3" => Ok("1664x2496"),
-        "21:9" => Ok("3136x1344"),
-        _ => Err(ProtocolError::invalid_request(
-            "unsupported Seedream aspect ratio; specify size in pixels",
-        )),
-    }
+fn seedream_size(ratio: &str) -> Option<&'static str> {
+    Some(match ratio {
+        "1:1" => "2048x2048",
+        "4:3" => "2304x1728",
+        "3:4" => "1728x2304",
+        "16:9" => "2848x1600",
+        "9:16" => "1600x2848",
+        "3:2" => "2496x1664",
+        "2:3" => "1664x2496",
+        "21:9" => "3136x1344",
+        _ => return None,
+    })
 }
 
 fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {

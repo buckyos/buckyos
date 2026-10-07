@@ -569,6 +569,7 @@ fn codecs() -> Arc<CodecRegistry> {
                 buckyos_api::features::JSON_SCHEMA.into(),
             ]),
             execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
+            default_max_output_tokens: None,
         }],
         supports_cancel: false,
         supports_webhook: false,

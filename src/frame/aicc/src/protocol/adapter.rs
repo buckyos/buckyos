@@ -37,6 +37,10 @@ pub(crate) struct OperationBinding {
     pub capability: Capability,
     pub supported_features: BTreeSet<String>,
     pub execution_modes: BTreeSet<ExecutionMode>,
+    /// Set when the wire protocol requires an output cap that the canonical
+    /// request treats as optional. Call lowering fills an omitted
+    /// `max_output_tokens` with this value, clamped to the model's capability.
+    pub default_max_output_tokens: Option<u64>,
 }
 
 impl OperationBinding {
@@ -49,6 +53,7 @@ impl OperationBinding {
             capability: api_type.capability(),
             supported_features: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
+            default_max_output_tokens: None,
         }
     }
 
@@ -56,6 +61,11 @@ impl OperationBinding {
         if self.capability != self.api_type.capability() {
             return Err(ProtocolError::invalid_configuration(
                 "operation binding capability does not match its API type",
+            ));
+        }
+        if self.default_max_output_tokens == Some(0) {
+            return Err(ProtocolError::invalid_configuration(
+                "operation default max output tokens must be greater than zero",
             ));
         }
         if self.execution_modes.is_empty() {
@@ -496,6 +506,26 @@ pub(crate) fn normalize_provider_base_url(value: &str) -> ProtocolResultValue<St
 }
 
 impl CodecContext {
+    /// Tuning options the protocol cannot express are dropped instead of
+    /// failing the call; this warning is their only trace. Output format,
+    /// input and edit-scope requirements must still be rejected.
+    pub(crate) fn ignore_unsupported_options(&self, protocol: &str, options: &[(&str, bool)]) {
+        let ignored = options
+            .iter()
+            .filter(|(_, present)| *present)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        if ignored.is_empty() {
+            return;
+        }
+        log::warn!(
+            "{protocol} ignores unsupported canonical option(s) {} for {}/{}",
+            ignored.join(", "),
+            self.state_coordinate.provider_profile_id,
+            self.state_coordinate.origin_model,
+        );
+    }
+
     pub(crate) fn materialized_resource(
         &self,
         source: &ResourceRef,

@@ -293,17 +293,17 @@ fn encode_interaction(call: &CodecCall<'_>, api_type: ApiType) -> ProtocolResult
             encode_asr(request, call, &mut body)?
         }
         (AiccCall::ImagesGenerate(request), ApiType::ImageTextToImage) => {
-            encode_text_to_image(request, &mut body)?
+            encode_text_to_image(request, call.context, &mut body)?
         }
         (AiccCall::ImageToImage(request), ApiType::ImageImageToImage) => {
             encode_image_to_image(request, call, &mut body)?
         }
         (AiccCall::AudioTextToSpeech(request), ApiType::AudioTextToSpeech) => {
-            encode_tts(request, &mut body)?
+            encode_tts(request, call.context, &mut body)?
         }
         (AiccCall::AudioMusic(request), ApiType::AudioMusic) => encode_music(request, &mut body)?,
         (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-            encode_interaction_text_to_video(request, &mut body)?
+            encode_interaction_text_to_video(request, call.context, &mut body)?
         }
         (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
             encode_interaction_image_to_video(request, call, &mut body)?
@@ -422,12 +422,13 @@ fn encode_llm(
         );
     }
     let mut generation = Map::new();
-    if request.temperature.is_some() || request.top_p.is_some() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "Gemini Interactions v1beta does not define temperature or top_p",
-        ));
-    }
+    call.context.ignore_unsupported_options(
+        "Gemini Interactions",
+        &[
+            ("temperature", request.temperature.is_some()),
+            ("top_p", request.top_p.is_some()),
+        ],
+    );
     if let Some(tokens) = request.max_output_tokens {
         generation.insert("max_output_tokens".to_string(), tokens.into());
     }
@@ -766,6 +767,7 @@ fn encode_asr(
 
 fn encode_text_to_image(
     request: &TextToImageInvokeRequest,
+    context: &CodecContext,
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.prompt.clone()));
@@ -777,12 +779,10 @@ fn encode_text_to_image(
     if let Some(seed) = request.seed {
         config.insert("seed".to_string(), seed.into());
     }
-    if request.n.is_some_and(|n| n != 1) {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "Gemini Interactions image output does not define candidate_count",
-        ));
-    }
+    context.ignore_unsupported_options(
+        "Gemini Interactions image",
+        &[("n", request.n.is_some_and(|n| n != 1))],
+    );
     body.insert(
         "response_format".to_string(),
         Value::Object(response_format),
@@ -838,15 +838,14 @@ fn image_response_format(
 
 fn encode_tts(
     request: &AudioTextToSpeechRequest,
+    context: &CodecContext,
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.text.clone()));
-    if request.speed.is_some() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "Gemini Interactions speech_config does not define speed",
-        ));
-    }
+    context.ignore_unsupported_options(
+        "Gemini Interactions speech",
+        &[("speed", request.speed.is_some())],
+    );
     body.insert(
         "response_format".to_string(),
         Value::Object(audio_response_format(request.output.as_ref())?),
@@ -928,15 +927,14 @@ fn audio_response_format(
 
 fn encode_interaction_text_to_video(
     request: &VideoTextToVideoRequest,
+    context: &CodecContext,
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
     body.insert("input".to_string(), Value::String(request.prompt.clone()));
-    if let Some(value) = request.generate_audio {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            format!("Gemini Interactions video generation does not define generate_audio={value}"),
-        ));
-    }
+    context.ignore_unsupported_options(
+        "Gemini Interactions video",
+        &[("generate_audio", request.generate_audio.is_some())],
+    );
     body.insert(
         "response_format".to_string(),
         Value::Object(video_response_format(
@@ -985,12 +983,16 @@ fn encode_interaction_video_to_video(
     call: &CodecCall<'_>,
     body: &mut Map<String, Value>,
 ) -> ProtocolResultValue<()> {
-    if request.preserve_motion.is_some() || request.time_range.is_some() {
+    if request.time_range.is_some() {
         return Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "Gemini Interactions video editing does not define preserve_motion or time_range",
+            "Gemini Interactions video editing does not define time_range",
         ));
     }
+    call.context.ignore_unsupported_options(
+        "Gemini Interactions video editing",
+        &[("preserve_motion", request.preserve_motion.is_some())],
+    );
     body.insert(
         "input".to_string(),
         Value::Array(vec![
@@ -2976,7 +2978,7 @@ mod tests {
     }
 
     #[test]
-    fn interaction_rejects_fields_missing_from_v1beta_schema() {
+    fn interaction_ignores_sampling_fields_missing_from_v1beta_schema() {
         let mut request = LlmChatInvokeRequest::new(
             "ignored@google",
             vec![AiMessage::text(AiRole::User, "hello")],
@@ -2990,7 +2992,7 @@ mod tests {
                 json!("gemini-test"),
             )]),
         };
-        let error = encode_interaction(
+        let value = encode_interaction(
             &CodecCall {
                 api_type: ApiType::Llm,
                 input: &input,
@@ -2998,8 +3000,9 @@ mod tests {
             },
             ApiType::Llm,
         )
-        .unwrap_err();
-        assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
+        .unwrap();
+        assert!(!value.to_string().contains("temperature"));
+        assert!(!value.to_string().contains("top_p"));
     }
 
     #[test]

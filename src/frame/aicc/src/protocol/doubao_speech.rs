@@ -87,12 +87,10 @@ impl OperationCodec for DoubaoTtsCodec {
                 "Doubao TTS codec received the wrong canonical request",
             ));
         };
-        if request.speed.is_some() {
-            return Err(ProtocolError::new(
-                ProtocolErrorKind::UnsupportedOperation,
-                "Doubao Agent Plan TTS does not expose canonical speed control",
-            ));
-        }
+        call.context.ignore_unsupported_options(
+            "Doubao Agent Plan TTS",
+            &[("speed", request.speed.is_some())],
+        );
         let speaker = call
             .input
             .resolved_parameters
