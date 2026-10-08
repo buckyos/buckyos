@@ -28,7 +28,7 @@ fn user_state_is_per_subject_and_never_a_commit() {
     // no grant at all: the workspace does not exist for the caller
     assert_eq!(ws.get_user_state(&Caller::user("nobody")).unwrap_err().code.as_str(), "NOT_FOUND");
     // a share export carries no user state
-    let export = ws.export(&alice(), "share", true).unwrap();
+    let export = ws.export(&alice(), "share", true, None).unwrap();
     let bytes = std::fs::read(export["path"].as_str().unwrap()).unwrap();
     assert!(!bytes.windows(b"viewport:surface-main".len()).any(|w| w == b"viewport:surface-main"));
 }

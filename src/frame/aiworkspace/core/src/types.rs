@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub fn change_class(type_id: &str) -> &'static str {
     match type_id {
-        TYPE_CELL | TYPE_CONTAINER => "view",
+        TYPE_CELL | TYPE_CONTAINER | TYPE_VIEWPORT | TYPE_SHOW_PATH => "view",
         TYPE_TABLE => "schema",
         _ => "value",
     }
@@ -147,7 +147,7 @@ pub fn record_nested(payload: &JsonMap) -> Value {
 
 const CELL_KEYS: &[&str] = &[
     "source_ref", "view", "title", "fields", "filter", "sorts", "group", "manual_order", "options", "config", "def_ref", "bindings", "locked",
-    "flip", "start", "end", "route", "controls", "label",
+    "flip", "start", "end", "route", "controls", "label", "presentation",
 ];
 /// Named data bindings of a Block (`aiws` v2): at most this many names.
 pub const MAX_BINDINGS: usize = 32;
@@ -362,6 +362,191 @@ fn validate_cell(p: &mut Planner, e: &mut EntityRow, changed: Option<&[String]>)
     if view_type == "connector" {
         validate_connector(p, e, changed)?;
     }
+    check_presentation(&mut e.payload, &view_type)
+}
+
+// ---- presentation (third phase §4, §5, §6) ----
+
+/// Speaker notes of a Frame or a Viewport: plain text shown only in the prompter.
+pub const MAX_NOTES_BYTES: usize = 16 * 1024;
+/// Public caption of a Frame or a Viewport (the guide's bubble).
+pub const MAX_CAPTION_CHARS: usize = 2000;
+pub const MAX_SHOW_STEPS: usize = 500;
+pub const MAX_STEP_HIDE: usize = 200;
+
+/// `#rgb`, `#rrggbb` or `#rrggbbaa`.
+fn is_color(v: &Value) -> bool {
+    v.as_str().is_some_and(|s| {
+        let hex = s.strip_prefix('#').unwrap_or("");
+        matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    })
+}
+
+fn check_notes(payload: &JsonMap, what: &str) -> WsResult<()> {
+    match payload.get("notes") {
+        None => {}
+        Some(Value::String(t)) if t.len() <= MAX_NOTES_BYTES => {}
+        Some(Value::String(_)) => return Err(WsError::limit(format!("{what}notes are limited to {MAX_NOTES_BYTES} bytes"))),
+        Some(_) => return Err(bad(format!("{what}notes must be a string"))),
+    }
+    match payload.get("caption") {
+        None => Ok(()),
+        Some(Value::String(t)) if t.chars().count() <= MAX_CAPTION_CHARS => Ok(()),
+        Some(_) => Err(bad(format!("{what}caption must be a string of at most {MAX_CAPTION_CHARS} chars"))),
+    }
+}
+
+/// A Cell's `presentation`: `{ live? }` on any Block, plus `{ background?, notes?, caption? }` on a Frame.
+/// `null` removes it. A line has none.
+fn check_presentation(payload: &mut JsonMap, view_type: &str) -> WsResult<()> {
+    let p = match payload.get("presentation") {
+        None => return Ok(()),
+        Some(Value::Null) => {
+            payload.remove("presentation");
+            return Ok(());
+        }
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad("presentation must be an object")),
+    };
+    if view_type == "connector" {
+        return Err(bad("a connector has no presentation properties"));
+    }
+    for (k, v) in p {
+        match k.as_str() {
+            "live" if v.is_boolean() => {}
+            "live" => return Err(bad("presentation.live must be a boolean")),
+            "background" | "notes" | "caption" if view_type != "frame" => {
+                return Err(bad(format!("presentation.{k} is only valid on frames")))
+            }
+            "background" if is_color(v) => {}
+            "background" => return Err(bad("presentation.background must be a #rrggbb color")),
+            "notes" | "caption" => {}
+            _ => return Err(bad(format!("presentation: unknown key {k}"))),
+        }
+    }
+    check_notes(p, "presentation.")
+}
+
+const VIEWPORT_KEYS: &[&str] = &["title", "surface_ref", "center", "zoom", "notes", "caption"];
+
+/// `buckyos.viewport`: `{ title?, surface_ref: { entity_id }, center: { x, y }, zoom, notes?, caption? }`. The
+/// visible area is `stage / zoom` around `center`, `stage` being the size of the path that shows it (§5.1).
+fn validate_viewport(p: &Planner, e: &mut EntityRow, changed: Option<&[String]>) -> WsResult<()> {
+    check_keys(&e.payload, VIEWPORT_KEYS, "viewport")?;
+    opt_text(&e.payload, "title", 256)?;
+    let surface = e
+        .payload
+        .get("surface_ref")
+        .and_then(Value::as_object)
+        .filter(|o| o.len() == 1)
+        .and_then(|o| o.get("entity_id"))
+        .and_then(Value::as_str)
+        .filter(|s| is_valid_id(s))
+        .ok_or_else(|| bad("viewport needs surface_ref { entity_id }"))?
+        .to_string();
+    let center_ok = e.payload.get("center").and_then(Value::as_object).is_some_and(|c| {
+        c.len() == 2 && finite(c.get("x")).is_some() && finite(c.get("y")).is_some()
+    });
+    if !center_ok {
+        return Err(bad("viewport needs center { x, y } with finite numbers"));
+    }
+    if !finite(e.payload.get("zoom")).is_some_and(|z| (0.05..=4.0).contains(&z)) {
+        return Err(bad("viewport zoom must be a number in [0.05, 4]"));
+    }
+    check_notes(&e.payload, "")?;
+    let is_changed = |k: &str| !p.env.import && changed.map_or(true, |c| c.iter().any(|x| x == k));
+    if is_changed("surface_ref") {
+        let t = p.check_ref_target(&json!({ "entity_id": surface }), Some(&[TYPE_CONTAINER]))?;
+        let free = t.as_ref().is_some_and(|t| {
+            t.payload.get("kind").and_then(Value::as_str) == Some("surface") && t.payload.get("layout").and_then(|l| l["mode"].as_str()) == Some("free")
+        });
+        if !free {
+            return Err(WsError::invalid_op(format!("{surface} is not a free-layout Surface: a Viewport needs one")));
+        }
+    }
+    Ok(())
+}
+
+const SHOW_PATH_KEYS: &[&str] = &["title", "purpose", "stage", "background", "steps"];
+
+/// `buckyos.show-path` (§6.1): `{ title?, purpose: presentation | guide, stage: { w, h }, background?, steps }`; a step is
+/// `{ id, target: { kind: frame | viewport, entity_id }, title?, enabled?, transition?, hide? }`. Targets are judged
+/// when a step is added or retargeted; an untouched step whose target went away stays (a dangling item, §6.2).
+fn validate_show_path(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>, changed: Option<&[String]>) -> WsResult<()> {
+    check_keys(&e.payload, SHOW_PATH_KEYS, "show path")?;
+    opt_text(&e.payload, "title", 256)?;
+    match e.payload.get("purpose").and_then(Value::as_str) {
+        Some("presentation" | "guide") => {}
+        _ => return Err(bad("purpose must be presentation or guide")),
+    }
+    let stage_ok = e.payload.get("stage").and_then(Value::as_object).is_some_and(|st| {
+        let dim = |k: &str| finite(st.get(k)).is_some_and(|n| (16.0..=16384.0).contains(&n));
+        st.len() == 2 && dim("w") && dim("h")
+    });
+    if !stage_ok {
+        return Err(bad("stage must be { w, h } with numbers in [16, 16384]"));
+    }
+    if e.payload.get("background").is_some_and(|b| !is_color(b)) {
+        return Err(bad("background must be a #rrggbb color"));
+    }
+    let steps = e.payload.get("steps").and_then(Value::as_array).ok_or_else(|| bad("steps must be an array"))?;
+    if steps.len() > MAX_SHOW_STEPS {
+        return Err(WsError::limit(format!("at most {MAX_SHOW_STEPS} steps")));
+    }
+    let known: BTreeMap<&str, &Value> = before
+        .and_then(|b| b.payload.get("steps"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|s| Some((s.get("id")?.as_str()?, s.get("target")?)))
+        .collect();
+    let judge = !p.env.import && changed.map_or(true, |c| c.iter().any(|k| k == "steps"));
+    let mut ids = BTreeSet::new();
+    for step in steps {
+        let o = step.as_object().ok_or_else(|| bad("a step must be an object"))?;
+        for (k, v) in o {
+            let ok = match k.as_str() {
+                "id" | "target" => true,
+                "title" => v.as_str().is_some_and(|t| t.chars().count() <= 256),
+                "enabled" => v.is_boolean(),
+                "transition" => matches!(v.as_str(), Some("auto" | "fly" | "fade" | "cut")),
+                "hide" => v.as_array().is_some_and(|l| l.len() <= MAX_STEP_HIDE && l.iter().all(|x| x.as_str().is_some_and(is_valid_id))),
+                _ => return Err(bad(format!("step: unknown key {k}"))),
+            };
+            if !ok {
+                return Err(bad(format!("step.{k} is invalid (title ≤ 256 chars, enabled boolean, transition auto | fly | fade | cut, hide ≤ {MAX_STEP_HIDE} ids)")));
+            }
+        }
+        let id = o.get("id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(|| bad("step.id must be an id"))?;
+        if !ids.insert(id) {
+            return Err(bad(format!("duplicate step id {id}")));
+        }
+        let target = o.get("target").ok_or_else(|| bad("step needs target"))?;
+        let shape = || bad("step.target must be { kind: frame | viewport, entity_id }");
+        let t = target.as_object().filter(|t| t.len() == 2).ok_or_else(shape)?;
+        let kind = t.get("kind").and_then(Value::as_str).filter(|k| matches!(*k, "frame" | "viewport")).ok_or_else(shape)?;
+        let target_id = t.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(shape)?;
+        if !judge || known.get(id) == Some(&target) {
+            continue;
+        }
+        let Some(row) = p.check_ref_target(&json!({ "entity_id": target_id }), None)? else { continue };
+        match kind {
+            "frame" => {
+                if !(row.type_id == TYPE_CELL && row.payload.get("view").and_then(|v| v["type"].as_str()) == Some("frame")) {
+                    return Err(bad(format!("step {id}: {target_id} is not a Frame")));
+                }
+                let free = crate::plan::surface_of(&p.ov, target_id)?.is_some_and(|s| s.payload.get("layout").and_then(|l| l["mode"].as_str()) == Some("free"));
+                if !free {
+                    return Err(WsError::invalid_op(format!("step {id}: Frame {target_id} is not on a free-layout Surface")));
+                }
+            }
+            _ => {
+                if row.type_id != TYPE_VIEWPORT {
+                    return Err(bad(format!("step {id}: {target_id} is not a Viewport")));
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -518,8 +703,8 @@ fn validate_container(p: &Planner, e: &mut EntityRow, before: Option<&EntityRow>
     opt_text(&e.payload, "title", 256)?;
     match e.payload.get("system") {
         None => {}
-        Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content") => {}
-        Some(_) => return Err(bad("system must be canvas_content or surface_content on a folder")),
+        Some(Value::String(s)) if kind == "folder" && matches!(s.as_str(), "canvas_content" | "surface_content" | "shows") => {}
+        Some(_) => return Err(bad("system must be canvas_content, surface_content or shows on a folder")),
     }
     if let Some(sid) = e.payload.get("surface_id") {
         if kind != "folder" || !sid.as_str().is_some_and(is_valid_id) {
@@ -1175,6 +1360,14 @@ pub fn init_entity(p: &mut Planner, row: &mut EntityRow, mut payload: JsonMap) -
             row.payload = payload;
             validate_block_def(row)?;
         }
+        TYPE_VIEWPORT => {
+            row.payload = payload;
+            validate_viewport(p, row, None)?;
+        }
+        TYPE_SHOW_PATH => {
+            row.payload = payload;
+            validate_show_path(p, row, None, None)?;
+        }
         _ => row.payload = payload,
     }
     Ok(Value::Object(row.payload.clone()))
@@ -1211,6 +1404,8 @@ pub fn validate_update(p: &mut Planner, before: &EntityRow, e: &mut EntityRow, c
         }
         TYPE_WISH => validate_wish(p, e, Some(changed)),
         TYPE_BLOCK_DEF => validate_block_def(e),
+        TYPE_VIEWPORT => validate_viewport(p, e, Some(changed)),
+        TYPE_SHOW_PATH => validate_show_path(p, e, Some(before), Some(changed)),
         _ => Err(WsError::invalid_op("this type has no keyed content")),
     }
 }
@@ -1277,6 +1472,19 @@ pub fn entity_refs(e: &EntityRow) -> WsResult<BTreeSet<RefEdge>> {
         TYPE_ANNOTATION => {
             if let Some(t) = e.payload.get("target") {
                 out.insert(ref_edge(&e.entity_id, "", "anchor", t));
+            }
+        }
+        // presentation references never block deletion: a gone target leaves a dangling step (third phase §6.2)
+        TYPE_VIEWPORT => {
+            if let Some(id) = e.payload.get("surface_ref").and_then(|r| r.get("entity_id")).and_then(Value::as_str) {
+                out.insert(RefEdge::local(&e.entity_id, "", "show_surface", id));
+            }
+        }
+        TYPE_SHOW_PATH => {
+            for step in e.payload.get("steps").and_then(Value::as_array).into_iter().flatten() {
+                let (Some(id), Some(target)) = (step.get("id").and_then(Value::as_str), step.get("target").and_then(|t| t.get("entity_id")).and_then(Value::as_str)) else { continue };
+                let s = selector_string(&json!({ "kind": "step", "id": id }));
+                out.insert(RefEdge::local(&e.entity_id, &s, "show_target", target));
             }
         }
         TYPE_RECORD => {

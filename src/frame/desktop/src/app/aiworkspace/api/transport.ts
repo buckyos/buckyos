@@ -212,3 +212,25 @@ export function resolveTransport(): TransportAvailability {
   void transport.principal()
   return { ok: true, transport }
 }
+
+/** A prompter link's call (第三期规划 §11.1): plain kRPC to the service with the show's token instead of a session —
+ * the page runs before (and without) the Desktop's login. Resolves with `result`, rejects with TransportError. */
+export async function prompterCall<T>(method: string, params: Record<string, unknown>, token: string, signal?: AbortSignal): Promise<T> {
+  const base = (readDevOverride()?.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '')
+  let response: Response
+  try {
+    response = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method, params: { ...params, prompter_token: token }, sys: [Date.now()] }),
+      signal,
+    })
+  } catch (error) {
+    throw new TransportError('network', error instanceof Error ? error.message : String(error))
+  }
+  if (!response.ok) throw await httpError(response)
+  const body = await response.json().catch(() => null) as { result?: T; error?: string } | null
+  if (!body) throw new TransportError('network', 'unparsable response')
+  if (typeof body.error === 'string' && body.error) throw new TransportError('protocol', body.error)
+  return body.result as T
+}

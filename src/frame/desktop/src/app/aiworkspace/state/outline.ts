@@ -43,6 +43,19 @@ function extras(typeId: string, payload: Record<string, unknown>): Partial<Entit
     out.connector = view?.type === 'connector' ? connectorProjection(payload) : null
     out.source_id = (payload.source_ref as { entity_id?: string } | undefined)?.entity_id ?? null
     out.def_id = (payload.def_ref as { entity_id?: string } | undefined)?.entity_id ?? null
+    out.live = (payload.presentation as { live?: boolean } | undefined)?.live === true ? true : null
+  } else if (typeId === 'buckyos.viewport') {
+    out.viewport = {
+      surface_id: (payload.surface_ref as { entity_id?: string } | undefined)?.entity_id ?? null,
+      center: (payload.center as { x: number; y: number } | undefined) ?? null,
+      zoom: (payload.zoom as number | undefined) ?? null,
+    }
+  } else if (typeId === 'buckyos.show-path') {
+    out.show_path = {
+      purpose: (payload.purpose as 'presentation' | 'guide' | undefined) ?? null,
+      stage: (payload.stage as { w: number; h: number } | undefined) ?? null,
+      steps: Array.isArray(payload.steps) ? payload.steps.length : 0,
+    }
   } else if (typeId === 'buckyos.wish') {
     out.executor = (payload.executor as string) ?? null
     out.output_mode = (payload.output_mode as string) ?? null
@@ -282,7 +295,8 @@ export class OutlineModel {
             const payload: Record<string, unknown> = {}
             let touchedExtras = false
             for (const op of keyed) for (const key of (op.keys as { key: string; value?: unknown }[] | undefined) ?? []) {
-              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
+              if (['title', 'view', 'source_ref', 'def_ref', 'kind', 'layout', 'executor', 'output_mode', 'target', 'media_type', 'def_id', 'icon', 'locked', 'start', 'end', 'presentation',
+                'surface_ref', 'center', 'zoom', 'purpose', 'stage', 'steps', ...CONNECTOR_KEYS].includes(key.key)) touchedExtras = true
               if (op.op === 'entity.set_keys') payload[key.key] = key.value
             }
             if (touchedExtras) {
@@ -296,6 +310,11 @@ export class OutlineModel {
                 executor: current.executor, output_mode: current.output_mode, def_id: current.def_id, media_type: current.media_type,
                 target: current.target_id ? { entity_id: current.target_id } : undefined,
                 ...(current.connector ?? {}),
+                presentation: current.live ? { live: true } : undefined,
+                surface_ref: current.viewport?.surface_id ? { entity_id: current.viewport.surface_id } : undefined,
+                center: current.viewport?.center ?? undefined, zoom: current.viewport?.zoom ?? undefined,
+                purpose: current.show_path?.purpose ?? undefined, stage: current.show_path?.stage ?? undefined,
+                steps: current.show_path ? new Array(current.show_path.steps) : undefined,
               }
               for (const op of keyed) if (op.op === 'entity.unset_keys') for (const key of (op.keys as { key: string }[] | undefined) ?? []) delete known[key.key]
               Object.assign(update, extras(current.type_id, { ...known, ...payload }))

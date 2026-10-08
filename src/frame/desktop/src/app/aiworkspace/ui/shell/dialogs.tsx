@@ -194,6 +194,9 @@ function NewFromTemplate({ client, onOpen }: { client: AiwsClient; onOpen: (work
 export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; workspace: { workspace_id: string; title: string }; onDone?: (message: string) => void }) {
   const [mode, setMode] = useState<'share' | 'personal_backup'>('share')
   const [selfContained, setSelfContained] = useState(true)
+  // speaker notes travel in a personal backup, not in what goes to other people (第三期规划 §6.4)
+  const [notesChoice, setNotesChoice] = useState<boolean | null>(null)
+  const notes = notesChoice ?? mode === 'personal_backup'
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'info' | 'error'; text: string } | null>(null)
   const [exported, setExported] = useState<ExportResult | null>(null)
@@ -201,7 +204,7 @@ export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; 
     setBusy(true)
     setMessage(null)
     try {
-      const result = unwrap(await client.export({ workspace_id: workspace.workspace_id }, mode, selfContained))
+      const result = unwrap(await client.export({ workspace_id: workspace.workspace_id }, mode, selfContained, notes))
       const blob = await client.transport.download(`export/${workspace.workspace_id}/${result.export_id}`)
       saveBlob(blob, `${workspace.title}-${mode === 'share' ? 'share' : 'backup'}.zip`)
       setExported(result)
@@ -216,11 +219,12 @@ export function ExportForm({ client, workspace, onDone }: { client: AiwsClient; 
   }
   return (
     <div className="aiws-inline-form">
-      <select aria-label="导出方式" value={mode} onChange={(event) => setMode(event.target.value === 'personal_backup' ? 'personal_backup' : 'share')}>
+      <select aria-label="导出方式" value={mode} onChange={(event) => { setMode(event.target.value === 'personal_backup' ? 'personal_backup' : 'share'); setNotesChoice(null) }}>
         <option value="share">分享包（不含协作历史）</option>
         <option value="personal_backup">个人恢复备份（含协作历史）</option>
       </select>
       <label><input type="checkbox" checked={selfContained} onChange={(event) => setSelfContained(event.target.checked)} /> 自包含</label>
+      <label title="Frame 和 Viewport 的讲解备注只给演讲者看：分享给他人时默认不包含；说明（引导气泡）总是包含"><input type="checkbox" data-testid="aiws-export-notes" checked={notes} onChange={(event) => setNotesChoice(event.target.checked)} /> 包含讲解备注</label>
       <button type="button" data-testid="aiws-export" disabled={busy} onClick={() => { void run() }}>{busy ? '导出中…' : '导出并下载'}</button>
       {message && <div className={message.kind === 'error' ? 'aiws-error' : 'aiws-muted'} role={message.kind === 'error' ? 'alert' : 'status'} data-testid="aiws-export-message">{message.text}</div>}
       {exported && (
@@ -305,6 +309,9 @@ const SHORTCUTS: [string, string][] = [
   ['Enter', '编辑选中对象的内容'], ['Esc', '逐层退出：菜单、放置、编辑、选择'], ['方向键（Shift 加速）', '移动选中的对象'],
   ['Ctrl/⌘ + G，Ctrl/⌘ + Shift + G', '分组 / 解组'], ['F2', '打开属性'], ['V / H', '选择工具 / 移动视图工具'],
   ['按住空格拖动，鼠标中键拖动', '临时移动视图'], ['Ctrl/⌘ + 滚轮', '以指针为中心缩放'], ['滚轮，Shift + 滚轮', '上下 / 左右移动视图'],
+  ['放映：→ ↓ PageDown 空格 Enter', '下一项'], ['放映：← ↑ PageUp Backspace', '上一项'], ['放映：Home / End', '第一项 / 最后一项'],
+  ['放映：B 或 .', '黑屏'], ['放映：Esc', '自由浏览时回到本步骤，否则退出放映；操作 Block 时交还按键'],
+  ['使用引导：→ ← Esc', '下一项、上一项、结束引导'], ['路径编辑：Alt + ↑ / ↓，Delete', '调整选中步骤的顺序、移除步骤'],
 ]
 
 export function HelpDialog({ onClose }: { onClose: () => void }) {

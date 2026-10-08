@@ -4,7 +4,8 @@ Backend of the BuckyOS AI Workspace (phase one kernel, phase two structure). Des
 [第一期核心架构设计与验证](<../../../doc/workspace/BuckyOS AI Workspace 第一期核心架构设计与验证.md>),
 [第一期内置对象详细设计](<../../../doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md>) (called "the design" below) and
 [第二期规划](<../../../doc/workspace/BuckyOS AI Workspace 第二期规划.md>) (the two trees, wishes, dependency records, freshness) and
-[许愿格详细设计](<../../../doc/workspace/BuckyOS AI  Workspace 许愿格详细设计.md>) v0.2 (the real wish executor, W0–W4).
+[许愿格详细设计](<../../../doc/workspace/BuckyOS AI  Workspace 许愿格详细设计.md>) v0.2 (the real wish executor, W0–W4) and
+[第三期规划](<../../../doc/workspace/BuckyOS AI Workspace 第三期规划.md>) v0.2 (Frames, Viewports, presentation paths, non-public shows).
 
 ```text
 core/      aiworkspace-core   pure logic, builds for wasm32-unknown-unknown (no tokio/fs/sqlite/clock/random);
@@ -18,7 +19,8 @@ server/    aiworkspace        process entry, kRPC dispatch, upload/download rout
 aiws/      aiws v2 package    program host (aiws.js, run.js), API doc for the model, prompts, renderer catalog (deno test)
 wasm/      aiworkspace-wasm   wasm-bindgen facade of core for the browser replica (`wasm/build.sh` writes it into the Desktop app)
 schemas/   richtext.basic.v1.json (single source for the Rust validator and the ProseMirror schema)
-fixtures/  project-workspace/commits.json (the shared sample as a commit sequence), vectors/
+fixtures/  project-workspace/commits.json (the shared sample as a commit sequence), presentation/commits.json (the third
+           phase M0 fixture: a five-step mixed path and a guide), vectors/
 ```
 
 ## Run
@@ -53,7 +55,8 @@ cargo test -p aiworkspace           # V23 + crash recovery — against the real 
 ## The two trees (phase two §4)
 
 Every Workspace has the fixed system nodes `root` → `data` (the data tree) and `surfaces` (the Surface
-collection); `canvas-content` is a system folder under `data` holding one folder per Surface. They exist from
+collection); `canvas-content` is a system folder under `data` holding one folder per Surface, `shows` another one
+holding the presentation paths and Viewports (below). They exist from
 `seq` 0 and cannot be created, deleted, moved or renamed by operations. Structure rules (`core/src/plan.rs`
 `child_allowed`): `data` / `folder` take folders and data entities (TableSource, RichText, Record, AssetRef,
 Annotation, `buckyos.wish`, `buckyos.block-def`); `surfaces` takes `surface` containers; `surface` / `group`
@@ -84,7 +87,55 @@ and gets an addressable version in `entity_versions` at every application. Fresh
 A result the user keeps against a later run ("保留人工修改") is re-recorded with that run's read set and `kept_manual: true`, so the wish is current again without regenerating it.
 those versions with the cells now: `current | stale | upstream_stale | unavailable | unknown`.
 
-Format version is `0.3`; packages of an older format (`0.1`, `0.2`) are refused with `UNSUPPORTED_VERSION` (no migration).
+Format version is `0.4` (since the presentation entities below; protocol `0.5`); stores and packages of an older format are refused with `UNSUPPORTED_VERSION` (no migration).
+
+## Presentation (第三期规划 §4–§6, §8, §11)
+
+The data tree has a fourth system node, `shows` (a folder with `system: "shows"` under `data`), holding the presentation
+paths and Viewports and nothing else; neither type is allowed anywhere else (`plan.rs` `child_allowed`).
+
+| Entity | Payload |
+| --- | --- |
+| `buckyos.viewport` | `title?`, `surface_ref: { entity_id }` (a free-layout Surface, judged when written), `center: { x, y }`, `zoom` in [0.05, 4], `notes?` (≤ 16 KiB), `caption?` (≤ 2000 chars). The visible area is `stage / zoom` around `center`, `stage` being the size of the path that shows it. |
+| `buckyos.show-path` | `title?`, `purpose: presentation \| guide`, `stage: { w, h }` (16–16384), `background?` (`#rgb`/`#rrggbb`/`#rrggbbaa`), `steps: [{ id, target: { kind: frame \| viewport, entity_id }, title?, enabled?, transition?: auto \| fly \| fade \| cut, hide?: [cell ids] }]` (≤ 500, ids unique). |
+| Cell `presentation` | `{ live? }` on any Block but a line (operable on stage, §10.2); `{ background?, notes?, caption? }` on a Frame only. `null` removes it. |
+
+- Step targets are judged when a step is added or retargeted (alive, readable, a Frame Cell on a free Surface or a
+  Viewport); an untouched step whose target went away stays — a dangling step the editor lists and a show skips.
+- References never block deletion: every step is a `show_target` edge (selector `{ kind: step, id }`), a Viewport's
+  Surface a `show_surface` edge. The whole `steps` array is one version cell; the editor replays its step commands on
+  conflicts (front end).
+- Outline: a Viewport carries `viewport: { surface_id, center, zoom }`, a path `show_path: { purpose, stage, steps }`
+  (a count), a Block with `presentation.live` carries `live: true`. Notes and captions are read with `doc.read`.
+- Wishes never see `shows` or its entities (`wish/snapshot.rs`), and the read tools never list a Cell's `presentation`.
+- `doc.export` takes `include_notes` (default: true for `personal_backup`, false for `share`); without it Frame
+  `presentation.notes` and Viewport `notes` are left out of the package (`materialize_with`), captions stay. The manifest
+  says `notes_included`.
+
+### Non-public shows
+
+| Method | Caller | Params → result |
+| --- | --- | --- |
+| `show.start` | session | `workspace_id`, `path_id`, `live` → `show_id`, `prompter_token`, `clone_workspace_id?`, `locked`, `live`, `started_at`, `expires_at`, `lease_ms` |
+| `show.heartbeat` | presenter | `show_id` → `expires_at` (renews the lock and the clone) |
+| `show.publish` | presenter | `show_id`, `seq`, `state` (≤ 64 KiB; an older `seq` never replaces a newer state) |
+| `show.command` | presenter or token | `show_id`, `command: { command_id, kind, args? }` → `cursor`, `duplicate` |
+| `show.watch` | presenter or token | `show_id`, `after_seq?`, `after_command?`, `timeout_ms?` (long poll) → `state`, `seq`, `commands`, `cursor`, `timed_out` |
+| `show.notes` | presenter or token | `show_id` → the path's steps with title, notes, caption, as the presenter reads them |
+| `show.end` | presenter, or `manage` on the Workspace (forced end) | `show_id` |
+
+- A caller with workspace-level write access locks the Workspace (`store/src/show.rs`): every document commit from any
+  session is refused with `SHOW_LOCKED` (retryable; `data: { show_id, presenter, started_at }`), user state is not
+  affected. `ws.get_info` and every `doc.wait_changes` answer carry `show_lock`. A reader presents without a lock.
+- With `live` (and write access) the show gets a temporary clone: `doc.sqlite` and `local.sqlite` are copied with
+  `VACUUM INTO` inside the Workspace's writer, identity rewritten (`workspace_meta.purpose = show`, source, show id),
+  grants and wish runs kept (run folders hard-linked, active runs marked interrupted), locks, uploads and user state
+  dropped. Objects are content-addressed in the service's store and shared, not copied (10,000 × 20 table: ~45 ms,
+  release build). A clone is not listed by `ws.list`, cannot be prepared for offline or presented itself.
+- The relay, the lock and the clones live in memory: the lease is 60 s (`AIWS_SHOW_LEASE_MS` shortens it for tests);
+  a sweeper ends shows that were not renewed (lock released, clone deleted); a restarted service drops every clone left
+  on disk. A prompter authenticates with `params.prompter_token` instead of a session token, and only for
+  `show.command`, `show.watch` and `show.notes` of its show.
 
 ## Connector (连接线方案 C1)
 
@@ -202,12 +253,13 @@ string is used only for an invalid token, an unknown method or an unparsable req
 | `doc.undo` | `epoch`, `commit_id`, `idempotency_key`, `mode?`, `plan_digest?`, `session_id?` |
 | `doc.get_changes` | `epoch`, `after_seq`, `limit?`, `filter: { detail: "touched" }?` |
 | `doc.wait_changes` | `epoch?`, `after_seq`, `timeout_ms?` (long poll) |
-| `doc.checkpoint`, `doc.export` | `mode: "share" \| "personal_backup"`, `self_contained` |
+| `doc.checkpoint`, `doc.export` | `mode: "share" \| "personal_backup"`, `self_contained`, `include_notes?` |
 | `asset.begin_upload` → PUT → `asset.finish_upload` | `size`, `upload_id` |
 | `replica.bootstrap` | — then `GET /replica/<workspace_id>/<replica_id>` |
 | `proc.start` / `proc.get` / `proc.apply` / `proc.cancel` | `program`, `params`, `idempotency_key`; `run_id`, `session_id?` — wish programs below |
 | `proc.list` | `wish_id?`, `limit?` — wish runs, newest first |
 | `lock.acquire` / `lock.renew` / `lock.release` / `lock.break` / `lock.list` | `entity_ids[]`, `session_id`; `lock_ids[]`; `entity_id` |
+| `show.start` / `show.heartbeat` / `show.publish` / `show.command` / `show.watch` / `show.notes` / `show.end` | see “Non-public shows” |
 | `diag.list_unretained`, `diag.verify_refs` | |
 
 HTTP routes (same port, `Authorization: Bearer <session token>`):
@@ -229,7 +281,7 @@ Operations (`operations[]` of a Commit): `entity.create|delete|restore|rename|se
 ## Where this implementation differs from the design text
 
 - **Export/replica download routes carry the `workspace_id`** (`/export/<workspace_id>/<export_id>`): there is no service-level database to look an export id up in.
-- **Object storage is a content-addressed folder with CYFS ids and file names**, verified against ndn-lib in `store/tests/kernel.rs` (V01). It is not yet backed by the zone named store, so nothing is pinned there and assets are not fetchable through NDN. `FsObjectStore` is the boundary to replace.
+- **Object storage is a content-addressed folder with CYFS ids and file names**, verified against ndn-lib in `store/tests/kernel.rs` (V01). It is not yet backed by the zone named store, so nothing is pinned there and assets are not fetchable through NDN. `FsObjectStore` is the boundary to replace. It is service-wide, so a show's clone shares every object without copying (第三期规划 §8.3 asked for the named store here; see the third phase report).
 - **Files are single `mix256` chunks (≤ 32 MiB)**; ChunkList for larger assets and record files is not written.
 - **Undo `partial` mode** determines the applicable part by probing each inverse operation on its own.
 - **URL query sources** only reach adapters registered in the service (`fixture://` generated source for tests). There is no general HTTP fetcher: a URL in a document cannot make the service issue arbitrary requests.

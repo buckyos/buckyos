@@ -261,7 +261,7 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   await expect(page.getByTestId('aiws-mock-prepare')).toContainText('summary')
   // a candidate is not an applied state
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(6)
-  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(17)
+  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(18)
 
   await page.getByTestId('aiws-mock-apply').click()
   await expect(run).toHaveAttribute('data-state', 'succeeded')
@@ -275,14 +275,14 @@ test('(f) Mock run: candidate, apply, simulated labels, and undo of the whole ap
   const summary = page.getByTestId('aiws-cell-frame-cell-summary')
   await expect(summary).toContainText('任务摘要（模拟生成）')
   await expect(summary).toContainText('共 5 项任务，未完成 4 项，逾期 1 项。')
-  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(19)
+  expect(await api.outline(ALICE, ws.workspace_id)).toHaveLength(20)
   expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).value).toBe('option-high')
 
   // one application is one commit: one undo removes the summary, its cell and every risk value
   await expect(page.getByTestId('aiws-undo')).toHaveText('撤销 1')
   await page.getByTestId('aiws-undo').click()
   await expect(page.getByTestId('aiws-cell-frame-cell-summary')).toHaveCount(0)
-  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).length).toBe(17)
+  await expect.poll(async () => (await api.outline(ALICE, ws.workspace_id)).length).toBe(18)
   await expect(all.getByTestId('aiws-cell-task-41-risk').getByTestId('aiws-derived')).toHaveCount(0)
   expect((await api.cell(ALICE, ws.workspace_id, 'tasks', 'task-41', 'risk')).is_set).toBe(false)
   // redo = undo of the compensating commit: everything is back

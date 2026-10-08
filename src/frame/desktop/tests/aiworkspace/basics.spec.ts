@@ -21,11 +21,11 @@ test('(a) the app opens from the desktop shell, creates the sample and shows its
   // the data tree (data-source mode): the data of design §3.8 (no Blocks, no system nodes), the canvas content area collapsed
   await page.getByTestId('aiws-top-sources').click()
   const items = page.getByTestId('aiws-tree-item')
-  await expect(items).toHaveCount(7)
+  await expect(items).toHaveCount(8)
   const ids = await items.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-entity-id')))
-  expect([...ids].sort()).toEqual(['canvas-content', 'diagram', 'note-budget', 'notes', 'project-info', 'task-42-details', 'tasks'].sort())
-  // the outline has the 17 entities: root, the three system nodes, the Surface with its content folder, and the 11 of §3.8
-  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(17)
+  expect([...ids].sort()).toEqual(['canvas-content', 'diagram', 'note-budget', 'notes', 'project-info', 'shows', 'task-42-details', 'tasks'].sort())
+  // the outline has the 18 entities: root, the four system nodes, the Surface with its content folder, and the 11 of §3.8
+  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: workspaceId })).entities).toHaveLength(18)
   await page.getByTestId('aiws-top-canvas').click()
 
   // the flow Surface shows cells in (order_key, entity_id) order; content entities are not on the page

@@ -8,7 +8,7 @@ import { useState } from 'react'
 import { ArrowLeftRight, ChevronDown, Database, Ellipsis, LayoutDashboard, Search, Users } from 'lucide-react'
 import type { EntityEnvelope } from '../../api/types'
 import { describeError } from '../../api/session'
-import { useDirectReadOnly, useOutlineVersion, useStore } from '../../state/hooks'
+import { useOutlineVersion, useReadOnlyReason, useStore } from '../../state/hooks'
 import { CANVAS_MODE_LABEL } from '../blocks/registry'
 import { SURFACE_ICONS, SurfaceIcon } from '../canvas/icons'
 import { accepted, renameBase, renameSurface, setSurfaceIcon, SurfaceDeleteDialog, surfaceWriteReason, type RenameBase } from '../canvas/surfaceManage'
@@ -28,7 +28,7 @@ export function MainToolbar({ canvas }: { canvas: CanvasCommands | null }) {
   const shell = useShell()
   useOutlineVersion()
   const mode = useCanvasMode()
-  const readOnlyNow = useDirectReadOnly()
+  const readOnlyNow = useReadOnlyReason()
   const surface = shell.activeSurface
   const writeReason = surfaceWriteReason(store, surface, mode !== 'edit', readOnlyNow)
   const inSources = shell.topMode === 'sources'

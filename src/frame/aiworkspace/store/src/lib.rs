@@ -7,6 +7,7 @@ pub mod proc;
 pub mod reads;
 pub mod schema;
 pub mod service;
+pub mod show;
 pub mod urlsource;
 pub mod wish;
 pub mod workspace;

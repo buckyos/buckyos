@@ -14,7 +14,7 @@ import {
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json,
   type LockInfo, type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type WorkspaceInfo,
   type AnnotationRead, type ListAnnotationsParams, type Capability, type DerivedRecord, type FreshnessInfo, type GrantList, type RelationsInfo,
-  type Subject, type VersionInfo, type WishChoices, type WishRunView,
+  type Subject, type VersionInfo, type WishChoices, type WishRunView, type ShowLockInfo,
 } from './types'
 
 export type SessionStatus =
@@ -93,6 +93,10 @@ export interface WorkspaceSession {
   info(): WorkspaceInfo
   status(): SessionStatus
   appliedSeq(): number
+  /** The show presenting this workspace (第三期规划 §8.1): writes are closed until it ends. Reported with the
+   * status listeners; learnt from the change-stream follower and from refused commits. */
+  showLock(): ShowLockInfo | null
+  noteShowLock(lock: ShowLockInfo | null): void
   subscribeStatus(listener: () => void): () => void
   /** Commit events in `seq` order, each exactly once (own commits included). */
   subscribeChanges(listener: (event: CommitEvent) => void): () => void
@@ -201,6 +205,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   private readonly host: SessionHost | null
   private wsInfo: WorkspaceInfo
   private currentStatus: SessionStatus = { kind: 'connecting' }
+  private lock: ShowLockInfo | null = null
   private applied: number
   private keyCounter = 0
   private closed = false
@@ -219,6 +224,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
     this.applied = info.head_seq
     this.sessionMode = mode
     this.host = host
+    this.lock = info.show_lock ?? null
   }
 
   static async open(client: AiwsClient, workspaceId: string, mode: SessionMode = { kind: 'direct', reason: 'not_prepared', detail: '尚未为此工作区准备离线' }): Promise<OnlineWorkspaceSession> {
@@ -251,6 +257,13 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
   info() { return this.wsInfo }
   status() { return this.currentStatus }
   appliedSeq() { return this.applied }
+  showLock() { return this.lock }
+
+  noteShowLock(lock: ShowLockInfo | null) {
+    if ((lock?.show_id ?? null) === (this.lock?.show_id ?? null)) return
+    this.lock = lock
+    this.statusListeners.forEach((listener) => listener())
+  }
 
   subscribeStatus(listener: () => void) {
     this.statusListeners.add(listener)
@@ -313,6 +326,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
         this.waitAbort = new AbortController()
         const woke = await this.client.waitChanges(this.ws, this.epoch, this.applied, 25000, this.waitAbort.signal)
         if (!woke.ok) this.handleStreamError(woke.error.code, woke.error.detail)
+        else this.noteShowLock(woke.show_lock ?? null)
       } catch (error) {
         if (this.closed || this.isStopped()) break
         if (!(error instanceof TransportError)) throw error
@@ -525,6 +539,7 @@ export class OnlineWorkspaceSession implements WorkspaceSession {
       }
       if (result) {
         this.unknown.delete(key)
+        if (result.status === 'rejected' && result.code === 'SHOW_LOCKED') this.noteShowLock((result.errors?.[0]?.data as ShowLockInfo | undefined) ?? null)
         if (result.status === 'accepted') this.poke()
         else this.noteCode(result.code, STOP_TEXT[result.code] ?? result.detail)
         const refused = result.status !== 'accepted' ? this.refused(key) : null

@@ -1,6 +1,6 @@
 import { useCallback, useContext, useMemo, useSyncExternalStore } from 'react'
 import type { BlockDefRead, CellPayload, EntityEnvelope, KeyedContent } from '../../api/types'
-import { useDirectReadOnly, useEntity, useLoad, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
+import { useEntity, useLoad, useReadOnlyReason, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { EditorToolbarContext } from './editorToolbar'
 import { blockRegistry, modePolicy, type BlockDefinition, type CanvasMode, type DataState, type RenderContext, type Resolution, type ToolbarItem } from './registry'
 
@@ -68,23 +68,26 @@ export function useBlockContext(options: BlockContextOptions) {
     return blockRegistry.resolve(payload, source?.type_id, documentDefinition)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [payload, source?.type_id, documentDefinition, definitionRead.error, definitionRead.data?.degraded, defId, registryVersion])
-  const readOnlyNow = useDirectReadOnly()
+  const readOnlyNow = useReadOnlyReason()
   const toolbarSink = useContext(EditorToolbarContext)
   const pointerType = usePointerType()
   if (!cell || !payload) return { context: null, resolution, error: read.error, registryVersion }
   const dataState = dataStateOf(payload, source)
   const policy = modePolicy(mode)
-  const readOnlyReason = readOnlyNow ? '后台不可达，此窗口未启用离线：只读'
+  // on stage only the Blocks marked "operable on stage" take input (第三期规划 §10.2)
+  const editable = policy.editContent && (mode !== 'show' || payload.presentation?.live === true)
+  const readOnlyReason = readOnlyNow ? readOnlyNow
     : depth > 0 ? '嵌入的 Block 只读'
-      : !policy.writes ? mode === 'view' ? '查看模式：除批注外不修改文档' : '播放编辑尚未实现：只读占位'
+      : !policy.writes ? mode === 'view' ? '查看模式：除批注外不修改文档' : '路径编辑中不修改对象内容'
+        : !editable ? '放映中：这个 Block 没有开放现场操作'
         : !cell.capabilities.includes('update') ? '没有修改此 Block 的权限'
           : dataState === 'missing' || dataState === 'unreadable' || dataState === 'degraded' ? '绑定的数据不可用'
             : source && !source.capabilities.some((c) => c === 'update' || c === 'append') ? '没有修改其数据的权限' : null
   const context: RenderContext = {
     cell, payload, keyRevs: current.content.key_revs, source, definition: resolution?.ok ? resolution.definition : MISSING_DEF, documentDefinition, depth,
-    mode, view, selected: Boolean(options.selected), hovered: Boolean(options.hovered), editorActive: Boolean(options.editorActive) && policy.editContent && depth === 0,
+    mode, view, selected: Boolean(options.selected), hovered: Boolean(options.hovered), editorActive: Boolean(options.editorActive) && editable && depth === 0,
     capabilities: cell.capabilities, readOnlyReason, dataState, size: options.size ?? { w: cell.placement?.w ?? 320, h: cell.placement?.h ?? 200 }, zoom: options.zoom ?? 1,
-    activateEditor: () => { if (policy.editContent && depth === 0 && resolution?.ok) options.onActivate?.() },
+    activateEditor: () => { if (editable && depth === 0 && resolution?.ok) options.onActivate?.() },
     deactivateEditor: () => options.onDeactivate?.(), openEntity: ui.openEntity,
     setEditorToolbar: (items: ToolbarItem[] | null) => toolbarSink?.set(`block:${cellId}`, items), pointerType,
     annotate: ui.annotate, showAnnotations: ui.showAnnotations,

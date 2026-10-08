@@ -374,7 +374,7 @@ test('packages: export, import as new, fork, and a restore that replaces history
   await expect(list.getByTestId('aiws-list-message')).toContainText('已导入为新的工作区')
   const imported = (await list.getByTestId('aiws-list-message').innerText()).match(/ws_[a-z0-9]+/)?.[0] as string
   expect(imported).not.toBe(ws.workspace_id)
-  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(17)
+  expect((await api.rpc(ALICE, 'doc.outline', { workspace_id: imported })).entities).toHaveLength(18)
   expect((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: imported })).content_root).toBe((await api.rpc(ALICE, 'doc.checkpoint', { workspace_id: ws.workspace_id })).content_root)
 
   // fork

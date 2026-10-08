@@ -15,9 +15,14 @@ import { surfacesOf } from '../canvas/surfaceOps'
 import { DataSourceView } from '../sources/DataSourceView'
 import { PermissionsPanel } from '../sources/PermissionsPanel'
 import type { OfflineActions } from '../WorkspaceView'
+import type { Json } from '../../api/types'
+import { pathsOf } from '../../presentation/model'
+import { openShow, resumeShow } from '../../presentation/showSession'
+import { StartShowDialog } from '../../presentation/StartShowDialog'
+import { StageView, type ShowSession } from '../../presentation/StageView'
 import { ExportDialog, HelpDialog, ImportDialog, MockDialog, NewDialog } from './dialogs'
 import { MainToolbar } from './MainToolbar'
-import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type DialogRequest, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
+import { LAYOUT_KEYS, PREF_KEYS, ShellContext, SOURCES_SIDE_TABS, usePhone, type DialogRequest, type GuideState, type LayoutPrefs, type ShellApi, type SideTab, type SizeClass, type TopMode } from './shellContext'
 import { SidePanel } from './SidePanel'
 import { StatusDetail, StatusDock } from './StatusSummary'
 
@@ -93,9 +98,9 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   const side = sideState ?? null
   const setSide = useCallback((tab: SideTab | null) => store.userState.set('ui:side', tab), [store])
   const objectToolbar = useUserState<boolean>(PREF_KEYS.objectToolbar)
-  const presenterToolbar = useUserState<boolean>(PREF_KEYS.presenterToolbar)
+  const viewToolbar = useUserState<boolean>(PREF_KEYS.viewToolbar)
   const grid = useUserState<boolean>(PREF_KEYS.grid)
-  const prefs: LayoutPrefs = { objectToolbar: objectToolbar ?? true, presenterToolbar: presenterToolbar ?? true, grid: grid ?? true }
+  const prefs: LayoutPrefs = { objectToolbar: objectToolbar ?? true, viewToolbar: viewToolbar ?? true, grid: grid ?? true }
   const setPref = useCallback((key: keyof LayoutPrefs, value: boolean) => store.userState.set(PREF_KEYS[key], value), [store])
   const resetLayout = useCallback(() => { for (const key of LAYOUT_KEYS) store.userState.set(key, null) }, [store])
 
@@ -115,16 +120,46 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   useEffect(() => { store.setLockPolling(lockRequired); return () => store.setLockPolling(false) }, [store, lockRequired])
   // stale user state of Surfaces that are gone (§4.4; UI improvement §12.1)
   useEffect(() => { if (loaded) store.userState.pruneSurfaces(new Set(surfaces.map((e) => e.entity_id))) }, [store, surfaces, loaded])
-  // a workspace never reopens into the presentation-edit placeholder (§4 rule 3)
+  // ---- shows and guides (第三期规划 §7.2, §7.3): a show takes the window over until it ends; a guide runs on the canvas
+  const [showSession, setShowSession] = useState<ShowSession | null>(null)
+  const [startRequest, setStartRequest] = useState<{ pathId: string | null; stepId: string | null } | null>(null)
+  const [guide, setGuideState] = useState<GuideState | null>(null)
+  const offerNotice = useRef<number | null>(null)
+  const setGuide = useCallback((next: GuideState | null) => {
+    setGuideState(next)
+    if (!next) return
+    store.userState.set('mode', 'canvas')
+    // a guide that runs needs no more offering
+    if (offerNotice.current !== null) { store.dismissNotice(offerNotice.current); offerNotice.current = null }
+  }, [store])
+  const endShow = useCallback((reason?: string) => {
+    setShowSession((current) => {
+      if (current && current.store !== store) void current.store.dispose()
+      return null
+    })
+    // the lock was this show's: writing is open again (the follower would only learn it at its next poll)
+    store.session.noteShowLock(null)
+    if (reason) store.notify('info', reason)
+  }, [store])
+  // a reloaded stage takes its show back while the show is alive (§11.3)
+  useEffect(() => {
+    let live = true
+    void resumeShow(client, store).then((session) => { if (live && session) setShowSession(session); else if (session && session.store !== store) void session.store.dispose() })
+    return () => { live = false }
+  }, [client, store])
+  // a workspace with a guide offers it once (the offer is remembered in the user state, §7.3)
   useEffect(() => {
     let live = true
     void store.userReady.then(() => {
-      if (!live || store.userState.get('canvas:mode') !== 'presentation_edit') return
-      store.userState.set('canvas:mode', 'view')
-      store.notify('info', '上次停在“播放编辑”占位（尚未实现），已切换到查看模式。')
+      if (!live) return
+      const offer = pathsOf(store.outline, 'guide').find((g) => store.userState.get(`guide:${g.entity_id}`) === undefined)
+      if (!offer) return
+      store.userState.set(`guide:${offer.entity_id}`, { index: 0, prompted: true } satisfies Json)
+      offerNotice.current = store.notify('info', `这个作品带有使用引导「${offer.title ?? offer.name ?? ''}」。`, { label: '开始引导', run: () => setGuide({ pathId: offer.entity_id, index: 0 }) })
     })
     return () => { live = false }
-  }, [store])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opened workspace, when the outline is there
+  }, [store, loaded])
   // an explicit target (a link) wins over the remembered Surface (§4 rule 1); a target that is gone falls back and says so
   const targetHandled = useRef(false)
   useEffect(() => {
@@ -218,9 +253,11 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
   }, [offline])
 
   const shell: ShellApi = {
-    client, close: onClose, openWorkspace: onOpenWorkspace, offline, topMode: mode, setTopMode, surfaces, activeSurface, selectSurface,
+    client, close: onClose, openWorkspace: onOpenWorkspace, offline, topMode: showSession ? 'show' : mode, setTopMode, surfaces, activeSurface, selectSurface,
     side, setSide, openDialog: setDialog, prefs, setPref, resetLayout, size, phone, devTools, identity, logout: onLogout, home: onHome,
     runOffline, offlineBusy, offlineError, clearOfflineError: () => setOfflineError(null),
+    startShow: (request) => setStartRequest({ pathId: request?.pathId ?? null, stepId: request?.stepId ?? null }),
+    guide, setGuide,
   }
 
   // Ctrl/Cmd+Z goes to the UndoCoordinator: exactly one step per key press (design §2.7)
@@ -229,6 +266,8 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
     const onPointer = (event: PointerEvent) => { active = Boolean(rootRef.current?.contains(event.target as Node)) }
     const onKey = (event: KeyboardEvent) => {
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.defaultPrevented || event.isComposing) return
+      // the stage of a show never undoes the workspace's edits
+      if (rootRef.current?.querySelector('[data-testid="aiws-show"]')) return
       const key = event.key.toLowerCase()
       if (key !== 'z' && key !== 'y') return
       const root = rootRef.current
@@ -254,7 +293,7 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
         {loaded && (
           <WorkspaceUiContext.Provider value={ui}>
             <div className="aiws-stage">
-              {mode === 'sources' ? (
+              {showSession ? <StageView session={showSession} client={client} onExit={endShow} /> : mode === 'sources' ? (
                 <div className="aiws-sources-stage">
                   <div className="aiws-sources-bar"><MainToolbar canvas={null} /></div>
                   <div className="aiws-sources-row">
@@ -267,6 +306,15 @@ export function WorkspaceShell({ client, onClose, onOpenWorkspace, offline, iden
                 </div>
               ) : <CanvasView focus={focus} />}
             </div>
+            {startRequest && !showSession && (
+              <StartShowDialog initialPathId={startRequest.pathId} initialStepId={startRequest.stepId} onClose={() => setStartRequest(null)}
+                onStart={async (pathId, stepId) => {
+                  const session = await openShow(client, store, pathId, stepId)
+                  setGuideState(null)
+                  setStartRequest(null)
+                  setShowSession(session)
+                }} />
+            )}
             {dialog?.kind === 'new' && <NewDialog client={client} store={store} initialTab={dialog.tab} onClose={() => setDialog(null)} onCreatedSurface={(id) => { selectSurface(id); setTopMode('canvas') }} onOpenWorkspace={onOpenWorkspace} />}
             {dialog?.kind === 'export' && <ExportDialog client={client} workspace={{ workspace_id: workspaceInfo.workspace_id, title: workspaceInfo.title }} onClose={() => setDialog(null)} />}
             {dialog?.kind === 'import' && <ImportDialog client={client} onClose={() => setDialog(null)} onOpenWorkspace={onOpenWorkspace} />}

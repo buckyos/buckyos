@@ -5,6 +5,8 @@
 
 import { unwrap } from '../../api/client'
 import { describeError } from '../../api/session'
+import type { Json } from '../../api/types'
+import { pathsOf } from '../../presentation/model'
 import { workspaceUrl } from '../../links'
 import type { WorkspaceStore } from '../../state/store'
 import { CANVAS_MODE_LABEL, CANVAS_MODES, CATALOG_GROUP_LABEL, type CanvasMode, type CatalogGroup } from '../blocks/registry'
@@ -63,6 +65,8 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
   const view = canvas?.view ?? null
   const viewReason = canvas ? (view ? null : '流式页没有画布缩放') : NOT_ON_CANVAS
   const notCanvas = shell.topMode !== 'canvas' ? NOT_ON_CANVAS : null
+  const presentations = pathsOf(store.outline, 'presentation')
+  const guides = pathsOf(store.outline, 'guide')
   return [
     { id: 'new-canvas', label: '新建画布…', disabled: !caps.includes('structure'), reason: '没有新建画布的权限', run: () => shell.openDialog({ kind: 'new', tab: 'canvas' }) },
     { id: 'new', label: '新建…', hint: '画布 / 工作区 / 模板', run: () => shell.openDialog({ kind: 'new', tab: caps.includes('structure') ? 'canvas' : 'workspace' }) },
@@ -89,7 +93,7 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     {
       id: 'view', label: '视图', items: [
         { id: 'pref-object-toolbar', label: '对象工具栏', checked: shell.prefs.objectToolbar, run: () => shell.setPref('objectToolbar', !shell.prefs.objectToolbar) },
-        { id: 'pref-presenter-toolbar', label: '演讲工具栏', checked: shell.prefs.presenterToolbar, run: () => shell.setPref('presenterToolbar', !shell.prefs.presenterToolbar) },
+        { id: 'pref-view-toolbar', label: '视图工具栏', checked: shell.prefs.viewToolbar, run: () => shell.setPref('viewToolbar', !shell.prefs.viewToolbar) },
         { id: 'pref-grid', label: '网格', checked: shell.prefs.grid, run: () => shell.setPref('grid', !shell.prefs.grid) },
         { id: 'sep-v', separator: true },
         side('inspector'), side('relations'), side('annotations'), side('collab'), side('edits'),
@@ -107,10 +111,17 @@ export function buildMainMenu({ store, shell, canvas, mode }: { store: Workspace
     },
     {
       id: 'canvas-mode', label: '画布模式', disabled: notCanvas !== null, reason: notCanvas, items: CANVAS_MODES.map((m) => ({
-        id: `mode-${m}`, testId: `aiws-mode-${m}`, label: m === 'presentation_edit' ? `${CANVAS_MODE_LABEL[m]}（占位）` : CANVAS_MODE_LABEL[m], checked: mode === m, run: () => store.userState.set('canvas:mode', m),
+        id: `mode-${m}`, testId: `aiws-mode-${m}`, label: CANVAS_MODE_LABEL[m], checked: mode === m, run: () => store.userState.set('canvas:mode', m),
       })),
     },
-    { id: 'start-presentation', testId: 'aiws-top-play', label: '开始演示…', disabled: true, reason: '依赖演示服务与场次模型，当前不可用', explain: true },
+    { id: 'start-presentation', testId: 'aiws-top-play', label: '开始放映…', disabled: presentations.length === 0, reason: '还没有演讲路径：在“路径编辑”中创建', explain: true, run: () => shell.startShow() },
+    {
+      id: 'guides', label: '使用引导', disabled: guides.length === 0, reason: '这个工作区没有使用引导',
+      items: guides.map((g) => ({ id: `guide-${g.entity_id}`, testId: `aiws-menu-guide-${g.entity_id}`, label: g.title ?? g.name ?? g.entity_id, run: () => {
+        const saved = store.userState.get<Json>(`guide:${g.entity_id}`) as { index?: number; done?: boolean } | undefined
+        shell.setGuide({ pathId: g.entity_id, index: saved && !saved.done ? saved.index ?? 0 : 0 })
+      } })),
+    },
     { id: 'sep-4', separator: true },
     { id: 'import', label: '导入工作区包…', run: () => shell.openDialog({ kind: 'import' }) },
     { id: 'export', label: '导出…', hint: '分享包 / 个人备份', disabled: !caps.includes('export'), reason: '没有导出权限', run: () => shell.openDialog({ kind: 'export' }) },

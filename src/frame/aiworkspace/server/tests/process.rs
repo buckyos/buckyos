@@ -105,7 +105,7 @@ impl Server {
 }
 
 fn commit_req(ws: &str, epoch: &str, key: &str, ops: Value) -> Value {
-    json!({ "protocol_version": "0.4", "workspace_id": ws, "epoch": epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
+    json!({ "protocol_version": "0.5", "workspace_id": ws, "epoch": epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
 }
 
 fn mixed_batch(ws: &str, epoch: &str) -> Value {
@@ -134,7 +134,7 @@ async fn v23_service_api_end_to_end() {
     // reads, queries, structured business errors in `result`
     let info = s.rpc("tok-alice", "ws.get_info", w.clone()).await;
     assert_eq!((info["head_seq"].as_u64(), info["title"].as_str()), (Some(6), Some("项目工作区")));
-    assert_eq!(s.rpc("tok-alice", "doc.outline", w.clone()).await["entities"].as_array().unwrap().len(), 17);
+    assert_eq!(s.rpc("tok-alice", "doc.outline", w.clone()).await["entities"].as_array().unwrap().len(), 18);
     let open = s.rpc("tok-alice", "doc.query", json!({ "workspace_id": id, "view_id": "cell-open-tasks" })).await;
     assert_eq!(open["total"], 4);
     let batch = s.rpc("tok-alice", "doc.read", json!({ "workspace_id": id, "targets": [{ "entity_id": "notes" }, { "entity_id": "ghost" }] })).await;
@@ -166,7 +166,7 @@ async fn v23_service_api_end_to_end() {
     let c = s.rpc("tok-alice", "doc.commit", mixed_batch(&id, &epoch)).await;
     assert_eq!(c["status"], "accepted", "{c}");
     let woke = tokio::time::timeout(Duration::from_secs(5), waiter).await.expect("wake-up").unwrap();
-    assert_eq!(woke, json!({ "ok": true, "epoch": epoch, "head_seq": 7, "timed_out": false }));
+    assert_eq!(woke, json!({ "ok": true, "epoch": epoch, "head_seq": 7, "timed_out": false, "show_lock": null }));
     let quiet = s.rpc("tok-alice", "doc.wait_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 7, "timeout_ms": 100 })).await;
     assert_eq!(quiet["timed_out"], true);
     let changes = s.rpc("tok-alice", "doc.get_changes", json!({ "workspace_id": id, "epoch": epoch, "after_seq": 6 })).await;

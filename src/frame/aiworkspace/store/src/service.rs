@@ -23,6 +23,8 @@ pub struct Service {
     pub failpoint: Option<FailPoint>,
     /// Called for every Workspace this service opens (the server hooks its notifiers here).
     pub on_open: Option<Box<dyn Fn(&mut Workspace) + Send + Sync>>,
+    /// Show locks of this deployment's Workspaces (third phase §8.1); in memory, a restart ends every show.
+    pub show_locks: crate::show::ShowLocks,
     open: Mutex<HashMap<String, WsHandle>>,
 }
 
@@ -47,27 +49,31 @@ impl Service {
                 let _ = std::fs::remove_dir_all(entry.path());
             }
         }
-        Ok(Service {
+        let svc = Service {
             data_dir: data_dir.to_path_buf(),
             objects: Arc::new(FsObjectStore::open(&data_dir.join("objects"))?),
             clock,
             sources: SourceRegistry::default(),
             failpoint: None,
             on_open: None,
+            show_locks: Default::default(),
             open: Mutex::new(HashMap::new()),
-        })
+        };
+        svc.drop_stale_clones()?;
+        Ok(svc)
     }
 
-    fn ws_dir(&self, id: &str) -> PathBuf {
+    pub(crate) fn ws_dir(&self, id: &str) -> PathBuf {
         self.data_dir.join("workspaces").join(id)
     }
 
-    fn tmp_dir(&self) -> PathBuf {
+    pub(crate) fn tmp_dir(&self) -> PathBuf {
         self.data_dir.join("workspaces").join(format!(".tmp-{}", random_id("")))
     }
 
     fn register(&self, mut ws: Workspace) -> WsHandle {
         ws.failpoint = self.failpoint.clone();
+        ws.show_locks = Some(self.show_locks.clone());
         if let Some(hook) = &self.on_open {
             hook(&mut ws);
         }
@@ -131,6 +137,10 @@ impl Service {
             }
             let Ok(handle) = self.workspace(&name) else { continue };
             let ws = handle.lock().unwrap();
+            // a show clone belongs to its stage only (third phase §8.3)
+            if ws.purpose().is_some() {
+                continue;
+            }
             let access: Access = ws.access(&caller.principal)?;
             let reads = access.ws_caps.has(Cap::Read) || access.scoped.values().any(|c| c.has(Cap::Read));
             if reads {

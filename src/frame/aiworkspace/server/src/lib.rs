@@ -3,6 +3,7 @@
 //! each Workspace has exactly one writer behind its mutex.
 
 pub mod auth;
+pub mod show;
 pub mod wish;
 
 use aiworkspace_core::{Code, WsError, WsResult};
@@ -59,6 +60,8 @@ pub struct AppState {
     pub auth: Arc<dyn Authenticator>,
     pub limits: Limits,
     pub wish: Arc<wish::WishRuntime>,
+    /// Non-public shows (third phase §11.3): in memory, ended by a restart.
+    pub shows: show::Shows,
     heads: Arc<Mutex<HashMap<String, watch::Sender<u64>>>>,
     uploads: Mutex<HashMap<String, Upload>>,
 }
@@ -93,7 +96,7 @@ impl AppState {
                 }
             }));
         }));
-        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), heads, uploads: Mutex::new(HashMap::new()) })
+        Arc::new(AppState { svc, auth, limits, wish: wish::WishRuntime::new(wish), shows: show::Shows::default(), heads, uploads: Mutex::new(HashMap::new()) })
     }
 
     pub fn with_ws<T>(&self, id: &str, f: impl FnOnce(&mut Workspace) -> WsResult<T>) -> WsResult<T> {
@@ -148,17 +151,25 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
     };
     let seq = req["sys"][0].as_u64().unwrap_or(0);
     let Some(method) = req["method"].as_str().map(str::to_string) else { return rpc_error(seq, "method required") };
-    let Some(token) = req["sys"][1].as_str().filter(|t| !t.trim().is_empty()) else {
-        return rpc_error(seq, "session token required");
-    };
-    let caller = match state.auth.authenticate(token).await {
-        Ok(c) => c,
-        Err(e) => return rpc_error(seq, &e),
-    };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
-    let result = if method == "doc.wait_changes" {
-        wait_changes(&state, &params, &caller).await
+    // a prompter link carries the show's token instead of a session (third phase §11.1)
+    let prompter = if method.starts_with("show.") { show::prompter_token(&params) } else { None };
+    let caller = match (prompter.is_some(), req["sys"][1].as_str().filter(|t| !t.trim().is_empty())) {
+        (true, _) => None,
+        (false, None) => return rpc_error(seq, "session token required"),
+        (false, Some(token)) => match state.auth.authenticate(token).await {
+            Ok(c) => Some(c),
+            Err(e) => return rpc_error(seq, &e),
+        },
+    };
+    let result = if let Some(token) = prompter {
+        show::handle(&state, &method, &params, show::Auth::Token(token)).await
+    } else if method.starts_with("show.") {
+        show::handle(&state, &method, &params, show::Auth::Session(caller.expect("authenticated above"))).await
+    } else if method == "doc.wait_changes" {
+        wait_changes(&state, &params, &caller.expect("authenticated above")).await
     } else {
+        let caller = caller.expect("authenticated above");
         let st = state.clone();
         let m = method.clone();
         match tokio::task::spawn_blocking(move || dispatch(&st, &m, &params, &caller)).await {
@@ -174,7 +185,7 @@ async fn krpc(State(state): State<Arc<AppState>>, body: bytes::Bytes) -> Respons
     }
 }
 
-const UNKNOWN_METHOD: &str = "\u{0}unknown-method";
+pub(crate) const UNKNOWN_METHOD: &str = "\u{0}unknown-method";
 
 fn s<'a>(p: &'a Value, key: &str) -> WsResult<&'a str> {
     p.get(key).and_then(Value::as_str).ok_or_else(|| WsError::invalid_op(format!("{key} required")))
@@ -267,7 +278,7 @@ fn dispatch(state: &Arc<AppState>, method: &str, p: &Value, caller: &Caller) -> 
         "doc.checkpoint" => state.with_ws(ws_id()?, |ws| Ok(ws.checkpoint(caller)?.to_json()))?,
         "doc.export" => state.with_ws(ws_id()?, |ws| {
             let mut r = ws.export(caller, p.get("mode").and_then(Value::as_str).unwrap_or("share"),
-                                  p.get("self_contained").and_then(Value::as_bool).unwrap_or(true))?;
+                                  p.get("self_contained").and_then(Value::as_bool).unwrap_or(true), p.get("include_notes").and_then(Value::as_bool))?;
             r.as_object_mut().unwrap().remove("path"); // server paths are not part of the protocol
             Ok(r)
         })?,
@@ -367,12 +378,14 @@ async fn wait_changes(state: &Arc<AppState>, p: &Value, caller: &Caller) -> WsRe
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout);
     loop {
         let head = *rx.borrow_and_update();
+        // the show lock rides along (第三期规划 §8.1): followers learn that writes are closed, and when they reopen
+        let show_lock = || state.svc.show_locks.lock().unwrap().get(&id).filter(|l| l.expires_ms > (state.svc.clock)()).map(|l| l.to_json());
         if head > after {
-            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": false }));
+            return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": false, "show_lock": show_lock() }));
         }
         match tokio::time::timeout_at(deadline, rx.changed()).await {
             Ok(Ok(())) => continue,
-            _ => return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": true })),
+            _ => return Ok(json!({ "ok": true, "epoch": info["epoch"], "head_seq": head, "timed_out": true, "show_lock": show_lock() })),
         }
     }
 }
@@ -554,5 +567,6 @@ pub async fn serve(state: Arc<AppState>, listen: &str) -> std::io::Result<()> {
     // wish programs call back over loopback for `llm.map`
     let host = if addr.ip().is_unspecified() { format!("127.0.0.1:{}", addr.port()) } else { addr.to_string() };
     *state.wish.host_base.lock().unwrap() = Some(format!("http://{host}{HTTP_PATH}"));
+    show::spawn_sweeper(state.clone());
     axum::serve(listener, build_router(state)).await
 }

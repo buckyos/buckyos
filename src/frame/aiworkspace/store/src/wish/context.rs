@@ -397,7 +397,7 @@ impl Stage {
         while let Some(id) = stack.pop() {
             for edge in ctx.children(&id)?.into_iter().rev() {
                 let Some(e) = ctx.entity(&edge.child_id)?.filter(|e| e.alive()) else { continue };
-                if !self.snap.access.can_read(&ctx, &e)? {
+                if !self.snap.can_read(&e)? {
                     continue;
                 }
                 if e.type_id == TYPE_CONTAINER {
@@ -597,6 +597,9 @@ impl Stage {
                     let ctx = self.snap.ctx();
                     for edge in ctx.children(&e.entity_id)? {
                         let Some(c) = ctx.entity(&edge.child_id)?.filter(|c| c.alive()) else { continue };
+                        if c.entity_id == SHOWS_ID {
+                            continue;
+                        }
                         if !self.snap.access.can_read(&ctx, &c)? {
                             // a readable subset is never passed off as the whole folder (§6.2)
                             return Err(WsError::new(Code::DependencyUnavailable, format!("folder {} contains members you cannot read: it cannot be read completely", title_of(e))));
@@ -639,7 +642,7 @@ impl Stage {
     fn materialize_input(&mut self, i: &BoundInput) -> WsResult<()> {
         let ctx = self.snap.ctx();
         let e = match ctx.entity(&i.entity_id)? {
-            Some(e) if e.alive() && self.snap.access.can_read(&ctx, &e)? => e,
+            Some(e) if e.alive() && self.snap.can_read(&e)? => e,
             Some(e) if e.alive() => return Err(WsError::new(Code::DependencyUnavailable, format!("input {} is not readable", i.label))),
             _ => return Err(WsError::new(Code::DependencyUnavailable, format!("input {} no longer exists", i.label))),
         };

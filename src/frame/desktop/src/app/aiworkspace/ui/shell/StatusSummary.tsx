@@ -8,7 +8,9 @@
 
 import { useState, useSyncExternalStore } from 'react'
 import { EDIT_STATE_LABEL } from '../../state/edits'
-import { useAppCache, useEdits, useSessionStatus, useStore } from '../../state/hooks'
+import { unwrap } from '../../api/client'
+import { describeError } from '../../api/session'
+import { useAppCache, useEdits, useSessionStatus, useShowLock, useStore } from '../../state/hooks'
 import { EditsPanel } from './panels'
 import { useShell } from './shellContext'
 
@@ -143,6 +145,7 @@ export function ShellAlerts() {
       {readOnlyDirect && (
         <div className="aiws-warning aiws-alert" role="alert" data-testid="aiws-direct-readonly">后台不可达，而此窗口未启用离线（{sessionMode.kind === 'direct' ? sessionMode.detail : ''}）：当前只读，不能编辑。</div>
       )}
+      <ShowLockAlert />
       {sessionMode.kind === 'replica' && appCache.unavailable && (
         <div className="aiws-warning aiws-alert" role="status" data-testid="aiws-app-cache-missing">
           工作区数据已在本设备，但应用本身没有缓存（{appCache.unavailable}）：已打开的窗口断网后可以继续工作，关闭后在没有网络时无法重新启动。
@@ -171,6 +174,32 @@ export function ShellAlerts() {
           <button type="button" className="aiws-link" onClick={() => store.dismissNotice(notice.id)}>关闭</button>
         </div>
       ))}
+    </div>
+  )
+}
+
+/** The workspace is being presented (第三期规划 §8.1): writes are closed until the show ends; a manager may end it. */
+function ShowLockAlert() {
+  const store = useStore()
+  const shell = useShell()
+  const lock = useShowLock()
+  const [ending, setEnding] = useState(false)
+  if (!lock || shell.topMode === 'show') return null
+  const started = lock.started_at ? new Date(lock.started_at).toLocaleTimeString() : ''
+  const manager = store.session.info().capabilities.includes('manage')
+  const replica = store.session.offline !== null
+  return (
+    <div className="aiws-warning aiws-alert" role="status" data-testid="aiws-show-locked" data-presenter={lock.presenter}>
+      {lock.presenter} 正在放映这个工作区{started ? `（${started} 开始）` : ''}：放映期间关闭写入{replica ? '，本设备的修改在放映结束后自动发送' : '，放映结束后恢复'}。
+      {manager && (
+        <button type="button" className="aiws-link" data-testid="aiws-show-force-end" disabled={ending} onClick={() => {
+          setEnding(true)
+          void shell.client.showEnd({ workspace_id: store.session.workspaceId }, lock.show_id).then((r) => unwrap(r)).then(
+            () => { store.session.noteShowLock(null); store.notify('info', '已结束放映：工作区恢复写入。') },
+            (error: unknown) => store.notify('error', `没有结束放映：${describeError(error)}`),
+          ).finally(() => setEnding(false))
+        }}>结束放映</button>
+      )}
     </div>
   )
 }

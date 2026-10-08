@@ -21,13 +21,12 @@ test('UI01/UI18 mode switches keep the session, the undo stack and drafts; switc
   await expect(page.getByTestId('aiws-undo')).toHaveText(/撤销 1/)
   const afterEdit = await api.headSeq(ALICE, ws.workspace_id)
   expect(afterEdit).toBe(before + 1)
-  // sub-modes: view, presentation-edit placeholder, back to edit; the session id and undo stack stay
+  // sub-modes: view, path editing, back to edit; the session id and undo stack stay
   const sessionId = await page.getByTestId('aiws-workspace').getAttribute('data-session-id')
   await setCanvasMode(page, 'view')
   await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view')
   await setCanvasMode(page, 'presentation_edit')
-  await expect(page.getByTestId('aiws-presentation-placeholder')).toBeVisible()
-  await expect(page.getByTestId('aiws-presentation-placeholder')).toContainText('尚未实现')
+  await expect(page.getByTestId('aiws-path-editor').or(page.getByTestId('aiws-presentation-placeholder'))).toBeVisible()
   await setCanvasMode(page, 'edit')
   // top-level modes
   await page.getByTestId('aiws-top-sources').click()
@@ -113,7 +112,7 @@ test('UI04 Surfaces: create, move a Block across, delete with pre-check; referen
   await expect(page.getByTestId('aiws-delete-confirm')).toHaveCount(0)
   // bob reads only the data tree: the same pre-check tells him nothing about the Blocks
   await api.rpc(ALICE, 'ws.grant', { workspace_id: ws.workspace_id, subject: 'bob', scope_entity_id: 'data', capabilities: ['read', 'delete'] })
-  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.4', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
+  const prepared = await api.rpc(BOB, 'doc.prepare', { protocol_version: '0.5', workspace_id: ws.workspace_id, epoch: ws.epoch, idempotency_key: 'bob-pre', session_id: 'bob', operations: [{ op: 'entity.delete', entity_id: 'intro', expect: { rev: (await api.read(BOB, ws.workspace_id, 'intro')).life_rev } }] })
   expect(prepared.status).toBe('rejected')
   expect(prepared.errors[0].data.referrers).toEqual([])
   expect(prepared.errors[0].data.hidden_referrers).toBe(true)
@@ -294,9 +293,9 @@ test('UI08/UI09 edit and view sub-modes dispatch rendering, tools and writes; un
   const outline = await api.outline(ALICE, ws.workspace_id)
   const note = outline.find((e: { type_id: string; target_id?: string }) => e.type_id === 'buckyos.annotation' && e.target_id === 'sales')
   expect(note?.parent_id).toBe('sf-detail-content')
-  // presentation edit: static, no selection, nothing written
+  // path editing: the other Blocks are static, no selection, nothing written
   await setCanvasMode(page, 'presentation_edit')
-  await expect(page.getByTestId('aiws-presentation-placeholder')).toBeVisible()
+  await expect(page.getByTestId('aiws-path-editor').or(page.getByTestId('aiws-presentation-placeholder'))).toBeVisible()
   await page.getByTestId('aiws-canvas-block-blk-sales-2').click({ force: true })
   await expect(page.locator('[data-testid^="aiws-selection-"]')).toHaveCount(0)
   await page.keyboard.press('Delete')

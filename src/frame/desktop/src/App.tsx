@@ -22,6 +22,9 @@ const MessageHubRoute = lazy(() =>
 const AIWorkspaceRoute = lazy(() =>
   import('./app/aiworkspace/AIWorkspaceRoute').then((m) => ({ default: m.AIWorkspaceRoute })),
 )
+const PrompterRoute = lazy(() =>
+  import('./app/aiworkspace/presentation/PrompterRoute').then((m) => ({ default: m.PrompterRoute })),
+)
 const TaskCenterRoute = lazy(() =>
   import('./app/task-center/TaskCenterRoute').then((m) => ({ default: m.TaskCenterRoute })),
 )
@@ -66,6 +69,15 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <AIWorkspaceRoute />
+      </Suspense>
+    ),
+  },
+  {
+    // the prompter link of a show (AI Workspace 第三期规划 §11): works without signing in
+    path: '/workspace/:workspaceId/show/:showId',
+    element: (
+      <Suspense fallback={null}>
+        <PrompterRoute />
       </Suspense>
     ),
   },

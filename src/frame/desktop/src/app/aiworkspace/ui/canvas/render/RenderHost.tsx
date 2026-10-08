@@ -121,6 +121,10 @@ export interface RenderHostProps {
   onConnectorCreate?: (spec: NewConnector, release: { blank: boolean; screen: Point }) => void
   /** One gesture's edit of a line (an end, its bends, its label). */
   onConnectorChange?: (id: string, change: ConnectorChange) => void
+  /** Blocks mounted at full detail whatever the camera (a show's target and next step, 第三期规划 §9.4). */
+  prefetch?: ReadonlySet<string>
+  /** Blocks laid out but not drawn (a show hides Frames and a step's hidden Blocks). */
+  hidden?: ReadonlySet<string>
 }
 
 /** Where a dragged line end would attach: a Block, the anchor on it, the point, and whether the pointer is on that
@@ -309,17 +313,20 @@ export function RenderHost(props: RenderHostProps) {
     if (root) camera.setViewportSize(root.clientWidth, root.clientHeight)
     const observer = root ? new ResizeObserver(() => { camera.setViewportSize(root.clientWidth, root.clientHeight); setSettled((n) => n + 1) }) : null
     if (root && observer) observer.observe(root)
-    const offChange = camera.onChange(() => forceOverlay((n) => n + 1))
+    // a show's stage draws no overlay: a flight moves the transform only, React renders nothing per frame (第三期规划 §9.3)
+    const offChange = mode === 'show' ? () => undefined : camera.onChange(() => forceOverlay((n) => n + 1))
     return () => { offChange(); observer?.disconnect(); camera.attach(null) }
-  }, [camera])
+  }, [camera, mode])
 
   // ---- culling with hysteresis (recomputed when the camera settles or the layout changes)
+  const { prefetch } = props
   const pinned = useMemo(() => {
     const set = new Set<string>(selection)
     if (editing) set.add(editing)
     if (hover) set.add(hover)
+    for (const id of prefetch ?? []) set.add(id)
     return set
-  }, [selection, editing, hover])
+  }, [selection, editing, hover, prefetch])
   const [mounts, setMounts] = useState<Map<string, MountState>>(() => computeMounts(new Map(), camera, laid, index, pinned))
   // the camera settling is an event: recompute from the listener (never inside an effect)
   useEffect(() => camera.onSettle(() => { setSettled((n) => n + 1); setMounts((prev) => computeMounts(prev, camera, laid, index, pinned)) }), [camera, laid, index, pinned])
@@ -1080,7 +1087,7 @@ export function RenderHost(props: RenderHostProps) {
     if (l.connector) {
       frameList.push(
         <ConnectorFrame key={id} id={id} geom={l.connector.geom} geomKey={l.connector.key} title={l.entity.title ?? null} zIndex={editing === id ? laid.size + 1 : l.paint + 1}
-          hidden={state === 'hidden'} zoom={lineZoom} mode={mode} editing={editing === id} registry={lines} onDone={handlersFor(id).onDeactivate} />,
+          hidden={state === 'hidden' || Boolean(props.hidden?.has(id))} zoom={lineZoom} mode={mode} editing={editing === id} registry={lines} onDone={handlersFor(id).onDeactivate} />,
       )
       continue
     }
@@ -1099,7 +1106,7 @@ export function RenderHost(props: RenderHostProps) {
         data-locked={l.locked ? 'true' : undefined}
         data-view={l.entity.view_type ?? undefined}
         data-chrome={l.isGroup ? undefined : blockRegistry.get(l.entity.view_type ?? '', l.entity.view_version ?? undefined)?.chrome ?? 'clip'}
-        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, rotate: l.rotation ? `${l.rotation}deg` : undefined, display: state === 'hidden' ? 'none' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
+        style={{ left: l.rect.x, top: l.rect.y, width: l.rect.w, height: l.rect.h, rotate: l.rotation ? `${l.rotation}deg` : undefined, display: state === 'hidden' ? 'none' : undefined, visibility: props.hidden?.has(id) ? 'hidden' : undefined, zIndex: editing === id ? laid.size + 1 : l.paint + 1 }}
       >
         {l.isGroup ? (
           <div className="aiws-group-chrome"><span className="aiws-group-title">{l.entity.title ?? l.entity.name ?? '分组'}</span></div>

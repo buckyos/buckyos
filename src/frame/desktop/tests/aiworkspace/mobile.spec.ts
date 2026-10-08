@@ -3,6 +3,8 @@
  * gestures driven through real multi-touch input (CDP), not synthetic DOM events. What the phone does to the
  * view is asserted on the camera transform; that it leaves the shared work state alone, through a desktop. */
 
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { devices, type CDPSession, type Page } from '@playwright/test'
 import { expect, test, type Api } from './fixtures'
 
@@ -92,7 +94,7 @@ test('UI-M01 a phone opens the canvas in view mode with one toolbar: canvas icon
   await expect(page.getByTestId('aiws-main-toolbar')).toHaveCount(0)
   await expect(page.getByTestId('aiws-object-toolbar')).toHaveCount(0)
   await expect(page.getByTestId('aiws-main-menu')).toHaveCount(0)
-  const toolbar = page.getByTestId('aiws-presenter-toolbar')
+  const toolbar = page.getByTestId('aiws-view-toolbar')
   await expect(toolbar.getByTestId('aiws-surface-switch')).toContainText('经营分析')
   await expect(toolbar.getByTestId('aiws-surface-switch').locator('svg').first()).toBeVisible()
   await expect(toolbar.getByTestId('aiws-zoom-menu')).toBeVisible()
@@ -259,4 +261,20 @@ test('UI-M02 touch gestures on the phone canvas: pan and glide, pinch, double ta
   await expect(page.locator('[data-testid="aiws-side-panel"][data-tab="relations"]')).toBeVisible()
   // no gesture wrote the document
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(seq)
+})
+
+test('UI-M03 the guide on a phone (第三期规划 §7.3): offered in the one toolbar, taps turn its pages, the canvas stays put', async ({ page, api }) => {
+  const ws = await api.rpc(ALICE, 'ws.create', { title: `m03 ${Date.now()}` }) as { workspace_id: string; epoch: string }
+  const fixture = JSON.parse(readFileSync(resolve('../aiworkspace/fixtures/presentation/commits.json'), 'utf8')) as { commits: { operations: Record<string, unknown>[] }[] }
+  for (const [index, commit] of fixture.commits.entries()) expect((await api.commit(ALICE, ws, commit.operations, `presentation/${index + 1}`)).status).toBe('accepted')
+  await openOnPhone(page, ws.workspace_id)
+  // the phone has no show (a stage needs a large screen); the guide is there
+  await expect(page.getByTestId('aiws-show-start')).toHaveCount(0)
+  await page.getByTestId('aiws-guide-start').tap()
+  await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g1')
+  await page.screenshot({ path: 'test-results/aiworkspace-presentation/m03-guide.png' })
+  await page.getByTestId('aiws-guide-next').tap()
+  await expect(page.getByTestId('aiws-guide')).toHaveAttribute('data-step', 'g2')
+  await page.getByTestId('aiws-guide-close').tap()
+  await expect(page.getByTestId('aiws-guide')).toHaveCount(0)
 })

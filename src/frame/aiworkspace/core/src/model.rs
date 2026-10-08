@@ -22,22 +22,33 @@ pub const TYPE_ANNOTATION: &str = "buckyos.annotation";
 pub const TYPE_WISH: &str = "buckyos.wish";
 /// A Block definition saved as a document entity (declarative or HTML; phase two §10.3).
 pub const TYPE_BLOCK_DEF: &str = "buckyos.block-def";
+/// A navigation point on a free Surface: visual centre and scale (third phase §5).
+pub const TYPE_VIEWPORT: &str = "buckyos.viewport";
+/// A presentation path: Frames and Viewports in order, with a stage size (third phase §6).
+pub const TYPE_SHOW_PATH: &str = "buckyos.show-path";
 pub const ROOT_ID: &str = "root";
 /// System nodes of the two trees (phase two §4): the data tree root, the Surface collection and the
 /// canvas content area (a system folder under `data` holding one folder per Surface).
 pub const DATA_ID: &str = "data";
 pub const SURFACES_ID: &str = "surfaces";
 pub const CANVAS_CONTENT_ID: &str = "canvas-content";
+/// System folder under `data` holding the presentation paths and Viewports (third phase §6.2).
+pub const SHOWS_ID: &str = "shows";
 pub const SCOPE_SHARED: &str = "shared";
 pub const POLICY_OPEN: &str = "open";
 pub const POLICY_LOCK: &str = "lock_required";
 /// Reserved key of `key_revs` holding `source.members_rev`.
 pub const MEMBERS_KEY: &str = "#members";
-pub const FORMAT_VERSION: &str = "0.3";
-pub const PROTOCOL_VERSION: &str = "0.4";
+pub const FORMAT_VERSION: &str = "0.4";
+pub const PROTOCOL_VERSION: &str = "0.5";
 
 pub fn is_known_type(t: &str) -> bool {
-    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF)
+    matches!(t, TYPE_CONTAINER | TYPE_RECORD | TYPE_RICHTEXT | TYPE_TABLE | TYPE_CELL | TYPE_ASSET | TYPE_ANNOTATION | TYPE_WISH | TYPE_BLOCK_DEF | TYPE_VIEWPORT | TYPE_SHOW_PATH)
+}
+
+/// Presentation entities: they live only in the `shows` system folder.
+pub fn is_show_type(t: &str) -> bool {
+    matches!(t, TYPE_VIEWPORT | TYPE_SHOW_PATH)
 }
 
 /// Types that live in the data tree (everything that is neither a container nor a Block).
@@ -47,7 +58,7 @@ pub fn is_data_type(t: &str) -> bool {
 
 /// Fixed entities every Workspace has; they cannot be created, deleted, moved or renamed by operations.
 pub fn is_system_id(id: &str) -> bool {
-    matches!(id, ROOT_ID | DATA_ID | SURFACES_ID | CANVAS_CONTENT_ID)
+    matches!(id, ROOT_ID | DATA_ID | SURFACES_ID | CANVAS_CONTENT_ID | SHOWS_ID)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -168,8 +179,9 @@ impl RefEdge {
         }
     }
     /// Reference kinds that block deletion of their target. `input` (wish inputs), `derived`
-    /// (generation dependencies) and `connector_endpoint` (a line's bound end) do not: the target may go,
-    /// the result then reads "引用不可用" and the line keeps its stored end position.
+    /// (generation dependencies), `connector_endpoint` (a line's bound end), `show_target` (a step of a
+    /// presentation path) and `show_surface` (a Viewport's Surface) do not: the target may go, the result
+    /// then reads "引用不可用", the line keeps its stored end position and the step becomes a dangling item.
     pub fn blocks_delete(&self) -> bool {
         matches!(self.kind.as_str(), "bind" | "embed" | "value" | "body" | "def")
     }
@@ -485,6 +497,9 @@ fn system_container(id: &str, kind: &str, name: Option<&str>, title: Option<&str
     if id == CANVAS_CONTENT_ID {
         payload.insert("system".into(), Value::String("canvas_content".into()));
     }
+    if id == SHOWS_ID {
+        payload.insert("system".into(), Value::String("shows".into()));
+    }
     let mut key_revs = BTreeMap::new();
     for k in payload.keys() {
         key_revs.insert(k.clone(), 0);
@@ -528,6 +543,7 @@ pub fn system_entities(title: Option<&str>) -> Vec<(EntityRow, Option<TreeEdge>)
         (root, None),
         (system_container(DATA_ID, "data", Some("data"), Some("数据")), Some(edge(DATA_ID, ROOT_ID, "a"))),
         (system_container(SURFACES_ID, "surfaces", Some("surfaces"), Some("画布")), Some(edge(SURFACES_ID, ROOT_ID, "b"))),
+        (system_container(SHOWS_ID, "folder", Some("shows"), Some("演讲路径")), Some(edge(SHOWS_ID, DATA_ID, "zy"))),
         (system_container(CANVAS_CONTENT_ID, "folder", Some("canvas-content"), Some("画布内容")), Some(edge(CANVAS_CONTENT_ID, DATA_ID, "zz"))),
     ]
 }

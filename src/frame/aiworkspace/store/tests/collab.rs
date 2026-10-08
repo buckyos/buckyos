@@ -144,8 +144,8 @@ fn v06_richtext_restore_and_lineage() {
         // a client that went offline now and keeps an unsent edit
         let offline = Client::open(&ws, &alice(), "notes", 777);
         let pending = offline.edit(&[insert_after("p-0", "late", "离线期间写的")]);
-        let backup = PathBuf::from(ws.export(&alice(), "personal_backup", true).unwrap()["path"].as_str().unwrap());
-        let share = PathBuf::from(ws.export(&alice(), "share", true).unwrap()["path"].as_str().unwrap());
+        let backup = PathBuf::from(ws.export(&alice(), "personal_backup", true, None).unwrap()["path"].as_str().unwrap());
+        let share = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
         (pending, offline.lineage, backup, share)
     };
     // restart: memory is rebuilt from snapshot + updates

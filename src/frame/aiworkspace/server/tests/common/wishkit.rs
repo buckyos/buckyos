@@ -119,7 +119,7 @@ impl Srv {
     pub async fn commit(&self, ops: Value) -> Value {
         static K: AtomicU64 = AtomicU64::new(0);
         let info = self.rpc("ws.get_info", json!({})).await;
-        let r = self.rpc("doc.commit", json!({ "protocol_version": "0.4", "epoch": info["epoch"], "idempotency_key": format!("k{}", K.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })).await;
+        let r = self.rpc("doc.commit", json!({ "protocol_version": "0.5", "epoch": info["epoch"], "idempotency_key": format!("k{}", K.fetch_add(1, Ordering::SeqCst)), "session_id": "s1", "operations": ops })).await;
         assert_eq!(r["status"], "accepted", "{r}");
         r
     }

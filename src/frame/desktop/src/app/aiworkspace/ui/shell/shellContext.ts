@@ -11,7 +11,8 @@ import { useUserState } from '../../state/hooks'
 import { CANVAS_MODES, type CanvasMode } from '../blocks/registry'
 import type { OfflineActions } from '../WorkspaceView'
 
-export type TopMode = 'sources' | 'canvas'
+/** `show` is a show's stage: never stored, it takes over the window until the show ends (第三期规划 §7.2). */
+export type TopMode = 'sources' | 'canvas' | 'show'
 
 /** The right panel shows one kind of content at a time (§3.2). */
 export type SideTab = 'inspector' | 'relations' | 'annotations' | 'collab' | 'edits' | 'wish'
@@ -27,9 +28,12 @@ export type DialogRequest =
   | { kind: 'mock' }
 
 /** Personal layout preferences (user work state, `ui:*`); "restore default layout" clears them. */
-export interface LayoutPrefs { objectToolbar: boolean; presenterToolbar: boolean; grid: boolean }
-export const PREF_KEYS = { objectToolbar: 'ui:object-toolbar', presenterToolbar: 'ui:presenter-toolbar', grid: 'ui:grid' } as const
-export const LAYOUT_KEYS = ['ui:object-toolbar', 'ui:presenter-toolbar', 'ui:grid', 'ui:side', 'ui:pinned-defs'] as const
+export interface LayoutPrefs { objectToolbar: boolean; viewToolbar: boolean; grid: boolean }
+export const PREF_KEYS = { objectToolbar: 'ui:object-toolbar', viewToolbar: 'ui:view-toolbar', grid: 'ui:grid' } as const
+export const LAYOUT_KEYS = ['ui:object-toolbar', 'ui:view-toolbar', 'ui:grid', 'ui:side', 'ui:pinned-defs'] as const
+
+/** A running guide (第三期规划 §7.3): which path, which of its steps. */
+export interface GuideState { pathId: string; index: number }
 
 /** Size class of the application container (not the browser): §11 responsive rules. */
 export type SizeClass = 'wide' | 'medium' | 'narrow'
@@ -90,6 +94,11 @@ export interface ShellApi {
   offlineBusy: string | null
   offlineError: string | null
   clearOfflineError: () => void
+  /** Open "开始放映" (第三期规划 §7.2), optionally for a path and its first step. */
+  startShow: (request?: { pathId?: string | null; stepId?: string | null }) => void
+  /** The running guide, if any; `setGuide(null)` ends it. */
+  guide: GuideState | null
+  setGuide: (guide: GuideState | null) => void
 }
 
 export const ShellContext = createContext<ShellApi | null>(null)

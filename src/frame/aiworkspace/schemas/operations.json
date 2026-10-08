@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.4",
+ "protocol_version": "0.5",
  "description": "Operation catalogue of a Commit (`operations[].op`). class: create|append|merge = auto-merge, overwrite|structural = version check (`expect` required), internal = undo path only. Checked against the code by core/tests/schemas.rs.",
  "operations": [
   {
@@ -14,7 +14,7 @@
    "class": "structural",
    "undo": "compensable",
    "capability": "delete",
-   "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body/def references (input, derived, produced, anchor and connector_endpoint references never block)."
+   "note": "Tombstone. Children must be listed explicitly; blocked by bind/embed/value/body/def references (input, derived, produced, anchor, connector_endpoint, show_target and show_surface references never block)."
   },
   {
    "op": "entity.restore",

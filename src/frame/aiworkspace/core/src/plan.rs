@@ -705,10 +705,15 @@ fn container_kind(e: &EntityRow) -> &str {
 ///
 /// * `root` holds only the system nodes (created with the Workspace, never by an operation).
 /// * `data` / `folder`: folders and data entities (annotations of any scope); the data tree.
+/// * the `shows` system folder: presentation paths and Viewports, nothing else (third phase §6.2);
+///   they are never placed anywhere else.
 /// * `surfaces`: Surfaces only.
 /// * `surface` / `group`: Cells and UI groups only; the BlockTree holds no data.
 /// * a TableSource holds the rich text bodies of its records.
 pub fn child_allowed(parent: &EntityRow, child_type: &str, child_kind: Option<&str>, child_scope: &str) -> bool {
+    if parent.entity_id == SHOWS_ID {
+        return is_show_type(child_type) && child_scope == SCOPE_SHARED;
+    }
     match parent.type_id.as_str() {
         TYPE_CONTAINER => match container_kind(parent) {
             "data" | "folder" => match child_type {

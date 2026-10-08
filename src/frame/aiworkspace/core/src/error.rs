@@ -29,6 +29,8 @@ pub enum Code {
     LockRequired,
     LockHeld,
     LockLost,
+    /// The Workspace is being presented (third phase §8.1): document writes are closed until the show ends.
+    ShowLocked,
 }
 
 impl Code {
@@ -58,6 +60,7 @@ impl Code {
         Code::LockRequired,
         Code::LockHeld,
         Code::LockLost,
+        Code::ShowLocked,
     ];
 
     pub fn as_str(&self) -> &'static str {
@@ -87,6 +90,7 @@ impl Code {
             Code::LockRequired => "LOCK_REQUIRED",
             Code::LockHeld => "LOCK_HELD",
             Code::LockLost => "LOCK_LOST",
+            Code::ShowLocked => "SHOW_LOCKED",
         }
     }
 
@@ -98,6 +102,7 @@ impl Code {
                 | Code::WriterBusy
                 | Code::BaseUnknown
                 | Code::SnapshotExpired
+                | Code::ShowLocked
         )
     }
 

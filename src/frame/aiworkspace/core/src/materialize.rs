@@ -164,6 +164,18 @@ pub fn shared_entities(ctx: &dyn ReadCtx) -> WsResult<Vec<(EntityRow, Option<Tre
     Ok(out)
 }
 
+/// The entity without its speaker notes (a Frame's `presentation.notes`, a Viewport's `notes`), or `None` when it
+/// has none: what an export for other people carries (third phase §6.4).
+pub fn without_notes(e: &EntityRow) -> Option<EntityRow> {
+    let mut out = e.clone();
+    let removed = match e.type_id.as_str() {
+        TYPE_CELL => out.payload.get_mut("presentation").and_then(Value::as_object_mut).and_then(|p| p.remove("notes")).is_some(),
+        TYPE_VIEWPORT => out.payload.remove("notes").is_some(),
+        _ => false,
+    };
+    removed.then_some(out)
+}
+
 /// Materialize the current shared content. `visible` filters by read permission
 /// (a filtered entity takes its subtree with it); `cached` short-circuits
 /// entities whose `(entity_id, content_rev)` was materialized before.
@@ -172,6 +184,18 @@ pub fn materialize(
     sink: &mut dyn ObjectSink,
     visible: &dyn Fn(&EntityRow) -> WsResult<bool>,
     cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
+) -> WsResult<Materialized> {
+    materialize_with(ctx, sink, visible, cached, false)
+}
+
+/// [`materialize`], leaving out speaker notes when `strip_notes` (such content is not a version of the entity
+/// and never goes through `cached`).
+pub fn materialize_with(
+    ctx: &dyn ReadCtx,
+    sink: &mut dyn ObjectSink,
+    visible: &dyn Fn(&EntityRow) -> WsResult<bool>,
+    cached: &mut dyn FnMut(&EntityRow, Option<&ObjId>) -> Option<ObjId>,
+    strip_notes: bool,
 ) -> WsResult<Materialized> {
     let mut included: BTreeSet<String> = BTreeSet::new();
     let (mut lines, mut objects, mut unresolved, mut excluded) = (Vec::new(), BTreeMap::new(), Vec::new(), 0);
@@ -182,9 +206,10 @@ pub fn materialize(
             continue;
         }
         included.insert(e.entity_id.clone());
-        let object_id = match cached(&e, None) {
-            Some(id) => id,
-            None => {
+        let object_id = match (strip_notes.then(|| without_notes(&e)).flatten(), cached(&e, None)) {
+            (Some(stripped), _) => content_object(ctx, &stripped, sink)?,
+            (None, Some(id)) => id,
+            (None, None) => {
                 let id = content_object(ctx, &e, sink)?;
                 cached(&e, Some(&id));
                 id

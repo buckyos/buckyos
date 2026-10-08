@@ -83,7 +83,7 @@ test('UI-P02 three floating toolbars and the bottom-right status area, no naviga
     if (width) await page.getByTestId('aiws-root').evaluate((root, w) => { root.style.width = `${w}px`; root.style.flex = 'none' }, width)
     await page.waitForTimeout(400)
     await expect(page.getByTestId('aiws-workspace')).toHaveAttribute('data-size', width === 0 || width >= 1100 ? 'wide' : width >= 760 ? 'medium' : 'narrow')
-    const ids = ['aiws-main-toolbar', 'aiws-presenter-toolbar', 'aiws-object-toolbar', 'aiws-status']
+    const ids = ['aiws-main-toolbar', 'aiws-view-toolbar', 'aiws-object-toolbar', 'aiws-status']
     const boxes = await Promise.all(ids.map(async (id) => (await page.getByTestId(id).boundingBox())!))
     for (let i = 0; i < boxes.length; i++) for (let j = i + 1; j < boxes.length; j++) expect(overlap(boxes[i], boxes[j]), `${ids[i]} × ${ids[j]} at ${width}`).toBe(false)
     // the status area is the bottom-right corner of the work area
@@ -271,12 +271,12 @@ test('UI-P06 hand tool and space pan, zoom from the presenter toolbar and the ma
   await mainMenu(page, 'aiws-menu-zoom', 'aiws-menu-zoom-50')
   await expect(page.getByTestId('aiws-zoom')).toHaveText('50%')
   // the presenter toolbar can be hidden; the main menu keeps view navigation reachable
-  await mainMenu(page, 'aiws-menu-view', 'aiws-menu-pref-presenter-toolbar')
-  await expect(page.getByTestId('aiws-presenter-toolbar')).toHaveCount(0)
+  await mainMenu(page, 'aiws-menu-view', 'aiws-menu-pref-view-toolbar')
+  await expect(page.getByTestId('aiws-view-toolbar')).toHaveCount(0)
   await mainMenu(page, 'aiws-menu-zoom', 'aiws-menu-fit-all')
   await expect(page.getByTestId('aiws-canvas')).not.toHaveAttribute('data-zoom', '0.50')
   await mainMenu(page, 'aiws-menu-view', 'aiws-menu-reset-layout')
-  await expect(page.getByTestId('aiws-presenter-toolbar')).toBeVisible()
+  await expect(page.getByTestId('aiws-view-toolbar')).toBeVisible()
   await page.waitForTimeout(500)
   expect(await api.headSeq(ALICE, ws.workspace_id)).toBe(head)
   expect((await hooks(page)).commits).toBe(0)
@@ -335,7 +335,7 @@ test('UI-P07 object clipboard: copy a group (new ids, shared data), cut across S
   expect(await page.getByTestId('aiws-notice').filter({ hasText: '已复制' }).count()).toBeLessThanOrEqual(copied)
 })
 
-test('UI-P08 view mode hides creation, the data-source view keeps the session; presentation edit is a labelled placeholder', async ({ page, api }) => {
+test('UI-P08 view mode hides creation, the data-source view keeps the session; path editing reopens where it was left', async ({ page, api }) => {
   const ws = await api.demo(ALICE, 'quarterly', `p08 ${Date.now()}`)
   await openCanvas(page, ALICE, ws.workspace_id)
   const session = await page.getByTestId('aiws-workspace').getAttribute('data-session-id')
@@ -350,17 +350,18 @@ test('UI-P08 view mode hides creation, the data-source view keeps the session; p
   await expect(page.getByTestId('aiws-main-menu')).toBeFocused()
   // annotations stay available in view mode
   await expect(page.getByTestId('aiws-annotate-start')).toBeEnabled()
+  // path editing (第三期规划 §7.1); without a presentation path there is nothing to show yet, and the menu says why
   await mainMenu(page, 'aiws-menu-canvas-mode', 'aiws-mode-presentation_edit')
-  await expect(page.getByTestId('aiws-presentation-placeholder')).toContainText('尚未实现')
+  await expect(page.getByTestId('aiws-path-editor').or(page.getByTestId('aiws-presentation-placeholder'))).toBeVisible()
   await page.getByTestId('aiws-main-menu').click()
   await expect(page.getByTestId('aiws-top-play')).toBeDisabled()
-  await expect(page.getByTestId('aiws-top-play')).toContainText('当前不可用')
+  await expect(page.getByTestId('aiws-top-play')).toContainText('还没有演讲路径')
   await page.keyboard.press('Escape')
-  // the presentation-edit placeholder is never where a workspace reopens
+  // a workspace reopens in the sub-mode it was left in, path editing included
   await closeWorkspace(page)
   await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
-  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'view', { timeout: 30_000 })
-  await expect(page.getByTestId('aiws-notice').filter({ hasText: '已切换到查看模式' })).toBeVisible()
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-mode', 'presentation_edit', { timeout: 30_000 })
+  await mainMenu(page, 'aiws-menu-canvas-mode', 'aiws-mode-view')
   // data source and back: same session, the toolbar says where it leads
   const reopened = await page.getByTestId('aiws-workspace').getAttribute('data-session-id')
   await page.getByTestId('aiws-top-sources').click()

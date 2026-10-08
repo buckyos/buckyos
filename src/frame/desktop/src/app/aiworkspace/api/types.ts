@@ -1,7 +1,7 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '0.4'
+export const PROTOCOL_VERSION = '0.5'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -31,7 +31,13 @@ export interface WorkspaceInfo extends WorkspaceSummary {
   protocol_version: string
   head_commit_id: string | null
   forked_from: unknown
+  /** The show presenting this Workspace (第三期规划 §8.1): document writes are closed until it ends. */
+  show_lock?: ShowLockInfo | null
+  /** `show` for the temporary clone of a show (§8.3). */
+  purpose?: string | null
 }
+
+export interface ShowLockInfo { show_id: string; presenter: string; started_at: string }
 
 export type TypeId =
   | 'buckyos.container'
@@ -43,13 +49,17 @@ export type TypeId =
   | 'buckyos.annotation'
   | 'buckyos.wish'
   | 'buckyos.block-def'
+  | 'buckyos.viewport'
+  | 'buckyos.show-path'
 
 /** Fixed ids of the two trees (phase two §4): data tree root, Surface collection, canvas content area. */
 export const ROOT_ID = 'root'
 export const DATA_ID = 'data'
 export const SURFACES_ID = 'surfaces'
 export const CANVAS_CONTENT_ID = 'canvas-content'
-export const SYSTEM_IDS: ReadonlySet<string> = new Set([ROOT_ID, DATA_ID, SURFACES_ID, CANVAS_CONTENT_ID])
+/** The system folder of presentation paths and Viewports (第三期规划 §6.2). */
+export const SHOWS_ID = 'shows'
+export const SYSTEM_IDS: ReadonlySet<string> = new Set([ROOT_ID, DATA_ID, SURFACES_ID, CANVAS_CONTENT_ID, SHOWS_ID])
 
 /** Free-layout placement relative to the parent container; stacking order is the sibling `order_key`. */
 /** `rotation`: degrees clockwise about the centre, `[0, 360)`, absent = 0 (标准对象的交互改进 §7.1). */
@@ -103,8 +113,8 @@ export interface EntityEnvelope {
   title?: string | null
   kind?: ContainerKind | string
   layout?: { mode: 'flow' | 'free' } | null
-  /** Folders: `canvas_content` (the area) or `surface_content` (one Surface's folder). */
-  system?: 'canvas_content' | 'surface_content' | null
+  /** Folders: `canvas_content` (the area), `surface_content` (one Surface's folder) or `shows` (presentation paths). */
+  system?: 'canvas_content' | 'surface_content' | 'shows' | null
   /** A content folder's Surface; a Surface's content folder. */
   surface_id?: string | null
   content_folder_id?: string | null
@@ -140,7 +150,33 @@ export interface EntityEnvelope {
   target_id?: string | null
   annotation_kind?: string | null
   media_type?: string | null
+  /** A Block that may be operated on stage (`presentation.live`, 第三期规划 §10.2; outline only). */
+  live?: boolean | null
+  /** A Viewport's navigation point (outline only, §5.1). */
+  viewport?: { surface_id: string | null; center: { x: number; y: number } | null; zoom: number | null } | null
+  /** A presentation path (outline only, §6.1): its purpose, stage size and number of steps. */
+  show_path?: { purpose: ShowPurpose | null; stage: StageSize | null; steps: number } | null
 }
+
+// ---- presentation (第三期规划 §4–§6)
+
+export type ShowPurpose = 'presentation' | 'guide'
+export interface StageSize { w: number; h: number }
+export type StepTransition = 'auto' | 'fly' | 'fade' | 'cut'
+/** One step of a presentation path: a Frame or a Viewport, referenced, never copied. */
+export interface ShowStep {
+  id: string
+  target: { kind: 'frame' | 'viewport'; entity_id: string }
+  title?: string
+  enabled?: boolean
+  transition?: StepTransition
+  /** Cells hidden while this step is shown (shows only). */
+  hide?: string[]
+}
+export interface ShowPathPayload { title?: string; purpose: ShowPurpose; stage: StageSize; background?: string; steps: ShowStep[] }
+export interface ViewportPayload { title?: string; surface_ref: { entity_id: string }; center: { x: number; y: number }; zoom: number; notes?: string; caption?: string }
+/** A Cell's `presentation`: `live` on any Block; the rest on a Frame. */
+export interface PresentationProps { live?: boolean; background?: string; notes?: string; caption?: string }
 
 export interface Selector {
   kind: string
@@ -232,6 +268,8 @@ export interface CellPayload {
   route?: ConnectorProjection['route']
   controls?: ConnectorProjection['controls']
   label?: ConnectorProjection['label']
+  /** Presentation properties (第三期规划 §4.1, §10.2). */
+  presentation?: PresentationProps
 }
 
 export type WishExecutor = 'mock' | 'xllm' | 'agent-work-session'
@@ -660,3 +698,42 @@ export interface GrantList { grants: Grant[]; complete: boolean; owner: string |
 
 export type WishPayloadRead = KeyedContent<WishPayload>
 export type BlockDefRead = KeyedContent<BlockDefPayload>
+
+// ---- shows (第三期规划 §11.3, §12)
+
+/** What `show.start` answers. */
+export interface ShowStart {
+  show_id: string
+  prompter_token: string
+  clone_workspace_id: string | null
+  locked: boolean
+  live: boolean
+  started_at: string
+  expires_at: string
+  lease_ms: number
+}
+/** A control input from any entry point (keys, the control bar, a prompter, touch). */
+export interface ShowCommand { command_id: string; kind: ShowCommandKind; args?: Record<string, Json> }
+export type ShowCommandKind = 'next' | 'prev' | 'goto' | 'first' | 'last' | 'black' | 'back'
+/** The state the stage publishes (the prompters only show it). */
+export interface ShowState {
+  show_id: string
+  path_id: string
+  step_id: string | null
+  /** Index among the steps that are shown (enabled and not dangling). */
+  index: number
+  count: number
+  free: boolean
+  black: boolean
+  /** The laser pointer in stage coordinates `[0, 1]²`, or absent. */
+  pointer?: { x: number; y: number } | null
+  transition?: string | null
+  started_at: string
+}
+export interface ShowWatch { state: ShowState | Record<string, never>; seq: number; commands: { cursor: number; command: ShowCommand }[]; cursor: number; path_id: string; started_at: string; expires_at: string; timed_out: boolean }
+export interface ShowNotes {
+  title?: string | null
+  purpose?: ShowPurpose | null
+  stage?: StageSize | null
+  steps: { id: string; kind: 'frame' | 'viewport'; target_id: string; title: string | null; enabled: boolean; missing: boolean; notes: string | null; caption: string | null }[]
+}

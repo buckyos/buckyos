@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { describeError, type ReadOk } from '../../api/session'
-import type { Json, WishInput, WishPayloadRead, WishRunView } from '../../api/types'
+import { SHOWS_ID, SYSTEM_IDS, type Json, type WishInput, type WishPayloadRead, type WishRunView } from '../../api/types'
 import { EDIT_STATE_LABEL } from '../../state/edits'
 import { useEdit, useEntity, useFreshness, useLoad, useOutlineVersion, useStore, useVersion, useWorkspaceUi } from '../../state/hooks'
 import { consumeIntent, useIntent } from '../blocks/editorToolbar'
@@ -161,7 +161,7 @@ export function WishPanel({ wishId, readOnly, compact, cellId, canvasSelection }
   const rerun = () => act(() => store.wish.rerunProgram(wishId, cellId))
   const repair = () => act(async () => { if (run) await store.wish.repairProgram(wishId, run.run_id, cellId) })
   const cancel = () => act(async () => { if (run) await store.wish.cancel(run) })
-  const candidates = store.outline.all().filter((e) => !e.deleted && e.entity_id !== wishId && e.type_id !== 'buckyos.cell' && e.type_id !== 'buckyos.wish' && e.type_id !== 'buckyos.block-def' && (e.type_id !== 'buckyos.container' || e.kind === 'folder') && store.outline.ancestors(e.entity_id).includes('data') && e.entity_id !== 'canvas-content')
+  const candidates = store.outline.all().filter((e) => !e.deleted && e.entity_id !== wishId && e.type_id !== 'buckyos.cell' && e.type_id !== 'buckyos.wish' && e.type_id !== 'buckyos.block-def' && (e.type_id !== 'buckyos.container' || e.kind === 'folder') && store.outline.ancestors(e.entity_id).includes('data') && !SYSTEM_IDS.has(e.entity_id) && !store.outline.ancestors(e.entity_id).includes(SHOWS_ID))
   const lastRun = payload.last_run
   const programFailed = run?.stage === 'rerun_program' && run.state === 'failed' && run.error?.sub_code === 'PROGRAM_FAILED'
   const contract = analysis?.output_contract.results ?? []

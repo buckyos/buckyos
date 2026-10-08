@@ -1,8 +1,8 @@
 # BuckyOS AI Workspace 第三期规划
 
-> 状态：实施规划 v0.2，2026-10-08。v0.1 经源码对照 review 后，按用户裁决重写；裁决记录见 §17。
+> 状态：v0.3，2026-10-08，**M0–M4 已实施**。v0.1 经源码对照 review 后，按用户裁决重写为 v0.2（裁决记录见 §17）；实施中的取舍与偏差写在 §18，验收结果见[第三期实施记录与验收报告](<BuckyOS AI Workspace 第三期实施记录与验收报告.md>)。
 >
-> 实现基线：仓库提交 `31f51f76`。§2 的“现状”来自源码检查，其余内容是待实施的设计。
+> 实现基线：仓库提交 `31f51f76`。§2 的“现状”描述的是实施前的源码；其余各节是设计，实际实现以 §18 的回写为准。
 >
 > 核心目标：**补齐为演示设计的 Frame，新增用于使用引导的 Viewport，用演讲路径混排两类对象；以“非公开放映”服务作者在本地检验放映效果，并提供网站式使用引导。** 简单、快速优先；协作问题在放映期间以关闭写入的方式处理。
 
@@ -481,7 +481,7 @@ M2 就建立放映控制器和中继，M3 只增加克隆和可操作 Block，�
 
 ## 16. 实施验证入口
 
-以下是实施时的验证入口，编写本规划时没有执行。
+以下是实施时的验证入口（已在实施中执行，结果见验收报告）。
 
 在仓库根目录验证共享内核与存储：
 
@@ -537,3 +537,34 @@ pnpm exec playwright test --config=playwright.aiworkspace.config.ts
   - §6.2、§7.1 中相机事件和动画契约版本的要求，改为只记录目标步骤和转场类型；
   - 同机公共窗口改为提示器链接模型。
 - [UI 改进](<BuckyOS AI Workspace UI改进.md>)：§4 规则 3（重新打开时离开播放编辑占位）随占位一起删除。
+
+## 18. 实施回写
+
+2026-10-08 按本文实施 M0–M4。下表记录实施中定下的细节、与正文不同的取舍和没有完成的部分；正文其余内容仍然有效。
+
+| 编号 | 位置 | 实现与取舍 |
+| --- | --- | --- |
+| 18-1 | §5.1 | Viewport 增加可选的 `title`（步骤列表和提示器需要名字）。数值范围：`zoom` 0.05–4，`notes` ≤ 16 KiB，`caption` ≤ 2000 字；路径 `stage` 的宽高在 16–16384，`steps` ≤ 500，每步 `hide` ≤ 200。颜色接受 `#rgb`、`#rrggbb`、`#rrggbbaa`。 |
+| 18-2 | §6.2 | `shows` 是 `data` 下 `system: "shows"` 的系统文件夹（排在 `canvas-content` 之前），只接受路径和 Viewport，这两类实体也只能放在这里。步骤引用的 selector 用与其他引用一致的 JSON 形式 `{ kind: "step", id }`，即正文的 `step:<id>`。 |
+| 18-3 | §6.2 | 许愿格的排除在快照层做：`shows` 及其中实体对许愿格的读取不可见（`wish/snapshot.rs`），数据目录作为输入时跳过它。Cell 的 `presentation` 从不被读取工具列出（工具只列出 `filter / sorts / fields / config / bindings`），所以没有单独“去掉 notes”的代码。 |
+| 18-4 | §6.4 | `doc.export` 增加 `include_notes`，缺省按导出方式（个人备份 true，分享包 false）；manifest 记录 `notes_included`。去掉备注的内容不写入 `(entity_id, content_rev)` 缓存。导入不需要任何改动。导出对话框加“包含讲解备注”。 |
+| 18-5 | §6.5 | FORMAT 升到 0.4，PROTOCOL 升到 0.5；旧存储和旧包按不支持的版本拒绝，不迁移。 |
+| 18-6 | §8.1 | 放映锁和中继一样只在内存中（服务级 `ShowLocks`），服务重启即结束放映、释放锁。锁检查在幂等重放之后、规划之前：已接受过的请求重发仍返回原结果。拒绝码 `SHOW_LOCKED`（可重试），`data` 带 `show_id / presenter / started_at`。`ws.get_info` 和每次 `doc.wait_changes` 的应答都带 `show_lock`：其他窗口最迟在下一次长轮询（≤ 25 s）知道锁，被拒的写入也会立即告知；在线直连窗口随即只读并显示“X 正在放映”，有管理权限的显示“结束放映”（即 `show.end` 的强制结束）；持有离线副本的窗口照常保存到本设备，待发写入停在队列里，锁解除后自动发送。 |
+| 18-7 | §8.1 | “有工作区级写权限”指工作区级授权含 update / append / delete / structure 之一。同一工作区同时只有一场加锁的放映，第二场 `show.start` 返回 `SHOW_LOCKED`；没有写权限的只读放映不受限。租期 60 s，舞台每 20 s（租期的 1/3）续一次；服务端清扫器结束过期的放映。`AIWS_SHOW_LEASE_MS` 只为测试缩短租期。 |
+| 18-8 | §8.3 | 克隆用 `VACUUM INTO` 在工作区写入互斥中复制 `doc.sqlite` 与 `local.sqlite`，保留实体 id、seq/epoch、授权和许愿格运行记录（运行目录和 `llm.map` 缓存硬链接）；克隆中仍在运行的 run 标为 interrupted（原作品的运行不属于它）。克隆在 `workspace_meta` 标记 `purpose = show`、来源和 show_id，不出现在 `ws.list`，不能准备离线，也不能再被放映。实测 1 万行 × 20 字段的表格加资源：克隆 43 ms、删除 2 ms（release 构建）。 |
+| 18-9 | §8.3 | **没有接入系统 named store。** 现有 `FsObjectStore` 本来就是服务级、按内容寻址的对象存储，所有工作区共用，克隆不复制任何对象字节，删除克隆也不动对象，所以“克隆只增加引用、不复制字节”在本期已经成立；named store 接入（pin、NDN 可取）仍是第一期留下的替换边界，没有在本期做。 |
+| 18-10 | §8.4 | 离线放映要求本窗口持有离线副本：在线直连窗口在后台不可达时读不到路径，开始放映会失败并说明原因。离线放映不加锁、没有提示器链接、不克隆，舞台状态栏显示“本地放映”。 |
+| 18-11 | §9 | 飞行：ρ = 1.4，时长为路径长度 × 380 ms，限制在 0.4–1.2 s，三次 ease-in-out。“回到本步骤”也是飞行（减少动态效果时为淡入淡出）。到达判定：目标图层里没有“载入中”的 Block，最多等 300 ms。窗口尺寸变化在转场结束后立即重算。 |
+| 18-12 | §9.4、§13 | 舞台复用 `RenderHost`：新增画布模式 `show`（不选择、不布局、不插入；只有 `presentation.live` 的 Block 可激活），新增 `prefetch`（目标与下一步矩形内的 Block 固定挂载、完整 LOD）和 `hidden`（`hide` 与所有 Frame）。`show` 模式下 RenderHost 不订阅相机变化，飞行时 React 不渲染。所有 Frame（不只是当前这一页的）在舞台上都不显示，它们是编辑辅助。 |
+| 18-13 | §4.2 | 补边和 Frame 裁剪是同一个遮罩（路径背景色，挖空当前取景）；Frame 的 `background` 画在 Block 之下。比例不同的 Frame 在舞台内再补边。自由浏览时去掉遮罩，显示周围内容。 |
+| 18-14 | §10.2、§10.4 | 放映中激活 Block 只用双击：舞台上没有选中对象，Enter 按 §10.4 是“下一项”。激活后按键交给 Block，Esc 交还。可操作的许愿格在舞台右侧的抽屉中打开许愿格面板，绑定克隆的 store。非 live 的 HTML Block 只显示静态快照或占位；live 的 HTML Block 激活后运行。 |
+| 18-15 | §10.3 | 板书：触控笔、鼠标或触控，笔画以 Surface 世界坐标存在本场内存（`points: [{ x, y, t, p? }]`、颜色、宽度），翻页不清除，有橡皮（按笔画擦除）、撤销一笔、清除。激光笔的位置按舞台坐标 `[0, 1]²` 发布给提示器。 |
+| 18-16 | §11 | 提示器令牌为 `pt_` + 26 位 base32，放在请求参数 `prompter_token`；令牌只能调用本场的 `show.command / show.watch / show.notes`。提示器路由 `/workspace/:id/show/:showId` 列入 Desktop 的免登录路由。大屏背景画面：同一浏览器能读取该工作区时（已登录或开发直连）渲染只读画面并显示激光笔；小屏（宽度 < 1100 px）只显示面板。二维码没有做（需要新依赖）。支持 Window Management API 的浏览器显示“放到其他屏幕”。 |
+| 18-17 | §11.3 | `show.publish` 的 `seq` 由舞台编号，较旧的 seq 不覆盖较新的状态；命令按 `command_id` 在服务端和舞台两处去重，服务端保留最近 200 条。舞台刷新后的继续放映靠本标签页的 sessionStorage 记录 show_id 和令牌：独立标签页 `/workspace/<id>` 重新载入后直接回到舞台（已验证）；Desktop 窗口里重新载入后，同一标签页再次打开该工作区也会接回（未单独验证），不再打开则放映在租期后结束。 |
+| 18-18 | §7.1 | 路径编辑面板在画布左侧（300 px），画布适应与居中避开它。“添加 Frame…”列出当前画布上的 Frame；选中另一张画布上的步骤会先切换画布。排序支持拖拽和 Alt+↑/↓，Delete 移除步骤。诊断：失效（可重新绑定或移除）、已旋转（可“转正”）、比例与舞台不一致（可“调整为舞台比例”）、Frame 也在舞台比例不同的路径中。 |
+| 18-19 | §7.2 | 开始放映前先 `prepareLeave()`；仍有未提交或需要处理的修改时，对话框说明并提供“仍然开始／取消”。路径编辑中可以“从这一步放映”。视图工具栏有“开始放映”按钮（手机上没有）。 |
+| 18-20 | §7.3 | 引导进度存为用户状态 `guide:<path_id> = { index, done, prompted }`；打开带引导的作品时每个用户提示一次（状态区的提示，带“开始引导”）。引导开始后这条提示自动关闭。气泡放在取景下方，放不下时放上方，再放不下时放在取景内底部。 |
+| 18-21 | §2 | `PresenterToolbar` 改名 `ViewToolbar`，测试 id `aiws-view-toolbar`，偏好键 `ui:view-toolbar`（旧键不迁移）。画布子模式名称“路径编辑”。 |
+| 18-22 | §14 M0 | 共用 fixture：`src/frame/aiworkspace/fixtures/presentation/commits.json`（两张自由画布、三个带备注与说明的 Frame、两个 Viewport、`frame1 → frame2 → viewport1 → viewport2 → frame3` 混排路径与一条引导路径、一个可操作的便签）。Rust 契约测试 `core/tests/presentation.rs`，存储测试 `store/tests/show.rs`，服务进程测试 `server/tests/show.rs`，浏览器测试 `tests/aiworkspace/presentation.spec.ts`、`offline-presentation.spec.ts`、`mobile.spec.ts` UI-M03、`probe.spec.ts` P3-19。 |
+
+未完成：named store 接入（18-9）、二维码、在真实 Zone/DV 上的验证（FORMAT 0.4 会让 DV 上已有的测试工作区打不开，部署需要确认）、真实手机与多屏、Window Management API 的实测、HTML 与许愿格作为可操作 Block 的端到端用例。

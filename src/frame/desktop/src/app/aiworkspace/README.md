@@ -1,4 +1,4 @@
-# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction + connectors)
+# AI Workspace — Desktop app (phase one + phase two UI framework + UI improvement + standard object interaction + connectors + presentation)
 
 Front end of the `aiworkspace` service (`src/frame/aiworkspace`). Design:
 `doc/workspace/BuckyOS AI Workspace 第一期内置对象详细设计.md` ("the design" below),
@@ -66,14 +66,14 @@ ui/
   WorkspaceView.tsx       store context + shell; registers the shipped Block definitions
   shell/                  WorkspaceShell (top-level views, active Surface, right panel, dialogs, layout preferences),
                           MainToolbar (icon, name, Surface switcher, data source, main menu, collaboration),
-                          MainMenu (the function index), PresenterToolbar (annotation, zoom and view navigation,
+                          MainMenu (the function index), ViewToolbar (annotation, zoom and view navigation,
                           identity, share link), StatusSummary (the bottom-right status area: save / sync /
                           connection, persistent alerts and notices; the 修改状态 panel), SidePanel, dialogs (New, export, import, help, Mock, leave check),
                           popover.tsx (popovers and keyboard menus), shellContext.ts, panels, annotations panel
   sources/                data-source mode: DataTree (canvas content collapsed, filters), DataDetail (editors without a
                           Block), RelationsPanel (doc.relations), PropertiesPanel (versions, restore), PermissionsPanel
                           (presets, canvas permissions, subjects)
-  canvas/                 CanvasView (sub-modes edit / view / presentation-edit placeholder, selection, pointer tool,
+  canvas/                 CanvasView (sub-modes edit / view / path editing, selection, pointer tool,
                           one-shot placement, insert, clipboard, group, cross-Surface move, keyboard), ObjectToolbar,
                           InsertCatalog + catalog.ts (the one insert catalog), clipboard.ts, surfaceManage.tsx
                           (rename / icon / delete pre-check), icons.tsx (preset canvas icons), FlowSurface, layout.ts,
@@ -203,7 +203,7 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 ## Phase two in short
 
 - **Two top-level modes** on one session, one undo stack and one pending queue: 数据源 (three columns) and 画布
-  (Surfaces, edit / 查看 / 播放编辑 placeholder). Modes, sub-modes, the active Surface and every Surface's viewport are
+  (Surfaces, edit / 查看 / 路径编辑 — see “Presentation”). Modes, sub-modes, the active Surface and every Surface's viewport are
   user work state (server + IndexedDB), never document commits.
 - **Canvas**: the camera is a CSS transform, not React state; Blocks are culled in three levels with hysteresis;
   small Blocks get placeholders; editors and HTML runtimes have a mount budget; a drag or resize is one commit
@@ -230,8 +230,7 @@ own origin, i.e. its own OPFS, service worker and localStorage.
   successfully (`state/recent.ts`, keyed `mode|target|principal`) on its remembered Surface (`surface:active`);
   closing a workspace pauses the restore for the rest of the app session; the main menu's "在新标签页中打开"
   opens the workspace and its Surface in a tab. A gone Surface falls back to the first readable one and says so.
-  A workspace never reopens into the presentation-edit placeholder.
-- **Chrome.** The canvas fills the window; the main toolbar (top left), the presenter toolbar (top right: add
+- **Chrome.** The canvas fills the window; the main toolbar (top left), the view toolbar (top right: add
   annotation, zoom ▾ with presets / fit, identity, share) and the vertical object toolbar float in screen space
   (`camera.setInsets` keeps fitting and centring out from under them). There is no bottom-right navigation area:
   the bottom-right corner of the work area is the status area (`StatusDock`: the save / sync summary, alerts and
@@ -392,7 +391,7 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
 - Wake-ups use the `doc.wait_changes` long poll only (no kevent). Lock holders are refreshed by re-reading
   the outline every 5 s while some entity requires a lock.
 - Flow Surfaces reorder by buttons, not drag and drop.
-- Phase two, not done: play mode and presentation editing (entry and placeholder only); Notion-style layout
+- Phase two, not done (play mode and presentation editing came with the third phase, see “Presentation”): Notion-style layout
   containers and canvas templates; connectors; real executors (xllm, agent-work-session); table version restore;
   drag from the data tree onto the canvas (use "添加已有数据…"); multi-user cursors; coordinate comment pins;
   an extension marketplace or AI-generated extension pipeline (HTML definitions are hand-made); plan §15 R1 is
@@ -427,3 +426,44 @@ startup timeouts, crashes and disposal reject waiting calls and release the ifra
 - The app's own UI text is Chinese only (the app name and summary are in the Desktop dictionaries).
 - The zone transport follows the SDK's normal service path but has only been type-checked here; the e2e
   suite runs through the dev override.
+
+## Presentation (doc/workspace/BuckyOS AI Workspace 第三期规划.md)
+
+```text
+presentation/
+  model.ts            pure functions: a step → one world rectangle (Frame placement through groups, Viewport centre/zoom ×
+                      the path's stage), the stage fitted into a window, the camera making R fill S, default transitions,
+                      the van Wijk–Nuij flight (ρ 1.4, 0.4–1.2 s), step commands and their replay
+  pathOps.ts          writes: step commands with replay on conflicts (≤ 3), new paths / Viewports / Frames with their step in
+                      one commit, the stage size with every Frame of the path at the new aspect, notes / captions / backgrounds,
+                      `presentation.live`
+  PathEditor.tsx      the canvas sub-mode "路径编辑": paths, steps (drag / Alt+↑↓ / Delete), step and target properties,
+                      diagnostics; step rectangles on the canvas (Viewports moved and scaled there), the viewfinder of
+                      "添加当前视角"
+  StartShowDialog.tsx, showSession.ts   "开始放映": settle this window's edits, `show.start` (lock, clone), the clone's own
+                      WorkspaceStore; a reloaded stage resumes its show (sessionStorage, per tab)
+  StageView.tsx       the stage: controller, relay, keys (§10.4), control bar (auto-hides), notes, prompter link, full screen /
+                      other screen, laser pointer, ink, operable Blocks (a live wish opens its panel in a drawer)
+  StageCanvas.tsx     the picture: RenderHost in `show` mode per Surface (≤ 2 mounted), a camera per Surface, the
+                      letterbox / Frame crop mask, cut / fade / fly, pre-mounting the target and the next step
+  controller.ts       commands → state (step, free, black, pointer, transition); relay.ts the stage's side of `show.*`
+  overlays.tsx        ink (world coordinates per Surface, pressure, eraser, undo) and the laser pointer
+  GuideOverlay.tsx    the guide: dimmed around the fitted step, a caption bubble, the canvas inert, progress `guide:<path>`
+  PrompterRoute.tsx   `/workspace/<id>/show/<show>#k=<token>`: no login (a public route), notes, commands, the step list,
+                      the clock; on a large screen that can read the workspace, the step's picture behind the panel
+```
+
+- The stage reuses the canvas: `RenderHost` takes `prefetch` (mounted at full detail) and `hidden` (Frames, a step's
+  `hide`); in `show` mode it draws no overlay and does not re-render while the camera flies. Blocks are editable on stage
+  only with `presentation.live` (`useBlockContext`), activated by a double-click; Esc gives the keys back.
+- A show takes over the workspace window (`TopMode` `show`, never stored); leaving it ends the show and puts the canvas
+  back as it was. The show never reads or writes the editing user state.
+- A presented workspace refuses writes (`SHOW_LOCKED`): sessions learn the lock from `doc.wait_changes` and refused
+  commits (`session.showLock()`); a direct window turns read-only (`useReadOnlyReason`) with an alert (managers can end
+  the show); a replica keeps the edits queued and sends them when the show ends.
+- `ViewToolbar` (renamed from `PresenterToolbar`) has the guide and the show buttons; the main menu has "开始放映…" and
+  "使用引导"; the export dialog has "包含讲解备注".
+- Tests: `tests/aiworkspace/presentation.spec.ts` (P3-01…P3-17), `offline-presentation.spec.ts` (P3-18, a replica during
+  a show), `mobile.spec.ts` UI-M03 (the guide on a phone), `probe.spec.ts` P3-19 (`test-results/aiworkspace-probe-show.json`).
+  The stage exposes `__aiwsTestHooks.stage` (camera, transitions with timings) under the dev override;
+  `AIWS_SHOW_LEASE_MS` shortens the show lease of the e2e backend.

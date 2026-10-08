@@ -13,7 +13,7 @@ export function PropertiesPanel({ entity }: { entity: EntityEnvelope }) {
   const store = useStore()
   const [name, setName] = useState(entity.name ?? '')
   const can = (capability: string) => entity.capabilities.includes(capability as never)
-  const isSystem = ['root', 'data', 'surfaces', 'canvas-content'].includes(entity.entity_id)
+  const isSystem = ['root', 'data', 'surfaces', 'canvas-content', 'shows'].includes(entity.entity_id)
   const submit = (label: string, operations: Parameters<typeof store.submit>[0]['operations']) => store.submit({ editId: `entity:${entity.entity_id}`, label, operations })
   return (
     <div className="aiws-properties" data-testid="aiws-properties" data-entity-id={entity.entity_id}>

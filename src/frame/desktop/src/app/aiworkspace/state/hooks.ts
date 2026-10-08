@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useState, useSyncExt
 import { SW_UPDATE_EVENT, serviceWorkerState, type ServiceWorkerState } from '../../../serviceWorker'
 import { describeError, type SessionStatus } from '../api/session'
 import type { CapturedAnchor } from '../anchors/registry'
-import type { AnchorInfo, AnnotationPayload, AnnotationRead, EntityEnvelope, FreshnessInfo, Json } from '../api/types'
+import type { AnchorInfo, AnnotationPayload, AnnotationRead, EntityEnvelope, FreshnessInfo, Json, ShowLockInfo } from '../api/types'
 import type { EditEntry } from './edits'
 import type { WorkspaceStore } from './store'
 
@@ -37,12 +37,27 @@ export function useSessionStatus(): SessionStatus {
   return useSyncExternalStore((listener) => session.subscribeStatus(listener), () => session.status())
 }
 
-/** Online direct mode of a window that could not become the replica holder: read-only while the backend is unreachable (design §6.1). */
-export function useDirectReadOnly(): boolean {
+/** The show presenting this workspace, if any (第三期规划 §8.1). */
+export function useShowLock(): ShowLockInfo | null {
+  const { session } = useStore()
+  return useSyncExternalStore((listener) => session.subscribeStatus(listener), () => session.showLock())
+}
+
+/** Why this window cannot write the document now, or null: the backend is unreachable for a window without the
+ * replica (design §6.1), or the workspace is being presented (第三期规划 §8.1; a replica keeps its writes queued). */
+export function useReadOnlyReason(): string | null {
   const { session } = useStore()
   const status = useSessionStatus()
+  const lock = useShowLock()
   const mode = session.mode()
-  return mode.kind === 'direct' && mode.reason !== 'not_prepared' && status.kind === 'offline'
+  if (mode.kind === 'direct' && mode.reason !== 'not_prepared' && status.kind === 'offline') return '后台不可达且此窗口未启用离线：当前只读'
+  if (lock && mode.kind === 'direct') return `${lock.presenter} 正在放映这个工作区：放映期间关闭写入`
+  return null
+}
+
+/** The document cannot be written from this window now (see useReadOnlyReason). */
+export function useDirectReadOnly(): boolean {
+  return useReadOnlyReason() !== null
 }
 
 export function useLocksVersion(): number {

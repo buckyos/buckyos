@@ -13,7 +13,7 @@ import { Group, Lock, LockOpen, MessageSquarePlus, Sparkles, Ungroup } from 'luc
 import { describeError } from '../../api/session'
 import { randomId } from '../../api/ids'
 import type { CellPayload, EntityEnvelope, Json, KeyedContent, Operation, Placement } from '../../api/types'
-import { useDirectReadOnly, useOutlineVersion, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
+import { useReadOnlyReason, useStore, useUserState, useWorkspaceUi } from '../../state/hooks'
 import { BlockBoundary } from '../blocks/BlockHost'
 import { useBlockContext } from '../blocks/useBlockContext'
 import { BudgetContext, createBudget } from '../blocks/budget'
@@ -25,25 +25,28 @@ import { AnnotationsPanel } from '../shell/AnnotationsPanel'
 import type { CanvasCommands, Command } from '../shell/MainMenu'
 import { MainToolbar } from '../shell/MainToolbar'
 import { useOverlayOpen } from '../shell/popover'
-import { PresenterToolbar } from '../shell/PresenterToolbar'
+import { ViewToolbar } from '../shell/ViewToolbar'
 import { CANVAS_SIDE_TABS, useCanvasMode, useShell, type SideTab } from '../shell/shellContext'
 import { SidePanel } from '../shell/SidePanel'
 import { StatusDetail, StatusDock } from '../shell/StatusSummary'
 import { OpenWishContext } from '../wish/wishBlock'
+import { GuideOverlay } from '../../presentation/GuideOverlay'
+import { PathEditor } from '../../presentation/PathEditor'
+import { setLive } from '../../presentation/pathOps'
 import { WishPanel } from '../wish/WishPanel'
 import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
-import { anchorWorld, axisOf, boxOf, distanceTo, facingAnchor } from './connectors/geometry'
-import { formOf, hasBoundEnd, isConnector, ShapeBook } from './connectors/layout'
+import { anchorWorld, axisOf, boxOf, facingAnchor } from './connectors/geometry'
+import { formOf, hasBoundEnd, isConnector } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
 import { FlowSurface } from './FlowSurface'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
-import { boundsOf, layoutSurface, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
+import { boundsOf, movedPlacement, placementOf, relativeTo, surfaceBounds, topLevel, type Laid } from './layout'
 import { ObjectToolbar, type PointerTool } from './ObjectToolbar'
 import { Camera } from './render/camera'
 import { RenderHost, type LayoutChange } from './render/RenderHost'
-import { SpatialIndex } from './render/spatialIndex'
 import { createSurfaceOps, surfacesOf } from './surfaceOps'
+import { useSurfaceLayout } from './useSurfaceLayout'
 import { BlockInspector, ContextMenu, NearToolbar, type NearAction } from './tools'
 
 export interface CanvasFocus { surfaceId: string; blockId: string | null; nonce: number }
@@ -57,6 +60,8 @@ const NEXT_OBJECTS = ['note', 'richtext', 'shape', 'wish']
 const TOP_INSET = 68
 const TOP_INSET_NARROW = 124
 const LEFT_INSET = 68
+/** The path editor's panel (第三期规划 §7.1) takes the left side of the canvas. */
+const PATH_EDITOR_INSET = 324
 const BOTTOM_INSET = 52
 
 export function CanvasView({ focus }: { focus: CanvasFocus | null }) {
@@ -90,7 +95,7 @@ function EmptyCanvas({ mode }: { mode: CanvasMode }) {
             ) : <p className="aiws-muted">{shell.phone ? '手机上只能查看；新建画布请在电脑上打开这个工作区。' : '你没有新建画布的权限；数据源中的数据仍可查看。'}</p>}
           </div>
           <div className="aiws-chrome-top">
-            {shell.phone ? <PresenterToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}
+            {shell.phone ? <ViewToolbar camera={null} hasSelection={false} onFitAll={() => undefined} onFitSelection={() => undefined} annotate={null} /> : <MainToolbar canvas={null} />}
           </div>
           <StatusDock />
         </div>
@@ -106,8 +111,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const store = useStore()
   const ui = useWorkspaceUi()
   const shell = useShell()
-  const outlineVersion = useOutlineVersion()
-  const readOnlyNow = useDirectReadOnly()
+  const readOnlyReason = useReadOnlyReason()
+  const readOnlyNow = readOnlyReason !== null
   const overlayOpen = useOverlayOpen()
   const clip = useSyncExternalStore(canvasClipboard.subscribe, canvasClipboard.snapshot)
   const surfaceId = surface.entity_id
@@ -127,26 +132,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
   const isFree = surface.layout?.mode === 'free'
-  // connector ends meet the outline and anchors a Block declares; a definition deciding them from its payload is read once (连接线实现方案 §4.3)
-  const [shapeBook] = useState(() => new ShapeBook(store))
-  const shapesVersion = useSyncExternalStore(shapeBook.subscribe, shapeBook.snapshot)
-  const laid = useMemo(() => layoutSurface(store.outline, surfaceId, (id) => shapeBook.get(store.outline.get(id))),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- outlineVersion / shapesVersion are the invalidation signals
-    [store, surfaceId, outlineVersion, shapesVersion, shapeBook])
-  useEffect(() => {
-    const targets: EntityEnvelope[] = []
-    for (const l of laid.values()) for (const end of [l.connector?.data.start, l.connector?.data.end]) { const target = end ? laid.get(end.entity_id)?.entity : undefined; if (target) targets.push(target) }
-    shapeBook.ensure(targets)
-  }, [laid, shapeBook])
-  const index = useMemo(() => {
-    const idx = new SpatialIndex()
-    for (const [id, l] of laid) {
-      const line = l.connector
-      idx.insert({ id, rect: l.bounds, paint: l.paint, ...(l.rotation ? { turned: { rect: l.rect, rotation: l.rotation } } : {}),
-        ...(line ? { line: { flat: line.geom.flat, label: line.geom.label.box, distance: (p: { x: number; y: number }) => distanceTo(line.geom, p) } } : {}) })
-    }
-    return idx
-  }, [laid])
+  const { laid, index, shapeBook } = useSurfaceLayout(surfaceId)
   // the Editor of the Block being edited hands its tools to the near toolbar (标准对象的交互改进 §5.4)
   const [toolbarSink] = useState(() => new ToolbarSink())
   useSyncExternalStore(toolbarSink.subscribe, toolbarSink.snapshot)
@@ -155,7 +141,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const phone = shell.phone
   const showObjectToolbar = shell.prefs.objectToolbar && mode !== 'presentation_edit' && !phone
   const topInset = shell.size === 'narrow' && !phone ? TOP_INSET_NARROW : TOP_INSET
-  const leftInset = showObjectToolbar && !collapsed ? LEFT_INSET : 12
+  const leftInset = mode === 'presentation_edit' && isFree && !phone ? PATH_EDITOR_INSET : showObjectToolbar && !collapsed ? LEFT_INSET : 12
   const insets = { top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }
   useEffect(() => { camera.setInsets({ top: topInset, right: 12, bottom: BOTTOM_INSET, left: leftInset }) }, [camera, topInset, leftInset])
 
@@ -269,7 +255,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const canLayout = policy.layout && surface.capabilities.includes('structure') && !readOnlyNow
   const insertReason = !policy.insert ? (mode === 'view' ? '查看模式不能插入' : '播放编辑占位中不能插入')
     : !surface.capabilities.includes('structure') ? '没有在这张画布上添加对象的权限'
-      : readOnlyNow ? '后台不可达且此窗口未启用离线：当前只读' : null
+      : readOnlyReason
 
   /** World point at the centre of the unobstructed visible area (top-left of a Block of `size` centred there). */
   const centreSpot = (size: { w: number; h: number }) => {
@@ -589,6 +575,8 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
+      // a guide owns the keys while it runs (第三期规划 §10.4)
+      if (shell.guide) return
       if (event.isComposing || target?.closest('input, textarea, select, [contenteditable="true"], [data-role="editor"]')) return
       // a placement or target pick started from a toolbar button is cancelled by Esc even while that button has the focus
       if (event.key === 'Escape' && (placing || annotatePick || tool === 'connector') && !target?.closest('.aiws-popover, .aiws-dialog, .aiws-menu')) { setPlacing(null); setAnnotatePick(false); setTool((t) => (t === 'connector' ? 'select' : t)); return }
@@ -774,7 +762,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
     <BudgetContext.Provider value={budget}>
       <div className="aiws-canvas-view" data-testid="aiws-canvas-view" data-mode={mode}>
         <div className="aiws-canvas-body" ref={hostRef} data-testid="aiws-canvas-body">
-          <div ref={mainRef} className={`aiws-canvas-main${mode === 'presentation_edit' ? ' is-placeholder' : ''}${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}>
+          <div ref={mainRef} className={`aiws-canvas-main${shell.prefs.grid ? '' : ' no-grid'}${showObjectToolbar && !collapsed ? ' has-left-tools' : ''}`}>
             {isFree ? (
               <EditorToolbarContext.Provider value={toolbarSink}>
               <OpenWishContext.Provider value={shell.side === 'wish' ? wishOpen?.cellId ?? null : null}>
@@ -790,15 +778,18 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
             ) : (
               <div className="aiws-flow-host" data-testid="aiws-flow-host"><FlowSurface surfaceId={surfaceId} mode={mode} selected={selection} onSelect={setSelection} editing={editing} onEditingChange={setEditing} onInsert={(parentId) => setMenu({ at: { x: 200, y: 120 }, world: null, blockId: null, parentId })} /></div>
             )}
-            {mode === 'presentation_edit' && (
-              <div className="aiws-presentation-placeholder" role="status" data-testid="aiws-presentation-placeholder">
-                <b>播放编辑尚未实现</b>
-                <div>这里将来编排演示路径、镜头、备注和互动。现在只是入口：画布保持静态显示，不选中、不写文档。</div>
-              </div>
-            )}
+            {mode === 'presentation_edit' && (isFree
+              ? <PathEditor surface={surface} camera={camera} laid={laid} />
+              : (
+                <div className="aiws-presentation-placeholder" role="status" data-testid="aiws-presentation-placeholder">
+                  <b>流式页没有演讲路径</b>
+                  <div>Frame 和 Viewport 只放在自由画布上：切换到一张自由画布来编排演讲路径。</div>
+                </div>
+              ))}
+            {shell.guide && <GuideOverlay key={shell.guide.pathId} camera={camera} surfaceId={surfaceId} />}
             <div className="aiws-chrome-top">
               {!phone && <MainToolbar canvas={commands} />}
-              {(shell.prefs.presenterToolbar || phone) && <PresenterToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
+              {(shell.prefs.viewToolbar || phone) && <ViewToolbar camera={isFree ? camera : null} hasSelection={selection.size > 0} onFitAll={fitAll} onFitSelection={fitSelection} annotate={annotateCommand} />}
             </div>
             {showObjectToolbar && (
               <div className="aiws-chrome-left">
@@ -860,8 +851,15 @@ function SelectionInspector({ cell, mode, context, resolved, registryVersion }: 
     void store.submit({ editId: `key:${cell.entity_id}:title`, label: `Block 标题 → ${title || '（清除）'}`, operations: [title ? { op: 'entity.set_keys', entity_id: cell.entity_id, keys: [{ key: 'title', value: title, expect: { rev: keyRevs.title ?? 0 } }] } : { op: 'entity.unset_keys', entity_id: cell.entity_id, keys: [{ key: 'title', expect: { rev: keyRevs.title ?? 0 } }] }] })
   }
   const Inspector = definition?.Inspector
+  const operable = cell.view_type !== 'frame' && cell.view_type !== 'connector' && cell.type_id === 'buckyos.cell'
   return (
     <BlockInspector cellId={cell.entity_id} mode={mode}>
+      {operable && payload && (
+        <label className="aiws-inline-form" title="放映时，只有勾选了这一项的 Block 可以输入、运行和操作；现场写入进入临时副本，放映结束后丢弃。">
+          <input type="checkbox" data-testid="aiws-inspector-live" checked={payload.presentation?.live === true} disabled={readOnly}
+            onChange={(event) => { void setLive(store, cell.entity_id, event.target.checked) }} />放映时可操作
+        </label>
+      )}
       {payload && (
         <label className="aiws-inline-form">标题 <input aria-label="Block 标题" defaultValue={payload.title ?? ''} disabled={readOnly} onBlur={(event) => setTitle(event.target.value.trim())} /></label>
       )}

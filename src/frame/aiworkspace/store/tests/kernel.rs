@@ -46,7 +46,7 @@ fn fixture_replays_and_reads_back() {
     let h = env.svc.workspace(&id).unwrap();
     let ws = h.lock().unwrap();
     let outline = ws.outline(&alice()).unwrap();
-    assert_eq!(outline["entities"].as_array().unwrap().len(), 17);
+    assert_eq!(outline["entities"].as_array().unwrap().len(), 18);
     let t = ws.read(&alice(), "tasks", None).unwrap();
     assert_eq!(t["content"]["record_count"], 5);
     assert_eq!(t["content"]["fields"].as_array().unwrap().len(), 6);

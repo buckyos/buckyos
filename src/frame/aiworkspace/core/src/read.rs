@@ -262,6 +262,10 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
             if let Some(v) = e.payload.get("locked") {
                 env["locked"] = v.clone();
             }
+            // what a show needs before reading any content: which Blocks may be operated on stage (third phase §10.2)
+            if e.payload.get("presentation").and_then(|p| p.get("live")) == Some(&json!(true)) {
+                env["live"] = json!(true);
+            }
             // the geometry a canvas needs to draw a line (连接线方案 §9.2); appearance stays in `config`
             if types::is_connector(&e.type_id, &e.payload) {
                 let mut c = json!({ "start": e.payload.get("start").cloned().unwrap_or(Value::Null),
@@ -288,6 +292,21 @@ pub fn outline_extras(env: &mut Value, e: &EntityRow) {
         }
         TYPE_ASSET => {
             env["media_type"] = e.payload.get("media_type").cloned().unwrap_or(Value::Null);
+        }
+        // enough to draw a Viewport's frame and list the paths; steps, notes and captions are read with `doc.read`
+        TYPE_VIEWPORT => {
+            env["viewport"] = json!({
+                "surface_id": e.payload.get("surface_ref").and_then(|r| r.get("entity_id")).cloned().unwrap_or(Value::Null),
+                "center": e.payload.get("center").cloned().unwrap_or(Value::Null),
+                "zoom": e.payload.get("zoom").cloned().unwrap_or(Value::Null),
+            });
+        }
+        TYPE_SHOW_PATH => {
+            env["show_path"] = json!({
+                "purpose": e.payload.get("purpose").cloned().unwrap_or(Value::Null),
+                "stage": e.payload.get("stage").cloned().unwrap_or(Value::Null),
+                "steps": e.payload.get("steps").and_then(Value::as_array).map_or(0, Vec::len),
+            });
         }
         _ => {}
     }

@@ -30,6 +30,8 @@ const preview = `http://127.0.0.1:${process.env.AIWS_E2E_PREVIEW_PORT}`
 const previewDir = 'test-results/aiworkspace-dist'
 const web = `http://127.0.0.1:${process.env.AIWS_E2E_WEB_PORT}`
 process.env.AIWS_E2E_BACKEND = backend
+// a show's lease (第三期规划 §8.1) is shortened so that a crashed stage loses its show within the test's patience
+process.env.AIWS_SHOW_LEASE_MS ??= '6000'
 
 export default defineConfig({
   testDir: './tests/aiworkspace',

@@ -23,7 +23,7 @@ export function DataTree({ selected, onSelect }: { selected: string | null; onSe
   const expandedState = useUserState<Record<string, boolean>>('datatree:expanded')
   const expanded = useMemo(() => expandedState ?? {}, [expandedState])
   const toggle = (id: string) => store.userState.set('datatree:expanded', { ...expanded, [id]: !(expanded[id] ?? false) })
-  const isExpanded = (entity: EntityEnvelope) => expanded[entity.entity_id] ?? (entity.entity_id !== 'canvas-content' && entity.system !== 'surface_content')
+  const isExpanded = (entity: EntityEnvelope) => expanded[entity.entity_id] ?? (entity.entity_id !== 'canvas-content' && entity.entity_id !== 'shows' && entity.system !== 'surface_content')
   const matches = (entity: EntityEnvelope): boolean => {
     if (typeFilter !== 'all' && entity.type_id !== typeFilter) return false
     if (origin === 'generated' && !entity.derived) return false
@@ -41,7 +41,7 @@ export function DataTree({ selected, onSelect }: { selected: string | null; onSe
         <input aria-label="搜索数据" placeholder="搜索…" value={query} onChange={(event) => setQuery(event.target.value)} />
         <select aria-label="类型筛选" value={typeFilter} onChange={(event) => setTypeFilter(event.target.value as TypeFilter)}>
           <option value="all">全部类型</option>
-          {Object.entries(TYPE_LABEL).filter(([id]) => id !== 'buckyos.cell' && id !== 'buckyos.container').map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+          {Object.entries(TYPE_LABEL).filter(([id]) => !['buckyos.cell', 'buckyos.container', 'buckyos.viewport', 'buckyos.show-path'].includes(id)).map(([id, label]) => <option key={id} value={id}>{label}</option>)}
         </select>
         <select aria-label="来源筛选" value={origin} onChange={(event) => setOrigin(event.target.value as OriginFilter)}>
           <option value="all">原始与生成</option><option value="original">只看原始</option><option value="generated">只看生成结果</option>
@@ -63,14 +63,14 @@ function TreeNode({ entity, depth, selected, onSelect, isExpanded, toggle, match
   const visibleChildren = filtering ? children.filter((c) => matches(c) || (c.type_id === 'buckyos.container' && store.outline.descendants(c.entity_id).some(matches))) : children
   if (filtering && !matches(entity) && visibleChildren.length === 0) return null
   const open = filtering ? true : isExpanded(entity)
-  const label = entity.entity_id === 'canvas-content' ? '画布内容区' : entityLabel(entity)
+  const label = entity.entity_id === 'canvas-content' ? '画布内容区' : entity.entity_id === 'shows' ? '演讲路径' : entityLabel(entity)
   const surface = entity.system === 'surface_content' && entity.surface_id ? store.outline.get(entity.surface_id) : undefined
   return (
     <li role="treeitem" aria-expanded={isFolder ? open : undefined} aria-selected={selected === entity.entity_id} data-testid="aiws-tree-item" data-entity-id={entity.entity_id} data-type={entity.type_id} data-system={entity.system ?? undefined}>
       <div className={`aiws-tree-row${selected === entity.entity_id ? ' is-selected' : ''}`} style={{ paddingLeft: depth * 14 }}>
         {(isFolder || children.length > 0) ? <button type="button" className="aiws-tree-toggle" aria-label={open ? '折叠' : '展开'} onClick={() => toggle(entity.entity_id)}>{open ? '▾' : '▸'}</button> : <span className="aiws-tree-toggle" />}
         <button type="button" className="aiws-tree-label" data-testid={`aiws-tree-${entity.entity_id}`} onClick={() => onSelect(selected === entity.entity_id ? null : entity.entity_id)}>
-          <span className="aiws-outline-type">{entity.system === 'canvas_content' ? '系统' : entity.system === 'surface_content' ? '画布' : TYPE_LABEL[entity.type_id] ?? entity.type_id}</span>
+          <span className="aiws-outline-type">{entity.system === 'canvas_content' || entity.system === 'shows' ? '系统' : entity.system === 'surface_content' ? '画布' : TYPE_LABEL[entity.type_id] ?? entity.type_id}</span>
           <span className="aiws-outline-name">{label}{surface ? <span className="aiws-muted">（画布 {entityLabel(surface)}）</span> : null}</span>
           {entity.derived && <span className="aiws-chip aiws-chip-derived" title="由许愿格生成">生成</span>}
           {entity.derived && <FreshnessBadge entityId={entity.entity_id} showManual={false} />}
@@ -91,7 +91,8 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
   useOutlineVersion()
   const entity = selected ? store.outline.get(selected) : undefined
   const folder = entity?.type_id === 'buckyos.container' ? entity : (entity?.parent_id ? store.outline.get(entity.parent_id) : store.outline.get('data'))
-  const target = folder && folder.kind !== 'surfaces' && folder.kind !== 'surface' && folder.kind !== 'group' ? folder : store.outline.get('data')
+  // the presentation folder holds paths and Viewports only (第三期规划 §6.2): new data goes to the data root instead
+  const target = folder && folder.kind !== 'surfaces' && folder.kind !== 'surface' && folder.kind !== 'group' && folder.entity_id !== 'shows' ? folder : store.outline.get('data')
   const [kind, setKind] = useState<NewDataKind>('table')
   const [title, setTitle] = useState('')
   const [deleting, setDeleting] = useState<{ referrers: { entity_id: string; target: string }[]; hidden: boolean } | null>(null)
@@ -130,13 +131,13 @@ export function DataTreeActions({ selected, onSelect }: { selected: string | nul
     setDeleting(null)
     if (outcome.status === 'accepted' || outcome.status === 'saved_locally') onSelect(null)
   }
-  const folders = store.outline.descendants('data').filter((e) => e.type_id === 'buckyos.container' && e.entity_id !== entity?.entity_id && !store.outline.ancestors(e.entity_id).includes(entity?.entity_id ?? '\0'))
+  const folders = store.outline.descendants('data').filter((e) => e.type_id === 'buckyos.container' && e.entity_id !== 'shows' && e.entity_id !== entity?.entity_id && !store.outline.ancestors(e.entity_id).includes(entity?.entity_id ?? '\0'))
   const moveTo = (parentId: string) => {
     if (!entity) return
     const key = store.core.order_key_between(store.outline.childrenOf(parentId).at(-1)?.order_key ?? undefined, undefined)
     void store.submit({ editId: `entity:${entity.entity_id}`, label: `移动 ${entityLabel(entity)}`, operations: [{ op: 'tree.move', entity_id: entity.entity_id, new_parent_id: parentId, order_key: key }] })
   }
-  const isSystem = entity && ['data', 'canvas-content'].includes(entity.entity_id)
+  const isSystem = entity && ['data', 'canvas-content', 'shows'].includes(entity.entity_id)
   return (
     <div className="aiws-datatree-actions" data-testid="aiws-datatree-actions">
       {canCreate && (

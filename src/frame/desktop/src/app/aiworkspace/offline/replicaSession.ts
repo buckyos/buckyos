@@ -26,7 +26,7 @@ import {
   PROTOCOL_VERSION,
   type CollabState, type CommitEvent, type CommitOutcome, type CommitRequest, type CommitResult, type EntityEnvelope, type Json, type LockInfo,
   type Operation, type PrepareResult, type QueryPage, type QueryParams, type RunView, type Selector, type Touched, type WorkspaceInfo, type WishChoices,
-  type AnnotationContent, type ListAnnotationsParams, type Capability,
+  type AnnotationContent, type ListAnnotationsParams, type Capability, type ShowLockInfo,
 } from '../api/types'
 import { StorageFailure, describeStorageFailure, type ReplicaClient } from './client'
 import { forgetPrepared, noteTitle, type OpenedReplica, type ReplicaLock } from './holder'
@@ -95,6 +95,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   private confirmedSeq: number
   private rows: PendingRow[]
   private currentStatus: SessionStatus = { kind: 'connecting' }
+  private showLockInfo: ShowLockInfo | null = null
   private storageIssue: string | null = null
   private keyCounter = 0
   private closed = false
@@ -157,6 +158,15 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
   info() { return this.wsInfo }
   status() { return this.currentStatus }
   appliedSeq() { return this.confirmedSeq }
+  showLock() { return this.showLockInfo }
+
+  noteShowLock(lock: ShowLockInfo | null) {
+    if ((lock?.show_id ?? null) === (this.showLockInfo?.show_id ?? null)) return
+    this.showLockInfo = lock
+    this.statusListeners.forEach((listener) => listener())
+    // the show ended: what waited for it goes out now
+    if (!lock) this.wake()
+  }
 
   subscribeStatus(listener: () => void) {
     this.statusListeners.add(listener)
@@ -276,6 +286,7 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
         const woke = await Promise.race([remote, local])
         if (woke === null) { poll.abort(); void remote.catch(() => undefined); continue }
         if (!woke.ok) this.streamError(woke.error.code, woke.error.detail)
+        else this.noteShowLock(woke.show_lock ?? null)
       } catch (error) {
         if (this.closed || this.isStopped()) break
         if (error instanceof StorageFailure) {
@@ -351,7 +362,12 @@ export class ReplicaWorkspaceSession implements WorkspaceSession {
         if (error instanceof TransportError) await this.mark(key, 'unknown', null)
         throw error
       }
-      if (result.status === 'accepted') {
+      if (result.status === 'rejected' && result.code === 'SHOW_LOCKED') {
+        // presented right now (第三期规划 §8.1): retryable, the submission waits in the queue until the show ends
+        await this.mark(key, 'queued', null)
+        this.noteShowLock((result.errors?.[0]?.data as ShowLockInfo | undefined) ?? null)
+        break
+      } else if (result.status === 'accepted') {
         // not removed here: the change stream brings it back by key — the only path that advances the confirmed layer
         await this.catchUp()
       } else if (SESSION_STOP_CODES.has(result.code) || refusedVersion(result.code, typeof result.detail === 'string' ? result.detail : undefined)) {

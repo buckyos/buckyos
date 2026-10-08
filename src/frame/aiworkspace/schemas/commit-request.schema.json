@@ -13,7 +13,7 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "0.4"
+   "const": "0.5"
   },
   "workspace_id": {
    "type": "string",

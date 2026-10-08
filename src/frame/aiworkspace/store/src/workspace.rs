@@ -118,6 +118,8 @@ pub struct Workspace {
     /// Called after a commit became durable and was published in memory.
     pub on_commit: Option<Box<dyn Fn(u64) + Send>>,
     pub on_lock_change: Option<Box<dyn Fn() + Send>>,
+    /// Show locks of the service (third phase §8.1): a presented Workspace accepts no document writes.
+    pub show_locks: Option<crate::show::ShowLocks>,
 }
 
 fn open_db(path: &Path, synchronous_full: bool) -> WsResult<Connection> {
@@ -222,6 +224,7 @@ impl Workspace {
             last_stats: WriteStats::default(),
             on_commit: None,
             on_lock_change: None,
+            show_locks: None,
         };
         Ok(ws)
     }
@@ -382,7 +385,8 @@ impl Workspace {
         Ok(json!({ "ok": true, "workspace_id": self.workspace_id, "title": self.title(), "epoch": self.epoch,
                    "head_seq": self.head_seq, "head_commit_id": self.head_commit_id, "format_version": FORMAT_VERSION,
                    "protocol_version": PROTOCOL_VERSION, "capabilities": access.ws_caps.names(),
-                   "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()) }))
+                   "forked_from": meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str::<Value>(&s).ok()),
+                   "show_lock": self.show_lock().map(|l| l.to_json()), "purpose": self.purpose() }))
     }
 
     /// Any grant at all (workspace-level or scoped) is enough to know the Workspace exists.
@@ -473,6 +477,10 @@ impl Workspace {
         let access = self.access(&caller.principal).map_err(reject)?;
         if access.is_empty() {
             return Err(reject(WsError::not_found("workspace not found")));
+        }
+        // a presented Workspace is closed for writes, from every session (third phase §8.1)
+        if let Some(lock) = self.show_lock() {
+            return Err(reject(Self::show_locked_error(&lock)));
         }
         if let Some(run_id) = &req.run_id {
             let state: Option<String> = self

@@ -6,7 +6,7 @@
 
 import { useState } from 'react'
 import { describeError } from '../../api/session'
-import type { CommitOutcome, EntityEnvelope, Json, Operation } from '../../api/types'
+import { SYSTEM_IDS, type CommitOutcome, type EntityEnvelope, type Json, type Operation } from '../../api/types'
 import { useOverlayMounted } from '../shell/popover'
 import type { WorkspaceStore } from '../../state/store'
 import { useStore } from '../../state/hooks'
@@ -42,10 +42,10 @@ export function accepted(outcome: CommitOutcome): boolean {
 }
 
 /** Why a Surface's own properties (name, icon) cannot be changed now, or null. */
-export function surfaceWriteReason(store: WorkspaceStore, surface: EntityEnvelope | null | undefined, viewOnly: boolean, readOnlyNow: boolean): string | null {
+export function surfaceWriteReason(store: WorkspaceStore, surface: EntityEnvelope | null | undefined, viewOnly: boolean, readOnlyNow: string | null): string | null {
   if (!surface) return '没有画布'
   if (!surface.capabilities.includes('structure')) return '没有修改这张画布的权限'
-  if (readOnlyNow) return '后台不可达且此窗口未启用离线：当前只读'
+  if (readOnlyNow) return readOnlyNow
   if (viewOnly) return '当前不是编辑模式'
   void store
   return null
@@ -81,7 +81,7 @@ export function SurfaceDeleteDialog({ surface, onClose, onDeleted }: { surface: 
     const ops: Operation[] = []
     if (moveFirst && folder) {
       // "move to the data tree, then delete": the folder's children move under `data`
-      let key = store.outline.childrenOf('data').filter((e) => e.entity_id !== 'canvas-content').at(-1)?.order_key
+      let key = store.outline.childrenOf('data').filter((e) => !SYSTEM_IDS.has(e.entity_id)).at(-1)?.order_key
       for (const child of store.outline.childrenOf(folder.entity_id)) { key = store.core.order_key_between(key, undefined); ops.push({ op: 'tree.move', entity_id: child.entity_id, new_parent_id: 'data', order_key: key }) }
     }
     const blocks = store.outline.descendants(surface.entity_id).map((e) => e.entity_id)

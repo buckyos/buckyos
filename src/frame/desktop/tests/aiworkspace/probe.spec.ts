@@ -314,3 +314,71 @@ test('CN probe: 1,000 Blocks with 1,000 lines; dragging a Block with 200 lines',
   expect(firstViewMs).toBeLessThan(THRESHOLDS.firstViewMs * 2)
   expect(pan.p95).toBeLessThan(THRESHOLDS.panP95Ms * 2)
 })
+
+/* 第三期规划 §15 P3-19: a show over a large canvas — 1,000 Blocks, tables, a 10,000-row table, HTML Blocks and rich
+ * text editors — turning pages through Frames and Viewports. Recorded: show start (with a clone), per step the time until
+ * the target's Blocks were ready on stage, frame times during flights, long tasks. */
+test('P3-19 presentation probe: a show over 1,000 Blocks with HTML Blocks and editors', async ({ page, api }) => {
+  const ws = await api.demo(ALICE, 'quarterly', `probe show ${Date.now()}`)
+  await buildSurface(api, ws, 'sf-show', '放映探针', 1000, true, true)
+  const html: unknown[] = [{ op: 'entity.create', entity_id: 'def-probe', type_id: 'buckyos.block-def', parent_id: 'data', order_key: 'zzd', payload: { def_id: 'probe.html', version: 1, kind: 'html', title: '探针 HTML', allow_no_source: true, html: { html: '<div style="font:14px sans-serif">HTML Block</div>', js: 'aiws.ready()' } } }]
+  for (let i = 0; i < 12; i++) {
+    html.push({ op: 'entity.create', entity_id: `hb${i}`, type_id: 'buckyos.cell', parent_id: 'sf-show', order_key: `zh${i.toString(36)}z`, placement: { x: 6200 + (i % 4) * 420, y: (Math.floor(i / 4)) * 260, w: 400, h: 240 }, payload: { view: { type: 'html', version: 1 }, def_ref: { entity_id: 'def-probe' }, title: `HTML ${i}`, ...(i === 0 ? { presentation: { live: true } } : {}) } })
+  }
+  for (let i = 0; i < 6; i++) {
+    html.push({ op: 'entity.create', entity_id: `rt${i}`, type_id: 'buckyos.richtext', parent_id: 'sf-show-content', order_key: `zr${i}z`, payload: { content: { type: 'doc', content: [{ type: 'paragraph', attrs: { block_id: `p${i}` }, content: [{ type: 'text', text: `第 ${i} 段富文本：放映探针` }] }] } } })
+    html.push({ op: 'entity.create', entity_id: `rtb${i}`, type_id: 'buckyos.cell', parent_id: 'sf-show', order_key: `zrb${i}z`, placement: { x: 6200 + (i % 3) * 520, y: 900 + Math.floor(i / 3) * 320, w: 500, h: 300 }, payload: { view: { type: 'richtext' }, source_ref: { entity_id: `rt${i}` } } })
+  }
+  // Frames and Viewports spread over the canvas: near and far moves, the 10,000-row table, the HTML area
+  const frames = [{ id: 'pf1', x: 0, y: 0 }, { id: 'pf2', x: 2400, y: 1800 }, { id: 'pf3', x: 6100, y: -100 }, { id: 'pf4', x: -900, y: -100 }]
+  for (const f of frames) html.push({ op: 'entity.create', entity_id: f.id, type_id: 'buckyos.cell', parent_id: 'sf-show', order_key: `zf${f.id}z`, placement: { x: f.x, y: f.y, w: 1600, h: 900 }, payload: { view: { type: 'frame' }, title: f.id } })
+  const vps = [{ id: 'pv1', x: 800, y: 600, zoom: 1.5 }, { id: 'pv2', x: 3600, y: 2600, zoom: 0.8 }, { id: 'pv3', x: 6900, y: 1200, zoom: 1.2 }]
+  for (const v of vps) html.push({ op: 'entity.create', entity_id: v.id, type_id: 'buckyos.viewport', parent_id: 'shows', order_key: `zv${v.id}z`, payload: { title: v.id, surface_ref: { entity_id: 'sf-show' }, center: { x: v.x, y: v.y }, zoom: v.zoom } })
+  const order = ['pf1', 'pv1', 'pf2', 'pv2', 'pf3', 'pv3', 'pf4', 'pf1']
+  html.push({ op: 'entity.create', entity_id: 'pp', type_id: 'buckyos.show-path', parent_id: 'shows', order_key: 'zpz', payload: { title: '探针路径', purpose: 'presentation', stage: { w: 1920, h: 1080 }, steps: order.map((id, i) => ({ id: `ps${i}`, target: { kind: id.startsWith('pf') ? 'frame' : 'viewport', entity_id: id } })) } })
+  const r = await api.commit(ALICE, ws, html)
+  expect(r.status, JSON.stringify(r).slice(0, 400)).toBe('accepted')
+  await api.rpc(ALICE, 'ws.set_user_state', { workspace_id: ws.workspace_id, entries: { 'surface:active': 'sf-show', mode: 'canvas' } })
+  await openProductionApp(page, ALICE)
+  await page.locator(`[data-testid="aiws-workspace-card"][data-workspace-id="${ws.workspace_id}"]`).getByTestId('aiws-open').click()
+  await expect(page.getByTestId('aiws-canvas')).toHaveAttribute('data-surface-id', 'sf-show')
+  // starting the show: the path's canvas has an operable Block, so the workspace is locked and cloned
+  await page.getByTestId('aiws-main-menu').click()
+  await page.getByTestId('aiws-top-play').click()
+  await page.getByTestId('aiws-start-path').selectOption({ label: '探针路径' })
+  const t0 = Date.now()
+  await page.getByTestId('aiws-start-show-go').click()
+  await expect(page.getByTestId('aiws-show')).toHaveAttribute('data-live', 'true', { timeout: 60_000 })
+  const startMs = Date.now() - t0
+  // each page turn: how long until the target was on stage and ready, and the frames of the flight
+  const steps: { step: string; kind: string; arriveMs: number; frameP95: number; frameMax: number }[] = []
+  const settle = async (index: number) => {
+    await expect(page.getByTestId('aiws-show')).toHaveAttribute('data-step', `ps${index}`)
+    await expect.poll(() => page.evaluate(() => window.__aiwsTestHooks?.stage?.transitions.at(-1)?.arrivedAt != null), { timeout: 20_000 }).toBe(true)
+  }
+  await settle(0)
+  const longTasks = await page.evaluate(() => {
+    const w = window as unknown as { __long: number }
+    w.__long = 0
+    try { new PerformanceObserver((list) => { for (const e of list.getEntries()) if (e.duration > 50) w.__long += 1 }).observe({ entryTypes: ['longtask'] }) } catch { /* unsupported */ }
+    return 0
+  })
+  for (let i = 1; i < order.length; i++) {
+    await page.keyboard.press('ArrowRight')
+    await settle(i)
+    const t = await page.evaluate(() => window.__aiwsTestHooks!.stage!.transitions.at(-1)!)
+    const gaps = t.frames.slice(1).map((f, k) => f - t.frames[k]).sort((a, b) => a - b)
+    steps.push({ step: t.step, kind: t.kind, arriveMs: Math.round(t.arrivedAt! - t.startedAt), frameP95: Math.round((gaps[Math.floor(gaps.length * 0.95)] ?? 0) * 10) / 10, frameMax: Math.round((gaps.at(-1) ?? 0) * 10) / 10 })
+    await page.waitForTimeout(400)
+  }
+  const long = await page.evaluate(() => (window as unknown as { __long: number }).__long)
+  const dom = await domStats(page)
+  await page.getByTestId('aiws-show-exit').click()
+  const report = { startMs, steps, longTasks: long + longTasks, dom, scale: { blocks: 1000, tables: 20, bigTableRows: 10_000, html: 12, richtext: 6 },
+    environment: { userAgent: await page.evaluate(() => navigator.userAgent), viewport: page.viewportSize(), build: 'vite preview (production build)', at: new Date().toISOString() } }
+  mkdirSync('test-results', { recursive: true })
+  writeFileSync('test-results/aiworkspace-probe-show.json', JSON.stringify(report, null, 2))
+  test.info().annotations.push({ type: 'probe', description: JSON.stringify(report) })
+  // the target is on stage within the flight time plus the ready wait (fly ≤ 1.2 s, fade 2 × 150 ms + ≤ 300 ms)
+  for (const s of steps) expect(s.arriveMs, JSON.stringify(s)).toBeLessThan(2500)
+})

@@ -151,12 +151,21 @@ fn scale_probes() {
     assert_eq!(ws.checkpoint(&alice()).unwrap().content_root, cp.content_root);
     println!("checkpoint again (cached objects)      {:>9.1} ms", ms(t));
     let t = Instant::now();
-    let ex = ws.export(&alice(), "share", true).unwrap();
+    let ex = ws.export(&alice(), "share", true, None).unwrap();
     let pkg = std::fs::metadata(ex["path"].as_str().unwrap()).unwrap().len();
     println!("export share package                   {:>9.1} ms   {:.1} MiB", ms(t), pkg as f64 / 1048576.0);
     let t = Instant::now();
     let rep = ws.replica_bootstrap(&alice()).unwrap();
     println!("replica bootstrap                      {:>9.1} ms   {:.1} MiB", ms(t), std::fs::metadata(rep["path"].as_str().unwrap()).unwrap().len() as f64 / 1048576.0);
+    // the temporary clone of a show (第三期规划 §8.3, M0 target ≤ 1 s): both databases, objects shared
+    drop(ws);
+    let t = Instant::now();
+    let clone = env.svc.clone_for_show(&id, "sh_perf", "").unwrap();
+    println!("show clone (doc + local, objects shared) {:>7.1} ms", ms(t));
+    let t = Instant::now();
+    env.svc.drop_clone(&clone).unwrap();
+    println!("show clone removed                     {:>9.1} ms", ms(t));
+    let mut ws = h.lock().unwrap();
 
     println!("\n== fixture: rich text, ~1000 blocks / ~100k chars ==");
     let blocks: Vec<Value> = (0..1000)
@@ -194,15 +203,21 @@ fn scale_probes() {
 
     println!("\n== fixture: 1000 entities (groups, cells, records) ==");
     let t = Instant::now();
-    let mut ops = Vec::new();
+    // groups and Blocks live on a Surface (phase two §4.5)
+    let mut ops = vec![
+        json!({ "op": "entity.create", "entity_id": "probe-content", "type_id": "buckyos.container", "parent_id": "canvas-content", "order_key": "p",
+                "payload": { "kind": "folder", "system": "surface_content", "surface_id": "probe" } }),
+        json!({ "op": "entity.create", "entity_id": "probe", "type_id": "buckyos.container", "parent_id": "surfaces", "order_key": "p",
+                "payload": { "kind": "surface", "layout": { "mode": "free" }, "content_folder_id": "probe-content" } }),
+    ];
     let mut key = None::<String>;
     for g in 0..20 {
-        ops.push(json!({ "op": "entity.create", "entity_id": format!("g{g}"), "type_id": "buckyos.container", "parent_id": "data",
-                         "order_key": format!("r{g:02}x"), "payload": { "kind": "group", "layout": { "mode": "free" } } }));
+        ops.push(json!({ "op": "entity.create", "entity_id": format!("g{g}"), "type_id": "buckyos.container", "parent_id": "probe",
+                         "order_key": format!("r{g:02}x"), "placement": { "x": 0, "y": g * 400, "w": 1000, "h": 300 }, "payload": { "kind": "group" } }));
         for c in 0..49 {
             let k = aiworkspace_core::order_key::order_key_between(key.as_deref(), None).unwrap();
             ops.push(json!({ "op": "entity.create", "entity_id": format!("g{g}c{c}"), "type_id": "buckyos.cell", "parent_id": format!("g{g}"),
-                             "order_key": k, "placement": { "x": c * 10, "y": g * 10, "w": 200, "h": 120, "z": 0 },
+                             "order_key": k, "placement": { "x": c * 10, "y": 10, "w": 200, "h": 120 },
                              "payload": { "source_ref": { "entity_id": "tasks" }, "view": { "type": "table" }, "title": format!("视图 {g}-{c}") } }));
             key = Some(k);
         }

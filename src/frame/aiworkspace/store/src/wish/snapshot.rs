@@ -41,6 +41,9 @@ impl WishSnapshot {
     /// A live entity the caller may read.
     pub fn readable(&self, id: &str) -> WsResult<EntityRow> {
         let e = aiworkspace_core::read::readable_entity(&self.ctx(), &self.access, id)?;
+        if presentation_only(&e) {
+            return Err(WsError::not_found(format!("entity {id} not found")));
+        }
         if !e.alive() {
             return Err(WsError::deleted(format!("entity {id} is deleted")));
         }
@@ -48,7 +51,7 @@ impl WishSnapshot {
     }
 
     pub fn can_read(&self, e: &EntityRow) -> WsResult<bool> {
-        self.access.can_read(&self.ctx(), e)
+        Ok(!presentation_only(e) && self.access.can_read(&self.ctx(), e)?)
     }
 
     /// Verified bytes of an asset.
@@ -56,6 +59,12 @@ impl WishSnapshot {
         use aiworkspace_core::materialize::ObjectSource;
         self.objects.get_file(object_id)
     }
+}
+
+/// Presentation paths, Viewports and their folder are not part of what a wish sees (third phase §6.2); a Frame's
+/// speaker notes are never read out either (the read tools list a Block's keys explicitly).
+fn presentation_only(e: &EntityRow) -> bool {
+    e.entity_id == SHOWS_ID || is_show_type(&e.type_id)
 }
 
 impl Workspace {

@@ -1,5 +1,5 @@
 {
- "protocol_version": "0.4",
+ "protocol_version": "0.5",
  "description": "Stable error codes. Clients branch on `code` (and `sub_code`), never on text. `status` is how a Commit reports it. Checked against the code by core/tests/schemas.rs.",
  "codes": [
   {
@@ -162,6 +162,12 @@
    "retryable": false,
    "status": "rejected",
    "meaning": "The caller's lease expired, was idle-released or was broken."
+  },
+  {
+   "code": "SHOW_LOCKED",
+   "retryable": true,
+   "status": "rejected",
+   "meaning": "The Workspace is being presented: document writes are closed until the show ends (data: presenter, started_at)."
   }
  ]
 }

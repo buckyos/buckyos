@@ -5,6 +5,7 @@ import type {
   AnnotationRead, ChangesPage, CollabState, CommitRequest, CommitResult, EntityEnvelope, ExportResult, GrantList, ListAnnotationsParams, LockInfo, PrepareResult,
   QueryPage, QueryParams, ReadResult, Result, RunView, Selector, WorkspaceInfo, WorkspaceSummary, Capability, Json,
   DerivedRecord, FreshnessInfo, Operation, RelationsInfo, Subject, VersionInfo, WishChoices, WishRunView,
+  ShowCommand, ShowLockInfo, ShowNotes, ShowStart, ShowState, ShowWatch,
 } from './types'
 import type { Transport } from './transport'
 
@@ -73,14 +74,25 @@ export class AiwsClient {
     return this.call<Result<ChangesPage>>('doc.get_changes', { ...ws, epoch, after_seq, limit })
   }
   waitChanges(ws: Ws, epoch: string, after_seq: number, timeout_ms: number, signal?: AbortSignal) {
-    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms }, signal)
+    return this.call<Result<{ epoch: string; head_seq: number; timed_out: boolean; show_lock?: ShowLockInfo | null }>>('doc.wait_changes', { ...ws, epoch, after_seq, timeout_ms }, signal)
   }
 
   // ---- packages
   checkpoint(ws: Ws) { return this.call<Result<{ content_root: string; snapshot: string }>>('doc.checkpoint', ws) }
-  export(ws: Ws, mode: 'share' | 'personal_backup', self_contained: boolean) {
-    return this.call<Result<ExportResult>>('doc.export', { ...ws, mode, self_contained })
+  export(ws: Ws, mode: 'share' | 'personal_backup', self_contained: boolean, include_notes?: boolean) {
+    return this.call<Result<ExportResult>>('doc.export', { ...ws, mode, self_contained, ...(include_notes === undefined ? {} : { include_notes }) })
   }
+
+  // ---- shows (第三期规划 §11.3): the stage's calls; a prompter uses `prompterCall` with the show's token
+  showStart(ws: Ws, path_id: string, live: boolean) { return this.call<Result<ShowStart>>('show.start', { ...ws, path_id, live }) }
+  showHeartbeat(ws: Ws, show_id: string) { return this.call<Result<{ expires_at: string }>>('show.heartbeat', { ...ws, show_id }) }
+  showPublish(ws: Ws, show_id: string, seq: number, state: ShowState) { return this.call<Result<{ seq: number }>>('show.publish', { ...ws, show_id, seq, state }) }
+  showCommand(ws: Ws, show_id: string, command: ShowCommand) { return this.call<Result<{ cursor: number; duplicate: boolean }>>('show.command', { ...ws, show_id, command }) }
+  showWatch(ws: Ws, show_id: string, params: { after_seq?: number; after_command?: number; timeout_ms?: number }, signal?: AbortSignal) {
+    return this.call<Result<ShowWatch>>('show.watch', { ...ws, show_id, ...params }, signal)
+  }
+  showNotes(ws: Ws, show_id: string) { return this.call<Result<ShowNotes>>('show.notes', { ...ws, show_id }) }
+  showEnd(ws: Ws, show_id: string) { return this.call<Result<object>>('show.end', { ...ws, show_id }) }
 
   // ---- offline replica (design §6.2)
   replicaBootstrap(ws: Ws) {

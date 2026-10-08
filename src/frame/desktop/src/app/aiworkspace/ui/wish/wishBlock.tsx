@@ -8,7 +8,7 @@ import { createContext, useCallback, useContext, useSyncExternalStore } from 're
 import { CircleStop, Database, PanelRight, Play, Sparkles } from 'lucide-react'
 import { randomId } from '../../api/ids'
 import type { ReadOk } from '../../api/session'
-import type { Json, WishPayloadRead } from '../../api/types'
+import { SYSTEM_IDS, type Json, type WishPayloadRead } from '../../api/types'
 import { useLoad, useStore, useVersion } from '../../state/hooks'
 import type { WorkspaceStore } from '../../state/store'
 import { requestIntent } from '../blocks/editorToolbar'
@@ -96,7 +96,7 @@ export const wishBlock: BlockDefinition = {
   create: (args) => {
     const ops = []
     // the Mock executor's definition entity is created with the first wish of a Workspace (D9)
-    if (!args.store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(args.store.core.order_key_between(args.store.outline.childrenOf('data').filter((e) => e.entity_id !== 'canvas-content').at(-1)?.order_key ?? undefined, undefined)))
+    if (!args.store.outline.get(MOCK_WISH_DEF_ID)) ops.push(mockWishDefOp(args.store.core.order_key_between(args.store.outline.childrenOf('data').filter((e) => !SYSTEM_IDS.has(e.entity_id)).at(-1)?.order_key ?? undefined, undefined)))
     if (args.existingSourceId) return [...ops, cellOp(args, 'wish', args.existingSourceId)]
     const payload: Record<string, Json> = {
       title: args.title || '许愿格', prompt: args.title || '', executor: 'xllm', output_mode: 'overwrite',

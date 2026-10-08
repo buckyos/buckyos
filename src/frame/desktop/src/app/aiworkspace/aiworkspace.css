@@ -530,7 +530,7 @@
 .aiws-chrome-top { position: absolute; top: 12px; left: 12px; right: 12px; z-index: 25; display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; pointer-events: none; }
 .aiws-chrome-top > *, .aiws-main-area > * { pointer-events: auto; }
 .aiws-main-area { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; min-width: 0; pointer-events: none; }
-.aiws-main-toolbar, .aiws-presenter-toolbar { display: flex; align-items: center; gap: 2px; padding: 4px; min-height: 46px; box-sizing: border-box; max-width: 100%; }
+.aiws-main-toolbar, .aiws-view-toolbar { display: flex; align-items: center; gap: 2px; padding: 4px; min-height: 46px; box-sizing: border-box; max-width: 100%; }
 .aiws-root .aiws-tool { min-width: 36px; height: 36px; padding: 0 8px; border: none; border-radius: 8px; background: none; color: var(--cp-text); justify-content: center; flex: none; }
 .aiws-root .aiws-tool:hover:not(:disabled) { background: var(--cp-surface-2); }
 .aiws-root .aiws-tool[aria-pressed='true'], .aiws-root .aiws-tool[aria-expanded='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
@@ -579,6 +579,8 @@
 
 /* object toolbar */
 .aiws-chrome-left { position: absolute; left: 12px; top: 70px; bottom: 12px; z-index: 24; display: flex; align-items: flex-start; pointer-events: none; }
+/* an open menu or popover of a floating toolbar is above the status area's notices */
+.aiws-chrome-top:has(.aiws-popover, .aiws-menu), .aiws-chrome-left:has(.aiws-popover, .aiws-menu) { z-index: 55; }
 .aiws-object-toolbar { pointer-events: auto; display: flex; flex-direction: column; gap: 2px; padding: 4px; max-height: 100%; overflow-y: auto; box-sizing: border-box; }
 .aiws-tool-group { display: flex; flex-direction: column; gap: 2px; padding-bottom: 4px; margin-bottom: 2px; border-bottom: 1px solid var(--cp-border); }
 .aiws-tool-group-history { border-bottom: none; padding-bottom: 0; }
@@ -693,7 +695,7 @@
 /* responsive by the application container (§11): medium drops secondary text, narrow stacks the toolbars */
 .aiws-workspace[data-size='medium'] .aiws-root button.aiws-surface-name, .aiws-workspace[data-size='medium'] button.aiws-surface-name { max-width: 180px; }
 .aiws-workspace[data-size='narrow'] .aiws-chrome-top { flex-wrap: wrap; }
-.aiws-workspace[data-size='narrow'] .aiws-presenter-toolbar { margin-left: auto; }
+.aiws-workspace[data-size='narrow'] .aiws-view-toolbar { margin-left: auto; }
 .aiws-workspace[data-size='narrow'] button.aiws-surface-name { max-width: 110px; }
 .aiws-workspace[data-size='narrow'] .aiws-chrome-left { top: 70px; }
 .aiws-workspace[data-size='narrow'] .aiws-flow-host { padding-top: 124px; }
@@ -720,7 +722,7 @@
    the page itself never pinch-zooms (iOS ignores user-scalable=no) */
 .aiws-workspace[data-phone='true'] { touch-action: pan-x pan-y; }
 .aiws-workspace[data-phone='true'] .aiws-chrome-top { top: calc(8px + env(safe-area-inset-top)); left: calc(8px + env(safe-area-inset-left)); right: calc(8px + env(safe-area-inset-right)); }
-.aiws-workspace[data-phone='true'] .aiws-presenter-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
+.aiws-workspace[data-phone='true'] .aiws-view-toolbar { flex: 1 1 auto; min-width: 0; margin-left: 0; }
 .aiws-workspace[data-phone='true'] .aiws-flow-host { padding: 64px 8px 56px; }
 .aiws-workspace[data-phone='true'] .aiws-hint { top: calc(64px + env(safe-area-inset-top)); max-width: calc(100% - 24px); white-space: normal; text-align: center; }
 .aiws-workspace[data-phone='true'] .aiws-status-dock { right: calc(8px + env(safe-area-inset-right)); bottom: calc(8px + env(safe-area-inset-bottom)); }

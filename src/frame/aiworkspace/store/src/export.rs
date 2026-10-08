@@ -7,7 +7,7 @@ use crate::schema::{DOC_DDL, REPLICA_TABLES};
 use crate::workspace::{random_id, Caller, CommitOpts, Workspace};
 use aiworkspace_core::access::{Access, Cap};
 use aiworkspace_core::canonical::{self, named_object, obj_id_from_filename, obj_id_to_filename, parse_strict, ObjId, OBJ_TYPE_JSON};
-use aiworkspace_core::materialize::{self, load_ops, materialize, snapshot_root, ObjectSource};
+use aiworkspace_core::materialize::{self, load_ops, materialize_with, snapshot_root, ObjectSource};
 use aiworkspace_core::model::*;
 use aiworkspace_core::value::format_utc_ms;
 use aiworkspace_core::{richtext, Code, WsError, WsResult};
@@ -90,6 +90,11 @@ pub fn closure(store: &FsObjectStore, content_root: &str, assets: bool) -> WsRes
 impl Workspace {
     /// Materialize the content `access` may read as immutable NamedObjects.
     pub(crate) fn materialize_for(&self, access: &Access, kind: &str, by: &str) -> WsResult<Checkpoint> {
+        self.materialize_notes(access, kind, by, true)
+    }
+
+    /// [`Self::materialize_for`]; without `notes` the speaker notes are left out (third phase §6.4).
+    pub(crate) fn materialize_notes(&self, access: &Access, kind: &str, by: &str, notes: bool) -> WsResult<Checkpoint> {
         let now = self.now();
         let ctx = self.ctx(&now);
         let mut sink = StoreSink::new(&self.objects);
@@ -118,7 +123,7 @@ impl Workspace {
                     .filter(|id| self.objects.has_object(id)),
             }
         };
-        let m = materialize(&ctx, &mut sink, &visible, &mut cached)?;
+        let m = materialize_with(&ctx, &mut sink, &visible, &mut cached, !notes)?;
         let forked: Option<Value> = crate::docdb::meta_get(&self.doc, "forked_from")?.and_then(|s| serde_json::from_str(&s).ok());
         let snap = snapshot_root(&self.workspace_id, self.head_seq, &self.head_commit_id, &m.content_root, forked.as_ref());
         let (snapshot_id, text) = named_object(OBJ_TYPE_JSON, &snap)?;
@@ -147,8 +152,9 @@ impl Workspace {
     ///
     /// `share`: a new content snapshot of what the caller may read — no drafts,
     /// no history, no CRDT bytes, no credentials. `personal_backup`: additionally
-    /// the original CRDT states and the caller's personal annotations.
-    pub fn export(&mut self, caller: &Caller, mode: &str, self_contained: bool) -> WsResult<Value> {
+    /// the original CRDT states and the caller's personal annotations. `notes`: whether speaker notes travel
+    /// (default: in a personal backup only; third phase §6.4).
+    pub fn export(&mut self, caller: &Caller, mode: &str, self_contained: bool, notes: Option<bool>) -> WsResult<Value> {
         let access = self.require_ws(caller, Cap::Export)?;
         let personal = match mode {
             "share" => false,
@@ -158,7 +164,8 @@ impl Workspace {
         if personal && !access.ws_caps.has(Cap::Read) {
             return Err(WsError::denied("a personal backup needs workspace-level read"));
         }
-        let cp = self.materialize_for(&access, "export", &caller.principal)?;
+        let notes = notes.unwrap_or(personal);
+        let cp = self.materialize_notes(&access, "export", &caller.principal, notes)?;
         let (mut objects, chunks, missing_assets) = closure(&self.objects, &cp.content_root, self_contained)?;
         objects.insert(cp.snapshot_id.clone());
         let now = self.now();
@@ -241,7 +248,7 @@ impl Workspace {
             "types": types.iter().map(|(t, v)| json!({ "type_id": t, "schema_version": v })).collect::<Vec<_>>(),
             "editor_schemas": if has_richtext { json!([richtext::EDITOR_SCHEMA]) } else { json!([]) },
             "missing": missing, "external_sources": external, "excluded_entities": cp.excluded,
-            "collab": collab, "personal_entities": personal_count,
+            "collab": collab, "personal_entities": personal_count, "notes_included": notes,
             "exported_at": now, "exported_by": caller.principal,
         });
         zip.start_file("manifest.json", opts).map_err(zerr)?;
@@ -331,6 +338,9 @@ impl Workspace {
         let access = self.require_ws_any(caller)?;
         if !access.ws_caps.has(Cap::Read) {
             return Err(WsError::denied("an offline replica needs workspace-level read"));
+        }
+        if self.purpose().is_some() {
+            return Err(WsError::invalid_op("a show clone is not prepared for offline use"));
         }
         let now = self.now();
         let dir = self.dir.join("staging").join("replicas");

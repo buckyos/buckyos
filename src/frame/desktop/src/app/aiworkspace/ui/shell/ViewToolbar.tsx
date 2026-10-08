@@ -1,19 +1,23 @@
-/* The presenter toolbar, top right (UI improvement §8.1, §9.1): add annotation | interactions | zoom ▾ |
- * identity and online members | share link. Zoom and view navigation live only here (and in the main
- * menu): there is no bottom-right navigation area. Interactions are not shown — there is no global
- * interaction system yet — and online members only appear once presence exists. On a phone (§16) it is
- * the only toolbar and starts with the canvas switcher (icon, name, the workspace's canvases). */
+/* The view toolbar, top right (UI improvement §8.1, §9.1; renamed from the "presenter toolbar" in 第三期规划 §2, which
+ * keeps "提示器" for the show's prompter): add annotation | guide | show | zoom ▾ | identity and online members | share
+ * link. Zoom and view navigation live only here (and in the main menu): there is no bottom-right navigation area.
+ * Interactions are not shown — there is no global interaction system yet — and online members only appear once
+ * presence exists. The guide (§7.3) appears when the workspace has a guide path, the show button (§7.2) when it has a
+ * presentation path. On a phone (§16) it is the only toolbar and starts with the canvas switcher (icon, name, the
+ * workspace's canvases). */
 
 import { useEffect, useState } from 'react'
-import { Link2, LogOut, MessageSquarePlus, Minus, Plus } from 'lucide-react'
-import { useStore } from '../../state/hooks'
+import { Link2, LogOut, MessageSquarePlus, Minus, Play, Plus, Signpost } from 'lucide-react'
+import type { Json } from '../../api/types'
+import { pathsOf } from '../../presentation/model'
+import { useOutlineVersion, useStore } from '../../state/hooks'
 import type { Camera } from '../canvas/render/camera'
 import { MAX_ZOOM, MIN_ZOOM } from '../canvas/render/camera'
 import { SurfaceSwitcher } from './MainToolbar'
 import { PopoverPanel, usePopover } from './popover'
 import { shareLink, useShell, ZOOM_PRESETS } from './shellContext'
 
-export function PresenterToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate }: {
+export function ViewToolbar({ camera, hasSelection, onFitAll, onFitSelection, annotate }: {
   /** Free Surfaces only: flow pages have no camera, so no zoom. */
   camera: Camera | null
   hasSelection: boolean
@@ -25,8 +29,10 @@ export function PresenterToolbar({ camera, hasSelection, onFitAll, onFitSelectio
   const shell = useShell()
   const compact = shell.size === 'narrow' || shell.phone
   return (
-    <div className="aiws-panel aiws-presenter-toolbar" role="toolbar" aria-label={shell.phone ? '画布工具' : '演讲工具'} data-testid="aiws-presenter-toolbar">
+    <div className="aiws-panel aiws-view-toolbar" role="toolbar" aria-label={shell.phone ? '画布工具' : '视图工具'} data-testid="aiws-view-toolbar">
       {shell.phone && <SurfaceSwitcher phone />}
+      <GuideButton compact={compact} />
+      {!shell.phone && <ShowButton />}
       {annotate && (
         <button type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-pressed={annotate.active} disabled={annotate.reason !== null} data-testid="aiws-annotate-start"
           title={annotate.reason ?? (annotate.active ? '点选要批注的对象（Esc 取消）' : '添加批注：选中对象后批注；未选中时先点选目标')} aria-label="添加批注" onClick={annotate.run}>
@@ -80,6 +86,46 @@ export function ZoomControl({ camera, hasSelection, onFitAll, onFitSelection }: 
         </PopoverPanel>
       )}
     </span>
+  )
+}
+
+/** "使用引导" (§7.3): one guide starts at once (where the user left it), several are offered in a list. */
+function GuideButton({ compact }: { compact: boolean }) {
+  const store = useStore()
+  const shell = useShell()
+  useOutlineVersion()
+  const { open, toggle, close, bindAnchor, bindTrigger } = usePopover()
+  const guides = pathsOf(store.outline, 'guide')
+  if (guides.length === 0) return null
+  const begin = (pathId: string) => {
+    const saved = store.userState.get<Json>(`guide:${pathId}`) as { index?: number; done?: boolean } | undefined
+    shell.setGuide({ pathId, index: saved && !saved.done ? saved.index ?? 0 : 0 })
+  }
+  return (
+    <span ref={bindAnchor} className="aiws-anchor">
+      <button ref={bindTrigger} type="button" className={`aiws-tool${compact ? '' : ' aiws-tool-text'}`} aria-label="使用引导" title="使用引导：逐步看这张画布怎么用" data-testid="aiws-guide-start"
+        aria-pressed={shell.guide !== null} onClick={() => (guides.length === 1 ? begin(guides[0].entity_id) : toggle())}>
+        <Signpost size={18} />{!compact && <span>引导</span>}
+      </button>
+      {open && (
+        <PopoverPanel align="end" label="使用引导" testId="aiws-guide-list">
+          {guides.map((g) => <button key={g.entity_id} type="button" className="aiws-popover-item" onClick={() => { close(); begin(g.entity_id) }}>{g.title ?? g.name ?? g.entity_id}</button>)}
+        </PopoverPanel>
+      )}
+    </span>
+  )
+}
+
+/** "开始放映" (§7.2): shown when the workspace has a presentation path. */
+function ShowButton() {
+  const store = useStore()
+  const shell = useShell()
+  useOutlineVersion()
+  if (pathsOf(store.outline, 'presentation').length === 0) return null
+  return (
+    <button type="button" className="aiws-tool" aria-label="开始放映" title="开始放映…" data-testid="aiws-show-start" onClick={() => shell.startShow()}>
+      <Play size={18} />
+    </button>
   )
 }
 

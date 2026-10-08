@@ -282,12 +282,13 @@ export class WorkspaceStore {
   noticeSnapshot = (): readonly Notice[] => this.notices
 
   /** Errors and notices that offer an action stay until dismissed; plain information goes away by itself (UI improvement §10). */
-  notify(kind: Notice['kind'], text: string, action?: Notice['action']) {
+  notify(kind: Notice['kind'], text: string, action?: Notice['action']): number {
     this.noticeId += 1
     const id = this.noticeId
     this.notices = [...this.notices, { id, kind, text, action }]
     this.noticeEmitter.emit()
     if (kind === 'info' && !action) window.setTimeout(() => this.dismissNotice(id), 10_000)
+    return id
   }
 
   /** Remember what this window just placed, so a remote overwrite can be reported and re-applied (D1). */
@@ -380,9 +381,12 @@ export class WorkspaceStore {
         const locks = (first?.data?.locks ?? []) as { entity_id?: string; holder?: string }[]
         for (const lock of locks) if (lock.entity_id) this.locks.noteLost(lock.entity_id, outcome.code === 'LOCK_HELD' ? `写锁由 ${lock.holder ?? '他人'} 持有` : '写锁已失去或尚未取得')
       }
+      const presenter = outcome.code === 'SHOW_LOCKED' ? (first?.data?.presenter as string | undefined) ?? '他人' : null
       this.edits.set({
         id: editId, label, state: 'needs_attention', code: outcome.code, mine, hasMine,
-        detail: `未被接受（${outcome.code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}）${first?.detail ?? outcome.detail ? `：${first?.detail ?? outcome.detail}` : ''}`,
+        detail: presenter !== null
+          ? `没有保存：${presenter} 正在放映这个工作区，放映期间关闭写入（第三期规划 §8.1）。放映结束后再修改一次即可。`
+          : `未被接受（${outcome.code}${outcome.sub_code ? `/${outcome.sub_code}` : ''}）${first?.detail ?? outcome.detail ? `：${first?.detail ?? outcome.detail}` : ''}`,
       })
     } else {
       this.setUnsaved(editId, { label, operations: options.operations, mine, reason: `结果未知：${outcome.detail}`, at: new Date().toISOString() })

@@ -14,7 +14,7 @@ use std::sync::Arc;
 fn export(env: &Env, id: &str, who: &Caller, mode: &str, self_contained: bool) -> (PathBuf, Value) {
     let h = env.svc.workspace(id).unwrap();
     let mut ws = h.lock().unwrap();
-    let r = ws.export(who, mode, self_contained).unwrap();
+    let r = ws.export(who, mode, self_contained, None).unwrap();
     (PathBuf::from(r["path"].as_str().unwrap()), r["manifest"].clone())
 }
 
@@ -231,7 +231,7 @@ fn v14_privacy_of_exports_and_replicas() {
     let rep2 = ws.replica_bootstrap(&alice()).unwrap();
     assert!(!contains(&std::fs::read(rep2["path"].as_str().unwrap()).unwrap(), "\"owner\":\"赵\""));
     assert!(ws.read(&alice(), "tasks", Some(&json!({ "kind": "table_record", "record_id": "task-42" }))).unwrap()["content"]["values"].get("owner").is_none());
-    assert!(!contains(&unzip_all(&PathBuf::from(ws.export(&alice(), "share", true).unwrap()["path"].as_str().unwrap())), "\"owner\":\"赵\""));
+    assert!(!contains(&unzip_all(&PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap())), "\"owner\":\"赵\""));
 }
 
 /// V20: unknown types / versions are preserved, read-only, and never silently dropped.
@@ -264,7 +264,7 @@ fn v20_unknown_content_is_preserved() {
     assert_eq!(code(&commit(&mut ws, &alice(), json!([{ "op": "entity.create", "entity_id": "c2", "type_id": "acme.chart", "parent_id": "data", "order_key": "s" }]))), "MISSING_EXTENSION");
     ok(&mut ws, &alice(), json!([{ "op": "tree.place", "entity_id": "chart-1", "order_key": "p5" }]));
     // export → import keeps the raw payload byte-for-byte in meaning
-    let pkg = PathBuf::from(ws.export(&alice(), "share", true).unwrap()["path"].as_str().unwrap());
+    let pkg = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
     drop(ws);
     let other = common::env();
     let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
@@ -335,10 +335,10 @@ fn v22_assets() {
     std::fs::remove_file(&chunk_path).unwrap();
     assert_eq!(ws.read(&alice(), "diagram", None).unwrap()["content"]["availability"], "missing");
     // a self-contained export reports what it could not include instead of pretending
-    let m = ws.export(&alice(), "share", true).unwrap()["manifest"].clone();
+    let m = ws.export(&alice(), "share", true, None).unwrap()["manifest"].clone();
     assert_eq!(m["self_contained"], false);
     assert_eq!(m["missing"][0]["id"], json!(obj));
-    let pkg = PathBuf::from(ws.export(&alice(), "share", true).unwrap()["path"].as_str().unwrap());
+    let pkg = PathBuf::from(ws.export(&alice(), "share", true, None).unwrap()["path"].as_str().unwrap());
     drop(ws);
     let other = common::env();
     let r = other.svc.import(&alice(), &pkg, "new", false).unwrap();
@@ -374,7 +374,7 @@ fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
     assert_eq!(db.query_row("SELECT src_entity_id FROM refs WHERE dst_object_id = ?1 AND kind = 'asset'", [object_id], |r| r.get::<_, String>(0)).unwrap(), "snapshot-cell");
     env.advance(25 * 3600 * 1000);
     assert_eq!(ws.list_unretained(&alice()).unwrap()["unretained"], json!([]));
-    let exported = ws.export(&alice(), "share", true).unwrap();
+    let exported = ws.export(&alice(), "share", true, None).unwrap();
     assert_eq!(exported["manifest"]["self_contained"], true);
     assert!(exported["manifest"]["objects"].as_array().unwrap().iter().any(|o| o["id"] == object_id));
     let other = common::env();
@@ -384,7 +384,7 @@ fn block_snapshots_are_assets_in_grants_packages_and_replicas() {
     assert!(imported_ws.can_read_asset(&bob(), object_id).unwrap());
     assert_eq!(aiworkspace_core::materialize::ObjectSource::get_file(imported_ws.objects.as_ref(), object_id).unwrap(), bytes);
     assert_eq!(imported_ws.verify_refs().unwrap()["ok"], true);
-    let without_assets = ws.export(&alice(), "share", false).unwrap();
+    let without_assets = ws.export(&alice(), "share", false, None).unwrap();
     assert_eq!(without_assets["manifest"]["self_contained"], false);
     assert!(without_assets["manifest"]["missing"].as_array().unwrap().iter().any(|o| o["id"] == object_id));
     let removed = ok(&mut ws, &alice(), json!([{ "op": "entity.set_keys", "entity_id": "snapshot-cell", "keys": [
@@ -473,7 +473,7 @@ fn v24_url_query_table() {
 
     // export keeps the definition, not the data; import does not go online
     let before = src.queries.load(Ordering::Relaxed);
-    let exported = ws.export(&alice(), "share", true).unwrap();
+    let exported = ws.export(&alice(), "share", true, None).unwrap();
     let m = &exported["manifest"];
     assert_eq!(m["self_contained"], false, "external rows are not inside the package");
     assert_eq!(m["external_sources"].as_array().unwrap().len(), 3);

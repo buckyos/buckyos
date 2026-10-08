@@ -111,7 +111,7 @@ function ResolvedBlock({ context: base, lod, registryVersion }: { context: Rende
   let role: 'static' | 'simplified' | 'view' | 'editor' = 'static'
   if (lod === 'simplified' && def.Simplified) { Impl = def.Simplified; role = 'simplified' }
   if (wantsEditor && slot && def.Editor) { Impl = def.Editor; role = 'editor' }
-  else if (depth === 0 && mode === 'view' && def.View && lod !== 'simplified') { Impl = def.View; role = 'view' }
+  else if (depth === 0 && (mode === 'view' || mode === 'show') && def.View && lod !== 'simplified') { Impl = def.View; role = 'view' }
   const budgetNote = wantsEditor && !slot ? '同时激活的编辑器已达上限，此 Block 保持静态显示' : null
   return (
     <div className="aiws-block-body" data-testid={`aiws-block-${cell.entity_id}`} data-role={role} data-renderer={def.type} data-mode={mode} data-data-state={dataState} data-chrome={def.chrome ?? 'clip'}>

@@ -18,9 +18,10 @@ import type { WorkspaceStore } from '../../state/store'
 import type { AnchorDef } from '../canvas/connectors/anchors'
 import { HTML_API_VERSION } from '../extensions/htmlRuntime'
 
-export type CanvasMode = 'edit' | 'view' | 'presentation_edit'
+/** `show` is not a sub-mode the user picks: it is the stage of a show (第三期规划 §10.1). */
+export type CanvasMode = 'edit' | 'view' | 'presentation_edit' | 'show'
 export const CANVAS_MODES: CanvasMode[] = ['edit', 'view', 'presentation_edit']
-export const CANVAS_MODE_LABEL: Record<CanvasMode, string> = { edit: '编辑', view: '查看', presentation_edit: '播放编辑' }
+export const CANVAS_MODE_LABEL: Record<CanvasMode, string> = { edit: '编辑', view: '查看', presentation_edit: '路径编辑', show: '放映' }
 
 export type DataState = 'ready' | 'missing' | 'unreadable' | 'degraded' | 'none'
 
@@ -311,5 +312,8 @@ export function modePolicy(mode: CanvasMode): ModePolicy {
       return { select: true, layout: false, editContent: false, insert: false, annotate: true, readingInteraction: true, writes: false }
     case 'presentation_edit':
       return { select: false, layout: false, editContent: false, insert: false, annotate: false, readingInteraction: false, writes: false }
+    // only Blocks marked "operable on stage" take input (the host checks `presentation.live`, §10.2)
+    case 'show':
+      return { select: false, layout: false, editContent: true, insert: false, annotate: false, readingInteraction: true, writes: true }
   }
 }

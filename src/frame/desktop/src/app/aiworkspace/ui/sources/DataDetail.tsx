@@ -60,6 +60,7 @@ function FolderDetail({ entity }: { entity: EntityEnvelope }) {
     <div className="aiws-folder-detail">
       {entity.system === 'surface_content' && surface && <div className="aiws-muted">画布「{entityLabel(surface)}」上创建的内容都放在这里；它与画布同时创建、同时删除。</div>}
       {entity.system === 'canvas_content' && <div className="aiws-muted">画布内容区：每张画布一个子文件夹。它不干扰第一层数据源。</div>}
+      {entity.system === 'shows' && <div className="aiws-muted">演讲路径与 Viewport：在画布的“路径编辑”中编排，放映与使用引导从这里读取。许愿格不读取这里的内容。</div>}
       <ul>{children.map((c) => <li key={c.entity_id}><button type="button" className="aiws-link" onClick={() => ui.openEntity(c.entity_id)}>{entityLabel(c)}</button> <span className="aiws-muted">{TYPE_LABEL[c.type_id] ?? c.type_id}</span></li>)}</ul>
       {children.length === 0 && <div className="aiws-muted">（空文件夹）</div>}
     </div>

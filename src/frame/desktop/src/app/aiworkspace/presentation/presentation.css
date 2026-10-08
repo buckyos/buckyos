@@ -1,0 +1,113 @@
+/* Presentation (第三期规划): the stage of a show, the path editor, the guide and the prompter. Colours derive from the
+ * Desktop theme (--cp-*) like the rest of the workspace; the stage itself is the presented picture and uses the path's
+ * own background. */
+
+/* ---- the stage */
+.aiws-show { position: absolute; inset: 0; z-index: 60; background: #111; overflow: hidden; color: var(--cp-text); }
+.aiws-show:fullscreen { width: 100vw; height: 100vh; }
+.aiws-show-loading { display: flex; align-items: center; justify-content: center; color: #ddd; }
+.aiws-show-empty { display: flex; flex-direction: column; gap: 8px; padding: 16px 20px; max-width: 420px; color: var(--cp-text); }
+.aiws-stage-canvas { position: absolute; inset: 0; overflow: hidden; background: var(--aiws-stage-letterbox, #fff); }
+.aiws-stage-layer { position: absolute; inset: 0; visibility: hidden; }
+.aiws-stage-layer.is-active { visibility: visible; }
+.aiws-stage-canvas .aiws-canvas { background: var(--aiws-stage-bg, #fff); background-image: none; cursor: default; transition: background-color 150ms ease; }
+.aiws-stage-canvas.is-passive .aiws-canvas { pointer-events: none; }
+.aiws-stage-mask { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; transition: opacity 150ms ease; }
+.aiws-stage-mask path { fill: var(--aiws-stage-letterbox, #fff); }
+.aiws-stage-veil { position: absolute; inset: 0; z-index: 4; pointer-events: none; opacity: 0; background: var(--aiws-stage-letterbox, #fff); }
+.aiws-stage-black { position: absolute; inset: 0; z-index: 5; background: #000; }
+.aiws-stage-ink, .aiws-stage-pointer { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.aiws-stage-ink { z-index: 2; }
+.aiws-stage-pointer { z-index: 6; }
+.aiws-stage-ink.is-active { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.aiws-stage-pointer.is-active { pointer-events: auto; cursor: none; }
+
+/* controls float over the stage and leave it when the mouse rests */
+.aiws-show-bar { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); z-index: 20; display: flex; align-items: center; gap: 2px; padding: 4px; max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; transition: opacity 200ms ease; }
+.aiws-show.is-idle .aiws-show-bar, .aiws-show.is-idle .aiws-show-note { opacity: 0; pointer-events: none; }
+.aiws-show.is-idle { cursor: none; }
+.aiws-show.is-idle.has-tool-pen, .aiws-show.is-idle.has-tool-eraser { cursor: auto; }
+.aiws-show-sep { width: 1px; height: 22px; background: var(--cp-border); margin: 0 4px; }
+.aiws-root .aiws-show-counter { display: inline-flex; align-items: center; gap: 6px; font-variant-numeric: tabular-nums; }
+.aiws-root .aiws-tool[aria-pressed='true'] { background: var(--aiws-pressed-bg); color: var(--cp-accent); }
+.aiws-show-status { font-size: 12px; color: var(--cp-muted); padding: 0 6px; white-space: nowrap; }
+.aiws-show-note { position: absolute; left: 50%; bottom: 70px; transform: translateX(-50%); z-index: 19; font-size: 12px; padding: 3px 12px; border-radius: 999px; background: rgb(0 0 0 / 0.55); color: #fff; white-space: nowrap; pointer-events: none; transition: opacity 200ms ease; }
+.aiws-show-ink-tools { display: inline-flex; align-items: center; gap: 2px; }
+.aiws-root button.aiws-show-swatch { width: 18px; height: 18px; min-width: 18px; padding: 0; border-radius: 50%; border: 2px solid var(--cp-surface); box-shadow: 0 0 0 1px var(--cp-border); }
+.aiws-root button.aiws-show-swatch.is-on { box-shadow: 0 0 0 2px var(--cp-accent); }
+.aiws-root button.aiws-show-back { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20; display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; border-radius: 999px; background: var(--cp-surface-opaque, var(--cp-surface)); box-shadow: var(--cp-shadow); }
+.aiws-show-hint { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); z-index: 20; padding: 4px 12px; border-radius: 999px; background: rgb(0 0 0 / 0.6); color: #fff; font-size: 12px; pointer-events: none; }
+.aiws-show-panel { position: absolute; bottom: 76px; left: 50%; transform: translateX(-50%); z-index: 21; width: min(440px, calc(100% - 32px)); max-height: 50%; overflow: auto; padding: 8px; display: flex; flex-direction: column; gap: 4px; }
+.aiws-root button.aiws-show-step { display: flex; align-items: center; gap: 8px; border: none; background: none; text-align: left; padding: 6px 8px; border-radius: 8px; }
+.aiws-root button.aiws-show-step.is-current { background: var(--aiws-selected-bg); box-shadow: inset 0 0 0 1px var(--aiws-selected-border); }
+.aiws-show-step-n { width: 24px; text-align: right; color: var(--cp-muted); font-variant-numeric: tabular-nums; }
+.aiws-show-step-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-show-notes-title { font-weight: 600; }
+.aiws-show-notes-body { white-space: pre-wrap; font-size: 15px; line-height: 1.6; }
+.aiws-show-drawer { position: absolute; top: 12px; right: 12px; bottom: 12px; z-index: 22; width: min(420px, calc(100% - 24px)); overflow: auto; padding: 8px 10px; }
+
+/* ---- the path editor (canvas sub-mode "路径编辑") */
+.aiws-path-editor { position: absolute; top: 68px; left: 12px; bottom: 60px; z-index: 24; width: 300px; display: flex; flex-direction: column; gap: 6px; padding: 8px; overflow: auto; box-sizing: border-box; }
+.aiws-workspace[data-size='narrow'] .aiws-path-editor { top: 124px; width: min(300px, calc(100% - 24px)); }
+.aiws-path-editor h4 { margin: 4px 0 0; font-size: 12px; color: var(--cp-muted); font-weight: 600; }
+.aiws-path-row { display: flex; align-items: center; gap: 4px; }
+.aiws-path-row > select, .aiws-path-row > input { flex: 1 1 auto; min-width: 0; }
+.aiws-root .aiws-path-row > button { flex: none; white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; }
+.aiws-path-steps { display: flex; flex-direction: column; gap: 2px; }
+.aiws-root button.aiws-path-step { display: flex; align-items: center; gap: 6px; width: 100%; border: 1px solid transparent; background: none; text-align: left; padding: 4px 6px; border-radius: 8px; }
+.aiws-root button.aiws-path-step.is-selected { background: var(--aiws-selected-bg); border-color: var(--aiws-selected-border); }
+.aiws-root button.aiws-path-step.is-drop { border-top-color: var(--cp-accent); }
+.aiws-root button.aiws-path-step.is-off .aiws-path-step-title { text-decoration: line-through; color: var(--cp-muted); }
+.aiws-path-step-n { width: 18px; text-align: right; color: var(--cp-muted); font-size: 12px; font-variant-numeric: tabular-nums; flex: none; }
+.aiws-path-step-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aiws-path-badge { font-size: 10px; border: 1px solid var(--cp-border); border-radius: 4px; padding: 0 4px; color: var(--cp-muted); flex: none; }
+.aiws-path-badge.is-problem { border-color: color-mix(in srgb, var(--cp-warning) 60%, var(--cp-border)); color: var(--cp-text); background: color-mix(in srgb, var(--cp-warning) 16%, transparent); }
+.aiws-path-props { display: flex; flex-direction: column; gap: 4px; border-top: 1px solid var(--cp-border); padding-top: 6px; }
+.aiws-path-props label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--cp-muted); }
+.aiws-path-props textarea { min-height: 72px; resize: vertical; color: var(--cp-text); }
+.aiws-path-props input, .aiws-path-props select { color: var(--cp-text); }
+.aiws-path-hide { display: flex; flex-direction: column; gap: 2px; max-height: 120px; overflow: auto; font-size: 12px; }
+.aiws-path-hide label { flex-direction: row; align-items: center; gap: 4px; color: var(--cp-text); }
+.aiws-path-overlay { position: absolute; inset: 0; z-index: 5; pointer-events: none; overflow: hidden; }
+.aiws-path-overlay svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.aiws-path-box { fill: color-mix(in srgb, var(--cp-accent) 6%, transparent); stroke: color-mix(in srgb, var(--cp-accent) 70%, transparent); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.aiws-path-box.is-selected { fill: color-mix(in srgb, var(--cp-accent) 10%, transparent); stroke: var(--cp-accent); stroke-width: 2; stroke-dasharray: none; pointer-events: auto; cursor: move; }
+.aiws-path-box.is-frame { stroke-dasharray: 2 3; }
+.aiws-path-link { stroke: color-mix(in srgb, var(--cp-accent) 55%, transparent); stroke-width: 1.5; fill: none; marker-end: url(#aiws-path-arrow); }
+.aiws-path-label { position: absolute; transform: translate(0, -100%); padding: 1px 6px; border-radius: 6px 6px 6px 0; background: var(--cp-accent); color: var(--cp-bg); font-size: 11px; white-space: nowrap; pointer-events: none; }
+.aiws-path-handle { fill: var(--cp-surface); stroke: var(--cp-accent); stroke-width: 1.5; pointer-events: auto; }
+.aiws-viewfinder { position: absolute; z-index: 6; border: 2px solid var(--cp-accent); border-radius: 2px; box-shadow: 0 0 0 9999px rgb(0 0 0 / 0.28); pointer-events: none; }
+.aiws-viewfinder-label { position: absolute; left: 0; top: -28px; padding: 2px 8px; border-radius: 6px; background: var(--cp-accent); color: var(--cp-bg); font-size: 12px; white-space: nowrap; }
+.aiws-viewfinder-actions { position: absolute; right: 0; bottom: -40px; display: flex; gap: 6px; pointer-events: auto; }
+
+/* ---- the guide (网站式导览) */
+.aiws-guide { position: absolute; inset: 0; z-index: 40; touch-action: none; }
+.aiws-guide-shade { position: absolute; inset: 0; pointer-events: none; }
+.aiws-guide-shade path { fill: rgb(0 0 0 / 0.5); }
+.aiws-guide-ring { position: absolute; border: 2px solid var(--cp-accent); border-radius: 6px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--cp-accent) 25%, transparent); pointer-events: none; transition: all 200ms ease; }
+.aiws-guide-bubble { position: absolute; width: min(340px, calc(100% - 24px)); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; box-sizing: border-box; }
+.aiws-guide-bubble-text { white-space: pre-wrap; line-height: 1.55; }
+.aiws-guide-bubble-head { display: flex; align-items: center; gap: 8px; }
+.aiws-guide-count { font-size: 12px; color: var(--cp-muted); font-variant-numeric: tabular-nums; }
+
+/* ---- the prompter (a page of its own: /workspace/<id>/show/<show>#k=…) */
+.aiws-prompter { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--cp-bg); color: var(--cp-text); font-family: system-ui, sans-serif; }
+.aiws-prompter-stage { position: absolute; inset: 0; z-index: 0; }
+.aiws-prompter-panel { position: relative; z-index: 1; margin: auto; width: min(760px, 100%); height: 100%; max-height: 100%; box-sizing: border-box; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+.aiws-prompter.has-stage .aiws-prompter-panel { margin: 0 0 0 auto; width: min(460px, 100%); background: color-mix(in srgb, var(--cp-bg) 88%, transparent); backdrop-filter: blur(6px); border-left: 1px solid var(--cp-border); }
+.aiws-prompter-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.aiws-prompter-title { font-weight: 600; font-size: 18px; flex: 1 1 auto; min-width: 0; }
+.aiws-prompter-clock { font-variant-numeric: tabular-nums; color: var(--cp-muted); }
+.aiws-prompter-notes { flex: 1 1 auto; overflow: auto; white-space: pre-wrap; line-height: 1.5; border: 1px solid var(--cp-border); border-radius: 12px; padding: 12px 14px; background: var(--cp-surface); }
+.aiws-prompter-next { color: var(--cp-muted); }
+.aiws-prompter-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.aiws-prompter button { font: inherit; color: inherit; border: 1px solid var(--cp-border); background: var(--cp-surface); border-radius: 10px; padding: 10px 12px; cursor: pointer; }
+.aiws-prompter button:disabled { opacity: 0.5; cursor: default; }
+.aiws-prompter button.is-primary { background: var(--cp-accent); color: var(--cp-bg); border-color: var(--cp-accent); font-weight: 600; font-size: 18px; }
+.aiws-prompter-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.aiws-prompter-row > button { flex: 1 1 auto; }
+.aiws-prompter-steps { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow: auto; }
+.aiws-prompter-steps button { text-align: left; padding: 6px 10px; }
+.aiws-prompter-steps button.is-current { border-color: var(--cp-accent); background: color-mix(in srgb, var(--cp-accent-soft) 20%, var(--cp-surface)); }
+.aiws-prompter-ended { margin: auto; text-align: center; display: flex; flex-direction: column; gap: 8px; padding: 24px; }
+.aiws-prompter-pointer { position: absolute; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: rgb(239 68 68 / 0.95); box-shadow: 0 0 12px rgb(239 68 68 / 0.8); pointer-events: none; z-index: 1; }
