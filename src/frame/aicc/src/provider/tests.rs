@@ -202,6 +202,18 @@ struct ScriptedDiscovery {
     calls: AtomicUsize,
 }
 
+struct CredentialFailingDiscovery;
+
+#[async_trait]
+impl ProviderDiscovery for CredentialFailingDiscovery {
+    async fn discover(
+        &self,
+        _context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        Err(ProviderError::Credential("invalid provider API key".into()))
+    }
+}
+
 impl ScriptedDiscovery {
     fn new(
         results: impl IntoIterator<Item = Result<ProviderDiscoverySnapshot, String>>,
@@ -1009,6 +1021,18 @@ async fn draft_validation_classifies_connection_auth_discovery_and_adapter_failu
         .unwrap_err();
     assert_eq!(error.stage, ProviderDraftValidationStage::Discovery);
     assert_eq!(error.kind, ProviderRefreshFailure::Discovery);
+
+    let error = manager
+        .validate_draft(
+            &valid,
+            &connection_contract(),
+            &CredentialFailingDiscovery,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.stage, ProviderDraftValidationStage::Authentication);
+    assert_eq!(error.kind, ProviderRefreshFailure::Credential);
 
     assert_eq!(discovery_impl.calls.load(Ordering::SeqCst), 0);
     assert_eq!(store.commits.load(Ordering::SeqCst), 0);

@@ -10,7 +10,8 @@
       "id": "kimi-k3",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
-        "max_context_tokens": 1000000,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,

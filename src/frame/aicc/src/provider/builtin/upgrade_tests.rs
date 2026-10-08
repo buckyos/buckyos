@@ -1243,7 +1243,23 @@ fn domestic_currency_never_matches_global_and_minimax_vision_matches_contract() 
             model.provider_model_id == "MiniMax-M3"
         );
     }
-    assert_eq!(inventory.models.len(), 2);
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .map(|model| model.provider_model_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "MiniMax-H3",
+            "MiniMax-H3-Max",
+            "MiniMax-M2.7",
+            "MiniMax-M3",
+            "asr-1.0",
+            "image-01",
+            "speech-2.8-hd",
+            "speech-2.8-turbo",
+        ])
+    );
 }
 
 #[test]

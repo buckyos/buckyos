@@ -158,25 +158,45 @@ function rewriteMockUrls(
   authority: string,
   endpoint: string,
   artifactAuthority = authority,
+  artifactSelectionSeed?: string,
 ): unknown {
   if (typeof value === "string") {
-    return value.replaceAll("http://mock-artifact", `http://${artifactAuthority}`).replaceAll(
+    const rewritten = value.replaceAll("http://mock-artifact", `http://${artifactAuthority}`).replaceAll(
       "http://mock/{endpoint}",
       `http://${authority}/${endpoint}`,
     )
       .replaceAll("http://mock", `http://${authority}`);
+    return withArtifactSelection(rewritten, artifactAuthority, artifactSelectionSeed);
   }
   if (Array.isArray(value)) {
-    return value.map((item) => rewriteMockUrls(item, authority, endpoint, artifactAuthority));
+    return value.map((item) =>
+      rewriteMockUrls(item, authority, endpoint, artifactAuthority, artifactSelectionSeed)
+    );
   }
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value).map((
         [key, item],
-      ) => [key, rewriteMockUrls(item, authority, endpoint, artifactAuthority)]),
+      ) => [
+        key,
+        rewriteMockUrls(item, authority, endpoint, artifactAuthority, artifactSelectionSeed),
+      ]),
     );
   }
   return value;
+}
+
+function withArtifactSelection(
+  value: string,
+  artifactAuthority: string,
+  selectionSeed?: string,
+): string {
+  if (!selectionSeed || !value.startsWith(`http://${artifactAuthority}/artifacts/`)) {
+    return value;
+  }
+  const url = new URL(value);
+  url.searchParams.set("aicc_mock_selection", selectionSeed);
+  return url.toString();
 }
 
 function discoveryFixture(
@@ -413,7 +433,9 @@ export function createT15MockHandler(
           ? "audio/wav"
           : "video/mp4";
         response.writeHead(200, { "content-type": mime });
-        response.end(url.pathname.startsWith("/artifacts/doubao")
+        response.end(mime === "image/jpeg"
+          ? Buffer.from([0xff, 0xd8, 0xff, 0xd9])
+          : url.pathname.startsWith("/artifacts/doubao")
           ? url.pathname.endsWith(".mp4")
             ? Buffer.from([0, 0, 0, 12, 0x66, 0x74, 0x79, 0x70, 0, 0, 0, 0])
             : Buffer.from([0xff, 0xd8, 0xff, 0xd9])
@@ -668,6 +690,7 @@ export function createT15MockHandler(
               request.headers.host ?? "127.0.0.1",
               url.pathname.replace(/^\//, ""),
               artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+              selection.selection_seed,
             ),
           );
         }
@@ -713,6 +736,7 @@ export function createT15MockHandler(
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
           artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+          selection.selection_seed,
         ) as Record<string, unknown>;
         const task = (result.task ?? {}) as Record<string, unknown>;
         task.status = status;
@@ -723,6 +747,7 @@ export function createT15MockHandler(
               request.headers.host ?? "127.0.0.1",
               options.artifactPort,
               "/artifacts/unavailable.mp4",
+              selection.selection_seed,
             ),
           };
         }
@@ -807,6 +832,7 @@ export function createT15MockHandler(
           request.headers.host ?? "127.0.0.1",
           "",
           artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+          selection.selection_seed,
         ) as Record<string, unknown>;
         return json(response, 200, result);
       }
@@ -849,8 +875,14 @@ export function createT15MockHandler(
                 request.headers.host ?? "127.0.0.1",
                 options.artifactPort,
                 "/artifacts/unavailable.mp4",
+                selection.selection_seed,
               )
-              : `http://${artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort)}/artifacts/doubao.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature` },
+              : artifactUrl(
+                request.headers.host ?? "127.0.0.1",
+                options.artifactPort,
+                "/artifacts/doubao.mp4?X-Tos-Algorithm=TOS4-HMAC-SHA256&X-Tos-Credential=t15&X-Tos-Signature=t15-signature",
+                selection.selection_seed,
+              ) },
           });
       }
       if (
@@ -893,6 +925,7 @@ export function createT15MockHandler(
           request.headers.host ?? "127.0.0.1",
           url.pathname.replace(/^\//, ""),
           artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+          selection.selection_seed,
         ) as Record<string, unknown>;
         if (selection.scenario === "async_artifact_unavailable") {
           result.video_result = [{
@@ -900,6 +933,7 @@ export function createT15MockHandler(
               request.headers.host ?? "127.0.0.1",
               options.artifactPort,
               "/artifacts/unavailable.mp4",
+              selection.selection_seed,
             ),
           }];
         }
@@ -942,11 +976,13 @@ export function createT15MockHandler(
                       request.headers.host ?? "127.0.0.1",
                       options.artifactPort,
                       "/artifacts/unavailable.mp4",
+                      selection.selection_seed,
                     )
                     : artifactUrl(
                       request.headers.host ?? "127.0.0.1",
                       options.artifactPort,
                       "/artifacts/result.mp4",
+                      selection.selection_seed,
                     ),
                 },
               }],
@@ -1018,11 +1054,13 @@ export function createT15MockHandler(
                 request.headers.host ?? "127.0.0.1",
                 options.artifactPort,
                 "/artifacts/unavailable.mp4",
+                selection.selection_seed,
               )
               : artifactUrl(
                 request.headers.host ?? "127.0.0.1",
                 options.artifactPort,
                 "/artifacts/result.mp4",
+                selection.selection_seed,
               ),
           },
           base_resp: { status_code: 0, status_msg: "success" },
@@ -1360,6 +1398,7 @@ export function createT15MockHandler(
         request.headers.host ?? "127.0.0.1",
         url.pathname.replace(/^\//, ""),
         artifactAuthority(request.headers.host ?? "127.0.0.1", options.artifactPort),
+        selection.selection_seed,
       );
       return json(response, 200, fixture);
     } catch (error) {
@@ -1374,8 +1413,14 @@ function artifactAuthority(authority: string, artifactPort?: number): string {
   return hostname.includes(":") ? `[${hostname}]:${artifactPort}` : `${hostname}:${artifactPort}`;
 }
 
-function artifactUrl(authority: string, artifactPort: number | undefined, path: string): string {
-  return `http://${artifactAuthority(authority, artifactPort)}${path}`;
+function artifactUrl(
+  authority: string,
+  artifactPort: number | undefined,
+  path: string,
+  selectionSeed?: string,
+): string {
+  const artifactHost = artifactAuthority(authority, artifactPort);
+  return withArtifactSelection(`http://${artifactHost}${path}`, artifactHost, selectionSeed);
 }
 
 function port(args: string[], name = "--port", fallback = 18081): number {

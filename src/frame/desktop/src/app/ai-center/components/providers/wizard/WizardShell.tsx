@@ -128,12 +128,15 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
     const profile = catalog?.providers.find((item) => item.provider_profile_id === type)
     const displayName = type === 'sn' ? t('aiCenter.wizard.snRouter', 'SN Router') : profile?.display_name ?? ''
     const regionField = profile?.connection_fields.region
-    const defaultRegion = regionField?.default_value ?? regionField?.allowed_values[0]
+    const defaultRegion = regionField?.default_value
+    const requiresExplicitRegion = regionField?.mode === 'required' && !defaultRegion
     updateDraft({
       provider_profile_id: type,
       provider_instance_name: nextProviderInstanceName(type, displayName, providers.map((provider) => provider.config.provider_instance_name)),
       display_name: displayName,
-      base_url: defaultRegion
+      base_url: requiresExplicitRegion
+        ? ''
+        : defaultRegion
         ? profile?.region_base_urls[defaultRegion] ?? profile?.base_url ?? ''
         : profile?.base_url ?? '',
       operation_base_urls: {},

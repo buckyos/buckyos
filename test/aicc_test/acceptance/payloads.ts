@@ -231,7 +231,7 @@ export function buildExactRequest(args: {
     args.cell.resource_representation,
     args.cell.document_format,
   );
-  const inputJson = { ...payload.input_json };
+  const inputJson = { ...payload.input_json, ...(args.cell.request_defaults ?? {}) };
   const resources = [...payload.resources];
   const fixture = (kind: SingularFixtureKind): ResourceRef => requireFixture(
     args.fixtures,

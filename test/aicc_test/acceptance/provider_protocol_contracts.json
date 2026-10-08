@@ -675,7 +675,7 @@
           "MiniMax-H3-Max"
         ],
         "audio.music": [
-          "music-2.0"
+          "music-3.0"
         ]
       },
       "test_model_ids": {
@@ -688,7 +688,7 @@
         "image.img2img": "image-01",
         "video.txt2video": "MiniMax-H3",
         "video.img2video": "MiniMax-H3",
-        "audio.music": "music-2.0"
+        "audio.music": "music-3.0"
       },
       "contracts": [
         {
@@ -757,7 +757,7 @@
           "required_body_fields_by_api_type": { "image.img2img": ["subject_reference"] },
           "allowed_body_fields": ["model", "prompt", "aspect_ratio", "height", "width", "response_format", "n", "prompt_optimizer", "subject_reference"],
           "body_field_types": { "model": ["string"], "prompt": ["string"], "subject_reference": ["array"] },
-          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock-artifact/artifacts/image.png"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
+          "success_fixture": { "id": "minimax_mock_1", "data": { "image_urls": ["http://mock-artifact/artifacts/image.jpeg"] }, "metadata": { "failed_count": "0", "success_count": "1" }, "base_resp": { "status_code": 0, "status_msg": "success" } },
           "official_sources": ["https://platform.minimax.io/docs/api-reference/image-generation-t2i", "https://platform.minimax.io/docs/api-reference/image-generation-i2i"],
           "evidence_summary": "MiniMax image generation uses POST /v1/image_generation with model/prompt and returns data.image_urls."
         },
@@ -1399,7 +1399,7 @@
         "vision.ocr": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"],
         "vision.caption": ["kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"]
       },
-      "official_variant_sources": ["https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
+      "official_variant_sources": ["https://platform.kimi.com/docs/models", "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart", "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"],
       "official_variant_rules": [{
         "model_ids": ["kimi-k3"],
         "variants": {

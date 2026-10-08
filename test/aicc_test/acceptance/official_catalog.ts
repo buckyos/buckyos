@@ -278,6 +278,7 @@ export async function fetchOfficialCatalogs(input: {
   drivers: string[];
   instanceNames: Record<string, string>;
   tokens: Record<string, string | undefined>;
+  endpointOverrides?: Record<string, string | undefined>;
   timeoutMs: number;
   fetcher?: Fetcher;
 }): Promise<ProviderInventory[]> {
@@ -285,8 +286,15 @@ export async function fetchOfficialCatalogs(input: {
   const fetchedAt = new Date().toISOString();
   const catalogs: ProviderInventory[] = [];
   for (const driver of input.drivers) {
-    const profile = profiles.get(driver);
-    if (!profile) throw new Error(`missing provider baseline for ${driver}`);
+    const baselineProfile = profiles.get(driver);
+    if (!baselineProfile) throw new Error(`missing provider baseline for ${driver}`);
+    const endpoint = input.endpointOverrides?.[driver];
+    const profile = endpoint
+      ? {
+        ...baselineProfile,
+        official_catalog: { ...baselineProfile.official_catalog, endpoint },
+      }
+      : baselineProfile;
     const instance = input.instanceNames[driver] || `${driver}-unresolved`;
     const models = await fetchOfficialModels({
       profile,

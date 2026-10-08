@@ -68,7 +68,7 @@ import {
   type ArtifactAudit,
   type ReadableNamedData,
 } from "./artifact_validation.ts";
-import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
+import { assertJudgeModelAvailable, JudgeError, judgeProviderDriver, runJudge, selectJudgeModel } from "./judge.ts";
 import {
   bindOfficialCatalogInstances,
   fetchOfficialCatalogs,
@@ -113,6 +113,7 @@ type Options = {
   providerTokens: ProviderTokens;
   providerInstanceOverrides: ProviderInstanceOverrides;
   officialCatalogTokens: Record<string, string | undefined>;
+  officialCatalogEndpoints: Record<string, string>;
   applyProviderCredentials: boolean;
   allowCredentialMutationCli: boolean;
   shardIndex: number;
@@ -425,6 +426,7 @@ async function parseOptions(args: string[]): Promise<Options> {
   const providerInstances: Record<string, string> = {};
   const providerTokens = configuredProviderTokens(config, env);
   const officialCatalogTokens: Record<string, string | undefined> = { ...providerTokens };
+  const officialCatalogEndpoints: Record<string, string> = {};
   for (const driver of [
     "openai",
     "claude",
@@ -438,6 +440,15 @@ async function parseOptions(args: string[]): Promise<Options> {
     const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
     const environment = env(`AICC_${driver.replaceAll("-", "_").toUpperCase()}_CATALOG_TOKEN`);
     if (configured || environment) officialCatalogTokens[driver] = configured ?? environment;
+  }
+  for (const [key, value] of Object.entries(config)) {
+    const match = /^official_catalog_credentials\.([^.]+)\.endpoint$/.exec(key);
+    if (!match || typeof value !== "string" || !value.trim()) continue;
+    const endpoint = new URL(value.trim());
+    if (endpoint.protocol !== "https:") {
+      throw new Error(`${key} must use HTTPS`);
+    }
+    officialCatalogEndpoints[match[1]] = endpoint.toString();
   }
   for (const [key, value] of Object.entries(config)) {
     const match = /^limits\.([^.]+)\.(max_concurrency|min_interval_ms)$/.exec(key);
@@ -488,6 +499,7 @@ async function parseOptions(args: string[]): Promise<Options> {
     providerTokens,
     providerInstanceOverrides: configuredProviderInstanceOverrides(config),
     officialCatalogTokens,
+    officialCatalogEndpoints,
     applyProviderCredentials: tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ?? false,
     allowCredentialMutationCli: false,
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
@@ -957,6 +969,7 @@ async function main(): Promise<void> {
       options.providerInstances[driver] ?? `${driver}-catalog`,
     ])),
     tokens: options.officialCatalogTokens,
+    endpointOverrides: options.officialCatalogEndpoints,
     timeoutMs: Math.min(options.timeoutMs, 60_000),
   });
   const initialRuntimeInstances = new Set(
@@ -1159,6 +1172,7 @@ async function executeAcceptance(input: {
     ])),
   });
   const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
+  const judgeSchedulerProvider = judgeProviderDriver(judgeModel, selectedInventories);
   const officialInventories = scopeOfficialInventoriesToInstanceRules(
     bindOfficialCatalogInstances(officialCatalogs, selectedInventories),
     options.providerInstanceOverrides,
@@ -1321,6 +1335,7 @@ async function executeAcceptance(input: {
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
     : [];
+  if (judgedCells.length > 0) assertJudgeModelAvailable(judgeModel, selectedInventories);
   const continuationPrerequisiteCells = [...new Map(
     executableCells
       .filter((cell) => cell.api_type === "video.extend")
@@ -1618,7 +1633,7 @@ async function executeAcceptance(input: {
                   metadata: audit.metadata,
                 })),
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
-                invoke: async (request) => await scheduler.execute("judge", async () => {
+                invoke: async (request) => await scheduler.execute(judgeSchedulerProvider, async () => {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
                   judgeReservation = costBudget.reserve(judgeEstimate);
                   actualCalls += 1;

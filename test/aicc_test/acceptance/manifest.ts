@@ -293,6 +293,16 @@ export function validateProviderBaseline(value: unknown): ProviderBaseline {
           }
         }
       }
+      if (rule.request_defaults !== undefined) {
+        if (!isObject(rule.request_defaults)) {
+          throw new Error(`${driver}.request_defaults must be an object`);
+        }
+        for (const [apiType, defaults] of Object.entries(rule.request_defaults)) {
+          if (!(rule.api_types as string[]).includes(apiType) || !isObject(defaults)) {
+            throw new Error(`${driver}.request_defaults.${apiType} is invalid`);
+          }
+        }
+      }
       requireStringArray(rule.source_urls, `${driver}.rule.source_urls`);
       requireString(rule.evidence_summary, `${driver}.evidence_summary`);
       for (const apiType of rule.api_types as string[]) {
@@ -533,6 +543,9 @@ export function analyzeProviderMatrix(args: {
           input_kinds: inputKinds,
           output_kinds: outputKinds,
           resource_representation: rule.resource_representation,
+          request_defaults: rule.request_defaults?.[apiType] === undefined
+            ? undefined
+            : structuredClone(rule.request_defaults[apiType]),
           source_urls: rule.source_urls,
           estimated_cost_usd: model.pricing?.currency?.toUpperCase() === "USD" &&
               typeof model.pricing.estimated_cost === "number" &&
