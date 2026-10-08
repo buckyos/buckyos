@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.doubao-speech.doubao-speech.asr.flash.v3.audio.asr.error.rate_limit",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "doubao-speech",
+  "provider_instance": "t15-20261008050816-1602985-doubao-speech",
+  "exact_model": "doubao-seed-asr-2.0-fast@t15-20261008050816-1602985-doubao-speech",
+  "api_type": "audio.asr",
+  "method": "audio.asr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:23:50.006Z",
+      "elapsed_ms": 344,
+      "status": "passed",
+      "diagnostic": "contract=doubao-speech.asr.flash.v3; scenario=rate_limit; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008104624-67760",
+  "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.response.missing_required_response_field",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008104624-67760-minimax",
+  "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:47:45.445Z",
+      "elapsed_ms": 352,
+      "status": "passed",
+      "diagnostic": "contract=minimax.video-generation.v2; scenario=missing_required_response_field; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

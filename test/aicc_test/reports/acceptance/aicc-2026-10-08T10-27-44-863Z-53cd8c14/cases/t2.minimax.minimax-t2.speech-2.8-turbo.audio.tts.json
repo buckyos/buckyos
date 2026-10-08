@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "speech-2.8-turbo@minimax-t2",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 40625,
+      "status": "failed",
+      "failure_class": "assertion_failed",
+      "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"exact model unavailable: speech-2.8-turbo@minimax-t2: filtered by canonical_field_unsatisfied\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

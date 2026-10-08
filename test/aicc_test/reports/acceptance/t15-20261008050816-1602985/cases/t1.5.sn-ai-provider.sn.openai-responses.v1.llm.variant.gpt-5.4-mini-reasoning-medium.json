@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.sn-ai-provider.sn.openai-responses.v1.llm.variant.gpt-5.4-mini-reasoning-medium",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "sn-ai-provider",
+  "provider_instance": "t15-20261008050816-1602985-sn-ai-provider",
+  "exact_model": "gpt-5.4-mini:reasoning-medium@t15-20261008050816-1602985-sn-ai-provider",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:31:03.458Z",
+      "elapsed_ms": 262,
+      "status": "passed",
+      "diagnostic": "contract=sn.openai-responses.v1; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

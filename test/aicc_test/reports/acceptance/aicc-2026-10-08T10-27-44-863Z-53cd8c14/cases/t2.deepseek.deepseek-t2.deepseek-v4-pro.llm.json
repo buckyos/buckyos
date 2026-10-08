@@ -1,0 +1,38 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.deepseek.deepseek-t2.deepseek-v4-pro.llm",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "deepseek",
+  "provider_instance": "deepseek-t2",
+  "exact_model": "deepseek-v4-pro@deepseek-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 3945,
+      "status": "passed",
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 25,
+        "total_tokens": 123
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.00011418,
+      "cost_status": "actual"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-c257d22c406f43ca8a9f28899c8ba866",
+  "usage": {
+    "input_tokens": 98,
+    "output_tokens": 25,
+    "total_tokens": 123
+  },
+  "cost_usd": 0.00011418,
+  "trace_id": "aicc-idem-529571c76eb57a26d6e2897d648f8714"
+}

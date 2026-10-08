@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.route.exposure.google-gemini.lyria--.audio.music",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "audio.music",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:32:22.136Z",
+      "elapsed_ms": 96,
+      "status": "passed",
+      "diagnostic": "audio.music closed through lyria-3-clip-preview@dv-gemini-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "google-gemini",
+  "provider_profile_id": "gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "model_rule": "lyria-*",
+  "exposure_mode": "logical_routable"
+}

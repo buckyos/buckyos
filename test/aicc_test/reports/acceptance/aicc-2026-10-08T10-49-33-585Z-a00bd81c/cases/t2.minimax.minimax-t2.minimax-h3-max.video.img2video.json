@@ -1,0 +1,26 @@
+{
+  "run_id": "aicc-2026-10-08T10-49-33-585Z-a00bd81c",
+  "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-H3-Max@minimax-t2",
+  "api_type": "video.img2video",
+  "method": "video.img2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:49:36.096Z",
+      "elapsed_ms": 36732,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "error_code": "2013",
+      "diagnostic": "TaskFailureError: provider task t-aa94bc583dde4e6bb6097284415fa326 ended Failed: {\"code\":\"provider_error\",\"message\":\"content[1].image_url: invalid param: image size 1104x132, expected each side in [256, 5760]\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

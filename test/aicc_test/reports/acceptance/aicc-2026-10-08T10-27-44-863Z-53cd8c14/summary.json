@@ -1,0 +1,1790 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "started_at": "2026-10-08T10:27:44.824Z",
+  "finished_at": "2026-10-08T10:30:11.756Z",
+  "commit": "7612d141be9938f5d1c4a89b41f20ae80459c1c1",
+  "baseline_revision": "2026-10-08.2",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 19,
+  "actual_real_calls": 19,
+  "estimated_cost_usd": 0.19000000000000003,
+  "actual_cost_usd": 0.00022233,
+  "raw_cost_usd": 0.00022233,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 20,
+    "planned_max_calls": 19,
+    "planned_max_cost_usd": 0.19000000000000003,
+    "actual_calls": 19,
+    "actual_cost_usd": 0.00022233,
+    "raw_cost_usd": 0.00022233,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0.16,
+    "total_exposure_usd": 0.16022233,
+    "remaining_budget_usd": 19.83977767,
+    "unknown_cost_calls": 16,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.llm",
+        "attempt": 1,
+        "provider_driver": "deepseek",
+        "provider_instance": "deepseek-t2",
+        "exact_model": "deepseek-flash@deepseek-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 45,
+          "output_tokens": 28,
+          "total_tokens": 73
+        },
+        "estimated_cost_usd": 0.01,
+        "actual_cost_usd": 0.000023549999999999996,
+        "cost_status": "actual"
+      },
+      {
+        "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+        "attempt": 1,
+        "provider_driver": "deepseek",
+        "provider_instance": "deepseek-t2",
+        "exact_model": "deepseek-flash@deepseek-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "deepseek",
+        "provider_instance": "deepseek-t2",
+        "exact_model": "deepseek-flash@deepseek-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 236,
+          "output_tokens": 82,
+          "total_tokens": 318
+        },
+        "estimated_cost_usd": 0.01,
+        "actual_cost_usd": 0.0000846,
+        "cost_status": "actual"
+      },
+      {
+        "case_id": "t2.deepseek.deepseek-t2.deepseek-v4-pro.llm",
+        "attempt": 1,
+        "provider_driver": "deepseek",
+        "provider_instance": "deepseek-t2",
+        "exact_model": "deepseek-v4-pro@deepseek-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 98,
+          "output_tokens": 25,
+          "total_tokens": 123
+        },
+        "estimated_cost_usd": 0.01,
+        "actual_cost_usd": 0.00011418,
+        "cost_status": "actual"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.asr-1.0.audio.asr",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "asr-1.0@minimax-t2",
+        "api_type": "audio.asr",
+        "method": "audio.asr",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "passed",
+        "usage": {
+          "request_units": 1
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.image-01.image.txt2img",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "image-01@minimax-t2",
+        "api_type": "image.txt2img",
+        "method": "images.generate",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "MiniMax-H3-Max@minimax-t2",
+        "api_type": "video.img2video",
+        "method": "video.img2video",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.txt2video",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "MiniMax-H3-Max@minimax-t2",
+        "api_type": "video.txt2video",
+        "method": "video.txt2video",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.minimax-h3.video.img2video",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "MiniMax-H3@minimax-t2",
+        "api_type": "video.img2video",
+        "method": "video.img2video",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.minimax-h3.video.txt2video",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "MiniMax-H3@minimax-t2",
+        "api_type": "video.txt2video",
+        "method": "video.txt2video",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "passed",
+        "usage": {
+          "request_units": 1
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.speech-2.8-hd.audio.tts",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "speech-2.8-hd@minimax-t2",
+        "api_type": "audio.tts",
+        "method": "audio.tts",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "speech-2.8-turbo@minimax-t2",
+        "api_type": "audio.tts",
+        "method": "audio.tts",
+        "started_at": "2026-10-08T10:27:47.698Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.prerequisite.generated_artifact.image.txt2img.image-01@minimax-t2",
+        "attempt": 1,
+        "provider_driver": "minimax",
+        "provider_instance": "minimax-t2",
+        "exact_model": "image-01@minimax-t2",
+        "api_type": "image.txt2img",
+        "method": "images.generate",
+        "started_at": "2026-10-08T10:27:48.891Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "deepseek",
+        "calls": 4,
+        "input_tokens": 379,
+        "output_tokens": 135,
+        "total_tokens": 514,
+        "request_units": 0,
+        "actual_cost_usd": 0.00022233,
+        "raw_cost_usd": 0.00022233,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "kimi",
+        "calls": 6,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      },
+      {
+        "key": "minimax",
+        "calls": 9,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 2,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.09,
+        "unknown_cost_calls": 9
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "deepseek/deepseek-t2",
+        "calls": 4,
+        "input_tokens": 379,
+        "output_tokens": 135,
+        "total_tokens": 514,
+        "request_units": 0,
+        "actual_cost_usd": 0.00022233,
+        "raw_cost_usd": 0.00022233,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "kimi/kimi-t2",
+        "calls": 6,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      },
+      {
+        "key": "minimax/minimax-t2",
+        "calls": 9,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 2,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.09,
+        "unknown_cost_calls": 9
+      }
+    ],
+    "by_model": [
+      {
+        "key": "asr-1.0@minimax-t2",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "deepseek-flash@deepseek-t2",
+        "calls": 3,
+        "input_tokens": 281,
+        "output_tokens": 110,
+        "total_tokens": 391,
+        "request_units": 0,
+        "actual_cost_usd": 0.00010815,
+        "raw_cost_usd": 0.00010815,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "deepseek-v4-pro@deepseek-t2",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 25,
+        "total_tokens": 123,
+        "request_units": 0,
+        "actual_cost_usd": 0.00011418,
+        "raw_cost_usd": 0.00011418,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      },
+      {
+        "key": "image-01@minimax-t2",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "kimi-k2.7-code-highspeed@kimi-t2",
+        "calls": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k3@kimi-t2",
+        "calls": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "MiniMax-H3-Max@minimax-t2",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "MiniMax-H3@minimax-t2",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "speech-2.8-hd@minimax-t2",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "speech-2.8-turbo@minimax-t2",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "audio.asr",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "audio.tts",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "image.txt2img",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "llm",
+        "calls": 4,
+        "input_tokens": 143,
+        "output_tokens": 53,
+        "total_tokens": 196,
+        "request_units": 0,
+        "actual_cost_usd": 0.00013773,
+        "raw_cost_usd": 0.00013773,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "video.img2video",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "video.txt2video",
+        "calls": 2,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "vision.caption",
+        "calls": 3,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "vision.ocr",
+        "calls": 3,
+        "input_tokens": 236,
+        "output_tokens": 82,
+        "total_tokens": 318,
+        "request_units": 0,
+        "actual_cost_usd": 0.0000846,
+        "raw_cost_usd": 0.0000846,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.deepseek.deepseek-t2.deepseek-flash.llm",
+        "calls": 1,
+        "input_tokens": 45,
+        "output_tokens": 28,
+        "total_tokens": 73,
+        "request_units": 0,
+        "actual_cost_usd": 0.000023549999999999996,
+        "raw_cost_usd": 0.000023549999999999996,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      },
+      {
+        "key": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.deepseek.deepseek-t2.deepseek-flash.vision.ocr",
+        "calls": 1,
+        "input_tokens": 236,
+        "output_tokens": 82,
+        "total_tokens": 318,
+        "request_units": 0,
+        "actual_cost_usd": 0.0000846,
+        "raw_cost_usd": 0.0000846,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      },
+      {
+        "key": "t2.deepseek.deepseek-t2.deepseek-v4-pro.llm",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 25,
+        "total_tokens": 123,
+        "request_units": 0,
+        "actual_cost_usd": 0.00011418,
+        "raw_cost_usd": 0.00011418,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.asr-1.0.audio.asr",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.image-01.image.txt2img",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.minimax-h3-max.video.txt2video",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.minimax-h3.video.img2video",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.minimax-h3.video.txt2video",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 1,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.speech-2.8-hd.audio.tts",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.prerequisite.generated_artifact.image.txt2img.image-01@minimax-t2",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 1006,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 45,
+            "output_tokens": 28,
+            "total_tokens": 73
+          },
+          "estimated_cost_usd": 0.01,
+          "actual_cost_usd": 0.000023549999999999996,
+          "cost_status": "actual"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-48ec09d13d17435687bd648bd235a603",
+      "usage": {
+        "input_tokens": 45,
+        "output_tokens": 28,
+        "total_tokens": 73
+      },
+      "cost_usd": 0.000023549999999999996,
+      "trace_id": "aicc-idem-60e2b05ff31bcfb027e7300900bc43eb"
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 1107,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.ocr",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 2650,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 236,
+            "output_tokens": 82,
+            "total_tokens": 318
+          },
+          "estimated_cost_usd": 0.01,
+          "actual_cost_usd": 0.0000846,
+          "cost_status": "actual"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-f47bde39db9549aba88ccdb53d485915",
+      "usage": {
+        "input_tokens": 236,
+        "output_tokens": 82,
+        "total_tokens": 318
+      },
+      "cost_usd": 0.0000846,
+      "trace_id": "aicc-idem-d07c78b6221117c49cc7de4319090004"
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-v4-pro.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-v4-pro@deepseek-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 3945,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 98,
+            "output_tokens": 25,
+            "total_tokens": 123
+          },
+          "estimated_cost_usd": 0.01,
+          "actual_cost_usd": 0.00011418,
+          "cost_status": "actual"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-c257d22c406f43ca8a9f28899c8ba866",
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 25,
+        "total_tokens": 123
+      },
+      "cost_usd": 0.00011418,
+      "trace_id": "aicc-idem-529571c76eb57a26d6e2897d648f8714"
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 672,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "TaskFailureError: provider task t-f07615d29170491c8bd32394f05f15ec ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k2.7-code-highspeed or Permission denied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 21106,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 42591,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "TaskFailureError: provider task t-b42b66a20b494cc293ae70e502cdf0f2 ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k2.7-code-highspeed or Permission denied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 63665,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "TaskFailureError: provider task t-bc594fd594d441329119eed5e9c9e006 ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k3 or Permission denied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 84122,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 105655,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "TaskFailureError: provider task t-a012d38eca684311b5ef1c457a538aba ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k3 or Permission denied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.asr-1.0.audio.asr",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "asr-1.0@minimax-t2",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 1193,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "request_units": 1
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-0c53b94b011e4459ac17252b2b476cf6",
+      "usage": {
+        "request_units": 1
+      },
+      "trace_id": "aicc-idem-b71e183e463d71bcca11c457120c29ef"
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.image-01.image.img2img",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "image-01@minimax-t2",
+      "api_type": "image.img2img",
+      "method": "image.img2img",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 18262,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "Error: PNG artifact has an invalid signature",
+          "estimated_cost_usd": 0,
+          "cost_status": "not_called"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.image-01.image.txt2img",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "image-01@minimax-t2",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 35917,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "Error: PNG artifact has an invalid signature",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 35704,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.txt2video",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 37031,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "TaskFailureError: provider task t-8480d36aef8b4f0895ce4e0e684bdc7c ended Failed: {\"code\":\"provider_error\",\"message\":\"MiniMax request failed with status 400 Bad Request: invalid params, model MiniMax-H3-Max does not support duration 4s, supported durations: 5s, 6s, 7s, 8s, 9s, 10s, 11s, 12s, 13s, 14s, 15s (2013)\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3.video.img2video",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 37624,
+          "status": "failed",
+          "failure_class": "resource_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3.video.txt2video",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 142852,
+          "status": "review",
+          "diagnostic": "validated 1 output artifact(s); semantic rubric requires Judge or manual review",
+          "usage": {
+            "request_units": 1
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [
+        {
+          "obj_id": "[downloaded-url]",
+          "label": "video/mp4",
+          "size": 1022047,
+          "sha256": "ee1775a3dd6bb4a6d83de6d7a32017ed6df4cc2aca43ed3abe2019e515cf49b9",
+          "metadata": {
+            "duration_seconds": 4.459,
+            "format": "mp4"
+          }
+        }
+      ],
+      "task_id": "t-d98990bbb9c440bdaac4027810fc1aaa",
+      "usage": {
+        "request_units": 1
+      },
+      "trace_id": "aicc-idem-eddba6b5796e4207f3fd8c6c42f8d944"
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.speech-2.8-hd.audio.tts",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-hd@minimax-t2",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 39617,
+          "status": "failed",
+          "failure_class": "assertion_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"exact model unavailable: speech-2.8-hd@minimax-t2: filtered by canonical_field_unsatisfied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+      "case_id": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-turbo@minimax-t2",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:27:47.698Z",
+          "elapsed_ms": 40625,
+          "status": "failed",
+          "failure_class": "assertion_failed",
+          "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"exact model unavailable: speech-2.8-turbo@minimax-t2: filtered by canonical_field_unsatisfied\"}",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-v4-pro@deepseek-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "asr-1.0@minimax-t2",
+      "provider_model_id": "asr-1.0",
+      "physical_model_id": "asr-1.0",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/speech-to-text"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "image-01@minimax-t2",
+      "provider_model_id": "image-01",
+      "physical_model_id": "image-01",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-hd@minimax-t2",
+      "provider_model_id": "speech-2.8-hd",
+      "physical_model_id": "speech-2.8-hd",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-turbo@minimax-t2",
+      "provider_model_id": "speech-2.8-turbo",
+      "physical_model_id": "speech-2.8-turbo",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-v4-pro@deepseek-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "asr-1.0@minimax-t2",
+      "provider_model_id": "asr-1.0",
+      "physical_model_id": "asr-1.0",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/speech-to-text"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "image-01@minimax-t2",
+      "provider_model_id": "image-01",
+      "physical_model_id": "image-01",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3-Max@minimax-t2",
+      "provider_model_id": "MiniMax-H3-Max",
+      "physical_model_id": "MiniMax-H3-Max",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-H3@minimax-t2",
+      "provider_model_id": "MiniMax-H3",
+      "physical_model_id": "MiniMax-H3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/guides/video-generation"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-hd@minimax-t2",
+      "provider_model_id": "speech-2.8-hd",
+      "physical_model_id": "speech-2.8-hd",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "speech-2.8-turbo@minimax-t2",
+      "provider_model_id": "speech-2.8-turbo",
+      "physical_model_id": "speech-2.8-turbo",
+      "status": "included",
+      "source_urls": [
+        "https://platform.minimax.io/docs/api-reference/api-overview"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [
+    {
+      "defect_id": "defect.aicc.t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "component": "AICC",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "evidence_paths": [
+        "cases/t2.deepseek.deepseek-t2.deepseek-flash.vision.caption.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "component": "AICC",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "evidence_paths": [
+        "cases/t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "component": "AICC",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "evidence_paths": [
+        "cases/t2.kimi.kimi-t2.kimi-k3.vision.caption.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.image-01.image.img2img",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.image-01.image.img2img",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "Error: PNG artifact has an invalid signature",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.image-01.image.img2img.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.image-01.image.txt2img",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.image-01.image.txt2img",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "Error: PNG artifact has an invalid signature",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.image-01.image.txt2img.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.minimax-h3-max.video.img2video.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.minimax-h3.video.img2video",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.minimax-h3.video.img2video",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.minimax-h3.video.img2video.json"
+      ],
+      "failure_class": "resource_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.speech-2.8-hd.audio.tts",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.speech-2.8-hd.audio.tts",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"exact model unavailable: speech-2.8-hd@minimax-t2: filtered by canonical_field_unsatisfied\"}",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.speech-2.8-hd.audio.tts.json"
+      ],
+      "failure_class": "assertion_failed"
+    },
+    {
+      "defect_id": "defect.aicc.t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+      "component": "AICC",
+      "case_id": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"exact model unavailable: speech-2.8-turbo@minimax-t2: filtered by canonical_field_unsatisfied\"}",
+      "evidence_paths": [
+        "cases/t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts.json"
+      ],
+      "failure_class": "assertion_failed"
+    }
+  ],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --provider deepseek --provider kimi --provider minimax --case t2.deepseek.deepseek-t2.deepseek-flash.vision.caption --case t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm --case t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption --case t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr --case t2.kimi.kimi-t2.kimi-k3.llm --case t2.kimi.kimi-t2.kimi-k3.vision.caption --case t2.kimi.kimi-t2.kimi-k3.vision.ocr --case t2.minimax.minimax-t2.image-01.image.img2img --case t2.minimax.minimax-t2.image-01.image.txt2img --case t2.minimax.minimax-t2.minimax-h3-max.video.img2video --case t2.minimax.minimax-t2.minimax-h3-max.video.txt2video --case t2.minimax.minimax-t2.minimax-h3.video.img2video --case t2.minimax.minimax-t2.speech-2.8-hd.audio.tts --case t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (deepseek, kimi, minimax)"
+    ]
+  }
+}

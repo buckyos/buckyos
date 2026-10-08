@@ -1,0 +1,5 @@
+case_id,attempt,provider_driver,provider_instance,exact_model,api_type,method,started_at,status,input_tokens,output_tokens,total_tokens,request_units,estimated_cost_usd,raw_cost_usd,credit_applied_usd,actual_cost_usd,cost_status
+t2.kimi.kimi-t2.kimi-k2.6.vision.ocr,1,kimi,kimi-t2,kimi-k2.6@kimi-t2,vision.ocr,vision.ocr,2026-10-08T06:02:52.411Z,passed,219,2006,2225,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.6.vision.ocr.judge,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,llm,chat.completions.create,2026-10-08T06:03:36.431Z,passed,556,48,604,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr,1,kimi,kimi-t2,kimi-k2.7-code@kimi-t2,vision.ocr,vision.ocr,2026-10-08T06:02:52.411Z,passed,219,1992,2211,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr.judge,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,llm,chat.completions.create,2026-10-08T06:04:27.131Z,passed,551,47,598,,0.01000000,,,,unknown

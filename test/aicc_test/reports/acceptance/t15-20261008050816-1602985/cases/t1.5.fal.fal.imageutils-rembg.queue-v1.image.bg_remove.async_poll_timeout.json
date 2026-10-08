@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.fal.fal.imageutils-rembg.queue-v1.image.bg_remove.async_poll_timeout",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "t15-20261008050816-1602985-fal",
+  "exact_model": "fal-ai/imageutils/rembg@t15-20261008050816-1602985-fal",
+  "api_type": "image.bg_remove",
+  "method": "image.bg_remove",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:15:34.307Z",
+      "elapsed_ms": 5411,
+      "status": "passed",
+      "diagnostic": "contract=fal.imageutils-rembg.queue-v1; scenario=async_poll_timeout; captured_requests=3",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

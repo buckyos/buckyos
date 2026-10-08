@@ -1,0 +1,17 @@
+case_id,attempt,provider_driver,provider_instance,exact_model,api_type,method,started_at,status,input_tokens,output_tokens,total_tokens,request_units,estimated_cost_usd,raw_cost_usd,credit_applied_usd,actual_cost_usd,cost_status
+t2.kimi.kimi-t2.kimi-k2.6.llm,1,kimi,kimi-t2,kimi-k2.6@kimi-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,22,108,130,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.6.vision.caption,1,kimi,kimi-t2,kimi-k2.6@kimi-t2,vision.caption,vision.caption,2026-10-08T05:44:46.219Z,passed,430,562,992,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.6.vision.ocr,1,kimi,kimi-t2,kimi-k2.6@kimi-t2,vision.ocr,vision.ocr,2026-10-08T05:44:46.219Z,passed,219,118,337,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code.llm,1,kimi,kimi-t2,kimi-k2.7-code@kimi-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,22,51,73,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption,1,kimi,kimi-t2,kimi-k2.7-code@kimi-t2,vision.caption,vision.caption,2026-10-08T05:44:46.219Z,passed,430,408,838,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr,1,kimi,kimi-t2,kimi-k2.7-code@kimi-t2,vision.ocr,vision.ocr,2026-10-08T05:44:46.219Z,failed,,,,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m2.1-highspeed.llm,1,minimax,minimax-t2,MiniMax-M2.1-highspeed@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,51,137,188,,0.01000000,,,0.00035940,actual
+t2.minimax.minimax-t2.minimax-m2.1.llm,1,minimax,minimax-t2,MiniMax-M2.1@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,51,99,150,,0.01000000,,,0.00013410,actual
+t2.minimax.minimax-t2.minimax-m2.5-highspeed.llm,1,minimax,minimax-t2,MiniMax-M2.5-highspeed@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,56,179,235,,0.01000000,,,0.00046320,actual
+t2.minimax.minimax-t2.minimax-m2.5.llm,1,minimax,minimax-t2,MiniMax-M2.5@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,56,151,207,,0.01000000,,,0.00019800,actual
+t2.minimax.minimax-t2.minimax-m2.7-highspeed.llm,1,minimax,minimax-t2,MiniMax-M2.7-highspeed@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,56,85,141,,0.01000000,,,0.00023760,actual
+t2.minimax.minimax-t2.minimax-m2.7.llm,1,minimax,minimax-t2,MiniMax-M2.7@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,56,164,220,,0.01000000,,,0.00021360,actual
+t2.minimax.minimax-t2.minimax-m2.llm,1,minimax,minimax-t2,MiniMax-M2@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,54,183,237,,0.01000000,,,0.00023580,actual
+t2.minimax.minimax-t2.minimax-m3.llm,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,llm,chat.completions.create,2026-10-08T05:44:46.219Z,passed,178,10,188,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m3.vision.caption,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,vision.caption,vision.caption,2026-10-08T05:44:46.219Z,passed,582,191,773,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m3.vision.ocr,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,vision.ocr,vision.ocr,2026-10-08T05:44:46.219Z,passed,197,216,413,,0.01000000,,,,unknown

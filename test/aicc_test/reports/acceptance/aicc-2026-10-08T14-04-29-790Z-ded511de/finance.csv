@@ -1,0 +1,2 @@
+case_id,attempt,provider_driver,provider_instance,exact_model,api_type,method,started_at,status,input_tokens,output_tokens,total_tokens,request_units,estimated_cost_usd,raw_cost_usd,credit_applied_usd,actual_cost_usd,cost_status
+t2.deepseek.deepseek-t2.deepseek-flash.vision.caption,1,deepseek,deepseek-t2,deepseek-flash@deepseek-t2,vision.caption,vision.caption,2026-10-08T14:04:41.592Z,passed,241,362,603,,0.01000000,,,0.00025335,actual

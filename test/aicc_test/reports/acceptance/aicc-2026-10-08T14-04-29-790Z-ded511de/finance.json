@@ -1,0 +1,111 @@
+{
+  "currency": "USD",
+  "budget_usd": 0.01,
+  "planned_max_calls": 1,
+  "planned_max_cost_usd": 0.01,
+  "actual_calls": 1,
+  "actual_cost_usd": 0.00025335,
+  "raw_cost_usd": 0.00025335,
+  "credit_applied_usd": 0,
+  "estimated_exposure_usd": 0,
+  "total_exposure_usd": 0.00025335,
+  "remaining_budget_usd": 0.00974665,
+  "unknown_cost_calls": 0,
+  "budget_exceeded": false,
+  "entries": [
+    {
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "attempt": 1,
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "started_at": "2026-10-08T14:04:41.592Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.00025335,
+      "cost_status": "actual"
+    }
+  ],
+  "by_provider": [
+    {
+      "key": "deepseek",
+      "calls": 1,
+      "input_tokens": 241,
+      "output_tokens": 362,
+      "total_tokens": 603,
+      "request_units": 0,
+      "actual_cost_usd": 0.00025335,
+      "raw_cost_usd": 0.00025335,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0,
+      "unknown_cost_calls": 0
+    }
+  ],
+  "by_instance": [
+    {
+      "key": "deepseek/deepseek-t2",
+      "calls": 1,
+      "input_tokens": 241,
+      "output_tokens": 362,
+      "total_tokens": 603,
+      "request_units": 0,
+      "actual_cost_usd": 0.00025335,
+      "raw_cost_usd": 0.00025335,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0,
+      "unknown_cost_calls": 0
+    }
+  ],
+  "by_model": [
+    {
+      "key": "deepseek-flash@deepseek-t2",
+      "calls": 1,
+      "input_tokens": 241,
+      "output_tokens": 362,
+      "total_tokens": 603,
+      "request_units": 0,
+      "actual_cost_usd": 0.00025335,
+      "raw_cost_usd": 0.00025335,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0,
+      "unknown_cost_calls": 0
+    }
+  ],
+  "by_api_type": [
+    {
+      "key": "vision.caption",
+      "calls": 1,
+      "input_tokens": 241,
+      "output_tokens": 362,
+      "total_tokens": 603,
+      "request_units": 0,
+      "actual_cost_usd": 0.00025335,
+      "raw_cost_usd": 0.00025335,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0,
+      "unknown_cost_calls": 0
+    }
+  ],
+  "by_case": [
+    {
+      "key": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "calls": 1,
+      "input_tokens": 241,
+      "output_tokens": 362,
+      "total_tokens": 603,
+      "request_units": 0,
+      "actual_cost_usd": 0.00025335,
+      "raw_cost_usd": 0.00025335,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0,
+      "unknown_cost_calls": 0
+    }
+  ]
+}

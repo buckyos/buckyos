@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.qwen.qwen.responses.compatible-v1.llm.variant.qwen3.8-max-reasoning-medium",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "qwen",
+  "provider_instance": "t15-20261008050816-1602985-qwen-isolation-4",
+  "exact_model": "qwen3.8-max:reasoning-medium@t15-20261008050816-1602985-qwen-isolation-4",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:30:39.531Z",
+      "elapsed_ms": 207,
+      "status": "passed",
+      "diagnostic": "contract=qwen.responses.compatible-v1; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

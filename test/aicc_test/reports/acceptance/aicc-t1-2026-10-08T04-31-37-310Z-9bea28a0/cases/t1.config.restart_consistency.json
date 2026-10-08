@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.config.restart_consistency",
+  "layer": "T1",
+  "status": "passed",
+  "method": "node-daemon.restart",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:34:35.724Z",
+      "elapsed_ms": 3002,
+      "status": "passed",
+      "diagnostic": "settings and Provider inventory survived AICC restart 1575105->1576110",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

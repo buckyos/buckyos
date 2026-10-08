@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.fal.fal.esrgan.queue-v1.image.upscale.error.rate_limit",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "t15-20261008050816-1602985-fal",
+  "exact_model": "fal-ai/esrgan@t15-20261008050816-1602985-fal",
+  "api_type": "image.upscale",
+  "method": "image.upscale",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:15:21.989Z",
+      "elapsed_ms": 366,
+      "status": "passed",
+      "diagnostic": "contract=fal.esrgan.queue-v1; scenario=rate_limit; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.img2video",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-H3-Max@minimax-t2",
+  "api_type": "video.img2video",
+  "method": "video.img2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 35704,
+      "status": "failed",
+      "failure_class": "resource_failed",
+      "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"resource content does not match its MIME\",\"details\":{\"failure\":\"mime_mismatch\"}}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

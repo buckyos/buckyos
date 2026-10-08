@@ -1,0 +1,39 @@
+{
+  "run_id": "aicc-2026-10-08T14-04-29-790Z-ded511de",
+  "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "deepseek",
+  "provider_instance": "deepseek-t2",
+  "exact_model": "deepseek-flash@deepseek-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T14:04:41.592Z",
+      "elapsed_ms": 2890,
+      "status": "review",
+      "diagnostic": "semantic rubric requires Judge or manual review",
+      "usage": {
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.00025335,
+      "cost_status": "actual"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-6004e30016e94d12b4a509279288cca3",
+  "usage": {
+    "input_tokens": 241,
+    "output_tokens": 362,
+    "total_tokens": 603
+  },
+  "cost_usd": 0.00025335,
+  "trace_id": "aicc-idem-b26a3963f2fbd7f2cb44cb9c0bff7b4d"
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.config.provider_instance_isolation",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "models.list",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:34:08.482Z",
+      "elapsed_ms": 0,
+      "status": "passed",
+      "diagnostic": "isolated inventories: dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0, dv-openai-b-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

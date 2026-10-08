@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.glm.glm.videos.generations.v4.video.txt2video.error.authentication",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "glm",
+  "provider_instance": "t15-20261008050816-1602985-glm",
+  "exact_model": "cogvideox-3@t15-20261008050816-1602985-glm",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:20:19.445Z",
+      "elapsed_ms": 188,
+      "status": "passed",
+      "diagnostic": "contract=glm.videos.generations.v4; scenario=authentication; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

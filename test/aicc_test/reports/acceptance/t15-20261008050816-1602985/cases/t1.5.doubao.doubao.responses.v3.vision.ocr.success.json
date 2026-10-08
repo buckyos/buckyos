@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.doubao.doubao.responses.v3.vision.ocr.success",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "doubao",
+  "provider_instance": "t15-20261008050816-1602985-doubao",
+  "exact_model": "doubao-seed-2-0-lite-260428@t15-20261008050816-1602985-doubao",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:25:17.057Z",
+      "elapsed_ms": 229,
+      "status": "passed",
+      "diagnostic": "contract=doubao.responses.v3; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 672,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "diagnostic": "TaskFailureError: provider task t-f07615d29170491c8bd32394f05f15ec ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k2.7-code-highspeed or Permission denied\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

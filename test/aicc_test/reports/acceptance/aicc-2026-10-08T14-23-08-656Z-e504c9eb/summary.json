@@ -1,0 +1,607 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+  "started_at": "2026-10-08T14:23:08.618Z",
+  "finished_at": "2026-10-08T14:25:02.711Z",
+  "commit": "7612d141be9938f5d1c4a89b41f20ae80459c1c1",
+  "baseline_revision": "2026-10-08.3",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 6,
+  "actual_real_calls": 6,
+  "estimated_cost_usd": 0.060000000000000005,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.06,
+    "planned_max_calls": 6,
+    "planned_max_cost_usd": 0.060000000000000005,
+    "actual_calls": 6,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0.060000000000000005,
+    "total_exposure_usd": 0.060000000000000005,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 6,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 75,
+          "total_tokens": 97
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 263,
+          "total_tokens": 693
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 119,
+          "total_tokens": 338
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 54,
+          "total_tokens": 154
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 512,
+          "output_tokens": 377,
+          "total_tokens": 889
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-08T14:23:10.762Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 302,
+          "output_tokens": 136,
+          "total_tokens": 438
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "kimi",
+        "calls": 6,
+        "input_tokens": 1585,
+        "output_tokens": 1024,
+        "total_tokens": 2609,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "kimi/kimi-t2",
+        "calls": 6,
+        "input_tokens": 1585,
+        "output_tokens": 1024,
+        "total_tokens": 2609,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      }
+    ],
+    "by_model": [
+      {
+        "key": "kimi-k2.7-code-highspeed@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 457,
+        "total_tokens": 1128,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k3@kimi-t2",
+        "calls": 3,
+        "input_tokens": 914,
+        "output_tokens": 567,
+        "total_tokens": 1481,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "llm",
+        "calls": 2,
+        "input_tokens": 122,
+        "output_tokens": 129,
+        "total_tokens": 251,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "vision.caption",
+        "calls": 2,
+        "input_tokens": 942,
+        "output_tokens": 640,
+        "total_tokens": 1582,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      },
+      {
+        "key": "vision.ocr",
+        "calls": 2,
+        "input_tokens": 521,
+        "output_tokens": 255,
+        "total_tokens": 776,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.02,
+        "unknown_cost_calls": 2
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 75,
+        "total_tokens": 97,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 263,
+        "total_tokens": 693,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 119,
+        "total_tokens": 338,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "calls": 1,
+        "input_tokens": 100,
+        "output_tokens": 54,
+        "total_tokens": 154,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "calls": 1,
+        "input_tokens": 512,
+        "output_tokens": 377,
+        "total_tokens": 889,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "calls": 1,
+        "input_tokens": 302,
+        "output_tokens": 136,
+        "total_tokens": 438,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 1280,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 75,
+            "total_tokens": 97
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-f35b9e2b58cb48268681dd5e1daf60c7",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 75,
+        "total_tokens": 97
+      },
+      "trace_id": "aicc-idem-73a011c72b8ac5e0abaa7bb7df8aac14"
+    },
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 23588,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 430,
+            "output_tokens": 263,
+            "total_tokens": 693
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-95e71e248cc54069a58abb442b7ab61e",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 263,
+        "total_tokens": 693
+      },
+      "trace_id": "aicc-idem-bb8f41a25376a7032610f240c5f131c7"
+    },
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 43464,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 219,
+            "output_tokens": 119,
+            "total_tokens": 338
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-64a1682c05034198ab8a74959f6a6b95",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 119,
+        "total_tokens": 338
+      },
+      "trace_id": "aicc-idem-452840088757c86fb14c3adbc4ecd935"
+    },
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 67234,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 54,
+            "total_tokens": 154
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-fc90556102084ee0a00e257d1ce63c1b",
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 54,
+        "total_tokens": 154
+      },
+      "trace_id": "aicc-idem-9d42b209e104a2b63571b8a7cb73ef10"
+    },
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 99285,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 512,
+            "output_tokens": 377,
+            "total_tokens": 889
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-148f5ce1556441d4ac14b2085f390fdf",
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 377,
+        "total_tokens": 889
+      },
+      "trace_id": "aicc-idem-0feaa2e1ae64be83fd79ad8885f11277"
+    },
+    {
+      "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:23:10.762Z",
+          "elapsed_ms": 111164,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 302,
+            "output_tokens": 136,
+            "total_tokens": 438
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-d8c4731320074fe79e3d6985aa9355fb",
+      "usage": {
+        "input_tokens": 302,
+        "output_tokens": 136,
+        "total_tokens": 438
+      },
+      "trace_id": "aicc-idem-21e3ff46fcc069291df949a9c8db08a0"
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (kimi)"
+    ]
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.claude.anthropic.messages.2023-06-01.vision.caption.variant.claude-sonnet-5-reasoning-max",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "claude",
+  "provider_instance": "t15-20261008050816-1602985-claude",
+  "exact_model": "claude-sonnet-5:reasoning-max@t15-20261008050816-1602985-claude",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:11:56.909Z",
+      "elapsed_ms": 244,
+      "status": "passed",
+      "diagnostic": "contract=anthropic.messages.2023-06-01; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

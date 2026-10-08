@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.embeddings.v1.embedding.text.response.missing_required_response_field",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-3",
+  "exact_model": "text-embedding-3-small@t15-20261008050816-1602985-openai-isolation-3",
+  "api_type": "embedding.text",
+  "method": "embedding.text",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:08:53.683Z",
+      "elapsed_ms": 393,
+      "status": "passed",
+      "diagnostic": "contract=openai.embeddings.v1; scenario=missing_required_response_field; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

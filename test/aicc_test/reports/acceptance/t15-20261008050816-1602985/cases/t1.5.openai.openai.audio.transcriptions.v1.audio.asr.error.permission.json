@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.audio.transcriptions.v1.audio.asr.error.permission",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-6",
+  "exact_model": "gpt-transcribe@t15-20261008050816-1602985-openai-isolation-6",
+  "api_type": "audio.asr",
+  "method": "audio.asr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:09:16.439Z",
+      "elapsed_ms": 186,
+      "status": "passed",
+      "diagnostic": "contract=openai.audio.transcriptions.v1; scenario=permission; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.glm.glm.images.generations.v4.image.txt2img.error.invalid_parameters",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "glm",
+  "provider_instance": "t15-20261008050816-1602985-glm",
+  "exact_model": "glm-image@t15-20261008050816-1602985-glm",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:19:37.331Z",
+      "elapsed_ms": 220,
+      "status": "passed",
+      "diagnostic": "contract=glm.images.generations.v4; scenario=invalid_parameters; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

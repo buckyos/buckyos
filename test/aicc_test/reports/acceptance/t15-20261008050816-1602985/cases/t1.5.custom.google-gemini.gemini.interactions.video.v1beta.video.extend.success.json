@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.custom.google-gemini.gemini.interactions.video.v1beta.video.extend.success",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-custom-google-gemini",
+  "exact_model": "gemini-omni-1.1-flash@t15-20261008050816-1602985-custom-google-gemini",
+  "api_type": "video.extend",
+  "method": "video.extend",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:32:43.324Z",
+      "elapsed_ms": 521,
+      "status": "passed",
+      "diagnostic": "contract=gemini.interactions.video.v1beta; scenario=success; captured_requests=1; seed=t15-20261008050816-1602985; selected_official_model=gemini-omni-1.1-flash",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,813 @@
+{
+  "schema_version": 1,
+  "run_id": "t15-20261008102309-22405",
+  "started_at": "2026-10-08T10:23:09.348Z",
+  "finished_at": "2026-10-08T10:23:29.208Z",
+  "commit": "7612d141be9938f5d1c4a89b41f20ae80459c1c1",
+  "baseline_revision": "official-provider-protocols-2026-10-08.1",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:13.159Z",
+          "elapsed_ms": 236,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.stream",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:13.445Z",
+          "elapsed_ms": 708,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=stream_success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.stream-interrupted",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:14.204Z",
+          "elapsed_ms": 363,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=stream_interrupted; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.invalid_format",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:15.339Z",
+          "elapsed_ms": 253,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=invalid_format; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:15.844Z",
+          "elapsed_ms": 198,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:16.314Z",
+          "elapsed_ms": 242,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:16.851Z",
+          "elapsed_ms": 196,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:17.296Z",
+          "elapsed_ms": 371,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.overloaded",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:17.961Z",
+          "elapsed_ms": 408,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=overloaded; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:18.690Z",
+          "elapsed_ms": 388,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:19.376Z",
+          "elapsed_ms": 405,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:20.034Z",
+          "elapsed_ms": 431,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.ocr.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:20.781Z",
+          "elapsed_ms": 271,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.caption.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:21.102Z",
+          "elapsed_ms": 204,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-flash-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-high@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:21.356Z",
+          "elapsed_ms": 213,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.caption.variant.deepseek-flash-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-high@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:21.619Z",
+          "elapsed_ms": 273,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.ocr.variant.deepseek-flash-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-high@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:21.943Z",
+          "elapsed_ms": 263,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-flash-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-low@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:22.256Z",
+          "elapsed_ms": 217,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.caption.variant.deepseek-flash-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-low@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:22.523Z",
+          "elapsed_ms": 200,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.ocr.variant.deepseek-flash-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-low@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:22.773Z",
+          "elapsed_ms": 221,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-flash-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-max@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:23.044Z",
+          "elapsed_ms": 251,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.caption.variant.deepseek-flash-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-max@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:23.346Z",
+          "elapsed_ms": 225,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.ocr.variant.deepseek-flash-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-max@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:23.621Z",
+          "elapsed_ms": 220,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-flash-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-none@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:23.891Z",
+          "elapsed_ms": 209,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.caption.variant.deepseek-flash-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-none@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:24.150Z",
+          "elapsed_ms": 212,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.vision.ocr.variant.deepseek-flash-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-flash:reasoning-none@t15-20261008102309-22405-deepseek",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:24.412Z",
+          "elapsed_ms": 249,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-v4-pro-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-v4-pro:reasoning-high@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:24.711Z",
+          "elapsed_ms": 272,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-v4-pro-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-v4-pro:reasoning-low@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:25.034Z",
+          "elapsed_ms": 204,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-v4-pro-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-v4-pro:reasoning-max@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:25.289Z",
+          "elapsed_ms": 205,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008102309-22405",
+      "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.variant.deepseek-v4-pro-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "deepseek",
+      "provider_instance": "t15-20261008102309-22405-deepseek",
+      "exact_model": "deepseek-v4-pro:reasoning-none@t15-20261008102309-22405-deepseek",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:23:25.544Z",
+          "elapsed_ms": 201,
+          "status": "passed",
+          "diagnostic": "contract=deepseek.responses.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    }
+  ],
+  "product_defects": [],
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "temporary Provider instances were removed and the Mock selection was reset"
+    ]
+  },
+  "manifest_coverage": {
+    "total": 30,
+    "executed": 30,
+    "passed": 30,
+    "failed": 0,
+    "coverage_rate": 1,
+    "unexecuted_case_ids": []
+  },
+  "protocol_evidence_revision": "official-provider-protocols-2026-10-08.1",
+  "official_evidence_checked_at": "2026-10-08",
+  "limits": {
+    "global_concurrency": 1,
+    "provider_concurrency": 1,
+    "provider_min_interval_ms": 50
+  },
+  "providers": [
+    "deepseek"
+  ]
+}

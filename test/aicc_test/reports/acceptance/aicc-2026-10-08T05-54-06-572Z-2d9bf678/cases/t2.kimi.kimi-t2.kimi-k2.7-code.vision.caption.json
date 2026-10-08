@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-08T05-54-06-572Z-2d9bf678",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code@kimi-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:54:11.463Z",
+      "elapsed_ms": 106623,
+      "status": "passed",
+      "diagnostic": "Judge score 0.95: Caption matches image: pink scalloped flower with yellow center and two brown dots, green stem with two leaves, three top boulders (dark brown, tan, dark brown), two bottom tan boulders, mint sky. Overall description accurate.",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 429,
+        "total_tokens": 859
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-fa1bf5af77ec4b70a8d7d6eac518ec9b",
+  "usage": {
+    "input_tokens": 430,
+    "output_tokens": 429,
+    "total_tokens": 859
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "MiniMax-M3@minimax-t2",
+    "task_id": "t-fb2cc810944a4b56825447129361c8f1",
+    "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption; tested_model=kimi-k2.7-code@kimi-t2; rubric_items=1; output_text_chars=751; input_resources=1; output_resources=0",
+    "score": 0.95,
+    "passed": true,
+    "reason": "Caption matches image: pink scalloped flower with yellow center and two brown dots, green stem with two leaves, three top boulders (dark brown, tan, dark brown), two bottom tan boulders, mint sky. Overall description accurate.",
+    "exact_model": "MiniMax-M3@minimax-t2",
+    "provider_instance": "minimax-t2",
+    "provider_driver": "minimax",
+    "distinct_provider_or_family": true
+  },
+  "trace_id": "aicc-idem-954543b37212a9adb8b57aabec90f194"
+}

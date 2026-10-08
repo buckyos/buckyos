@@ -1,0 +1,44 @@
+{
+  "run_id": "aicc-2026-10-08T10-49-33-585Z-a00bd81c",
+  "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.txt2video",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-H3-Max@minimax-t2",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:49:36.096Z",
+      "elapsed_ms": 46971,
+      "status": "review",
+      "diagnostic": "validated 1 output artifact(s); semantic rubric requires Judge or manual review",
+      "usage": {
+        "request_units": 1
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [
+    {
+      "obj_id": "[downloaded-url]",
+      "label": "video/mp4",
+      "size": 4156959,
+      "sha256": "e5d57e33f2e77f6d409b87011de1fee1e2911fc7a888f7a0e929da1a72819d38",
+      "metadata": {
+        "duration_seconds": 5.184,
+        "format": "mp4"
+      }
+    }
+  ],
+  "task_id": "t-27ab813324294d1da8b243452fc2c02f",
+  "usage": {
+    "request_units": 1
+  },
+  "trace_id": "aicc-idem-9e80a341045d2c715ac9665647d80ac1"
+}

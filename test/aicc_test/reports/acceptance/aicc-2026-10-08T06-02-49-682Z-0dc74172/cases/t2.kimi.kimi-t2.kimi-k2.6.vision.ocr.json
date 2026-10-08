@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-08T06-02-49-682Z-0dc74172",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.6@kimi-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T06:02:52.411Z",
+      "elapsed_ms": 54099,
+      "status": "passed",
+      "diagnostic": "Judge score 0.95: Output 'BUCKY05-DV-4827' contains the visible acceptance marker '4827'. Minor prefix differences but marker is present.",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 2006,
+        "total_tokens": 2225
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-7b401b72dd9645e7a84c4cfc6a0c49de",
+  "usage": {
+    "input_tokens": 219,
+    "output_tokens": 2006,
+    "total_tokens": 2225
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "MiniMax-M3@minimax-t2",
+    "task_id": "t-b8853807488647b9826371ab611e4a7f",
+    "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.6.vision.ocr; tested_model=kimi-k2.6@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+    "score": 0.95,
+    "passed": true,
+    "reason": "Output 'BUCKY05-DV-4827' contains the visible acceptance marker '4827'. Minor prefix differences but marker is present.",
+    "exact_model": "MiniMax-M3@minimax-t2",
+    "provider_instance": "minimax-t2",
+    "provider_driver": "minimax",
+    "distinct_provider_or_family": true
+  },
+  "trace_id": "aicc-idem-fe3f6a09204e847f12880c8ddc5b8aaf"
+}

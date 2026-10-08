@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.authentication",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008050816-1602985-minimax",
+  "exact_model": "music-3.0@t15-20261008050816-1602985-minimax",
+  "api_type": "audio.music",
+  "method": "audio.music",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:18:15.351Z",
+      "elapsed_ms": 194,
+      "status": "passed",
+      "diagnostic": "contract=minimax.music-generation.v1; scenario=authentication; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

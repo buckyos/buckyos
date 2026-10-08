@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.images.generations.v1.image.txt2img.response.wrong_content_type",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-4",
+  "exact_model": "gpt-image-2@t15-20261008050816-1602985-openai-isolation-4",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:08:59.679Z",
+      "elapsed_ms": 411,
+      "status": "passed",
+      "diagnostic": "contract=openai.images.generations.v1; scenario=wrong_content_type; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

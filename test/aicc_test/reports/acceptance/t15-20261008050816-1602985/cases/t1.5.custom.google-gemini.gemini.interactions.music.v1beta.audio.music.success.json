@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.custom.google-gemini.gemini.interactions.music.v1beta.audio.music.success",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-custom-google-gemini",
+  "exact_model": "lyria-3-clip-preview@t15-20261008050816-1602985-custom-google-gemini",
+  "api_type": "audio.music",
+  "method": "audio.music",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:32:41.255Z",
+      "elapsed_ms": 470,
+      "status": "passed",
+      "diagnostic": "contract=gemini.interactions.music.v1beta; scenario=success; captured_requests=1; seed=t15-20261008050816-1602985; selected_official_model=lyria-3-clip-preview",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

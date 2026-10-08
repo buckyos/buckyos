@@ -1,0 +1,304 @@
+{
+  "currency": "USD",
+  "budget_usd": 0.06,
+  "planned_max_calls": 6,
+  "planned_max_cost_usd": 0.060000000000000005,
+  "actual_calls": 6,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "estimated_exposure_usd": 0.060000000000000005,
+  "total_exposure_usd": 0.060000000000000005,
+  "remaining_budget_usd": 0,
+  "unknown_cost_calls": 6,
+  "budget_exceeded": false,
+  "entries": [
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 75,
+        "total_tokens": 97
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 263,
+        "total_tokens": 693
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 119,
+        "total_tokens": 338
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 54,
+        "total_tokens": 154
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 377,
+        "total_tokens": 889
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "attempt": 1,
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 302,
+        "output_tokens": 136,
+        "total_tokens": 438
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "by_provider": [
+    {
+      "key": "kimi",
+      "calls": 6,
+      "input_tokens": 1585,
+      "output_tokens": 1024,
+      "total_tokens": 2609,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.060000000000000005,
+      "unknown_cost_calls": 6
+    }
+  ],
+  "by_instance": [
+    {
+      "key": "kimi/kimi-t2",
+      "calls": 6,
+      "input_tokens": 1585,
+      "output_tokens": 1024,
+      "total_tokens": 2609,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.060000000000000005,
+      "unknown_cost_calls": 6
+    }
+  ],
+  "by_model": [
+    {
+      "key": "kimi-k2.7-code-highspeed@kimi-t2",
+      "calls": 3,
+      "input_tokens": 671,
+      "output_tokens": 457,
+      "total_tokens": 1128,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.03,
+      "unknown_cost_calls": 3
+    },
+    {
+      "key": "kimi-k3@kimi-t2",
+      "calls": 3,
+      "input_tokens": 914,
+      "output_tokens": 567,
+      "total_tokens": 1481,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.03,
+      "unknown_cost_calls": 3
+    }
+  ],
+  "by_api_type": [
+    {
+      "key": "llm",
+      "calls": 2,
+      "input_tokens": 122,
+      "output_tokens": 129,
+      "total_tokens": 251,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.02,
+      "unknown_cost_calls": 2
+    },
+    {
+      "key": "vision.caption",
+      "calls": 2,
+      "input_tokens": 942,
+      "output_tokens": 640,
+      "total_tokens": 1582,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.02,
+      "unknown_cost_calls": 2
+    },
+    {
+      "key": "vision.ocr",
+      "calls": 2,
+      "input_tokens": 521,
+      "output_tokens": 255,
+      "total_tokens": 776,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.02,
+      "unknown_cost_calls": 2
+    }
+  ],
+  "by_case": [
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "calls": 1,
+      "input_tokens": 22,
+      "output_tokens": 75,
+      "total_tokens": 97,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "calls": 1,
+      "input_tokens": 430,
+      "output_tokens": 263,
+      "total_tokens": 693,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "calls": 1,
+      "input_tokens": 219,
+      "output_tokens": 119,
+      "total_tokens": 338,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "calls": 1,
+      "input_tokens": 100,
+      "output_tokens": 54,
+      "total_tokens": 154,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "calls": 1,
+      "input_tokens": 512,
+      "output_tokens": 377,
+      "total_tokens": 889,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "calls": 1,
+      "input_tokens": 302,
+      "output_tokens": 136,
+      "total_tokens": 438,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    }
+  ]
+}

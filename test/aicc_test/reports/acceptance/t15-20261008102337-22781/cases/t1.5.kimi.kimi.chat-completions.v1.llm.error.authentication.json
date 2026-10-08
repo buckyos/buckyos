@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008102337-22781",
+  "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.authentication",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "t15-20261008102337-22781-kimi",
+  "exact_model": "kimi-k3@t15-20261008102337-22781-kimi",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:23:43.119Z",
+      "elapsed_ms": 239,
+      "status": "passed",
+      "diagnostic": "contract=kimi.chat-completions.v1; scenario=authentication; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

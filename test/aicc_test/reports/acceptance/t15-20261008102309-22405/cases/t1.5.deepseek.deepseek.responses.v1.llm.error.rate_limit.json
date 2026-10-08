@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008102309-22405",
+  "case_id": "t1.5.deepseek.deepseek.responses.v1.llm.error.rate_limit",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "deepseek",
+  "provider_instance": "t15-20261008102309-22405-deepseek",
+  "exact_model": "deepseek-flash@t15-20261008102309-22405-deepseek",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:23:17.296Z",
+      "elapsed_ms": 371,
+      "status": "passed",
+      "diagnostic": "contract=deepseek.responses.v1; scenario=rate_limit; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

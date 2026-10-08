@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.runtime_boundary.missing_usage_rejected",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "exact_model": "gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:33:27.887Z",
+      "elapsed_ms": 393,
+      "status": "passed",
+      "diagnostic": "missing_usage rejected after reaching Provider boundary: Error: AICC accepted missing_usage: {\"event_ref\":\"/task_mgr/t-a03a0b02009c4426ada59aa73180d2b5\",\"finish_reason\":\"stop\",\"message\":{\"content\":[{\"text\":\"BUCKYOS-AICC-4827\",\"type\":\"text\"},{\"provider\":\"openai\",\"source\":{\"adapter_type\":\"openai-responses\",\"origin_model\":\"gpt-5.6\",\"origin_provider\":\"openai\",\"provider_profile_id\":\"openai\"},\"type\":\"provider_state\",\"value\":{\"content\":[{\"text\":\"BUCKYOS-AICC-4827\",\"type\":\"output_text\"}],\"id\":\"msg_mock_117\",\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\"}}],\"role\":\"assistant\"},\"provider_task_ref\":\"resp_mock_117\",\"route_trace\":{\"attempts\":[],\"final_model\":\"gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0\"},\"status\":\"succeeded\",\"task_id\":\"t-a03a0b02009c4426ada59aa73180d2b5\",\"usage\":{},\"result\":{\"message\":{\"content\":[{\"text\":\"BUCKYOS-AICC-4827\",\"type\":\"text\"},{\"provider\":\"openai\",\"source\":{\"adapter_type\":\"openai-responses\",\"origin_model\":\"gpt-5.6\",\"origin_provider\":\"openai\",\"provider_profile_id\":\"openai\"},\"type\":\"provider_state\",\"value\":{\"content\":[{\"text\":\"BUCKYOS-AICC-4827\",\"type\":\"output_text\"}],\"id\":\"msg_mock_117\",\"role\":\"assistant\",\"status\":\"completed\",\"type\":\"message\"}}],\"role\":\"assistant\"},\"usage\":{},\"finish_reason\":\"stop\",\"provider_task_ref\":\"resp_mock_117\",\"extra\":{\"route_trace\":{\"attempts\":[],\"final_model\":\"gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0\"}}}}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

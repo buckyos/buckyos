@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-2026-10-08T06-02-49-682Z-0dc74172",
+  "case_id": "t2.preflight.provider_no_eligible_models.minimax",
+  "layer": "T2",
+  "status": "skipped",
+  "provider_driver": "minimax",
+  "method": "model_coverage.filter",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T06:02:52.410Z",
+      "elapsed_ms": 0,
+      "status": "skipped",
+      "diagnostic": "runtime inventory contains no active physical model after lifecycle, alias, and duplicate filtering",
+      "estimated_cost_usd": 0,
+      "cost_status": "not_called"
+    }
+  ]
+}

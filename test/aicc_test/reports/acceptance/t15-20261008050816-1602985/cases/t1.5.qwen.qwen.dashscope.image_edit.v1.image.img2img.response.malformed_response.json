@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.qwen.qwen.dashscope.image_edit.v1.image.img2img.response.malformed_response",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "qwen",
+  "provider_instance": "t15-20261008050816-1602985-qwen-isolation-3",
+  "exact_model": "qwen-image-edit@t15-20261008050816-1602985-qwen-isolation-3",
+  "api_type": "image.img2img",
+  "method": "image.img2img",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:28:57.635Z",
+      "elapsed_ms": 377,
+      "status": "passed",
+      "diagnostic": "contract=qwen.dashscope.image_edit.v1; scenario=malformed_response; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

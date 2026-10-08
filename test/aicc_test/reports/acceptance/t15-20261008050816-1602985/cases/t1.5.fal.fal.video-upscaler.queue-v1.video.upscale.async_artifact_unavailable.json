@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.fal.fal.video-upscaler.queue-v1.video.upscale.async_artifact_unavailable",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "t15-20261008050816-1602985-fal",
+  "exact_model": "fal-ai/video-upscaler@t15-20261008050816-1602985-fal",
+  "api_type": "video.upscale",
+  "method": "video.upscale",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:16:29.682Z",
+      "elapsed_ms": 997,
+      "status": "passed",
+      "diagnostic": "contract=fal.video-upscaler.queue-v1; scenario=async_artifact_unavailable; captured_requests=5",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

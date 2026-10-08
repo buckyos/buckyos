@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.security.cross_tenant",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "get_task",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:34:05.113Z",
+      "elapsed_ms": 219,
+      "status": "passed",
+      "diagnostic": "secondary tenant rejected for task t-b3b4d9c0aeac4ee088823e8a1db1d713: RPCError: RPC call error: Failed due to reason: task_not_found: t-b3b4d9c0aeac4ee088823e8a1db1d713",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

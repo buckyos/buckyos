@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.runtime_boundary.rate_limit_fallback",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "exact_model": "gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:33:13.702Z",
+      "elapsed_ms": 503,
+      "status": "passed",
+      "diagnostic": "rate_limit rejected after reaching Provider boundary: Error: AICC returned failed: {\"status\":\"failed\",\"task_id\":\"t-d996674b31a140f9b2a23cb669a5728d\",\"event_ref\":\"/task_mgr/t-d996674b31a140f9b2a23cb669a5728d\"}: {\"code\":\"provider_error\",\"message\":\"OpenAI rate_limit: deterministic rate_limit from AICC mock provider\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

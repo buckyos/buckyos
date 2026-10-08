@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.images.plan-v3.image.txt2img.error.authentication",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "doubao-agent-plan",
+  "provider_instance": "t15-20261008050816-1602985-doubao-agent-plan",
+  "exact_model": "doubao-seedream-5.0-lite@t15-20261008050816-1602985-doubao-agent-plan",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:21:44.864Z",
+      "elapsed_ms": 187,
+      "status": "passed",
+      "diagnostic": "contract=doubao-agent-plan.images.plan-v3; scenario=authentication; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008104624-67760",
+  "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.response.wrong_content_type",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008104624-67760-minimax",
+  "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:46:41.689Z",
+      "elapsed_ms": 335,
+      "status": "passed",
+      "diagnostic": "contract=minimax.t2a.v2; scenario=wrong_content_type; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

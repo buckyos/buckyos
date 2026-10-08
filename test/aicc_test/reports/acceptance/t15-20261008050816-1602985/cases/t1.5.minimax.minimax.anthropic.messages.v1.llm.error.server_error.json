@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.server_error",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008050816-1602985-minimax",
+  "exact_model": "MiniMax-M3@t15-20261008050816-1602985-minimax",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:16:54.115Z",
+      "elapsed_ms": 377,
+      "status": "passed",
+      "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=server_error; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

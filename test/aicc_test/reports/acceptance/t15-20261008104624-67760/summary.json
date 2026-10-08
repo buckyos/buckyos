@@ -1,0 +1,2113 @@
+{
+  "schema_version": 1,
+  "run_id": "t15-20261008104624-67760",
+  "started_at": "2026-10-08T10:46:24.495Z",
+  "finished_at": "2026-10-08T10:48:03.427Z",
+  "commit": "7612d141be9938f5d1c4a89b41f20ae80459c1c1",
+  "baseline_revision": "official-provider-protocols-2026-10-08.1",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:28.277Z",
+          "elapsed_ms": 302,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.stream",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:28.629Z",
+          "elapsed_ms": 370,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=stream_success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.stream-interrupted",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:29.049Z",
+          "elapsed_ms": 345,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=stream_interrupted; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:29.772Z",
+          "elapsed_ms": 196,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:30.228Z",
+          "elapsed_ms": 222,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:30.749Z",
+          "elapsed_ms": 387,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:31.398Z",
+          "elapsed_ms": 217,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:31.916Z",
+          "elapsed_ms": 393,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:32.565Z",
+          "elapsed_ms": 200,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:33.044Z",
+          "elapsed_ms": 409,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:33.719Z",
+          "elapsed_ms": 397,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:34.415Z",
+          "elapsed_ms": 508,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:35.184Z",
+          "elapsed_ms": 397,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.vision.ocr.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:35.881Z",
+          "elapsed_ms": 248,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.vision.caption.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:36.179Z",
+          "elapsed_ms": 214,
+          "status": "passed",
+          "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:36.443Z",
+          "elapsed_ms": 214,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:36.707Z",
+          "elapsed_ms": 204,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:36.962Z",
+          "elapsed_ms": 193,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:37.471Z",
+          "elapsed_ms": 292,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:38.013Z",
+          "elapsed_ms": 376,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:38.682Z",
+          "elapsed_ms": 238,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:39.200Z",
+          "elapsed_ms": 371,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:39.832Z",
+          "elapsed_ms": 247,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:40.396Z",
+          "elapsed_ms": 331,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:41.018Z",
+          "elapsed_ms": 387,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:41.689Z",
+          "elapsed_ms": 335,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "speech-2.8-hd@t15-20261008104624-67760-minimax",
+      "api_type": "audio.tts",
+      "method": "audio.tts",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:42.314Z",
+          "elapsed_ms": 331,
+          "status": "passed",
+          "diagnostic": "contract=minimax.t2a.v2; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:42.897Z",
+          "elapsed_ms": 214,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:43.161Z",
+          "elapsed_ms": 191,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:43.615Z",
+          "elapsed_ms": 221,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:44.116Z",
+          "elapsed_ms": 372,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:44.737Z",
+          "elapsed_ms": 196,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:45.203Z",
+          "elapsed_ms": 421,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:45.885Z",
+          "elapsed_ms": 194,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:46.373Z",
+          "elapsed_ms": 405,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:47.040Z",
+          "elapsed_ms": 387,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:47.691Z",
+          "elapsed_ms": 336,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.speech-to-text.v1.audio.asr.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "asr-1.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.asr",
+      "method": "audio.asr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:48.281Z",
+          "elapsed_ms": 336,
+          "status": "passed",
+          "diagnostic": "contract=minimax.speech-to-text.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:48.863Z",
+          "elapsed_ms": 226,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:49.139Z",
+          "elapsed_ms": 438,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:49.628Z",
+          "elapsed_ms": 237,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:50.140Z",
+          "elapsed_ms": 197,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:50.643Z",
+          "elapsed_ms": 387,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:51.335Z",
+          "elapsed_ms": 184,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:51.811Z",
+          "elapsed_ms": 398,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:52.486Z",
+          "elapsed_ms": 210,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:52.957Z",
+          "elapsed_ms": 368,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:53.592Z",
+          "elapsed_ms": 327,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:54.191Z",
+          "elapsed_ms": 401,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:54.931Z",
+          "elapsed_ms": 373,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.img2img.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.img2img",
+      "method": "image.img2img",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:55.554Z",
+          "elapsed_ms": 243,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.image-generation.v1.image.img2img.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "image-01@t15-20261008104624-67760-minimax",
+      "api_type": "image.img2img",
+      "method": "image.img2img",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:55.848Z",
+          "elapsed_ms": 353,
+          "status": "passed",
+          "diagnostic": "contract=minimax.image-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:56.251Z",
+          "elapsed_ms": 2634,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=success; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:46:58.935Z",
+          "elapsed_ms": 2820,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=success; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.async",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:01.805Z",
+          "elapsed_ms": 2510,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=async_success; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.async-failed",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:04.366Z",
+          "elapsed_ms": 2369,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=async_failed; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.async_poll_timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:09.175Z",
+          "elapsed_ms": 5534,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=async_poll_timeout; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.async-cancel",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:17.193Z",
+          "elapsed_ms": 407,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=async_cancel; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:20.350Z",
+          "elapsed_ms": 232,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:22.988Z",
+          "elapsed_ms": 205,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:25.622Z",
+          "elapsed_ms": 406,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:28.489Z",
+          "elapsed_ms": 203,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:31.415Z",
+          "elapsed_ms": 352,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:34.196Z",
+          "elapsed_ms": 197,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:36.883Z",
+          "elapsed_ms": 371,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:39.753Z",
+          "elapsed_ms": 332,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:42.551Z",
+          "elapsed_ms": 422,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.txt2video.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:45.445Z",
+          "elapsed_ms": 352,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.img2video.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:48.323Z",
+          "elapsed_ms": 2483,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=success; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.video-generation.v2.video.img2video.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "MiniMax-H3@t15-20261008104624-67760-minimax",
+      "api_type": "video.img2video",
+      "method": "video.img2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:50.857Z",
+          "elapsed_ms": 2448,
+          "status": "passed",
+          "diagnostic": "contract=minimax.video-generation.v2; scenario=success; captured_requests=3",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:53.355Z",
+          "elapsed_ms": 217,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:53.622Z",
+          "elapsed_ms": 302,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.invalid_parameters",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:53.974Z",
+          "elapsed_ms": 203,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=invalid_parameters; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:54.482Z",
+          "elapsed_ms": 188,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:54.923Z",
+          "elapsed_ms": 428,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.insufficient_balance",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:55.627Z",
+          "elapsed_ms": 232,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=insufficient_balance; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.timeout",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:56.114Z",
+          "elapsed_ms": 448,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=timeout; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.content_policy",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:56.830Z",
+          "elapsed_ms": 186,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=content_policy; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:57.323Z",
+          "elapsed_ms": 365,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:58.000Z",
+          "elapsed_ms": 449,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:58.742Z",
+          "elapsed_ms": 354,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261008104624-67760",
+      "case_id": "t1.5.minimax.minimax.music-generation.v1.audio.music.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "minimax",
+      "provider_instance": "t15-20261008104624-67760-minimax",
+      "exact_model": "music-3.0@t15-20261008104624-67760-minimax",
+      "api_type": "audio.music",
+      "method": "audio.music",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T10:47:59.361Z",
+          "elapsed_ms": 404,
+          "status": "passed",
+          "diagnostic": "contract=minimax.music-generation.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    }
+  ],
+  "product_defects": [],
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "temporary Provider instances were removed and the Mock selection was reset"
+    ]
+  },
+  "manifest_coverage": {
+    "total": 82,
+    "executed": 82,
+    "passed": 82,
+    "failed": 0,
+    "coverage_rate": 1,
+    "unexecuted_case_ids": []
+  },
+  "protocol_evidence_revision": "official-provider-protocols-2026-10-08.1",
+  "official_evidence_checked_at": "2026-10-08",
+  "limits": {
+    "global_concurrency": 1,
+    "provider_concurrency": 1,
+    "provider_min_interval_ms": 50
+  },
+  "providers": [
+    "minimax"
+  ]
+}

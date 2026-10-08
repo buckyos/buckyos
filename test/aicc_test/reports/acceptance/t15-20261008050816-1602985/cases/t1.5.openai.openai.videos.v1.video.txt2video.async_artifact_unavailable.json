@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.videos.v1.video.txt2video.async_artifact_unavailable",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-7",
+  "exact_model": "sora-2@t15-20261008050816-1602985-openai-isolation-7",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:09:36.749Z",
+      "elapsed_ms": 1665,
+      "status": "passed",
+      "diagnostic": "contract=openai.videos.v1; scenario=async_artifact_unavailable; captured_requests=3",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

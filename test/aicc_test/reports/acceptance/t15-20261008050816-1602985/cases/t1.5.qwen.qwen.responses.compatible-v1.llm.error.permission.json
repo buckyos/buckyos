@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.qwen.qwen.responses.compatible-v1.llm.error.permission",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "qwen",
+  "provider_instance": "t15-20261008050816-1602985-qwen",
+  "exact_model": "qwen3.8-max@t15-20261008050816-1602985-qwen",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:27:08.721Z",
+      "elapsed_ms": 248,
+      "status": "passed",
+      "diagnostic": "contract=qwen.responses.compatible-v1; scenario=permission; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

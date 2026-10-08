@@ -1,0 +1,37 @@
+{
+  "run_id": "aicc-2026-10-08T14-23-08-656Z-e504c9eb",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T14:23:10.762Z",
+      "elapsed_ms": 99285,
+      "status": "review",
+      "diagnostic": "semantic rubric requires Judge or manual review",
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 377,
+        "total_tokens": 889
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-148f5ce1556441d4ac14b2085f390fdf",
+  "usage": {
+    "input_tokens": 512,
+    "output_tokens": 377,
+    "total_tokens": 889
+  },
+  "trace_id": "aicc-idem-0feaa2e1ae64be83fd79ad8885f11277"
+}
