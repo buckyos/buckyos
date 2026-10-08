@@ -4,8 +4,7 @@
 
 import type { EntityEnvelope, Placement } from '../../api/types'
 import type { OutlineModel } from '../../state/outline'
-import { isConnector, resolveConnectors, type LaidConnector } from './connectors/layout'
-import type { Shape } from './connectors/geometry'
+import { isConnector, RECT_FORM, resolveConnectors, type LaidConnector, type TargetForm } from './connectors/layout'
 import { normalizeRotation, rotatedBounds } from './geometry'
 import { union, type Rect } from './render/camera'
 
@@ -21,8 +20,8 @@ export interface Laid { entity: EntityEnvelope; rect: Rect; rotation: number; bo
 export const DEFAULT_PLACEMENT: Placement = { x: 0, y: 0, w: 320, h: 200 }
 
 /** World rectangles of every Block and group of `surfaceId`, in paint order (parents before children), then
- * the connectors routed between them (`shapes`: the outline each target declares). */
-export function layoutSurface(outline: OutlineModel, surfaceId: string, shapes: (id: string) => Shape = () => 'rect'): Map<string, Laid> {
+ * the connectors routed between them (`forms`: the outline and anchors each target declares). */
+export function layoutSurface(outline: OutlineModel, surfaceId: string, forms: (id: string) => TargetForm = () => RECT_FORM): Map<string, Laid> {
   const out = new Map<string, Laid>()
   let paint = 0
   const walk = (parentId: string, origin: { x: number; y: number }, depth: number, lockedAbove: boolean) => {
@@ -41,7 +40,7 @@ export function layoutSurface(outline: OutlineModel, surfaceId: string, shapes: 
     }
   }
   walk(surfaceId, { x: 0, y: 0 }, 0, false)
-  resolveConnectors(out, outline, (id) => shapes(id))
+  resolveConnectors(out, outline, forms)
   return out
 }
 

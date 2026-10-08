@@ -33,8 +33,8 @@ import { OpenWishContext } from '../wish/wishBlock'
 import { WishPanel } from '../wish/WishPanel'
 import { registryEntries, type CatalogEntry, type InsertRequest } from './catalog'
 import { canvasClipboard, copyToClipboard, pasteOperations } from './clipboard'
-import { anchorWorld, axisOf, boxOf, distanceTo } from './connectors/geometry'
-import { hasBoundEnd, isConnector, ShapeBook } from './connectors/layout'
+import { anchorWorld, axisOf, boxOf, distanceTo, facingAnchor } from './connectors/geometry'
+import { formOf, hasBoundEnd, isConnector, ShapeBook } from './connectors/layout'
 import { connectorChangeOps, createConnectorOp, freezeOps, type ConnectorChange, type NewConnector } from './connectors/ops'
 import { FlowSurface } from './FlowSurface'
 import { InsertCatalog, type CatalogTab } from './InsertCatalog'
@@ -127,7 +127,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
   const [camera] = useState(() => new Camera())
   const [budget] = useState(() => createBudget(surface.layout?.mode === 'free' ? undefined : { editors: 200, html: 8 }))
   const isFree = surface.layout?.mode === 'free'
-  // connector ends meet the outline a Block declares; a shape decided by its payload is read once (连接线实现方案 §4.3)
+  // connector ends meet the outline and anchors a Block declares; a definition deciding them from its payload is read once (连接线实现方案 §4.3)
   const [shapeBook] = useState(() => new ShapeBook(store))
   const shapesVersion = useSyncExternalStore(shapeBook.subscribe, shapeBook.snapshot)
   const laid = useMemo(() => layoutSurface(store.outline, surfaceId, (id) => shapeBook.get(store.outline.get(id))),
@@ -518,8 +518,12 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
       if (!line || line.deleted) return []
       const read = await store.session.read<KeyedContent<CellPayload>>(next.connectorId)
       const revs = read.content.key_revs ?? {}
-      const anchor = { kind: 'auto' as const }
-      const end = anchorWorld({ rect, rotation: 0, shape: 'rect' }, anchor, next.from)
+      // the end takes the new object's anchor facing the start (the side it was placed on)
+      const form = formOf(entry.definition)
+      const target = { rect, rotation: 0, shape: form.shape, anchors: form.anchors }
+      const anchor = facingAnchor(target, next.from)
+      if (!anchor) return []
+      const end = anchorWorld(target, anchor, next.from)
       const box = boxOf(next.from, end)
       const flipped = Boolean(box.flip.h) !== Boolean(read.content.payload.flip?.h) || Boolean(box.flip.v) !== Boolean(read.content.payload.flip?.v)
       const placement = relativeTo(laid, surfaceId, box.rect, 0, 0)
@@ -780,7 +784,7 @@ function SurfaceView({ surface, mode, focus }: { surface: EntityEnvelope; mode: 
                 onPlace={(world) => { const request = placing; setPlacing(null); if (request) void insert(request, world) }}
                 onContextMenu={(point, blockId) => { if (!policy.select && !policy.insert) return; setMenu({ at: { x: point.screenX, y: point.screenY }, world: { x: point.worldX, y: point.worldY }, blockId }) }}
                 cutIds={cutIds} renderNear={(bbox) => <NearToolbar bbox={bbox} items={nearItems} more={moreActions} viewport={viewportSize} insets={insets} />}
-                shapeOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
+                formOf={(id) => shapeBook.get(store.outline.get(id))} onConnectorCreate={policy.insert && insertReason === null ? createConnector : undefined} onConnectorChange={changeConnector} />
               </OpenWishContext.Provider>
               </EditorToolbarContext.Provider>
             ) : (

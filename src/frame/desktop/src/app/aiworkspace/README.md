@@ -289,23 +289,29 @@ own origin, i.e. its own OPFS, service worker and localStorage.
 
 - **Data**: a Cell with `view.type = connector`. The placement is the box around the two stored ends (`w` / `h` may
   be 0) and `flip` says which corner is which; `start` / `end` are null (a coordinate) or `{ entity_id, anchor }`
-  (`auto`, or `point` at a normalised spot of the target); `route` (straight / elbow / curve), `controls`
+  with `anchor: { kind: 'named', id }`, one of the target's anchors; `route` (straight / elbow / curve), `controls`
   (`{u, v, dx, dy}` in the endpoint frame), `label` (`{t, offset}`; the text is the Cell `title`), `config` (look).
   The outline projects all but `config` as `EntityEnvelope.connector` (`state/outline.ts` mirrors the core).
-- **Geometry** (`ui/canvas/connectors/geometry.ts`, pure): stored ends, connection points (rect / ellipse, turned
-  targets), the endpoint-frame decomposition, the three routers (automatic elbow adapted from React Flow's
+- **Anchors** (`ui/canvas/connectors/anchors.ts`, 连接线方案 §4.3, §15): a line stores an anchor id; where it is
+  belongs to the target. Default: 16 ids named like a compass rose (`n`, `nne`, … `nnw`) on a rectangle (corners,
+  side midpoints, quarter points) and the same ids every 22.5° on an ellipse — 8 major, 8 minor. A definition may
+  declare its own (`BlockDefinition.anchors`, an array or a function of the payload). Minor anchors are offered
+  only while they are all ≥ 32 px apart on screen; an id the target lacks floats on its outline.
+- **Geometry** (`ui/canvas/connectors/geometry.ts`, pure): stored ends, anchors (rect / ellipse, turned targets;
+  the visible set, the anchor facing the other end, a connection handle's anchor), the endpoint-frame decomposition, the three routers (automatic elbow adapted from React Flow's
   smoothstep; curves as Hermite pieces through the points), arc length, label point, nearest point, bounds. Part
   of `connector@1`: a change that alters existing drawings needs a new `view.version`.
 - **Layout** (`connectors/layout.ts`): the second pass of `layoutSurface` routes every line against the Blocks'
   world rectangles; `Laid.rect` stays the stored box (all placement writes use it) and `Laid.bounds` covers the
-  path and label. A target's outline comes from `BlockDefinition.shape` (now a function of the payload);
-  `ShapeBook` reads the payload of targets whose shape depends on it. Lines enter the spatial index along their
+  path and label. A target's outline and anchors come from `BlockDefinition.shape` / `anchors` (either may be a
+  function of the payload); `ShapeBook` reads the payload of targets whose form depends on it (`TargetForm`). Lines enter the spatial index along their
   path and hit within 6 px (or half their width).
 - **Drawing** (`ConnectorFrame.tsx`, `paint.ts`): one frame per line in the paint order, `pointer-events: none`,
   SVG from one markup function that gestures also use to repaint in place (`LineRegistry`); caps scale with the
   width; the label breaks the line (a mask) unless it has a fill; low zoom drops the label and simplifies caps.
-- **Gestures** (`RenderHost.tsx`): connection handles on one selected Block (mouse), the connector tool (L),
-  a dragged end snapping to side midpoints (`point`) or the Block under it (`auto`), end / bend / segment / label
+- **Gestures** (`RenderHost.tsx`): connection handles on one selected Block (mouse; one per side that has an
+  anchor), the connector tool (L; it shows the anchors under the pointer before the press), a dragged end snapping
+  to a visible anchor within 12 px or, inside a Block, to its major anchor facing the other end, end / bend / segment / label
   handles on a selected line, a double press on a line to edit its label, edge panning while dragging. Moving,
   resizing or turning Blocks re-routes their lines per frame without React. One gesture, one commit
   (`connectors/ops.ts`); payload keys are written with `expect`, placements auto-merge.

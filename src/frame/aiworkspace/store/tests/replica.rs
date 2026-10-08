@@ -66,7 +66,7 @@ fn bootstrap(ws: &mut Workspace, who: &Caller, peer: u64) -> Replica {
 }
 
 fn local(rep: &Replica, key: &str, ops: Value) -> Value {
-    json!({ "protocol_version": "0.3", "workspace_id": rep.workspace_id, "epoch": rep.epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
+    json!({ "protocol_version": "0.4", "workspace_id": rep.workspace_id, "epoch": rep.epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
 }
 
 fn working_cell(rep: &Replica, record: &str, field: &str) -> (Option<Value>, u64) {
@@ -295,7 +295,7 @@ fn replica_keeps_anchors_it_does_not_know() {
     let mut ws = h.lock().unwrap();
     let mut rep = bootstrap(&mut ws, &alice(), 4343);
     // stand-in for a newer backend: the import path keeps what a strict write would refuse
-    let req = json!({ "protocol_version": "0.3", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
+    let req = json!({ "protocol_version": "0.4", "workspace_id": ws.workspace_id, "epoch": ws.epoch, "idempotency_key": "newer/1",
         "operations": [{ "op": "entity.create", "entity_id": "note-future", "type_id": "buckyos.annotation", "parent_id": "data",
             "order_key": "zz", "payload": { "target": { "entity_id": "notes", "selector": { "kind": "richtext_line", "line": 2 } },
                 "range": { "kind": "richtext_columns", "from": 1 }, "kind": "note", "body": "来自新版本" } }] });

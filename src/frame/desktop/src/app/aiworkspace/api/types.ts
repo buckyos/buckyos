@@ -1,7 +1,7 @@
 /* Wire types of the aiworkspace service (see src/frame/aiworkspace/README.md and the detailed design §2–§5).
  * Only what the Desktop app reads is typed; unknown keys are preserved as `unknown`. */
 
-export const PROTOCOL_VERSION = '0.3'
+export const PROTOCOL_VERSION = '0.4'
 
 export type Json = null | boolean | number | string | Json[] | { [key: string]: Json }
 
@@ -206,7 +206,7 @@ export interface ConnectorProjection {
   controls?: { u: number; v: number; dx?: number; dy?: number }[]
   label?: { t: number; offset?: number }
 }
-export interface ConnectorEnd { entity_id: string; anchor: { kind: 'auto' } | { kind: 'point'; x: number; y: number } }
+export interface ConnectorEnd { entity_id: string; anchor: { kind: 'named'; id: string } }
 
 export interface CellPayload {
   /** Absent on a pure UI Block (frame, shape…). */

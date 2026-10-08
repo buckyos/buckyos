@@ -8,10 +8,11 @@ import type { CellPayload, EntityEnvelope, KeyedContent } from '../../../api/typ
 import type { OutlineModel } from '../../../state/outline'
 import { Emitter } from '../../../state/emitter'
 import type { WorkspaceStore } from '../../../state/store'
-import { blockRegistry } from '../../blocks/registry'
+import { blockRegistry, type BlockDefinition } from '../../blocks/registry'
 import type { Laid } from '../layout'
 import type { Point } from '../geometry'
 import type { Rect } from '../render/camera'
+import { cleanAnchors, defaultAnchors, RECT_ANCHORS, type AnchorDef } from './anchors'
 import { routeConnector, storedEnds, type ConnectorGeometry, type Shape, type TargetGeom, type TargetLookup } from './geometry'
 import { CONNECTOR_VIEW, connectorData, LABEL_FONT, type ConnectorData } from './model'
 import { geometryKey } from './registry'
@@ -26,10 +27,35 @@ export function isConnector(entity: Pick<EntityEnvelope, 'type_id' | 'view_type'
   return entity?.type_id === 'buckyos.cell' && entity.view_type === CONNECTOR_VIEW
 }
 
-/** The outline a target Block declares (rect or ellipse). A definition that decides from the Cell's payload is
- * read once per content revision; until then the target counts as a rectangle. */
+/** What a line end meets on a target: its outline and its anchors. */
+export interface TargetForm { shape: Shape; anchors: readonly AnchorDef[] }
+
+export const RECT_FORM: TargetForm = { shape: 'rect', anchors: RECT_ANCHORS }
+
+/** A definition's form for a Cell payload (without one, what it declares outright; parts decided from the
+ * payload count as a rectangle and its anchors). Anchors a definition declares are read wide. */
+export function formOf(def: BlockDefinition | undefined, payload?: CellPayload): TargetForm {
+  if (!def) return RECT_FORM
+  try {
+    const shape: Shape = typeof def.shape === 'function' ? (payload ? def.shape(payload) : 'rect') : def.shape ?? 'rect'
+    const declared = typeof def.anchors === 'function' ? (payload ? def.anchors(payload) : null) : def.anchors ?? null
+    return { shape, anchors: (declared && cleanAnchors(declared)) ?? defaultAnchors(shape) }
+  } catch {
+    return RECT_FORM
+  }
+}
+
+const decidesFromPayload = (def: BlockDefinition | undefined) => typeof def?.shape === 'function' || typeof def?.anchors === 'function'
+const staticForms = new WeakMap<BlockDefinition, TargetForm>()
+
+function sameForm(a: TargetForm | undefined, b: TargetForm): boolean {
+  return Boolean(a && a.shape === b.shape && (a.anchors === b.anchors || JSON.stringify(a.anchors) === JSON.stringify(b.anchors)))
+}
+
+/** The outline (rect or ellipse) and anchors a target Block declares. A definition that decides from the Cell's
+ * payload is read once per content revision; until then the target counts as a rectangle. */
 export class ShapeBook {
-  private readonly known = new Map<string, { rev: number; shape: Shape }>()
+  private readonly known = new Map<string, { rev: number; form: TargetForm }>()
   private readonly loading = new Set<string>()
   private readonly emitter = new Emitter()
   private version = 0
@@ -39,28 +65,31 @@ export class ShapeBook {
 
   constructor(store: WorkspaceStore) { this.store = store }
 
-  get(entity: EntityEnvelope | undefined): Shape {
-    if (!entity || entity.type_id !== 'buckyos.cell') return 'rect'
-    const shape = blockRegistry.get(entity.view_type ?? '')?.shape
-    if (typeof shape !== 'function') return shape ?? 'rect'
-    return this.known.get(entity.entity_id)?.shape ?? 'rect'
+  get(entity: EntityEnvelope | undefined): TargetForm {
+    if (!entity || entity.type_id !== 'buckyos.cell') return RECT_FORM
+    const def = blockRegistry.get(entity.view_type ?? '')
+    if (!def) return RECT_FORM
+    if (decidesFromPayload(def)) return this.known.get(entity.entity_id)?.form ?? formOf(def)
+    let form = staticForms.get(def)
+    if (!form) { form = formOf(def); staticForms.set(def, form) }
+    return form
   }
 
   /** Read the payloads the outline does not carry, for targets whose definition decides from it. */
   ensure(entities: EntityEnvelope[]) {
     for (const entity of entities) {
-      const shape = blockRegistry.get(entity.view_type ?? '')?.shape
-      if (typeof shape !== 'function') continue
+      const def = blockRegistry.get(entity.view_type ?? '')
+      if (!decidesFromPayload(def)) continue
       const id = entity.entity_id
       const known = this.known.get(id)
       if ((known && known.rev === entity.content_rev) || this.loading.has(id)) continue
       this.loading.add(id)
       void this.store.readBatched<KeyedContent<CellPayload>>(id).then((read) => {
         this.loading.delete(id)
-        const next = shape(read.content.payload)
-        const before = this.known.get(id)?.shape
-        this.known.set(id, { rev: entity.content_rev, shape: next })
-        if (before !== next) { this.version += 1; this.emitter.emit() }
+        const next = formOf(def, read.content.payload)
+        const before = this.known.get(id)?.form
+        this.known.set(id, { rev: entity.content_rev, form: sameForm(before, next) ? before! : next })
+        if (!sameForm(before, next)) { this.version += 1; this.emitter.emit() }
       }, () => { this.loading.delete(id) })
     }
   }
@@ -70,13 +99,14 @@ export class ShapeBook {
 export type Override = (id: string) => { rect: Rect; rotation: number } | undefined
 
 /** How a connector sees a bound target on this Surface: its (overridden) rect, or why it is not usable. */
-export function lookupIn(laid: Map<string, Laid>, outline: OutlineModel, shapes: (id: string) => Shape, override?: Override): TargetLookup {
+export function lookupIn(laid: Map<string, Laid>, outline: OutlineModel, forms: (id: string) => TargetForm, override?: Override): TargetLookup {
   return (id: string) => {
     const l = laid.get(id)
     if (!l) return { broken: outline.get(id) ? 'off_surface' : 'missing' }
     if (l.connector || isConnector(l.entity)) return { broken: 'invalid' }
     const moved = override?.(id)
-    const geom: TargetGeom = { rect: moved?.rect ?? l.rect, rotation: moved?.rotation ?? l.rotation, shape: shapes(id) }
+    const form = forms(id)
+    const geom: TargetGeom = { rect: moved?.rect ?? l.rect, rotation: moved?.rotation ?? l.rotation, shape: form.shape, anchors: form.anchors }
     return geom
   }
 }
@@ -88,8 +118,8 @@ export function routeLaid(l: Laid, data: ConnectorData, lookup: TargetLookup, of
 }
 
 /** The second layout pass: every connector's data, geometry and bounds. */
-export function resolveConnectors(laid: Map<string, Laid>, outline: OutlineModel, shapes: (id: string) => Shape) {
-  const lookup = lookupIn(laid, outline, shapes)
+export function resolveConnectors(laid: Map<string, Laid>, outline: OutlineModel, forms: (id: string) => TargetForm) {
+  const lookup = lookupIn(laid, outline, forms)
   for (const l of laid.values()) {
     if (!isConnector(l.entity)) continue
     const data = connectorData(l.entity.connector as Record<string, unknown> | null | undefined)

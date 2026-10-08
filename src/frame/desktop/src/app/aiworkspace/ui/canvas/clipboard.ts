@@ -153,7 +153,7 @@ export function pasteOperations(store: WorkspaceStore, clip: Clip, target: Paste
       const rebind = (end: Json | undefined): Json => {
         const b = end as { entity_id?: string; anchor?: Json } | null | undefined
         const copy = b?.entity_id ? fresh.get(b.entity_id) : undefined
-        return copy ? { entity_id: copy, anchor: b?.anchor ?? { kind: 'auto' } } : null
+        return copy && b?.anchor ? { entity_id: copy, anchor: b.anchor } : null
       }
       const { rect, flip } = boxOf({ x: item.ends[0].x + dx, y: item.ends[0].y + dy }, { x: item.ends[1].x + dx, y: item.ends[1].y + dy })
       const { flip: _flip, ...rest } = item.payload

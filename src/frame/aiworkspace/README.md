@@ -63,7 +63,8 @@ only; the client owns the preset list), a shared, undoable key projected into th
 `[0, 360)`, absent = 0); stacking order is `order_key`. A Cell or a group may carry `locked: true`: a shared flag
 the client honours (no moves, resizing or deletion from the canvas) and the core only checks for being boolean.
 `FORMAT_VERSION` is 0.3 since these two keys (older kernels would refuse them on replay or import); stores and
-packages of format 0.2 are refused like any other version. `PROTOCOL_VERSION` is 0.3 since connectors (below). Free
+packages of format 0.2 are refused like any other version. `PROTOCOL_VERSION` is 0.4 since named connector anchors
+(0.3: connectors, below). Free
 notes are annotations without `target`. A Cell's `view.type` is any renderer id (format checked here, support
 decided by the front-end registry, D6); it may have no `source_ref`, a `config` (≤ 64 KiB) and a `def_ref` to a
 Block definition entity (blocks its deletion).
@@ -94,7 +95,7 @@ box, mirrored by `flip`. Its own payload keys, each a separate version cell, are
 | Key | Shape |
 | --- | --- |
 | `flip` | absent, `null` or `{ h?: bool, v?: bool }` |
-| `start` / `end` | absent or `null` = coordinate endpoint (the corner); bound = `{ entity_id, anchor }`, anchor `{ kind: "auto" }` or `{ kind: "point", x, y }` with x, y in [0, 1] |
+| `start` / `end` | absent or `null` = coordinate endpoint (the corner); bound = `{ entity_id, anchor: { kind: "named", id } }`, id `[A-Za-z0-9_.:-]{1,64}`: one of the target's anchors (which ids exist is the target renderer's business — by default the 16-point compass `n` … `nnw` — so unknown ids are not refused) |
 | `route` | absent (= `straight`), `straight`, `elbow`, `curve` |
 | `controls` | absent or ≤ 64 × `{ u, v, dx?, dy? }` (more → `LIMIT_EXCEEDED`) |
 | `label` | absent or `{ t in [0, 1], offset? }` |
@@ -110,7 +111,7 @@ It may carry `title` (the label text), `config` (appearance, ≤ 64 KiB, not ins
   changed (an untouched dangling end stays editable): the target passes `check_ref_target` (alive and readable,
   else `REFERENCE_BROKEN`), is a Cell that is not a connector or a `group` (not the line itself, data, a Surface),
   and sits on the line's Surface (`plan::surface_of`, an ancestor group included) — else `INVALID_SCHEMA`. A
-  self loop needs two different `point` anchors and a route other than `straight`. Creating a connector needs a
+  self loop needs two different anchors and a route other than `straight`. Creating a connector needs a
   free-layout Surface, and so does a new binding (`INVALID_OPERATION`); a later move into a flow page or a layout
   switch is not checked (the line is kept, just not drawn). Import and replay check shapes only and keep dangling
   endpoints verbatim.

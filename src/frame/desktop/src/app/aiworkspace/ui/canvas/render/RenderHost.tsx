@@ -36,9 +36,10 @@ import { Lock, RotateCw } from 'lucide-react'
 import type { Placement } from '../../../api/types'
 import { ConnectorFrame } from '../connectors/ConnectorFrame'
 import { LineRegistry } from '../connectors/registry'
-import { anchorWorld, cubicAt, decompose, dist, ELBOW_STUB, leftOf, materialize, nearest, pathData, routeBetween, routeConnector, snapPoints, type ConnectorGeometry, type Seg, type Shape, type TargetGeom } from '../connectors/geometry'
-import { CONNECTOR_PAD, connectorAdjacency, hasBoundEnd, lookupIn, routeLaid, type Override } from '../connectors/layout'
-import { LABEL_FONT, type Anchor, type ConnectorData, type Route } from '../connectors/model'
+import { anchorLabel, findAnchor, SIDE_VEC } from '../connectors/anchors'
+import { anchorsOf, anchorWorld, cubicAt, decompose, dist, ELBOW_STUB, facingAnchor, leftOf, materialize, nearest, pathData, routeBetween, routeConnector, sideAnchor, visibleAnchors, type ConnectorGeometry, type Seg, type TargetGeom } from '../connectors/geometry'
+import { CONNECTOR_PAD, connectorAdjacency, hasBoundEnd, lookupIn, RECT_FORM, routeLaid, type Override, type TargetForm } from '../connectors/layout'
+import { LABEL_FONT, sameAnchor, type Anchor, type ConnectorData, type Route } from '../connectors/model'
 import type { ConnectorChange, EndSpec, NewConnector } from '../connectors/ops'
 import { paintConnector } from '../connectors/paint'
 import { describeError } from '../../../api/session'
@@ -114,15 +115,16 @@ export interface RenderHostProps {
   onPlace?: (world: { x: number; y: number }) => void
   /** Objects marked by "cut" (dashed until pasted or cancelled). */
   cutIds?: ReadonlySet<string>
-  /** The outline each Block declares: connector ends meet it. */
-  shapeOf?: (id: string) => Shape
+  /** The outline and anchors each Block declares: connector ends meet them. */
+  formOf?: (id: string) => TargetForm
   /** A line was drawn (from a connection handle or with the connector tool); `blank`: its end is on no object. */
   onConnectorCreate?: (spec: NewConnector, release: { blank: boolean; screen: Point }) => void
   /** One gesture's edit of a line (an end, its bends, its label). */
   onConnectorChange?: (id: string, change: ConnectorChange) => void
 }
 
-/** Where a dragged line end would attach: a Block, the anchor on it, the point, and whether it is a side midpoint. */
+/** Where a dragged line end would attach: a Block, the anchor on it, the point, and whether the pointer is on that
+ * anchor (`exact`) or only inside the Block (the anchor facing the other end). */
 interface Snap { id: string; anchor: Anchor; point: Point; target: TargetGeom; exact: boolean }
 
 type Drag =
@@ -133,9 +135,10 @@ type Drag =
   | { kind: 'rotate'; id: string; center: Point; startAngle: number; start: number; current: number; lines: string[] }
   | { kind: 'marquee'; startX: number; startY: number; current: Rect | null; additive: boolean; moved: boolean }
   /** Drawing a new line from `from`. */
-  | { kind: 'connect'; from: EndSpec; startX: number; startY: number; end: EndSpec | null; route: Route; screen: Point; moved: boolean }
+  /** `loose`: the start was pressed inside a Block, not on an anchor — it takes the anchor facing the end. */
+  | { kind: 'connect'; from: EndSpec; loose: boolean; startX: number; startY: number; end: EndSpec | null; endExact: boolean; route: Route; screen: Point; moved: boolean }
   /** Dragging one end of a line. */
-  | { kind: 'endpoint'; id: string; which: 'start' | 'end'; startX: number; startY: number; end: EndSpec | null; route: Route | null; moved: boolean }
+  | { kind: 'endpoint'; id: string; which: 'start' | 'end'; startX: number; startY: number; end: EndSpec | null; endExact: boolean; route: Route | null; moved: boolean }
   /** Dragging a bend (`move` point `index` of `base`) or an elbow segment (`segment` `index` of the corner list `base`);
    * a press on the line's body that does not move is a click (`clicked`). */
   | { kind: 'bend'; id: string; mode: 'move' | 'segment'; base: Point[]; index: number; press: Point; working: Point[] | null; startX: number; startY: number; moved: boolean; clicked: boolean; additive: boolean; wasSelected: boolean }
@@ -258,8 +261,15 @@ export function RenderHost(props: RenderHostProps) {
   const adjacency = useMemo(() => connectorAdjacency(laid), [laid])
   /** A gesture's live line: its geometry, and (dragging an end) the Block the end would attach to. */
   const [linePreview, setLinePreview] = useState<{ id: string | null; geom: ConnectorGeometry; snap: Snap | null } | null>(null)
-  const shapeOf = props.shapeOf ?? (() => 'rect' as const)
-  const lookupWith = (override?: Override) => lookupIn(laid, store.outline, shapeOf, override)
+  const formOf = props.formOf ?? (() => RECT_FORM)
+  const lookupWith = (override?: Override) => lookupIn(laid, store.outline, formOf, override)
+  /** A Block as a line end's target (not a line). */
+  const targetOf = (id: string): TargetGeom | null => {
+    const l = laid.get(id)
+    if (!l || l.connector) return null
+    const form = formOf(id)
+    return { rect: l.rect, rotation: l.rotation, shape: form.shape, anchors: form.anchors }
+  }
   const routeOptions = (id: string | null) => ({ title: id ? laid.get(id)?.entity.title ?? null : null, font: LABEL_FONT.m, pad: CONNECTOR_PAD })
   const repaint = (id: string, g: ConnectorGeometry) => { const e = lines.get(id); if (e) paintConnector(e.el, g, e.style, e.options) }
   /** After a gesture: the frames show the committed layout again (React repaints when it changes). */
@@ -369,28 +379,40 @@ export function RenderHost(props: RenderHostProps) {
     if (top && !top.line && (top.turned ? containsPoint(top.turned.rect, top.turned.rotation, x, y) : x >= top.rect.x && x <= top.rect.x + top.rect.w && y >= top.rect.y && y <= top.rect.y + top.rect.h)) return top
     return index.hit(x, y, { slop: LINE_HIT_PX / camera.zoom, lineTolerance: (item) => lines.halfWidth(item.id) })
   }
-  /** Where a dragged line end at screen point `p` attaches: a side midpoint within SNAP_PX of the pointer, else the
-   * Block under it (`auto`, aimed at `toward`), else nothing. Lines, unreadable and excluded Blocks never attach. */
+  /** Where a dragged line end at screen point `p` attaches (§4.3): an anchor within SNAP_PX of the pointer (the
+   * top-most Block's, then the nearest), else — inside a Block — its anchor facing `toward`, else nothing. Lines,
+   * unreadable and excluded Blocks never attach; minor anchors count only while they are shown. */
   const snapAt = (p: Point, toward: Point, exclude?: string): Snap | null => {
     const w = camera.toWorld(p.x, p.y)
     const r = SNAP_PX / camera.zoom
-    const targetOf = (id: string): TargetGeom | null => { const l = laid.get(id); return l && !l.connector && id !== exclude ? { rect: l.rect, rotation: l.rotation, shape: shapeOf(id) } : null }
+    const usable = (id: string) => (id === exclude ? null : targetOf(id))
     let best: Snap | null = null
     let bestPaint = -1
+    let bestD = Infinity
     for (const item of index.query({ x: w.x - r, y: w.y - r, w: r * 2, h: r * 2 })) {
-      const target = item.line ? null : targetOf(item.id)
+      const target = item.line ? null : usable(item.id)
       if (!target) continue
-      for (const sp of snapPoints(target)) {
-        const s = camera.toScreen(sp.point.x, sp.point.y)
-        if (Math.hypot(s.x - p.x, s.y - p.y) <= SNAP_PX && item.paint > bestPaint) { best = { id: item.id, anchor: sp.anchor, point: sp.point, target, exact: true }; bestPaint = item.paint }
+      for (const spot of visibleAnchors(target, camera.zoom)) {
+        const s = camera.toScreen(spot.point.x, spot.point.y)
+        const d = Math.hypot(s.x - p.x, s.y - p.y)
+        if (d > SNAP_PX || item.paint < bestPaint || (item.paint === bestPaint && d >= bestD)) continue
+        best = { id: item.id, anchor: spot.anchor, point: spot.point, target, exact: true }
+        bestPaint = item.paint
+        bestD = d
       }
     }
     if (best) return best
-    const hit = index.hit(w.x, w.y, { accept: (item) => !item.line && targetOf(item.id) !== null })
-    const target = hit ? targetOf(hit.id) : null
+    const hit = index.hit(w.x, w.y, { accept: (item) => !item.line && usable(item.id) !== null })
+    const target = hit ? usable(hit.id) : null
     if (!hit || !target) return null
-    const anchor: Anchor = { kind: 'auto' }
-    return { id: hit.id, anchor, point: anchorWorld(target, anchor, toward), target, exact: false }
+    const anchor = facingAnchor(target, toward)
+    return anchor ? { id: hit.id, anchor, point: anchorWorld(target, anchor, toward), target, exact: false } : null
+  }
+  /** What the connector tool would start from at the pointer (its anchors are shown before the press). */
+  const [toolSnap, setToolSnap] = useState<Snap | null>(null)
+  const followToolSnap = (p: Point | null) => {
+    const next = p ? snapAt(p, camera.toWorld(p.x, p.y)) : null
+    setToolSnap((before) => (before?.id === next?.id && before?.exact === next?.exact && (!before || !next || sameAnchor(before.anchor, next.anchor)) && before?.target.rect === next?.target.rect ? before : next))
   }
 
   // ---- edge panning: a drag near the canvas edge moves the camera; what follows the pointer is shifted with it
@@ -508,8 +530,9 @@ export function RenderHost(props: RenderHostProps) {
       if (cancel || !drag.moved || !drag.end) return
       const from = drag.from.binding
       const to = drag.end.binding
-      if (from && to && from.entity_id === to.entity_id && !(from.anchor.kind === 'point' && to.anchor.kind === 'point' && (from.anchor.x !== to.anchor.x || from.anchor.y !== to.anchor.y))) {
-        store.notify('info', '首尾连在同一个对象上时，两端要放在它不同的连接点（四边中点）上。')
+      // a loop needs two different anchors the pointer was on (§4.3)
+      if (from && to && from.entity_id === to.entity_id && (drag.loose || !drag.endExact || sameAnchor(from.anchor, to.anchor))) {
+        store.notify('info', '首尾连在同一个对象上时，两端要放在它两个不同的锚点上。')
         return
       }
       // the stored corners are where the ends are now (an `auto` start depends on where the end went)
@@ -524,8 +547,8 @@ export function RenderHost(props: RenderHostProps) {
       const data: ConnectorData = { ...l.connector.data, [drag.which]: drag.end.binding, ...(drag.route ? { route: drag.route } : {}) }
       const other = drag.which === 'start' ? data.end : data.start
       const mine = drag.end.binding
-      if (mine && other && mine.entity_id === other.entity_id && !(mine.anchor.kind === 'point' && other.anchor.kind === 'point' && (mine.anchor.x !== other.anchor.x || mine.anchor.y !== other.anchor.y))) {
-        store.notify('info', '首尾连在同一个对象上时，两端要放在它不同的连接点（四边中点）上。')
+      if (mine && other && mine.entity_id === other.entity_id && (!drag.endExact || sameAnchor(mine.anchor, other.anchor))) {
+        store.notify('info', '首尾连在同一个对象上时，两端要放在它两个不同的锚点上。')
         return
       }
       const geom = l.connector.geom
@@ -563,10 +586,12 @@ export function RenderHost(props: RenderHostProps) {
       props.onPlace?.(w)
       return
     }
-    // the connector tool: a press on a Block binds the start to it, a press on blank space starts a free line
+    // the connector tool: a press on an anchor starts there, inside a Block the start takes the anchor facing
+    // the end, a press on blank space starts a free line
     if (props.tool === 'connector' && event.button === 0 && !spaceHeld.current && props.onConnectorCreate) {
       const snap = snapAt(p, w)
-      beginConnect(event, snap ? { binding: { entity_id: snap.id, anchor: snap.anchor }, point: snap.exact ? snap.point : centerOf(snap.target.rect) } : { binding: null, point: w })
+      setToolSnap(null)
+      beginConnect(event, snap ? { binding: { entity_id: snap.id, anchor: snap.anchor }, point: snap.point } : { binding: null, point: w }, Boolean(snap && !snap.exact))
       return
     }
     const hand = props.tool === 'hand'
@@ -606,13 +631,13 @@ export function RenderHost(props: RenderHostProps) {
   }
 
   /** Start drawing a line from `from` (a connection handle, or the connector tool's press). */
-  const beginConnect = (event: PointerStart, from: EndSpec) => {
+  const beginConnect = (event: PointerStart, from: EndSpec, loose = false) => {
     event.preventDefault()
     rootRef.current?.setPointerCapture(event.pointerId)
     window.getSelection()?.removeAllRanges()
     setDragging(true)
     if (editing) endEditing()
-    dragRef.current = { kind: 'connect', from, startX: event.clientX, startY: event.clientY, end: null, route: 'straight', screen: screenPoint(event), moved: false }
+    dragRef.current = { kind: 'connect', from, loose, startX: event.clientX, startY: event.clientY, end: null, endExact: false, route: 'straight', screen: screenPoint(event), moved: false }
   }
   /** Start dragging a bend: a stored or materialised point (`index`), an elbow segment, or — `index` null — the
    * piece of the line under the pointer (a new bend there; on an elbow, that segment). */
@@ -657,7 +682,7 @@ export function RenderHost(props: RenderHostProps) {
     }
     rootRef.current?.setPointerCapture(event.pointerId)
     setDragging(true)
-    dragRef.current = { kind: 'endpoint', id, which, startX: event.clientX, startY: event.clientY, end: null, route: null, moved: false }
+    dragRef.current = { kind: 'endpoint', id, which, startX: event.clientX, startY: event.clientY, end: null, endExact: false, route: null, moved: false }
   }
   const beginLineHandle = (event: ReactPointerEvent<Element>, id: string, index: number, insert: boolean) => {
     if (dragRef.current || !lineEditable(id)) return
@@ -692,7 +717,8 @@ export function RenderHost(props: RenderHostProps) {
     if (dragRef.current || !l) return
     event.stopPropagation()
     handleDownAt.current = event.timeStamp
-    const target: TargetGeom = { rect: l.rect, rotation: l.rotation, shape: shapeOf(id) }
+    const target = targetOf(id)
+    if (!target) return
     beginConnect(event, { binding: { entity_id: id, anchor }, point: anchorWorld(target, anchor, centerOf(l.rect)) })
   }
 
@@ -715,6 +741,8 @@ export function RenderHost(props: RenderHostProps) {
       return
     }
     if (!drag) {
+      // the connector tool shows the anchors under the pointer instead of the hover state
+      if (props.tool === 'connector' && props.onConnectorCreate) { changeHover(null); followToolSnap(screenPoint(event)); return }
       if (!policy.select || props.tool === 'hand') return
       // the pointer on an affordance keeps its Block hovered
       if ((event.target as Element | null)?.closest?.('.aiws-afford')) return
@@ -814,8 +842,13 @@ export function RenderHost(props: RenderHostProps) {
       const w = camera.toWorld(p.x, p.y)
       if (current.kind === 'connect') {
         // the end attaches to what is under the pointer; a loop on one Block routes as an elbow
-        const snap = snapAt(p, current.from.point)
+        const fromTarget = current.loose && current.from.binding ? targetOf(current.from.binding.entity_id) : null
+        const snap = snapAt(p, fromTarget ? centerOf(fromTarget.rect) : current.from.point)
         current.end = snap ? { binding: { entity_id: snap.id, anchor: snap.anchor }, point: snap.point } : { binding: null, point: w }
+        current.endExact = snap?.exact ?? false
+        // a start pressed inside its Block faces the end
+        const facing = fromTarget && facingAnchor(fromTarget, current.end.point)
+        if (fromTarget && facing && current.from.binding) current.from = { binding: { entity_id: current.from.binding.entity_id, anchor: facing }, point: anchorWorld(fromTarget, facing, current.end.point) }
         current.route = snap && snap.id === current.from.binding?.entity_id ? 'elbow' : 'straight'
         current.screen = p
         const g = routeConnector({ start: current.from.binding, end: current.end.binding, flip: {}, route: current.route, controls: [], label: { t: 0.5, offset: 0 } }, [current.from.point, current.end.point], lookupWith(), routeOptions(null))
@@ -831,6 +864,7 @@ export function RenderHost(props: RenderHostProps) {
         // binding needs `update` on the line; without it the end only moves
         const snap = lineEditable(current.id) ? snapAt(p, other.point, current.id) : null
         current.end = snap ? { binding: { entity_id: snap.id, anchor: snap.anchor }, point: snap.point } : { binding: null, point: w }
+        current.endExact = snap?.exact ?? false
         current.route = snap && otherBinding?.entity_id === snap.id && line.data.route === 'straight' ? 'elbow' : null
         const data: ConnectorData = { ...line.data, [current.which]: current.end.binding, ...(current.route ? { route: current.route } : {}) }
         const stored: [Point, Point] = current.which === 'start' ? [current.end.point, other.point] : [other.point, current.end.point]
@@ -1142,7 +1176,15 @@ export function RenderHost(props: RenderHostProps) {
   const lineId = selected.length === 1 && selected[0].line && mode === 'edit' && policy.layout && canLayout && !selected[0].locked && editing !== selected[0].id && !dragging ? selected[0].id : null
   const lineG = lineId ? lineGeom(lineId) : undefined
   const canBend = lineId ? lineEditable(lineId) : false
-  const lineEnds = lineG && lineId ? (['start', 'end'] as const).map((which) => ({ which, end: lineG[which], at: toScreenPt(lineG[which].point) })) : []
+  const lineEnds = lineG && lineId ? (['start', 'end'] as const).map((which) => ({ which, end: lineG[which], at: toScreenPt(lineG[which].point), binding: laid.get(lineId)?.connector?.data[which] ?? null })) : []
+  /** Which anchor of which Block a bound end is on, in words. */
+  const endPlace = (binding: { entity_id: string; anchor: Anchor } | null): string | null => {
+    if (!binding) return null
+    const name = store.outline.get(binding.entity_id)?.title || '对象'
+    const id = binding.anchor.id
+    const target = targetOf(binding.entity_id)
+    return `连接在「${name}」的${anchorLabel(target ? findAnchor(anchorsOf(target), id) : undefined, id)}锚点`
+  }
   const lineControls = lineG && canBend && lineG.route !== 'elbow' && !lineG.auto ? lineG.pts.slice(1, -1).map(toScreenPt) : []
   const lineMids = lineG && canBend ? (lineG.route === 'curve'
     ? lineG.segs.map((sg) => ({ at: toScreenPt(cubicAt(sg, 0.5)), long: dist(toScreenPt(sg.a), toScreenPt(sg.b)) >= 24 }))
@@ -1150,22 +1192,24 @@ export function RenderHost(props: RenderHostProps) {
   const lineLabel = lineG && canBend && lineG.label.box ? camera.rectToScreen(lineG.label.box) : null
   // the label's handle wins over a bend handle under it (a bend is still added by dragging the line elsewhere)
   const underLabel = (p: Point) => Boolean(lineLabel && p.x >= lineLabel.x - 6 && p.x <= lineLabel.x + lineLabel.w + 6 && p.y >= lineLabel.y - 6 && p.y <= lineLabel.y + lineLabel.h + 6)
-  // connection handles: outside the side midpoints of one selected Block (mouse only, §4.3)
+  // connection handles: just outside the anchor each side starts from — n, e, s, w unless the Block declares its
+  // own (mouse only, §4.3)
   const connectHandles = single && singleLaid && !singleLaid.isGroup && pointer === 'mouse' && props.onConnectorCreate && props.tool !== 'connector' ? (() => {
-    const pts = corners(single.rect, single.rotation)
-    const c = { x: single.rect.x + single.rect.w / 2, y: single.rect.y + single.rect.h / 2 }
-    const sides: { side: string; a: Point; b: Point; anchor: Anchor }[] = [
-      { side: 'n', a: pts[0], b: pts[1], anchor: { kind: 'point', x: 0.5, y: 0 } }, { side: 'e', a: pts[1], b: pts[2], anchor: { kind: 'point', x: 1, y: 0.5 } },
-      { side: 's', a: pts[2], b: pts[3], anchor: { kind: 'point', x: 0.5, y: 1 } }, { side: 'w', a: pts[3], b: pts[0], anchor: { kind: 'point', x: 0, y: 0.5 } },
-    ]
-    return sides.map(({ side, a, b, anchor }) => {
-      const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
-      const d = Math.hypot(m.x - c.x, m.y - c.y) || 1
-      return { side, anchor, x: m.x + ((m.x - c.x) / d) * CONNECT_OFFSET, y: m.y + ((m.y - c.y) / d) * CONNECT_OFFSET }
+    const target = targetOf(single.id)
+    if (!target) return []
+    return (['n', 'e', 's', 'w'] as const).flatMap((side) => {
+      const spot = sideAnchor(target, side)
+      if (!spot) return []
+      const at = toScreenPt(spot.point)
+      const out = rotatePoint(SIDE_VEC[side], { x: 0, y: 0 }, target.rotation)
+      return [{ side, anchor: spot.anchor, x: at.x + out.x * CONNECT_OFFSET, y: at.y + out.y * CONNECT_OFFSET }]
     })
   })() : []
-  const snap = linePreview?.snap ?? null
+  // the anchors of the Block a dragged end (or the connector tool) is over; the chosen one stands out
+  const snap = linePreview?.snap ?? (props.tool === 'connector' && !dragging ? toolSnap : null)
   const snapShape = snap ? { rect: camera.rectToScreen(snap.target.rect), rotation: snap.target.rotation, ellipse: snap.target.shape === 'ellipse' } : null
+  const snapSpots = snap ? visibleAnchors(snap.target, camera.zoom) : []
+  const snapOn = snap && (snap.exact || linePreview) ? snap.anchor.id : null
 
   /** What the near toolbar keeps clear of: the selection and, on a turned Block, its rotation handle (and the connection handles). */
   const nearBox = (b: { x: number; y: number; x2: number; y2: number }): Rect => {
@@ -1195,7 +1239,7 @@ export function RenderHost(props: RenderHostProps) {
       onWheel={onWheel}
       onContextMenu={onContextMenu}
       onPointerLeave={() => {
-        if (!dragRef.current) changeHover(null)
+        if (!dragRef.current) { changeHover(null); setToolSnap(null) }
         if (ghostRef.current) ghostRef.current.style.visibility = 'hidden'
       }}
       onDoubleClick={(event) => {
@@ -1243,11 +1287,15 @@ export function RenderHost(props: RenderHostProps) {
         </g>
         {marquee && <rect className="aiws-marquee" data-testid="aiws-marquee" x={marquee.x} y={marquee.y} width={marquee.w} height={marquee.h} />}
         {snapShape && snap && (
-          <g className="aiws-snap" data-testid={`aiws-snap-${snap.id}`} data-anchor={snap.anchor.kind}>
+          <g className="aiws-snap" data-testid={`aiws-snap-${snap.id}`} data-anchor={snap.anchor.id} data-exact={snap.exact ? 'true' : 'false'}>
             {snapShape.ellipse
               ? <ellipse className="aiws-snap-outline" cx={snapShape.rect.x + snapShape.rect.w / 2} cy={snapShape.rect.y + snapShape.rect.h / 2} rx={snapShape.rect.w / 2} ry={snapShape.rect.h / 2} transform={turned(snapShape.rect, snapShape.rotation)} />
               : <rect className="aiws-snap-outline" x={snapShape.rect.x} y={snapShape.rect.y} width={snapShape.rect.w} height={snapShape.rect.h} transform={turned(snapShape.rect, snapShape.rotation)} />}
-            {snapPoints(snap.target).map((sp, i) => { const at = toScreenPt(sp.point); const on = snap.exact && dist(sp.point, snap.point) < 0.5; return <circle key={i} className={`aiws-snap-point${on ? ' is-on' : ''}`} cx={at.x} cy={at.y} r={on ? 5 : 3.5} /> })}
+            {snapSpots.map(({ def, point }) => {
+              const at = toScreenPt(point)
+              const on = def.id === snapOn
+              return <circle key={def.id} className={`aiws-snap-point${def.minor ? ' is-minor' : ''}${on ? ' is-on' : ''}`} data-testid={`aiws-snap-anchor-${def.id}`} cx={at.x} cy={at.y} r={on ? 5 : def.minor ? 2.75 : 3.5} />
+            })}
           </g>
         )}
         {linePreview && linePreview.id === null && <path className="aiws-line-preview" data-testid="aiws-line-preview" d={pathData(screenSegs(linePreview.geom.segs))} />}
@@ -1266,11 +1314,11 @@ export function RenderHost(props: RenderHostProps) {
                 <title>拖动折点（Shift 水平 / 垂直）；双击删除</title>
               </g>
             ))}
-            {lineEnds.map(({ which, end, at }) => (
-              <g key={which} className={`aiws-line-handle aiws-line-end is-${end.state}`} data-testid={`aiws-line-end-${which}`} data-state={end.state} onPointerDown={(event) => beginLineEnd(event, lineId, which)}>
+            {lineEnds.map(({ which, end, at, binding }) => (
+              <g key={which} className={`aiws-line-handle aiws-line-end is-${end.state}`} data-testid={`aiws-line-end-${which}`} data-state={end.state} data-anchor={binding?.anchor.id} onPointerDown={(event) => beginLineEnd(event, lineId, which)}>
                 <circle className="aiws-line-handle-hit" cx={at.x} cy={at.y} r={9} /><circle className="aiws-line-dot" cx={at.x} cy={at.y} r={5} />
                 {end.state === 'broken' && <text className="aiws-line-bang" x={at.x} y={at.y}>!</text>}
-                <title>{end.state === 'broken' ? '端点不可用：拖到对象上重新连接（双击查看说明）' : '拖动重新连接；拖到空白处断开'}</title>
+                <title>{end.state === 'broken' ? '端点不可用：拖到对象上重新连接（双击查看说明）' : `${end.state === 'bound' ? `${endPlace(binding)}。` : ''}拖动重新连接；拖到空白处断开`}</title>
               </g>
             ))}
           </g>

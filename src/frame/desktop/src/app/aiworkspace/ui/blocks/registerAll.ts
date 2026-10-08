@@ -7,6 +7,7 @@ import { registerHtmlBlock } from '../extensions/HtmlBlockHost'
 import { registerWishBlock } from '../wish/wishBlock'
 import { connectorDefinition } from '../canvas/connectors/definition'
 import { blockRegistry } from './registry'
+import { testHooks } from '../../api/testHooks'
 
 let registered = false
 export function registerDefaultBlocks() {
@@ -19,4 +20,6 @@ export function registerDefaultBlocks() {
   registerDeclarativeBlock()
   registerSampleBlocks()
   registerVideoBlock()
+  const hooks = testHooks()
+  if (hooks) hooks.blocks = blockRegistry
 }

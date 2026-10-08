@@ -2,9 +2,10 @@
  * `connector@1`, so a change that alters existing drawings needs a new `view.version`.
  *
  *   stored ends   the placement box plus `flip` give the two stored endpoints S and E (world)
- *   connection    a bound end sits on its target: a `point` anchor at a normalised spot of the target's rect,
- *                 an `auto` anchor where the ray from the target's centre towards the other end leaves its
- *                 outline (rect or ellipse); rotated targets turn both
+ *   connection    a bound end sits on its target's anchor of that id, leaving by its side (or by the one of its
+ *                 sides facing the other end); an id the target does not have floats: where the ray from the
+ *                 target's centre towards the other end leaves its outline (rect or ellipse); rotated targets
+ *                 turn both
  *   controls      `{u, v, dx, dy}` in the endpoint frame: between the ends a ratio, beyond them an offset from
  *                 the nearer end, decomposed per axis — so right angles survive any move of the ends
  *   routes        straight (through the controls), elbow (orthogonal; automatic route adapted from React
@@ -14,10 +15,12 @@
 
 import { centerOf, rotatePoint, type Point } from '../geometry'
 import type { Rect } from '../render/camera'
+import { defaultAnchors, findAnchor, SIDE_VEC, sidesOf, type AnchorDef, type Shape, type Side } from './anchors'
 import type { Anchor, Binding, Control, ConnectorData, Flip, Route } from './model'
 
-export type Shape = 'rect' | 'ellipse'
-export interface TargetGeom { rect: Rect; rotation: number; shape: Shape }
+export type { Shape } from './anchors'
+/** A bound end's target: its layout rect, rotation, outline and anchors (the outline's default set if absent). */
+export interface TargetGeom { rect: Rect; rotation: number; shape: Shape; anchors?: readonly AnchorDef[] }
 export type BrokenReason = 'missing' | 'off_surface' | 'invalid'
 /** What the layout knows of a bound end's target. */
 export type TargetLookup = (id: string) => TargetGeom | { broken: BrokenReason }
@@ -96,10 +99,23 @@ export function boxOf(s: Point, e: Point): { rect: Rect; flip: Flip } {
 function toLocal(t: TargetGeom, p: Point): Point { return rotatePoint(p, centerOf(t.rect), -t.rotation) }
 function toWorld(t: TargetGeom, p: Point): Point { return rotatePoint(p, centerOf(t.rect), t.rotation) }
 
-/** The connection point in the target's own (unrotated) coordinates. */
-export function anchorLocal(t: TargetGeom, anchor: Anchor, toward: Point): Point {
+export function anchorsOf(t: TargetGeom): readonly AnchorDef[] {
+  return t.anchors ?? defaultAnchors(t.shape)
+}
+
+/** The target's anchor of that id (none: the target does not have it). */
+function namedDef(t: TargetGeom, anchor: Anchor): AnchorDef | undefined {
+  return findAnchor(anchorsOf(t), anchor.id)
+}
+
+function defLocal(t: TargetGeom, a: AnchorDef): Point {
   const r = t.rect
-  if (anchor.kind === 'point') return { x: r.x + anchor.x * r.w, y: r.y + anchor.y * r.h }
+  return { x: r.x + a.x * r.w + (a.dx ?? 0), y: r.y + a.y * r.h + (a.dy ?? 0) }
+}
+
+/** Where the ray from the target's centre towards `toward` leaves its outline (own coordinates). */
+function floating(t: TargetGeom, toward: Point): Point {
+  const r = t.rect
   const c = centerOf(r)
   const q = toLocal(t, toward)
   let dx = q.x - c.x
@@ -111,12 +127,18 @@ export function anchorLocal(t: TargetGeom, anchor: Anchor, toward: Point): Point
   return { x: c.x + dx * k, y: c.y + dy * k }
 }
 
+/** The connection point in the target's own (unrotated) coordinates. */
+export function anchorLocal(t: TargetGeom, anchor: Anchor, toward: Point): Point {
+  const def = namedDef(t, anchor)
+  return def ? defLocal(t, def) : floating(t, toward)
+}
+
 /** The world position of a connection point. */
 export function anchorWorld(t: TargetGeom, anchor: Anchor, toward: Point): Point {
   return toWorld(t, anchorLocal(t, anchor, toward))
 }
 
-/** The side a connection point is on, as a turned unit direction (the centre takes the way to `toward`). */
+/** The side a floating connection point is on, as a turned unit direction (the centre takes the way to `toward`). */
 function outward(t: TargetGeom, local: Point, toward: Point): Point {
   const r = t.rect
   const c = centerOf(r)
@@ -128,20 +150,83 @@ function outward(t: TargetGeom, local: Point, toward: Point): Point {
   return rotatePoint(d, { x: 0, y: 0 }, t.rotation)
 }
 
-/** The four side midpoints a dragged end snaps to (n, e, s, w), as anchors and world points. */
-export function snapPoints(t: TargetGeom): { anchor: Anchor; point: Point }[] {
-  return ([[0.5, 0], [1, 0.5], [0.5, 1], [0, 0.5]] as const).map(([x, y]) => {
-    const anchor: Anchor = { kind: 'point', x, y }
-    return { anchor, point: anchorWorld(t, anchor, centerOf(t.rect)) }
-  })
+/** The side a named anchor leaves by: its only side, or of its sides the one facing `toward` (ties: the first). */
+function sideToward(t: TargetGeom, def: AnchorDef, local: Point, toward: Point): Point {
+  const q = toLocal(t, toward)
+  const v = { x: q.x - local.x, y: q.y - local.y }
+  let best = SIDE_VEC[sidesOf(def)[0]]
+  let bestDot = -Infinity
+  for (const side of sidesOf(def)) {
+    const d = SIDE_VEC[side]
+    const dot = d.x * v.x + d.y * v.y
+    if (dot > bestDot + 1e-9) { best = d; bestDot = dot }
+  }
+  return rotatePoint(best, { x: 0, y: 0 }, t.rotation)
 }
 
-/** The anchor of a world point inside a target, normalised to its rect (turned back first). */
-export function anchorAt(t: TargetGeom, p: Point): Anchor {
-  const q = toLocal(t, p)
-  const r = t.rect
-  const clamp = (v: number) => Math.min(1, Math.max(0, Math.round(v * 10000) / 10000))
-  return { kind: 'point', x: clamp((q.x - r.x) / Math.max(r.w, 1e-9)), y: clamp((q.y - r.y) / Math.max(r.h, 1e-9)) }
+/** Minor anchors are offered when every one of them is at least this far (screen px) from its neighbours. */
+export const MINOR_GAP_PX = 32
+
+export interface AnchorSpot { def: AnchorDef; anchor: Anchor; point: Point }
+
+/** The anchors a dragged end can snap to at `zoom`, with their world points: the major ones always, the minor
+ * ones too when the target is large enough on screen (8 → 16 on a rectangle). */
+export function visibleAnchors(t: TargetGeom, zoom: number): AnchorSpot[] {
+  const all = anchorsOf(t).map((def): AnchorSpot => ({ def, anchor: { kind: 'named', id: def.id }, point: toWorld(t, defLocal(t, def)) }))
+  const minor = all.filter((a) => a.def.minor)
+  if (!minor.length) return all
+  const gap = MINOR_GAP_PX / Math.max(zoom, 1e-9)
+  const roomy = minor.every((m) => all.every((o) => o === m || dist(o.point, m.point) >= gap))
+  return roomy ? all : all.filter((a) => !a.def.minor)
+}
+
+/** The anchor an end dropped inside the target (not on an anchor) takes: on the side facing `toward` (in the
+ * target's own axes), the major anchor that leaves only by that side and is nearest to where the ray from the
+ * centre leaves the outline; without one, any major anchor leaving by that side, then any major anchor. None
+ * when the target declares no anchors (it takes no lines). */
+export function facingAnchor(t: TargetGeom, toward: Point): Anchor | null {
+  const defs = anchorsOf(t)
+  if (!defs.length) return null
+  const c = centerOf(t.rect)
+  const q = toLocal(t, toward)
+  const side = axisOf(q.x - c.x, q.y - c.y)
+  const hit = floating(t, toward)
+  const majors = defs.filter((d) => !d.minor)
+  const pool = majors.length ? majors : defs
+  const faces = (d: AnchorDef, only: boolean) => {
+    const sides = sidesOf(d)
+    return (!only || sides.length === 1) && sides.some((s) => SIDE_VEC[s].x === side.x && SIDE_VEC[s].y === side.y)
+  }
+  const only = pool.filter((d) => faces(d, true))
+  const some = only.length ? only : pool.filter((d) => faces(d, false))
+  const candidates = some.length ? some : pool
+  let best = candidates[0]
+  let bestD = Infinity
+  for (const d of candidates) {
+    const dd = dist(defLocal(t, d), hit)
+    if (dd < bestD - 1e-9) { best = d; bestD = dd }
+  }
+  return { kind: 'named', id: best.id }
+}
+
+/** The anchor a connection handle on `side` starts from: the target's anchor of that compass id when it leaves by
+ * that side, else the major anchor leaving by that side nearest the side's midpoint; none without one. */
+export function sideAnchor(t: TargetGeom, side: Side): AnchorSpot | null {
+  const defs = anchorsOf(t)
+  const leaves = (d: AnchorDef) => sidesOf(d).includes(side)
+  const own = findAnchor(defs, side)
+  let def = own && leaves(own) ? own : undefined
+  if (!def) {
+    const r = t.rect
+    const mid = { x: r.x + (0.5 + SIDE_VEC[side].x / 2) * r.w, y: r.y + (0.5 + SIDE_VEC[side].y / 2) * r.h }
+    let bestD = Infinity
+    for (const d of defs) {
+      if (d.minor || !leaves(d)) continue
+      const dd = dist(defLocal(t, d), mid)
+      if (dd < bestD) { def = d; bestD = dd }
+    }
+  }
+  return def ? { def, anchor: { kind: 'named', id: def.id }, point: toWorld(t, defLocal(t, def)) } : null
 }
 
 /** Where both ends are now (§4.3): bound ends on their targets, coordinate and broken ends at their stored spot. */
@@ -153,13 +238,16 @@ export function resolveEnds(data: Pick<ConnectorData, 'start' | 'end'>, stored: 
   }
   const s = geomOf(data.start)
   const e = geomOf(data.end)
-  // what an `auto` end aims at: the other end's fixed spot, or (both auto) the other target's centre
-  const reference = (o: typeof s, stored: Point): Point => (!o.b || !o.g ? stored : o.b.anchor.kind === 'point' ? anchorWorld(o.g, o.b.anchor, stored) : centerOf(o.g.rect))
+  // what an end's sides face (and a floating end aims at): the other end's anchor, or (the other end floats too)
+  // the other target's centre
+  const fixed = (o: typeof s) => Boolean(o.b && o.g && namedDef(o.g, o.b.anchor))
+  const reference = (o: typeof s, stored: Point): Point => (!o.b || !o.g ? stored : fixed(o) ? anchorWorld(o.g, o.b.anchor, stored) : centerOf(o.g.rect))
   const one = (x: typeof s, storedAt: Point, toward: Point): ResolvedEnd => {
     if (!x.b) return { point: storedAt, dir: { x: 0, y: 0 }, state: 'free' }
     if (!x.g) return { point: storedAt, dir: { x: 0, y: 0 }, state: 'broken', reason: x.broken ?? 'missing', targetId: x.b.entity_id }
-    const local = anchorLocal(x.g, x.b.anchor, toward)
-    return { point: toWorld(x.g, local), dir: outward(x.g, local, toward), state: 'bound', targetId: x.b.entity_id }
+    const def = namedDef(x.g, x.b.anchor)
+    const local = def ? defLocal(x.g, def) : anchorLocal(x.g, x.b.anchor, toward)
+    return { point: toWorld(x.g, local), dir: def ? sideToward(x.g, def, local, toward) : outward(x.g, local, toward), state: 'bound', targetId: x.b.entity_id }
   }
   const start = one(s, stored[0], reference(e, stored[1]))
   const end = one(e, stored[1], reference(s, stored[0]))

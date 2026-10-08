@@ -15,6 +15,7 @@ import { z } from 'zod'
 import type { CapturedAnchor } from '../../anchors/registry'
 import type { BlockDefPayload, Capability, CellPayload, EntityEnvelope, Json, Operation, Placement } from '../../api/types'
 import type { WorkspaceStore } from '../../state/store'
+import type { AnchorDef } from '../canvas/connectors/anchors'
 import { HTML_API_VERSION } from '../extensions/htmlRuntime'
 
 export type CanvasMode = 'edit' | 'view' | 'presentation_edit'
@@ -156,6 +157,9 @@ export interface BlockDefinition {
   /** The outline the hover state follows and connector ends meet (连接线实现方案 §4.3); a function reads the
    * Cell's payload only, so the canvas can resolve a target that is not mounted. */
   shape?: 'rect' | 'ellipse' | ((payload: CellPayload) => 'rect' | 'ellipse')
+  /** The anchors line ends attach to (连接线实现方案 §4.3); without it, the outline's 16 compass anchors. Ids must
+   * stay stable: a line stores the id. A function reads the Cell's payload only, like `shape`. */
+  anchors?: readonly AnchorDef[] | ((payload: CellPayload) => readonly AnchorDef[])
   /** `locked`: corner handles keep the proportions (Shift frees them); `free`: Shift keeps them. */
   resize?: { aspect?: 'free' | 'locked' }
   /** Hover affordances (§4.2); without it a Block with data shows the data's name. */
@@ -186,7 +190,7 @@ export type Resolution =
   | { ok: true; definition: BlockDefinition; warning?: string }
   | { ok: false; reason: 'unknown_renderer' | 'unsupported_version' | 'type_not_accepted' | 'source_required' | 'definition_missing' | 'invalid_definition' | 'unsupported_api' | 'invalid_config' | 'data_unavailable'; detail: string; definition?: BlockDefinition }
 
-class BlockRegistry {
+export class BlockRegistry {
   private readonly defs = new Map<string, Map<number, BlockDefinition>>()
   private readonly listeners = new Set<() => void>()
   private version = 0

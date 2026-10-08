@@ -1,15 +1,17 @@
 /* The connector's data (连接线实现方案 §4, §5): a `buckyos.cell` with `view.type = connector`. The tree edge's
  * placement is the box around the two stored endpoints and `flip` says which corner is which; each end is a
- * coordinate (null) or a binding to a Block's connection point; `route` and `controls` give the path, `label`
+ * coordinate (null) or a binding to one of a Block's anchors; `route` and `controls` give the path, `label`
  * places the title along it, `config` is the look. The outline projects everything but `config`
  * (`EntityEnvelope.connector`), so layout never waits for a read. Reading is lenient (a newer or broken value
  * falls back to the default); the core checks what is written. */
 
 import type { Json } from '../../../api/types'
+import { ANCHOR_ID } from './anchors'
 
 export const CONNECTOR_VIEW = 'connector'
 
-export type Anchor = { kind: 'auto' } | { kind: 'point'; x: number; y: number }
+/** One of the target's anchors, by id (§4.3); where it sits is the target's definition's business. */
+export interface Anchor { kind: 'named'; id: string }
 export interface Binding { entity_id: string; anchor: Anchor }
 export type Route = 'straight' | 'elbow' | 'curve'
 /** A control point in the endpoint frame (§4.4): `P = S + (u·(E−S) + dx, v·(E−S) + dy)` per axis. */
@@ -33,12 +35,15 @@ const finite = (v: unknown): v is number => typeof v === 'number' && Number.isFi
 
 function binding(v: unknown): Binding | null {
   if (!v || typeof v !== 'object') return null
-  const b = v as { entity_id?: unknown; anchor?: { kind?: unknown; x?: unknown; y?: unknown } }
+  const b = v as { entity_id?: unknown; anchor?: { kind?: unknown; id?: unknown } }
   if (typeof b.entity_id !== 'string' || !b.entity_id) return null
   const a = b.anchor
-  const anchor: Anchor = a?.kind === 'point' && finite(a.x) && finite(a.y) ? { kind: 'point', x: Math.min(1, Math.max(0, a.x)), y: Math.min(1, Math.max(0, a.y)) } : { kind: 'auto' }
-  return { entity_id: b.entity_id, anchor }
+  if (a?.kind !== 'named' || typeof a.id !== 'string' || !ANCHOR_ID.test(a.id)) return null
+  return { entity_id: b.entity_id, anchor: { kind: 'named', id: a.id } }
 }
+
+/** Two anchors are the same anchor of their target (a self loop needs two different ones). */
+export const sameAnchor = (a: Anchor, b: Anchor) => a.id === b.id
 
 /** The connector's fields from the outline projection (or a payload): read wide. */
 export function connectorData(source: Record<string, unknown> | null | undefined): ConnectorData {

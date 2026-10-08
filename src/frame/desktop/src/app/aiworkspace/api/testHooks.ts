@@ -3,6 +3,7 @@
 
 import type { RichTextAnchorHost, RichTextHit } from '../anchors/richtext'
 import type { AnchorRegistry } from '../anchors/registry'
+import type { BlockRegistry } from '../ui/blocks/registry'
 import { DEV_OVERRIDE_KEY } from './transport'
 
 interface TestHooks {
@@ -10,6 +11,8 @@ interface TestHooks {
   canonicalize?: (ast: unknown) => unknown
   /** The rich text anchor registry, so a test can play an application registering its own range kind. */
   richTextAnchors?: AnchorRegistry<RichTextAnchorHost, RichTextHit>
+  /** The Block registry, so a test can play an extension registering a Block (e.g. one with its own line anchors). */
+  blocks?: BlockRegistry
   /** Fault injection into the Replica Worker of the open workspace (replica session only). */
   replica?: { failTransactions(kind: 'quota' | 'error', count: number): Promise<void>; killWorker(): void }
   /** The render probe reads what the canvas mounted (phase two §9.5). */

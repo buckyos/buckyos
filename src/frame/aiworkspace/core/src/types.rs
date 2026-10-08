@@ -382,8 +382,8 @@ fn finite(v: Option<&Value>) -> Option<f64> {
 }
 
 /// `start` / `end`: absent or `null` is a coordinate endpoint (its corner of the box); a bound endpoint is
-/// `{ entity_id, anchor }` with anchor `{ kind: auto }` or `{ kind: point, x, y }` (x, y in [0, 1] of the
-/// target's layout box). Returns the bound target's id.
+/// `{ entity_id, anchor: { kind: named, id } }`, the id one of the target's anchors (declared by its renderer,
+/// `[A-Za-z0-9_.:-]{1,64}`; which ids exist is not judged here). Returns the bound target's id.
 fn connector_end<'v>(payload: &'v JsonMap, key: &str) -> WsResult<Option<&'v str>> {
     let v = match payload.get(key) {
         None | Some(Value::Null) => return Ok(None),
@@ -393,12 +393,15 @@ fn connector_end<'v>(payload: &'v JsonMap, key: &str) -> WsResult<Option<&'v str
     let o = v.as_object().filter(|o| o.len() == 2).ok_or_else(shape)?;
     let id = o.get("entity_id").and_then(Value::as_str).filter(|s| is_valid_id(s)).ok_or_else(shape)?;
     let a = o.get("anchor").and_then(Value::as_object).ok_or_else(shape)?;
-    let unit = |k: &str| finite(a.get(k)).is_some_and(|f| (0.0..=1.0).contains(&f));
-    match a.get("kind").and_then(Value::as_str) {
-        Some("auto") if a.len() == 1 => Ok(Some(id)),
-        Some("point") if a.len() == 3 && unit("x") && unit("y") => Ok(Some(id)),
-        _ => Err(bad(format!("{key}.anchor must be {{ kind: auto }} or {{ kind: point, x, y }} with x, y in [0, 1]"))),
+    let named = a.len() == 2 && a.get("kind").and_then(Value::as_str) == Some("named") && a.get("id").and_then(Value::as_str).is_some_and(is_anchor_id);
+    if !named {
+        return Err(bad(format!("{key}.anchor must be {{ kind: named, id }} with an id of 1-64 of A-Z a-z 0-9 _ . : -")));
     }
+    Ok(Some(id))
+}
+
+fn is_anchor_id(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b':' | b'-'))
 }
 
 /// Shapes always; bindings only when written (create, or `start` / `end` / `route` changed). Import and
@@ -475,15 +478,10 @@ fn validate_connector(p: &Planner, e: &EntityRow, changed: Option<&[String]>) ->
             return Err(WsError::invalid_op(format!("{key}: connectors are bound only on a free-layout Surface")));
         }
     }
-    // a self loop needs two distinct fixed points and a route that can leave and come back
+    // a self loop needs two different anchors and a route that can leave and come back
     if start.is_some() && start == end && ["start", "end", "route"].iter().any(|k| is_changed(k)) {
-        let point = |key: &str| {
-            let a = &pl[key]["anchor"];
-            (a["kind"] == json!("point")).then(|| (a["x"].as_f64(), a["y"].as_f64()))
-        };
-        match (point("start"), point("end")) {
-            (Some(a), Some(b)) if a != b && route != "straight" => {}
-            _ => return Err(bad("a self loop needs two different point anchors and a route other than straight")),
+        if pl["start"]["anchor"]["id"] == pl["end"]["anchor"]["id"] || route == "straight" {
+            return Err(bad("a self loop needs two different anchors and a route other than straight"));
         }
     }
     Ok(())

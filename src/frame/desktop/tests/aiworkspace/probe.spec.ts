@@ -234,7 +234,7 @@ async function buildLineSurface(api: Api, ws: { workspace_id: string; epoch: str
   const line = (id: string, a: string, b: string, from: { x: number; y: number }, to: { x: number; y: number }, extra: Record<string, unknown> = {}) => ({
     op: 'entity.create', entity_id: id, type_id: 'buckyos.cell', parent_id: surfaceId, order_key: `l${id}z`,
     placement: { x: Math.min(from.x, to.x), y: Math.min(from.y, to.y), w: Math.abs(to.x - from.x), h: Math.abs(to.y - from.y) },
-    payload: { view: { type: 'connector', version: 1 }, start: { entity_id: a, anchor: { kind: 'point', x: 1, y: 0.5 } }, end: { entity_id: b, anchor: { kind: 'auto' } }, ...(from.x > to.x || from.y > to.y ? { flip: { ...(from.x > to.x ? { h: true } : {}), ...(from.y > to.y ? { v: true } : {}) } } : {}), ...extra },
+    payload: { view: { type: 'connector', version: 1 }, start: { entity_id: a, anchor: { kind: 'named', id: 'e' } }, end: { entity_id: b, anchor: { kind: 'named', id: 'w' } }, ...(from.x > to.x || from.y > to.y ? { flip: { ...(from.x > to.x ? { h: true } : {}), ...(from.y > to.y ? { v: true } : {}) } } : {}), ...extra },
   })
   for (let i = 0; i < count - 200; i++) {
     const j = (i % cols === cols - 1) ? i + cols : i + 1

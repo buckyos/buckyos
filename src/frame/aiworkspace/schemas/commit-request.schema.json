@@ -13,7 +13,7 @@
  ],
  "properties": {
   "protocol_version": {
-   "const": "0.3"
+   "const": "0.4"
   },
   "workspace_id": {
    "type": "string",
@@ -321,7 +321,7 @@
    }
   },
   "connector_endpoint": {
-   "description": "A bound endpoint of a connector. null (or an absent key) is a coordinate endpoint: the corresponding corner of the placement box (start = top-left, end = bottom-right, mirrored by flip). The target is a live, readable Cell (not a connector) or group on the same free-layout Surface; checked when written, not on import. Indexed as a `connector_endpoint` reference (src_selector {kind: connector_end, end: start|end}) that never blocks deleting the target.",
+   "description": "A bound endpoint of a connector. null (or an absent key) is a coordinate endpoint: the corresponding corner of the placement box (start = top-left, end = bottom-right, mirrored by flip). The target is a live, readable Cell (not a connector) or group on the same free-layout Surface; checked when written, not on import. Indexed as a `connector_endpoint` reference (src_selector {kind: connector_end, end: start|end}) that never blocks deleting the target. The anchor names one of the target's anchors; which ids exist is the target renderer's business (by default the 16-point compass n, nne, ne, … nnw of its outline), not checked here.",
    "type": [
     "object",
     "null"
@@ -336,49 +336,26 @@
      "$ref": "#/$defs/id"
     },
     "anchor": {
-     "oneOf": [
-      {
-       "type": "object",
-       "additionalProperties": false,
-       "required": [
-        "kind"
-       ],
-       "properties": {
-        "kind": {
-         "const": "auto"
-        }
-       }
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "named"
       },
-      {
-       "type": "object",
-       "additionalProperties": false,
-       "required": [
-        "kind",
-        "x",
-        "y"
-       ],
-       "properties": {
-        "kind": {
-         "const": "point"
-        },
-        "x": {
-         "type": "number",
-         "minimum": 0,
-         "maximum": 1
-        },
-        "y": {
-         "type": "number",
-         "minimum": 0,
-         "maximum": 1
-        }
-       }
+      "id": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
       }
-     ]
+     }
     }
    }
   },
   "connector_payload": {
-   "description": "Payload of a buckyos.cell with view.type = connector (a line). The connector keys (flip, start, end, route, controls, label) are refused on any other view; a connector refuses source_ref, bindings, def_ref and the table-only keys, and its view.type can never change (nor can another Cell become a connector). config is appearance, checked by the front-end registry (<= 64 KiB). Self loop (start and end bound to the same entity): both anchors are distinct points and route is not straight. Creating one needs a free-layout Surface.",
+   "description": "Payload of a buckyos.cell with view.type = connector (a line). The connector keys (flip, start, end, route, controls, label) are refused on any other view; a connector refuses source_ref, bindings, def_ref and the table-only keys, and its view.type can never change (nor can another Cell become a connector). config is appearance, checked by the front-end registry (<= 64 KiB). Self loop (start and end bound to the same entity): two different anchors and a route other than straight. Creating one needs a free-layout Surface.",
    "type": "object",
    "additionalProperties": false,
    "required": [

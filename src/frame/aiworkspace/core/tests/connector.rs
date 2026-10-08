@@ -44,12 +44,12 @@ fn line(id: &str, parent: &str, placement: Value, extra: Value) -> Value {
     op
 }
 
-fn bound(id: &str) -> Value {
-    json!({ "entity_id": id, "anchor": { "kind": "auto" } })
+fn named(id: &str, anchor: &str) -> Value {
+    json!({ "entity_id": id, "anchor": { "kind": "named", "id": anchor } })
 }
 
-fn at(id: &str, x: f64, y: f64) -> Value {
-    json!({ "entity_id": id, "anchor": { "kind": "point", "x": x, "y": y } })
+fn bound(id: &str) -> Value {
+    named(id, "n")
 }
 
 fn box_(x: f64, y: f64, w: f64, h: f64) -> Value {
@@ -154,7 +154,7 @@ fn connector_keys_shapes_and_view_type() {
     // the full shape, as the design example writes it
     ws.ok(json!([line("l1", "s1", box_(320.0, 180.0, 320.0, 60.0), json!({
         "title": "下一步", "locked": false, "flip": { "h": true, "v": false },
-        "start": at("a", 1.0, 0.5), "end": null, "route": "elbow",
+        "start": named("a", "e"), "end": null, "route": "elbow",
         "controls": [{ "u": 0.5, "v": 0 }, { "u": 0.5, "v": 1, "dx": -12.5, "dy": 0 }],
         "label": { "t": 0.5, "offset": 0 },
         "config": { "stroke": "#64748b", "width": 2, "dash": "solid", "start_cap": "none", "end_cap": "arrow" } }))]));
@@ -163,17 +163,28 @@ fn connector_keys_shapes_and_view_type() {
     assert_eq!(code(&ws.fail(set("l1", "controls", json!(many), &ws))), "LIMIT_EXCEEDED");
     let max: Vec<Value> = (0..64).map(|i| json!({ "u": 0, "v": i })).collect();
     ws.ok(set("l1", "controls", json!(max), &ws));
+    // any anchor id of the allowed alphabet: the target's renderer says what it means
+    for end in [named("a", "nne"), named("a", "port:in-2"), named("a", &"x".repeat(64))] {
+        ws.ok(set("l1", "start", end, &ws));
+    }
     for (k, v) in [
         ("flip", json!({ "h": true, "x": true })),
         ("flip", json!({ "h": "yes" })),
         ("flip", json!(true)),
         ("start", json!({ "entity_id": "a" })),
-        ("start", json!({ "entity_id": "a", "anchor": { "kind": "auto" }, "extra": 1 })),
-        ("start", json!({ "entity_id": "A B", "anchor": { "kind": "auto" } })),
-        ("start", json!({ "entity_id": "a", "anchor": { "kind": "point", "x": 1.5, "y": 0 } })),
-        ("start", json!({ "entity_id": "a", "anchor": { "kind": "point", "x": 0.5 } })),
-        ("start", json!({ "entity_id": "a", "anchor": { "kind": "auto", "x": 0 } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "n" }, "extra": 1 })),
+        ("start", json!({ "entity_id": "A B", "anchor": { "kind": "named", "id": "n" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "auto" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "point", "x": 1, "y": 0.5 } })),
+        ("start", json!({ "entity_id": "a", "anchor": "n" })),
         ("start", json!({ "entity_id": "a", "anchor": { "kind": "port", "port": 1 } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "n e" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "上" } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "x".repeat(65) } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": 3 } })),
+        ("start", json!({ "entity_id": "a", "anchor": { "kind": "named", "id": "n", "x": 0 } })),
         ("end", json!("a")),
         ("route", json!("zigzag")),
         ("route", Value::Null),
@@ -204,7 +215,7 @@ fn connector_keys_shapes_and_view_type() {
 fn bindings_stay_on_one_free_canvas() {
     let mut ws = setup();
     // a Block and a group on the same canvas, including the connector's own ancestor group
-    ws.ok(json!([line("l1", "g1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("g1"), "end": at("b", 0.5, 0.0) }))]));
+    ws.ok(json!([line("l1", "g1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("g1"), "end": named("b", "n") }))]));
     ws.ok(json!([line("l2", "s1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("a"), "end": bound("g1") }))]));
     // targets created earlier in the same batch are visible
     ws.ok(json!([frame("e", "g1"), line("l3", "s1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("e") }))]));
@@ -223,8 +234,8 @@ fn bindings_stay_on_one_free_canvas() {
     ws.ok(set("l1", "route", json!("curve"), &ws));
     ws.ok(set("l1", "start", bound("a"), &ws));
     ws.ok(set("l1", "label", json!({ "t": 0.25 }), &ws));
-    assert_eq!(ws.store.entities["l1"].payload["end"], at("b", 0.5, 0.0));
-    assert_eq!(code(&ws.fail(set("l1", "end", at("b", 0.5, 1.0), &ws))), "REFERENCE_BROKEN");
+    assert_eq!(ws.store.entities["l1"].payload["end"], named("b", "n"));
+    assert_eq!(code(&ws.fail(set("l1", "end", named("b", "s"), &ws))), "REFERENCE_BROKEN");
     // creating on a flow page is refused; a line moved there keeps its data but gets no new bindings
     let f = ws.fail(json!([line("bad", "s3", box_(0.0, 0.0, 50.0, 50.0), json!({}))]));
     assert_eq!(code(&f), "INVALID_OPERATION", "{f}");
@@ -240,22 +251,21 @@ fn bindings_stay_on_one_free_canvas() {
 }
 
 #[test]
-fn self_loops_need_two_points_and_a_route() {
+fn self_loops_need_two_anchors_and_a_route() {
     let mut ws = setup();
     let make = |ws: &mut MemWorkspace, extra: Value| ws.commit(json!([line("loop", "s1", box_(0.0, 0.0, 40.0, 40.0), extra)]));
     for extra in [
-        json!({ "start": bound("a"), "end": bound("a"), "route": "elbow" }),
-        json!({ "start": at("a", 1.0, 0.5), "end": bound("a"), "route": "curve" }),
-        json!({ "start": at("a", 1.0, 0.5), "end": at("a", 1.0, 0.5), "route": "elbow" }),
-        json!({ "start": at("a", 1.0, 0.5), "end": at("a", 0.5, 0.0) }),
-        json!({ "start": at("a", 1.0, 0.5), "end": at("a", 0.5, 0.0), "route": "straight" }),
+        json!({ "start": named("a", "e"), "end": named("a", "e"), "route": "elbow" }),
+        json!({ "start": named("a", "e"), "end": named("a", "n") }),
+        json!({ "start": named("a", "e"), "end": named("a", "n"), "route": "straight" }),
     ] {
         assert_eq!(code(&make(&mut ws, extra.clone()).err().expect("refused").to_json()), "INVALID_SCHEMA", "{extra}");
     }
-    make(&mut ws, json!({ "start": at("a", 1.0, 0.5), "end": at("a", 0.5, 0.0), "route": "elbow" })).ok().expect("self loop");
+    make(&mut ws, json!({ "start": named("a", "e"), "end": named("a", "n"), "route": "elbow" })).ok().expect("self loop");
     assert_eq!(code(&ws.fail(set("loop", "route", json!("straight"), &ws))), "INVALID_SCHEMA");
-    assert_eq!(code(&ws.fail(set("loop", "end", at("a", 1.0, 0.5), &ws))), "INVALID_SCHEMA");
+    assert_eq!(code(&ws.fail(set("loop", "end", named("a", "e"), &ws))), "INVALID_SCHEMA");
     ws.ok(set("loop", "route", json!("curve"), &ws));
+    ws.ok(set("loop", "end", named("a", "nne"), &ws));
     ws.ok(set("loop", "end", bound("g1"), &ws));
 }
 
@@ -263,7 +273,7 @@ fn self_loops_need_two_points_and_a_route() {
 fn endpoint_references_relations_and_outline() {
     let mut ws = setup();
     ws.ok(json!([line("l1", "s1", box_(0.0, 0.0, 50.0, 0.0), json!({})),
-        line("l2", "g1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": at("a", 1.0, 0.5), "end": bound("b"), "route": "elbow", "controls": [{ "u": 0.5, "v": 0 }] }))]));
+        line("l2", "g1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": named("a", "e"), "end": bound("b"), "route": "elbow", "controls": [{ "u": 0.5, "v": 0 }] }))]));
     let refs: Vec<&RefEdge> = ws.store.refs.iter().filter(|r| r.src_entity_id == "l2").collect();
     assert_eq!(refs.len(), 2);
     for (end, target) in [("start", "a"), ("end", "b")] {
@@ -295,7 +305,7 @@ fn endpoint_references_relations_and_outline() {
     // outline: the geometry, with start / end always present, absent keys omitted, config not projected
     let o = outline_of(&ws, "l2");
     assert_eq!(o["view_type"], "connector");
-    assert_eq!(o["connector"], json!({ "start": at("a", 1.0, 0.5), "end": bound("g1"), "route": "elbow", "controls": [{ "u": 0.5, "v": 0 }] }));
+    assert_eq!(o["connector"], json!({ "start": named("a", "e"), "end": bound("g1"), "route": "elbow", "controls": [{ "u": 0.5, "v": 0 }] }));
     assert_eq!(outline_of(&ws, "l1")["connector"], json!({ "start": null, "end": null }));
     assert_eq!(outline_of(&ws, "l1")["placement"], box_(0.0, 0.0, 50.0, 0.0));
     ws.ok(set("l1", "flip", json!({ "h": true }), &ws));
@@ -334,7 +344,7 @@ fn import_keeps_dangling_endpoints() {
         }
     }
     let mut ws = setup();
-    ws.ok(json!([line("l1", "s1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("a"), "end": at("b", 0.25, 0.5), "route": "curve" }))]));
+    ws.ok(json!([line("l1", "s1", box_(0.0, 0.0, 50.0, 50.0), json!({ "start": bound("a"), "end": named("b", "w"), "route": "curve" }))]));
     // the end's target is left out of the package: the line travels with its dangling end
     let mut sink = Mem::default();
     let m = materialize(&ws.store, &mut sink, &|e: &EntityRow| Ok(e.entity_id != "b"), &mut |_, _| None).unwrap();
@@ -343,7 +353,7 @@ fn import_keeps_dangling_endpoints() {
     let mut env = fresh.env("alice", "import", None, true);
     env.import = true;
     fresh.commit_with(&Access::full("alice"), &env, &MemWorkspace::request(Value::Array(plan.ops.clone()))).ok().expect("import");
-    assert_eq!(fresh.store.entities["l1"].payload["end"], at("b", 0.25, 0.5));
+    assert_eq!(fresh.store.entities["l1"].payload["end"], named("b", "w"));
     assert!(fresh.store.entities.get("b").is_none());
     assert!(fresh.store.refs.iter().any(|r| r.src_entity_id == "l1" && r.kind == "connector_endpoint" && r.dst_entity_id == "b"));
     // replay of what a backend accepted: a line on a flow page, bound across canvases, is kept verbatim

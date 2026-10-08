@@ -105,7 +105,7 @@ impl Server {
 }
 
 fn commit_req(ws: &str, epoch: &str, key: &str, ops: Value) -> Value {
-    json!({ "protocol_version": "0.3", "workspace_id": ws, "epoch": epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
+    json!({ "protocol_version": "0.4", "workspace_id": ws, "epoch": epoch, "idempotency_key": key, "session_id": "s1", "operations": ops })
 }
 
 fn mixed_batch(ws: &str, epoch: &str) -> Value {
