@@ -378,34 +378,6 @@ struct ModelObject {
 
 #[async_trait]
 impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
-    fn match_model_driver(
-        &self,
-        id: &str,
-        catalog: &crate::catalog::CatalogSnapshot,
-    ) -> crate::catalog::ProviderModelMatch {
-        use crate::catalog::{ModelIdentity, ModelMatchFailure, ProviderModelMatch};
-        if self.provider_profile_id == DEEPSEEK_PROFILE_ID {
-            if matches!(
-                id,
-                "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" | "deepseek-flash"
-            ) {
-                let model = "deepseek-v4.1-flash";
-                return if catalog.resolve_model("deepseek", model).is_ok() {
-                    ProviderModelMatch::Matched(ModelIdentity {
-                        model_driver_id: "deepseek".into(),
-                        model_id: model.into(),
-                    })
-                } else {
-                    ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
-                };
-            }
-            if matches!(id, "deepseek-chat" | "deepseek-reasoner") {
-                return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
-            }
-        }
-        ProviderModelMatch::NotHandled
-    }
-
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,

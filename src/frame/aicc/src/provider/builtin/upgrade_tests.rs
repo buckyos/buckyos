@@ -156,14 +156,11 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
             model_id: "claude-sonnet-5".into()
         })
     );
-    let deepseek = openai_responses_compatible::OpenAiCompatibleModelsDiscovery::new(
-        "deepseek",
-        DEEPSEEK_RESPONSES_ADAPTER_ID,
-        HttpTransport::new(Default::default()).unwrap(),
-    );
     assert_eq!(
-        deepseek.match_model_driver("deepseek-v4-flash", &catalog),
-        ProviderModelMatch::Matched(ModelIdentity {
+        catalog
+            .provider_model_identity_override("deepseek", "deepseek-v4-flash")
+            .unwrap(),
+        Ok(ModelIdentity {
             model_driver_id: "deepseek".into(),
             model_id: "deepseek-v4.1-flash".into()
         })
@@ -175,6 +172,61 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
             .model_driver_id,
         "deepseek"
     );
+}
+
+#[test]
+fn deepseek_inventory_uses_provider_metadata_for_aliases_and_exclusions() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "deepseek")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "deepseek-test"),
+        discovery(&[
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-v4-pro",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+
+    assert!(inventory.unmatched_models.is_empty());
+    assert_eq!(inventory.models.len(), 4);
+    for provider_model_id in [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    ] {
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == provider_model_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, "deepseek-v4.1-flash");
+        assert!(matches!(
+            model.identity_source,
+            ModelIdentitySource::Provider
+        ));
+    }
+    let pro = inventory
+        .models
+        .iter()
+        .find(|model| model.provider_model_id == "deepseek-v4-pro")
+        .unwrap();
+    assert_eq!(pro.origin_model_id, "deepseek-v4-pro");
+    assert!(matches!(pro.identity_source, ModelIdentitySource::Catalog));
+    assert!(inventory.models.iter().all(|model| !matches!(
+        model.provider_model_id.as_str(),
+        "deepseek-chat" | "deepseek-reasoner"
+    )));
 }
 
 #[tokio::test]
