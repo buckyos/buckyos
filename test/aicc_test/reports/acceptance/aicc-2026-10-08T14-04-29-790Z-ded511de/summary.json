@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-08T14-04-29-790Z-ded511de",
+  "started_at": "2026-10-08T14:04:29.751Z",
+  "finished_at": "2026-10-08T14:04:44.761Z",
+  "commit": "7612d141be9938f5d1c4a89b41f20ae80459c1c1",
+  "baseline_revision": "2026-10-08.3",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 1,
+  "actual_real_calls": 1,
+  "estimated_cost_usd": 0.01,
+  "actual_cost_usd": 0.00025335,
+  "raw_cost_usd": 0.00025335,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.01,
+    "planned_max_calls": 1,
+    "planned_max_cost_usd": 0.01,
+    "actual_calls": 1,
+    "actual_cost_usd": 0.00025335,
+    "raw_cost_usd": 0.00025335,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0.00025335,
+    "remaining_budget_usd": 0.00974665,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+        "attempt": 1,
+        "provider_driver": "deepseek",
+        "provider_instance": "deepseek-t2",
+        "exact_model": "deepseek-flash@deepseek-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-08T14:04:41.592Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 241,
+          "output_tokens": 362,
+          "total_tokens": 603
+        },
+        "estimated_cost_usd": 0.01,
+        "actual_cost_usd": 0.00025335,
+        "cost_status": "actual"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "deepseek",
+        "calls": 1,
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603,
+        "request_units": 0,
+        "actual_cost_usd": 0.00025335,
+        "raw_cost_usd": 0.00025335,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "deepseek/deepseek-t2",
+        "calls": 1,
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603,
+        "request_units": 0,
+        "actual_cost_usd": 0.00025335,
+        "raw_cost_usd": 0.00025335,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      }
+    ],
+    "by_model": [
+      {
+        "key": "deepseek-flash@deepseek-t2",
+        "calls": 1,
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603,
+        "request_units": 0,
+        "actual_cost_usd": 0.00025335,
+        "raw_cost_usd": 0.00025335,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "vision.caption",
+        "calls": 1,
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603,
+        "request_units": 0,
+        "actual_cost_usd": 0.00025335,
+        "raw_cost_usd": 0.00025335,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+        "calls": 1,
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603,
+        "request_units": 0,
+        "actual_cost_usd": 0.00025335,
+        "raw_cost_usd": 0.00025335,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0,
+        "unknown_cost_calls": 0
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-08T14-04-29-790Z-ded511de",
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "layer": "T2",
+      "status": "review",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-08T14:04:41.592Z",
+          "elapsed_ms": 2890,
+          "status": "review",
+          "diagnostic": "semantic rubric requires Judge or manual review",
+          "usage": {
+            "input_tokens": 241,
+            "output_tokens": 362,
+            "total_tokens": 603
+          },
+          "estimated_cost_usd": 0.01,
+          "actual_cost_usd": 0.00025335,
+          "cost_status": "actual"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-6004e30016e94d12b4a509279288cca3",
+      "usage": {
+        "input_tokens": 241,
+        "output_tokens": 362,
+        "total_tokens": 603
+      },
+      "cost_usd": 0.00025335,
+      "trace_id": "aicc-idem-b26a3963f2fbd7f2cb44cb9c0bff7b4d"
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (deepseek)"
+    ]
+  }
+}

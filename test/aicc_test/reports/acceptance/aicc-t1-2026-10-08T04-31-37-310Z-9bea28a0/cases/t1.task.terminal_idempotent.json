@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.task.terminal_idempotent",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:33:42.712Z",
+      "elapsed_ms": 6231,
+      "status": "passed",
+      "diagnostic": "terminal state remained immutable across five reads",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

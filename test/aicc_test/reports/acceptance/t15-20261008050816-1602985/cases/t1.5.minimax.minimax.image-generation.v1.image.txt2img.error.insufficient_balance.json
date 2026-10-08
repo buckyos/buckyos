@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.minimax.minimax.image-generation.v1.image.txt2img.error.insufficient_balance",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008050816-1602985-minimax",
+  "exact_model": "image-01@t15-20261008050816-1602985-minimax",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:17:11.596Z",
+      "elapsed_ms": 228,
+      "status": "passed",
+      "diagnostic": "contract=minimax.image-generation.v1; scenario=insufficient_balance; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

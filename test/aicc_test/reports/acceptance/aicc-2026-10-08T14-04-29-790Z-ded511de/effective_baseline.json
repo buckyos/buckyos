@@ -1,0 +1,369 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-10-08T14:04:44.761Z",
+  "source_baseline_revision": "2026-10-08.3",
+  "official_catalog_fetched_at": "2026-10-08T14:04:30.014Z",
+  "provider_inventory_refresh_policy": {
+    "max_attempts": 3,
+    "retry_delay_ms": 2000,
+    "backoff": "exponential",
+    "max_delay_ms": 30000
+  },
+  "provider_inventory_refreshes": [
+    {
+      "provider_driver": "deepseek",
+      "provider_instance_name": "deepseek-t2",
+      "attempt_count": 1,
+      "before_inventory_revision": "335daf7d3710119d229ceabb8fb53e66a799c952a57d77da9887a7c7616cb426",
+      "refresh_inventory_revision": "15:1791436096660",
+      "unmatched_count": 0,
+      "after_inventory_revision": "335daf7d3710119d229ceabb8fb53e66a799c952a57d77da9887a7c7616cb426"
+    }
+  ],
+  "provider_runtime_after_refresh": {
+    "inventory_revision": "16:1791436096660",
+    "providers": [
+      {
+        "auth": {
+          "configured": true,
+          "mode": "dynamic_login"
+        },
+        "base_url": "https://sn.buckyos.ai/api/v1/ai/",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "sn-openai",
+        "provider_instance_name": "sn-ai-provider-default",
+        "provider_profile_id": "sn",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.z.ai/api/paas/v4",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "glm-chat",
+        "provider_instance_name": "glm-main",
+        "provider_profile_id": "glm",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://openspeech.bytedance.com/api/v3/tts",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-speech-main",
+        "provider_profile_id": "doubao-speech",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "doubao-responses",
+        "provider_instance_name": "doubao-main",
+        "provider_profile_id": "doubao",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "named_header",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.minimax.cn/anthropic",
+        "enabled": false,
+        "health": {
+          "state": "disabled"
+        },
+        "inventory": {
+          "model_count": 0,
+          "state": "disabled",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": []
+        },
+        "protocol_adapter_id": "minimax-messages",
+        "provider_instance_name": "minimax-main",
+        "provider_profile_id": "minimax",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791468270775,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 2,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1791468270775
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-main",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      },
+      {
+        "auth": {
+          "configured": true,
+          "credential_kind": "bearer",
+          "mode": "api_key"
+        },
+        "base_url": "https://api.deepseek.com",
+        "enabled": true,
+        "health": {
+          "checked_at_ms": 1791468271303,
+          "state": "healthy"
+        },
+        "inventory": {
+          "model_count": 2,
+          "state": "loaded",
+          "unavailable_presets": [],
+          "unmatched_models": [],
+          "unpriced_models": [],
+          "updated_at_ms": 1791468271303
+        },
+        "protocol_adapter_id": "deepseek-responses",
+        "provider_instance_name": "deepseek-t2",
+        "provider_profile_id": "deepseek",
+        "provider_type": "cloud_api"
+      }
+    ],
+    "settings_revision": 427
+  },
+  "official_provider_catalogs": [
+    {
+      "provider_driver": "deepseek",
+      "provider_instance_name": "deepseek-t2",
+      "inventory_revision": "official-snapshot-2026-10-08T14:04:30.014Z",
+      "models": [
+        {
+          "provider_model_id": "deepseek-flash"
+        },
+        {
+          "provider_model_id": "deepseek-v4-pro"
+        }
+      ]
+    }
+  ],
+  "selected_provider_instances": [
+    {
+      "provider_driver": "deepseek",
+      "provider_instance_name": "deepseek-t2",
+      "inventory_revision": "335daf7d3710119d229ceabb8fb53e66a799c952a57d77da9887a7c7616cb426",
+      "models": [
+        {
+          "exact_model": "deepseek-flash:reasoning-high@deepseek-t2",
+          "provider_model_id": "deepseek-flash:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-flash:reasoning-low@deepseek-t2",
+          "provider_model_id": "deepseek-flash:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-flash:reasoning-max@deepseek-t2",
+          "provider_model_id": "deepseek-flash:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-flash:reasoning-none@deepseek-t2",
+          "provider_model_id": "deepseek-flash:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-flash@deepseek-t2",
+          "provider_model_id": "deepseek-flash",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm",
+            "vision.caption",
+            "vision.ocr"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro:reasoning-high@deepseek-t2",
+          "provider_model_id": "deepseek-v4-pro:reasoning-high",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro:reasoning-low@deepseek-t2",
+          "provider_model_id": "deepseek-v4-pro:reasoning-low",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro:reasoning-max@deepseek-t2",
+          "provider_model_id": "deepseek-v4-pro:reasoning-max",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro:reasoning-none@deepseek-t2",
+          "provider_model_id": "deepseek-v4-pro:reasoning-none",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        },
+        {
+          "exact_model": "deepseek-v4-pro@deepseek-t2",
+          "provider_model_id": "deepseek-v4-pro",
+          "provider_actual_model_id": null,
+          "aicc_api_types": [
+            "llm"
+          ],
+          "logical_mounts": []
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "provider_model_id": "deepseek-flash",
+      "physical_model_id": "deepseek-flash",
+      "status": "included",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "shard": {
+    "index": 0,
+    "count": 1
+  },
+  "executed_matrix": [
+    {
+      "case_id": "t2.deepseek.deepseek-t2.deepseek-flash.vision.caption",
+      "provider_driver": "deepseek",
+      "provider_instance": "deepseek-t2",
+      "exact_model": "deepseek-flash@deepseek-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "input_kinds": [
+        "image"
+      ],
+      "output_kinds": [
+        "text"
+      ],
+      "normalized_status": "active",
+      "source_urls": [
+        "https://api-docs.deepseek.com/api/create-response/"
+      ]
+    }
+  ]
+}

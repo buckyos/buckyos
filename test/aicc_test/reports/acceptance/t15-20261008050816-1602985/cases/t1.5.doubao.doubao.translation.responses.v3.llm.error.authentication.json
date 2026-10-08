@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.doubao.doubao.translation.responses.v3.llm.error.authentication",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "doubao",
+  "provider_instance": "t15-20261008050816-1602985-doubao",
+  "exact_model": "doubao-seed-translation-250915@t15-20261008050816-1602985-doubao",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:25:18.297Z",
+      "elapsed_ms": 230,
+      "status": "passed",
+      "diagnostic": "contract=doubao.translation.responses.v3; scenario=authentication; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

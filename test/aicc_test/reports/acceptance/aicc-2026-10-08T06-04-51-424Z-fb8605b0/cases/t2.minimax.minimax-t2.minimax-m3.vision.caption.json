@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-08T06-04-51-424Z-fb8605b0",
+  "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.caption",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-M3@minimax-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T06:04:53.389Z",
+      "elapsed_ms": 54884,
+      "status": "passed",
+      "diagnostic": "Judge score 0.95: Caption accurately describes the pink daisy-like flower with yellow center, two brown dots, green stem with leaves, brown soil strip, and muted brown/tan oval background shapes.",
+      "usage": {
+        "input_tokens": 582,
+        "output_tokens": 166,
+        "total_tokens": 748
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-57197e15b1d2407a878dad5bdf97279d",
+  "usage": {
+    "input_tokens": 582,
+    "output_tokens": 166,
+    "total_tokens": 748
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "MiniMax-M3@minimax-t2",
+    "task_id": "t-08f144ba8e85465c9d238943d1eca6b9",
+    "input_summary": "case=t2.minimax.minimax-t2.minimax-m3.vision.caption; tested_model=MiniMax-M3@minimax-t2; rubric_items=1; output_text_chars=846; input_resources=1; output_resources=0",
+    "score": 0.95,
+    "passed": true,
+    "reason": "Caption accurately describes the pink daisy-like flower with yellow center, two brown dots, green stem with leaves, brown soil strip, and muted brown/tan oval background shapes.",
+    "exact_model": "MiniMax-M3@minimax-t2",
+    "provider_instance": "minimax-t2",
+    "provider_driver": "minimax",
+    "distinct_provider_or_family": false
+  },
+  "trace_id": "aicc-idem-f2e39586a55e28322c612fc3c2e484a1"
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.minimax.minimax.t2a.v2.audio.tts.error.insufficient_balance",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008050816-1602985-minimax",
+  "exact_model": "speech-2.8-hd@t15-20261008050816-1602985-minimax",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:16:59.276Z",
+      "elapsed_ms": 186,
+      "status": "passed",
+      "diagnostic": "contract=minimax.t2a.v2; scenario=insufficient_balance; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

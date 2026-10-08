@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-08T06-04-51-424Z-fb8605b0",
+  "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.ocr",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-M3@minimax-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T06:04:53.389Z",
+      "elapsed_ms": 59036,
+      "status": "review",
+      "diagnostic": "Judge score 0: Output contains no extracted text and does not include the required acceptance marker '4827'.",
+      "usage": {
+        "input_tokens": 197,
+        "output_tokens": 186,
+        "total_tokens": 383
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-bd8c145702094e0cb005ee2af27ae5c3",
+  "usage": {
+    "input_tokens": 197,
+    "output_tokens": 186,
+    "total_tokens": 383
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "MiniMax-M3@minimax-t2",
+    "task_id": "t-2c11b23f7830424fb6a6f7b2ad17b9e2",
+    "input_summary": "case=t2.minimax.minimax-t2.minimax-m3.vision.ocr; tested_model=MiniMax-M3@minimax-t2; rubric_items=1; output_text_chars=806; input_resources=1; output_resources=0",
+    "score": 0,
+    "passed": false,
+    "reason": "Output contains no extracted text and does not include the required acceptance marker '4827'.",
+    "exact_model": "MiniMax-M3@minimax-t2",
+    "provider_instance": "minimax-t2",
+    "provider_driver": "minimax",
+    "distinct_provider_or_family": false
+  },
+  "trace_id": "aicc-idem-fa262039e8adc156c45242533c8ee984"
+}

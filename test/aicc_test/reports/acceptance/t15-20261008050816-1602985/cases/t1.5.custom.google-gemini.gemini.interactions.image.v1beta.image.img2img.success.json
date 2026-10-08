@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.custom.google-gemini.gemini.interactions.image.v1beta.image.img2img.success",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-custom-google-gemini",
+  "exact_model": "gemini-3.1-flash-image@t15-20261008050816-1602985-custom-google-gemini",
+  "api_type": "image.img2img",
+  "method": "image.img2img",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:32:40.015Z",
+      "elapsed_ms": 778,
+      "status": "passed",
+      "diagnostic": "contract=gemini.interactions.image.v1beta; scenario=success; captured_requests=1; seed=t15-20261008050816-1602985; selected_official_model=gemini-3.1-flash-image",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

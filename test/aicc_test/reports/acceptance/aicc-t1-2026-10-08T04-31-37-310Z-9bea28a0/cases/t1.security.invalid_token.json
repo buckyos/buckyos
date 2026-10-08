@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.security.invalid_token",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "models.list",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:34:05.110Z",
+      "elapsed_ms": 1,
+      "status": "passed",
+      "diagnostic": "invalid token rejected: RPCError: RPC call error: Invalid token: Invalid session token: Failed due to reason: Failed to decode session token: Failed: parts.len != 3",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

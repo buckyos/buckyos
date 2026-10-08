@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.route.corrupt_metadata",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:32:44.895Z",
+      "elapsed_ms": 75,
+      "status": "passed",
+      "diagnostic": "route rejected: RPCError: RPC call error: Parse Request Error: {\"code\":\"invalid_request\",\"message\":\"invalid weight `-1` at `llm.gpt-pro.items.corrupt.weight`\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

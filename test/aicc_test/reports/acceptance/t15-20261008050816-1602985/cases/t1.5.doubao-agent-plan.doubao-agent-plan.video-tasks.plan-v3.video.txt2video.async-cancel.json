@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.async-cancel",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "doubao-agent-plan",
+  "provider_instance": "t15-20261008050816-1602985-doubao-agent-plan",
+  "exact_model": "doubao-seedance-2.0@t15-20261008050816-1602985-doubao-agent-plan",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:22:16.768Z",
+      "elapsed_ms": 416,
+      "status": "passed",
+      "diagnostic": "contract=doubao-agent-plan.video-tasks.plan-v3; scenario=async_cancel; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

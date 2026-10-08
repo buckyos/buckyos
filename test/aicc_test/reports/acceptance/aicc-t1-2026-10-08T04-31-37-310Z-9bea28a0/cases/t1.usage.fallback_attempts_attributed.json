@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.usage.fallback_attempts_attributed",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "helper.llm_chat",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:34:04.385Z",
+      "elapsed_ms": 723,
+      "status": "passed",
+      "diagnostic": "primary failure, same-model retry, and successful backup were attributed for task t-03b54cc230b94637966c3da9b9a28731",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

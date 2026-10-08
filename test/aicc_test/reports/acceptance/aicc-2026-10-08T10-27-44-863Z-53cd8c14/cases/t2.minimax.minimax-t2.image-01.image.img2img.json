@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.minimax.minimax-t2.image-01.image.img2img",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "image-01@minimax-t2",
+  "api_type": "image.img2img",
+  "method": "image.img2img",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 18262,
+      "status": "failed",
+      "failure_class": "resource_failed",
+      "diagnostic": "Error: PNG artifact has an invalid signature",
+      "estimated_cost_usd": 0,
+      "cost_status": "not_called"
+    }
+  ]
+}

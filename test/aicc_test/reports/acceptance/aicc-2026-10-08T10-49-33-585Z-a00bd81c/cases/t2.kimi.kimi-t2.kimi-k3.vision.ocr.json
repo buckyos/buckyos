@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-49-33-585Z-a00bd81c",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:49:36.095Z",
+      "elapsed_ms": 105606,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "diagnostic": "TaskFailureError: provider task t-fab7d07055d543c3bcab654f53d42a8e ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k3 or Permission denied\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

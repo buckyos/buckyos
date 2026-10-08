@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.responses.v1.llm.variant.gpt-5.4-nano-reasoning-medium",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-8",
+  "exact_model": "gpt-5.4-nano:reasoning-medium@t15-20261008050816-1602985-openai-isolation-8",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:10:18.695Z",
+      "elapsed_ms": 200,
+      "status": "passed",
+      "diagnostic": "contract=openai.responses.v1; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

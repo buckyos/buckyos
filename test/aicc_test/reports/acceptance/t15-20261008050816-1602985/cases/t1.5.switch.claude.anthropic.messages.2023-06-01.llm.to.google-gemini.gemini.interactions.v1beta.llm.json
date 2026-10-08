@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.switch.claude.anthropic.messages.2023-06-01.llm.to.google-gemini.gemini.interactions.v1beta.llm",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-google-gemini-isolation-8",
+  "exact_model": "gemini-3.5-flash@t15-20261008050816-1602985-google-gemini-isolation-8",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:31:45.202Z",
+      "elapsed_ms": 913,
+      "status": "passed",
+      "diagnostic": "contract=gemini.interactions.v1beta; scenario=success; captured_requests=2; source_provider=claude; source_exact_model=claude-sonnet-5@t15-20261008050816-1602985-claude",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

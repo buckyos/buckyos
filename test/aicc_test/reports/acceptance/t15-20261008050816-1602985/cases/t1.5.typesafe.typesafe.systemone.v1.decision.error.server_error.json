@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.typesafe.typesafe.systemone.v1.decision.error.server_error",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "typesafe",
+  "provider_instance": "t15-20261008050816-1602985-typesafe",
+  "exact_model": "jev-1.13.0@t15-20261008050816-1602985-typesafe",
+  "api_type": "decision",
+  "method": "decision.evaluate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:08:22.685Z",
+      "elapsed_ms": 329,
+      "status": "passed",
+      "diagnostic": "contract=typesafe.systemone.v1; scenario=server_error; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.glm.glm.embeddings.v4.embedding.text.response.missing_required_response_field",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "glm",
+  "provider_instance": "t15-20261008050816-1602985-glm",
+  "exact_model": "embedding-3@t15-20261008050816-1602985-glm",
+  "api_type": "embedding.text",
+  "method": "embedding.text",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:19:35.998Z",
+      "elapsed_ms": 431,
+      "status": "passed",
+      "diagnostic": "contract=glm.embeddings.v4; scenario=missing_required_response_field; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}
