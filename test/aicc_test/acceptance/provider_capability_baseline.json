@@ -1066,7 +1066,8 @@
       "official_catalog": {
         "endpoint": "https://api.minimax.io/v1/models",
         "format": "openai",
-        "authentication": "bearer"
+        "authentication": "bearer",
+        "supplemental_model_ids": ["asr-1.0", "speech-2.8-hd", "speech-2.8-turbo", "image-01", "MiniMax-H3", "MiniMax-H3-Max"]
       },
       "source_urls": ["https://platform.minimax.io/docs/guides/models-intro"],
       "protocol_evidence": {
@@ -1126,6 +1127,7 @@
           "methods": ["audio.tts"],
           "input_kinds": ["text"],
           "output_kinds": ["audio"],
+          "request_defaults": {"audio.tts": {"voice": {}}},
           "source_urls": ["https://platform.minimax.io/docs/api-reference/api-overview"],
           "evidence_summary": "MiniMax speech models provide text-to-speech."
         },
@@ -1146,6 +1148,10 @@
           "methods": ["video.txt2video", "video.img2video"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 5},
+            "video.img2video": {"duration_seconds": 5}
+          },
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
           "evidence_summary": "MiniMax Hailuo models support text-to-video and model-specific image-to-video."
         },
@@ -1374,10 +1380,10 @@
       "protocol_adapter_ids": ["kimi-chat"],
       "model_driver_ids": ["kimi"],
       "discovery": "official_catalog",
-      "official_catalog": { "endpoint": "https://api.moonshot.cn/v1/models", "format": "openai", "authentication": "bearer" },
-      "source_urls": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/models-overview"],
+      "official_catalog": { "endpoint": "https://api.moonshot.cn/v1/models", "format": "openai", "authentication": "bearer", "supplemental_model_ids": ["kimi-k3", "kimi-k2.7-code-highspeed"] },
+      "source_urls": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k3-quickstart", "https://platform.kimi.com/docs/guide/use-kimi-vision-model"],
       "protocol_evidence": {
-        "documentation_version": "official documentation checked 2026-09-04",
+        "documentation_version": "official documentation checked 2026-10-08",
         "streaming_semantics": "Chat Completions streams data-only SSE chunks and terminates with data: [DONE].",
         "async_operation_semantics": "Chat Completions is synchronous or streamed; no background task lifecycle is inferred.",
         "usage_semantics": "Non-streaming and terminal streaming responses expose prompt, completion, total and cached token counts.",
@@ -1387,13 +1393,18 @@
         "context_output_limits": "Context and output limits are model specific and not inferred from the protocol.",
         "region_restrictions": "China and global Kimi platforms use independent endpoints and credentials.",
         "account_tier_restrictions": "Model access, concurrency and quota depend on account authorization and tier.",
-        "preview_allowlist": "Only models returned by the authenticated catalog are eligible."
+        "preview_allowlist": "Authenticated catalog models are eligible; active models explicitly documented by Kimi may supplement an incomplete account catalog."
       },
       "coverage_rules": [
         { "model_pattern": "kimi-latest", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://platform.kimi.com/docs/api/models-overview"], "evidence_summary": "The latest name tracks a changing Kimi release rather than one physical model." },
         { "model_pattern": "moonshot-v1-auto", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://platform.kimi.com/docs/api/models-overview"], "evidence_summary": "The auto selector routes by request context rather than identifying one physical model." }
       ],
-      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "kimi_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/api/chat"], "evidence_summary": "Kimi Chat Completions model capability is refined by the authenticated model catalog and model documentation." }]
+      "rules": [
+        { "model_pattern": "kimi-k3", "status": "active", "source_status": "kimi_official_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/guide/kimi-k3-quickstart", "https://platform.kimi.com/docs/guide/use-kimi-vision-model"], "evidence_summary": "Kimi documents K3 as an active flagship model with native image and video understanding through multimodal Chat Completions input." },
+        { "model_pattern": "kimi-k2.7-code*", "status": "active", "source_status": "kimi_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"], "evidence_summary": "Kimi K2.7 Code and its high-speed build support documented multimodal input." },
+        { "model_pattern": "kimi-k2.6", "status": "active", "source_status": "kimi_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"], "evidence_summary": "Kimi K2.6 supports documented image and video understanding." },
+        { "model_pattern": "*", "status": "active", "source_status": "kimi_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://platform.kimi.com/docs/api/chat"], "evidence_summary": "Other catalog-visible Kimi models retain text Chat Completions coverage unless their model guide documents multimodal input." }
+      ]
     },
     {
       "provider_driver": "glm",
@@ -1446,7 +1457,10 @@
         { "model_pattern": "deepseek-chat", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://api-docs.deepseek.com/updates/"], "evidence_summary": "DeepSeek documents this legacy name as a moving alias for a physical model's non-thinking mode." },
         { "model_pattern": "deepseek-reasoner", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://api-docs.deepseek.com/updates/"], "evidence_summary": "DeepSeek documents this legacy name as a moving alias for a physical model's thinking mode." }
       ],
-      "rules": [{ "model_pattern": "*", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Responses capability follows the official per-model compatibility table." }]
+      "rules": [
+        { "model_pattern": "deepseek-flash", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Flash supports the documented Responses image input in addition to text generation." },
+        { "model_pattern": "*", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Responses capability follows the official per-model compatibility table." }
+      ]
     },
     {
       "provider_driver": "doubao-agent-plan",

@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 12,
+  "revision_seq": 13,
   "provider_profile_id": "doubao",
   "model_driver_overrides": {
     "deepseek-v4-1-flash-260910": "deepseek/deepseek-v4.1-flash",
@@ -35,6 +35,10 @@
     "glm-5-3-flash-260828": "glm/glm-5.3-flash"
   },
   "models": [
+    {
+      "id": "doubao-seed-2-1-pro-260628",
+      "capability_limits": {"max_context_tokens": 262144}
+    },
     {"id": "doubao-seed-translation-250915", "operations": {"llm": "responses.create"}, "request_rules": [
       {"when": {"api_type": "llm", "operation": "responses.create"}, "defaults": {"translation_options": {"target_language": "en"}}}
     ]},

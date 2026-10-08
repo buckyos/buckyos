@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 2,
+  "revision_seq": 3,
   "catalog_id": "kimi",
   "providers": [
     {
@@ -29,9 +29,19 @@
           "secret": true
         },
         "instance_fields": {
-          "region": { "mode": "optional", "default_value": "global", "allowed_values": ["china", "global"] },
+          "region": { "mode": "required", "allowed_values": ["china", "global"] },
           "workspace": { "mode": "unsupported" },
           "account": { "mode": "unsupported" }
+        },
+        "access_endpoints": {
+          "china": {
+            "label": "China",
+            "description": "Use API Keys created on platform.kimi.com. China and global accounts, balances, and keys are isolated."
+          },
+          "global": {
+            "label": "Global",
+            "description": "Use API Keys created on platform.kimi.ai. China and global accounts, balances, and keys are isolated."
+          }
         }
       }
     }

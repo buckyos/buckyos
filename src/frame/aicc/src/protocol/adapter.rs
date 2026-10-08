@@ -2396,7 +2396,10 @@ mod tests {
             .encode_download(signed_url, &provider_context)
             .unwrap();
         assert_eq!(request.url, signed_url);
-        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(request
+            .headers
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
         assert!(request.headers.get("x-goog-api-key").is_none());
 
         let mut mock_context = context("http://127.0.0.1:18081/v1", "mock-secret");
@@ -2404,7 +2407,10 @@ mod tests {
         let request = DefaultArtifactDownloadProtocol
             .encode_download("http://127.0.0.1:18082/artifacts/result.png", &mock_context)
             .unwrap();
-        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(request
+            .headers
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
 
         assert!(DefaultArtifactDownloadProtocol
             .encode_download("http://cdn.example/private", &provider_context)
@@ -2488,7 +2494,10 @@ mod tests {
                 &context("https://ark.cn-beijing.volces.com/api/v3", "provider-secret"),
             )
             .unwrap();
-        assert!(request.headers.get(reqwest::header::AUTHORIZATION).is_none());
+        assert!(request
+            .headers
+            .get(reqwest::header::AUTHORIZATION)
+            .is_none());
     }
 
     #[test]

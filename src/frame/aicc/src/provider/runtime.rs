@@ -529,10 +529,12 @@ impl ProviderRuntimeManager {
             })
             .await
             .map_err(|error| {
-                ProviderDraftValidationError::from_provider_error(
-                    ProviderDraftValidationStage::Discovery,
-                    &error,
-                )
+                let stage = if matches!(error, ProviderError::Credential(_)) {
+                    ProviderDraftValidationStage::Authentication
+                } else {
+                    ProviderDraftValidationStage::Discovery
+                };
+                ProviderDraftValidationError::from_provider_error(stage, &error)
             })?;
         let catalog = self.catalog.read().await.clone();
         let inventory = InventoryBuilder::build_with_matcher(

@@ -1,9 +1,11 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 4,
+  "schema_revision": 1,
+  "revision_seq": 6,
   "provider_profile_id": "kimi",
+  "static_inventory_models": ["kimi-k3", "kimi-k2.7-code-highspeed"],
+  "supplemental_inventory_api_types": ["llm", "vision.ocr", "vision.caption"],
   "models": [],
   "patterns": [
     {

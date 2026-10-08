@@ -58,6 +58,9 @@ name = ""
 [instances.minimax]
 name = ""
 
+[instances.kimi]
+name = ""
+
 [instances.openrouter]
 name = ""
 
@@ -80,6 +83,12 @@ api_token = ""
 api_token = ""
 
 [provider_credentials.minimax]
+api_token = ""
+
+[official_catalog_credentials.minimax]
+endpoint = ""
+
+[provider_credentials.kimi]
 api_token = ""
 
 [provider_credentials.openrouter]
@@ -110,6 +119,10 @@ max_concurrency = 1
 min_interval_ms = 1000
 
 [limits.minimax]
+max_concurrency = 1
+min_interval_ms = 1000
+
+[limits.kimi]
 max_concurrency = 1
 min_interval_ms = 1000
 

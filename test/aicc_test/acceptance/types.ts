@@ -163,6 +163,7 @@ export type CapabilityRule = {
     input_combinations: string[][];
     output_combinations: string[][];
   }>;
+  request_defaults?: Record<string, Record<string, unknown>>;
   source_urls: string[];
   evidence_summary: string;
 };
@@ -260,6 +261,7 @@ export type MatrixCell = {
   output_kinds: string[];
   resource_representation?: "url" | "base64" | "named_object";
   document_format?: string;
+  request_defaults?: Record<string, unknown>;
   source_urls: string[];
   estimated_cost_usd?: number;
 };

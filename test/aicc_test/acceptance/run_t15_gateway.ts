@@ -287,7 +287,7 @@ async function selectMock(
       contract_id: testCase.protocol_contract_id,
       api_type: testCase.api_type,
       scenario: testCase.mock_scenario,
-      selection_seed: selectionSeed,
+      selection_seed: `${selectionSeed ?? "t15"}:${testCase.case_id}`,
     }),
   });
   if (!response.ok) {
