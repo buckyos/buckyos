@@ -405,6 +405,10 @@
           "methods": ["chat.completions.create", "vision.ocr", "vision.caption", "images.generate", "image.img2img", "agent.computer_use"],
           "input_kinds": ["text", "image", "document"],
           "output_kinds": ["text", "json", "tool_call", "image", "computer_action"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "size": "1024x1024", "quality": "low"},
+            "image.img2img": {"output": {"size": "1024x1024"}}
+          },
           "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
           "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.6-sol", "https://developers.openai.com/api/reference/resources/responses/methods/create"],
           "evidence_summary": "GPT-5.6 supports the Responses computer tool and returns computer_call actions; its other typed capabilities inherit the documented GPT-5 Responses surface."
@@ -426,6 +430,11 @@
           "methods": ["images.generate", "image.img2img", "image.inpaint"],
           "input_kinds": ["text", "image", "mask"],
           "output_kinds": ["image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "size": "1024x1024", "quality": "low"},
+            "image.img2img": {"output": {"size": "1024x1024"}},
+            "image.inpaint": {"output": {"size": "1024x1024"}}
+          },
           "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation"],
           "evidence_summary": "GPT Image supports image generation and editing, including masked edits."
         },
@@ -507,6 +516,10 @@
           "methods": ["chat.completions.create", "vision.ocr", "vision.caption", "images.generate", "image.img2img"],
           "input_kinds": ["text", "image", "document"],
           "output_kinds": ["text", "tool_call", "image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "size": "1024x1024", "quality": "low"},
+            "image.img2img": {"output": {"size": "1024x1024"}}
+          },
           "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
           "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.2-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
           "evidence_summary": "GPT-5.2 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
@@ -519,6 +532,10 @@
           "methods": ["chat.completions.create", "vision.ocr", "vision.caption", "images.generate", "image.img2img"],
           "input_kinds": ["text", "image", "document"],
           "output_kinds": ["text", "tool_call", "image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "size": "1024x1024", "quality": "low"},
+            "image.img2img": {"output": {"size": "1024x1024"}}
+          },
           "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
           "source_urls": ["https://developers.openai.com/api/docs/models/gpt-5.4-pro", "https://developers.openai.com/api/docs/guides/file-inputs"],
           "evidence_summary": "GPT-5.4 Pro supports text, image, files, tools, and the Responses image generation tool, but its official model page marks Structured Outputs unsupported."
@@ -531,6 +548,10 @@
           "methods": ["chat.completions.create", "vision.ocr", "vision.caption", "images.generate", "image.img2img"],
           "input_kinds": ["text", "image", "document"],
           "output_kinds": ["text", "json", "tool_call", "image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "size": "1024x1024", "quality": "low"},
+            "image.img2img": {"output": {"size": "1024x1024"}}
+          },
           "document_formats": ["txt", "md", "pdf", "doc", "docx", "xls", "xlsx", "csv", "tsv", "ppt", "pptx", "html", "xml", "json", "yaml", "rtf", "source"],
           "source_urls": ["https://developers.openai.com/api/docs/guides/image-generation", "https://developers.openai.com/api/docs/models"],
           "evidence_summary": "GPT-5 and newer models that list the Responses image generation tool support generation and editing through image_generation calls; masked inpaint remains unsupported on this surface."
@@ -888,6 +909,10 @@
           "methods": ["video.txt2video", "video.img2video"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.img2video": {"duration_seconds": 4, "resolution": "720p"}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
           "evidence_summary": "Veo Lite supports text and image conditioned video generation."
         },
@@ -898,6 +923,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.img2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.extend": {"resolution": "720p"}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
           "evidence_summary": "Veo 3.1 supports text/image generation and supported video extension operations."
         },
@@ -909,6 +939,10 @@
           "methods": ["video.txt2video", "video.img2video"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.img2video": {"duration_seconds": 4, "resolution": "720p"}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/video"],
           "evidence_summary": "Veo models generate video from supported text and image inputs."
         },
@@ -919,6 +953,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.img2video": {"duration_seconds": 4, "resolution": "720p"},
+            "video.extend": {"resolution": "720p"}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
           "evidence_summary": "Gemini Omni Flash is documented for conversational video generation, editing, and extension."
         },
@@ -930,6 +969,10 @@
           "methods": ["images.generate", "image.img2img"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "output": {"size": "1K"}},
+            "image.img2img": {"output": {"size": "1K"}}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/image-generation"],
           "evidence_summary": "Gemini image models support generation and editing."
         },
@@ -941,6 +984,10 @@
           "methods": ["images.generate", "image.img2img"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["image"],
+          "request_defaults": {
+            "image.txt2img": {"n": 1, "output": {"size": "1K"}},
+            "image.img2img": {"output": {"size": "1K"}}
+          },
           "source_urls": ["https://ai.google.dev/gemini-api/docs/image-generation"],
           "evidence_summary": "Nano Banana models support image generation and editing."
         },
@@ -1149,8 +1196,8 @@
           "input_kinds": ["text", "image"],
           "output_kinds": ["video"],
           "request_defaults": {
-            "video.txt2video": {"duration_seconds": 5},
-            "video.img2video": {"duration_seconds": 5}
+            "video.txt2video": {"duration_seconds": 5, "resolution": "480p"},
+            "video.img2video": {"duration_seconds": 5, "resolution": "480p"}
           },
           "source_urls": ["https://platform.minimax.io/docs/guides/video-generation"],
           "evidence_summary": "MiniMax Hailuo models support text-to-video and model-specific image-to-video."
@@ -1494,8 +1541,8 @@
         { "model_pattern": "glm-latest", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility name follows the current GLM release and is excluded in favor of its physical GLM IDs." }
       ],
       "rules": [
-        { "model_pattern": "doubao-seedream-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["image.txt2img", "image.img2img"], "methods": ["images.generate", "image.img2img"], "input_kinds": ["text", "image"], "output_kinds": ["image"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedream text-to-image and image-to-image on /api/plan/v3/images/generations." },
-        { "model_pattern": "doubao-seedance-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "input_kinds": ["text", "image", "video"], "output_kinds": ["video"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedance generation as asynchronous /api/plan/v3 content-generation tasks." },
+        { "model_pattern": "doubao-seedream-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["image.txt2img", "image.img2img"], "methods": ["images.generate", "image.img2img"], "input_kinds": ["text", "image"], "output_kinds": ["image"], "request_defaults": {"image.txt2img": {"n": 1, "size": "1K"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedream text-to-image and image-to-image on /api/plan/v3/images/generations." },
+        { "model_pattern": "doubao-seedance-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"], "input_kinds": ["text", "image", "video"], "output_kinds": ["video"], "request_defaults": {"video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false}, "video.img2video": {"duration_seconds": 4, "resolution": "480p"}, "video.extend": {"resolution": "480p"}}, "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-visual-models?lang=zh"], "evidence_summary": "Agent Plan documents Seedance generation as asynchronous /api/plan/v3 content-generation tasks." },
         { "model_pattern": "doubao-embedding-vision", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["embedding.multimodal"], "methods": ["embedding.multimodal"], "input_kinds": ["text", "image"], "output_kinds": ["embedding"], "source_urls": ["https://www.volcengine.com/docs/82379/1526459"], "evidence_summary": "Ark multimodal embedding accepts typed text and image input." },
         { "model_pattern": "doubao-seed-tts-2.0", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["audio.tts"], "methods": ["audio.tts"], "input_kinds": ["text"], "output_kinds": ["audio"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Agent Plan TTS uses seed-tts-2.0 and the dedicated HTTP openspeech plan endpoint." },
         { "model_pattern": "deepseek-v4-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents these DeepSeek V4 models as text-input Responses models." },
@@ -1714,6 +1761,7 @@
           "methods": ["images.generate", "image.img2img"],
           "input_kinds": ["text", "image"],
           "output_kinds": ["image"],
+          "request_defaults": {"image.txt2img": {"n": 1, "size": "1K"}},
           "source_urls": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
           "evidence_summary": "Seedream physical IDs returned by /api/v3/models use the standard /api/v3/images/generations operation."
         },
@@ -1758,6 +1806,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
+            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.extend": {"resolution": "480p"}
+          },
           "source_urls": ["https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"],
           "evidence_summary": "Seedance 2.0 Standard documents text/image generation, multimodal reference video editing and video extension on the standard content-generation task API."
         },
@@ -1769,6 +1822,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
+            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.extend": {"resolution": "480p"}
+          },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
           "evidence_summary": "The Seedance 2.0 capability table marks Fast active for generation, video editing and extension."
         },
@@ -1780,6 +1838,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
+            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.extend": {"resolution": "480p"}
+          },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
           "evidence_summary": "The Seedance 2.0 capability table marks Mini active for generation, video editing and extension."
         },
@@ -1791,6 +1854,11 @@
           "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
+          "request_defaults": {
+            "video.txt2video": {"duration_seconds": 4, "resolution": "480p", "generate_audio": false},
+            "video.img2video": {"duration_seconds": 4, "resolution": "480p"},
+            "video.extend": {"resolution": "480p"}
+          },
           "source_urls": ["https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
           "evidence_summary": "Seedance 2.5 documents generation, video editing and explicit omni_reference_task_type=extend on the standard task API."
         },

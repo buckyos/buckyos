@@ -834,7 +834,7 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "vision.caption") return ["The caption accurately describes the supplied marker image."];
   if (apiType === "vision.detect") return ["The structured detection result identifies visible objects in the supplied image."];
   if (apiType === "vision.segment") return ["The segmentation result corresponds to visible regions in the supplied image."];
-  if (apiType === "audio.tts") return ["The speech clearly says BuckyOS test number four eight two seven."];
+  if (apiType === "audio.tts") return ["The speech clearly says BuckyOS four eight two seven."];
   if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
   if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
   if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
@@ -1452,8 +1452,8 @@ async function executeAcceptance(input: {
           const payload = prerequisiteRequest.payload as Record<string, unknown>;
           if (sourceApiType === "video.txt2video") {
             payload.input_json = {
+              ...(payload.input_json as Record<string, unknown>),
               prompt: "A paper plane moving across a desk, continuous steady motion",
-              duration_seconds: 4,
             };
             payload.resources = [];
           }
