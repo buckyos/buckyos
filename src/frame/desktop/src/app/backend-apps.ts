@@ -14,6 +14,7 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'app-service',
   'preview',
   'aiworkspace',
+  'homestation',
 ])
 
 const logicalAppAliases: Readonly<Record<string, string>> = {

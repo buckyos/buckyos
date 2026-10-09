@@ -1,6 +1,6 @@
 import { useCallback } from 'react'
 import useSWRInfinite from 'swr/infinite'
-import type { StoreDomain } from '../mock/store'
+import type { StoreDomain } from '../store/types'
 import { useHomeStationStore, useStoreRevalidate } from '../store/context'
 
 export interface PagedList<Page> {

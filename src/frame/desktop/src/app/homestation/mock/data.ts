@@ -18,6 +18,7 @@ import type {
 } from '../datamodel/types'
 import { EMPTY_PERSONAL } from '../datamodel/types'
 import type { CommentType, Did, EntryUrl, FeedContent, FeedHead, FeedObject, FeedSource, FileObject, ObjId, PublicationCategory } from '../protocol/feed'
+import type { TagOverride } from '../store/types'
 
 export interface MockIdentity {
   did: Did
@@ -75,8 +76,6 @@ export interface StoredBody {
   state: 'ready' | 'preparing' | 'unavailable'
   pendingReads: number
 }
-
-export type TagOverride = 'remove' | 'confirm' | 'to_assisted'
 
 export interface MockDb {
   now: number

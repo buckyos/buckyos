@@ -1,7 +1,15 @@
 import type { Translate } from '../datamodel/format'
-import type { EffectiveTag, FeedItemView, ReadingEntry } from '../datamodel/types'
+import type { EffectiveTag, FeedItemView, ReaderIdentity, ReadingEntry } from '../datamodel/types'
+import type { PreviewReaderKey } from '../store/context'
 
 export const GENERATION_TAGS = new Set(['ai_full', 'ai_assisted', 'low_quality'])
+
+export function previewReaderLabel(t: Translate, key: PreviewReaderKey, reader: ReaderIdentity | undefined, nameOf: (did: string) => string): string {
+  const name = reader?.kind === 'did' ? nameOf(reader.did) : ''
+  if (key === 'follower') return t('homestation.profile.asFollower', 'Follower ({{name}})', { name })
+  if (key === 'friend') return t('homestation.profile.asFriend', 'Friend ({{name}})', { name })
+  return t('homestation.profile.asAnonymous', 'Anonymous')
+}
 
 export function actionText(t: Translate, item: FeedItemView): string | null {
   const type = item.object.comment_type

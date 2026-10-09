@@ -1,6 +1,6 @@
 # HomeStation UI DataModel
 
-- 文档版本：v0.1（2026-10-09，按架构 v0.6 重构原型后提炼）
+- 文档版本：v0.2（2026-10-09，v0.1 按架构 v0.6 重构原型后提炼；v0.2 接入 homestation 服务：§10 映射、§11 devnet）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/homestation`
 - 上游文档：
@@ -20,7 +20,9 @@
 | 协议层 | `protocol/feed.ts` | `FeedObject`、`FeedHead`、`FollowDeclaration`、`FileObject` | 跨节点对象的镜像，字段取自架构 §5.8–§5.11 示例，**不是冻结线格式**；UI 不得往里加私有字段 |
 | UI 投影 | `datamodel/types.ts` | `FeedItemView`、`EntryState`、`ReadingEntry`、`PersonalState`、`InteractionStats`、`CandidateEntry` 等 | 由不可变对象 + 本地私有状态组合而成，可随时重算 |
 | 输入模型 | `datamodel/inputs.ts` | zod schema：发布、评论、受众、来源输入、过滤规则 | 表单的唯一校验来源，错误消息是 i18n key |
-| Mock store | `mock/store.ts`（seed 在 `mock/data.ts`） | 异步 API（300–800ms 延迟）+ 同步 peek | 接口按职责命名，不冒充后端已有接口 |
+| Store 接口 | `store/types.ts`（`HomeStationStore`） | 异步 API + 同步 peek + 按领域通知 | 组件只依赖这个接口 |
+| Mock store | `mock/store.ts`（seed 在 `mock/data.ts`，占位图在 `mock/media.ts`） | 异步 API（300–800ms 延迟）+ 同步 peek | 只在 Mock 运行时且未设开发覆盖时使用 |
+| 服务 store | `api/store.ts`、`api/transport.ts` | homestation 服务 kRPC + 本地缓存 + `ui.versions` 轮询 | 映射见 §10 |
 | 组件 | 其余 `*.tsx` | 视图 | 只经 store 读写；不直接改 seed |
 
 架构 §5.7 的四层在 UI 中对应为：不可变 Feed Object → `FeedItemView.object`；签名与验证 → `FeedItemView.verification`；入口状态 → `EntryState`；私有应用投影 → `ReadingEntry` / `PersonalState` / `InteractionStats` / `CandidateEntry`。**`isLiked`、计数、推荐理由、本地标签都不在对象上。**
@@ -69,7 +71,7 @@ interface FeedHead { kind: 'feed_head'; entry: EntryUrl; seq: number; state: 'ac
 interface FileObject { kind: 'file'; name: string; meta: { mime; size; width?; height?; duration_ms? } }
 ```
 
-- 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `mock/media.ts` 的 resolver 把 ObjId 解析成地址（mock 生成 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`）。
+- 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
 - URL 只出现在 `link` 与 `source.original_url`。
 - `commentTarget(object)`：转发／引用转发的目标是 `wraps`，其他评论是 `references` 中的 `comment_on`。
 - 入口：正文与评论 `cyfs://<zone>/home/feed/@/<key>`，公开互动 `cyfs://<zone>/home/reactions/@/<互动键摘要>`，商品可用内容 DID（seed：`did:bns:echoes-of-the-void`）。
@@ -321,18 +323,52 @@ Mock 场景（URL `?scenario=`，可逗号组合）：`empty`（待读与候选�
 
 ## 10. KRPC 映射说明
 
-后端尚未实现。接入时以架构 §17.1（跨节点最小能力）与 §17.4（支撑原型的应用能力）为准：
+Store 的选择（`store/createStore.ts`）：设置了开发覆盖（见 §11）或不在 Mock 运行时（`isMockRuntime()` 为 false）时用服务 store，否则用 Mock store（`?scenario=` 只对 Mock 生效）。服务 store 经 `buckyos.getServiceRpcClient('homestation')` 走 `/kapi/homestation`，上传与媒体用 SDK 的 session token；开发覆盖下直接发 kRPC（`{method, params, sys: [seq, token]}`）。
 
-| Mock store | 架构能力 |
-| --- | --- |
-| `listReading` | §17.4 待读查询 |
-| `listFollowedCandidates`、`openCandidate` | §17.4 关注补看查询、候选主动阅读 |
-| `listPublished`（展示读取）、`listChanges`（变化读取） | §4.4 / §17.1 读取个人发表流 |
-| `getItem`、`getWrappedBody`、`retryResources` | §17.1 读取具体对象；§8.3 资源准备 |
-| `listComments` | §17.1 读取评论视图、查询互动统计与依据 |
-| `setLike`、`setBookmark`、`repost`、`quote`、`comment`、`withdraw`、`editPost`、`setAudience` | §17.4 评论及互动、发布与素材管理；§16.5 Head |
-| `publish`、`retryPublish`、`uploadAttachment`、`shareCapture` | §17.4 发布与素材管理；§9.7；§5.6 |
-| `resolveSourceInput`、`follow`、`unfollow`、`pauseSource` | §17.4 来源与订阅管理 |
-| `setMuteRule`、`setFilterRule`、`setTagOverride` | §17.4 朋友圈展示设置、标签与内容过滤 |
+`HomeStationStoreProvider`（`store/HomeStationStoreProvider.tsx`）在视图挂载时调用 `connect()`：服务 store 先取 `ui.bootstrap`（加载中/失败时显示加载或重试），之后每 3 秒取 `ui.versions`（页面隐藏时暂停，重新可见时立即取一次），变化的领域触发 `onDomains` 重新验证（`evaluation` 视为 `reading`），并刷新 bootstrap（reading、candidates、sources、prefs）、待读摘要、Head 调试数据和已挂载的所有者卡片（published、comments、saved）。写操作完成后同样按领域通知。
 
-与任务描述的差异：任务写的是 `listReading(viewKey, cursor)` 与 `listPublished(..., { mode })`；原型实现为 `listReading(query, cursor)`（视图键由 query 派生）以及 `listPublished` / `listChanges` 两个函数，因为两种读取的返回结构不同。
+| Store | kRPC / HTTP | 说明 |
+| --- | --- | --- |
+| `connect`；`peekIdentity`、`peekSettings`、`peekGroups`、`peekMuteRules`、`peekFilterRules`、`peekTopics`、`peekSyncStatus`、`peekHiddenSummary`、`peekCollector`、`peekPreviewReaders`、`peekMuteCandidates`、`owner` | `ui.bootstrap` | `peekCollector` 取 `settings.collectors[0]`，评论区收录者视图键为 `collector:<DID>`；`peekPreviewReaders` 的“关注者”取 `followers` 中第一个不是好友的人（没有则取第一个），“好友”取 `friends[0]`，没有时隐藏该预览项；`peekMuteCandidates` = `friends` + `following` + `identities` 中的个人 |
+| 变化跟踪 | `ui.versions` | 每 3 秒 |
+| `peekReadingSummary` | `reading.summary {query}` | 按查询缓存，变化后重取 |
+| `peekEntries`（Head 调试） | `published.entries` | |
+| `peekCard`、`watchCard` | `item.cards {objIds, reader}` | 缓存主要来自列表响应的 `cards`；未命中时按读者补取 |
+| `listReading` | `reading.list {query, cursor, limit: 8}` | |
+| `listFollowedCandidates` | `candidates.list {cursor, includeRead, limit: 8}` | |
+| `openCandidate` | `candidates.open {objId}` | |
+| `listPublished` | `published.list {owner, reader, kind?, cursor, limit: 10}` | 不传 `kind` 即主页的 feed 种类；`owner` 不是自己时由服务读取对方 HomeStation，读者为他人时只能按匿名近似，返回 `readerApproximated: true`，访客视图显示说明 |
+| `listChanges` | `published.changes {reader, after}` | |
+| `getItem` | `item.get {objId, reader}` | |
+| `getWrappedBody` | `item.wrapped_body {objId}` | |
+| `retryResources` | `item.retry_resources {objId}` | |
+| `listComments` | `comments.list {objId, view, type}` | |
+| `listSaved` | `saved.list {kind}` + `item.cards` | |
+| `getProfile` | `profile.get {did, reader}` + `item.cards`（精选） | |
+| `setLike`、`setBookmark`、`setReadLater`、`setDislike`、`repost` | `interact.like {objId, on}`、`interact.bookmark {objId, on, public}`、`interact.read_later`、`interact.dislike`、`interact.repost` | 返回 `PersonalState`，直接写回卡片缓存 |
+| `quote`、`comment` | `interact.quote {objId, text, audience}`、`interact.comment {objId, text}` | |
+| `withdraw`、`editPost`、`setAudience`、`retryDelivery` | `entry.withdraw {entry}`、`entry.edit {entry, text}`、`entry.set_audience {entry, audience}`、`entry.retry_delivery {entry}` | |
+| `publish`、`retryPublish`、`shareCapture` | `publish.create {key, input}`、`publish.retry {key}`、`publish.share_capture {objId}` | |
+| `uploadAttachment(file, kind)` | `PUT /kapi/homestation/upload?name=&mime=&width=&height=&duration_ms=`（`Authorization: Bearer`） | 图片尺寸、音视频时长在浏览器读出 |
+| `fetchLinkPreview` | `publish.link_preview {url}` | |
+| `resolveSourceInput`、`follow`、`unfollow`、`pauseSource`、`listSources` | `sources.resolve {kind, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.list` | |
+| `setMuteRule`、`setFilterRule`、`setTagOverride`、`markLessLike`、`setDefaultAudience` | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override}`、`prefs.mark_less_like {objId}`、`prefs.set_default_audience {audience}` | 设置先在本地生效，写完后重取 bootstrap |
+| `setFeatured` | `profile.set_featured {order}` | |
+| 媒体地址 | `GET /home/objects/<ObjId>/content?access=<token>` | 令牌出现在 URL 中，已知风险 |
+
+UI 尚未使用的服务方法：`candidates.admit`、`item.fetch`、`comments.set_listing`、`comments.sync`、`publish.task`、`profile.set`、`sources.sync`、`prefs.set_topics`、`prefs.set_collectors`、`prefs.set_comments_open`、`feedback.record`、`consumption.*`、`eval.*`、`admin.*`。
+
+## 11. 连接 devnet 开发
+
+后端示例 `devnet` 启动一组互相连通的 HomeStation（`me` 是 Desktop 的所有者，令牌 `tok-me`；alice、bob、sarah、收录者 index 依次占用后续端口，再后一个端口是 RSS 夹具站），并写入种子数据。
+
+```bash
+# buckyos/src
+cargo run -p homestation --example devnet -- --port 4131 --data-dir /tmp/homestation-devnet --fresh
+# buckyos/src/frame/desktop
+HS_BACKEND=http://127.0.0.1:4131 pnpm run dev
+```
+
+打开 `/homestation?hsDevToken=tok-me`（令牌存入 `localStorage['homestation.dev']`，也可直接写 `{"token":"tok-me","baseUrl":"/kapi/homestation"}`；删除该键回到 Mock）。访客门户：`/homestation/u/did:test:alice?reader=anonymous`。`HS_BACKEND` 让 Vite 把 `/kapi/homestation` 与 `/home/*` 转发到 `me`。
+
+真实后端 e2e：`pnpm exec playwright test --config=playwright.homestation.config.ts`（自行启动 devnet 于 4231–4236 和 Vite；`HS_DEVNET_BIN` 可指定已构建的 devnet）。

@@ -11,7 +11,7 @@ import { AudioBlock, CardHeader, EmbeddedCard, LinkPreview, ReasonLine, Resource
 import { formatCount, formatDuration } from '../datamodel/format'
 import type { CardView } from '../datamodel/types'
 import { useItemActions } from '../actions'
-import { fileSourceRef, mediaUrl } from '../mock/media'
+import { fileSourceRef, mediaUrl } from '../media'
 import { useHsNav } from '../navContext'
 import { useCardView, useHomeStationStore } from '../store/context'
 import { EmptyState, PageHeader } from '../ui/primitives'

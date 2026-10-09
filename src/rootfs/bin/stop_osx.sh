@@ -52,6 +52,7 @@ stop_all() {
   kill_process "nfs-server"
   kill_process "nfs_server"
   kill_process "aiworkspace"
+  kill_process "homestation"
   kill_process "repo-service"
   kill_process "repo_service"
   kill_process "control-panel"

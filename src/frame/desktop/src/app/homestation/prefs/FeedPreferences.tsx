@@ -5,7 +5,7 @@ import { Controller, useForm } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
 import { filterRuleInputSchema, type FilterRuleInput } from '../datamodel/inputs'
 import type { AudienceSpec, FilterRule, GenerationTag, MuteRule } from '../datamodel/types'
-import type { HomeStationStore } from '../mock/store'
+import type { HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { AudiencePicker } from '../publish/AudiencePicker'
 import { useHomeStationStore, useStoreSelector } from '../store/context'
@@ -15,7 +15,7 @@ import { useToast } from '../ui/toastContext'
 const selectMutes = (store: HomeStationStore) => store.peekMuteRules()
 const selectRules = (store: HomeStationStore) => store.peekFilterRules()
 const selectGroups = (store: HomeStationStore) => store.peekGroups()
-const selectFriends = (store: HomeStationStore) => store.peekFriends()
+const selectPeople = (store: HomeStationStore) => store.peekMuteCandidates()
 const selectHidden = (store: HomeStationStore) => store.peekHiddenSummary()
 const selectSettings = (store: HomeStationStore) => store.peekSettings()
 
@@ -102,11 +102,11 @@ export function FeedPreferences() {
   const mutes = useStoreSelector(selectMutes)
   const rules = useStoreSelector(selectRules)
   const groups = useStoreSelector(selectGroups)
-  const friends = useStoreSelector(selectFriends)
+  const candidates = useStoreSelector(selectPeople)
   const hidden = useStoreSelector(selectHidden)
   const settings = useStoreSelector(selectSettings)
   const [choice, setChoice] = useState('')
-  const people = [...new Set([...friends, 'did:bns:sarah', 'did:bns:david'])].map(did => ({ did, name: store.peekIdentity(did).name }))
+  const people = candidates.map(did => ({ did, name: store.peekIdentity(did).name }))
 
   const addMute = () => {
     if (!choice) return

@@ -1,7 +1,7 @@
 import { Bookmark, Clock, Filter, Hash, Home, Inbox, Rss, Send, User } from 'lucide-react'
 import { useCallback } from 'react'
 import { useI18n } from '../../i18n/provider'
-import type { HomeStationStore } from './mock/store'
+import type { HomeStationStore } from './store/types'
 import { useHsNav, type HsPage } from './navContext'
 import { useStoreSelector } from './store/context'
 import { Avatar } from './ui/primitives'

@@ -1001,6 +1001,7 @@ const PROCESS_KILL_BASELINE: &[&str] = &[
     "nfs-server",
     "nfs_server",
     "aiworkspace",
+    "homestation",
     "repo-service",
     "repo_service",
     "control-panel",

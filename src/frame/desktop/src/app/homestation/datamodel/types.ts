@@ -308,6 +308,7 @@ export interface PublishedPage {
   entries: PublishedEntryView[]
   nextCursor: string | null
   changeCursor: number
+  readerApproximated?: boolean
 }
 
 export interface StreamChange {

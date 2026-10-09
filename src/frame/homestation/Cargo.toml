@@ -1,0 +1,45 @@
+[package]
+name = "homestation"
+version.workspace = true
+edition = "2021"
+
+[lib]
+name = "homestation"
+path = "src/lib.rs"
+
+[[bin]]
+name = "homestation"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+axum = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+log = { workspace = true }
+env_logger = { workspace = true }
+http = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true }
+rusqlite = { workspace = true }
+jsonwebtoken = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+regex = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+kRPC = { workspace = true }
+name-lib = { workspace = true }
+name-client = { workspace = true }
+ndn-lib = { workspace = true }
+named_store = { workspace = true }
+buckyos-kit = { workspace = true }
+buckyos-api = { path = "../../kernel/buckyos-api" }
+
+[dev-dependencies]
+tempfile = { workspace = true }

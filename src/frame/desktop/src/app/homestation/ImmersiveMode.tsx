@@ -8,7 +8,7 @@ import { ResourceOverlay, VerificationBadge } from './card/parts'
 import { formatCount } from './datamodel/format'
 import type { CardView, ReadingQuery } from './datamodel/types'
 import { useReadingList } from './feed/useReadingList'
-import { mediaUrl } from './mock/media'
+import { mediaUrl } from './media'
 import { useHsNav } from './navContext'
 import { useCardView, useHomeStationStore } from './store/context'
 

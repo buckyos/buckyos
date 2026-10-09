@@ -5,7 +5,7 @@ import { useCallback, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
 import { linkCardSchema, publishInputSchema, type AttachmentInput, type PublishInput } from '../datamodel/inputs'
-import type { HomeStationStore } from '../mock/store'
+import type { HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
 import { useHomeStationStore, useStoreSelector } from '../store/context'
 import { useToast } from '../ui/toastContext'
@@ -52,11 +52,11 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
     form.setValue('attachments', form.getValues('attachments').map(attachment => (attachment.id === id ? { ...attachment, ...patch } : attachment)), { shouldValidate: form.formState.isSubmitted })
   }, [form])
 
-  const addAttachment = useCallback(async (kind: AttachmentInput['kind'], name: string, mime: string, size: number) => {
+  const addAttachment = useCallback(async (kind: AttachmentInput['kind'], file: File) => {
     const id = crypto.randomUUID()
-    form.setValue('attachments', [...form.getValues('attachments'), { id, kind, name, status: 'uploading' }])
+    form.setValue('attachments', [...form.getValues('attachments'), { id, kind, name: file.name, status: 'uploading' }])
     try {
-      const object = await store.uploadAttachment({ name, kind, mime, size })
+      const object = await store.uploadAttachment(file, kind)
       updateAttachment(id, { status: 'uploaded', object })
     } catch {
       updateAttachment(id, { status: 'failed' })
@@ -155,7 +155,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
             className="hidden"
             data-testid={`${idPrefix}-file`}
             onChange={event => {
-              for (const file of [...(event.target.files ?? [])]) void addAttachment(kindOfFile(file), file.name, file.type, file.size)
+              for (const file of [...(event.target.files ?? [])]) void addAttachment(kindOfFile(file), file)
               event.target.value = ''
             }}
           />
@@ -165,7 +165,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
           <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVideo', 'Add video')} aria-label={t('homestation.publish.addVideo', 'Add video')} onClick={() => fileRef.current?.click()}>
             <Video size={17} />
           </button>
-          <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} aria-label={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} onClick={() => void addAttachment('audio', `voice-note-${attachments.length + 1}.m4a`, 'audio/mp4', 380_000)}>
+          <button type="button" className="hs-icon-btn" title={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} aria-label={t('homestation.publish.addVoice', 'Record a voice note (simulated)')} onClick={() => void addAttachment('audio', new File([new Uint8Array(380_000)], `voice-note-${attachments.length + 1}.m4a`, { type: 'audio/mp4' }))}>
             <Mic size={17} />
           </button>
           <button type="button" className="hs-icon-btn" aria-pressed={linkOpen} title={t('homestation.publish.addLink', 'Import from a URL')} aria-label={t('homestation.publish.addLink', 'Import from a URL')} onClick={() => setLinkOpen(value => !value)}>

@@ -3,23 +3,18 @@ import { useCallback, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { useI18n } from '../../i18n/provider'
 import { FeedCard } from './card/FeedCard'
+import { previewReaderLabel } from './card/labels'
 import { formatCount } from './datamodel/format'
 import type { PublishedKindFilter, PublishedPage, ReaderIdentity } from './datamodel/types'
 import { usePagedList } from './feed/usePagedList'
 import { HsNavContext, useHsNav } from './navContext'
 import type { Did } from './protocol/feed'
-import { useHomeStationStore, useStoreRevalidate } from './store/context'
+import { useHomeStationStore, usePreviewReaders, useStoreRevalidate, type PreviewReaderKey } from './store/context'
 import type { ProfileTab } from './types'
 import { Avatar, EmptyState, ErrorState, ListSkeleton } from './ui/primitives'
 import { useToast } from './ui/toastContext'
 
 export type PreviewReader = 'owner' | 'anonymous' | 'follower' | 'friend'
-
-const PREVIEW_READERS: Record<Exclude<PreviewReader, 'owner'>, ReaderIdentity> = {
-  anonymous: { kind: 'anonymous' },
-  follower: { kind: 'did', did: 'did:bns:sarah' },
-  friend: { kind: 'did', did: 'did:bns:bob' },
-}
 
 function PublishedList({ owner, kind, variant }: { owner: Did; kind: PublishedKindFilter | undefined; variant: 'profile' | 'visitor' }) {
   const { t } = useI18n()
@@ -33,11 +28,18 @@ function PublishedList({ owner, kind, variant }: { owner: Did; kind: PublishedKi
   }, [store])
   const list = usePagedList<PublishedPage>(scope, fetchPage, ['published', 'profile'])
   const rows = useMemo(() => list.pages.flatMap(page => page.entries), [list.pages])
+  const approximated = list.pages[0]?.readerApproximated ? (
+    <p className="mx-4 mt-3 flex items-start gap-1.5 rounded-xl px-3 py-2 text-xs leading-5" style={{ background: 'var(--hs-subtle-bg)', color: 'var(--cp-muted)' }} data-testid="hs-reader-approximated">
+      <Eye size={13} className="mt-0.5 flex-shrink-0" />
+      {t('homestation.profile.readerApproximated', 'Your HomeStation can’t read a third party’s home feed as another person, so this is approximated: it shows what an anonymous reader gets.')}
+    </p>
+  ) : null
   if (list.isLoading) return <ListSkeleton rows={3} />
   if (list.error) return <ErrorState onRetry={list.reload} />
-  if (rows.length === 0) return <EmptyState icon={<Eye size={30} strokeWidth={1.4} />} title={t('homestation.profile.emptyTab', 'Nothing here for this reader')} />
+  if (rows.length === 0) return <>{approximated}<EmptyState icon={<Eye size={30} strokeWidth={1.4} />} title={t('homestation.profile.emptyTab', 'Nothing here for this reader')} /></>
   return (
     <div data-testid="hs-profile-list">
+      {approximated}
       {rows.map(row => (row.objId ? <FeedCard key={row.entry} objId={row.objId} variant={variant} /> : null))}
       {list.hasMore ? <div className="flex justify-center py-3"><button type="button" className="hs-btn" onClick={list.loadMore}>{t('homestation.state.loadMore', 'Load more')}</button></div> : null}
     </div>
@@ -83,7 +85,8 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange 
   const [followRequested, setFollowRequested] = useState(false)
   const ownerView = nav.perspective === 'owner'
   const previewing = ownerView && previewReader && previewReader !== 'owner'
-  const reader: ReaderIdentity = previewing ? PREVIEW_READERS[previewReader as Exclude<PreviewReader, 'owner'>] : nav.reader
+  const previewReaders = usePreviewReaders()
+  const reader: ReaderIdentity = previewing ? previewReaders[previewReader as PreviewReaderKey] ?? previewReaders.anonymous : nav.reader
   const variant: 'profile' | 'visitor' = ownerView && !previewing ? 'profile' : 'visitor'
   const scopedNav = useMemo(() => ({ ...nav, reader, perspective: previewing ? ('visitor' as const) : nav.perspective }), [nav, previewing, reader])
   const profile = useSWR(['hs-profile', store.id, owner, JSON.stringify(reader)], () => store.getProfile(owner, reader), { revalidateOnFocus: false })
@@ -96,12 +99,9 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange 
     { id: 'products', label: t('homestation.profile.tabProducts', 'Products') },
     { id: 'featured', label: t('homestation.profile.tabFeatured', 'Featured') },
   ]
-  const readerLabels: Record<PreviewReader, string> = {
-    owner: t('homestation.profile.asOwner', 'You'),
-    anonymous: t('homestation.profile.asAnonymous', 'Anonymous'),
-    follower: t('homestation.profile.asFollower', 'Follower (Sarah Kim)'),
-    friend: t('homestation.profile.asFriend', 'Friend (Bob Zhang)'),
-  }
+  const nameOf = (did: string) => store.peekIdentity(did).name
+  const readerOptions = (['owner', 'anonymous', 'follower', 'friend'] as PreviewReader[]).filter(option => option === 'owner' || previewReaders[option])
+  const readerLabel = (option: PreviewReader) => (option === 'owner' ? t('homestation.profile.asOwner', 'You') : previewReaderLabel(t, option, previewReaders[option], nameOf))
 
   return (
     <HsNavContext.Provider value={scopedNav}>
@@ -110,9 +110,9 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange 
           <div className="flex flex-wrap items-center gap-1.5 px-4 py-2 text-[11px]" style={{ borderBottom: '1px solid var(--hs-divider)', background: 'var(--hs-subtle-bg)' }}>
             <Eye size={12} />
             <span style={{ color: 'var(--cp-muted)' }}>{t('homestation.profile.previewAs', 'Preview as')}</span>
-            {(['owner', 'anonymous', 'follower', 'friend'] as PreviewReader[]).map(option => (
+            {readerOptions.map(option => (
               <button key={option} type="button" className="hs-chip" style={{ padding: '3px 10px' }} aria-pressed={(previewReader ?? 'owner') === option} data-testid={`hs-preview-${option}`} onClick={() => onPreviewReaderChange(option)}>
-                {readerLabels[option]}
+                {readerLabel(option)}
               </button>
             ))}
             <span className="hs-badge">{t('homestation.profile.devOnly', 'Dev tool')}</span>

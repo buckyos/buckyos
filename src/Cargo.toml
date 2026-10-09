@@ -33,6 +33,7 @@ members = [
     "./frame/aiworkspace/store",
     "./frame/aiworkspace/server",
     "./frame/aiworkspace/wasm",
+    "./frame/homestation",
 
     "./test/test_rbac"
 ]

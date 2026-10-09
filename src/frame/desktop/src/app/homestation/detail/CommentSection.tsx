@@ -8,13 +8,13 @@ import { VerificationBadge } from '../card/parts'
 import { formatCount, formatDateTime, formatTimeAgo, viewLabel } from '../datamodel/format'
 import { commentInputSchema, type CommentInput } from '../datamodel/inputs'
 import type { CardView, CommentView, StatsViewKey } from '../datamodel/types'
-import type { CommentTypeFilter } from '../mock/store'
+import type { CommentTypeFilter, HomeStationStore } from '../store/types'
 import { useHsNav } from '../navContext'
-import { useHomeStationStore, useNow, useStoreRevalidate } from '../store/context'
+import { useHomeStationStore, useNow, useStoreRevalidate, useStoreSelector } from '../store/context'
 import { Avatar, EmptyState, ErrorState, ListSkeleton } from '../ui/primitives'
 import { useToast } from '../ui/toastContext'
 
-const COLLECTOR_VIEW: StatsViewKey = 'collector:open-index'
+const selectCollector = (store: HomeStationStore) => store.peekCollector()
 
 function CommentRow({ comment, view }: { comment: CommentView; view: StatsViewKey }) {
   const { t } = useI18n()
@@ -115,6 +115,7 @@ export function CommentSection({ view: card }: { view: CardView }) {
   const { t, locale } = useI18n()
   const store = useHomeStationStore()
   const nav = useHsNav()
+  const collector = useStoreSelector(selectCollector)
   const owner = nav.perspective === 'owner'
   const [view, setView] = useState<StatsViewKey>(owner ? 'local' : 'author')
   const [type, setType] = useState<CommentTypeFilter>('text')
@@ -126,7 +127,7 @@ export function CommentSection({ view: card }: { view: CardView }) {
   const data = swr.data
   const current = data?.comments.filter(comment => !comment.onOldVersion) ?? []
   const older = data?.comments.filter(comment => comment.onOldVersion) ?? []
-  const views: StatsViewKey[] = owner ? ['local', 'author', COLLECTOR_VIEW] : ['author']
+  const views: StatsViewKey[] = owner ? ['local', 'author', ...(collector ? [`collector:${collector.id}` as const] : [])] : ['author']
   const types: { id: CommentTypeFilter; label: string }[] = [
     { id: 'text', label: t('homestation.comments.typeText', 'Comments') },
     { id: 'like', label: t('homestation.comments.typeLike', 'Likes') },
@@ -134,6 +135,7 @@ export function CommentSection({ view: card }: { view: CardView }) {
     { id: 'quote', label: t('homestation.comments.typeQuote', 'Quotes') },
   ]
   const stats = data?.stats
+  const collectorName = collector?.name ?? ''
 
   return (
     <section className="mt-6" aria-label={t('homestation.comments.title', 'Comments and interactions')} data-testid="hs-comments">
@@ -142,7 +144,7 @@ export function CommentSection({ view: card }: { view: CardView }) {
         <div className="flex flex-wrap gap-1" role="radiogroup" aria-label={t('homestation.comments.viewLabel', 'Comment view')}>
           {views.map(entry => (
             <button key={entry} type="button" role="radio" aria-checked={view === entry} className="hs-chip" data-testid={`hs-comment-view-${entry.split(':')[0]}`} onClick={() => setView(entry)}>
-              {viewLabel(t, entry, 'Open Index')}
+              {viewLabel(t, entry, collectorName)}
             </button>
           ))}
         </div>
@@ -163,7 +165,7 @@ export function CommentSection({ view: card }: { view: CardView }) {
       </div>
       {stats ? (
         <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px]" style={{ color: 'var(--cp-muted)' }} data-testid="hs-stats-scope">
-          <span className="hs-badge is-success">{view === 'local' ? t('homestation.stats.localVerified', 'Local verified') : viewLabel(t, view, 'Open Index')}</span>
+          <span className="hs-badge is-success">{view === 'local' ? t('homestation.stats.localVerified', 'Local verified') : viewLabel(t, view, collectorName)}</span>
           <span>{t('homestation.stats.summary', '{{likes}} likes · {{comments}} comments · {{reposts}} reposts · {{quotes}} quotes', { likes: formatCount(stats.likes), comments: formatCount(stats.textComments), reposts: formatCount(stats.reposts), quotes: formatCount(stats.quotes) })}</span>
           <span>{t('homestation.stats.asOf', 'as of {{time}}', { time: formatDateTime(stats.asOf, locale) })}</span>
           {stats.sync === 'partial' ? <span className="hs-badge is-warning">{t('homestation.stats.partial', 'Partial sync')}</span> : null}

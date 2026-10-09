@@ -33,6 +33,9 @@ modules:
   aiworkspace:
     type: rust
     name: aiworkspace
+  homestation:
+    type: rust
+    name: homestation
   repo_service:
     type: rust
     name: repo_service
@@ -108,6 +111,7 @@ apps:
       smb_service: bin/smb-service/
       nfs_server: bin/nfs-server/
       aiworkspace: bin/aiworkspace/
+      homestation: bin/homestation/
       repo_service: bin/repo-service/
       node_active: bin/node-active/
       aicc: bin/aicc/

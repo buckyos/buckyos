@@ -3,7 +3,7 @@ import { useCallback, useState } from 'react'
 import { useI18n } from '../../../i18n/provider'
 import type { AudienceSpec } from '../datamodel/types'
 import { useStoreSelector } from '../store/context'
-import type { HomeStationStore } from '../mock/store'
+import type { HomeStationStore } from '../store/types'
 
 const selectGroups = (store: HomeStationStore) => store.peekGroups()
 

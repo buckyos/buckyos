@@ -35,37 +35,15 @@ import type {
   WrappedBody,
 } from '../datamodel/types'
 import { EMPTY_PERSONAL } from '../datamodel/types'
-import type { PublishInput } from '../datamodel/inputs'
+import type { AttachmentInput, PublishInput } from '../datamodel/inputs'
 import { commentTarget, type CommentType, type Did, type EntryUrl, type FeedContent, type FeedObject, type ObjId } from '../protocol/feed'
-import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, type MockDb, type StoredEntry, type TagOverride } from './data'
-
-export type StoreDomain = 'reading' | 'candidates' | 'published' | 'comments' | 'saved' | 'sources' | 'prefs' | 'profile'
+import type { CommentList, CommentTypeFilter, EntryDebugView, HomeStationStore, StoreDomain, TagOverride } from '../store/types'
+import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, type MockDb, type StoredEntry } from './data'
 
 export interface StoreScenario {
   empty: boolean
   error: boolean
   publishFail: boolean
-}
-
-export type CommentTypeFilter = 'text' | 'like' | 'repost' | 'quote'
-
-export interface CommentList {
-  comments: CommentView[]
-  stats: InteractionStats
-  targetVersion: number
-  versionCount: number
-}
-
-export interface EntryDebugView {
-  entry: EntryUrl
-  kind: StoredEntry['kind']
-  audience: AudienceSpec
-  heads: { seq: number; state: string; current?: ObjId; at: number }[]
-}
-
-export interface LikeResult {
-  personal: PersonalState
-  restricted: boolean
 }
 
 const PAGE_SIZE = 8
@@ -91,7 +69,7 @@ export function parseScenario(search: string): StoreScenario {
 
 let storeCounter = 0
 
-export function createHomeStationStore(scenario: StoreScenario = { empty: false, error: false, publishFail: false }) {
+export function createHomeStationStore(scenario: StoreScenario = { empty: false, error: false, publishFail: false }): HomeStationStore {
   const startedAt = Date.now()
   const db: MockDb = seedDatabase(startedAt, { empty: scenario.empty })
   const id = `hs-${++storeCounter}`
@@ -657,13 +635,18 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
         domainListeners.delete(entry)
       }
     },
+    connect: () => () => {},
+    watchCard: () => () => {},
+    peekStatus: () => 'ready' as const,
+    peekCollector: () => db.collector,
+    peekPreviewReaders: () => ({ follower: 'did:bns:sarah', friend: 'did:bns:bob' }),
+    peekMuteCandidates: (): Did[] => [...new Set([...(db.friends.get(db.owner) ?? []), 'did:bns:sarah', 'did:bns:david'])],
 
     peekCard: card,
     peekIdentity: identityView,
     peekPersonal: personal,
     peekSettings: () => ({ ...db.settings }),
     peekGroups: (): ContactGroup[] => db.groups,
-    peekFriends: (): Did[] => [...(db.friends.get(db.owner) ?? [])],
     peekMuteRules: (): MuteRule[] => db.muteRules,
     peekFilterRules: (): FilterRule[] => db.filterRules,
     peekTopics(): TopicView[] {
@@ -1035,11 +1018,11 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
       return startTask(`share-${objId}`, { text: '', attachments: [], link: null, audience: db.settings.defaultAudience }, objId)
     },
 
-    async uploadAttachment(file: { name: string; kind: 'image' | 'video' | 'audio'; mime: string; size: number }): Promise<ObjId> {
+    async uploadAttachment(file: File, kind: AttachmentInput['kind']): Promise<ObjId> {
       await delay()
       runtimeCounter += 1
       const objId = fid(`upload-${id}-${runtimeCounter}-${file.name}`)
-      db.files.set(objId, { kind: 'file', name: file.name, meta: { mime: file.mime || (file.kind === 'image' ? 'image/png' : file.kind === 'video' ? 'video/mp4' : 'audio/mp4'), size: file.size, ...(file.kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) } })
+      db.files.set(objId, { kind: 'file', name: file.name, meta: { mime: file.type || (kind === 'image' ? 'image/png' : kind === 'video' ? 'video/mp4' : 'audio/mp4'), size: file.size, ...(kind === 'image' ? { width: 1600, height: 1200 } : { duration_ms: 42_000 }) } })
       return objId
     },
 
@@ -1190,5 +1173,3 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
 
   return store
 }
-
-export type HomeStationStore = ReturnType<typeof createHomeStationStore>

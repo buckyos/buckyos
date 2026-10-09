@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useSyncExternalStore } from 'react'
-import type { HomeStationStore, StoreDomain } from '../mock/store'
+import type { ReaderIdentity } from '../datamodel/types'
 import { useHsNav } from '../navContext'
+import type { HomeStationStore, StoreDomain } from './types'
 
 export const HomeStationStoreContext = createContext<HomeStationStore | null>(null)
 
@@ -17,9 +18,28 @@ export function useStoreSelector<T>(selector: (store: HomeStationStore, version:
 }
 
 export function useCardView(objId: string) {
+  const store = useHomeStationStore()
   const reader = useHsNav().reader
-  const select = useCallback((store: HomeStationStore) => store.peekCard(objId, reader), [objId, reader])
+  const readerKey = JSON.stringify(reader)
+  useEffect(() => store.watchCard(objId, JSON.parse(readerKey) as ReaderIdentity), [store, objId, readerKey])
+  const select = useCallback((current: HomeStationStore) => current.peekCard(objId, reader), [objId, reader])
   return useStoreSelector(select)
+}
+
+export type PreviewReaderKey = 'anonymous' | 'follower' | 'friend'
+
+const ANONYMOUS_READER: ReaderIdentity = { kind: 'anonymous' }
+const selectPreviewFollower = (store: HomeStationStore) => store.peekPreviewReaders().follower
+const selectPreviewFriend = (store: HomeStationStore) => store.peekPreviewReaders().friend
+
+export function usePreviewReaders(): { anonymous: ReaderIdentity } & Partial<Record<PreviewReaderKey, ReaderIdentity>> {
+  const follower = useStoreSelector(selectPreviewFollower)
+  const friend = useStoreSelector(selectPreviewFriend)
+  return useMemo(() => ({
+    anonymous: ANONYMOUS_READER,
+    ...(follower ? { follower: { kind: 'did' as const, did: follower } } : {}),
+    ...(friend ? { friend: { kind: 'did' as const, did: friend } } : {}),
+  }), [follower, friend])
 }
 
 export function useStoreRevalidate(domains: StoreDomain[], revalidate: () => void) {

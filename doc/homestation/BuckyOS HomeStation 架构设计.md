@@ -7,6 +7,7 @@
 > **v0.4 变更**：Feed Object 不可变，可变性只通过对象自身声明的可变入口及其单调的入口状态（Head）表达，取代 v0.3 的 `feed_change` 变更声明链；对象内容要么自包含，要么包裹另一个 ObjId，URL 不再作为内容引用。
 > **v0.5 变更**：将标签评价提升为 HomeStation 系统服务的公共能力，支持按需评价 DID 身份及 ObjId／对象路径指向的内容；待读分类与过滤是其调用场景之一。
 > **v0.6 变更**：明确 HomeStation 社交网络协议的核心是以 DID 定位用户的发表流（Home Feed List）与投递入口，并约定读取与投递所需的访问参数（§4.4）；新增发表受众（§4.5）；Social Inbox 改为 HomeStation 自有的 CYFS dispatch 入口，传输结果与准入披露分层（§7.4）；入口状态（Head）定为独立对象，不复用 PathObject；私人抓取默认不进入发表流（§5.6）；点赞默认公开。
+> **实施回写（2026-10-09）**：首版实现在 `src/frame/homestation`，§21 待定项采用的实现选择见 §23，线格式与接口见《HomeStation 协议与实现》。
 
 ## 1. 架构摘要
 
@@ -1880,3 +1881,24 @@ HomeStation 将内容消费拆成“获取候选—本地筛选—资源准备�
 作者视图、收录者视图与本地默认视图共同提供选择权：**作者可以组织自己的评论列表，但不能把这种组织权变成控制所有人所见评论的权力。** 系统追求的是可发现、可对比、可替换，而不是承诺全网绝对完整。
 
 首版需要先把这个完整闭环做出来，再持续演进推荐、资源管理、隐私机制和注意力经济。稳定的协议负责对象流通、版本关系及自愿的跨节点声明；用户自己的应用负责决定去哪里找、接下来读什么，以及如何理解阅读后的反馈。
+
+## 23. 实施回写（2026-10-09）
+
+首版实现（`src/frame/homestation`，Desktop 前端 `src/frame/desktop/src/app/homestation`）对 §21 的待定项采用以下选择；完整的线格式、接口、数据与验证见《HomeStation 协议与实现》。这些选择在宣布网络格式稳定前都可以修改。
+
+| §21 议题 | 实现选择 |
+| --- | --- |
+| 发表流与投递入口 | 约定路径 `cyfs://<Zone>/home/feed`、`cyfs://<Zone>/home/inbox`；Zone → `https://<Zone>`，可在服务设置声明其他源站；读者证明为自签 JWT（`Authorization: DID …`，`aud = cyfs://<Zone>/home`，有效期 ≤ 10 分钟），同 Zone 用户用会话令牌；变化游标为发表流自增序号，压缩后早于压缩点的游标得到 `resync`；展示读取游标为 `iat|入口` |
+| 发表受众 | 枚举 `public` / `followers` / `friends` / `group` / `dids`；“关注者”在读取时判定，好友视同关注者；受众调整追加 `audience` 变化，并向新增受众补一次 Push；包裹他人非公开对象的授权尚未实现 |
+| Feed/Message 关系 | ObjType：Feed Object `cyfeed`、Head `cyfhead`、关注声明 `cyfollow`、消费证明 `cyfproof`、共享评价 `cyfeval`；字段自定义，不复用 `BaseContentObject` |
+| 对象身份与签名 | ObjId = type + sha256(JCS claims)；JWT（EdDSA），`kid = <签名者 DID>#<key id>`；签名者须为发表者本人、其 DID Document 列出的密钥或其拥有的设备；服务模式用 OOD 设备密钥签名 |
+| 内容形态 | 内联正文 ≤ 8000 字符、对象 ≤ 64 KiB、部件 ≤ 9；`wraps` 与部件均为 ObjId 字符串 |
+| 投递结果 | 准入披露为 `accepted` 状态体中的附加字段 `admission`；拒绝原因 `not-admitted`、`not-addressed`、`rate-limited`、`invalid-signature`、`signature-required`、`signing-key-unavailable` 等 |
+| 列表发现与变更 | 作者视图与收录者视图均为 `GET /home/comments?target=<ObjId>` 的完整列表（`complete: true`）；接收方保存视图快照，只有两次完整快照之间消失的记录才标为“可观察的移除” |
+| 可变入口与 Head | Head 增加 `publisher` 字段；互动键摘要为 `<type>-` 加 `sha256("homestation/reaction/v1\n<互动者>\n<目标>\n<type>")` 前 16 字节的十六进制；只支持整条撤回 |
+| 评论关系 | 关系字段为 `references[{relation: "comment_on"}]`；转发类以 `wraps` 为目标；多级回复未实现 |
+| 通用标签评价 | 维度：内容 `topic` / `generation_method` / `quality` / `ad`，身份 `topic_affinity` / `delivery_behavior`；档案 `rules`（规则，默认）与 `model`（AICC，需配置）；修正作用域 `global` / `app:<id>` |
+| 本地保留 | 候选 14 天、待读窗口 300 条、行为事件 7 天；入口 Head 不随内容淘汰 |
+
+尚未覆盖或未经真实环境验证的部分：每个 Zone 只为 owner 发表；设备签名的跨 Zone 验证、网关 `/home/*` 转发、Message Center 联系人读取与 NDM 读写未做 DV；chunk list 大文件不预取、不校验；自然语言订阅的来源映射由规则完成，尚无 Agent 持续维护；收录者没有检索接口。
+

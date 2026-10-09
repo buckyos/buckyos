@@ -12,8 +12,7 @@ import { ImmersiveMode } from './ImmersiveMode'
 import { InfoPanel } from './InfoPanel'
 import { INFO_PANEL_DEFAULT_WIDTH, INFO_PANEL_HIDE_BELOW, INFO_PANEL_MAX_WIDTH, INFO_PANEL_MIN_WIDTH, PANEL_SPLITTER_WIDTH, SIDEBAR_COLLAPSE_BELOW, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH } from './layout'
 import { MePage } from './MePage'
-import { installHomeStationPreviewSource } from './mock/media'
-import { createHomeStationStore, parseScenario, type HomeStationStore } from './mock/store'
+import { installHomeStationPreviewSource } from './media'
 import { HsNavContext, useHsNav, type HsNav, type HsPage } from './navContext'
 import { PublicProfileView, type PreviewReader } from './PublicProfileView'
 import { FeedPreferences } from './prefs/FeedPreferences'
@@ -22,7 +21,9 @@ import { PublishComposer } from './publish/PublishComposer'
 import { SavedList } from './saved/SavedList'
 import { SidebarPanel } from './SidebarPanel'
 import { SourceManager } from './source/SourceManager'
-import { HomeStationStoreContext, useHomeStationStore, useStoreSelector } from './store/context'
+import { useHomeStationStore, useStoreSelector } from './store/context'
+import { HomeStationStoreProvider } from './store/HomeStationStoreProvider'
+import type { HomeStationStore } from './store/types'
 import type { ReadingMode } from './types'
 import { Avatar, PageHeader } from './ui/primitives'
 import { ToastHost } from './ui/ToastHost'
@@ -145,7 +146,6 @@ function PublishHeader() {
 export function HomeStationView() {
   const { t } = useI18n()
   const isDesktop = useMediaQuery('(min-width: 769px)')
-  const [store] = useState(() => createHomeStationStore(parseScenario(window.location.search)))
   const [pages, setPages] = useState<HsPage[]>([{ name: 'feed' }])
   const [query, setQuery] = useState<ReadingQuery>(DEFAULT_QUERY)
   const [readingMode, setReadingMode] = useState<ReadingMode>('standard')
@@ -227,7 +227,7 @@ export function HomeStationView() {
   )
 
   return (
-    <HomeStationStoreContext.Provider value={store}>
+    <HomeStationStoreProvider>
       <HsNavContext.Provider value={nav}>
         <div className="hs-root relative flex h-full w-full overflow-hidden" style={{ background: 'var(--cp-bg)', cursor: resizing ? 'col-resize' : undefined }} data-testid="homestation" ref={layoutRef}>
           <ToastHost>
@@ -301,6 +301,6 @@ export function HomeStationView() {
           </ToastHost>
         </div>
       </HsNavContext.Provider>
-    </HomeStationStoreContext.Provider>
+    </HomeStationStoreProvider>
   )
 }

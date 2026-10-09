@@ -205,6 +205,8 @@ g, system:slog-server, frame
 g, system:smb-service, frame
 g, system:nfs-server, frame
 g, system:aiworkspace, frame
+g, system:homestation, frame
+p, system:homestation, obj://msg-center/owners/*,read,allow
 
 "#;
 
@@ -408,6 +410,21 @@ p, app:session-ui,obj://msg-center/inbox/did:bns:alice/session-a,read|write,allo
             )
             .await
         );
+    }
+
+    #[tokio::test]
+    async fn homestation_reads_owner_contacts_only() {
+        let _guard = TEST_LOCK.lock().await;
+        let config = build_current_rbac_config(Some("g, ood1, ood"));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+        let owner = crate::MailboxAddress::new(name_lib::DID::from_str("did:bns:alice").unwrap(), None)
+            .unwrap()
+            .owner_resource();
+        assert!(rbac::enforce("ood1", "system:homestation", &owner, "read", None).await);
+        assert!(!rbac::enforce("ood1", "system:homestation", &owner, "write", None).await);
+        assert!(!rbac::enforce("ood1", "system:aiworkspace", &owner, "read", None).await);
     }
 
     #[tokio::test]

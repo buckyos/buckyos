@@ -53,11 +53,18 @@ function desktopServiceWorker(): Plugin {
 // production the zone gateway serves /kapi/aiworkspace same-origin). Point
 // AIWS_BACKEND at a standalone backend (e.g. http://127.0.0.1:4120) to forward
 // /kapi/aiworkspace to it; unset, nothing changes. See src/app/aiworkspace/README.md.
+// HomeStation dev proxy: HS_BACKEND (e.g. http://127.0.0.1:4131, the `devnet` example's `me`
+// node) forwards /kapi/homestation and the zone-level protocol paths /home/* to it. See
+// src/app/homestation/UI_DATAMODEL.md §11.
 export default defineConfig(() => {
   const nfsTarget = process.env.VITE_NFS_PROXY
   const zoneTarget = process.env.VITE_ZONE_PROXY
   const zoneIp = process.env.VITE_ZONE_PROXY_IP
   const aiwsTarget = process.env.AIWS_BACKEND
+  const hsTarget = process.env.HS_BACKEND
+  const hsProxy = hsTarget
+    ? Object.fromEntries(['/kapi/homestation', '^/home/'].map((path) => [path, { target: hsTarget, changeOrigin: true }]))
+    : {}
   const zoneAgent = zoneTarget
     ? new https.Agent({
         rejectUnauthorized: false,
@@ -99,6 +106,7 @@ export default defineConfig(() => {
       proxy: {
         // listed first: more specific than the zone proxy's /kapi
         ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
+        ...hsProxy,
         ...(nfsTarget ? { '/nfs/v1': { target: nfsTarget, changeOrigin: true } } : {}),
         ...zoneProxy,
       },
@@ -108,6 +116,7 @@ export default defineConfig(() => {
     preview: {
       proxy: {
         ...(aiwsTarget ? { '/kapi/aiworkspace': { target: aiwsTarget, changeOrigin: true } } : {}),
+        ...hsProxy,
       },
     },
   }
