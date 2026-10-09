@@ -2055,6 +2055,40 @@ fn non_llm_tasks_use_explicit_spec_links_and_require_the_requested_api() {
 }
 
 #[test]
+fn deepseek_flash_vision_apis_are_explicitly_routable() {
+    let mut inventory = crate::model::llm_tests::inventory(
+        "deepseek",
+        "deepseek-v4.1-flash",
+        "deepseek-flash",
+        "deepseek-main",
+        &["high"],
+    );
+    inventory.models[0].api_types.extend([
+        buckyos_api::ApiType::VisionOcr,
+        buckyos_api::ApiType::VisionCaption,
+    ]);
+    let registry = builtin_tree(&[inventory]);
+    for (logical_model, api_type) in [
+        ("vision.ocr", buckyos_api::ApiType::VisionOcr),
+        ("vision.caption", buckyos_api::ApiType::VisionCaption),
+    ] {
+        let candidates = registry
+            .resolve_candidates(logical_model, api_type)
+            .unwrap();
+        assert_eq!(candidates.candidates.len(), 1, "{logical_model}");
+        assert_eq!(
+            candidates.candidates[0].model.exact_model.as_str(),
+            "deepseek-flash:reasoning-high@deepseek-main"
+        );
+        assert!(candidates.candidates[0].paths.iter().any(|path| {
+            path.logical_paths
+                .iter()
+                .any(|logical_path| logical_path == "llm.deepseek-flash")
+        }));
+    }
+}
+
+#[test]
 fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts() {
     let empty = builtin_tree(&[]);
     let directory = model_directory_json(&empty);
