@@ -756,7 +756,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     .collect(),
             }
         };
-        let env = crate::runtime::open_session_env(&binding, &ctx);
+        let env = crate::runtime::open_session_env(&binding, &ctx).await?;
         (binding, env)
     };
     // Behaviors come from the agent's catalog: frozen before any inference

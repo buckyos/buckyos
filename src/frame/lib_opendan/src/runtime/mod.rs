@@ -365,20 +365,20 @@ pub async fn bind_or_verify(
     Ok(existing.unwrap_or(binding))
 }
 
-pub fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> SessionEnv {
+pub async fn open_session_env(binding: &Binding, ctx: &SessionEnvCtx) -> Result<SessionEnv> {
     let mut layers = vec![ctx.session_dir.join(RUNTIME_DIR).join("bin")];
     if let Some(root) = &ctx.agent_root {
         if root.join("tools").is_dir() {
             layers.push(root.join("tools"));
         }
     }
-    SessionEnv {
+    Ok(SessionEnv {
         runtime_id: binding.runtime_id.clone(),
         kind: binding.kind.clone(),
         workdir: binding.workdir.clone().into(),
         path_layers: layers,
-        env: session_env_vars(ctx, &binding.runtime_id),
-    }
+        env: session_env_vars(ctx, &binding.runtime_id).await?,
+    })
 }
 
 pub fn bin_plan_for(
@@ -405,7 +405,7 @@ pub fn bin_plan_for(
 }
 
 /// The §7.3 environment contract.
-pub fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Vec<(String, String)> {
+pub async fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Result<Vec<(String, String)>> {
     let mut v = vec![
         ("OPENDAN_AGENT_DID".to_string(), ctx.agent_did.clone()),
         (
@@ -426,5 +426,8 @@ pub fn session_env_vars(ctx: &SessionEnvCtx, runtime_id: &str) -> Vec<(String, S
         v.push(("BUCKYOS_APPCLIENT_SESSION_TOKEN".to_string(), tok));
     }
     v.extend(ctx.extra_env.iter().cloned());
-    v
+    agent_tool::runtime_context::refresh_appclient_session_env(&mut v)
+        .await
+        .map_err(|e| OpenDanError::Bind(e.to_string()))?;
+    Ok(v)
 }

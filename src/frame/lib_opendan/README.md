@@ -36,6 +36,8 @@ LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 J
 
 RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runtime 是构造配置，session_config.runtime.requirement 是绑定要求。binding 保存实际 target 和执行 cwd，推理与旧执行恢复前先核验。SessionToolManager 保留协议纪律，内部调用 Sandbox。Session 的 .runtime/bin 与 Agent tools 作为宿主环境注入；独立 xllm 接管校验保存的 PATH、manifest、helper 与凭据环境引用。远端 Session helper 未部署时明确报 Capability；remote_ssh 可独立用于 xllm。
 
+宿主已注册 BuckyOS runtime 时，Session 环境与每次 native / tmux 命令执行前都会续期并读取当前 session token，注入 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，覆盖父进程、Session 配置或单次调用中的旧值。续期失败或 token 为空时阻止执行；工具沿用宿主身份，不需要 owner 私钥。run 的环境核验记录只保存凭据变量名，不保存 token 值。未注册 runtime 的独立开发形态仍可显式传入该环境变量。
+
 ## xagent
 
 设计见 [xAgent](../../../doc/opendan/xAgent.md)。xagent 是 xllm 的上一层：xllm 把一个 run 推进到一个 Outcome，xagent 把一个 Agent Session 推进到一个 Turn 关闭，或常驻地推进它。

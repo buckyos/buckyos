@@ -1132,7 +1132,7 @@ impl BashRunner for LocalProcessBashRunner {
     async fn start(
         &self,
         _ctx: &SessionRuntimeContext,
-        req: BashRunRequest,
+        mut req: BashRunRequest,
     ) -> Result<Box<dyn CommandHandle>, AgentToolError> {
         match req.target {
             BashTarget::Local => {}
@@ -1142,6 +1142,7 @@ impl BashRunner for LocalProcessBashRunner {
                 )));
             }
         }
+        crate::runtime_context::refresh_appclient_session_env(&mut req.env).await?;
         let (dir, temp) = self.exec_dir(req.call_id.as_deref());
         let mut builder = tokio::fs::DirBuilder::new();
         builder.recursive(true);
