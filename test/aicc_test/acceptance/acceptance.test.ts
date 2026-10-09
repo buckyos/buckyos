@@ -2790,7 +2790,7 @@ test("T2 request defaults are driven by the capability baseline cell", () => {
       baseline_status: "active",
       input_kinds: ["text"],
       output_kinds: ["video"],
-      request_defaults: { duration_seconds: 5 },
+      request_defaults: { duration_seconds: 5, resolution: "480p" },
       source_urls: [],
     },
     runId: "run",
@@ -2800,6 +2800,78 @@ test("T2 request defaults are driven by the capability baseline cell", () => {
     ((request.payload as { input_json: Record<string, unknown> }).input_json).duration_seconds,
     5,
   );
+  assert.equal(
+    ((request.payload as { input_json: Record<string, unknown> }).input_json).resolution,
+    "480p",
+  );
+});
+
+test("T2 generated media requests use minimum-cost output settings", async () => {
+  const request = (apiType: string, requestDefaults?: Record<string, unknown>) => buildExactRequest({
+    cell: {
+      case_id: apiType,
+      provider_driver: "test",
+      provider_instance: "test-main",
+      exact_model: "model@test-main",
+      provider_model_id: "model",
+      api_type: apiType,
+      method: apiType === "image.txt2img" ? "images.generate" : apiType,
+      baseline_status: "active",
+      input_kinds: ["text"],
+      output_kinds: [apiType.split(".")[0]],
+      request_defaults: requestDefaults,
+      source_urls: [],
+    },
+    runId: "run",
+    fixtures: {},
+  }).payload as { input_json: Record<string, unknown> };
+
+  assert.deepEqual(request("image.txt2img", {
+    size: "1024x1024",
+    quality: "low",
+  }).input_json, {
+    prompt: "A blue square containing 4827",
+    n: 1,
+    size: "1024x1024",
+    quality: "low",
+  });
+  assert.deepEqual(request("video.txt2video", {
+    resolution: "480p",
+    generate_audio: false,
+  }).input_json, {
+    prompt: "A paper plane moving across a desk",
+    duration_seconds: 4,
+    resolution: "480p",
+    generate_audio: false,
+  });
+  assert.deepEqual(request("audio.music").input_json, {
+    prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
+    duration_seconds: 4,
+    instrumental: true,
+  });
+
+  const providerBaseline = await baseline();
+  const defaults = (provider: string, pattern: string, apiType: string) =>
+    providerBaseline.providers.find((item) => item.provider_driver === provider)?.rules
+      .find((rule) => rule.model_pattern === pattern)?.request_defaults?.[apiType];
+  assert.deepEqual(defaults("openai", "gpt-image-*", "image.txt2img"), {
+    n: 1,
+    size: "1024x1024",
+    quality: "low",
+  });
+  assert.deepEqual(defaults("google-gemini", "veo-3.1-*", "video.txt2video"), {
+    duration_seconds: 4,
+    resolution: "720p",
+  });
+  assert.deepEqual(defaults("minimax", "MiniMax-H3*", "video.txt2video"), {
+    duration_seconds: 5,
+    resolution: "480p",
+  });
+  assert.deepEqual(defaults("doubao", "doubao-seedance-2-0-260128", "video.txt2video"), {
+    duration_seconds: 4,
+    resolution: "480p",
+    generate_audio: false,
+  });
 });
 
 test("T2 multimodal embedding request honors the selected input combination", () => {
