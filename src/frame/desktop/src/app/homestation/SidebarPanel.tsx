@@ -1,165 +1,82 @@
-import {
-  Bookmark,
-  Clock,
-  Hash,
-  Rss,
-  User,
-} from 'lucide-react'
-import type { Source, Topic, UserProfile } from './types'
+import { Bookmark, Clock, Filter, Hash, Home, Inbox, Rss, Send, User } from 'lucide-react'
+import { useCallback } from 'react'
+import { useI18n } from '../../i18n/provider'
+import type { HomeStationStore } from './mock/store'
+import { useHsNav, type HsPage } from './navContext'
+import { useStoreSelector } from './store/context'
+import { Avatar } from './ui/primitives'
 
-interface SidebarPanelProps {
-  profile: UserProfile
-  topics: Topic[]
-  sources: Source[]
-  activeTopicId: string | null
-  t: (key: string, fallback: string) => string
-  onSelectTopic: (id: string | null) => void
-  onViewProfile: () => void
-  headerActions?: React.ReactNode
-}
+const selectSync = (store: HomeStationStore) => store.peekSyncStatus()
+const selectTopics = (store: HomeStationStore) => store.peekTopics()
 
-function SourceTypeBadge({ type }: { type: string }) {
-  const colors: Record<string, string> = {
-    person: 'var(--cp-accent)',
-    channel: 'var(--cp-warning)',
-    rss: 'var(--cp-success)',
-    website: 'var(--cp-muted)',
-    topic: 'var(--cp-accent-soft)',
-    'agent-curated': 'var(--cp-danger)',
-  }
-
+export function SidebarPanel({ collapsed, activeTopicId, onSelectTopic }: { collapsed: boolean; activeTopicId: string | null; onSelectTopic: (topicId: string | null) => void }) {
+  const { t } = useI18n()
+  const nav = useHsNav()
+  const sync = useStoreSelector(selectSync)
+  const topics = useStoreSelector(selectTopics)
+  const selectOwner = useCallback((store: HomeStationStore) => store.peekIdentity(store.owner), [])
+  const owner = useStoreSelector(selectOwner)
+  const current = nav.page.name === 'detail' ? 'feed' : nav.page.name
+  const savedKind = nav.page.name === 'saved' ? nav.page.kind : null
+  const items: { page: HsPage; label: string; icon: React.ReactNode; badge?: number; testId: string }[] = [
+    { page: { name: 'feed' }, label: t('homestation.nav.feed', 'Reading feed'), icon: <Home size={16} />, testId: 'hs-nav-feed' },
+    { page: { name: 'profile' }, label: t('homestation.nav.profile', 'My homepage'), icon: <User size={16} />, testId: 'hs-nav-profile' },
+    { page: { name: 'published' }, label: t('homestation.nav.published', 'My publications'), icon: <Send size={16} />, testId: 'hs-nav-published' },
+    { page: { name: 'candidates' }, label: t('homestation.nav.catchup', 'Catch up'), icon: <Inbox size={16} />, badge: sync.candidates, testId: 'hs-nav-candidates' },
+    { page: { name: 'saved', kind: 'bookmark' }, label: t('homestation.nav.bookmarks', 'Bookmarks'), icon: <Bookmark size={16} />, testId: 'hs-nav-bookmarks' },
+    { page: { name: 'saved', kind: 'read_later' }, label: t('homestation.nav.readLater', 'Read later'), icon: <Clock size={16} />, testId: 'hs-nav-read-later' },
+    { page: { name: 'sources' }, label: t('homestation.nav.sources', 'Sources'), icon: <Rss size={16} />, testId: 'hs-nav-sources' },
+    { page: { name: 'prefs' }, label: t('homestation.nav.prefsShort', 'Filters & hidden'), icon: <Filter size={16} />, testId: 'hs-nav-prefs' },
+  ]
+  const isCurrent = (page: HsPage) => page.name === current && (page.name !== 'saved' || page.kind === savedKind)
   return (
-    <span
-      className="rounded px-1 py-0.5 text-[9px] font-semibold uppercase"
-      style={{
-        background: `color-mix(in srgb, ${colors[type] ?? 'var(--cp-muted)'} 15%, transparent)`,
-        color: colors[type] ?? 'var(--cp-muted)',
-      }}
-    >
-      {type}
-    </span>
-  )
-}
-
-export function SidebarPanel({
-  profile,
-  topics,
-  sources,
-  activeTopicId,
-  t,
-  onSelectTopic,
-  onViewProfile,
-  headerActions,
-}: SidebarPanelProps) {
-  const followingSources = sources.filter((s) => s.isFollowing)
-
-  return (
-    <div
-      className="desktop-scrollbar flex h-full flex-col overflow-y-auto"
-      style={{
-        background:
-          'linear-gradient(180deg, color-mix(in srgb, var(--cp-surface) 96%, transparent), color-mix(in srgb, var(--cp-surface-2) 94%, transparent))',
-      }}
-    >
-      {/* Header */}
-      <div className="flex items-center gap-2 px-4 py-3" style={{ borderBottom: '1px solid var(--cp-border)' }}>
-        <button
-          type="button"
-          onClick={onViewProfile}
-          className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-          style={{
-            background: 'color-mix(in srgb, var(--cp-accent) 15%, transparent)',
-            color: 'var(--cp-accent)',
-          }}
-        >
-          {profile.name.charAt(0)}
-        </button>
-        <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{profile.name}</p>
-          <p className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-            {profile.followerCount} {t('homestation.followers', 'followers')}
-          </p>
-        </div>
-        {headerActions}
+    <nav className="desktop-scrollbar flex h-full flex-col overflow-y-auto" style={{ background: 'color-mix(in srgb, var(--cp-surface) 70%, var(--cp-bg))', borderRight: '1px solid var(--hs-divider)' }} aria-label={t('homestation.nav.label', 'HomeStation')} data-testid="hs-sidebar">
+      <div className="flex items-center gap-2 px-3 py-3" style={{ borderBottom: '1px solid var(--hs-divider)' }}>
+        <Avatar identity={owner} size={34} />
+        {!collapsed ? (
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold">{owner.name}</p>
+            <p className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.title', 'HomeStation')}</p>
+          </div>
+        ) : null}
       </div>
-
-      {/* Quick actions */}
       <div className="flex flex-col gap-0.5 px-2 py-2">
-        <button
-          type="button"
-          onClick={onViewProfile}
-          className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
-          style={{ color: 'var(--cp-text)' }}
-        >
-          <User size={16} style={{ color: 'var(--cp-muted)' }} />
-          {t('homestation.myProfile', 'My Profile')}
-        </button>
-        <button
-          type="button"
-          className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
-          style={{ color: 'var(--cp-text)' }}
-        >
-          <Bookmark size={16} style={{ color: 'var(--cp-muted)' }} />
-          {t('homestation.bookmarks', 'Bookmarks')}
-        </button>
-        <button
-          type="button"
-          className="flex items-center gap-3 rounded-xl px-3 py-2 text-sm transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
-          style={{ color: 'var(--cp-text)' }}
-        >
-          <Clock size={16} style={{ color: 'var(--cp-muted)' }} />
-          {t('homestation.readLater', 'Read Later')}
-        </button>
-      </div>
-
-      {/* Topics section */}
-      <div className="px-2 pt-2">
-        <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-          {t('homestation.topics', 'Topics')}
-        </p>
-        {topics.map((topic) => (
+        {items.map(item => (
           <button
-            key={topic.id}
+            key={item.testId}
             type="button"
-            onClick={() => onSelectTopic(activeTopicId === topic.id ? null : topic.id)}
-            className="flex w-full items-center gap-2 rounded-xl px-3 py-1.5 text-sm transition-colors hover:bg-[color:color-mix(in_srgb,var(--cp-text)_6%,transparent)]"
-            style={{
-              color: 'var(--cp-text)',
-              background: activeTopicId === topic.id
-                ? 'color-mix(in srgb, var(--cp-accent) 10%, transparent)'
-                : 'transparent',
-            }}
+            className="hs-nav-item"
+            aria-current={isCurrent(item.page) ? 'page' : undefined}
+            title={collapsed ? item.label : undefined}
+            aria-label={collapsed ? item.label : undefined}
+            data-testid={item.testId}
+            onClick={() => nav.navigate(item.page, { reset: true })}
           >
-            <Hash size={14} style={{ color: activeTopicId === topic.id ? 'var(--cp-accent)' : 'var(--cp-muted)' }} />
-            <span className="flex-1 truncate text-left">{topic.name}</span>
-            <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{topic.feedCount}</span>
+            <span style={{ color: 'var(--cp-muted)' }}>{item.icon}</span>
+            {!collapsed ? <span className="flex-1 truncate">{item.label}</span> : null}
+            {!collapsed && item.badge ? <span className="hs-badge">{item.badge}</span> : null}
           </button>
         ))}
       </div>
-
-      {/* Sources section */}
-      <div className="px-2 pt-4">
-        <p className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-wider" style={{ color: 'var(--cp-muted)' }}>
-          {t('homestation.sources', 'Sources')} ({followingSources.length})
-        </p>
-        {followingSources.slice(0, 6).map((source) => (
-          <div
-            key={source.id}
-            className="flex items-center gap-2 rounded-xl px-3 py-1.5"
-          >
-            <Rss size={12} style={{ color: 'var(--cp-muted)' }} />
-            <span className="flex-1 truncate text-xs" style={{ color: 'var(--cp-text)' }}>
-              {source.name}
-            </span>
-            <SourceTypeBadge type={source.type} />
-          </div>
-        ))}
-        {followingSources.length > 6 ? (
-          <p className="px-3 py-1 text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-            +{followingSources.length - 6} {t('homestation.more', 'more')}
-          </p>
-        ) : null}
-      </div>
-    </div>
+      {!collapsed ? (
+        <div className="px-2 pb-4 pt-2">
+          <p className="hs-section-title px-3 pb-1">{t('homestation.topics.title', 'Topics')}</p>
+          <p className="px-3 pb-1 text-[10px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.topics.scope', 'Counts: your feed · last 7 days')}</p>
+          {topics.map(topic => (
+            <button
+              key={topic.id}
+              type="button"
+              className="hs-nav-item py-1.5"
+              aria-current={activeTopicId === topic.id && current === 'feed' ? 'page' : undefined}
+              onClick={() => onSelectTopic(activeTopicId === topic.id ? null : topic.id)}
+            >
+              <Hash size={13} style={{ color: 'var(--cp-muted)' }} />
+              <span className="flex-1 truncate">{topic.name}</span>
+              <span className="text-[11px]" style={{ color: 'var(--cp-muted)' }}>{topic.recentCount}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </nav>
   )
 }

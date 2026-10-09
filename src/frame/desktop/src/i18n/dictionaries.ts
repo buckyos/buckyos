@@ -4,6 +4,7 @@ import { aiCenterEn, aiCenterZh } from './ai-center'
 import { aiCenterRoutingEn, aiCenterRoutingZh } from './ai-center-routing'
 import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
+import { homeStationEn, homeStationZh } from './homestation'
 import { appServiceEn, appServiceZh } from './app-service'
 import type { SupportedLocale } from '../models/ui'
 
@@ -15,6 +16,7 @@ const en: Dictionary = {
   ...aiCenterPlaygroundEn,
   ...aiCenterRoutingEn,
   ...messageHubEn,
+  ...homeStationEn,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': 'Thin desktop layer for layout, launch, and in-place windows.',
   'shell.home': 'Home',
@@ -932,6 +934,7 @@ const zhCN: Dictionary = {
   ...aiCenterPlaygroundZh,
   ...aiCenterRoutingZh,
   ...messageHubZh,
+  ...homeStationZh,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': '用于布局、启动与同容器窗口承载的轻量桌面层。',
   'shell.home': '主页',

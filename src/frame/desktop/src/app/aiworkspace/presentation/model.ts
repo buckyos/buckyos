@@ -15,6 +15,20 @@ export const STAGE_PRESETS: { id: string; label: string; stage: StageSize }[] = 
   { id: '4:3', label: '4:3（1440 × 1080）', stage: { w: 1440, h: 1080 } },
 ]
 export const DEFAULT_BACKGROUND = '#ffffff'
+
+/** The theme the stage renders its content in: the one whose text reads on the page background (`#rgb`, `#rrggbb` or
+ * `#rrggbbaa`, as the kernel accepts), whatever theme the Desktop uses. Text contrast is equal near a relative
+ * luminance of 0.22 between the two themes' text colours. */
+export function stageTheme(background: string): 'light' | 'dark' {
+  const hex = background.replace('#', '')
+  const digits = hex.length === 3 ? [...hex].map((c) => c + c) : [hex.slice(0, 2), hex.slice(2, 4), hex.slice(4, 6)]
+  const [r, g, b] = digits.map((d) => {
+    const c = parseInt(d, 16) / 255
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  })
+  if ([r, g, b].some(Number.isNaN)) return 'light'
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b < 0.22 ? 'dark' : 'light'
+}
 export const MIN_ZOOM = 0.05
 export const MAX_ZOOM = 4
 

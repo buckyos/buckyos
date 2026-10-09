@@ -1,19 +1,23 @@
 /* AI Workspace – all rules are scoped under .aiws-root. Colours come from the Desktop theme variables. */
 
-.aiws-root {
+.aiws-root, .aiws-root .cp-theme-light, .aiws-root .cp-theme-dark {
   /* state colours derived from the Desktop theme the way its own apps do: accent-soft only as a light tint
-     over the surface, the accent for borders, icons and links, body text on selected rows */
+     over the surface, the accent for borders, icons and links, body text on selected rows. Derived again under a
+     subtree with its own theme (the stage), since a derived variable is computed where it is declared. */
   --aiws-selected-bg: color-mix(in srgb, var(--cp-accent-soft) 20%, var(--cp-surface));
   --aiws-selected-border: color-mix(in srgb, var(--cp-accent) 26%, var(--cp-border));
   --aiws-pressed-bg: color-mix(in srgb, var(--cp-accent) 14%, transparent);
   --aiws-ai: color-mix(in srgb, var(--cp-accent-soft) 55%, var(--cp-text));
   accent-color: var(--cp-accent);
+  color: var(--cp-text);
+}
+
+.aiws-root {
   position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  color: var(--cp-text);
   background: var(--cp-bg);
   font-size: 13px;
   line-height: 1.5;
@@ -517,7 +521,8 @@
 .aiws-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 .aiws-root button.is-primary { background: var(--cp-accent); border-color: var(--cp-accent); color: #fff; }
 /* the dark theme's accent is light: dark text keeps the primary actions readable */
-:root[data-theme='dark'] .aiws-root button.is-primary, :root[data-theme='dark'] .aiws-root .aiws-tool.is-primary { color: var(--cp-bg-strong); }
+:root[data-theme='dark'] .aiws-root button.is-primary, :root[data-theme='dark'] .aiws-root .aiws-tool.is-primary,
+.aiws-root .cp-theme-dark button.is-primary, .aiws-root .cp-theme-dark .aiws-tool.is-primary { color: var(--cp-bg-strong); }
 .aiws-root button.is-primary:hover:not(:disabled) { background: color-mix(in srgb, var(--cp-accent) 88%, #000); }
 .aiws-root button.is-danger { color: var(--cp-danger); border-color: color-mix(in srgb, var(--cp-danger) 45%, var(--cp-border)); }
 .aiws-root button { display: inline-flex; align-items: center; gap: 4px; }

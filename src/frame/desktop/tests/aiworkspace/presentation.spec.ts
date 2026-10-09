@@ -4,7 +4,7 @@
  * (src/frame/aiworkspace/fixtures/presentation/commits.json): two free Surfaces, frame1 → frame2 → viewport1 →
  * viewport2 → frame3 and a guide path. */
 
-import type { Page } from '@playwright/test'
+import type { Locator, Page } from '@playwright/test'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { mainMenu, openCanvas, setCanvasMode, test, expect, type Api } from './fixtures'
@@ -128,6 +128,17 @@ async function setKey(api: Api, ws: { workspace_id: string; epoch: string }, ent
   const result = await api.commit(token, ws, [{ op: 'entity.set_keys', entity_id: entity, keys: [{ key, value, expect: { rev: read.content.key_revs[key] ?? 0 } }] }])
   expect(result.status, JSON.stringify(result)).toBe('accepted')
   return result
+}
+
+/** Relative luminance (0–1) of an element's text colour. */
+async function inkLuminance(locator: Locator): Promise<number> {
+  return locator.evaluate((el) => {
+    const ctx = document.createElement('canvas').getContext('2d')!
+    ctx.fillStyle = getComputedStyle(el).color
+    ctx.fillRect(0, 0, 1, 1)
+    const [r, g, b] = ctx.getImageData(0, 0, 1, 1).data
+    return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+  })
 }
 
 test('P3-01b the editor builds a path from the UI: new path, Frames, the current view; it survives a reload', async ({ page, api }) => {
@@ -647,6 +658,10 @@ test('P3 dark theme: the path editor, the start dialog, the stage controls, the 
   await shot(page, 'dark-start')
   await page.getByTestId('aiws-start-show-go').click()
   await onStep(page, 's1')
+  // the stage draws its content for its own light page, not for the dark Desktop theme around it
+  await expect(page.getByTestId('aiws-stage-canvas')).toHaveAttribute('data-stage-theme', 'light')
+  expect(await inkLuminance(page.getByTestId('aiws-stage-canvas'))).toBeLessThan(0.3)
+  expect(await inkLuminance(page.getByTestId('aiws-show-bar'))).toBeGreaterThan(0.7)
   await page.getByTestId('aiws-show-notes').click()
   await shot(page, 'dark-stage')
   await page.getByTestId('aiws-show-link').click()
@@ -663,4 +678,22 @@ test('P3 dark theme: the path editor, the start dialog, the stage controls, the 
   await page.getByTestId('aiws-guide-start').click()
   await expect(page.getByTestId('aiws-guide')).toBeVisible()
   await shot(page, 'dark-guide')
+})
+
+test('P3 stage theme: on a dark page the stage draws its content in the dark theme, also on the light Desktop theme', async ({ page, api }) => {
+  const ws = await showWorkspace(api, `p3-theme ${Date.now()}`)
+  await setKey(api, ws, 'path-intro', 'background', '#111827')
+  await openCanvas(page, ALICE, ws.workspace_id)
+  await startShow(page)
+  await onStep(page, 's1')
+  // frame1 has its own light page
+  await expect(page.getByTestId('aiws-stage-canvas')).toHaveAttribute('data-stage-theme', 'light')
+  await page.keyboard.press('ArrowRight')
+  await page.keyboard.press('ArrowRight')
+  await onStep(page, 's3')
+  // a Viewport step sits on the path's dark background
+  await expect(page.getByTestId('aiws-stage-canvas')).toHaveAttribute('data-stage-theme', 'dark')
+  expect(await inkLuminance(page.getByTestId('aiws-stage-canvas'))).toBeGreaterThan(0.7)
+  expect(await inkLuminance(page.getByTestId('aiws-show-bar'))).toBeLessThan(0.3)
+  await shot(page, 'p3-theme-dark-page')
 })

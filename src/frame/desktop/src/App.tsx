@@ -16,6 +16,9 @@ const LoginPage = lazy(() => import('./auth/LoginPage'))
 const HomeStationRoute = lazy(() =>
   import('./app/homestation/HomeStationRoute').then((m) => ({ default: m.HomeStationRoute })),
 )
+const HomeStationVisitorRoute = lazy(() =>
+  import('./app/homestation/HomeStationVisitorRoute').then((m) => ({ default: m.HomeStationVisitorRoute })),
+)
 const MessageHubRoute = lazy(() =>
   import('./app/messagehub/MessageHubRoute').then((m) => ({ default: m.MessageHubRoute })),
 )
@@ -53,6 +56,14 @@ const router = createBrowserRouter([
     element: (
       <Suspense fallback={null}>
         <HomeStationRoute />
+      </Suspense>
+    ),
+  },
+  {
+    path: '/homestation/u/:did',
+    element: (
+      <Suspense fallback={null}>
+        <HomeStationVisitorRoute />
       </Suspense>
     ),
   },

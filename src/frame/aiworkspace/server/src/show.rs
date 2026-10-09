@@ -335,14 +335,15 @@ async fn end(state: &Arc<AppState>, p: &Value, auth: Auth) -> WsResult<Value> {
 /// Release the lock, delete the clone, forget the show (its token with it) and wake its watchers.
 pub async fn end_show(state: &Arc<AppState>, show_id: &str) {
     let Some(show) = state.shows.map.lock().unwrap().remove(show_id) else { return };
-    if show.locked {
-        state.svc.show_unlock(&show.workspace_id, show_id);
-    }
+    // the clone goes before the lock: once others may write again, the show has left nothing behind
     if let Some(clone) = show.clone_id {
         let st = state.clone();
         if let Err(e) = blocking(move || st.svc.drop_clone(&clone)).await {
             log::warn!("could not delete the clone of show {show_id}: {e}");
         }
+    }
+    if show.locked {
+        state.svc.show_unlock(&show.workspace_id, show_id);
     }
     state.shows.notify();
     log::info!("show {show_id} on {} ended", show.workspace_id);
