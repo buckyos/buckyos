@@ -26,10 +26,12 @@ const SystestAppPanel = lazyPanel(
   (m) => m.SystestAppPanel,
 )
 
+const WebAppFramePanel = lazyPanel(() => import('./web-frame/WebAppFramePanel'), m => m.WebAppFramePanel)
+
 const appLoaders: Record<string, AppContentLoader> = {
+  aiworkspace: lazyPanel(() => import('./aiworkspace/AIWorkspaceAppPanel'), (m) => m.AIWorkspaceAppPanel),
   'ai-center': lazyPanel(() => import('./ai-center/AICenterAppPanel'), (m) => m.AICenterAppPanel),
   'app-service': lazyPanel(() => import('./app-service/AppServiceAppPanel'), (m) => m.AppServiceAppPanel),
-  canvas: lazyPanel(() => import('./canvas/CanvasAppPanel'), (m) => m.CanvasAppPanel),
   settings: lazyPanel(() => import('./settings/SettingsAppPanel'), (m) => m.SettingsAppPanel),
   studio: lazyPanel(() => import('./studio/StudioAppPanel'), (m) => m.StudioAppPanel),
   market: lazyPanel(() => import('./market/MarketAppPanel'), (m) => m.MarketAppPanel),
@@ -56,7 +58,7 @@ export function resolveDesktopApps(
     .map((app) => {
       const catalogId = desktopCatalogIdForLogicalApp(app.logicalAppId ?? app.id)
       const loader = appLoaders[catalogId]
-        ?? (app.webHosts?.length ? SystestAppPanel : undefined)
+        ?? (app.webHosts?.length ? WebAppFramePanel : undefined)
       return { ...app, loader }
     })
 }

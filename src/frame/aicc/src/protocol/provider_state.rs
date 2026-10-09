@@ -11,7 +11,10 @@ pub(crate) fn bind_provider_state_source(
             }
         }
         Value::Object(object) => {
-            if object.get("type").and_then(Value::as_str) == Some("provider_state") {
+            if matches!(
+                object.get("type").and_then(Value::as_str),
+                Some("provider_state" | "thinking")
+            ) {
                 object.insert(
                     "source".to_string(),
                     serde_json::to_value(source).expect("provider state coordinate serializes"),
@@ -23,6 +26,41 @@ pub(crate) fn bind_provider_state_source(
         }
         _ => {}
     }
+}
+
+/// Thinking is only replayable to the provider instance and model that
+/// produced it. Returns the request without the thinking blocks of any other
+/// (or unbound) source, or `None` when there is nothing to drop. The filter
+/// only depends on the coordinates, so the prefix sent to one target stays
+/// stable across requests.
+pub(crate) fn drop_foreign_thinking(
+    call: &buckyos_api::AiccCall,
+    target: &buckyos_api::ProviderStateCoordinate,
+) -> Option<buckyos_api::AiccCall> {
+    use buckyos_api::{AiContent, AiccCall};
+    let foreign = |block: &AiContent| matches!(block, AiContent::Thinking { source, .. } if !provider_state_is_native(source, target));
+    let messages = match call {
+        AiccCall::ChatCompletionsCreate(request) => &request.messages,
+        AiccCall::HelperLlmChat(request) => &request.messages,
+        _ => return None,
+    };
+    if !messages
+        .iter()
+        .any(|message| message.content.iter().any(foreign))
+    {
+        return None;
+    }
+    let mut filtered = call.clone();
+    let messages = match &mut filtered {
+        AiccCall::ChatCompletionsCreate(request) => &mut request.messages,
+        AiccCall::HelperLlmChat(request) => &mut request.messages,
+        _ => unreachable!("only chat calls carry messages"),
+    };
+    messages.retain_mut(|message| {
+        message.content.retain(|block| !foreign(block));
+        !message.content.is_empty()
+    });
+    Some(filtered)
 }
 
 pub(crate) fn provider_state_is_native(
@@ -125,5 +163,43 @@ mod tests {
         let mut different_profile = source.clone();
         different_profile.provider_profile_id = "openrouter".to_string();
         assert!(!provider_state_is_native(&source, &different_profile));
+    }
+
+    #[test]
+    fn binds_thinking_and_drops_only_foreign_thinking() {
+        use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest};
+
+        let source = ProviderStateCoordinate {
+            provider_profile_id: "anthropic".to_string(),
+            adapter_type: "claude-messages".to_string(),
+            origin_provider: "anthropic".to_string(),
+            origin_model: "claude-opus".to_string(),
+        };
+        let mut value = json!({"message": {"role": "assistant", "content": [
+            {"type": "thinking", "text": "t", "provider_metadata": {"signature": "s"}},
+            {"type": "text", "text": "a"}
+        ]}});
+        bind_provider_state_source(&mut value, &source);
+        let message: AiMessage = serde_json::from_value(value["message"].clone()).unwrap();
+        assert!(matches!(
+            &message.content[0],
+            AiContent::Thinking { source: bound, .. } if bound == &source
+        ));
+
+        let call = AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+            "m@p",
+            vec![AiMessage::text(AiRole::User, "hi"), message],
+        ));
+        assert!(super::drop_foreign_thinking(&call, &source).is_none());
+
+        let mut other = source.clone();
+        other.provider_profile_id = "openrouter".to_string();
+        let AiccCall::ChatCompletionsCreate(filtered) =
+            super::drop_foreign_thinking(&call, &other).unwrap()
+        else {
+            panic!("expected a chat call");
+        };
+        assert_eq!(filtered.messages.len(), 2);
+        assert_eq!(filtered.messages[1].content, vec![AiContent::text("a")]);
     }
 }

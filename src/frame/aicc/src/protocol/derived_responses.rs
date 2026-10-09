@@ -108,11 +108,18 @@ pub(crate) fn responses_dialect_adapter(
         super::openai_responses::openai_responses_adapter_with_reported_cost_currency(
             reported_cost_currency,
         );
-    let operation = base_descriptor
+    let mut operation = base_descriptor
         .operations
         .get(OPENAI_RESPONSES_OPERATION_ID)
         .cloned()
         .ok_or_else(|| ProtocolError::invalid_configuration("Responses operation is missing"))?;
+    if dialect != ResponsesDialectKind::OpenRouter {
+        for binding in &mut operation.bindings {
+            binding
+                .supported_features
+                .remove(buckyos_api::features::WEB_SEARCH);
+        }
+    }
     let base_codecs = base_registration
         .operation_codecs
         .into_iter()
@@ -295,9 +302,6 @@ impl ResponsesDialectStrategy for OpenRouterDialect {
         mut request: HttpRequest,
         prepared: PreparedDialectRequest,
     ) -> ProtocolResultValue<HttpRequest> {
-        if prepared.body_extensions.is_empty() {
-            return Ok(request);
-        }
         let super::HttpBody::Json(body) = &mut request.body else {
             return Err(ProtocolError::invalid_configuration(
                 "OpenRouter Responses request body is not JSON",
@@ -309,6 +313,13 @@ impl ResponsesDialectStrategy for OpenRouterDialect {
             )
         })?;
         body.extend(prepared.body_extensions);
+        if let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) {
+            for tool in tools {
+                if tool.get("type").and_then(Value::as_str) == Some("web_search") {
+                    tool["type"] = Value::String("openrouter:web_search".into());
+                }
+            }
+        }
         Ok(request)
     }
 }

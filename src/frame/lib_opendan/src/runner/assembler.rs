@@ -9,35 +9,35 @@
 //! 4. initial context material (`prompt.context`)
 //! 5. objective / end condition
 //!
-//! Fresh values (time, active sessions, hints, changes) live in the input
-//! batch message only, so the system section plus the history summary form
+//! Fresh values (time, active sessions, hints) live in the input batch
+//! message only, so the system section plus the history summary form
 //! a stable prefix (S-20).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::Value;
+use llm_context::{
+    escape_xml_attr, EngineConfig, NullValueLoader, PromptRenderEngine, RenderVars,
+};
+use serde_json::{json, Value};
 
-use crate::error::Result;
+use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
 use crate::state::{render_active_sessions, ActiveSession, Hint};
 
-/// A change to inject (subscription / activity / change input).
-#[derive(Debug, Clone, PartialEq)]
-pub struct ChangeItem {
-    pub id: String,
-    pub text: String,
-    pub terminal: bool,
-}
+use super::input_view::{input_formats, render_event_xml, EventView, InputView};
 
-/// Material of one input batch (a hook point: `on_init`, `on_wakeup`,
-/// `on_behavior_switch`; or an observation boundary). Whether the batch
-/// opens or joins a logical Turn is decided by the runner, not here.
+/// Material of one controlled input (`on_init`, `on_input`,
+/// `on_context_switch`). Whether the batch opens or joins a logical Turn is
+/// decided by the runner, not here; so are routing, dequeuing and media
+/// blocks.
 #[derive(Debug, Clone, Default)]
 pub struct InputMaterial {
+    /// `on_init | on_input | on_context_switch`.
     pub hook: String,
-    pub inputs: Vec<InputMessage>,
-    pub changes: Vec<ChangeItem>,
+    /// The selected inputs (`input.*`): the only material from the bus.
+    pub input: InputView,
     pub hints: Vec<Hint>,
     pub active: Vec<ActiveSession>,
     pub runtime_status: Value,
@@ -50,13 +50,33 @@ pub struct InputMaterial {
 pub trait SessionAssembler: Send + Sync {
     /// System text (identity + constraints + app prompt + objective).
     async fn system_text(&self, cfg: &SessionConfig, agent_root: Option<&Path>) -> Result<String>;
-    /// The user message of a hook point; `None` = nothing to infer on.
+    /// The user message of a controlled input: the output of the frozen
+    /// behavior's template for `m.hook` (built-in when absent). Pure: reads
+    /// no queue, moves no cursor, writes no state. `None` = nothing to
+    /// infer on.
     async fn render_input(
         &self,
         cfg: &SessionConfig,
         state: &SessionState,
+        templates: &InputTemplates,
         m: &InputMaterial,
     ) -> Result<Option<String>>;
+    /// The semi-subscription snapshot message placed before a controlled
+    /// input (`prompt.semi_subscription_snapshot`), for the pending state
+    /// versions selected for this batch. `None` when there are none.
+    async fn render_semi_subscription_snapshot(
+        &self,
+        templates: &InputTemplates,
+        events: &[EventView],
+    ) -> Result<Option<String>> {
+        default_snapshot(templates, events).await
+    }
+    /// A path the agent can read in this session's runtime for the data
+    /// object `obj_id`, when the host has one. Not a download: only an
+    /// existing mapping.
+    fn attachment_path(&self, _cfg: &SessionConfig, _obj_id: &str) -> Option<String> {
+        None
+    }
     /// Entry configuration of a hand-over / call target (§4.4): how the
     /// behavior is entered is decided by the target, and a target without a
     /// declared mode is an error — there is no in-place switch to fall back
@@ -65,41 +85,121 @@ pub trait SessionAssembler: Send + Sync {
         cfg.behavior_entry(behavior)
             .map_err(crate::error::OpenDanError::InvalidArgument)
     }
-    /// Text injected at an observation boundary (changes only).
-    async fn render_observation(&self, m: &InputMaterial) -> Result<Option<String>> {
-        if m.changes.is_empty() {
-            return Ok(None);
-        }
-        Ok(Some(render_changes(&m.changes)))
+    /// Freeze what the session still needs from the agent's behavior
+    /// catalog before `behavior` (`None`: the session itself) is used. The
+    /// changed configuration is returned and committed by the driver
+    /// (`config_rev + 1`). Default: the session carries its own entries
+    /// (`extensions.opendan.behaviors`), nothing is frozen.
+    async fn ensure_frozen(
+        &self,
+        _cfg: &SessionConfig,
+        _behavior: Option<&str>,
+        _agent: &dyn crate::state::AgentStateClient,
+        _who: &str,
+    ) -> Result<Option<SessionConfig>> {
+        Ok(None)
     }
+}
+
+/// Render a custom input template (`llm_context::prompt_engine`, `__EXEC__`
+/// off) with libopendan's named formats. A template error keeps the inputs
+/// unconsumed.
+pub async fn render_template(template: &str, vars: Value) -> Result<String> {
+    let template = &strip_block_tag_lines(template);
+    let engine = PromptRenderEngine::new(EngineConfig {
+        extensions: input_formats(),
+        ..EngineConfig::default()
+    });
+    let mut rv = RenderVars::new();
+    if let Value::Object(map) = vars {
+        for (k, v) in map {
+            rv.vars.insert(k, v);
+        }
+    }
+    let out = engine
+        .render(template, &rv, &NullValueLoader)
+        .await
+        .map_err(|e| OpenDanError::InvalidArgument(format!("input template: {e}")))?;
+    Ok(out.rendered.trim().to_string())
+}
+
+/// A line holding nothing but block tags (`{% for %}`, `{% if %}`,
+/// `{% endfor %}` ...) produces no output line: the tags are kept, the
+/// line's indentation and its newline are not. Lines with text or `{{ }}`
+/// are untouched.
+fn strip_block_tag_lines(template: &str) -> String {
+    fn only_block_tags(line: &str) -> bool {
+        let mut rest = line.trim();
+        if rest.is_empty() {
+            return false;
+        }
+        while !rest.is_empty() {
+            let Some(body) = rest.strip_prefix("{%") else {
+                return false;
+            };
+            let Some(end) = body.find("%}") else {
+                return false;
+            };
+            rest = body[end + 2..].trim_start();
+        }
+        true
+    }
+    let mut out = String::with_capacity(template.len());
+    for line in template.split_inclusive('\n') {
+        if only_block_tags(line) {
+            out.push_str(line.trim());
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+/// Built-in snapshot body: one `<event>` element per state version.
+pub fn render_snapshot_events(events: &[EventView]) -> String {
+    events
+        .iter()
+        .map(render_event_xml)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+async fn default_snapshot(
+    templates: &InputTemplates,
+    events: &[EventView],
+) -> Result<Option<String>> {
+    if events.is_empty() {
+        return Ok(None);
+    }
+    let text = render_snapshot_events(events);
+    let rendered = match &templates.semi_subscription_snapshot {
+        Some(tpl) => {
+            render_template(tpl, json!({ "snapshot": { "events": events, "text": text } })).await?
+        }
+        None => format!("<semi_subscription_snapshot>\n{text}\n</semi_subscription_snapshot>"),
+    };
+    Ok(Some(rendered).filter(|t| !t.trim().is_empty()))
 }
 
 pub const AVOIDANCE_RULE: &str = "Other sessions of this agent may be running at the same time. Before modifying a file, object or artifact, check <active_sessions>: do not modify what another active session is writing. Wait for it (its state is visible), work on another part first, or explain the conflict in your report.";
 
-#[derive(Debug, Clone, Default)]
+/// Resolves a data object to a path readable in the session's runtime.
+pub type AttachmentPathFn = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+#[derive(Clone, Default)]
 pub struct DefaultAssembler {
     /// Extra constraint lines appended to the non-overridable section.
     pub extra_constraints: Vec<String>,
+    /// Host mapping of attachments to readable paths.
+    pub attachment_paths: Option<AttachmentPathFn>,
 }
 
-fn esc(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
-}
-
-pub fn render_changes(changes: &[ChangeItem]) -> String {
-    let mut s = String::from("<changes>\n");
-    for c in changes {
-        let t = if c.terminal { " terminal=\"true\"" } else { "" };
-        s.push_str(&format!("<change id=\"{}\"{t}>{}</change>\n", esc(&c.id), esc(&c.text)));
+impl std::fmt::Debug for DefaultAssembler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DefaultAssembler")
+            .field("extra_constraints", &self.extra_constraints)
+            .finish()
     }
-    s.push_str("</changes>");
-    s
-}
-
-fn fmt_time(ms: u64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|t| t.with_timezone(&chrono::Local).to_rfc3339())
-        .unwrap_or_default()
 }
 
 #[async_trait]
@@ -108,7 +208,15 @@ impl SessionAssembler for DefaultAssembler {
         let mut s = String::new();
         // 1. identity
         let mut identity = String::new();
-        if let Some(root) = agent_root {
+        if let Some(f) = &cfg.prompt.frozen {
+            // Frozen with the session: the AgentRoot is not read again.
+            for t in [&f.identity.role, &f.identity.self_text] {
+                if !t.trim().is_empty() {
+                    identity.push_str(t.trim());
+                    identity.push_str("\n\n");
+                }
+            }
+        } else if let Some(root) = agent_root {
             for f in ["role.md", "self.md"] {
                 if let Ok(t) = std::fs::read_to_string(root.join(f)) {
                     if !t.trim().is_empty() {
@@ -145,7 +253,7 @@ impl SessionAssembler for DefaultAssembler {
         }
         s.push('\n');
         // 3. application prompt
-        if let Some(p) = &cfg.prompt.system_prompt {
+        if let Some(p) = &cfg.prompt.system {
             if !p.trim().is_empty() {
                 s.push_str("## application\n");
                 s.push_str(p.trim());
@@ -177,46 +285,122 @@ impl SessionAssembler for DefaultAssembler {
         Ok(s.trim_end().to_string())
     }
 
+    fn attachment_path(&self, _cfg: &SessionConfig, obj_id: &str) -> Option<String> {
+        self.attachment_paths.as_ref().and_then(|f| f(obj_id))
+    }
+
     async fn render_input(
         &self,
         cfg: &SessionConfig,
         state: &SessionState,
+        templates: &InputTemplates,
         m: &InputMaterial,
     ) -> Result<Option<String>> {
         let first = !state.bootstrap_done;
         let switch = state.internal_continuation.clone();
-        if !first && switch.is_none() && m.inputs.is_empty() && m.changes.is_empty() {
+        if !first && switch.is_none() && m.input.is_empty() {
             return Ok(None);
         }
-        let mut s = format!(
-            "<session_input hook=\"{}\" time=\"{}\">\n",
-            esc(&m.hook),
-            fmt_time(m.now_ms)
-        );
-        if let Some(b) = &switch {
-            s.push_str(&format!("<behavior_switch to=\"{}\"/>\n", esc(b)));
+        let blocks = Blocks::of(cfg, state, m);
+        let builtin = blocks.builtin(m);
+        let template = match m.hook.as_str() {
+            HOOK_ON_INIT => templates.on_init.as_ref(),
+            HOOK_ON_CONTEXT_SWITCH => templates.on_context_switch.as_ref(),
+            _ => templates.on_input.as_ref(),
+        };
+        let Some(template) = template else {
+            return Ok(Some(builtin));
+        };
+        let handover = switch.as_ref().map(|to| {
+            json!({
+                "to": to,
+                "process_result": state.process_result.as_ref().map(|r| json!({
+                    "behavior": r.get("behavior").and_then(Value::as_str).unwrap_or_default(),
+                    "status": r.get("status").and_then(Value::as_str).unwrap_or("ok"),
+                    "result": r.get("result").and_then(Value::as_str).unwrap_or_default(),
+                })),
+                "sub_task": state.child_call().filter(|c| &c.behavior == to).map(|c| json!({
+                    "mode": c.mode.as_str(),
+                    "task": c.task.clone().unwrap_or_default(),
+                })),
+            })
+        });
+        let vars = json!({
+            "input": m.input,
+            "session": {
+                "id": cfg.session.session_id,
+                "kind": cfg.session.kind.as_str(),
+                "objective": cfg.session.objective,
+                "timezone": cfg.session.timezone,
+                "is_bootstrap": first,
+                // Assembled by hosts that keep todos / background hints;
+                // none here.
+                "current_todo": Value::Null,
+                "background_hint_changed": false,
+                "default_changed_background_hint_text": "",
+            },
+            "runtime": {
+                "status": m.runtime_status,
+                "clock_text": m.input.time,
+            },
+            "handover": handover,
+            "hints": m.hints.iter().map(|h| json!({"id": h.id, "time": h.time, "sentence": h.sentence})).collect::<Vec<_>>(),
+            "task_text": blocks.task,
+            "handover_text": blocks.handover,
+            "perceptions_text": blocks.perceptions,
+            "hints_text": blocks.hints,
+            "active_sessions_text": blocks.active,
+            "runtime_text": blocks.runtime,
+            "builtin": builtin,
+        });
+        let text = render_template(template, vars).await?;
+        Ok(Some(text).filter(|t| !t.is_empty()))
+    }
+}
+
+fn esc(s: &str) -> String {
+    llm_context::escape_xml_text(s)
+}
+
+/// The per-batch material of the built-in templates, block by block (each
+/// is empty or ends with a newline). A custom template may reuse them.
+struct Blocks {
+    handover: String,
+    task: String,
+    perceptions: String,
+    hints: String,
+    active: String,
+    runtime: String,
+}
+
+impl Blocks {
+    fn of(cfg: &SessionConfig, state: &SessionState, m: &InputMaterial) -> Self {
+        let mut handover = String::new();
+        if let Some(b) = &state.internal_continuation {
+            handover.push_str(&format!("<context_switch to=\"{}\"/>\n", escape_xml_attr(b)));
             if let Some(r) = &state.process_result {
-                s.push_str(&format!(
+                handover.push_str(&format!(
                     "<process_result behavior=\"{}\" status=\"{}\">{}</process_result>\n",
-                    esc(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
-                    esc(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
+                    escape_xml_attr(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
+                    escape_xml_attr(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
                     esc(r.get("result").and_then(Value::as_str).unwrap_or_default())
                 ));
             }
             // A sub context being entered: its task, and what it returns to.
             if let Some(call) = state.child_call().filter(|c| &c.behavior == b) {
-                s.push_str(&format!(
+                handover.push_str(&format!(
                     "<sub_task mode=\"{}\">{}\nYour result returns to the caller: finish with your report; do not ask the user.</sub_task>\n",
                     call.mode.as_str(),
                     esc(call.task.as_deref().unwrap_or("Continue the work handed over to this behavior."))
                 ));
             }
         }
-        if first {
-            s.push_str("<task>Start working on the objective of this session.</task>\n");
+        let mut task = String::new();
+        if !state.bootstrap_done {
+            task.push_str("<task>Start working on the objective of this session.</task>\n");
             if let Some(scope) = &cfg.session.scope {
                 if !scope.paths.is_empty() || !scope.objects.is_empty() {
-                    s.push_str(&format!(
+                    task.push_str(&format!(
                         "<scope>{}</scope>\n",
                         esc(&scope
                             .paths
@@ -229,56 +413,170 @@ impl SessionAssembler for DefaultAssembler {
                 }
             }
         }
-        if !m.inputs.is_empty() {
-            s.push_str("<inputs>\n");
-            for i in &m.inputs {
-                s.push_str(&format!(
-                    "<{k} from=\"{f}\" key=\"{key}\">{t}</{k}>\n",
-                    k = i.kind.as_str(),
-                    f = esc(&i.from),
-                    key = esc(&i.key),
-                    t = esc(&i.text())
-                ));
-            }
-            s.push_str("</inputs>\n");
-        }
-        if !m.changes.is_empty() {
-            s.push_str(&render_changes(&m.changes));
-            s.push('\n');
-        }
+        let mut perceptions = String::new();
         if !m.perceptions.is_empty() {
-            s.push_str("<perceptions>\n");
+            perceptions.push_str("<perceptions>\n");
             for p in &m.perceptions {
-                s.push_str(&format!(
+                perceptions.push_str(&format!(
                     "<perception session=\"{}\" seq=\"{}\" kind=\"{}\">{}</perception>\n",
-                    esc(&p.session_id),
+                    escape_xml_attr(&p.session_id),
                     p.seq,
-                    esc(&p.kind),
+                    escape_xml_attr(&p.kind),
                     esc(&p.summary)
                 ));
             }
-            s.push_str("</perceptions>\n");
+            perceptions.push_str("</perceptions>\n");
         }
+        let mut hints = String::new();
         if !m.hints.is_empty() {
-            s.push_str("<hints>\n");
+            hints.push_str("<hints>\n");
             for h in &m.hints {
-                s.push_str(&format!(
+                hints.push_str(&format!(
                     "<hint id=\"{}\" time=\"{}\">{}</hint>\n",
-                    esc(&h.id),
-                    esc(&h.time),
+                    escape_xml_attr(&h.id),
+                    escape_xml_attr(&h.time),
                     esc(&h.sentence)
                 ));
             }
-            s.push_str("</hints>\n");
+            hints.push_str("</hints>\n");
         }
-        if let Some(a) = render_active_sessions(&m.active) {
-            s.push_str(&a);
+        let active = render_active_sessions(&m.active)
+            .map(|a| format!("{a}\n"))
+            .unwrap_or_default();
+        let runtime = if m.runtime_status.is_null() {
+            String::new()
+        } else {
+            format!("<runtime>{}</runtime>\n", m.runtime_status)
+        };
+        Self {
+            handover,
+            task,
+            perceptions,
+            hints,
+            active,
+            runtime,
+        }
+    }
+
+    /// The built-in template of every hook: the `<session_input>` element
+    /// with the hand-over state, the bootstrap task, the selected inputs and
+    /// the material computed for this batch.
+    fn builtin(&self, m: &InputMaterial) -> String {
+        let mut s = format!(
+            "<session_input hook=\"{}\" time=\"{}\">\n",
+            escape_xml_attr(&m.hook),
+            m.input.time
+        );
+        s.push_str(&self.handover);
+        s.push_str(&self.task);
+        if !m.input.text.is_empty() {
+            s.push_str(&m.input.text);
             s.push('\n');
         }
-        if !m.runtime_status.is_null() {
-            s.push_str(&format!("<runtime>{}</runtime>\n", m.runtime_status));
-        }
+        s.push_str(&self.perceptions);
+        s.push_str(&self.hints);
+        s.push_str(&self.active);
+        s.push_str(&self.runtime);
         s.push_str("</session_input>");
-        Ok(Some(s))
+        s
+    }
+}
+
+impl DefaultAssembler {
+    pub fn with_attachment_paths(mut self, f: AttachmentPathFn) -> Self {
+        self.attachment_paths = Some(f);
+        self
+    }
+}
+
+/// Assembler of sessions whose behaviors come from the agent's catalog
+/// (xAgent §6.4): the system section only depends on the frozen material
+/// and the session config, so runs of one behavior share a stable prefix.
+/// Input rendering, formats and media are those of [`DefaultAssembler`].
+#[derive(Clone, Default)]
+pub struct BehaviorAssembler {
+    pub inner: DefaultAssembler,
+}
+
+impl BehaviorAssembler {
+    pub fn new(inner: DefaultAssembler) -> Self {
+        Self { inner }
+    }
+}
+
+#[async_trait]
+impl SessionAssembler for BehaviorAssembler {
+    async fn system_text(&self, cfg: &SessionConfig, agent_root: Option<&Path>) -> Result<String> {
+        let Some(frozen) = &cfg.prompt.frozen else {
+            return Err(OpenDanError::blocked(
+                "the session has no frozen behaviors (prompt.frozen) and they cannot be guessed",
+                None,
+            ));
+        };
+        let mut c = cfg.clone();
+        if let Some(system) = c.prompt.system.clone().filter(|t| t.contains("{{") || t.contains("{%")) {
+            let name = cfg.prompt.behavior.clone().unwrap_or_default();
+            let behavior = frozen.behaviors.get(&name);
+            let vars = json!({
+                "identity": { "role": frozen.identity.role, "self": frozen.identity.self_text, "i18n": frozen.identity.i18n },
+                "behavior": {
+                    "name": name,
+                    "objective": behavior.map(|b| b.meta.objective.clone()).unwrap_or_default(),
+                    "mode": behavior.and_then(|b| b.prompt.mode).map(|m| m.as_str()),
+                },
+                "session": {
+                    "id": cfg.session.session_id,
+                    "kind": cfg.session.kind.as_str(),
+                    "objective": cfg.session.objective,
+                    "driver": cfg.session.driver.principal,
+                    "scope": cfg.session.scope,
+                    "parent": cfg.session.origin.as_ref().and_then(|o| o.parent_session.clone()),
+                },
+                "workspace": { "id": match &cfg.workspace {
+                    Some(WorkspaceRef::Agent { id }) => Value::String(id.clone()),
+                    Some(WorkspaceRef::External { path }) => Value::String(path.clone()),
+                    None => Value::Null,
+                }},
+            });
+            c.prompt.system = Some(render_template(&system, vars).await?);
+        }
+        self.inner.system_text(&c, agent_root).await
+    }
+
+    fn attachment_path(&self, cfg: &SessionConfig, obj_id: &str) -> Option<String> {
+        self.inner.attachment_path(cfg, obj_id)
+    }
+
+    async fn render_input(
+        &self,
+        cfg: &SessionConfig,
+        state: &SessionState,
+        templates: &InputTemplates,
+        m: &InputMaterial,
+    ) -> Result<Option<String>> {
+        self.inner.render_input(cfg, state, templates, m).await
+    }
+
+    async fn ensure_frozen(
+        &self,
+        cfg: &SessionConfig,
+        behavior: Option<&str>,
+        agent: &dyn crate::state::AgentStateClient,
+        who: &str,
+    ) -> Result<Option<SessionConfig>> {
+        let mut next = cfg.clone();
+        if next.prompt.frozen.is_none() {
+            // Without frozen material and without a readable catalog nothing
+            // is guessed and nothing is inferred.
+            crate::state::freeze_config(&mut next, agent.behaviors(), who)
+                .await
+                .map_err(|e| {
+                    OpenDanError::blocked(format!("cannot freeze the session's behaviors: {e}"), None)
+                })?;
+        }
+        if let Some(b) = behavior.filter(|b| !b.is_empty()) {
+            crate::state::freeze_behavior(&mut next, agent.behaviors(), b).await?;
+        }
+        Ok((&next != cfg).then_some(next))
     }
 }

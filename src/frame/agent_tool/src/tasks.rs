@@ -480,7 +480,8 @@ impl RunningTaskResolver for CompositeTaskResolver {
     }
 
     fn can_resolve(&self, task_id: &str) -> bool {
-        task_id.starts_with(LOCAL_TASK_PREFIX) || self.buckyos.is_some()
+        task_id.starts_with(LOCAL_TASK_PREFIX)
+            || self.buckyos.as_ref().is_some_and(|b| b.can_resolve(task_id))
     }
 
     fn watch(&self, task_id: &str) {

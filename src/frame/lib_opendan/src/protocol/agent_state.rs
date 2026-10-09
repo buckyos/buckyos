@@ -36,6 +36,13 @@ pub struct SessionStatus {
     pub report_brief: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_decision: Option<Value>,
+    /// What a waiting session waits for (a parent tells "needs input" from
+    /// "waits for a tool / its own sub sessions").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<super::state::WaitingKind>,
+    /// A Turn is open (work in progress, or waiting inside it).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub turn_open: bool,
     #[serde(default)]
     pub activity: Activity,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,6 +54,13 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
+    /// [`super::state::SessionState::takes_input`] as last reported.
+    pub fn takes_input(&self) -> bool {
+        self.run_state != RunState::Finished
+            || matches!(self.acceptance, Acceptance::Pending | Acceptance::Accepted)
+            || self.pending_decision.is_some()
+    }
+
     pub fn created(now_ms: u64) -> Self {
         Self {
             rev: 0,
@@ -56,6 +70,8 @@ impl SessionStatus {
             one_line_status: String::new(),
             report_brief: String::new(),
             pending_decision: None,
+            waiting_for: None,
+            turn_open: false,
             activity: Activity::default(),
             last_runner: None,
             last_error: None,
@@ -74,6 +90,9 @@ pub struct RegistryEntry {
     pub created_by: CreatedBy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idempotency_key: Option<String>,
+    /// What the session is bound to (a ui session: its mailbox address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route_key: Option<String>,
     pub driver: DriverRef,
     /// Path of the session directory (DFS path).
     pub location: String,

@@ -95,7 +95,8 @@ pub(crate) use openai_responses::{
     OPENAI_RESPONSES_OPERATION_ID,
 };
 pub(crate) use provider_state::{
-    bind_provider_state_source, foreign_provider_state_text, provider_state_is_native,
+    bind_provider_state_source, drop_foreign_thinking, foreign_provider_state_text,
+    provider_state_is_native,
 };
 pub(crate) use qwen_media::{qwen_media_adapter, QWEN_MEDIA_ADAPTER_ID};
 pub(crate) use result::{

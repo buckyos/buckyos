@@ -38,6 +38,10 @@ pub(crate) struct OperationBinding {
     pub capability: Capability,
     pub supported_features: BTreeSet<String>,
     pub execution_modes: BTreeSet<ExecutionMode>,
+    /// Set when the wire protocol requires an output cap that the canonical
+    /// request treats as optional. Call lowering fills an omitted
+    /// `max_output_tokens` with this value, clamped to the model's capability.
+    pub default_max_output_tokens: Option<u64>,
 }
 
 impl OperationBinding {
@@ -50,6 +54,7 @@ impl OperationBinding {
             capability: api_type.capability(),
             supported_features: BTreeSet::new(),
             execution_modes: execution_modes.into_iter().collect(),
+            default_max_output_tokens: None,
         }
     }
 
@@ -57,6 +62,11 @@ impl OperationBinding {
         if self.capability != self.api_type.capability() {
             return Err(ProtocolError::invalid_configuration(
                 "operation binding capability does not match its API type",
+            ));
+        }
+        if self.default_max_output_tokens == Some(0) {
+            return Err(ProtocolError::invalid_configuration(
+                "operation default max output tokens must be greater than zero",
             ));
         }
         if self.execution_modes.is_empty() {
@@ -248,6 +258,17 @@ impl AdapterDescriptor {
 pub(crate) struct CodecInput {
     pub canonical_request: AiccCall,
     pub resolved_parameters: BTreeMap<String, Value>,
+}
+
+impl CodecInput {
+    fn without_foreign_thinking(&self, context: &CodecContext) -> Option<Self> {
+        super::drop_foreign_thinking(&self.canonical_request, &context.state_coordinate).map(
+            |canonical_request| Self {
+                canonical_request,
+                resolved_parameters: self.resolved_parameters.clone(),
+            },
+        )
+    }
 }
 
 impl std::fmt::Debug for CodecInput {
@@ -568,6 +589,26 @@ pub(crate) fn normalize_provider_base_url(value: &str) -> ProtocolResultValue<St
 }
 
 impl CodecContext {
+    /// Tuning options the protocol cannot express are dropped instead of
+    /// failing the call; this warning is their only trace. Output format,
+    /// input and edit-scope requirements must still be rejected.
+    pub(crate) fn ignore_unsupported_options(&self, protocol: &str, options: &[(&str, bool)]) {
+        let ignored = options
+            .iter()
+            .filter(|(_, present)| *present)
+            .map(|(name, _)| *name)
+            .collect::<Vec<_>>();
+        if ignored.is_empty() {
+            return;
+        }
+        log::warn!(
+            "{protocol} ignores unsupported canonical option(s) {} for {}/{}",
+            ignored.join(", "),
+            self.state_coordinate.provider_profile_id,
+            self.state_coordinate.origin_model,
+        );
+    }
+
     pub(crate) fn materialized_resource(
         &self,
         source: &ResourceRef,
@@ -1334,13 +1375,14 @@ impl CodecRegistry {
         }
         input.validate_for(&registered.binding)?;
         context.validate()?;
+        let filtered = input.without_foreign_thinking(context);
         registered
             .codec
             .as_ref()
             .expect("registry validated operation codec")
             .encode(&CodecCall {
                 api_type,
-                input,
+                input: filtered.as_ref().unwrap_or(input),
                 context,
             })
     }
@@ -1468,7 +1510,19 @@ impl CodecRegistry {
                 "native lifecycle operation is not supported",
             ));
         }
-        codec.encode_native(input)
+        let filtered = input
+            .codec_input
+            .and_then(|codec_input| codec_input.without_foreign_thinking(input.context));
+        match &filtered {
+            Some(codec_input) => codec.encode_native(&NativeTaskInput {
+                operation: input.operation,
+                remote_task_id: input.remote_task_id,
+                codec_input: Some(codec_input),
+                resolved_parameters: input.resolved_parameters,
+                context: input.context,
+            }),
+            None => codec.encode_native(input),
+        }
     }
 
     pub(crate) fn output_video_seconds(

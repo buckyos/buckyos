@@ -20,18 +20,19 @@
     "acceptance": "n/a",
     "one_line_status": "",
     "report_brief": "",
+    "turn_open": true,
     "activity": {
       "summary": "x",
-      "heartbeat_ms": 1791024660159
+      "heartbeat_ms": 1791134682615
     },
     "last_runner": {
-      "runner_id": "rn-d24c7e798cb3405d",
+      "runner_id": "rn-fb93693a80884ce0",
       "host": "${FIXTURE_HOST}",
-      "pid": 494295,
+      "pid": 3939406,
       "lock_epoch": 1,
-      "at_ms": 1791024660160
+      "at_ms": 1791134682616
     },
-    "updated_at_ms": 1791024660159
+    "updated_at_ms": 1791134682615
   },
   "location_rev": 0
 }

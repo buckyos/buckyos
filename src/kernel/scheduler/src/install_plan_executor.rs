@@ -178,7 +178,12 @@ fn validate_plan(plan: &InstallPlan) -> std::result::Result<Vec<DeploymentPackag
 }
 
 fn default_reserved_hostnames(settings: &ZoneGatewaySettings) -> BTreeSet<String> {
-    let mut reserved = BTreeSet::from(["_".to_string(), "www".to_string(), "sys".to_string()]);
+    let mut reserved = BTreeSet::from([
+        "_".to_string(),
+        "www".to_string(),
+        "sys".to_string(),
+        "homestation".to_string(),
+    ]);
     reserved.extend(settings.shortcuts.keys().cloned());
     reserved
 }
@@ -1149,7 +1154,12 @@ impl SchedulerHandler for SchedulerServer {
                 .map_err(rpc_error)?;
             let registry: AppRegistry =
                 serde_json::from_str(&registry_value.value).map_err(rpc_error)?;
-            let reserved = BTreeSet::from(["_".to_string(), "www".to_string(), "sys".to_string()]);
+            let reserved = BTreeSet::from([
+                "_".to_string(),
+                "www".to_string(),
+                "sys".to_string(),
+                "homestation".to_string(),
+            ]);
             let collides = plan.target_app_instance_id.is_some()
                 && (reserved.contains(&plan.shortcut_hostname)
                     || registry

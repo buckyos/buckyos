@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "MsgDelivery": {
+      "description": "Delivery layer information; everything optional.",
+      "properties": {
+        "conversation_name": {
+          "description": "Display name of the conversation (group name).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "from_name": {
+          "description": "Display name of the speaker.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "record_id": {
+          "description": "msg-center record id (audit).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tunnel": {
+          "description": "DID of the ingress tunnel.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "description": "`type = \"msg\"` payload: the message object as it is plus what a MsgObject does not carry by design.",
+  "properties": {
+    "delivery": {
+      "$ref": "#/definitions/MsgDelivery"
+    },
+    "msg": {
+      "description": "cyfs-ndn MsgObject v2, never rewritten or trimmed."
+    }
+  },
+  "required": [
+    "msg"
+  ],
+  "title": "SessionMsg",
+  "type": "object"
+}

@@ -570,6 +570,7 @@ fn codecs() -> Arc<CodecRegistry> {
                 buckyos_api::features::JSON_SCHEMA.into(),
             ]),
             execution_modes: BTreeSet::from([ExecutionMode::Immediate]),
+            default_max_output_tokens: None,
         }],
         supports_cancel: false,
         supports_webhook: false,
@@ -663,6 +664,70 @@ impl DynamicLoginCredentialResolver for FakeDynamicCredentialResolver {
         self.contexts.lock().await.push(context.clone());
         ResolvedCredential::bearer("dynamic-login", "draft-secret")
             .map_err(|error| ProviderError::Credential(error.to_string()))
+    }
+}
+
+#[test]
+fn web_search_inventory_requires_model_adapter_and_discovery_support() {
+    let catalog = crate::model::llm_tests::builtin_catalog();
+    let mut codecs = CodecRegistry::default();
+    for (descriptor, registration) in [
+        crate::protocol::openai_responses_adapter(),
+        crate::protocol::claude_messages_adapter(),
+        crate::protocol::gemini_interactions_adapter(),
+        crate::protocol::openai_chat_completions_adapter(),
+        crate::protocol::doubao_media_adapter(),
+        crate::protocol::qwen_media_adapter(),
+        crate::protocol::doubao_speech_adapter(),
+    ] {
+        codecs.register_codecs(descriptor, registration).unwrap();
+    }
+    for (descriptor, registration) in
+        crate::protocol::openai_responses_compatible_adapters().unwrap()
+    {
+        codecs.register_derived(descriptor, registration).unwrap();
+    }
+    crate::protocol::register_sn_openai_adapter(&mut codecs).unwrap();
+    let (descriptor, registration) = crate::protocol::openrouter_responses_adapter();
+    codecs.register_derived(descriptor, registration).unwrap();
+
+    for (provider, adapter, model, supported) in [
+        ("openai", "openai-responses", "gpt-5.4", true),
+        ("sn", "sn-openai", "gpt-5.4", true),
+        ("openrouter", "openrouter-responses", "openai/gpt-5.4", true),
+        ("gemini", "gemini-interactions", "gemini-3.6-flash", true),
+        ("claude", "claude-messages", "claude-sonnet-5", true),
+        ("deepseek", "deepseek-responses", "deepseek-v4-pro", false),
+        ("openai", "openai-chat-completions", "gpt-5.4", false),
+    ] {
+        for discovery_disables in [false, true] {
+            let mut profile = profile();
+            profile.provider_profile_id = provider.into();
+            profile.default_protocol_adapter_id = adapter.into();
+            let mut config = instance("primary");
+            config.provider_profile_id = provider.into();
+            config.protocol_adapter_id = adapter.into();
+            let mut discovered = discovery(model);
+            discovered.models[0].supported_features = None;
+            discovered.models[0].remote_methods = None;
+            if discovery_disables {
+                discovered.models[0]
+                    .unsupported_features
+                    .insert("web_search".into());
+            }
+            let inventory =
+                InventoryBuilder::build(&profile, &config, discovered, &catalog, &codecs).unwrap();
+            assert_eq!(inventory.models.len(), 1, "{adapter}");
+            assert_eq!(
+                inventory.models[0]
+                    .capabilities
+                    .get("web_search")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                supported && !discovery_disables,
+                "{adapter}"
+            );
+        }
     }
 }
 

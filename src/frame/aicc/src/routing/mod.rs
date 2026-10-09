@@ -378,6 +378,14 @@ impl<'a, Q: QuotaSource> Router<'a, Q> {
     }
 
     pub(crate) fn route(&self, request: &RoutingRequest) -> Result<RouteDecision, RoutingError> {
+        let mut request = request.clone();
+        request.disable.web_search |= request.api_type == ApiType::Llm
+            && !matches!(
+                request.model.as_str(),
+                "llm.chat" | "llm.plan" | "llm.vision"
+            )
+            && !(request.model.contains('@') && request.requirements.web_search);
+        let request = &request;
         validate_request(request)?;
         if request.model.contains('@') {
             self.route_exact(request)
@@ -2403,6 +2411,143 @@ mod tests {
         request.capability = ApiType::Llm.capability();
         request.allow_experimental = experimental;
         Router::new(registry, &engine(&RoutingPolicyPatch::default()), &runtime).route(&request)
+    }
+
+    #[test]
+    fn web_search_is_optional_and_respects_request_and_directory_disables() {
+        let catalog = crate::model::llm_tests::compile(vec![serde_json::from_value(
+            crate::model::llm_tests::openai_document(),
+        )
+        .unwrap()])
+        .unwrap();
+        let stocks = [crate::model::llm_tests::inventory(
+            "openai",
+            "gpt-5.4",
+            "gpt-5.4",
+            "openai",
+            &["medium"],
+        )];
+        let overlay = crate::model::llm_tests::gpt_overlay();
+        let policy = engine(&RoutingPolicyPatch::default());
+        for (path, search_allowed) in [
+            ("llm.chat", true),
+            ("llm.plan", true),
+            ("llm.vision", true),
+            ("llm.code", false),
+            ("llm.swift", false),
+            ("llm.summarize", false),
+            ("llm.translate", false),
+            ("llm.fallback", false),
+            ("llm.chat.custom", false),
+        ] {
+            for directory_disables in [false, true] {
+                let mut definition = crate::model::llm_tests::definition(path);
+                definition.disable_line.web_search = directory_disables;
+                let mut overlay = overlay.clone();
+                if path != "llm.chat" {
+                    let chat = overlay.logical_tree.remove("llm.chat").unwrap();
+                    overlay.logical_tree.insert(path.into(), chat);
+                }
+                let registry = ModelRegistry::build(
+                    &catalog,
+                    &stocks,
+                    vec![definition],
+                    RegistryLayers {
+                        factory: Some(&overlay),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let runtime: BTreeMap<_, _> = registry
+                    .model_views()
+                    .into_iter()
+                    .map(|model| (model.exact_model, state(false, 0.1, 100.0)))
+                    .collect();
+                let router = Router::new(&registry, &policy, &runtime);
+                for request_disables in [false, true] {
+                    let mut request = RoutingRequest::new(
+                        "trace-search",
+                        "request-search",
+                        path,
+                        ApiType::Llm,
+                        request(path).caller,
+                    );
+                    request.disable.web_search = request_disables;
+                    let route = router.route(&request).unwrap();
+                    assert_eq!(
+                        route
+                            .selected
+                            .enabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"),
+                        search_allowed && !directory_disables && !request_disables,
+                        "{path}"
+                    );
+                    assert_eq!(
+                        route
+                            .selected
+                            .disabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"),
+                        !search_allowed || directory_disables || request_disables,
+                        "{path}"
+                    );
+                    assert_eq!(
+                        route.trace.disabled_capabilities,
+                        route.selected.disabled_capabilities
+                    );
+                    request.requirements.web_search = true;
+                    assert_eq!(
+                        router.route(&request).is_ok(),
+                        search_allowed && !directory_disables && !request_disables,
+                        "{path}"
+                    );
+                }
+                for model in [
+                    "llm.gpt-standard",
+                    "llm.gpt-5-4:medium",
+                    "gpt-5.4:reasoning-medium@openai",
+                ] {
+                    let mut request = RoutingRequest::new(
+                        "trace-search",
+                        "request-search",
+                        model,
+                        ApiType::Llm,
+                        request(model).caller,
+                    );
+                    let route = router.route(&request).unwrap();
+                    assert!(
+                        !route
+                            .selected
+                            .enabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"),
+                        "{model}"
+                    );
+                    assert!(
+                        route
+                            .selected
+                            .disabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"),
+                        "{model}"
+                    );
+                    request.requirements.web_search = true;
+                    let explicit = router.route(&request);
+                    assert_eq!(explicit.is_ok(), model.contains('@'), "{model}");
+                    if let Ok(route) = explicit {
+                        assert!(route.selected.enabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"));
+                        assert!(!route.trace.disabled_capabilities
+                            .iter()
+                            .any(|feature| feature == "web_search"));
+                    }
+                    request.disable.web_search = true;
+                    assert!(router.route(&request).is_err(), "{model}");
+                }
+            }
+        }
     }
 
     #[test]

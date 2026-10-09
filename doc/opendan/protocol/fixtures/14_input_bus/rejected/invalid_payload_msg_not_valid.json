@@ -1,0 +1,21 @@
+{
+  "at_ms": 1790899200000,
+  "from": "did:bns:alice",
+  "key": "cymsg:00",
+  "payload": {
+    "msg": {
+      "content": {
+        "content": "hi"
+      },
+      "from": "did:bns:alice",
+      "kind": "chat",
+      "to": [
+        "did:bns:a",
+        "did:bns:b"
+      ],
+      "to_session": "s1"
+    }
+  },
+  "schema": "opendan.session_input/3",
+  "type": "msg"
+}

@@ -107,12 +107,12 @@ async fn follow_up_input_after_finish_is_rejected_and_logged() {
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
     let agent = env.agent();
     // Posting a normal msg to a finished session is refused up front…
-    let err = libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m1", "more?"), APP).await;
+    let err = libopendan::post_input(agent.as_ref(), sd.sid(), &msg("more?")).await;
     assert!(err.is_err());
     // …and a raw delivery that slipped through is rejected by the consumer.
     let ch = env.channels();
     let q = sd.config().unwrap().channels.kmsg().unwrap().1.to_string();
-    libopendan::channel::kmsg::post_to_queue(&ch.client(), &q, &Input::msg("m2", "late"), APP)
+    libopendan::channel::kmsg::post_to_queue(&ch.client(), &q, &msg("late"))
         .await
         .unwrap();
     let r = drive(&sd, &deps, StopWhen::Idle).await;

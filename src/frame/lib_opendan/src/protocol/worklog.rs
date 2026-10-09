@@ -17,7 +17,7 @@ pub struct InputRef {
     pub index: u64,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub key: String,
-    /// `msg | event | change | control | perception`.
+    /// `msg | event | control`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
 }
@@ -43,7 +43,14 @@ fn unknown() -> String {
     "unknown".to_string()
 }
 
-/// Worklog entry bodies (format of `opendan.session_state/2` sessions).
+/// Source id of inputs the runner synthesizes itself (completion of a
+/// watched task): they have no delivery position to consume.
+pub const INTERNAL_TASK_SRC: &str = "_task";
+/// Source id of the events a runner synthesizes from the registry state of
+/// the session's sub sessions (needs attention / finished).
+pub const INTERNAL_CHILD_SRC: &str = "_child";
+
+/// Worklog entry bodies (format of `opendan.session_state/5` sessions).
 ///
 /// Identities: an input batch is `(run_id, input_seq)`, a Turn is `turn`
 /// (session-wide), a behavior Step is `(run_id, step_index)`, a tool call /
@@ -69,14 +76,13 @@ pub enum WorklogBody {
         #[serde(default)]
         inputs: Vec<InputRef>,
         #[serde(default)]
-        changes: Vec<String>,
+        events: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook: Option<String>,
         at_ms: u64,
     },
-    /// An input batch that joined the open Turn (behavior hand-over, fork
-    /// return, input consumed while the Turn was in progress). Observation
-    /// injections are only recorded as their `user_message`.
+    /// An input batch that joined the open Turn (hand-over, sub context
+    /// return, input consumed while the Turn was in progress).
     InputBatch {
         run_id: String,
         turn: u64,
@@ -84,7 +90,7 @@ pub enum WorklogBody {
         #[serde(default)]
         inputs: Vec<InputRef>,
         #[serde(default)]
-        changes: Vec<String>,
+        events: Vec<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         hook: Option<String>,
         at_ms: u64,
@@ -168,14 +174,19 @@ pub enum WorklogBody {
         #[serde(default, skip_serializing_if = "Value::is_null")]
         report: Value,
     },
-    /// An input marked consumed without being processed.
+    /// An input marked consumed without being processed. `reason` is a
+    /// `RejectReason` name.
     InputRejected {
         input: InputRef,
         reason: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
     },
-    /// A subscription change dropped by coalescing / trimming.
-    ChangeDropped {
-        change: String,
+    /// An event consumed without entering the context or `pending_events`:
+    /// no valid subscription matched (`unsubscribed`), or it only woke the
+    /// wait of a suspended call (`pending_call`).
+    EventDropped {
+        input: InputRef,
         reason: String,
     },
     /// Control inputs applied outside a run (stop / subscribe / activity).
@@ -188,6 +199,20 @@ pub enum WorklogBody {
 }
 
 impl WorklogBody {
+    pub fn turn(&self) -> Option<u64> {
+        match self {
+            Self::TurnStarted { turn, .. }
+            | Self::InputBatch { turn, .. }
+            | Self::UserMessage { turn, .. }
+            | Self::AssistantMessage { turn, .. }
+            | Self::Step { turn, .. }
+            | Self::ActionResult { turn, .. }
+            | Self::Outcome { turn, .. }
+            | Self::TurnEnded { turn, .. } => Some(*turn),
+            _ => None,
+        }
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             WorklogBody::Created { .. } => "created",
@@ -202,7 +227,7 @@ impl WorklogBody {
             WorklogBody::Compaction { .. } => "compaction",
             WorklogBody::Decide { .. } => "decide",
             WorklogBody::InputRejected { .. } => "input_rejected",
-            WorklogBody::ChangeDropped { .. } => "change_dropped",
+            WorklogBody::EventDropped { .. } => "event_dropped",
             WorklogBody::ControlApplied { .. } => "control_applied",
         }
     }

@@ -1,0 +1,17 @@
+{
+  "at_ms": 1790899200000,
+  "from": "app:obj-bridge@alice",
+  "key": "obj:doc-1:8",
+  "payload": {
+    "event": "changed",
+    "seq": 8,
+    "source": {
+      "id": "doc-1",
+      "kind": "object"
+    },
+    "subscription_id": "watch-obj",
+    "summary": "doc-1 was edited by Bob"
+  },
+  "schema": "opendan.session_input/3",
+  "type": "event"
+}

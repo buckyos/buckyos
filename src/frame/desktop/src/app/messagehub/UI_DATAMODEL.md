@@ -1,6 +1,6 @@
 # MessageHub UI DataModel
 
-- 文档版本：v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
+- 文档版本：v0.11（2026-10-04：Agent 回复的 `agent_task`、edit 整体替换内容、任务区 / 任务树 / 通用消息详情、消息级深链，见 §3.5.4）；v0.10（2026-10-01：Session 参与者列表与移出入口、@ 自动补全，见 §3.7）；v0.9（2026-10-01：buckyos#638 — 分栏拖动、任意会话的消息回应与取消、实体列表隐藏 root 与本人，见 §3.7 / §4.1 / §5）；v0.8（2026-10-01：取消成员 proof、群管理与消息关系 UI，见 §3.7）；v0.7（2026-10-01：接入 Self-host Group v2 — 建群、成员、邀请、群会话发送，见 §3.7）；v0.6（2026-09-07：真实接入 — 会话登记 / 生命周期 / 授权 / 对象访问落地，§9.4 记录执行结果）
 - 文档类型：UI DataModel 设计文档（WebUI Dev Loop 阶段三产物）
 - 模块位置：`src/frame/desktop/src/app/messagehub`
 - 上游文档：
@@ -456,7 +456,9 @@ export interface EntitySessionCreation {
 
 策略按 `(ownerDid, entityId)` 保存，`default` 对 Agent 和 BuckyOS 原生连接为允许，其它外部连接为禁止。显式 `deny` 对所有类型生效。
 
-实体点击和带 `entityId` 的入口统一调用 `ensureDefaultSession`：只选择 active 会话，按 `lastActiveAt` 降序、ID 升序选择，置顶不影响默认会话。Agent 仅选择未绑定 msg-tunnel 的原生会话；Person / Group / Service 可选择已有的外部会话。缺失时先继续查询分页，再在创建策略和连接能力允许的情况下登记空会话并进入；观察模式不创建。同一 viewer/owner/entity 的并发请求合并，切换实体后忽略旧请求的界面跳转。
+入口还可以再带 `messageId`（原锚点消息的 ObjId，见 §3.5.4）：仅当 `sessionId` 指向的 Session 存在时生效。
+
+入口（`/messagehub` 的查询参数、桌面 launch payload）可以带 `sessionId`：该 owner 视图中存在这个 Session（active 或 archived）时直接打开它，不再解析默认会话；没有 `entityId` 时进入这个 Session 所属的实体；找不到时按没有 `sessionId` 处理。实体点击和带 `entityId` 的入口统一调用 `ensureDefaultSession`：只选择 active 会话，按 `lastActiveAt` 降序、ID 升序选择，置顶不影响默认会话。Agent 仅选择未绑定 msg-tunnel 的原生会话；Person / Group / Service 可选择已有的外部会话。缺失时先继续查询分页，再在创建策略和连接能力允许的情况下登记空会话并进入；观察模式不创建。同一 viewer/owner/entity 的并发请求合并，切换实体后忽略旧请求的界面跳转。
 `canCreate` 是策略、当前视角、后端授权与所选连接能力共同计算的结果；多连接时在提交前明确选定连接，
 并重新校验对应能力。在 tunnel 中新建还要求 `supportsMultipleSessions && canCreateRemoteSession`。
 原生 Agent 会话不要求外部 tunnel 存在。配置允许不能绕过平台限制，不能解除已有 Session 的只读模式。
@@ -522,6 +524,23 @@ Agent 观察则连展示配置、已读、草稿都不能写入。后续代 Agen
 
 快照携带 revision，修改携带 expected_revision 与幂等键；只提交真实生效的变更并记录日志。
 本节不要求添加组件、表单或原型交互，也不将目标类型提前写进当前协议镜像。
+
+#### 3.3.6 会话浮动面板（Session Panel，2026-10-04）
+
+会话历史顶部可选的浮动面板（`conversation/SessionPanel.tsx`），没有内容时不渲染。折叠态最多三行文本高
+（标题一行，字段一行，正文占余下行并截断）；内容超出或带自定义内容时出现展开按钮，展开后显示全部字段、
+全文与自定义内容（最高 50vh，内部滚动）。折叠高度作为历史列表的顶部留白（`topInset`），首屏消息不被遮挡。
+
+内容来源按优先级取一个：
+
+1. `EntitySession.panel?: SessionPanelInfo`：宿主 / 会话类型定义的内容（例如工单状态）。
+   `{ title, text?, fields?: { label, value, tone?: 'success' | 'warning' | 'danger' }[] }`。
+   **后端目标契约**：当前只有 mock 提供（Release Hub 的工单面板），真实投影不产生该字段；
+   `ConversationView.sessionPanelDetails` 可再传入任意 ReactNode，仅在展开态显示。
+2. 置顶消息：`SessionPreferences.pinnedMessage?: PinnedMessage | null`，
+   `{ id: 消息 obj id, text（≤ 2000 字符的正文快照；无正文时为附件名）, senderDid, createdAt }`。
+   这是 owner 个人偏好（`ui.pinned_message`，见 §4.4），不是群共享置顶；面板关闭按钮 = 取消置顶，观察模式只读。
+   保存的是快照：消息之后被编辑 / 撤回不会回写面板；本人删除该消息时一并取消置顶。
 
 ### 3.4 EntityDetail
 
@@ -649,6 +668,22 @@ Agent 实体会话中对端发来的 `text/plain` 也按 Markdown 渲染，因�
 
 同一发送者 5 分钟内的连续消息（Action 除外）视为一组：组内间距收紧、群聊只在组首显示发送者名称。
 
+消息操作（悬停栏 / 触屏页脚菜单，`renderers.tsx`）：快捷回应之后是四个图标入口——回复、复制、转发、删除，
+其余（编辑、置顶）收在「更多」菜单。
+
+- 复制：写入剪贴板的是显示正文（含编辑后的内容），无正文时为附件名；观察模式同样可用。
+- 转发：选择目标实体后向其默认 Session 发送一条新消息（`store.forward`：显示正文 + `data_obj` 引用，
+  不带 `relates_to` / `mentions` / `machine`，不标注原发送者）；发送中 / 失败的消息与通知卡片不可转发。
+- 删除：君子协议语义——向会话各方发出删除请求（`relates_to.rel = redact`），对端的默认实现会照做，但无法强制。
+  群内沿用 `Self-Host-Groupv2.md` §2.6 的规则（本人在撤回窗口内、或具备 `message.redact_any`）；
+  非群会话没有 host 裁决，任一方可对任意消息发出请求，收到后本端把目标消息折叠为占位。
+  图标点开后是单项确认：可发请求时为「撤回 / 为所有人删除」，否则（群内无权限、已是占位消息）为「仅为我删除」
+  （`store.deleteMessage`：`msg.update_record_state(record_id, 'DELETED')`，只影响 owner 自己的 mailbox 记录）。
+
+纯图片 / 视频消息不绘制气泡背景（`data-testid="message-media"`）：媒体直接落在会话画布上，
+caption 另起一个气泡，时间等页脚使用画布配色；含文件卡片或其它引用的消息仍用气泡。
+类型在对象解析前按文件名判断，解析后以对象信息为准。
+
 附件（`conversation/media/`）与 Preview 的集成：
 
 - 每个 `data_obj` 引用映射为 Preview 的宿主 Source（`kind: 'messagehub-object'`，`value: { objId | uri, name, reference }`），
@@ -706,6 +741,58 @@ Action Log 是已确认变化的历史记录，按普通持久消息进入 Sessi
 切换过滤时重建可见 entries、时间分隔与 totalCount，原始 messageIndex 与消息稳定 ID 保持不变。
 不能只在 renderer 中返回 null，否则当前链会继续调用文本 fallback，或留下虚拟滚动空行。
 分类、过滤及 mock 事务已落地；真实状态提交、日志持久发布与 GroupEvent / 平台事件映射仍待实现。
+
+#### 3.5.4 Agent 回复：可编辑气泡、任务区与消息详情（2026-10-04）
+
+协议见 `doc/message_hub/Message Center.md` §2.1.1。UI 侧约定：
+
+**有效内容（`conversation/history/relations.ts`）**
+
+- `foldMessageRelations` 把 `edit` 折叠到目标消息：`ui_relations.edited = { content: MsgContent, at, edits[] }`。`effectiveContent(message)` 返回最新一次编辑的完整 `MsgContent`，没有编辑时就是原内容；`displayedContent` / `messageSummaryText` 都从它取值。渲染器（`renderers.tsx`）、媒体会话（`media/source.ts`）、复制 / 转发 / 置顶 / 引用预览都读有效内容：格式、附件和 machine 部分随编辑整体替换。
+- 锚点不变：气泡的 ObjId（`messageObjId`）、时间线位置、发送时间和 `agent_task` 都取自原消息。
+- 忽略的编辑：作者与原消息不同；目标已被撤回（`redacted` 存在时丢弃 `edited`）；目标本身是一条 edit（最终 edit 始终指向原锚点）。edit 先于原消息到达、重复到达都得到同一结果；只加载到 edit 而原消息不在已加载历史里时，这条 edit 不成行也不折叠。
+- `messageAgentTaskId(message)`（`protocol/msgobj.ts`）只从非 edit 的消息上读取 `agent_task.task_id`，格式不对返回 `undefined`。
+
+**任务缓存（`conversation/tasks/taskWatch.ts` 的 `TaskWatch`，单例 `getTaskWatch()`）**
+
+- 数据源 `TaskWatchSource`（`src/api/task_mgr.ts` 的 `createTaskWatchSource()`，mock 为 `mock/tasks.ts`）：`getTask` / `getSubtasks` / `listEvents` / `subscribe('task' | 'tree')`，用登录用户自己的 TaskMgr 权限，不走 Task Center 的全量列表。
+- `watch(taskId)`：按 task_id 引用计数，已挂载的气泡共享一份快照和一个 `/task_mgr/<id>` 订阅。摘要 = task 本身 + 直接子任务第一页（20 条，用于计数和判断是否有子任务）。事件只是“重读”提示；同时有退避轮询兜底（2s → 30s，连续 120 次无新 revision 或 6 次失败后停止轮询，订阅保留）；比缓存 revision 旧的应答被丢弃；并发读上限 4，单次读 10s 超时。
+- 终态收敛：task 为 `Terminal` 且已加载的直接子任务全部 `Terminal` 后，取消订阅并停止轮询；之后重新进入视口直接用缓存，不再读也不再订阅。`denied` / `missing` 同样不再跟踪。
+- `watchTree(rootId)`（气泡展开或消息详情打开时）：订阅 `/task_mgr/tree/<root_id>`，`expandNode` 逐层懒加载、`loadChildren(id, true)` 翻页、`loadEvents` 读事件；最后一个使用者离开时取消订阅并丢弃更深层节点和事件。
+- 断线：`online` 与页面重新可见时 `resync()` 对未收敛的 task 补读。读失败但已有快照时标 `stale`。
+- 消息侧刷新仍只靠 msg-center `box_changed` + 轮询；TaskMgr 事件只刷新任务区，不产生消息、未读或通知。
+
+**气泡任务区（`conversation/tasks/MessageTask.tsx` 的 `MessageTaskArea`，规则在 `taskView.ts`）**
+
+| 情况 | 展示 |
+|---|---|
+| 无 `agent_task`、读取中、`denied`、`missing`、从未读成功 | 不展示任务区，正文照常 |
+| 非终态 | 第 1 行：阶段 + `task.message`；第 2 行：子任务计数（运行中 / 等待中）· 等待原因 · 更新于。不显示百分比 |
+| `Waiting` | `ChildTask` → 等待子任务；`Dependency` / `External` → 等待外部依赖；其它 → 等待中 |
+| `pending_control` | Cancel → “正在停止…”，直到 runner 上报终态才显示已取消 |
+| 终态失败 / 取消 | 失败（带 `error.message`）/ 已取消 |
+| 终态成功、无子任务 | 不展示（普通快速回复），只在详情里可见 |
+| 终态成功、有子任务 | 折叠摘要：已完成 + “N 个子任务已结束” |
+| 终态成功但最终 edit 未到 | “处理完成，回复同步中”。判定：气泡没有 edit，且消息创建时间比 task 完成时间早 2 秒以上，完成后 10 分钟内 |
+| 读失败且上次快照非终态（`stale`） | “状态不可用”，不再显示运行中 |
+
+展开按钮显示本 Turn 的 task tree（节点状态、名称、简短活动、等待原因，逐层展开、分页加载）。task_id 不出现在气泡里。
+
+**通用消息详情与 Turn 工作日志（`MessageDetails.tsx`、`conversation/worklog/`）**
+
+- 入口：点击气泡（链接、附件、按钮、展开按钮和选中文本各自照常工作）、悬停栏 / 触屏菜单的「详情」图标（testid `message-details`）、聚焦气泡后按 Enter。观察模式同样可用（只读）。
+- Agent 消息默认打开「工作日志」页签：`agent_task.task_id` → `get_task.input.{agent_did,session_id,turn}` → `session.worklog`，严格定位此消息对应的 turn。只解释 `opendan.agent_turn/v1`，没有绑定或读不到 task 时给出说明；普通消息仍直接展示消息详情。
+- 日志以 seq 从旧到新排列，底部是最新进展；`step.actions` / `assistant_message.tool_calls` 和 `action_result` 按 `(run_id,call_id)` 合成 IN/OUT 卡片。跨页结果暂时独立展示，补齐输入后合并；同一 call 的后续结果覆盖 pending 结果。文本只来自已记录的 assistant/user 内容，不合成推理内容。长输入输出可展开。
+- 首次加载 50 条，滚动到顶部或点击按钮向前分页；打开中的视图每 2.5 秒按字节游标补读，终态且追平 committed 后停止。停留底部时跟随新增记录；读旧记录时保持位置并提供「最新进展」。切换消息、关闭详情时丢弃在途响应与计时器。请求失败显示说明并可重试，已有记录保留。
+- `children[].created_by_call` 把登记表中的子 session 关联到创建工具调用。点击进入同一 Agent 的子 session 首轮日志，可查看它关联的 task 详情并逐层返回；工具结果顶层的结构化 `task_id` 也可进入 task 详情。不从普通输出文本猜测 ID。
+- 同源路由：打开一个 worklog 时查询一次 `agent.list` 解析 DID → AgentId，再调用 `/kapi/<agent_id>`；不为气泡提前读取日志，不逐条查询 TaskMgr。`TaskWatchDetail.input` 保留真实 task 输入。TaskMgr 与 OpenDAN 都使用当前登录者权限。
+- 「消息详情」页签保留发送者与时间、可复制的消息 ID 与链接、当前有效内容、原消息、编辑记录、投递状态，以及实时任务摘要、task tree、可读事件、结果、产物引用、`origin_ref`、可复制的 task_id。task 不可读 / 已清理 / 读取失败时显示对应说明。Desktop 消息详情宽 640px，小屏使用现有全屏详情布局。
+- 寻址：详情以原锚点 ObjId 为键。`?sessionId=…&messageId=…`（launch payload 同名字段，`messageHubMessagePath()` 生成）进入时在桌面布局打开详情并把该行滚入视口；消息不在已加载历史里时 `store.locateMessage` 逐页向前加载（真实后端最多 50 页），仍找不到显示“找不到这条消息”。
+
+**未读**
+
+- edit 没有自己的行：`markRead` 把可见气泡对应的 edit 记录（`editsOf`）一并标为已读；历史面板在气泡新折叠进一条 edit 后会重新上报可见消息。
+- 已知缺口：未打开的会话里占位与 edit 都未读时，msg-center 的 `unread_count` 计为 2，UI 无法在不加载历史的情况下修正。
 
 ### 3.6 会话时间线投影模型
 
@@ -803,7 +890,7 @@ store 接口为 `group / groupStatus / ensureGroup / groupSession / createGroup 
   | `rejected` / `removed` / `session_removed` | 不变 | 只显示文案 |
 
 - **管理**：群面板列出成员、角色和待加入状态；邀请、移出或撤销邀请（`group.remove_member`）、退出（`group.leave`）、解散（`group.delete`，仅群主）均先确认，失败显示 host 的原因码对应文案（`knownGroupErrors`：`invitation-mismatch`、`transfer-mismatch`、`agent-owner-required`、`invite-required`、`join-not-allowed`、`member-not-pending`、`revision-conflict` 等；未知码原样显示）。
-- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者的编辑内容 + 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数 `reactions[{ key, dids, messages: { did → 回应消息 ObjId } }]`；目标为回应消息的 `redact` 是取消回应，从计数中移除该人，见 v2 §2.6「取消回应就是撤回这条回应消息」），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send`（群会话 `group_msg`，直聊 `chat`）：回复（`thread`）和回应（`reaction` + `key`）在任何本人可写的会话都可用，编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）仅群会话。回应入口（buckyos#638，参考飞书 / Discord）：指针设备上气泡顶部悬停栏（`.mh-hover-bar`，`@media (hover: hover)`）给出 4 个快捷表情、「添加回应」表情面板（`REACTION_PALETTE`）和「…」菜单；触屏设备用页脚「…」菜单（含快捷表情与表情面板）。回应 chip 高亮本人已回应项（`aria-pressed`），点击切换：未回应则发 `reaction`，已回应则 `unreact` = 对 `ownReactionId` 的回应消息发 `redact`；同一 `(from, target, key)` 重复发送是 no-op。回应 / 撤回不计入会话活动预览（`isMessageActivity`）。Composer 的 @ 提及（`input/mentions.ts`）：光标前的 `@词`（`@` 位于开头或空白 / 左括号之后，`mail@host` 不算）弹出候选，候选为当前 Session 的参与者（`groupSessionMembers` 中 `included` 者，含 Guest，未知时用群成员），按名字前缀 / 词首 / 包含排序，最多 8 个，`session.mention_all` 能力下 `@all` 在匹配时排第一；↑↓ 选择，Enter / Tab 选中（替换整个 `@词` 并补一个空格），Esc 关闭（直到光标离开该 `@`）。@ 按钮在光标处插入 `@` 并打开同一列表。选中的人写入结构化 `mentions.dids`（只计仍出现在文本中的名字）；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
+- **消息关系与提及**（MsgObject v2 `relates_to` / `mentions`，`protocol/msgobj.ts`）：时间线读取时用 `foldMessageRelations` 折叠：`edit` / `redact` / `reaction` 消息不单独成行，目标消息带 `ui_relations`（最新一次同作者编辑的**完整 `MsgContent`**（`edited.content`，含 format / refs / machine；`edited.edits` 保留全部编辑记录，见 §3.5.4）+ 「已编辑」标记、撤回占位「消息已撤回」/「已被 X 删除」、按 key 汇总的回应计数 `reactions[{ key, dids, messages: { did → 回应消息 ObjId } }]`；目标为回应消息的 `redact` 是取消回应，从计数中移除该人，见 v2 §2.6「取消回应就是撤回这条回应消息」），`thread` 消息正常成行并引用目标。发送侧全部是普通 `msg.post_send`（群会话 `group_msg`，直聊 `chat`）：回复（`thread`）和回应（`reaction` + `key`）在任何本人可写的会话都可用，编辑本人消息（`edit`，受 `edit_window_ms`）、撤回本人消息（`redact`，受 `recall_window_ms`）、管理员删帖（`redact`，需 `message.redact_any`）仅群会话。回应入口（buckyos#638，参考飞书 / Discord）：指针设备上气泡顶部悬停栏（`.mh-hover-bar`，`@media (hover: hover)`）给出 4 个快捷表情、「添加回应」表情面板（`REACTION_PALETTE`）和「…」菜单；触屏设备用页脚「…」菜单（含快捷表情与表情面板）。回应 chip 高亮本人已回应项（`aria-pressed`），点击切换：未回应则发 `reaction`，已回应则 `unreact` = 对 `ownReactionId` 的回应消息发 `redact`；同一 `(from, target, key)` 重复发送是 no-op。回应 / 撤回不计入会话活动预览（`isMessageActivity`）。Composer 的 @ 提及（`input/mentions.ts`）：光标前的 `@词`（`@` 位于开头或空白 / 左括号之后，`mail@host` 不算）弹出候选，候选为当前 Session 的参与者（`groupSessionMembers` 中 `included` 者，含 Guest，未知时用群成员），按名字前缀 / 词首 / 包含排序，最多 8 个，`session.mention_all` 能力下 `@all` 在匹配时排第一；↑↓ 选择，Enter / Tab 选中（替换整个 `@词` 并补一个空格），Esc 关闭（直到光标离开该 `@`）。@ 按钮在光标处插入 `@` 并打开同一列表。选中的人写入结构化 `mentions.dids`（只计仍出现在文本中的名字）；被提及的消息带「提到你」标记。两种 store 都不新增 RPC。
 - **Session 详情**：群会话提示「群主可以查看本群的所有会话」（v2 §2.3.4）。
 
 已知缺口：
@@ -961,6 +1048,8 @@ export const uiSessionStateSchema = z.object({
   'ui.title': z.string().trim().min(1).max(64).optional(),
   'ui.pinned': z.boolean().optional(),
   'ui.muted': z.boolean().optional(),
+  /** 置顶消息快照（§3.3.6）；`null` 表示未置顶。 */
+  'ui.pinned_message': pinnedMessageSchema.nullable().optional(),
   'ui.tags': z.array(z.string().trim().min(1).max(24)).max(16).optional(),
   /** 未发送草稿文本。附件不持久化。 */
   'ui.draft': z.string().max(32_768).optional(),
@@ -1244,6 +1333,8 @@ Agent 视角仅展示 Agent 自己的未读聚合，不加入用户 App badge；
 
 ### 6.5 本地阅读状态与对端回执
 
+- 被折叠的 edit 记录随承载它的气泡一并标为已读（§3.5.4）。
+
 - 本地已读：自己的会话处于可见且贴底状态时，对确实已展示的入站记录调用
   `msg.update_record_state(record_id, READ)`；SENT 不具有阅读语义。大批记录可补 owner 范围的批量接口，
   不能靠消费型 `msg.get_next` 推进 UI 历史或抢占 Agent 待处理消息。
@@ -1421,7 +1512,7 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | `GroupInfo` | `group.get_doc` / `group.list_members` / `group.list_sessions` / `group.check_access` | 见 3.7 |
 | `AccountBinding.endpointDid` | `Contact.bindings[].endpoint_did` | 直接 |
 | `EntityDetail.accessLevel` | `Contact.access_level` | `SCREAMING`→`snake` 已由 serde 处理 |
-| 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；请求处理状态与跨页计数待补齐 |
+| 请求记录及准入提示 | `msg.list_session` 的 box_kind / `msg.list_box_by_time` 的 REQUEST_BOX + `contact.get_contact` | 保留记录来源；当前已为 Friend 时不显示会话顶部待接收 / 拉黑提示，历史请求计数仍可在详情查看；请求处理状态与跨页计数待补齐 |
 | 群操作能力 | `group.check_access` | 按 actor 和 action（`session.post` 带 session_id）查询，不由 native / 本地托管推断 |
 | 回执详情 | `msg.list_read_receipts` | 独立于 mailbox 与 delivery；当前持久性限制见 6.5 |
 
@@ -1433,6 +1524,9 @@ UI 通过有权限的 owner/session 事件投影或受控轮询触发 Session AP
 | 本地标记已读 | `msg.update_record_state` | `{ record_id, new_state: 'READ' }`，自己的已展示入站记录；批量水位待补，见 6.5 |
 | 写入群消息回执 | `msg.set_read_state` | group_id / msg_id / reader_did / status；不清除邮箱未读，当前仅内存保存 |
 | 单条记录状态变更 | `msg.update_record_state` | RecipientState；不能代替 Session 生命周期 |
+| 仅为我删除消息 | `msg.update_record_state` | `{ record_id, new_state: 'DELETED' }`；`msg.list_session` 不再返回该记录，对端不受影响 |
+| 转发消息 | `msg.post_send` | 目标 Session 的新消息，正文与 `data_obj` 引用取自原消息 |
+| 置顶消息 | `ui_session.update_state` | `{ owner, session_id, key: 'ui.pinned_message', value: PinnedMessage \| null }` |
 | 会话归档 / 恢复 / 彻底删除 | `msg.archive_session` / `msg.restore_session` / `msg.delete_session` | `{ owner, session_id }`；保留阅读状态、删除水位和共享对象引用，见 4.5 |
 | 手工创建空会话 | `msg.create_session` | `{ owner, peer_did, title?, binding?, session_id? }`；返回 `OwnerSessionState` |
 | 个人显示标题 / 置顶 / 静音 | `ui_session.update_state` | `{ owner, session_id, key, value }`，带 `owner` 走 owner 范围表；草稿仅存 viewer 本地 |

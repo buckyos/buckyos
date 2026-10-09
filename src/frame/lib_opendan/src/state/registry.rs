@@ -219,14 +219,19 @@ impl SessionRegistry for FsRegistry {
         Ok(marked)
     }
 
-    async fn post_input(&self, sid: &str, input: &Input, who: &str) -> Result<u64> {
+    async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64> {
         let entry = self
             .read_entry(sid)?
             .ok_or_else(|| OpenDanError::NotFound(format!("session {sid}")))?;
-        // Best-effort pre-check; the consumer is authoritative.
-        if entry.status.run_state == RunState::Finished && !input.allowed_after_finish() {
+        // Best-effort pre-check; the consumer is authoritative. A finished
+        // session takes only a `decide`, and only while it has a decision
+        // to take (otherwise its queue is released).
+        if entry.status.run_state == RunState::Finished
+            && !(input.input.allowed_after_finish() && entry.status.takes_input())
+        {
             return Err(OpenDanError::SessionFinished(sid.to_string()));
         }
+        input.validate()?;
         let queue = entry
             .input_queue
             .clone()
@@ -235,7 +240,67 @@ impl SessionRegistry for FsRegistry {
             .queue
             .as_ref()
             .ok_or_else(|| OpenDanError::Channel("no queue client configured".into()))?;
-        let index = crate::channel::kmsg::post_to_queue(client, &queue, input, who).await?;
+        // A queue whose data was lost is recreated by the driver only: it
+        // resets the consumption progress first, the new queue numbering
+        // deliveries from 1 again.
+        let missing = |e: ::kRPC::RPCErrors| {
+            if crate::channel::kmsg::is_queue_not_found(&e) {
+                OpenDanError::QueueMissing {
+                    session_id: sid.to_string(),
+                }
+            } else {
+                e.into()
+            }
+        };
+        // Capacity check and append are one critical section for every
+        // producer that reaches the session through the registry: at most
+        // `MAX_PENDING_INPUTS` records wait on the bus, a full bus refuses
+        // the append. Pending = delivered and not consumed by the committed
+        // state (consumed positions waiting for the cumulative ack are not
+        // counted twice).
+        let _post_lock = match crate::session::SessionDir::open(&entry.location) {
+            Ok(sd) => {
+                let state = sd.state()?;
+                let config = sd.config()?;
+                if state.schema != SESSION_STATE_SCHEMA || config.schema != SESSION_CONFIG_SCHEMA {
+                    return Err(OpenDanError::SessionReadonly {
+                        session_id: sid.to_string(),
+                        reason: format!(
+                            "it uses `{}` / `{}`; migrate it before posting or driving",
+                            state.schema, config.schema
+                        ),
+                    });
+                }
+                let lock_path = sd.state_dir().join(POST_LOCK_FILE);
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(false)
+                    .write(true)
+                    .open(&lock_path)
+                    .map_err(|e| OpenDanError::io(&lock_path, e))?;
+                fs2::FileExt::lock_exclusive(&file)
+                    .map_err(|e| OpenDanError::io(&lock_path, e))?;
+                // Re-read under the lock.
+                let state = sd.state()?;
+                let stats = client.get_queue_stats(&queue).await.map_err(missing)?;
+                let src = config.channels.kmsg().map(|(id, _, _)| id.to_string());
+                let pending = src
+                    .map(|id| state.pending_inputs(&id, stats.last_index))
+                    .unwrap_or(0);
+                if pending >= MAX_PENDING_INPUTS {
+                    return Err(OpenDanError::InputFull {
+                        session_id: sid.to_string(),
+                        pending,
+                    });
+                }
+                Some(file)
+            }
+            // The directory is not readable from here (another host): the
+            // consumer still validates every record.
+            Err(_) => None,
+        };
+        let msg = crate::channel::kmsg::encode_input(input)?;
+        let index = client.post_message(&queue, msg).await.map_err(missing)?;
         if let (Some(w), Some(ev)) = (&self.waker, &entry.wake_event) {
             w.notify(ev, serde_json::json!({ "sid": sid })).await;
         }

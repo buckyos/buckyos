@@ -1,5 +1,6 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
 use crate::msg_box_db::{IdempotencyCommitOutcome, IdempotencyStoredResult, MsgBoxDbMgr};
+use crate::msg_tunnel::EditCapability;
 use crate::owner_session::TokenVerifierSlot;
 use async_trait::async_trait;
 use buckyos_api::{
@@ -8,17 +9,17 @@ use buckyos_api::{
     DeliveryRecordWithObject, DeliveryReportResult, DeliverySnapshot, DeliveryState,
     DispatchResult, GrantTemporaryAccessResult, ImportContactEntry, ImportReport, IngressContext,
     KEventClient, MailboxAddress, MailboxKind, MailboxRecord, MailboxRecordPage,
-    MailboxRecordWithObject, MsgCenterCreateSessionReq, MsgCenterHandler, MsgReceiptObj,
-    OwnerSessionState, PostSendDelivery, PostSendResult, ReadReceiptState, RecipientState,
-    SessionDeliveryOverall, SessionDeliveryTarget, SessionDeliveryView, SessionLifecycle,
-    SessionListLifecycleFilter, SessionListOrder, SessionMessageDirection, SessionMessageItem,
-    SessionMessagePage, SessionSummary, SessionSummaryPage, SetGroupSubscribersResult,
-    TransportKind, UiSessionStateEntry,
+    MailboxRecordWithObject, MsgCenterCreateSessionReq, MsgCenterHandler, MsgEditCapability,
+    MsgReceiptObj, OwnerSessionState, PostSendDelivery, PostSendResult, ReadReceiptState,
+    RecipientState, SessionDeliveryOverall, SessionDeliveryTarget, SessionDeliveryView,
+    SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SessionMessageDirection,
+    SessionMessageItem, SessionMessagePage, SessionSummary, SessionSummaryPage,
+    SetGroupSubscribersResult, TransportKind, UiSessionStateEntry,
 };
 use kRPC::{RPCContext, RPCErrors};
 use log::{info, warn};
 use name_lib::DID;
-use ndn_lib::{MsgObjKind, MsgObject, NamedObject, ObjId};
+use ndn_lib::{MsgObjKind, MsgObject, MsgRelType, NamedObject, ObjId};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -38,6 +39,7 @@ const DELIVERY_SENDING_LEASE_MS: u64 = 60_000;
 const DELIVERY_RETRY_BASE_MS: u64 = 2_000;
 const DELIVERY_RETRY_MAX_MS: u64 = 300_000;
 const MSG_CENTER_BOX_CHANGED_EVENT_NAME: &str = "changed";
+const PRIVATE_EDIT_REDACT_SCAN_PAGE: usize = 200;
 const IDEMPOTENCY_SCOPE_DISPATCH: &str = "dispatch";
 const IDEMPOTENCY_SCOPE_POST_SEND: &str = "post_send";
 const IDEMPOTENCY_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1000;
@@ -71,6 +73,8 @@ pub struct MessageCenter {
     pub(crate) msg_box_db: MsgBoxDbMgr,
     /// tunnel_instance_id -> (transport_did, platform).
     tunnel_registry: Arc<RwLock<HashMap<String, TunnelRegistryEntry>>>,
+    /// transport_did -> edit capability declared by that delivery executor.
+    edit_capabilities: Arc<RwLock<HashMap<String, EditCapability>>>,
     /// DIDs hosted by this zone (zone users / agents / hosted groups): the
     /// message hub delivers to them natively via local dispatch.
     local_recipients: Arc<RwLock<HashSet<String>>>,
@@ -109,6 +113,7 @@ impl MessageCenter {
             contact_mgr,
             msg_box_db,
             tunnel_registry: Arc::new(RwLock::new(HashMap::new())),
+            edit_capabilities: Arc::new(RwLock::new(HashMap::new())),
             local_recipients: Arc::new(RwLock::new(hosted)),
             message_hub_did: Arc::new(OnceLock::new()),
             cyfs_dispatch: Arc::new(RwLock::new(Default::default())),
@@ -163,6 +168,15 @@ impl MessageCenter {
             .unwrap()
             .get(tunnel_instance_id)
             .cloned()
+    }
+
+    /// Record what a delivery executor declares about editing delivered
+    /// messages. An executor that never declared anything is "unknown".
+    pub fn declare_edit_capability(&self, transport_did: &DID, capability: EditCapability) {
+        self.edit_capabilities
+            .write()
+            .unwrap()
+            .insert(transport_did.to_string(), capability);
     }
 
     /// Install the MessageHub transport DID (start-up wiring).
@@ -1252,6 +1266,7 @@ impl MessageCenter {
             reason: None,
         };
         let mut mailbox_records = Vec::<MailboxRecord>::new();
+        let mut rejected_edit = None;
 
         {
             let recipients = match &receiver {
@@ -1280,6 +1295,28 @@ impl MessageCenter {
                     );
                     result.dropped_recipients.push(recipient);
                     continue;
+                }
+                if let Some(relation) = stored_msg
+                    .relates_to
+                    .as_ref()
+                    .filter(|relation| relation.rel == MsgRelType::Edit)
+                {
+                    if let Err(error) = self
+                        .validate_private_edit(&stored_msg, &relation.target, &recipient)
+                        .await
+                    {
+                        warn!(
+                            "dispatch rejected private edit: msg_id={}, sender={}, recipient={}, target={}, error={}",
+                            stored_msg_id.to_string(),
+                            sender.to_string(),
+                            recipient.to_string(),
+                            relation.target.to_string(),
+                            error,
+                        );
+                        result.dropped_recipients.push(recipient);
+                        rejected_edit = Some(error);
+                        continue;
+                    }
                 }
 
                 let decision = match self
@@ -1335,6 +1372,12 @@ impl MessageCenter {
             }
         }
 
+        if result.delivered_recipients.is_empty() {
+            if let Some(error) = rejected_edit {
+                return Err(error);
+            }
+        }
+
         let now_ms = Self::now_ms();
         let expires_at_ms = if receiver.is_some() {
             None
@@ -1366,6 +1409,177 @@ impl MessageCenter {
             }
         }
         Ok(result)
+    }
+
+    /// Route planning of `post_send`: one delivery envelope per deduped
+    /// `msg.to` target. Pure, no writes; one unroutable target fails the plan.
+    fn plan_delivery_envelopes(
+        &self,
+        msg: &MsgObject,
+        msg_id: &ObjId,
+    ) -> std::result::Result<Vec<DeliveryEnvelope>, String> {
+        let targets = Self::dedupe_dids(msg.to.clone());
+        let mut envelopes = Vec::with_capacity(targets.len());
+        for target in targets {
+            let mut envelope = self.build_delivery_envelope(msg_id, target.clone())?;
+            if msg.kind == MsgObjKind::GroupMsg {
+                let settings = self.cyfs_dispatch.read().unwrap();
+                let route = settings
+                    .message_route(msg, &target)
+                    .map_err(|e| e.to_string())?
+                    .ok_or_else(|| "joined-group-route-not-configured".to_string())?;
+                let snapshot = envelope.address.get_or_insert_with(Default::default);
+                snapshot.platform = Some("cyfs".into());
+                snapshot.address = Some(route.target);
+            }
+            envelopes.push(envelope);
+        }
+        Ok(envelopes)
+    }
+
+    async fn get_edit_capability_internal(
+        &self,
+        msg: MsgObject,
+    ) -> std::result::Result<MsgEditCapability, RPCErrors> {
+        if msg.to.is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "get_edit_capability requires at least one target in msg.to".to_string(),
+            ));
+        }
+        Self::validate_ingress_message(&msg)?;
+        let not_editable = |reason: String| MsgEditCapability {
+            editable: false,
+            reason: Some(reason),
+            ..Default::default()
+        };
+
+        if Self::is_group_message(&msg) {
+            let hosted = match msg.to.as_slice() {
+                [group] => self.groups.load(group).await?,
+                _ => None,
+            };
+            // The rules of a group hosted elsewhere are not known here.
+            let Some(group) = hosted else {
+                return Ok(not_editable("unknown".to_string()));
+            };
+            let edit_window_ms = group.rules(msg.to_session.as_deref())?.edit.edit_window_ms;
+            return Ok(MsgEditCapability {
+                editable: edit_window_ms.is_none(),
+                reason: edit_window_ms.map(|_| "group edit window".to_string()),
+                edit_window_ms,
+                text_only: false,
+            });
+        }
+
+        let msg_id = msg.gen_obj_id().0;
+        let envelopes = match self.plan_delivery_envelopes(&msg, &msg_id) {
+            Ok(envelopes) => envelopes,
+            Err(reason) => return Ok(not_editable(reason)),
+        };
+        let mut capability = MsgEditCapability {
+            editable: true,
+            ..Default::default()
+        };
+        for envelope in envelopes {
+            let declared = self
+                .edit_capabilities
+                .read()
+                .unwrap()
+                .get(&envelope.transport_did.to_string())
+                .cloned();
+            let reason = match declared {
+                Some(declared) if declared.supported => {
+                    capability.text_only |= declared.text_only;
+                    capability.edit_window_ms =
+                        match (capability.edit_window_ms, declared.edit_window_ms) {
+                            (Some(left), Some(right)) => Some(left.min(right)),
+                            (left, right) => left.or(right),
+                        };
+                    continue;
+                }
+                Some(_) => match &envelope.transport {
+                    TransportKind::Native => "native unsupported".to_string(),
+                    TransportKind::Tunnel { platform, .. } => {
+                        format!("tunnel:{} unsupported", platform)
+                    }
+                },
+                None => "unknown".to_string(),
+            };
+            capability.editable = false;
+            capability.reason.get_or_insert(reason);
+        }
+        Ok(capability)
+    }
+
+    /// Receive-side rule for a private (non-group) edit, mirroring the group
+    /// rule in `accept_group_message_tx`: the original is a plain message the
+    /// same author sent into the same conversation of `recipient`, and that
+    /// author has not redacted it since.
+    async fn validate_private_edit(
+        &self,
+        edit: &MsgObject,
+        target: &ObjId,
+        recipient: &DID,
+    ) -> std::result::Result<(), RPCErrors> {
+        use crate::group_types::{denied, missing};
+
+        let session_id = Self::derive_session_id(&MailboxKind::Inbox, edit);
+        let original_record = self
+            .msg_box_db
+            .list_message_records(target)
+            .await?
+            .into_iter()
+            .find(|record| {
+                record.owner == *recipient
+                    && matches!(
+                        record.box_kind,
+                        MailboxKind::Inbox | MailboxKind::RequestBox
+                    )
+            })
+            .ok_or_else(missing)?;
+        let original = self
+            .get_message_internal(target.clone())
+            .await?
+            .ok_or_else(missing)?;
+        if original.to_session != edit.to_session {
+            return Err(missing());
+        }
+        if original.from != edit.from || original.kind != edit.kind || original.relates_to.is_some()
+        {
+            return Err(denied("edit-not-allowed"));
+        }
+
+        let Some(session_id) = session_id.as_deref() else {
+            return Ok(());
+        };
+        let mut cursor = (original_record.sort_key, original_record.record_id.clone());
+        loop {
+            let page = self
+                .msg_box_db
+                .list_session_records(
+                    recipient,
+                    session_id,
+                    PRIVATE_EDIT_REDACT_SCAN_PAGE,
+                    Some(cursor.0),
+                    Some(cursor.1.as_str()),
+                    false,
+                )
+                .await?;
+            let Some(last) = page.last() else {
+                return Ok(());
+            };
+            cursor = (last.sort_key, last.record_id.clone());
+            for record in page.iter().filter(|record| record.from == edit.from) {
+                let redacts = self
+                    .get_message_internal(record.msg_id.clone())
+                    .await?
+                    .and_then(|msg| msg.relates_to)
+                    .is_some_and(|rel| rel.rel == MsgRelType::Redact && rel.target == *target);
+                if redacts {
+                    return Err(missing());
+                }
+            }
+        }
     }
 
     async fn post_send_internal(
@@ -1473,59 +1687,40 @@ impl MessageCenter {
         // Phase 1: resolve every target up front (pure, no writes). One
         // unroutable target fails the whole post_send with a clear reason —
         // the database keeps no partial state, never a silent fallback.
-        let delivery_targets = Self::dedupe_dids(stored_msg.to.clone());
-        let mut envelopes = Vec::with_capacity(delivery_targets.len());
-        for target in delivery_targets {
-            let prepared = self
-                .build_delivery_envelope(&stored_msg_id, target.clone())
-                .and_then(|mut envelope| {
-                    if stored_msg.kind == MsgObjKind::GroupMsg {
-                        let settings = self.cyfs_dispatch.read().unwrap();
-                        let route = settings
-                            .message_route(&stored_msg, &target)
-                            .map_err(|e| e.to_string())?
-                            .ok_or_else(|| "joined-group-route-not-configured".to_string())?;
-                        let snapshot = envelope.address.get_or_insert_with(Default::default);
-                        snapshot.platform = Some("cyfs".into());
-                        snapshot.address = Some(route.target);
-                    }
-                    Ok(envelope)
-                });
-            match prepared {
-                Ok(envelope) => envelopes.push(envelope),
-                Err(reason) => {
-                    let result = PostSendResult {
-                        ok: false,
-                        msg_id: stored_msg_id.clone(),
-                        deliveries: Vec::new(),
-                        reason: Some(reason),
-                    };
-                    let now_ms = Self::now_ms();
-                    let expires_at_ms = Self::idempotency_expires_at(now_ms);
-                    match self
-                        .msg_box_db
-                        .commit_post_send_records(
-                            IDEMPOTENCY_SCOPE_POST_SEND,
-                            &idempotency_owner_scope,
-                            idempotency_key.as_deref(),
-                            Some(retention_key.as_str()),
-                            &stored_msg_id,
-                            &stored_msg,
-                            None,
-                            &[],
-                            &result,
-                            now_ms,
-                            expires_at_ms,
-                        )
-                        .await?
-                    {
-                        IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
-                        IdempotencyCommitOutcome::Committed => {}
-                    }
-                    return Ok(result);
+        let envelopes = match self.plan_delivery_envelopes(&stored_msg, &stored_msg_id) {
+            Ok(envelopes) => envelopes,
+            Err(reason) => {
+                let result = PostSendResult {
+                    ok: false,
+                    msg_id: stored_msg_id.clone(),
+                    deliveries: Vec::new(),
+                    reason: Some(reason),
+                };
+                let now_ms = Self::now_ms();
+                let expires_at_ms = Self::idempotency_expires_at(now_ms);
+                match self
+                    .msg_box_db
+                    .commit_post_send_records(
+                        IDEMPOTENCY_SCOPE_POST_SEND,
+                        &idempotency_owner_scope,
+                        idempotency_key.as_deref(),
+                        Some(retention_key.as_str()),
+                        &stored_msg_id,
+                        &stored_msg,
+                        None,
+                        &[],
+                        &result,
+                        now_ms,
+                        expires_at_ms,
+                    )
+                    .await?
+                {
+                    IdempotencyCommitOutcome::Reused(cached) => return Ok(cached),
+                    IdempotencyCommitOutcome::Committed => {}
                 }
+                return Ok(result);
             }
-        }
+        };
 
         // Phase 2: persist the message, the SENT mailbox record and one
         // delivery record per target. All ids are deterministic, so replays
@@ -2381,6 +2576,21 @@ impl MsgCenterHandler for MessageCenter {
         self.post_send_internal(msg, idempotency_key).await
     }
 
+    async fn handle_get_edit_capability(
+        &self,
+        msg: MsgObject,
+        ctx: RPCContext,
+    ) -> std::result::Result<MsgEditCapability, RPCErrors> {
+        let mailbox = MailboxAddress::new(
+            msg.from.clone(),
+            Self::derive_session_id(&MailboxKind::Sent, &msg),
+        )
+        .map_err(RPCErrors::ParseRequestError)?;
+        self.authorize_mailbox(&ctx, &mailbox, MailboxKind::Sent, "write")
+            .await?;
+        self.get_edit_capability_internal(msg).await
+    }
+
     async fn handle_get_next(
         &self,
         mailbox: MailboxAddress,
@@ -2907,6 +3117,14 @@ impl MsgCenterHandler for MessageCenter {
         self.authorize_resource(&ctx, "obj://msg-center/ui-state", "read")
             .await?;
         self.list_ui_session_state_internal(session_id).await
+    }
+
+    async fn handle_get_delivery(
+        &self,
+        delivery_id: String,
+        _ctx: RPCContext,
+    ) -> std::result::Result<Option<DeliveryRecord>, RPCErrors> {
+        self.msg_box_db.get_delivery(&delivery_id).await
     }
 
     async fn handle_get_tunnel_cursor(

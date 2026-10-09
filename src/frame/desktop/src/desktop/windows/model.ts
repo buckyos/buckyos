@@ -52,12 +52,25 @@ export function createWindowRecord(
  */
 const windowModelCache = new WeakMap<WindowRecord, DesktopWindowDataModel>()
 
+/**
+ * The layer model keeps `windows` in the store's (creation) order and never
+ * drops or reorders entries while a window is open:
+ *
+ * - Minimized windows stay in the list; the window layer hides them instead
+ *   of unmounting them.
+ * - Stacking is expressed only through each window's `zIndex` style, not
+ *   through render order. Reordering keyed siblings makes React move the DOM
+ *   nodes, and a moved `<iframe>` reloads its page.
+ *
+ * Both would otherwise make an embedded web app lose its state and restart
+ * every time the user minimizes/restores it or merely focuses another window.
+ * `topWindow` is the visible window with the highest `zIndex`.
+ */
 export function createDesktopWindowLayerDataModel(
   apps: DesktopAppItem[],
   windows: WindowRecord[],
 ): DesktopWindowLayerDataModel {
-  const visibleWindows = windows
-    .filter((windowItem) => windowItem.state !== 'minimized')
+  const layerWindows = windows
     .map((windowItem) => {
       const app = findDesktopAppById(apps, windowItem.appId)
 
@@ -78,10 +91,12 @@ export function createDesktopWindowLayerDataModel(
       return model
     })
     .filter((windowItem): windowItem is DesktopWindowDataModel => Boolean(windowItem))
-    .sort((left, right) => left.zIndex - right.zIndex)
 
-  return {
-    windows: visibleWindows,
-    topWindow: visibleWindows[visibleWindows.length - 1],
+  let topWindow: DesktopWindowDataModel | undefined
+  for (const windowItem of layerWindows) {
+    if (windowItem.state === 'minimized') continue
+    if (!topWindow || windowItem.zIndex >= topWindow.zIndex) topWindow = windowItem
   }
+
+  return { windows: layerWindows, topWindow }
 }

@@ -71,6 +71,11 @@ pub struct QueueConfig {
     pub retention_seconds: Option<u64>,
     /// 是否需要同步落盘 (Write-Ahead-Log 语义)
     pub sync_write: bool,
+    /// 保留已确认的消息（日志语义，可回溯）。默认 false：生产者-消费者语义，
+    /// 一条消息被全部订阅确认（游标越过它）后即删除，消费正常时队列基本为空；
+    /// 没有订阅时不裁剪。ACK 与删除分离是使用者的选择。
+    #[serde(default)]
+    pub keep_acked: bool,
 
     pub other_app_can_read: bool,
     pub other_app_can_write: bool,
@@ -84,6 +89,7 @@ impl Default for QueueConfig {
             max_messages: None,
             retention_seconds: None,
             sync_write: false,
+            keep_acked: false,
             other_app_can_read: true,
             other_app_can_write: false,
             other_user_can_read: false,

@@ -2,7 +2,7 @@
 
 日期：2026-09-26
 
-状态：待实施。（2026-09-30：3.1 的消息级 helper `llm_context::strip_thinking` / `is_thinking` 与 3.3 已随 [X7 TODO](llm-context-x7-suspension-todo.md) 实施，`RewrittenHistory` / `RewrittenSteps` 统一剥离；3.1 的快照级版本、3.2、3.4 其余部分与 3.5 未做。）第 3 节现在做（LLMContext，加上 AICC 的 Thinking 来源绑定）；第 4 节（AgentSession 及可选项）等 AgentSession 改动整理完再做。
+状态：第 3 节已实施（2026-10-03），实施记录见第 7 节。3.1 的消息级 helper 与 3.3 已于 2026-09-30 随 [X7 TODO](llm-context-x7-suspension-todo.md) 实施。第 4 节（AgentSession 及可选项）等 AgentSession 改动整理完再做；第 5 节集成验证未做。
 
 ## 1. 背景
 
@@ -132,3 +132,31 @@
 - `src/frame/opendan/src/agent_session.rs`、`llm_context_helper.rs`
 - `src/frame/agent_tool/src/xllm.rs`
 - `notepads/llm_context_append_only_history.md`
+
+## 7. 实施记录（2026-10-03）
+
+### LLMContext
+
+- 3.1：`llm_context::strip_snapshot_thinking(&mut LLMContextSnapshot)`（`suspension.rs`），处理 `request.input`、`state.accumulated`、`steps[]` / `last_step` / `action_step` 的 `assistant_message`。和消息级 `strip_thinking` 一致：只剩 thinking 的 assistant message 整条去掉，text / tool_use 保留。
+- 3.2：`apply_overrides_to_snapshot` 只在前缀真正变化时剥离。触发条件：
+  - `system_messages` 与现有开头 System 段不同；
+  - `user_messages`（只要给了就算变化）；
+  - `tool_policy` 的 `mode` / `whitelist` / `action_mode` / `action_whitelist` / `disable_capabilities` 变化（`max_tool_iterations` 等预算和派发选项不算）；
+  - `model_policy` 的 `preferred` / `fallbacks` 变化（`temperature`、`max_completion_tokens`、`provider_options` 不算）；
+  - `behavior_name` 变化：它决定哪些 step 渲染成 full pair、哪些渲染成 `<step_record>`，前缀会变。
+  - `objective` 不发给 LLM，不触发。
+- 3.4：`llm_context/src/tests/thinking.rs`（传统 loop 字节级回传、behavior sediment 前后一致、snapshot 往返、3.2 触发 / 不触发）；3.3 的用例已在 `tests/suspension/context_limit.rs`。
+
+### AICC（3.5）
+
+- `AiContent::Thinking` 新增 `source: ProviderStateCoordinate`（serde 缺省 unbound）。
+- 绑定：`bind_provider_state_source` 同时绑定 `type == "thinking"`，沿用 ProviderState 的三个位置（Immediate / Stream / Native Task 结果）。
+- 过滤：没有逐个改 adapter，而是在 `CodecRegistry::encode` / `encode_native` 入口统一调用 `drop_foreign_thinking`（`protocol/provider_state.rs`），adapter 看到的请求里只剩本来源的 thinking。runtime_failover 每个候选各自 encode，所以按候选过滤。
+- 测试：`claude_messages` 的 `registry_replays_native_thinking_and_drops_foreign_thinking`（primary 的带 signature 回放、OpenRouter 同款模型与 unbound 的丢弃、两次编码结果相同），`provider_state` 的绑定 / 过滤单测。
+
+### 未做 / 注意
+
+- `redacted_thinking` 仍是 `ProviderState`（4.3）。跨来源时走原有 ProviderState 降级逻辑，不会报错。
+- 直接调用 adapter codec（不经 `CodecRegistry`）不会过滤；目前只有单测这样用。
+- `buckyos-websdk` 的 TS 类型 `AiContent` 的 `thinking` / `provider_state` 都没有 `source` 字段（另一个仓库，未改）。TS 调用方只要原样回传 AICC 返回的 block 就能保留坐标；自己重建 block 而丢了 `source` 的，thinking 会被当作 unbound 丢弃。`src/tools/buckyos-agent/lib/aicc.ts` 不处理 content block，无需改动。
+- 第 5 节集成验证（mock 欠费切换、真实 Opus 5.5）未跑。

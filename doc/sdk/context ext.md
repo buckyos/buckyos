@@ -2,7 +2,7 @@
 
 > 文档状态：Draft v0.1
 > 日期：2026-09-04
-> 上游需求：`product/bucky_file/BuckyOS Preview App-Component PRD.md`（Preview Pipeline 扩展注册与匹配、Full App、Open With）、`src/frame/desktop/src/app/canvas/BuckyOS AI Canvas PRD.md`（表格内 AI 单元格、自定义交互块）、`product/bucky_file/filebrowser_PRD.md`（图标视图、右侧 Meta 面板）。
+> 上游需求：`product/bucky_file/BuckyOS Preview App-Component PRD.md`（Preview Pipeline 扩展注册与匹配、Full App、Open With）、`doc/ai-canvas/BuckyOS AI Canvas PRD.md`（表格内 AI 单元格、自定义交互块）、`product/bucky_file/filebrowser_PRD.md`（图标视图、右侧 Meta 面板）。
 > 关联协议：`doc/App 安装协议.md`（AppDoc v1、`system/app_registry`、真相与投影）、`doc/key url.md`（`cyfs://` / `obj://` / `buckyos://`）。
 
 ---

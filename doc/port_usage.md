@@ -41,6 +41,8 @@
 | 4070 | workflow-service | kapi/workflow |
 | 4100 | smb-service | - |
 | 4110 | nfs-server | /nfs/v1 (zone 级协议路径) |
+| 4120 | aiworkspace | kapi/aiworkspace |
+| 4130 | homestation | kapi/homestation，/home/ (zone 级协议路径：发表流、投递入口、对象) |
 
 ## 应用服务端口（app service）
 

@@ -4,6 +4,8 @@
 mod common;
 #[path = "../examples/support/fixture_paths.rs"]
 mod fixture_paths;
+#[path = "../examples/support/input_fixture.rs"]
+mod input_fixture;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -317,8 +319,11 @@ async fn f09_semi_subscription() {
     let (_t, env, _) = load("09_semi_subscription");
     let b = session(&env, "work-fixture-sub-b");
     let llm = ScriptedLlm::new(|req, _| {
-        let u = last_user_text(req);
-        assert!(u.contains("work-fixture-sub-a is finished"), "{u}");
+        // The snapshot message comes first, the controlled input after it.
+        let users = user_texts(req);
+        assert_eq!(users.len(), 2, "{users:?}");
+        assert!(users[0].starts_with("<semi_subscription_snapshot>"), "{users:?}");
+        assert!(users[0].contains("work-fixture-sub-a is finished"), "{users:?}");
         text("seen")
     });
     assert!(drive(&b, &fdeps(&env, llm.clone()), StopWhen::Finished)
@@ -386,4 +391,119 @@ async fn f13_unsupported_snapshot_version() {
         DriveResult::RecoveryBlocked(_)
     ));
     assert_eq!(llm.count(), 0);
+}
+
+/// The input bus fixture: every stored record is handled as `expected.json`
+/// says, and the renderings are reproduced byte for byte.
+#[tokio::test]
+async fn f14_input_bus() {
+    use libopendan::runner::input_view::{render_event_xml, render_msg_xml};
+    use libopendan::runner::render_template;
+    let dir = fixtures_dir().join("14_input_bus");
+    let read = |rel: &str| std::fs::read_to_string(dir.join(rel)).unwrap();
+    let json_of = |rel: &str| -> Value { serde_json::from_str(&read(rel)).unwrap() };
+    let expected = json_of("expected.json");
+    // Accepted records parse to their declared type, and a producer that
+    // re-posts them (CLI `post --json`) gets the same record.
+    let mut records = Vec::new();
+    for r in expected["records"].as_array().unwrap() {
+        let file = r["file"].as_str().unwrap();
+        let rec = json_of(&format!("records/{file}"));
+        let input = parse_logical_record(&rec).unwrap_or_else(|e| panic!("{file}: {e}"));
+        assert_eq!(input.type_name(), r["type"].as_str().unwrap(), "{file}");
+        let posted = PostedInput::from_json(rec.clone(), "app:any@alice").unwrap();
+        assert_eq!(serde_json::to_value(&posted).unwrap(), rec, "{file}");
+        if let SessionInput::Msg(m) = &input {
+            assert_eq!(msg_key(&m.msg), rec["key"].as_str().unwrap(), "{file}");
+            let reply = serde_json::to_value(ReplyRoute::of_msg(&posted.key, m)).unwrap();
+            for (k, v) in r["reply_after"].as_object().unwrap() {
+                assert_eq!(&reply[k], v, "{file} reply.{k}");
+            }
+        }
+        records.push((file.to_string(), rec));
+    }
+    // Rejections are deterministic; posting refuses what consuming rejects.
+    for r in expected["rejected"].as_array().unwrap() {
+        let file = r["file"].as_str().unwrap();
+        let rec = json_of(&format!("rejected/{file}"));
+        let err = parse_logical_record(&rec).expect_err(file);
+        assert_eq!(err.reason.as_str(), r["reason"].as_str().unwrap(), "{file}: {err}");
+        // (`post --json` fills in an omitted `from` / `at_ms` / `schema`.)
+        if !file.contains("missing_from") {
+            assert!(PostedInput::from_json(rec, "app:any@alice").is_err(), "{file}");
+        }
+    }
+    let big = parse_logical_record(&input_fixture::too_large()).unwrap_err();
+    assert_eq!(big.reason, RejectReason::PayloadTooLarge);
+    // Routing of the two events with the fixture's subscriptions.
+    let mut cfg_json = serde_json::to_value(
+        libopendan::SessionDir::open(
+            fixtures_dir().join("01_new_work_session/app/work-fixture-new"),
+        )
+        .unwrap()
+        .config()
+        .unwrap(),
+    )
+    .unwrap();
+    cfg_json["subscriptions"] = expected["session"]["subscriptions"].clone();
+    let cfg: SessionConfig = serde_json::from_value(cfg_json).unwrap();
+    let mode_of = |file: &str| {
+        let rec = &records.iter().find(|(n, _)| n == file).unwrap().1;
+        let SessionInput::Event(ev) = parse_logical_record(rec).unwrap() else {
+            panic!("{file}")
+        };
+        cfg.subscription_for(
+            ev.subscription_id.as_deref(),
+            &ev.source.kind,
+            &ev.source.id,
+            &ev.event,
+        )
+        .map(|s| s.mode)
+    };
+    assert_eq!(mode_of("03_event_active_task.json"), Some(SubscriptionMode::Active));
+    assert_eq!(mode_of("04_event_semi_object.json"), Some(SubscriptionMode::Semi));
+    // Renderings.
+    let view = input_fixture::batch_view(&records, HOOK_ON_INPUT);
+    assert_eq!(view.text, read("rendering/input_text.xml"));
+    let vars = input_fixture::vars(&view);
+    assert_eq!(vars, json_of("rendering/vars.json"));
+    for t in expected["rendering"]["templates"].as_array().unwrap() {
+        let tpl = read(t["template"].as_str().unwrap());
+        let out = render_template(&tpl, vars.clone()).await.unwrap();
+        assert_eq!(out, read(t["output"].as_str().unwrap()), "{}", t["template"]);
+    }
+    // `input.xml` is `input.text`; `message.xml` / `event.xml` are its elements.
+    let same = render_template("{{ input | render_format: \"input.xml\" }}", vars.clone())
+        .await
+        .unwrap();
+    assert_eq!(same, view.text);
+    assert!(view.text.contains(&render_msg_xml(&view.messages[0])));
+    assert!(view.text.contains(&render_event_xml(&view.events[0])));
+    assert_eq!(
+        read("rendering/templates/example_1_builtin_equivalent.out"),
+        read("rendering/on_input_builtin.txt")
+    );
+    // The speaker is `msg.from`, never the poster; text cannot fake structure.
+    assert!(view.text.contains("from=\"Bob\""));
+    assert!(!view.text.contains("msg-bridge"));
+    assert!(view.text.contains("&lt;build&gt;"));
+    // input.media: same text; `inline` adds the blocks in attachment order.
+    let builtin = read("rendering/on_input_builtin.txt");
+    for (name, media) in [("reference", InputMedia::Reference), ("inline", InputMedia::Inline)] {
+        let m = input_fixture::user_message(&builtin, &view, media);
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            json_of(&format!("rendering/ai_message_{name}.json")),
+            "{name}"
+        );
+    }
+    let inline = json_of("rendering/ai_message_inline.json");
+    let kinds: Vec<&str> = inline["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(kinds, vec!["text", "image", "document"]);
+    assert_eq!(json_of("rendering/ai_message_reference.json")["content"].as_array().unwrap().len(), 1);
 }

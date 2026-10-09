@@ -5,7 +5,9 @@ import {
   MenuItem,
   useMediaQuery,
 } from '@mui/material'
-import { buckyos } from 'buckyos'
+import { isTransferableRef } from 'buckyos/content'
+import { openContent } from '../app/content/open'
+import { openPreview } from '../app/preview/launch'
 import clsx from 'clsx'
 import {
   memo,
@@ -56,7 +58,6 @@ import {
   type StatusTip,
 } from './shell'
 import { useI18n } from '../i18n/provider'
-import { isMockRuntime } from '../runtime'
 import type {
   AppDefinition,
   FormFactor,
@@ -68,7 +69,7 @@ import type {
   WindowRecord,
 } from '../models/ui'
 import { supportedLocales } from '../models/ui'
-import { clearMessageHubLocalState } from '../app/messagehub/api/local'
+import { signOutToLogin } from '../auth/signOut'
 import { useThemeMode } from '../theme/provider'
 
 // --- New unified store ---
@@ -90,17 +91,6 @@ import {
 // ---------------------------------------------------------------------------
 // Hooks that remain in the view layer (DOM / browser APIs)
 // ---------------------------------------------------------------------------
-
-const clearDesktopAuthState = () => {
-  if (!isMockRuntime()) {
-    buckyos.logout(true)
-  }
-
-  window.localStorage.removeItem('user_info')
-  window.localStorage.removeItem('buckyos.account_info')
-  window.localStorage.removeItem('buckyos.account_info.control-panel')
-  document.cookie = 'control-panel_token=; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Lax'
-}
 
 /**
  * Reads env(safe-area-inset-*) values for immersive fullscreen on mobile.
@@ -240,6 +230,17 @@ export function DesktopRoute() {
     (searchParams.get('scenario') as MockScenario | null) ?? 'normal'
   const [scenario] = useState<MockScenario>(initialScenario)
   const [isLoggingOut, setIsLoggingOut] = useState(false)
+  const launchHandled = useRef(false)
+  useEffect(() => {
+    const value = searchParams.get('open')
+    if (snap.status !== 'success' || !value || launchHandled.current) return
+    const source = value.startsWith('obj://') ? { kind: 'object-id' as const, objectId: value.slice(6) } : { kind: 'cyfs-path' as const, path: value }
+    if (!isTransferableRef(source)) return
+    launchHandled.current = true
+    if (searchParams.get('intent') === 'preview') openPreview({ source })
+    else void openContent({ source })
+  }, [snap.status, searchParams])
+
 
   // Refs for drag suppression (view-only concern)
   const suppressOpenItemId = useRef<string | null>(null)
@@ -502,30 +503,20 @@ export function DesktopRoute() {
 
     setIsLoggingOut(true)
     try {
-      const response = await fetch('/sso_logout', {
-        method: 'POST',
-        credentials: 'include',
-        cache: 'no-store',
-        headers: {
-          Accept: 'application/json',
-        },
-      })
-      if (!response.ok) {
-        throw new Error(`Logout failed: ${response.status} ${response.statusText}`)
-      }
-
-      clearDesktopAuthState()
-      await clearMessageHubLocalState()
-
-      const loginUrl = new URL('/login', window.location.origin)
-      loginUrl.searchParams.set('redirect_url', window.location.href)
-      window.location.assign(loginUrl.toString())
+      if (!await store.prepareLogout()) { setIsLoggingOut(false); return }
+      await signOutToLogin()
     } catch (error) {
       console.error('[logout] failed:', error)
       store.setSnackbar(t('shell.logoutFailed', 'Log out failed. Please try again.'))
       setIsLoggingOut(false)
     }
   }, [isLoggingOut, store, t])
+  // apps ask for the Desktop's own sign-out (the AI Workspace identity menu)
+  useEffect(() => {
+    const onRequest = () => { void handleLogout() }
+    window.addEventListener('buckyos:request-logout', onRequest)
+    return () => window.removeEventListener('buckyos:request-logout', onRequest)
+  }, [handleLogout])
   const handleCycleLocale = useCallback(
     () => setLocale(nextSupportedLocale(locale)),
     [setLocale, locale],

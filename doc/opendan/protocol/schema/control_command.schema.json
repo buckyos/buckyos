@@ -29,14 +29,14 @@
     "SubscriptionMode": {
       "oneOf": [
         {
-          "description": "Delivered as `event`; wakes the session and triggers inference.",
+          "description": "A matching event is an Input: it wakes the session and enters a controlled input batch.",
           "enum": [
             "active"
           ],
           "type": "string"
         },
         {
-          "description": "Delivered as `change`; only injected at observation boundaries.",
+          "description": "A matching event is an Observe: merged into `pending_events` and shown as the semi-subscription snapshot before the next controlled input; never triggers inference by itself.",
           "enum": [
             "semi"
           ],
@@ -47,7 +47,7 @@
     "SubscriptionSource": {
       "oneOf": [
         {
-          "description": "Another session of the same agent (pull: registry rev compare).",
+          "description": "Another session of the same agent (pull: registry rev compare; always observed). Also matches bus events with `source = session:<ref>`.",
           "properties": {
             "ref": {
               "type": "string"
@@ -66,9 +66,10 @@
           "type": "object"
         },
         {
-          "description": "External object events bridged into the kmsg queue.",
+          "description": "Object events bridged into the bus (`source = object:<object>`). `event` empty or `*` matches every event name.",
           "properties": {
             "event": {
+              "default": "",
               "type": "string"
             },
             "object": {
@@ -82,8 +83,64 @@
             }
           },
           "required": [
-            "event",
             "object",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A task (`source = task:<task_id>`).",
+          "properties": {
+            "task_id": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "task"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "task_id",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A timer (`source = timer:<name>`).",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "timer"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "name",
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A system source (`source = system:<id>`).",
+          "properties": {
+            "id": {
+              "default": "",
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "system"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
             "type"
           ],
           "type": "object"
@@ -118,7 +175,7 @@
       "type": "object"
     }
   },
-  "description": "`control` payloads.",
+  "description": "`type = \"control\"` payload: session control, executed by the runner. Never enters the LLM context and produces no input receipt.",
   "oneOf": [
     {
       "properties": {
@@ -141,6 +198,7 @@
       "type": "object"
     },
     {
+      "description": "The only input a finished session still accepts.",
       "properties": {
         "by": {
           "default": "",
@@ -227,6 +285,41 @@
         "touch": {
           "items": {
             "$ref": "#/definitions/Touching"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "command"
+      ],
+      "type": "object"
+    },
+    {
+      "description": "A perception record of this session (the former `perception` input).",
+      "properties": {
+        "command": {
+          "enum": [
+            "perceive"
+          ],
+          "type": "string"
+        },
+        "kind": {
+          "default": "observation",
+          "type": "string"
+        },
+        "objects": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "summary": {
+          "default": "",
+          "type": "string"
+        },
+        "tags": {
+          "items": {
+            "type": "string"
           },
           "type": "array"
         }

@@ -221,8 +221,9 @@
 // │   │   ├── minimax_standard -> llm.minimax-standard (1.1)
 // │   │   └── qwen_moe_120b -> llm.qwen-moe-120b (1.05)
 // │   ├── code
-// │   │   ├── claude_sonnet -> llm.claude-sonnet (2.4)
+// │   │   ├── claude_opus -> llm.claude-opus (2.4)
 // │   │   ├── gpt_codex -> llm.gpt-codex (2.2) [初始值]
+// │   │   ├── kimi_flagship -> llm.kimi-flagship (2.1)
 // │   │   ├── gpt_standard -> llm.gpt-standard (2.1)
 // │   │   ├── qwen_max -> llm.qwen-max (1.9)
 // │   │   ├── deepseek_pro -> llm.deepseek-pro (1.8)
@@ -235,7 +236,6 @@
 // │   │   ├── doubao_code -> llm.doubao-code (1.6)
 // │   │   ├── minimax_standard -> llm.minimax-standard (1.6)
 // │   │   ├── glm_vision_code -> llm.glm-vision-code (1.5)
-// │   │   ├── claude_opus -> llm.claude-opus (1.4)
 // │   │   ├── qwen_dense_27b -> llm.qwen-dense-27b (1.3)
 // │   │   ├── qwen_moe_400b -> llm.qwen-moe-400b (1.3)
 // │   │   ├── qwen_moe_120b -> llm.qwen-moe-120b (1.2)
@@ -1011,9 +1011,9 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                         (
                             "code".into(),
                             logical_node(&[
-                                ("claude_sonnet", "llm.claude-sonnet", 2.4),
-                                ("kimi_flagship", "llm.kimi-flagship", 2.3),
+                                ("claude_opus", "llm.claude-opus", 2.4),
                                 ("gpt_codex", "llm.gpt-codex", 2.2),
+                                ("kimi_flagship", "llm.kimi-flagship", 2.1),
                                 ("gpt_standard", "llm.gpt-standard", 2.1),
                                 ("qwen_max", "llm.qwen-max", 1.9),
                                 ("deepseek_pro", "llm.deepseek-pro", 1.8),
@@ -1026,7 +1026,6 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("doubao_code", "llm.doubao-code", 1.6),
                                 ("minimax_standard", "llm.minimax-standard", 1.6),
                                 ("glm_vision_code", "llm.glm-vision-code", 1.5),
-                                ("claude_opus", "llm.claude-opus", 1.4),
                                 ("qwen_dense_27b", "llm.qwen-dense-27b", 1.3),
                                 ("qwen_moe_400b", "llm.qwen-moe-400b", 1.3),
                                 ("qwen_moe_120b", "llm.qwen-moe-120b", 1.2),

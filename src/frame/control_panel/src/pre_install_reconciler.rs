@@ -194,6 +194,24 @@ impl PreInstallReconciler {
         config
             .validate()
             .map_err(|error| PreInstallError::new("INVALID_CONFIG", false, error))?;
+        let spec_key = format!("users/{owner_user_id}/apps/{app_id}/spec");
+        match system_config.get(&spec_key).await {
+            Ok(value) => {
+                let spec: buckyos_api::AppServiceSpec = serde_json::from_str(&value.value)
+                    .map_err(|error| PreInstallError::new("INVALID_SPEC", false, error.to_string()))?;
+                if spec.state == buckyos_api::ServiceState::Deleted {
+                    Self::write_state(system_config, app_id, json!({
+                        "schema_version": 1, "app_id": app_id,
+                        "app_instance_id": spec.app_instance_id,
+                        "pikg_path": config.pikg_path, "action": "user_removed",
+                        "updated_at": buckyos_get_unix_timestamp(), "error": null,
+                    })).await.map_err(|error| PreInstallError::new("STATE_WRITE_FAILED", true, error))?;
+                    return Ok(false);
+                }
+            }
+            Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => {}
+            Err(error) => return Err(PreInstallError::new("SPEC_READ_FAILED", true, error.to_string())),
+        }
         let root = get_buckyos_root_dir();
         let source_path = canonical_preinstall_path(&root, config.pikg_path.as_str()).await?;
         let runtime = get_buckyos_api_runtime().map_err(|error| {

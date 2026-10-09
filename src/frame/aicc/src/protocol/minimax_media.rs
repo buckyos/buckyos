@@ -310,8 +310,17 @@ impl OperationCodec for MiniMaxImmediateCodec {
                     ("model".to_string(), json!(model)),
                     ("prompt".to_string(), json!(request.prompt)),
                 ]);
-                if let Some(lyrics) = &request.lyrics {
-                    body.insert("lyrics".to_string(), json!(lyrics));
+                match (&request.lyrics, request.instrumental) {
+                    (Some(lyrics), _) => {
+                        body.insert("lyrics".to_string(), json!(lyrics));
+                    }
+                    (None, Some(true)) => {
+                        body.insert("is_instrumental".to_string(), json!(true));
+                    }
+                    // Vocal tracks need lyrics; let MiniMax write them from the prompt.
+                    (None, _) => {
+                        body.insert("lyrics_optimizer".to_string(), json!(true));
+                    }
                 }
                 if let Some(output) = &request.output {
                     let mut audio = Map::new();
@@ -1060,7 +1069,7 @@ fn audio_mime(format: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::protocol::{CodecInput, CodecLimits, ResolvedCredential};
-    use buckyos_api::{ProviderStateCoordinate, VideoTextToVideoRequest};
+    use buckyos_api::{AudioMusicRequest, ProviderStateCoordinate, VideoTextToVideoRequest};
     use bytes::Bytes;
     use reqwest::StatusCode;
     use serde_json::json;
@@ -1106,6 +1115,49 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(output.value["segments"][0]["id"], "0");
+    }
+
+    #[test]
+    fn music_without_lyrics_is_instrumental_or_gets_generated_lyrics() {
+        let descriptor = minimax_media_adapter().0.operations[MUSIC_OPERATION_ID].clone();
+        let codec = MiniMaxImmediateCodec {
+            descriptor,
+            api_type: ApiType::AudioMusic,
+        };
+        let context = context();
+        let body = |instrumental: Option<bool>, lyrics: Option<&str>| {
+            let mut request = AudioMusicRequest::new("ignored", "calm piano".to_owned());
+            request.instrumental = instrumental;
+            request.lyrics = lyrics.map(str::to_owned);
+            let input = CodecInput {
+                canonical_request: AiccCall::AudioMusic(request),
+                resolved_parameters: BTreeMap::from([(
+                    "provider_model_id".to_owned(),
+                    json!("music-2.6"),
+                )]),
+            };
+            let wire = codec
+                .encode(&CodecCall {
+                    api_type: ApiType::AudioMusic,
+                    input: &input,
+                    context: &context,
+                })
+                .unwrap();
+            let HttpBody::Json(body) = wire.body else {
+                panic!("expected JSON")
+            };
+            body
+        };
+
+        let vocal = body(None, None);
+        assert_eq!(vocal["lyrics_optimizer"], true);
+        assert!(vocal.get("lyrics").is_none());
+        let instrumental = body(Some(true), None);
+        assert_eq!(instrumental["is_instrumental"], true);
+        assert!(instrumental.get("lyrics_optimizer").is_none());
+        let written = body(Some(false), Some("la la"));
+        assert_eq!(written["lyrics"], "la la");
+        assert!(written.get("lyrics_optimizer").is_none());
     }
 
     #[tokio::test]

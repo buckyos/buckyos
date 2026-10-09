@@ -612,6 +612,8 @@ struct AppDocWire {
     pub req_capbilities: HashMap<String, i64>,
     #[serde(default)]
     pub permissions: Vec<PermissionItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_handlers: Vec<serde_json::Value>,
     pub selector_type: SelectorType,
     pub service_config_tips: ServiceConfigTips,
 }
@@ -644,6 +646,8 @@ pub struct AppDoc {
     #[serde(default)]
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub permissions: Vec<PermissionItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub content_handlers: Vec<serde_json::Value>,
 
     //UI 应该根据service_config_tips的提示，来构造UI，得到最终的ServiceConfig
     pub selector_type: SelectorType,
@@ -684,6 +688,7 @@ impl<'de> Deserialize<'de> for AppDoc {
             sdk_version: wire.sdk_version,
             req_capbilities: wire.req_capbilities,
             permissions: wire.permissions,
+            content_handlers: wire.content_handlers,
             selector_type: wire.selector_type,
             service_config_tips: wire.service_config_tips,
         })
@@ -960,6 +965,7 @@ pub struct AppDocBuilder {
     sdk_version: Option<String>,
     req_capbilities: HashMap<String, i64>,
     permissions: Vec<PermissionItem>,
+    content_handlers: Vec<serde_json::Value>,
     selector_type: Option<SelectorType>,
     service_config_tips: ServiceConfigTips,
     pkg_list: SubPkgList,
@@ -1006,6 +1012,7 @@ impl AppDocBuilder {
             sdk_version: None,
             req_capbilities: HashMap::new(),
             permissions: vec![],
+            content_handlers: vec![],
             selector_type: None,
             service_config_tips: ServiceConfigTips::default(),
             pkg_list: SubPkgList::default(),
@@ -1104,6 +1111,11 @@ impl AppDocBuilder {
 
     pub fn add_permission(mut self, permission: PermissionItem) -> Self {
         self.permissions.push(permission);
+        self
+    }
+
+    pub fn content_handlers(mut self, handlers: Vec<serde_json::Value>) -> Self {
+        self.content_handlers = handlers;
         self
     }
 
@@ -1327,9 +1339,7 @@ impl AppDocBuilder {
                     );
                 }
 
-                // Web is always static and should not request permissions.
                 self.selector_type = Some(SelectorType::Static);
-                self.permissions.clear();
                 self.service_config_tips = ServiceConfigTips::default();
             }
             AppType::Agent => {
@@ -1400,6 +1410,7 @@ impl AppDocBuilder {
             sdk_version: self.sdk_version,
             req_capbilities: self.req_capbilities,
             permissions: self.permissions,
+            content_handlers: self.content_handlers,
             selector_type: self.selector_type.unwrap_or_default(),
             service_config_tips: self.service_config_tips,
             pkg_list: self.pkg_list,
@@ -1542,7 +1553,7 @@ mod tests {
     }
 
     #[test]
-    fn test_app_doc_builder_web_enforces_static_and_no_permissions() {
+    fn test_app_doc_builder_web_enforces_static_and_preserves_permissions() {
         let owner = DID::from_str("did:web:example.com").unwrap();
         let doc = AppDoc::builder(
             AppType::Web,
@@ -1570,7 +1581,7 @@ mod tests {
         );
 
         assert_eq!(doc.selector_type, SelectorType::Static);
-        assert!(doc.permissions.is_empty());
+        assert_eq!(doc.permissions.len(), 1);
         assert_eq!(doc.name, "demo-web");
         assert_eq!(doc.categories, vec!["web"]);
 

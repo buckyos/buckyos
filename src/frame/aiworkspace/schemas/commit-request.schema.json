@@ -1,0 +1,468 @@
+{
+ "$schema": "https://json-schema.org/draft/2020-12/schema",
+ "$id": "buckyos.ai-workspace/commit-request/0.3",
+ "title": "Commit request (doc.commit / doc.prepare)",
+ "type": "object",
+ "additionalProperties": false,
+ "required": [
+  "protocol_version",
+  "workspace_id",
+  "epoch",
+  "idempotency_key",
+  "operations"
+ ],
+ "properties": {
+  "protocol_version": {
+   "const": "0.5"
+  },
+  "workspace_id": {
+   "type": "string",
+   "pattern": "^ws_[a-z2-7]{26}$"
+  },
+  "epoch": {
+   "type": "string",
+   "pattern": "^ep_[a-z2-7]{26}$"
+  },
+  "idempotency_key": {
+   "type": "string",
+   "pattern": "^[\\x21-\\x7e]{1,128}$"
+  },
+  "session_id": {
+   "type": [
+    "string",
+    "null"
+   ],
+   "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+  },
+  "origin": {
+   "enum": [
+    "human",
+    "agent",
+    "program",
+    "import",
+    "system"
+   ],
+   "default": "human"
+  },
+  "run_id": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "undo_group": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "message": {
+   "type": [
+    "string",
+    "null"
+   ]
+  },
+  "preconditions": {
+   "type": "array",
+   "items": {
+    "type": "object",
+    "required": [
+     "target",
+     "expect"
+    ],
+    "properties": {
+     "target": {
+      "type": "object",
+      "required": [
+       "entity_id"
+      ],
+      "properties": {
+       "entity_id": {
+        "$ref": "#/$defs/id"
+       },
+       "selector": {
+        "$ref": "#/$defs/selector"
+       }
+      }
+     },
+     "expect": {
+      "oneOf": [
+       {
+        "type": "object",
+        "required": [
+         "rev"
+        ],
+        "properties": {
+         "rev": {
+          "type": "integer",
+          "minimum": 0
+         }
+        },
+        "additionalProperties": false
+       },
+       {
+        "type": "object",
+        "required": [
+         "hash"
+        ],
+        "properties": {
+         "hash": {
+          "type": "string"
+         }
+        },
+        "additionalProperties": false
+       }
+      ]
+     }
+    }
+   }
+  },
+  "operations": {
+   "type": "array",
+   "minItems": 1,
+   "maxItems": 10000,
+   "items": {
+    "type": "object",
+    "required": [
+     "op"
+    ],
+    "properties": {
+     "op": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ },
+ "$defs": {
+  "id": {
+   "type": "string",
+   "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$"
+  },
+  "expect": {
+   "description": "Expected rev of the overwritten version cell. 0 = never written.",
+   "type": "object",
+   "required": [
+    "rev"
+   ],
+   "properties": {
+    "rev": {
+     "type": "integer",
+     "minimum": 0
+    }
+   },
+   "additionalProperties": false
+  },
+  "selector": {
+   "type": "object",
+   "required": [
+    "kind"
+   ],
+   "properties": {
+    "kind": {
+     "enum": [
+      "entity",
+      "doc_key",
+      "table_field",
+      "table_record",
+      "table_cell",
+      "richtext_block",
+      "table_field_values",
+      "table_members",
+      "table_field_type"
+     ]
+    },
+    "key": {
+     "type": "string"
+    },
+    "record_id": {
+     "$ref": "#/$defs/id"
+    },
+    "field_id": {
+     "$ref": "#/$defs/id"
+    },
+    "block_id": {
+     "$ref": "#/$defs/id"
+    }
+   }
+  },
+  "reference": {
+   "type": "object",
+   "required": [
+    "entity_id"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "workspace_id": {
+     "type": "string",
+     "description": "Only for cross-Workspace references; internal references omit it."
+    },
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "version": {
+     "oneOf": [
+      {
+       "type": "object",
+       "properties": {
+        "mode": {
+         "const": "live_head"
+        }
+       },
+       "required": [
+        "mode"
+       ],
+       "additionalProperties": false
+      },
+      {
+       "type": "object",
+       "properties": {
+        "mode": {
+         "const": "fixed_revision"
+        },
+        "object_id": {
+         "type": "string"
+        },
+        "source_revision": {
+         "type": "string"
+        },
+        "seq": {
+         "type": "integer"
+        }
+       },
+       "required": [
+        "mode"
+       ]
+      },
+      {
+       "type": "object",
+       "properties": {
+        "mode": {
+         "const": "published_channel"
+        },
+        "channel": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "mode",
+        "channel"
+       ]
+      }
+     ]
+    },
+    "selector": {
+     "$ref": "#/$defs/selector"
+    }
+   }
+  },
+  "query_reference": {
+   "type": "object",
+   "required": [
+    "kind",
+    "source_url"
+   ],
+   "additionalProperties": false,
+   "properties": {
+    "kind": {
+     "const": "url_query"
+    },
+    "source_url": {
+     "type": "string",
+     "description": "Absolute URL without credentials."
+    },
+    "query": {
+     "type": "object"
+    },
+    "version": {
+     "type": "object"
+    },
+    "consistency": {
+     "enum": [
+      "snapshot",
+      "best_effort"
+     ]
+    }
+   }
+  },
+  "placement": {
+   "description": "Free-layout placement of a Block or group (entity.create / tree.move / tree.place), relative to the parent; stacking order is order_key. A connector's placement is the bounding box of its two stored endpoint positions: w and h may be 0, rotation is not allowed, it is required (never null), and with two coordinate ends (start and end absent or null) it must not be a single point (w + h > 0; not re-judged for undo, which may restore a box written while the ends were bound).",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "x",
+    "y",
+    "w",
+    "h"
+   ],
+   "properties": {
+    "x": {
+     "type": "number"
+    },
+    "y": {
+     "type": "number"
+    },
+    "w": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "description": "> 0; >= 0 for a connector"
+    },
+    "h": {
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "description": "> 0; >= 0 for a connector"
+    },
+    "rotation": {
+     "type": "number",
+     "minimum": 0,
+     "exclusiveMaximum": 360,
+     "description": "degrees clockwise about the centre; not on a connector"
+    }
+   }
+  },
+  "connector_endpoint": {
+   "description": "A bound endpoint of a connector. null (or an absent key) is a coordinate endpoint: the corresponding corner of the placement box (start = top-left, end = bottom-right, mirrored by flip). The target is a live, readable Cell (not a connector) or group on the same free-layout Surface; checked when written, not on import. Indexed as a `connector_endpoint` reference (src_selector {kind: connector_end, end: start|end}) that never blocks deleting the target. The anchor names one of the target's anchors; which ids exist is the target renderer's business (by default the 16-point compass n, nne, ne, … nnw of its outline), not checked here.",
+   "type": [
+    "object",
+    "null"
+   ],
+   "additionalProperties": false,
+   "required": [
+    "entity_id",
+    "anchor"
+   ],
+   "properties": {
+    "entity_id": {
+     "$ref": "#/$defs/id"
+    },
+    "anchor": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "kind",
+      "id"
+     ],
+     "properties": {
+      "kind": {
+       "const": "named"
+      },
+      "id": {
+       "type": "string",
+       "pattern": "^[A-Za-z0-9_.:-]{1,64}$"
+      }
+     }
+    }
+   }
+  },
+  "connector_payload": {
+   "description": "Payload of a buckyos.cell with view.type = connector (a line). The connector keys (flip, start, end, route, controls, label) are refused on any other view; a connector refuses source_ref, bindings, def_ref and the table-only keys, and its view.type can never change (nor can another Cell become a connector). config is appearance, checked by the front-end registry (<= 64 KiB). Self loop (start and end bound to the same entity): two different anchors and a route other than straight. Creating one needs a free-layout Surface.",
+   "type": "object",
+   "additionalProperties": false,
+   "required": [
+    "view"
+   ],
+   "properties": {
+    "view": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "type"
+     ],
+     "properties": {
+      "type": {
+       "const": "connector"
+      },
+      "version": {
+       "type": "integer",
+       "minimum": 1,
+       "description": "1 = connector@1 (its routing and interpolation); the core checks the format only"
+      }
+     }
+    },
+    "title": {
+     "type": "string",
+     "maxLength": 256,
+     "description": "label text"
+    },
+    "config": {
+     "type": "object"
+    },
+    "locked": {
+     "type": "boolean"
+    },
+    "flip": {
+     "type": [
+      "object",
+      "null"
+     ],
+     "additionalProperties": false,
+     "properties": {
+      "h": {
+       "type": "boolean"
+      },
+      "v": {
+       "type": "boolean"
+      }
+     }
+    },
+    "start": {
+     "$ref": "#/$defs/connector_endpoint"
+    },
+    "end": {
+     "$ref": "#/$defs/connector_endpoint"
+    },
+    "route": {
+     "enum": [
+      "straight",
+      "elbow",
+      "curve"
+     ],
+     "default": "straight"
+    },
+    "controls": {
+     "type": "array",
+     "maxItems": 64,
+     "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+       "u",
+       "v"
+      ],
+      "properties": {
+       "u": {
+        "type": "number"
+       },
+       "v": {
+        "type": "number"
+       },
+       "dx": {
+        "type": "number"
+       },
+       "dy": {
+        "type": "number"
+       }
+      }
+     }
+    },
+    "label": {
+     "type": "object",
+     "additionalProperties": false,
+     "required": [
+      "t"
+     ],
+     "properties": {
+      "t": {
+       "type": "number",
+       "minimum": 0,
+       "maximum": 1
+      },
+      "offset": {
+       "type": "number"
+      }
+     }
+    }
+   }
+  }
+ }
+}

@@ -8,7 +8,7 @@
 //   - pkg_list.script => HostScript
 //   - pkg_list.agent  => Agent / OpenDan
 //
-//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]
+//   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--opendan-bin <path>] [--detach] [-- <opendan args>]
 
 type JsonValue =
   | string
@@ -28,10 +28,12 @@ type StartupOptions = {
   detach: boolean
   systemConfigUrl: string
   agentPackageRoot?: string
+  opendanBinary?: string
   opendanArgs: string[]
 }
 
 const DEFAULT_BUCKYOS_ROOT = '/opt/buckyos'
+const SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE = 'system-config-bootstrap'
 const DEFAULT_OPENDAN_SERVICE_PORT = 4060
 const DEFAULT_HOST_SCRIPT_SERVICE_PORT = 3000
 const OPENDAN_SERVICE_PORT_FALLBACK_KEYS = ['www', 'http', 'https', 'main']
@@ -92,15 +94,14 @@ function printUsage(): never {
   console.error(
     [
       'Usage:',
-      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--worksession-test <json>] [--worksession-task-test <json>] [--detach]',
+      '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--opendan-bin <path>] [--detach] [-- <opendan args>]',
       '',
       'Example:',
       '  service_debug jarvis.buckyos.bns.did alice',
       '  service_debug buckyos_systest devtest',
       '  service_debug jarvis.buckyos.bns.did alice --port 14060',
       '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./apps/jarvis_runtime/agent',
-      '  service_debug jarvis.buckyos.bns.did alice --worksession-test ./case.json',
-      '  service_debug jarvis.buckyos.bns.did alice --worksession-task-test ./case.json',
+      '  service_debug jarvis.buckyos.bns.did alice --opendan-bin ./target/debug/opendan -- --web ./frame/opendan/web/dist',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -122,11 +123,25 @@ function parseArgs(args: string[]): StartupOptions {
   let detach = false
   let systemConfigUrl = 'http://127.0.0.1:3200/kapi/system_config'
   let agentPackageRoot: string | undefined
+  let opendanBinary: string | undefined
   const opendanArgs: string[] = []
 
   for (let index = 2; index < args.length; index += 1) {
     const arg = args[index]
+    if (arg === '--') {
+      opendanArgs.push(...args.slice(index + 1))
+      break
+    }
     switch (arg) {
+      case '--opendan-bin': {
+        const raw = args[index + 1]?.trim()
+        index += 1
+        if (!raw) {
+          throw new Error('missing value for --opendan-bin')
+        }
+        opendanBinary = raw
+        break
+      }
       case '--node-id': {
         nodeId = args[index + 1]?.trim()
         index += 1
@@ -164,59 +179,7 @@ function parseArgs(args: string[]): StartupOptions {
         agentPackageRoot = raw
         break
       }
-      case '--worksession-test':
-      case '--work-session-test': {
-        const raw = args[index + 1]?.trim()
-        index += 1
-        if (!raw) {
-          throw new Error(`missing value for ${arg}`)
-        }
-        opendanArgs.push(arg, raw)
-        break
-      }
-      case '--worksession-task-test':
-      case '--work-session-task-test':
-      case 'worksession-task-test':
-      case 'work-session-task-test': {
-        const raw = args[index + 1]?.trim()
-        index += 1
-        if (!raw) {
-          throw new Error(`missing value for ${arg}`)
-        }
-        opendanArgs.push('--worksession-task-test', raw)
-        break
-      }
-      case '--': {
-        const next = args[index + 1]?.trim()
-        if (
-          next === 'worksession-task-test' ||
-          next === 'work-session-task-test' ||
-          next === '--worksession-task-test' ||
-          next === '--work-session-task-test'
-        ) {
-          const raw = args[index + 2]?.trim()
-          index += 2
-          if (!raw) {
-            throw new Error(`missing value for ${next}`)
-          }
-          opendanArgs.push('--worksession-task-test', raw)
-          break
-        }
-        throw new Error(`unknown argument after --: ${next || ''}`)
-      }
       default: {
-        if (arg.startsWith('--worksession-test=') || arg.startsWith('--work-session-test=')) {
-          opendanArgs.push(arg)
-          break
-        }
-        if (arg.startsWith('--worksession-task-test=') || arg.startsWith('--work-session-task-test=')) {
-          const value = arg.slice(arg.indexOf('=') + 1)
-          if (!value.trim()) {
-            throw new Error(`missing value for ${arg.slice(0, arg.indexOf('='))}`)
-          }
-          opendanArgs.push(`--worksession-task-test=${value}`)
-          break
-        }
         throw new Error(`unknown argument: ${arg}`)
       }
     }
@@ -230,6 +193,7 @@ function parseArgs(args: string[]): StartupOptions {
     detach,
     systemConfigUrl,
     agentPackageRoot,
+    opendanBinary,
     opendanArgs,
   }
 }
@@ -390,12 +354,15 @@ async function importEd25519PrivateKeyFromPem(pem: string): Promise<CryptoKey> {
   )
 }
 
-async function generateAppServiceToken(
+// Device-signed assertions, as node-daemon issues them: a login assertion for
+// the app (exchanged at verify-hub by the app runtime), and, with `audience`,
+// the read-only bootstrap assertion system-config accepts from the device.
+async function generateDeviceAssertion(
   appId: string,
   subject: string,
   deviceName: string,
   privateKeyPem: string,
-  appInstanceId?: string,
+  audience?: string,
 ): Promise<string> {
   const now = Math.floor(Date.now() / 1000)
   const header = {
@@ -403,22 +370,16 @@ async function generateAppServiceToken(
     kid: deviceName,
     typ: 'JWT',
   }
-  const payload = {
-    token_type: 'Normal',
+  const payload: Record<string, unknown> = {
     appid: appId,
-    jti: `${now}`,
-    session: now,
-    sub: subject,
-    aud: null,
     exp: now + VERIFY_HUB_TOKEN_EXPIRE_TIME * 2,
     iss: deviceName,
-    token: null,
-    extra: appInstanceId
-      ? {
-        app_instance_id: appInstanceId,
-        app_owner_user_id: subject,
-      }
-      : {},
+    jti: `${now}${Math.floor(Math.random() * 1_000_000)}`,
+    sub: subject,
+  }
+  if (audience) {
+    payload.aud = audience
+    payload.exp = now + 15 * 60
   }
 
   const encodedHeader = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)))
@@ -474,7 +435,13 @@ function selectAgentServicePort(
   return DEFAULT_OPENDAN_SERVICE_PORT
 }
 
-async function resolveOpendanBinary(buckyosRoot: string): Promise<string> {
+async function resolveOpendanBinary(buckyosRoot: string, overridePath?: string): Promise<string> {
+  if (overridePath) {
+    if (await fileExists(overridePath)) {
+      return overridePath
+    }
+    throw new Error(`opendan binary override not found: ${overridePath}`)
+  }
   const scriptDir = new URL('.', import.meta.url).pathname
   const candidates = [
     joinPath(buckyosRoot, 'bin', 'opendan', 'opendan'),
@@ -659,18 +626,18 @@ async function buildLaunchContext(options: StartupOptions) {
 
   const nodeId = options.nodeId || deviceName
   const appInstanceId = `${options.appId}@${options.ownerUserId}`
-  const serviceToken = await generateAppServiceToken(
+  const serviceToken = await generateDeviceAssertion(
     options.appId,
     options.ownerUserId,
     deviceName,
     nodePrivateKeyPem,
-    appInstanceId,
   )
-  const nodeDaemonToken = await generateAppServiceToken(
+  const nodeDaemonToken = await generateDeviceAssertion(
     'node-daemon',
     deviceName,
     deviceName,
     nodePrivateKeyPem,
+    SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
   )
   const systemConfigClient = new KRPCClient(options.systemConfigUrl, nodeDaemonToken)
   const zoneConfig = await sysConfigGet(systemConfigClient, 'boot/config')
@@ -758,7 +725,7 @@ async function buildLaunchContext(options: StartupOptions) {
 
   if (hasAgentPkg(appDoc)) {
     const agentPackage = await resolveAgentPackageRoot(buckyosRoot, appDoc, options.agentPackageRoot)
-    const opendanBinary = await resolveOpendanBinary(buckyosRoot)
+    const opendanBinary = await resolveOpendanBinary(buckyosRoot, options.opendanBinary)
     const agentEnvRoot = getAppDataDir(buckyosRoot, options.appId, options.ownerUserId)
     await Deno.mkdir(agentEnvRoot, { recursive: true })
     const servicePort = selectAgentServicePort(appDoc, appInstanceConfig, options.port)

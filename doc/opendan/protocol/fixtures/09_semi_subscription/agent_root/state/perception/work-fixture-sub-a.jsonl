@@ -1,2 +1,2 @@
-{"seq":1,"at_ms":1791024660690,"session_id":"work-fixture-sub-a","kind":"run_digest","source":"session","summary":"finished: answer","payload":{"run_id":"20261003-035100-0b71b7","turn":1,"turn_status":"completed"},"refs":{"worklog_seq":6}}
-{"seq":2,"at_ms":1791024660690,"session_id":"work-fixture-sub-a","kind":"task_outcome","source":"session","summary":"finished: answer","payload":{"acceptance":"pending","outcome":"succeeded"}}
+{"seq":1,"at_ms":1791134683164,"session_id":"work-fixture-sub-a","kind":"run_digest","source":"session","summary":"finished: answer","payload":{"run_id":"20261004-102443-cf746a","turn":1,"turn_status":"completed"},"refs":{"worklog_seq":6}}
+{"seq":2,"at_ms":1791134683164,"session_id":"work-fixture-sub-a","kind":"task_outcome","source":"session","summary":"finished: answer","payload":{"acceptance":"pending","outcome":"succeeded"}}

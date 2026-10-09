@@ -48,7 +48,7 @@ async fn dv_real_kmsg_drives_a_work_session() {
     assert_eq!(sd.sid(), again.sid());
     let queue = queue_of(&sd);
     println!("queue {queue}");
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("dv-m1", "ping from DV"), APP)
+    libopendan::post_input(agent.as_ref(), sd.sid(), &msg("ping from DV"))
         .await
         .unwrap();
     let llm = ScriptedLlm::new(|req, _| {
@@ -66,12 +66,11 @@ async fn dv_real_kmsg_drives_a_work_session() {
     // The subscription cursor was acknowledged past the consumed message.
     let sub = match &sd.config().unwrap().channels.inputs[0] {
         InputSourceConfig::Kmsg { subscriber, .. } => subscriber.clone(),
-        _ => unreachable!(),
     };
     let left = client.fetch_messages(&sub, 10, false).await.unwrap();
     assert!(left.is_empty(), "acked: {left:?}");
     // A late message after finish is rejected and acknowledged too.
-    libopendan::channel::kmsg::post_to_queue(&client, &queue, &Input::msg("dv-m2", "late"), APP)
+    libopendan::channel::kmsg::post_to_queue(&client, &queue, &msg("late"))
         .await
         .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Idle).await.is_finished());

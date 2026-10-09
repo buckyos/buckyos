@@ -60,7 +60,7 @@ Deno.test('relation messages fold into their targets: latest own edit, redaction
   const orphan = msg('m4', ME, 'reply to nothing', { relates_to: { rel: 'thread', target: 'missing' } }, now + 10)
   const folded = foldMessageRelations([original, edit1, edit2, foreignEdit, react1, react2, react3, reply, other, redact, orphan])
   equal(folded.map(item => item.ui_message_id), ['m1', 'm2', 'm3', 'm4'])
-  equal(messageRelations(folded[0]), { edited: { content: 'hello again', at: now + 2 }, reactions: [{ key: '👍', dids: [BOB, ME], messages: { [BOB]: 'r1', [ME]: 'r2' } }] })
+  equal(messageRelations(folded[0]), { edited: { content: { format: 'text/plain', content: 'hello again' }, at: now + 2, edits: [{ id: 'e1', at: now + 1, content: { format: 'text/plain', content: 'hello there' } }, { id: 'e2', at: now + 2, content: { format: 'text/plain', content: 'hello again' } }] }, reactions: [{ key: '👍', dids: [BOB, ME], messages: { [BOB]: 'r1', [ME]: 'r2' } }] })
   equal(ownReactionId(folded[0], ME, '👍'), 'r2')
   equal(ownReactionId(folded[0], ME, '❤️'), undefined)
   equal(displayedContent(folded[0]), 'hello again')

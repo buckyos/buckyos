@@ -25,8 +25,11 @@ src/rootfs/bin/node-daemon/node_daemon
 src/rootfs/bin/repo-service/repo_service
 src/rootfs/bin/smb-service/smb_service
 src/rootfs/bin/nfs-server/nfs_server
+src/rootfs/bin/aiworkspace/aiworkspace
+src/rootfs/bin/homestation/homestation
 /src/rootfs/bin/control-panel/control_panel
 /src/rootfs/bin/control-panel/web/
+/src/rootfs/bin/opendan/web/
 /src/rootfs/bin/sys-test/dist/
 src/rootfs/logs
 src/rootfs/tmp
@@ -70,6 +73,7 @@ src/publish/win_pkg/scripts/seed_defaults.ps1
 src/publish/win_pkg/scripts/ensure_firewall_rules.ps1
 src/publish/win_pkg/scripts/uninstall_cleanup.ps1
 src/rootfs/bin/opendan/agent_tool
+src/rootfs/bin/opendan/xagent
 /src/rootfs/libexec/buckyos-tool/
 
 src/apps/sys_test/dist/
@@ -99,3 +103,4 @@ src/rootfs/bin/workflow/workflow
 src/deno.lock
 /doc/ai-canvas/e2e/runs/
 src/frame/desktop/test-results/
+src/frame/opendan/web/test-results-zone/

@@ -133,6 +133,24 @@
         }
       ]
     },
+    "EventSource": {
+      "description": "Where an event comes from.",
+      "properties": {
+        "id": {
+          "default": "",
+          "description": "object: object id; session: sid; task: task_id; timer: timer name; system: may be empty.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`object | session | task | timer | system`; unknown kinds are not a format error (an event without a matching subscription is dropped).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
     "FrameRole": {
       "description": "Why a run sits in `process_stack`.",
       "oneOf": [
@@ -151,6 +169,24 @@
           "type": "string"
         }
       ]
+    },
+    "InputPos": {
+      "description": "Delivery position of a bus record.",
+      "properties": {
+        "index": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "src": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "src"
+      ],
+      "type": "object"
     },
     "LiveRun": {
       "description": "A run that is not finished yet (xllm run directory).",
@@ -217,12 +253,16 @@
       "type": "object"
     },
     "OpenTurn": {
-      "description": "The logical Turn in progress (one Input → result of the AgentSession).\n\nOpened by the first input batch committed while no Turn is open (bootstrap, msg / event). Behavior switches, fork calls and returns, independent context switches, observation injections, resumable suspensions (interrupt, retryable error, context limit, pending tool), history epoch rewrites and restarts keep it open; inputs consumed while it is open join it. Only the session closes it, when it interprets an outcome as the Turn's result or failure ([`TurnStatus`]).",
+      "description": "The logical Turn in progress (one Input → result of the AgentSession).\n\nOpened by the first input batch committed while no Turn is open (bootstrap, msg / event). Context switches, sub context calls and returns, observation injections, resumable suspensions (interrupt, retryable error, context limit, pending tool), history epoch rewrites and restarts keep it open; inputs consumed while it is open join it. Only the session closes it, when it interprets an outcome as the Turn's result or failure ([`TurnStatus`]).",
       "properties": {
         "at_ms": {
           "format": "uint64",
           "minimum": 0.0,
           "type": "integer"
+        },
+        "has_msg": {
+          "description": "A message (not only events) is among them.",
+          "type": "boolean"
         },
         "hook": {
           "type": [
@@ -261,6 +301,116 @@
       ],
       "type": "object"
     },
+    "OutboxEntry": {
+      "description": "One outbound message of a session.",
+      "properties": {
+        "attempts": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "deliveries": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "description": "Idempotency key: `(sid, turn, run_id, n)`.",
+          "type": "string"
+        },
+        "msg": {
+          "description": "The complete message, `created_at_ms` included: re-sent unchanged."
+        },
+        "msg_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "purpose": {
+          "$ref": "#/definitions/OutboxPurpose"
+        },
+        "status": {
+          "$ref": "#/definitions/OutboxStatus"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "updated_at_ms": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "msg",
+        "status",
+        "turn"
+      ],
+      "type": "object"
+    },
+    "OutboxPurpose": {
+      "description": "What an outbox entry is for.",
+      "oneOf": [
+        {
+          "description": "The reply of a Turn as a message of its own.",
+          "enum": [
+            "reply"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "\"Accepted, working on it\": sent while the Turn is open, replaced by the Turn's final edit.",
+          "enum": [
+            "placeholder"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The reply of a Turn as an edit of its placeholder.",
+          "enum": [
+            "final_edit"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "OutboxStatus": {
+      "oneOf": [
+        {
+          "enum": [
+            "sent"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Not handed to the outbound sink yet, or the hand-over failed in a way worth retrying.",
+          "enum": [
+            "pending"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Refused (route mismatch, rejected by the message service); never retried.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        }
+      ]
+    },
     "Outcome": {
       "enum": [
         "succeeded",
@@ -268,6 +418,109 @@
         "stopped"
       ],
       "type": "string"
+    },
+    "PendingEvent": {
+      "description": "Semi-subscription state waiting to be injected: the newest version of one `(subscription_id, source)`, its terminal event kept separately. Saved when received (the delivery is then consumed); cleared only by the receipt of the batch that injected exactly these versions, by `unsubscribe`, or replaced by a newer version.",
+      "properties": {
+        "latest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PendingEventVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "source": {
+          "$ref": "#/definitions/EventSource"
+        },
+        "subscription_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "superseded": {
+          "default": 0,
+          "description": "Versions replaced before they were injected.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "terminal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PendingEventVersion"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Never replaced by later non-terminal versions."
+        }
+      },
+      "required": [
+        "source"
+      ],
+      "type": "object"
+    },
+    "PendingEventVersion": {
+      "description": "One version of an observed source's state.",
+      "properties": {
+        "data_ref": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event": {
+          "type": "string"
+        },
+        "input": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InputPos"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Where it was delivered (`None`: synthesized by the runner, e.g. a pull-mode session subscription)."
+        },
+        "key": {
+          "type": "string"
+        },
+        "received_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "seq": {
+          "default": null,
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "event",
+        "key",
+        "received_at_ms",
+        "summary"
+      ],
+      "type": "object"
     },
     "ProcessFrame": {
       "description": "Suspended behavior process (its run is kept, §4.4).",
@@ -347,6 +600,77 @@
       },
       "type": "array"
     },
+    "ReplyRoute": {
+      "description": "Default reply path of a session.",
+      "oneOf": [
+        {
+          "description": "Reply the way the last consumed input message came.",
+          "properties": {
+            "kind": {
+              "description": "MsgObject kind of the reply.",
+              "type": "string"
+            },
+            "reply_to": {
+              "default": null,
+              "description": "ObjId of the message replied to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route": {
+              "enum": [
+                "message"
+              ],
+              "type": "string"
+            },
+            "to": {
+              "description": "The sender (one-to-one) or the group.",
+              "type": "string"
+            },
+            "to_session": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tunnel": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "route",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Hand the result back to the parent session.",
+          "properties": {
+            "route": {
+              "enum": [
+                "parent_session"
+              ],
+              "type": "string"
+            },
+            "session_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "route",
+            "session_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "RunState": {
       "enum": [
         "created",
@@ -360,6 +684,16 @@
     "SourceProgress": {
       "description": "Consumption progress of one input source (§4.5).",
       "properties": {
+        "accepted": {
+          "description": "Input events accepted by an active subscription that are still pending: their routing was decided when they were first seen, so a later `unsubscribe` does not turn them into dropped events.",
+          "items": {
+            "format": "uint64",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
         "acked_index": {
           "default": 0,
           "description": "Highest index acknowledged-able: every index ≤ this was consumed.",
@@ -376,13 +710,6 @@
           },
           "type": "array",
           "uniqueItems": true
-        },
-        "reading": {
-          "description": "msg-center records consumed but not yet marked `Read` (deferred).",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
         }
       },
       "type": "object"
@@ -438,15 +765,15 @@
           "minimum": 0.0,
           "type": "integer"
         },
-        "changes": {
-          "description": "Subscription changes, e.g. `s1@16`.",
+        "events": {
+          "description": "Keys of the semi-subscription state versions injected with them.",
           "items": {
             "type": "string"
           },
           "type": "array"
         },
         "hook": {
-          "description": "Hook point of the first batch (`on_init`, `on_wakeup`, `on_behavior_switch`, `observation`).",
+          "description": "Controlled input of the first batch (`on_init`, `on_input`, `on_context_switch`).",
           "type": [
             "string",
             "null"
@@ -473,6 +800,95 @@
         }
       },
       "required": [
+        "turn"
+      ],
+      "type": "object"
+    },
+    "TurnStatus": {
+      "description": "How a logical Turn ended (decided by the session from the outcome and the hand-over state, never by the waist alone).",
+      "oneOf": [
+        {
+          "description": "A result was delivered (final answer, a reply before waiting for input, or the session finished).",
+          "enum": [
+            "completed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "A non-recoverable error ended the run.",
+          "enum": [
+            "failed"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The run's budget was exhausted.",
+          "enum": [
+            "budget_exhausted"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "`control(stop)`.",
+          "enum": [
+            "stopped"
+          ],
+          "type": "string"
+        }
+      ]
+    },
+    "TurnTask": {
+      "description": "A Turn and the task the host's task service keeps for it. Written when the task was created (the Turn is open), closed in the commit that closes the Turn, `reported` once the task service took the terminal state.",
+      "properties": {
+        "closed": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/TurnStatus"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "error": true,
+        "has_msg": {
+          "description": "The batch that opened the Turn had a message: a placeholder may be sent for it.",
+          "type": "boolean"
+        },
+        "opened_at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "placeholder": {
+          "description": "ObjId of the placeholder message of this Turn (the anchor its final edit targets).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reported": {
+          "type": "boolean"
+        },
+        "summary": {
+          "description": "Result summary handed to the task service with the terminal state.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "turn": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "opened_at_ms",
+        "task_id",
         "turn"
       ],
       "type": "object"
@@ -644,6 +1060,13 @@
       ],
       "description": "The Turn in progress, if any."
     },
+    "outbox": {
+      "description": "Replies produced by committed Turns and their delivery: written in the commit that closes the Turn, sent afterwards, re-sent as they are after a restart (the idempotency key and the message never change).",
+      "items": {
+        "$ref": "#/definitions/OutboxEntry"
+      },
+      "type": "array"
+    },
     "outcome": {
       "anyOf": [
         {
@@ -657,8 +1080,11 @@
     "pending_decision": {
       "description": "Decisions seen in the queue but not applied yet (UI display)."
     },
-    "pending_task_calls": {
-      "items": true,
+    "pending_events": {
+      "description": "Semi-subscription state received and not injected yet.",
+      "items": {
+        "$ref": "#/definitions/PendingEvent"
+      },
       "type": "array"
     },
     "perception_seq": {
@@ -690,6 +1116,17 @@
       ],
       "default": []
     },
+    "reply": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ReplyRoute"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Default reply path: the way the last consumed input message came, else the parent session."
+    },
     "reported_rev": {
       "default": 0,
       "format": "uint64",
@@ -715,6 +1152,7 @@
     },
     "subscription_cursors": {
       "additionalProperties": true,
+      "description": "Pull-mode cursors only (registry rev of session subscriptions).",
       "type": "object"
     },
     "topic": {
@@ -733,6 +1171,13 @@
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "turn_tasks": {
+      "description": "Turns bound to a task of the host's task service: the open Turn's, closed ones whose terminal state is not reported yet, and the most recent settled ones.",
+      "items": {
+        "$ref": "#/definitions/TurnTask"
+      },
+      "type": "array"
     },
     "turns_completed": {
       "default": 0,
@@ -756,6 +1201,13 @@
           "type": "null"
         }
       ]
+    },
+    "watched_tasks": {
+      "description": "Background tasks of ended runs the runner follows for this session (implicit active subscriptions on `task:<task_id>`): when one ends, its completion is handled like a subscribed event.",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     },
     "worklog": {
       "allOf": [

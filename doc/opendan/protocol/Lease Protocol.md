@@ -25,6 +25,7 @@
   "acquired_at_ms": 0, "released_at_ms": null }
 ```
 
+- `holder.host` 是本机执行环境的身份：`host:<hostname>:<machine-id>`；设置了环境变量 `AGENT_TOOL_HOST_ID` 时为 `host:<值>:`。app 容器每次重建都会换 hostname，所以 OpenDAN 在 zone 内启动时把它设为 `<device did>/<app instance id>`，Session 的 runtime 绑定（`binding.json` 的 `target.host`）也用这个值，容器重建后仍能接管。
 - `epoch` = 上一次内容的 epoch + 1（文件为空或不可解析时从 1 开始），写入 `state.json.writer.lock_epoch` 用于审计。
 - 内容只由持有者经**同一文件描述符原地改写**（`pwrite(0)` + `ftruncate` + `fsync`）。锁文件**永不替换、永不删除**：flock 属于 inode，rename 之后新打开者会拿到新 inode 上的锁。其它状态文件照常原子替换。
 - 其它参与方只为显示读取内容（“谁在推进”）；读到半写内容重读一次，仍失败视为未知。

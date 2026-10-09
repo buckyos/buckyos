@@ -19,9 +19,7 @@ async fn stop_takes_effect_after_one_do_action() {
             post_blocking(
                 &qd,
                 &q,
-                Input::control(
-                    "stop-1",
-                    &ControlCommand::Stop {
+                PostedInput::control(APP, "stop-1", ControlCommand::Stop {
                         reason: Some("user".into()),
                     },
                 ),
@@ -57,8 +55,7 @@ async fn stop_before_any_run_finishes_without_inference() {
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
-        &Input::control("s", &ControlCommand::Stop { reason: None }),
-        APP,
+        &PostedInput::control(APP, "s", ControlCommand::Stop { reason: None }),
     )
     .await
     .unwrap();
@@ -70,53 +67,84 @@ async fn stop_before_any_run_finishes_without_inference() {
     assert_eq!(sd.state().unwrap().outcome, Some(Outcome::Stopped));
 }
 
-#[tokio::test]
-async fn change_is_injected_at_the_observation_boundary() {
-    let env = Env::new();
-    let mut spec = work_spec("watch the camera");
-    spec.subscriptions.push(Subscription {
+fn camera_subscription(mode: SubscriptionMode) -> Subscription {
+    Subscription {
         id: "s2".into(),
-        mode: SubscriptionMode::Semi,
+        mode,
         source: SubscriptionSource::ObjectEvent {
             object: "https://cam/01".into(),
-            event: "motion".into(),
+            event: String::new(),
         },
         watch: vec![],
-    });
+    }
+}
+
+fn camera_event(key: &str, seq: u64, summary: &str) -> PostedInput {
+    event(key, Some("s2"), "object", "https://cam/01", Some(seq), summary)
+}
+
+/// Observe events received during a run are merged and saved, never
+/// injected by themselves; the next controlled input shows them as the
+/// semi-subscription snapshot, in front of its own message, as one batch.
+#[tokio::test]
+async fn semi_events_wait_for_the_next_controlled_input() {
+    let env = Env::new();
+    let mut spec = work_spec("watch the camera");
+    spec.end_condition = EndCondition {
+        kind: EndConditionType::MaxTurns,
+        detail: json!({ "n": 2 }),
+    };
+    spec.subscriptions.push(camera_subscription(SubscriptionMode::Semi));
     let sd = env.create_work(spec).await;
     let (qd, q) = (env.queue_dir.clone(), queue_of(&sd));
     let llm = ScriptedLlm::new(move |req, n| match n {
         0 => {
-            // Two progress changes with one key (coalesced) + nothing else.
-            for v in ["evt1", "evt2"] {
+            // Two versions of one source: the newer replaces the older.
+            for v in [1u64, 2] {
                 post_blocking(
                     &qd,
                     &q,
-                    Input::change(
-                        "cam01#motion",
-                        json!({ "text": format!("motion at door ({v})"), "subscription": "s2", "version": v }),
-                    ),
+                    camera_event(&format!("cam:{v}"), v, &format!("motion at door (v{v})")),
                 );
             }
             tool_call("c1", "shell", json!({ "command": "true" }))
         }
-        _ => {
-            let u = last_user_text(req);
-            assert!(u.contains("motion at door (evt2)"), "{u}");
-            assert!(!u.contains("evt1"), "coalesced: {u}");
+        1 => {
+            let all = render(&req.messages);
+            assert!(!all.contains("motion at door"), "nothing is injected mid-run: {all}");
             text("noted")
         }
+        _ => {
+            let users = user_texts(req);
+            let n = users.len();
+            assert!(users[n - 2].starts_with("<semi_subscription_snapshot>"), "{users:?}");
+            assert!(users[n - 2].contains("motion at door (v2)"), "{users:?}");
+            assert!(!users[n - 2].contains("(v1)"), "replaced versions are not replayed");
+            assert!(users[n - 1].contains("what happened?"), "{users:?}");
+            text("the door moved")
+        }
     });
-    let r = drive(&sd, &env.deps(llm.clone()), StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
+    let deps = env.deps(llm.clone());
+    let r = drive(&sd, &deps, StopWhen::Idle).await;
+    assert!(matches!(r, libopendan::runner::DriveResult::Idle { .. }), "{r:?}");
     assert_eq!(llm.count(), 2);
     let st = sd.state().unwrap();
-    assert_eq!(
-        st.source("q").acked_index,
-        2,
-        "both change deliveries consumed"
-    );
-    assert_eq!(st.subscription_cursors["s2"]["version"], json!("evt2"));
+    assert_eq!(st.source("q").acked_index, 2, "both deliveries consumed when saved");
+    assert_eq!(st.pending_events.len(), 1);
+    let p = &st.pending_events[0];
+    assert_eq!(p.latest.as_ref().unwrap().key, "cam:2");
+    assert_eq!(p.superseded, 1);
+    // Idle keeps the state; a semi event alone never triggers inference.
+    drive(&sd, &deps, StopWhen::Idle).await;
+    assert_eq!(llm.count(), 2);
+    assert_eq!(sd.state().unwrap().pending_events.len(), 1);
+    libopendan::post_input(env.agent().as_ref(), sd.sid(), &msg("what happened?"))
+        .await
+        .unwrap();
+    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
+    assert_eq!(llm.count(), 3);
+    let st = sd.state().unwrap();
+    assert!(st.pending_events.is_empty(), "cleared by the batch that injected it");
     let wl = read_worklog(&sd);
     let users: Vec<String> = wl
         .iter()
@@ -125,25 +153,121 @@ async fn change_is_injected_at_the_observation_boundary() {
             _ => None,
         })
         .collect();
-    assert_eq!(users.len(), 2, "{users:?}");
-    assert!(users[1].contains("evt2"));
-    assert!(wl
+    assert_eq!(users.len(), 3, "{users:#?}");
+    assert!(users[1].starts_with("<semi_subscription_snapshot>"));
+    // The snapshot is part of the second Turn's batch, not a Turn of its own.
+    assert_eq!(count(&kinds(&wl), "turn_started"), 2);
+    let started: Vec<&WorklogBody> = wl
         .iter()
-        .any(|e| matches!(&e.body, WorklogBody::ChangeDropped { .. })));
-    // The observation joined the Turn: one more user message, no new Turn,
-    // no input_batch marker.
-    let k = kinds(&wl);
-    assert_eq!(count(&k, "turn_started"), 1);
-    assert_eq!(count(&k, "input_batch"), 0);
-    let turns: Vec<u64> = wl
-        .iter()
-        .filter_map(|e| match &e.body {
-            WorklogBody::UserMessage { turn, .. } => Some(*turn),
-            _ => None,
-        })
+        .map(|e| &e.body)
+        .filter(|b| matches!(b, WorklogBody::TurnStarted { .. }))
         .collect();
-    assert_eq!(turns, vec![1, 1]);
-    assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
+    assert!(
+        matches!(started[1], WorklogBody::TurnStarted { events, inputs, .. } if events == &vec!["cam:2".to_string()] && inputs.len() == 1)
+    );
+}
+
+/// The same event for an active and a semi subscription; an event nobody
+/// subscribed to is dropped (consumed, never in the context or pending).
+#[tokio::test]
+async fn events_are_routed_by_subscription() {
+    let env = Env::new();
+    // active: the event is an Input and starts a Turn.
+    let mut spec = work_spec("react to the camera");
+    spec.end_condition = EndCondition {
+        kind: EndConditionType::MaxTurns,
+        detail: json!({ "n": 2 }),
+    };
+    spec.subscriptions.push(camera_subscription(SubscriptionMode::Active));
+    let sd = env.create_work(spec).await;
+    let llm = ScriptedLlm::new(|req, n| {
+        if n == 1 {
+            let u = last_user_text(req);
+            assert!(
+                u.contains("<event key=\"cam:1\" subscription=\"s2\" source=\"object:https://cam/01\" event=\"changed\" seq=\"1\">motion</event>"),
+                "{u}"
+            );
+        }
+        text("ok")
+    });
+    let deps = env.deps(llm.clone());
+    drive(&sd, &deps, StopWhen::Idle).await;
+    let agent = env.agent();
+    libopendan::post_input(agent.as_ref(), sd.sid(), &camera_event("cam:1", 1, "motion"))
+        .await
+        .unwrap();
+    // Unsubscribed sources: dropped, timers and system events included.
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &event("t:1", None, "timer", "nightly", None, "tick"),
+    )
+    .await
+    .unwrap();
+    libopendan::post_input(
+        agent.as_ref(),
+        sd.sid(),
+        &event("x:1", Some("nope"), "object", "https://cam/01", None, "wrong subscription"),
+    )
+    .await
+    .unwrap();
+    assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
+    assert_eq!(llm.count(), 2);
+    let st = sd.state().unwrap();
+    assert_eq!(st.source("q").acked_index, 3);
+    let wl = read_worklog(&sd);
+    let dropped: Vec<&WorklogBody> = wl
+        .iter()
+        .map(|e| &e.body)
+        .filter(|b| matches!(b, WorklogBody::EventDropped { reason, .. } if reason == "unsubscribed"))
+        .collect();
+    assert_eq!(dropped.len(), 2, "{wl:#?}");
+}
+
+/// event A → unsubscribe → event B of one source: A is handled by the
+/// subscription valid at its position, the unsubscribe removes state not
+/// injected yet, B is dropped.
+#[tokio::test]
+async fn subscription_changes_take_effect_in_delivery_order() {
+    let env = Env::new();
+    for mode in [SubscriptionMode::Active, SubscriptionMode::Semi] {
+        let mut spec = work_spec("ordering");
+        spec.end_condition = EndCondition {
+            kind: EndConditionType::MaxTurns,
+            detail: json!({ "n": 3 }),
+        };
+        spec.subscriptions.push(camera_subscription(mode));
+        let sd = env.create_work(spec).await;
+        let llm = ScriptedLlm::new(|req, n| {
+            if n == 1 {
+                let all = user_texts(req).join("\n");
+                assert!(!all.contains("event B"), "{all}");
+            }
+            text("ok")
+        });
+        let deps = env.deps(llm.clone());
+        drive(&sd, &deps, StopWhen::Idle).await;
+        let agent = env.agent();
+        for input in [
+            camera_event("cam:a", 1, "event A"),
+            PostedInput::control(APP, "unsub-1", ControlCommand::Unsubscribe { id: "s2".into() }),
+            camera_event("cam:b", 2, "event B"),
+        ] {
+            libopendan::post_input(agent.as_ref(), sd.sid(), &input).await.unwrap();
+        }
+        drive(&sd, &deps, StopWhen::Idle).await;
+        let st = sd.state().unwrap();
+        assert_eq!(st.source("q").acked_index, 3, "{mode:?}");
+        assert!(st.pending_events.is_empty(), "{mode:?}: unsubscribe removed the saved state");
+        match mode {
+            // A was accepted as an Input before the unsubscribe.
+            SubscriptionMode::Active => {
+                assert_eq!(llm.count(), 2);
+                assert!(llm.transcript(1).contains("event A"));
+            }
+            SubscriptionMode::Semi => assert_eq!(llm.count(), 1),
+        }
+    }
 }
 
 #[tokio::test]
@@ -170,7 +294,10 @@ async fn semi_subscribed_session_change_is_pulled_by_rev() {
     let b = env.create_work(spec).await;
     let a_sid = a.sid().to_string();
     let llm = ScriptedLlm::new(move |req, _| {
-        let u = last_user_text(req);
+        // A's state arrives as the snapshot message in front of `on_init`.
+        let users = user_texts(req);
+        assert_eq!(users.len(), 2, "{users:?}");
+        let u = &users[0];
         assert!(u.contains(&a_sid) && u.contains("finished"), "{u}");
         text("B done")
     });
@@ -267,9 +394,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
         }
     });
     let decide = |d: &str| {
-        Input::control(
-            format!("decide-{d}"),
-            &ControlCommand::Decide {
+        PostedInput::control(APP, format!("decide-{d}"), ControlCommand::Decide {
                 decision: d.into(),
                 by: "did:user:alice".into(),
                 note: None,
@@ -292,7 +417,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             .state,
         VersionState::Produced
     );
-    libopendan::post_input(agent.as_ref(), a.sid(), &decide("accept"), APP)
+    libopendan::post_input(agent.as_ref(), a.sid(), &decide("accept"))
         .await
         .unwrap();
     assert!(drive(&a, &env.deps(llm.clone()), StopWhen::Idle)
@@ -325,7 +450,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
             .base,
         Some(va.clone())
     );
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP)
+    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"))
         .await
         .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
@@ -340,7 +465,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
         Some(vb.clone())
     );
     // Discarding A later does not override B's head.
-    libopendan::post_input(agent.as_ref(), a.sid(), &decide("discard"), APP)
+    libopendan::post_input(agent.as_ref(), a.sid(), &decide("discard"))
         .await
         .unwrap();
     drive(&a, &env.deps(llm.clone()), StopWhen::Idle).await;
@@ -359,7 +484,7 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
     assert_eq!(rep["workspace"], json!("unsupported"));
     assert!(!rep["unsupported"].as_array().unwrap().is_empty(), "{rep}");
     // Discarding B: its base A is discarded → no valid ancestor → null.
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("discard"), APP)
+    libopendan::post_input(agent.as_ref(), b.sid(), &decide("discard"))
         .await
         .unwrap();
     drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
@@ -390,30 +515,24 @@ async fn decide_accept_and_discard_move_the_artifact_head() {
         2,
         "{kinds:?}"
     );
-    // Re-posting the same dedup key is dropped silently…
-    libopendan::post_input(agent.as_ref(), b.sid(), &decide("accept"), APP)
-        .await
-        .unwrap();
-    drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
-    assert_eq!(read_worklog(&b).last().unwrap().body.kind(), "decide");
-    // …a new accept after discard is rejected (logged), not applied.
-    let again = Input::control(
-        "decide-accept-2",
-        &ControlCommand::Decide {
+    // Discarded is final: B gave its queue back and any decide is refused
+    // up front (a finished session takes no more input).
+    let q = queue_of(&b);
+    assert!(env.channels().client().get_queue_stats(&q).await.is_err(), "queue released");
+    let again = PostedInput::control(APP, "decide-accept-2", ControlCommand::Decide {
             decision: "accept".into(),
             by: "did:user:alice".into(),
             note: None,
         },
     );
-    libopendan::post_input(agent.as_ref(), b.sid(), &again, APP)
-        .await
-        .unwrap();
-    drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await;
+    for d in [decide("accept"), again] {
+        let err = libopendan::post_input(agent.as_ref(), b.sid(), &d).await.unwrap_err();
+        assert!(matches!(err, libopendan::OpenDanError::SessionFinished(_)), "{err}");
+    }
+    let n = read_worklog(&b).len();
+    assert!(drive(&b, &env.deps(llm.clone()), StopWhen::Idle).await.is_finished());
     assert_eq!(b.state().unwrap().acceptance, Acceptance::Discarded);
-    assert_eq!(
-        read_worklog(&b).last().unwrap().body.kind(),
-        "input_rejected"
-    );
+    assert_eq!(read_worklog(&b).len(), n);
 }
 
 #[tokio::test]
@@ -425,15 +544,12 @@ async fn decide_before_finish_waits_as_pending_decision() {
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
-        &Input::control(
-            "d",
-            &ControlCommand::Decide {
+        &PostedInput::control(APP, "d", ControlCommand::Decide {
                 decision: "accept".into(),
                 by: "did:user:alice".into(),
                 note: None,
             },
         ),
-        APP,
     )
     .await
     .unwrap();
@@ -471,9 +587,7 @@ async fn activity_control_and_perception_inputs_are_applied() {
             post_blocking(
                 &qd,
                 &q,
-                Input::control(
-                    "act-1",
-                    &ControlCommand::Activity {
+                PostedInput::control(APP, "act-1", ControlCommand::Activity {
                         summary: Some("editing collision".into()),
                         touch: vec![Touching {
                             kind: "path".into(),
@@ -488,9 +602,15 @@ async fn activity_control_and_perception_inputs_are_applied() {
             post_blocking(
                 &qd,
                 &q,
-                Input::perception(
+                PostedInput::control(
+                    APP,
                     "p-1",
-                    json!({ "kind": "observation", "summary": "the door is red", "tags": ["door"] }),
+                    ControlCommand::Perceive {
+                        kind: "observation".into(),
+                        summary: "the door is red".into(),
+                        tags: vec!["door".into()],
+                        objects: vec![],
+                    },
                 ),
             );
             tool_call(
@@ -565,7 +685,7 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
             1 => text("<response><thinking>need research</thinking><next_behavior>research</next_behavior></response>"),
             2 => {
                 assert!(all.contains("p1-output"), "child inherits parent steps:\n{all}");
-                assert!(all.contains("behavior_switch to=\"research\""), "{all}");
+                assert!(all.contains("context_switch to=\"research\""), "{all}");
                 text("<response><actions><shell><![CDATA[echo r1-output]]></shell></actions></response>")
             }
             3 => text("<response><report><![CDATA[research result X]]></report></response>"),
@@ -724,7 +844,7 @@ async fn invalid_behavior_table_is_refused_before_anything_runs() {
         (json!({ "do": { "mode": "normal" } }), "unknown mode"),
         (json!({ "do": {} }), "missing mode"),
         (
-            json!({ "do": { "mode": "fork", "system_prompt": "other" } }),
+            json!({ "do": { "mode": "fork", "prompt": { "system": "other" } } }),
             "fork with its own system",
         ),
         (
@@ -772,8 +892,8 @@ async fn switch_context_targets_keep_their_own_system_and_history() {
     let mut spec = behavior_spec(
         "do and check",
         json!({
-            "do": { "mode": "switch_context", "system_prompt": "SYSTEM-DO" },
-            "check": { "mode": "switch_context", "system_prompt": "SYSTEM-CHECK" }
+            "do": { "mode": "switch_context", "prompt": { "system": "SYSTEM-DO" } },
+            "check": { "mode": "switch_context", "prompt": { "system": "SYSTEM-CHECK" } }
         }),
     );
     spec.prompt.behavior = Some("do".into());
@@ -790,7 +910,7 @@ async fn switch_context_targets_keep_their_own_system_and_history() {
             2 => {
                 assert!(sys.contains("SYSTEM-CHECK") && !sys.contains("SYSTEM-DO"), "{sys}");
                 assert!(!all.contains("do-1"), "DO's history is not CHECK's:\n{all}");
-                assert!(all.contains("behavior_switch to=\"check\""), "{all}");
+                assert!(all.contains("context_switch to=\"check\""), "{all}");
                 text("<response><actions><shell><![CDATA[echo check-1]]></shell></actions></response>")
             }
             3 => text("<response><next_behavior>do</next_behavior></response>"),
@@ -844,7 +964,7 @@ async fn create_sub_context_uses_its_own_system_and_selected_history() {
         let sd = env
             .create_work(behavior_spec(
                 "plan then do",
-                json!({ "do": { "mode": "create_sub_context", "system_prompt": "SYSTEM-DO", "inherit": inherit } }),
+                json!({ "do": { "mode": "create_sub_context", "prompt": { "system": "SYSTEM-DO" }, "inherit": inherit } }),
             ))
             .await;
         let llm = ScriptedLlm::new(move |req, n| {
@@ -949,7 +1069,6 @@ async fn tmux_runtime_runs_exec_in_the_session_pane() {
     let rt = std::sync::Arc::new(libopendan::runtime::TmuxRuntime::from_config(
         agent_tool::runtime::RuntimeConfig {
             kind: Some("tmux".into()),
-            id: Some("rt-test-tmux".into()),
             tmux: Some(agent_tool::runtime::TmuxConfig {
                 session: Some(libopendan::runtime::tmux::tmux_session_name(sd.sid())),
                 ..Default::default()
@@ -986,7 +1105,7 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
         mode: SubscriptionMode::Semi,
         source: SubscriptionSource::ObjectEvent {
             object: "o".into(),
-            event: "e".into(),
+            event: String::new(),
         },
         watch: vec![],
     });
@@ -996,7 +1115,7 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text("<response><next_behavior>WAIT_USER_MSG</next_behavior></response>"),
         _ => {
-            let u = last_user_text(req);
+            let u = user_texts(req).join("\n");
             assert!(u.contains("door opened") && u.contains("hello"), "{u}");
             text("<response><report><![CDATA[ok]]></report></response>")
         }
@@ -1018,8 +1137,7 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
-        &Input::change("door", json!({"text": "door opened", "subscription": "s2"})),
-        APP,
+        &event("door", Some("s2"), "object", "o", None, "door opened"),
     )
     .await
     .unwrap();
@@ -1031,7 +1149,7 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
     );
     // A message makes a batch; the change rides along; it joins the Turn
     // that is still waiting for its input.
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m1", "hello"), APP)
+    libopendan::post_input(agent.as_ref(), sd.sid(), &msg("hello"))
         .await
         .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
@@ -1056,7 +1174,7 @@ async fn switch_across_drives_runs_the_next_behavior() {
     let llm = ScriptedLlm::new(|req, n| match n {
         0 => text("<response><next_behavior>do</next_behavior></response>"),
         _ => {
-            assert!(render(&req.messages).contains("behavior_switch to=\"do\""));
+            assert!(render(&req.messages).contains("context_switch to=\"do\""));
             text("<response><report><![CDATA[both phases done]]></report></response>")
         }
     });
@@ -1107,7 +1225,7 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
         let all = render(&req.messages);
         if all.contains("second request") {
             text("<response><report><![CDATA[answer two]]></report></response>")
-        } else if all.contains("behavior_switch to=\"do\"") {
+        } else if all.contains("context_switch to=\"do\"") {
             text("<response><report><![CDATA[answer one]]></report></response>")
         } else {
             text("<response><next_behavior>do</next_behavior></response>")
@@ -1134,8 +1252,7 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
     libopendan::post_input(
         agent.as_ref(),
         sd.sid(),
-        &Input::msg("m2", "second request"),
-        APP,
+        &msg("second request"),
     )
     .await
     .unwrap();
@@ -1165,11 +1282,11 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
         let all = render(&req.messages);
         if all.contains("research result X") {
             text("<response><report><![CDATA[final answer]]></report></response>")
-        } else if all.contains("behavior_switch to=\"research\"") {
+        } else if all.contains("context_switch to=\"research\"") {
             post_blocking(
                 &qd,
                 &q,
-                Input::control("stop-1", &ControlCommand::Stop { reason: None }),
+                PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
             );
             text("<response><report><![CDATA[research result X]]></report></response>")
         } else {

@@ -2,14 +2,25 @@
 //!
 //! The runtime never scans the whole file: reads go backwards from the
 //! committed end and stop at the summary start offset (or when the caller has
-//! enough). The only forward read is compaction's bounded range.
+//! enough). Forward reads serve compaction, audit, and incremental pages.
 
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+
+use serde::Serialize;
 
 use crate::error::Result;
 use crate::fsutil::{self, ReverseLines};
 use crate::lock::Lease;
 use crate::protocol::{WorklogBody, WorklogEntry};
+
+#[derive(Debug, Serialize)]
+pub struct WorklogPage {
+    pub entries: Vec<WorklogEntry>,
+    pub next_before: Option<u64>,
+    pub next_after: u64,
+}
 
 #[derive(Debug, Clone)]
 pub struct Worklog {
@@ -71,6 +82,69 @@ impl Worklog {
             }
         }
         Ok(out)
+    }
+
+    pub fn page(
+        &self,
+        committed: u64,
+        turn: u64,
+        before: Option<u64>,
+        after: Option<u64>,
+        limit: usize,
+    ) -> Result<WorklogPage> {
+        use crate::error::OpenDanError;
+        if (before.is_some() && after.is_some()) || limit == 0 || limit > 200 {
+            return Err(OpenDanError::InvalidArgument("invalid worklog page options".into()));
+        }
+        let cursor = before.or(after).unwrap_or(committed);
+        if cursor > committed {
+            return Err(OpenDanError::InvalidArgument("worklog cursor exceeds committed history".into()));
+        }
+        let io = |e| OpenDanError::io(&self.path, e);
+        let mut file = File::open(&self.path).map_err(io)?;
+        if cursor > 0 {
+            file.seek(SeekFrom::Start(cursor - 1)).map_err(io)?;
+            let mut byte = [0];
+            file.read_exact(&mut byte).map_err(io)?;
+            if byte[0] != b'\n' {
+                return Err(OpenDanError::InvalidArgument("worklog cursor is not a record boundary".into()));
+            }
+        }
+        let mut entries = Vec::new();
+        if after.is_some() {
+            file.seek(SeekFrom::Start(cursor)).map_err(io)?;
+            let mut reader = BufReader::new(file.take(committed - cursor));
+            let mut offset = cursor;
+            let mut line = Vec::new();
+            for _ in 0..2000 {
+                line.clear();
+                let len = reader.read_until(b'\n', &mut line).map_err(io)?;
+                if len == 0 { break; }
+                offset += len as u64;
+                let entry: WorklogEntry = serde_json::from_slice(&line)
+                    .map_err(|e| OpenDanError::json(&self.path, e))?;
+                if entry.body.turn() == Some(turn) { entries.push(entry); }
+                if entries.len() == limit { break; }
+            }
+            return Ok(WorklogPage { entries, next_before: None, next_after: offset });
+        }
+        let mut reader = self.reverse(cursor, 0)?;
+        let mut offset = cursor;
+        for _ in 0..2000 {
+            let Some((start, entry)) = reader.next_json::<WorklogEntry>()? else {
+                offset = 0;
+                break;
+            };
+            offset = start;
+            if entry.body.turn().is_some_and(|t| t < turn) {
+                offset = 0;
+                break;
+            }
+            if entry.body.turn() == Some(turn) { entries.push(entry); }
+            if entries.len() == limit { break; }
+        }
+        entries.reverse();
+        Ok(WorklogPage { entries, next_before: (offset > 0).then_some(offset), next_after: committed })
     }
 
     /// Bounded forward read of `[start, end)` (compaction / audit).

@@ -214,6 +214,7 @@ mod canonical_contract_tests {
             vec![
                 AiContent::text("answer"),
                 AiContent::Thinking {
+                    source: ProviderStateCoordinate::unbound(),
                     summary: Some("summary".to_string()),
                     text: None,
                     provider_metadata: Some(json!({"signature": "opaque"})),
@@ -2289,6 +2290,11 @@ pub enum AiContent {
     /// `provider_metadata` holds per-provider signature/state bits that
     /// aren't worth a dedicated field.
     Thinking {
+        /// Provider instance + model that produced the block. AICC binds it
+        /// on every response and only replays the block to that same source;
+        /// an unbound or foreign block is dropped from the request.
+        #[serde(default = "ProviderStateCoordinate::unbound")]
+        source: ProviderStateCoordinate,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         summary: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3021,6 +3027,8 @@ pub struct RouteResolveResponse {
 #[serde(deny_unknown_fields)]
 pub struct LlmChatInvokeRequest {
     pub exact_model: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub web_search: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
     #[serde(default)]
@@ -3169,6 +3177,7 @@ impl LlmChatInvokeRequest {
     pub fn new(exact_model: impl Into<String>, messages: Vec<AiMessage>) -> Self {
         Self {
             exact_model: exact_model.into(),
+            web_search: false,
             trace_id: None,
             execution_mode: AiccExecutionMode::Immediate,
             messages,

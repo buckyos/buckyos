@@ -24,6 +24,12 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
 
 ## 2. AppDoc v1
 
+`content_handlers` 是可选的声明数组；空数组规范化后省略，非空数组参与 AppDoc ObjectId 与签名。Web App 保留 `permissions`，访问仍须满足用户与 App 的权限交集。
+
+P0 支持 Content Extension `open`：声明包含 App 内唯一的 `handler_id`、正整数 `version`、非空 `selectors` 和 `intents.open`。入口必须是当前 App Web host 内的安全绝对路径，优先级为 0–80，Handler 权限是 App 权限的子集。CLI 打包时校验；scheduler 派生时再次校验，失败时跳过该 App 的全部 Handler 并记录诊断，不阻断安装。具体契约见 [Text Editor §5–7](../src/apps/text_editor/readme.md)。
+
+scheduler 从启用且未停止、未删除的 AppSpec 派生 `system/content_registry`，附加内建 Preview；投影不变则不写。注册表仅 scheduler 可写，用户和 App 可读；`users/{user}/content_defaults` 只允许该用户经系统 Shell 修改。卸载与停用通过 AppSpec 收敛移除 Handler。
+
 ### 2.1 完整 JSON Schema
 
 `AppDoc` flatten/inherit `BaseContentObject`，因此它仍是可以通过 Named Object/NDN 流转的内容对象；但它不再 inherit `PackageMeta`。以下 schema 冻结 AppDoc body。根对象、`SubPkgDesc`、selector、presentation、permission、endpoint、mount、bash env 和 instance volume 都拒绝未知字段；`service_config_tips` 为显式自定义配置保留 additional properties。
@@ -84,6 +90,7 @@ AppDoc ObjectId + spec_generation -> DeploymentIdentity
       "additionalProperties": { "type": "integer" },
       "default": {}
     },
+    "content_handlers": { "type": "array", "items": { "type": "object" }, "default": [] },
     "permissions": {
       "type": "array",
       "items": { "$ref": "#/$defs/permission" },
@@ -375,7 +382,7 @@ services/{app_instance_id}/instances/{node_id}
 
 `NodeConfig.apps` 的 key 是 AppInstanceId，不拼 NodeId。每个 value 携带一个完整 `NodeExecutionSpec v1`：AppInstanceId、AppDID、AppDoc ObjectId、spec generation、AppType、已选 exact package map、权限、ServiceSpecConfig 和 Registry 投影。它不嵌入完整 AppDoc/AppSpec。node-daemon 只读同一 NodeConfig revision 即可执行，禁止回读 AppSpec、AppDoc 或 Registry 来补字段。
 
-beta 2.2 bootstrap 先创建空 Registry，并把普通预装 App 仅保存为 `system/install_settings` 中的 `PreInstallPlanSeed`；builder 不读取 PIKG、不创建普通 App 的 Task、execution record、AppSpec 或 Registry allocation。Control Panel 登录且安装 runner 启动后，将 rootfs PIKG 复制到 immutable staging，以 `LocalPikg + SystemInternal + auto_confirm` 走标准 Installer。仅这个内部入口可把已经过结构、AppDID、structural owner 和 canonical AppDoc ObjectId 校验的 rootfs AppDoc 注册为进程内 `LocalAuthorityOverride`；该 override 不写普通 cache、不暴露给公共 RPC。运行时 Inspect 生成完整 immutable `InstallPlan` 后才提交 Scheduler。PIKG 缺失或损坏只形成 Control Panel 的后台预装错误，不阻断 kernel boot。Jarvis runtime 暂由独立的 internal Agent bootstrap helper 处理，不复用普通预装配置。
+beta 2.2 bootstrap 先创建空 Registry，并把普通预装 App 仅保存为 `system/install_settings` 中的 `PreInstallPlanSeed`；builder 不读取 PIKG、不创建普通 App 的 Task、execution record、AppSpec 或 Registry allocation。Control Panel 登录且安装 runner 启动后，将 rootfs PIKG 复制到 immutable staging，以 `LocalPikg + SystemInternal + auto_confirm` 走标准 Installer。仅这个内部入口可把已经过结构、AppDID、structural owner 和 canonical AppDoc ObjectId 校验的 rootfs AppDoc 注册为进程内 `LocalAuthorityOverride`；该 override 不写普通 cache、不暴露给公共 RPC。运行时 Inspect 生成完整 immutable `InstallPlan` 后才提交 Scheduler。用户卸载后保留的 `Deleted` AppSpec 优先于预装种子：reconciler 记录 `action: user_removed`、清空错误并停止该种子的预装；种子升级或 PIKG 缺失也不重新安装。PIKG 缺失或损坏只形成 Control Panel 的后台预装错误，不阻断 kernel boot。Jarvis runtime 暂由独立的 internal Agent bootstrap helper 处理，不复用普通预装配置。
 
 ## 5. InstallPlan execution protocol
 

@@ -341,8 +341,8 @@ Tunnel 需要接收和发送的消息/事件类型及其标准表达：
 ### 7.1 共享 / 成员状态与 Action Log（数据层目标契约，待实现）
 
 统一字段见 [Session State and Action Log.md](<./Session State and Action Log.md>)。
-当前 Telegram `TgUiSessionTracker` 已同步 active / typing / status_line；这属于临时运行态，
-尚不等于整体状态、每成员状态或统一 Action Log 已实现。
+Telegram tunnel 不再同步 active / typing / status_line 运行态（`TgUiSessionTracker` 已删除）；
+整体状态、每成员状态或统一 Action Log 均未实现。
 
 - tunnel 需分别声明整体状态 / 成员状态的可读可写字段与事件来源能力，不能用 `egress=true` 代表可修改群资料。
   本轮只定义要求，§12 的现有 capability 与代码待实现阶段扩展。
@@ -359,10 +359,9 @@ Tunnel 需要接收和发送的消息/事件类型及其标准表达：
 流式输出与可靠投递的边界：
 
 - `MsgObject` 不可变，不能把一个对象改写成流式 token。
-- typing / partial / status_line 属于 **SessionState**（易失通道）；平台支持编辑的，tunnel 可把中间态渲染为消息编辑；不支持的降级为 typing 指示或只发最终消息。
-- 中间态必须带同一 `thread.topic` 或 session 关联键，带 `turn_nonce`/`correlation_id`。
-- **只有最终回复**是 `kind=Chat/GroupMsg` 的 `MsgObject`，进入正常 `post_send` 流水。
-- 中间态**永不产生** `MailboxRecord` 或 `DeliveryRecord`。
+- typing / partial 属于 **SessionState**（易失通道），**永不产生** `MailboxRecord` 或 `DeliveryRecord`。tunnel 目前不消费它们。
+- “占位 → 最终回复”不走易失通道：占位与最终回复都是普通 `MsgObject`，最终回复用 `relates_to = { rel: edit, target: <占位 ObjId> }` 指向占位，进入正常 `post_send` 流水。发送方在发占位前用 `msg.get_edit_capability` 查询出站目标是否可编辑（§12.1），不可编辑或未知就不发占位，只发最终回复。
+- 旧的 Telegram status_line / `turn_nonce` 状态消息链路已删除，不存在第二套占位机制。
 
 ## 9. 可操作与第三方应用消息
 
@@ -405,6 +404,7 @@ Agent 链路: 触发消息 → Agent session/worklog → post_send msg_id
 - Bot/User 账号由 tunnel 实例配置表达；`tunnel_instance_id` 如 `tg-main-tunnel`。
 - 入站：update 去重 → 标准化 → `dispatch`；`tg_message_id/chat_type` 等入 ingress 元数据与 `ext_ids`；附件对象化后 `refs` 引用。
 - 出站：消费 `DeliveryRecord`；地址完全来自 envelope；**没有 `default_chat_id` fallback**。
+- 编辑：声明 `EditCapability { supported: true, text_only: true }`；`relates_to=edit` 落到 `editMessageText`，流程见 §12.1。
 - 平台裁剪：Bot 主动私聊受限、群/频道能力不同、部分消息只能保留 raw payload。
 - 错误分类：429 → retryable（带 retry_after）；400/403 → `DEAD`；超时 → retryable + duplicate risk。
 
@@ -439,6 +439,30 @@ pub struct MessageTunnelCapability {
 ```
 
 capability 挂在 tunnel registry 条目上，供管理界面与平台裁剪使用；**不参与投递决策**（决策已在 `post_send` 前由用户/Agent 显式完成）。
+上面的结构是目标形态；当前代码里 `DeliveryExecutor` 只声明 ingress / egress 与下面的编辑能力。
+
+### 12.1 编辑能力与通用 edit（已实现）
+
+`DeliveryExecutor::edit_capability()` 声明 `EditCapability { supported, edit_window_ms, text_only }`：目标是否允许发送方编辑自己已投递的消息、平台编辑时间窗、是否只能原地替换文本。这是目标的属性，发送前即可知；某一条消息此刻能否编辑只有执行时才知道，由 `EditFailure { WindowExpired, OriginalMissing, NotReplaceable }` 表达。
+
+`msg.get_edit_capability(msg)`（Rust：`MsgCenterClient::get_edit_capability`）接收将要发送的出站信封，按 **`post_send` 同一套路由规划**逐目标回答，不发送、不落库，返回 `MsgEditCapability { editable, reason?, edit_window_ms?, text_only }`：
+
+| 出站目标 | 回答 |
+|---|---|
+| 原生私聊（MessageHub） | 可编辑 |
+| 本 Zone 托管的群 | 群规则 `edit.edit_window_ms` 为空则可编辑；非空一律不可编辑（`group edit window`） |
+| 由其他 Zone 托管的群 | 规则不在本地，`unknown`，不可编辑 |
+| 经 tunnel 出站 | 取该 tunnel 声明的能力；未声明为 `unknown`，声明不支持为 `tunnel:<platform> unsupported` |
+| 无法规划路由 | 不可编辑，reason 为规划失败原因 |
+
+多个目标时全部可编辑才算可编辑；`text_only` 取并集，`edit_window_ms` 取最小值。
+
+tunnel 收到 `relates_to.rel = edit` 的出站消息时必须落到平台编辑 API，**禁止把 edit 正文当成新消息发出**。Telegram 的实现：
+
+1. 用（原消息 ObjId, target, transport）算出原消息的 `delivery_id`，读取其 `DeliveryRecord.external_msg_id`。原消息仍在投递中则本次返回可重试失败（`edit_original_pending`）。
+2. 调用平台编辑 API。暂时失败（网络、限流、5xx、结果未知）按同一 `delivery_id` 重试同一个编辑；重试得到 “message is not modified” 视为成功，覆盖“编辑成功但 ACK 丢失”。
+3. 平台明确拒绝（时间窗过期、原消息不存在、内容无法原地替换）或原消息从未送达：进入兜底，发送一条普通最终消息。兜底状态（待发送 / 已发送及其外部消息 ID）先写入 tunnel 的持久 KV 再执行，重试或重启不会再次编辑，也不会发第二条。
+4. edit 带附件（`text_only`）：文本原地替换，附件用一条独立消息补发一次，同样受兜底状态保护。
 
 账号类型（Bot/User/System）同样是实例配置与能力声明的一部分，影响平台行为边界，不影响协议。
 
@@ -457,7 +481,7 @@ capability 挂在 tunnel registry 条目上，供管理界面与平台裁剪使�
 
 ### 13.3 降级策略
 
-- 消息编辑 → 新消息或状态消息；typing → 无操作；read receipt → 本地状态。
+- 消息编辑 → 平台不支持时由发送方按 `msg.get_edit_capability` 降级为只发最终消息；支持但单条编辑被拒绝时 tunnel 兜底发一次普通消息（§12.1）。typing → 无操作；read receipt → 本地状态。
 - operation → 文本摘要 + raw payload。
 - 附件上传失败 → retryable failure，不静默丢弃。
 

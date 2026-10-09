@@ -937,6 +937,7 @@ function LiveInstallTask(
         setSnapshot(status)
         setError(null)
         terminal = status.task_phase === 'Terminal'
+        if (terminal) window.dispatchEvent(new Event('buckyos-apps-changed'))
       } catch (cause) {
         if (active) {
           setError(cause instanceof Error ? cause.message : String(cause))

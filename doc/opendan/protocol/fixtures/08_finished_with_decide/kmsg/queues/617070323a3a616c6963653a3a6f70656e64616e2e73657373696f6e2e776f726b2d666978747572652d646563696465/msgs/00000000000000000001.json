@@ -1,6 +1,6 @@
 {
   "index": 1,
-  "created_at": 1791024660,
+  "created_at": 1791134683,
   "payload": [
     123,
     34,
@@ -66,9 +66,10 @@
     125
   ],
   "headers": {
+    "schema": "opendan.session_input/3",
     "type": "control",
     "key": "d-1",
     "from": "app:app2@alice",
-    "at_ms": "1791024660586"
+    "at_ms": "1791134683054"
   }
 }

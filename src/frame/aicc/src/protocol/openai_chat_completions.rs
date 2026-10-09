@@ -1521,6 +1521,7 @@ fn finalize_stream(state: &mut ChatCompletionStreamState) -> ProtocolResultValue
     let mut content = Vec::new();
     if !state.thinking.is_empty() {
         content.push(AiContent::Thinking {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             summary: None,
             text: Some(std::mem::take(&mut state.thinking)),
             provider_metadata: None,
@@ -1706,6 +1707,7 @@ mod tests {
             Ok(ChatCompletionsImmediateExtensions {
                 content: vec![
                     AiContent::Thinking {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
                         summary: None,
                         text: Some(thinking),
                         provider_metadata: None,
@@ -1904,6 +1906,7 @@ mod tests {
                 AiMessage::new(
                     AiRole::Assistant,
                     vec![AiContent::Thinking {
+                        source: context("https://fake.example/v1").state_coordinate,
                         summary: None,
                         text: Some("prior thought".to_string()),
                         provider_metadata: None,
@@ -2193,6 +2196,7 @@ mod tests {
             vec![AiMessage::new(
                 AiRole::Assistant,
                 vec![AiContent::Thinking {
+                    source: buckyos_api::ProviderStateCoordinate::unbound(),
                     summary: Some("private reasoning".to_string()),
                     text: None,
                     provider_metadata: None,

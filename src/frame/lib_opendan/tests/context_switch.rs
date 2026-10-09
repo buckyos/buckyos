@@ -152,7 +152,7 @@ async fn tool_triggered_sub_context_has_its_own_system() {
     let sd = env
         .create_work(fc_spec(
             "delegate",
-            json!({ "do": { "mode": "create_sub_context", "system_prompt": "SYSTEM-DO",
+            json!({ "do": { "mode": "create_sub_context", "prompt": { "system": "SYSTEM-DO" },
                             "llm_context": { "tools": { "enabled": true } } } }),
         ))
         .await;
@@ -271,7 +271,7 @@ async fn returned_sub_context_transcript_stays_out_of_rebuilt_history() {
     let r = drive(&sd, &deps, StopWhen::Idle).await;
     assert!(!r.is_finished(), "{r:?}");
     let agent = env.agent();
-    libopendan::post_input(agent.as_ref(), sd.sid(), &Input::msg("m2", "again"), APP)
+    libopendan::post_input(agent.as_ref(), sd.sid(), &msg("again"))
         .await
         .unwrap();
     assert!(drive(&sd, &deps, StopWhen::Finished).await.is_finished());
@@ -302,7 +302,7 @@ async fn input_arriving_during_a_sub_context_goes_to_the_caller() {
         match n {
             0 => text("<response><next_behavior>do</next_behavior></response>"),
             1 => {
-                post_blocking(&qd, &q, Input::msg("m2", "extra-info from the user"));
+                post_blocking(&qd, &q, msg("extra-info from the user"));
                 text("<response><actions><shell><![CDATA[echo do-1]]></shell></actions></response>")
             }
             2 => {

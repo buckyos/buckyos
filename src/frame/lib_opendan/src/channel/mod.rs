@@ -4,7 +4,6 @@
 pub mod dir_queue;
 pub mod kmsg;
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -23,12 +22,27 @@ pub trait InputSource: Send + Sync {
     fn id(&self) -> &str;
     /// Deliveries after the committed progress that are not consumed yet
     /// (oldest first, at most `max`).
-    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<InputMessage>>;
+    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>>;
     /// Confirm (cumulative ack) the committed contiguous position. Always
     /// safe to repeat; never called with a position below a previous one.
     async fn confirm(&self, progress: &SourceProgress) -> Result<()>;
     /// Lowest index the source still holds (`None` = empty / unknown).
     async fn first_available(&self) -> Result<Option<u64>>;
+    /// `false` only when the service reports the source gone (a kmsg queue
+    /// whose data was lost while the session directory survived).
+    async fn exists(&self) -> Result<bool> {
+        Ok(true)
+    }
+    /// Create a missing source again under its fixed name; deliveries are
+    /// numbered from the start again.
+    async fn recreate(&self) -> Result<()> {
+        Ok(())
+    }
+    /// Give the source back: the session will not consume input any more
+    /// (a missing source counts as released).
+    async fn release(&self) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// Opens the input sources declared in `session_config.channels`.
@@ -78,13 +92,6 @@ impl InputChannelFactory for KmsgChannels {
                     &cfg.session.driver.principal,
                     self.client.clone(),
                 ))),
-                InputSourceConfig::MsgCenter { .. } => {
-                    // UI sessions / msg-center input are deferred (V1).
-                    return Err(OpenDanError::Channel(
-                        "msg_center inputs are not supported yet (UI sessions are deferred)"
-                            .into(),
-                    ));
-                }
             }
         }
         Ok(out)
@@ -92,50 +99,6 @@ impl InputChannelFactory for KmsgChannels {
 
     fn queue_client(&self) -> Option<Arc<MsgQueueClient>> {
         Some(self.client.clone())
-    }
-}
-
-/// Inputs fetched in one pass, grouped by kind.
-#[derive(Debug, Clone, Default)]
-pub struct Inputs {
-    pub items: Vec<InputMessage>,
-}
-
-impl Inputs {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    pub fn take(&mut self, kind: InputKind) -> Vec<InputMessage> {
-        let (taken, rest): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.items).into_iter().partition(|m| m.kind == kind);
-        self.items = rest;
-        taken
-    }
-
-    pub fn peek(&self, kind: InputKind) -> Vec<&InputMessage> {
-        self.items.iter().filter(|m| m.kind == kind).collect()
-    }
-
-    pub fn take_malformed(&mut self) -> Vec<InputMessage> {
-        let (taken, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.items)
-            .into_iter()
-            .partition(|m| m.malformed.is_some());
-        self.items = rest;
-        taken
-    }
-
-    pub fn extend(&mut self, other: Inputs) {
-        let mut seen: BTreeMap<(String, u64), ()> = self
-            .items
-            .iter()
-            .map(|m| ((m.src.clone(), m.index), ()))
-            .collect();
-        for m in other.items {
-            if seen.insert((m.src.clone(), m.index), ()).is_none() {
-                self.items.push(m);
-            }
-        }
     }
 }
 
@@ -208,4 +171,55 @@ pub struct NoopNotifier;
 #[async_trait]
 impl Notifier for NoopNotifier {
     async fn session_changed(&self, _sid: &str, _rev: u64) {}
+}
+
+/// Read-only source over `prompt.initial_inputs` ([`BOOTSTRAP_SRC`]): the
+/// bootstrap material of a session without an input queue. Index = position
+/// from 1; consumption is recorded in state like any source, confirming is a
+/// no-op.
+pub struct BootstrapSource {
+    records: Vec<PostedInput>,
+}
+
+impl BootstrapSource {
+    pub fn new(records: &[PostedInput]) -> Self {
+        Self {
+            records: records.to_vec(),
+        }
+    }
+}
+
+#[async_trait]
+impl InputSource for BootstrapSource {
+    fn id(&self) -> &str {
+        BOOTSTRAP_SRC
+    }
+
+    async fn fetch(&self, progress: &SourceProgress, max: usize) -> Result<Vec<FetchedInput>> {
+        Ok(self
+            .records
+            .iter()
+            .enumerate()
+            .map(|(i, r)| (i as u64 + 1, r))
+            .filter(|(index, _)| !progress.is_consumed(*index))
+            .take(max)
+            .map(|(index, r)| FetchedInput {
+                src: BOOTSTRAP_SRC.to_string(),
+                index,
+                kind: r.input.type_name().to_string(),
+                key: r.key.clone(),
+                from: r.from.clone(),
+                at_ms: r.at_ms,
+                input: Ok(r.input.clone()),
+            })
+            .collect())
+    }
+
+    async fn confirm(&self, _progress: &SourceProgress) -> Result<()> {
+        Ok(())
+    }
+
+    async fn first_available(&self) -> Result<Option<u64>> {
+        Ok((!self.records.is_empty()).then_some(1))
+    }
 }

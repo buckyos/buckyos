@@ -54,6 +54,7 @@ pub(super) fn openai_responses_adapter_with_reported_cost_currency(
                 [
                     buckyos_api::features::TOOL_CALL,
                     buckyos_api::features::JSON_SCHEMA,
+                    buckyos_api::features::WEB_SEARCH,
                     "reasoning",
                     buckyos_api::features::VISION,
                 ],
@@ -409,12 +410,13 @@ fn encode_responses_llm(
             ProtocolError::invalid_request(format!("invalid canonical message: {error}"))
         })?;
     }
-    if request.seed.is_some() || !request.stop.is_empty() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI Responses does not support canonical seed or stop parameters",
-        ));
-    }
+    call.context.ignore_unsupported_options(
+        "OpenAI Responses",
+        &[
+            ("seed", request.seed.is_some()),
+            ("stop", !request.stop.is_empty()),
+        ],
+    );
     let mut body = Map::new();
     body.insert("model".to_string(), Value::String(provider_model_id(call)?));
     body.insert(
@@ -931,6 +933,19 @@ fn apply_responses_parameters(
             apply_translation_options(body, value)?;
             continue;
         }
+        if name == buckyos_api::features::WEB_SEARCH {
+            let enabled = value.as_bool().ok_or_else(|| {
+                ProtocolError::invalid_request("resolved web_search must be a boolean")
+            })?;
+            if enabled {
+                body.entry("tools")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or_else(|| ProtocolError::invalid_request("tools must be an array"))?
+                    .push(json!({"type": "web_search"}));
+            }
+            continue;
+        }
         let valid = match name.as_str() {
             "background" | "parallel_tool_calls" | "store" | "stream" => value.is_boolean(),
             "include" => value
@@ -1053,17 +1068,16 @@ fn encode_responses_image_generate(
     request: &TextToImageInvokeRequest,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
-    if request.negative_prompt.is_some()
-        || request.seed.is_some()
-        || request.style.is_some()
-        || request.aspect_ratio.is_some()
-        || request.n.is_some_and(|count| count != 1)
-    {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI Responses image generation received an unsupported hard parameter",
-        ));
-    }
+    call.context.ignore_unsupported_options(
+        "OpenAI Responses image generation",
+        &[
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("seed", request.seed.is_some()),
+            ("style", request.style.is_some()),
+            ("aspect_ratio", request.aspect_ratio.is_some()),
+            ("n", request.n.is_some_and(|count| count != 1)),
+        ],
+    );
     let tool = image_generation_tool(
         request.size.as_deref(),
         request.quality.as_deref(),
@@ -1089,12 +1103,16 @@ fn encode_responses_image_edit(
     request: &ImageToImageRequest,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
-    if request.images.is_empty() || request.strength.is_some() {
+    if request.images.is_empty() {
         return Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI Responses image edit requires images and does not support strength",
+            "OpenAI Responses image edit requires images",
         ));
     }
+    call.context.ignore_unsupported_options(
+        "OpenAI Responses image edit",
+        &[("strength", request.strength.is_some())],
+    );
     let mut content = vec![json!({"type": "input_text", "text": request.prompt})];
     for image in &request.images {
         content.push(encode_input_image(image, call)?);
@@ -1268,6 +1286,7 @@ fn decode_response_item(
                 })
                 .filter(|text| !text.is_empty());
             blocks.push(AiContent::Thinking {
+                source: buckyos_api::ProviderStateCoordinate::unbound(),
                 summary,
                 text,
                 provider_metadata: Some(json!({
@@ -1925,15 +1944,16 @@ impl OperationCodec for OpenAiEmbeddingCodec {
                 "OpenAI embeddings input must not be empty",
             ));
         }
-        if request.chunking.is_some()
-            || request.embedding_space_id.is_some()
-            || request.normalize == Some(false)
-        {
+        if request.chunking.is_some() || request.embedding_space_id.is_some() {
             return Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
                 "OpenAI embeddings received an unsupported canonical transform",
             ));
         }
+        call.context.ignore_unsupported_options(
+            "OpenAI embeddings",
+            &[("normalize", request.normalize == Some(false))],
+        );
         if request
             .prefer_artifact
             .as_ref()
@@ -2117,13 +2137,14 @@ fn encode_image_generation(
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<HttpRequest> {
     require_parameter_subset(&call.input.resolved_parameters, &[], "Images generation")?;
-    if request.negative_prompt.is_some() || request.aspect_ratio.is_some() || request.seed.is_some()
-    {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI Images generation received an unsupported hard parameter",
-        ));
-    }
+    call.context.ignore_unsupported_options(
+        "OpenAI Images generation",
+        &[
+            ("negative_prompt", request.negative_prompt.is_some()),
+            ("aspect_ratio", request.aspect_ratio.is_some()),
+            ("seed", request.seed.is_some()),
+        ],
+    );
     let mut body = Map::from_iter([
         ("model".to_string(), json!(provider_model_id(call)?)),
         ("prompt".to_string(), json!(request.prompt)),
@@ -2160,12 +2181,16 @@ fn encode_image_edit(
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<HttpRequest> {
     require_parameter_subset(&call.input.resolved_parameters, &[], "Images edit")?;
-    if request.images.is_empty() || request.strength.is_some() {
+    if request.images.is_empty() {
         return Err(ProtocolError::new(
             ProtocolErrorKind::UnsupportedOperation,
-            "OpenAI Images edit requires images and does not support strength",
+            "OpenAI Images edit requires images",
         ));
     }
+    call.context.ignore_unsupported_options(
+        "OpenAI Images edit",
+        &[("strength", request.strength.is_some())],
+    );
     let mut body = MultipartBody::new(32, call.context.limits.max_request_bytes)?;
     body.push(MultipartPart::bytes("model", provider_model_id(call)?))?;
     body.push(MultipartPart::bytes("prompt", request.prompt.clone()))?;
@@ -2696,12 +2721,16 @@ fn encode_video_submit(
     if let (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) =
         (&codec_input.canonical_request, api_type)
     {
-        if request.preserve_motion.is_some() || request.time_range.is_some() {
+        if request.time_range.is_some() {
             return Err(ProtocolError::new(
                 ProtocolErrorKind::UnsupportedOperation,
-                "OpenAI video editing does not support preserve_motion or time_range",
+                "OpenAI video editing does not support time_range",
             ));
         }
+        input.context.ignore_unsupported_options(
+            "OpenAI video editing",
+            &[("preserve_motion", request.preserve_motion.is_some())],
+        );
         let resource = input.context.materialized_resource(&request.video)?;
         if let Some(artifact_id) = &resource.provider_artifact_id {
             let mut http_request = HttpRequest::new(
@@ -2733,18 +2762,23 @@ fn encode_video_submit(
     }
     let (prompt, image) = match (&codec_input.canonical_request, api_type) {
         (AiccCall::VideoTextToVideo(request), ApiType::VideoTextToVideo) => {
-            if request.generate_audio == Some(true)
-                || request.seed.is_some()
-                || request
-                    .output
-                    .as_ref()
-                    .is_some_and(|output| output.fps.is_some())
+            if request
+                .output
+                .as_ref()
+                .is_some_and(|output| output.fps.is_some())
             {
                 return Err(ProtocolError::new(
                     ProtocolErrorKind::UnsupportedOperation,
-                    "OpenAI video generation received an unsupported hard parameter",
+                    "OpenAI video generation does not support output fps",
                 ));
             }
+            input.context.ignore_unsupported_options(
+                "OpenAI video generation",
+                &[
+                    ("generate_audio", request.generate_audio == Some(true)),
+                    ("seed", request.seed.is_some()),
+                ],
+            );
             (request.prompt.clone(), None)
         }
         (AiccCall::VideoImageToVideo(request), ApiType::VideoImageToVideo) => {
@@ -3206,6 +3240,7 @@ mod tests {
                     AiRole::Assistant,
                     vec![
                         AiContent::Thinking {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             summary: Some("ignored neutral summary".to_string()),
                             text: None,
                             provider_metadata: None,
@@ -4301,7 +4336,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_foreign_credentials_and_unmapped_hard_parameters() {
+    fn rejects_foreign_credentials_and_ignores_seed_and_stop() {
         let mut bad_context = context();
         bad_context.credential =
             Some(ResolvedCredential::named_header("secret://key", "x-api-key", "secret").unwrap());
@@ -4324,19 +4359,21 @@ mod tests {
         );
         let mut request = request;
         request.seed = Some(7);
-        assert_eq!(
-            registry()
-                .encode(
-                    OPENAI_RESPONSES_ADAPTER_ID,
-                    OPENAI_RESPONSES_OPERATION_ID,
-                    ApiType::Llm,
-                    &input(AiccCall::ChatCompletionsCreate(request)),
-                    &context(),
-                )
-                .unwrap_err()
-                .kind,
-            ProtocolErrorKind::UnsupportedOperation
-        );
+        request.stop = vec!["END".to_string()];
+        let wire = registry()
+            .encode(
+                OPENAI_RESPONSES_ADAPTER_ID,
+                OPENAI_RESPONSES_OPERATION_ID,
+                ApiType::Llm,
+                &input(AiccCall::ChatCompletionsCreate(request)),
+                &context(),
+            )
+            .unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert!(body.get("seed").is_none());
+        assert!(body.get("stop").is_none());
     }
 }
 

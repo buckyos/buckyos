@@ -1,13 +1,16 @@
 //! Agent State (§6): cross-session state on the AgentRoot, accessed only
-//! through [`AgentStateClient`]. The first implementation reads and writes the
-//! AgentRoot files directly and coordinates with file locks
-//! ([`FsAgentStateClient`]); a kRPC implementation follows the OpenDAN
-//! refactor, a DFS mount stays transparent to the file version.
+//! through [`AgentStateClient`]. [`FsAgentStateClient`] reads and writes the
+//! AgentRoot files directly and coordinates with file locks (a DFS mount
+//! stays transparent to it); [`KrpcAgentStateClient`] reaches the Agent
+//! State service of the OpenDAN process for callers without the AgentRoot.
 
 mod activity;
 mod artifacts;
+mod behaviors;
 mod cognition;
+mod connect;
 mod fs_client;
+pub mod krpc;
 mod locks;
 mod perception;
 mod registry;
@@ -25,8 +28,17 @@ pub use activity::{
     STALE_HEARTBEAT_MS,
 };
 pub use artifacts::{nearest_valid_base, DecideResult};
+pub use behaviors::{
+    freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog, FsBehaviorCatalog,
+    MemBehaviorCatalog,
+};
 pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
+pub use connect::{
+    connect, register_in_process, unregister_in_process, ConnectOptions, ForwardingStateClient,
+    StateLocator, WithBehaviors, ENV_AGENT_ROOT, ENV_AGENT_STATE_URL,
+};
 pub use fs_client::{AgentLayout, FsAgentStateClient};
+pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
 pub use perception::{run_digest, Backlog, BacklogItem};
 
 /// Session registry (session mgr, §6.2). The only entry point to discover
@@ -39,12 +51,34 @@ pub trait SessionRegistry: Send + Sync {
     async fn report_state(&self, lease: &Lease, sid: &str, status: SessionStatus) -> Result<bool>;
     async fn lookup(&self, sid: &str) -> Result<Option<RegistryEntry>>;
     async fn query(&self, q: &RegistryQuery) -> Result<Vec<RegistryEntry>>;
+    /// Sub sessions of `parents` (`origin.parent_session`), by session id.
+    async fn children_of(&self, parents: &[String]) -> Result<Vec<RegistryEntry>> {
+        let mut out: Vec<RegistryEntry> = self
+            .query(&RegistryQuery::default())
+            .await?
+            .into_iter()
+            .filter(|e| {
+                e.origin
+                    .as_ref()
+                    .and_then(|o| o.parent_session.as_ref())
+                    .is_some_and(|p| parents.contains(p))
+            })
+            .collect();
+        out.sort_by(|a, b| a.session_id.cmp(&b.session_id));
+        Ok(out)
+    }
     /// Driver only: the session directory moved.
     async fn update_location(&self, lease: &Lease, sid: &str, location: &Path) -> Result<()>;
     /// Mark entries whose location vanished as unreachable (never deletes).
     async fn verify(&self) -> Result<Vec<String>>;
     /// Post an input to a session's kmsg queue (+ wake event).
-    async fn post_input(&self, sid: &str, input: &Input, who: &str) -> Result<u64>;
+    /// Append a record to the session's input bus. Refused with
+    /// `input_full` while the bus holds [`MAX_PENDING_INPUTS`] records that
+    /// are not consumed yet (nothing is overwritten; retry later), with
+    /// `queue_missing` while the queue is lost and not yet recreated by the
+    /// driver (retry later), and with `session_readonly` for a session of an
+    /// older protocol version.
+    async fn post_input(&self, sid: &str, input: &PostedInput) -> Result<u64>;
 }
 
 /// Active session view (§6.7): other sessions that run and what they touch.
@@ -132,4 +166,7 @@ pub trait AgentStateClient: Send + Sync {
     fn cognition(&self) -> &dyn Cognition;
     fn artifacts(&self) -> &dyn Artifacts;
     fn locks(&self) -> &dyn LockManager;
+    /// The agent's behaviors and identity text (frozen into a session when
+    /// it is constructed).
+    fn behaviors(&self) -> &dyn BehaviorCatalog;
 }

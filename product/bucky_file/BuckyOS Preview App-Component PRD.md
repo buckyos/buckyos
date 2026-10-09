@@ -1329,7 +1329,7 @@ Preview Controller 与 `nfs_server` 之间至少需要以下三个逻辑操作�
 7. Smart Window 相关性评分的精确权重；
 8. 不同桌面平台的快捷键映射；
 9. `nfs_server` Preview 缓存数据库 schema、总容量、TTL、LRU/GC 水位和磁盘压力策略；
-10. Content Extension 启用阶段的 App Handler manifest、签名、沙箱、升级/卸载生命周期，以及 Full App 默认关联和“使用其他应用打开”的系统协议；
+10. Content Extension `open` 的 AppDoc `content_handlers`、ObjectId/签名参与、scheduler 注册表生命周期、用户默认关联、通用 Open Router 与 App Frame 已实现，契约见 `src/apps/text_editor/readme.md` §5–7。第三方 `preview` Handler、沙箱策略、默认应用设置页与按次授权仍待后续实现；
 11. Host Actions 的安全权限和视觉位置规范。
 
 ---

@@ -296,12 +296,13 @@ impl BashRunner for TmuxBashRunner {
 }
 
 impl TmuxBashRunner {
-    async fn start_command(&self, req: BashRunRequest) -> Result<TmuxCommand, AgentToolError> {
+    async fn start_command(&self, mut req: BashRunRequest) -> Result<TmuxCommand, AgentToolError> {
         if let BashTarget::Unsupported(t) = &req.target {
             return Err(AgentToolError::InvalidArgs(format!(
                 "unsupported target {t}"
             )));
         }
+        crate::runtime_context::refresh_appclient_session_env(&mut req.env).await?;
         let dir = self.exec_dir(req.call_id.as_deref());
         let mut builder = tokio::fs::DirBuilder::new();
         builder.recursive(true);

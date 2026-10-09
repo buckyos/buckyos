@@ -9,7 +9,10 @@
   display: none;
 }
 
-:root {
+/* Theme tokens. `.cp-theme-light` / `.cp-theme-dark` give a subtree a fixed theme whatever the page uses (an AI
+   Workspace stage renders its content for the stage's own background). */
+:root,
+.cp-theme-light {
   color-scheme: light;
   --cp-bg: oklch(0.966 0.014 286);
   --cp-bg-strong: oklch(0.925 0.022 284);
@@ -48,7 +51,9 @@
     0 14px 36px color-mix(in srgb, var(--cp-shadow) 16%, transparent);
   --cp-ease-emphasis: cubic-bezier(0.19, 1, 0.22, 1);
   --cp-ease-smooth: cubic-bezier(0.22, 1, 0.36, 1);
+}
 
+:root {
   /* Grid Slot system — Medium density (default) */
   --grid-columns: 4;
   --grid-gap: 2px;
@@ -70,7 +75,8 @@
   -moz-osx-font-smoothing: grayscale;
 }
 
-:root[data-theme='dark'] {
+:root[data-theme='dark'],
+.cp-theme-dark {
   color-scheme: dark;
   --cp-bg: oklch(0.22 0.022 274);
   --cp-bg-strong: oklch(0.18 0.02 272);

@@ -402,52 +402,71 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         let route = Router::new(&models, &policy, &runtime)
             .route(&request)
             .unwrap();
-        let mut request =
-            LlmChatInvokeRequest::new(&exact, vec![AiMessage::text(AiRole::User, "hello")]);
-        request.max_output_tokens = Some(2048);
-        let call = buckyos_api::AiccCall::ChatCompletionsCreate(request);
-        let credential = if provider == "claude" {
-            ResolvedCredential::named_header("secret://test", "x-api-key", "secret").unwrap()
-        } else if provider == "gemini" {
-            ResolvedCredential::named_header("secret://test", "x-goog-api-key", "secret").unwrap()
-        } else {
-            ResolvedCredential::bearer("secret://test", "secret").unwrap()
-        };
-        let target = ProviderCallTarget {
-            provider_rules_id: Some(provider.into()),
-            base_url: config.base_url.clone(),
-            operation_base_urls: BTreeMap::new(),
-            credential,
-            credential_reference: "secret://test".into(),
-            credential_header_name: None,
-            limits: CodecLimits {
-                request_timeout: Duration::from_secs(30),
-                max_request_bytes: 1024 * 1024,
-                max_response_bytes: 1024 * 1024,
-            },
-            pricing: None,
-            match_dimensions: Default::default(),
-        };
-        let lowered = CallResolver::new(&catalog, &codecs)
-            .lower(&route, &call, target)
-            .unwrap();
-        let wire = codecs
-            .encode(
-                &lowered.protocol_adapter_id,
-                &lowered.operation,
-                lowered.api_type,
-                &lowered.input,
-                &lowered.context,
-            )
-            .unwrap();
-        let HttpBody::Json(body) = wire.body else {
-            panic!("expected JSON")
-        };
-        assert_eq!(
-            body.pointer(pointer),
-            Some(&expected),
-            "{provider}/{id}/{effort}: {body}"
-        );
+        // The output cap is optional in the canonical request; protocols that
+        // require one get a default, the others must not grow one.
+        for max_output_tokens in [Some(2048), None] {
+            let mut request =
+                LlmChatInvokeRequest::new(&exact, vec![AiMessage::text(AiRole::User, "hello")]);
+            request.max_output_tokens = max_output_tokens;
+            let call = buckyos_api::AiccCall::ChatCompletionsCreate(request);
+            let credential = if provider == "claude" {
+                ResolvedCredential::named_header("secret://test", "x-api-key", "secret").unwrap()
+            } else if provider == "gemini" {
+                ResolvedCredential::named_header("secret://test", "x-goog-api-key", "secret")
+                    .unwrap()
+            } else {
+                ResolvedCredential::bearer("secret://test", "secret").unwrap()
+            };
+            let target = ProviderCallTarget {
+                provider_rules_id: Some(provider.into()),
+                base_url: config.base_url.clone(),
+                operation_base_urls: BTreeMap::new(),
+                credential,
+                credential_reference: "secret://test".into(),
+                credential_header_name: None,
+                limits: CodecLimits {
+                    request_timeout: Duration::from_secs(30),
+                    max_request_bytes: 1024 * 1024,
+                    max_response_bytes: 1024 * 1024,
+                },
+                pricing: None,
+                match_dimensions: Default::default(),
+            };
+            let lowered = CallResolver::new(&catalog, &codecs)
+                .lower(&route, &call, target)
+                .unwrap();
+            let wire = codecs
+                .encode(
+                    &lowered.protocol_adapter_id,
+                    &lowered.operation,
+                    lowered.api_type,
+                    &lowered.input,
+                    &lowered.context,
+                )
+                .unwrap();
+            let HttpBody::Json(body) = wire.body else {
+                panic!("expected JSON")
+            };
+            assert_eq!(
+                body.pointer(pointer),
+                Some(&expected),
+                "{provider}/{id}/{effort}: {body}"
+            );
+            if provider == "claude" {
+                assert_eq!(
+                    body["max_tokens"],
+                    json!(max_output_tokens.unwrap_or(32_000)),
+                    "{provider}/{id}/{effort}: {body}"
+                );
+            } else if max_output_tokens.is_none() {
+                let buckyos_api::AiccCall::ChatCompletionsCreate(lowered_request) =
+                    &lowered.input.canonical_request
+                else {
+                    panic!("expected chat call")
+                };
+                assert_eq!(lowered_request.max_output_tokens, None, "{provider}/{id}");
+            }
+        }
     }
 }
 

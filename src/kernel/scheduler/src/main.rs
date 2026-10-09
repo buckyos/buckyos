@@ -130,6 +130,10 @@ async fn create_init_list_by_template(
         .await?
         .add_nfs_server()
         .await?
+        .add_aiworkspace()
+        .await?
+        .add_homestation()
+        .await?
         .add_workflow()
         .await?
         .add_control_panel()
@@ -466,6 +470,10 @@ mod test {
         assert!(init_map.contains_key("services/msg-center/spec"));
         assert!(init_map.contains_key("services/nfs-server/spec"));
         assert!(init_map.contains_key("services/nfs-server/settings"));
+        assert!(init_map.contains_key("services/aiworkspace/spec"));
+        assert!(init_map.contains_key("services/aiworkspace/settings"));
+        assert!(init_map.contains_key("services/homestation/spec"));
+        assert!(init_map.contains_key("services/homestation/settings"));
         //assert!(init_map.contains_key("services/smb-service/spec"));
         assert!(init_map.contains_key(&format!("users/{}/profile", TEST_USERNAME)));
         let install_settings: buckyos_api::SystemInstallSettings = serde_json::from_str(
@@ -474,13 +482,16 @@ mod test {
                 .expect("install settings should be preserved"),
         )
         .expect("install settings should use the pre-install seed schema");
-        assert_eq!(install_settings.pre_install_apps.len(), 2);
+        assert_eq!(install_settings.pre_install_apps.len(), 3);
         assert!(install_settings
             .pre_install_apps
             .contains_key("jarvis.buckyos.bns.did"));
         assert!(install_settings
             .pre_install_apps
             .contains_key("buckyos-systest.buckyos.bns.did"));
+        assert!(install_settings
+            .pre_install_apps
+            .contains_key("text-editor.buckyos.bns.did"));
         let registry: AppRegistry = serde_json::from_str(
             init_map
                 .get(APP_REGISTRY_KEY)
@@ -526,6 +537,11 @@ mod test {
         println!("this_snapshot: {}", this_snapshot);
 
         assert!(!schedule_plan.tx_actions.is_empty());
+        assert!(!schedule_plan.tx_actions.contains_key("system/content_registry"));
+        let running_plan = build_schedule_plan(&init_map, false)
+            .await
+            .expect("normal schedule should succeed");
+        assert!(running_plan.tx_actions.contains_key("system/content_registry"));
         assert_eq!(schedule_plan.schedule_snapshot.nodes.len(), 1);
         assert!(schedule_plan
             .schedule_snapshot

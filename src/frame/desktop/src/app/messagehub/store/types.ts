@@ -78,7 +78,12 @@ export interface MessageHubStore {
   historyStatus(context: MessageHubContext, sessionId: string): 'idle' | 'loading' | 'ready' | 'error'
   hasOlder(context: MessageHubContext, sessionId: string): boolean
   loadOlder(context: MessageHubContext, sessionId: string): Promise<boolean>
-  /** Mark displayed inbound records read (no-op for observers). */
+  /**
+   * Makes sure the message with this ObjId is in the loaded history, loading
+   * older pages as needed; resolves to whether it is.
+   */
+  locateMessage(context: MessageHubContext, sessionId: string, messageId: string): Promise<boolean>
+  /** Mark displayed inbound records read, together with the edits folded into them (no-op for observers). */
   markRead(context: MessageHubContext, sessionId: string, recordIds: string[]): Promise<void>
   access(context: MessageHubContext, session: Session, confirmed: boolean): SessionAccess
   draft(context: MessageHubContext, sessionId: string): string
@@ -95,6 +100,10 @@ export interface MessageHubStore {
   send(context: MessageHubContext, sessionId: string, payload: OutgoingPayload, confirmation: string | undefined): Promise<void>
   /** Post a failed outgoing message again as a new message (same text and attachment refs). */
   resend(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
+  /** Post a copy of `message` (displayed text and attachment refs) to another session of the owner. */
+  forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined): Promise<void>
+  /** Remove a message from the owner's own view of the session; other participants keep it. */
+  deleteMessage(context: MessageHubContext, sessionId: string, message: MessageObject): Promise<void>
   runtimeFor(context: MessageHubContext, sessionId: string): RuntimeState[]
   clearTransient(ownerDid: string): void
   title(context: MessageHubContext, session: Session): string

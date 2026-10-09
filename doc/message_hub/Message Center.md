@@ -79,6 +79,25 @@ Email 没有做好而 BuckyOS 升级的部分：DID 原生身份与签名、群�
 - `thread`：`topic / reply_to / correlation_id` 语义线索，不参与路由。
 - `kind` / `created_at_ms` / `expires_at_ms` / `nonce` / `meta`。`created_at_ms` 是发送方声明的时间，只用于展示，不作为排序或游标的权威依据。
 
+#### 2.1.1 `agent_task`：Agent 回复指向它的 TaskMgr task（2026-10-04）
+
+Agent 的回复可以在 MsgObject 顶层（`meta` 平铺，**不**再包一层 `meta`）携带：
+
+```json
+{ "agent_task": { "task_id": "<TaskMgr task id>" } }
+```
+
+- 含义：产生这条回复的 Agent Turn 在 TaskMgr 里的 task。一个 Turn 一个 task，运行、等待、终结期间 `task_id` 不变。
+- 只有 MessageHub UI 解释这个字段。msg-center、tunnel、group host 把它当普通扩展字段透传，不解析、不校验；`MsgObject::validate()` 不认识它也不拒绝它。
+- 两种发送形态：
+  1. 慢 Turn：Agent 先发一条携带 `agent_task` 的占位消息（如“收到，开始处理…”），Turn 结束时只发**一条** `relates_to = { rel: "edit", target: <占位消息 ObjId> }` 的最终消息，其完整 `content`（text、format、refs、machine）整体替换占位内容。
+  2. 快 Turn：不发占位，只发一条携带 `agent_task` 的普通回复。
+- UI 只信**原锚点消息**（非 `edit` 的那条）上的 `agent_task`，忽略 edit 携带的；因此不需要服务端“禁止借 edit 更换 task”的校验。
+- 字段缺失、格式不对、task 不存在或当前登录者无权读取时，UI 不展示任务区，正文照常显示。UI 不从正文解析任何 ID。
+- 读取 task 用真实登录者自己的 TaskMgr 权限（task 由 Agent 自建并 grant 给 Agent 的 owner）；消息可读不代表 task 可读，观察 Agent 邮箱不借用 owner 或 Agent 的身份。
+- 进度不走消息：运行中的状态、子任务树、事件都从 TaskMgr 读（`get_task`、`get_subtasks`、`list_task_events`，事件路径 `/task_mgr/<id>`、`/task_mgr/tree/<root_id>`），不为每次状态变化发 edit，也不产生新的 mailbox 记录或通知。
+- 未读：占位与 edit 各有一条 INBOX 记录；UI 在气泡可见时把二者一并标为已读（edit 没有自己的行）。会话摘要里的 `unread_count` 仍由 msg-center 按记录计数，未打开的会话在二者都未读时会计为 2（见 MessageHub `UI_DATAMODEL.md` §3.5.4）。
+
 **永远不属于 MsgObject 的**：已读状态、投递状态、重试信息、外部平台 message id、归档/删除标记、会话归类、接收方分配的序号。
 本地阅读状态属于 `MailboxRecord`；投递与重试属于 `DeliveryRecord`；投递回执由 `ReceiptObj`（`cyrece`）单独表达。
 会话级生命周期需另有 owner 范围元数据（§5.8）。这些变化均不修改原始 MsgObject。
@@ -211,7 +230,7 @@ DeliveryState（属 DeliveryRecord，executor 驱动）:
                         ↘ DEAD   （不可重试或超次数，可诊断、可人工重投）
 
 SessionRuntimeState（本文旧称 SessionState；易失，不落 mailbox/delivery）:
-  typing / active / status_line 等 UI 会话状态，独立通道，随时可丢
+  typing 等 UI 会话状态，独立通道，随时可丢
 ```
 
 这里的三类是既有消息处理状态机。新增的 Session 整体状态（`SessionSharedState`）和成员状态
@@ -373,6 +392,13 @@ def report_delivery(delivery_id, result):
 ```
 
 处于 `SENDING` 超过租约时间的记录由定时 sweep 收回（→ `WAIT`，`attempts+1`，记录 duplicate risk），覆盖 executor 崩溃场景。
+
+#### 私聊 edit 的接收侧校验
+
+群消息的关系校验在 group host。非群消息的 `relates_to.rel = edit` 在**接收侧** `dispatch` 写 inbox 前按收件人校验：
+收件人确实收到过原消息、原消息与 edit 的 `to_session` 相同（否则 `not-found`）；作者与原消息作者一致、`kind` 相同、
+原消息自身不是关系消息（否则 `edit-not-allowed`）；原作者此后没有在该会话里撤回（redact）它（否则 `not-found`）。
+不合法的 edit 对该收件人丢弃；没有任何收件人接受时 `dispatch` 返回错误。发送侧 `post_send` 不做此校验。
 
 ### 4.5 跨 Zone 原生投递与 Gateway 尽力缓存（2026-09-07 实现边界校正）
 
@@ -538,8 +564,8 @@ UI 目标字段见 [UI DataModel §3.3](../../src/frame/desktop/src/app/messageh
 
 当前 GroupMgr 已把 GroupEvent 写入 group_events；它们尚未发布到 Session 消息时间线。
 前端已有 mock Action renderer 和共享 / 成员编辑交互，不能将这些 UI 交互视为后端状态契约已实现。
-Telegram 的 active / typing / status_line KV 已有消费方，但缺少统一成员 DID、有效期与 owner 隔离；
-映射运行态时必须补齐可信来源和过期规则，不能据此推导实体在线状态。
+`ui_session_states` 的 typing KV 只有 MessageHub UI 一个消费方（Telegram tunnel 的 active / typing / status_line 同步已删除），
+缺少统一成员 DID、有效期与 owner 隔离；映射运行态时必须补齐可信来源和过期规则，不能据此推导实体在线状态。
 
 ### 5.8 owner 本地会话生命周期（2026-09-07 已实现）
 
@@ -699,6 +725,7 @@ beta2.2 尚处于 breaking-change 阶段，version 7 到 version 8 采用 no-com
 # 写入
 dispatch(msg_obj, ingress_meta, idempotency_key)   # 入站（tunnel/hub/系统）
 post_send(msg_obj, idempotency_key)                # 出站（user/agent/系统）
+get_edit_capability(msg_obj)                       # 按 post_send 的路由规划回答该信封的目标能否原地编辑；不发送、不落库
 report_delivery(delivery_id, result)               # executor 回报投递结果
 
 # Session（UI/Agent 的唯一读取面）

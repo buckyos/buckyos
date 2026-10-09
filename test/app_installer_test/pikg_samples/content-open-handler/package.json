@@ -1,0 +1,14 @@
+{
+  "name": "content-open-handler-fixture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build web --outDir ../dist"
+  },
+  "dependencies": {
+    "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+  },
+  "devDependencies": {
+    "vite": "^8.0.1"
+  }
+}

@@ -373,7 +373,7 @@ const seedEntities: Entity[] = [
 
 /* ── Sessions ── */
 
-const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | 'type' | 'source' | 'lastActiveAt' | 'unreadCount'>[]> = {
+const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | 'type' | 'source' | 'lastActiveAt' | 'unreadCount' | 'panel'>[]> = {
   'agent-coder': [
     {
       id: 'session-coder-1',
@@ -398,6 +398,14 @@ const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | '
       type: 'task',
       source: 'linear',
       lastActiveAt: Date.now() - 2 * 3600_000,
+      unreadCount: 0,
+    },
+    {
+      id: 'session-coder-task',
+      entityId: 'agent-coder',
+      title: 'Release Checklist',
+      type: 'chat',
+      lastActiveAt: Date.now() - 3 * 60_000,
       unreadCount: 0,
     },
   ],
@@ -449,6 +457,15 @@ const seedSessions: Record<string, Pick<Session, 'id' | 'entityId' | 'title' | '
       type: 'workspace',
       lastActiveAt: Date.now() - 22 * 60_000,
       unreadCount: 4,
+      panel: {
+        title: 'Ticket #1042 · Release 2.4 rollout',
+        text: 'Staged rollout is paused at 25% while the sync regression is verified on the canary zone. Resume needs sign-off from QA and the release owner.',
+        fields: [
+          { label: 'Status', value: 'In review', tone: 'warning' },
+          { label: 'Owner', value: 'Alice Chen' },
+          { label: 'Due', value: 'Fri 18:00' },
+        ],
+      },
     },
   ],
   'release-war-room': [
@@ -571,7 +588,48 @@ export function createOutgoingMockMessage({
   })
 }
 
+/** Task ids the seeded Agent replies of `session-coder-task` carry in `agent_task` (served by `mock/tasks.ts`). */
+export const MOCK_AGENT_TASKS = {
+  done: 'task-turn-report',
+  fast: 'task-turn-clock',
+  failed: 'task-turn-deploy',
+  foreign: 'task-turn-foreign',
+  running: 'task-turn-checklist',
+  /** Only ever carried by an edit, so it must never be read. */
+  hijack: 'task-turn-hijack',
+} as const
+
+/**
+ * Agent replies as an Agent Turn sends them: a placeholder carrying
+ * `agent_task`, replaced by one final `edit` when the Turn ends; a quick Turn
+ * sends a single ordinary reply that carries `agent_task`.
+ */
+function agentTaskSeeds(sessionId: string): MessageObject[] {
+  const you = (id: string, content: string, minutesAgo: number) => createChatMessage({ id, from: participantDids.you, to: [participantDids.codeAssistant], senderName: 'You', content, createdAtMs: Date.now() - minutesAgo * 60_000, deliveryStatus: 'read', sessionId })
+  const agent = (id: string, content: MsgContent, minutesAgo: number, extra: Partial<MessageObject>): MessageObject => ({ ...createChatMessage({ id, from: participantDids.codeAssistant, to: [participantDids.you], senderName: 'CodeAssistant', content: content.content ?? '', createdAtMs: Date.now() - minutesAgo * 60_000, sessionId, contentOverride: content }), ...extra })
+  const placeholder: MsgContent = { format: 'text/plain', content: 'Got it, working on it…' }
+  return [
+    you('msg-ct-1', 'Summarize yesterday\'s build failures.', 50),
+    agent('msg-ct-2', placeholder, 49, { agent_task: { task_id: MOCK_AGENT_TASKS.done } }),
+    agent('msg-ct-2-final', {
+      format: 'text/markdown',
+      content: '## Build failures\n\n- **3 failures** yesterday, 2 of them flaky\n- The real regression is in `relations.ts`\n\nThe full report is attached.',
+      refs: [{ role: 'output', label: 'design-brief.pdf', target: { type: 'data_obj', obj_id: 'cyfile:mock-doc-brief', uri_hint: 'cyfs://cyfile:mock-doc-brief' } }],
+    }, 45, { relates_to: { rel: 'edit', target: 'msg-ct-2' }, agent_task: { task_id: MOCK_AGENT_TASKS.hijack } }),
+    you('msg-ct-3', 'What time is it in UTC?', 40),
+    agent('msg-ct-4', { format: 'text/plain', content: 'It is 09:41 UTC.' }, 40, { agent_task: { task_id: MOCK_AGENT_TASKS.fast } }),
+    you('msg-ct-5', 'Deploy the docs preview.', 35),
+    agent('msg-ct-6', placeholder, 34, { agent_task: { task_id: MOCK_AGENT_TASKS.failed } }),
+    agent('msg-ct-6-final', { format: 'text/plain', content: 'The deployment failed: the preview bucket is over quota.' }, 30, { relates_to: { rel: 'edit', target: 'msg-ct-6' } }),
+    you('msg-ct-7', 'Who approved that deploy?', 21),
+    agent('msg-ct-8', { format: 'text/plain', content: 'It was approved in another workspace.' }, 20, { agent_task: { task_id: MOCK_AGENT_TASKS.foreign } }),
+    you('msg-ct-9', 'Check the MessageHub release checklist.', 4),
+    agent('msg-ct-10', placeholder, 3, { agent_task: { task_id: MOCK_AGENT_TASKS.running } }),
+  ]
+}
+
 export const mockMessageSeeds: Record<string, readonly MessageObject[]> = {
+  'session-coder-task': agentTaskSeeds('session-coder-task'),
   'session-coder-1': [
     createChatMessage({
       id: 'msg-c1-1',

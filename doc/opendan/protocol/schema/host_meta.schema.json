@@ -1,28 +1,57 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "definitions": {
-    "ChangeReceipt": {
-      "description": "A consumed subscription change.",
+    "EventReceipt": {
+      "description": "A semi-subscription state version a batch actually injected.",
       "properties": {
-        "cursor": {
-          "description": "New cursor value for `state.subscription_cursors[subscription]`."
-        },
-        "id": {
-          "description": "`s1@16` style id.",
+        "key": {
           "type": "string"
         },
-        "subscription": {
+        "seq": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/EventSource"
+        },
+        "subscription_id": {
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "key",
+        "source"
+      ],
+      "type": "object"
+    },
+    "EventSource": {
+      "description": "Where an event comes from.",
+      "properties": {
+        "id": {
+          "default": "",
+          "description": "object: object id; session: sid; task: task_id; timer: timer name; system: may be empty.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "`object | session | task | timer | system`; unknown kinds are not a format error (an event without a matching subscription is dropped).",
           "type": "string"
         }
       },
       "required": [
-        "id",
-        "subscription"
+        "kind"
       ],
       "type": "object"
     },
     "InputReceipt": {
-      "description": "Structured receipt of one batch of inputs that entered the context (§8.3). Persisted inside the run snapshot together with the message.",
+      "description": "Structured receipt of one input batch that entered the context. Persisted inside the run snapshot together with its 1–2 messages; recovery completes state from it and never renders again.",
       "properties": {
         "after_step": {
           "default": 0,
@@ -40,33 +69,20 @@
           "default": false,
           "type": "boolean"
         },
-        "changes": {
+        "events": {
+          "description": "Semi-subscription state versions the snapshot message injected; cleared from `pending_events` by exact `(subscription_id, source, key)` (and `seq` when present).",
           "items": {
-            "$ref": "#/definitions/ChangeReceipt"
+            "$ref": "#/definitions/EventReceipt"
           },
           "type": "array"
-        },
-        "consumed_only": {
-          "description": "Inputs consumed by this batch without entering the context (coalesced changes, dropped changes).",
-          "items": {
-            "$ref": "#/definitions/InputRef"
-          },
-          "type": "array"
-        },
-        "content": {
-          "default": "",
-          "description": "Rendered message text (evidence; also used for `user_message`).",
-          "type": "string"
         },
         "extra": {
           "additionalProperties": true,
           "type": "object"
         },
         "hook": {
-          "type": [
-            "string",
-            "null"
-          ]
+          "description": "`on_init | on_input | on_context_switch`.",
+          "type": "string"
         },
         "input_seq": {
           "description": "Monotonic within the run; batch id = (run_id, input_seq).",
@@ -75,18 +91,34 @@
           "type": "integer"
         },
         "inputs": {
+          "description": "Delivery positions of the msg / Input events this batch consumed.",
           "items": {
             "$ref": "#/definitions/InputRef"
           },
           "type": "array"
         },
-        "message_pos": {
-          "$ref": "#/definitions/MessagePos"
-        },
         "opens_turn": {
           "default": false,
-          "description": "`true` when this batch opened the Turn; hand-over, resume, supplementary and observation batches join the open Turn.",
+          "description": "`true` when this batch opened the Turn; hand-over and supplementary batches join the open Turn.",
           "type": "boolean"
+        },
+        "parts": {
+          "description": "The 1–2 messages of the batch, in injection order.",
+          "items": {
+            "$ref": "#/definitions/ReceiptPart"
+          },
+          "type": "array"
+        },
+        "reply": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ReplyRoute"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default reply path after this batch."
         },
         "run_id": {
           "type": "string"
@@ -100,8 +132,8 @@
       },
       "required": [
         "at_ms",
+        "hook",
         "input_seq",
-        "message_pos",
         "run_id",
         "turn"
       ],
@@ -119,7 +151,7 @@
           "type": "string"
         },
         "kind": {
-          "description": "`msg | event | change | control | perception`.",
+          "description": "`msg | event | control`.",
           "type": "string"
         },
         "src": {
@@ -133,7 +165,7 @@
       "type": "object"
     },
     "MessagePos": {
-      "description": "Where the message of a receipt batch lives inside the snapshot.",
+      "description": "Where a message of a receipt batch lives inside the snapshot.",
       "oneOf": [
         {
           "description": "In `request.input` (behavior runs before their first step).",
@@ -178,7 +210,7 @@
           "type": "object"
         },
         {
-          "description": "Attached to a behavior step as `next_user_message`.",
+          "description": "Merged into a behavior step's `next_user_message`.",
           "properties": {
             "index": {
               "format": "uint64",
@@ -197,19 +229,97 @@
             "kind"
           ],
           "type": "object"
+        }
+      ]
+    },
+    "ReceiptPart": {
+      "description": "One message injected by a batch.",
+      "properties": {
+        "part": {
+          "description": "`semi_subscription_snapshot | input`.",
+          "type": "string"
         },
+        "pos": {
+          "$ref": "#/definitions/MessagePos"
+        },
+        "text": {
+          "description": "The message's text block (evidence, worklog `user_message`). Image / document blocks are not repeated: read them at `pos` in the snapshot.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "part",
+        "pos",
+        "text"
+      ],
+      "type": "object"
+    },
+    "ReplyRoute": {
+      "description": "Default reply path of a session.",
+      "oneOf": [
         {
-          "description": "Nothing rendered (e.g. bootstrap without inputs).",
+          "description": "Reply the way the last consumed input message came.",
           "properties": {
             "kind": {
+              "description": "MsgObject kind of the reply.",
+              "type": "string"
+            },
+            "reply_to": {
+              "default": null,
+              "description": "ObjId of the message replied to.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route": {
               "enum": [
-                "none"
+                "message"
               ],
+              "type": "string"
+            },
+            "to": {
+              "description": "The sender (one-to-one) or the group.",
+              "type": "string"
+            },
+            "to_session": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "tunnel": {
+              "default": null,
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "route",
+            "to"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Hand the result back to the parent session.",
+          "properties": {
+            "route": {
+              "enum": [
+                "parent_session"
+              ],
+              "type": "string"
+            },
+            "session_id": {
               "type": "string"
             }
           },
           "required": [
-            "kind"
+            "route",
+            "session_id"
           ],
           "type": "object"
         }
@@ -256,6 +366,10 @@
         "$ref": "#/definitions/InputReceipt"
       },
       "type": "array"
+    },
+    "media_degraded": {
+      "description": "The run's inline media blocks were removed once after the provider refused the request (`input.media = inline` degraded to references); it is not tried again.",
+      "type": "boolean"
     },
     "process_entry": {
       "description": "Behavior process entry the run belongs to.",

@@ -4,18 +4,22 @@
 //! protocol piece used here is xllm's run directory (§8.7).
 
 pub mod assembler;
+mod children;
 mod drive;
+pub mod input_view;
 mod flush;
 pub mod history;
 mod hook;
 mod inputs;
 mod live;
+mod outbound;
 mod outcome;
 mod receipts;
 mod reconcile;
 mod rounds;
 mod shared;
 mod tools;
+mod turn_task;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,8 +36,17 @@ use crate::runtime::AgentRuntime;
 use crate::session::SessionDir;
 use crate::state::AgentStateClient;
 
-pub use assembler::{DefaultAssembler, InputMaterial, SessionAssembler};
+pub use assembler::{
+    render_template, BehaviorAssembler, DefaultAssembler, InputMaterial, SessionAssembler,
+};
+pub use children::{SessionTaskResolver, SESSION_TASK_PREFIX};
 pub use drive::drive;
+pub use outbound::{
+    compose_text, has_pending_outbound, OutboundSink, SendResult, TurnReply, AGENT_TASK_META,
+};
+pub use turn_task::{
+    has_pending_turn_tasks, TurnTaskEnd, TurnTaskOpen, TurnTaskSink, TurnTaskStatus,
+};
 pub use history::{LlmSummarizer, Summarizer};
 pub use tools::classify_effect;
 
@@ -56,6 +69,10 @@ pub enum StopWhen {
     /// error (`Error`), or has nothing to run (`OutcomesHandled`, which then
     /// reports the waiting state).
     MaxOutcomes { n: u64 },
+    /// Return when a Turn was closed by this drive (its recovery included),
+    /// with that Turn's result. A return condition only: what closes a Turn
+    /// is unchanged.
+    TurnClosed,
 }
 
 /// Why `drive` returned.
@@ -77,6 +94,21 @@ pub enum DriveResult {
     OutcomesHandled {
         rev: u64,
         run_state: RunState,
+    },
+    /// `StopWhen::TurnClosed`: a Turn was closed by this drive (the session
+    /// may have finished with it).
+    TurnClosed {
+        rev: u64,
+        turn: u64,
+        status: TurnStatus,
+        answer: Option<String>,
+    },
+    /// `StopWhen::TurnClosed`: the open Turn could not be closed by this
+    /// drive (it waits for input, a tool or sub sessions).
+    TurnOpen {
+        rev: u64,
+        turn: u64,
+        waiting_for: Option<WaitingFor>,
     },
     /// Another holder advances the session (display info).
     Busy {
@@ -122,11 +154,48 @@ pub struct RunnerOptions {
     pub heartbeat_interval: Duration,
     /// Active sessions rendered into a turn.
     pub active_sessions_limit: usize,
-    /// Changes injected per boundary.
+    /// Semi-subscription state versions shown per snapshot message; the
+    /// rest stays pending.
     pub change_budget: usize,
+    /// msg / Input events one `on_input` batch takes (`input.mode = batch`).
+    pub input_batch_max: usize,
     pub load_hints: bool,
     /// Snapshots kept per finished run.
     pub keep_snapshots: usize,
+    /// How long a Turn answering a message stays open before its
+    /// placeholder is sent (a first tool call sends it earlier).
+    pub placeholder_delay: Duration,
+}
+
+/// A stop requested by the driving process itself (SIGINT, a host stopping
+/// a sub session without a queue): handled like a queued `stop` — the run is
+/// interrupted, the Turn closes as stopped and the session finishes.
+#[derive(Clone, Default)]
+pub struct StopSignal {
+    flag: Arc<std::sync::atomic::AtomicBool>,
+    notify: Arc<tokio::sync::Notify>,
+}
+
+impl StopSignal {
+    pub fn request(&self) {
+        self.flag.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    pub fn requested(&self) -> bool {
+        self.flag.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Returns once a stop is requested.
+    pub async fn wait(&self) {
+        loop {
+            let notified = self.notify.notified();
+            if self.requested() {
+                return;
+            }
+            notified.await;
+        }
+    }
 }
 
 impl Default for RunnerOptions {
@@ -139,8 +208,10 @@ impl Default for RunnerOptions {
             heartbeat_interval: Duration::from_secs(60),
             active_sessions_limit: 8,
             change_budget: 16,
+            input_batch_max: 16,
             load_hints: true,
             keep_snapshots: 2,
+            placeholder_delay: Duration::from_secs(3),
         }
     }
 }
@@ -161,11 +232,16 @@ pub struct RunnerDeps {
     pub assembler: Arc<dyn SessionAssembler>,
     pub summarizer: Option<Arc<dyn Summarizer>>,
     pub notifier: Arc<dyn Notifier>,
+    /// Where replies leave the process (`None`: no outbox is kept).
+    pub outbound: Option<Arc<dyn OutboundSink>>,
+    /// The host's task service (`None`: Turns get no task).
+    pub turn_tasks: Option<Arc<dyn TurnTaskSink>>,
     /// Executable wrapped as `agent-session` in `.runtime/bin`.
     pub session_cli: Option<PathBuf>,
     /// Tools that only exist in this runner process (`requirement.app_tools`).
     pub app_tools: Vec<String>,
     pub options: RunnerOptions,
+    pub stop: StopSignal,
 }
 
 impl RunnerDeps {
@@ -187,9 +263,12 @@ impl RunnerDeps {
             assembler: Arc::new(DefaultAssembler::default()),
             summarizer: None,
             notifier: Arc::new(NoopNotifier),
+            outbound: None,
+            turn_tasks: None,
             session_cli: None,
             app_tools: Vec::new(),
             options: RunnerOptions::default(),
+            stop: StopSignal::default(),
         }
     }
 

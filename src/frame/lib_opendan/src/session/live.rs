@@ -177,6 +177,13 @@ impl Session {
             one_line_status: self.state.one_line_status.clone(),
             report_brief,
             pending_decision: self.state.pending_decision.clone(),
+            waiting_for: self
+                .state
+                .waiting_for
+                .as_ref()
+                .filter(|_| self.state.run_state == crate::protocol::RunState::Waiting)
+                .map(|w| w.kind),
+            turn_open: self.state.open_turn.is_some(),
             activity: self.state.activity.clone(),
             last_runner: self.writer.as_ref().map(|w| crate::protocol::LastRunner {
                 runner_id: w.runner_id.clone(),

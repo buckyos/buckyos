@@ -14,6 +14,8 @@ const messages: Record<string, [string, string]> = {
   modelsError: ['Could not load models.', '模型列表加载失败。'],
   noModels: ['No connected model supports this API type under the current Provider filter. Add or refresh a Provider, or change the filter.', '当前 Provider 筛选下没有支持此 API 类型的已接入模型。请添加或刷新 Provider，或调整筛选。'],
   executionMode: ['Execution mode', '执行模式'],
+  webSearch: ['Enable internet search', '启用联网搜索'],
+  webSearchHint: ['Allow the model to search the web when needed. The selected model and Provider must support search.', '允许模型按需联网搜索，所选模型和 Provider 必须支持搜索。'],
   immediate: ['Immediate', '直接返回'],
   stream: ['Stream via task progress', '通过任务进度查看流式输出'],
   optionalHint: ['Enable optional parameters with their checkboxes. Provider support may vary.', '勾选后可设置可选参数；各 Provider 支持的参数可能不同。'],

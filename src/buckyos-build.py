@@ -1,5 +1,6 @@
 #!/usr/bin/env -S uv run
 
+import json
 import os
 import shutil
 import subprocess
@@ -167,6 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     if result != 0:
         return result
 
+    env["BUCKYOS_PIKG_COMMAND"] = json.dumps([
+        _find_command("node") or "node",
+        str(Path(__file__).resolve().parent / "rootfs" / "libexec" / "buckyos-tool" / "cli" / "launcher.mjs"),
+    ])
     return subprocess.run(
         [executable, *args],
         env=env,

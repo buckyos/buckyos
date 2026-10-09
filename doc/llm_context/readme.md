@@ -59,7 +59,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 
 每次调用新建分支 run：保留调用方的 system、配置和**分叉点之前的完整有效历史**，在其后追加分支任务；调用返回方式与 create_sub_context 相同。底层构造是 `fork_snapshot(parent_snapshot, ForkOptions)`：调用方有未完成的工具批次 / behavior Step 时，分叉点取在该批次 / Step 之前（它留给调用方）；`expect_system` 与调用方 system 不同则拒绝；function_call 模式下继承的历史成为子 run 的 `request.input`。
 
-`derive_child` / `fork_snapshot`（`llm_context/src/context_derive.rs`）都是纯函数：不修改父快照，不带走父的挂起状态、待派发调用、usage、错误计数和宿主元数据，延续父的 step / action 编号，并返回 `InheritBoundary {messages, steps_below, next_action_id, fork_point}`，宿主据此只把子 run 新增的部分写入 worklog。`snapshot_overrides`（`rebuild_with_inherit`）只用于从**同一个 run** 自己的快照改 request 侧参数重建，不用于 context 之间的交接：交接从不在已有历史上替换 system。
+`derive_child` / `fork_snapshot`（`llm_context/src/context_derive.rs`）都是纯函数：不修改父快照，不带走父的挂起状态、待派发调用、usage、错误计数和宿主元数据，延续父的 step / action 编号，并返回 `InheritBoundary {messages, steps_below, next_action_id, fork_point}`，宿主据此只把子 run 新增的部分写入 worklog。`snapshot_overrides`（`rebuild_with_inherit`）只用于从**同一个 run** 自己的快照改 request 侧参数重建，不用于 context 之间的交接：交接从不在已有历史上替换 system。thinking 只对产生它的模型和前缀（system、tools、之前的消息）有效：override 真正改变了 system、历史、提供给模型的工具 / action 集合、模型（`preferred` / `fallbacks`）或 `behavior_name` 时，`apply_overrides_to_snapshot` 用 `strip_snapshot_thinking` 丢弃快照里的全部 thinking（`request.input`、`accumulated`、各 step 的 `assistant_message`）；值没变或只改预算、trace、objective 等不进前缀的字段时保留。宿主自己改写快照（换模型、压缩）时复用 `strip_thinking` / `strip_snapshot_thinking`。
 
 ### 子 context 的触发与返回
 

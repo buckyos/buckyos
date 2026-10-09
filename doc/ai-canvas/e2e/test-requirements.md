@@ -9,8 +9,8 @@
 时刻承担这些角色；它们不预设账号类型或权限模型。测试 Agent 是操作浏览器的执行者，产品
 Agent 是 Canvas 调用的生成服务，两者在记录中分开命名。
 
-[产品 PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 决定产品承诺，
-[原型 README](../../../src/frame/desktop/src/app/canvas/README.md) 说明当前能力。已有判据完整保留在
+[产品 PRD](../BuckyOS%20AI%20Canvas%20PRD.md) 决定产品承诺，
+[原型 README](https://github.com/buckyos/buckyos/blob/9ff98e613dd3133b447175726b47e70300a32652/src/frame/desktop/src/app/canvas/README.md) 说明原型删除前的能力；本文场景作为历史需求保留，归档状态见 [入口说明](README.md)。已有判据完整保留在
 [细粒度验收附录](assertions.md)，新增风险保留在 [覆盖缺口附录](coverage-gaps.md)。
 场景提供组织方式，不放宽旧断言，也不把未来协作目标变成已冻结的内核设计。
 

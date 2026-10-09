@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "claude",
-  "revision_seq": 3,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
@@ -15,6 +15,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -37,6 +38,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -59,6 +61,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -81,6 +84,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -103,6 +107,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -125,6 +130,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -147,6 +153,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -169,6 +176,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -191,6 +199,7 @@
         "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -213,6 +222,7 @@
         "max_output_tokens": 128000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -235,6 +245,7 @@
         "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "json_schema": true,
         "vision": true,
         "reasoning": true
@@ -257,6 +268,7 @@
         "max_output_tokens": 64000,
         "streaming": true,
         "tool_call": true,
+        "web_search": true,
         "vision": true,
         "reasoning": true
       },

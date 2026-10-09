@@ -1,0 +1,169 @@
+{
+  "input": {
+    "count": 2,
+    "events": [
+      {
+        "data_ref": null,
+        "event": "updated",
+        "key": "task:t1:revision:7",
+        "seq": 7,
+        "source": {
+          "id": "t1",
+          "kind": "task"
+        },
+        "subscription_id": "watch-t1",
+        "summary": "任务 t1 的状态发生变化",
+        "terminal": false
+      }
+    ],
+    "hook": "on_input",
+    "items": [
+      {
+        "attachments": [
+          {
+            "index": 0,
+            "media": "image",
+            "mime": "image/png",
+            "name": "screenshot.png",
+            "obj_id": "cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "path": null,
+            "role": "input"
+          },
+          {
+            "index": 1,
+            "media": "document",
+            "mime": "text/plain",
+            "name": "build.log",
+            "obj_id": "cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "path": null,
+            "role": "input"
+          }
+        ],
+        "conversation": {
+          "id": "did:bns:dev-team",
+          "kind": "group",
+          "name": "Dev Team",
+          "session": null
+        },
+        "format": "text/plain",
+        "from": {
+          "did": "did:bns:bob",
+          "id": "bob.bns.did",
+          "name": "Bob"
+        },
+        "is_event": false,
+        "is_group": true,
+        "is_msg": true,
+        "key": "cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a",
+        "kind": "group_msg",
+        "machine": null,
+        "mentions": {
+          "all": false,
+          "dids": [
+            "did:bns:jarvis"
+          ],
+          "me": true
+        },
+        "received_at": "2026-10-02T00:00:00Z",
+        "relations": [
+          {
+            "msg_id": "cymsg:9999999999999999999999999999999999999999999999999999999999999999",
+            "reaction": null,
+            "rel": "reply_to"
+          }
+        ],
+        "sent_at": "2026-10-02T00:00:00Z",
+        "text": "@jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里",
+        "title": null
+      },
+      {
+        "data_ref": null,
+        "event": "updated",
+        "is_event": true,
+        "is_msg": false,
+        "key": "task:t1:revision:7",
+        "seq": 7,
+        "source": {
+          "id": "t1",
+          "kind": "task"
+        },
+        "subscription_id": "watch-t1",
+        "summary": "任务 t1 的状态发生变化",
+        "terminal": false
+      }
+    ],
+    "messages": [
+      {
+        "attachments": [
+          {
+            "index": 0,
+            "media": "image",
+            "mime": "image/png",
+            "name": "screenshot.png",
+            "obj_id": "cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+            "path": null,
+            "role": "input"
+          },
+          {
+            "index": 1,
+            "media": "document",
+            "mime": "text/plain",
+            "name": "build.log",
+            "obj_id": "cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+            "path": null,
+            "role": "input"
+          }
+        ],
+        "conversation": {
+          "id": "did:bns:dev-team",
+          "kind": "group",
+          "name": "Dev Team",
+          "session": null
+        },
+        "format": "text/plain",
+        "from": {
+          "did": "did:bns:bob",
+          "id": "bob.bns.did",
+          "name": "Bob"
+        },
+        "is_group": true,
+        "key": "cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a",
+        "kind": "group_msg",
+        "machine": null,
+        "mentions": {
+          "all": false,
+          "dids": [
+            "did:bns:jarvis"
+          ],
+          "me": true
+        },
+        "received_at": "2026-10-02T00:00:00Z",
+        "relations": [
+          {
+            "msg_id": "cymsg:9999999999999999999999999999999999999999999999999999999999999999",
+            "reaction": null,
+            "rel": "reply_to"
+          }
+        ],
+        "sent_at": "2026-10-02T00:00:00Z",
+        "text": "@jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里",
+        "title": null
+      }
+    ],
+    "text": "<inputs>\n<msg key=\"cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a\" from=\"Bob\" from_id=\"bob.bns.did\" group=\"Dev Team\" mentioned=\"true\" reply_to=\"cymsg:9999999999999999999999999999999999999999999999999999999999999999\" time=\"2026-10-02T00:00:00Z\">\n@jarvis 帮我看一下这张截图里的报错 &lt;build&gt;，日志在附件里\n<attachment index=\"0\" media=\"image\" name=\"screenshot.png\" mime=\"image/png\" obj_id=\"cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\"/>\n<attachment index=\"1\" media=\"document\" name=\"build.log\" mime=\"text/plain\" obj_id=\"cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2\"/>\n</msg>\n<event key=\"task:t1:revision:7\" subscription=\"watch-t1\" source=\"task:t1\" event=\"updated\" seq=\"7\">任务 t1 的状态发生变化</event>\n</inputs>",
+    "time": "2026-10-02T00:00:01Z"
+  },
+  "runtime": {
+    "clock_text": "2026-10-02T00:00:01Z"
+  },
+  "session": {
+    "background_hint_changed": true,
+    "current_todo": {
+      "id": "T3",
+      "status": "in_progress",
+      "summary": "Fix the <build> error"
+    },
+    "default_changed_background_hint_text": "Working directory: /workspace",
+    "objective": "Fix the failing build"
+  }
+}

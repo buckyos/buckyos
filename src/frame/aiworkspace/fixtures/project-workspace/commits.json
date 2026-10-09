@@ -1,0 +1,624 @@
+{
+ "description": "The project workspace of design doc §3.8 (phase-two structure: data tree + one Surface) as the commit sequence that creates it. Replayed through the service interface; commit N gets seq N.",
+ "assets": [
+  {
+   "placeholder": "$asset:diagram",
+   "file_name": "架构图.png",
+   "base64": "iVBORw0KGgoAAAANSUhEUgAAABAAAAAJCAIAAAC0SDtlAAAAFElEQVR42mPQiDpBEmIY1TAoNAAAk1q5oVLxFXwAAAAASUVORK5CYII="
+  }
+ ],
+ "commits": [
+  {
+   "message": "创建画布",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "surface-main-content",
+     "type_id": "buckyos.container",
+     "parent_id": "canvas-content",
+     "order_key": "a",
+     "name": "项目工作区",
+     "payload": {
+      "kind": "folder",
+      "title": "项目工作区",
+      "system": "surface_content",
+      "surface_id": "surface-main"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "surface-main",
+     "type_id": "buckyos.container",
+     "parent_id": "surfaces",
+     "order_key": "a",
+     "name": "项目工作区",
+     "payload": {
+      "kind": "surface",
+      "layout": {
+       "mode": "flow"
+      },
+      "title": "项目工作区",
+      "content_folder_id": "surface-main-content"
+     }
+    }
+   ]
+  },
+  {
+   "message": "任务表与样例数据",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "tasks",
+     "type_id": "buckyos.table-source",
+     "parent_id": "data",
+     "order_key": "b",
+     "name": "任务",
+     "payload": {
+      "title_field_id": "title",
+      "description": "项目任务",
+      "fields": [
+       {
+        "field_id": "title",
+        "name": "任务",
+        "type": "text",
+        "required": true
+       },
+       {
+        "field_id": "status",
+        "name": "状态",
+        "type": "select",
+        "options": [
+         {
+          "option_id": "option-open",
+          "label": "进行中"
+         },
+         {
+          "option_id": "option-done",
+          "label": "完成"
+         }
+        ]
+       },
+       {
+        "field_id": "budget",
+        "name": "预算",
+        "type": "decimal",
+        "scale": 2
+       },
+       {
+        "field_id": "due",
+        "name": "截止日期",
+        "type": "date"
+       },
+       {
+        "field_id": "owner",
+        "name": "负责人",
+        "type": "text"
+       },
+       {
+        "field_id": "risk",
+        "name": "风险",
+        "type": "select",
+        "maintained_by": "program",
+        "options": [
+         {
+          "option_id": "option-high",
+          "label": "高"
+         },
+         {
+          "option_id": "option-medium",
+          "label": "中"
+         },
+         {
+          "option_id": "option-low",
+          "label": "低"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "task-42-details",
+     "type_id": "buckyos.richtext",
+     "parent_id": "tasks",
+     "order_key": "a",
+     "payload": {
+      "content": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "attrs": {
+          "block_id": "d-title",
+          "level": 2
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "验证范围"
+          }
+         ]
+        },
+        {
+         "type": "paragraph",
+         "attrs": {
+          "block_id": "d-1"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "覆盖对象树、命令引擎、富文本与结构化表格。"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "op": "table.insert_records",
+     "source_id": "tasks",
+     "records": [
+      {
+       "record_id": "task-40",
+       "values": {
+        "title": "盘点系统能力",
+        "status": "option-done",
+        "budget": "300.00",
+        "due": "2026-09-20",
+        "owner": "林"
+       }
+      },
+      {
+       "record_id": "task-41",
+       "values": {
+        "title": "定义对象格式",
+        "status": "option-open",
+        "budget": "800.00",
+        "due": "2026-10-08",
+        "owner": "王"
+       }
+      },
+      {
+       "record_id": "task-42",
+       "values": {
+        "title": "完成第一期架构验证",
+        "status": "option-open",
+        "budget": "1200.00",
+        "due": "2026-10-20",
+        "owner": "林"
+       },
+       "body_ref": {
+        "entity_id": "task-42-details"
+       }
+      },
+      {
+       "record_id": "task-43",
+       "values": {
+        "title": "写验收用例",
+        "status": "option-open",
+        "owner": "赵"
+       }
+      },
+      {
+       "record_id": "task-44",
+       "values": {
+        "title": "离线副本探针",
+        "status": "option-open",
+        "budget": "9.50",
+        "due": "2026-11-30"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "message": "项目信息与架构图",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "project-info",
+     "type_id": "buckyos.record",
+     "parent_id": "data",
+     "order_key": "c",
+     "name": "项目信息",
+     "payload": {
+      "schema": {
+       "properties": [
+        {
+         "key": "owner",
+         "name": "负责人",
+         "type": "text",
+         "required": true
+        },
+        {
+         "key": "deadline",
+         "name": "截止",
+         "type": "date"
+        },
+        {
+         "key": "budget",
+         "name": "预算",
+         "type": "decimal",
+         "scale": 2
+        }
+       ]
+      },
+      "props": {
+       "owner": "林",
+       "deadline": "2026-10-20",
+       "budget": "1200.00"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "diagram",
+     "type_id": "buckyos.asset-ref",
+     "parent_id": "data",
+     "order_key": "d",
+     "name": "架构图",
+     "payload": {
+      "object_id": "$asset:diagram",
+      "file_name": "架构图.png",
+      "image": {
+       "width": 16,
+       "height": 9
+      }
+     }
+    }
+   ]
+  },
+  {
+   "message": "版面：视图单元",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "cell-all-tasks",
+     "type_id": "buckyos.cell",
+     "parent_id": "surface-main",
+     "order_key": "f",
+     "payload": {
+      "source_ref": {
+       "entity_id": "tasks"
+      },
+      "view": {
+       "type": "table"
+      },
+      "title": "全部任务",
+      "fields": [
+       {
+        "field_id": "title",
+        "width": 320
+       },
+       {
+        "field_id": "status",
+        "width": 120
+       },
+       {
+        "field_id": "budget",
+        "width": 120
+       },
+       {
+        "field_id": "due",
+        "width": 140
+       },
+       {
+        "field_id": "owner",
+        "width": 120
+       },
+       {
+        "field_id": "risk",
+        "width": 100
+       }
+      ]
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "cell-open-tasks",
+     "type_id": "buckyos.cell",
+     "parent_id": "surface-main",
+     "order_key": "g",
+     "payload": {
+      "source_ref": {
+       "entity_id": "tasks"
+      },
+      "view": {
+       "type": "table"
+      },
+      "title": "未完成任务",
+      "fields": [
+       {
+        "field_id": "title",
+        "width": 320
+       },
+       {
+        "field_id": "status",
+        "width": 120
+       },
+       {
+        "field_id": "due",
+        "width": 140
+       }
+      ],
+      "filter": {
+       "op": "cmp",
+       "field_id": "status",
+       "operator": "ne",
+       "value": "option-done"
+      },
+      "sorts": [
+       {
+        "field_id": "due",
+        "direction": "asc"
+       }
+      ]
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "cell-info",
+     "type_id": "buckyos.cell",
+     "parent_id": "surface-main",
+     "order_key": "h",
+     "payload": {
+      "source_ref": {
+       "entity_id": "project-info"
+      },
+      "view": {
+       "type": "record"
+      },
+      "title": "项目信息"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "cell-diagram",
+     "type_id": "buckyos.cell",
+     "parent_id": "surface-main",
+     "order_key": "i",
+     "payload": {
+      "source_ref": {
+       "entity_id": "diagram"
+      },
+      "view": {
+       "type": "asset"
+      },
+      "options": {
+       "fit": "contain"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "message": "项目说明",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "notes",
+     "type_id": "buckyos.richtext",
+     "parent_id": "data",
+     "order_key": "e",
+     "name": "项目说明",
+     "payload": {
+      "content": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "attrs": {
+          "block_id": "n-title",
+          "level": 1
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "本周项目进展"
+          }
+         ]
+        },
+        {
+         "type": "paragraph",
+         "attrs": {
+          "block_id": "n-intro"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "第一期围绕"
+          },
+          {
+           "type": "text",
+           "text": "文档格式",
+           "marks": [
+            {
+             "type": "strong"
+            }
+           ]
+          },
+          {
+           "type": "text",
+           "text": "、"
+          },
+          {
+           "type": "text",
+           "text": "Command Engine",
+           "marks": [
+            {
+             "type": "em"
+            },
+            {
+             "type": "strong"
+            }
+           ]
+          },
+          {
+           "type": "text",
+           "text": " 与内置对象展开，详见 "
+          },
+          {
+           "type": "object_link",
+           "attrs": {
+            "ref": {
+             "entity_id": "task-42-details"
+            },
+            "label": "任务 42 详情"
+           }
+          },
+          {
+           "type": "text",
+           "text": "。"
+          }
+         ]
+        },
+        {
+         "type": "bullet_list",
+         "attrs": {
+          "block_id": "n-list"
+         },
+         "content": [
+          {
+           "type": "list_item",
+           "attrs": {
+            "block_id": "n-li1"
+           },
+           "content": [
+            {
+             "type": "paragraph",
+             "attrs": {
+              "block_id": "n-li1p"
+             },
+             "content": [
+              {
+               "type": "text",
+               "text": "对象与稳定引用"
+              }
+             ]
+            }
+           ]
+          },
+          {
+           "type": "list_item",
+           "attrs": {
+            "block_id": "n-li2"
+           },
+           "content": [
+            {
+             "type": "paragraph",
+             "attrs": {
+              "block_id": "n-li2p"
+             },
+             "content": [
+              {
+               "type": "text",
+               "text": "命令、冲突与撤销"
+              }
+             ]
+            },
+            {
+             "type": "ordered_list",
+             "attrs": {
+              "block_id": "n-ol"
+             },
+             "content": [
+              {
+               "type": "list_item",
+               "attrs": {
+                "block_id": "n-ol1"
+               },
+               "content": [
+                {
+                 "type": "paragraph",
+                 "attrs": {
+                  "block_id": "n-ol1p"
+                 },
+                 "content": [
+                  {
+                   "type": "text",
+                   "text": "原子批次"
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "type": "object_embed",
+         "attrs": {
+          "block_id": "n-embed",
+          "ref": {
+           "entity_id": "cell-open-tasks"
+          }
+         }
+        },
+        {
+         "type": "paragraph",
+         "attrs": {
+          "block_id": "n-end"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "以上为未完成任务的实时视图。"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "cell-notes",
+     "type_id": "buckyos.cell",
+     "parent_id": "surface-main",
+     "order_key": "e1",
+     "payload": {
+      "source_ref": {
+       "entity_id": "notes"
+      },
+      "view": {
+       "type": "richtext"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "message": "预算批注",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "note-budget",
+     "type_id": "buckyos.annotation",
+     "parent_id": "data",
+     "order_key": "j",
+     "payload": {
+      "target": {
+       "entity_id": "tasks",
+       "selector": {
+        "kind": "table_cell",
+        "record_id": "task-42",
+        "field_id": "budget"
+       }
+      },
+      "kind": "note",
+      "body": "请核对预算来源",
+      "style": {
+       "color": "#FFF2CC"
+      }
+     }
+    }
+   ]
+  }
+ ]
+}

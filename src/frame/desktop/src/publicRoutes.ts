@@ -8,6 +8,12 @@
 
 export const PUBLIC_ROUTE_PREFIXES = ['/login', '/userprofile'] as const
 
+/** Login-optional paths that are not prefixes: the prompter link of an AI Workspace show
+ * (`/workspace/<id>/show/<show>`), whose token is its only credential; HomeStation portal
+ * pages (`/homestation/<user>`, `/homestation/<user>/<key>`, `/homestation/~zone`) — but not
+ * `/homestation` itself, the signed-in user's own app. */
+const PUBLIC_ROUTE_PATTERNS: readonly RegExp[] = [/^\/workspace\/[^/]+\/show\/[^/]+$/, /^\/homestation\/[^/]+(\/[^/]+)?$/]
+
 const normalizePath = (pathname: string) =>
   (pathname || '/').replace(/\/+$/, '') || '/'
 
@@ -19,5 +25,5 @@ export function isPublicRoute(pathname: string): boolean {
   const normalized = normalizePath(pathname)
   return PUBLIC_ROUTE_PREFIXES.some(
     (prefix) => normalized === prefix || normalized.startsWith(`${prefix}/`),
-  )
+  ) || PUBLIC_ROUTE_PATTERNS.some((pattern) => pattern.test(normalized))
 }

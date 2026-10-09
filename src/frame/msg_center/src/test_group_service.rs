@@ -2298,3 +2298,36 @@ async fn session_member_lists_respect_reader_scope_and_back_removal() {
     );
     assert!(list(member(), Some("desk")).await.is_err());
 }
+
+#[tokio::test]
+async fn edit_capability_of_a_group_follows_its_edit_window() {
+    use buckyos_api::MsgCenterHandler;
+
+    let (c, _tmp, _) = center().await;
+    let capability = |c: MessageCenter| async move {
+        c.handle_get_edit_capability(message(&owner(), None, "hi", 1), context(&owner()))
+            .await
+            .unwrap()
+    };
+
+    // Not hosted here: the group's rules are unknown.
+    let unknown = capability(c.clone()).await;
+    assert!(!unknown.editable);
+    assert_eq!(unknown.reason.as_deref(), Some("unknown"));
+
+    create(&c, json!({})).await;
+    let open = capability(c.clone()).await;
+    assert!(open.editable);
+    assert_eq!(open.edit_window_ms, None);
+
+    let (windowed, _tmp, _) = center().await;
+    create(
+        &windowed,
+        json!({"default_session":{"edit":{"edit_window_ms":60000}}}),
+    )
+    .await;
+    let limited = capability(windowed).await;
+    assert!(!limited.editable);
+    assert_eq!(limited.reason.as_deref(), Some("group edit window"));
+    assert_eq!(limited.edit_window_ms, Some(60000));
+}

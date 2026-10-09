@@ -1,0 +1,17 @@
+{
+  "at_ms": 1790899200000,
+  "from": "app:task-bridge@alice",
+  "key": "task:t1:revision:7",
+  "payload": {
+    "event": "updated",
+    "seq": 7,
+    "source": {
+      "id": "t1",
+      "kind": "task"
+    },
+    "subscription_id": "watch-t1",
+    "summary": "任务 t1 的状态发生变化"
+  },
+  "schema": "opendan.session_input/3",
+  "type": "event"
+}

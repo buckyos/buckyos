@@ -2963,6 +2963,135 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test]
+    async fn zone_agent_sync_establishes_mutual_friendship_without_a_tunnel() {
+        let (center, _tmp) = new_center("zone-agent-sync").await;
+        let owner = DID::new("web", "alice.test.buckyos.io");
+        let agent = name_lib::AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            owner.clone(),
+            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
+                .unwrap(),
+        );
+        let mut agent = agent;
+        agent
+            .extra_info
+            .insert("display_name".into(), json!("Jarvis"));
+        let users = vec![crate::contact_mgr::ZoneUserContactSeed {
+            did: owner.clone(),
+            name: "Alice".into(),
+            note: None,
+            bindings: vec![],
+            groups: vec![],
+            tags: vec![],
+        }];
+        crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
+            .await
+            .unwrap();
+
+        for (sender, recipient, name, tag) in [
+            (&owner, &agent.id, "Alice", "zone_user"),
+            (&agent.id, &owner, "Jarvis", "zone_agent"),
+        ] {
+            let contact = center
+                .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(contact.access_level, buckyos_api::AccessGroupLevel::Friend);
+            assert_eq!(contact.name, name);
+            assert!(contact.tags.iter().any(|value| value == tag));
+            inbound(
+                &center,
+                chat_at(sender, vec![recipient.clone()], "Hello", 8_100_000),
+                "agent-sync",
+                &sender.to_string(),
+            )
+            .await;
+            let mailbox = buckyos_api::MailboxAddress::new(
+                recipient.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap();
+            for (kind, count) in [(MailboxKind::Inbox, 1), (MailboxKind::RequestBox, 0)] {
+                let records = center
+                    .handle_peek_box(mailbox.clone(), kind, None, None, None, ctx())
+                    .await
+                    .unwrap();
+                assert_eq!(records.len(), count);
+            }
+        }
+        assert!(center
+            .handle_get_contact(agent.id.clone(), Some(DID::new("bns", "bob")), ctx())
+            .await
+            .unwrap()
+            .is_none());
+
+        center
+            .handle_block_contact(agent.id.clone(), None, Some(owner.clone()), ctx())
+            .await
+            .unwrap();
+        center
+            .handle_update_contact(
+                owner.clone(),
+                buckyos_api::ContactPatch {
+                    access_level: Some(buckyos_api::AccessGroupLevel::Stranger),
+                    ..Default::default()
+                },
+                Some(agent.id.clone()),
+                ctx(),
+            )
+            .await
+            .unwrap();
+        crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
+            .await
+            .unwrap();
+        for (sender, recipient, level) in [
+            (&owner, &agent.id, buckyos_api::AccessGroupLevel::Stranger),
+            (&agent.id, &owner, buckyos_api::AccessGroupLevel::Block),
+        ] {
+            let contact = center
+                .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(contact.access_level, level);
+        }
+    }
+
+    #[tokio::test]
+    async fn zone_agent_sync_preserves_an_existing_block_on_first_sync() {
+        let (center, _tmp) = new_center("zone-agent-block").await;
+        let owner = DID::new("bns", "alice");
+        let agent = name_lib::AgentDocument::new(
+            DID::new("web", "jarvis.test.buckyos.io"),
+            owner.clone(),
+            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
+                .unwrap(),
+        );
+        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+            center
+                .handle_block_contact(sender.clone(), None, Some(recipient.clone()), ctx())
+                .await
+                .unwrap();
+        }
+        crate::sync_zone_agent_contacts(&center, &[], &[agent.clone()])
+            .await
+            .unwrap();
+        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+            let result = center
+                .handle_dispatch(
+                    chat_at(sender, vec![recipient.clone()], "Blocked", 8_200_000),
+                    None,
+                    None,
+                    ctx(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.dropped_recipients, vec![recipient.clone()]);
+        }
+    }
+
+    #[tokio::test]
     async fn zone_user_tokens_scope_reads_and_writes_to_the_owner() {
         let (center, _tmp) = new_center("auth").await;
         let alice = DID::new("bns", "alice");
@@ -3322,4 +3451,169 @@ fn malformed_record_owners_are_rejected_without_panicking() {
     ] {
         assert!(MessageCenter::owner_from_record_id(record_id).is_err());
     }
+}
+
+fn edit_capable(text_only: bool) -> crate::msg_tunnel::EditCapability {
+    crate::msg_tunnel::EditCapability {
+        supported: true,
+        edit_window_ms: None,
+        text_only,
+    }
+}
+
+#[tokio::test]
+async fn edit_capability_follows_the_post_send_route_of_every_target() {
+    let (center, _tmp) = new_center("edit_capability").await;
+    let hub = DID::new("bns", "hub");
+    center.set_message_hub_did(hub.clone());
+    center.declare_edit_capability(&hub, edit_capable(false));
+    let tg = DID::new("bns", "tg-tunnel");
+    center
+        .register_tunnel("tg-main".to_string(), tg.clone(), "telegram".to_string())
+        .unwrap();
+    let mail = DID::new("bns", "mail-tunnel");
+    center
+        .register_tunnel("mail-main".to_string(), mail.clone(), "email".to_string())
+        .unwrap();
+    center.declare_edit_capability(&mail, Default::default());
+
+    let author = DID::new("bns", "agent");
+    let native = DID::new("bns", "bob");
+    let tg_user = DID::new("msgtunnel", "12345.user.tg-main");
+    let mail_user = DID::new("msgtunnel", "42.user.mail-main");
+    let capability = |to: Vec<DID>| {
+        let center = center.clone();
+        let msg = make_msg(author.clone(), to, MsgObjKind::Chat);
+        async move { center.handle_get_edit_capability(msg, ctx()).await.unwrap() }
+    };
+
+    let native_chat = capability(vec![native.clone()]).await;
+    assert!(native_chat.editable);
+    assert_eq!(native_chat.reason, None);
+    assert!(!native_chat.text_only);
+
+    // A registered tunnel that declared nothing is unknown, not editable.
+    let undeclared = capability(vec![tg_user.clone()]).await;
+    assert!(!undeclared.editable);
+    assert_eq!(undeclared.reason.as_deref(), Some("unknown"));
+
+    center.declare_edit_capability(&tg, edit_capable(true));
+    let telegram = capability(vec![tg_user.clone()]).await;
+    assert!(telegram.editable);
+    assert!(telegram.text_only);
+
+    let email = capability(vec![mail_user.clone()]).await;
+    assert!(!email.editable);
+    assert_eq!(email.reason.as_deref(), Some("tunnel:email unsupported"));
+
+    // Several targets: editable only if all of them are.
+    let mixed_ok = capability(vec![native.clone(), tg_user.clone()]).await;
+    assert!(mixed_ok.editable);
+    assert!(mixed_ok.text_only);
+    let mixed = capability(vec![native.clone(), mail_user]).await;
+    assert!(!mixed.editable);
+    assert_eq!(mixed.reason.as_deref(), Some("tunnel:email unsupported"));
+
+    let unroutable = capability(vec![DID::new("msgtunnel", "1.user.no-such-tunnel")]).await;
+    assert!(!unroutable.editable);
+    assert!(unroutable.reason.unwrap().contains("no-such-tunnel"));
+
+    // The query neither sends nor persists anything.
+    for transport in [hub, tg, mail] {
+        assert!(center
+            .handle_get_next_delivery(transport, Some(true), None, ctx())
+            .await
+            .unwrap()
+            .is_none());
+    }
+    assert!(center
+        .handle_list_mailboxes(author, MailboxKind::Sent, ctx())
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn private_edit_is_validated_on_the_receiving_side() {
+    use ndn_lib::{MsgRelType, MsgRelation, ObjId};
+
+    let (center, _tmp) = new_center("private_edit").await;
+    let author = DID::new("bns", "author");
+    let other = DID::new("bns", "mallory");
+    let alice = DID::new("bns", "alice");
+    let relation = |from: &DID, rel: MsgRelType, target: &ObjId, text: &str| {
+        let mut msg = make_msg(from.clone(), vec![alice.clone()], MsgObjKind::Chat);
+        msg.relates_to = Some(MsgRelation::new(rel, target.clone()));
+        msg.content.content = text.to_string();
+        msg
+    };
+    let dispatch = |msg: MsgObject| {
+        let center = center.clone();
+        async move { center.handle_dispatch(msg, None, None, ctx()).await }
+    };
+    let rejected = |result: Result<buckyos_api::DispatchResult, kRPC::RPCErrors>, reason: &str| {
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains(reason), "{error} should contain {reason}");
+    };
+
+    let original = make_msg(author.clone(), vec![alice.clone()], MsgObjKind::Chat);
+    let original_id = original.gen_obj_id().0;
+    let foreign = make_msg(other.clone(), vec![alice.clone()], MsgObjKind::Chat);
+    let foreign_id = foreign.gen_obj_id().0;
+    for msg in [original.clone(), foreign] {
+        assert_eq!(dispatch(msg).await.unwrap().delivered_recipients.len(), 1);
+    }
+
+    let edit = relation(&author, MsgRelType::Edit, &original_id, "edited");
+    let edit_id = edit.gen_obj_id().0;
+    let accepted = dispatch(edit).await.unwrap();
+    assert_eq!(accepted.delivered_recipients, vec![alice.clone()]);
+
+    // Someone else's message, in the same recipient's inbox.
+    rejected(
+        dispatch(relation(&author, MsgRelType::Edit, &foreign_id, "hijack")).await,
+        "edit-not-allowed",
+    );
+    // The target is itself a relation message.
+    rejected(
+        dispatch(relation(
+            &author,
+            MsgRelType::Edit,
+            &edit_id,
+            "edit of edit",
+        ))
+        .await,
+        "edit-not-allowed",
+    );
+    // The recipient never received the target.
+    let unseen = make_msg(author.clone(), vec![alice.clone()], MsgObjKind::Chat);
+    rejected(
+        dispatch(relation(
+            &author,
+            MsgRelType::Edit,
+            &unseen.gen_obj_id().0,
+            "unseen",
+        ))
+        .await,
+        "not-found",
+    );
+    // The original lives in another conversation.
+    let mut elsewhere = relation(&author, MsgRelType::Edit, &original_id, "elsewhere");
+    elsewhere.to_session = Some("other-session".to_string());
+    rejected(dispatch(elsewhere).await, "not-found");
+
+    // Once the author redacted the original it can no longer be edited.
+    dispatch(relation(&author, MsgRelType::Redact, &original_id, ""))
+        .await
+        .unwrap();
+    rejected(
+        dispatch(relation(
+            &author,
+            MsgRelType::Edit,
+            &original_id,
+            "too late",
+        ))
+        .await,
+        "not-found",
+    );
 }

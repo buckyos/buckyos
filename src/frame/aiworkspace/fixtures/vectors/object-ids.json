@@ -1,0 +1,255 @@
+{
+  "chunks": [
+    {
+      "chunk_id": "mix256:00e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file_object_id": "cyfile:8101ece88e566d8281be01e9d0dcdfc33dd2c4079e1244e1f20f881916574e3b",
+      "hex": ""
+    },
+    {
+      "chunk_id": "mix256:052cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "file_object_id": "cyfile:e21eb104c2547df92992e610a5be010ecca693f9e3e38e3b66445d453f163c21",
+      "hex": "68656c6c6f"
+    },
+    {
+      "chunk_id": "mix256:0ca5744c0b84079e7d32e6fc4b4885614a72a7bfbb5202a96a75034733c604244b",
+      "file_object_id": "cyfile:81174e033fc52b417e596663beb95bd214dc43ed9dcf55affd32544d92d9192a",
+      "hex": "e4b8ade69687206279746573"
+    }
+  ],
+  "description": "V01 vectors: canonical JSON, ObjectIds, chunk ids and value normalization. Checked by Rust and by the WASM build in the browser.",
+  "invalid": [
+    {
+      "input": "{\"a\":1,\"a\":2}",
+      "reason": "duplicate key"
+    },
+    {
+      "input": "{\"n\":9007199254740992}",
+      "reason": "integer beyond 2^53-1"
+    },
+    {
+      "input": "{\"n\":-9007199254740992}",
+      "reason": "integer beyond 2^53-1"
+    },
+    {
+      "input": "{\"n\":-0.0}",
+      "reason": "negative zero"
+    },
+    {
+      "input": "{\"n\":1e999}",
+      "reason": "non-finite number"
+    },
+    {
+      "input": "{\"a\":1} trailing",
+      "reason": "trailing data"
+    },
+    {
+      "input": "{'a':1}",
+      "reason": "not JSON"
+    }
+  ],
+  "valid": [
+    {
+      "canonical": "{}",
+      "input": "{}",
+      "obj_type": "jobj",
+      "object_id": "jobj:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "canonical": "{\"a\":null,\"b\":1,\"c\":[true,false,\"x\"]}",
+      "input": "{\"a\":null,\"b\":1,\"c\":[true,false,\"x\"]}",
+      "obj_type": "jobj",
+      "object_id": "jobj:5051e52c397feffef3fd79856aee2add7d555e6a096a95e361f1a839fa5fe677"
+    },
+    {
+      "canonical": "{\"content\":{\"records\":{\"count\":0,\"encoding\":\"jsonl+jcs\"},\"title_field_id\":\"title\"},\"schema_version\":1,\"ws_type\":\"buckyos.table-source\"}",
+      "input": "{\"content\":{\"records\":{\"count\":0,\"encoding\":\"jsonl+jcs\"},\"title_field_id\":\"title\"},\"schema_version\":1,\"ws_type\":\"buckyos.table-source\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:d41facf3c3f32e08bc21072071191d83f94e1a800ac7fa1f6c711bb6e31d6e20"
+    },
+    {
+      "canonical": "{\"\\r\":\"CR\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin\",\"€\":\"Euro\",\"😀\":\"Emoji\",\"דּ\":\"Hebrew\"}",
+      "input": "{\"\\r\":\"CR\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin\",\"€\":\"Euro\",\"דּ\":\"Hebrew\",\"😀\":\"Emoji\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:9bd9c839b222e3c37bfde5453b2b5447c4dbd54138583ace3dc88c6d7810457f"
+    },
+    {
+      "canonical": "{\"text\":\"é\"}",
+      "input": "{\"text\":\"é\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:9b53287cd41955684903378d2b1b4a3ddea9d80d67dcd026319a7c5a9a8a8b42"
+    },
+    {
+      "canonical": "{\"text\":\"é\"}",
+      "input": "{\"text\":\"é\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:42d3cbf59fdccced04e5dff14433fb52d34d58e385e9770ffd896ff517d63b92"
+    },
+    {
+      "canonical": "{\"emoji\":\"😀\",\"escapes\":\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0001\",\"中文\":\"值\"}",
+      "input": "{\"emoji\":\"😀\",\"escapes\":\"\\\"\\\\/\\b\\f\\n\\r\\t\\u0001\",\"中文\":\"值\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:0d6a118cb1bf8c6cf8331b8681ff22072b7d268870b60f43a3e59db86a114e7d"
+    },
+    {
+      "canonical": "{\"numbers\":[0,1,-1,1.5,0.1,1e+21,1e-7,123456789,9007199254740991,-9007199254740991,4.5e-10,100,1]}",
+      "input": "{\"numbers\":[0,1,-1,1.5,0.1,1e+21,1e-7,123456789,9007199254740991,-9007199254740991,4.5e-10,100,1.0]}",
+      "obj_type": "jobj",
+      "object_id": "jobj:0a9b7fb9d5f25fe760a22e8fd64a3f89e874bca7bf0f66a687b13626ae3d6b8e"
+    },
+    {
+      "canonical": "{\"a\":1}",
+      "input": "{\"a\":1}",
+      "obj_type": "jobj",
+      "object_id": "jobj:015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862"
+    },
+    {
+      "canonical": "{\"a\":1,\"b\":null}",
+      "input": "{\"a\":1,\"b\":null}",
+      "obj_type": "jobj",
+      "object_id": "jobj:46e0ff59f6164548317489fbea1133a48f7a83c325c3535e44559c9619afb76b"
+    },
+    {
+      "canonical": "{\"content\":{\"doc\":{\"content\":[{\"attrs\":{\"block_id\":\"p1\"},\"content\":[{\"text\":\"本周项目进展\",\"type\":\"text\"}],\"type\":\"paragraph\"}],\"type\":\"doc\"},\"editor_schema\":\"buckyos.richtext.basic.v1\"},\"schema_version\":1,\"ws_type\":\"buckyos.richtext\"}",
+      "input": "{\"content\":{\"doc\":{\"content\":[{\"attrs\":{\"block_id\":\"p1\"},\"content\":[{\"text\":\"本周项目进展\",\"type\":\"text\"}],\"type\":\"paragraph\"}],\"type\":\"doc\"},\"editor_schema\":\"buckyos.richtext.basic.v1\"},\"schema_version\":1,\"ws_type\":\"buckyos.richtext\"}",
+      "obj_type": "jobj",
+      "object_id": "jobj:7b7bbc797413de567d415decf3001b8e46aeb97f959158992b5a9c9ed1258304"
+    },
+    {
+      "canonical": "{\"content\":\"mix256:05abcd\",\"create_time\":0,\"last_update_time\":0,\"size\":5}",
+      "input": "{\"content\":\"mix256:05abcd\",\"create_time\":0,\"last_update_time\":0,\"size\":5}",
+      "obj_type": "cyfile",
+      "object_id": "cyfile:8d36320f18ec08b498c33ff4b103f1643af1dd0f8be6257c3d0438def7e391b4"
+    }
+  ],
+  "values": [
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "scale": 2,
+        "type": "decimal"
+      },
+      "input": "001200.5",
+      "output": "1200.50"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "scale": 2,
+        "type": "decimal"
+      },
+      "input": "-0.00",
+      "output": "0.00"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "scale": 2,
+        "type": "decimal"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": "1.005"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "number"
+      },
+      "input": -0.0,
+      "output": 0
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "number"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": 9007199254740992
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "date"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": "2026-02-29"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "datetime"
+      },
+      "input": "2026-10-04T16:00:00+08:00",
+      "output": "2026-10-04T08:00:00.000Z"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "datetime"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": "2026-10-04T08:00:00"
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "text"
+      },
+      "input": "",
+      "output": ""
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "type": "text"
+      },
+      "error": "INVALID_SCHEMA",
+      "input": null
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "nullable": true,
+        "type": "text"
+      },
+      "input": null,
+      "output": null
+    },
+    {
+      "def": {
+        "field_id": "f",
+        "name": "f",
+        "options": [
+          {
+            "label": "B",
+            "option_id": "b"
+          },
+          {
+            "label": "A",
+            "option_id": "a"
+          }
+        ],
+        "type": "multi_select"
+      },
+      "input": [
+        "b",
+        "a",
+        "b"
+      ],
+      "output": [
+        "a",
+        "b"
+      ]
+    }
+  ]
+}

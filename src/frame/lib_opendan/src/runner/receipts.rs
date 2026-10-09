@@ -32,38 +32,31 @@ pub fn with_host_meta(host: Option<&Value>, meta: &HostMeta) -> Value {
     v
 }
 
-pub fn position_of(p: InjectionPosition) -> MessagePos {
-    match p {
-        InjectionPosition::RequestInput(i) => MessagePos::RequestInput { index: i as u64 },
-        InjectionPosition::Accumulated(i) => MessagePos::Accumulated { index: i as u64 },
-        InjectionPosition::Step(i) => MessagePos::Step { index: i as u64 },
-        InjectionPosition::None => MessagePos::None,
-    }
+/// Positions of `count` messages placed by one injection starting at `p`.
+/// In a behavior step all of them are merged into that step's
+/// `next_user_message`.
+pub fn positions_of(p: InjectionPosition, count: usize) -> Vec<MessagePos> {
+    (0..count as u64)
+        .filter_map(|i| match p {
+            InjectionPosition::RequestInput(at) => Some(MessagePos::RequestInput {
+                index: at as u64 + i,
+            }),
+            InjectionPosition::Accumulated(at) => Some(MessagePos::Accumulated {
+                index: at as u64 + i,
+            }),
+            InjectionPosition::Step(at) => Some(MessagePos::Step { index: at as u64 }),
+            InjectionPosition::None => None,
+        })
+        .collect()
 }
 
-/// Where the waist will place an injection into `snapshot` (deterministic:
-/// used by the checkpoint hook, which must describe the position in the
-/// receipt it hands over together with the message).
-pub fn predict_position(snapshot: &LLMContextSnapshot, behavior: bool) -> MessagePos {
-    if !behavior {
-        return MessagePos::Accumulated {
-            index: snapshot.state.accumulated.len() as u64,
-        };
-    }
-    let current = snapshot.request.behavior_name.as_str();
-    match snapshot.state.last_step.as_ref().or(snapshot
-        .state
-        .steps
-        .last()
-        .filter(|s| s.meta.behavior_name == current))
-    {
-        Some(step) => MessagePos::Step {
-            index: step.meta.step_index as u64,
-        },
-        None => MessagePos::RequestInput {
-            index: snapshot.request.input.len() as u64,
-        },
-    }
+/// Task id of a synthesized task completion input (`task:<id>:terminal`).
+pub fn task_of_internal_key(key: &str) -> Option<&str> {
+    key.strip_prefix("task:")?.strip_suffix(":terminal")
+}
+
+pub fn internal_task_key(task_id: &str) -> String {
+    format!("task:{task_id}:terminal")
 }
 
 /// Apply one receipt to the session state (idempotent: receipts at or below
@@ -114,17 +107,17 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
     }
     live.applied_input_seq = r.input_seq;
     let input_ids: Vec<String> = r.inputs.iter().map(|i| i.id()).collect();
-    let change_ids: Vec<String> = r.changes.iter().map(|c| c.id.clone()).collect();
+    let event_keys: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
     match live.turns.last_mut() {
         Some(last) if last.turn == r.turn && !r.opens_turn => {
             last.inputs.extend(input_ids);
-            last.changes.extend(change_ids);
+            last.events.extend(event_keys);
         }
         _ => live.turns.push(TurnInputs {
             turn: r.turn,
             inputs: input_ids,
-            changes: change_ids,
-            hook: r.hook.clone(),
+            events: event_keys,
+            hook: Some(r.hook.clone()),
             input_seq: r.input_seq,
             at_ms: r.at_ms,
         }),
@@ -136,37 +129,52 @@ pub fn apply_receipt(state: &mut SessionState, r: &InputReceipt) -> Result<bool>
         .filter(|i| i.kind == "msg" || i.kind == "event")
         .map(|i| i.id())
         .collect();
+    let has_msg = r.inputs.iter().any(|i| i.kind == "msg");
     if r.opens_turn {
         state.open_turn = Some(OpenTurn {
             index: r.turn,
             run_id: r.run_id.clone(),
             input_seq: r.input_seq,
-            hook: r.hook.clone(),
+            hook: Some(r.hook.clone()),
             inputs: logical,
+            has_msg,
             at_ms: r.at_ms,
         });
         state.turn_seq = state.turn_seq.max(r.turn);
     } else if let Some(t) = state.open_turn.as_mut() {
         t.inputs.extend(logical);
+        t.has_msg |= has_msg;
     }
-    for i in r.inputs.iter().chain(r.consumed_only.iter()) {
-        state.source_mut(&i.src).mark(i.index);
+    for i in &r.inputs {
+        if i.src == INTERNAL_TASK_SRC {
+            // The completion of a watched task entered the context: the
+            // runner stops following it.
+            if let Some(task) = task_of_internal_key(&i.key) {
+                state.watched_tasks.retain(|t| t != task);
+            }
+        } else if i.src == INTERNAL_CHILD_SRC {
+            // The sub session's state entered the context: remembered per
+            // child, so the same state is not delivered again.
+            if let Some((sid, event)) = super::children::child_of_internal_key(&i.key) {
+                super::children::set_attention(state, sid, Some(event));
+            }
+        } else {
+            state.source_mut(&i.src).mark(i.index);
+        }
         state.recent_keys.push(&i.key);
     }
-    for c in &r.changes {
-        if !c.cursor.is_null() {
-            state
-                .subscription_cursors
-                .insert(c.subscription.clone(), c.cursor.clone());
-        }
+    // Exactly the semi-subscription versions this batch injected.
+    clear_pending_events(&mut state.pending_events, &r.events);
+    // The default reply path is restored from the receipt, never from the
+    // rendered text or the bus.
+    if let Some(reply) = &r.reply {
+        state.reply = Some(reply.clone());
     }
     if r.bootstrap {
         state.bootstrap_done = true;
     }
-    if r.hook.as_deref() != Some(OBSERVATION_HOOK) {
-        state.run_state = RunState::Running;
-        state.waiting_for = None;
-    }
+    state.run_state = RunState::Running;
+    state.waiting_for = None;
     if r.extra.contains_key("continuation") {
         // The hand-over turn (behavior switch / fork result) was delivered.
         state.internal_continuation = None;

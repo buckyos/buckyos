@@ -8,6 +8,7 @@ import {
   type ResolvedPreviewSource,
 } from '../../../../components/preview/types'
 import { getMessageStableId, type MessageObject, type RefItem } from '../../protocol/msgobj'
+import { effectiveContent } from '../history/relations'
 import type { ConversationMessageReader } from '../history/types'
 import { getObjectAccess, type ObjectInfo } from '../history/objectAccess'
 
@@ -81,7 +82,7 @@ export function messageAttachments(message: MessageObject, indexHint: number): M
   const messageId = getMessageStableId(message, indexHint)
   const hasAccess = getObjectAccess() !== null
   const out: MessageAttachment[] = []
-  ;(message.content.refs ?? []).forEach((ref, refIndex) => {
+  ;(effectiveContent(message).refs ?? []).forEach((ref, refIndex) => {
     const attachment = attachmentOfRef(ref, `${messageId}#${refIndex}`, hasAccess)
     if (attachment) out.push(attachment)
   })

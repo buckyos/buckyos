@@ -1,0 +1,54 @@
+{
+  "at_ms": 1790899200500,
+  "from": "app:msg-bridge@alice",
+  "key": "cymsg:177ee9099ca6521860194947bb82640487fbbe0a3e3f6f3a23451c3e1b62a92a",
+  "payload": {
+    "delivery": {
+      "conversation_name": "Dev Team",
+      "from_name": "Bob",
+      "record_id": "r-102"
+    },
+    "msg": {
+      "content": {
+        "content": "@jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里",
+        "format": "text/plain",
+        "refs": [
+          {
+            "label": "screenshot.png",
+            "role": "input",
+            "target": {
+              "obj_id": "cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+              "type": "data_obj",
+              "uri_hint": "screenshot.png"
+            }
+          },
+          {
+            "label": "build.log",
+            "role": "input",
+            "target": {
+              "obj_id": "cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+              "type": "data_obj",
+              "uri_hint": "build.log"
+            }
+          }
+        ]
+      },
+      "created_at_ms": 1790899200000,
+      "from": "did:bns:bob",
+      "kind": "group_msg",
+      "mentions": {
+        "dids": [
+          "did:bns:jarvis"
+        ]
+      },
+      "thread": {
+        "reply_to": "cymsg:9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "to": [
+        "did:bns:dev-team"
+      ]
+    }
+  },
+  "schema": "opendan.session_input/3",
+  "type": "msg"
+}

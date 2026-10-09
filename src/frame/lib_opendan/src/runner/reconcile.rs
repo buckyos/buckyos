@@ -15,7 +15,8 @@ use crate::session::runs::RunHandle;
 
 use super::live::remove_if_safe;
 use super::outcome::{
-    call_site_of, classify_done, finish_run, hand_over, has_report, CallSite, FinishKind, Next,
+    call_site_of, classify_done, finish_run, freeze_target, hand_over, has_report,
+    hold_for_children, CallSite, FinishKind, Next,
 };
 use super::tools::pending_sub_call;
 use super::receipts::{apply_receipt, receipts_after, snapshot_host_meta, validate_receipts};
@@ -131,6 +132,11 @@ async fn redo_transfer(
     // A record this state already committed (the run was suspended by it
     // and is live again) is history, not a transfer left to do.
     if let Some(h) = record.handover.as_ref().filter(|h| h.at_ms != committed) {
+        freeze_target(sh, Some(&h.next_behavior)).await;
+        let cfg = sh.session.lock().await.config.clone();
+        let assembler = sh.deps.assembler.clone();
+        let entry_cfg = cfg.clone();
+        let entry = move |b: &str| assembler.behavior_entry(&entry_cfg, b);
         let (child, depth) = call_site_of(sh, &record.run_id).await;
         let site = CallSite {
             child,
@@ -155,6 +161,7 @@ async fn redo_transfer(
             completed,
         );
         next.usage = record.usage.main.clone();
+        hold_for_children(sh, &mut next).await?;
         if next.kind == FinishKind::Switch {
             hand_over(sh, run, behavior, snapshot, &mut next).await?;
         } else {
@@ -191,7 +198,11 @@ async fn finish_terminal_record(
         .and_then(|v| serde_json::from_value::<Next>(v).ok());
     let next = match recorded {
         Some(n) => n,
-        None => derive_next(sh, record, snapshot, behavior).await,
+        None => {
+            let mut next = derive_next(sh, record, snapshot, behavior).await;
+            hold_for_children(sh, &mut next).await?;
+            next
+        }
     };
     finish_run(sh, run, snapshot, behavior, next).await
 }

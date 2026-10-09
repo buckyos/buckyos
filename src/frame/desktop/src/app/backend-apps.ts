@@ -12,8 +12,9 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'users-agents',
   'my-network',
   'app-service',
-  'canvas',
   'preview',
+  'aiworkspace',
+  'homestation',
 ])
 
 const logicalAppAliases: Readonly<Record<string, string>> = {

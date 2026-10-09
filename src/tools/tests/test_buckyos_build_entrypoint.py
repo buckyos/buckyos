@@ -32,7 +32,9 @@ class BuckyosBuildEntrypointTests(unittest.TestCase):
         self.assertEqual(result, 23)
         run.assert_called_once_with(
             ["/runtime/buckyos-build", "--skip-web", "-s", "scheduler"],
-            env=module.os.environ.copy(),
+            env={**module.os.environ.copy(), "BUCKYOS_PIKG_COMMAND": module.json.dumps([
+                "/runtime/buckyos-build", str(SCRIPT_PATH.resolve().parent / "rootfs" / "libexec" / "buckyos-tool" / "cli" / "launcher.mjs"),
+            ])},
         )
 
     def test_main_prepares_sdk_tool_distribution_before_build(self) -> None:

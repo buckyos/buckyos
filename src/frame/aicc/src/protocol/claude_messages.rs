@@ -30,6 +30,9 @@ pub(crate) const CLAUDE_MESSAGES_VERSION: &str = "2023-06-01";
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024 * 1024;
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+// `max_tokens` is mandatory on the wire; this ceiling (clamped to the model's
+// own limit during call lowering) leaves room for thinking plus a long answer.
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_000;
 const CLAUDE_PROVIDER_NAMESPACE: &str = "claude";
 
 pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegistration) {
@@ -104,6 +107,8 @@ impl ClaudeMessagesCodec {
         }
         validate_message_sequence(&request.messages)?;
         validate_canonical_options(request)?;
+        call.context
+            .ignore_unsupported_options("Claude Messages", &[("seed", request.seed.is_some())]);
 
         let provider_model_id =
             required_string(&call.input.resolved_parameters, "provider_model_id")?;
@@ -280,9 +285,12 @@ pub(crate) fn claude_messages_operation_descriptor() -> OperationDescriptor {
     );
     binding.supported_features = BTreeSet::from([
         features::TOOL_CALL.to_string(),
+        features::JSON_SCHEMA.to_string(),
         features::VISION.to_string(),
         features::PLAN.to_string(),
+        features::WEB_SEARCH.to_string(),
     ]);
+    binding.default_max_output_tokens = Some(DEFAULT_MAX_OUTPUT_TOKENS);
     OperationDescriptor {
         operation_id: CLAUDE_MESSAGES_OPERATION_ID.to_string(),
         bindings: vec![
@@ -388,12 +396,6 @@ fn validate_canonical_options(request: &LlmChatInvokeRequest) -> ProtocolResultV
                 "Claude Messages codec does not map canonical structured output",
             ));
         }
-    }
-    if request.seed.is_some() {
-        return Err(ProtocolError::new(
-            ProtocolErrorKind::UnsupportedOperation,
-            "Claude Messages does not support seed",
-        ));
     }
     if request.output.is_some() {
         return Err(ProtocolError::new(
@@ -682,6 +684,7 @@ fn encode_content(
             summary,
             text,
             provider_metadata,
+            ..
         } => {
             if summary.is_some() {
                 return Err(ProtocolError::new(
@@ -821,6 +824,19 @@ fn apply_resolved_parameters(
         if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
+        if name == "web_search" {
+            let enabled = value.as_bool().ok_or_else(|| {
+                ProtocolError::invalid_request("resolved Claude web_search must be a boolean")
+            })?;
+            if enabled {
+                body.entry("tools")
+                    .or_insert_with(|| json!([]))
+                    .as_array_mut()
+                    .ok_or_else(|| ProtocolError::invalid_request("Claude tools must be an array"))?
+                    .push(json!({"type": "web_search_20250305", "name": "web_search"}));
+            }
+            continue;
+        }
         if !ALLOWED.contains(&name.as_str()) {
             return Err(ProtocolError::invalid_request(format!(
                 "resolved Claude parameter `{name}` is not supported"
@@ -947,6 +963,7 @@ fn decode_content(value: &Value) -> ProtocolResultValue<AiContent> {
             })
         }
         "thinking" => Ok(AiContent::Thinking {
+            source: buckyos_api::ProviderStateCoordinate::unbound(),
             summary: None,
             text: Some(required_value_string(value, "thinking")?),
             provider_metadata: Some(
@@ -1640,6 +1657,7 @@ mod tests {
                     AiRole::Assistant,
                     vec![
                         AiContent::Thinking {
+                            source: buckyos_api::ProviderStateCoordinate::unbound(),
                             summary: None,
                             text: Some("reason".to_string()),
                             provider_metadata: Some(json!({"signature": "sig"})),
@@ -1911,6 +1929,51 @@ mod tests {
         assert_eq!(output.value["message"]["content"][3]["provider"], "claude");
     }
 
+    #[test]
+    fn web_search_requests_and_results_remain_provider_state() {
+        let search = json!({
+            "type": "server_tool_use", "id": "srvtoolu-search", "name": "web_search",
+            "input": {"query": "巴克云 BuckyOS"}
+        });
+        for result in [
+            json!([{"type": "web_search_result", "url": "https://buckyos.org", "title": "BuckyOS", "encrypted_content": "opaque"}]),
+            json!({"type": "web_search_tool_result_error", "error_code": "unavailable"}),
+        ] {
+            let search_result = json!({"type": "web_search_tool_result", "tool_use_id": "srvtoolu-search", "content": result});
+            let output = normalize_message(&json!({
+                "type": "message", "role": "assistant", "content": [search, search_result, {"type": "text", "text": "搜索结果"}],
+                "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 8}
+            }))
+            .unwrap();
+            assert_eq!(output.value["message"]["content"][0]["type"], "provider_state");
+            assert_eq!(output.value["message"]["content"][0]["value"], search);
+            assert_eq!(output.value["message"]["content"][1]["value"], search_result);
+            assert_eq!(output.value["message"]["content"][2]["text"], "搜索结果");
+            assert!(output.value["tool_calls"].as_array().unwrap().is_empty());
+            let mut state = ClaudeStreamState::default();
+            let mut final_output = None;
+            for event in [
+                json!({"type": "message_start", "message": {"type": "message", "role": "assistant", "usage": {"input_tokens": 5, "output_tokens": 0}}}),
+                json!({"type": "content_block_start", "index": 0, "content_block": {"type": "server_tool_use", "id": "srvtoolu-search", "name": "web_search", "input": {}}}),
+                json!({"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": search["input"].to_string()}}),
+                json!({"type": "content_block_stop", "index": 0}),
+                json!({"type": "content_block_start", "index": 1, "content_block": search_result}),
+                json!({"type": "content_block_stop", "index": 1}),
+                json!({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": "搜索结果"}}),
+                json!({"type": "content_block_stop", "index": 2}),
+                json!({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 8}}),
+                json!({"type": "message_stop"}),
+            ] {
+                for decoded in decode_stream_event(None, &event.to_string(), &mut state).unwrap() {
+                    if let ProtocolEvent::Final(output) = decoded {
+                        final_output = Some(output);
+                    }
+                }
+            }
+            assert_eq!(final_output.unwrap().value, output.value);
+        }
+    }
+
     #[tokio::test]
     async fn decodes_sse_text_tool_thinking_and_cumulative_usage() {
         let body = concat!(
@@ -2082,22 +2145,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unmapped_hard_constraints_before_http() {
+    fn ignores_seed_but_rejects_output_media_before_http() {
         let mut request = LlmChatInvokeRequest::new(
             "ignored@instance",
             vec![AiMessage::text(AiRole::User, "hello")],
         );
         request.max_output_tokens = Some(16);
         request.seed = Some(7);
-        let input = input(request, &[]);
         let context = context();
-        let error = codec()
-            .encode(&CodecCall {
+        let encode = |request: LlmChatInvokeRequest| {
+            codec().encode(&CodecCall {
                 api_type: ApiType::Llm,
-                input: &input,
+                input: &input(request, &[]),
                 context: &context,
             })
-            .unwrap_err();
+        };
+        let wire = encode(request.clone()).unwrap();
+        let HttpBody::Json(body) = wire.body else {
+            panic!("expected JSON")
+        };
+        assert!(body.get("seed").is_none());
+
+        request.output = Some(buckyos_api::AiOutputOptions::default());
+        let error = encode(request).unwrap_err();
         assert_eq!(error.kind, ProtocolErrorKind::UnsupportedOperation);
     }
 
@@ -2135,6 +2205,87 @@ mod tests {
         assert_eq!(body["output_config"]["effort"], "high");
         assert_eq!(body["output_config"]["format"]["type"], "json_schema");
         assert_eq!(body["output_config"]["format"]["schema"]["type"], "object");
+    }
+
+    #[test]
+    fn registry_replays_native_thinking_and_drops_foreign_thinking() {
+        let (descriptor, registration) = claude_messages_adapter();
+        let mut registry = super::super::CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let native = context().state_coordinate;
+        // Same model served by another provider instance: still foreign.
+        let mut backup = native.clone();
+        backup.provider_profile_id = "openrouter".into();
+        backup.adapter_type = "openai-responses".into();
+        let turn = |source: buckyos_api::ProviderStateCoordinate, text: &str, metadata: Value| {
+            AiMessage::new(
+                AiRole::Assistant,
+                vec![
+                    AiContent::Thinking {
+                        source,
+                        summary: None,
+                        text: Some(format!("{text} reasoning")),
+                        provider_metadata: Some(metadata),
+                    },
+                    AiContent::text(text),
+                ],
+            )
+        };
+        let mut request = LlmChatInvokeRequest::new(
+            "test-model@claude",
+            vec![
+                AiMessage::text(AiRole::User, "one"),
+                turn(native, "primary", json!({"signature": "sig-primary"})),
+                AiMessage::text(AiRole::User, "two"),
+                turn(backup, "backup", json!({"id": "rs_1", "encrypted_content": "x"})),
+                AiMessage::text(AiRole::User, "three"),
+                // Kimi / GLM style: plaintext only, never bound to a source.
+                AiMessage::new(
+                    AiRole::Assistant,
+                    vec![AiContent::Thinking {
+                        source: buckyos_api::ProviderStateCoordinate::unbound(),
+                        summary: None,
+                        text: Some("unbound".into()),
+                        provider_metadata: None,
+                    }],
+                ),
+                AiMessage::text(AiRole::User, "four"),
+            ],
+        );
+        request.max_output_tokens = Some(64);
+        let input = input(request, &[]);
+        let encode = || {
+            let wire = registry
+                .encode(
+                    CLAUDE_MESSAGES_ADAPTER_ID,
+                    CLAUDE_MESSAGES_OPERATION_ID,
+                    ApiType::Llm,
+                    &input,
+                    &context(),
+                )
+                .unwrap();
+            let HttpBody::Json(body) = wire.body else {
+                panic!("expected a JSON body");
+            };
+            body
+        };
+        let body = encode();
+        let messages = body["messages"].as_array().unwrap();
+        assert_eq!(
+            messages[1]["content"],
+            json!([
+                {"type": "thinking", "thinking": "primary reasoning", "signature": "sig-primary"},
+                {"type": "text", "text": "primary"}
+            ])
+        );
+        assert_eq!(
+            messages[3]["content"],
+            json!([{"type": "text", "text": "backup"}])
+        );
+        assert!(!body.to_string().contains("unbound"));
+        assert!(!body.to_string().contains("backup reasoning"));
+        // Deterministic: the same blocks are dropped on every request.
+        assert_eq!(body, encode());
     }
 }
 

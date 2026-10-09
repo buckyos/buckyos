@@ -1,0 +1,504 @@
+{
+ "description": "Third phase M0 fixture (BuckyOS AI Workspace 第三期规划 §14): two free Surfaces, three Frames with speaker notes and captions, two Viewports, the five-step mixed path frame1 → frame2 → viewport1 → viewport2 → frame3 (cross-Surface, a fade, a hidden Block) and a guide path. One operable Block (note-live). Replayed through the service interface; commit N gets seq N.",
+ "commits": [
+  {
+   "message": "两张自由画布",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "s-launch-content",
+     "type_id": "buckyos.container",
+     "parent_id": "canvas-content",
+     "order_key": "a",
+     "name": "发布会",
+     "payload": {
+      "kind": "folder",
+      "title": "发布会",
+      "system": "surface_content",
+      "surface_id": "s-launch"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "s-launch",
+     "type_id": "buckyos.container",
+     "parent_id": "surfaces",
+     "order_key": "a",
+     "name": "发布会",
+     "payload": {
+      "kind": "surface",
+      "layout": {
+       "mode": "free"
+      },
+      "title": "发布会",
+      "content_folder_id": "s-launch-content"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "s-work-content",
+     "type_id": "buckyos.container",
+     "parent_id": "canvas-content",
+     "order_key": "b",
+     "name": "总结",
+     "payload": {
+      "kind": "folder",
+      "title": "总结",
+      "system": "surface_content",
+      "surface_id": "s-work"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "s-work",
+     "type_id": "buckyos.container",
+     "parent_id": "surfaces",
+     "order_key": "b",
+     "name": "总结",
+     "payload": {
+      "kind": "surface",
+      "layout": {
+       "mode": "free"
+      },
+      "title": "总结",
+      "content_folder_id": "s-work-content"
+     }
+    }
+   ]
+  },
+  {
+   "message": "三页 Frame 与内容",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "frame1",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "a",
+     "placement": {
+      "x": 0,
+      "y": 0,
+      "w": 1600,
+      "h": 900
+     },
+     "payload": {
+      "view": {
+       "type": "frame",
+       "version": 1
+      },
+      "title": "封面",
+      "config": {
+       "color": "#4f8df7"
+      },
+      "presentation": {
+       "background": "#f8fafc",
+       "notes": "开场：介绍我们是谁、今天讲什么。\n控制在一分钟内。",
+       "caption": "欢迎：这是演示的第一页。"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "shape-cover",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "b",
+     "placement": {
+      "x": 200,
+      "y": 300,
+      "w": 1200,
+      "h": 240
+     },
+     "payload": {
+      "view": {
+       "type": "shape",
+       "version": 1
+      },
+      "title": "BuckyOS AI Workspace",
+      "config": {
+       "shape": "rect",
+       "fill": "#e8f0fe",
+       "stroke": "#4f8df7"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "frame2",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "c",
+     "placement": {
+      "x": 1800,
+      "y": 0,
+      "w": 1600,
+      "h": 900
+     },
+     "payload": {
+      "view": {
+       "type": "frame",
+       "version": 1
+      },
+      "title": "问题",
+      "config": {
+       "color": "#e5534b"
+      },
+      "presentation": {
+       "notes": "讲痛点：数据散落，AI 看不到上下文。",
+       "caption": "我们要解决的问题。"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "shape-problem",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "d",
+     "placement": {
+      "x": 2500,
+      "y": 150,
+      "w": 700,
+      "h": 300
+     },
+     "payload": {
+      "view": {
+       "type": "shape",
+       "version": 1
+      },
+      "title": "AI 看不到上下文",
+      "config": {
+       "shape": "rect",
+       "fill": "#fdecea",
+       "stroke": "#e5534b"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "shape-flow",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "f",
+     "placement": {
+      "x": 0,
+      "y": 1200,
+      "w": 1600,
+      "h": 800
+     },
+     "payload": {
+      "view": {
+       "type": "shape",
+       "version": 1
+      },
+      "title": "工作流：参数区",
+      "config": {
+       "shape": "rect",
+       "fill": "#eef7ee",
+       "stroke": "#3c9d4e"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "frame3",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-work",
+     "order_key": "a",
+     "placement": {
+      "x": 0,
+      "y": 0,
+      "w": 1600,
+      "h": 900
+     },
+     "payload": {
+      "view": {
+       "type": "frame",
+       "version": 1
+      },
+      "title": "总结",
+      "config": {
+       "color": "#8957e5"
+      },
+      "presentation": {
+       "background": "#ffffff",
+       "notes": "总结三点，然后进入问答。",
+       "caption": "总结"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "shape-thanks",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-work",
+     "order_key": "b",
+     "placement": {
+      "x": 200,
+      "y": 200,
+      "w": 1200,
+      "h": 300
+     },
+     "payload": {
+      "view": {
+       "type": "shape",
+       "version": 1
+      },
+      "title": "谢谢",
+      "config": {
+       "shape": "rect",
+       "fill": "#e8f0fe",
+       "stroke": "#4f8df7"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "shape-extra",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-work",
+     "order_key": "c",
+     "placement": {
+      "x": 200,
+      "y": 560,
+      "w": 1200,
+      "h": 200
+     },
+     "payload": {
+      "view": {
+       "type": "shape",
+       "version": 1
+      },
+      "title": "本页放映时隐藏的补充说明",
+      "config": {
+       "shape": "rect",
+       "fill": "#fff8e1",
+       "stroke": "#d4a72c"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "d-note-problem",
+     "type_id": "buckyos.annotation",
+     "parent_id": "s-launch-content",
+     "order_key": "e",
+     "payload": {
+      "kind": "note",
+      "body": "数据散落在各处",
+      "style": {
+       "color": "#fff2cc"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "note-problem",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "e",
+     "placement": {
+      "x": 1900,
+      "y": 150,
+      "w": 420,
+      "h": 300
+     },
+     "payload": {
+      "view": {
+       "type": "note",
+       "version": 1
+      },
+      "source_ref": {
+       "entity_id": "d-note-problem"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "d-note-live",
+     "type_id": "buckyos.annotation",
+     "parent_id": "s-launch-content",
+     "order_key": "g",
+     "payload": {
+      "kind": "note",
+      "body": "放映时可以在这里写",
+      "style": {
+       "color": "#fff2cc"
+      }
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "note-live",
+     "type_id": "buckyos.cell",
+     "parent_id": "s-launch",
+     "order_key": "g",
+     "placement": {
+      "x": 100,
+      "y": 1300,
+      "w": 500,
+      "h": 300
+     },
+     "payload": {
+      "view": {
+       "type": "note",
+       "version": 1
+      },
+      "source_ref": {
+       "entity_id": "d-note-live"
+      },
+      "presentation": {
+       "live": true
+      }
+     }
+    }
+   ]
+  },
+  {
+   "message": "两个 Viewport",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "viewport1",
+     "type_id": "buckyos.viewport",
+     "parent_id": "shows",
+     "order_key": "a",
+     "payload": {
+      "title": "工作流全貌",
+      "surface_ref": {
+       "entity_id": "s-launch"
+      },
+      "center": {
+       "x": 800,
+       "y": 1600
+      },
+      "zoom": 1,
+      "notes": "演示参数区",
+      "caption": "在这里调整生成参数"
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "viewport2",
+     "type_id": "buckyos.viewport",
+     "parent_id": "shows",
+     "order_key": "b",
+     "payload": {
+      "title": "参数区特写",
+      "surface_ref": {
+       "entity_id": "s-launch"
+      },
+      "center": {
+       "x": 350,
+       "y": 1450
+      },
+      "zoom": 2,
+      "caption": "放映时可以直接在这张便签上写"
+     }
+    }
+   ]
+  },
+  {
+   "message": "演讲路径与使用引导",
+   "operations": [
+    {
+     "op": "entity.create",
+     "entity_id": "path-intro",
+     "type_id": "buckyos.show-path",
+     "parent_id": "shows",
+     "order_key": "c",
+     "name": "五分钟介绍",
+     "payload": {
+      "title": "五分钟介绍",
+      "purpose": "presentation",
+      "stage": {
+       "w": 1920,
+       "h": 1080
+      },
+      "background": "#ffffff",
+      "steps": [
+       {
+        "id": "s1",
+        "target": {
+         "kind": "frame",
+         "entity_id": "frame1"
+        }
+       },
+       {
+        "id": "s2",
+        "target": {
+         "kind": "frame",
+         "entity_id": "frame2"
+        }
+       },
+       {
+        "id": "s3",
+        "target": {
+         "kind": "viewport",
+         "entity_id": "viewport1"
+        }
+       },
+       {
+        "id": "s4",
+        "target": {
+         "kind": "viewport",
+         "entity_id": "viewport2"
+        },
+        "transition": "fade"
+       },
+       {
+        "id": "s5",
+        "target": {
+         "kind": "frame",
+         "entity_id": "frame3"
+        },
+        "hide": [
+         "shape-extra"
+        ]
+       }
+      ]
+     }
+    },
+    {
+     "op": "entity.create",
+     "entity_id": "path-guide",
+     "type_id": "buckyos.show-path",
+     "parent_id": "shows",
+     "order_key": "d",
+     "name": "首次使用",
+     "payload": {
+      "title": "首次使用",
+      "purpose": "guide",
+      "stage": {
+       "w": 1920,
+       "h": 1080
+      },
+      "steps": [
+       {
+        "id": "g1",
+        "target": {
+         "kind": "frame",
+         "entity_id": "frame1"
+        }
+       },
+       {
+        "id": "g2",
+        "target": {
+         "kind": "viewport",
+         "entity_id": "viewport1"
+        }
+       },
+       {
+        "id": "g3",
+        "target": {
+         "kind": "viewport",
+         "entity_id": "viewport2"
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

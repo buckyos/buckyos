@@ -1,0 +1,10 @@
+{
+  "at_ms": 1790899200000,
+  "from": "app:x@alice",
+  "key": "cam#motion",
+  "payload": {
+    "text": "motion"
+  },
+  "schema": "opendan.session_input/3",
+  "type": "change"
+}

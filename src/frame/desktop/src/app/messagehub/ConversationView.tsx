@@ -5,6 +5,8 @@ import {
   Lock,
   Menu,
   MoreVertical,
+  Pin,
+  Ticket,
   SlidersHorizontal,
   SquarePen,
   User,
@@ -24,7 +26,8 @@ import {
   type ConversationComposerHandle,
   type ConversationComposerSubmitPayload,
 } from './conversation/input/ConversationComposer'
-import { messageObjId, ownReactionId } from './conversation/history/relations'
+import { messageObjId, messageSummaryText, ownReactionId } from './conversation/history/relations'
+import { SessionPanel } from './conversation/SessionPanel'
 import { isTransferWithFiles, type ComposerAttachmentInput } from './conversation/input/attachmentDraft'
 import { ConversationMediaScopeContext } from './conversation/media/context'
 import type { DID, MessageObject } from './protocol/msgobj'
@@ -66,6 +69,14 @@ interface ConversationViewProps {
   admission?: EntityAdmission | null
   onAdmission?: (action: 'accept' | 'block') => Promise<void>
   onOpenEntity?: (id: string) => void
+  /** Opens the forward target picker for a message. */
+  onForward?: (message: MessageObject) => void
+  /** Extra content of the session panel, shown when it is expanded (host-defined). */
+  sessionPanelDetails?: ReactNode
+  /** Opens the details of a message. */
+  onOpenMessage?: (message: MessageObject) => void
+  /** ObjId of a message to bring into view (a deep link, or the message whose details are open). */
+  focusMessageId?: string | null
 }
 
 const MIN_HISTORY_PANE_HEIGHT = 180
@@ -90,6 +101,10 @@ export function ConversationView({
   admission = null,
   onAdmission,
   onOpenEntity,
+  onForward,
+  sessionPanelDetails,
+  onOpenMessage,
+  focusMessageId = null,
 }: ConversationViewProps) {
   const { t } = useI18n()
   const store = useMessageHubStore()
@@ -99,6 +114,7 @@ export function ConversationView({
   const [admissionPending, setAdmissionPending] = useState(false)
   const [admissionError, setAdmissionError] = useState(false)
   const requestCount = session?.requestCount ?? 0
+  const showAdmissionBanner = requestCount > 0 && admission?.accessLevel !== 'friend'
   const runAdmission = async (action: 'accept' | 'block') => {
     if (!onAdmission || admissionPending) return
     setAdmissionPending(true); setAdmissionError(false)
@@ -123,6 +139,9 @@ export function ConversationView({
   const isOwner = context.mode === 'self' && context.ownerDid === context.viewerDid
   const [relation, setRelation] = useState<ComposerRelation | null>(null)
   const sessionId = session?.id
+  const pinned = session ? store.preferences(context, session.id).pinnedMessage ?? null : null
+  const pinnedId = pinned?.id
+  const [panelInset, setPanelInset] = useState(0)
   const group = isGroup ? store.group(context, entity.id) : null
   const groupMembers = group?.members
   const groupHosted = group?.hosted === true
@@ -158,13 +177,15 @@ export function ConversationView({
       acceptSessionInvitation: isOwner ? (message: MessageObject) => notice(message, parsed => parsed.sessionId ? store.acceptGroupSessionInvitation(context, parsed.groupDid, parsed.sessionId) : Promise.reject(Error('not-found'))) : undefined,
       openEntity: onOpenEntity,
       // Relations are plain messages with `relates_to`, so a direct session
-      // offers reactions and replies too; edits and recalls follow group rules.
+      // offers reactions, replies and delete requests too; edits follow group rules.
       relations: isOwner && sessionId ? {
         capabilities: (message: MessageObject) => {
           const own = message.from === context.ownerDid, now = store.now()
           const edit = isGroup && canSend && own && withinWindow(group?.messageRules.editWindowMs, message.created_at_ms, now)
-          const redact = isGroup && canSend && (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false)
-          return { reply: canSend, react: canSend, edit, redact }
+          // Outside a group a redact is a request the peer's client honours by
+          // default; nothing enforces it, so either side may ask for any message.
+          const redact = canSend && (!isGroup || (own ? withinWindow(group?.messageRules.recallWindowMs, message.created_at_ms, now) : group?.can.redactAny ?? false))
+          return { reply: canSend, react: canSend, edit, redact, recall: redact && isGroup && own }
         },
         reply: (message: MessageObject) => setRelation({ kind: 'reply', message }),
         edit: (message: MessageObject) => setRelation({ kind: 'edit', message }),
@@ -172,9 +193,26 @@ export function ConversationView({
         react: (message: MessageObject, key: string) => sendRelation(messageObjId(message), 'reaction', key),
         unreact: (message: MessageObject, key: string) => sendRelation(ownReactionId(message, context.ownerDid, key), 'redact'),
       } : undefined,
+      openDetails: sessionId ? onOpenMessage : undefined,
+      forward: isOwner && sessionId ? onForward : undefined,
+      remove: isOwner && sessionId ? (message: MessageObject) => store.deleteMessage(context, sessionId, message) : undefined,
+      pin: isOwner && sessionId ? {
+        isPinned: (message: MessageObject) => !!pinnedId && messageObjId(message) === pinnedId,
+        toggle: (message: MessageObject) => {
+          const id = messageObjId(message)
+          if (!id) return Promise.reject(Error('not-found'))
+          return store.updatePreferences(context, sessionId, { pinnedMessage: id === pinnedId ? null : { id, text: messageSummaryText(message).slice(0, 2000), senderDid: message.from, createdAt: message.created_at_ms } })
+        },
+      } : undefined,
       readReceipt: sessionId ? (message: MessageObject) => store.readReceipt(context, sessionId, message) : undefined,
     }
-  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, t]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [canSend, onResend, onSendMessage, store, snapshot, context.ownerDid, context.viewerDid, context.mode, isOwner, isGroup, sessionId, group, onOpenEntity, onForward, onOpenMessage, pinnedId, t]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!focusMessageId || !sessionId) return
+    historyPaneRef.current?.scrollToMessage(focusMessageId)
+    void store.locateMessage(context, sessionId, focusMessageId).catch(() => false)
+  }, [focusMessageId, sessionId, store, context.ownerDid, context.viewerDid, context.mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Observe body height to compute composer max (50% of conversation body)
   useEffect(() => {
@@ -290,12 +328,12 @@ export function ConversationView({
         {onCreate && <button type="button" onClick={onCreate} disabled={!!creationReason} title={creationReason ? t(`messagehub.reason.${creationReason}`) : t('messagehub.newSession')} aria-label={t('messagehub.newSession')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40"><SquarePen size={18} /></button>}
         <button onClick={onOpenSessionDetails} disabled={!session} aria-label={t('messagehub.sessionDetails')} title={t('messagehub.sessionDetails')} className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-[color:var(--cp-muted)] disabled:opacity-40" type="button"><MoreVertical size={18} /></button>
       </div>
-      {session && requestCount > 0 && <div role="note" data-testid="request-banner" title={admissionDetail} className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-3 py-1 text-[13px]">
+      {session && showAdmissionBanner && <div role="note" data-testid="request-banner" title={admissionDetail} className="flex shrink-0 items-center gap-2 border-b border-[color:var(--cp-border)] bg-[color:color-mix(in_srgb,var(--cp-warning)_12%,var(--cp-surface))] px-3 py-1 text-[13px]">
         <span className="min-w-0 flex-1 truncate font-medium">{t('messagehub.requestPending', undefined, { count: requestCount })}{admission?.accessLevel && admission.accessLevel !== 'stranger' ? <span className="font-normal text-[color:var(--cp-muted)]"> · {t(`messagehub.access.${admission.accessLevel}`)}</span> : null}</span>
         {admission?.canChange && admission.accessLevel !== 'friend' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 font-medium text-[color:var(--cp-accent)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('accept')}>{t('messagehub.acceptContact')}</button>}
         {admission?.canChange && admission.accessLevel !== 'block' && <button type="button" disabled={admissionPending} className="min-h-11 shrink-0 rounded-lg px-3 text-[color:var(--cp-danger)] disabled:opacity-40 md:min-h-9" onClick={() => void runAdmission('block')}>{t('messagehub.blockContact')}</button>}
       </div>}
-      {session && requestCount > 0 && admissionError && <p role="alert" className="shrink-0 px-3 py-1 text-xs text-[color:var(--cp-danger)]">{t('messagehub.admissionFailed')}</p>}
+      {session && showAdmissionBanner && admissionError && <p role="alert" className="shrink-0 px-3 py-1 text-xs text-[color:var(--cp-danger)]">{t('messagehub.admissionFailed')}</p>}
 
       {defaultSessionError && <div role="alert" className="flex shrink-0 items-center gap-2 px-3 py-2 text-xs text-[color:var(--cp-danger)]"><span>{t('messagehub.operationFailed')}</span><button type="button" className="min-h-8 rounded-lg border border-[color:var(--cp-border)] px-2" onClick={onRetryDefaultSession}>{t('messagehub.retry')}</button></div>}
       <div className="relative flex min-h-0 flex-1">
@@ -306,9 +344,14 @@ export function ConversationView({
           className="flex min-h-0 flex-1 flex-col"
         >
           <div
-            className="flex flex-1 min-h-0 flex-col"
+            className="relative flex flex-1 min-h-0 flex-col"
             style={{ minHeight: MIN_HISTORY_PANE_HEIGHT }}
           >
+            {session?.panel ? (
+              <SessionPanel key={`custom:${session.id}`} icon={<Ticket size={15} />} title={session.panel.title} text={session.panel.text} fields={session.panel.fields} onCollapsedHeight={setPanelInset} testId="session-panel">{sessionPanelDetails}</SessionPanel>
+            ) : pinned && sessionId ? (
+              <SessionPanel key={`pin:${pinned.id}`} icon={<Pin size={15} />} title={t('messagehub.panel.pinnedBy', undefined, { name: messageActions.displayName(pinned.senderDid) })} text={pinned.text} dismissLabel={t('messagehub.message.unpin')} onDismiss={isOwner ? () => { void store.updatePreferences(context, sessionId, { pinnedMessage: null }).catch(() => undefined) } : undefined} onCollapsedHeight={setPanelInset} testId="session-panel">{sessionPanelDetails}</SessionPanel>
+            ) : null}
             <ConversationMediaScopeContext.Provider value={mediaScope}>
               <ConversationMessageActionsContext.Provider value={messageActions}>
               <ConversationHistoryPane
@@ -322,6 +365,7 @@ export function ConversationView({
                 hasOlder={hasOlder}
                 onLoadOlder={onLoadOlder}
                 onVisibleMessages={onVisibleMessages}
+                topInset={panelInset > 0 ? panelInset + 12 : 0}
               />
               </ConversationMessageActionsContext.Provider>
             </ConversationMediaScopeContext.Provider>

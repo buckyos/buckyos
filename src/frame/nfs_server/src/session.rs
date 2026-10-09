@@ -191,6 +191,18 @@ impl LeaseMgr {
         }
     }
 
+    pub fn abort(&self, lease_id: &str, session: &str) -> NfsResult<Option<Lease>> {
+        let mut map = self.leases.lock().unwrap();
+        let key = map.iter().find(|(_, lease)| lease.lease_id == lease_id).map(|(key, _)| key.clone());
+        if let Some(key) = key {
+            if map[&key].session != session {
+                return Err(NfsError::new(ErrorCode::LeaseConflict, "lease belongs to another session"));
+            }
+            return Ok(map.remove(&key));
+        }
+        Ok(None)
+    }
+
     pub fn release_session(&self, session: &str) -> Vec<Lease> {
         let mut map = self.leases.lock().unwrap();
         let dropped: Vec<Lease> =

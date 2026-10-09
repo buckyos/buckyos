@@ -17,11 +17,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": null,
         "inflight": [],
-        "run_id": "20261003-035101-9bf19c",
+        "run_id": "20261004-102443-d3de1b",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261003-035101-9bf19c"
+        "20261004-102443-d3de1b"
       ],
       "session_id": "work-fixture-blocked",
       "state": {

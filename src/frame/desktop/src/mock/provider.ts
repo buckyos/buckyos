@@ -1,5 +1,6 @@
 import type { DesktopPayload, FormFactor, MockScenario } from '../models/ui'
 import { buildDesktopPayload } from './data'
+import { contentFixtureApps, contentFixtureEnabled } from './content'
 
 interface ProviderArgs {
   formFactor: FormFactor
@@ -22,5 +23,7 @@ export async function fetchDesktopPayload({
     throw new Error('mock.provider.desktop_unavailable')
   }
 
-  return structuredClone(buildDesktopPayload(formFactor, scenario))
+  const payload = structuredClone(buildDesktopPayload(formFactor, scenario))
+  if (contentFixtureEnabled()) payload.apps.push(...contentFixtureApps(payload.apps.find(app => app.id === 'files')!))
+  return payload
 }

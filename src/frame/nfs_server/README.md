@@ -56,7 +56,7 @@ cargo test -p nfs_server        # 单元与集成测试，不需要外部服务
 |---|---|---|
 | 会话 | `hello` / `bye` | ✅ feature 协商、limits、realms;session 由 hello 返回 |
 | 解析 | `resolve` / `stat` / `list` / `batch` | ✅ 统一信封;list 接受 Dir/View/Collection/Group Ref;无状态游标(D10 不重置,返回 `revision_changed`);batch 共享游标 walk/stat/list |
-| 写入 | `mkdir` / `move` / `delete` / `open_write` / `commit_file` | ✅ revision CAS + 内存租约 + 旁路写 commit 复检(size/mtime) |
+| 写入 | `mkdir` / `move` / `delete` / `open_write` / `commit_file` / `abort_write` | ✅ revision CAS + 内存租约 + 旁路写 commit 复检(size/mtime) |
 | 本地复制 | `copy_capabilities` / `copy_submit` / `copy_list` / `copy_get` / `copy_decide` / `copy_cancel` | ✅ 可信用户、TaskMgr 任务、逐项日志、恢复/取消/失败项重试；详见产品文档 §10 |
 | 引用绑定 | `bind_ref` / `unlink` | ✅ sidecar merge、同名冲突 `conflicts[]`、unlink 只解引用 |
 | 上传 | `probe` + tus 续传 + `commit_file` | ✅ 内嵌最小 tus(N1 采纳内嵌方案);probe/秒传基于 filedb `content_index` 缓存表 |
@@ -154,3 +154,7 @@ loopback 监听且显式开启 `--debug-api`。测试仍执行 JWT 签名及标�
 生产模式通过现有 runtime 验证 Verify Hub 用户 token，并用 nfs-server 服务身份代理
 该用户创建/控制 Task；hello 的随机 session 不是 Task creator。详细 Input、恢复状态、
 文件元数据和平台边界见 [产品协议 §10](../../../product/bucky_file/nfs_server.md#10-本地文件复制扩展fb-04-copy)。
+
+## 编辑器取消写入
+
+控制面写操作 `abort_write { lease_id }` 使用当前 NFSP `session` 与递增 `seq`。有效租约只能由所属会话取消；成功返回 `{ "aborted": true }`、释放租约并删除暂存上传。不存在或已提交的租约重复取消也成功，便于客户端在 `finally` 清理。跨会话取消返回 `LEASE_CONFLICT`。此检查约束 NFSP 会话，尚不代表用户/App RBAC 已覆盖全部 NFSP 接口。

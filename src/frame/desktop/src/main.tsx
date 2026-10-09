@@ -9,6 +9,8 @@ import App from './App.tsx'
 import { consumePendingSiteDataReset } from './app/settings/siteDataReset'
 import { isMockRuntime } from './runtime'
 import { isPublicRoute } from './publicRoutes'
+import { isPortalRoot } from './app/homestation/links'
+import { registerDesktopServiceWorker } from './serviceWorker'
 
 interface AccountInfo {
   session_token?: unknown
@@ -58,8 +60,9 @@ async function bootstrap() {
     }
     console.log('[bootstrap] initBuckyOS done')
     // Login-optional internal pages (see publicRoutes.ts) skip the account
-    // gate so they remain reachable in a logged-out state.
-    if (!isPublicRoute(window.location.pathname)) {
+    // gate so they remain reachable in a logged-out state; so does `/` on the
+    // zone's short hosts, which opens the default HomeStation feed.
+    if (!isPublicRoute(window.location.pathname) && !isPortalRoot()) {
       const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
       console.log('[bootstrap] accountInfo:', accountInfo)
       if (accountInfo == null || !(await ensureDesktopSession(accountInfo))) {
@@ -100,6 +103,9 @@ function renderBootstrapFailure(error: unknown) {
   panel.append(title, body, retry)
   root.append(panel)
 }
+
+// Application resources for a cold start without the network (production builds only).
+registerDesktopServiceWorker()
 
 // Without this, any rejection during bootstrap (SDK host discovery, site
 // data reset, session refresh) leaves a permanently blank page with the

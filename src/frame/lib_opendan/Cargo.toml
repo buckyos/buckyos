@@ -27,6 +27,8 @@ toml = { workspace = true }
 kRPC = { workspace = true }
 buckyos-api = { path = "../../kernel/buckyos-api" }
 llm_context = { path = "../llm_context" }
+ndn-lib = { workspace = true }
+name-lib = { workspace = true }
 agent_tool = { path = "../agent_tool" }
 
 [dev-dependencies]

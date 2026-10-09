@@ -21,6 +21,7 @@ use crate::request::{
     BudgetSpec, ErrorPolicy, HumanPolicy, LLMContextRequest, ModelPolicy, OutputSpec, ToolPolicy,
 };
 use crate::state::LLMContextSnapshot;
+use crate::suspension::strip_snapshot_thinking;
 
 /// Overlay applied to a base [`LLMContextSnapshot`] before rebuilding the next
 /// [`LLMContext`]. Every field is `Option`/`bool` so callers only specify what
@@ -68,15 +69,25 @@ pub struct RequestOverrides {
 ///
 /// Maintains the invariant that `request.input` and `state.accumulated` share
 /// the same leading System segment.
+///
+/// Thinking is only valid for the model and the exact prefix (system, tools,
+/// earlier messages) it was produced with. When an override really changes
+/// that prefix — system messages, history, the offered tool set, the model
+/// or the behavior the steps are rendered for — every thinking block of the
+/// snapshot is dropped. Overrides that leave the prefix alone keep it.
 pub fn apply_overrides_to_snapshot(
     mut snap: LLMContextSnapshot,
     ov: RequestOverrides,
 ) -> LLMContextSnapshot {
+    let mut prefix_changed = false;
     if let Some(new_system) = ov.system_messages {
+        prefix_changed |= split_leading_system(&snap.request.input).0 != new_system.as_slice()
+            || split_leading_system(&snap.state.accumulated).0 != new_system.as_slice();
         replace_leading_system(&mut snap.request.input, &new_system);
         replace_leading_system(&mut snap.state.accumulated, &new_system);
     }
     if let Some(new_user) = ov.user_messages {
+        prefix_changed = true;
         replace_after_leading_system(&mut snap.request.input, &new_user);
         replace_after_leading_system(&mut snap.state.accumulated, &new_user);
         snap.state.suspended = None;
@@ -90,6 +101,7 @@ pub fn apply_overrides_to_snapshot(
     }
 
     if let Some(tp) = ov.tool_policy {
+        prefix_changed |= offered_tools_differ(&snap.request.tool_policy, &tp);
         if ov.reset_tool_iterations {
             snap.state.tool_iterations_left = tp.max_tool_iterations;
         }
@@ -108,12 +120,15 @@ pub fn apply_overrides_to_snapshot(
         snap.request.objective = obj;
     }
     if let Some(behavior_name) = ov.behavior_name {
+        prefix_changed |= snap.request.behavior_name != behavior_name;
         snap.request.behavior_name = behavior_name;
     }
     if let Some(trace) = ov.trace {
         snap.request.trace = trace;
     }
     if let Some(mp) = ov.model_policy {
+        prefix_changed |= snap.request.model_policy.preferred != mp.preferred
+            || snap.request.model_policy.fallbacks != mp.fallbacks;
         snap.request.model_policy = mp;
     }
     if let Some(b) = ov.budget {
@@ -144,7 +159,29 @@ pub fn apply_overrides_to_snapshot(
         }
     }
 
+    if prefix_changed {
+        strip_snapshot_thinking(&mut snap);
+    }
+
     snap
+}
+
+/// Whether two policies offer the model a different tool / action set.
+/// Budgets and dispatch options are not part of the request prefix.
+fn offered_tools_differ(old: &ToolPolicy, new: &ToolPolicy) -> bool {
+    old.mode != new.mode
+        || old.whitelist != new.whitelist
+        || old.action_mode != new.action_mode
+        || old.action_whitelist != new.action_whitelist
+        || old.disable_capabilities != new.disable_capabilities
+}
+
+fn split_leading_system(msgs: &[AiMessage]) -> (&[AiMessage], &[AiMessage]) {
+    let leading = msgs
+        .iter()
+        .position(|m| m.role != AiRole::System)
+        .unwrap_or(msgs.len());
+    msgs.split_at(leading)
 }
 
 /// Replace the leading run of `System`-role messages in `msgs` with `new_system`.

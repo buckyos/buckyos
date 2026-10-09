@@ -461,7 +461,14 @@ pub(crate) fn interrupted_shell_text(
     }
 }
 
+/// Names the local execution environment where the hostname is not a stable
+/// identity (an app container gets a new one every time it is recreated).
+pub const HOST_ID_ENV: &str = "AGENT_TOOL_HOST_ID";
+
 pub fn native_host_id() -> String {
+    if let Some(id) = std::env::var(HOST_ID_ENV).ok().filter(|v| !v.trim().is_empty()) {
+        return format!("host:{}:", id.trim());
+    }
     let host = std::fs::read_to_string("/etc/hostname")
         .unwrap_or_else(|_| std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".into()));
     let machine = std::fs::read_to_string("/etc/machine-id").unwrap_or_default();

@@ -1,664 +1,331 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMediaQuery } from '@mui/material'
-import {
-  ChevronLeft,
-  ChevronRight,
-  Hash,
-  PenSquare,
-  Rss,
-  Search,
-  X,
-} from 'lucide-react'
+import { ExternalLink, Hash, Link2, PanelRightOpen, PenSquare, Search, X } from 'lucide-react'
+import { useCallback, useMemo, useRef, useState } from 'react'
+import { WindowDialogProvider } from '../../desktop/windows/dialogs'
 import { useI18n } from '../../i18n/provider'
-import { FeedList } from './FeedList'
-import { FilterBar } from './FilterBar'
+import './homestation.css'
+import { FollowedCandidates } from './candidates/FollowedCandidates'
+import type { ReadingQuery } from './datamodel/types'
+import { ItemDetail } from './detail/ItemDetail'
+import { FeedPage } from './feed/FeedPage'
+import { ImmersiveMode } from './ImmersiveMode'
 import { InfoPanel } from './InfoPanel'
-import { ImmersiveVideoMode } from './ImmersiveVideoMode'
-import { PublicProfileView } from './PublicProfileView'
-import { ArticleDetail } from './detail/ArticleDetail'
-import { ImageDetail } from './detail/ImageDetail'
-import { VideoDetail } from './detail/VideoDetail'
-import { QuickPublishComposer } from './publish/QuickPublishComposer'
+import { INFO_PANEL_DEFAULT_WIDTH, INFO_PANEL_HIDE_BELOW, INFO_PANEL_MAX_WIDTH, INFO_PANEL_MIN_WIDTH, PANEL_SPLITTER_WIDTH, SIDEBAR_COLLAPSE_BELOW, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH } from './layout'
+import { portalHref, portalShareUrl } from './links'
+import { MePage } from './MePage'
+import { installHomeStationPreviewSource } from './media'
+import { HsNavContext, useHsNav, type HsNav, type HsPage } from './navContext'
+import { PublicProfileView, type PreviewReader } from './PublicProfileView'
+import { FeedPreferences } from './prefs/FeedPreferences'
+import { MyPublications } from './publish/MyPublications'
+import { PublishComposer } from './publish/PublishComposer'
+import { SavedList } from './saved/SavedList'
+import { SidebarPanel } from './SidebarPanel'
 import { SourceManager } from './source/SourceManager'
-import {
-  filterFeedObjects,
-  mockFeedObjects,
-  mockSources,
-  mockTopics,
-  mockUserProfile,
-} from './mock/data'
-import {
-  INFO_PANEL_DEFAULT_WIDTH,
-  INFO_PANEL_MAX_WIDTH,
-  INFO_PANEL_MIN_WIDTH,
-  PANEL_SPLITTER_WIDTH,
-} from './layout'
-import type {
-  FeedFilter,
-  FeedObject,
-  MobileView,
-  ReadingMode,
-} from './types'
+import { useHomeStationStore, useStoreSelector } from './store/context'
+import { HomeStationStoreProvider } from './store/HomeStationStoreProvider'
+import type { HomeStationStore } from './store/types'
+import type { ReadingMode } from './types'
+import { Avatar, PageHeader } from './ui/primitives'
+import { ToastHost } from './ui/ToastHost'
+import { useToast } from './ui/toastContext'
 
-export function HomeStationView() {
+installHomeStationPreviewSource()
+
+const OWNER_READER = { kind: 'owner' } as const
+const DEFAULT_QUERY: ReadingQuery = { filter: 'all', topicId: null, search: '', showFiltered: false }
+const selectTopics = (store: HomeStationStore) => store.peekTopics()
+const selectOwner = (store: HomeStationStore) => store.peekIdentity(store.owner)
+const selectHome = (store: HomeStationStore) => store.peekHome()
+
+function TopBar({ query, onQueryChange, showSearch, onToggleSearch, onAvatar, trailing, isMobile }: { query: ReadingQuery; onQueryChange: (patch: Partial<ReadingQuery>) => void; showSearch: boolean; onToggleSearch: () => void; onAvatar?: () => void; trailing?: React.ReactNode; isMobile: boolean }) {
   const { t } = useI18n()
-  const isDesktop = useMediaQuery('(min-width: 769px)')
-
-  /* ── Core State ��─ */
-  const [activeFilter, setActiveFilter] = useState<FeedFilter>('all')
-  const [activeTopicId, setActiveTopicId] = useState<string | null>(null)
-  const [readingMode, setReadingMode] = useState<ReadingMode>('standard')
-  const [selectedFeedId, setSelectedFeedId] = useState<string | null>(null)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [showSearch, setShowSearch] = useState(false)
-
-  /* ── Feed State (mutable for interactions) ── */
-  const [feedObjects, setFeedObjects] = useState<FeedObject[]>(() => [...mockFeedObjects])
-
-  /* ── Mobile State ── */
-  const [mobileView, setMobileView] = useState<MobileView>('feed')
-
-  /* ── Desktop Panel State ���─ */
-  const [showInfoPanel, setShowInfoPanel] = useState(true)
-  const [infoPanelWidth, setInfoPanelWidth] = useState(INFO_PANEL_DEFAULT_WIDTH)
-  const [isResizingInfoPanel, setIsResizingInfoPanel] = useState(false)
-
-  /* ── Refs ── */
-  const desktopLayoutRef = useRef<HTMLDivElement>(null)
-  const infoPanelWidthRef = useRef(INFO_PANEL_DEFAULT_WIDTH)
-  const infoPanelResizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
-
-  /* ── Derived Data ── */
-  const filteredFeeds = useMemo(() => {
-    const filtered = filterFeedObjects(feedObjects, activeFilter, activeTopicId)
-    const normalizedQuery = searchQuery.trim().toLowerCase()
-    if (!normalizedQuery) return filtered
-    return filtered.filter((feed) =>
-      [feed.title, feed.text, feed.body, feed.author.name]
-        .some((value) => value?.toLowerCase().includes(normalizedQuery)),
-    )
-  }, [feedObjects, activeFilter, activeTopicId, searchQuery])
-
-  const selectedFeed = useMemo(
-    () => (selectedFeedId ? feedObjects.find((f) => f.id === selectedFeedId) ?? null : null),
-    [selectedFeedId, feedObjects],
-  )
-
-  /* ── Clamp Helpers ── */
-  const clampInfoPanelWidth = useCallback(
-    (w: number) => Math.min(Math.max(w, INFO_PANEL_MIN_WIDTH), INFO_PANEL_MAX_WIDTH), [],
-  )
-
-  /* ── Sync refs ── */
-  useEffect(() => { infoPanelWidthRef.current = infoPanelWidth }, [infoPanelWidth])
-
-  useEffect(() => {
-    const el = desktopLayoutRef.current
-    if (!isDesktop || !el) return
-
-    const ro = new ResizeObserver(() => {
-      setInfoPanelWidth((prev) => clampInfoPanelWidth(prev))
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [clampInfoPanelWidth, isDesktop])
-
-  /* ── Interaction Handlers ── */
-  const handleToggleLike = useCallback((id: string) => {
-    setFeedObjects((prev) =>
-      prev.map((f) =>
-        f.id !== id
-          ? f
-          : {
-            ...f,
-            interactions: {
-              ...f.interactions,
-              isLiked: !f.interactions.isLiked,
-              likeCount: f.interactions.likeCount + (f.interactions.isLiked ? -1 : 1),
-            },
-          },
-      ),
-    )
-  }, [])
-
-  const handleToggleBookmark = useCallback((id: string) => {
-    setFeedObjects((prev) =>
-      prev.map((f) =>
-        f.id !== id
-          ? f
-          : {
-            ...f,
-            interactions: {
-              ...f.interactions,
-              isBookmarked: !f.interactions.isBookmarked,
-            },
-          },
-      ),
-    )
-  }, [])
-
-  const handleRepost = useCallback((id: string) => {
-    setFeedObjects((prev) =>
-      prev.map((f) =>
-        f.id !== id
-          ? f
-          : {
-            ...f,
-            interactions: {
-              ...f.interactions,
-              isReposted: !f.interactions.isReposted,
-              repostCount: f.interactions.repostCount + (f.interactions.isReposted ? -1 : 1),
-            },
-          },
-      ),
-    )
-  }, [])
-
-  const handleSelectFeed = useCallback((id: string) => {
-    setSelectedFeedId(id)
-    if (!isDesktop) setMobileView('detail')
-  }, [isDesktop])
-
-  const handleBack = useCallback(() => {
-    setSelectedFeedId(null)
-    setMobileView('feed')
-  }, [])
-
-  const handlePublish = useCallback((text: string) => {
-    const newFeed: FeedObject = {
-      id: `feed-new-${Date.now()}`,
-      author: { id: mockUserProfile.id, name: mockUserProfile.name, sourceType: 'did', isVerified: true },
-      contentType: 'text',
-      text,
-      media: [],
-      topics: [],
-      interactions: { likeCount: 0, commentCount: 0, repostCount: 0, isLiked: false, isBookmarked: false, isReposted: false },
-      createdAt: Date.now(),
-      sourceId: 'self',
-    }
-    setFeedObjects((prev) => [newFeed, ...prev])
-    if (!isDesktop) {
-      setMobileView('feed')
-    }
-  }, [isDesktop])
-
-  const handleReadingModeChange = useCallback((mode: ReadingMode) => {
-    if (mode === 'immersive-video') {
-      if (!isDesktop) setMobileView('immersive')
-      else setReadingMode(mode)
-    }
-    setReadingMode(mode)
-  }, [isDesktop])
-
-  /* ── Info Panel Splitter ── */
-  const handleInfoPanelSplitterPointerDown = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    infoPanelResizeRef.current = { pointerId: e.pointerId, startX: e.clientX, startWidth: infoPanelWidthRef.current }
-    setIsResizingInfoPanel(true)
-    e.currentTarget.setPointerCapture(e.pointerId)
-    e.preventDefault()
-  }, [])
-
-  const handleInfoPanelSplitterPointerMove = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!infoPanelResizeRef.current || infoPanelResizeRef.current.pointerId !== e.pointerId) return
-    const next = clampInfoPanelWidth(infoPanelResizeRef.current.startWidth - (e.clientX - infoPanelResizeRef.current.startX))
-    infoPanelWidthRef.current = next
-    setInfoPanelWidth(next)
-  }, [clampInfoPanelWidth])
-
-  const handleInfoPanelSplitterPointerUp = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!infoPanelResizeRef.current || infoPanelResizeRef.current.pointerId !== e.pointerId) return
-    infoPanelResizeRef.current = null
-    setIsResizingInfoPanel(false)
-    e.currentTarget.releasePointerCapture(e.pointerId)
-  }, [])
-
-  /* ── Immersive overlay ── */
-  if (readingMode === 'immersive-video' && isDesktop) {
-    const videoFeeds = feedObjects.filter(
-      (f) => f.contentType === 'video' || f.media.some((m) => m.type === 'video'),
-    )
-    return (
-      <ImmersiveVideoMode
-        feeds={videoFeeds.length > 0 ? videoFeeds : feedObjects}
-        onToggleLike={handleToggleLike}
-        onToggleBookmark={handleToggleBookmark}
-        onRepost={handleRepost}
-        onClose={() => setReadingMode('standard')}
-      />
-    )
-  }
-
-  /* ── Mobile Layout ── */
-  if (!isDesktop) {
-    return (
-      <div className="relative flex h-full w-full flex-col" style={{ background: 'var(--cp-bg)' }}>
-        {/* Immersive mode overlay */}
-        {mobileView === 'immersive' ? (
-          <ImmersiveVideoMode
-            feeds={feedObjects.filter(
-              (f) => f.contentType === 'video' || f.media.some((m) => m.type === 'video'),
-            )}
-            onToggleLike={handleToggleLike}
-            onToggleBookmark={handleToggleBookmark}
-            onRepost={handleRepost}
-            onClose={() => { setMobileView('feed'); setReadingMode('standard') }}
-          />
-        ) : null}
-
-        {/* Detail view */}
-        {mobileView === 'detail' && selectedFeed ? (
-          <div className="h-full">
-            {selectedFeed.contentType === 'article' && selectedFeed.body ? (
-              <ArticleDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : selectedFeed.media.some((m) => m.type === 'video') ? (
-              <VideoDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : selectedFeed.media.some((m) => m.type === 'image') ? (
-              <ImageDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : (
-              <ArticleDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            )}
-          </div>
-        ) : null}
-
-        {/* Profile view */}
-        {mobileView === 'profile' ? (
-          <div className="flex h-full flex-col">
-            {/* Back header */}
-            <div className="flex items-center gap-2 px-2 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
-              <button
-                type="button"
-                onClick={() => { setMobileView('feed') }}
-                className="flex h-9 w-9 items-center justify-center rounded-xl"
-                style={{ color: 'var(--cp-text)' }}
-              >
-                <ChevronLeft size={20} />
-              </button>
-              <span className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-                {t('homestation.profile', 'Profile')}
-              </span>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <PublicProfileView
-                profile={mockUserProfile}
-                feeds={feedObjects.filter((f) => f.author.id === mockUserProfile.id)}
-                t={t}
-                onSelectFeed={handleSelectFeed}
-                onToggleLike={handleToggleLike}
-                onToggleBookmark={handleToggleBookmark}
-                onRepost={handleRepost}
-              />
-              {/* Sources entry */}
-              <div className="px-4 pb-6">
-                <button
-                  type="button"
-                  onClick={() => setMobileView('sources')}
-                  className="flex w-full items-center gap-3 rounded-xl px-4 py-3"
-                  style={{ background: 'color-mix(in srgb, var(--cp-text) 5%, transparent)' }}
-                >
-                  <Rss size={18} style={{ color: 'var(--cp-accent)' }} />
-                  <span className="flex-1 text-left text-sm font-medium" style={{ color: 'var(--cp-text)' }}>
-                    {t('homestation.manageSources', 'Manage Sources')}
-                  </span>
-                  <ChevronRight size={16} style={{ color: 'var(--cp-muted)' }} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {/* Publish view */}
-        {mobileView === 'publish' ? (
-          <div className="flex h-full flex-col">
-            <div className="flex items-center gap-2 px-2 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
-              <button type="button" onClick={() => setMobileView('feed')} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: 'var(--cp-text)' }}>
-                <ChevronLeft size={20} />
-              </button>
-              <span className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('homestation.tabPublish', 'Publish')}</span>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <QuickPublishComposer t={t} onPublish={handlePublish} />
-            </div>
-          </div>
-        ) : null}
-
-        {/* Sources view */}
-        {mobileView === 'sources' ? (
-          <div className="flex h-full flex-col">
-            <div className="flex items-center gap-2 px-2 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
-              <button type="button" onClick={() => { setMobileView('profile') }} className="flex h-9 w-9 items-center justify-center rounded-xl" style={{ color: 'var(--cp-text)' }}>
-                <ChevronLeft size={20} />
-              </button>
-              <span className="text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{t('homestation.tabSources', 'Sources')}</span>
-            </div>
-            <div className="flex-1 overflow-y-auto">
-              <SourceManager sources={mockSources} t={t} />
-            </div>
-          </div>
-        ) : null}
-
-        {/* Feed view (default) */}
-        {mobileView === 'feed' ? (
-          <>
-            {/* Top bar: avatar + name + search */}
-            <div className="flex items-center gap-3 px-4 py-2" style={{ borderBottom: '1px solid var(--cp-border)' }}>
-              <button
-                type="button"
-                onClick={() => { setMobileView('profile') }}
-                className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-                style={{
-                  background: 'color-mix(in srgb, var(--cp-accent) 15%, transparent)',
-                  color: 'var(--cp-accent)',
-                }}
-              >
-                {mockUserProfile.name.charAt(0)}
-              </button>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{mockUserProfile.name}</p>
-                <p className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-                  {mockUserProfile.bio ?? t('homestation.title', 'HomeStation')}
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSearch((v) => !v)}
-                className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl"
-                style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
-              >
-                <Search size={18} />
-              </button>
-            </div>
-
-            {/* Search panel with Topics (conditional) */}
-            {showSearch ? (
-              <div style={{ borderBottom: '1px solid var(--cp-border)' }}>
-                <div className="flex items-center gap-2 px-4 py-2">
-                  <Search size={16} style={{ color: 'var(--cp-muted)' }} />
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder={t('homestation.searchPlaceholder', 'Search feeds...')}
-                    className="flex-1 bg-transparent text-sm outline-none"
-                    style={{ color: 'var(--cp-text)' }}
-                    autoFocus
-                  />
-                  <button type="button" onClick={() => { setShowSearch(false); setSearchQuery('') }} style={{ color: 'var(--cp-muted)' }}>
-                    <X size={16} />
-                  </button>
-                </div>
-                {/* Topics list */}
-                <div className="flex flex-wrap gap-2 px-4 pb-3 pt-1">
-                  <span className="text-[11px] font-medium" style={{ color: 'var(--cp-muted)', lineHeight: '28px' }}>
-                    {t('homestation.topics', 'Topics')}:
-                  </span>
-                  {mockTopics.map((topic) => (
-                    <button
-                      key={topic.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveTopicId(activeTopicId === topic.id ? null : topic.id)
-                        setActiveFilter('all')
-                        setShowSearch(false)
-                        setSearchQuery('')
-                      }}
-                      className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
-                      style={{
-                        background: activeTopicId === topic.id
-                          ? 'var(--cp-accent)'
-                          : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-                        color: activeTopicId === topic.id ? 'white' : 'var(--cp-text)',
-                      }}
-                    >
-                      <Hash size={12} />
-                      {topic.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* Feed list with filter bar (scrolls together) */}
-            <div className="flex-1 overflow-y-auto">
-              <FilterBar
-                activeFilter={activeFilter}
-                activeTopicId={activeTopicId}
-                readingMode={readingMode}
-                topics={mockTopics}
-                t={t}
-                onFilterChange={setActiveFilter}
-                onTopicSelect={setActiveTopicId}
-                onReadingModeChange={handleReadingModeChange}
-                isMobile
-              />
-              <FeedList
-                feeds={filteredFeeds}
-                readingMode={readingMode}
-                t={t}
-                onSelectFeed={handleSelectFeed}
-                onToggleLike={handleToggleLike}
-                onToggleBookmark={handleToggleBookmark}
-                onRepost={handleRepost}
-                scrollable={false}
-              />
-            </div>
-
-            {/* FAB */}
-            <button
-              type="button"
-              onClick={() => setMobileView('publish')}
-              className="absolute z-20 flex h-14 w-14 items-center justify-center rounded-full shadow-lg"
-              style={{
-                right: 16,
-                bottom: 16,
-                background: 'var(--cp-accent)',
-                color: 'white',
-              }}
-            >
-              <PenSquare size={22} />
-            </button>
-          </>
-        ) : null}
-
-      </div>
-    )
-  }
-
-  /* ── Desktop Layout ── */
+  const owner = useStoreSelector(selectOwner)
+  const topics = useStoreSelector(selectTopics)
   return (
-    <div
-      ref={desktopLayoutRef}
-      className="flex h-full w-full"
-      style={{
-        background: 'var(--cp-bg)',
-        zIndex: 1,
-        cursor: isResizingInfoPanel ? 'col-resize' : 'default',
-      }}
-    >
-      {/* Center: Feed column */}
-      <div className="flex h-full min-w-0 flex-1 flex-col" style={{ borderRight: '1px solid var(--cp-border)' }}>
-        {/* Desktop top bar - mobile style */}
-        <div className="flex items-center gap-3 px-4 py-2">
-          <button
-            type="button"
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-sm font-semibold"
-            style={{
-              background: 'color-mix(in srgb, var(--cp-accent) 15%, transparent)',
-              color: 'var(--cp-accent)',
-            }}
-          >
-            {mockUserProfile.name.charAt(0)}
-          </button>
-          <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>{mockUserProfile.name}</p>
-            <p className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>
-              {mockUserProfile.bio ?? t('homestation.title', 'HomeStation')}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setShowSearch((v) => !v)}
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl"
-            style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
-          >
-            <Search size={18} />
-          </button>
-          {!showInfoPanel ? (
-            <button
-              type="button"
-              onClick={() => setShowInfoPanel(true)}
-              className="flex h-8 w-8 items-center justify-center rounded-xl"
-              style={{ color: 'var(--cp-muted)', background: 'color-mix(in srgb, var(--cp-text) 7%, transparent)' }}
-              title={t('homestation.showInfoPanel', 'Show info panel')}
-            >
-              <ChevronLeft size={16} />
-            </button>
-          ) : null}
+    <div style={{ borderBottom: '1px solid var(--hs-divider)' }}>
+      <div className="flex items-center gap-3 px-4 py-2">
+        <button type="button" className="flex-shrink-0 rounded-full" onClick={onAvatar} aria-label={t('homestation.me.title', 'Me')} data-testid="hs-avatar">
+          <Avatar identity={owner} size={36} />
+        </button>
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-sm font-semibold">{owner.name}</p>
+          <p className="truncate text-[11px]" style={{ color: 'var(--cp-muted)' }}>{t('homestation.topbar.subtitle', 'Your reading feed · HomeStation')}</p>
         </div>
-
-        {/* Search panel with Topics (conditional) */}
-        {showSearch ? (
-          <div style={{ borderBottom: '1px solid var(--cp-border)' }}>
-            <div className="flex items-center gap-2 px-4 py-2">
-              <Search size={16} style={{ color: 'var(--cp-muted)' }} />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder={t('homestation.searchPlaceholder', 'Search feeds...')}
-                className="flex-1 bg-transparent text-sm outline-none"
-                style={{ color: 'var(--cp-text)' }}
-                autoFocus
-              />
-              <button type="button" onClick={() => { setShowSearch(false); setSearchQuery('') }} style={{ color: 'var(--cp-muted)' }}>
-                <X size={16} />
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-2 px-4 pb-3 pt-1">
-              <span className="text-[11px] font-medium" style={{ color: 'var(--cp-muted)', lineHeight: '28px' }}>
-                {t('homestation.topics', 'Topics')}:
-              </span>
-              {mockTopics.map((topic) => (
-                <button
-                  key={topic.id}
-                  type="button"
-                  onClick={() => {
-                    setActiveTopicId(activeTopicId === topic.id ? null : topic.id)
-                    setActiveFilter('all')
-                    setShowSearch(false)
-                    setSearchQuery('')
-                  }}
-                  className="flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium transition-colors"
-                  style={{
-                    background: activeTopicId === topic.id
-                      ? 'var(--cp-accent)'
-                      : 'color-mix(in srgb, var(--cp-text) 8%, transparent)',
-                    color: activeTopicId === topic.id ? 'white' : 'var(--cp-text)',
-                  }}
-                >
+        <button type="button" className="hs-icon-btn" aria-pressed={showSearch} aria-label={t('homestation.search.toggle', 'Search in this view')} onClick={onToggleSearch} data-testid="hs-search-toggle">
+          <Search size={18} />
+        </button>
+        {trailing}
+      </div>
+      {showSearch ? (
+        <div className="px-4 pb-2">
+          <div className="flex items-center gap-2 rounded-xl px-3 py-1.5" style={{ background: 'var(--hs-subtle-bg)' }}>
+            <Search size={15} style={{ color: 'var(--cp-muted)' }} />
+            <input
+              type="search"
+              value={query.search}
+              autoFocus
+              onChange={event => onQueryChange({ search: event.target.value })}
+              placeholder={t('homestation.search.placeholder', 'Search in this view (title, text, author)')}
+              aria-label={t('homestation.search.placeholder', 'Search in this view (title, text, author)')}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+              data-testid="hs-search-input"
+            />
+            <button type="button" aria-label={t('homestation.search.clear', 'Clear search')} onClick={() => { onQueryChange({ search: '' }); onToggleSearch() }} style={{ color: 'var(--cp-muted)' }}>
+              <X size={15} />
+            </button>
+          </div>
+          {isMobile ? (
+            <div className="hs-scroll-x mt-2 flex gap-1.5 overflow-x-auto">
+              {topics.map(topic => (
+                <button key={topic.id} type="button" className="hs-chip" aria-pressed={query.topicId === topic.id} onClick={() => onQueryChange({ topicId: query.topicId === topic.id ? null : topic.id })} data-testid={`hs-topic-${topic.id}`}>
                   <Hash size={12} />
                   {topic.name}
                 </button>
               ))}
             </div>
-          </div>
-        ) : null}
-
-        {selectedFeed ? (
-          <div className="flex-1 overflow-y-auto">
-            {selectedFeed.contentType === 'article' && selectedFeed.body ? (
-              <ArticleDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : selectedFeed.media.some((m) => m.type === 'video') ? (
-              <VideoDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : selectedFeed.media.some((m) => m.type === 'image') ? (
-              <ImageDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            ) : (
-              <ArticleDetail feed={selectedFeed} t={t} onBack={handleBack} onToggleLike={handleToggleLike} onToggleBookmark={handleToggleBookmark} />
-            )}
-          </div>
-        ) : (
-          <>
-            <FilterBar
-              activeFilter={activeFilter}
-              activeTopicId={activeTopicId}
-              readingMode={readingMode}
-              topics={mockTopics}
-              t={t}
-              onFilterChange={setActiveFilter}
-              onTopicSelect={setActiveTopicId}
-              onReadingModeChange={handleReadingModeChange}
-            />
-            <div className="flex-1 overflow-hidden">
-              <FeedList
-                feeds={filteredFeeds}
-                readingMode={readingMode}
-                t={t}
-                onSelectFeed={handleSelectFeed}
-                onToggleLike={handleToggleLike}
-                onToggleBookmark={handleToggleBookmark}
-                onRepost={handleRepost}
-              />
-            </div>
-          </>
-        )}
-      </div>
-
-      {/* Info panel splitter */}
-      {showInfoPanel ? (
-        <button
-          type="button"
-          className="group relative h-full flex-shrink-0"
-          onPointerDown={handleInfoPanelSplitterPointerDown}
-          onPointerMove={handleInfoPanelSplitterPointerMove}
-          onPointerUp={handleInfoPanelSplitterPointerUp}
-          onPointerCancel={handleInfoPanelSplitterPointerUp}
-          title={t('homestation.resizeInfoPanel', 'Resize info panel')}
-          style={{
-            width: PANEL_SPLITTER_WIDTH,
-            marginLeft: -(PANEL_SPLITTER_WIDTH / 2),
-            marginRight: -(PANEL_SPLITTER_WIDTH / 2),
-            cursor: 'col-resize',
-            background: isResizingInfoPanel ? 'color-mix(in srgb, var(--cp-accent) 8%, transparent)' : 'transparent',
-            zIndex: 10,
-            touchAction: 'none',
-          }}
-        >
-          <span
-            className="pointer-events-none absolute inset-y-0 left-1/2 -translate-x-1/2 rounded-full transition-all duration-150"
-            style={{
-              width: isResizingInfoPanel ? 3 : 1,
-              top: 18,
-              bottom: 18,
-              background: isResizingInfoPanel ? 'var(--cp-accent)' : 'color-mix(in srgb, var(--cp-border) 92%, transparent)',
-              boxShadow: isResizingInfoPanel ? '0 0 0 4px color-mix(in srgb, var(--cp-accent) 12%, transparent)' : 'none',
-            }}
-          />
-        </button>
-      ) : null}
-
-      {/* Right info panel */}
-      {showInfoPanel ? (
-        <div
-          className="h-full flex-shrink-0"
-          style={{
-            width: infoPanelWidth,
-            minWidth: INFO_PANEL_MIN_WIDTH,
-            maxWidth: INFO_PANEL_MAX_WIDTH,
-            background: 'var(--cp-bg)',
-            transition: isResizingInfoPanel ? 'none' : 'width 220ms var(--cp-ease-emphasis)',
-          }}
-        >
-          <InfoPanel
-            activeFilter={activeFilter}
-            activeTopicId={activeTopicId}
-            readingMode={readingMode}
-            topics={mockTopics}
-            t={t}
-            onPublish={handlePublish}
-            onSelectTopic={(id) => { setActiveTopicId(id); setActiveFilter('all') }}
-            onClose={() => setShowInfoPanel(false)}
-          />
+          ) : null}
         </div>
       ) : null}
     </div>
+  )
+}
+
+function PageContent({ page, query, onQueryChange, readingMode, onReadingModeChange, isMobile, header, previewReader, onPreviewReaderChange }: { page: HsPage; query: ReadingQuery; onQueryChange: (patch: Partial<ReadingQuery>) => void; readingMode: ReadingMode; onReadingModeChange: (mode: ReadingMode) => void; isMobile: boolean; header?: React.ReactNode; previewReader: PreviewReader; onPreviewReaderChange: (reader: PreviewReader) => void }) {
+  const { t } = useI18n()
+  const store = useHomeStationStore()
+  const topics = useStoreSelector(selectTopics)
+  switch (page.name) {
+    case 'feed':
+      return <FeedPage query={query} onQueryChange={onQueryChange} readingMode={readingMode} onReadingModeChange={onReadingModeChange} topics={topics} isMobile={isMobile} header={header} />
+    case 'detail':
+      return <ItemDetail key={page.objId} objId={page.objId} />
+    case 'profile':
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          <ProfileHeader />
+          <div className="desktop-scrollbar mx-auto min-h-0 w-full max-w-[760px] flex-1 overflow-y-auto">
+            <PublicProfileView owner={store.owner} previewReader={previewReader} onPreviewReaderChange={onPreviewReaderChange} />
+            <div className="h-20" />
+          </div>
+        </div>
+      )
+    case 'published':
+      return <MyPublications />
+    case 'candidates':
+      return <FollowedCandidates />
+    case 'saved':
+      return <SavedList key={page.kind} kind={page.kind} />
+    case 'sources':
+      return <SourceManager />
+    case 'prefs':
+      return <FeedPreferences />
+    case 'me':
+      return <MePage />
+    case 'publish':
+      return (
+        <div className="flex h-full min-h-0 flex-col">
+          <PublishHeader />
+          <div className="desktop-scrollbar min-h-0 flex-1 overflow-y-auto"><PublishComposer /></div>
+        </div>
+      )
+    default:
+      return <p className="p-4 text-sm">{t('homestation.state.unknownPage', 'Unknown page')}</p>
+  }
+}
+
+function ProfileHeader() {
+  const { t } = useI18n()
+  const nav = useHsNav()
+  const toast = useToast()
+  const home = useStoreSelector(selectHome)
+  const actions = home ? (
+    <>
+      <a className="hs-icon-btn" href={portalHref(home.user)} target="_blank" rel="noreferrer" title={t('homestation.profile.openPublic', 'Open my public page')} aria-label={t('homestation.profile.openPublic', 'Open my public page')} data-testid="hs-profile-open-public">
+        <ExternalLink size={16} />
+      </a>
+      <button
+        type="button"
+        className="hs-icon-btn"
+        title={t('homestation.profile.copyLink', 'Copy link to my page')}
+        aria-label={t('homestation.profile.copyLink', 'Copy link to my page')}
+        data-testid="hs-profile-copy-link"
+        onClick={() => {
+          const url = portalShareUrl(home.user)
+          void navigator.clipboard?.writeText(url).then(() => toast({ text: t('homestation.profile.linkCopied', 'Link copied: {{url}}', { url }) }), () => toast({ text: url }))
+        }}
+      >
+        <Link2 size={16} />
+      </button>
+    </>
+  ) : undefined
+  return <PageHeader title={t('homestation.nav.profile', 'My homepage')} subtitle={t('homestation.profile.subtitle', 'Your home feed, read the way visitors read it')} onBack={nav.isDesktop ? undefined : nav.back} backLabel={t('common.back', 'Back')} actions={actions} />
+}
+
+function PublishHeader() {
+  const { t } = useI18n()
+  const nav = useHsNav()
+  return <PageHeader title={t('homestation.publish.title', 'New post')} onBack={nav.back} backLabel={t('common.back', 'Back')} />
+}
+
+export function HomeStationView() {
+  const { t } = useI18n()
+  const isDesktop = useMediaQuery('(min-width: 769px)')
+  const [pages, setPages] = useState<HsPage[]>([{ name: 'feed' }])
+  const [query, setQuery] = useState<ReadingQuery>(DEFAULT_QUERY)
+  const [readingMode, setReadingMode] = useState<ReadingMode>('standard')
+  const [showSearch, setShowSearch] = useState(false)
+  const [previewReader, setPreviewReader] = useState<PreviewReader>('owner')
+  const [width, setWidth] = useState(1280)
+  const [infoPref, setInfoPref] = useState<'auto' | 'open' | 'closed'>('auto')
+  const [infoWidth, setInfoWidth] = useState(INFO_PANEL_DEFAULT_WIDTH)
+  const [resizing, setResizing] = useState(false)
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number } | null>(null)
+  const observerRef = useRef<ResizeObserver | null>(null)
+
+  const layoutRef = useCallback((element: HTMLDivElement | null) => {
+    observerRef.current?.disconnect()
+    if (!element) return
+    const observer = new ResizeObserver(entries => setWidth(entries[0]?.contentRect.width ?? 1280))
+    observer.observe(element)
+    observerRef.current = observer
+  }, [])
+
+  const page = pages[pages.length - 1]
+  const onQueryChange = useCallback((patch: Partial<ReadingQuery>) => setQuery(current => ({ ...current, ...patch })), [])
+
+  const nav = useMemo<HsNav>(() => ({
+    page,
+    perspective: 'owner',
+    reader: OWNER_READER,
+    isDesktop,
+    navigate: (next, options) => setPages(current => (options?.reset ? (next.name === 'feed' ? [next] : [{ name: 'feed' }, next]) : [...current, next])),
+    back: () => setPages(current => (current.length > 1 ? current.slice(0, -1) : current)),
+    openDetail: objId => setPages(current => [...current, { name: 'detail', objId }]),
+    showFilteredInFeed: () => {
+      setQuery(current => ({ ...current, showFiltered: true }))
+      setPages([{ name: 'feed' }])
+    },
+  }), [isDesktop, page])
+
+  const docked = width >= INFO_PANEL_HIDE_BELOW
+  const infoOpen = infoPref === 'open' || (infoPref === 'auto' && docked)
+  const sidebarCollapsed = width < SIDEBAR_COLLAPSE_BELOW
+
+  const selectTopic = (topicId: string | null) => {
+    onQueryChange({ topicId })
+    setPages([{ name: 'feed' }])
+  }
+
+  const onSplitterDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: infoWidth }
+    setResizing(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+    event.preventDefault()
+  }
+  const onSplitterMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const state = resizeRef.current
+    if (!state || state.pointerId !== event.pointerId) return
+    setInfoWidth(Math.min(Math.max(state.startWidth - (event.clientX - state.startX), INFO_PANEL_MIN_WIDTH), INFO_PANEL_MAX_WIDTH))
+  }
+  const onSplitterUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!resizeRef.current || resizeRef.current.pointerId !== event.pointerId) return
+    resizeRef.current = null
+    setResizing(false)
+    event.currentTarget.releasePointerCapture(event.pointerId)
+  }
+
+  const content = (
+    <PageContent
+      page={page}
+      query={query}
+      onQueryChange={onQueryChange}
+      readingMode={readingMode}
+      onReadingModeChange={setReadingMode}
+      isMobile={!isDesktop}
+      previewReader={previewReader}
+      onPreviewReaderChange={setPreviewReader}
+      header={isDesktop ? undefined : (
+        <TopBar query={query} onQueryChange={onQueryChange} showSearch={showSearch} onToggleSearch={() => setShowSearch(value => !value)} onAvatar={() => nav.navigate({ name: 'me' })} isMobile />
+      )}
+    />
+  )
+
+  return (
+    <HomeStationStoreProvider>
+      <HsNavContext.Provider value={nav}>
+        <div className="hs-root relative flex h-full w-full overflow-hidden" style={{ background: 'var(--cp-bg)', cursor: resizing ? 'col-resize' : undefined }} data-testid="homestation" ref={layoutRef}>
+          <ToastHost>
+            <WindowDialogProvider surface={isDesktop ? 'desktop' : 'mobile'} permissions={{ fullscreen: false }}>
+              {isDesktop ? (
+                <div className="flex h-full w-full min-w-0">
+                  <div className="h-full flex-shrink-0" style={{ width: sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_WIDTH }}>
+                    <SidebarPanel collapsed={sidebarCollapsed} activeTopicId={query.topicId} onSelectTopic={selectTopic} />
+                  </div>
+                  <main className="flex h-full min-w-0 flex-1 flex-col">
+                    {page.name === 'feed' ? (
+                      <TopBar
+                        query={query}
+                        onQueryChange={onQueryChange}
+                        showSearch={showSearch}
+                        onToggleSearch={() => setShowSearch(value => !value)}
+                        onAvatar={() => nav.navigate({ name: 'profile' }, { reset: true })}
+                        isMobile={false}
+                        trailing={!infoOpen ? (
+                          <button type="button" className="hs-icon-btn" aria-label={t('homestation.info.show', 'Show context panel')} onClick={() => setInfoPref('open')} data-testid="hs-info-open">
+                            <PanelRightOpen size={17} />
+                          </button>
+                        ) : null}
+                      />
+                    ) : null}
+                    {content}
+                  </main>
+                  {infoOpen && docked ? (
+                    <button
+                      type="button"
+                      className="relative h-full flex-shrink-0"
+                      style={{ width: PANEL_SPLITTER_WIDTH, marginLeft: -PANEL_SPLITTER_WIDTH / 2, marginRight: -PANEL_SPLITTER_WIDTH / 2, cursor: 'col-resize', zIndex: 5, touchAction: 'none' }}
+                      aria-label={t('homestation.info.resize', 'Resize context panel')}
+                      onPointerDown={onSplitterDown}
+                      onPointerMove={onSplitterMove}
+                      onPointerUp={onSplitterUp}
+                      onPointerCancel={onSplitterUp}
+                    >
+                      <span className="pointer-events-none absolute inset-y-4 left-1/2 -translate-x-1/2 rounded-full" style={{ width: resizing ? 3 : 1, background: resizing ? 'var(--cp-accent)' : 'var(--hs-divider)' }} />
+                    </button>
+                  ) : null}
+                  {infoOpen ? (
+                    <div
+                      className={docked ? 'h-full flex-shrink-0' : 'absolute inset-y-0 right-0 z-40 shadow-xl'}
+                      style={{ width: infoWidth, background: docked ? 'var(--cp-bg)' : 'var(--hs-panel-bg)', borderLeft: '1px solid var(--hs-divider)' }}
+                    >
+                      <InfoPanel query={query} readingMode={readingMode} onQueryChange={onQueryChange} onClose={() => setInfoPref('closed')} />
+                    </div>
+                  ) : null}
+                </div>
+              ) : (
+                // 待确认（TODO §13）：移动端是否改为 PRD 的底部五栏导航，临时保留顶栏 + 发布按钮，新页面入口放在“我”页
+                <div className="relative flex h-full w-full min-w-0 flex-col">
+                  {content}
+                  {page.name === 'feed' ? (
+                    <button
+                      type="button"
+                      onClick={() => nav.navigate({ name: 'publish' })}
+                      className="absolute z-20 flex h-14 w-14 items-center justify-center rounded-full shadow-lg"
+                      style={{ right: 16, bottom: 'calc(16px + var(--sab))', background: 'var(--cp-accent)', color: 'var(--hs-on-accent)' }}
+                      aria-label={t('homestation.publish.title', 'New post')}
+                      data-testid="hs-fab"
+                    >
+                      <PenSquare size={22} />
+                    </button>
+                  ) : null}
+                </div>
+              )}
+              {readingMode === 'immersive' ? <ImmersiveMode query={query} onClose={() => setReadingMode('standard')} /> : null}
+            </WindowDialogProvider>
+          </ToastHost>
+        </div>
+      </HsNavContext.Provider>
+    </HomeStationStoreProvider>
   )
 }

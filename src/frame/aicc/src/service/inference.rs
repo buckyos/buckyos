@@ -977,6 +977,9 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
             } else {
                 buckyos_api::ModelRequirement::default()
             };
+            if let AiccCall::ChatCompletionsCreate(request) = call {
+                requirements.web_search = request.web_search;
+            }
             if let Some(voice) = params.get("voice") {
                 requirements.canonical_fields.insert(
                     "/voice".into(),
@@ -1002,6 +1005,33 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
                 estimated_output_tokens: None,
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod search_tests {
+    use super::*;
+
+    #[test]
+    fn exact_chat_search_requires_explicit_boolean_opt_in() {
+        for enabled in [None, Some(false), Some(true)] {
+            let mut params = serde_json::json!({
+                "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "搜索巴克云"}]}]
+            });
+            if let Some(enabled) = enabled {
+                params["web_search"] = Value::Bool(enabled);
+            }
+            let request = buckyos_api::LlmChatInvokeRequest::from_json(params).unwrap();
+            let route = route_input_for_call(&AiccCall::ChatCompletionsCreate(request)).unwrap();
+            assert_eq!(route.requirements.web_search, enabled == Some(true));
+            assert!(!route.disable.web_search);
+        }
+        assert!(buckyos_api::LlmChatInvokeRequest::from_json(serde_json::json!({
+            "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
+            "messages": [], "web_search": "true"
+        }))
+        .is_err());
     }
 }
 

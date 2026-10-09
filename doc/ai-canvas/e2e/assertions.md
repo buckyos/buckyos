@@ -7,7 +7,7 @@
 
 本文维护 BuckyOS Desktop AI Canvas 的通用 E2E 验收：PRD §21 四组验收、§22 的 TC-001～TC-015、
 TA-C1～C3、23 条原型补充断言，以及 33 条待补覆盖设计。规范依据为本仓库的
-[PRD](../../../src/frame/desktop/src/app/canvas/BuckyOS%20AI%20Canvas%20PRD.md) 和 [原型 README](../../../src/frame/desktop/src/app/canvas/README.md)。
+[PRD](../BuckyOS%20AI%20Canvas%20PRD.md) 和 [原型 README](https://github.com/buckyos/buckyos/blob/9ff98e613dd3133b447175726b47e70300a32652/src/frame/desktop/src/app/canvas/README.md)。
 
 2026-09-28 按所有权迁入 BuckyOS；编号与验收语义保持，原来的 TA-C 前缀继续作为历史编号使用。
 课程、作业、教务、业务权限及其内核接入前置由应用仓库维护，不作为本仓库的通用产品设计。
@@ -20,11 +20,11 @@ TA-C1～C3、23 条原型补充断言，以及 33 条待补覆盖设计。规范
 
 | 层 | 对象与依赖 | 执行边界 |
 |---|---|---|
-| T-A 原型级 | `src/frame/desktop/src/app/canvas`，浏览器、本地存储、Mock / 受控 HTTP 夹具 | 本文的执行范围；不需要真实模型、内核服务或多节点环境 |
+| T-A 原型级 | 已删除的 `src/frame/desktop/src/app/canvas`，浏览器、本地存储、Mock / 受控 HTTP 夹具 | 仅适用于删除前的版本；不需要真实模型、内核服务或多节点环境 |
 | T-B 内核契约级 | 冻结后的文档、命令、权限、发布等接口与语义 | 本次不启动；原型等价子断言提前执行不代表完整契约通过 |
 | T-C 应用业务闭环级 | T-B 通过以及应用服务、多节点与真实账号就绪 | 由应用仓库维护其场景；不能由单人原型结果推断已通过 |
 
-从 `src/frame/desktop` 运行 `pnpm run dev`，打开 `/?scenario=normal`，从第一页「AI 画布」进入。
+以下为原型删除前的执行步骤（归档状态见 [入口说明](README.md)）：从 `src/frame/desktop` 运行 `pnpm run dev`，打开 `/?scenario=normal`，从第一页「AI 画布」进入。
 `pnpm run check` / `pnpm run lint` 覆盖 Canvas；它们不能替代浏览器 E2E。HTTP 测试使用本地可控
 响应服务，明确它不是真实 Agent 后端。使用隔离的浏览器数据，不能清空用户实际文档来制造环境。
 长测试进程 detached 启动，夹具、日志、暂存统一放工作区 `.work`，完成后将需要的证据归档。

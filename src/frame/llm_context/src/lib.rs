@@ -47,7 +47,7 @@ pub use deps::{
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
 pub use msg_parser::{
-    ai_message_to_msg_object_with_base_validated_async, msg_object_to_ai_message_structured,
+    ai_message_to_msg_object_with_base_validated_async, attachment_kind, attachment_mime, msg_object_to_ai_message_structured,
     parse_msg_object_structured, AttachmentTag, AttachmentValidation, AttachmentValidator,
     LocalFileResolver, MsgEgressOptions, MsgParseOutput, MsgParserError,
     PermissiveAttachmentValidator, SystemControlCommand, PROVIDER_MSG_METADATA,
@@ -64,8 +64,9 @@ pub use prompt_compose::{
     compose, CompositionError, CompositionOutcome, CompositionRequest, SectionSpec,
 };
 pub use prompt_engine::{
-    EngineConfig, NullValueLoader, PromptRenderEngine, RenderError, RenderResult, RenderStats,
-    RenderVars, ValueLoader,
+    escape_xml_attr, escape_xml_text, EngineConfig, NullValueLoader, PromptRenderEngine,
+    RenderError, RenderExtensions, RenderResult, RenderStats, RenderValueFn, RenderVars,
+    ValueLoader,
 };
 pub use request::{
     BudgetAction, BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorClass, ErrorPolicy,
@@ -77,7 +78,7 @@ pub use snapshot_overrides::{
 pub use state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
-pub use suspension::{is_thinking, strip_thinking};
+pub use suspension::{is_thinking, strip_snapshot_thinking, strip_thinking};
 pub use tasks::{
     next_step_hint, render_background_env, task_state_observation, CancelUnsupported,
     RunningTaskResolver, TaskBrief, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS,

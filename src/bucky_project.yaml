@@ -30,6 +30,12 @@ modules:
   nfs_server:
     type: rust
     name: nfs_server
+  aiworkspace:
+    type: rust
+    name: aiworkspace
+  homestation:
+    type: rust
+    name: homestation
   repo_service:
     type: rust
     name: repo_service
@@ -52,6 +58,13 @@ modules:
   agent_tool:
     type: rust
     name: agent_tool_cli_dev
+  xagent:
+    type: rust
+    name: libopendan
+  opendan_web:
+    type: web
+    name: opendan_web
+    src_dir: frame/opendan/web/
   # control_panel_web:
   #   type: web
   #   name: control_panel
@@ -65,6 +78,11 @@ modules:
     format: pikg
     name: buckyos_systest
     src_dir: apps/sys_test
+  text_editor:
+    type: web
+    format: pikg
+    name: text_editor
+    src_dir: apps/text_editor
   jarvis_runtime:
     format: pikg
     name: jarvis_runtime
@@ -92,12 +110,16 @@ apps:
       #control_panel_web: bin/control-panel/web/
       smb_service: bin/smb-service/
       nfs_server: bin/nfs-server/
+      aiworkspace: bin/aiworkspace/
+      homestation: bin/homestation/
       repo_service: bin/repo-service/
       node_active: bin/node-active/
       aicc: bin/aicc/
       msg_center: bin/msg-center/
       opendan: bin/opendan/
       agent_tool: bin/opendan/
+      xagent: bin/opendan/xagent
+      opendan_web: bin/opendan/web/
       buckyos-tool-bin: bin/buckyos
       buckyos-tool: libexec/buckyos-tool/
       scheduler-etc: etc/scheduler/
@@ -108,6 +130,7 @@ apps:
       stop_osx.sh: bin/stop_osx.sh
       desktop: bin/control-panel/web/
       buckyos_systest: data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg
+      text_editor: data/cache/text-editor.buckyos.bns.did-0.1.0.pikg
       jarvis_runtime: data/cache/jarvis.buckyos.bns.did-0.7.0.pikg
 
     # 数据路径，install_data 的时候如果目标存在，则不会复制，否则从rootfs复制到目标(覆盖安装逻辑)

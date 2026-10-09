@@ -44,12 +44,18 @@ pub struct Probe {
     pub path: String,
 }
 
+/// Sets `machine_id`, falling back to the hostname when `/etc/machine-id` is
+/// missing or empty (the normal state inside a container).
+const MACHINE_ID: &str = r#"machine_id="$(cat /etc/machine-id 2>/dev/null || true)"
+[ -n "$machine_id" ] || machine_id="$(hostname)"
+"#;
+
 const PROBE: &str = r#"set -e
 [ "$(uname -s)" = Linux ]
 command -v bash >/dev/null
 command -v realpath >/dev/null
 command -v base64 >/dev/null
-printf '%s\0' "$(cat /etc/machine-id)" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date -Iseconds)" "$(date +%Z%z)"
+printf '%s\0' "$machine_id" "$(hostname)" "$(id -u)" "$(uname -s | tr '[:upper:]' '[:lower:]')" "$(uname -m)" "$(command -v bash)" "$(pwd -P)" "${PATH}" "$(date -Iseconds)" "$(date +%Z%z)"
 for tool in bash realpath base64; do printf '%s\0' "$tool"; done
 "#;
 
@@ -58,6 +64,7 @@ fn probe_script(cwd: &str, env: &BTreeMap<String, String>) -> String {
     for (k, v) in env {
         s.push_str(&format!("export {k}={}\n", shell_quote(v)));
     }
+    s.push_str(MACHINE_ID);
     s.push_str(PROBE);
     s
 }
@@ -168,6 +175,23 @@ mod probe_tests {
             std::env::current_dir().unwrap().to_str().unwrap()
         );
         assert!(probe.info.shell.ends_with("/bash"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn remote_probe_uses_hostname_when_machine_id_is_empty() {
+        let cwd = std::env::current_dir().unwrap();
+        let script = probe_script(cwd.to_str().unwrap(), &BTreeMap::new());
+        let output = Command::new("bash")
+            .arg("-c")
+            .arg(format!("cat() {{ return 0; }}\n{script}"))
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let probe = parse_probe(&output.stdout).unwrap();
+        assert_eq!(probe.identity.machine, probe.identity.hostname);
+        assert_eq!(probe.info.cwd, cwd.to_str().unwrap());
     }
 
     #[test]
@@ -288,7 +312,7 @@ impl SshTransport {
     }
     fn identity_gate(&self) -> String {
         match &self.identity {
-            Some(i) => format!("[ \"$(cat /etc/machine-id)\" = {} ] && [ \"$(id -u)\" = {} ] && [ \"$(hostname)\" = {} ] || exit 199\n", shell_quote(&i.machine), shell_quote(&i.uid), shell_quote(&i.hostname)),
+            Some(i) => format!("{MACHINE_ID}[ \"$machine_id\" = {} ] && [ \"$(id -u)\" = {} ] && [ \"$(hostname)\" = {} ] || exit 199\n", shell_quote(&i.machine), shell_quote(&i.uid), shell_quote(&i.hostname)),
             None => String::new(),
         }
     }
@@ -376,11 +400,21 @@ impl SshTransport {
         Ok(())
     }
     pub async fn verify_sftp(&self) -> Result<(), XllmError> {
-        let machine = self
-            .read(Path::new("/etc/machine-id"))
-            .await
-            .map_err(capability)?;
-        if String::from_utf8_lossy(&machine).trim() != self.identity.as_ref().unwrap().machine {
+        let identity = self.identity.as_ref().unwrap();
+        let path = Path::new("/etc/machine-id");
+        // A target without a machine id (a container) is identified by its
+        // hostname, so SFTP has to see the same missing or empty file.
+        let expected = if identity.machine == identity.hostname {
+            ""
+        } else {
+            identity.machine.as_str()
+        };
+        let machine = if expected.is_empty() && !self.exists(path).await.map_err(capability)? {
+            Vec::new()
+        } else {
+            self.read(path).await.map_err(capability)?
+        };
+        if String::from_utf8_lossy(&machine).trim() != expected {
             return Err(capability("SSH and SFTP do not expose the same filesystem"));
         }
         Ok(())

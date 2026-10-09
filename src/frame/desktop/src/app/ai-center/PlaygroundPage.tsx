@@ -136,8 +136,12 @@ export function PlaygroundPage({ active = true }: { active?: boolean }) {
           <label className="block text-sm space-y-2"><span>{t('aiCenter.playground.executionMode')}</span><select aria-label={t('aiCenter.playground.executionMode')} className={controlClass} style={controlStyle} value={String(params.execution_mode ?? 'immediate')} onChange={(event) => updateParams({ ...params, execution_mode: event.target.value })}>
             <option value="immediate">{t('aiCenter.playground.immediate')}</option>{api !== 'decision' && <option value="stream">{t('aiCenter.playground.stream')}</option>}
           </select></label>
+          {api === 'llm' && <div className="space-y-1">
+            <label className="flex gap-2 items-center text-sm"><input type="checkbox" checked={params.web_search === true} onChange={(event) => updateParams({ ...params, web_search: event.target.checked })} />{t('aiCenter.playground.webSearch')}</label>
+            <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.webSearchHint')}</p>
+          </div>}
           <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{PLAYGROUND_APIS[api].method} · {t('aiCenter.playground.optionalHint')}</p>
-          <RequestFields key={`${api}-${formVersion}`} fields={PLAYGROUND_APIS[api].fields} value={params} onChange={updateParams} />
+          <RequestFields key={`${api}-${formVersion}`} fields={PLAYGROUND_APIS[api].fields.filter((field) => field.key !== 'web_search')} value={params} onChange={updateParams} />
           <label className="flex gap-2 items-center text-sm"><input type="checkbox" checked={advanced} onChange={(event) => setAdvanced(event.target.checked)} />{t('aiCenter.playground.advanced')}</label>
           {advanced && <div className="space-y-3">
             <p className="text-xs" style={{ color: 'var(--cp-muted)' }}>{t('aiCenter.playground.importHint')}</p>

@@ -3418,6 +3418,20 @@ impl ControlPanelServer {
         staging_handle: &str,
         seed: &buckyos_api::PreInstallPlanSeed,
     ) -> Result<PreInstallSubmitOutcome, RPCErrors> {
+        let client = self.app_installer.system_config_client().await?;
+        let spec_key = format!("users/{owner_user_id}/apps/{app_id}/spec");
+        match client.get(&spec_key).await {
+            Ok(value) => {
+                let spec: AppServiceSpec = serde_json::from_str(&value.value)
+                    .map_err(|e| RPCErrors::ReasonError(e.to_string()))?;
+                if spec.state == ServiceState::Deleted {
+                    return Ok(PreInstallSubmitOutcome { action: "user_removed".into(), task_id: None,
+                        app_instance_id: spec.app_instance_id, plan_fingerprint: String::new() });
+                }
+            }
+            Err(SystemConfigError::KeyNotFound(_)) => {}
+            Err(error) => return Err(RPCErrors::ReasonError(error.to_string())),
+        }
         let canonical_app_id = buckyos_api::AppId::from_app_did(pikg_app_doc.app_did())
             .map_err(RPCErrors::ReasonError)?;
         let expected_owner = pikg_app_doc.app_did().upper_did().ok_or_else(|| {

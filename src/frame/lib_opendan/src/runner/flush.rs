@@ -108,50 +108,44 @@ fn action_entries(calls: &[buckyos_api::AiToolCall]) -> Vec<ActionEntry> {
         .collect()
 }
 
-/// Entries of one input batch: the batch marker (`turn_started` when it
-/// opened the Turn, `input_batch` for a hand-over / supplementary batch;
-/// observations have none) and its message.
-fn user_entries(
-    run_id: &str,
-    r: &InputReceipt,
-    turn: &mut u64,
-    fallback: String,
-) -> Vec<WorklogBody> {
-    let mut out = Vec::new();
-    *turn = r.turn;
+/// The batch marker of a receipt: `turn_started` when it opened the Turn,
+/// `input_batch` when it joined the open one.
+fn batch_marker(run_id: &str, r: &InputReceipt) -> WorklogBody {
     let inputs = r.inputs.clone();
-    let changes: Vec<String> = r.changes.iter().map(|c| c.id.clone()).collect();
+    let events: Vec<String> = r.events.iter().map(|e| e.key.clone()).collect();
     if r.opens_turn {
-        out.push(WorklogBody::TurnStarted {
+        WorklogBody::TurnStarted {
             run_id: run_id.to_string(),
             turn: r.turn,
             input_seq: r.input_seq,
             inputs,
-            changes,
-            hook: r.hook.clone(),
+            events,
+            hook: Some(r.hook.clone()),
             at_ms: r.at_ms,
-        });
-    } else if r.hook.as_deref() != Some(OBSERVATION_HOOK) {
-        out.push(WorklogBody::InputBatch {
-            run_id: run_id.to_string(),
-            turn: r.turn,
-            input_seq: r.input_seq,
-            inputs,
-            changes,
-            hook: r.hook.clone(),
-            at_ms: r.at_ms,
-        });
-    }
-    let content = if r.content.is_empty() {
-        fallback
+        }
     } else {
-        r.content.clone()
-    };
-    if !content.is_empty() || r.message_pos != MessagePos::None {
+        WorklogBody::InputBatch {
+            run_id: run_id.to_string(),
+            turn: r.turn,
+            input_seq: r.input_seq,
+            inputs,
+            events,
+            hook: Some(r.hook.clone()),
+            at_ms: r.at_ms,
+        }
+    }
+}
+
+/// Entries of one input batch: its marker, then one `user_message` per
+/// injected message (the text block; media blocks stay in the snapshot).
+fn user_entries(run_id: &str, r: &InputReceipt, turn: &mut u64) -> Vec<WorklogBody> {
+    *turn = r.turn;
+    let mut out = vec![batch_marker(run_id, r)];
+    for part in &r.parts {
         out.push(WorklogBody::UserMessage {
             run_id: run_id.to_string(),
             turn: *turn,
-            content,
+            content: part.text.clone(),
         });
     }
     out
@@ -219,11 +213,17 @@ pub fn run_history_entries(
 
     if !behavior {
         // Positions only mean something within the current epoch.
+        // The receipt part at message `i`: (receipt, part index).
         let receipt_at = |i: usize| {
-            meta.input_receipts.iter().find(|r| {
-                r.input_seq > meta.epoch_input_seq
-                    && r.message_pos == MessagePos::Accumulated { index: i as u64 }
-            })
+            meta.input_receipts
+                .iter()
+                .filter(|r| r.input_seq > meta.epoch_input_seq)
+                .find_map(|r| {
+                    r.parts
+                        .iter()
+                        .position(|p| p.pos == MessagePos::Accumulated { index: i as u64 })
+                        .map(|n| (r, n))
+                })
         };
         let flushed = if marks.epoch == meta.history_epoch {
             marks.messages
@@ -239,14 +239,26 @@ pub fn run_history_entries(
             let this = unit;
             unit += 1;
             if this < flushed {
-                if let Some(r) = receipt_at(i) {
+                if let Some((r, _)) = receipt_at(i) {
                     turn = r.turn;
                 }
                 continue;
             }
             match m.role {
                 AiRole::User => match receipt_at(i) {
-                    Some(r) => out.extend(user_entries(run_id, r, &mut turn, m.text_content())),
+                    Some((r, n)) => {
+                        turn = r.turn;
+                        // The marker goes with the batch's first message
+                        // (written even when a flush cut the batch in two).
+                        if n == 0 {
+                            out.push(batch_marker(run_id, r));
+                        }
+                        out.push(WorklogBody::UserMessage {
+                            run_id: run_id.to_string(),
+                            turn,
+                            content: r.parts[n].text.clone(),
+                        });
+                    }
                     None => out.push(WorklogBody::UserMessage {
                         run_id: run_id.to_string(),
                         turn,
@@ -316,8 +328,8 @@ pub fn run_history_entries(
     }
     let mut evs: Vec<((u64, u8, u64), Ev)> = Vec::new();
     for r in &meta.input_receipts {
-        let key = match r.message_pos {
-            MessagePos::Step { index } => (index, 2, r.input_seq),
+        let key = match r.parts.first().map(|p| &p.pos) {
+            Some(MessagePos::Step { index }) => (*index, 2, r.input_seq),
             _ => (r.after_step as u64, 0, r.input_seq),
         };
         evs.push((key, Ev::Msg(r)));
@@ -343,7 +355,7 @@ pub fn run_history_entries(
                     turn = r.turn;
                     continue;
                 }
-                out.extend(user_entries(run_id, r, &mut turn, String::new()));
+                out.extend(user_entries(run_id, r, &mut turn));
             }
             Ev::Step(step) => {
                 if (step.meta.step_index as u64) < marks.step_index {

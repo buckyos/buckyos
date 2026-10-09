@@ -91,3 +91,21 @@ pub struct SessionStatic {
     #[serde(default)]
     pub updated_at_ms: u64,
 }
+
+/// One line of `usage.jsonl`: what one successful Round consumed, by model.
+/// Appended by the session's driver; `static.json` keeps the totals.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct UsageRecord {
+    pub at_ms: u64,
+    /// The model the provider reports having served the Round, else the
+    /// model alias of the request.
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
+}

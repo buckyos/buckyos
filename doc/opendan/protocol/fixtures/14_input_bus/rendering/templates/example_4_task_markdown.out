@@ -1,0 +1,8 @@
+# Task
+Fix the failing build
+
+## Request from Bob (bob.bns.did) in Dev Team
+> @jarvis 帮我看一下这张截图里的报错 <build>，日志在附件里
+Attachments:
+- [0] screenshot.png (image, obj_id=cyfile:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1)
+- [1] build.log (document, obj_id=cyfile:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2)

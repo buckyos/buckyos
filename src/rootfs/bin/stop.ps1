@@ -54,6 +54,8 @@ $processNames = @(
   "smb_service",
   "nfs-server",
   "nfs_server",
+  "aiworkspace",
+  "homestation",
   "repo-service",
   "repo_service",
   "control-panel",

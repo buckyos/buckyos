@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "output_dir": "../dapp_dist",
+  "pikg_file": "content-open-handler.buckyos.bns.did-0.1.0.pikg",
+  "sub_pkgs": {
+    "web": {
+      "required": true,
+      "source": {
+        "type": "path",
+        "path": "../dist"
+      }
+    }
+  }
+}

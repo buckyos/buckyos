@@ -12,6 +12,7 @@ use buckyos_api::{
     TypedTaskData,
 };
 use kRPC::kRPC;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as Json};
 use tokio::fs;
@@ -23,8 +24,9 @@ use agent_did_object_lib::{
     XCallInput as ObjectXCallInput,
 };
 use agent_tool::agent_attention_signal::{
-    CreateExtractionWindowInput, DiscoverEventArgs, DiscoverObjectObservationArgs,
-    DiscoverRelationshipArgs, DiscoverSkillCoverageGapArgs, SignalLifecycleStatus,
+    AttentionSignal, CreateExtractionWindowInput, DiscoverEventArgs,
+    DiscoverObjectObservationArgs, DiscoverRelationshipArgs, DiscoverSkillCoverageGapArgs,
+    ExtractionWindow, SignalLifecycleStatus,
 };
 use agent_tool::agent_memory::{
     AddObservationOp, AgentMemory, AgentMemoryConfig, AgentMemoryError, FlatSetOp, LoadOptions,
@@ -60,20 +62,6 @@ use agent_tool::{
     WorkspaceToolBackend, WriteFileTool, DEFAULT_READ_TOKEN_LIMIT,
 };
 use agent_tool::{llm_explore, llm_understand_media, run_local_llm};
-use chrono::{DateTime, Duration, Utc};
-use opendan::buildin_tool::{
-    AlreadyImprovedOutput, BeginAttentionSignalExtractionArgs,
-    BeginAttentionSignalExtractionOutput, CommitSessionHistoryImprovedArgs,
-    CommitSessionHistoryImprovedOutput, CompleteAttentionSignalExtractionArgs,
-    CompleteAttentionSignalExtractionOutput, ListPendingAttentionSignalsArgs,
-    ListPendingAttentionSignalsOutput, MarkAttentionSignalConsumedArgs,
-    MarkAttentionSignalConsumedOutput, ReadSessionHistoryArgs, ReadSessionHistoryOutput,
-    SessionHistoryMessageOutput,
-};
-use opendan::round_history::{
-    SessionHistoryQuery, SessionHistoryReadOptions, SessionHistoryReader,
-};
-use opendan::session_model::{AlreadyImprovedState, SessionKind, SessionMeta};
 
 const TOOL_CHECK_TASK: &str = "check_task";
 const TOOL_CANCEL_TASK: &str = "cancel_task";
@@ -88,13 +76,11 @@ const TOOL_AGENT_NOTEBOOK: &str = "agent-notebook";
 const TOOL_AGENT_NOTEBOOK_SNAKE: &str = "agent_notebook";
 const TOOL_AGENT_SKILLS: &str = "agent-skills";
 const TOOL_AGENT_SKILLS_SNAKE: &str = "agent_skills";
-const TOOL_READ_SESSION_HISTORY: &str = "read_session_history";
-const TOOL_COMMIT_SESSION_HISTORY_IMPROVED: &str = "commit_session_history_improved";
 const TOOL_BEGIN_ATTENTION_SIGNAL_EXTRACTION: &str = "BeginAttentionSignalExtraction";
 const TOOL_COMPLETE_ATTENTION_SIGNAL_EXTRACTION: &str = "CompleteAttentionSignalExtraction";
 const TOOL_LIST_PENDING_ATTENTION_SIGNALS: &str = "ListPendingAttentionSignals";
 const TOOL_MARK_ATTENTION_SIGNAL_CONSUMED: &str = "MarkAttentionSignalConsumed";
-const TOOL_NAMES: [&str; 31] = [
+const TOOL_NAMES: [&str; 29] = [
     "Glob",
     "Grep",
     "dcrontab",
@@ -116,8 +102,6 @@ const TOOL_NAMES: [&str; 31] = [
     TOOL_CHECK_TASK,
     TOOL_CANCEL_TASK,
     TOOL_FINISH_TASK,
-    TOOL_READ_SESSION_HISTORY,
-    TOOL_COMMIT_SESSION_HISTORY_IMPROVED,
     TOOL_BEGIN_ATTENTION_SIGNAL_EXTRACTION,
     TOOL_COMPLETE_ATTENTION_SIGNAL_EXTRACTION,
     agent_tool::TOOL_DISCOVER_EVENT,
@@ -141,10 +125,6 @@ const DEFAULT_BEHAVIOR: &str = "cli";
 const SESSION_RECORD_FILE: &str = "session.json";
 const SESSION_WORKSPACE_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
 const WORKSPACE_INDEX_FILE: &str = "index.json";
-const DEFAULT_HISTORY_PAGE_SIZE: usize = 50;
-const MAX_HISTORY_PAGE_SIZE: usize = 200;
-const DEFAULT_HISTORY_TOKEN_LIMIT: u32 = 40 * 1024;
-const DEFAULT_HISTORY_WINDOW_MS: i64 = 10 * 60 * 1000;
 const ATTENTION_EXTRACTION_RUNTIME_REL_PATH: &str =
     ".runtime/attention_signal_extraction/current.json";
 const OBJECT_ROUTE_CONFIG_ENV: &str = "AGENT_DID_OBJECT_ROUTE_CONFIG";
@@ -5245,12 +5225,54 @@ struct CliWorkspaceBackend {
     agent_id: String,
 }
 
-struct CliReadSessionHistoryTool {
-    agent_root: PathBuf,
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct BeginAttentionSignalExtractionArgs {
+    session_id: String,
+    window_start: String,
+    window_end: String,
 }
 
-struct CliCommitSessionHistoryImprovedTool {
-    agent_root: PathBuf,
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct BeginAttentionSignalExtractionOutput {
+    owner_id: String,
+    agent_id: String,
+    agent_scope_id: String,
+    user_id: String,
+    session_id: String,
+    window_start: String,
+    window_end: String,
+    extraction_window_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct CompleteAttentionSignalExtractionArgs {}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct CompleteAttentionSignalExtractionOutput {
+    extraction_window: ExtractionWindow,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct ListPendingAttentionSignalsArgs {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct ListPendingAttentionSignalsOutput {
+    agent_scope_id: String,
+    returned: usize,
+    signals: Vec<AttentionSignal>,
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+struct MarkAttentionSignalConsumedArgs {
+    signal_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+struct MarkAttentionSignalConsumedOutput {
+    signal: AttentionSignal,
 }
 
 struct CliBeginAttentionSignalExtractionTool {
@@ -5295,167 +5317,6 @@ struct CliDiscoverSkillCoverageGapTool {
     store: Arc<AgentAttentionSignalStore>,
     agent_root: PathBuf,
     current_session_id: String,
-}
-
-#[async_trait]
-impl TypedTool for CliReadSessionHistoryTool {
-    type Args = ReadSessionHistoryArgs;
-    type Output = ReadSessionHistoryOutput;
-
-    fn name(&self) -> &str {
-        TOOL_READ_SESSION_HISTORY
-    }
-
-    fn description(&self) -> &str {
-        "Read target Agent Session history from <agent_root>/sessions/<session_id>/round_history."
-    }
-
-    fn usage(&self) -> Option<String> {
-        Some(
-            "read_session_history '{\"session_id\":\"...\",\"from_already_improved\":true,\"token_limit\":40960}' | read_session_history session_id=<id> already_improved token_limit=40960".to_string(),
-        )
-    }
-
-    fn parse_bash_args(
-        &self,
-        tokens: &[String],
-        _shell_cwd: Option<&Path>,
-    ) -> Result<Json, AgentToolError> {
-        parse_read_session_history_cli_args(tokens)
-    }
-
-    fn build_summary(&self, output: &Self::Output) -> String {
-        format!(
-            "read {} message(s) from session {} ({})",
-            output.returned, output.session_id, output.query
-        )
-    }
-
-    async fn execute(
-        &self,
-        _ctx: &ToolCtx<'_>,
-        args: Self::Args,
-    ) -> Result<Self::Output, AgentToolError> {
-        let session_id = args.session_id.trim();
-        validate_session_id_arg(session_id)?;
-        let session_dir = session_dir(&self.agent_root, session_id);
-        if !session_dir.is_dir() {
-            return Err(AgentToolError::ExecFailed(format!(
-                "session `{session_id}` not found"
-            )));
-        }
-
-        let token_limit = args.token_limit.unwrap_or(DEFAULT_HISTORY_TOKEN_LIMIT);
-        let reader = SessionHistoryReader::open(&session_dir)
-            .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
-        let already_improved = load_already_improved_state(&session_dir).await?;
-        let (result, query_label) = if args.from_already_improved {
-            let start_round_index = already_improved.committed_round_index.saturating_add(1);
-            let result = reader
-                .read_session_messages_from_round_index(
-                    start_round_index,
-                    SessionHistoryReadOptions { token_limit },
-                )
-                .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
-            (
-                result,
-                format!("already_improved from_round={start_round_index}"),
-            )
-        } else {
-            let (query, query_label) = build_history_query(&args)?;
-            let result = reader
-                .read_session_messages(query, SessionHistoryReadOptions { token_limit })
-                .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
-            (result, query_label)
-        };
-        let commit_round_index = args
-            .from_already_improved
-            .then_some(result.last_round_index)
-            .flatten();
-        let latest_round_index = result.latest_round_index;
-        let messages = result
-            .messages
-            .into_iter()
-            .map(|msg| {
-                let ts_ms = msg.ts.timestamp_millis().max(0) as u64;
-                SessionHistoryMessageOutput {
-                    round_index: msg.round_index,
-                    seq: msg.seq,
-                    ts_ms,
-                    ts: msg.ts.to_rfc3339(),
-                    role: msg.role.as_str().to_string(),
-                    text: msg.text,
-                }
-            })
-            .collect::<Vec<_>>();
-        Ok(ReadSessionHistoryOutput {
-            session_id: session_id.to_string(),
-            query: query_label,
-            already_improved: already_improved_output(&already_improved),
-            commit_round_index,
-            latest_round_index,
-            total_candidates: result.total_candidates,
-            returned: messages.len(),
-            truncated: result.truncated,
-            messages,
-        })
-    }
-}
-
-#[async_trait]
-impl TypedTool for CliCommitSessionHistoryImprovedTool {
-    type Args = CommitSessionHistoryImprovedArgs;
-    type Output = CommitSessionHistoryImprovedOutput;
-
-    fn name(&self) -> &str {
-        TOOL_COMMIT_SESSION_HISTORY_IMPROVED
-    }
-
-    fn description(&self) -> &str {
-        "Commit self-improve processing progress into target session .meta/session.json."
-    }
-
-    fn usage(&self) -> Option<String> {
-        Some(
-            "commit_session_history_improved '{\"session_id\":\"...\",\"round_index\":3}' | commit_session_history_improved session_id=<id> round_index=3".to_string(),
-        )
-    }
-
-    fn build_summary(&self, output: &Self::Output) -> String {
-        format!(
-            "committed improved history for session {} through round {}",
-            output.session_id, output.committed_round_index
-        )
-    }
-
-    async fn execute(
-        &self,
-        _ctx: &ToolCtx<'_>,
-        args: Self::Args,
-    ) -> Result<Self::Output, AgentToolError> {
-        let session_id = args.session_id.trim();
-        validate_session_id_arg(session_id)?;
-        let session_dir = session_dir(&self.agent_root, session_id);
-        if !session_dir.is_dir() {
-            return Err(AgentToolError::ExecFailed(format!(
-                "session `{session_id}` not found"
-            )));
-        }
-        let latest_round_index = SessionHistoryReader::open(&session_dir)
-            .and_then(|reader| reader.latest_round_index())
-            .map_err(|err| AgentToolError::ExecFailed(format!("{err:#}")))?;
-        let target_round_index = latest_round_index
-            .map(|latest| args.round_index.min(latest))
-            .unwrap_or(0);
-        let (previous, committed) =
-            commit_already_improved_state(&session_dir, target_round_index).await?;
-        Ok(CommitSessionHistoryImprovedOutput {
-            session_id: session_id.to_string(),
-            committed_round_index: committed.committed_round_index,
-            previous_committed_round_index: previous.committed_round_index,
-            latest_round_index,
-        })
-    }
 }
 
 #[async_trait]
@@ -5505,23 +5366,7 @@ impl TypedTool for CliBeginAttentionSignalExtractionTool {
             ));
         }
 
-        let target_session_dir = session_dir(&self.agent_root, session_id);
-        let meta = load_session_meta(&target_session_dir)
-            .await?
-            .ok_or_else(|| {
-                AgentToolError::ExecFailed(format!("session `{session_id}` meta not found"))
-            })?;
-        if matches!(meta.kind, SessionKind::SelfImprove) {
-            return Err(AgentToolError::InvalidArgs(
-                "self-improve session history cannot be used as self-improve input".to_string(),
-            ));
-        }
-
-        let owner_id = if meta.owner.trim().is_empty() {
-            "system".to_string()
-        } else {
-            meta.owner.clone()
-        };
+        let owner_id = "system".to_string();
         let user_id = owner_id.clone();
         let agent_scope_id = self.agent_id.clone();
         let store = open_attention_store(&self.agent_root)?;
@@ -5805,189 +5650,6 @@ fn validate_session_id_arg(session_id: &str) -> Result<(), AgentToolError> {
 
 fn session_dir(agent_root: &Path, session_id: &str) -> PathBuf {
     agent_root.join("sessions").join(session_id)
-}
-
-fn session_meta_path(session_dir: &Path) -> PathBuf {
-    session_dir.join(".meta").join("session.json")
-}
-
-async fn load_session_meta(session_dir: &Path) -> Result<Option<SessionMeta>, AgentToolError> {
-    let path = session_meta_path(session_dir);
-    match fs::read(&path).await {
-        Ok(bytes) => serde_json::from_slice::<SessionMeta>(&bytes)
-            .map(Some)
-            .map_err(|err| {
-                AgentToolError::ExecFailed(format!("parse {} failed: {err}", path.display()))
-            }),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(AgentToolError::ExecFailed(format!(
-            "read {} failed: {err}",
-            path.display()
-        ))),
-    }
-}
-
-async fn write_session_meta(session_dir: &Path, meta: &SessionMeta) -> Result<(), AgentToolError> {
-    let path = session_meta_path(session_dir);
-    let dir = path.parent().ok_or_else(|| {
-        AgentToolError::ExecFailed(format!("invalid session meta path {}", path.display()))
-    })?;
-    fs::create_dir_all(dir).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("mkdir {} failed: {err}", dir.display()))
-    })?;
-    let bytes = serde_json::to_vec_pretty(meta).map_err(|err| {
-        AgentToolError::ExecFailed(format!("serialize session meta failed: {err}"))
-    })?;
-    let tmp = dir.join(format!(
-        "session.json.{}.{}.tmp",
-        std::process::id(),
-        now_ms()
-    ));
-    fs::write(&tmp, &bytes).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("write {} failed: {err}", tmp.display()))
-    })?;
-    fs::rename(&tmp, &path).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!("rename to {} failed: {err}", path.display()))
-    })?;
-    Ok(())
-}
-
-async fn load_already_improved_state(
-    session_dir: &Path,
-) -> Result<AlreadyImprovedState, AgentToolError> {
-    Ok(load_session_meta(session_dir)
-        .await?
-        .map(|meta| meta.already_improved)
-        .unwrap_or_default())
-}
-
-async fn commit_already_improved_state(
-    session_dir: &Path,
-    round_index: u64,
-) -> Result<(AlreadyImprovedState, AlreadyImprovedState), AgentToolError> {
-    let mut meta = load_session_meta(session_dir).await?.ok_or_else(|| {
-        AgentToolError::ExecFailed(format!(
-            "session meta not found under {}",
-            session_dir.display()
-        ))
-    })?;
-    let previous = meta.already_improved.clone();
-    if round_index > meta.already_improved.committed_round_index {
-        meta.already_improved.committed_round_index = round_index;
-        meta.already_improved.committed_at_ms = now_ms();
-    }
-    let committed = meta.already_improved.clone();
-    write_session_meta(session_dir, &meta).await?;
-    Ok((previous, committed))
-}
-
-fn already_improved_output(state: &AlreadyImprovedState) -> AlreadyImprovedOutput {
-    AlreadyImprovedOutput {
-        committed_round_index: state.committed_round_index,
-        committed_at_ms: state.committed_at_ms,
-    }
-}
-
-fn parse_read_session_history_cli_args(tokens: &[String]) -> Result<Json, AgentToolError> {
-    if tokens.len() == 1 && tokens[0].trim().starts_with('{') {
-        return agent_tool::parse_default_bash_exec_args(tokens);
-    }
-    let mut normalized = Vec::with_capacity(tokens.len());
-    for token in tokens {
-        match token.as_str() {
-            "already_improved" | "from_already_improved" => {
-                normalized.push("from_already_improved=true".to_string())
-            }
-            _ => normalized.push(token.clone()),
-        }
-    }
-    agent_tool::parse_default_bash_exec_args(&normalized)
-}
-
-fn build_history_query(
-    args: &ReadSessionHistoryArgs,
-) -> Result<(SessionHistoryQuery, String), AgentToolError> {
-    let exact_start = parse_optional_time(args.start_ms, args.start.as_deref(), "start")?;
-    let exact_end = parse_optional_time(args.end_ms, args.end.as_deref(), "end")?;
-    if exact_start.is_some() || exact_end.is_some() {
-        let start = exact_start.ok_or_else(|| {
-            AgentToolError::InvalidArgs(
-                "`start`/`start_ms` is required with exact time range".to_string(),
-            )
-        })?;
-        let end = exact_end.ok_or_else(|| {
-            AgentToolError::InvalidArgs(
-                "`end`/`end_ms` is required with exact time range".to_string(),
-            )
-        })?;
-        if start > end {
-            return Err(AgentToolError::InvalidArgs(
-                "`start` must not be greater than `end`".to_string(),
-            ));
-        }
-        return Ok((
-            SessionHistoryQuery::TimeRange { start, end },
-            format!("time_range {}..{}", start.to_rfc3339(), end.to_rfc3339()),
-        ));
-    }
-
-    let at = parse_optional_time(args.at_ms, args.at.as_deref(), "at")?;
-    if let Some(at) = at {
-        let window_ms = args.window_ms.unwrap_or(DEFAULT_HISTORY_WINDOW_MS as u64) as i64;
-        if window_ms <= 0 {
-            return Err(AgentToolError::InvalidArgs(
-                "`window_ms` must be greater than zero".to_string(),
-            ));
-        }
-        let half = Duration::milliseconds(window_ms / 2);
-        let start = at - half;
-        let end = at + Duration::milliseconds(window_ms - window_ms / 2);
-        return Ok((
-            SessionHistoryQuery::TimeRange { start, end },
-            format!("around {} window_ms={window_ms}", at.to_rfc3339()),
-        ));
-    }
-
-    let page = args.page.unwrap_or(0);
-    if page < -1 {
-        return Err(AgentToolError::InvalidArgs(
-            "`page` must be -1 or a non-negative integer".to_string(),
-        ));
-    }
-    let page_size = args.page_size.unwrap_or(DEFAULT_HISTORY_PAGE_SIZE);
-    if page_size == 0 {
-        return Err(AgentToolError::InvalidArgs(
-            "`page_size` must be greater than zero".to_string(),
-        ));
-    }
-    let page_size = page_size.min(MAX_HISTORY_PAGE_SIZE);
-    Ok((
-        SessionHistoryQuery::Page { page, page_size },
-        format!("page={page} page_size={page_size}"),
-    ))
-}
-
-fn parse_optional_time(
-    ms: Option<u64>,
-    rfc3339: Option<&str>,
-    name: &str,
-) -> Result<Option<DateTime<Utc>>, AgentToolError> {
-    match (ms, rfc3339.map(str::trim).filter(|s| !s.is_empty())) {
-        (Some(ms), None) => {
-            let ms = i64::try_from(ms)
-                .map_err(|_| AgentToolError::InvalidArgs(format!("`{name}_ms` is out of range")))?;
-            DateTime::<Utc>::from_timestamp_millis(ms)
-                .map(Some)
-                .ok_or_else(|| AgentToolError::InvalidArgs(format!("`{name}_ms` is invalid")))
-        }
-        (None, Some(value)) => DateTime::parse_from_rfc3339(value)
-            .map(|dt| Some(dt.with_timezone(&Utc)))
-            .map_err(|err| AgentToolError::InvalidArgs(format!("invalid `{name}` time: {err}"))),
-        (None, None) => Ok(None),
-        (Some(_), Some(_)) => Err(AgentToolError::InvalidArgs(format!(
-            "use either `{name}_ms` or `{name}`, not both"
-        ))),
-    }
 }
 
 fn open_attention_store(agent_root: &Path) -> Result<AgentAttentionSignalStore, AgentToolError> {
@@ -6310,12 +5972,6 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     mgr.register_typed_tool(WriteFileTool::new(file_cfg.clone(), audit.clone()))?;
     mgr.register_typed_tool(EditFileTool::new(file_cfg, audit))?;
     mgr.register_typed_tool(TodoTool::new(TodoToolConfig::new(state_root)))?;
-    mgr.register_typed_tool(CliReadSessionHistoryTool {
-        agent_root: env.agent_env_root.clone(),
-    })?;
-    mgr.register_typed_tool(CliCommitSessionHistoryImprovedTool {
-        agent_root: env.agent_env_root.clone(),
-    })?;
     mgr.register_typed_tool(CliBeginAttentionSignalExtractionTool {
         agent_root: env.agent_env_root.clone(),
         current_session_id: env.call_ctx.session_id.clone(),
@@ -7220,8 +6876,6 @@ mod tests {
     use std::sync::Mutex;
 
     use agent_tool::RuntimeContextSource;
-    use buckyos_api::{AiMessage, AiRole};
-    use opendan::round_history::{ContextMode, RoundStatus, RoundTrigger, SessionHistoryWriter};
     use tempfile::tempdir;
     use tokio::fs;
     use tokio::io::AsyncWriteExt as _;
@@ -7367,48 +7021,6 @@ mod tests {
             ),
         )
         .expect("write agent identity");
-    }
-
-    async fn seed_opendan_session_meta(agent_root: &Path, session_id: &str, kind: SessionKind) {
-        let session_dir = agent_root.join("sessions").join(session_id);
-        fs::create_dir_all(session_dir.join(".meta"))
-            .await
-            .expect("create session meta dir");
-        let meta = SessionMeta::new(
-            session_id.to_string(),
-            kind,
-            "chat_route".to_string(),
-            "alice".to_string(),
-        );
-        let bytes = serde_json::to_vec_pretty(&meta).expect("serialize session meta");
-        fs::write(session_dir.join(".meta").join("session.json"), bytes)
-            .await
-            .expect("write session meta");
-    }
-
-    async fn seed_round_history(agent_root: &Path, session_id: &str, text: &str) {
-        let session_dir = agent_root.join("sessions").join(session_id);
-        let mut writer = SessionHistoryWriter::open(&session_dir)
-            .await
-            .expect("open history writer");
-        writer
-            .begin_round(
-                RoundTrigger::UserMsg {
-                    preview: text.to_string(),
-                },
-                Vec::new(),
-                ContextMode::Chat,
-            )
-            .await
-            .expect("begin round");
-        writer
-            .append_message(AiMessage::text(AiRole::User, text), None)
-            .await
-            .expect("append message");
-        writer
-            .finalize_round(RoundStatus::Completed)
-            .await
-            .expect("finalize round");
     }
 
     #[tokio::test]
@@ -7691,43 +7303,15 @@ methods = ["x_call"]
     }
 
     #[tokio::test]
-    async fn attention_stage1_cli_flow_reads_discovers_completes_and_commits() {
+    async fn attention_stage1_cli_flow_discovers_and_completes() {
         let _guard = nb_lock();
         let temp = tempdir().expect("create tempdir");
         let root = temp.path().join("agent");
         let cwd = root.join("workspace");
         fs::create_dir_all(&cwd).await.expect("create cwd");
         let target_session = "target-session";
-        seed_opendan_session_meta(&root, target_session, SessionKind::Ui).await;
-        seed_round_history(
-            &root,
-            target_session,
-            "Project Atlas is blocked on DNS verification.",
-        )
-        .await;
-
         let env = test_env(root.clone(), cwd.clone());
-        let read_output = execute(
-            vec![
-                OsString::from("/tmp/read_session_history"),
-                OsString::from(format!("session_id={target_session}")),
-                OsString::from("already_improved"),
-                OsString::from("token_limit=4096"),
-            ],
-            env.clone(),
-            None,
-        )
-        .await
-        .expect("read session history");
-        assert_eq!(read_output.exit_code, EXIT_SUCCESS);
-        let read_payload: Json = serde_json::from_str(&read_output.stdout).expect("read json");
-        assert_eq!(read_payload["detail"]["returned"], 1);
-        assert_eq!(read_payload["detail"]["commit_round_index"], 1);
-        let message_ts = read_payload["detail"]["messages"][0]["ts"]
-            .as_str()
-            .expect("message ts")
-            .to_string();
-
+        let message_ts = "2026-01-01T00:00:00Z";
         let begin_args = json!({
             "session_id": target_session,
             "window_start": message_ts,
@@ -7797,24 +7381,6 @@ methods = ["x_call"]
         .expect("complete extraction");
         assert_eq!(complete_output.exit_code, EXIT_SUCCESS);
 
-        let commit_output = execute(
-            vec![
-                OsString::from("/tmp/commit_session_history_improved"),
-                OsString::from(format!("session_id={target_session}")),
-                OsString::from("round_index=1"),
-            ],
-            env.clone(),
-            None,
-        )
-        .await
-        .expect("commit history progress");
-        assert_eq!(commit_output.exit_code, EXIT_SUCCESS);
-        let committed_meta = load_session_meta(&root.join("sessions").join(target_session))
-            .await
-            .expect("load meta")
-            .expect("meta exists");
-        assert_eq!(committed_meta.already_improved.committed_round_index, 1);
-
         let list_output = execute(
             vec![
                 OsString::from("/tmp/ListPendingAttentionSignals"),
@@ -7839,7 +7405,6 @@ methods = ["x_call"]
         let cwd = root.join("workspace");
         fs::create_dir_all(&cwd).await.expect("create cwd");
         let target_session = "target-session";
-        seed_opendan_session_meta(&root, target_session, SessionKind::Ui).await;
         let env = test_env(root.clone(), cwd);
 
         let begin_args = json!({

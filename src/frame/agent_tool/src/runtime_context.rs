@@ -13,6 +13,30 @@ pub const OPENDAN_TRACE_ID_ENV: &str = "OPENDAN_TRACE_ID";
 pub const DEFAULT_TRACE_ID: &str = "cli-trace";
 pub const DEFAULT_SESSION_ID: &str = "cli-session";
 
+pub async fn refresh_appclient_session_env(
+    env: &mut Vec<(String, String)>,
+) -> Result<(), AgentToolError> {
+    let Ok(runtime) = buckyos_api::get_buckyos_api_runtime() else {
+        return Ok(());
+    };
+    Box::pin(runtime.renew_token_from_verify_hub())
+        .await
+        .map_err(|err| {
+            AgentToolError::ExecFailed(format!(
+                "refresh appclient session token before exec failed: {err}"
+            ))
+        })?;
+    let token = runtime.get_session_token().await;
+    if token.trim().is_empty() {
+        return Err(AgentToolError::ExecFailed(
+            "buckyos runtime returned an empty appclient session token after refresh".to_string(),
+        ));
+    }
+    env.retain(|(key, _)| key != BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV);
+    env.push((BUCKYOS_APPCLIENT_SESSION_TOKEN_ENV.to_string(), token));
+    Ok(())
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RuntimeContextSource {
     StableEnv,

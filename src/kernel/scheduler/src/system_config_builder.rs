@@ -5,24 +5,26 @@ use buckyos_api::msg_queue::{
 };
 use buckyos_api::{
     generate_aicc_service_doc, generate_control_panel_service_doc, generate_msg_center_service_doc,
-    generate_nfs_server_doc, generate_opendan_service_doc, generate_repo_service_doc,
-    generate_scheduler_service_doc, generate_smb_service_doc, generate_task_manager_service_doc,
-    generate_verify_hub_service_doc, generate_workflow_service_doc, AgentId, AgentServiceBinding,
-    AgentSpec, AppDoc, AppId, AppInstanceId, AppRegistry, BuckyOSDevConfig, BuckyOSInfo,
-    GatewaySettings, GatewayShortcut, KernelServiceSpec, NodeConfig, NodeState,
-    ServiceEndpointConfig, ServiceExposeConfig, ServiceExposeRouteConfig, ServiceInfo,
-    ServiceInstanceReportInfo, ServiceInstanceState, ServiceNode, ServiceProtocol,
-    ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings, UserPrivateProfile,
-    UserProfile, UserSettings, UserState, UserTunnelBinding, UserType, ZoneConfig,
-    AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY, BUCKYOS_INFO_KEY,
-    OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
+    generate_aiworkspace_doc, generate_homestation_doc, generate_nfs_server_doc,
+    generate_opendan_service_doc, generate_repo_service_doc, generate_scheduler_service_doc,
+    generate_smb_service_doc, generate_task_manager_service_doc, generate_verify_hub_service_doc,
+    generate_workflow_service_doc, AgentId, AgentServiceBinding, AgentSpec, AppDoc, AppId,
+    AppInstanceId, AppRegistry, BuckyOSDevConfig, BuckyOSInfo, GatewaySettings, GatewayShortcut,
+    KernelServiceSpec, NodeConfig, NodeState, ServiceEndpointConfig, ServiceExposeConfig,
+    ServiceExposeRouteConfig, ServiceInfo, ServiceInstanceReportInfo, ServiceInstanceState,
+    ServiceNode, ServiceProtocol, ServiceSpecConfig, ServiceState, SubPkgDesc, UserContactSettings,
+    UserPrivateProfile, UserProfile, UserSettings, UserState, UserTunnelBinding, UserType,
+    ZoneConfig, AGENT_SPEC_SCHEMA_VERSION, APP_REGISTRY_KEY, BUCKYOS_DEV_CONFIG_KEY,
+    BUCKYOS_INFO_KEY, OPENDAN_SERVICE_UNIQUE_ID, SCHEDULER_SERVICE_UNIQUE_ID, VERIFY_HUB_UNIQUE_ID,
     ZONE_OWNER_USER_ID_KEY,
 };
 use buckyos_api::{
-    NfsServerSettings, AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID,
-    CONTROL_PANEL_SERVICE_PORT, CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT,
-    MSG_CENTER_SERVICE_UNIQUE_ID, NFS_SERVER_SERVICE_PORT, NFS_SERVER_UNIQUE_ID,
-    REPO_SERVICE_UNIQUE_ID, SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
+    AICC_SERVICE_SERVICE_PORT, AICC_SERVICE_UNIQUE_ID, CONTROL_PANEL_SERVICE_PORT,
+    CONTROL_PANEL_SERVICE_UNIQUE_ID, MSG_CENTER_SERVICE_PORT, MSG_CENTER_SERVICE_UNIQUE_ID,
+    AiWorkspaceSettings, AIWORKSPACE_SERVICE_PORT, AIWORKSPACE_UNIQUE_ID, HomeStationSettings,
+    HOMESTATION_SERVICE_PORT, HOMESTATION_UNIQUE_ID, NfsServerSettings,
+    NFS_SERVER_SERVICE_PORT, NFS_SERVER_UNIQUE_ID, REPO_SERVICE_UNIQUE_ID,
+    SMB_SERVICE_UNIQUE_ID, TASK_MANAGER_SERVICE_PORT,
     TASK_MANAGER_SERVICE_UNIQUE_ID, WORKFLOW_SERVICE_PORT, WORKFLOW_SERVICE_UNIQUE_ID,
 };
 use buckyos_kit::{
@@ -661,6 +663,41 @@ impl SystemConfigBuilder {
 
         let settings = NfsServerSettings::default();
         self.insert_json_if_absent("services/nfs-server/settings", &settings)?;
+        Ok(self)
+    }
+
+    pub async fn add_aiworkspace(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_aiworkspace_doc();
+        // reached through the generic /kapi/aiworkspace gateway route
+        let config = build_kernel_service_spec(
+            AIWORKSPACE_UNIQUE_ID,
+            AIWORKSPACE_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/aiworkspace/spec", &config)?;
+
+        let settings = AiWorkspaceSettings::default();
+        self.insert_json_if_absent("services/aiworkspace/settings", &settings)?;
+        Ok(self)
+    }
+
+    pub async fn add_homestation(&mut self) -> Result<&mut Self> {
+        let service_doc = generate_homestation_doc();
+        // owner kRPC through the generic /kapi/homestation route; the zone-level /home/
+        // protocol paths are forwarded by boot_gateway.yaml
+        let config = build_kernel_service_spec(
+            HOMESTATION_UNIQUE_ID,
+            HOMESTATION_SERVICE_PORT,
+            1,
+            service_doc,
+        )
+        .await?;
+        self.insert_json("services/homestation/spec", &config)?;
+
+        let settings = HomeStationSettings::default();
+        self.insert_json_if_absent("services/homestation/settings", &settings)?;
         Ok(self)
     }
 

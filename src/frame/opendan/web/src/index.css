@@ -1,0 +1,71 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --line: #d9dde3;
+  --fg: #1c2330;
+  --mute: #667085;
+  --accent: #2456c9;
+  --ok: #18794e;
+  --warn: #a15c07;
+  --bad: #c0362c;
+  --soft: #eef2fb;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171c;
+    --panel: #1c2027;
+    --line: #2f3540;
+    --fg: #e3e7ee;
+    --mute: #8d97a8;
+    --accent: #7aa2ff;
+    --ok: #4cc38a;
+    --warn: #e0a341;
+    --bad: #ff7b72;
+    --soft: #242b38;
+  }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 13px;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* The home page is read on a phone: larger type, finger-sized targets. */
+.home {
+  font-size: 15px;
+  line-height: 1.45;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+@layer components {
+  .tbl {
+    @apply w-full border-collapse text-left;
+  }
+  .tbl th {
+    @apply border-b border-line px-2 py-1 text-xs font-medium text-mute whitespace-nowrap;
+  }
+  .tbl td {
+    @apply border-b border-line px-2 py-1 align-top;
+  }
+  .btn {
+    @apply inline-flex items-center gap-1 rounded border border-line bg-panel px-2 py-1 text-xs hover:border-accent disabled:opacity-50;
+  }
+  .card {
+    @apply rounded-2xl border border-line bg-panel;
+  }
+  .tap {
+    @apply inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-4 text-sm font-medium disabled:opacity-50;
+  }
+  .input {
+    @apply rounded border border-line bg-panel px-2 py-1 text-xs text-fg;
+  }
+}

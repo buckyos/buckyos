@@ -56,6 +56,19 @@ async function login(page: Page, request: APIRequestContext, baseURL: string): P
 test.describe('MessageHub on a real zone', () => {
   test.skip(!enabled, 'Set MESSAGEHUB_REAL_E2E=1 with a proxied dev server (see playwright.real.config.ts).')
 
+  test('a session link from the agent home page opens that session', async ({ page, request, baseURL }) => {
+    await login(page, request, baseURL!)
+    const active = async () => {
+      const toggle = page.getByRole('button', { name: 'Sessions', exact: true })
+      await expect(toggle).toBeVisible()
+      if (!(await page.getByTestId('session-sidebar').isVisible())) await toggle.click()
+      return page.locator('[data-testid="session-row"]:has(button[aria-current="true"])')
+    }
+    // The owner's own conversation with the agent.
+    await page.goto(`/messagehub?${new URLSearchParams({ entityId: agentDid, sessionId: `dm:${agentDid}` })}`)
+    await expect(await active()).toHaveAttribute('data-session-id', `dm:${agentDid}`)
+  })
+
   test('observe the zone agent read-only and browse its real timeline', async ({ page, request, baseURL }) => {
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))

@@ -547,7 +547,9 @@ fn ref_item_to_structured_attachment(
     }))
 }
 
-fn attachment_kind(
+/// `image | audio | video | document | file` of a data object reference,
+/// inferred from its label, URI hint and the message format (in that order).
+pub fn attachment_kind(
     msg_format: Option<&MsgContentFormat>,
     label: Option<&str>,
     uri_hint: Option<&str>,
@@ -632,7 +634,8 @@ fn attachment_kind_from_hint(value: &str) -> Option<&'static str> {
     }
 }
 
-fn attachment_mime(
+/// MIME type of a data object reference, when it can be inferred.
+pub fn attachment_mime(
     msg_format: Option<&MsgContentFormat>,
     label: Option<&str>,
     uri_hint: Option<&str>,

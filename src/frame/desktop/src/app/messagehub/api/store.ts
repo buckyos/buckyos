@@ -22,11 +22,11 @@ import {
   type Contact, type GroupDoc, type GroupDocEnvelope, type GroupSessionItem, type SessionSummary, type UiSessionStateEntry,
 } from '../datamodel/sessionApi'
 import { createGroupSchema, formatInviteLink, groupSessionId } from '../groupModel'
-import { messageObjId } from '../conversation/history/relations'
+import { editsOf, effectiveContent, messageObjId } from '../conversation/history/relations'
 import { isValidMsgSessionId, randomMsgNonce, type MessageObject, type MsgObject, type RefItem } from '../protocol/msgobj'
-import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
+import { createSessionSchema, creationReason, defaultPreferences, groupSharedStateSchema, memberStateSchema, pinnedMessageSchema, presentationSchema, selectDefaultSession, sessionKey, sessionTitle, sharedStateSchema, sortSessions, viewerSessionKey } from '../sessionModel'
 import { ensureDefaultSession } from '../store/defaultSession'
-import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
+import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetail, type GroupCapabilities, type GroupInfo, type GroupInvitation, type GroupInvitationView, type GroupSessionInfo, type GroupSessionParticipants, type MessageHubContext, type PinnedMessage, type ReadReceipt, type RuntimeState, type Session, type SessionAccess, type SessionBinding, type SessionPreferences } from '../types'
 import type { ConnectionChoice, EntityAdmission, ManageAction, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 import { LocalStateStore } from './local'
 import { apiObjectAccess } from './objects'
@@ -37,6 +37,8 @@ import { uploadAttachments } from './upload'
 const SESSION_PAGE_SIZE = 50
 const HISTORY_PAGE_SIZE = 64
 const SUMMARY_POLL_MS = 20_000
+/** Older pages a message lookup may load before giving up. */
+const LOCATE_MAX_PAGES = 50
 const RUNTIME_POLL_MS = 5_000
 const DELIVERY_FOLLOW_DELAYS_MS = [300, 700, 1_500, 3_000, 5_000, 8_000]
 const TYPING_TTL_MS = 30_000
@@ -71,7 +73,7 @@ interface OwnerData {
   invitationNames: Map<string, string | null>
   /** Group DIDs of local group sessions already looked up in `group.list_by_member`. */
   groupLookups: Set<string>
-  prefs: Record<string, { title: string; pinned: boolean; muted: boolean }>
+  prefs: Record<string, { title: string; pinned: boolean; muted: boolean; pinnedMessage?: PinnedMessage | null }>
   prefsLoaded: Set<string>
   version: number
   projected?: { version: number; value: ProjectedOwner }
@@ -592,6 +594,17 @@ export class MessageHubApiStore implements MessageHubStore {
     }
   }
 
+  async locateMessage(context: MessageHubContext, sessionId: string, messageId: string) {
+    if (!this.canView(context)) return false
+    const data = this.owner(context.ownerDid)
+    const key = viewerSessionKey(context, sessionId)
+    const loaded = () => (data.histories.get(key)?.messages ?? []).some(message => messageObjId(message) === messageId)
+    this.reader(context, sessionId)
+    for (let wait = 0; wait < 100 && data.historyStatus.get(sessionId) === 'loading'; wait++) await new Promise(resolve => setTimeout(resolve, 100))
+    for (let page = 0; page < LOCATE_MAX_PAGES && !loaded(); page++) if (!await this.loadOlder(context, sessionId)) break
+    return loaded()
+  }
+
   async markRead(context: MessageHubContext, sessionId: string, recordIds: string[]) {
     if (context.mode !== 'self' || context.ownerDid !== this.selfDid || context.viewerDid !== this.selfDid) return
     const data = this.owner(context.ownerDid)
@@ -599,9 +612,12 @@ export class MessageHubApiStore implements MessageHubStore {
     const history = data.histories.get(key)
     if (!history) return
     const wanted = new Set(recordIds)
-    const targets = history.messages.filter(message => {
+    // An edit has no row of its own: its record is read with the bubble that
+    // shows it, so a placeholder and its final edit count as one unread message.
+    const shown = history.messages.filter(message => wanted.has(recordMeta(message)?.recordId ?? ''))
+    const targets = [...shown, ...editsOf(history.messages, shown)].filter(message => {
       const meta = recordMeta(message)
-      return meta && wanted.has(meta.recordId) && meta.direction === 'in' && meta.recipientState === 'UNREAD'
+      return meta && meta.direction === 'in' && meta.recipientState === 'UNREAD'
     })
     if (targets.length === 0) return
     // Records are marked in parallel and merged in one revision so the
@@ -766,7 +782,7 @@ export class MessageHubApiStore implements MessageHubStore {
       const entries = await listUiSessionState(sessionId, context.ownerDid)
       const prefs = { ...defaultPreferences }
       for (const entry of entries) this.applyPref(prefs, entry)
-      data.prefs[sessionId] = { title: prefs.title, pinned: prefs.pinned, muted: prefs.muted }
+      data.prefs[sessionId] = { title: prefs.title, pinned: prefs.pinned, muted: prefs.muted, pinnedMessage: prefs.pinnedMessage }
       this.bump(data)
     } catch (error) {
       data.prefsLoaded.delete(sessionId)
@@ -778,6 +794,7 @@ export class MessageHubApiStore implements MessageHubStore {
     if (entry.key === 'ui.title' && typeof entry.value === 'string' && entry.value.trim().length <= 64) prefs.title = entry.value.trim()
     if (entry.key === 'ui.pinned' && typeof entry.value === 'boolean') prefs.pinned = entry.value
     if (entry.key === 'ui.muted' && typeof entry.value === 'boolean') prefs.muted = entry.value
+    if (entry.key === 'ui.pinned_message') { const pin = pinnedMessageSchema.safeParse(entry.value); prefs.pinnedMessage = pin.success ? pin.data : null }
   }
 
   preferences(context: MessageHubContext, sessionId: string): SessionPreferences {
@@ -788,7 +805,7 @@ export class MessageHubApiStore implements MessageHubStore {
   }
 
   async updatePreferences(context: MessageHubContext, sessionId: string, patch: Partial<SessionPreferences>) {
-    if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions'].includes(key))) throw new Error('permission_denied')
+    if (Object.keys(patch).some(key => !['title', 'pinned', 'muted', 'showActions', 'pinnedMessage'].includes(key))) throw new Error('permission_denied')
     const data = this.owner(context.ownerDid)
     if (patch.showActions !== undefined) {
       if (typeof patch.showActions !== 'boolean') throw new Error('invalid_input')
@@ -800,8 +817,9 @@ export class MessageHubApiStore implements MessageHubStore {
       this.requireOwn(context)
       const merged = { ...this.preferences(context, sessionId), ...ownerPatch }
       presentationSchema.parse(merged)
-      for (const [key, value] of Object.entries(ownerPatch)) await updateUiSessionState(sessionId, `ui.${key}`, value, context.ownerDid)
-      data.prefs[sessionId] = { title: merged.title, pinned: merged.pinned, muted: merged.muted }
+      if (merged.pinnedMessage) pinnedMessageSchema.parse(merged.pinnedMessage)
+      for (const [key, value] of Object.entries(ownerPatch)) await updateUiSessionState(sessionId, key === 'pinnedMessage' ? 'ui.pinned_message' : `ui.${key}`, value ?? null, context.ownerDid)
+      data.prefs[sessionId] = { title: merged.title, pinned: merged.pinned, muted: merged.muted, pinnedMessage: merged.pinnedMessage ?? null }
       data.prefsLoaded.add(sessionId)
     }
     this.bump(data)
@@ -890,6 +908,34 @@ export class MessageHubApiStore implements MessageHubStore {
     const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
     this.pendingSendKeys.set(pendingKey, idempotencyKey)
     await this.postOutgoing(context, session, content, pendingKey, idempotencyKey)
+  }
+
+  async forward(context: MessageHubContext, sessionId: string, message: MessageObject, confirmation: string | undefined) {
+    const session = this.writableSession(context, sessionId, confirmation)
+    const effective = effectiveContent(message)
+    const refs = (effective.refs ?? []).filter(ref => ref.target.type === 'data_obj')
+    const content: MsgObject['content'] = { format: effective.format ?? 'text/plain', content: effective.content ?? '', ...(refs.length ? { refs } : {}) }
+    const pendingKey = `${sessionKey(context.ownerDid, sessionId)}:forward:${messageIdOf(message)}`
+    const idempotencyKey = this.pendingSendKeys.get(pendingKey) ?? crypto.randomUUID()
+    this.pendingSendKeys.set(pendingKey, idempotencyKey)
+    await this.postOutgoing(context, session, content, pendingKey, idempotencyKey)
+  }
+
+  /**
+   * Deleting is local to the owner: the mailbox record becomes `DELETED`
+   * (hidden from `msg.list_session`), the message object and the other
+   * participants' records stay. A message that never reached the mailbox (a
+   * failed send) only leaves the timeline.
+   */
+  async deleteMessage(context: MessageHubContext, sessionId: string, message: MessageObject) {
+    this.requireOwn(context)
+    const data = this.owner(context.ownerDid)
+    const key = viewerSessionKey(context, sessionId)
+    const meta = recordMeta(message)
+    if (meta) await updateRecordState(meta.recordId, 'DELETED')
+    data.histories.set(key, removeMessage(data.histories.get(key) ?? emptyHistory, messageIdOf(message)))
+    if (this.preferences(context, sessionId).pinnedMessage?.id === messageObjId(message)) await this.updatePreferences(context, sessionId, { pinnedMessage: null })
+    this.bump(data)
   }
 
   private async postOutgoing(context: MessageHubContext, session: Session, content: MsgObject['content'], pendingKey: string, idempotencyKey: string, meta: Pick<MsgObject, 'relates_to' | 'mentions'> = {}) {

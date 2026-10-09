@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "description": "One line of `usage.jsonl`: what one successful Round consumed, by model. Appended by the session's driver; `static.json` keeps the totals.",
+  "properties": {
+    "at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "input_tokens": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "model": {
+      "description": "The model the provider reports having served the Round, else the model alias of the request.",
+      "type": "string"
+    },
+    "output_tokens": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "total_tokens": {
+      "default": 0,
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    }
+  },
+  "required": [
+    "at_ms",
+    "model"
+  ],
+  "title": "UsageRecord",
+  "type": "object"
+}

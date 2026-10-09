@@ -271,8 +271,7 @@ Group Session 的 action 由 Group Service 发布（`from = group_did`），细�
 
 | 当前仓库证据 | 已有能力 | 本设计仍需补齐 |
 |---|---|---|
-| `src/kernel/buckyos-api/src/msg_center_client.rs`：`UiSessionStateEntry` / `ui_session.*` | Session ID + key/value；active / typing / status_line 常量 | 权威引用、成员 DID、字段权限、revision、幂等状态修改 |
-| `src/frame/msg_center/src/tg_tunnel.rs`：`TgUiSessionTracker` / `refresh_ui_sessions` | 活跃追踪、typing 与状态行同步 | 持久共享 / 成员状态读写、外部变更确认与 Action Log 映射；不能把现有运行态当作已完成实现 |
+| `src/kernel/buckyos-api/src/msg_center_client.rs`：`UiSessionStateEntry` / `ui_session.*` | Session ID + key/value；typing 常量 | 权威引用、成员 DID、字段权限、revision、幂等状态修改 |
 | `src/kernel/buckyos-api/src/group_mgr.rs`：`GroupMemberRecord` / `GroupEvent` | 成员权威数据及 joined / left / removed 等事件类型 | 群事件到统一 Action Log 的幂等发布与状态 / 事件提交一致性 |
 | 现有 `MsgObject.kind=event` / `content.machine` | 容纳结构化事件 | `buckyos.action_log` payload 校验、来源校验与关联 |
 | `src/frame/msg_center/src/msg_center.rs`：`is_group_message` | 当前只按 `kind=GroupMsg` 识别群消息 | 为发往群 DID 的 Action Log event 补齐群接收 / 分发与 Session 归类，不能改成普通聊天消息来绕过 |

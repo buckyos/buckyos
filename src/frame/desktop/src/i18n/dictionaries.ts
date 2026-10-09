@@ -4,6 +4,7 @@ import { aiCenterEn, aiCenterZh } from './ai-center'
 import { aiCenterRoutingEn, aiCenterRoutingZh } from './ai-center-routing'
 import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
+import { homeStationEn, homeStationZh } from './homestation'
 import { appServiceEn, appServiceZh } from './app-service'
 import type { SupportedLocale } from '../models/ui'
 
@@ -15,6 +16,7 @@ const en: Dictionary = {
   ...aiCenterPlaygroundEn,
   ...aiCenterRoutingEn,
   ...messageHubEn,
+  ...homeStationEn,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': 'Thin desktop layer for layout, launch, and in-place windows.',
   'shell.home': 'Home',
@@ -95,11 +97,11 @@ const en: Dictionary = {
   'apps.appService': 'App Service',
   'apps.docs': 'Docs',
   'apps.workflow': 'Workflow',
-  'apps.canvas': 'AI Canvas',
+  'apps.aiworkspace': 'AI Workspace',
   'apps.systest': 'Systest',
   'appSummary.taskCenter': 'Track system tasks, handle notifications, and browse system events.',
   'appSummary.workflow': 'Browse Workflow Definitions, application mount points, and Run history.',
-  'appSummary.canvas': 'AI-native infinite canvas: organize data like Excel, write goals in wish cells, keep agent results as editable objects.',
+  'appSummary.aiworkspace': 'Structured workspace documents: rich text, tables and views, assets and annotations with versioned commits, undo and collaboration.',
   'appSummary.appService': 'System-level app service control panel for install, run, and diagnose.',
   'appSummary.systest': 'Run the BuckyOS system test app inside a managed desktop window.',
   'appSummary.aiCenter': 'Manage AI providers, models, usage, and routing.',
@@ -932,6 +934,7 @@ const zhCN: Dictionary = {
   ...aiCenterPlaygroundZh,
   ...aiCenterRoutingZh,
   ...messageHubZh,
+  ...homeStationZh,
   'shell.title': 'BuckyOS Web Desktop',
   'shell.subtitle': '用于布局、启动与同容器窗口承载的轻量桌面层。',
   'shell.home': '主页',
@@ -1012,11 +1015,11 @@ const zhCN: Dictionary = {
   'apps.appService': '应用服务',
   'apps.docs': '文档',
   'apps.workflow': 'Workflow',
-  'apps.canvas': 'AI 画布',
+  'apps.aiworkspace': 'AI 工作区',
   'apps.systest': '系统测试',
   'appSummary.taskCenter': '追踪系统任务、处理系统通知、浏览系统事件。',
   'appSummary.workflow': '浏览 Workflow Definition、应用挂载点和最近 Run 历史。',
-  'appSummary.canvas': 'AI Native 无限画布：像 Excel 一样组织数据，在许愿格里写目标，让 Agent 结果成为可编辑对象。',
+  'appSummary.aiworkspace': '结构化工作区文档：富文本、表格与视图、资产与批注，带版本化提交、撤销与协作。',
   'appSummary.appService': '系统级应用服务控制面板，安装、运行与诊断。',
   'appSummary.systest': '在桌面窗口中运行 BuckyOS 系统测试应用。',
   'appSummary.usersAgents': '管理系统内部用户、Agent、自托管群组、权限与运行状态。',

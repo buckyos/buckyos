@@ -26,7 +26,7 @@ use llm_context::observation::Observation;
 
 use crate::lock::Lease;
 use crate::protocol::{
-    BehaviorEntry, ChildCall, CallTrigger, Touching, MAX_CALL_DEPTH, TOOL_CALL_BEHAVIOR,
+    BehaviorEntry, ChildCall, CallTrigger, Touching, TOOL_CALL_BEHAVIOR,
 };
 use crate::session::runs::RunHandle;
 
@@ -53,8 +53,12 @@ pub struct SessionToolManager {
     lease: Arc<Lease>,
     workdir: PathBuf,
     /// Write targets inferred from tool calls (merged into activity at the
-    /// next observation boundary).
+    /// next checkpoint).
     touched: Arc<Mutex<Vec<Touching>>>,
+    /// Tool called last (shown as the activity of the Turn's task).
+    current_tool: Arc<Mutex<Option<String>>>,
+    /// Task ids the results of this run referred to so far.
+    seen_tasks: Mutex<std::collections::BTreeSet<String>>,
 }
 
 impl SessionToolManager {
@@ -64,13 +68,17 @@ impl SessionToolManager {
         lease: Arc<Lease>,
         workdir: PathBuf,
         touched: Arc<Mutex<Vec<Touching>>>,
+        current_tool: Arc<Mutex<Option<String>>>,
     ) -> Self {
+        let seen_tasks = Mutex::new(run.noted_tasks().into_iter().collect());
         Self {
             inner,
             run,
             lease,
             workdir,
             touched,
+            current_tool,
+            seen_tasks,
         }
     }
 
@@ -116,6 +124,7 @@ impl ToolManager for SessionToolManager {
         if let Err(e) = self.run.require_execution_admitted() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
+        *self.current_tool.lock().expect("current tool") = Some(call.name.clone());
         let effect = classify_effect(&call.name);
         if effect != "read_only" {
             let action = InflightAction {
@@ -123,7 +132,14 @@ impl ToolManager for SessionToolManager {
                 tool: call.name.clone(),
                 args: canonical_args(&call.args),
                 effect: effect.to_string(),
-                idempotency_key: None,
+                // Stable identity of the dispatch (session / run / call): a
+                // tool that creates a task in an external service uses it as
+                // the idempotency key, so a crash between creating and
+                // recording the task finds the same task again.
+                idempotency_key: Some(crate::ids::h(&[
+                    self.run.run_id(),
+                    call.call_id.as_str(),
+                ])),
                 step_index: None,
                 started_at_ms: crate::now_ms(),
             };
@@ -135,13 +151,35 @@ impl ToolManager for SessionToolManager {
             }
             self.infer_touching(&call);
         }
-        // Only a sub context call suspends the run: every other tool waits
-        // for its task inside the call.
-        let mut ctx = ctx;
-        if call.name != TOOL_CALL_BEHAVIOR {
-            ctx.allow_deferred = false;
+        // A tool that answers `Pending { task_id }` suspends the run: the
+        // session waits for the task outside the context (the run's
+        // resolver answers for it) and fills the result on resume.
+        let result = self.inner.call_tool(call, ctx).await;
+        if let Ok(Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. }) =
+            &result
+        {
+            if let Some((task_id, t)) = tool_result
+                .as_ref()
+                .and_then(|t| t.task_id.as_deref().map(|id| (id, t)))
+            {
+                // A result that introduces a task (and is not the result of
+                // a finished command) or says it is "still running" means
+                // the task continues after the call; any other result about
+                // a known task is its end as the LLM saw it.
+                let first = self
+                    .seen_tasks
+                    .lock()
+                    .expect("seen tasks")
+                    .insert(task_id.to_string());
+                let ok = matches!(&result, Ok(Observation::Success { .. }));
+                let running = t.summary.contains("still running")
+                    || (first && ok && t.return_code.is_none());
+                if let Err(e) = self.run.note_task(task_id, running) {
+                    log::warn!("cannot note task {task_id} of run {}: {e}", self.run.run_id());
+                }
+            }
         }
-        self.inner.call_tool(call, ctx).await
+        result
     }
 
     fn list_tool_specs(&self) -> Vec<ToolSpecLite> {
@@ -166,16 +204,26 @@ pub struct CallBehaviorTool {
     targets: BTreeMap<String, BehaviorEntry>,
     /// Sub contexts already in progress above the run this tool belongs to.
     depth: usize,
+    /// `session.policy.max_process_depth`.
+    max_depth: usize,
 }
 
 impl CallBehaviorTool {
-    pub fn new(behaviors: &BTreeMap<String, BehaviorEntry>, depth: usize) -> Option<Self> {
+    pub fn new(
+        behaviors: &BTreeMap<String, BehaviorEntry>,
+        depth: usize,
+        max_depth: usize,
+    ) -> Option<Self> {
         let targets: BTreeMap<String, BehaviorEntry> = behaviors
             .iter()
             .filter(|(_, e)| e.mode.is_sub_context())
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        (!targets.is_empty()).then_some(Self { targets, depth })
+        (!targets.is_empty()).then_some(Self {
+            targets,
+            depth,
+            max_depth,
+        })
     }
 }
 
@@ -234,9 +282,10 @@ impl AgentTool for CallBehaviorTool {
                 self.targets.keys().cloned().collect::<Vec<_>>().join(", ")
             )));
         }
-        if self.depth >= MAX_CALL_DEPTH {
+        if self.depth >= self.max_depth {
             return Err(AgentToolError::ExecFailed(format!(
-                "sub contexts are nested {MAX_CALL_DEPTH} deep already; do the work in this context"
+                "sub contexts are nested {} deep already; do the work in this context",
+                self.max_depth
             )));
         }
         let deferred = CURRENT_TOOL_CTX

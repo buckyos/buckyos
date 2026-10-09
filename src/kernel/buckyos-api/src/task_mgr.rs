@@ -1004,6 +1004,11 @@ pub const WORKFLOW_RUN_TARGET_TASK_SCHEMA_ID: &str = "workflow.run/v1";
 pub const AGENT_DELEGATE_TASK_SCHEMA_ID: &str = "agent.delegate/v1";
 pub const HUMAN_INPUT_TASK_SCHEMA_ID: &str = "human.input/v1";
 pub const OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID: &str = "opendan.async_tool/v1";
+/// One Turn of an agent session, run by the agent's own runtime app. Input:
+/// `{agent_did, session_id, session_kind, turn, inputs}`; result:
+/// `{summary}`. Sub sessions' Turns are children of the Turn that created
+/// them.
+pub const OPENDAN_AGENT_TURN_TASK_SCHEMA_ID: &str = "opendan.agent_turn/v1";
 /// Fired by the `opendan.command` scheduled-task target. It has no
 /// `TaskDataType` envelope and no runner yet, but the schedule fire must be
 /// able to create the task rather than dying on `task_schema_not_found`.
@@ -1114,6 +1119,11 @@ const BUILTIN_TASK_SCHEMAS: &[(&str, &str, &[TaskExecutorKind])] = &[
         OPENDAN_ASYNC_TOOL_TASK_SCHEMA_ID,
         crate::OPENDAN_SERVICE_NAME,
         &[TaskExecutorKind::Unbound, TaskExecutorKind::App],
+    ),
+    (
+        OPENDAN_AGENT_TURN_TASK_SCHEMA_ID,
+        crate::OPENDAN_SERVICE_NAME,
+        &[TaskExecutorKind::App],
     ),
     (
         OPENDAN_COMMAND_TASK_SCHEMA_ID,

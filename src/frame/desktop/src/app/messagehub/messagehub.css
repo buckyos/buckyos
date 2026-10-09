@@ -146,7 +146,7 @@
 
 .mh-hover-bar {
   position: absolute;
-  top: -16px;
+  top: -27px;
   z-index: 5;
   display: none;
   align-items: center;
@@ -224,4 +224,163 @@
 .mh-reaction-picker button:focus-visible {
   background: color-mix(in srgb, var(--cp-text) 8%, transparent);
   outline: none;
+}
+
+.mh-hover-divider {
+  width: 1px;
+  height: 16px;
+  margin: 0 2px;
+  background: var(--cp-border);
+}
+
+/* Floating session panel (pinned message / host-defined state). Collapsed it
+   holds at most three 20px text lines; expanded it scrolls inside half the
+   viewport. */
+.mh-session-panel {
+  width: 100%;
+  max-width: 720px;
+  padding: 8px 8px 8px 12px;
+  border-radius: 12px;
+  background: var(--cp-surface-opaque, var(--cp-surface));
+  border: 1px solid var(--cp-border);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--cp-shadow, #0f172a) 14%, transparent);
+  color: var(--cp-text);
+}
+
+.mh-session-panel[data-expanded="true"] {
+  max-height: 50vh;
+  overflow-y: auto;
+}
+
+.mh-session-panel-text {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.mh-session-panel-text[data-clamped="true"] {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.mh-session-panel-button {
+  display: flex;
+  height: 28px;
+  width: 28px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  color: var(--cp-muted);
+}
+
+.mh-session-panel-button:hover,
+.mh-session-panel-button:focus-visible {
+  background: color-mix(in srgb, var(--cp-text) 8%, transparent);
+  color: var(--cp-text);
+  outline: none;
+}
+
+.mh-bubble:focus-visible {
+  outline: 2px solid var(--cp-accent);
+  outline-offset: 2px;
+}
+
+.mh-row[data-highlight="true"] .mh-bubble {
+  animation: mh-row-highlight 2.4s ease-out;
+}
+
+@keyframes mh-row-highlight {
+  0%, 40% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--cp-accent) 55%, transparent); }
+  100% { box-shadow: 0 0 0 3px transparent; }
+}
+
+.mh-task {
+  background: color-mix(in srgb, currentColor 7%, transparent);
+}
+
+.mh-task-spin {
+  animation: mh-task-spin 1.4s linear infinite;
+}
+
+@keyframes mh-task-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mh-task-spin,
+  .mh-row[data-highlight="true"] .mh-bubble {
+    animation: none;
+  }
+}
+.mh-worklog-timeline {
+  margin-left: 5px;
+  border-left: 1px solid var(--cp-border);
+}
+
+.mh-worklog-row {
+  position: relative;
+  min-width: 0;
+  padding: 0 0 28px 20px;
+}
+
+.mh-worklog-dot {
+  position: absolute;
+  top: 6px;
+  left: -5px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--cp-muted);
+}
+
+.mh-worklog-row[data-status='ok'] .mh-worklog-dot,
+.mh-worklog-row[data-status='completed'] .mh-worklog-dot {
+  background: var(--cp-success);
+}
+
+.mh-worklog-row[data-status='error'] .mh-worklog-dot,
+.mh-worklog-row[data-status='failed'] .mh-worklog-dot {
+  background: var(--cp-danger);
+}
+
+.mh-worklog-row[data-status='pending'] .mh-worklog-dot {
+  background: var(--cp-accent);
+}
+
+.mh-worklog-io {
+  overflow: hidden;
+  border: 1px solid var(--cp-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--cp-text) 3%, transparent);
+}
+
+.mh-worklog-value {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mh-worklog-value + .mh-worklog-value {
+  border-top: 1px solid var(--cp-border);
+}
+
+.mh-worklog-value pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+}
+
+.mh-worklog-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  text-align: left;
+  font-size: 12px;
+  color: var(--cp-accent);
 }

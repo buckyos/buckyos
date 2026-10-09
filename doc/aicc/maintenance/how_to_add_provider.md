@@ -118,6 +118,19 @@ Provider 不提供价格或价格无法由现有 schema 精确表达时，价格
 各内置 Provider 的事实源和静态/动态/unknown 决策见
 [`../provider_pricing_sources.md`](../provider_pricing_sources.md)。
 
+canonical 请求里的可选参数按以下规则处理，不能让调用方为了适配某个 Provider 而必须填写或删掉参数：
+
+- **调用方没给、协议却要求必填**：AICC 补默认值。取值顺序是调用方显式值 > Provider Rules
+  `request_rules[].defaults` > 协议默认值。例如 Claude Messages 的 `max_tokens`：在 operation binding
+  上声明 `default_max_output_tokens`（32000），lowering 时再按模型 `capabilities.max_output_tokens` 截断。
+  不要求上限的协议不补。
+- **调用方给了、协议不支持的调参项**（temperature、top_p、seed、stop、n、speed、strength、style、
+  negative_prompt、aspect_ratio、generate_audio、preserve_motion、`normalize=false` 等）：忽略，并通过
+  `CodecContext::ignore_unsupported_options` 打 warn 日志，不报错。
+- **仍然报错**：输出格式契约（`output` 下的媒体类型、采样率、fps，转写输出格式与时间戳，结构化输出）、
+  输入要求（缺图、条目数不符）、编辑范围（`time_range`）、向量空间与 chunking。
+- canonical_fields 的 `fallback` 优先用 `default`；只有映射失败会改变结果语义时才用 `reject`。
+
 原生任务只有在 adapter 明确声明 `cancel_supported` 时才发送远端取消。Gemini/MiniMax
 视频当前不支持取消：`task.cancel` 返回 `unsupported_operation`，已有轮询不终止，任务仍会
 继续收敛到供应商最终状态。

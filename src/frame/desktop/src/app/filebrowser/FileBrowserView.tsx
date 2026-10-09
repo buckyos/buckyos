@@ -19,6 +19,8 @@ import {
 import { normalizeCyfsPath } from '../../components/preview/session'
 import type { ContentRef, PreviewSessionContext } from '../../components/preview/types'
 import { useI18n } from '../../i18n/provider'
+import { contentDescriptor, type HandlerPlan } from 'buckyos/content'
+import { openContent, contentHandlers, handlerLabel, contentRegistry } from '../content/open'
 import { openPreview } from '../preview/launch'
 import {
   useMobileBackHandler,
@@ -141,6 +143,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
     return next
   })
   const [toast, setToast] = useState<string | null>(null)
+  const [defaultApp, setDefaultApp] = useState<{ plans: HandlerPlan[]; request: Parameters<typeof openContent>[0]; name: string; size?: number; key: string; always: boolean; selector: string } | null>(null)
   const [previewCollapsed, setPreviewCollapsed] = useState(true)
   /** Toolbar clipboard, shared by both panes. */
   const [clipboard, setClipboard] = useState<ClipboardState | null>(null)
@@ -307,12 +310,12 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
   }
 
   const handleOpenFile = (pane: BrowserPane, item: FileItem, opts?: { newWindow?: boolean }) => {
-    openPreview({
+    void openContent({
       source: previewSourceOf(item),
       session: previewSessionOf(pane, item),
       origin: { app: 'files', hostContext: pane.currentUrl, windowId },
       newWindow: opts?.newWindow,
-    })
+    }, { name: item.entry.name, size: item.entry.sizeBytes })
   }
 
   /** Multi-selection → stable explicit list; only the chosen files take part (§14.4). */
@@ -320,7 +323,7 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
     const files = chosen.filter((entry) => entry.entry.kind !== 'folder')
     if (!files.length) return
     if (files.length === 1) {
-      handleOpenFile(pane, files[0])
+      openPreview({ source: previewSourceOf(files[0]), session: previewSessionOf(pane, files[0]), origin: { app: 'files', windowId } })
       return
     }
     openPreview({
@@ -759,6 +762,12 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
       context,
       sections: fileBrowserMenuRegistry.build(context),
     })
+    if (items.length === 1 && items[0].entry.kind !== 'folder') {
+      void contentHandlers({ source: previewSourceOf(items[0]), session: previewSessionOf(pane, items[0]) }, { name: items[0].entry.name, size: items[0].entry.sizeBytes }).then(plans => {
+        context.contentHandlers = plans.map(plan => ({ key: plan.handlerKey, label: handlerLabel(plan) }))
+        setContextMenu(current => current?.context === context ? { ...current, sections: fileBrowserMenuRegistry.build(context) } : current)
+      })
+    }
   }
 
   /** Dispatch a menu command — shared by the desktop popup and the mobile sheet. */
@@ -774,6 +783,22 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
     const first = items[0]
     const entries = context.entries
     switch (action.command) {
+      case 'open-handler':
+      case 'choose-default': {
+        if (!first || first.entry.kind === 'folder') break
+        const request = { source: previewSourceOf(first), session: previewSessionOf(pane, first), origin: { app: 'files', windowId } }
+        void (async () => {
+          const plans = await contentHandlers(request, { name: first.entry.name, size: first.entry.sizeBytes })
+          const key = action.args?.handlerKey as string | undefined
+          if (action.command === 'choose-default') {
+            const descriptor = contentDescriptor(request.source as import('buckyos/content').TransferableContentRef, { name: first.entry.name })
+            setDefaultApp({ plans, request, name: first.entry.name, size: first.entry.sizeBytes, key: plans[0]?.handlerKey ?? '', always: true, selector: `mime:${descriptor.mime}` })
+            return
+          }
+          await openContent(request, { handlerKey: key, name: first.entry.name, size: first.entry.sizeBytes })
+        })().catch(error => showToast(String(error)))
+        break
+      }
       case 'open':
         if (!first) break
         if (first.entry.kind === 'folder') {
@@ -941,6 +966,10 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
       context,
       sections: fileBrowserMenuRegistry.build(context),
     })
+    if (items.length === 1 && items[0].entry.kind !== 'folder') void contentHandlers({ source: previewSourceOf(items[0]), session: previewSessionOf(left, items[0]) }, { name: items[0].entry.name, size: items[0].entry.sizeBytes }).then(plans => {
+      context.contentHandlers = plans.map(plan => ({ key: plan.handlerKey, label: handlerLabel(plan) }))
+      setMobileMenu(current => current?.context === context ? { ...current, sections: fileBrowserMenuRegistry.build(context) } : current)
+    })
   }
 
   const handleMobileMenuAction = (action: FileMenuAction) => {
@@ -1055,6 +1084,13 @@ export function FileBrowserView({ windowId }: { windowId?: string }) {
     },
   })
   const dialogs = <>
+    {defaultApp && <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/30 p-4"><section role="dialog" aria-modal="true" aria-label={t('filebrowser.menu.chooseDefault', 'Choose default app…')} className="flex w-96 flex-col gap-4 rounded-xl bg-[color:var(--cp-surface)] p-5 shadow-xl">
+      <h2>{t('filebrowser.menu.chooseDefault', 'Choose default app…')}</h2>
+      {defaultApp.plans.map(plan => <label key={plan.handlerKey}><input type="radio" name="content-handler" checked={defaultApp.key === plan.handlerKey} onChange={() => setDefaultApp({ ...defaultApp, key: plan.handlerKey })} /> {handlerLabel(plan)}</label>)}
+      <label><input type="checkbox" checked={defaultApp.always} onChange={event => setDefaultApp({ ...defaultApp, always: event.target.checked })} /> {t('filebrowser.menu.alwaysUse', 'Always use this app for {{selector}}', { selector: defaultApp.selector })}</label>
+      <div className="flex justify-end gap-4"><button onClick={() => setDefaultApp(null)}>{t('common.cancel', 'Cancel')}</button><button onClick={() => { const choice = defaultApp; void (async () => { if (choice.always) await (await contentRegistry())?.setDefault('open', choice.selector, choice.key); setDefaultApp(null); await openContent(choice.request, { handlerKey: choice.key, name: choice.name, size: choice.size }) })().catch(error => showToast(String(error))) }}>{t('filebrowser.menu.open', 'Open')}</button></div>
+    </section></div>}
+
     <DeleteDialog request={deleteRequest} onClose={() => setDeleteRequest(null)} />
     <ConflictDialog request={conflictRequest?.ownerId === windowId ? conflictRequest : null} />
     <CopyTasks ownerId={windowId} reveal={(path) => livePanes.current[0].revealOriginal(path)} />
