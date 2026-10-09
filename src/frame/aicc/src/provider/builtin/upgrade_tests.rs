@@ -251,7 +251,7 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
     for (provider, id, effort, pointer, expected) in [
         (
             "qwen",
-            "qwen3.8-2.4t-a95b",
+            "qwen3.8-flash",
             "low",
             "/reasoning/effort",
             json!("low"),
@@ -265,10 +265,17 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
         ),
         (
             "qwen",
-            "qwen3.5-27b",
-            "thinking",
-            "/reasoning/effort",
-            json!("xhigh"),
+            "kimi/kimi-k2.8-preview",
+            "low",
+            "/reasoning_effort",
+            json!("low"),
+        ),
+        (
+            "qwen",
+            "MiniMax/MiniMax-M3",
+            "none",
+            "/thinking/type",
+            json!("disabled"),
         ),
         (
             "kimi",
@@ -388,14 +395,19 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "{provider}/{id}/{effort}: {:?}",
             inv.unavailable_presets
         );
-        if id == "qwen3.8-2.4t-a95b" {
+        if id == "qwen3.8-flash" {
             assert_eq!(
                 model
                     .variants
                     .iter()
                     .map(|v| v.name.as_str())
                     .collect::<Vec<_>>(),
-                ["reasoning-low", "reasoning-medium", "reasoning-xhigh"]
+                [
+                    "reasoning-low",
+                    "reasoning-medium",
+                    "reasoning-none",
+                    "reasoning-xhigh"
+                ]
             );
         }
         let models =
@@ -1064,7 +1076,7 @@ fn provider_pricing_contains_all_rebased_model_defaults() {
         ("kimi", 4),
         ("minimax", 23),
         ("openai", 28),
-        ("qwen", 85),
+        ("qwen", 99),
     ] {
         assert_eq!(
             catalog
@@ -1130,7 +1142,7 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 307);
+    assert_eq!(pricing_count, 321);
 }
 
 #[test]
@@ -1512,11 +1524,17 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
         .profiles()
         .find(|profile| profile.provider_profile_id == "qwen")
         .unwrap();
-    let ids = ["wan2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"];
+    let ids = ["wanx2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"];
     let inventory = InventoryBuilder::build(
         profile,
         &instance(profile, "qwen"),
-        discovery(&ids),
+        discovery(&[
+            "qwen3.8-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4.1-flash",
+            "kimi-k3",
+            "MiniMax/MiniMax-M2.7",
+        ]),
         &catalog,
         &registry.codecs(),
     )
@@ -1526,7 +1544,65 @@ fn qwen_media_protocol_fixtures_resolve_to_routable_inventory() {
         "{:?}",
         inventory.unmatched_models
     );
-    assert_eq!(inventory.models.len(), 3);
+    assert!(inventory.models.len() >= 7);
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .find(|item| item.provider_model_id == "MiniMax/MiniMax-M2.7")
+            .unwrap()
+            .capabilities["max_output_tokens"],
+        json!(131072)
+    );
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .find(|item| item.provider_model_id == "qwen3.8-flash")
+            .unwrap()
+            .operations["llm"],
+        "responses.create"
+    );
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .find(|item| item.provider_model_id == "deepseek-v4-flash")
+            .unwrap()
+            .operations["llm"],
+        "chat.completions.create"
+    );
+    for model in ["deepseek-v4-flash"] {
+        assert_eq!(
+            inventory
+                .models
+                .iter()
+                .find(|item| item.provider_model_id == model)
+                .unwrap()
+                .api_types,
+            vec![ApiType::Llm]
+        );
+    }
+    for model in ["deepseek-v4.1-flash", "kimi-k3"] {
+        let api_types = &inventory
+            .models
+            .iter()
+            .find(|item| item.provider_model_id == model)
+            .unwrap()
+            .api_types;
+        assert!(api_types.contains(&ApiType::Llm));
+        assert!(api_types.contains(&ApiType::VisionOcr));
+        assert!(api_types.contains(&ApiType::VisionCaption));
+        assert_eq!(
+            inventory
+                .models
+                .iter()
+                .find(|item| item.provider_model_id == model)
+                .unwrap()
+                .operations["vision.caption"],
+            "chat.completions.create"
+        );
+    }
     for (model, api) in ids.into_iter().zip([
         ApiType::ImageTextToImage,
         ApiType::ImageImageToImage,

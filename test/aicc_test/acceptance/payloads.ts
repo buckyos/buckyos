@@ -86,7 +86,7 @@ function io(
               text: "Reply with the exact marker BUCKYOS-AICC-4827.",
             }],
           }],
-          max_output_tokens: 64,
+          max_output_tokens: 1024,
         },
         resources: [],
       };

@@ -2,11 +2,67 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 4,
+  "revision_seq": 9,
   "provider_profile_id": "qwen",
-  "models": [],
+  "model_driver_overrides": {
+    "deepseek-v4-flash-0731": "deepseek/deepseek-v4-flash",
+    "deepseek-v4-pro-0813": "deepseek/deepseek-v4-pro",
+    "vanchin/deepseek-v4-pro": "deepseek/deepseek-v4-pro",
+    "vanchin/deepseek-v4-pro-0813": "deepseek/deepseek-v4-pro",
+    "vanchin/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+    "ZHIPU/GLM-5": "glm/glm-5",
+    "ZHIPU/GLM-5.1": "glm/glm-5.1",
+    "ZHIPU/GLM-5.2": "glm/glm-5.2",
+    "ZHIPU/GLM-5.3": "glm/glm-5.3",
+    "ZHIPU/GLM-5.3-Flash": "glm/glm-5.3-flash",
+    "kimi/kimi-k2.6": "kimi/kimi-k2.6",
+    "kimi/kimi-k2.7-code": "kimi/kimi-k2.7-code",
+    "kimi/kimi-k2.7-code-highspeed": "kimi/kimi-k2.7-code-highspeed",
+    "kimi/kimi-k2.8-preview": "kimi/kimi-k2.8-preview",
+    "kimi/kimi-k3": "kimi/kimi-k3",
+    "MiniMax/MiniMax-M2.1": "minimax/MiniMax-M2.1",
+    "MiniMax/MiniMax-M2.5": "minimax/MiniMax-M2.5",
+    "MiniMax/MiniMax-M2.7": "minimax/MiniMax-M2.7",
+    "MiniMax/MiniMax-M3": "minimax/MiniMax-M3"
+  },
+  "models": [
+    {
+      "id": "MiniMax/MiniMax-M2.1",
+      "operations": { "llm": "chat.completions.create" },
+      "capability_limits": { "max_output_tokens": 131072 }
+    },
+    {
+      "id": "MiniMax/MiniMax-M2.5",
+      "operations": { "llm": "chat.completions.create" },
+      "capability_limits": { "max_output_tokens": 131072 }
+    },
+    {
+      "id": "MiniMax/MiniMax-M2.7",
+      "operations": { "llm": "chat.completions.create" },
+      "capability_limits": { "max_output_tokens": 131072 }
+    }
+  ],
   "patterns": [
     { "match": "qwen*-latest", "exclude": true },
+    {
+      "match": {
+        "provider_model_id": [
+          "deepseek-v4*",
+          "vanchin/deepseek-v4*",
+          "glm-*",
+          "ZHIPU/GLM-*",
+          "kimi-k*",
+          "kimi/kimi-k*",
+          "MiniMax-M2*",
+          "MiniMax/MiniMax-M*"
+        ]
+      },
+      "operations": {
+        "llm": "chat.completions.create",
+        "vision.ocr": "chat.completions.create",
+        "vision.caption": "chat.completions.create"
+      }
+    },
     {
       "match": "qwen-image*",
       "operations": { "image.txt2img": "dashscope.image_synthesis", "image.img2img": "dashscope.image_edit" }
@@ -34,7 +90,9 @@
     {
       "match": "*",
       "operations": {
-        "llm": "responses.create"
+        "llm": "responses.create",
+        "vision.ocr": "responses.create",
+        "vision.caption": "responses.create"
       },
       "request_rules": [
         {
@@ -53,6 +111,20 @@
     }
   ],
   "model_pricing": [
+    { "match": { "provider_model_id": ["vanchin/deepseek-v4-pro", "vanchin/deepseek-v4-pro-0813"] }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-pro-by-vanchin", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.000012, "output_token": 0.000024, "cache_input_token": 0.000001 } },
+    { "match": { "provider_model_id": "vanchin/deepseek-v4.1-flash" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/deepseek-v4-1-flash-by-vanchin", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.000002, "output_token": 0.000008, "cache_input_token": 0.00000004 } },
+    { "match": { "provider_model_id": "ZHIPU/GLM-5" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/glm-5-by-zhipu", "verified_at": "2026-10-09", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 0.000004, "output_token": 0.000018, "cache_input_token": 0.000001 }, { "input_token": 0.000006, "output_token": 0.000022, "cache_input_token": 0.0000015 }] } } },
+    { "match": { "provider_model_id": "ZHIPU/GLM-5.1" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/glm-5-1-by-zhipu", "verified_at": "2026-10-09", "currency": "CNY", "tiers": { "dimension": "input_tokens", "mode": "volume", "steps": [{ "up_to": 32768, "input_token": 0.000006, "output_token": 0.000024, "cache_input_token": 0.0000013 }, { "input_token": 0.000008, "output_token": 0.000028, "cache_input_token": 0.000002 }] } } },
+    { "match": { "provider_model_id": ["ZHIPU/GLM-5.2", "ZHIPU/GLM-5.3"] }, "pricing": { "source_url": "https://docs.bigmodel.cn/cn/guide/start/pricing", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.000008, "output_token": 0.000028, "cache_input_token": 0.000002 } },
+    { "match": { "provider_model_id": "ZHIPU/GLM-5.3-Flash" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/glm-5-3-flash-by-zhipu", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000008, "output_token": 0.0000028, "cache_input_token": 0.00000023 } },
+    { "match": { "provider_model_id": "kimi/kimi-k2.6" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/kimi-k2-6-by-moonshot", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000011 } },
+    { "match": { "provider_model_id": "kimi/kimi-k2.7-code" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/kimi-k2-7-code-by-moonshot", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027, "cache_input_token": 0.0000013 } },
+    { "match": { "provider_model_id": "kimi/kimi-k2.7-code-highspeed" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/kimi-k2-7-code-highspeed", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.000013, "output_token": 0.000054, "cache_input_token": 0.0000026 } },
+    { "match": { "provider_model_id": "kimi/kimi-k2.8-preview" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/models", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000065, "output_token": 0.000027 } },
+    { "match": { "provider_model_id": "kimi/kimi-k3" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/kimi-kimi-k3", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.00002, "output_token": 0.0001, "cache_input_token": 0.000002 } },
+    { "match": { "provider_model_id": ["MiniMax/MiniMax-M2.1", "MiniMax/MiniMax-M2.5"] }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000021, "output_token": 0.0000084, "cache_input_token": 0.00000021 } },
+    { "match": { "provider_model_id": "MiniMax/MiniMax-M2.7" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/minimax-m2-7", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000021, "output_token": 0.0000084, "cache_input_token": 0.00000042 } },
+    { "match": { "provider_model_id": "MiniMax/MiniMax-M3" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/minimax-m3", "verified_at": "2026-10-09", "currency": "CNY", "input_token": 0.0000042, "output_token": 0.0000168, "cache_input_token": 0.00000084 } },
     { "match": { "provider_model_id": "qwen3.8-2.4t-a95b", "region": "ap-southeast-1" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 1.4988e-5, "output_token": 4.4965e-5 } },
     { "match": { "provider_model_id": "qwen3.8-27b", "region": "ap-southeast-1" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 3.646e-6, "output_token": 2.1875e-5 } },
     { "match": { "provider_model_id": "qwen3.6-35b-a3b", "region": "ap-southeast-1" }, "pricing": { "source_url": "https://help.aliyun.com/zh/model-studio/model-pricing", "verified_at": "2026-09-26", "currency": "CNY", "input_token": 2.810325e-6, "output_token": 1.686195e-5 } },
@@ -227,27 +299,110 @@
   ],
   "variants": [
     {
+      "model_driver": "deepseek",
+      "variant": "reasoning-none",
+      "match": { "origin_model_id": ["deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro"], "variant": "reasoning-none" },
+      "provider_options": { "enable_thinking": false }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-low",
+      "match": { "origin_model_id": ["deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro"], "variant": "reasoning-low" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "low" }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-high",
+      "match": { "origin_model_id": ["deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro"], "variant": "reasoning-high" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "high" }
+    },
+    {
+      "model_driver": "deepseek",
+      "variant": "reasoning-max",
+      "match": { "origin_model_id": ["deepseek-v4.1-flash", "deepseek-v4-flash", "deepseek-v4-pro"], "variant": "reasoning-max" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "max" }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-thinking",
+      "match": { "origin_model_id": ["glm-5", "glm-5.1", "glm-5.2"], "variant": "reasoning-thinking" },
+      "provider_options": { "enable_thinking": true }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-none",
+      "match": { "origin_model_id": ["glm-5", "glm-5.1", "glm-5.2"], "variant": "reasoning-none" },
+      "provider_options": { "enable_thinking": false }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-low",
+      "match": { "origin_model_id": ["glm-5.3", "glm-5.3-flash"], "variant": "reasoning-low" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "low" }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-high",
+      "match": { "origin_model_id": ["glm-5.2", "glm-5.3", "glm-5.3-flash"], "variant": "reasoning-high" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "high" }
+    },
+    {
+      "model_driver": "glm",
+      "variant": "reasoning-max",
+      "match": { "origin_model_id": ["glm-5.2", "glm-5.3", "glm-5.3-flash"], "variant": "reasoning-max" },
+      "provider_options": { "enable_thinking": true, "reasoning_effort": "max" }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-low",
+      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-low" },
+      "provider_options": { "reasoning_effort": "low" }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-high",
+      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-high" },
+      "provider_options": { "reasoning_effort": "high" }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-max",
+      "match": { "origin_model_id": ["kimi-k2.8-preview", "kimi-k3"], "variant": "reasoning-max" },
+      "provider_options": { "reasoning_effort": "max" }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-medium",
+      "match": { "origin_model_id": ["kimi-k2.7-code", "kimi-k2.7-code-highspeed"], "variant": "reasoning-medium" },
+      "provider_options": { "enable_thinking": true, "preserve_thinking": true }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-medium",
+      "match": { "origin_model_id": "kimi-k2.6", "variant": "reasoning-medium" },
+      "provider_options": { "enable_thinking": true }
+    },
+    {
+      "model_driver": "kimi",
+      "variant": "reasoning-none",
+      "match": { "origin_model_id": "kimi-k2.6", "variant": "reasoning-none" },
+      "provider_options": { "enable_thinking": false }
+    },
+    {
+      "model_driver": "minimax",
+      "variant": "reasoning-none",
+      "match": { "origin_model_id": "MiniMax-M3", "variant": "reasoning-none" },
+      "provider_options": { "thinking": { "type": "disabled" } }
+    },
+    {
       "model_driver": "qwen",
       "variant": "reasoning-none",
       "match": {
         "origin_model_id": [
-          "qwen3.6-max-preview",
-          "qwen3.8-27b",
-          "qwen3.6-35b-a3b",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-omni-flash",
-          "qwen3.7-max",
-          "qwen3.7-plus",
-          "qwen3.7-flash",
-          "qwen3.6-plus",
-          "qwen3.6-flash",
-          "qwen3.5-plus",
-          "qwen3.5-flash",
-          "qwen3.5-397b-a17b",
-          "qwen3.5-122b-a10b",
-          "qwen3.5-35b-a3b",
-          "qwen3.5-27b"
+          "qwen3.7-plus"
         ],
         "variant": "reasoning-none"
       },
@@ -262,8 +417,6 @@
       "variant": "reasoning-low",
       "match": {
         "origin_model_id": [
-          "qwen3.8-2.4t-a95b",
-          "qwen3.8-27b",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-omni-flash"
@@ -281,8 +434,6 @@
       "variant": "reasoning-medium",
       "match": {
         "origin_model_id": [
-          "qwen3.8-2.4t-a95b",
-          "qwen3.8-27b",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-omni-flash"
@@ -300,8 +451,6 @@
       "variant": "reasoning-xhigh",
       "match": {
         "origin_model_id": [
-          "qwen3.8-2.4t-a95b",
-          "qwen3.8-27b",
           "qwen3.8-max",
           "qwen3.8-flash",
           "qwen3.8-omni-flash"
@@ -318,21 +467,7 @@
       "model_driver": "qwen",
       "variant": "reasoning-thinking",
       "match": {
-        "origin_model_id": [
-          "qwen3.6-max-preview",
-          "qwen3.6-35b-a3b",
-          "qwen3.7-max",
-          "qwen3.7-plus",
-          "qwen3.7-flash",
-          "qwen3.6-plus",
-          "qwen3.6-flash",
-          "qwen3.5-plus",
-          "qwen3.5-flash",
-          "qwen3.5-397b-a17b",
-          "qwen3.5-122b-a10b",
-          "qwen3.5-35b-a3b",
-          "qwen3.5-27b"
-        ],
+        "origin_model_id": "qwen3.7-plus",
         "variant": "reasoning-thinking"
       },
       "provider_options": {
@@ -347,6 +482,17 @@
     "qwen3.8-flash",
     "qwen3.8-2.4t-a95b",
     "qwen3.7-plus",
-    "qwen3.5-27b"
+    "qwen3.5-27b",
+    "wanx2.1-t2i-turbo",
+    "qwen-image-edit",
+    "wan2.6-t2v"
+  ],
+  "supplemental_inventory_api_types": [
+    "llm",
+    "vision.ocr",
+    "vision.caption",
+    "image.txt2img",
+    "image.img2img",
+    "video.txt2video"
   ]
 }

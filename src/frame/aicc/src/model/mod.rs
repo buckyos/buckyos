@@ -1200,21 +1200,6 @@ impl ModelRegistry {
                             variant: variant.name.clone(),
                         });
                     }
-                    if let Some(llm) =
-                        catalog.llm_model(&model.model_driver_id, &model.origin_model_id)
-                    {
-                        if !llm
-                            .semantics
-                            .supported_efforts
-                            .iter()
-                            .any(|effort| effort.variant().as_deref() == Some(&variant.name))
-                        {
-                            return Err(ModelRegistryError::InvalidLogicalTree(format!(
-                                "illegal preset {} for {}/{}",
-                                variant.name, model.model_driver_id, model.origin_model_id
-                            )));
-                        }
-                    }
                     self.register_model(inventory, model, Some(variant))?;
                 }
             }

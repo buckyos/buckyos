@@ -1255,18 +1255,22 @@ function toProviderWritePayload(draft: WizardDraft): Record<string, unknown> {
 }
 
 /**
- * `enabled_inventory_models` is only emitted when the wizard actually collected a
- * selection. An absent key keeps the provider's whole static catalog published,
- * which is the pre-existing behaviour for every profile.
+ * Static catalogs use `enabled_inventory_models`; live discovery uses the
+ * complementary `exclude_models`. Models outside the profile-owned selectable
+ * list (for example Qwen first-party base models) remain published automatically.
  */
 function toProviderInstanceRules(draft: WizardDraft): Record<string, unknown> | undefined {
   const policyRegion = draft.policy_region?.trim()
   const selection = draft.selected_inventory_models
+  const selectable = draft.selectable_inventory_models
   const hasSelection = Array.isArray(selection)
   if (!policyRegion && !hasSelection) return undefined
+  const selected = new Set(selection ?? [])
   return {
     policy_region: policyRegion || undefined,
-    exclude_models: [],
+    exclude_models: Array.isArray(selectable)
+      ? selectable.filter((model) => !selected.has(model)).sort()
+      : [],
     model_driver_overrides: {},
     enabled_inventory_models: hasSelection ? [...selection].sort() : undefined,
   }

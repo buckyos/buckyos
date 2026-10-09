@@ -73,9 +73,11 @@ import {
   cloudUpdateTombstones,
 } from "./cloud_update_cases.ts";
 import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
+import { withMockQuotaTruth } from "./quota_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
 import {
+  callChatCompletions,
   callInference,
   openAiccArtifact,
   reauthenticatingRpcClient,
@@ -101,6 +103,7 @@ import {
 } from "./run_t15_gateway.ts";
 import {
   createT15MockHandler,
+  qwenResponsesVideoErrors,
   T15_PROVIDER_DISCOVERY_CONTRACTS,
 } from "./t15_mock_provider.ts";
 import {
@@ -109,6 +112,10 @@ import {
   MOCK_PROVIDER_SCENARIOS,
   validateMockProviderContract,
 } from "./mock_provider_contract.ts";
+import {
+  minimaxDiscoveryModelIds,
+  minimaxVideoFixture,
+} from "./mock_provider.ts";
 import {
   assertExactOnlyIsUnmounted,
   assertRouteExposureCompleteness,
@@ -130,6 +137,7 @@ import {
   judgeProviderDriver,
   outputResources,
   parseJudgeVerdict,
+  parseJudgeVerdictTexts,
   responseText,
   runJudge,
   selectJudgeModel,
@@ -505,13 +513,30 @@ test("Judge verdict parser enforces the requested strict schema", () => {
     parseJudgeVerdict('{"pass":true,"score":0.9,"reason":"ok","extra":1}', 0.8)
   );
   assert.throws(() =>
+    parseJudgeVerdict('{"pass":true,"score":0.7,"reason":"ok"}', 0.8)
+  );
+  assert.equal(
     parseJudgeVerdict(
       `{"pass":true,"score":0.9,"reason":"${"x".repeat(241)}"}`,
       0.8,
-    )
+    ).reason.length,
+    240,
   );
   assert.throws(() =>
     parseJudgeVerdict('prefix {"pass":true,"score":0.9,"reason":"ok"}', 0.8)
+  );
+  assert.deepEqual(
+    parseJudgeVerdictTexts([
+      "We need a strict JSON verdict.",
+      '{"pass":true,"score":0.9,"reason":"meets rubric"}',
+    ], 0.8),
+    { passed: true, score: 0.9, reason: "meets rubric" },
+  );
+  assert.throws(() =>
+    parseJudgeVerdictTexts([
+      'prefix {"pass":true,"score":0.9,"reason":"ok"}',
+      '{"pass":true,"score":0.9,"reason":"ok","extra":1}',
+    ], 0.8)
   );
 });
 
@@ -560,6 +585,30 @@ test("Judge request uses the canonical nested JSON schema response format", asyn
       },
     },
   });
+});
+
+test("Judge video resources retain a filename for Qwen Responses lowering", async () => {
+  let captured: Record<string, unknown> | undefined;
+  await callChatCompletions({
+    call: (_method, params) => {
+      captured = params;
+      return Promise.resolve({ task_id: "judge-video", status: "running" });
+    },
+  }, {
+    model: { alias: "qwen3.8-omni-flash@qwen-t2" },
+    payload: {
+      input_json: { messages: [{ role: "user", content: [{ type: "text", text: "judge" }] }] },
+      resources: [{ kind: "url", url: "https://example.test/result.mp4", mime_hint: "video/mp4" }],
+    },
+  });
+  assert.deepEqual(
+    ((captured?.messages as Array<Record<string, unknown>>)[0].content as unknown[])[1],
+    {
+      type: "document",
+      source: { kind: "url", url: "https://example.test/result.mp4", mime_hint: "video/mp4" },
+      title: "video.mp4",
+    },
+  );
 });
 
 test("shared TOML parser accepts finite decimal and exponent numbers", () => {
@@ -735,6 +784,26 @@ test("MiniMax official documentation supplements media models omitted by models 
       "speech-2.8-hd",
       "speech-2.8-turbo",
     ],
+  );
+});
+
+test("Qwen official documentation supplements media models omitted by models API", async () => {
+  const providerBaseline = await baseline();
+  const inventory = (await fetchOfficialCatalogs({
+    baseline: providerBaseline,
+    drivers: ["qwen"],
+    instanceNames: { qwen: "qwen-t2" },
+    tokens: { qwen: "catalog-test-token" },
+    endpointOverrides: { qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1/models" },
+    timeoutMs: 1_000,
+    fetcher: async () => new Response(JSON.stringify({
+      object: "list",
+      data: [{ id: "qwen3.8-flash", object: "model" }],
+    }), { status: 200 }),
+  }))[0];
+  assert.deepEqual(
+    inventory.models.map((model) => model.provider_model_id),
+    ["qwen-image-edit", "qwen3.8-flash", "wan2.6-t2v", "wanx2.1-t2i-turbo"],
   );
 });
 
@@ -1380,7 +1449,24 @@ test("route exposure cell snapshot rejects an API added under an existing model 
   const providerBaseline = structuredClone(await baseline());
   const contract = await loadRouteExposureContract();
   const logicalEntrypoints = await loadLogicalEntrypointBaseline();
-  const rule = providerBaseline.providers.find((provider) => provider.provider_driver === "qwen")!.rules[0];
+  const qwen = providerBaseline.providers.find((provider) => provider.provider_driver === "qwen")!;
+  for (const model of ["qwen3.8-max", "qwen3.8-flash", "qwen3.8-omni-flash", "qwen3.7-plus"]) {
+    const rule = qwen.rules.find((item) => item.model_pattern === model)!;
+    assert.deepEqual(rule.api_types, ["llm", "vision.ocr", "vision.caption"]);
+  }
+  assert.deepEqual(
+    qwen.rules.find((item) => item.model_pattern === "wanx2.1-t2i-turbo")?.api_types,
+    ["image.txt2img"],
+  );
+  assert.deepEqual(
+    qwen.rules.find((item) => item.model_pattern === "qwen-image-edit")?.api_types,
+    ["image.img2img"],
+  );
+  assert.deepEqual(
+    qwen.rules.find((item) => item.model_pattern === "wan2.6-t2v")?.api_types,
+    ["video.txt2video"],
+  );
+  const rule = qwen.rules.find((rule) => rule.model_pattern === "*")!;
   rule.api_types.push("vision.caption");
   rule.methods.push(...methodsForApiType("vision.caption"));
   assert.throws(
@@ -1577,6 +1663,26 @@ test("T1 Mock Provider uses a fixed versioned control contract", () => {
   assert.ok(MOCK_PROVIDER_SCENARIOS.includes("stream_success"));
   assert.ok(MOCK_PROVIDER_SCENARIOS.includes("async_success"));
   assert.ok(MOCK_PROVIDER_SCENARIOS.includes("rate_limit"));
+});
+
+test("T1 Mock Provider covers the MiniMax image inventory and H3 video lifecycle", () => {
+  assert.ok(minimaxDiscoveryModelIds().includes("image-01"));
+  assert.ok(minimaxDiscoveryModelIds().includes("MiniMax-H3"));
+  assert.deepEqual(
+    minimaxVideoFixture("POST", "/v2/video_generation", "http://mock"),
+    { task_id: "minimax-video-mock", base_resp: { status_code: 0 } },
+  );
+  const completed = minimaxVideoFixture(
+    "GET",
+    "/v2/query/video_generation/minimax-video-mock",
+    "http://mock",
+  ) as { task: { status: string; content: { url: string } } };
+  assert.equal(completed.task.status, "succeeded");
+  assert.equal(completed.task.content.url, "http://mock/__mock/fixtures/video.mp4");
+  assert.deepEqual(
+    minimaxVideoFixture("DELETE", "/v2/video_generation/minimax-video-mock", "http://mock"),
+    { status: "cancelled", base_resp: { status_code: 0 } },
+  );
 });
 
 test("T3 manifest includes six inbound kinds and multi-attachment history", () => {
@@ -1922,6 +2028,48 @@ test("refreshing RPC client retries expired sudo tokens once and shares concurre
   assert.equal(unexpectedReconnects, 0);
 });
 
+test("quota transaction refreshes the short-lived sudo session before cleanup", async () => {
+  let created = 0;
+  let deleted = 0;
+  let refreshed = 0;
+  const result = await withMockQuotaTruth({
+    systemConfig: {
+      call: async (method: string) => {
+        assert.equal(method, "sys_config_set");
+        created += 1;
+        return {};
+      },
+    },
+    refreshSystemConfig: async () => {
+      refreshed += 1;
+      return {
+        call: async (method: string) => {
+          assert.equal(method, "sys_config_delete");
+          deleted += 1;
+          return {};
+        },
+      };
+    },
+    userId: "owner",
+    appId: "system:control-panel",
+    inventories: [{
+      provider_driver: "openai",
+      provider_instance_name: "openai-test",
+      provider_profile_id: "openai",
+      inventory_revision: "test",
+      models: [],
+    }],
+    execute: async () => {
+      assert.equal(deleted, 0);
+      return "completed";
+    },
+  });
+  assert.equal(result, "completed");
+  assert.equal(refreshed, 1);
+  assert.equal(deleted, created);
+  assert.ok(created > 0);
+});
+
 test("Provider credentials patch only the selected runtime instance without mutating input", () => {
   const original = {
     providers: [
@@ -1974,10 +2122,10 @@ test("Provider credentials accept TOML values or provider-specific environment v
     if (name === "AICC_CLAUDE_API_TOKEN") return "env-claude";
     if (name === "AICC_GLM_API_TOKEN") return "env-glm";
     if (name === "AICC_DEEPSEEK_API_TOKEN") return "env-deepseek";
+    if (name === "AICC_QWEN_API_TOKEN") return "env-qwen";
     if (name === "AICC_KIMI_API_TOKEN") return "env-kimi";
     if (name === "AICC_DOUBAO_API_TOKEN") return "env-doubao";
     if (name === "AICC_DOUBAO_AGENT_PLAN_API_TOKEN") return "env-doubao-agent-plan";
-    if (name === "AICC_QWEN_API_TOKEN") return "env-qwen";
     return undefined;
   });
   assert.deepEqual(tokens, {
@@ -1985,10 +2133,10 @@ test("Provider credentials accept TOML values or provider-specific environment v
     claude: "env-claude",
     glm: "env-glm",
     deepseek: "env-deepseek",
+    qwen: "env-qwen",
     kimi: "env-kimi",
     doubao: "env-doubao",
     "doubao-agent-plan": "env-doubao-agent-plan",
-    qwen: "env-qwen",
   });
 });
 
@@ -2059,14 +2207,26 @@ test("Provider credentials create one current-schema instance when the section i
     openrouter: "router-token",
     glm: "glm-token",
     deepseek: "deepseek-token",
+    qwen: "qwen-token",
     doubao: "doubao-token",
     "doubao-agent-plan": "doubao-agent-plan-token",
   }, {}) as { providers: Array<Record<string, unknown>> };
-  assert.equal(patched.providers.length, 8);
+  assert.equal(patched.providers.length, 9);
   assert.deepEqual(
     patched.providers.map((instance) => instance.provider_profile_id),
-    ["openai", "gemini", "kimi", "openrouter", "glm", "deepseek", "doubao", "doubao-agent-plan"],
+    ["openai", "gemini", "kimi", "openrouter", "glm", "deepseek", "qwen", "doubao", "doubao-agent-plan"],
   );
+  assert.deepEqual(patched.providers[6], {
+    provider_instance_name: "qwen-main",
+    provider_type: "cloud_api",
+    provider_profile_id: "qwen",
+    protocol_adapter_id: "qwen-responses",
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    credentials: { api_token: { inline_secret: "qwen-token" } },
+    provider_rules_id: "qwen",
+    enabled: true,
+    timeout_ms: 300_000,
+  });
   assert.equal(
     patched.providers[1].provider_instance_name,
     "google-gemini-main",
@@ -2083,18 +2243,18 @@ test("Provider credentials create one current-schema instance when the section i
   assert.equal(patched.providers[5].provider_instance_name, "deepseek-main");
   assert.equal(patched.providers[5].base_url, "https://api.deepseek.com");
   assert.equal(patched.providers[5].protocol_adapter_id, "deepseek-responses");
-  assert.equal(patched.providers[6].provider_instance_name, "doubao-main");
-  assert.equal(
-    patched.providers[6].base_url,
-    "https://ark.cn-beijing.volces.com/api/v3",
-  );
-  assert.equal(patched.providers[6].protocol_adapter_id, "doubao-responses");
-  assert.equal(patched.providers[7].provider_instance_name, "doubao-agent-plan-main");
+  assert.equal(patched.providers[7].provider_instance_name, "doubao-main");
   assert.equal(
     patched.providers[7].base_url,
-    "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "https://ark.cn-beijing.volces.com/api/v3",
   );
   assert.equal(patched.providers[7].protocol_adapter_id, "doubao-responses");
+  assert.equal(patched.providers[8].provider_instance_name, "doubao-agent-plan-main");
+  assert.equal(
+    patched.providers[8].base_url,
+    "https://ark.cn-beijing.volces.com/api/plan/v3",
+  );
+  assert.equal(patched.providers[8].protocol_adapter_id, "doubao-responses");
 });
 
 test("Provider credentials create an explicitly named run-scoped instance without rewriting an existing account type", () => {
@@ -3721,12 +3881,16 @@ test("T1.5 Provider mock rejects non-official wire and redacts captured credenti
     })).status,
     200,
   );
-  assert.equal(
-    (await fetch(`${baseUrl}/compatible-mode/v1/models`, {
-      headers: { authorization: "Bearer t15-secret-value" },
-    })).status,
-    404,
+  const qwenCatalog = await fetch(`${baseUrl}/compatible-mode/v1/models`, {
+    headers: { authorization: "Bearer t15-secret-value" },
+  });
+  assert.equal(qwenCatalog.status, 200);
+  const qwenCatalogIds = new Set(
+    ((await qwenCatalog.json()) as { data: Array<{ id: string }> }).data.map((model) => model.id),
   );
+  assert.ok(qwenCatalogIds.has("qwen3.8-max"));
+  assert.ok(qwenCatalogIds.has("deepseek-v4-flash"));
+  assert.ok(!qwenCatalogIds.has("wanx2.1-t2i-turbo"));
   assert.equal(
     (await fetch(`${baseUrl}/__mock/select`, {
       method: "POST",
@@ -4128,6 +4292,15 @@ test("T1.5 Provider mock implements each machine discovery contract and rejects 
         const models = fixture.data as Array<Record<string, unknown>>;
         assert.ok(models.every((model) => Array.isArray(model.task_type)));
         assert.ok(models.every((model) => model.id !== "doubao-seed-tts-2.0"));
+      }
+      if (provider.provider_driver === "qwen") {
+        const ids = new Set(
+          (fixture.data as Array<Record<string, unknown>>).map((model) => model.id),
+        );
+        assert.ok(ids.has("qwen3.8-max"));
+        assert.ok(!ids.has("wanx2.1-t2i-turbo"));
+        assert.ok(!ids.has("qwen-image-edit"));
+        assert.ok(!ids.has("wan2.6-t2v"));
       }
     }
   }
@@ -4557,6 +4730,17 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
         "t1.5.google-gemini.gemini.interactions.v1beta.llm.tool-history"
     ),
   );
+  const qwenVideoInput = manifest.find((item) =>
+    item.case_id === "t1.5.qwen.qwen.responses.compatible-v1.llm.video-input"
+  );
+  assert.equal(qwenVideoInput?.model_selector?.value, "qwen3.8-omni-flash");
+  assert.ok(qwenVideoInput?.tags.includes("video_input"));
+  const qwenAggregatedChat = manifest.find((item) =>
+    item.case_id ===
+      "t1.5.qwen.qwen.chat-completions.compatible-v1.llm.success"
+  );
+  assert.equal(qwenAggregatedChat?.model_selector?.value, "deepseek-v4-flash");
+  assert.equal(qwenAggregatedChat?.method, "chat.completions.create");
   for (
     const caseId of [
       "t1.5.openai.openai.responses.v1.llm.native-history",
@@ -4637,6 +4821,31 @@ test("T1.5 manifest owns Provider normal, streaming, async, error, and variant c
   );
 });
 
+test("T1.5 Qwen Responses mock enforces the official video input shape", () => {
+  assert.deepEqual(qwenResponsesVideoErrors({
+    input: [{
+      role: "user",
+      content: [{
+        type: "input_video",
+        video_url: "https://example.test/video.mp4",
+      }],
+    }],
+  }), []);
+  assert.match(
+    qwenResponsesVideoErrors({
+      input: [{
+        role: "user",
+        content: [{
+          type: "input_file",
+          filename: "video.mp4",
+          file_url: "https://example.test/video.mp4",
+        }],
+      }],
+    }).join("; "),
+    /must use input_video/,
+  );
+});
+
 test("T1.5 variants are independently derived from official expectations", async () => {
   const catalog = structuredClone(await loadProviderProtocolCatalog());
   const provider = catalog.providers.find((candidate) =>
@@ -4708,6 +4917,38 @@ test("T1.5 variants are independently derived from official expectations", async
     variantCells(catalog, { ...inventory, models: [] }),
     /missing official base model/,
   );
+});
+
+test("T1.5 aggregate variants use their documented wire contract", async () => {
+  const catalog = structuredClone(await loadProviderProtocolCatalog());
+  const provider = catalog.providers.find((candidate) =>
+    candidate.provider_driver === "qwen"
+  );
+  assert.ok(provider);
+  provider.official_variant_rules = [{
+    model_ids: ["vanchin/deepseek-v4-pro"],
+    variants: {
+      "reasoning-none": { enable_thinking: false },
+    },
+  }];
+  const cells = variantCells(catalog, {
+    provider_instance_name: "qwen-t15",
+    provider_driver: "qwen",
+    models: [{
+      exact_model: "vanchin/deepseek-v4-pro@qwen-t15",
+      provider_model_id: "vanchin/deepseek-v4-pro",
+      api_types: ["llm"],
+      logical_mounts: [],
+    }, {
+      exact_model: "vanchin/deepseek-v4-pro:reasoning-none@qwen-t15",
+      provider_model_id: "vanchin/deepseek-v4-pro:reasoning-none",
+      provider_actual_model_id: "vanchin/deepseek-v4-pro",
+      provider_options: { enable_thinking: false },
+      api_types: ["llm"],
+      logical_mounts: [],
+    }],
+  });
+  assert.equal(cells[0]?.contract_id, "qwen.chat-completions.compatible-v1");
 });
 
 test("T1.5 exact model selectors rebind to a recreated Provider instance", async () => {

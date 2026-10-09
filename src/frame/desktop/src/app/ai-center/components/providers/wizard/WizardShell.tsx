@@ -150,6 +150,7 @@ export function WizardShell({ onBack, onCreated }: WizardShellProps) {
         : undefined,
       auth_mode: 'api_key',
       api_key: '',
+      selectable_inventory_models: profile?.selectable_inventory_models?.map((model) => model.id),
       selected_inventory_models: profile?.selectable_inventory_models?.length
         ? profile.selectable_inventory_models.map((model) => model.id)
         : undefined,

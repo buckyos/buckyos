@@ -192,6 +192,18 @@ pub(crate) fn responses_dialect_adapter(
             .native_task_codecs
             .extend(media_registration.native_task_codecs);
     }
+    if dialect == ResponsesDialectKind::Qwen {
+        let (chat_descriptor, chat_registration) =
+            super::chat_completions_dialects::qwen_aggregated_chat_adapter();
+        for operation in chat_descriptor.operations.into_values() {
+            descriptor
+                .operations
+                .insert(operation.operation_id.clone(), operation);
+        }
+        registration
+            .operation_codecs
+            .extend(chat_registration.operation_codecs);
+    }
     if dialect == ResponsesDialectKind::Doubao {
         let (operations, speech_registration) = super::doubao_speech::doubao_speech_registration();
         descriptor
@@ -348,17 +360,18 @@ impl ResponsesDialectStrategy for QwenDialect {
         mut request: HttpRequest,
         prepared: PreparedDialectRequest,
     ) -> ProtocolResultValue<HttpRequest> {
+        let super::HttpBody::Json(body) = &mut request.body else {
+            return Err(ProtocolError::invalid_configuration(
+                "Qwen request body must be JSON",
+            ));
+        };
+        rewrite_qwen_video_inputs(body);
         if let Some(value) = prepared.enable_thinking {
             if !value.is_boolean() {
                 return Err(ProtocolError::invalid_request(
                     "enable_thinking must be a boolean",
                 ));
             }
-            let super::HttpBody::Json(body) = &mut request.body else {
-                return Err(ProtocolError::invalid_configuration(
-                    "Qwen request body must be JSON",
-                ));
-            };
             body["enable_thinking"] = value;
         }
         if let Some(enabled) = prepared.session_cache {
@@ -371,6 +384,31 @@ impl ResponsesDialectStrategy for QwenDialect {
             );
         }
         Ok(request)
+    }
+}
+
+fn rewrite_qwen_video_inputs(value: &mut Value) {
+    match value {
+        Value::Array(values) => values.iter_mut().for_each(rewrite_qwen_video_inputs),
+        Value::Object(object) => {
+            let is_video = object.get("type").and_then(Value::as_str) == Some("input_file")
+                && object
+                    .get("filename")
+                    .and_then(Value::as_str)
+                    .is_some_and(|name| name.eq_ignore_ascii_case("video.mp4"));
+            if is_video {
+                object.insert("type".to_owned(), Value::String("input_video".to_owned()));
+                if let Some(url) = object.remove("file_url") {
+                    object.insert("video_url".to_owned(), url);
+                }
+                if let Some(data) = object.remove("file_data") {
+                    object.insert("data".to_owned(), data);
+                }
+                object.remove("filename");
+            }
+            object.values_mut().for_each(rewrite_qwen_video_inputs);
+        }
+        _ => {}
     }
 }
 
@@ -559,7 +597,7 @@ mod tests {
         openai_responses_adapter, CodecContext, CodecLimits, CodecRegistry, HttpBody,
         ResolvedCredential,
     };
-    use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest};
+    use buckyos_api::{AiContent, AiMessage, AiRole, AiccCall, LlmChatInvokeRequest, ResourceRef};
     use reqwest::header::AUTHORIZATION;
     use serde_json::json;
     use std::time::Duration;
@@ -639,19 +677,25 @@ mod tests {
                     // (`tts.unidirectional`, `asr.recognize.flash`,
                     // `asr.recognize.submit`).
                     DOUBAO_RESPONSES_ADAPTER_ID => 7,
-                    QWEN_RESPONSES_ADAPTER_ID => 4,
+                    QWEN_RESPONSES_ADAPTER_ID => 5,
                     _ => 3,
                 };
                 assert_eq!(descriptor.operations.len(), expected_operations);
                 assert!(registration.operation_codecs.len() >= 1);
                 assert!(!registration.native_task_codecs.is_empty());
-                let expected_components =
-                    if descriptor.protocol_adapter_id == DOUBAO_RESPONSES_ADAPTER_ID {
-                        3
-                    } else {
-                        2
-                    };
+                let expected_components = if descriptor.protocol_adapter_id
+                    == DOUBAO_RESPONSES_ADAPTER_ID
+                {
+                    3
+                } else {
+                    2
+                };
                 assert_eq!(descriptor.component_adapter_ids.len(), expected_components);
+                if descriptor.protocol_adapter_id == QWEN_RESPONSES_ADAPTER_ID {
+                    assert!(descriptor
+                        .operations
+            .contains_key("chat.completions.create"));
+                }
             }
         }
         assert_eq!(
@@ -833,6 +877,47 @@ mod tests {
             panic!("expected JSON request")
         };
         assert!(body.get(QWEN_SESSION_CACHE_PARAMETER).is_none());
+    }
+
+    #[test]
+    fn qwen_maps_mp4_documents_to_responses_video_input() {
+        let (_, registration) = responses_dialect_adapter(ResponsesDialectKind::Qwen).unwrap();
+        let input = CodecInput {
+            canonical_request: AiccCall::ChatCompletionsCreate(LlmChatInvokeRequest::new(
+                "logical.model",
+                vec![AiMessage::new(
+                    AiRole::User,
+                    vec![
+                        AiContent::Text { text: "describe the video".into() },
+                        AiContent::Document {
+                            source: ResourceRef::url(
+                                "https://example.test/result.mp4".into(),
+                                Some("video/mp4".into()),
+                            ),
+                            title: Some("video.mp4".into()),
+                        },
+                    ],
+                )],
+            )),
+            resolved_parameters: BTreeMap::from([(
+                "provider_model_id".to_string(),
+                Value::String("qwen3.8-omni-flash".to_string()),
+            )]),
+        };
+        let request = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context("https://workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"),
+            })
+            .unwrap();
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON request")
+        };
+        assert_eq!(body["input"][0]["content"][1], json!({
+            "type": "input_video",
+            "video_url": "https://example.test/result.mp4"
+        }));
     }
 
     #[test]

@@ -401,6 +401,7 @@ impl<'a> CallResolver<'a> {
                 "thinking",
                 "thinking_budget",
                 "enable_thinking",
+                "preserve_thinking",
             ] {
                 if let Some(value) = variant_options.get(key) {
                     normalized
@@ -2281,7 +2282,7 @@ mod tests {
             .map(str::to_owned)
             .collect::<Vec<_>>();
         assert_eq!(golden, documented);
-        assert_eq!(golden.len(), 114);
+        assert_eq!(golden.len(), 119);
         assert!(golden.contains(&"typesafe|typesafe-systemone|decision|systemone.evaluate".into()));
         assert!(golden.contains(&"openai|openai-responses|llm|responses.create".into()));
         assert!(
@@ -2312,6 +2313,7 @@ mod tests {
         assert!(golden
             .contains(&"minimax|minimax-messages|video.txt2video|video_generation.create".into()));
         assert!(golden.contains(&"qwen|qwen-responses|llm|responses.create".into()));
+        assert!(golden.contains(&"qwen|qwen-responses|llm|chat.completions.create".into()));
         assert!(golden.contains(&"sn|sn-openai|llm|responses.create".into()));
     }
     #[test]

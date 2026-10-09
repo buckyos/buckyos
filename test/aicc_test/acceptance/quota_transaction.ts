@@ -36,6 +36,7 @@ async function batches<T>(
 
 export async function withMockQuotaTruth<T>(input: {
   systemConfig: RpcClient;
+  refreshSystemConfig?: () => Promise<RpcClient>;
   userId: string;
   appId: string;
   inventories: readonly ProviderInventory[];
@@ -58,8 +59,11 @@ export async function withMockQuotaTruth<T>(input: {
     });
     return await input.execute();
   } finally {
+    const cleanupSystemConfig = input.refreshSystemConfig
+      ? await input.refreshSystemConfig()
+      : input.systemConfig;
     await batches(created, async (key) => {
-      await input.systemConfig.call("sys_config_delete", { key });
+      await cleanupSystemConfig.call("sys_config_delete", { key });
     });
   }
 }

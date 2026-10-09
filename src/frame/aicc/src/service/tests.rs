@@ -1056,6 +1056,23 @@ fn model_catalog_preserves_known_models_and_specs_without_providers() {
         .find(|model| model["id"] == "qwen3.5-27b")
         .unwrap();
     assert_eq!(model["metadata"]["local_deployable"], true);
+    for model_id in [
+        "qwen3.8-max",
+        "qwen3.8-flash",
+        "qwen3.8-omni-flash",
+        "qwen3.7-plus",
+    ] {
+        let model = qwen["models"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|model| model["id"] == model_id)
+            .unwrap();
+        assert_eq!(
+            model["metadata"]["api_types"],
+            json!(["llm", "vision.caption", "vision.ocr"])
+        );
+    }
 }
 
 #[test]
@@ -2206,6 +2223,34 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         loaded_directory["image.txt2img"],
         directory["image.txt2img"]
     );
+
+    let mut minimax = crate::model::llm_tests::inventory(
+        "minimax",
+        "image-01",
+        "image-01",
+        "minimax-provider",
+        &[],
+    );
+    minimax.models[0].api_types = vec![
+        buckyos_api::ApiType::ImageTextToImage,
+        buckyos_api::ApiType::ImageImageToImage,
+    ];
+    minimax.models[0].logical_mounts = vec![
+        "image.txt2img.minimax".into(),
+        "image.img2img.minimax".into(),
+    ];
+    let loaded = builtin_tree(&[minimax]);
+    for (path, api_type) in [
+        ("image.txt2img", buckyos_api::ApiType::ImageTextToImage),
+        ("image.img2img", buckyos_api::ApiType::ImageImageToImage),
+    ] {
+        let candidates = loaded.resolve_candidates(path, api_type).unwrap();
+        assert_eq!(candidates.candidates.len(), 1, "{path}");
+        assert_eq!(
+            candidates.candidates[0].model.exact_model.as_str(),
+            "image-01@minimax-provider"
+        );
+    }
 }
 
 fn dir_item<'a>(directory: &'a Value, path: &str, name: &str) -> &'a Value {

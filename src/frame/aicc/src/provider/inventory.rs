@@ -1096,13 +1096,8 @@ impl InventoryBuilder {
             };
             if let Some(llm) = catalog.llm_model(&model_driver_id, &origin_model_id) {
                 variants.retain(|variant| {
-                    (!discovered.unsupported_features.contains("reasoning")
-                        || variant.name == "reasoning-none")
-                        && llm
-                            .semantics
-                            .supported_efforts
-                            .iter()
-                            .any(|effort| effort.variant().as_deref() == Some(&variant.name))
+                    !discovered.unsupported_features.contains("reasoning")
+                        || variant.name == "reasoning-none"
                 });
                 for effort in &llm.semantics.supported_efforts {
                     if let Some(name) = effort.variant() {

@@ -75,6 +75,7 @@ function chatMessages(
     content.push({
       type: mime.startsWith("image/") ? "image" : "document",
       source: resource,
+      ...(mime.startsWith("video/") ? { title: "video.mp4" } : {}),
     });
   }
   return messages;

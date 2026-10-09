@@ -10,6 +10,7 @@ const SUPPORTED_TOKEN_DRIVERS = [
   "openrouter",
   "glm",
   "deepseek",
+  "qwen",
   "doubao",
   "doubao-agent-plan",
   "doubao-speech",
@@ -54,7 +55,7 @@ function defaultInstance(driver: ProviderTokenDriver, name: string, token: strin
     doubao: "https://ark.cn-beijing.volces.com/api/v3",
     "doubao-agent-plan": "https://ark.cn-beijing.volces.com/api/plan/v3",
     "doubao-speech": "https://openspeech.bytedance.com",
-    qwen: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+    qwen: "https://dashscope.aliyuncs.com/compatible-mode/v1",
   };
   const adapters: Record<ProviderTokenDriver, string> = {
     openai: "openai-responses",

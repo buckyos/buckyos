@@ -808,13 +808,9 @@ mod tests {
         ] {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
-            assert_eq!(
-                rules
-                    .patterns
-                    .iter()
-                    .find_map(|rule| rule.operations.get("llm")),
-                Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
-            );
+            assert!(rules.patterns.iter().any(|rule| {
+                rule.operations.get("llm") == Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
+            }));
             let model_driver_id = if profile_id == DOUBAO_AGENT_PLAN_PROFILE_ID {
                 DOUBAO_PROFILE_ID
             } else {
@@ -880,7 +876,18 @@ mod tests {
         }
         assert_eq!(
             providers[3].connection.workspace.mode,
-            crate::provider::ProviderFieldMode::Required
+            crate::provider::ProviderFieldMode::Optional
+        );
+        let legacy_qwen = providers[3]
+            .connection
+            .resolve(crate::provider::ProviderConnectionInput {
+                base_url: Some("https://dashscope.aliyuncs.com/compatible-mode/v1"),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            legacy_qwen.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
         );
         assert_eq!(
             providers[1].known_provider().base_url,
@@ -938,13 +945,18 @@ mod tests {
                     DOUBAO_PROFILE_ID => 13,
                     DOUBAO_AGENT_PLAN_PROFILE_ID => 10,
                     DEEPSEEK_PROFILE_ID => 5,
-                    QWEN_PROFILE_ID | "openai" => 4,
+                    QWEN_PROFILE_ID => 9,
+                    "openai" => 4,
                     _ => 3,
                 }
             );
             if matches!(
                 provider.profile.provider_profile_id.as_str(),
-                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "minimax"
+                DOUBAO_PROFILE_ID
+                    | DOUBAO_AGENT_PLAN_PROFILE_ID
+                    | DEEPSEEK_PROFILE_ID
+                    | QWEN_PROFILE_ID
+                    | "minimax"
             ) {
                 assert!(
                     !rules.models.is_empty(),
@@ -961,7 +973,7 @@ mod tests {
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 7,
                 DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
-                QWEN_PROFILE_ID => 8,
+                QWEN_PROFILE_ID => 9,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
@@ -983,13 +995,9 @@ mod tests {
                     "minimal"
                 );
             }
-            assert_eq!(
-                rules
-                    .patterns
-                    .iter()
-                    .find_map(|rule| rule.operations.get("llm")),
-                Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
-            );
+            assert!(rules.patterns.iter().any(|rule| {
+                rule.operations.get("llm") == Some(&OPENAI_RESPONSES_OPERATION_ID.to_string())
+            }));
         }
         assert!(deepseek().provider_rules(99).patterns[0].request_rules[0]
             .remove
@@ -998,7 +1006,9 @@ mod tests {
         let qwen_llm_rule = qwen_rules
             .patterns
             .iter()
-            .find(|rule| rule.operations.contains_key("llm"))
+            .find(|rule| {
+                rule.operations.get("llm") == Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
+            })
             .unwrap();
         assert!(qwen_llm_rule.request_rules[0]
             .remove
@@ -1028,7 +1038,7 @@ mod tests {
         );
         assert_eq!(
             known[3].ui_hints["instance_fields"]["workspace"]["mode"],
-            Value::String("required".to_owned())
+            Value::String("optional".to_owned())
         );
     }
 

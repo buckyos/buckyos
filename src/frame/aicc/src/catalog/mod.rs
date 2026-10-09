@@ -506,25 +506,16 @@ impl CatalogSnapshot {
         &self,
         rules: &str,
         driver: &str,
-        model: &str,
+        _model: &str,
         context: &MatchContext,
     ) -> Result<Vec<&ProviderVariantRule>, CatalogResolveError> {
         if self.provider_rules(rules).is_none() {
             return Ok(Vec::new());
         }
-        let llm = self.llm_model(driver, model);
         let matches = self
             .matching_provider_variants_for_model(rules, context)?
             .into_iter()
             .filter(|variant| variant.model_driver == driver)
-            .filter(|variant| {
-                llm.is_none_or(|llm| {
-                    llm.semantics
-                        .supported_efforts
-                        .iter()
-                        .any(|effort| effort.variant().as_deref() == Some(&variant.variant))
-                })
-            })
             .collect::<Vec<_>>();
         Ok(matches
             .iter()

@@ -21,6 +21,7 @@ type DiscoveryContract = {
   required_query?: Record<string, string>;
   required_headers?: Record<string, string>;
   response_shape?: "openai" | "anthropic" | "gemini" | "sn";
+  documented_supplemental_model_ids?: string[];
   openai_model_capabilities?: boolean;
   volcengine_ark_capabilities?: boolean;
 };
@@ -73,7 +74,16 @@ export const T15_PROVIDER_DISCOVERY_CONTRACTS: Record<
     volcengine_ark_capabilities: true,
   },
   "doubao-speech": { mode: "catalog_only" },
-  qwen: { mode: "catalog_only" },
+  qwen: {
+    mode: "machine_api",
+    path: "/compatible-mode/v1/models",
+    response_shape: "openai",
+    documented_supplemental_model_ids: [
+      "wanx2.1-t2i-turbo",
+      "qwen-image-edit",
+      "wan2.6-t2v",
+    ],
+  },
   "sn-ai-provider": {
     mode: "machine_api",
     path: "/api/v1/ai/models",
@@ -136,6 +146,38 @@ function parseRequestBody(request: IncomingMessage, bytes: Buffer): unknown {
     return fields;
   }
   return undefined;
+}
+
+export function qwenResponsesVideoErrors(body: unknown): string[] {
+  const errors: string[] = [];
+  const visit = (value: unknown): void => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    const item = value as Record<string, unknown>;
+    if (item.type === "input_file") {
+      const filename = typeof item.filename === "string" ? item.filename : "";
+      const fileUrl = typeof item.file_url === "string" ? item.file_url : "";
+      if (/\.mp4(?:$|[?#])/i.test(filename) || /\.mp4(?:$|[?#])/i.test(fileUrl)) {
+        errors.push("Qwen Responses video input must use input_video, not input_file");
+      }
+    }
+    if (item.type === "input_video") {
+      if (typeof item.video_url !== "string" || item.video_url.length === 0) {
+        errors.push("Qwen Responses input_video requires video_url");
+      }
+      for (const field of ["file_url", "file_data", "filename"]) {
+        if (item[field] !== undefined) {
+          errors.push(`Qwen Responses input_video forbids ${field}`);
+        }
+      }
+    }
+    Object.values(item).forEach(visit);
+  };
+  visit(body);
+  return errors;
 }
 
 function safeHeaders(
@@ -206,14 +248,20 @@ function discoveryFixture(
 ): unknown {
   const officialModels = Object.values(
     provider.official_first_party_model_ids ?? {},
-  ).flat();
+  ).flat().concat(
+    Object.values(provider.official_aggregated_model_ids ?? {}).flat(),
+  );
+  const documentedSupplements = new Set(
+    T15_PROVIDER_DISCOVERY_CONTRACTS[provider.provider_driver]
+      .documented_supplemental_model_ids ?? [],
+  );
   const modelIds = [
     ...new Set([
       ...Object.values(provider.test_model_ids),
       ...provider.contracts.flatMap((contract) => Object.values(contract.test_model_ids ?? {})),
       ...officialModels,
     ]),
-  ];
+  ].filter((id) => !documentedSupplements.has(id));
   if (shape === "sn") {
     return {
       revision: "t15-mock-1",
@@ -1236,6 +1284,12 @@ export function createT15MockHandler(
         captured,
         selection.api_type ?? contract.api_types[0],
       );
+      if (
+        selection.provider_driver === "qwen" &&
+        selection.contract_id === "qwen.responses.compatible-v1"
+      ) {
+        validationErrors.push(...qwenResponsesVideoErrors(parsedBody));
+      }
       if (
         ["doubao", "doubao-agent-plan"].includes(selection.provider_driver) &&
         ["vision.ocr", "vision.caption"].includes(selection.api_type ?? "") &&

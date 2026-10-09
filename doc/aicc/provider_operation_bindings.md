@@ -113,9 +113,14 @@ openrouter|openrouter-responses|llm|responses.create
 openrouter|openrouter-responses|rerank|rerank.create
 qwen|qwen-responses|image.img2img|dashscope.image_edit
 qwen|qwen-responses|image.txt2img|dashscope.image_synthesis
+qwen|qwen-responses|llm|chat.completions.create
 qwen|qwen-responses|llm|responses.create
 qwen|qwen-responses|video.img2video|dashscope.video_synthesis
 qwen|qwen-responses|video.txt2video|dashscope.video_synthesis
+qwen|qwen-responses|vision.caption|chat.completions.create
+qwen|qwen-responses|vision.caption|responses.create
+qwen|qwen-responses|vision.ocr|chat.completions.create
+qwen|qwen-responses|vision.ocr|responses.create
 sn|sn-openai|llm|responses.create
 typesafe|typesafe-systemone|decision|systemone.evaluate
 <!-- END GENERATED BINDINGS -->
