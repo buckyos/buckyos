@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
-pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 13;
+pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 14;
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
@@ -32,6 +32,8 @@ pub(crate) struct AiccSettings {
     pub providers: Vec<ProviderSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_config: Option<AiccRouteOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_named_object_base_url: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +144,25 @@ impl SettingsDocument {
 
 impl AiccSettings {
     pub(crate) fn validate(&self) -> Result<(), SettingsError> {
+        if let Some(base_url) = self.public_named_object_base_url.as_deref() {
+            let url = reqwest::Url::parse(base_url).map_err(|_| SettingsError::InvalidField {
+                field: "public_named_object_base_url",
+                reason: "must be an absolute HTTPS URL".to_string(),
+            })?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(SettingsError::InvalidField {
+                    field: "public_named_object_base_url",
+                    reason: "must be an absolute HTTPS URL without credentials, query, or fragment"
+                        .to_string(),
+                });
+            }
+        }
         let mut names = BTreeSet::new();
         for provider in &self.providers {
             provider.validate()?;
@@ -829,6 +850,38 @@ mod tests {
             &json!({"providers": [static_with_runtime_ref]}).to_string()
         )
         .is_err());
+    }
+
+    #[test]
+    fn public_named_object_base_url_is_explicit_and_https_only() {
+        let parsed = SettingsDocument::parse(
+            1,
+            &json!({
+                "providers": [],
+                "public_named_object_base_url": "https://zone.example/ndn"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.settings.public_named_object_base_url.as_deref(),
+            Some("https://zone.example/ndn")
+        );
+        for invalid in [
+            "http://zone.example/ndn",
+            "https://user@zone.example/ndn",
+            "https://zone.example/ndn?token=secret",
+        ] {
+            assert!(SettingsDocument::parse(
+                1,
+                &json!({
+                    "providers": [],
+                    "public_named_object_base_url": invalid
+                })
+                .to_string(),
+            )
+            .is_err());
+        }
     }
 
     #[test]

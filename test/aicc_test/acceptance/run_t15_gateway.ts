@@ -53,6 +53,7 @@ type Options = {
   mockControlUrl: string;
   mockPort: number;
   startLocalMock: boolean;
+  publicNamedObjectBaseUrl?: string;
   configAllowsMutation: boolean;
   cliAllowsMutation: boolean;
   providers: string[];
@@ -137,6 +138,7 @@ function options(args: string[]): Options {
     mockControlUrl: "",
     mockPort: 18081,
     startLocalMock: false,
+    publicNamedObjectBaseUrl: process.env.AICC_T15_PUBLIC_NAMED_OBJECT_BASE_URL,
     configAllowsMutation: process.env.AICC_T15_ALLOW_CONFIG_MUTATION === "true",
     cliAllowsMutation: false,
     providers: [],
@@ -179,6 +181,8 @@ function options(args: string[]): Options {
       parsed.timeoutMs = Number(required(args, index++, arg));
     } else if (arg === "--provider-min-interval-ms") {
       parsed.providerMinIntervalMs = Number(required(args, index++, arg));
+    } else if (arg === "--public-named-object-base-url") {
+      parsed.publicNamedObjectBaseUrl = required(args, index++, arg);
     } else if (arg === "--report-dir") {
       parsed.reportDir = required(args, index++, arg);
     } else if (arg === "--start-local-mock") parsed.startLocalMock = true;
@@ -210,12 +214,48 @@ function options(args: string[]): Options {
   if (!parsed.mockControlUrl) parsed.mockControlUrl = parsed.mockBaseUrl;
   parsed.mockBaseUrl = parsed.mockBaseUrl.replace(/\/+$/, "");
   parsed.mockControlUrl = parsed.mockControlUrl.replace(/\/+$/, "");
+  if (parsed.publicNamedObjectBaseUrl) {
+    const url = new URL(parsed.publicNamedObjectBaseUrl);
+    if (url.protocol !== "https:") {
+      throw new Error("--public-named-object-base-url must use HTTPS");
+    }
+    parsed.publicNamedObjectBaseUrl = parsed.publicNamedObjectBaseUrl.replace(
+      /\/+$/,
+      "",
+    );
+  }
   if (!parsed.configAllowsMutation || !parsed.cliAllowsMutation) {
     throw new Error(
       "T1.5 requires AICC_T15_ALLOW_CONFIG_MUTATION=true and --allow-config-mutation; temporary Provider instances are deleted in cleanup",
     );
   }
   return parsed;
+}
+
+async function overridePublicNamedObjectBaseUrl(input: {
+  systemConfig: RpcClient;
+  aicc: RpcClient;
+  baseUrl: string;
+}): Promise<(systemConfig: RpcClient, aicc: RpcClient) => Promise<void>> {
+  const key = "services/aicc/settings";
+  const raw = await input.systemConfig.call("sys_config_get", { key }) as {
+    value?: unknown;
+  };
+  if (typeof raw.value !== "string") {
+    throw new Error("services/aicc/settings is missing");
+  }
+  const backup = raw.value;
+  const settings = JSON.parse(backup) as Record<string, unknown>;
+  settings.public_named_object_base_url = input.baseUrl;
+  await input.systemConfig.call("sys_config_set", {
+    key,
+    value: JSON.stringify(settings),
+  });
+  await input.aicc.call("service.reload_settings", {});
+  return async (systemConfig, aicc) => {
+    await systemConfig.call("sys_config_set", { key, value: backup });
+    await aicc.call("service.reload_settings", {});
+  };
 }
 
 async function waitMock(baseUrl: string, timeoutMs = 15_000): Promise<void> {
@@ -872,7 +912,13 @@ export function buildT15TypedParams(
     case "audio.tts":
       return { ...common, text: "BuckyOS 4827", voice: {} };
     case "audio.asr":
-      return { ...common, audio: resource("audio/wav") };
+      return {
+        ...common,
+        audio: resource("audio/wav"),
+        ...(exactModelId.startsWith("doubao-seed-asr-")
+          ? { diarization: true }
+          : {}),
+      };
     case "audio.music":
       return {
         ...common,
@@ -2070,6 +2116,11 @@ async function main(): Promise<void> {
   let restoreCloudConfig:
     | ((refreshedSystemConfig?: RpcClient) => Promise<void>)
     | undefined;
+  let restoreNamedObjectSettings:
+    | ((systemConfig: RpcClient, aicc: RpcClient) => Promise<void>)
+    | undefined;
+  let namedObjectSystemConfig: RpcClient | undefined;
+  let namedObjectAicc: RpcClient | undefined;
   let cloudRevision = 0;
   let cloudCleanupRevision = 0;
   let cloudActive = false;
@@ -2088,6 +2139,15 @@ async function main(): Promise<void> {
       password: input.password,
       appId: input.appId,
     });
+    if (input.publicNamedObjectBaseUrl) {
+      namedObjectSystemConfig = sudoSystemConfig;
+      namedObjectAicc = session.aicc;
+      restoreNamedObjectSettings = await overridePublicNamedObjectBaseUrl({
+        systemConfig: sudoSystemConfig,
+        aicc: session.aicc,
+        baseUrl: input.publicNamedObjectBaseUrl,
+      });
+    }
     if (cloudCaseRequested) {
       cloudAdmin = session.aicc;
       cloudSystemConfig = sudoSystemConfig;
@@ -2589,6 +2649,24 @@ async function main(): Promise<void> {
           });
         }
       }
+    }
+    const restoreSystemConfig = cloudSystemConfig ?? namedObjectSystemConfig;
+    const restoreAicc = cloudAdmin ?? namedObjectAicc;
+    if (restoreNamedObjectSettings && restoreSystemConfig && restoreAicc) {
+      await restoreNamedObjectSettings(restoreSystemConfig, restoreAicc).catch(
+        (error) =>
+          results.push({
+            case_id: "t1.5.cleanup.public-named-object-base-url",
+            provider_driver: null,
+            method: "sys_config_set/service.reload_settings",
+            scenario: null,
+            status: "failed",
+            diagnostic: String(error),
+            captured_requests: 0,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+          }),
+      );
     }
     if (cloudFixture && cloudAdmin) {
       let shouldRemoveCloudRules = cloudActive;

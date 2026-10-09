@@ -1958,6 +1958,10 @@
               "object"
             ]
           },
+          "required_body_values": {
+            "/request/enable_speaker_info": true,
+            "/request/show_utterances": true
+          },
           "success_fixture": {
             "result": {
               "text": "The quick brown fox jumps over the lazy dog.",
@@ -2021,6 +2025,10 @@
             "request": [
               "object"
             ]
+          },
+          "required_body_values": {
+            "/request/enable_speaker_info": true,
+            "/request/show_utterances": true
           },
           "required_body_paths": [
             "/audio/url"

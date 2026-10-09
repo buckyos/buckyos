@@ -764,7 +764,7 @@ fn asr_request_options(
         ));
     }
     let mut options = Map::from_iter([("model_name".to_owned(), json!(DOUBAO_ASR_MODEL_NAME))]);
-    if let Some(timestamps) = request
+    let timestamps_requested = if let Some(timestamps) = request
         .timestamps
         .as_deref()
         .filter(|value| !value.is_empty())
@@ -776,10 +776,15 @@ fn asr_request_options(
             ));
         }
         // 分句时间戳来自 `show_utterances` 返回的 utterance 边界。
-        options.insert("show_utterances".to_owned(), json!(true));
-    }
+        true
+    } else {
+        false
+    };
     if let Some(diarization) = request.diarization {
         options.insert("enable_speaker_info".to_owned(), json!(diarization));
+    }
+    if timestamps_requested || request.diarization == Some(true) {
+        options.insert("show_utterances".to_owned(), json!(true));
     }
     Ok(options)
 }
@@ -1276,6 +1281,29 @@ mod tests {
         let mut registry = CodecRegistry::default();
         registry.register_codecs(descriptor, registration).unwrap();
         registry
+    }
+
+    #[test]
+    fn asr_diarization_requests_utterances_without_timestamps() {
+        let request = AudioSpeechRecognitionRequest::from_json(json!({
+            "exact_model": "doubao-seed-asr-2.0-fast@doubao-main",
+            "audio": ResourceRef::url("https://cdn.example.com/a.mp3".to_owned(), None),
+            "diarization": true
+        }))
+        .unwrap();
+        let options = asr_request_options(&request).unwrap();
+        assert_eq!(options.get("enable_speaker_info"), Some(&json!(true)));
+        assert_eq!(options.get("show_utterances"), Some(&json!(true)));
+
+        let request = AudioSpeechRecognitionRequest::from_json(json!({
+            "exact_model": "doubao-seed-asr-2.0-fast@doubao-main",
+            "audio": ResourceRef::url("https://cdn.example.com/a.mp3".to_owned(), None),
+            "diarization": false
+        }))
+        .unwrap();
+        let options = asr_request_options(&request).unwrap();
+        assert_eq!(options.get("enable_speaker_info"), Some(&json!(false)));
+        assert!(!options.contains_key("show_utterances"));
     }
 
     #[test]

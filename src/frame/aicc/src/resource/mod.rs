@@ -304,10 +304,10 @@ impl ResourceInputForm {
 
 /// Turns a locally stored object into a URL a third-party Provider can fetch.
 ///
-/// The zone gateway serves named objects at `{zone_ndn_base_url}{obj_id}`
-/// (`https://<zone>/ndn/<obj_id>`). That URL is the only form in which an
-/// object can leave the zone without being inlined into the request body, so
-/// it is what a URL-accepting codec is given.
+/// A configured public endpoint serves named objects at `{base_url}/{obj_id}`.
+/// That URL is the only form in which an object can leave the zone without
+/// being inlined into the request body, so it is what a URL-accepting codec is
+/// given.
 ///
 /// Returning `None` means this zone does not expose named objects over HTTP;
 /// the object then has to be inlined as bytes.
@@ -324,8 +324,7 @@ impl NamedObjectUrlProvider for DisabledNamedObjectUrlProvider {
     }
 }
 
-/// Serves objects through the zone gateway, i.e. `runtime.get_zone_ndn_base_url()`
-/// (`https://<zone host>/ndn/`).
+/// Serves objects through an explicitly configured public endpoint.
 pub(crate) struct ZoneNamedObjectUrlProvider {
     base_url: String,
 }
