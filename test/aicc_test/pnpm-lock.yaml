@@ -11,6 +11,10 @@ importers:
       buckyos:
         specifier: git+https://github.com/buckyos/buckyos-websdk#main
         version: https://codeload.github.com/buckyos/buckyos-websdk/tar.gz/0fe6f04de045c1d2bc015180fbe3d157d5e286e1
+    devDependencies:
+      '@types/node':
+        specifier: 22.7.5
+        version: 22.7.5
 
 packages:
 
