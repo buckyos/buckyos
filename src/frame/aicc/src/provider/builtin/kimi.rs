@@ -236,9 +236,7 @@ mod tests {
                 .find_map(|rule| rule.operations.get("llm")),
             Some(&OPENAI_CHAT_COMPLETIONS_OPERATION_ID.to_owned())
         );
-        assert!(kimi_provider_rules(7)
-            .static_inventory_models
-            .contains(&"kimi-k2.7-code-highspeed".to_owned()));
+        assert!(kimi_provider_rules(7).static_inventory_models.is_empty());
         assert_eq!(kimi_known_provider().base_url, "https://api.moonshot.ai/v1");
         let known = kimi_known_provider();
         assert_eq!(

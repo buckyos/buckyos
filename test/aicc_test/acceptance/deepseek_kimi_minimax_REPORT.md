@@ -11,7 +11,7 @@
 | T1 | AICC 全量静态、路由与配置契约 | 178 / 178 通过 |
 | T1.5 | 新增模型前的 Provider 全量回归基线 | 1605 / 1605 通过 |
 | T1.5 | DeepSeek 全量 | 30 / 30 通过 |
-| T1.5 | Kimi 本次新增模型：`kimi-k3`、`kimi-k2.7-code-highspeed` | 26 / 26 通过 |
+| T1.5 | Kimi 授权账号场景：`kimi-k3`、`kimi-k2.7-code-highspeed` 协议覆盖 | 26 / 26 通过 |
 | T1.5 | MiniMax 全量 | 82 / 82 通过 |
 | T2 | DeepSeek：`deepseek-flash`、`deepseek-v4-pro` | 2 passed，2 review，0 failed |
 | T2 | Kimi 全部已测模型，共 12 个模型/API 单元 | 8 passed，4 review，0 failed |
@@ -19,7 +19,7 @@
 
 DeepSeek 的两个 LLM 单元已通过真实调用；`deepseek-flash / vision.ocr` 与 `deepseek-flash / vision.caption` 均已成功完成真实调用。由于本轮未启用 Judge，两个视觉单元最终状态保留为人工语义复核 `review`。DeepSeek 全部四个单元无失败、无确认的产品缺陷。
 
-Kimi 的旧模型 `kimi-k2.6`、`kimi-k2.7-code` 共六个 T2 单元最终全部通过。新增的 `kimi-k3` 与 `kimi-k2.7-code-highspeed` 均已进入官方账号库存并通过 T1.5；充值后的六个真实 T2 单元全部成功调用，其中两个 LLM 单元通过，四个视觉单元因未启用 Judge 保留为人工语义复核 `review`。Kimi 全部已测单元无失败、无账号权限限制、无确认的 AICC 产品缺陷。
+Kimi 的旧模型 `kimi-k2.6`、`kimi-k2.7-code` 共六个 T2 单元最终全部通过。初始 API Key 的 `/models` 未返回 `kimi-k3` 与 `kimi-k2.7-code-highspeed`，这是账号当时没有这两个模型访问权限的正常结果，不是官方目录缺失；Kimi Provider 不应静态补充账户不可访问的模型。充值后复验时，这两个模型由账号库存动态发现，六个真实 T2 单元全部成功调用，其中两个 LLM 单元通过，四个视觉单元因未启用 Judge 保留为人工语义复核 `review`。Kimi 全部最终已测单元无失败、无确认的 AICC 产品缺陷。
 
 MiniMax 旧模型矩阵共十个 T2 单元，最终结果为九个通过、一个人工语义复核。新增库存包含 `asr-1.0`、`speech-2.8-hd`、`speech-2.8-turbo`、`image-01`、`MiniMax-H3`、`MiniMax-H3-Max`；新增九个 T2 单元均获得成功协议响应，图片、音频和视频制品均通过下载与格式校验。由于新增模型复验未启用 Judge，这九个单元最终状态保留为人工语义复核 `review`。MiniMax 全部已测单元无失败、无确认的产品缺陷。
 

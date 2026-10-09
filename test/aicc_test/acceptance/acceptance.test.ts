@@ -717,7 +717,7 @@ test("MiniMax official documentation supplements media models omitted by models 
   );
 });
 
-test("Kimi official documentation supplements an incomplete account catalog", async () => {
+test("Kimi account inventory is never supplemented from public documentation", async () => {
   const providerBaseline = await baseline();
   const inventory = (await fetchOfficialCatalogs({
     baseline: providerBaseline,
@@ -732,7 +732,7 @@ test("Kimi official documentation supplements an incomplete account catalog", as
   }))[0];
   assert.deepEqual(
     inventory.models.map((model) => model.provider_model_id),
-    ["kimi-k2.6", "kimi-k2.7-code-highspeed", "kimi-k3"],
+    ["kimi-k2.6"],
   );
 });
 
