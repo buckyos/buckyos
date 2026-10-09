@@ -29,6 +29,7 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
         base_adapter_id: CLAUDE_MESSAGES_ADAPTER_ID,
         override_points: BTreeSet::from([
             "request_parameter_validation",
+            "max_tokens_optionality",
             "base_resp_error",
             "provider_state_namespace",
         ]),
@@ -38,7 +39,7 @@ pub(crate) fn minimax_messages_dialect_contract() -> MiniMaxMessagesDialectContr
 }
 
 pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistration) {
-    let base = ClaudeMessagesCodec::new();
+    let base = ClaudeMessagesCodec::new().with_max_tokens_required(false);
     let mut operation = base.descriptor().clone();
     operation.bindings.retain(|binding| {
         matches!(
@@ -47,6 +48,7 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
         )
     });
     for binding in &mut operation.bindings {
+        binding.default_max_output_tokens = None;
         binding
             .supported_features
             .remove(buckyos_api::features::WEB_SEARCH);
@@ -77,9 +79,10 @@ pub(crate) fn minimax_messages_adapter() -> (AdapterDescriptor, CodecRegistratio
         descriptor,
         CodecRegistration {
             operation_codecs: [
-                ClaudeMessagesCodec::new(),
-                ClaudeMessagesCodec::new_for(ApiType::VisionOcr),
-                ClaudeMessagesCodec::new_for(ApiType::VisionCaption),
+                ClaudeMessagesCodec::new().with_max_tokens_required(false),
+                ClaudeMessagesCodec::new_for(ApiType::VisionOcr).with_max_tokens_required(false),
+                ClaudeMessagesCodec::new_for(ApiType::VisionCaption)
+                    .with_max_tokens_required(false),
             ]
             .into_iter()
             .map(|base| {
@@ -403,6 +406,7 @@ mod tests {
         let contract = minimax_messages_dialect_contract();
         assert_eq!(contract.base_adapter_id, CLAUDE_MESSAGES_ADAPTER_ID);
         assert!(contract.override_points.contains("base_resp_error"));
+        assert!(contract.override_points.contains("max_tokens_optionality"));
         assert!(contract.unsupported_parameters.is_empty());
 
         let (descriptor, registration) = minimax_messages_adapter();
@@ -411,7 +415,9 @@ mod tests {
             Some(CLAUDE_MESSAGES_ADAPTER_ID)
         );
         assert_eq!(descriptor.operations.len(), 7);
-        assert!(contract.unsupported_capabilities.contains(buckyos_api::features::WEB_SEARCH));
+        assert!(contract
+            .unsupported_capabilities
+            .contains(buckyos_api::features::WEB_SEARCH));
         for codec in &registration.operation_codecs {
             assert!(codec.descriptor().bindings.iter().all(|binding| !binding
                 .supported_features
@@ -454,6 +460,34 @@ mod tests {
         };
         assert_eq!(body["temperature"], 0.5);
         assert_eq!(body["stop_sequences"], json!(["canonical-stop"]));
+    }
+
+    #[test]
+    fn allows_omitted_max_tokens_without_adding_a_protocol_default() {
+        let (descriptor, registration) = minimax_messages_adapter();
+        assert_eq!(
+            descriptor.operations[CLAUDE_MESSAGES_OPERATION_ID]
+                .binding(ApiType::Llm)
+                .unwrap()
+                .default_max_output_tokens,
+            None
+        );
+        let mut input = input(Vec::new(), None);
+        let AiccCall::ChatCompletionsCreate(request) = &mut input.canonical_request else {
+            unreachable!()
+        };
+        request.max_output_tokens = None;
+        let encoded = registration.operation_codecs[0]
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context(),
+            })
+            .unwrap();
+        let HttpBody::Json(body) = encoded.body else {
+            panic!()
+        };
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[test]

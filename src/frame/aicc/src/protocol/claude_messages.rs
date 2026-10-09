@@ -55,6 +55,7 @@ pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegis
 pub(crate) struct ClaudeMessagesCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
+    max_tokens_required: bool,
 }
 
 impl ClaudeMessagesCodec {
@@ -62,6 +63,7 @@ impl ClaudeMessagesCodec {
         Self {
             descriptor: claude_messages_operation_descriptor(),
             api_type: ApiType::Llm,
+            max_tokens_required: true,
         }
     }
 
@@ -69,7 +71,13 @@ impl ClaudeMessagesCodec {
         Self {
             descriptor: claude_messages_operation_descriptor(),
             api_type,
+            max_tokens_required: true,
         }
+    }
+
+    pub(crate) fn with_max_tokens_required(mut self, required: bool) -> Self {
+        self.max_tokens_required = required;
+        self
     }
 
     pub(crate) fn adapter_descriptor(&self) -> AdapterDescriptor {
@@ -113,12 +121,12 @@ impl ClaudeMessagesCodec {
         let provider_model_id =
             required_string(&call.input.resolved_parameters, "provider_model_id")?;
         let max_tokens = resolved_u64(&call.input.resolved_parameters, "max_tokens")?
-            .or(request.max_output_tokens)
-            .ok_or_else(|| {
-                ProtocolError::invalid_request(
-                    "Claude Messages requires max_output_tokens or resolved max_tokens",
-                )
-            })?;
+            .or(request.max_output_tokens);
+        if self.max_tokens_required && max_tokens.is_none() {
+            return Err(ProtocolError::invalid_request(
+                "Claude Messages requires max_output_tokens or resolved max_tokens",
+            ));
+        }
 
         let (system, messages) = encode_messages(&request.messages, call.context)?;
         if messages.is_empty() {
@@ -129,7 +137,9 @@ impl ClaudeMessagesCodec {
         let mut body = Map::new();
         body.insert("model".to_string(), Value::String(provider_model_id));
         body.insert("messages".to_string(), Value::Array(messages));
-        body.insert("max_tokens".to_string(), Value::from(max_tokens));
+        if let Some(max_tokens) = max_tokens {
+            body.insert("max_tokens".to_string(), Value::from(max_tokens));
+        }
         if !system.is_empty() {
             body.insert("system".to_string(), Value::Array(system));
         }
@@ -1625,6 +1635,25 @@ mod tests {
                 ApiType::Llm,
             )
             .is_ok());
+    }
+
+    #[test]
+    fn rejects_omitted_max_tokens_for_anthropic_messages() {
+        let request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "hello")],
+        );
+        let input = input(request, &[]);
+        let context = context();
+        let error = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context,
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        assert!(error.message.contains("requires max_output_tokens"));
     }
 
     #[test]
