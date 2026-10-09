@@ -1900,7 +1900,7 @@
       "protocol_adapter_ids": ["qwen-responses"],
       "model_driver_ids": ["qwen", "deepseek", "glm", "kimi", "minimax"],
       "discovery": "official_catalog",
-      "official_catalog": { "endpoint": "https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/models", "format": "openai", "authentication": "bearer", "supplemental_model_ids": ["wanx2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"] },
+      "official_catalog": { "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/models", "format": "openai", "authentication": "bearer", "supplemental_model_ids": ["wanx2.1-t2i-turbo", "qwen-image-edit", "wan2.6-t2v"] },
       "source_urls": ["https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-responses", "https://www.alibabacloud.com/help/en/model-studio/qwen-api-via-openai-chat-completions", "https://www.alibabacloud.com/help/en/model-studio/models"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-10-09",

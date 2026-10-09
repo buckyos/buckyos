@@ -303,6 +303,10 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
       {profile && (['workspace', 'account'] as const).map((name) => {
         const field = profile.connection_fields[name]
         if (!field) return null
+        const placeholder = `{${name}}`
+        const usedByEndpoint = draft.base_url.includes(placeholder)
+          || Object.values(draft.operation_base_urls).some((url) => url.includes(placeholder))
+        if (field.mode === 'optional' && !usedByEndpoint) return null
         const label = t(`aiCenter.wizard.${name}`, name)
         const value = draft[name] ?? ''
         if (field.allowed_values.length > 0) {
@@ -323,7 +327,7 @@ export function StepConnection({ draft, catalog, onUpdate }: StepConnectionProps
             </div>
           )
         }
-        return <InputField key={name} label={label} value={value} onChange={(next) => onUpdate({ [name]: next } as Partial<WizardDraft>)} required={field.mode === 'required'} />
+        return <InputField key={name} label={label} value={value} onChange={(next) => onUpdate({ [name]: next } as Partial<WizardDraft>)} required={field.mode === 'required' || usedByEndpoint} />
       })}
 
       {policyRegionField && !showPolicyRegion && (

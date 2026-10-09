@@ -900,18 +900,46 @@ mod tests {
     }
 
     #[test]
-    fn qwen_resolves_every_declared_region_and_requires_safe_workspace() {
-        let qwen = qwen();
+    fn qwen_uses_public_endpoints_and_requires_workspace_only_for_dedicated_regions() {
+        let connection = super::super::builtin_connection_contract(QWEN_PROFILE_ID);
+        let beijing = connection
+            .resolve(ProviderConnectionInput {
+                region: Some("cn-beijing"),
+                ..ProviderConnectionInput::default()
+            })
+            .unwrap();
         assert_eq!(
-            qwen.resolve_base_url(Some("ap-southeast-1"), Some("ws-123"))
-                .unwrap(),
-            "https://ws-123.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+            beijing.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
         );
-        assert!(qwen.resolve_base_url(None, None).is_err());
-        assert!(qwen.resolve_base_url(None, Some("bad/workspace")).is_err());
-        assert!(qwen
-            .resolve_base_url(Some("cn-unknown"), Some("ws-123"))
+        assert!(beijing.workspace.is_none());
+        assert_eq!(
+            connection
+                .resolve(ProviderConnectionInput {
+                    region: Some("us-east-1"),
+                    ..ProviderConnectionInput::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://dashscope-us.aliyuncs.com/compatible-mode/v1"
+        );
+        assert!(connection
+            .resolve(ProviderConnectionInput {
+                region: Some("ap-northeast-1"),
+                ..ProviderConnectionInput::default()
+            })
             .is_err());
+        assert_eq!(
+            connection
+                .resolve(ProviderConnectionInput {
+                    region: Some("ap-northeast-1"),
+                    workspace: Some("ws-123"),
+                    ..ProviderConnectionInput::default()
+                })
+                .unwrap()
+                .base_url,
+            "https://ws-123.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1"
+        );
     }
 
     #[test]
@@ -1034,7 +1062,7 @@ mod tests {
         assert_eq!(known[2].ui_hints["setup_group"]["default"], false);
         assert_eq!(
             known[3].base_url,
-            "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1"
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
         );
         assert_eq!(
             known[3].ui_hints["instance_fields"]["workspace"]["mode"],

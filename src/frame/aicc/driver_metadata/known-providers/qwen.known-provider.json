@@ -2,13 +2,13 @@
   "format": "buckyos.aicc.known-provider-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 3,
+  "revision_seq": 4,
   "catalog_id": "qwen",
   "providers": [
     {
       "provider_profile_id": "qwen",
       "display_name": "Qwen（阿里云百炼）",
-      "base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
       "protocol_adapter_id": "qwen-responses",
       "discovery_behavior_id": "openai-compatible-models",
       "provider_rules_id": "qwen",
@@ -29,9 +29,9 @@
         "workspace": { "mode": "optional" },
         "account": { "mode": "unsupported" },
         "region_base_urls": {
-          "cn-beijing": "https://{workspace}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+          "cn-beijing": "https://dashscope.aliyuncs.com/compatible-mode/v1",
           "ap-southeast-1": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
-          "us-east-1": "https://{workspace}.us-east-1.maas.aliyuncs.com/compatible-mode/v1",
+          "us-east-1": "https://dashscope-us.aliyuncs.com/compatible-mode/v1",
           "eu-central-1": "https://{workspace}.eu-central-1.maas.aliyuncs.com/compatible-mode/v1",
           "ap-northeast-1": "https://{workspace}.ap-northeast-1.maas.aliyuncs.com/compatible-mode/v1",
           "cn-hongkong": "https://cn-hongkong.dashscope.aliyuncs.com/compatible-mode/v1"
@@ -60,7 +60,7 @@
           { "id": "ZHIPU/GLM-5.3-Flash", "label": "GLM-5.3 Flash" }
         ],
         "instance_fields": {
-          "default_base_url": "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1",
+          "default_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
           "region": {
             "mode": "optional",
             "default_value": "cn-beijing",
