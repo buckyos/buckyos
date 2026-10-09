@@ -1156,9 +1156,23 @@ fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_
         .unwrap();
     assert!(custom.operation_base_urls.is_empty());
     let defaults = binding.connection.resolve(Default::default()).unwrap();
-    assert!(defaults
-        .operation_base_urls
-        .contains_key("tts.unidirectional"));
+    assert_eq!(
+        defaults.operation_base_urls,
+        BTreeMap::from([
+            (
+                "ark.contents.generate".into(),
+                "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
+            ),
+            (
+                "ark.images.generate".into(),
+                "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
+            ),
+            (
+                "tts.unidirectional".into(),
+                "https://openspeech.bytedance.com/api/v3/plan/tts".into(),
+            ),
+        ])
+    );
     let overrides = BTreeMap::from([(
         "tts.unidirectional".into(),
         "https://proxy.example/tts".into(),

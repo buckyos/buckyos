@@ -510,6 +510,11 @@ impl AiccHandler for AiccService {
             AiccSettings {
                 providers: vec![candidate.clone()],
                 session_config: None,
+                public_named_object_base_url: current
+                    .document
+                    .settings
+                    .public_named_object_base_url
+                    .clone(),
             },
         )
         .map_err(to_rpc_error)?;

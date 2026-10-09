@@ -79,7 +79,8 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
       "provider_rules_id": "openai"
     }
   ],
-  "session_config": {}
+  "session_config": {},
+  "public_named_object_base_url": "https://zone.example/ndn"
 }
 ```
 
@@ -88,6 +89,7 @@ Provider credential 只存在于统一 Provider Instance 的 typed credential so
 - `provider_instance_name` 是 Zone 内稳定唯一主键。
 - `provider_type` 只表达部署类型，不表达厂商或协议。
 - `provider_profile_id` 必须来自 Known Provider catalog 或 `custom`。
+- `public_named_object_base_url` 可选；仅在 Zone 已部署第三方 Provider 可访问的 HTTPS Named Object 下载入口时配置。省略时 `UrlOrBytes` 输入回退为字节，`UrlOnly` 本地输入明确失败。
 - `protocol_family_id` 用于 `custom` Provider 的创建/更新协商，表达 OpenAI-compatible、Claude-compatible、Gemini-compatible 等大类；后端必须从该族已注册 Adapter 中解析并持久化确定的 `protocol_adapter_id`，运行时不再猜测。
 - `protocol_adapter_id` 是后端解析并保存的内部执行字段，必须来自运行时 adapter registry；Known Provider 由 Profile 给出确定值，`custom` Provider 的创建请求不要求用户填写。
 - `custom` Provider 可以只提交协议族、`base_url` 和凭据，由 registry 选择该族默认 Adapter；也可显式提交属于该族的 Adapter。跨族组合必须拒绝，解析结果固化到 settings。

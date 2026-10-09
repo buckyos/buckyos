@@ -76,12 +76,13 @@ AICC_T15_ALLOW_CONFIG_MUTATION=true pnpm run acceptance:t1.5 -- \
   --gateway-url https://test.buckyos.io \
   --mock-base-url http://aicc-reachable-host:18081 \
   --mock-control-url http://127.0.0.1:18081 \
+  --public-named-object-base-url https://test.buckyos.io/ndn \
   --provider openai \
   --allow-config-mutation
 pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 ```
 
-T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。所有返回 URL artifact 的 success fixture 都使用独立 artifact origin，runner 必须通过 `/kapi/aicc/artifact/open` 下载并验证非空内容，同时 Mock 会拒绝泄漏到跨域下载请求中的 Provider Authorization。独立 artifact origin 默认监听 Provider Mock 端口的下一个端口，单独启动 Mock 时可用 `--artifact-port` 覆盖。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
+T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。`UrlOnly` 输入用例需要通过 `--public-named-object-base-url` 显式传入 Provider 可访问的 Zone HTTPS Named Object 入口；runner 会临时写入该配置并在结束时原样恢复。所有返回 URL artifact 的 success fixture 都使用独立 artifact origin，runner 必须通过 `/kapi/aicc/artifact/open` 下载并验证非空内容，同时 Mock 会拒绝泄漏到跨域下载请求中的 Provider Authorization。独立 artifact origin 默认监听 Provider Mock 端口的下一个端口，单独启动 Mock 时可用 `--artifact-port` 覆盖。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
 
 T1 的 `t1.config.cloud_update_dynamic_catalog` 通过 NDN 连续发布两个完整 cloud revision：修改已有 Model Driver 的逻辑挂载、删除并恢复已有模型项，并动态增加 Provider Rules 和 Known Provider 文件；断言 cache 原子提交、全局 metadata sequence 收敛、动态 Provider 路由和真实 Mock 访问。T1.5 的 `t1.5.openai.openai.responses.v1.llm.cloud-update` 覆盖云端 Provider Rules 更新，并从真实 Adapter 的捕获请求确认 `service_tier` 已生效。两者都在结束时发布更高 revision 的 tombstone、禁用更新并恢复原始 system-config。
 

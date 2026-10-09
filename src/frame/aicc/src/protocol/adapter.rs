@@ -517,7 +517,11 @@ fn is_public_https_url(url: &reqwest::Url) -> bool {
     if host.eq_ignore_ascii_case("localhost") || host.ends_with(".localhost") {
         return false;
     }
-    host.parse::<IpAddr>().map_or(true, ip_is_public)
+    let ip_literal = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    ip_literal.parse::<IpAddr>().map_or(true, ip_is_public)
 }
 
 fn ip_is_public(ip: IpAddr) -> bool {
@@ -531,13 +535,16 @@ fn ip_is_public(ip: IpAddr) -> bool {
                 || ip.is_unspecified()
                 || ip.is_multicast())
         }
-        IpAddr::V6(ip) => {
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local())
-        }
+        IpAddr::V6(ip) => ip
+            .to_ipv4_mapped()
+            .map(|ip| ip_is_public(IpAddr::V4(ip)))
+            .unwrap_or_else(|| {
+                !(ip.is_loopback()
+                    || ip.is_unspecified()
+                    || ip.is_multicast()
+                    || ip.is_unique_local()
+                    || ip.is_unicast_link_local())
+            }),
     }
 }
 
@@ -2405,6 +2412,23 @@ mod tests {
         assert!(DefaultArtifactDownloadProtocol
             .encode_download("https://127.0.0.1/private", &provider_context)
             .is_err());
+        for private_url in [
+            "https://[::1]/private",
+            "https://[fc00::1]/private",
+            "https://[fe80::1]/private",
+            "https://[::ffff:127.0.0.1]/private",
+            "https://[::ffff:10.0.0.1]/private",
+        ] {
+            assert!(
+                DefaultArtifactDownloadProtocol
+                    .encode_download(private_url, &provider_context)
+                    .is_err(),
+                "{private_url}"
+            );
+        }
+        assert!(DefaultArtifactDownloadProtocol
+            .encode_download("https://[2606:4700:4700::1111]/artifact", &provider_context)
+            .is_ok());
     }
 
     #[test]

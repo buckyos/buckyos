@@ -806,6 +806,7 @@ mod tests {
                     })
                     .collect(),
                 session_config: None,
+                public_named_object_base_url: None,
             },
         )
         .unwrap()

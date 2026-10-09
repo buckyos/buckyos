@@ -8,10 +8,14 @@ pub(crate) struct RuntimeInferencePort {
     storage: Arc<AiccStorage>,
     resource_store: Arc<dyn ResourceStore>,
     url_fetcher: Arc<dyn UrlResourceFetcher>,
-    /// How a locally stored object is exposed to the Provider; the zone gateway
-    /// URL when this zone serves named objects over HTTP.
-    object_urls: Arc<dyn NamedObjectUrlProvider>,
     model_health: Arc<ModelHealthRegistry>,
+}
+
+fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlProvider> {
+    match settings.public_named_object_base_url.as_deref() {
+        Some(base_url) => Arc::new(ZoneNamedObjectUrlProvider::new(base_url)),
+        None => Arc::new(DisabledNamedObjectUrlProvider),
+    }
 }
 
 impl RuntimeInferencePort {
@@ -23,7 +27,6 @@ impl RuntimeInferencePort {
         storage: Arc<AiccStorage>,
         resource_store: Arc<dyn ResourceStore>,
         url_fetcher: Arc<dyn UrlResourceFetcher>,
-        object_urls: Arc<dyn NamedObjectUrlProvider>,
         model_health: Arc<ModelHealthRegistry>,
     ) -> Self {
         Self {
@@ -34,7 +37,6 @@ impl RuntimeInferencePort {
             storage,
             resource_store,
             url_fetcher,
-            object_urls,
             model_health,
         }
     }
@@ -250,6 +252,7 @@ impl RuntimeInferencePort {
 
     async fn materialize_resources(
         &self,
+        settings: &AiccSettings,
         caller: &AuthorizedCaller,
         request_id: &str,
         call: &mut ResolvedProviderCall,
@@ -288,7 +291,7 @@ impl RuntimeInferencePort {
         )
         .map_err(resource_rpc_error)?
         .with_input_form(input_form)
-        .with_object_url_provider(self.object_urls.clone());
+        .with_object_url_provider(named_object_url_provider(settings));
         let resources = call
             .resource_requirements
             .iter()
@@ -677,8 +680,13 @@ impl InferencePort for RuntimeInferencePort {
         let mut primary = self
             .lower_call(routed.snapshot.as_ref(), &routed.decision, &exact_call)
             .await?;
-        self.materialize_resources(caller, &routed.request_id, &mut primary)
-            .await?;
+        self.materialize_resources(
+            routed.snapshot.settings.as_ref(),
+            caller,
+            &routed.request_id,
+            &mut primary,
+        )
+        .await?;
         let mut failover = Vec::new();
         for candidate in &routed.decision.fallback_candidates {
             let mut fallback_decision = routed.decision.clone();
@@ -1011,6 +1019,24 @@ fn route_input_for_call(call: &AiccCall) -> Result<InferenceRouteInput, RPCError
 #[cfg(test)]
 mod search_tests {
     use super::*;
+
+    #[test]
+    fn named_object_urls_require_explicit_public_base_url() {
+        let obj_id = ndn_lib::ObjId::new_by_raw("chunk".to_owned(), vec![1; 32]);
+        let settings = AiccSettings::default();
+        assert!(named_object_url_provider(&settings)
+            .object_url(&obj_id)
+            .is_none());
+
+        let settings = AiccSettings {
+            public_named_object_base_url: Some("https://zone.example/ndn".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            named_object_url_provider(&settings).object_url(&obj_id),
+            Some(format!("https://zone.example/ndn/{}", obj_id.to_string()))
+        );
+    }
 
     #[test]
     fn exact_chat_search_requires_explicit_boolean_opt_in() {

@@ -88,6 +88,8 @@ AiccServerHandler<T: AiccHandler>
 | execution | `ExecutionStore`, `TaskManagerPort`, `ProviderExecutionPort`, `UsageCompletionPort` | 幂等执行、TaskMgr 桥接、Provider 执行和一次性用量入账 |
 | resource | `ResourceAuthorizer`, `ResourceStore`, `UrlResourceFetcher` | `ResourceRef` 鉴权、物化和 artifact 写入 |
 
+本地 Named Object 只有在 `services/aicc/settings.public_named_object_base_url` 显式配置公网 HTTPS 下载入口时才能转成 Provider URL。未配置时，`UrlOrBytes` codec 读取对象字节，`UrlOnly` codec 返回资源不可用；不得根据 Zone hostname 推导一个未经部署确认的 `/ndn/` URL。
+
 禁止创建同时承担路由、发现、wire 编解码和生命周期的“大 Provider trait”。跨层调用必须经过上表端口或不可变数据对象。
 
 ## 4. Protocol Adapter 契约

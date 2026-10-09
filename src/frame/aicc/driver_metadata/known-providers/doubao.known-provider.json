@@ -97,9 +97,9 @@
         "account": {"mode": "unsupported"},
         "policy_region": {"mode": "optional", "default_value": "unknown", "allowed_values": ["unknown", "cn", "other"]},
         "operation_base_urls": {
-          "ark.images.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/v3",
-          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/tts"
+          "ark.images.generate": "https://ark.cn-beijing.volces.com/api/plan/v3",
+          "ark.contents.generate": "https://ark.cn-beijing.volces.com/api/plan/v3",
+          "tts.unidirectional": "https://openspeech.bytedance.com/api/v3/plan/tts"
         }
       },
       "ui_hints": {

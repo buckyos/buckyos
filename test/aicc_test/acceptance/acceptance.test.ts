@@ -3255,7 +3255,14 @@ test("T1.5 protocol catalog is independent, traceable, and strict on Provider wi
         "x-api-key": "test-key",
         "x-api-resource-id": "volc.seedasr.auc",
       }),
-      body: { user: {}, audio, request: {} },
+      body: {
+        user: {},
+        audio,
+        request: {
+          enable_speaker_info: true,
+          show_utterances: true,
+        },
+      },
     });
   assert.deepEqual(doubaoStandardAsrRequest({ url: "https://example.com/a.wav" }), []);
   assert.deepEqual(

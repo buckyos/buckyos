@@ -20,6 +20,7 @@ pub(crate) struct HttpTransportConfig {
     pub max_response_bytes: usize,
     pub max_json_bytes: usize,
     pub request_id_header: HeaderName,
+    pub follow_redirects: bool,
 }
 
 impl std::fmt::Debug for HttpTransportConfig {
@@ -33,6 +34,7 @@ impl std::fmt::Debug for HttpTransportConfig {
             .field("max_response_bytes", &self.max_response_bytes)
             .field("max_json_bytes", &self.max_json_bytes)
             .field("request_id_header", &self.request_id_header)
+            .field("follow_redirects", &self.follow_redirects)
             .finish()
     }
 }
@@ -47,6 +49,7 @@ impl Default for HttpTransportConfig {
             max_response_bytes: 32 * 1024 * 1024,
             max_json_bytes: 8 * 1024 * 1024,
             request_id_header: HeaderName::from_static("x-request-id"),
+            follow_redirects: true,
         }
     }
 }
@@ -427,6 +430,9 @@ impl HttpTransport {
         let mut builder = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)
             .timeout(config.request_timeout);
+        if !config.follow_redirects {
+            builder = builder.redirect(reqwest::redirect::Policy::none());
+        }
         if let Some(proxy) = &config.proxy {
             builder =
                 builder.proxy(reqwest::Proxy::all(proxy).map_err(|_| {
