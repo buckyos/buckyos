@@ -29,6 +29,15 @@ export interface Transport {
   contentUrl(objId: ObjId): string
 }
 
+// Media are read from the home that serves the page: the signed-in user's own home in the
+// HomeStation app (it holds everything shown there), the portal's feed (`<user>` or `~zone`)
+// on a portal page. One HomeStation view is mounted at a time, so a module value is enough.
+let contentHome = ''
+
+export function setContentHome(home: string) {
+  contentHome = home
+}
+
 interface DevOverride { token: string; baseUrl?: string }
 
 function readDevOverride(): DevOverride | null {
@@ -70,7 +79,8 @@ async function putUpload(url: string, token: string, body: Blob): Promise<{ objI
 }
 
 function contentPath(origin: string, objId: ObjId, token: string) {
-  return `${origin}/home/objects/${encodeURIComponent(objId)}/content?access=${encodeURIComponent(token)}`
+  const path = `${origin}/home/${encodeURIComponent(contentHome)}/objects/${encodeURIComponent(objId)}/content`
+  return token ? `${path}?access=${encodeURIComponent(token)}` : path
 }
 
 class DevOverrideTransport implements Transport {
@@ -81,7 +91,8 @@ class DevOverrideTransport implements Transport {
   private readonly token: string
 
   constructor(override: DevOverride) {
-    this.token = override.token
+    // `anonymous`: no session at all (portal pages as a visitor sees them).
+    this.token = override.token === 'anonymous' ? '' : override.token
     this.base = (override.baseUrl ?? `/kapi/${SERVICE_NAME}`).replace(/\/+$/, '')
     this.origin = this.base.replace(/\/kapi\/[^/]+$/, '')
   }
@@ -92,7 +103,7 @@ class DevOverrideTransport implements Transport {
       response = await fetch(this.base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ method, params, sys: [this.seq++, this.token] }),
+        body: JSON.stringify({ method, params, sys: this.token ? [this.seq++, this.token] : [this.seq++] }),
       })
     } catch (error) {
       throw new TransportError('network', error instanceof Error ? error.message : String(error))
@@ -132,6 +143,7 @@ class ZoneTransport implements Transport {
     if (!token) throw new TransportError('protocol', 'no session token')
     return (this.knownToken = token)
   }
+
 
   async call<T>(method: string, params: Record<string, unknown> = {}): Promise<T> {
     try {

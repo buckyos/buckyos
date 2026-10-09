@@ -6,6 +6,7 @@ import type {
   CommentView,
   ContactGroup,
   FilterRule,
+  HomeInfo,
   IdentityView,
   InteractionStats,
   MuteRule,
@@ -98,6 +99,8 @@ export interface HomeStationStore {
   peekCollector(): CollectorView | null
   peekPreviewReaders(): PreviewReaders
   peekMuteCandidates(): Did[]
+  /** The signed-in user's home and zone-feed rights; null on portal pages and before boot. */
+  peekHome(): HomeInfo | null
 
   listReading(query: ReadingQuery, cursor?: string | null): Promise<ReadingPage>
   listFollowedCandidates(cursor?: string | null, options?: { includeRead?: boolean }): Promise<CandidatePage>
@@ -121,6 +124,7 @@ export interface HomeStationStore {
   withdraw(entry: EntryUrl): Promise<void>
   editPost(entry: EntryUrl, text: string): Promise<ObjId | null>
   setAudience(entry: EntryUrl, audience: AudienceSpec): Promise<void>
+  setZoneListing(entry: EntryUrl, listed: boolean): Promise<void>
   publish(input: PublishInput, key: string): Promise<PublishTask>
   retryPublish(key: string): Promise<PublishTask>
   retryDelivery(entry: EntryUrl): Promise<void>

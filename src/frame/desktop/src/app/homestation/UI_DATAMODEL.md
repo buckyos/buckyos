@@ -35,12 +35,12 @@
 | 内容详情 + 评论区 | `detail/ItemDetail.tsx`、`detail/CommentSection.tsx` | `getWrappedBody`、`listComments`、`peekCard` |
 | 我的发表（发表 / 投递状态、编辑、撤回、调整受众、Head 调试面板） | `publish/MyPublications.tsx` | `listPublished(owner, { reader: owner, kind })`、`listChanges` |
 | 我的主页 + 以访客身份预览 | `PublicProfileView.tsx` | `getProfile`、`listPublished(owner, { reader })` |
-| 访客门户 `/homestation/u/:did` | `HomeStationVisitorRoute.tsx` | 同上，`reader` 来自 `?reader=anonymous｜follower｜friend` |
+| 门户 `/homestation/<user>`、`/homestation/<user>/<key>`、`/homestation/~zone`；`www.`/`homestation.` 短域名的 `/`（默认发表流） | `HomeStationPortalRoute.tsx`、`links.ts` | 只读的门户 store（`api/portalStore.ts`，`portal.*`），读者是登录用户或匿名；Mock 下由 `mock/portal.ts` 以匿名读种子数据 |
 | 关注补看 | `candidates/FollowedCandidates.tsx` | `listFollowedCandidates`、`openCandidate` |
 | 收藏 / 稍后再看 | `saved/SavedList.tsx` | `listSaved` |
 | 来源 | `source/SourceManager.tsx` | `listSources`、`resolveSourceInput`、`follow`、`unfollow`、`pauseSource` |
 | 过滤与不看 | `prefs/FeedPreferences.tsx` | `setMuteRule`、`setFilterRule`、`setDefaultAudience` |
-| 发布（移动端整页；桌面右栏快速发布） | `publish/PublishComposer.tsx` | `publish`、`retryPublish`、`uploadAttachment`、`fetchLinkPreview` |
+| 发布（移动端整页；桌面右栏快速发布；有写权限时可勾选“同时发布到 Zone 主页”） | `publish/PublishComposer.tsx` | `publish`、`retryPublish`、`uploadAttachment`、`fetchLinkPreview`、`peekHome` |
 | 桌面左栏 / 右栏、移动端“我”页 | `SidebarPanel.tsx`、`InfoPanel.tsx`、`MePage.tsx` | `peekSyncStatus`、`peekTopics`、`peekReadingSummary` |
 
 ---
@@ -71,7 +71,7 @@ interface FeedHead { kind: 'feed_head'; entry: EntryUrl; seq: number; state: 'ac
 interface FileObject { kind: 'file'; name: string; meta: { mime; size; width?; height?; duration_ms? } }
 ```
 
-- 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
+- 媒体只以 ObjId 引用；mime、尺寸、时长在 `FileObject.meta`。UI 通过 `media.ts` 把 ObjId 解析成地址：服务 store 下是同源 `/home/<user>/objects/<ObjId>/content?access=<session token>`，Mock 下是 `mock/media.ts` 生成的 SVG 占位图；图片详情把 `homestation-file` 源注册给 `ContentPreview`（服务 store 下取回该地址的 blob）。
 - URL 只出现在 `link` 与 `source.original_url`。
 - `commentTarget(object)`：转发／引用转发的目标是 `wraps`，其他评论是 `references` 中的 `comment_on`。
 - 入口：正文与评论 `cyfs://<zone>/home/feed/@/<key>`，公开互动 `cyfs://<zone>/home/reactions/@/<互动键摘要>`，商品可用内容 DID（seed：`did:bns:echoes-of-the-void`）。
@@ -297,7 +297,6 @@ Mock 场景（URL `?scenario=`，可逗号组合）：`empty`（待读与候选�
 | 正文、评论、转发的默认受众 | 公开，可在“过滤与不看”页修改 | `mock/data.ts` settings、`prefs/FeedPreferences.tsx` |
 | 点踩语义 | 仅本地反馈，不发表、不计数，UI 注明 | `mock/store.ts` `setDislike`、`card/ActionBar.tsx` |
 | 移动端是否改为 PRD 底部五栏 | 保留顶栏 + 发布按钮，新页面入口集中在“我”页 | `HomeStationView.tsx` |
-| 公开门户由 Zone 根 `$` 的 HomeStation 服务提供 | Desktop 内用 `/homestation/u/:did` 路由模拟 | `HomeStationVisitorRoute.tsx` |
 
 ---
 
@@ -354,13 +353,17 @@ Store 的选择（`store/createStore.ts`）：设置了开发覆盖（见 §11�
 | `resolveSourceInput`、`follow`、`unfollow`、`pauseSource`、`listSources` | `sources.resolve {kind, text}`、`sources.follow {resolution}`、`sources.unfollow {sourceId}`、`sources.pause {sourceId, paused}`、`sources.list` | |
 | `setMuteRule`、`setFilterRule`、`setTagOverride`、`markLessLike`、`setDefaultAudience` | `prefs.set_mute_rule {rule, on}`、`prefs.set_filter_rule {rule}`、`prefs.set_tag_override {objId, tag, override}`、`prefs.mark_less_like {objId}`、`prefs.set_default_audience {audience}` | 设置先在本地生效，写完后重取 bootstrap |
 | `setFeatured` | `profile.set_featured {order}` | |
-| 媒体地址 | `GET /home/objects/<ObjId>/content?access=<token>` | 令牌出现在 URL 中，已知风险 |
+| `peekHome` | `ui.bootstrap` 的 `home` | `{ zone, user, defaultFeed, zoneFeed: { feed, name, writer } }`；发布框据此显示 Zone 主页选项，我的主页据此给出公开链接 |
+| `setZoneListing` | `zone.set_listing {entry, listed}` | “我的发表”中的“同步到 / 移出 Zone 主页”；条目的 `zoneFeed: true` 表示已列入 |
+| 媒体地址 | `GET /home/<user>/objects/<ObjId>/content?access=<token>` | 应用内用自己的主页（`ui.bootstrap.user`，所有者能读本地的全部对象）；门户用所看的 feed（`<user>` 或 `~zone`），匿名时不带令牌（`transport.setContentHome`）。令牌出现在 URL 中，已知风险 |
+
+门户 store（`api/portalStore.ts`）只读：`portal.profile {feed}`（`getProfile`）、`portal.list {feed, kind?, cursor}`（`listPublished`）、`portal.item {feed, objId | key}`（`watchCard`、`getItem`、条目页）、`portal.comments {feed, objId, type}`（作者视图）、`portal.wrapped_body`；写方法一律拒绝（`homestation.portal.readOnly`）。路由先取 `portal.home` 得到默认发表流与读者；登录读者在他人主页上可以关注（调用自己 HomeStation 的 `sources.resolve` + `sources.follow`），匿名读者看到登录链接（登录页在 Zone 主机，回跳到同一门户页的 Zone 主机地址）。卡片的 `openDetail` 换算为 `/homestation/<user>/<key>`；在短域名上所有链接都指向 Zone 主机。
 
 UI 尚未使用的服务方法：`candidates.admit`、`item.fetch`、`comments.set_listing`、`comments.sync`、`publish.task`、`profile.set`、`sources.sync`、`prefs.set_topics`、`prefs.set_collectors`、`prefs.set_comments_open`、`feedback.record`、`consumption.*`、`eval.*`、`admin.*`。
 
 ## 11. 连接 devnet 开发
 
-后端示例 `devnet` 启动一组互相连通的 HomeStation（`me` 是 Desktop 的所有者，令牌 `tok-me`；alice、bob、sarah、收录者 index 依次占用后续端口，再后一个端口是 RSS 夹具站），并写入种子数据。
+后端示例 `devnet` 启动一组互相连通的 HomeStation 服务（`me` 的 Zone：Desktop 的用户 `me`，令牌 `tok-me`，同 Zone 第二个用户 `kai`，令牌 `tok-kai`；alice、bob、sarah、收录者 index 的 Zone 依次占用后续端口，再后一个端口是 RSS 夹具站），并写入种子数据。
 
 ```bash
 # buckyos/src
@@ -369,6 +372,6 @@ cargo run -p homestation --example devnet -- --port 4131 --data-dir /tmp/homesta
 HS_BACKEND=http://127.0.0.1:4131 pnpm run dev
 ```
 
-打开 `/homestation?hsDevToken=tok-me`（令牌存入 `localStorage['homestation.dev']`，也可直接写 `{"token":"tok-me","baseUrl":"/kapi/homestation"}`；删除该键回到 Mock）。访客门户：`/homestation/u/did:test:alice?reader=anonymous`。`HS_BACKEND` 让 Vite 把 `/kapi/homestation` 与 `/home/*` 转发到 `me`。
+打开 `/homestation?hsDevToken=tok-me`（令牌存入 `localStorage['homestation.dev']`，也可直接写 `{"token":"tok-me","baseUrl":"/kapi/homestation"}`；删除该键回到 Mock）。门户：`/homestation/me`、`/homestation/kai`、`/homestation/~zone`；匿名访问加 `?hsDevToken=anonymous`，以 kai 的身份加 `?hsDevToken=tok-kai`；`http://www.localhost:<port>/` 模拟短域名的默认发表流。`HS_BACKEND` 让 Vite 把 `/kapi/homestation` 与 `/home/*` 转发到 `me` 的 Zone（门户只能看这个 Zone 的用户）。
 
 真实后端 e2e：`pnpm exec playwright test --config=playwright.homestation.config.ts`（自行启动 devnet 于 4231–4236 和 Vite；`HS_DEVNET_BIN` 可指定已构建的 devnet）。

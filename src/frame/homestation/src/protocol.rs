@@ -362,10 +362,61 @@ impl EntryNamespace {
     }
 }
 
-/// A mutable entry: a zone path under the publisher's stream, or a content DID (E08).
+/// Path segment of the zone feed list (§4.6). Usernames may not contain `~`, so it cannot
+/// collide with a user's home.
+pub const ZONE_FEED: &str = "~zone";
+
+/// Where a publisher's HomeStation lives: a zone and the user's segment under `/home/`.
+/// A zone serves every one of its users; each user has an own stream and inbox (§4.4).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HomeRef {
+    pub zone: String,
+    pub user: String,
+}
+
+impl HomeRef {
+    pub fn new(zone: &str, user: &str) -> Self {
+        Self { zone: zone.trim_end_matches('.').to_ascii_lowercase(), user: user.to_string() }
+    }
+
+    /// `cyfs://<zone>/home/<user>`
+    pub fn base(&self) -> String {
+        format!("cyfs://{}/home/{}", self.zone, self.user)
+    }
+
+    pub fn stream(&self) -> String {
+        format!("{}/feed", self.base())
+    }
+
+    pub fn inbox(&self) -> String {
+        format!("{}/inbox", self.base())
+    }
+
+    pub fn entry(&self, namespace: EntryNamespace, key: &str) -> String {
+        format!("{}/{}/@/{}", self.base(), namespace.as_str(), key)
+    }
+
+    /// HTTP path on the zone origin: `/home/<user>/<rest>`.
+    pub fn path(&self, rest: &str) -> String {
+        format!("/home/{}/{}", self.user, rest.trim_start_matches('/'))
+    }
+}
+
+/// A user segment: a zone username (`[A-Za-z0-9_.-]`) or the zone feed list.
+pub fn valid_user_segment(user: &str) -> bool {
+    user == ZONE_FEED
+        || (!user.is_empty()
+            && user.len() <= 64
+            && user.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            && user != "."
+            && user != "..")
+}
+
+/// A mutable entry: a path under the publisher's home (`cyfs://<zone>/home/<user>/...`), or a
+/// content DID (E08).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EntryRef {
-    Path { zone: String, namespace: EntryNamespace, key: String },
+    Path { home: HomeRef, namespace: EntryNamespace, key: String },
     Did(String),
 }
 
@@ -385,21 +436,29 @@ impl EntryRef {
             return Err(format!("invalid entry zone {entry:?}"));
         }
         let mut segments = path.split('/');
-        let (home, ns, at, key) = (segments.next(), segments.next(), segments.next(), segments.next());
-        if home != Some("home") || at != Some("@") || segments.next().is_some() {
-            return Err(format!("entry must look like cyfs://<zone>/home/<namespace>/@/<key>: {entry:?}"));
+        let (home, user, ns, at, key) = (segments.next(), segments.next(), segments.next(), segments.next(), segments.next());
+        let user = user.unwrap_or_default();
+        if home != Some("home") || at != Some("@") || segments.next().is_some() || !valid_user_segment(user) || user == ZONE_FEED {
+            return Err(format!("entry must look like cyfs://<zone>/home/<user>/<namespace>/@/<key>: {entry:?}"));
         }
         let namespace = ns.and_then(EntryNamespace::parse).ok_or_else(|| format!("unknown entry namespace in {entry:?}"))?;
         let key = key.unwrap_or_default();
         if !valid_entry_key(key) {
             return Err(format!("invalid entry key in {entry:?}"));
         }
-        Ok(Self::Path { zone, namespace, key: key.to_string() })
+        Ok(Self::Path { home: HomeRef::new(&zone, user), namespace, key: key.to_string() })
     }
 
     pub fn zone(&self) -> Option<&str> {
         match self {
-            Self::Path { zone, .. } => Some(zone),
+            Self::Path { home, .. } => Some(&home.zone),
+            Self::Did(_) => None,
+        }
+    }
+
+    pub fn home(&self) -> Option<&HomeRef> {
+        match self {
+            Self::Path { home, .. } => Some(home),
             Self::Did(_) => None,
         }
     }
@@ -411,18 +470,6 @@ pub fn valid_entry_key(key: &str) -> bool {
         && key.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
         && key != "."
         && key != ".."
-}
-
-pub fn entry_url(zone: &str, namespace: EntryNamespace, key: &str) -> String {
-    format!("cyfs://{}/home/{}/@/{}", zone, namespace.as_str(), key)
-}
-
-pub fn stream_url(zone: &str) -> String {
-    format!("cyfs://{}/home/feed", zone)
-}
-
-pub fn inbox_target(zone: &str) -> String {
-    format!("cyfs://{}/home/inbox", zone)
 }
 
 pub fn digest32(parts: &[&str]) -> String {
@@ -604,13 +651,21 @@ mod tests {
 
     #[test]
     fn entry_urls_round_trip() {
-        let url = entry_url("alice.example", EntryNamespace::Feed, "garden-0001");
-        assert_eq!(url, "cyfs://alice.example/home/feed/@/garden-0001");
+        let home = HomeRef::new("Example.org", "alice");
+        let url = home.entry(EntryNamespace::Feed, "garden-0001");
+        assert_eq!(url, "cyfs://example.org/home/alice/feed/@/garden-0001");
+        assert_eq!(home.stream(), "cyfs://example.org/home/alice/feed");
+        assert_eq!(home.inbox(), "cyfs://example.org/home/alice/inbox");
+        assert_eq!(home.path("objects/x"), "/home/alice/objects/x");
         let parsed = EntryRef::parse(&url).unwrap();
-        assert_eq!(parsed.zone(), Some("alice.example"));
-        assert!(EntryRef::parse("cyfs://alice.example/home/feed/garden").is_err());
-        assert!(EntryRef::parse("https://alice.example/home/feed/@/x").is_err());
-        assert!(EntryRef::parse("cyfs://alice.example/home/feed/@/a/b").is_err());
+        assert_eq!(parsed.zone(), Some("example.org"));
+        assert_eq!(parsed.home(), Some(&home));
+        assert!(EntryRef::parse("cyfs://example.org/home/feed/@/garden").is_err());
+        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/garden").is_err());
+        assert!(EntryRef::parse("https://example.org/home/alice/feed/@/x").is_err());
+        assert!(EntryRef::parse("cyfs://example.org/home/alice/feed/@/a/b").is_err());
+        assert!(EntryRef::parse("cyfs://example.org/home/~zone/feed/@/x").is_err());
+        assert!(EntryRef::parse("cyfs://example.org/home/a%2Fb/feed/@/x").is_err());
         assert!(matches!(EntryRef::parse("did:bns:plant-stand").unwrap(), EntryRef::Did(_)));
     }
 
@@ -666,7 +721,7 @@ mod tests {
         let mut head = FeedHead {
             kind: HEAD_KIND.into(),
             publisher: "did:bns:alice".into(),
-            entry: entry_url("alice.example", EntryNamespace::Feed, "p1"),
+            entry: HomeRef::new("example.org", "alice").entry(EntryNamespace::Feed, "p1"),
             seq: 1,
             state: HeadState::Active,
             current: Some(objid(4)),

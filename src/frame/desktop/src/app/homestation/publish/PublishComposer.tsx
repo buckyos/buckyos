@@ -1,6 +1,6 @@
 import { zodResolver } from '@hookform/resolvers/zod'
 import clsx from 'clsx'
-import { CircleAlert, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
+import { CircleAlert, Globe2, Image, Link2, Loader2, Mic, RotateCw, Send, Video, X } from 'lucide-react'
 import { useCallback, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { useI18n } from '../../../i18n/provider'
@@ -12,6 +12,7 @@ import { useToast } from '../ui/toastContext'
 import { AudiencePicker } from './AudiencePicker'
 
 const selectSettings = (store: HomeStationStore) => store.peekSettings()
+const selectHome = (store: HomeStationStore) => store.peekHome()
 
 function newPublishKey() {
   return `publish-${crypto.randomUUID()}`
@@ -29,6 +30,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const toast = useToast()
   const nav = useHsNav()
   const settings = useStoreSelector(selectSettings)
+  const home = useStoreSelector(selectHome)
   const [publishKey, setPublishKey] = useState(newPublishKey)
   const [failed, setFailed] = useState(false)
   const [linkOpen, setLinkOpen] = useState(false)
@@ -46,6 +48,7 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
   const attachments = useWatch({ control: form.control, name: 'attachments' })
   const link = useWatch({ control: form.control, name: 'link' })
   const text = useWatch({ control: form.control, name: 'text' })
+  const audience = useWatch({ control: form.control, name: 'audience' })
   const uploading = attachments.some(attachment => attachment.status === 'uploading')
 
   const updateAttachment = useCallback((id: string, patch: Partial<AttachmentInput>) => {
@@ -79,14 +82,14 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
 
   const finish = () => {
     setFailed(false)
-    form.reset({ text: '', attachments: [], link: null, audience: form.getValues('audience') })
+    form.reset({ text: '', attachments: [], link: null, audience: form.getValues('audience'), zoneFeed: form.getValues('zoneFeed') })
     setPublishKey(newPublishKey())
     toast({ text: t('homestation.publish.done', 'Published to your feed. It’s in My publications, not in your reading list.'), tone: 'success', action: { label: t('homestation.toast.viewPublished', 'View'), onClick: () => nav.navigate({ name: 'published' }, { reset: true }) } })
     onPublished?.()
   }
 
   const submit = form.handleSubmit(async values => {
-    const task = await store.publish(values, publishKey)
+    const task = await store.publish({ ...values, zoneFeed: values.audience.kind === 'public' && !!values.zoneFeed }, publishKey)
     if (task.stage === 'failed') {
       setFailed(true)
       return
@@ -181,6 +184,22 @@ export function PublishComposer({ variant = 'full', onPublished }: { variant?: '
       <div className="mt-3">
         <Controller control={form.control} name="audience" render={({ field }) => <AudiencePicker idPrefix={idPrefix} value={field.value} onChange={field.onChange} compact={compact} />} />
       </div>
+      {home?.zoneFeed.writer ? (
+        <Controller
+          control={form.control}
+          name="zoneFeed"
+          render={({ field }) => (
+            <label className="mt-2 flex items-center gap-2 text-xs" style={{ color: audience.kind === 'public' ? undefined : 'var(--cp-muted)' }} data-testid={`${idPrefix}-zone-feed`}>
+              <input type="checkbox" checked={audience.kind === 'public' && !!field.value} disabled={audience.kind !== 'public'} onChange={event => field.onChange(event.target.checked)} />
+              <Globe2 size={13} />
+              <span>
+                {t('homestation.publish.zoneFeed', 'Also show on {{zone}}', { zone: home.zoneFeed.name })}
+                {audience.kind !== 'public' ? ` · ${t('homestation.publish.zoneFeedPublicOnly', 'public posts only')}` : ''}
+              </span>
+            </label>
+          )}
+        />
+      ) : null}
       {errorKey ? <p className="mt-2 text-xs" role="alert" style={{ color: 'var(--cp-danger)' }}>{t(errorKey, 'Check the post before publishing.')}</p> : null}
       {failed ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl px-3 py-2 text-xs" role="alert" style={{ background: 'color-mix(in srgb, var(--cp-danger) 12%, transparent)' }} data-testid={`${idPrefix}-failed`}>

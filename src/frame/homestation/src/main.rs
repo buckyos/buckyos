@@ -7,10 +7,14 @@ use homestation::auth::RuntimeAuth;
 use homestation::contacts::{CachedContacts, MsgCenterContacts};
 use homestation::db::Db;
 use homestation::directory::NameDirectory;
+use homestation::error::HsResult;
 use homestation::evaluation::{AiccModel, ModelClient};
+use homestation::host::{Host, HostConfig};
 use homestation::http::{serve, AppState};
-use homestation::objects::NdmChunkStore;
+use homestation::objects::{ChunkStore, NdmChunkStore};
 use homestation::sign::Signer;
+use homestation::users::{SystemConfigUsers, UserRegistry, ZoneUser};
+use homestation::zone::ZoneFeed;
 use homestation::{Station, StationConfig};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -49,8 +53,10 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        let workers = cfg.workers.unwrap_or(true);
-        let listen_arg = matches.get_one::<String>("listen").cloned();
+        let mut cfg = cfg;
+        if let Some(listen) = matches.get_one::<String>("listen") {
+            cfg.listen = Some(listen.clone());
+        }
         rt.block_on(async move {
             let standalone = match homestation::standalone::build(cfg, &PathBuf::from(data_dir), config_path.parent(), None) {
                 Ok(s) => s,
@@ -59,10 +65,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            let listen = listen_arg.unwrap_or(standalone.listen.clone());
-            if workers {
-                standalone.station.start_workers();
-            }
+            let listen = standalone.listen.clone();
             if let Err(e) = serve(standalone.state, &listen).await {
                 eprintln!("serve failed: {e}");
                 std::process::exit(1);
@@ -74,9 +77,10 @@ fn main() {
     }
 }
 
-/// BuckyOS service mode: kernel-service login, device key as the publisher's authorized
-/// signer, Message Center contacts, the zone named store, gateway route `/kapi/homestation`
-/// plus the zone-level `/home/` protocol paths.
+/// BuckyOS service mode: kernel-service login; every user of the zone gets a HomeStation (own
+/// database under `users/<user>/`, own Message Center contacts), all signed with the OOD
+/// device key (zone custody); the zone named store; gateway route `/kapi/homestation` plus
+/// the zone-level `/home/` protocol paths.
 async fn service_main() {
     let mut runtime = match init_buckyos_api_runtime(HOMESTATION_SERVICE_NAME, None, BuckyOSRuntimeType::KernelService).await {
         Ok(r) => r,
@@ -121,7 +125,6 @@ async fn service_main() {
     };
     let zone = zone_document_hostname(&zone_doc).trim_end_matches('.').to_ascii_lowercase();
     let owner = zone_doc.owner.to_string();
-    let owner_name = zone_doc.owner.id.split('.').next().unwrap_or("owner").to_string();
     let device_did = runtime.device_config.as_ref().map(|d| d.id.to_string()).unwrap_or_default();
     let signer = Signer::new(runtime.device_private_key.clone().expect("device key loaded"), format!("{device_did}#main_key"));
     let ndm = match runtime.get_named_store().await {
@@ -135,31 +138,57 @@ async fn service_main() {
         log::error!("set runtime failed: {e}");
         std::process::exit(1);
     }
-    let db = match Db::open(&data_dir.join("homestation.db")) {
-        Ok(db) => db,
+    let users = Arc::new(UserRegistry::new(Box::new(SystemConfigUsers), Duration::from_secs(60)));
+    let owner_user = users.by_did(&owner).await.map(|u| u.user);
+    if owner_user.is_none() {
+        log::warn!("the zone owner {owner} is not among the zone users");
+    }
+    // In-zone homes are served right here: never loop through the public gateway.
+    let mut origins = settings.peers.clone();
+    origins.entry(zone.clone()).or_insert_with(|| format!("http://127.0.0.1:{HOMESTATION_SERVICE_PORT}"));
+    let directory = Arc::new(NameDirectory::new(&zone, vec![device_did], users.clone(), origins));
+    let model: Option<Arc<dyn ModelClient>> = settings.evaluation_model.clone().map(|m| Arc::new(AiccModel { logical_model: m }) as Arc<dyn ModelClient>);
+    let chunks: Arc<dyn ChunkStore> = Arc::new(NdmChunkStore { ndm });
+    let mut template = StationConfig::new(&owner, "", &zone, "");
+    template.disclose_admission = settings.disclose_admission;
+    template.spider_enabled = settings.spider;
+    template.reading_window = settings.reading_window;
+    let users_dir = data_dir.join("users");
+    let builder = {
+        let directory = directory.clone();
+        let owner = owner.clone();
+        let collector = settings.collector;
+        Box::new(move |user: &ZoneUser| -> HsResult<Arc<Station>> {
+            let db = Db::open(&homestation::standalone::user_db_path(&users_dir, &user.user))?;
+            let mut cfg = template.clone();
+            cfg.owner = user.did.clone();
+            cfg.owner_name = user.name.clone();
+            cfg.user = user.user.clone();
+            // The collector role (§14) is the zone owner's.
+            cfg.collector = collector && user.did == owner;
+            let contacts = CachedContacts::new(Box::new(MsgCenterContacts { owner: user.did.clone() }), Duration::from_secs(30));
+            Ok(Station::new(cfg, db, signer.clone(), directory.clone(), contacts, chunks.clone(), model.clone()))
+        })
+    };
+    let mut host_cfg = HostConfig::new(&zone);
+    host_cfg.zone_did = Some(zone_doc.id.to_string());
+    host_cfg.zone_name = settings.zone_name.clone().unwrap_or_else(|| zone.clone());
+    host_cfg.owner_user = owner_user;
+    host_cfg.default_feed = settings.default_feed.clone();
+    host_cfg.zone_feed_writers = settings.zone_feed_writers.clone();
+    let zone_feed = match ZoneFeed::open(&data_dir.join("zone.db")) {
+        Ok(z) => z,
         Err(e) => {
-            log::error!("database: {e}");
+            log::error!("zone feed database: {e}");
             std::process::exit(1);
         }
     };
-    let mut cfg = StationConfig::new(&owner, &owner_name, &zone);
-    cfg.collector = settings.collector;
-    cfg.disclose_admission = settings.disclose_admission;
-    cfg.spider_enabled = settings.spider;
-    cfg.reading_window = settings.reading_window;
-    let directory = NameDirectory {
-        local_owner: owner.clone(),
-        local_zone: zone.clone(),
-        local_devices: vec![device_did],
-        origins: settings.peers.clone(),
-        zones: Default::default(),
-    };
-    let contacts = CachedContacts::new(Box::new(MsgCenterContacts { owner: owner.clone() }), Duration::from_secs(30));
-    let model: Option<Arc<dyn ModelClient>> = settings.evaluation_model.clone().map(|m| Arc::new(AiccModel { logical_model: m }) as Arc<dyn ModelClient>);
-    let station = Station::new(cfg, db, signer, Arc::new(directory), contacts, Arc::new(NdmChunkStore { ndm }), model);
-    station.start_workers();
-    let state = AppState { station, auth: Arc::new(RuntimeAuth::default()) };
-    if let Err(e) = serve(state, &format!("127.0.0.1:{HOMESTATION_SERVICE_PORT}")).await {
+    let host = Host::new(host_cfg, directory, Arc::new(RuntimeAuth::default()), users, zone_feed, builder);
+    match host.open_all().await {
+        Ok(n) => log::info!("serving the HomeStations of {n} users of {zone}"),
+        Err(e) => log::error!("opening user HomeStations: {e}"),
+    }
+    if let Err(e) = serve(AppState { host }, &format!("127.0.0.1:{HOMESTATION_SERVICE_PORT}")).await {
         log::error!("serve failed: {e}");
         std::process::exit(1);
     }

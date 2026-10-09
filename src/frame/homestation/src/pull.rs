@@ -19,11 +19,20 @@ pub struct SyncReport {
     pub resynced: bool,
 }
 
+pub fn dir_error(e: crate::directory::DirError) -> HsError {
+    match e {
+        crate::directory::DirError::NotFound(m) => HsError::NotFound(m),
+        crate::directory::DirError::Unavailable(m) => HsError::Unavailable(m),
+    }
+}
+
 impl Station {
-    pub async fn origin_for_did(&self, did: &str) -> HsResult<(String, String)> {
-        let zone = self.directory.zone_of(did).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
-        let origin = self.directory.origin_of_zone(&zone).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
-        Ok((zone, origin))
+    /// Home of a DID (`cyfs://<zone>/home/<user>`) and the HTTP origin serving its zone. In-zone
+    /// homes resolve to this node's own listener.
+    pub async fn origin_for_did(&self, did: &str) -> HsResult<(HomeRef, String)> {
+        let home = self.directory.home_of(did).await.map_err(dir_error)?;
+        let origin = self.directory.origin_of_zone(&home.zone).await.map_err(dir_error)?;
+        Ok((home, origin))
     }
 
     /// GET a protocol path on another zone, identified by a reader proof.
@@ -73,12 +82,7 @@ impl Station {
                 Ok(rows)
             })
             .await?;
-        for (id, kind, did) in sources {
-            if let Some(did) = &did {
-                if self.is_local_principal(did).await {
-                    continue;
-                }
-            }
+        for (id, kind, _did) in sources {
             let result = if kind == "person" {
                 self.sync_person(&id).await.map(|_| ())
             } else if kind == "channel" {
@@ -131,20 +135,20 @@ impl Station {
             })
             .await?;
         let did = did.ok_or_else(|| bad("source has no DID"))?;
-        let (zone, origin) = self.origin_for_did(&did).await?;
+        let (home, origin) = self.origin_for_did(&did).await?;
         let arrival = Arrival::Pull { source_id: source_id.to_string(), label: name.clone() };
         let mut report = SyncReport::default();
         let mut cursor = cursor;
         if cursor.is_none() {
-            cursor = Some(self.backfill(&zone, &origin, &arrival, &mut report).await?);
+            cursor = Some(self.backfill(&home, &origin, &arrival, &mut report).await?);
         }
         let mut since = cursor.unwrap_or(0);
         for _ in 0..20 {
-            let path = format!("/home/feed?mode=changes&since={since}&objects=1");
-            let page: ChangesPage = self.remote_json(&zone, &origin, &path).await?.ok_or_else(|| HsError::Unavailable("stream not found".into()))?;
+            let path = home.path(&format!("feed?mode=changes&since={since}&objects=1"));
+            let page: ChangesPage = self.remote_json(&home.zone, &origin, &path).await?.ok_or_else(|| HsError::NotFound("stream not found".into()))?;
             if page.resync {
                 report.resynced = true;
-                since = self.backfill(&zone, &origin, &arrival, &mut report).await?.max(page.next_cursor);
+                since = self.backfill(&home, &origin, &arrival, &mut report).await?.max(page.next_cursor);
                 break;
             }
             self.apply_objects(&page.objects, &arrival, &mut report).await;
@@ -176,11 +180,11 @@ impl Station {
         Ok(report)
     }
 
-    async fn backfill(&self, zone: &str, origin: &str, arrival: &Arrival, report: &mut SyncReport) -> HsResult<i64> {
+    async fn backfill(&self, home: &HomeRef, origin: &str, arrival: &Arrival, report: &mut SyncReport) -> HsResult<i64> {
         let page: DisplayPage = self
-            .remote_json(zone, origin, "/home/feed?mode=display&limit=30&objects=1")
+            .remote_json(&home.zone, origin, &home.path("feed?mode=display&limit=30&objects=1"))
             .await?
-            .ok_or_else(|| HsError::Unavailable("stream not found".into()))?;
+            .ok_or_else(|| HsError::NotFound("stream not found".into()))?;
         self.apply_objects(&page.objects, arrival, report).await;
         for item in &page.items {
             self.apply_remote_head(&item.head, item.restricted, "", arrival, &page.objects, report).await;
@@ -246,8 +250,8 @@ impl Station {
 
     /// Fetch an object by ObjId from `holder`'s HomeStation and ingest it after checking the id.
     pub async fn fetch_object_from(&self, holder: &str, obj_id: &str, arrival: Arrival) -> HsResult<()> {
-        let (zone, origin) = self.origin_for_did(holder).await?;
-        let response = self.remote_get(&zone, &origin, &format!("/home/objects/{}", normalize_obj_id(obj_id))).await?;
+        let (home, origin) = self.origin_for_did(holder).await?;
+        let response = self.remote_get(&home.zone, &origin, &home.path(&format!("objects/{}", normalize_obj_id(obj_id)))).await?;
         if !response.status().is_success() {
             return Err(HsError::NotFound(format!("{obj_id} not readable at {holder} (HTTP {})", response.status())));
         }
@@ -257,8 +261,8 @@ impl Station {
     }
 
     pub async fn fetch_chunk_from(&self, holder: &str, chunk_id: &str, max_bytes: u64) -> HsResult<Vec<u8>> {
-        let (zone, origin) = self.origin_for_did(holder).await?;
-        let response = self.remote_get(&zone, &origin, &format!("/home/chunks/{}", normalize_obj_id(chunk_id))).await?;
+        let (home, origin) = self.origin_for_did(holder).await?;
+        let response = self.remote_get(&home.zone, &origin, &home.path(&format!("chunks/{}", normalize_obj_id(chunk_id)))).await?;
         if !response.status().is_success() {
             return Err(HsError::NotFound(format!("chunk not readable at {holder} (HTTP {})", response.status())));
         }
@@ -275,15 +279,15 @@ impl Station {
     /// Resolve an entry of another publisher: read its current Head from the namespace owner.
     pub async fn resolve_remote_entry(&self, entry: &str) -> HsResult<Option<crate::publish::HeadRow>> {
         let parsed = EntryRef::parse(entry).map_err(bad)?;
-        let EntryRef::Path { zone, namespace, key } = parsed else {
+        let EntryRef::Path { home, namespace, key } = parsed else {
             return Err(HsError::Unavailable("DID entries resolve through the name service".into()));
         };
-        if zone == self.cfg.zone {
+        if home == self.home() {
             let entry = entry.to_string();
             return self.db.call(move |c| crate::publish::get_head(c, &entry)).await;
         }
-        let origin = self.directory.origin_of_zone(&zone).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
-        let response = self.remote_get(&zone, &origin, &format!("/home/{}/@/{}", namespace.as_str(), key)).await?;
+        let origin = self.directory.origin_of_zone(&home.zone).await.map_err(dir_error)?;
+        let response = self.remote_get(&home.zone, &origin, &home.path(&format!("{}/@/{}", namespace.as_str(), key))).await?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -303,9 +307,9 @@ impl Station {
 
     /// Read another maintainer's comment view on `target` and keep what verifies (§13.3).
     pub async fn pull_comment_view(&self, maintainer: &str, target: &str, as_collector: bool) -> HsResult<Option<CommentViewPage>> {
-        let (zone, origin) = self.origin_for_did(maintainer).await?;
-        let path = format!("/home/comments?target={}", normalize_obj_id(target));
-        let Some(page) = self.remote_json::<CommentViewPage>(&zone, &origin, &path).await? else { return Ok(None) };
+        let (home, origin) = self.origin_for_did(maintainer).await?;
+        let path = home.path(&format!("comments?target={}", normalize_obj_id(target)));
+        let Some(page) = self.remote_json::<CommentViewPage>(&home.zone, &origin, &path).await? else { return Ok(None) };
         let arrival = if as_collector {
             Arrival::Collector { collector: maintainer.to_string() }
         } else {
@@ -336,12 +340,12 @@ impl Station {
             let key = format!("collector_cursor:{}", collector.did);
             let key2 = key.clone();
             let since: i64 = self.db.call(move |c| crate::db::get_meta(c, &key2)).await?.and_then(|v| v.parse().ok()).unwrap_or(0);
-            let (zone, origin) = match self.origin_for_did(&collector.did).await {
+            let (home, origin) = match self.origin_for_did(&collector.did).await {
                 Ok(v) => v,
                 Err(_) => continue,
             };
-            let path = format!("/home/index/recent?since={since}&limit=50");
-            let page: Option<crate::stream::DisplayPage> = match self.remote_json(&zone, &origin, &path).await {
+            let path = home.path(&format!("index/recent?since={since}&limit=50"));
+            let page: Option<crate::stream::DisplayPage> = match self.remote_json(&home.zone, &origin, &path).await {
                 Ok(p) => p,
                 Err(e) => {
                     log::debug!("collector {} unavailable: {e}", collector.did);

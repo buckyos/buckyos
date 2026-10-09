@@ -187,8 +187,8 @@ impl Station {
     }
 
     pub async fn fetch_remote_profile_as(&self, did: &str, as_owner: bool) -> HsResult<Value> {
-        let (zone, origin) = self.origin_for_did(did).await?;
-        let response = self.remote_get_as(&zone, &origin, "/home/profile", as_owner).await?;
+        let (home, origin) = self.origin_for_did(did).await?;
+        let response = self.remote_get_as(&home.zone, &origin, &home.path("profile"), as_owner).await?;
         if !response.status().is_success() {
             return Err(HsError::Unavailable(format!("profile HTTP {}", response.status())));
         }
@@ -299,13 +299,37 @@ impl Station {
         }
     }
 
-    /// Whether a URL is served by a HomeStation (its `/home/profile` names a DID).
+    /// Whether a URL is a HomeStation page: `/homestation/<user>[/…]` or `/home/<user>/…` names
+    /// a user's home, the zone's `/` opens its default feed (§4.4); the home's profile gives
+    /// the DID. The zone feed is not a person and is not followed this way.
     async fn homestation_at(&self, input: &str) -> HsResult<Option<String>> {
         let url = url::Url::parse(input).map_err(|_| bad("invalid url"))?;
-        let origin = url.origin().ascii_serialization();
+        let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+        let zone_host = host.strip_prefix("www.").or_else(|| host.strip_prefix("homestation.")).unwrap_or(&host).to_string();
+        let origin = format!("{}://{}{}", url.scheme(), zone_host, url.port().map(|p| format!(":{p}")).unwrap_or_default());
+        let mut segments = url.path_segments().map(|s| s.filter(|x| !x.is_empty()).collect::<Vec<_>>()).unwrap_or_default();
+        let user = match segments.first().copied() {
+            Some("homestation") | Some("home") if segments.len() >= 2 => segments.remove(1).to_string(),
+            None => {
+                let index = self.http.get(format!("{origin}/home/")).timeout(std::time::Duration::from_secs(5)).send().await;
+                let Ok(index) = index else { return Ok(None) };
+                if !index.status().is_success() {
+                    return Ok(None);
+                }
+                let index: Value = index.json().await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+                match index.get("defaultFeed").and_then(Value::as_str) {
+                    Some(feed) => feed.to_string(),
+                    None => return Ok(None),
+                }
+            }
+            _ => return Ok(None),
+        };
+        if !crate::protocol::valid_user_segment(&user) || user == crate::protocol::ZONE_FEED {
+            return Ok(None);
+        }
         let response = self
             .http
-            .get(format!("{origin}/home/profile"))
+            .get(format!("{origin}/home/{user}/profile"))
             .timeout(std::time::Duration::from_secs(5))
             .send()
             .await
@@ -445,8 +469,8 @@ impl Station {
             return Err(bad("cannot follow yourself"));
         }
         name_lib::DID::from_str(did).map_err(|_| bad("invalid DID"))?;
-        if self.is_local_principal(did).await {
-            return Err(bad("users of this zone share this HomeStation and have no stream of their own yet"));
+        if let Err(crate::directory::DirError::NotFound(_)) = self.directory.home_of(did).await {
+            return Err(bad("homestation.follow.noHome"));
         }
         let did_s = did.to_string();
         let name = name.to_string();
@@ -499,13 +523,13 @@ impl Station {
         let published = match (row, head, active) {
             (None, _, false) => return Ok(()),
             (None, _, true) => {
-                let zone = self.directory.zone_of(did).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+                let home = self.directory.home_of(did).await.map_err(crate::pull::dir_error)?;
                 let follow = FollowDeclaration {
                     kind: FOLLOW_KIND.into(),
                     publisher: self.cfg.owner.clone(),
                     iat: now_s(),
                     entry: entry.clone(),
-                    target: FollowTarget { publisher: did.to_string(), stream: stream_url(&zone) },
+                    target: FollowTarget { publisher: did.to_string(), stream: home.stream() },
                 };
                 self.publish_version(NewVersion {
                     entry: entry.clone(),
@@ -596,9 +620,11 @@ impl Station {
         let contacts = self.contacts.list().await;
         let mut friends: Vec<(String, String)> = Vec::new();
         for c in contacts.iter().filter(|c| c.friend && !c.blocked && c.did != self.cfg.owner) {
-            if !self.is_local_principal(&c.did).await {
-                friends.push((c.did.clone(), c.name.clone()));
+            // Friends without a HomeStation (agents, people whose zone has none) have no stream to follow.
+            if let Err(crate::directory::DirError::NotFound(_)) = self.directory.home_of(&c.did).await {
+                continue;
             }
+            friends.push((c.did.clone(), c.name.clone()));
         }
         for (did, name) in &friends {
             if let Err(e) = self.follow_did(did, name, "friend", None).await {

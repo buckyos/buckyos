@@ -6,7 +6,8 @@ use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-pub const SCHEMA_VERSION: i64 = 1;
+/// 2: per-user homes (`cyfs://<zone>/home/<user>/...` entries).
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -375,7 +376,12 @@ pub struct Db {
 }
 
 impl Db {
+    /// A user's HomeStation database.
     pub fn open(path: &Path) -> HsResult<Self> {
+        Self::open_schema(path, SCHEMA, SCHEMA_VERSION)
+    }
+
+    pub fn open_schema(path: &Path, schema: &str, schema_version: i64) -> HsResult<Self> {
         // The runtime names the service data folder but does not create it on a fresh install.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| HsError::Internal(format!("create {}: {e}", parent.display())))?;
@@ -385,14 +391,14 @@ impl Db {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
-        conn.execute_batch(SCHEMA)?;
+        conn.execute_batch(schema)?;
         let version: Option<String> =
             conn.query_row("SELECT value FROM meta WHERE key='schema_version'", [], |r| r.get(0)).optional()?;
         match version {
             None => {
-                conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?1)", [SCHEMA_VERSION.to_string()])?;
+                conn.execute("INSERT INTO meta(key, value) VALUES ('schema_version', ?1)", [schema_version.to_string()])?;
             }
-            Some(v) if v == SCHEMA_VERSION.to_string() => {}
+            Some(v) if v == schema_version.to_string() => {}
             Some(v) => return Err(HsError::Internal(format!("unsupported schema version {v}"))),
         }
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
@@ -453,7 +459,7 @@ mod tests {
         let path = dir.path().join("data").join("homestation").join("homestation.db");
         let db = Db::open(&path).unwrap();
         let version = db.with(|c| get_meta(c, "schema_version")).unwrap();
-        assert_eq!(version.as_deref(), Some("1"));
+        assert_eq!(version.as_deref(), Some("2"));
         drop(db);
         Db::open(&path).unwrap();
     }

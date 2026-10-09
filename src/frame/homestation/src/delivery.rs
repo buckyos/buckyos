@@ -4,7 +4,6 @@
 
 use crate::error::{HsError, HsResult};
 use crate::objects::get_object;
-use crate::protocol::inbox_target;
 use crate::{now_ms, Station};
 use ndn_lib::{parse_cyfs_dispatch_result, CyfsDispatchStatus, ObjId};
 use rusqlite::{params, OptionalExtension};
@@ -50,7 +49,7 @@ impl Station {
         let owner = self.cfg.owner.clone();
         let mut rows = Vec::new();
         for recipient in recipients {
-            if recipient == &owner || self.is_local_principal(recipient).await {
+            if recipient == &owner || self.directory.known_without_home(recipient).await {
                 continue;
             }
             for (i, obj_id) in obj_ids.iter().enumerate() {
@@ -124,13 +123,10 @@ impl Station {
             let tier = audience
                 .and_then(|a| serde_json::from_str::<crate::audience::AudienceSpec>(&a).ok())
                 .map(|a| a.tier().to_string());
-            let outcome = if self.is_local_principal(&recipient).await {
-                Ok((None, DispatchOutcome::Rejected { reason: "local-principal".into(), retryable: false }))
-            } else {
-                self.dispatch_to(&obj_id, &recipient, tier).await
-            };
-            let (target, outcome) = match outcome {
+            let (target, outcome) = match self.dispatch_to(&obj_id, &recipient, tier).await {
                 Ok(v) => v,
+                // The recipient definitely has no HomeStation (an agent, an unknown user): retrying cannot help.
+                Err(HsError::NotFound(detail)) => (None, DispatchOutcome::Rejected { reason: format!("no-homestation: {detail}"), retryable: false }),
                 Err(e) => (None, DispatchOutcome::NoResponse { detail: e.to_string() }),
             };
             let result_json = serde_json::to_string(&outcome).unwrap_or_default();
@@ -176,27 +172,25 @@ impl Station {
         Ok(())
     }
 
-    /// PUT one object to `cyfs://<zone of recipient>/home/inbox`.
+    /// PUT one object to the recipient's inbox `cyfs://<zone>/home/<user>/inbox`.
     pub async fn dispatch_to(&self, obj_id: &str, recipient: &str, tier: Option<String>) -> HsResult<(Option<String>, DispatchOutcome)> {
         let id = obj_id.to_string();
         let obj = self
             .db
             .call(move |c| get_object(c, &id))
             .await?
-            .ok_or_else(|| HsError::NotFound(format!("object {obj_id} vanished")))?;
-        let zone = self.directory.zone_of(recipient).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
-        let target = inbox_target(&zone);
-        let origin = self.directory.origin_of_zone(&zone).await.map_err(|e| HsError::Unavailable(e.to_string()))?;
+            .ok_or_else(|| HsError::Internal(format!("object {obj_id} vanished")))?;
+        let (home, origin) = self.origin_for_did(recipient).await?;
+        let target = home.inbox();
         let (body, content_type) = obj.wire();
-        let outcome = self.dispatch_raw(&origin, &zone, &target, obj_id, body, content_type, tier.as_deref()).await;
+        let outcome = self.dispatch_raw(&origin, &home, obj_id, body, content_type, tier.as_deref()).await;
         Ok((Some(target), outcome))
     }
 
     pub async fn dispatch_raw(
         &self,
         origin: &str,
-        zone: &str,
-        target: &str,
+        home: &crate::protocol::HomeRef,
         obj_id: &str,
         body: String,
         content_type: &str,
@@ -206,11 +200,13 @@ impl Station {
             Ok(id) => id,
             Err(e) => return DispatchOutcome::Rejected { reason: format!("invalid object id: {e}"), retryable: false },
         };
-        let url = format!("{}/home/inbox", origin.trim_end_matches('/'));
+        let target = home.inbox();
+        let target = target.as_str();
+        let url = format!("{}{}", origin.trim_end_matches('/'), home.path("inbox"));
         let mut request = self
             .http
             .put(&url)
-            .header("host", zone)
+            .header("host", &home.zone)
             .header("content-type", content_type)
             .header("cyfs-obj-id", expected.to_base32())
             .header("cyfs-original-user", self.cfg.owner.clone())

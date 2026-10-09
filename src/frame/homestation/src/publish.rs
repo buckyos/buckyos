@@ -294,7 +294,7 @@ pub struct NewVersion {
 
 impl Station {
     pub fn own_entry(&self, namespace: EntryNamespace, key: &str) -> String {
-        entry_url(&self.cfg.zone, namespace, key)
+        self.home().entry(namespace, key)
     }
 
     pub fn sign_object(&self, obj_type: &'static str, claims: &Value) -> HsResult<StoredObject> {
@@ -322,9 +322,9 @@ impl Station {
         let signer = self.signer.clone();
         let owner = self.cfg.owner.clone();
         let key = match EntryRef::parse(&version.entry).map_err(bad)? {
-            EntryRef::Path { zone, namespace, key } => {
-                if zone != self.cfg.zone {
-                    return Err(bad("entry is not in this zone"));
+            EntryRef::Path { home, namespace, key } => {
+                if home != self.home() {
+                    return Err(bad("entry is not in this user's home"));
                 }
                 (namespace, key)
             }
@@ -372,6 +372,7 @@ impl Station {
             })
             .await?;
         self.bump(&["published", "profile"]);
+        self.zone_touch(&result.entry, "head").await;
         Ok(result)
     }
 
@@ -398,6 +399,7 @@ impl Station {
             })
             .await?;
         self.bump(&["published", "profile", "comments", "saved"]);
+        self.zone_touch(&result.entry, "head").await;
         Ok(result)
     }
 
@@ -429,6 +431,7 @@ impl Station {
             })
             .await?;
         self.bump(&["published", "profile"]);
+        self.zone_touch(&entry, "audience").await;
         if seq.state == HeadState::Active {
             let recipients = self.audience_recipients(&audience).await;
             let mut objects = versions.last().cloned().into_iter().collect::<Vec<_>>();
@@ -641,11 +644,17 @@ pub struct PublishInput {
     pub category: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Also list the post in the zone feed (§4.6); public posts only.
+    #[serde(default)]
+    pub zone_feed: bool,
 }
 
 impl PublishInput {
     pub fn validate(&self) -> HsResult<()> {
         self.audience.validate().map_err(bad)?;
+        if self.zone_feed && !self.audience.is_public() {
+            return Err(bad("homestation.validation.zoneFeedPublic"));
+        }
         if self.text.trim().chars().count() > 2000 {
             return Err(bad("homestation.validation.textTooLong"));
         }
@@ -727,6 +736,9 @@ impl Station {
     /// Publish a new post for an intent key; the same key never produces a second post (A41).
     pub async fn publish(&self, key: &str, input: PublishInput) -> HsResult<PublishTaskRow> {
         input.validate()?;
+        if input.zone_feed {
+            self.check_zone_writer().await?;
+        }
         self.run_task(key, TaskSource::Input(input)).await
     }
 
@@ -870,7 +882,13 @@ impl Station {
         }
         let entry = self.own_entry(EntryNamespace::Feed, &new_id("p"));
         obj.entry = Some(entry.clone());
-        self.publish_post_object(obj, input.audience.clone(), input.category.clone()).await
+        let published = self.publish_post_object(obj, input.audience.clone(), input.category.clone()).await?;
+        if input.zone_feed {
+            if let Err(e) = self.set_zone_listing(&published.entry, true).await {
+                log::warn!("listing {} in the zone feed failed: {e}", published.entry);
+            }
+        }
+        Ok(published)
     }
 
     pub async fn publish_post_object(&self, obj: FeedObject, audience: AudienceSpec, category: Option<String>) -> HsResult<Published> {

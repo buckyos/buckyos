@@ -1,4 +1,4 @@
-import { Bug, Lock, PenSquare, Send } from 'lucide-react'
+import { Bug, Globe2, Lock, PenSquare, Send } from 'lucide-react'
 import { useCallback, useMemo, useState } from 'react'
 import useSWR from 'swr'
 import { useWindowDialog } from '../../../desktop/windows/dialogs'
@@ -15,6 +15,7 @@ import { EmptyState, ErrorState, ListSkeleton, PageHeader } from '../ui/primitiv
 
 const selectEntries = (store: HomeStationStore) => store.peekEntries()
 const selectGroups = (store: HomeStationStore) => store.peekGroups()
+const selectHome = (store: HomeStationStore) => store.peekHome()
 
 function HeadDebugPanel() {
   const { t, locale } = useI18n()
@@ -66,16 +67,24 @@ function PublishedRow({ row }: { row: PublishedEntryView }) {
   const store = useHomeStationStore()
   const actions = useItemActions()
   const groups = useStoreSelector(selectGroups)
+  const home = useStoreSelector(selectHome)
   const label = audienceLabel(t, row.audience.spec, groups, did => store.peekIdentity(did).name)
   const withdrawn = row.head.state === 'withdrawn'
+  const listable = !withdrawn && (row.kind === 'post' || row.kind === 'quote') && !row.audience.restricted && !!home?.zoneFeed.writer
   const footer = (
     <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]" data-testid="hs-published-meta">
       <span className={row.audience.restricted ? 'hs-badge is-accent' : 'hs-badge'} data-testid="hs-published-audience">{row.audience.restricted ? <Lock size={10} /> : null}{label}</span>
       {row.audience.spec.kind === 'dids' && row.kind === 'comment' ? <span className="hs-badge">{t('homestation.published.notOnHomepage', 'Not on your public homepage')}</span> : null}
       <span className="hs-badge" title={row.entry}>{t('homestation.published.head', 'Head seq {{seq}} · {{state}}', { seq: row.head.seq, state: withdrawn ? t('homestation.version.withdrawn', 'Withdrawn') : t('homestation.published.active', 'active') })}</span>
+      {row.zoneFeed ? <span className="hs-badge is-success" data-testid="hs-published-zone"><Globe2 size={10} />{t('homestation.published.onZone', 'On {{zone}}', { zone: home?.zoneFeed.name ?? '' })}</span> : null}
       {!withdrawn ? <PublishStatus task={row.task} onRetry={row.task?.stage === 'failed' ? () => void store.retryPublish(row.task!.key) : row.task?.delivery?.state === 'partially_failed' ? () => void store.retryDelivery(row.entry) : undefined} /> : null}
       {!withdrawn ? (
         <span className="ml-auto flex gap-1">
+          {listable || row.zoneFeed ? (
+            <button type="button" className="hs-badge" onClick={() => void store.setZoneListing(row.entry, !row.zoneFeed)} data-testid="hs-published-zone-toggle">
+              {row.zoneFeed ? t('homestation.published.zoneRemove', 'Remove from zone page') : t('homestation.published.zoneAdd', 'Show on zone page')}
+            </button>
+          ) : null}
           <button type="button" className="hs-badge is-accent" onClick={() => void actions.changeAudience(row.entry, row.audience.spec)} data-testid="hs-published-audience-btn">{t('homestation.menu.audience', 'Change audience')}</button>
           <button type="button" className="hs-badge is-danger" onClick={() => void (row.kind === 'like' || row.kind === 'bookmark' ? store.withdraw(row.entry) : actions.withdraw(row.entry))} data-testid="hs-published-withdraw">{row.kind === 'like' ? t('homestation.like.unlike', 'Unlike') : row.kind === 'bookmark' ? t('homestation.bookmark.makePrivate', 'Make private') : t('homestation.menu.withdraw', 'Withdraw')}</button>
         </span>

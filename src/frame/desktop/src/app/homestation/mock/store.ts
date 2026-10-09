@@ -11,6 +11,7 @@ import type {
   EntryState,
   FeedItemView,
   FilterRule,
+  HomeInfo,
   IdentityView,
   InteractionStats,
   MuteRule,
@@ -38,7 +39,7 @@ import { EMPTY_PERSONAL } from '../datamodel/types'
 import type { AttachmentInput, PublishInput } from '../datamodel/inputs'
 import { commentTarget, type CommentType, type Did, type EntryUrl, type FeedContent, type FeedObject, type ObjId } from '../protocol/feed'
 import type { CommentList, CommentTypeFilter, EntryDebugView, HomeStationStore, StoreDomain, TagOverride } from '../store/types'
-import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, type MockDb, type StoredEntry } from './data'
+import { feedEntry, fid, oid, OWNER_DID, reactionEntry, seedDatabase, userOf, zoneOf, type MockDb, type StoredEntry } from './data'
 
 export interface StoreScenario {
   empty: boolean
@@ -78,6 +79,8 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
   const failedOnce = new Set<string>()
   const taskInputs = new Map<string, { input: PublishInput; shareOf?: ObjId }>()
   const captureShares = new Map<ObjId, ObjId>()
+  // Entries the owner listed in the zone feed (§4.6).
+  const zoneListed = new Set<EntryUrl>()
   let version = 0
   let runtimeCounter = 0
   let publishFailed = false
@@ -560,6 +563,7 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
     }
     const { objId, entry } = createEntry(feedEntry(db.owner, nextKey(stored.shareOf ? 'clip' : 'post')), object, input.audience, 'post')
     if (stored.shareOf) captureShares.set(stored.shareOf, objId)
+    if (input.zoneFeed) zoneListed.add(entry.entry)
     task.stage = 'published'
     task.entry = entry.entry
     task.objId = objId
@@ -607,6 +611,7 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
         task: isOwner ? entry.task : undefined,
         kind: entry.kind,
         publishedAt: entry.publishedAt,
+        ...(zoneListed.has(entry.entry) ? { zoneFeed: true } : {}),
       })
     }
     return rows.sort((left, right) => right.publishedAt - left.publishedAt)
@@ -617,6 +622,9 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
   }
 
   for (const entry of [...db.entries.values()].filter(entry => entry.publisher === db.owner).sort((left, right) => left.publishedAt - right.publishedAt)) appendChange(entry)
+  // The owner's newest public post starts out listed in the zone feed.
+  const firstListed = [...db.entries.values()].filter(entry => entry.publisher === db.owner && entry.kind === 'post' && entry.audience.kind === 'public').sort((left, right) => right.publishedAt - left.publishedAt)[0]
+  if (firstListed) zoneListed.add(firstListed.entry)
 
   const store = {
     id,
@@ -641,6 +649,9 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
     peekCollector: () => db.collector,
     peekPreviewReaders: () => ({ follower: 'did:bns:sarah', friend: 'did:bns:bob' }),
     peekMuteCandidates: (): Did[] => [...new Set([...(db.friends.get(db.owner) ?? []), 'did:bns:sarah', 'did:bns:david'])],
+    peekHome: (): HomeInfo => ({ zone: zoneOf(db.owner), user: userOf(db.owner), defaultFeed: userOf(db.owner), zoneFeed: { feed: '~zone', name: `${zoneOf(db.owner)}`, writer: true } }),
+    /** Listed entries of the zone feed, newest first (mock portal). */
+    zoneEntries: (): EntryUrl[] => [...zoneListed].reverse(),
 
     peekCard: card,
     peekIdentity: identityView,
@@ -1003,6 +1014,13 @@ export function createHomeStationStore(scenario: StoreScenario = { empty: false,
       const objId = newObjectVersion(entry, { ...previous, content, base_on: current })
       emit('published', 'profile', 'comments', 'reading')
       return objId
+    },
+
+    async setZoneListing(entryUrl: EntryUrl, listed: boolean): Promise<void> {
+      await delay()
+      if (listed) zoneListed.add(entryUrl)
+      else zoneListed.delete(entryUrl)
+      emit('published')
     },
 
     async setAudience(entryUrl: EntryUrl, audience: AudienceSpec): Promise<void> {

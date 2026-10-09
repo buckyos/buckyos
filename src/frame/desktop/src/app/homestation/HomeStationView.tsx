@@ -1,5 +1,5 @@
 import { useMediaQuery } from '@mui/material'
-import { Hash, PanelRightOpen, PenSquare, Search, X } from 'lucide-react'
+import { ExternalLink, Hash, Link2, PanelRightOpen, PenSquare, Search, X } from 'lucide-react'
 import { useCallback, useMemo, useRef, useState } from 'react'
 import { WindowDialogProvider } from '../../desktop/windows/dialogs'
 import { useI18n } from '../../i18n/provider'
@@ -11,6 +11,7 @@ import { FeedPage } from './feed/FeedPage'
 import { ImmersiveMode } from './ImmersiveMode'
 import { InfoPanel } from './InfoPanel'
 import { INFO_PANEL_DEFAULT_WIDTH, INFO_PANEL_HIDE_BELOW, INFO_PANEL_MAX_WIDTH, INFO_PANEL_MIN_WIDTH, PANEL_SPLITTER_WIDTH, SIDEBAR_COLLAPSE_BELOW, SIDEBAR_COLLAPSED_WIDTH, SIDEBAR_WIDTH } from './layout'
+import { portalHref, portalShareUrl } from './links'
 import { MePage } from './MePage'
 import { installHomeStationPreviewSource } from './media'
 import { HsNavContext, useHsNav, type HsNav, type HsPage } from './navContext'
@@ -27,6 +28,7 @@ import type { HomeStationStore } from './store/types'
 import type { ReadingMode } from './types'
 import { Avatar, PageHeader } from './ui/primitives'
 import { ToastHost } from './ui/ToastHost'
+import { useToast } from './ui/toastContext'
 
 installHomeStationPreviewSource()
 
@@ -34,6 +36,7 @@ const OWNER_READER = { kind: 'owner' } as const
 const DEFAULT_QUERY: ReadingQuery = { filter: 'all', topicId: null, search: '', showFiltered: false }
 const selectTopics = (store: HomeStationStore) => store.peekTopics()
 const selectOwner = (store: HomeStationStore) => store.peekIdentity(store.owner)
+const selectHome = (store: HomeStationStore) => store.peekHome()
 
 function TopBar({ query, onQueryChange, showSearch, onToggleSearch, onAvatar, trailing, isMobile }: { query: ReadingQuery; onQueryChange: (patch: Partial<ReadingQuery>) => void; showSearch: boolean; onToggleSearch: () => void; onAvatar?: () => void; trailing?: React.ReactNode; isMobile: boolean }) {
   const { t } = useI18n()
@@ -134,7 +137,29 @@ function PageContent({ page, query, onQueryChange, readingMode, onReadingModeCha
 function ProfileHeader() {
   const { t } = useI18n()
   const nav = useHsNav()
-  return <PageHeader title={t('homestation.nav.profile', 'My homepage')} subtitle={t('homestation.profile.subtitle', 'Your home feed, read the way visitors read it')} onBack={nav.isDesktop ? undefined : nav.back} backLabel={t('common.back', 'Back')} />
+  const toast = useToast()
+  const home = useStoreSelector(selectHome)
+  const actions = home ? (
+    <>
+      <a className="hs-icon-btn" href={portalHref(home.user)} target="_blank" rel="noreferrer" title={t('homestation.profile.openPublic', 'Open my public page')} aria-label={t('homestation.profile.openPublic', 'Open my public page')} data-testid="hs-profile-open-public">
+        <ExternalLink size={16} />
+      </a>
+      <button
+        type="button"
+        className="hs-icon-btn"
+        title={t('homestation.profile.copyLink', 'Copy link to my page')}
+        aria-label={t('homestation.profile.copyLink', 'Copy link to my page')}
+        data-testid="hs-profile-copy-link"
+        onClick={() => {
+          const url = portalShareUrl(home.user)
+          void navigator.clipboard?.writeText(url).then(() => toast({ text: t('homestation.profile.linkCopied', 'Link copied: {{url}}', { url }) }), () => toast({ text: url }))
+        }}
+      >
+        <Link2 size={16} />
+      </button>
+    </>
+  ) : undefined
+  return <PageHeader title={t('homestation.nav.profile', 'My homepage')} subtitle={t('homestation.profile.subtitle', 'Your home feed, read the way visitors read it')} onBack={nav.isDesktop ? undefined : nav.back} backLabel={t('common.back', 'Back')} actions={actions} />
 }
 
 function PublishHeader() {

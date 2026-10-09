@@ -187,12 +187,17 @@ test.describe('HomeStation prototype (architecture v0.6)', () => {
     }
     expect(counts.anonymous).toBeLessThan(counts.follower)
     expect(counts.follower).toBeLessThan(counts.friend)
-    await page.goto('/homestation/u/did:bns:leo?reader=friend')
-    await expect(page.getByTestId('hs-profile-list')).toContainText('Saturday trail plan')
-    await page.getByTestId('hs-visitor-reader-anonymous').click()
+    // The public portal of the same home feed reads as an anonymous visitor.
+    await page.goto('/homestation/leo')
+    await expect(page.getByTestId('hs-portal')).toHaveAttribute('data-feed', 'leo')
+    await expect(page.getByTestId('hs-portal-sign-in')).toBeVisible()
     await expect(page.getByTestId('hs-profile-list').getByTestId('hs-card').first()).toBeVisible()
+    await expect(page.getByTestId('hs-profile-list').getByTestId('hs-card')).toHaveCount(4)
     await expect(page.getByTestId('hs-profile-list')).not.toContainText('Saturday trail plan')
     await expect(page.getByTestId('hs-profile-list')).not.toContainText('Notes for followers')
+    await page.getByTestId('hs-portal-zone').click()
+    await expect(page.getByTestId('hs-portal')).toHaveAttribute('data-feed', '~zone')
+    await expect(page.getByTestId('hs-zone-list').getByTestId('hs-card')).toHaveCount(1)
     expect(errors).toEqual([])
   })
 

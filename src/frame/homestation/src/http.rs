@@ -1,11 +1,14 @@
-//! HTTP surface: owner kRPC at `/kapi/homestation`, uploads, and the cross-node protocol paths
-//! under `/home/` (stream, entries, objects, chunks, comment views, profile, inbox).
+//! HTTP surface: kRPC at `/kapi/homestation` (each user's own HomeStation, plus `portal.*`
+//! for anyone), uploads, and the cross-node protocol paths under `/home/`: the zone index and
+//! DID lookup at `/home/`, each user's home at `/home/<user>/...` (stream, entries, objects,
+//! chunks, comment views, profile, inbox) and the zone feed at `/home/~zone/...`.
 
 use crate::audience::Reader;
-use crate::auth::{reader_from_request, Authenticator, Caller};
+use crate::auth::{reader_from_request, Caller};
 use crate::delivery::HEADER_AUDIENCE;
 use crate::error::HsError;
-use crate::protocol::{normalize_obj_id, obj_type_of, OBJ_TYPE_FILE};
+use crate::host::{Host, Viewer};
+use crate::protocol::{normalize_obj_id, obj_type_of, OBJ_TYPE_FILE, ZONE_FEED};
 use crate::Station;
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, Path, Query, State};
@@ -22,8 +25,7 @@ pub const MAX_UPLOAD: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub station: Arc<Station>,
-    pub auth: Arc<dyn Authenticator>,
+    pub host: Arc<Host>,
 }
 
 pub fn router(state: AppState) -> Router {
@@ -31,15 +33,16 @@ pub fn router(state: AppState) -> Router {
         .route(KRPC_PATH, post(krpc))
         .route(&format!("{KRPC_PATH}/"), post(krpc))
         .route(&format!("{KRPC_PATH}/upload"), axum::routing::put(upload).post(upload))
-        .route("/home/feed", get(feed))
-        .route("/home/profile", get(profile))
-        .route("/home/comments", get(comments))
-        .route("/home/index/recent", get(collector_recent))
-        .route("/home/objects/{id}", get(object))
-        .route("/home/objects/{id}/content", get(object_content))
-        .route("/home/chunks/{id}", get(chunk))
-        .route("/home/inbox", axum::routing::put(inbox_put).get(inbox_status))
-        .route("/home/{ns}/@/{key}", get(entry_head))
+        .route("/home/", get(zone_index))
+        .route("/home/{user}/feed", get(feed))
+        .route("/home/{user}/profile", get(profile))
+        .route("/home/{user}/comments", get(comments))
+        .route("/home/{user}/index/recent", get(collector_recent))
+        .route("/home/{user}/objects/{id}", get(object))
+        .route("/home/{user}/objects/{id}/content", get(object_content))
+        .route("/home/{user}/chunks/{id}", get(chunk))
+        .route("/home/{user}/inbox", axum::routing::put(inbox_put).get(inbox_status))
+        .route("/home/{user}/{ns}/@/{key}", get(entry_head))
         .route("/healthz", get(|| async { "ok" }))
         .layer(DefaultBodyLimit::max(MAX_UPLOAD + 1024))
         .with_state(state)
@@ -67,12 +70,19 @@ async fn krpc(State(state): State<AppState>, body: Bytes) -> Response {
     let seq = req["sys"][0].as_u64().unwrap_or(0);
     let Some(method) = req["method"].as_str().map(str::to_string) else { return rpc_error(seq, "method required") };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
-    let Some(token) = req["sys"][1].as_str().filter(|t| !t.trim().is_empty()) else { return rpc_error(seq, "session token required") };
-    let caller = match state.auth.authenticate(token).await {
-        Ok(c) => c,
-        Err(e) => return rpc_error(seq, &format!("unauthorized: {e}")),
+    let portal = method.starts_with("portal.");
+    let token = req["sys"][1].as_str().filter(|t| !t.trim().is_empty());
+    let caller = match token {
+        Some(token) => match state.host.auth.authenticate(token).await {
+            Ok(c) => Some(c),
+            // A stale session must not hide public pages: portal reads fall back to anonymous.
+            Err(_) if portal => None,
+            Err(e) => return rpc_error(seq, &format!("unauthorized: {e}")),
+        },
+        None if portal => None,
+        None => return rpc_error(seq, "session token required"),
     };
-    match state.station.handle_rpc(&caller, &method, params).await {
+    match state.host.handle_rpc(caller.as_ref(), &method, params).await {
         Ok(v) => Json(json!({ "result": v, "sys": [seq] })).into_response(),
         Err(e) => rpc_error(seq, &e.to_string()),
     }
@@ -90,7 +100,20 @@ async fn caller_from_bearer(state: &AppState, headers: &HeaderMap, query: &HashM
         .map(str::to_string)
         .or_else(|| query.get("access").cloned())
         .ok_or_else(|| (StatusCode::UNAUTHORIZED, "session token required").into_response())?;
-    state.auth.authenticate(&token).await.map_err(|e| (StatusCode::UNAUTHORIZED, e).into_response())
+    state.host.auth.authenticate(&token).await.map_err(|e| (StatusCode::UNAUTHORIZED, e).into_response())
+}
+
+fn not_found(what: &str) -> Response {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": "not_found", "message": what }))).into_response()
+}
+
+/// The station serving `/home/<user>/...`.
+async fn station_of(state: &AppState, user: &str) -> Result<Arc<Station>, Response> {
+    match state.host.station(user).await {
+        Ok(Some(station)) => Ok(station),
+        Ok(None) => Err(not_found("no such home")),
+        Err(e) => Err(error_response(e)),
+    }
 }
 
 /// `PUT /kapi/homestation/upload?name=&mime=[&width=&height=&duration_ms=]`: store one
@@ -100,9 +123,11 @@ async fn upload(State(state): State<AppState>, headers: HeaderMap, Query(query):
         Ok(c) => c,
         Err(r) => return r,
     };
-    if caller.did.as_deref() != Some(state.station.owner()) {
-        return (StatusCode::FORBIDDEN, "only the owner uploads").into_response();
-    }
+    let station = match state.host.station_for_caller(&caller).await {
+        Ok(Some(station)) => station,
+        Ok(None) => return (StatusCode::FORBIDDEN, "this account has no HomeStation here").into_response(),
+        Err(e) => return error_response(e),
+    };
     if body.is_empty() || body.len() > MAX_UPLOAD {
         return (StatusCode::PAYLOAD_TOO_LARGE, "file must be 1 byte to 32 MiB").into_response();
     }
@@ -114,19 +139,20 @@ async fn upload(State(state): State<AppState>, headers: HeaderMap, Query(query):
             meta.insert(key.into(), json!(v));
         }
     }
-    match state.station.store_file(&name, &mime, body.to_vec(), Value::Object(meta)).await {
+    match station.store_file(&name, &mime, body.to_vec(), Value::Object(meta)).await {
         Ok((obj_id, body)) => Json(json!({ "objId": obj_id, "file": crate::projection::file_view(&body), "object": body })).into_response(),
         Err(e) => error_response(e),
     }
 }
 
-async fn reader(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<Reader, Response> {
+/// Reader of one user's home: that user (owner view), another identity, or anonymous.
+async fn reader(state: &AppState, station: &Station, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<Reader, Response> {
     let authorization = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
     reader_from_request(
-        state.auth.as_ref(),
-        state.station.directory.as_ref(),
-        state.station.owner(),
-        &state.station.cfg.zone,
+        state.host.auth.as_ref(),
+        state.host.directory.as_ref(),
+        station.owner(),
+        &state.host.cfg.zone,
         authorization,
         query.get("access").map(String::as_str),
     )
@@ -134,21 +160,66 @@ async fn reader(state: &AppState, headers: &HeaderMap, query: &HashMap<String, S
     .map_err(|e| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized", "message": e }))).into_response())
 }
 
-/// `GET /home/feed?mode=display|changes` (§4.4).
-async fn feed(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
-        Ok(r) => r,
-        Err(r) => return r,
-    };
+/// Reader of the zone feed: no owner there, each listed entry is judged by its own station.
+async fn viewer(state: &AppState, headers: &HeaderMap, query: &HashMap<String, String>) -> Result<Viewer, Response> {
+    let authorization = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let reader = reader_from_request(
+        state.host.auth.as_ref(),
+        state.host.directory.as_ref(),
+        "",
+        &state.host.cfg.zone,
+        authorization,
+        query.get("access").map(String::as_str),
+    )
+    .await
+    .map_err(|e| (StatusCode::UNAUTHORIZED, Json(json!({ "error": "unauthorized", "message": e }))).into_response())?;
+    Ok(Viewer::from_reader(&reader, ""))
+}
+
+/// `GET /home/`: the zone's default feed and zone feed; `?did=` locates a user's home (§4.4).
+async fn zone_index(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+    match q.get("did") {
+        Some(did) => match state.host.locate(did).await {
+            Some(home) => no_store(Json(home).into_response()),
+            None => not_found("no HomeStation for this DID here"),
+        },
+        None => no_store(Json(state.host.zone_index().await).into_response()),
+    }
+}
+
+/// `GET /home/<user>/feed?mode=display|changes` (§4.4), `GET /home/~zone/feed` (§4.6).
+async fn feed(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
     let with_objects = q.get("objects").is_some_and(|v| v == "1" || v == "true");
     let limit = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(20);
-    let result = match q.get("mode").map(String::as_str).unwrap_or("display") {
-        "changes" => {
-            let since = q.get("since").and_then(|v| v.parse().ok()).unwrap_or(0);
-            state.station.read_changes(&reader, since, limit.max(100), with_objects).await.map(|p| json!(p))
+    let mode = q.get("mode").map(String::as_str).unwrap_or("display");
+    if mode != "changes" && mode != "display" {
+        return (StatusCode::BAD_REQUEST, "mode is display or changes").into_response();
+    }
+    let since = q.get("since").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let result = if user == ZONE_FEED {
+        let viewer = match viewer(&state, &headers, &q).await {
+            Ok(v) => v,
+            Err(r) => return r,
+        };
+        if mode == "changes" {
+            state.host.zone_changes(&viewer, since, limit.max(100), with_objects).await.map(|p| json!(p))
+        } else {
+            state.host.zone_display(&viewer, q.get("cursor").cloned(), limit, with_objects).await.map(|p| json!(p))
         }
-        "display" => state.station.read_display(&reader, q.get("kind").cloned(), q.get("cursor").cloned(), limit, with_objects).await.map(|p| json!(p)),
-        _ => return (StatusCode::BAD_REQUEST, "mode is display or changes").into_response(),
+    } else {
+        let station = match station_of(&state, &user).await {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        let reader = match reader(&state, &station, &headers, &q).await {
+            Ok(r) => r,
+            Err(r) => return r,
+        };
+        if mode == "changes" {
+            station.read_changes(&reader, since, limit.max(100), with_objects).await.map(|p| json!(p))
+        } else {
+            station.read_display(&reader, q.get("kind").cloned(), q.get("cursor").cloned(), limit, with_objects).await.map(|p| json!(p))
+        }
     };
     match result {
         Ok(v) => no_store(Json(v).into_response()),
@@ -171,60 +242,78 @@ fn named_object_response(wire: String, content_type: &str, restricted: bool) -> 
     no_store(response)
 }
 
-/// `GET /home/<ns>/@/<key>`: the entry's current Head; 404 also when not visible (E11).
-async fn entry_head(State(state): State<AppState>, headers: HeaderMap, Path((ns, key)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
+/// `GET /home/<user>/<ns>/@/<key>`: the entry's current Head; 404 also when not visible (E11).
+async fn entry_head(State(state): State<AppState>, headers: HeaderMap, Path((user, ns, key)): Path<(String, String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let reader = match reader(&state, &station, &headers, &q).await {
         Ok(r) => r,
         Err(r) => return r,
     };
-    let entry = match state.station.entry_for_path(&ns, &key) {
+    let entry = match station.entry_for_path(&ns, &key) {
         Ok(e) => e,
         Err(e) => return error_response(e),
     };
-    match state.station.read_entry_head(&reader, &entry).await {
+    match station.read_entry_head(&reader, &entry).await {
         Ok(Some((jwt, restricted))) => named_object_response(jwt, "application/cyfs-named-object+jwt", restricted),
         Ok(None) => (StatusCode::NOT_FOUND, "no such entry").into_response(),
         Err(e) => error_response(e),
     }
 }
 
-/// `GET /home/objects/<id>`: knowing an ObjId grants nothing (§4.5, A32).
-async fn object(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
-        Ok(r) => r,
-        Err(r) => return r,
-    };
-    match state.station.read_object(&reader, &id).await {
-        Ok(Some(obj)) => {
-            let restricted = state.station.object_restricted(&obj.obj_id).await.unwrap_or(false);
+/// An object readable through `/home/<user>/objects/…`, or through the zone feed's listed entries.
+async fn find_object(state: &AppState, user: &str, headers: &HeaderMap, q: &HashMap<String, String>, id: &str) -> Result<Option<(Arc<Station>, Reader, crate::objects::StoredObject)>, Response> {
+    if user == ZONE_FEED {
+        let viewer = viewer(state, headers, q).await?;
+        return match state.host.zone_object(&viewer, id).await {
+            Ok(Some((station, obj))) => {
+                let reader = station.reader_for(&viewer);
+                Ok(Some((station, reader, obj)))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(error_response(e)),
+        };
+    }
+    let station = station_of(state, user).await?;
+    let reader = reader(state, &station, headers, q).await?;
+    match station.read_object(&reader, id).await {
+        Ok(Some(obj)) => Ok(Some((station, reader, obj))),
+        Ok(None) => Ok(None),
+        Err(e) => Err(error_response(e)),
+    }
+}
+
+/// `GET /home/<user>/objects/<id>`: knowing an ObjId grants nothing (§4.5, A32).
+async fn object(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    match find_object(&state, &user, &headers, &q, &id).await {
+        Err(r) => r,
+        Ok(Some((station, _, obj))) => {
+            let restricted = station.object_restricted(&obj.obj_id).await.unwrap_or(false);
             let (wire, content_type) = obj.wire();
             named_object_response(wire, content_type, restricted)
         }
         Ok(None) => (StatusCode::NOT_FOUND, "not found").into_response(),
-        Err(e) => error_response(e),
     }
 }
 
-/// `GET /home/objects/<file id>/content`: bytes of a single-chunk FileObject, for media
-/// elements (session token may come as `?access=`).
-async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
-        Ok(r) => r,
-        Err(r) => return r,
-    };
+/// `GET /home/<user>/objects/<file id>/content`: bytes of a single-chunk FileObject, for
+/// media elements (session token may come as `?access=`).
+async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
     let id = normalize_obj_id(&id);
     if obj_type_of(&id).as_deref() != Some(OBJ_TYPE_FILE) {
         return (StatusCode::BAD_REQUEST, "not a file object").into_response();
     }
-    let file = match state.station.read_object(&reader, &id).await {
-        Ok(Some(f)) => f,
+    let (station, reader, file) = match find_object(&state, &user, &headers, &q, &id).await {
+        Ok(Some(found)) => found,
         Ok(None) => return (StatusCode::NOT_FOUND, "not found").into_response(),
-        Err(e) => return error_response(e),
+        Err(r) => return r,
     };
     let Some(content) = file.body.get("content").and_then(Value::as_str) else { return (StatusCode::NOT_FOUND, "empty file").into_response() };
-    let data = match state.station.chunks.get_chunk(content).await {
+    let data = match station.chunks.get_chunk(content).await {
         Ok(Some(d)) => d,
-        Ok(None) if reader == Reader::Owner => match state.station.fetch_content_on_demand(&id).await {
+        Ok(None) if reader == Reader::Owner => match station.fetch_content_on_demand(&id).await {
             Ok(Some(d)) => d,
             Ok(None) => return (StatusCode::NOT_FOUND, "content not available").into_response(),
             Err(e) => return error_response(e),
@@ -241,12 +330,16 @@ async fn object_content(State(state): State<AppState>, headers: HeaderMap, Path(
     response
 }
 
-async fn chunk(State(state): State<AppState>, headers: HeaderMap, Path(id): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
+async fn chunk(State(state): State<AppState>, headers: HeaderMap, Path((user, id)): Path<(String, String)>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let reader = match reader(&state, &station, &headers, &q).await {
         Ok(r) => r,
         Err(r) => return r,
     };
-    match state.station.read_chunk(&reader, &id).await {
+    match station.read_chunk(&reader, &id).await {
         Ok(Some(data)) => {
             let mut response = (StatusCode::OK, data).into_response();
             response.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
@@ -257,34 +350,52 @@ async fn chunk(State(state): State<AppState>, headers: HeaderMap, Path(id): Path
     }
 }
 
-async fn comments(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
+async fn comments(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let reader = match reader(&state, &station, &headers, &q).await {
         Ok(r) => r,
         Err(r) => return r,
     };
     let Some(target) = q.get("target") else { return (StatusCode::BAD_REQUEST, "target required").into_response() };
-    match state.station.read_comment_view(&reader, target, q.get("type").cloned()).await {
+    match station.read_comment_view(&reader, target, q.get("type").cloned()).await {
         Ok(Some(page)) => no_store(Json(page).into_response()),
         Ok(None) => (StatusCode::NOT_FOUND, "no view for this target").into_response(),
         Err(e) => error_response(e),
     }
 }
 
-async fn profile(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let reader = match reader(&state, &headers, &q).await {
+async fn profile(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if user == ZONE_FEED {
+        return match state.host.zone_profile().await {
+            Ok(p) => no_store(Json(p).into_response()),
+            Err(e) => error_response(e),
+        };
+    }
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let reader = match reader(&state, &station, &headers, &q).await {
         Ok(r) => r,
         Err(r) => return r,
     };
-    match state.station.public_profile(&reader).await {
+    match station.public_profile(&reader).await {
         Ok(p) => no_store(Json(p).into_response()),
         Err(e) => error_response(e),
     }
 }
 
-async fn collector_recent(State(state): State<AppState>, Query(q): Query<HashMap<String, String>>) -> Response {
+async fn collector_recent(State(state): State<AppState>, Path(user): Path<String>, Query(q): Query<HashMap<String, String>>) -> Response {
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
     let since = q.get("since").and_then(|v| v.parse().ok()).unwrap_or(0);
     let limit = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(50);
-    match state.station.read_collector_recent(since, limit).await {
+    match station.read_collector_recent(since, limit).await {
         Ok(p) => no_store(Json(p).into_response()),
         Err(e) => error_response(e),
     }
@@ -297,11 +408,22 @@ fn dispatch_response(reply: crate::ingress::DispatchReply) -> Response {
     response
 }
 
-/// `PUT /home/inbox`: CYFS dispatch of one named object (§7.4).
-async fn inbox_put(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Bytes) -> Response {
+/// `PUT /home/<user>/inbox`: CYFS dispatch of one named object (§7.4).
+async fn inbox_put(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>, body: Bytes) -> Response {
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    let target = state.host.home(&user).inbox();
+    let station = match state.host.station(&user).await {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            return dispatch_response(crate::ingress::DispatchReply {
+                http_status: 404,
+                result: ndn_lib::CyfsDispatchResult::rejected(None, target, "no-handler", false),
+                admission: None,
+            })
+        }
+        Err(e) => return error_response(e),
+    };
     if !q.is_empty() {
-        let target = crate::protocol::inbox_target(&state.station.cfg.zone);
         return dispatch_response(crate::ingress::DispatchReply {
             http_status: 400,
             result: ndn_lib::CyfsDispatchResult::rejected(None, target, "query-not-allowed", false),
@@ -312,11 +434,12 @@ async fn inbox_put(State(state): State<AppState>, headers: HeaderMap, Query(q): 
     let claimed = headers.get(ndn_lib::CYFS_HEADER_OBJ_ID).and_then(|v| v.to_str().ok()).map(str::to_string);
     let tier = headers.get(HEADER_AUDIENCE).and_then(|v| v.to_str().ok()).map(str::to_string);
     let restricted = tier.as_deref().is_some_and(|t| t != "public");
-    let reply = state.station.receive_dispatch(&host, "/home/inbox", &content_type, claimed.as_deref(), restricted, &body).await;
+    let path = station.home().path("inbox");
+    let reply = station.receive_dispatch(&host, &path, &content_type, claimed.as_deref(), restricted, &body).await;
     if let (Some(tier), true) = (&tier, reply.result.status == ndn_lib::CyfsDispatchStatus::Accepted) {
         if let Some(entry) = entry_of_body(&body) {
             let tier = if tier == "restricted" { "dids" } else { tier.as_str() };
-            let _ = state.station.set_entry_tier(&entry, tier).await;
+            let _ = station.set_entry_tier(&entry, tier).await;
         }
     }
     dispatch_response(reply)
@@ -328,15 +451,19 @@ fn entry_of_body(body: &[u8]) -> Option<String> {
     claims.get("entry").and_then(Value::as_str).map(str::to_string)
 }
 
-/// `GET /home/inbox?dispatch-status=<ObjId>`: whether an object was accepted here.
-async fn inbox_status(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
-    let target = crate::protocol::inbox_target(&state.station.cfg.zone);
+/// `GET /home/<user>/inbox?dispatch-status=<ObjId>`: whether an object was accepted here.
+async fn inbox_status(State(state): State<AppState>, Path(user): Path<String>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    let station = match station_of(&state, &user).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let target = station.home().inbox();
     let query = q.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
     let Ok(id) = ndn_lib::parse_cyfs_dispatch_status_query(&query) else {
         return (StatusCode::BAD_REQUEST, "dispatch-status=<ObjId> required").into_response();
     };
     let _ = headers;
-    match state.station.inbox_receipt(&id.to_string()).await {
+    match station.inbox_receipt(&id.to_string()).await {
         Ok(Some(admission)) => {
             let mut result = ndn_lib::CyfsDispatchResult::new(Some(id), target, ndn_lib::CyfsDispatchStatus::Accepted);
             result.source = Some(ndn_lib::CyfsDispatchSource::Upstream);

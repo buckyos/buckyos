@@ -1,17 +1,20 @@
 # BuckyOS HomeStation 架构设计
 
-> **版本**：v0.6  
-> **日期**：2026-10-08  
+> **版本**：v0.7  
+> **日期**：2026-10-09  
 > **文档定位**：面向系统架构师与实现团队的架构基线。  
 > **设计依据**：本次关于 HomeStation 的连续口述与讨论。文中明确区分已形成的设计原则、为首版落地补充的实现建议，以及尚未冻结的协议细节。  
 > **v0.4 变更**：Feed Object 不可变，可变性只通过对象自身声明的可变入口及其单调的入口状态（Head）表达，取代 v0.3 的 `feed_change` 变更声明链；对象内容要么自包含，要么包裹另一个 ObjId，URL 不再作为内容引用。
 > **v0.5 变更**：将标签评价提升为 HomeStation 系统服务的公共能力，支持按需评价 DID 身份及 ObjId／对象路径指向的内容；待读分类与过滤是其调用场景之一。
 > **v0.6 变更**：明确 HomeStation 社交网络协议的核心是以 DID 定位用户的发表流（Home Feed List）与投递入口，并约定读取与投递所需的访问参数（§4.4）；新增发表受众（§4.5）；Social Inbox 改为 HomeStation 自有的 CYFS dispatch 入口，传输结果与准入披露分层（§7.4）；入口状态（Head）定为独立对象，不复用 PathObject；私人抓取默认不进入发表流（§5.6）；点赞默认公开。
+> **v0.7 变更**：纠正“每个 Zone 只有一个 HomeStation、只服务 Zone owner”的设定。HomeStation 和 Message Center 一样服务 Zone 的所有用户：每个用户都有自己的发表流与投递入口（`cyfs://<Zone>/home/<用户名>/...`），状态互相隔离；同 Zone 用户之间的关注、投递与读取和跨 Zone 完全相同（§4.4）。新增 Zone 汇总列表（Zone feedlist）、默认发表流与访问地址（§4.6）。
 > **实施回写（2026-10-09）**：首版实现在 `src/frame/homestation`，§21 待定项采用的实现选择见 §23，线格式与接口见《HomeStation 协议与实现》。
 
 ## 1. 架构摘要
 
 HomeStation 是 BuckyOS 预装的 Self-hosted 个人门户与内容消费应用。对外，它承载用户自己的动态、评论和内容发表；对内，它综合社交投递、主动订阅与内容抓取，为用户生成可以持续浏览的个人 Feed。
+
+一个 Zone 的 HomeStation 服务该 Zone 的**所有用户**，与 Message Center 一样：每个用户都有自己的发表流、投递入口、候选与待读、设置和评价记录，彼此隔离；Zone 另外维护一个汇总列表（Zone feedlist），并配置短域名默认打开哪个发表流（§4.6）。
 
 其核心不是建设一个由平台统一控制的推荐系统，而是建立一套开放的内容流通协议，将复杂的内容采集、筛选、准备和推荐反馈放在用户自己的 HomeStation 中执行。
 
@@ -219,7 +222,9 @@ HomeStation 之间的社交网络协议，核心只约定一件事：**给定一
 | 关注声明 | 写入自己的发表流（受众为被关注者），并投递到对方的投递入口 |
 | 编辑、撤回、取消 | 在自己的发表流签发新 Head，并沿已知路径投递 |
 
-**发现。** 默认按约定定位：由 DID 解析到用户的 Zone，发表流位于 `cyfs://<Zone>/home/feed`，投递入口位于 `cyfs://<Zone>/home/inbox`。用户将 HomeStation 托管在其他位置时，在公开资料中以发表者能力信息（§5.3）声明这两个地址，声明优先于约定。发表流覆盖该用户的全部对外入口：正文与评论位于 `home/feed/@/<入口键>`，公开互动位于 `home/reactions/@/<互动键摘要>`，关注声明位于 `home/follows/@/<键>`；它们共用一个变化序列，读者用一个游标即可同步全部变化。
+**发现。** 一个 Zone 的 HomeStation 服务该 Zone 的所有用户，每个用户在 Zone 内有自己的主页路径 `cyfs://<Zone>/home/<用户名>`。默认按约定定位：由 DID 解析到用户的 Zone，再向该 Zone 查询这个 DID 的用户名（`GET https://<Zone>/home/?did=<DID>`，Zone 不托管该 DID 时明确回答“没有”）；发表流位于 `cyfs://<Zone>/home/<用户名>/feed`，投递入口位于 `cyfs://<Zone>/home/<用户名>/inbox`。用户将 HomeStation 托管在其他位置时，在公开资料中以发表者能力信息（§5.3）声明这两个地址，声明优先于约定。发表流覆盖该用户的全部对外入口：正文与评论位于 `home/<用户名>/feed/@/<入口键>`，公开互动位于 `home/<用户名>/reactions/@/<互动键摘要>`，关注声明位于 `home/<用户名>/follows/@/<键>`；它们共用一个变化序列，读者用一个游标即可同步全部变化。
+
+**同 Zone 用户没有特例。** 同一 Zone 的两个用户之间的关注、投递、读取与跨 Zone 完全相同：各自的发表流、投递入口、受众规则和准入都独立；实现可以不经公网而在本机转发这些请求，但语义不变。没有 HomeStation 的身份（例如 Zone 内的 Agent）没有发表流，不派生关注，也不向其投递。
 
 **条目是签名 Head，列表响应不签名。** 发表流的每个条目是一个入口的当前 Head（§16.5），由入口控制者签名、可以独立验证；读取单个入口 `<入口路径>` 直接返回该 Head。内容按 Head 指向的 ObjId 获取，响应可以按 §5.5 的随附规则附带读者有权读取的对象 JSON，省去逐条获取。列表响应本身只是查询结果，不是签名对象：中间节点可以漏掉条目，但不能伪造条目。读者不能把某次响应缺少某个条目解释为撤回，撤回只由已撤回的 Head 表达。
 
@@ -259,6 +264,32 @@ HomeStation 之间的社交网络协议，核心只约定一件事：**给定一
 - **对受限内容的评论与互动只给原作者。** 评论、点赞等仍写入评论者的发表流，但受众固定为原作者：只投递和提供给原作者，不出现在评论者的公开主页，也不提交给收录者；其他人只能通过作者视图在原受众范围内看到。这类讨论因此依赖作者，失去 §15 多视图带来的开放性，这是受限可见本身的代价。
 - **包裹他人的非公开对象需要授权。** 从 MessageHub 等处一键发表时，只能直接包裹自己发表的对象或公开对象；别人发给我的消息、文件等非公开对象，需要原发表者授权才能包裹发表。
 - **点赞默认公开。** 点赞默认以公开受众发表，界面在首次点赞时告知用户；收藏仍默认私有（§11.1）。
+
+### 4.6 一个 Zone 的 HomeStation：用户主页、Zone 汇总列表与访问地址
+
+**访问地址。** HomeStation 的页面与协议路径分开：协议路径在 `/home/` 下（§4.4），页面在 `/homestation/` 下。
+
+| 地址 | 内容 |
+| --- | --- |
+| `https://<Zone>/homestation` | 登录用户自己的 HomeStation（待读、发表、设置），需要登录 |
+| `https://<Zone>/homestation/<用户名>` | 该用户的发表流（个人门户），登录可选：访客按自己的身份读取，匿名只看公开条目 |
+| `https://<Zone>/homestation/<用户名>/<入口键>` | 该用户的一条发表（`home/<用户名>/feed/@/<入口键>` 的当前版本），用于分享链接 |
+| `https://<Zone>/homestation/~zone` | Zone 汇总列表 |
+| `https://homestation.<Zone>/`、`https://www.<Zone>/` | Zone 配置的默认发表流 |
+
+`homestation.<Zone>` 总是可用，一般同时启用 `www.<Zone>` 短域名并默认使用它。只有这两个主机上路径为 `/` 时才特殊处理：打开默认发表流；页面里的链接一律指向 `https://<Zone>/homestation/...`。用户名不允许包含 `~`，所以 `~zone` 不会与任何用户的主页冲突。
+
+**默认发表流。** 由 Zone 配置，常见两种：指定某个用户的发表流（例如测试环境的 `devtest`），或者 Zone 汇总列表。未配置时为 Zone owner 的发表流。
+
+**Zone 汇总列表（Zone feedlist）。** 有写权限的用户发表时，可以选择同时把这条发表放进 Zone 汇总列表，之后也可以单独加入或移出。规则：
+
+- **条目仍是发表者自己签名的 Head。** 汇总列表不产生新的对象或签名，只记录哪些入口被列入，并维护自己的变化序列。读者对每个条目按其发表者验证（§5.4），与读取个人发表流完全相同；列表响应同样不签名。
+- **只收公开发表。** 列入时条目必须是公开受众的正文或引用转发；之后发表者缩小受众、编辑或撤回，汇总列表按发表者入口的当前状态返回：受众以外的读者看不到，撤回的不再展示。
+- **变化读取。** 列入、移出，以及已列入条目的新 Head 与受众变化都进入汇总列表的变化序列，关注汇总列表的读者用一个游标同步。移出只是不再列入，不是撤回；撤回仍只由发表者的 Head 表达（A68）。
+- **写权限由 Zone 决定。** 默认为 Zone 的普通用户（admin、root、user 类型），可由服务设置改为指定的用户名单。
+- **汇总列表不是个人。** 它没有私人状态，不发表关注声明，也不接收投递。
+
+**签名。** 服务模式下 Zone 的 HomeStation 用 OOD 设备密钥替该 Zone 的所有用户签名（Zone 托管）：验证方接受“签名设备所属的 Zone 正是发表者所在的 Zone”。这意味着 Zone 可以替其用户签名，属于已知风险，与用户把账号托管在 Zone 的信任关系一致；用户需要独立密钥时，可在其 DID Document 列出自己的密钥（§5.4）。
 
 ## 5. Feed Object：统一的发表与传播单元
 
@@ -305,7 +336,7 @@ Feed Object 一经发表就不可变，修改内容会产生新的 ObjId。可�
 - 入口代表一条**逻辑发表**，或一个互动状态（§12.4）；各版本的 ObjId 是入口在不同时刻指向的内容。
 
 ```text
-可变入口 cyfs://<Alice Zone>/home/feed/@/garden-0001
+可变入口 cyfs://<Alice Zone>/home/alice/feed/@/garden-0001
     ├─ Head seq=1：active，current = P1
     ├─ Head seq=2：active，current = P2
     └─ Head seq=3：withdrawn
@@ -319,7 +350,7 @@ Feed Object 一经发表就不可变，修改内容会产生新的 ObjId。可�
 对象自报的入口只说明“去哪里查”，本身不授予任何权限。接收方按以下约束认定版本归属：
 
 1. **入口键由发表者选择。** 入口写在对象里，而 ObjId 由对象内容计算，所以入口不能包含对象自身的 ObjId，否则形成哈希循环。
-2. **入口必须位于发表者控制的命名空间**：发表者 Zone 下的语义路径，或发表者拥有的内容 DID。入口不在 `publisher` 的命名空间内、也没有可验证授权的，视为无效入口，对象按终态对象处理。
+2. **入口必须位于发表者控制的命名空间**：发表者主页 `cyfs://<Zone>/home/<用户名>/` 下的语义路径（同一 Zone 的其他用户的路径不算），或发表者拥有的内容 DID。入口不在 `publisher` 的命名空间内、也没有可验证授权的，视为无效入口，对象按终态对象处理。
 3. **Head 指向的版本必须声明同一入口，且发表者相同。** 入口不能指向他人发表的对象，也不能把无关对象认领为自己发表的新版本。
 
 **普通评论、点赞、收藏等都绑定具体版本的 ObjId，而不是入口。** 持有旧版本的节点可以经由入口发现新版本并提示“该发表已更新”，但旧版本上的讨论和互动不能被解释为对新版本的评论或认可。新版本可以用 `base_on` 指向前一版本，供历史展示使用；版本归属只由 Head 认定，`base_on` 不授予任何权限。
@@ -381,7 +412,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791424800,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0001",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0001",
   "content": { "type": "text", "text": "今天开始搭建阳台菜园。" },
   "tags": ["园艺", "生活"]
 }
@@ -396,7 +427,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791425100,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0002",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0002",
   "content": {
     "type": "image",
     "text": "搭建前后的对比。",
@@ -417,7 +448,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791425400,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0003",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0003",
   "wraps": "<garden-video 的 cyfile>",
   "content": {
     "type": "video",
@@ -436,7 +467,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791425700,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0004",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0004",
   "content": {
     "type": "audio",
     "text": "记录一下今天的种植计划。",
@@ -454,7 +485,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791426000,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0005",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0005",
   "wraps": "<garden-article-body 的 cyfile>",
   "content": {
     "type": "article",
@@ -474,7 +505,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Bob DID>",
   "iat": 1791426300,
-  "entry": "cyfs://<Bob Zone>/home/feed/@/clip-0001",
+  "entry": "cyfs://<Bob Zone>/home/bob/feed/@/clip-0001",
   "wraps": "<external-article-snapshot 的 cyfile>",
   "content": {
     "type": "article",
@@ -501,7 +532,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791426600,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/work-garden-photos",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/work-garden-photos",
   "publication_category": "work",
   "content": {
     "type": "link",
@@ -546,7 +577,7 @@ Alice 的原创动态，自包含，可以直接在 Feed 卡片和个人主页�
   "comment_type": "text",
   "publisher": "<Bob DID>",
   "iat": 1791428400,
-  "entry": "cyfs://<Bob Zone>/home/feed/@/c-0001",
+  "entry": "cyfs://<Bob Zone>/home/bob/feed/@/c-0001",
   "content": { "type": "text", "text": "可以先试试耐阴的叶菜。" },
   "references": [{ "relation": "comment_on", "object_id": "<P1>" }]
 }
@@ -562,7 +593,7 @@ C1 是 Bob 的独立发表，可以进入 Bob 的主页及 P1 的不同评论视
   "comment_type": "like",
   "publisher": "<Bob DID>",
   "iat": 1791428460,
-  "entry": "cyfs://<Bob Zone>/home/reactions/@/<由 P1 与 like 派生的互动键>",
+  "entry": "cyfs://<Bob Zone>/home/bob/reactions/@/<由 P1 与 like 派生的互动键>",
   "references": [{ "relation": "comment_on", "object_id": "<P1>" }]
 }
 ```
@@ -591,7 +622,7 @@ B1 的存储及查询权限为 Bob 私有，不进入公开发表流，也不投
   "comment_type": "repost",
   "publisher": "<Bob DID>",
   "iat": 1791428580,
-  "entry": "cyfs://<Bob Zone>/home/reactions/@/<由 P1 与 repost 派生的互动键>",
+  "entry": "cyfs://<Bob Zone>/home/bob/reactions/@/<由 P1 与 repost 派生的互动键>",
   "wraps": "<P1>"
 }
 ```
@@ -606,7 +637,7 @@ B1 的存储及查询权限为 Bob 私有，不进入公开发表流，也不投
   "comment_type": "quote",
   "publisher": "<Bob DID>",
   "iat": 1791428640,
-  "entry": "cyfs://<Bob Zone>/home/feed/@/q-0001",
+  "entry": "cyfs://<Bob Zone>/home/bob/feed/@/q-0001",
   "wraps": "<P1>",
   "content": { "type": "text", "text": "准备照这个方案试一次，先从小花箱开始。" }
 }
@@ -625,7 +656,7 @@ Alice 发表 P1 时已签发入口的第一个 Head H1：
 ```json
 {
   "kind": "feed_head",
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0001",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0001",
   "seq": 1,
   "state": "active",
   "current": "<P1>",
@@ -640,7 +671,7 @@ Alice 发表 P1 时已签发入口的第一个 Head H1：
   "kind": "post",
   "publisher": "<Alice DID>",
   "iat": 1791432000,
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0001",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0001",
   "base_on": "<P1>",
   "content": { "type": "text", "text": "调整计划：先搭建两个小花箱。" },
   "tags": ["园艺", "生活"]
@@ -652,7 +683,7 @@ Alice 随后签发 seq=2 的 Head H2：
 ```json
 {
   "kind": "feed_head",
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0001",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0001",
   "seq": 2,
   "state": "active",
   "current": "<P2>",
@@ -669,7 +700,7 @@ Alice 签发 seq=3 的 Head H3：
 ```json
 {
   "kind": "feed_head",
-  "entry": "cyfs://<Alice Zone>/home/feed/@/garden-0001",
+  "entry": "cyfs://<Alice Zone>/home/alice/feed/@/garden-0001",
   "seq": 3,
   "state": "withdrawn",
   "updated_at_ms": 1791433800000
@@ -685,7 +716,7 @@ Bob 点赞时签发 L1 入口 seq=1 的有效 Head；取消点赞时签发 seq=2
 ```json
 {
   "kind": "feed_head",
-  "entry": "cyfs://<Bob Zone>/home/reactions/@/<由 P1 与 like 派生的互动键>",
+  "entry": "cyfs://<Bob Zone>/home/bob/reactions/@/<由 P1 与 like 派生的互动键>",
   "seq": 3,
   "state": "active",
   "current": "<L1>",
@@ -706,7 +737,7 @@ Bob 点赞时签发 L1 入口 seq=1 的有效 Head；取消点赞时签发 seq=2
   "kind": "follow",
   "publisher": "<Bob DID>",
   "iat": 1791421200,
-  "entry": "cyfs://<Bob Zone>/home/follows/@/<由 Alice DID 派生的键>",
+  "entry": "cyfs://<Bob Zone>/home/bob/follows/@/<由 Alice DID 派生的键>",
   "target": { "publisher": "<Alice DID>", "stream": "<Alice 的发表流入口>" }
 }
 ```
@@ -1194,7 +1225,7 @@ UI 不负责在每次打开页面时重新运行完整抓取与推荐流程，�
 
 首版搜索覆盖当前查询范围内的标题、正文和作者，明确与全网搜索、来源全部历史区分。已完整加载的小列表可以在 UI 过滤；分页时由应用查询层对同一范围搜索，不能把“当前页无结果”当作整个视图无结果。
 
-个人门户复用既有用户身份与资料能力。门户内容就是该用户发表流的展示读取（§4.4），按访客身份只返回其受众允许的条目，包括用户的正文、评论与转发；私人待读与候选接口只向所有者开放。作品、商品通过发表者提供的内容分类组织；精选由用户维护对象引用与顺序，改变精选不修改原对象。作品和商品可以是链接卡片（E07、E08），详情操作进入 `link` 指向的作者页面，首版不要求 HomeStation 实现交易或网页创作引擎。
+个人门户复用既有用户身份与资料能力，地址为 `https://<Zone>/homestation/<用户名>`（§4.6），任何人都可以打开，登录用户按自己的身份读取。门户内容就是该用户发表流的展示读取（§4.4），按访客身份只返回其受众允许的条目，包括用户的正文、评论与转发；私人待读与候选接口只向所有者开放。作品、商品通过发表者提供的内容分类组织；精选由用户维护对象引用与顺序，改变精选不修改原对象。作品和商品可以是链接卡片（E07、E08），详情操作进入 `link` 指向的作者页面，首版不要求 HomeStation 实现交易或网页创作引擎。
 
 ### 9.7 图片、视频、语音与素材发布
 
@@ -1324,7 +1355,7 @@ Self-hosted 部署本身不能替代数据外发控制。若 Spider 或推荐模
 
 评论对象至少区分普通正文评论、点赞、点踩、收藏、普通转发和引用转发等语义类型；这里的名称是语义分类，不是已冻结的字段值。所有类型都具有独立对象身份和明确的目标版本，对外发表的记录必须能验证发表主体。
 
-普通评论允许同一用户对同一内容发表多条独立观点。对于点赞或收藏这类开关操作，以“互动者 DID + 目标版本 ObjId + 互动类型”标识一个逻辑互动状态，同一键至多贡献一个有效计数。互动对象的可变入口由互动键确定性派生，位于互动者自己的命名空间（例如 `cyfs://<Bob Zone>/home/reactions/@/<互动键摘要>`），因此一个互动键在正常情况下只有一个入口，入口的 Head 就是该互动的当前状态，取消和再次点赞都是该入口的状态更新。多个新 ObjId、重复点击、多路径投递或重试都不能让同一个点赞被计为多次；即使互动者为同一键制造了多个入口，统计仍按互动键至多计一次。
+普通评论允许同一用户对同一内容发表多条独立观点。对于点赞或收藏这类开关操作，以“互动者 DID + 目标版本 ObjId + 互动类型”标识一个逻辑互动状态，同一键至多贡献一个有效计数。互动对象的可变入口由互动键确定性派生，位于互动者自己的命名空间（例如 `cyfs://<Bob Zone>/home/bob/reactions/@/<互动键摘要>`），因此一个互动键在正常情况下只有一个入口，入口的 Head 就是该互动的当前状态，取消和再次点赞都是该入口的状态更新。多个新 ObjId、重复点击、多路径投递或重试都不能让同一个点赞被计为多次；即使互动者为同一键制造了多个入口，统计仍按互动键至多计一次。
 
 UI 可以把普通评论展示为讨论列表，把特殊评论展示为按钮状态、数量及可查看的参与者列表。类型筛选只改变展示，不建立互不相通的收集系统；显示“评论数”时应说明是否包含特殊评论，默认可只统计普通正文评论。
 
@@ -1532,7 +1563,7 @@ Head 本身是可寻址、可签名验证的独立命名对象，复用既有对
 - 单调递增的序号。序号由入口控制者的发表服务串行分配，是同一入口状态先后的唯一依据；Head 中的时间只用于展示。
 - 当前状态：有效时给出当前版本的 ObjId；撤回时不再指向任何版本。
 
-Head 以 JWT 形式即可独立验证，因此不依赖发表者在线：发表者把新 Head 推送给原投递路径中的已知接收方、相关作者和收录节点，任何持有者都可以转发或缓存它。逐个对象轮询入口不可扩展，关注者与评论追踪者通过发表流的变化读取批量增量同步（§4.4）；入口 URL 是发表流路径加入口键（`.../home/feed/@/<入口键>`），读取它直接返回当前 Head。接收者同步评论列表时也应同步相应的 Head，不能只拉当前仍展示的引用。
+Head 以 JWT 形式即可独立验证，因此不依赖发表者在线：发表者把新 Head 推送给原投递路径中的已知接收方、相关作者和收录节点，任何持有者都可以转发或缓存它。逐个对象轮询入口不可扩展，关注者与评论追踪者通过发表流的变化读取批量增量同步（§4.4）；入口 URL 是发表流路径加入口键（`.../home/<用户名>/feed/@/<入口键>`），读取它直接返回当前 Head。接收者同步评论列表时也应同步相应的 Head，不能只拉当前仍展示的引用。
 
 Head 的读取权限与其入口的受众一致（§4.5）。私有收藏不产生对外 Head，它的创建、修改和删除都不向公共节点广播；公开收藏改回私有后再次公开时，在同一入口上签发更高序号的有效 Head，本地私有状态仍独立保存。
 
@@ -1833,6 +1864,10 @@ B 取消 R1 时将其入口置为已撤回，其他节点验证后更新 B 的�
 | A72 | Spider 为私人阅读抓取网页 | 快照与封装对象不出现在发表流，不对外提供；用户分享后才以自己的入口发表 |
 | A73 | 接收方 OOD 离线，网关返回 `cached` | 发送方继续保留重试责任，不当作已投递；`cached` 不附带任何准入披露 |
 | A74 | 用户首次点赞 | 以公开受众发表并告知用户点赞公开；收藏仍保持私有 |
+| A75 | 同一 Zone 的两个用户互为好友 | 各自有自己的发表流与投递入口；互相关注、投递与读取和跨 Zone 相同，都能完成；一方的设置、待读和私有收藏对另一方不可见 |
+| A76 | 只知道同 Zone 某用户的 DID，或另一个 Zone 的用户要关注他 | 通过 Zone 的 DID 查询得到 `home/<用户名>`，按该路径读取与投递；Zone 托管签名的 Head 能被验证，入口不在该用户主页下的被拒绝 |
+| A77 | 有写权限的用户发表时选择同步到 Zone 汇总列表，之后编辑、撤回或移出 | 汇总列表展示其签名 Head，读者可逐条验证；编辑与撤回进入汇总列表的变化读取，撤回后不再展示，移出不被解释为撤回；无写权限或非公开发表不能列入 |
+| A78 | 打开 `www.<Zone>/` 或 `homestation.<Zone>/` | 匿名也可访问，显示 Zone 配置的默认发表流；页面链接指向 `https://<Zone>/homestation/...` |
 
 多视图验证至少需要作者、评论者/阅读者和一个独立收录角色。不能只在单个数据库里模拟三个标签，就宣称已验证作者无法独占评论传播。
 
@@ -1840,7 +1875,8 @@ B 取消 R1 时将其入口置为已撤回，其他节点验证后更新 B 的�
 
 | 议题 | 已明确的边界 | 待决定内容 |
 | --- | --- | --- |
-| 发表流与投递入口 | 由 DID 按约定或声明定位；展示读取与变化读取；条目为签名 Head、列表响应不签名；按读者身份过滤；Pull 是事实来源 | 默认路径与声明位置的最终形式、读者身份的认证方式、游标与分页编码、变化压缩与重新同步、随附对象的上限 |
+| 发表流与投递入口 | 由 DID 按约定或声明定位；一个 Zone 服务其所有用户，每个用户一条 `home/<用户名>` 路径；展示读取与变化读取；条目为签名 Head、列表响应不签名；按读者身份过滤；Pull 是事实来源 | 声明位置的最终形式、读者身份的认证方式、游标与分页编码、变化压缩与重新同步、随附对象的上限 |
+| Zone 汇总列表 | 只记录列入的入口，条目仍是发表者签名的 Head；只收公开发表；写权限由 Zone 决定 | 跨 Zone 关注汇总列表的来源类型、汇总列表的展示排序与运营（置顶、移出他人发表） |
 | 发表受众 | 受众是入口的访问策略、不写入对象；受限内容不可转发，评论与互动只给原作者；点赞默认公开 | 受众级别的最终枚举、“关注者”受众的判定时点、受众调整在变化读取中的表达、包裹他人非公开对象的授权形式 |
 | Feed/Message 关系 | 语义不同，复用命名对象、签名设施；Feed 的变更走可变入口，不复用 `relates_to`；投递走 HomeStation 自有的 dispatch 入口，不经 Message Center 的消息投递 | Feed 的 ObjType 名称，可复用的 `BaseContentObject` 字段（不沿用其 `did` 承载入口），共用哪些 SDK 类型 |
 | 实例与线格式 | §5.7—§5.11 的实例覆盖内容、互动和状态关系 | 与命名对象／SDK 对齐字段及签名编码，不能把示例别名当真实 ID |
@@ -1888,17 +1924,18 @@ HomeStation 将内容消费拆成“获取候选—本地筛选—资源准备�
 
 | §21 议题 | 实现选择 |
 | --- | --- |
-| 发表流与投递入口 | 约定路径 `cyfs://<Zone>/home/feed`、`cyfs://<Zone>/home/inbox`；Zone → `https://<Zone>`，可在服务设置声明其他源站；读者证明为自签 JWT（`Authorization: DID …`，`aud = cyfs://<Zone>/home`，有效期 ≤ 10 分钟），同 Zone 用户用会话令牌；变化游标为发表流自增序号，压缩后早于压缩点的游标得到 `resync`；展示读取游标为 `iat|入口` |
+| 发表流与投递入口 | 约定路径 `cyfs://<Zone>/home/<用户名>/feed`、`.../inbox`；DID → 用户名由 Zone 回答 `GET /home/?did=`；Zone → `https://<Zone>`，可在服务设置声明其他源站，本 Zone 指向本机监听；读者证明为自签 JWT（`Authorization: DID …`，`aud = cyfs://<Zone>/home`，有效期 ≤ 10 分钟），同 Zone 用户用会话令牌；变化游标为发表流自增序号，压缩后早于压缩点的游标得到 `resync`；展示读取游标为 `iat|入口` |
+| Zone 汇总列表 | `cyfs://<Zone>/home/~zone/feed`，读取方式与个人发表流相同；列入随发表（`zoneFeed`）或单独操作；Zone 级数据库记录列入与变化序列 |
 | 发表受众 | 枚举 `public` / `followers` / `friends` / `group` / `dids`；“关注者”在读取时判定，好友视同关注者；受众调整追加 `audience` 变化，并向新增受众补一次 Push；包裹他人非公开对象的授权尚未实现 |
 | Feed/Message 关系 | ObjType：Feed Object `cyfeed`、Head `cyfhead`、关注声明 `cyfollow`、消费证明 `cyfproof`、共享评价 `cyfeval`；字段自定义，不复用 `BaseContentObject` |
-| 对象身份与签名 | ObjId = type + sha256(JCS claims)；JWT（EdDSA），`kid = <签名者 DID>#<key id>`；签名者须为发表者本人、其 DID Document 列出的密钥或其拥有的设备；服务模式用 OOD 设备密钥签名 |
+| 对象身份与签名 | ObjId = type + sha256(JCS claims)；JWT（EdDSA），`kid = <签名者 DID>#<key id>`；签名者须为发表者本人、其 DID Document 列出的密钥、其拥有的设备，或发表者所在 Zone 的设备（Zone 托管）；服务模式用 OOD 设备密钥替 Zone 的所有用户签名 |
 | 内容形态 | 内联正文 ≤ 8000 字符、对象 ≤ 64 KiB、部件 ≤ 9；`wraps` 与部件均为 ObjId 字符串 |
 | 投递结果 | 准入披露为 `accepted` 状态体中的附加字段 `admission`；拒绝原因 `not-admitted`、`not-addressed`、`rate-limited`、`invalid-signature`、`signature-required`、`signing-key-unavailable` 等 |
-| 列表发现与变更 | 作者视图与收录者视图均为 `GET /home/comments?target=<ObjId>` 的完整列表（`complete: true`）；接收方保存视图快照，只有两次完整快照之间消失的记录才标为“可观察的移除” |
+| 列表发现与变更 | 作者视图与收录者视图均为 `GET /home/<用户名>/comments?target=<ObjId>` 的完整列表（`complete: true`）；接收方保存视图快照，只有两次完整快照之间消失的记录才标为“可观察的移除” |
 | 可变入口与 Head | Head 增加 `publisher` 字段；互动键摘要为 `<type>-` 加 `sha256("homestation/reaction/v1\n<互动者>\n<目标>\n<type>")` 前 16 字节的十六进制；只支持整条撤回 |
 | 评论关系 | 关系字段为 `references[{relation: "comment_on"}]`；转发类以 `wraps` 为目标；多级回复未实现 |
 | 通用标签评价 | 维度：内容 `topic` / `generation_method` / `quality` / `ad`，身份 `topic_affinity` / `delivery_behavior`；档案 `rules`（规则，默认）与 `model`（AICC，需配置）；修正作用域 `global` / `app:<id>` |
 | 本地保留 | 候选 14 天、待读窗口 300 条、行为事件 7 天；入口 Head 不随内容淘汰 |
 
-尚未覆盖或未经真实环境验证的部分：每个 Zone 只为 owner 发表；设备签名的跨 Zone 验证、网关 `/home/*` 转发、Message Center 联系人读取与 NDM 读写未做 DV；chunk list 大文件不预取、不校验；自然语言订阅的来源映射由规则完成，尚无 Agent 持续维护；收录者没有检索接口。
+尚未覆盖或未经真实环境验证的部分：设备签名（含 Zone 托管）的跨 Zone 验证没有第二个可达 Zone 可测；跨 Zone 关注 Zone 汇总列表未实现；chunk list 大文件不预取、不校验；自然语言订阅的来源映射由规则完成，尚无 Agent 持续维护；收录者没有检索接口。
 

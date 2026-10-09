@@ -61,7 +61,7 @@ async fn evaluation_targets_and_binding() {
     // An entry path resolves to its current version; after an edit the old result is not the
     // path's result any more (A59); a withdrawn path is a state, not a judgement (A62).
     let post = publish(&net, "alice", "path-1", text_input("garden plan v1", public())).await;
-    let path = format!("cyfs://{}/home/feed/@/{}", alice.zone, post["entry"].as_str().unwrap().rsplit('/').next().unwrap());
+    let path = format!("cyfs://{}/home/alice/feed/@/{}", alice.zone, post["entry"].as_str().unwrap().rsplit('/').next().unwrap());
     let r1 = net.rpc("bob", "eval.evaluate", json!({ "request": { "target": { "kind": "content", "object_path": path }, "dimensions": ["topic"] } })).await;
     assert_eq!(r1["target"]["object_id"], post["objId"]);
     assert_eq!(r1["resolution"]["head_seq"], 1);
@@ -159,14 +159,18 @@ async fn permission_boundaries() {
     // Alice cannot withdraw Bob's comment entry (it is not hers).
     let err = net.try_rpc("alice", "entry.withdraw", json!({ "entry": comment["task"]["entry"] })).await.unwrap_err();
     assert!(err.contains("not_found") || err.contains("forbidden"), "{err}");
-    // Another user of Alice's zone gets the public face only; tokens of other zones mean nothing here.
+    // A session without a HomeStation in Alice's zone reads her portal only; tokens of other
+    // zones mean nothing here (portal reads fall back to anonymous).
     let guest = format!("{}-guest", alice.token);
     let foreign = net.try_rpc_token("alice", &guest, "reading.list", json!({})).await.unwrap_err();
-    assert!(foreign.contains("forbidden"), "{foreign}");
-    assert!(net.try_rpc_token("alice", &bob.token, "profile.get", json!({})).await.unwrap_err().contains("unauthorized"));
-    let profile = net.try_rpc_token("alice", &guest, "profile.get", json!({})).await.unwrap();
+    assert!(foreign.contains("noHome"), "{foreign}");
+    assert!(net.try_rpc_token("alice", &bob.token, "reading.list", json!({})).await.unwrap_err().contains("unauthorized"));
+    let profile = net.try_rpc_token("alice", &guest, "portal.profile", json!({ "feed": "alice" })).await.unwrap();
     assert_eq!(profile["did"], alice.did);
+    assert_eq!(profile["user"], "alice");
     assert_eq!(profile["posts"], 1);
+    let anonymous = net.try_rpc_token("alice", &bob.token, "portal.profile", json!({ "feed": "alice" })).await.unwrap();
+    assert_eq!(anonymous["posts"], 1);
     // Uploads are the owner's (A41 materials are user assets).
     let status = net
         .http
@@ -181,9 +185,10 @@ async fn permission_boundaries() {
     assert_eq!(status, 403);
     // A bad token is refused, an anonymous portal read works.
     assert!(net.try_rpc_token("alice", "nope", "profile.get", json!({})).await.unwrap_err().contains("unauthorized"));
-    let (status, body, _) = net.get(&format!("{}/home/profile", alice.base), None).await;
+    assert!(net.try_rpc_token("alice", "nope", "portal.home", json!({})).await.unwrap()["viewer"].is_null());
+    let (status, body, _) = net.get(&format!("{}/profile", alice.home), None).await;
     assert_eq!(status, 200);
     let profile: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(profile["stream"], format!("cyfs://{}/home/feed", alice.zone));
-    assert_eq!(profile["inbox"], format!("cyfs://{}/home/inbox", alice.zone));
+    assert_eq!(profile["stream"], format!("cyfs://{}/home/alice/feed", alice.zone));
+    assert_eq!(profile["inbox"], format!("cyfs://{}/home/alice/inbox", alice.zone));
 }

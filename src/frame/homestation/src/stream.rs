@@ -1,6 +1,7 @@
-//! Reading the owner's Home Feed List (§4.4): display read and change read, filtered by the
+//! Reading a user's Home Feed List (§4.4): display read and change read, filtered by the
 //! reader's audience (§4.5); single entry Heads, objects, chunks, author comment views and
-//! profile. Items are signed Heads; list responses themselves are not signed.
+//! profile; single items for the zone feed (§4.6). Items are signed Heads; list responses
+//! themselves are not signed.
 
 use crate::audience::{allows, Reader, ReaderRelations};
 use crate::error::{HsError, HsResult};
@@ -85,6 +86,9 @@ pub struct CommentViewPage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicProfile {
     pub did: String,
+    /// User segment of this home (`/homestation/<user>`).
+    #[serde(default)]
+    pub user: String,
     pub name: String,
     pub bio: String,
     pub stream: String,
@@ -516,12 +520,14 @@ impl Station {
                 Ok((followers, following))
             })
             .await?;
+        let home = self.home();
         Ok(PublicProfile {
             did: self.cfg.owner.clone(),
+            user: self.cfg.user.clone(),
             name,
             bio: settings.profile.bio,
-            stream: stream_url(&self.cfg.zone),
-            inbox: inbox_target(&self.cfg.zone),
+            stream: home.stream(),
+            inbox: home.inbox(),
             followers,
             following,
             posts,
@@ -535,7 +541,89 @@ impl Station {
         if !valid_entry_key(key) {
             return Err(HsError::NotFound("no such entry".into()));
         }
-        Ok(entry_url(&self.cfg.zone, ns, key))
+        Ok(self.home().entry(ns, key))
+    }
+
+    /// One listed entry of the zone feed as `reader` may see it: active, visible, with the
+    /// current version and its parts attached when asked (§4.6).
+    pub async fn zone_item(&self, reader: &Reader, entry: &str, with_objects: bool) -> HsResult<Option<(StreamItem, BTreeMap<String, String>)>> {
+        let rel = self.reader_relations(reader).await;
+        let reader = reader.clone();
+        let collector = self.cfg.collector;
+        let entry = entry.to_string();
+        self.db
+            .call(move |c| {
+                let Some(row) = get_entry(c, &entry)? else { return Ok(None) };
+                if !allows(&row.audience, &reader, &rel) {
+                    return Ok(None);
+                }
+                let Some(head) = get_head(c, &entry)? else { return Ok(None) };
+                if head.state != HeadState::Active {
+                    return Ok(None);
+                }
+                let Some(head_obj) = get_object(c, &head.head_obj_id)? else { return Ok(None) };
+                let mut objects = BTreeMap::new();
+                if with_objects {
+                    if let Some(current) = &head.current {
+                        attach(c, &mut objects, current, &reader, &rel, collector, 0)?;
+                    }
+                }
+                let iat: i64 = match &head.current {
+                    Some(current) => c.query_row("SELECT iat FROM feed_index WHERE obj_id=?1", [current], |r| r.get(0)).optional()?.unwrap_or(row.created_at / 1000),
+                    None => row.created_at / 1000,
+                };
+                Ok(Some((
+                    StreamItem {
+                        entry: entry.clone(),
+                        kind: row.kind.as_str().into(),
+                        category: row.category.clone(),
+                        restricted: !row.audience.is_public(),
+                        tier: row.audience.tier().into(),
+                        head: wire(&head_obj),
+                        current: head.current.clone(),
+                        iat: iat.max(0) as u64,
+                    },
+                    objects,
+                )))
+            })
+            .await
+    }
+
+    /// The current Head of a listed entry for a change of the zone feed; withdrawn Heads are
+    /// included so followers learn of the withdrawal.
+    pub async fn zone_change(&self, reader: &Reader, entry: &str, cursor: i64, kind: &str, with_objects: bool) -> HsResult<Option<(StreamChangeItem, BTreeMap<String, String>)>> {
+        let rel = self.reader_relations(reader).await;
+        let reader = reader.clone();
+        let collector = self.cfg.collector;
+        let (entry, kind) = (entry.to_string(), kind.to_string());
+        self.db
+            .call(move |c| {
+                let Some(row) = get_entry(c, &entry)? else { return Ok(None) };
+                if !allows(&row.audience, &reader, &rel) {
+                    return Ok(None);
+                }
+                let Some(head) = get_head(c, &entry)? else { return Ok(None) };
+                let Some(head_obj) = get_object(c, &head.head_obj_id)? else { return Ok(None) };
+                let mut objects = BTreeMap::new();
+                if with_objects {
+                    if let Some(current) = &head.current {
+                        attach(c, &mut objects, current, &reader, &rel, collector, 0)?;
+                    }
+                }
+                Ok(Some((
+                    StreamChangeItem {
+                        cursor,
+                        entry: entry.clone(),
+                        kind,
+                        entry_kind: row.kind.as_str().into(),
+                        seq: head.seq,
+                        restricted: !row.audience.is_public(),
+                        head: wire(&head_obj),
+                    },
+                    objects,
+                )))
+            })
+            .await
     }
 }
 

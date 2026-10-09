@@ -22,11 +22,15 @@ pub struct Node {
     pub did: String,
     pub zone: String,
     pub base: String,
+    /// `<base>/home/<user>`: this node's user's protocol paths.
+    pub home: String,
     pub token: String,
+    /// The zone key (the zone owner's key in these tests) and its DID: it signs for every user.
     pub pem: String,
+    pub signer: String,
     pub station: Arc<Station>,
     pub contacts: Arc<homestation::contacts::StaticContacts>,
-    _dir: TempDir,
+    _dir: Option<TempDir>,
 }
 
 impl Node {
@@ -83,6 +87,12 @@ impl Net {
     }
 
     pub async fn new_with(names: &[&str], collectors: &[&str], spider: &[&str]) -> Net {
+        Self::new_zones(names, collectors, spider, &[], &[]).await
+    }
+
+    /// `extra`: (zone owner, user) — more users served by that owner's zone, signed by its key.
+    /// `zone_options`: (zone owner, JSON merged into that zone's standalone config).
+    pub async fn new_zones(names: &[&str], collectors: &[&str], spider: &[&str], extra: &[(&str, &str)], zone_options: &[(&str, Value)]) -> Net {
         let mut listeners = Vec::new();
         let mut keys = Vec::new();
         let mut directory = StaticDirectory::default();
@@ -91,9 +101,13 @@ impl Net {
             let port = listener.local_addr().unwrap().port();
             let (pem, x) = homestation::sign::generate_key();
             let zone = format!("{name}.test");
-            directory.identities.insert(did_of(name), StaticIdentity { zone: Some(zone.clone()), public_key_x: Some(x), devices: vec![], owner: None });
-            // Another user of the same zone (no HomeStation of their own).
-            directory.identities.insert(format!("did:test:{name}-kid"), StaticIdentity { zone: Some(zone.clone()), public_key_x: None, devices: vec![], owner: None });
+            directory.identities.insert(did_of(name), StaticIdentity { zone: Some(zone.clone()), user: Some(name.to_string()), public_key_x: Some(x), devices: vec![], owner: None });
+            // An identity of the same zone without a HomeStation (an agent, say).
+            directory.identities.insert(format!("did:test:{name}-kid"), StaticIdentity { zone: Some(zone.clone()), user: None, public_key_x: None, devices: vec![], owner: None });
+            for (owner, user) in extra.iter().filter(|(o, _)| o == name) {
+                let _ = owner;
+                directory.identities.insert(did_of(user), StaticIdentity { zone: Some(zone.clone()), user: Some(user.to_string()), public_key_x: None, devices: vec![did_of(name)], owner: None });
+            }
             directory.zones.insert(zone, format!("http://127.0.0.1:{port}"));
             listeners.push((listener, port));
             keys.push(pem);
@@ -108,9 +122,11 @@ impl Net {
             if !collectors.contains(name) {
                 settings.collectors = collector_refs.clone();
             }
-            let cfg: StandaloneConfig = serde_json::from_value(json!({
+            let users: Vec<&str> = extra.iter().filter(|(o, _)| o == name).map(|(_, u)| *u).collect();
+            let mut raw = json!({
                 "owner": did_of(name),
                 "owner_name": name,
+                "user": name,
                 "zone": format!("{name}.test"),
                 "private_key_pem": pem,
                 "collector": collectors.contains(name),
@@ -122,9 +138,22 @@ impl Net {
                     format!("{token}-guest"): { "principal": "guest", "did": format!("did:test:guest-{name}"), "app_id": "control-panel" }
                 },
                 "settings": settings,
-            }))
-            .unwrap();
-            let mut cfg = cfg;
+                "users": users.iter().map(|u| {
+                    let mut s = UserSettings::default();
+                    s.profile.name = u.to_string();
+                    s.collectors = collector_refs.clone();
+                    json!({ "user": u, "did": did_of(u), "name": u, "settings": s })
+                }).collect::<Vec<_>>(),
+            });
+            for u in &users {
+                raw["tokens"][format!("tok-{u}")] = json!({ "principal": u, "did": did_of(u), "app_id": "control-panel" });
+            }
+            for (_, options) in zone_options.iter().filter(|(o, _)| o == name) {
+                for (k, v) in options.as_object().unwrap() {
+                    raw[k] = v.clone();
+                }
+            }
+            let mut cfg: StandaloneConfig = serde_json::from_value(raw).unwrap();
             cfg.directory = directory.clone();
             let standalone = build(cfg, dir.path(), None, None).unwrap();
             let state = standalone.state.clone();
@@ -132,6 +161,24 @@ impl Net {
             let handle = tokio::spawn(async move {
                 let _ = serve_listener(serve_state, listener).await;
             });
+            for u in &users {
+                nodes.push(Node {
+                    port,
+                    state: state.clone(),
+                    handle: std::sync::Mutex::new(None),
+                    name: u.to_string(),
+                    did: did_of(u),
+                    zone: format!("{name}.test"),
+                    base: format!("http://127.0.0.1:{port}"),
+                    home: format!("http://127.0.0.1:{port}/home/{u}"),
+                    token: format!("tok-{u}"),
+                    pem: pem.clone(),
+                    signer: did_of(name),
+                    station: standalone.host.station(u).await.unwrap().unwrap(),
+                    contacts: standalone.user_contacts[*u].clone(),
+                    _dir: None,
+                });
+            }
             nodes.push(Node {
                 port,
                 state,
@@ -140,11 +187,13 @@ impl Net {
                 did: did_of(name),
                 zone: format!("{name}.test"),
                 base: format!("http://127.0.0.1:{port}"),
+                home: format!("http://127.0.0.1:{port}/home/{name}"),
                 token,
                 pem,
+                signer: did_of(name),
                 station: standalone.station,
                 contacts: standalone.contacts,
-                _dir: dir,
+                _dir: Some(dir),
             });
         }
         Net { nodes, http: reqwest::Client::new() }
@@ -202,7 +251,8 @@ impl Net {
 
     /// A reader proof as `reader` for `target`'s zone.
     pub fn proof(&self, reader: &str, target: &str) -> String {
-        let signer = homestation::sign::Signer::from_pem(self.n(reader).pem.as_bytes(), format!("{}#main_key", did_of(reader))).unwrap();
+        let node = self.n(reader);
+        let signer = homestation::sign::Signer::from_pem(node.pem.as_bytes(), format!("{}#main_key", node.signer)).unwrap();
         let proof = homestation::auth::make_reader_proof(&signer, &did_of(reader), &self.n(target).zone).unwrap();
         format!("DID {proof}")
     }

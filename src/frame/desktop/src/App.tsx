@@ -8,6 +8,7 @@ import {
 import { I18nProvider } from './i18n/provider'
 import { PrototypeThemeProvider } from './theme/provider'
 import { DesktopRoute } from './desktop/DesktopRoute'
+import { isPortalRoot } from './app/homestation/links'
 
 // Standalone routes are code-split like the app panels: a visitor of `/`
 // should not download MessageHub / HomeStation / TaskCenter / the installer
@@ -16,8 +17,14 @@ const LoginPage = lazy(() => import('./auth/LoginPage'))
 const HomeStationRoute = lazy(() =>
   import('./app/homestation/HomeStationRoute').then((m) => ({ default: m.HomeStationRoute })),
 )
-const HomeStationVisitorRoute = lazy(() =>
-  import('./app/homestation/HomeStationVisitorRoute').then((m) => ({ default: m.HomeStationVisitorRoute })),
+const HomeStationPortalRoute = lazy(() =>
+  import('./app/homestation/HomeStationPortalRoute').then((m) => ({ default: m.HomeStationPortalRoute })),
+)
+
+const portalRoute = (
+  <Suspense fallback={null}>
+    <HomeStationPortalRoute />
+  </Suspense>
 )
 const MessageHubRoute = lazy(() =>
   import('./app/messagehub/MessageHubRoute').then((m) => ({ default: m.MessageHubRoute })),
@@ -41,7 +48,8 @@ const AppInstallerRoute = lazy(() =>
 const router = createBrowserRouter([
   {
     path: '/',
-    element: <DesktopRoute />,
+    // `www.<zone>/` and `homestation.<zone>/` open the zone's default HomeStation feed.
+    element: isPortalRoot() ? portalRoute : <DesktopRoute />,
   },
   {
     path: '/login',
@@ -59,14 +67,9 @@ const router = createBrowserRouter([
       </Suspense>
     ),
   },
-  {
-    path: '/homestation/u/:did',
-    element: (
-      <Suspense fallback={null}>
-        <HomeStationVisitorRoute />
-      </Suspense>
-    ),
-  },
+  // A user's home feed (`~zone`: the zone feed) and one of its posts: public, login optional.
+  { path: '/homestation/:feed', element: portalRoute },
+  { path: '/homestation/:feed/:key', element: portalRoute },
   {
     path: '/messagehub',
     element: (

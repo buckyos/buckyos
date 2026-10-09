@@ -30,4 +30,34 @@ test.describe('HomeStation on the real zone', () => {
     await expect(mine).toHaveCount(1)
     await expect(mine.getByTestId('hs-publish-status')).toHaveAttribute('data-stage', 'published')
   })
+
+  test('a post shown on the zone page is public on the portal, the www host and its own link', async ({ page, browser, baseURL }) => {
+    await loginThroughUi(page)
+    await page.goto('/homestation')
+    await expect(page.getByTestId('homestation')).toBeVisible({ timeout: 30_000 })
+    const text = `HomeStation DV zone page ${Date.now().toString(36)}`
+    await page.getByTestId('hs-quick-text').fill(text)
+    await page.getByTestId('hs-quick-zone-feed').locator('input').check()
+    await page.getByTestId('hs-quick-submit').click()
+    await expect(page.getByTestId('hs-toast').filter({ hasText: 'Published to your feed' })).toBeVisible()
+    await page.getByTestId('hs-nav-published').click()
+    const mine = page.getByTestId('hs-card').filter({ hasText: text })
+    await expect(mine.getByTestId('hs-published-zone')).toBeVisible()
+
+    // A visitor without a session.
+    const visitor = await browser.newContext({ ignoreHTTPSErrors: true })
+    const anonymous = await visitor.newPage()
+    const zoneHost = new URL(baseURL!).host
+    await anonymous.goto(`https://${zoneHost}/homestation/~zone`)
+    await expect(anonymous.getByTestId('hs-zone-list')).toContainText(text, { timeout: 30_000 })
+    await anonymous.goto(`https://${zoneHost}/homestation/${adminUser}`)
+    await expect(anonymous.getByTestId('hs-portal-sign-in')).toBeVisible()
+    await anonymous.getByTestId('hs-card').filter({ hasText: text }).getByText(text).click()
+    await expect(anonymous).toHaveURL(new RegExp(`/homestation/${adminUser}/p-[0-9a-f]+$`))
+    await expect(anonymous.getByTestId('hs-detail')).toContainText(text)
+    await anonymous.goto(`https://www.${zoneHost}/`)
+    await expect(anonymous.getByTestId('hs-portal')).toBeVisible({ timeout: 30_000 })
+    await expect(anonymous.getByTestId('hs-portal-zone')).toHaveAttribute('href', `https://${zoneHost}/homestation/~zone`)
+    await visitor.close()
+  })
 })

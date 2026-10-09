@@ -7,8 +7,11 @@ pub const HOMESTATION_UNIQUE_ID: &str = "homestation";
 pub const HOMESTATION_SERVICE_NAME: &str = "homestation";
 pub const HOMESTATION_SERVICE_PORT: u16 = 4130;
 pub const HOMESTATION_HTTP_PATH: &str = "/kapi/homestation";
-/// Zone-level protocol paths (stream, entries, objects, inbox) forwarded by the gateway.
+/// Zone-level protocol paths forwarded by the gateway: `/home/` (zone index, DID lookup),
+/// `/home/<user>/...` (each user's stream, entries, objects, inbox), `/home/~zone/...`.
 pub const HOMESTATION_PROTOCOL_PREFIX: &str = "/home/";
+/// Short hostname (`homestation.<zone>`) whose `/` opens the default feed, like `www.<zone>`.
+pub const HOMESTATION_HOST_PREFIX: &str = "homestation";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
@@ -23,6 +26,14 @@ pub struct HomeStationSettings {
     pub evaluation_model: Option<String>,
     pub spider: bool,
     pub reading_window: usize,
+    /// What `www.<zone>/` and `homestation.<zone>/` open: a username, or `~zone` for the zone
+    /// feed. None = the zone owner's feed.
+    pub default_feed: Option<String>,
+    /// Usernames that may list posts in the zone feed (`*` = all users). None = regular users
+    /// (admin / root / user, not limited or guest).
+    pub zone_feed_writers: Option<Vec<String>>,
+    /// Display name of the zone feed; none = the zone hostname.
+    pub zone_name: Option<String>,
 }
 
 impl Default for HomeStationSettings {
@@ -34,6 +45,9 @@ impl Default for HomeStationSettings {
             evaluation_model: None,
             spider: true,
             reading_window: 300,
+            default_feed: None,
+            zone_feed_writers: None,
+            zone_name: None,
         }
     }
 }

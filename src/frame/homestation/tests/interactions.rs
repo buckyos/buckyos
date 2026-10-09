@@ -48,7 +48,7 @@ async fn comments_likes_views_and_stats() {
     assert_eq!(author_comments["comments"].as_array().unwrap().len(), 1);
     // The collector got the public records too.
     let index = net.n("index");
-    let (status, body, _) = net.get(&format!("{}/home/comments?target={p1}", index.base), None).await;
+    let (status, body, _) = net.get(&format!("{}/comments?target={p1}", index.home), None).await;
     assert_eq!(status, 200, "{body}");
     let collector_view: Value = serde_json::from_str(&body).unwrap();
     assert!(collector_view["records"].as_array().unwrap().len() >= 3, "{collector_view}");
@@ -113,12 +113,12 @@ async fn restricted_targets() {
     let collected: i64 = index.station.db.call(|c| Ok(c.query_row("SELECT COUNT(*) FROM collector_index", [], |r| r.get(0))?)).await.unwrap();
     assert_eq!(collected, 0);
     // Bob's public stream does not show the comment; Alice (its audience) can read it.
-    let (_, body, _) = net.get(&format!("{}/home/feed?mode=display", bob.base), None).await;
+    let (_, body, _) = net.get(&format!("{}/feed?mode=display", bob.home), None).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["items"].as_array().unwrap().len(), 0);
-    let (_, body, _) = net.get(&format!("{}/home/feed?mode=display", bob.base), Some(net.proof("alice", "bob"))).await;
+    let (_, body, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("alice", "bob"))).await;
     assert_eq!(serde_json::from_str::<Value>(&body).unwrap()["items"].as_array().unwrap().len(), 1);
     // Carol cannot even read the original through Bob or Alice.
-    assert_eq!(net.get(&format!("{}/home/objects/{f1}", alice.base), Some(net.proof("carol", "alice"))).await.0, 404);
+    assert_eq!(net.get(&format!("{}/objects/{f1}", alice.home), Some(net.proof("carol", "alice"))).await.0, 404);
 }
 
 /// E11, E12, E13, A11, A28, A40, A49, A74: private bookmarks stay local; public bookmark and

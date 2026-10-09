@@ -5,6 +5,7 @@ import type {
   CardView,
   ContactGroup,
   FilterRule,
+  HomeInfo,
   IdentityView,
   MuteRule,
   PersonalState,
@@ -25,7 +26,7 @@ import type {
 } from '../datamodel/types'
 import type { Did, ObjId } from '../protocol/feed'
 import type { CommentList, EntryDebugView, HomeStationStore, ReadingSummary, StoreDomain, StoreSettings, StoreStatus } from '../store/types'
-import type { Transport, UploadMeta } from './transport'
+import { setContentHome, type Transport, type UploadMeta } from './transport'
 
 const READING_PAGE = 8
 const PUBLISHED_PAGE = 10
@@ -39,6 +40,8 @@ const EMPTY_SYNC: SyncStatus = { candidates: 0, preparing: 0, lastFetchAt: 0, so
 
 interface Bootstrap {
   owner: Did
+  user: string
+  home?: HomeInfo
   settings: StoreSettings & { muteRules: MuteRule[]; filterRules: FilterRule[]; collectors: { did: Did; name: string }[] }
   groups: ContactGroup[]
   friends: Did[]
@@ -184,6 +187,7 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
           bootAgain = false
           const data = await call<Bootstrap>('ui.bootstrap')
           boot = data
+          setContentHome(data.user)
           identities = new Map(data.identities.map(identity => [identity.did ?? '', identity]))
           versions ??= data.versions
           status = 'ready'
@@ -384,6 +388,7 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
       const people = boot.identities.filter(identity => identity.kind === 'person' && identity.did).map(identity => identity.did!)
       return [...new Set([...boot.friends, ...boot.following.map(entry => entry.did), ...people])].filter(did => did !== boot?.owner)
     },
+    peekHome: () => boot?.home ?? null,
 
     async listReading(query, cursor) {
       const page = await call<ReadingPage & { cards: CardView[] }>('reading.list', { query, cursor: cursor ?? null, limit: READING_PAGE })
@@ -461,6 +466,10 @@ export function createApiHomeStationStore(transport: Transport): HomeStationStor
     async setAudience(entry, audience) {
       await call('entry.set_audience', { entry, audience })
       await written(['published', 'profile'])
+    },
+    async setZoneListing(entry, listed) {
+      await call('zone.set_listing', { entry, listed })
+      await written(['published'])
     },
     async publish(input, key) {
       const task = await call<PublishTask>('publish.create', { key, input })

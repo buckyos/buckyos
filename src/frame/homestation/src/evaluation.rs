@@ -1019,14 +1019,20 @@ fn validate_request(r: &EvalRequest) -> HsResult<()> {
     Ok(())
 }
 
-/// `cyfs://<zone>/home/<ns>/@/<key>` or the same path over https.
+/// `cyfs://<zone>/home/<user>/<ns>/@/<key>`, the same path over https, or a portal link
+/// `https://<zone>/homestation/<user>/<key>` (a post of that user).
 pub fn path_to_entry(path: &str) -> Option<String> {
     let rest = path.strip_prefix("cyfs://").or_else(|| path.strip_prefix("https://")).or_else(|| path.strip_prefix("http://"))?;
     let (host, p) = rest.split_once('/')?;
     let host = host.split(':').next()?.to_ascii_lowercase();
-    let idx = p.find("home/")?;
-    let tail = &p[idx..];
-    let entry = format!("cyfs://{host}/{tail}");
+    let p = p.split(['?', '#']).next().unwrap_or_default();
+    let entry = if let Some(tail) = p.strip_prefix("homestation/") {
+        let (user, key) = tail.trim_end_matches('/').split_once('/')?;
+        let zone = host.strip_prefix("www.").or_else(|| host.strip_prefix("homestation.")).unwrap_or(&host);
+        format!("cyfs://{zone}/home/{user}/{NS_FEED}/@/{key}")
+    } else {
+        format!("cyfs://{host}/home/{}", p.strip_prefix("home/")?)
+    };
     EntryRef::parse(&entry).ok().map(|_| entry)
 }
 
@@ -1058,7 +1064,10 @@ mod tests {
 
     #[test]
     fn entry_paths() {
-        assert_eq!(path_to_entry("https://alice.example/home/feed/@/p-1").as_deref(), Some("cyfs://alice.example/home/feed/@/p-1"));
-        assert_eq!(path_to_entry("https://alice.example/alice/home/works/@/x"), None);
+        assert_eq!(path_to_entry("https://example.org/home/alice/feed/@/p-1").as_deref(), Some("cyfs://example.org/home/alice/feed/@/p-1"));
+        assert_eq!(path_to_entry("https://www.example.org/homestation/alice/p-1?x=1").as_deref(), Some("cyfs://example.org/home/alice/feed/@/p-1"));
+        assert_eq!(path_to_entry("https://example.org/home/feed/@/p-1"), None);
+        assert_eq!(path_to_entry("https://example.org/alice/home/works/@/x"), None);
+        assert_eq!(path_to_entry("https://example.org/homestation/alice"), None);
     }
 }

@@ -2,10 +2,12 @@
 //!
 //!   cargo run -p homestation --example devnet -- [--port 4131] [--data-dir /tmp/hs-devnet] [--fresh]
 //!
-//! Starts `me` (the Desktop's owner, token `tok-me`) on --port, then alice, bob, sarah, a
-//! collector `index` and a small RSS/web fixture site on the following ports. All of them
-//! talk only through the HomeStation protocol paths. Point the Desktop dev server at
-//! `HS_BACKEND=http://127.0.0.1:<port>` (see src/frame/desktop/src/app/homestation/UI_DATAMODEL.md §11).
+//! Starts the zone of `me` (the Desktop's user, token `tok-me`; a second user `kai` of the same
+//! zone, token `tok-kai`) on --port, then the zones of alice, bob, sarah, a collector `index`
+//! and a small RSS/web fixture site on the following ports. All of them talk only through the
+//! HomeStation protocol paths; me and kai through their own zone's. Point the Desktop dev
+//! server at `HS_BACKEND=http://127.0.0.1:<port>` (see
+//! src/frame/desktop/src/app/homestation/UI_DATAMODEL.md §11).
 
 use axum::response::IntoResponse;
 use homestation::contacts::ContactInfo;
@@ -33,6 +35,9 @@ fn svg(hue: u32, label: &str) -> Vec<u8> {
 struct Net {
     nodes: Vec<(String, Arc<homestation::Station>)>,
 }
+
+/// The second user of me's zone.
+const KAI: (&str, &str) = ("kai", "Kai Wen");
 
 impl Net {
     fn st(&self, name: &str) -> &Arc<homestation::Station> {
@@ -121,7 +126,7 @@ async fn main() {
     if args.iter().any(|a| a == "--fresh") {
         let _ = std::fs::remove_dir_all(&data);
     }
-    let fresh = !data.join("me").join("homestation.db").exists();
+    let fresh = !homestation::standalone::user_db_path(&data.join("me").join("users"), "me").exists();
     let fixture_port = port + NAMES.len() as u16;
     fixture(fixture_port).await;
 
@@ -140,7 +145,7 @@ async fn main() {
             }
         };
         let zone = format!("{name}.devnet");
-        directory.identities.insert(did(name), StaticIdentity { zone: Some(zone.clone()), public_key_x: Some(x), devices: vec![], owner: None });
+        directory.identities.insert(did(name), StaticIdentity { zone: Some(zone.clone()), user: Some(name.to_string()), public_key_x: Some(x), devices: vec![], owner: None });
         directory.zones.insert(zone, format!("http://127.0.0.1:{}", port + i as u16));
         keys.push(pem);
     }
@@ -164,6 +169,7 @@ async fn main() {
             "me" => vec![
                 ContactInfo { did: did("alice"), name: "Alice Chen".into(), friend: true, blocked: false, groups: vec![] },
                 ContactInfo { did: did("bob"), name: "Bob Zhang".into(), friend: true, blocked: false, groups: vec!["Hiking buddies".into()] },
+                ContactInfo { did: did(KAI.0), name: KAI.1.into(), friend: true, blocked: false, groups: vec![] },
             ],
             "alice" | "bob" => vec![
                 ContactInfo { did: did("me"), name: "Lin".into(), friend: true, blocked: false, groups: vec![] },
@@ -171,28 +177,50 @@ async fn main() {
             ],
             _ => vec![],
         };
+        let mut tokens = json!({ format!("tok-{name}"): { "principal": name, "did": did(name), "app_id": "control-panel" } });
+        let mut users = json!([]);
+        if *name == "me" {
+            tokens[format!("tok-{}", KAI.0)] = json!({ "principal": KAI.0, "did": did(KAI.0), "app_id": "control-panel" });
+            let mut kai = UserSettings::default();
+            kai.profile.name = KAI.1.into();
+            kai.profile.bio = "Lin's housemate, also on this zone".into();
+            kai.collectors = settings.collectors.clone();
+            users = json!([{ "user": KAI.0, "did": did(KAI.0), "name": KAI.1, "settings": kai,
+                "contacts": [{ "did": did("me"), "name": "Lin", "friend": true }] }]);
+        }
         let cfg: StandaloneConfig = serde_json::from_value(json!({
             "owner": did(name),
             "owner_name": display,
+            "user": name,
             "zone": format!("{name}.devnet"),
+            "zone_name": if *name == "me" { "Lin & Kai's zone".to_string() } else { format!("{name}.devnet") },
             "private_key_pem": pem,
+            "listen": format!("127.0.0.1:{}", port + i as u16),
             "collector": *name == "index",
             "spider": true,
+            "workers": false,
             "intervals_s": { "pull": 20, "delivery": 5, "select": 10, "comments": 30 },
-            "tokens": { format!("tok-{name}"): { "principal": name, "did": did(name), "app_id": "control-panel" } },
+            "tokens": tokens,
             "contacts": contacts,
             "settings": settings,
+            "users": users,
         }))
         .unwrap();
         let mut cfg = cfg;
         cfg.directory = directory.clone();
-        let Standalone { station, state, .. } = build(cfg, &data.join(name), None, None).expect("build node");
+        let Standalone { station, state, host, .. } = build(cfg, &data.join(name), None, None).expect("build node");
         let listen = format!("127.0.0.1:{}", port + i as u16);
         let listener = tokio::net::TcpListener::bind(&listen).await.expect("node port");
         tokio::spawn(async move {
             let _ = homestation::http::serve_listener(state, listener).await;
         });
-        summary.push(json!({ "name": name, "did": did(name), "base": format!("http://{listen}"), "token": format!("tok-{name}") }));
+        summary.push(json!({ "name": name, "did": did(name), "base": format!("http://{listen}"), "home": format!("http://{listen}/home/{name}"), "token": format!("tok-{name}") }));
+        for other in host.opened() {
+            if other.cfg.user != *name {
+                summary.push(json!({ "name": other.cfg.user, "did": other.cfg.owner, "base": format!("http://{listen}"), "home": format!("http://{listen}/home/{}", other.cfg.user), "token": format!("tok-{}", other.cfg.user) }));
+                nets.push((other.cfg.user.clone(), other));
+            }
+        }
         nets.push((name.to_string(), station));
     }
     let net = Net { nodes: nets };
@@ -207,7 +235,7 @@ async fn main() {
 }
 
 async fn seed(net: &Net, fixture_port: u16) {
-    for name in ["me", "alice", "bob"] {
+    for name in ["me", "alice", "bob", KAI.0] {
         net.rpc(name, "admin.run", json!({ "task": "friends" })).await;
     }
     let follow = net.rpc("me", "sources.resolve", json!({ "kind": "follow", "text": did("sarah") })).await;
@@ -255,7 +283,13 @@ async fn seed(net: &Net, fixture_port: u16) {
     )
     .await;
     net.post("sarah", "s2", text("Color palettes for winter interfaces", public_audience())).await;
-    net.post("me", "m1", text("Testing my HomeStation — hello from the devnet!", public_audience())).await;
+    let mut m1 = text("Testing my HomeStation — hello from the devnet!", public_audience());
+    m1["zoneFeed"] = json!(true);
+    net.post("me", "m1", m1).await;
+    let mut k1 = text("Kai here: our zone now has a shared front page.", public_audience());
+    k1["zoneFeed"] = json!(true);
+    net.post(KAI.0, "k1", k1).await;
+    net.post(KAI.0, "k2", text("Only for my own home feed.", public_audience())).await;
     net.post("me", "m2", text("Friends only: dinner photos coming soon", json!({ "kind": "friends" }))).await;
     net.settle().await;
 

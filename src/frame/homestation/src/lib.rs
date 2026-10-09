@@ -1,5 +1,6 @@
 //! HomeStation service: personal publication stream, delivery inbox, reading pipeline,
-//! evaluation service and comment network (architecture v0.6). See README.md.
+//! evaluation service and comment network (architecture v0.7). One service serves every user
+//! of the zone (`Host`), each with an own `Station`; plus the zone feed list. See README.md.
 
 pub mod api;
 pub mod audience;
@@ -12,6 +13,7 @@ pub mod directory;
 pub mod error;
 pub mod evaluation;
 pub mod feedback;
+pub mod host;
 pub mod http;
 pub mod ingress;
 pub mod interact;
@@ -28,15 +30,18 @@ pub mod sources;
 pub mod standalone;
 pub mod spider;
 pub mod stream;
+pub mod users;
+pub mod zone;
 
 use crate::contacts::CachedContacts;
 use crate::db::Db;
 use crate::directory::Directory;
 use crate::evaluation::ModelClient;
 use crate::objects::ChunkStore;
+use crate::protocol::HomeRef;
 use crate::sign::Signer;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::Duration;
 use tokio::sync::Notify;
 
@@ -58,11 +63,13 @@ pub fn new_id(prefix: &str) -> String {
 
 #[derive(Debug, Clone)]
 pub struct StationConfig {
-    /// The publisher identity this HomeStation serves.
+    /// The publisher identity this HomeStation serves: one user of the zone.
     pub owner: String,
     pub owner_name: String,
-    /// Zone hostname: entries are `cyfs://<zone>/home/...`.
+    /// Zone hostname: entries are `cyfs://<zone>/home/<user>/...`.
     pub zone: String,
+    /// The user's path segment (zone username).
+    pub user: String,
     /// Act as a collector (§14): accept and index public submissions from anyone.
     pub collector: bool,
     /// Attach the admission disclosure (`candidate` / `preferred`) to `accepted` (§7.4).
@@ -82,11 +89,12 @@ pub struct StationConfig {
 }
 
 impl StationConfig {
-    pub fn new(owner: &str, owner_name: &str, zone: &str) -> Self {
+    pub fn new(owner: &str, owner_name: &str, zone: &str, user: &str) -> Self {
         Self {
             owner: owner.to_string(),
             owner_name: owner_name.to_string(),
             zone: zone.to_ascii_lowercase(),
+            user: user.to_string(),
             collector: false,
             disclose_admission: true,
             reading_window: 300,
@@ -123,6 +131,8 @@ pub struct Station {
     pub model: Option<Arc<dyn ModelClient>>,
     pub wake: Wakers,
     versions: Mutex<BTreeMap<&'static str, u64>>,
+    /// The zone-level service holding this station (zone feed, the other users).
+    host: OnceLock<Weak<crate::host::Host>>,
 }
 
 pub const DOMAINS: &[&str] = &["reading", "candidates", "published", "comments", "saved", "sources", "prefs", "profile", "evaluation"];
@@ -154,6 +164,7 @@ impl Station {
             model,
             wake: Wakers::default(),
             versions: Mutex::new(DOMAINS.iter().map(|d| (*d, 0)).collect()),
+            host: OnceLock::new(),
         })
     }
 
@@ -161,17 +172,17 @@ impl Station {
         &self.cfg.owner
     }
 
-    /// Another user or agent of this zone. One HomeStation serves one publisher per zone, so
-    /// they have no stream or inbox of their own: no follow, Pull or Push to them; they read
-    /// the owner's stream with their session token.
-    pub async fn is_local_principal(&self, did: &str) -> bool {
-        if did == self.cfg.owner {
-            return false;
-        }
-        match self.directory.zone_of(did).await {
-            Ok(zone) => zone == self.cfg.zone || zone.ends_with(&format!(".{}", self.cfg.zone)),
-            Err(_) => false,
-        }
+    /// This user's home: `cyfs://<zone>/home/<user>`.
+    pub fn home(&self) -> HomeRef {
+        HomeRef::new(&self.cfg.zone, &self.cfg.user)
+    }
+
+    pub fn attach_host(&self, host: Weak<crate::host::Host>) {
+        let _ = self.host.set(host);
+    }
+
+    pub fn host(&self) -> Option<Arc<crate::host::Host>> {
+        self.host.get().and_then(Weak::upgrade)
     }
 
     /// Change counters the UI polls to revalidate its lists.

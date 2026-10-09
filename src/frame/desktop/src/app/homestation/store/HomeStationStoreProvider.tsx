@@ -26,8 +26,9 @@ function StoreGate({ children }: { children: ReactNode }) {
   )
 }
 
-export function HomeStationStoreProvider({ children }: { children: ReactNode }) {
-  const [store] = useState(createPageStore)
+/** `create` picks another store (a portal page's read-only store); the app's store by default. */
+export function HomeStationStoreProvider({ children, create = createPageStore }: { children: ReactNode; create?: () => HomeStationStore }) {
+  const [store] = useState(create)
   return (
     <HomeStationStoreContext.Provider value={store}>
       <StoreGate>{children}</StoreGate>

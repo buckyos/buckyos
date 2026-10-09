@@ -31,6 +31,8 @@ export const publishInputSchema = z
     attachments: z.array(attachmentSchema).max(9, 'homestation.validation.tooManyAttachments'),
     link: linkCardSchema.nullable(),
     audience: audienceSchema,
+    /** Also list the post in the zone feed (§4.6); sent only with a public audience. */
+    zoneFeed: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
     if (!value.text && value.attachments.length === 0 && !value.link) {

@@ -75,7 +75,7 @@ async fn pipeline_media_and_filters() {
     assert_eq!(card["item"]["media"][0]["file"]["meta"]["mime"], "image/png");
     assert_eq!(card["reading"]["reason"]["code"], "friend");
     assert!(card["reading"]["topics"].as_array().unwrap().contains(&json!("topic-garden")), "{card}");
-    let (status, body, _) = net.get(&format!("{}/home/objects/{photo_id}/content?access={}", bob.base, bob.token), None).await;
+    let (status, body, _) = net.get(&format!("{}/objects/{photo_id}/content?access={}", bob.home, bob.token), None).await;
     assert_eq!((status, body.len()), (200, 4096));
 
     // Showing filtered items reveals the inferred label with its basis; the object is untouched.
@@ -137,7 +137,7 @@ async fn followed_candidates_view() {
     net.rpc("bob", "admin.run", json!({ "task": "pull" })).await;
     let late_card = net.rpc("bob", "item.get", json!({ "objId": late["objId"] })).await;
     assert_eq!(late_card["item"]["media"][0]["file"]["meta"]["mime"], "image/png");
-    let url = format!("{}/home/objects/{}/content?access={}", bob.base, photo["objId"].as_str().unwrap(), bob.token);
+    let url = format!("{}/objects/{}/content?access={}", bob.home, photo["objId"].as_str().unwrap(), bob.token);
     let (status, body, _) = net.get(&url, None).await;
     assert_eq!((status, body.len()), (200, 2048));
     let opened = net.rpc("bob", "candidates.open", json!({ "objId": target })).await;
@@ -190,10 +190,10 @@ async fn change_read_and_compaction() {
     assert_eq!((head.seq, head.state), (2, homestation::protocol::HeadState::Withdrawn));
 
     publish(&net, "alice", "p3", text_input("three", public())).await;
-    let changes: Value = serde_json::from_str(&net.get(&format!("{}/home/feed?mode=changes&since=0", alice.base), None).await.1).unwrap();
+    let changes: Value = serde_json::from_str(&net.get(&format!("{}/feed?mode=changes&since=0", alice.home), None).await.1).unwrap();
     let last = changes["next_cursor"].as_i64().unwrap();
     net.rpc("alice", "admin.compact_stream", json!({ "through": last })).await;
-    let stale: Value = serde_json::from_str(&net.get(&format!("{}/home/feed?mode=changes&since=1", alice.base), None).await.1).unwrap();
+    let stale: Value = serde_json::from_str(&net.get(&format!("{}/feed?mode=changes&since=1", alice.home), None).await.1).unwrap();
     assert_eq!(stale["resync"], true);
     let report = net.rpc("bob", "sources.sync", json!({ "sourceId": source_id })).await;
     assert_eq!(report["resynced"], true);

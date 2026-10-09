@@ -235,7 +235,7 @@ pub fn item_view(conn: &Connection, ctx: &ViewCtx, obj_id: &str, depth: u8) -> H
         "embedded": embedded,
         "category": feed.publication_category,
         "createdAt": feed.iat * 1000,
-        "isOwn": feed.publisher == ctx.owner,
+        "isOwn": feed.publisher == ctx.owner && ctx.is_owner(),
     })))
 }
 

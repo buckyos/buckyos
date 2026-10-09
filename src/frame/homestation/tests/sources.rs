@@ -111,10 +111,10 @@ async fn spider_private_captures_and_share() {
     assert_eq!(body["state"], "ready");
     assert!(body["markdown"].as_str().unwrap().contains("Build four boxes"));
     // Private captures are not in Bob's stream (A72).
-    let (_, stream, _) = net.get(&format!("{}/home/feed?mode=display", bob.base), Some(net.proof("carol", "bob"))).await;
+    let (_, stream, _) = net.get(&format!("{}/feed?mode=display", bob.home), Some(net.proof("carol", "bob"))).await;
     assert_eq!(serde_json::from_str::<Value>(&stream).unwrap()["items"].as_array().unwrap().len(), 0);
     let capture_id = card["item"]["objId"].as_str().unwrap().to_string();
-    assert_eq!(net.get(&format!("{}/home/objects/{capture_id}", bob.base), Some(net.proof("carol", "bob"))).await.0, 404);
+    assert_eq!(net.get(&format!("{}/objects/{capture_id}", bob.home), Some(net.proof("carol", "bob"))).await.0, 404);
 
     // Sharing publishes Bob's own object wrapping the snapshot, with the source kept as data.
     let task = net.rpc("bob", "publish.share_capture", json!({ "objId": capture_id })).await;
@@ -128,7 +128,7 @@ async fn spider_private_captures_and_share() {
     assert_eq!(again["sharedAs"], task["objId"]);
     // Carol fetches the snapshot from Bob once it is part of a visible publication.
     let snapshot = shared["item"]["object"]["wraps"].as_str().unwrap().to_string();
-    assert_eq!(net.get(&format!("{}/home/objects/{snapshot}", bob.base), Some(net.proof("carol", "bob"))).await.0, 200);
+    assert_eq!(net.get(&format!("{}/objects/{snapshot}", bob.home), Some(net.proof("carol", "bob"))).await.0, 200);
 }
 
 /// §7.6, A34, A36: Message Center friends follow each other by default; losing the friend
@@ -180,10 +180,10 @@ async fn natural_language_intent() {
     assert_eq!(topic["subscribed"], true);
 }
 
-/// One HomeStation per zone: other users and agents of the owner's zone are friends without a
-/// stream of their own — no follow declaration, no Pull, no Push; they still read as friends.
+/// Friends without a HomeStation (an agent of the zone, say) have no stream: no follow, no
+/// declaration, no Push; following them explicitly says so.
 #[tokio::test(flavor = "multi_thread")]
-async fn same_zone_principals() {
+async fn friends_without_homestation() {
     let net = Net::new(&["alice", "bob"], &[]).await;
     let (alice, bob) = (net.n("alice"), net.n("bob"));
     let kid = "did:test:alice-kid";
@@ -195,7 +195,7 @@ async fn same_zone_principals() {
     assert_eq!(dids, vec![bob.did.as_str()]);
     let err = net.try_rpc("alice", "sources.follow", json!({ "resolution": { "inputKind": "follow", "input": kid, "notifyHint": "pending",
         "candidates": [{ "id": "src-kid", "name": "kid", "kind": "person", "did": kid, "basis": [], "notify": "pending", "paused": false }] } })).await.unwrap_err();
-    assert!(err.contains("share this HomeStation"), "{err}");
+    assert!(err.contains("noHome"), "{err}");
     publish(&net, "alice", "p1", text_input("friends only", json!({ "kind": "friends" }))).await;
     let queued: Vec<String> = alice.station.db.call(|c| {
         let mut stmt = c.prepare("SELECT DISTINCT recipient FROM outbox")?;

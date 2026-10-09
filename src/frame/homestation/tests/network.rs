@@ -31,7 +31,7 @@ async fn stream_audience_per_reader() {
     let sources = net.rpc("bob", "sources.list", json!({})).await;
     assert_eq!(sources["sources"][0]["notify"], "acknowledged");
 
-    let feed = format!("{}/home/feed?mode=display", alice.base);
+    let feed = format!("{}/feed?mode=display", alice.home);
     let (status, body, _) = net.get(&feed, None).await;
     assert_eq!(status, 200);
     let anonymous: Value = serde_json::from_str(&body).unwrap();
@@ -55,12 +55,12 @@ async fn stream_audience_per_reader() {
     assert_eq!(item["tier"], "friends");
 
     // Knowing an ObjId grants nothing (A32): Carol cannot read the friends-only object or its Head.
-    let object = format!("{}/home/objects/{}", alice.base, friends_post["objId"].as_str().unwrap());
+    let object = format!("{}/objects/{}", alice.home, friends_post["objId"].as_str().unwrap());
     assert_eq!(net.get(&object, Some(net.proof("carol", "alice"))).await.0, 404);
     assert_eq!(net.get(&object, Some(net.proof("dave", "alice"))).await.0, 200);
     let key = friends_post["entry"].as_str().unwrap().rsplit('/').next().unwrap().to_string();
-    assert_eq!(net.get(&format!("{}/home/feed/@/{key}", alice.base), None).await.0, 404);
-    assert_eq!(net.get(&format!("{}/home/feed/@/{key}", alice.base), Some(net.proof("dave", "alice"))).await.0, 200);
+    assert_eq!(net.get(&format!("{}/feed/@/{key}", alice.home), None).await.0, 404);
+    assert_eq!(net.get(&format!("{}/feed/@/{key}", alice.home), Some(net.proof("dave", "alice"))).await.0, 200);
     // A proof for another zone or a forged one is refused.
     assert_eq!(net.get(&feed, Some(net.proof("bob", "carol"))).await.0, 401);
 }
@@ -120,7 +120,7 @@ async fn push_admission_and_idempotency() {
     let jwt: String = alice.station.db.call({ let id = obj_id.clone(); move |c| Ok(c.query_row("SELECT jwt FROM objects WHERE obj_id=?1", [id], |r| r.get(0))?) }).await.unwrap();
     let forwarded = net
         .http
-        .put(format!("{}/home/inbox", bob.base))
+        .put(format!("{}/inbox", bob.home))
         .header("content-type", "application/cyfs-named-object+jwt")
         .header("cyfs-obj-id", ndn_lib::ObjId::new(&obj_id).unwrap().to_base32())
         .body(jwt)
@@ -130,7 +130,7 @@ async fn push_admission_and_idempotency() {
     assert_eq!(forwarded.status().as_u16(), 200);
     let other_zone = net
         .http
-        .put(format!("{}/home/inbox", bob.base))
+        .put(format!("{}/inbox", bob.home))
         .header("host", "carol.test")
         .header("content-type", "application/cyfs-named-object+jwt")
         .body("x.y.z")
@@ -141,7 +141,7 @@ async fn push_admission_and_idempotency() {
 
     // The status query reports what was accepted.
     let id = ndn_lib::ObjId::new(&obj_id).unwrap();
-    let (status, body, headers) = net.get(&format!("{}/home/inbox?dispatch-status={}", bob.base, id.to_base32()), None).await;
+    let (status, body, headers) = net.get(&format!("{}/inbox?dispatch-status={}", bob.home, id.to_base32()), None).await;
     assert_eq!(status, 200, "{body}");
     assert_eq!(headers.get("cyfs-dispatch-status").unwrap(), "accepted");
 }
@@ -192,7 +192,7 @@ async fn heads_versions_withdraw_and_conflicts() {
     let id = homestation::protocol::obj_id_of(OBJ_TYPE_HEAD, &homestation::sign::decode_unverified(&seq1_head).unwrap().claims).unwrap().0;
     let replay = net
         .http
-        .put(format!("{}/home/inbox", bob.base))
+        .put(format!("{}/inbox", bob.home))
         .header("host", &bob.zone)
         .header("content-type", "application/cyfs-named-object+jwt")
         .header("cyfs-obj-id", ndn_lib::ObjId::new(&id).unwrap().to_base32())
@@ -226,7 +226,7 @@ async fn heads_versions_withdraw_and_conflicts() {
 
     // Two different Heads with the same seq, both validly signed by Alice: conflict (A30).
     let signer = homestation::sign::Signer::from_pem(alice.pem.as_bytes(), format!("{}#main_key", alice.did)).unwrap();
-    let other_entry = entry_url(&alice.zone, EntryNamespace::Feed, "forked");
+    let other_entry = HomeRef::new(&alice.zone, "alice").entry(EntryNamespace::Feed, "forked");
     for current in [p1.clone(), p2.clone()] {
         let obj = homestation::protocol::FeedObject {
             entry: Some(other_entry.clone()),
@@ -251,7 +251,7 @@ async fn entry_namespace_and_content_rules() {
     bob.add_contact(mallory, true, &[]);
     let signer = homestation::sign::Signer::from_pem(mallory.pem.as_bytes(), format!("{}#main_key", mallory.did)).unwrap();
     // Mallory claims an entry in Alice's zone.
-    let stolen = entry_url(&alice.zone, EntryNamespace::Feed, "garden-0001");
+    let stolen = HomeRef::new(&alice.zone, "alice").entry(EntryNamespace::Feed, "garden-0001");
     let obj = json!({ "kind": "post", "publisher": mallory.did, "iat": 1, "entry": stolen, "content": { "type": "text", "text": "mine now" } });
     let jwt = signer.sign(&obj).unwrap();
     let id = bob.station.ingest_wire(&jwt, homestation::ingress::Arrival::Fetch, false).await.unwrap();

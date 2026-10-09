@@ -145,16 +145,20 @@ const crowd = ['Mia Park', 'Omar Haddad', 'Yuki Tanaka', 'Lena Fischer', 'Carlos
 
 const slugOf = (name: string) => name.toLowerCase().replace(/[^a-z]+/g, '-')
 
+export function userOf(did: Did) {
+  return did.split(':').pop() ?? did
+}
+
 export function zoneOf(did: Did) {
-  return `${did.split(':').pop()}.buckyos.io`
+  return `${userOf(did)}.buckyos.io`
 }
 
 export function feedEntry(did: Did, key: string): EntryUrl {
-  return `cyfs://${zoneOf(did)}/home/feed/@/${key}`
+  return `cyfs://${zoneOf(did)}/home/${userOf(did)}/feed/@/${key}`
 }
 
 export function reactionEntry(did: Did, target: ObjId, type: CommentType): EntryUrl {
-  return `cyfs://${zoneOf(did)}/home/reactions/@/${keyDigest(`${did}|${target}|${type}`)}`
+  return `cyfs://${zoneOf(did)}/home/${userOf(did)}/reactions/@/${keyDigest(`${did}|${target}|${type}`)}`
 }
 
 interface PostSpec {

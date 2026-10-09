@@ -76,13 +76,17 @@ function FeaturedList({ featured, editable, variant }: { featured: string[]; edi
   )
 }
 
-export function PublicProfileView({ owner, previewReader, onPreviewReaderChange }: { owner: Did; previewReader?: PreviewReader; onPreviewReaderChange?: (reader: PreviewReader) => void }) {
+/**
+ * A home feed as a reader gets it. In the owner's app with reader previews; on a portal page
+ * with `onFollow` (a signed-in viewer follows from here) or `signInHref` (anonymous visitors).
+ */
+export function PublicProfileView({ owner, previewReader, onPreviewReaderChange, onFollow, signInHref }: { owner: Did; previewReader?: PreviewReader; onPreviewReaderChange?: (reader: PreviewReader) => void; onFollow?: () => Promise<void>; signInHref?: string }) {
   const { t } = useI18n()
   const store = useHomeStationStore()
   const nav = useHsNav()
   const toast = useToast()
   const [tab, setTab] = useState<ProfileTab>('posts')
-  const [followRequested, setFollowRequested] = useState(false)
+  const [followState, setFollowState] = useState<'idle' | 'pending' | 'done'>('idle')
   const ownerView = nav.perspective === 'owner'
   const previewing = ownerView && previewReader && previewReader !== 'owner'
   const previewReaders = usePreviewReaders()
@@ -131,19 +135,29 @@ export function PublicProfileView({ owner, previewReader, onPreviewReaderChange 
               </h2>
               <p className="truncate font-mono text-[11px]" style={{ color: 'var(--cp-muted)' }}>{owner}</p>
             </div>
-            {!ownerView ? (
+            {!ownerView && onFollow ? (
               <button
                 type="button"
-                className={followRequested ? 'hs-btn' : 'hs-btn is-primary'}
+                className={followState === 'done' ? 'hs-btn' : 'hs-btn is-primary'}
                 data-testid="hs-visitor-follow"
+                disabled={followState !== 'idle'}
                 onClick={() => {
-                  setFollowRequested(true)
-                  toast({ text: t('homestation.profile.followSent', 'Your HomeStation will sign a follow declaration, deliver it to {{name}}, and start reading this home feed.', { name: data?.name ?? '' }) })
+                  setFollowState('pending')
+                  onFollow().then(() => setFollowState('done'), error => {
+                    setFollowState('idle')
+                    toast({ text: t('homestation.portal.followFailed', 'Couldn’t follow: {{reason}}', { reason: error instanceof Error ? error.message : String(error) }) })
+                  })
                 }}
               >
                 <UserPlus size={14} />
-                {followRequested ? t('homestation.profile.following', 'Following') : t('homestation.profile.follow', 'Follow')}
+                {followState === 'done' ? t('homestation.profile.following', 'Following') : t('homestation.profile.follow', 'Follow')}
               </button>
+            ) : null}
+            {!ownerView && !onFollow && signInHref ? (
+              <a className="hs-btn" href={signInHref} data-testid="hs-visitor-sign-in">
+                <UserPlus size={14} />
+                {t('homestation.portal.signInToFollow', 'Sign in to follow')}
+              </a>
             ) : null}
           </div>
           {data?.bio ? <p className="mt-1.5 text-sm leading-relaxed" style={{ color: 'color-mix(in srgb, var(--cp-text) 78%, transparent)' }}>{data.bio}</p> : null}

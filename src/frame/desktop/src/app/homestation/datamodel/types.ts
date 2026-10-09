@@ -302,6 +302,10 @@ export interface PublishedEntryView {
   task?: PublishTask
   kind: 'post' | 'comment' | 'repost' | 'quote' | 'like' | 'bookmark'
   publishedAt: number
+  /** Listed in the zone feed (§4.6). */
+  zoneFeed?: boolean
+  /** Publisher's username, on zone-feed pages. */
+  user?: string
 }
 
 export interface PublishedPage {
@@ -323,6 +327,9 @@ export interface StreamChange {
 
 export interface ProfileView {
   did: Did
+  /** Username of this home (`/homestation/<user>`); `~zone` for the zone feed. */
+  user?: string
+  kind?: 'user' | 'zone'
   name: string
   bio: string
   hue: number
@@ -330,6 +337,23 @@ export interface ProfileView {
   following: number
   posts: number
   featured: ObjId[]
+}
+
+/** Where the signed-in user's HomeStation lives and what the zone offers (§4.4, §4.6). */
+export interface HomeInfo {
+  zone: string
+  user: string
+  defaultFeed: string
+  zoneFeed: { feed: string; name: string; writer: boolean }
+}
+
+/** `portal.home`: the zone's default feed and who is looking. */
+export interface PortalHome {
+  zone: string
+  zoneName: string
+  defaultFeed: string
+  zoneFeed: string
+  viewer: { did: Did; user?: string; name?: string; zoneFeedWriter?: boolean } | null
 }
 
 export interface SyncStatus {

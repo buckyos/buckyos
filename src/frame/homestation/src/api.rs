@@ -42,18 +42,12 @@ fn reader_of(params: &Value, owner: &str) -> HsResult<Reader> {
     })
 }
 
-/// Methods a zone user who is not the owner may call (reading the owner's public face).
-const VISITOR_METHODS: &[&str] = &["profile.get", "published.list", "item.get"];
-
 impl Station {
+    /// Methods of the user's own HomeStation; `Host::handle_rpc` routes each caller to their
+    /// own station, other users' homes are read through `portal.*`.
     pub async fn handle_rpc(&self, caller: &Caller, method: &str, params: Value) -> HsResult<Value> {
-        let is_owner = caller.did.as_deref() == Some(self.cfg.owner.as_str());
-        if !is_owner {
-            if !VISITOR_METHODS.contains(&method) {
-                return Err(HsError::Forbidden("only the HomeStation owner may call this method".into()));
-            }
-            let visitor = caller.did.clone().map(Reader::Did).unwrap_or(Reader::Anonymous);
-            return self.visitor_rpc(visitor, method, params).await;
+        if caller.did.as_deref().is_some_and(|did| did != self.cfg.owner) {
+            return Err(HsError::Forbidden("only the HomeStation's user may call this method".into()));
         }
         let eval_scope = match caller.app_id.as_deref() {
             None => "global".to_string(),
@@ -357,23 +351,6 @@ impl Station {
         })
     }
 
-    async fn visitor_rpc(&self, reader: Reader, method: &str, params: Value) -> HsResult<Value> {
-        Ok(match method {
-            "profile.get" => self.profile_view(&self.cfg.owner.clone(), reader).await?,
-            "published.list" => {
-                let mut params = params;
-                params["owner"] = json!(self.cfg.owner);
-                params["reader"] = match &reader {
-                    Reader::Did(d) => json!({ "kind": "did", "did": d }),
-                    _ => json!({ "kind": "anonymous" }),
-                };
-                self.published_list(&params).await?
-            }
-            "item.get" => json!(self.card(&arg::<String>(&params, "objId")?, reader).await?),
-            _ => return Err(HsError::Forbidden("method not available".into())),
-        })
-    }
-
     async fn bootstrap(&self) -> HsResult<Value> {
         let settings = self.settings().await?;
         let contacts = self.contacts.list().await;
@@ -417,6 +394,7 @@ impl Station {
         Ok(json!({
             "owner": self.cfg.owner,
             "zone": self.cfg.zone,
+            "user": self.cfg.user,
             "followers": followers,
             "following": following,
             "settings": settings,
@@ -465,9 +443,62 @@ impl Station {
         }))
     }
 
+    /// Entry view (state, audience, kind) and card of one of my entries as `reader` sees it.
+    pub async fn entry_card(&self, reader: &Reader, entry: &str) -> HsResult<Option<(Value, Option<Value>)>> {
+        let ctx = self.view_ctx(reader.clone()).await;
+        let found = self.entry_card_with(&ctx, entry).await?;
+        Ok(found.filter(|(view, _)| ctx.is_owner() || view["head"]["state"] != "withdrawn"))
+    }
+
+    async fn entry_card_with(&self, ctx: &crate::projection::ViewCtx, entry: &str) -> HsResult<Option<(Value, Option<Value>)>> {
+        let entry = entry.to_string();
+        let ctx2 = ctx.clone();
+        self.db
+            .call(move |c| {
+                let Some(row) = get_entry(c, &entry)? else { return Ok(None) };
+                if !crate::audience::allows(&row.audience, &ctx2.reader, &ctx2.rel) {
+                    return Ok(None);
+                }
+                let head = get_head(c, &entry)?;
+                let versions = crate::publish::entry_versions(c, &entry)?;
+                let obj_id = head.as_ref().and_then(|h| h.current.clone()).or_else(|| versions.last().cloned());
+                let head_view = match &obj_id {
+                    Some(id) => match crate::objects::get_feed(c, id)? {
+                        Some(feed) => crate::projection::entry_state(c, id, &feed)?,
+                        None => None,
+                    },
+                    None => None,
+                }
+                .unwrap_or_else(|| {
+                    json!({
+                        "entry": entry, "seq": head.as_ref().map(|h| h.seq).unwrap_or(0),
+                        "state": head.as_ref().map(|h| h.state.as_str()).unwrap_or("active"),
+                        "isLatest": false, "version": 1, "versionCount": versions.len().max(1),
+                    })
+                });
+                let spec = if ctx2.is_owner() { row.audience.clone() } else { crate::projection::tier_spec(row.audience.tier()) };
+                let card = match &obj_id {
+                    Some(id) if crate::protocol::obj_type_of(id).as_deref() == Some(crate::protocol::OBJ_TYPE_FEED) => crate::projection::card_view(c, &ctx2, id, None)?,
+                    _ => None,
+                };
+                Ok(Some((
+                    json!({
+                        "entry": entry,
+                        "objId": obj_id,
+                        "head": head_view,
+                        "audience": { "spec": spec, "restricted": !row.audience.is_public() },
+                        "kind": row.kind.as_str(),
+                        "publishedAt": row.created_at,
+                    }),
+                    card,
+                )))
+            })
+            .await
+    }
+
     /// `listPublished(owner, { reader, kind, cursor })`: the owner's own stream as any reader
     /// sees it, or another publisher's stream read over the network.
-    async fn published_list(&self, p: &Value) -> HsResult<Value> {
+    pub(crate) async fn published_list(&self, p: &Value) -> HsResult<Value> {
         let owner: String = opt(p, "owner")?.unwrap_or_else(|| self.cfg.owner.clone());
         let reader = reader_of(p, &self.cfg.owner)?;
         let kind: Option<String> = opt(p, "kind")?;
@@ -485,47 +516,7 @@ impl Station {
         let mut entries = Vec::new();
         let mut cards = Vec::new();
         for item in &page.items {
-            let entry = item.entry.clone();
-            let ctx2 = ctx.clone();
-            let (view, card) = self
-                .db
-                .call(move |c| {
-                    let Some(row) = get_entry(c, &entry)? else { return Ok((Value::Null, None)) };
-                    let head = get_head(c, &entry)?;
-                    let versions = crate::publish::entry_versions(c, &entry)?;
-                    let obj_id = head.as_ref().and_then(|h| h.current.clone()).or_else(|| versions.last().cloned());
-                    let head_view = match &obj_id {
-                        Some(id) => match crate::objects::get_feed(c, id)? {
-                            Some(feed) => crate::projection::entry_state(c, id, &feed)?,
-                            None => None,
-                        },
-                        None => None,
-                    }
-                    .unwrap_or_else(|| {
-                        json!({
-                            "entry": entry, "seq": head.as_ref().map(|h| h.seq).unwrap_or(0),
-                            "state": head.as_ref().map(|h| h.state.as_str()).unwrap_or("active"),
-                            "isLatest": false, "version": 1, "versionCount": versions.len().max(1),
-                        })
-                    });
-                    let spec = if ctx2.is_owner() { row.audience.clone() } else { crate::projection::tier_spec(row.audience.tier()) };
-                    let card = match &obj_id {
-                        Some(id) if crate::protocol::obj_type_of(id).as_deref() == Some(crate::protocol::OBJ_TYPE_FEED) => crate::projection::card_view(c, &ctx2, id, None)?,
-                        _ => None,
-                    };
-                    Ok((
-                        json!({
-                            "entry": entry,
-                            "objId": obj_id,
-                            "head": head_view,
-                            "audience": { "spec": spec, "restricted": !row.audience.is_public() },
-                            "kind": row.kind.as_str(),
-                            "publishedAt": row.created_at,
-                        }),
-                        card,
-                    ))
-                })
-                .await?;
+            let (view, card) = self.entry_card_with(&ctx, &item.entry).await?.unwrap_or((Value::Null, None));
             if view.is_null() || (profile_feed && view["head"]["state"] == "withdrawn") {
                 continue;
             }
@@ -559,22 +550,20 @@ impl Station {
         Ok(json!({ "entries": entries, "nextCursor": page.next, "changeCursor": page.change_cursor, "cards": cards }))
     }
 
-    /// Visitor portal of another publisher (`/homestation/u/:did`): a display read signed as
-    /// the owner, verified and stored like any other pulled content.
     /// Another publisher's stream as the owner reads it, or as an anonymous visitor. Another
     /// reader's view cannot be produced here (that reader's identity is not ours to present), so
     /// it falls back to the anonymous view and says so.
     async fn remote_published(&self, owner: &str, reader: &Reader, kind: Option<String>, cursor: Option<String>, limit: usize) -> HsResult<Value> {
         let as_owner = *reader == Reader::Owner;
-        let (zone, origin) = self.origin_for_did(owner).await?;
-        let mut path = format!("/home/feed?mode=display&objects=1&limit={limit}");
+        let (home, origin) = self.origin_for_did(owner).await?;
+        let mut path = home.path(&format!("feed?mode=display&objects=1&limit={limit}"));
         if let Some(kind) = &kind {
             path.push_str(&format!("&kind={kind}"));
         }
         if let Some(cursor) = &cursor {
             path.push_str(&format!("&cursor={}", url_encode(cursor)));
         }
-        let response = self.remote_get_as(&zone, &origin, &path, as_owner).await?;
+        let response = self.remote_get_as(&home.zone, &origin, &path, as_owner).await?;
         if !response.status().is_success() {
             return Err(HsError::Unavailable(format!("stream of {owner}: HTTP {}", response.status())));
         }
@@ -676,11 +665,12 @@ impl Station {
             .await
     }
 
-    async fn profile_view(&self, did: &str, reader: Reader) -> HsResult<Value> {
+    pub(crate) async fn profile_view(&self, did: &str, reader: Reader) -> HsResult<Value> {
         if did == self.cfg.owner {
             let profile = self.public_profile(&reader).await?;
             return Ok(json!({
                 "did": profile.did,
+                "user": profile.user,
                 "name": profile.name,
                 "bio": profile.bio,
                 "hue": crate::hue_of(&profile.did),

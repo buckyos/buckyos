@@ -1205,7 +1205,9 @@ pub(crate) async fn update_node_gateway_info(
                             service_id: spec_id.clone(),
                             selector: selector.clone(),
                         });
-                    for host in ["_", "www", "sys"] {
+                    // `homestation.<zone>` is HomeStation's own short host: like `www.<zone>`,
+                    // the Desktop serves it and opens the zone's default feed at `/`.
+                    for host in ["_", "www", "sys", "homestation"] {
                         node_gateway_info
                             .app_info
                             .entry(host.to_string())
@@ -1315,6 +1317,10 @@ pub(crate) async fn update_node_gateway_info(
         node_gateway_info
             .app_info
             .entry("www".to_string())
+            .or_insert_with(|| control_panel_entry.clone());
+        node_gateway_info
+            .app_info
+            .entry("homestation".to_string())
             .or_insert(control_panel_entry);
     }
 
@@ -1582,7 +1588,12 @@ fn validate_beta22_app_state(input: &HashMap<String, String>) -> Result<()> {
         )
     })?;
     let registry: AppRegistry = serde_json::from_str(registry_raw)?;
-    let mut reserved = BTreeSet::from(["_".to_string(), "www".to_string(), "sys".to_string()]);
+    let mut reserved = BTreeSet::from([
+        "_".to_string(),
+        "www".to_string(),
+        "sys".to_string(),
+        "homestation".to_string(),
+    ]);
     if let Some(raw) = input.get("services/gateway/settings") {
         let settings: ZoneGatewaySettings = serde_json::from_str(raw)?;
         reserved.extend(settings.shortcuts.keys().cloned());

@@ -218,10 +218,15 @@ pub async fn verify_jwt(directory: &dyn Directory, jwt: &str, expected_type: Opt
     Ok(Verified { obj_id, obj_type: obj_type.to_string(), claims, jwt: jwt.to_string(), signer, publisher })
 }
 
-/// §5.4 rule 2: the entry lies in the publisher's namespace (zone path or owned content DID).
+/// §5.4 rule 2: the entry lies in the publisher's namespace (its home path or an owned
+/// content DID).
 pub async fn entry_belongs_to(directory: &dyn Directory, publisher: &str, entry: &str) -> Result<bool, DirError> {
     match EntryRef::parse(entry) {
-        Ok(EntryRef::Path { zone, .. }) => Ok(directory.zone_of(publisher).await? == zone),
+        Ok(EntryRef::Path { home, .. }) => match directory.home_of(publisher).await {
+            Ok(own) => Ok(own == home),
+            Err(DirError::NotFound(_)) => Ok(false),
+            Err(e) => Err(e),
+        },
         Ok(EntryRef::Did(did)) => Ok(directory.content_did_owner(&did).await?.as_deref() == Some(publisher)),
         Err(_) => Ok(false),
     }
