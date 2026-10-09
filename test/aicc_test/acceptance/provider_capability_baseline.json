@@ -1380,7 +1380,7 @@
       "protocol_adapter_ids": ["kimi-chat"],
       "model_driver_ids": ["kimi"],
       "discovery": "official_catalog",
-      "official_catalog": { "endpoint": "https://api.moonshot.cn/v1/models", "format": "openai", "authentication": "bearer", "supplemental_model_ids": ["kimi-k3", "kimi-k2.7-code-highspeed"] },
+      "official_catalog": { "endpoint": "https://api.moonshot.cn/v1/models", "format": "openai", "authentication": "bearer" },
       "source_urls": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/models-overview", "https://platform.kimi.com/docs/guide/kimi-k3-quickstart", "https://platform.kimi.com/docs/guide/use-kimi-vision-model"],
       "protocol_evidence": {
         "documentation_version": "official documentation checked 2026-10-08",
@@ -1393,7 +1393,7 @@
         "context_output_limits": "Context and output limits are model specific and not inferred from the protocol.",
         "region_restrictions": "China and global Kimi platforms use independent endpoints and credentials.",
         "account_tier_restrictions": "Model access, concurrency and quota depend on account authorization and tier.",
-        "preview_allowlist": "Authenticated catalog models are eligible; active models explicitly documented by Kimi may supplement an incomplete account catalog."
+        "preview_allowlist": "Only models returned by the authenticated /models endpoint are eligible for that account; public documentation never supplements account inventory."
       },
       "coverage_rules": [
         { "model_pattern": "kimi-latest", "action": "exclude", "reason": "logical_alias", "source_urls": ["https://platform.kimi.com/docs/api/models-overview"], "evidence_summary": "The latest name tracks a changing Kimi release rather than one physical model." },

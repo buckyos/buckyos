@@ -105,6 +105,7 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 
 - Kimi K3：[官方定价页](https://platform.kimi.com/docs/pricing/chat)明确上下文为 1,048,576；[K3 模型页](https://platform.kimi.com/docs/guide/kimi-k3-quickstart)明确 `max_completion_tokens` 默认 131,072、最大 1,048,576。因此模型能力配置为 1,048,576 / 1,048,576，不能把默认值写成硬上限。
 - Kimi K2.6、K2.7 Code 和 K2.7 Code Highspeed 的官方页仍只明确 256K 上下文，没有发布逐型号最大 completion 整数，输出上限继续缺省。
+- Kimi model-driver 描述 AICC 已知的型号与能力，但 Provider 有效库存只采用当前 API Key 的 `/models` 返回值。公开文档和 model-driver 都不能把 `kimi-k3`、`kimi-k2.7-code-highspeed` 静态注入没有访问权限的账号。
 
 ## 仍未确认的字段
 
