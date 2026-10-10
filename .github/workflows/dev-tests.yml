@@ -44,6 +44,11 @@ jobs:
         with:
           toolchain: stable
 
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
       - name: Install cargo test dependencies
         run: |
           sudo apt-get update
