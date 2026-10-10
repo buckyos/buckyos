@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.custom.google-gemini.gemini.predict-long-running.v1beta.video.txt2video.success",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-custom-google-gemini",
+  "exact_model": "veo-3.1-generate-preview@t15-20261008050816-1602985-custom-google-gemini",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:32:43.845Z",
+      "elapsed_ms": 2767,
+      "status": "passed",
+      "diagnostic": "contract=gemini.predict-long-running.v1beta; scenario=success; captured_requests=3; seed=t15-20261008050816-1602985; selected_official_model=veo-3.1-generate-preview",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

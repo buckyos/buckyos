@@ -3,12 +3,13 @@ use crate::catalog::{
     CatalogBuildOptions, CatalogSnapshot, ModelIdentity, ModelMatchFailure, ProviderModelMatch,
 };
 use crate::protocol::*;
+use crate::provider::inventory::ModelIdentitySource;
 use crate::provider::*;
 use crate::settings::{load_builtin_metadata, MetadataSources};
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiRole, ApiType, LlmChatInvokeRequest};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -155,14 +156,11 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
             model_id: "claude-sonnet-5".into()
         })
     );
-    let deepseek = openai_responses_compatible::OpenAiCompatibleModelsDiscovery::new(
-        "deepseek",
-        DEEPSEEK_RESPONSES_ADAPTER_ID,
-        HttpTransport::new(Default::default()).unwrap(),
-    );
     assert_eq!(
-        deepseek.match_model_driver("deepseek-v4-flash", &catalog),
-        ProviderModelMatch::Matched(ModelIdentity {
+        catalog
+            .provider_model_identity_override("deepseek", "deepseek-v4-flash")
+            .unwrap(),
+        Ok(ModelIdentity {
             model_driver_id: "deepseek".into(),
             model_id: "deepseek-v4.1-flash".into()
         })
@@ -174,6 +172,61 @@ fn overrides_provider_failures_and_aliases_are_terminal_and_isolated() {
             .model_driver_id,
         "deepseek"
     );
+}
+
+#[test]
+fn deepseek_inventory_uses_provider_metadata_for_aliases_and_exclusions() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "deepseek")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "deepseek-test"),
+        discovery(&[
+            "deepseek-flash",
+            "deepseek-v4-flash",
+            "deepseek-v4-flash-vision-exp",
+            "deepseek-v4-pro",
+            "deepseek-chat",
+            "deepseek-reasoner",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+
+    assert!(inventory.unmatched_models.is_empty());
+    assert_eq!(inventory.models.len(), 4);
+    for provider_model_id in [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp",
+    ] {
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == provider_model_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, "deepseek-v4.1-flash");
+        assert!(matches!(
+            model.identity_source,
+            ModelIdentitySource::Provider
+        ));
+    }
+    let pro = inventory
+        .models
+        .iter()
+        .find(|model| model.provider_model_id == "deepseek-v4-pro")
+        .unwrap();
+    assert_eq!(pro.origin_model_id, "deepseek-v4-pro");
+    assert!(matches!(pro.identity_source, ModelIdentitySource::Catalog));
+    assert!(inventory.models.iter().all(|model| !matches!(
+        model.provider_model_id.as_str(),
+        "deepseek-chat" | "deepseek-reasoner"
+    )));
 }
 
 #[tokio::test]
@@ -207,15 +260,15 @@ async fn builtin_presets_share_inventory_registry_and_wire_contracts() {
             "qwen",
             "qwen3.7-plus",
             "thinking",
-            "/enable_thinking",
-            json!(true),
+            "/reasoning/effort",
+            json!("xhigh"),
         ),
         (
             "qwen",
             "qwen3.5-27b",
             "thinking",
-            "/enable_thinking",
-            json!(true),
+            "/reasoning/effort",
+            json!("xhigh"),
         ),
         (
             "kimi",
@@ -534,6 +587,52 @@ async fn shared_discovery_preserves_unknowns_and_explicit_channel_restrictions()
     }
 }
 
+#[tokio::test]
+async fn volcengine_ark_discovery_uses_catalog_lifecycle_and_task_types() {
+    let body = json!({"object":"list","data":[
+        {"object":"model","id":"active-vlm","task_type":["TextGeneration","VisualQuestionAnswering","SpeechToText"]},
+        {"object":"model","id":"active-video","task_type":["MultimodalToVideo","VideoEditing","VideoExtension"]},
+        {"object":"model","id":"retiring","status":"Retiring","task_type":["TextGeneration"]},
+        {"object":"model","id":"unsupported-3d","task_type":["ImageTo3D"]}
+    ]});
+    let (models, _) = openai_responses_compatible::discover_volcengine_ark_models(
+        &ModelsHttp(body),
+        HttpRequest::new(reqwest::Method::GET, "https://example.test/api/v3/models"),
+        "doubao",
+    )
+    .await
+    .unwrap();
+    let model = |id: &str| {
+        models
+            .iter()
+            .find(|model| model.provider_model_id == id)
+            .unwrap()
+    };
+    assert_eq!(
+        model("active-vlm").api_types.clone(),
+        Some(vec![
+            ApiType::Llm,
+            ApiType::VisionOcr,
+            ApiType::VisionCaption
+        ])
+    );
+    assert_eq!(
+        model("active-video").api_types.clone(),
+        Some(vec![
+            ApiType::VideoTextToVideo,
+            ApiType::VideoImageToVideo,
+            ApiType::VideoToVideo,
+            ApiType::VideoExtend,
+        ])
+    );
+    assert_eq!(
+        model("retiring").availability,
+        ModelAvailability::Unavailable
+    );
+    assert!(model("retiring").deprecated);
+    assert_eq!(model("unsupported-3d").api_types.clone(), Some(vec![]));
+}
+
 #[test]
 fn claude_account_models_are_matched_with_every_declared_preset() {
     let catalog = catalog();
@@ -803,12 +902,162 @@ fn domestic_prices_do_not_fill_global_regions() {
 }
 
 #[test]
+fn builtin_media_models_mount_their_default_families() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    for (provider_id, discovered_id, expected_origin_id, mount, api_type, operation) in [
+        (
+            "doubao",
+            "doubao-seedream-4-0-20260415",
+            "doubao-seedream-4.0",
+            "image.txt2img.seedream",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao-agent-plan",
+            "doubao-seedream-5.0-lite",
+            "doubao-seedream-5.0-lite",
+            "image.txt2img.seedream",
+            "image.txt2img",
+            "ark.images.generate",
+        ),
+        (
+            "doubao",
+            "doubao-seedance-2-5-260628",
+            "doubao-seedance-2-5-260628",
+            "video.txt2video.seedance",
+            "video.txt2video",
+            "ark.contents.generate",
+        ),
+        (
+            "doubao-agent-plan",
+            "doubao-seedance-2.5",
+            "doubao-seedance-2.5",
+            "video.img2video.seedance",
+            "video.img2video",
+            "ark.contents.generate",
+        ),
+        (
+            "minimax",
+            "MiniMax-H3",
+            "MiniMax-H3",
+            "video.txt2video.minimax_h3",
+            "video.txt2video",
+            "video_generation.v2.create",
+        ),
+        (
+            "glm",
+            "vidu2-image",
+            "vidu2-image",
+            "video.img2video.vidu",
+            "video.img2video",
+            "videos.generate",
+        ),
+    ] {
+        let profile = providers
+            .profiles()
+            .find(|profile| profile.provider_profile_id == provider_id)
+            .unwrap();
+        let inventory = InventoryBuilder::build(
+            profile,
+            &instance(profile, provider_id),
+            discovery(&[discovered_id]),
+            &catalog,
+            &providers.codecs(),
+        )
+        .unwrap();
+        let model = inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == discovered_id)
+            .unwrap();
+        assert_eq!(model.origin_model_id, expected_origin_id);
+        assert!(model.logical_mounts.contains(&mount.to_owned()));
+        assert_eq!(
+            model.operations.get(api_type).map(String::as_str),
+            Some(operation)
+        );
+        if provider_id == "doubao-agent-plan" {
+            assert!(matches!(
+                model.identity_source,
+                ModelIdentitySource::Catalog
+            ));
+        }
+    }
+}
+
+#[test]
+fn agent_plan_inventory_uses_model_specific_official_capabilities() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "doubao-agent-plan")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "doubao-agent-plan"),
+        discovery(&[
+            "doubao-seed-2.0-mini",
+            "deepseek-v4-flash",
+            "deepseek-v4.1-flash",
+            "glm-5.3",
+            "glm-5.3-flash",
+            "kimi-k2.7-code",
+            "kimi-k2.6",
+            "kimi-k2.8-preview",
+            "kimi-k3",
+            "minimax-m3",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    let api_types = |model_id: &str| {
+        inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap()
+            .api_types
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+    };
+    assert!(
+        inventory
+            .models
+            .iter()
+            .all(|model| model.provider_model_id != "kimi-k2.6"),
+        "unlisted Agent Plan models must fail closed"
+    );
+    let text_only = HashSet::from([ApiType::Llm]);
+    let vision = HashSet::from([ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]);
+    for model_id in ["deepseek-v4-flash", "glm-5.3"] {
+        assert_eq!(api_types(model_id), text_only, "{model_id}");
+    }
+    for model_id in [
+        "doubao-seed-2.0-mini",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
+        "kimi-k2.7-code",
+        "kimi-k2.8-preview",
+        "kimi-k3",
+        "minimax-m3",
+    ] {
+        assert_eq!(api_types(model_id), vision, "{model_id}");
+    }
+}
+
+#[test]
 fn provider_pricing_contains_all_rebased_model_defaults() {
     let catalog = catalog();
     for (provider, expected_count) in [
         ("claude", 12),
         ("deepseek", 3),
-        ("doubao", 18),
+        ("doubao", 12),
+        ("doubao-agent-plan", 0),
         ("fal", 4),
         ("gemini", 29),
         ("glm", 101),
@@ -881,27 +1130,31 @@ fn every_builtin_provider_price_has_provenance() {
             );
         }
     }
-    assert_eq!(pricing_count, 310);
+    assert_eq!(pricing_count, 307);
 }
 
 #[test]
 fn corrected_provider_prices_match_official_billing_dimensions() {
     let catalog = catalog();
 
+    let agent_plan = catalog.provider_rules("doubao-agent-plan").unwrap();
+    assert!(agent_plan.model_pricing.is_empty());
+
+    let seedream = catalog
+        .resolve_provider_rule(
+            "doubao",
+            "doubao-seedream-4-0-20260415",
+            &Default::default(),
+        )
+        .unwrap();
+    let seedream = seedream.unwrap().action.pricing.unwrap();
+    assert_eq!(seedream.unit, Some(crate::catalog::PricingUnit::Image));
+    assert_eq!(seedream.amount, Some(0.2));
     let doubao = catalog.provider_rules("doubao").unwrap();
-    let mini = doubao
+    assert!(doubao
         .model_pricing
         .iter()
-        .find(|rule| rule.id.as_deref() == Some("doubao-seed-2.0-mini"))
-        .unwrap();
-    assert!(mini
-        .pricing
-        .tiers
-        .as_ref()
-        .unwrap()
-        .steps
-        .iter()
-        .all(|step| step.cache_input_token == Some(4e-8)));
+        .all(|rule| rule.id.as_deref() != Some("doubao-seed-tts-2.0")));
 
     let fal = catalog.provider_rules("fal").unwrap();
     let rembg = fal
@@ -990,16 +1243,35 @@ fn domestic_currency_never_matches_global_and_minimax_vision_matches_contract() 
             model.provider_model_id == "MiniMax-M3"
         );
     }
-    assert_eq!(inventory.models.len(), 2);
+    assert_eq!(
+        inventory
+            .models
+            .iter()
+            .map(|model| model.provider_model_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from([
+            "MiniMax-H3",
+            "MiniMax-H3-Max",
+            "MiniMax-M2.7",
+            "MiniMax-M3",
+            "asr-1.0",
+            "image-01",
+            "speech-2.8-hd",
+            "speech-2.8-turbo",
+        ])
+    );
 }
 
 #[test]
 fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_validated() {
     let catalog = catalog();
     let registry = builtin_provider_registry(&catalog).unwrap();
+    // TTS moved onto its own profile: the standard `doubao` profile now only
+    // serves the Ark inference endpoints, and `doubao-agent-plan` is the Ark
+    // card that still declares the openspeech TTS endpoint next to them.
     let binding = registry
         .resolve(BuiltinProviderRequest {
-            provider_profile_id: "doubao",
+            provider_profile_id: "doubao-agent-plan",
             protocol_adapter_id: "doubao-responses",
             auth_mode: ProviderAuthMode::ApiKey,
             credential_kind: None,
@@ -1015,9 +1287,23 @@ fn custom_base_urls_override_inherited_operation_endpoints_and_policy_region_is_
         .unwrap();
     assert!(custom.operation_base_urls.is_empty());
     let defaults = binding.connection.resolve(Default::default()).unwrap();
-    assert!(defaults
-        .operation_base_urls
-        .contains_key("tts.unidirectional"));
+    assert_eq!(
+        defaults.operation_base_urls,
+        BTreeMap::from([
+            (
+                "ark.contents.generate".into(),
+                "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
+            ),
+            (
+                "ark.images.generate".into(),
+                "https://ark.cn-beijing.volces.com/api/plan/v3".into(),
+            ),
+            (
+                "tts.unidirectional".into(),
+                "https://openspeech.bytedance.com/api/v3/plan/tts".into(),
+            ),
+        ])
+    );
     let overrides = BTreeMap::from([(
         "tts.unidirectional".into(),
         "https://proxy.example/tts".into(),
@@ -1206,8 +1492,14 @@ fn routable_builtin_unit_prices_match_operation_usage_dimensions() {
             }
         }
     }
+    // The standard `doubao` profile discovers its inventory dynamically and the
+    // `doubao-agent-plan` profile is a prepaid plan whose per-request pricing the
+    // schema cannot express, so neither contributes unit-priced dimensions to
+    // this sweep. The floor is what the remaining providers provide plus the three
+    // active `doubao-speech` models (one character-priced TTS model and two
+    // audio-second-priced ASR endpoints) across the four probed regions.
     assert!(
-        checked >= 39,
+        checked >= 31,
         "pricing coverage unexpectedly shrank: {checked}"
     );
 }

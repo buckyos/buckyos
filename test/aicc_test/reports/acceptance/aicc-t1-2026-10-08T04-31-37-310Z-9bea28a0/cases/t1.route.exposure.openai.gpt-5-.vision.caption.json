@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.route.exposure.openai.gpt-5-.vision.caption",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "vision.caption",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:32:22.809Z",
+      "elapsed_ms": 201,
+      "status": "passed",
+      "diagnostic": "vision.caption closed through gpt-5.3-codex:reasoning-high@dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "openai",
+  "provider_profile_id": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "model_rule": "gpt-5*",
+  "exposure_mode": "logical_routable"
+}

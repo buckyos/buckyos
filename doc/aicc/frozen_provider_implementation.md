@@ -131,7 +131,7 @@ Provider 停止、禁用、删除、reload 替换或服务退出时，必须先�
 
 ## 6. 凭据与安全
 
-- settings 持久化的是 locked credential/reference，不是可日志输出的明文。
+- settings 持久化 typed credential source；`inline_secret` 是敏感值，`secret_ref` 和 `runtime_ref` 是引用，三者都不得输出到日志。
 - `CredentialResolver` 在调用边界解析；`ResolvedCredential` 只传入 codec context。
 - adapter descriptor 冻结 Bearer、Named Header 等 contract；profile 可声明受控 credential variants。
 - `base_url` 必须是无 userinfo/query/fragment 的绝对 HTTP(S) URL。

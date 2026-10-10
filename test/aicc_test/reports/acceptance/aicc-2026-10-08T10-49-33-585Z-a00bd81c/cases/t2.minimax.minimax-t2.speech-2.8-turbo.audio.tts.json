@@ -1,0 +1,44 @@
+{
+  "run_id": "aicc-2026-10-08T10-49-33-585Z-a00bd81c",
+  "case_id": "t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "speech-2.8-turbo@minimax-t2",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [
+    "cyfile:31190928830b6928a09f6c9655a0438e22df8cc90e01fc601ada99488456268c"
+  ],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:49:36.096Z",
+      "elapsed_ms": 39159,
+      "status": "review",
+      "diagnostic": "validated 1 output artifact(s); semantic rubric requires Judge or manual review",
+      "usage": {
+        "request_units": 1
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.0024000000000000002,
+      "cost_status": "actual"
+    }
+  ],
+  "artifact_audits": [
+    {
+      "obj_id": "cyfile:31190928830b6928a09f6c9655a0438e22df8cc90e01fc601ada99488456268c",
+      "label": "",
+      "size": 67956,
+      "sha256": "143425b0e15bce5d5c4ab4d7cab27a7f6a0a219d01b340c53bf6b22d7b623bfd"
+    }
+  ],
+  "task_id": "t-6685bb728cd8497db7ebb536a8593f06",
+  "usage": {
+    "request_units": 1
+  },
+  "cost_usd": 0.0024000000000000002,
+  "trace_id": "aicc-idem-b92f9128dac1fde591bed10148c62e84"
+}

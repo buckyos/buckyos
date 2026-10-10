@@ -1,8 +1,8 @@
 {
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
-  "schema_revision": 0,
-  "revision_seq": 4,
+  "schema_revision": 1,
+  "revision_seq": 7,
   "provider_profile_id": "kimi",
   "models": [],
   "patterns": [

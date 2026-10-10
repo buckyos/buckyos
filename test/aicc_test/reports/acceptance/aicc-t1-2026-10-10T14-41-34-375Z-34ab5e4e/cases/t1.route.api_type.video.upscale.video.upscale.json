@@ -1,0 +1,30 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.video.upscale.video.upscale",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "dv-fal-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "fal-ai/video-upscaler@dv-fal-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "video.upscale",
+  "method": "video.upscale",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.video.upscale.video.upscale",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:54.709Z",
+      "elapsed_ms": 4487,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-8a69f72c75df407886aafdbcaef9566a",
+  "trace_id": "aicc-idem-dc7f7e0b7c5c6b8dbda458269107a7a3",
+  "usage": {
+    "request_units": 1
+  }
+}

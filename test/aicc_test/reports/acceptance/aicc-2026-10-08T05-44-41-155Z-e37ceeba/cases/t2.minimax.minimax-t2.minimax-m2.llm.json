@@ -1,0 +1,38 @@
+{
+  "run_id": "aicc-2026-10-08T05-44-41-155Z-e37ceeba",
+  "case_id": "t2.minimax.minimax-t2.minimax-m2.llm",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-M2@minimax-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:44:46.219Z",
+      "elapsed_ms": 29435,
+      "status": "passed",
+      "usage": {
+        "input_tokens": 54,
+        "output_tokens": 183,
+        "total_tokens": 237
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.00023579999999999999,
+      "cost_status": "actual"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-f4b9b98c4893400baddcc72df8ebda41",
+  "usage": {
+    "input_tokens": 54,
+    "output_tokens": 183,
+    "total_tokens": 237
+  },
+  "cost_usd": 0.00023579999999999999,
+  "trace_id": "aicc-idem-df72a3918bb14246418b68267d762e32"
+}

@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.exposure.claude.claude--.llm",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:34.826Z",
+      "elapsed_ms": 134,
+      "status": "passed",
+      "diagnostic": "llm.claude-fable closed through claude-fable-5:reasoning-high@dv-claude-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "claude",
+  "provider_profile_id": "claude",
+  "provider_instance": "dv-claude-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "model_rule": "claude-*",
+  "exposure_mode": "logical_routable"
+}

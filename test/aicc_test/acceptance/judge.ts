@@ -25,6 +25,7 @@ export function responseText(value: unknown, depth = 0): string[] {
   if (Array.isArray(value)) return value.flatMap((item) => responseText(item, depth + 1));
   const record = object(value);
   if (!record) return [];
+  if (record.type === "thinking" || record.type === "reasoning") return [];
   const values: string[] = [];
   for (const key of ["text", "output_text"] as const) {
     if (typeof record[key] === "string") values.push(record[key]);
@@ -119,6 +120,22 @@ export function selectJudgeModel(configuredModel: string, inventories: ProviderI
   return candidates[0]?.exactModel ?? configuredModel;
 }
 
+export function assertJudgeModelAvailable(model: string, inventories: ProviderInventory[]): void {
+  if (!model.includes("@")) return;
+  const available = inventories.some((inventory) =>
+    inventory.models.some((candidate) => candidate.exact_model === model)
+  );
+  if (!available) {
+    throw new JudgeError(`Judge exact model is not present in the selected Provider inventories: ${model}`);
+  }
+}
+
+export function judgeProviderDriver(model: string, inventories: ProviderInventory[]): string {
+  if (!model.includes("@")) return "judge";
+  const instance = model.slice(model.lastIndexOf("@") + 1);
+  return inventories.find((inventory) => inventory.provider_instance_name === instance)?.provider_driver ?? "judge";
+}
+
 export function outputResources(value: unknown, depth = 0): Array<Record<string, unknown>> {
   if (depth > 8 || value === null || value === undefined) return [];
   if (Array.isArray(value)) return value.flatMap((item) => outputResources(item, depth + 1));
@@ -189,7 +206,7 @@ export async function runJudge(input: {
   const inputSummary = `case=${input.caseId}; tested_model=${input.testedModel}; rubric_items=${input.rubric.length}; output_text_chars=${texts.length}; input_resources=${sourceResources.length}; output_resources=${outputResourcesForJudge.length}`;
   const content: Array<Record<string, unknown>> = [{
     type: "text",
-    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor background-removal PNG output, transparent_ratio >= 0.1 and opaque_ratio >= 0.01 are deterministic evidence that both removed background and retained foreground regions exist; also inspect subject integrity.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
+    text: `You are a strict acceptance-test judge using rubric version ${input.rubricVersion}. Compare the source input resources and observed output against every rubric item. Return exactly one JSON object with pass, score, and reason. Keep reason under 240 characters. pass must be false when score is below ${input.threshold}. For OCR and caption cases, observed output text is the expected evidence; do not require an output attachment or fail solely because none exists.\nRubric:\n- ${input.rubric.join("\n- ")}\nObserved output text:\n${texts || "<no text; inspect attached output resources>"}\nArtifact audit observations:\n${observations}\nFor background-removal PNG output, transparent_ratio >= 0.1 and opaque_ratio >= 0.01 are deterministic evidence that both removed background and retained foreground regions exist; also inspect subject integrity.\nThe next ${sourceResources.length} attachment(s) are source inputs; the final ${outputResourcesForJudge.length} attachment(s) are observed outputs.`,
   }];
   const resources = [...sourceResources, ...outputResourcesForJudge]
     .map((resource) => resource.source)
@@ -208,17 +225,19 @@ export async function runJudge(input: {
         max_output_tokens: 2048,
         response_format: {
           type: "json_schema",
-          name: "aicc_t2_judge_verdict",
-          strict: true,
-          schema: {
-            type: "object",
-            properties: {
-              pass: { type: "boolean" },
-              score: { type: "number", minimum: 0, maximum: 1 },
-              reason: { type: "string", maxLength: 240 },
+          json_schema: {
+            name: "aicc_t2_judge_verdict",
+            strict: true,
+            schema: {
+              type: "object",
+              properties: {
+                pass: { type: "boolean" },
+                score: { type: "number", minimum: 0, maximum: 1 },
+                reason: { type: "string", maxLength: 240 },
+              },
+              required: ["pass", "score", "reason"],
+              additionalProperties: false,
             },
-            required: ["pass", "score", "reason"],
-            additionalProperties: false,
           },
         },
       },

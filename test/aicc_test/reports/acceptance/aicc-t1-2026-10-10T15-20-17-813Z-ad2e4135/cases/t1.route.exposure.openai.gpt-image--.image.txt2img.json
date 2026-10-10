@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.exposure.openai.gpt-image--.image.txt2img",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "image.txt2img",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:24.683Z",
+      "elapsed_ms": 243,
+      "status": "passed",
+      "diagnostic": "image.txt2img closed through gpt-image-2@dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "openai",
+  "provider_profile_id": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "model_rule": "gpt-image-*",
+  "exposure_mode": "logical_routable"
+}

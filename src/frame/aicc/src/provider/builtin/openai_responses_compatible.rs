@@ -28,6 +28,8 @@ use std::time::Duration;
 
 pub(crate) const DEEPSEEK_PROFILE_ID: &str = "deepseek";
 pub(crate) const DOUBAO_PROFILE_ID: &str = "doubao";
+pub(crate) const DOUBAO_AGENT_PLAN_PROFILE_ID: &str = "doubao-agent-plan";
+pub(crate) const DOUBAO_SPEECH_PROFILE_ID: &str = "doubao-speech";
 pub(crate) const QWEN_PROFILE_ID: &str = "qwen";
 
 #[cfg(test)]
@@ -97,14 +99,23 @@ impl BuiltinProviderDescriptor {
 
 #[cfg(test)]
 pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProviderDescriptor> {
-    let known: [KnownProviderCatalog; 3] = [
-        super::builtin_catalog_document(CatalogKind::KnownProvider, DEEPSEEK_PROFILE_ID),
-        super::builtin_catalog_document(CatalogKind::KnownProvider, DOUBAO_PROFILE_ID),
-        super::builtin_catalog_document(CatalogKind::KnownProvider, QWEN_PROFILE_ID),
-    ];
-    let rules: [ProviderRulesCatalog; 3] = [
+    let known = crate::settings::load_builtin_metadata()
+        .expect("WP-15 builtin metadata must load")
+        .into_iter()
+        .filter(|file| file.kind == CatalogKind::KnownProvider)
+        .map(|file| {
+            serde_json::from_slice::<KnownProviderCatalog>(&file.contents).unwrap_or_else(|error| {
+                panic!(
+                    "WP-15 builtin metadata `{}` is invalid: {error}",
+                    file.catalog_id
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let rules: [ProviderRulesCatalog; 4] = [
         super::builtin_catalog_document(CatalogKind::ProviderRules, DEEPSEEK_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_PROFILE_ID),
+        super::builtin_catalog_document(CatalogKind::ProviderRules, DOUBAO_AGENT_PLAN_PROFILE_ID),
         super::builtin_catalog_document(CatalogKind::ProviderRules, QWEN_PROFILE_ID),
     ];
     [
@@ -115,6 +126,11 @@ pub(crate) fn openai_responses_compatible_builtin_providers() -> Vec<BuiltinProv
         ),
         (
             DOUBAO_PROFILE_ID,
+            BuiltinDiscoveryKind::OpenAiModelsApi,
+            ResponsesDialectKind::Doubao,
+        ),
+        (
+            DOUBAO_AGENT_PLAN_PROFILE_ID,
             BuiltinDiscoveryKind::CatalogOnly,
             ResponsesDialectKind::Doubao,
         ),
@@ -147,6 +163,8 @@ pub(crate) fn openai_responses_compatible_catalog_files() -> Vec<CurrentCatalogF
     super::builtin_catalog_files(&[
         DEEPSEEK_PROFILE_ID,
         DOUBAO_PROFILE_ID,
+        DOUBAO_AGENT_PLAN_PROFILE_ID,
+        DOUBAO_SPEECH_PROFILE_ID,
         QWEN_PROFILE_ID,
         "glm",
         "kimi",
@@ -170,6 +188,11 @@ fn deepseek() -> BuiltinProviderDescriptor {
 #[cfg(test)]
 fn doubao() -> BuiltinProviderDescriptor {
     configured_provider(DOUBAO_PROFILE_ID)
+}
+
+#[cfg(test)]
+fn doubao_agent_plan() -> BuiltinProviderDescriptor {
+    configured_provider(DOUBAO_AGENT_PLAN_PROFILE_ID)
 }
 
 #[cfg(test)]
@@ -302,6 +325,23 @@ pub(crate) struct OpenAiCompatibleModelsDiscovery {
     transport: Arc<dyn OpenAiCompatibleModelsTransport>,
 }
 
+#[derive(Clone)]
+pub(crate) struct VolcengineArkModelsDiscovery(OpenAiCompatibleModelsDiscovery);
+
+impl VolcengineArkModelsDiscovery {
+    pub(crate) fn new(
+        provider_profile_id: impl Into<String>,
+        protocol_adapter_id: impl Into<String>,
+        transport: HttpTransport,
+    ) -> Self {
+        Self(OpenAiCompatibleModelsDiscovery::new(
+            provider_profile_id,
+            protocol_adapter_id,
+            transport,
+        ))
+    }
+}
+
 impl OpenAiCompatibleModelsDiscovery {
     pub(crate) fn new(
         provider_profile_id: impl Into<String>,
@@ -338,34 +378,6 @@ struct ModelObject {
 
 #[async_trait]
 impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
-    fn match_model_driver(
-        &self,
-        id: &str,
-        catalog: &crate::catalog::CatalogSnapshot,
-    ) -> crate::catalog::ProviderModelMatch {
-        use crate::catalog::{ModelIdentity, ModelMatchFailure, ProviderModelMatch};
-        if self.provider_profile_id == DEEPSEEK_PROFILE_ID {
-            if matches!(
-                id,
-                "deepseek-v4-flash" | "deepseek-v4-flash-vision-exp" | "deepseek-flash"
-            ) {
-                let model = "deepseek-v4.1-flash";
-                return if catalog.resolve_model("deepseek", model).is_ok() {
-                    ProviderModelMatch::Matched(ModelIdentity {
-                        model_driver_id: "deepseek".into(),
-                        model_id: model.into(),
-                    })
-                } else {
-                    ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias)
-                };
-            }
-            if matches!(id, "deepseek-chat" | "deepseek-reasoner") {
-                return ProviderModelMatch::Failed(ModelMatchFailure::UnresolvedAlias);
-            }
-        }
-        ProviderModelMatch::NotHandled
-    }
-
     async fn discover(
         &self,
         context: &DiscoveryContext<'_>,
@@ -392,6 +404,155 @@ impl ProviderDiscovery for OpenAiCompatibleModelsDiscovery {
         validate_discovery(&snapshot)?;
         Ok(snapshot)
     }
+}
+
+#[async_trait]
+impl ProviderDiscovery for VolcengineArkModelsDiscovery {
+    async fn discover(
+        &self,
+        context: &DiscoveryContext<'_>,
+    ) -> ProviderResult<ProviderDiscoverySnapshot> {
+        validate_openai_compatible_models_context(
+            context,
+            &self.0.provider_profile_id,
+            &self.0.protocol_adapter_id,
+        )?;
+        let request = openai_compatible_models_request(context, &self.0.provider_profile_id)?;
+        let (models, revision) = discover_volcengine_ark_models(
+            self.0.transport.as_ref(),
+            request,
+            &self.0.provider_profile_id,
+        )
+        .await?;
+        let snapshot = ProviderDiscoverySnapshot {
+            revision,
+            discovered_at_ms: super::super::now_ms()?,
+            health: ProviderHealthState::Healthy,
+            models,
+        };
+        validate_discovery(&snapshot)?;
+        Ok(snapshot)
+    }
+}
+
+pub(super) async fn discover_volcengine_ark_models(
+    transport: &dyn OpenAiCompatibleModelsTransport,
+    request: HttpRequest,
+    provider: &str,
+) -> ProviderResult<(Vec<DiscoveredModel>, Option<String>)> {
+    let limit = request.max_response_bytes.unwrap_or(1024 * 1024);
+    let response = transport
+        .send(request)
+        .await
+        .map_err(|error| ProviderError::Discovery(error.to_string()))?;
+    ensure_openai_compatible_models_success(&response, provider)?;
+    let revision = response
+        .headers
+        .get(ETAG)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let value: serde_json::Value = response
+        .json(limit)
+        .map_err(|error| ProviderError::DiscoveryResponse(error.to_string()))?;
+    if value
+        .get("object")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind != "list")
+    {
+        return Err(ProviderError::DiscoveryResponse(format!(
+            "{provider} models response must be a list"
+        )));
+    }
+    let data = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            ProviderError::DiscoveryResponse(format!("{provider} models response requires data"))
+        })?;
+    let mut models = std::collections::BTreeMap::new();
+    for item in data {
+        let id = item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.trim().is_empty() && !id.contains('@'))
+            .ok_or_else(|| {
+                ProviderError::DiscoveryResponse(format!("{provider} invalid model id"))
+            })?;
+        if item
+            .get("object")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|kind| kind != "model")
+        {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} invalid model object"
+            )));
+        }
+        let mut model = catalog_model(id.into());
+        if matches!(
+            item.get("status").and_then(serde_json::Value::as_str),
+            Some("Retiring" | "Shutdown")
+        ) {
+            model.availability = ModelAvailability::Unavailable;
+            model.deprecated = true;
+        }
+        if let Some(task_types) = item.get("task_type").and_then(serde_json::Value::as_array) {
+            let mut api_types = Vec::new();
+            let mut add_api_type = |api_type| {
+                if !api_types.contains(&api_type) {
+                    api_types.push(api_type);
+                }
+            };
+            for task_type in task_types.iter().filter_map(serde_json::Value::as_str) {
+                match task_type {
+                    "TextGeneration" => {
+                        add_api_type(ApiType::Llm);
+                    }
+                    "VisualQuestionAnswering" => {
+                        add_api_type(ApiType::VisionOcr);
+                        add_api_type(ApiType::VisionCaption);
+                    }
+                    "TextEmbedding" => {
+                        add_api_type(ApiType::EmbeddingText);
+                    }
+                    "ImageEmbedding" => {
+                        add_api_type(ApiType::EmbeddingMultimodal);
+                    }
+                    "TextToImage" => {
+                        add_api_type(ApiType::ImageTextToImage);
+                    }
+                    "ImageToImage" => {
+                        add_api_type(ApiType::ImageImageToImage);
+                    }
+                    "TextToVideo" => {
+                        add_api_type(ApiType::VideoTextToVideo);
+                    }
+                    "ImageToVideo" => {
+                        add_api_type(ApiType::VideoImageToVideo);
+                    }
+                    "MultimodalToVideo" => {
+                        add_api_type(ApiType::VideoTextToVideo);
+                        add_api_type(ApiType::VideoImageToVideo);
+                    }
+                    "VideoEditing" => {
+                        add_api_type(ApiType::VideoToVideo);
+                    }
+                    "VideoExtension" => {
+                        add_api_type(ApiType::VideoExtend);
+                    }
+                    _ => {}
+                }
+            }
+            if !task_types.is_empty() {
+                model.api_types = Some(api_types);
+            }
+        }
+        if models.insert(id.to_owned(), model).is_some() {
+            return Err(ProviderError::DiscoveryResponse(format!(
+                "{provider} duplicate model id {id}"
+            )));
+        }
+    }
+    Ok((models.into_values().collect(), revision))
 }
 
 pub(super) async fn discover_model_ids(
@@ -639,7 +800,12 @@ mod tests {
             &CatalogBuildOptions::default(),
         )
         .unwrap();
-        for profile_id in [DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID] {
+        for profile_id in [
+            DEEPSEEK_PROFILE_ID,
+            DOUBAO_PROFILE_ID,
+            DOUBAO_AGENT_PLAN_PROFILE_ID,
+            QWEN_PROFILE_ID,
+        ] {
             assert!(catalog.known_provider(profile_id).is_some());
             let rules = catalog.provider_rules(profile_id).unwrap();
             assert_eq!(
@@ -649,7 +815,12 @@ mod tests {
                     .find_map(|rule| rule.operations.get("llm")),
                 Some(&OPENAI_RESPONSES_OPERATION_ID.to_owned())
             );
-            assert!(catalog.model_driver(profile_id).is_some());
+            let model_driver_id = if profile_id == DOUBAO_AGENT_PLAN_PROFILE_ID {
+                DOUBAO_PROFILE_ID
+            } else {
+                profile_id
+            };
+            assert!(catalog.model_driver(model_driver_id).is_some());
         }
 
         let deepseek = catalog.model_driver(DEEPSEEK_PROFILE_ID).unwrap();
@@ -689,7 +860,12 @@ mod tests {
                 .iter()
                 .map(|provider| provider.profile.provider_profile_id.as_str())
                 .collect::<Vec<_>>(),
-            vec![DEEPSEEK_PROFILE_ID, DOUBAO_PROFILE_ID, QWEN_PROFILE_ID]
+            vec![
+                DEEPSEEK_PROFILE_ID,
+                DOUBAO_PROFILE_ID,
+                DOUBAO_AGENT_PLAN_PROFILE_ID,
+                QWEN_PROFILE_ID
+            ]
         );
         for provider in &providers {
             assert_eq!(provider.profile.credential.kind, CredentialKind::Bearer);
@@ -703,12 +879,16 @@ mod tests {
             );
         }
         assert_eq!(
-            providers[2].connection.workspace.mode,
+            providers[3].connection.workspace.mode,
             crate::provider::ProviderFieldMode::Required
         );
         assert_eq!(
             providers[1].known_provider().base_url,
             "https://ark.cn-beijing.volces.com/api/v3"
+        );
+        assert_eq!(
+            providers[2].known_provider().base_url,
+            "https://ark.cn-beijing.volces.com/api/plan/v3"
         );
     }
 
@@ -729,7 +909,7 @@ mod tests {
 
     #[test]
     fn catalog_only_inventory_uses_explicit_models_without_guessing_capabilities() {
-        let snapshot = doubao()
+        let snapshot = doubao_agent_plan()
             .catalog_only_inventory(["endpoint-a".to_string(), "endpoint-b".to_string()])
             .unwrap();
         assert_eq!(snapshot.health, ProviderHealthState::Healthy);
@@ -737,8 +917,11 @@ mod tests {
         assert!(snapshot.models[0].supported_features.is_none());
         assert!(snapshot.models[0].api_types.is_none());
         assert!(snapshot.models[0].remote_methods.is_none());
-        assert!(doubao()
+        assert!(doubao_agent_plan()
             .catalog_only_inventory(["endpoint-a".to_string(), "endpoint-a".to_string()])
+            .is_err());
+        assert!(doubao()
+            .catalog_only_inventory(["doubao-seed-2-0-lite-260428".to_string()])
             .is_err());
         assert!(deepseek()
             .catalog_only_inventory(["deepseek-model".to_string()])
@@ -752,22 +935,54 @@ mod tests {
             assert_eq!(
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
-                    DOUBAO_PROFILE_ID => 5,
-                    QWEN_PROFILE_ID => 4,
+                    DOUBAO_PROFILE_ID => 13,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 9,
+                    DEEPSEEK_PROFILE_ID => 5,
+                    QWEN_PROFILE_ID | "openai" => 4,
                     _ => 3,
                 }
             );
-            if provider.profile.provider_profile_id == DOUBAO_PROFILE_ID {
-                assert!(!rules.models.is_empty());
+            if matches!(
+                provider.profile.provider_profile_id.as_str(),
+                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "minimax"
+            ) {
+                assert!(
+                    !rules.models.is_empty(),
+                    "{}",
+                    provider.profile.provider_profile_id
+                );
             } else {
-                assert!(rules.models.is_empty());
+                assert!(
+                    rules.models.is_empty(),
+                    "{}",
+                    provider.profile.provider_profile_id
+                );
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
-                DOUBAO_PROFILE_ID => 3,
+                DOUBAO_PROFILE_ID => 7,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
                 QWEN_PROFILE_ID => 8,
                 _ => 1,
             };
             assert_eq!(rules.patterns.len(), expected_patterns);
+            if matches!(
+                provider.profile.provider_profile_id.as_str(),
+                DOUBAO_PROFILE_ID | DOUBAO_AGENT_PLAN_PROFILE_ID
+            ) {
+                let vision_rule = rules
+                    .patterns
+                    .iter()
+                    .find(|rule| !rule.request_rules.is_empty())
+                    .unwrap();
+                assert_eq!(
+                    vision_rule.request_rules[0].defaults["max_output_tokens"],
+                    2048
+                );
+                assert_eq!(
+                    vision_rule.request_rules[0].defaults["reasoning"]["effort"],
+                    "minimal"
+                );
+            }
             assert_eq!(
                 rules
                     .patterns
@@ -798,12 +1013,21 @@ mod tests {
             .map(BuiltinProviderDescriptor::known_provider)
             .collect::<Vec<_>>();
         assert_eq!(known[0].base_url, "https://api.deepseek.com");
+        assert_eq!(known[1].ui_hints["setup_group"]["id"], "doubao");
+        assert_eq!(known[1].ui_hints["setup_group"]["account_type"], "standard");
+        assert_eq!(known[1].ui_hints["setup_group"]["default"], true);
+        assert_eq!(known[2].ui_hints["setup_group"]["id"], "doubao");
         assert_eq!(
-            known[2].base_url,
+            known[2].ui_hints["setup_group"]["account_type"],
+            "agent_plan"
+        );
+        assert_eq!(known[2].ui_hints["setup_group"]["default"], false);
+        assert_eq!(
+            known[3].base_url,
             "https://{workspace}.{region}.maas.aliyuncs.com/compatible-mode/v1"
         );
         assert_eq!(
-            known[2].ui_hints["instance_fields"]["workspace"]["mode"],
+            known[3].ui_hints["instance_fields"]["workspace"]["mode"],
             Value::String("required".to_owned())
         );
     }
@@ -881,7 +1105,8 @@ mod tests {
             .zip([
                 "deepseek-v4-flash",
                 "doubao-seed-2-0-lite-260215",
-                "qwen3.8-max",
+                "doubao-seed-2-0-lite-260428",
+                "qwen3.8-omni-flash",
             ])
         {
             let profile_id = provider.profile.provider_profile_id.clone();
@@ -948,7 +1173,208 @@ mod tests {
                 .unwrap();
             assert!(model.api_types.contains(&ApiType::Llm));
             assert_eq!(model.operations["llm"], OPENAI_RESPONSES_OPERATION_ID);
+            if profile_id == DEEPSEEK_PROFILE_ID {
+                assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "reasoning-high",
+                        "reasoning-low",
+                        "reasoning-max",
+                        "reasoning-none",
+                    ]
+                );
+            }
+            if profile_id == QWEN_PROFILE_ID {
+                assert!(model.api_types.contains(&ApiType::VisionOcr));
+                assert!(model.api_types.contains(&ApiType::VisionCaption));
+                assert_eq!(
+                    model
+                        .variants
+                        .iter()
+                        .map(|variant| variant.name.as_str())
+                        .collect::<Vec<_>>(),
+                    vec![
+                        "reasoning-low",
+                        "reasoning-medium",
+                        "reasoning-none",
+                        "reasoning-xhigh",
+                    ]
+                );
+            }
         }
+        let doubao_rules = doubao().provider_rules(7);
+        let pro_260628 = doubao_rules
+            .models
+            .iter()
+            .find(|model| model.id == "doubao-seed-2-1-pro-260628")
+            .unwrap();
+        assert_eq!(
+            pro_260628.capability_limits["max_context_tokens"],
+            json!(262_144)
+        );
+    }
+
+    #[test]
+    fn doubao_speech_static_inventory_and_model_allowlist_are_explicit() {
+        let catalog = CatalogSnapshot::from_current_files(
+            crate::settings::BUILTIN_CATALOG_REVISION_SEQ,
+            openai_responses_compatible_catalog_files(),
+            &CatalogBuildOptions::default(),
+        )
+        .unwrap();
+        let known = catalog
+            .known_provider(DOUBAO_SPEECH_PROFILE_ID)
+            .expect("doubao-speech Known Provider must be bundled")
+            .clone();
+        let rules = catalog
+            .provider_rules(DOUBAO_SPEECH_PROFILE_ID)
+            .expect("doubao-speech Provider Rules must be bundled")
+            .clone();
+        assert_eq!(
+            rules.static_inventory_models,
+            vec![
+                "doubao-seed-tts-2.0",
+                "doubao-seed-icl-2.0",
+                "doubao-seed-asr-2.0",
+                "doubao-seed-asr-2.0-fast"
+            ]
+        );
+        assert_eq!(
+            rules
+                .supplemental_inventory_api_types
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["audio.asr", "audio.tts"]
+        );
+
+        let provider = descriptor(
+            known,
+            rules,
+            BuiltinDiscoveryKind::CatalogOnly,
+            ResponsesDialectKind::Doubao,
+        );
+        assert_eq!(
+            provider.profile.provider_profile_id,
+            DOUBAO_SPEECH_PROFILE_ID
+        );
+        assert_eq!(provider.profile.discovery_mode, DiscoveryMode::CatalogOnly);
+
+        let mut codecs = CodecRegistry::default();
+        let (base_descriptor, base_registration) = openai_responses_adapter();
+        codecs
+            .register_codecs(base_descriptor, base_registration)
+            .unwrap();
+        for (descriptor, registration) in [
+            crate::protocol::doubao_media_adapter(),
+            crate::protocol::doubao_speech_adapter(),
+            crate::protocol::qwen_media_adapter(),
+        ] {
+            codecs.register_codecs(descriptor, registration).unwrap();
+        }
+        for (descriptor, registration) in openai_responses_compatible_adapters().unwrap() {
+            codecs.register_derived(descriptor, registration).unwrap();
+        }
+
+        let instance = |enabled: Option<BTreeSet<String>>| ProviderInstanceConfig {
+            provider_instance_name: "doubao-speech-main".to_owned(),
+            provider_profile_id: DOUBAO_SPEECH_PROFILE_ID.to_owned(),
+            protocol_adapter_id: provider.profile.default_protocol_adapter_id.clone(),
+            base_url: "https://openspeech.bytedance.com/api/v3/tts".to_owned(),
+            operation_base_urls: BTreeMap::new(),
+            credential: CredentialReference {
+                reference: "secret://doubao-speech/main".to_owned(),
+            },
+            credential_kind: None,
+            provider_rules_id: Some(DOUBAO_SPEECH_PROFILE_ID.to_owned()),
+            region: None,
+            workspace: None,
+            account: None,
+            request_timeout: Duration::from_secs(120),
+            auto_sync_models: true,
+            instance_rules: enabled.map(|enabled| buckyos_api::ProviderInstanceRules {
+                enabled_inventory_models: Some(enabled),
+                ..Default::default()
+            }),
+        };
+        let empty = || ProviderDiscoverySnapshot {
+            revision: Some("fixture-v1".to_owned()),
+            discovered_at_ms: 1,
+            health: ProviderHealthState::Healthy,
+            models: Vec::new(),
+        };
+        let build = |enabled: Option<BTreeSet<String>>| {
+            InventoryBuilder::build(
+                &provider.profile,
+                &instance(enabled),
+                empty(),
+                &catalog,
+                &codecs,
+            )
+            .unwrap()
+        };
+
+        // Declared static models are published from the wire-free catalog snapshot.
+        let inventory = build(None);
+        assert_eq!(
+            inventory
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "doubao-seed-asr-2.0",
+                "doubao-seed-asr-2.0-fast",
+                "doubao-seed-tts-2.0"
+            ]
+        );
+        for model in &inventory.models {
+            match model.provider_model_id.as_str() {
+                "doubao-seed-tts-2.0" => {
+                    assert!(model.api_types.contains(&ApiType::AudioTextToSpeech));
+                    assert_eq!(model.operations["audio.tts"], "tts.unidirectional");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.tts"));
+                }
+                "doubao-seed-asr-2.0" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.submit");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.asr.doubao"));
+                }
+                "doubao-seed-asr-2.0-fast" => {
+                    assert!(model.api_types.contains(&ApiType::AudioSpeechRecognition));
+                    assert_eq!(model.operations["audio.asr"], "asr.recognize.flash");
+                    assert!(model
+                        .logical_mounts
+                        .iter()
+                        .any(|mount| mount == "audio.asr.doubao"));
+                }
+                other => panic!("unexpected doubao-speech static model `{other}`"),
+            }
+        }
+
+        // The operator allowlist narrows the static catalog before publishing.
+        let narrowed = build(Some(BTreeSet::from(["doubao-seed-tts-2.0".to_owned()])));
+        assert_eq!(
+            narrowed
+                .models
+                .iter()
+                .map(|model| model.provider_model_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["doubao-seed-tts-2.0"]
+        );
+
+        // An empty allowlist keeps the profile configured but publishes no models.
+        assert!(build(Some(BTreeSet::new())).models.is_empty());
     }
 }
 

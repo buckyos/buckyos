@@ -1,0 +1,5 @@
+case_id,attempt,provider_driver,provider_instance,exact_model,api_type,method,started_at,status,input_tokens,output_tokens,total_tokens,request_units,estimated_cost_usd,raw_cost_usd,credit_applied_usd,actual_cost_usd,cost_status
+t2.minimax.minimax-t2.minimax-m3.vision.caption,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,vision.caption,vision.caption,2026-10-08T06:04:53.389Z,passed,582,166,748,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m3.vision.caption.judge,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,llm,chat.completions.create,2026-10-08T06:05:36.802Z,passed,899,54,953,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m3.vision.ocr,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,vision.ocr,vision.ocr,2026-10-08T06:04:53.389Z,passed,197,186,383,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-m3.vision.ocr.judge,1,minimax,minimax-t2,MiniMax-M3@minimax-t2,llm,chat.completions.create,2026-10-08T06:05:42.838Z,failed,837,34,871,,0.01000000,,,,unknown

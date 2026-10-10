@@ -1,0 +1,229 @@
+{
+  "currency": "USD",
+  "budget_usd": 0.06,
+  "planned_max_calls": 4,
+  "planned_max_cost_usd": 0.04,
+  "actual_calls": 4,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "estimated_exposure_usd": 0.04,
+  "total_exposure_usd": 0.04,
+  "remaining_budget_usd": 0.019999999999999997,
+  "unknown_cost_calls": 4,
+  "budget_exceeded": false,
+  "entries": [
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.caption",
+      "attempt": 1,
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "started_at": "2026-10-08T06:04:53.389Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 582,
+        "output_tokens": 166,
+        "total_tokens": 748
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.caption.judge",
+      "attempt": 1,
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "started_at": "2026-10-08T06:05:36.802Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 899,
+        "output_tokens": 54,
+        "total_tokens": 953
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.ocr",
+      "attempt": 1,
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "started_at": "2026-10-08T06:04:53.389Z",
+      "status": "passed",
+      "usage": {
+        "input_tokens": 197,
+        "output_tokens": 186,
+        "total_tokens": 383
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    },
+    {
+      "case_id": "t2.minimax.minimax-t2.minimax-m3.vision.ocr.judge",
+      "attempt": 1,
+      "provider_driver": "minimax",
+      "provider_instance": "minimax-t2",
+      "exact_model": "MiniMax-M3@minimax-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "started_at": "2026-10-08T06:05:42.838Z",
+      "status": "failed",
+      "usage": {
+        "input_tokens": 837,
+        "output_tokens": 34,
+        "total_tokens": 871
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "by_provider": [
+    {
+      "key": "minimax",
+      "calls": 4,
+      "input_tokens": 2515,
+      "output_tokens": 440,
+      "total_tokens": 2955,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.04,
+      "unknown_cost_calls": 4
+    }
+  ],
+  "by_instance": [
+    {
+      "key": "minimax/minimax-t2",
+      "calls": 4,
+      "input_tokens": 2515,
+      "output_tokens": 440,
+      "total_tokens": 2955,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.04,
+      "unknown_cost_calls": 4
+    }
+  ],
+  "by_model": [
+    {
+      "key": "MiniMax-M3@minimax-t2",
+      "calls": 4,
+      "input_tokens": 2515,
+      "output_tokens": 440,
+      "total_tokens": 2955,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.04,
+      "unknown_cost_calls": 4
+    }
+  ],
+  "by_api_type": [
+    {
+      "key": "llm",
+      "calls": 2,
+      "input_tokens": 1736,
+      "output_tokens": 88,
+      "total_tokens": 1824,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.02,
+      "unknown_cost_calls": 2
+    },
+    {
+      "key": "vision.caption",
+      "calls": 1,
+      "input_tokens": 582,
+      "output_tokens": 166,
+      "total_tokens": 748,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "vision.ocr",
+      "calls": 1,
+      "input_tokens": 197,
+      "output_tokens": 186,
+      "total_tokens": 383,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    }
+  ],
+  "by_case": [
+    {
+      "key": "t2.minimax.minimax-t2.minimax-m3.vision.caption",
+      "calls": 1,
+      "input_tokens": 582,
+      "output_tokens": 166,
+      "total_tokens": 748,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.minimax.minimax-t2.minimax-m3.vision.caption.judge",
+      "calls": 1,
+      "input_tokens": 899,
+      "output_tokens": 54,
+      "total_tokens": 953,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.minimax.minimax-t2.minimax-m3.vision.ocr",
+      "calls": 1,
+      "input_tokens": 197,
+      "output_tokens": 186,
+      "total_tokens": 383,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    },
+    {
+      "key": "t2.minimax.minimax-t2.minimax-m3.vision.ocr.judge",
+      "calls": 1,
+      "input_tokens": 837,
+      "output_tokens": 34,
+      "total_tokens": 871,
+      "request_units": 0,
+      "actual_cost_usd": 0,
+      "raw_cost_usd": 0,
+      "credit_applied_usd": 0,
+      "estimated_exposure_usd": 0.01,
+      "unknown_cost_calls": 1
+    }
+  ]
+}

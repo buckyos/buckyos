@@ -3,14 +3,15 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "kimi",
-  "revision_seq": 4,
+  "revision_seq": 6,
   "required_features": [],
   "models": [
     {
       "id": "kimi-k3",
       "api_types": ["llm", "vision.ocr", "vision.caption"],
       "capabilities": {
-        "max_context_tokens": 1000000,
+        "max_context_tokens": 1048576,
+        "max_output_tokens": 1048576,
         "streaming": true,
         "tool_call": true,
         "json_schema": true,
@@ -68,9 +69,16 @@
     },
     {
       "id": "kimi-k2.8-preview",
-      "api_types": ["llm"],
-      "capabilities": {"streaming": true, "tool_call": true, "json_schema": true, "reasoning": true},
-      "llm": {"spec": "kimi-general", "effort": "native", "default_effort": "native", "supported_efforts": ["native"], "stability": "experimental", "weight": 28}
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "max_context_tokens": 1048576,
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "vision": true,
+        "reasoning": true
+      },
+      "llm": {"spec": "kimi-general", "effort": "max", "default_effort": "max", "supported_efforts": ["low", "high", "max"], "stability": "experimental", "weight": 28}
     },
     {
       "id": "kimi-k2.6",

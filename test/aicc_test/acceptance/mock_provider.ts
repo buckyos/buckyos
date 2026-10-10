@@ -652,6 +652,14 @@ async function providerResponse(
     });
     return;
   }
+  if (path === "/v1/image_generation" && request.method === "POST") {
+    json(response, 200, {
+      data: { image_urls: [`http://127.0.0.1:${port}/__mock/fixtures/image.png`] },
+      metadata: { failed_count: "0", success_count: "1" },
+      base_resp: { status_code: 0, status_msg: "success" },
+    });
+    return;
+  }
   if (path === "/v1/audio/transcriptions") {
     json(response, 200, {
       text: "今天的测试编号是四八二七",
@@ -771,6 +779,44 @@ async function providerResponse(
   }
   if (/^\/v1\/videos\/[^/]+\/content$/.test(path) && request.method === "GET") {
     text(response, 200, "mock-video", "video/mp4");
+    return;
+  }
+  if (path === "/v2/video_generation" && request.method === "POST") {
+    const taskId = `minimax_video_mock_${state.calls}`;
+    state.operations.set(`/v2/query/video_generation/${taskId}`, { polls: 0, scenario });
+    json(response, 200, { task_id: taskId });
+    return;
+  }
+  if (/^\/v2\/query\/video_generation\/[^/]+$/.test(path) && request.method === "GET") {
+    const operation = state.operations.get(path) ?? { polls: 0, scenario };
+    operation.polls += 1;
+    state.operations.set(path, operation);
+    const taskId = path.split("/").at(-1)!;
+    if (operation.scenario === "async_pending") {
+      json(response, 200, { task: { id: taskId, status: "processing" } });
+      return;
+    }
+    if (operation.scenario === "async_failed" && operation.polls >= 2) {
+      json(response, 200, {
+        task: {
+          id: taskId,
+          status: "failed",
+          error: { code: 1004, message: "deterministic async Provider failure" },
+        },
+      });
+      return;
+    }
+    json(response, 200, operation.polls < 2
+      ? { task: { id: taskId, status: "processing" } }
+      : {
+        task: {
+          id: taskId,
+          status: "succeeded",
+          content: { url: `http://127.0.0.1:${port}/__mock/fixtures/video.mp4` },
+          duration: 5,
+          usage: { total_seconds: 5, input_seconds: 0, output_seconds: 5, input_image_count: 0 },
+        },
+      });
     return;
   }
   if (/^\/queue\/requests\/[^/]+\/status$/.test(path)) {

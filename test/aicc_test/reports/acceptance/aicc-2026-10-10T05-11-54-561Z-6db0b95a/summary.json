@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+  "started_at": "2026-10-10T05:11:54.519Z",
+  "finished_at": "2026-10-10T05:11:56.762Z",
+  "commit": "b6ed2453535ad05256d4809fe33d72f33d2585b7",
+  "baseline_revision": "2026-10-05.2",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 8,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0.08,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.06,
+    "planned_max_calls": 8,
+    "planned_max_cost_usd": 0.08,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0.06,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.preflight.baseline_mismatch.1",
+      "layer": "T2",
+      "status": "failed",
+      "method": "models.list",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.760Z",
+          "elapsed_ms": 0,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "official_not_supported_but_aicc_advertised minimax-m3@doubao-agent-plan-t2 vision.caption"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.preflight.baseline_mismatch.2",
+      "layer": "T2",
+      "status": "failed",
+      "method": "models.list",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.760Z",
+          "elapsed_ms": 0,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "official_not_supported_but_aicc_advertised minimax-m3@doubao-agent-plan-t2 vision.ocr"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-flash.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-pro.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.vision.caption",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.vision.ocr",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.glm-5.3.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.kimi-k2.8-preview.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-11-54-561Z-6db0b95a",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.minimax-m3.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:11:56.762Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-flash",
+      "physical_model_id": "deepseek-v4-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "provider_model_id": "doubao-seed-2.0-mini",
+      "physical_model_id": "doubao-seed-2.0-mini",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "provider_model_id": "kimi-k2.8-preview",
+      "physical_model_id": "kimi-k2.8-preview",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "provider_model_id": "minimax-m3",
+      "physical_model_id": "minimax-m3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-flash",
+      "physical_model_id": "deepseek-v4-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "provider_model_id": "doubao-seed-2.0-mini",
+      "physical_model_id": "doubao-seed-2.0-mini",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "provider_model_id": "kimi-k2.8-preview",
+      "physical_model_id": "kimi-k2.8-preview",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "provider_model_id": "minimax-m3",
+      "physical_model_id": "minimax-m3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [
+    {
+      "defect_id": "defect.aicc.t2.preflight.baseline_mismatch.1",
+      "component": "AICC",
+      "case_id": "t2.preflight.baseline_mismatch.1",
+      "expected": "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
+      "observed": "official_not_supported_but_aicc_advertised minimax-m3@doubao-agent-plan-t2 vision.caption",
+      "evidence_paths": [
+        "cases/t2.preflight.baseline_mismatch.1.json",
+        "effective_baseline.json"
+      ],
+      "failure_class": "baseline_mismatch"
+    },
+    {
+      "defect_id": "defect.aicc.t2.preflight.baseline_mismatch.2",
+      "component": "AICC",
+      "case_id": "t2.preflight.baseline_mismatch.2",
+      "expected": "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
+      "observed": "official_not_supported_but_aicc_advertised minimax-m3@doubao-agent-plan-t2 vision.ocr",
+      "evidence_paths": [
+        "cases/t2.preflight.baseline_mismatch.2.json",
+        "effective_baseline.json"
+      ],
+      "failure_class": "baseline_mismatch"
+    }
+  ],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (doubao-agent-plan)"
+    ]
+  }
+}

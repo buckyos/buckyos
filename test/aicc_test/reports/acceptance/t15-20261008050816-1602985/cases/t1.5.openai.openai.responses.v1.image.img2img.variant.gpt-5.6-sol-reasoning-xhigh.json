@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openai.openai.responses.v1.image.img2img.variant.gpt-5.6-sol-reasoning-xhigh",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "t15-20261008050816-1602985-openai-isolation-8",
+  "exact_model": "gpt-5.6-sol:reasoning-xhigh@t15-20261008050816-1602985-openai-isolation-8",
+  "api_type": "image.img2img",
+  "method": "image.img2img",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:11:03.434Z",
+      "elapsed_ms": 199,
+      "status": "passed",
+      "diagnostic": "contract=openai.responses.v1; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

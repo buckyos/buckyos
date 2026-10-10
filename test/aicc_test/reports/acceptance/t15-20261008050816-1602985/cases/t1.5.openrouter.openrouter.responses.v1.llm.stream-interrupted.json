@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openrouter.openrouter.responses.v1.llm.stream-interrupted",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openrouter",
+  "provider_instance": "t15-20261008050816-1602985-openrouter",
+  "exact_model": "openai/gpt-5.6@t15-20261008050816-1602985-openrouter",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:18:29.383Z",
+      "elapsed_ms": 354,
+      "status": "passed",
+      "diagnostic": "contract=openrouter.responses.v1; scenario=stream_interrupted; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T05-44-41-155Z-e37ceeba",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code@kimi-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:44:46.219Z",
+      "elapsed_ms": 36373,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "diagnostic": "TaskFailureError: provider task t-813ddc2fc7b449dcae839111c6813b6d ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI rate_limit_reached_error: Your account org-2c23bcfd58554861a97c6c6725457ab4<ak-fd5k4stk167i11fjk5i1> request reached organization max RPM: 3, please try again after 1 seconds\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

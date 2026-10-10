@@ -24,7 +24,7 @@
       "host": "${FIXTURE_HOST}",
       "target": {
         "host": "${FIXTURE_HOST}",
-        "uid": "0"
+        "uid": "${FIXTURE_UID}"
       },
       "workdir": "${FIXTURE_ROOT}/app/work-fixture-tail",
       "capabilities": {
@@ -351,7 +351,7 @@
         "runtime_id": "rt-fixture-native",
         "target": {
           "host": "${FIXTURE_HOST}",
-          "uid": "0"
+          "uid": "${FIXTURE_UID}"
         },
         "workdir": "${FIXTURE_ROOT}/app/work-fixture-tail"
       }

@@ -140,6 +140,24 @@ struct MiniMaxImmediateCodec {
 
 #[async_trait]
 impl OperationCodec for MiniMaxImmediateCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // One struct serves several operations with different wire grammars, so
+        // the form has to follow the api type rather than the codec. Deciding it
+        // per codec would force the whole struct to the strictest member — the
+        // multipart speech-to-text upload — and an image-edit caller would keep
+        // downloading a payload the protocol could have taken as a URL.
+        match self.api_type {
+            // Speech-to-text posts the audio as a multipart file.
+            ApiType::AudioSpeechRecognition => crate::resource::ResourceInputForm::BytesOnly,
+            // Image-to-image addresses its subject image with `resource_string`,
+            // which writes the URL verbatim.
+            ApiType::ImageImageToImage => crate::resource::ResourceInputForm::UrlOrBytes,
+            // The remaining operations carry no media input; stay on the
+            // conservative default so a future addition fails safe.
+            _ => crate::resource::ResourceInputForm::BytesOnly,
+        }
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -354,6 +372,12 @@ struct MiniMaxVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for MiniMaxVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // `resource_string` hands a URL straight through; only caller-supplied
+        // bytes are inlined.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -633,7 +657,7 @@ fn encode_video_submit(
             _ => {
                 return Err(ProtocolError::invalid_request(
                     "MiniMax V2 resolution must be 480P, 768P, or 2K",
-                ))
+                ));
             }
         };
         body.insert("resolution".to_string(), json!(resolution));
@@ -674,7 +698,7 @@ fn image_body(request: &TextToImageInvokeRequest, model: &str) -> Map<String, Va
 }
 
 fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
-    let mut resources = Vec::new();
+    let mut images = Vec::new();
     if let Some(urls) = value.pointer("/data/image_urls").and_then(Value::as_array) {
         for url in urls {
             let url = url
@@ -683,16 +707,14 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
                 .ok_or_else(|| {
                     ProtocolError::invalid_response("MiniMax image URL must be a non-empty string")
                 })?;
-            resources.push(ResourceRef::url(
-                url.to_string(),
-                Some("image/png".to_string()),
-            ));
+            let mime = image_mime_from_url(url).map(str::to_owned);
+            images.push((ResourceRef::url(url.to_string(), mime.clone()), mime));
         }
-    } else if let Some(images) = value
+    } else if let Some(encoded_images) = value
         .pointer("/data/image_base64")
         .and_then(Value::as_array)
     {
-        for image in images {
+        for image in encoded_images {
             let data = image
                 .as_str()
                 .filter(|data| !data.trim().is_empty())
@@ -701,28 +723,37 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
                         "MiniMax base64 image must be a non-empty string",
                     )
                 })?;
-            STANDARD.decode(data).map_err(|_| {
+            let bytes = STANDARD.decode(data).map_err(|_| {
                 ProtocolError::invalid_response("MiniMax response contains invalid base64 image")
             })?;
-            resources.push(ResourceRef::base64(
-                "image/jpeg".to_string(),
-                data.to_string(),
+            let mime = image_mime_from_bytes(&bytes).ok_or_else(|| {
+                ProtocolError::invalid_response(
+                    "MiniMax response contains an unrecognized base64 image",
+                )
+            })?;
+            images.push((
+                ResourceRef::base64(mime.to_string(), data.to_string()),
+                Some(mime.to_string()),
             ));
         }
     }
-    if resources.is_empty() {
+    if images.is_empty() {
         return Err(ProtocolError::invalid_response(
             "MiniMax image response contains no images",
         ));
     }
-    let image_units = resources.len() as u64;
-    let artifacts = resources
+    let image_units = images.len() as u64;
+    let resources = images
+        .iter()
+        .map(|(resource, _)| resource.clone())
+        .collect::<Vec<_>>();
+    let artifacts = images
         .iter()
         .enumerate()
-        .map(|(index, resource)| AiArtifact {
+        .map(|(index, (resource, mime))| AiArtifact {
             name: format!("image-{}", index + 1),
             resource: resource.clone(),
-            mime: Some("image/png".to_string()),
+            mime: mime.clone(),
             metadata: None,
         })
         .collect();
@@ -734,6 +765,35 @@ fn decode_images(value: &Value) -> ProtocolResultValue<ProtocolOutput> {
         }),
         artifacts,
     })
+}
+
+fn image_mime_from_url(value: &str) -> Option<&'static str> {
+    let path = Url::parse(value).ok()?.path().to_ascii_lowercase();
+    if path.ends_with(".png") {
+        Some("image/png")
+    } else if path.ends_with(".jpg") || path.ends_with(".jpeg") {
+        Some("image/jpeg")
+    } else if path.ends_with(".webp") {
+        Some("image/webp")
+    } else if path.ends_with(".gif") {
+        Some("image/gif")
+    } else {
+        None
+    }
+}
+
+fn image_mime_from_bytes(value: &[u8]) -> Option<&'static str> {
+    if value.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("image/png")
+    } else if value.starts_with(b"\xff\xd8\xff") {
+        Some("image/jpeg")
+    } else if value.starts_with(b"GIF87a") || value.starts_with(b"GIF89a") {
+        Some("image/gif")
+    } else if value.len() >= 12 && &value[..4] == b"RIFF" && &value[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else {
+        None
+    }
 }
 
 fn decode_hex_audio(value: &Value, name: &str) -> ProtocolResultValue<ProtocolOutput> {
@@ -973,6 +1033,12 @@ fn require_parameters(
 }
 
 fn resource_string(resource: &ResourceRef, context: &CodecContext) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
@@ -1128,6 +1194,22 @@ mod tests {
         let written = body(Some(false), Some("la la"));
         assert_eq!(written["lyrics"], "la la");
         assert!(written.get("lyrics_optimizer").is_none());
+    }
+
+    #[test]
+    fn image_response_preserves_the_documented_image_format() {
+        let url_output = decode_images(&json!({
+            "data": {"image_urls": ["https://cdn.example/result.jpeg?token=one"]}
+        }))
+        .unwrap();
+        assert_eq!(url_output.artifacts[0].mime.as_deref(), Some("image/jpeg"));
+
+        let png = STANDARD.encode(b"\x89PNG\r\n\x1a\nrest");
+        let base64_output = decode_images(&json!({"data": {"image_base64": [png]}})).unwrap();
+        assert_eq!(
+            base64_output.artifacts[0].mime.as_deref(),
+            Some("image/png")
+        );
     }
 
     #[tokio::test]

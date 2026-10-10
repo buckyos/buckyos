@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.exposure.minimax.minimax-m2-.llm",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:14.943Z",
+      "elapsed_ms": 320,
+      "status": "passed",
+      "diagnostic": "llm.minimax-standard closed through MiniMax-M2.5@dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "minimax",
+  "provider_profile_id": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "model_rule": "MiniMax-M2*",
+  "exposure_mode": "logical_routable"
+}

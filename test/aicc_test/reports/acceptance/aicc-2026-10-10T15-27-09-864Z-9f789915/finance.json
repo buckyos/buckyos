@@ -1,0 +1,21 @@
+{
+  "currency": "USD",
+  "budget_usd": 0.2,
+  "planned_max_calls": 10,
+  "planned_max_cost_usd": 0.1,
+  "actual_calls": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "estimated_exposure_usd": 0,
+  "total_exposure_usd": 0,
+  "remaining_budget_usd": 0.2,
+  "unknown_cost_calls": 0,
+  "budget_exceeded": false,
+  "entries": [],
+  "by_provider": [],
+  "by_instance": [],
+  "by_model": [],
+  "by_api_type": [],
+  "by_case": []
+}

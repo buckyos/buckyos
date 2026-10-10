@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.minimax.minimax-t2.minimax-h3-max.video.txt2video",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "MiniMax-H3-Max@minimax-t2",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 37031,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "diagnostic": "TaskFailureError: provider task t-8480d36aef8b4f0895ce4e0e684bdc7c ended Failed: {\"code\":\"provider_error\",\"message\":\"MiniMax request failed with status 400 Bad Request: invalid params, model MiniMax-H3-Max does not support duration 4s, supported durations: 5s, 6s, 7s, 8s, 9s, 10s, 11s, 12s, 13s, 14s, 15s (2013)\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

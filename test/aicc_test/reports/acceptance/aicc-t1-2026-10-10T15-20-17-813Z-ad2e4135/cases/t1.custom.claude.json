@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.custom.claude",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "custom-claude",
+  "provider_instance": "dv-custom-claude-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "exact_model": "claude-sonnet-5@dv-custom-claude-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "session_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135:t1.custom.claude",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:44.834Z",
+      "elapsed_ms": 286,
+      "status": "passed",
+      "diagnostic": "seed=aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135; selected_official_model=claude-sonnet-5",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-99f918625ecc44e394818fbbd9b07eb1"
+}

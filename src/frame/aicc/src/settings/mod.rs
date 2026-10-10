@@ -5,9 +5,9 @@ use crate::catalog::{
 use crate::error::SettingsError;
 use async_trait::async_trait;
 use buckyos_api::{
-    get_buckyos_api_runtime, AiccRouteOverlay, ProviderAuthSettings, ProviderCredentials,
-    ProviderDiscoverySettings, ProviderInstanceRules, ProviderInstanceType, SystemConfigClient,
-    SystemConfigError,
+    get_buckyos_api_runtime, AiccRouteOverlay, ProviderAuthSettings, ProviderCredential,
+    ProviderCredentials, ProviderDiscoverySettings, ProviderInstanceRules, ProviderInstanceType,
+    SystemConfigClient, SystemConfigError,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -20,7 +20,7 @@ use std::sync::Arc;
 pub(crate) const AICC_SETTINGS_KEY: &str = "services/aicc/settings";
 pub(crate) const SYSTEM_CONFIG_METADATA_KEY: &str = "services/aicc/driver_metadata";
 pub(crate) const LOCAL_METADATA_RELATIVE_DIR: &str = "etc/aicc/driver_metadata/local";
-pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 6;
+pub(crate) const BUILTIN_CATALOG_REVISION_SEQ: u64 = 15;
 const SYSTEM_CONFIG_METADATA_SCHEMA_VERSION: u32 = 1;
 
 include!(concat!(env!("OUT_DIR"), "/builtin_metadata.rs"));
@@ -32,6 +32,8 @@ pub(crate) struct AiccSettings {
     pub providers: Vec<ProviderSettings>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_config: Option<AiccRouteOverlay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_named_object_base_url: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +144,25 @@ impl SettingsDocument {
 
 impl AiccSettings {
     pub(crate) fn validate(&self) -> Result<(), SettingsError> {
+        if let Some(base_url) = self.public_named_object_base_url.as_deref() {
+            let url = reqwest::Url::parse(base_url).map_err(|_| SettingsError::InvalidField {
+                field: "public_named_object_base_url",
+                reason: "must be an absolute HTTPS URL".to_string(),
+            })?;
+            if url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+                || url.query().is_some()
+                || url.fragment().is_some()
+            {
+                return Err(SettingsError::InvalidField {
+                    field: "public_named_object_base_url",
+                    reason: "must be an absolute HTTPS URL without credentials, query, or fragment"
+                        .to_string(),
+                });
+            }
+        }
         let mut names = BTreeSet::new();
         for provider in &self.providers {
             provider.validate()?;
@@ -206,12 +227,40 @@ impl ProviderSettings {
         if self
             .credentials
             .values()
-            .all(|credential| credential.locked.trim().is_empty())
+            .all(|credential| credential.value().trim().is_empty())
         {
             return Err(SettingsError::InvalidField {
                 field: "credentials",
-                reason: "must contain a non-empty locked value".into(),
+                reason: "must contain a non-empty credential value or reference".into(),
             });
+        }
+        match self.auth.as_ref() {
+            Some(ProviderAuthSettings::DynamicLogin { .. }) => {
+                if !self
+                    .credentials
+                    .values()
+                    .any(|credential| matches!(credential, ProviderCredential::RuntimeRef(_)))
+                {
+                    return Err(SettingsError::InvalidField {
+                        field: "credentials",
+                        reason: "dynamic_login requires a runtime_ref credential".into(),
+                    });
+                }
+            }
+            Some(ProviderAuthSettings::ApiKey { .. }) | None => {
+                if !self.credentials.values().any(|credential| {
+                    matches!(
+                        credential,
+                        ProviderCredential::InlineSecret(_) | ProviderCredential::SecretRef(_)
+                    )
+                }) {
+                    return Err(SettingsError::InvalidField {
+                        field: "credentials",
+                        reason: "api_key authentication requires an inline_secret or secret_ref credential"
+                            .into(),
+                    });
+                }
+            }
         }
         if self.timeout_ms == Some(0) {
             return Err(SettingsError::InvalidField {
@@ -720,7 +769,7 @@ mod tests {
             "protocol_adapter_id": "openai-responses",
             "base_url": "https://api.example/v1",
             "credentials": {
-                "api_token": {"locked": "opaque"}
+                "api_token": {"inline_secret": "opaque"}
             }
         })
     }
@@ -771,6 +820,68 @@ mod tests {
         assert!(
             SettingsDocument::parse(1, &json!({"providers": [plaintext]}).to_string()).is_err()
         );
+
+        let mut legacy_locked = provider("legacy-locked");
+        legacy_locked["credentials"] = json!({"api_token": {"locked": "not-allowed"}});
+        assert!(
+            SettingsDocument::parse(1, &json!({"providers": [legacy_locked]}).to_string()).is_err()
+        );
+
+        let mut dynamic = provider("dynamic");
+        dynamic["credentials"] = json!({"device_token": {"runtime_ref": "runtime://device-jwt"}});
+        dynamic["auth"] = json!({
+            "mode": "dynamic_login",
+            "login_profile": "device_jwt",
+            "login_endpoint": "https://sn.example/kapi/ai"
+        });
+        assert!(
+            SettingsDocument::parse(1, &json!({"providers": [dynamic.clone()]}).to_string())
+                .is_ok()
+        );
+
+        dynamic["credentials"] = json!({"api_token": {"inline_secret": "wrong-source"}});
+        assert!(SettingsDocument::parse(1, &json!({"providers": [dynamic]}).to_string()).is_err());
+
+        let mut static_with_runtime_ref = provider("static-runtime");
+        static_with_runtime_ref["credentials"] =
+            json!({"device_token": {"runtime_ref": "runtime://device-jwt"}});
+        assert!(SettingsDocument::parse(
+            1,
+            &json!({"providers": [static_with_runtime_ref]}).to_string()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn public_named_object_base_url_is_explicit_and_https_only() {
+        let parsed = SettingsDocument::parse(
+            1,
+            &json!({
+                "providers": [],
+                "public_named_object_base_url": "https://zone.example/ndn"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.settings.public_named_object_base_url.as_deref(),
+            Some("https://zone.example/ndn")
+        );
+        for invalid in [
+            "http://zone.example/ndn",
+            "https://user@zone.example/ndn",
+            "https://zone.example/ndn?token=secret",
+        ] {
+            assert!(SettingsDocument::parse(
+                1,
+                &json!({
+                    "providers": [],
+                    "public_named_object_base_url": invalid
+                })
+                .to_string(),
+            )
+            .is_err());
+        }
     }
 
     #[test]
@@ -778,7 +889,7 @@ mod tests {
         let secret = "must-not-appear";
         let mut value = provider("primary");
         value["workspace"] = json!("engineering");
-        value["credentials"] = json!({"api_token": {"locked": secret}});
+        value["credentials"] = json!({"api_token": {"inline_secret": secret}});
         value["auth"] = json!({"mode": "api_key", "credential_ref": secret});
         let document =
             SettingsDocument::parse(1, &json!({"providers": [value]}).to_string()).unwrap();

@@ -1,0 +1,23 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.version_exact_rule",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "image.txt2img",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:52.909Z",
+      "elapsed_ms": 649,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "exact_model": "gpt-image-2@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea"
+}

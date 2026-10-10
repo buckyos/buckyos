@@ -1,0 +1,31 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.audio.tts.audio.tts",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "gpt-4o-mini-tts@dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.audio.tts.audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:45.030Z",
+      "elapsed_ms": 915,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-f119828c531c49ceb1cd2cb37824028a",
+  "trace_id": "aicc-idem-6011e2ba7a2a10e7da0bc428b33446d7",
+  "usage": {
+    "characters": 28,
+    "request_units": 1
+  }
+}

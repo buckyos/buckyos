@@ -1,0 +1,41 @@
+{
+  "schema_version": 2,
+  "contract_revision": "2026-10-10.2",
+  "capability_baseline_revision": "2026-10-10.2",
+  "capability_cells_sha256": "2a9b2d9955d03caf384a5e5b52e8358f30d81fe98431d4536da9f70d9e662fb6",
+  "logical_entrypoint_baseline_revision": "2026-10-05.1",
+  "profiles": [
+    { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "openai", "provider_profile_id": "openai", "covered_model_patterns": ["gpt-5.6*", "sora-2*", "gpt-image-*", "dall-e-3", "dall-e-2", "text-embedding-*", "whisper-1", "*transcribe*", "tts-1*", "*-tts*", "gpt-5.2-pro*", "gpt-5.4-pro*", "gpt-5*", "gpt-*", "o*", "babbage-*", "davinci-*", "computer-use-preview*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
+      { "model_pattern": "gpt-5.6*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.gpt-pro" },
+      { "model_pattern": "gpt-5.6*", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5.6*", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5.6*", "api_type": "agent.computer_use", "mode": "logical_routable", "logical_entrypoint": "agent_runtime.computer_use" },
+      { "model_pattern": "gpt-5.2-pro*", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5.2-pro*", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5.4-pro*", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5.4-pro*", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.gpt-codex" },
+      { "model_pattern": "gpt-5*", "api_type": "image.txt2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." },
+      { "model_pattern": "gpt-5*", "api_type": "image.img2img", "mode": "exact_only", "reason": "Responses image-generation tool models are callable by exact model but are not members of the dedicated image-model family tree." }
+    ] },
+    { "provider_driver": "claude", "provider_profile_id": "claude", "covered_model_patterns": ["claude-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
+      { "model_pattern": "claude-*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.claude-fable" }
+    ] },
+    { "provider_driver": "google-gemini", "provider_profile_id": "gemini", "covered_model_patterns": ["gemini-2.5-computer-use-preview-10-2025", "gemma-4-*", "gemini-embedding-2*", "*embedding*", "*tts*", "lyria-*", "veo-3.1-*lite*", "veo-3.1-*", "veo-*", "gemini-omni-*", "gemini-*image*", "*nano-banana*", "gemini-3.5-transcribe", "gemini-robotics-*", "gemini-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "fal", "provider_profile_id": "fal", "covered_model_patterns": ["fal-ai/esrgan", "fal-ai/imageutils/rembg", "fal-ai/deepfilternet3", "fal-ai/video-upscaler"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "minimax", "provider_profile_id": "minimax", "covered_model_patterns": ["MiniMax-M3*", "MiniMax-M2*", "asr-*", "speech-*", "image-*", "music-*", "MiniMax-H3*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [
+      { "model_pattern": "MiniMax-M3*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.minimax-standard" },
+      { "model_pattern": "MiniMax-M2*", "api_type": "llm", "mode": "logical_routable", "logical_entrypoint": "llm.minimax-standard" }
+    ] },
+    { "provider_driver": "openrouter", "provider_profile_id": "openrouter", "covered_model_patterns": ["typesafe/jev-1.13", "~typesafe/jev-latest", "cohere/rerank-*", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "kimi", "provider_profile_id": "kimi", "covered_model_patterns": ["kimi-k3", "kimi-k2.7-code*", "kimi-k2.6", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "glm", "provider_profile_id": "glm", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "deepseek", "provider_profile_id": "deepseek", "covered_model_patterns": ["deepseek-flash", "*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "doubao-agent-plan", "provider_profile_id": "doubao-agent-plan", "covered_model_patterns": ["doubao-seedream-*", "doubao-seedance-*", "doubao-embedding-vision", "doubao-seed-tts-2.0", "deepseek-v4-*", "deepseek-v4.1-*", "glm-5.3", "glm-5.3-flash", "kimi-k2.7-code", "kimi-k3", "kimi-k2.8-preview", "minimax-m3", "doubao-seed-*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "doubao-speech", "provider_profile_id": "doubao-speech", "covered_model_patterns": ["doubao-seed-tts-2.0", "doubao-seed-asr-2.0", "doubao-seed-asr-2.0-fast"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "doubao", "provider_profile_id": "doubao", "covered_model_patterns": ["doubao-embedding-vision-*", "doubao-seedream-*", "deepseek-v4-*", "glm-*-*", "qwen*-*", "doubao-seedance-2-0-260128", "doubao-seedance-2-0-fast-260128", "doubao-seedance-2-0-mini-260615", "doubao-seedance-2-5-260628", "doubao-seed-2-0-lite-260428", "doubao-seed-2-1-turbo-260628"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "qwen", "provider_profile_id": "qwen", "covered_model_patterns": ["*"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },
+    { "provider_driver": "sn-ai-provider", "provider_profile_id": "sn", "covered_model_patterns": [], "default_exposure": { "mode": "not_applicable", "reason": "Capabilities are inherited from the configured upstream inventory." }, "overrides": [] }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "run_id": "aicc-2026-10-08T10-27-44-863Z-53cd8c14",
+  "case_id": "t2.minimax.minimax-t2.asr-1.0.audio.asr",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "asr-1.0@minimax-t2",
+  "api_type": "audio.asr",
+  "method": "audio.asr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:27:47.698Z",
+      "elapsed_ms": 1193,
+      "status": "review",
+      "diagnostic": "semantic rubric requires Judge or manual review",
+      "usage": {
+        "request_units": 1
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-0c53b94b011e4459ac17252b2b476cf6",
+  "usage": {
+    "request_units": 1
+  },
+  "trace_id": "aicc-idem-b71e183e463d71bcca11c457120c29ef"
+}

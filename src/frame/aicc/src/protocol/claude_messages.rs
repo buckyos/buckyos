@@ -55,6 +55,7 @@ pub(crate) fn claude_messages_adapter() -> (AdapterDescriptor, super::CodecRegis
 pub(crate) struct ClaudeMessagesCodec {
     descriptor: OperationDescriptor,
     api_type: ApiType,
+    max_tokens_required: bool,
 }
 
 impl ClaudeMessagesCodec {
@@ -62,6 +63,7 @@ impl ClaudeMessagesCodec {
         Self {
             descriptor: claude_messages_operation_descriptor(),
             api_type: ApiType::Llm,
+            max_tokens_required: true,
         }
     }
 
@@ -69,7 +71,13 @@ impl ClaudeMessagesCodec {
         Self {
             descriptor: claude_messages_operation_descriptor(),
             api_type,
+            max_tokens_required: true,
         }
+    }
+
+    pub(crate) fn with_max_tokens_required(mut self, required: bool) -> Self {
+        self.max_tokens_required = required;
+        self
     }
 
     pub(crate) fn adapter_descriptor(&self) -> AdapterDescriptor {
@@ -113,12 +121,12 @@ impl ClaudeMessagesCodec {
         let provider_model_id =
             required_string(&call.input.resolved_parameters, "provider_model_id")?;
         let max_tokens = resolved_u64(&call.input.resolved_parameters, "max_tokens")?
-            .or(request.max_output_tokens)
-            .ok_or_else(|| {
-                ProtocolError::invalid_request(
-                    "Claude Messages requires max_output_tokens or resolved max_tokens",
-                )
-            })?;
+            .or(request.max_output_tokens);
+        if self.max_tokens_required && max_tokens.is_none() {
+            return Err(ProtocolError::invalid_request(
+                "Claude Messages requires max_output_tokens or resolved max_tokens",
+            ));
+        }
 
         let (system, messages) = encode_messages(&request.messages, call.context)?;
         if messages.is_empty() {
@@ -129,7 +137,9 @@ impl ClaudeMessagesCodec {
         let mut body = Map::new();
         body.insert("model".to_string(), Value::String(provider_model_id));
         body.insert("messages".to_string(), Value::Array(messages));
-        body.insert("max_tokens".to_string(), Value::from(max_tokens));
+        if let Some(max_tokens) = max_tokens {
+            body.insert("max_tokens".to_string(), Value::from(max_tokens));
+        }
         if !system.is_empty() {
             body.insert("system".to_string(), Value::Array(system));
         }
@@ -218,6 +228,10 @@ fn claude_messages_endpoint(base_url: &str) -> ProtocolResultValue<String> {
 
 #[async_trait]
 impl OperationCodec for ClaudeMessagesCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -745,6 +759,12 @@ fn encode_resource(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(json!({"type": "url", "url": url}));
+    }
     match resource {
         ResourceRef::Base64 { mime, data_base64 } => Ok(json!({
             "type": "base64", "media_type": mime, "data": data_base64
@@ -1618,6 +1638,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_omitted_max_tokens_for_anthropic_messages() {
+        let request = LlmChatInvokeRequest::new(
+            "ignored@instance",
+            vec![AiMessage::text(AiRole::User, "hello")],
+        );
+        let input = input(request, &[]);
+        let context = context();
+        let error = codec()
+            .encode(&CodecCall {
+                api_type: ApiType::Llm,
+                input: &input,
+                context: &context,
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, ProtocolErrorKind::InvalidRequest);
+        assert!(error.message.contains("requires max_output_tokens"));
+    }
+
+    #[test]
     fn encodes_messages_tools_thinking_usage_options_and_version_header() {
         let mut request = LlmChatInvokeRequest::new(
             "ignored@instance",
@@ -1935,9 +1974,15 @@ mod tests {
                 "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 8}
             }))
             .unwrap();
-            assert_eq!(output.value["message"]["content"][0]["type"], "provider_state");
+            assert_eq!(
+                output.value["message"]["content"][0]["type"],
+                "provider_state"
+            );
             assert_eq!(output.value["message"]["content"][0]["value"], search);
-            assert_eq!(output.value["message"]["content"][1]["value"], search_result);
+            assert_eq!(
+                output.value["message"]["content"][1]["value"],
+                search_result
+            );
             assert_eq!(output.value["message"]["content"][2]["text"], "搜索结果");
             assert!(output.value["tool_calls"].as_array().unwrap().is_empty());
             let mut state = ClaudeStreamState::default();
@@ -2227,7 +2272,11 @@ mod tests {
                 AiMessage::text(AiRole::User, "one"),
                 turn(native, "primary", json!({"signature": "sig-primary"})),
                 AiMessage::text(AiRole::User, "two"),
-                turn(backup, "backup", json!({"id": "rs_1", "encrypted_content": "x"})),
+                turn(
+                    backup,
+                    "backup",
+                    json!({"id": "rs_1", "encrypted_content": "x"}),
+                ),
                 AiMessage::text(AiRole::User, "three"),
                 // Kimi / GLM style: plaintext only, never bound to a source.
                 AiMessage::new(

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.fallback_max_depth",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:17.908Z",
+      "elapsed_ms": 92,
+      "status": "passed",
+      "diagnostic": "route rejected: RPCError: RPC call error: Parse Request Error: {\"code\":\"invalid_request\",\"message\":\"invalid logical tree: llm.plan.depth5: dangling fallback llm.plan.depth6\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

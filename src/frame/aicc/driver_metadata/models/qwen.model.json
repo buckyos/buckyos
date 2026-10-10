@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "qwen",
-  "revision_seq": 3,
+  "revision_seq": 4,
   "required_features": [],
   "models": [
     {
@@ -141,6 +141,27 @@
         "max_output_tokens": 131072
       },
       "id": "qwen3.8-flash",
+      "llm": {
+        "spec": "qwen-flash",
+        "effort": "xhigh",
+        "default_effort": "xhigh",
+        "supported_efforts": ["none", "low", "medium", "xhigh"],
+        "stability": "stable",
+        "weight": 38
+      }
+    },
+    {
+      "parameter_scale": "omni-flash",
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {
+        "streaming": true,
+        "tool_call": true,
+        "json_schema": true,
+        "reasoning": true,
+        "max_context_tokens": 1000000,
+        "max_output_tokens": 131072
+      },
+      "id": "qwen3.8-omni-flash",
       "llm": {
         "spec": "qwen-flash",
         "effort": "xhigh",
@@ -405,6 +426,41 @@
         "stability": "stable",
         "weight": 30
       }
+    },
+    {
+      "id": "qwen2-5-72b-20240919",
+      "parameter_scale": "72b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-0-6b-20250429",
+      "parameter_scale": "0.6b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-8b-20250429",
+      "parameter_scale": "8b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-14b-20250429",
+      "parameter_scale": "14b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
+    },
+    {
+      "id": "qwen3-32b-20250429",
+      "parameter_scale": "32b",
+      "api_types": ["llm"],
+      "capabilities": {"streaming": true},
+      "llm": {"spec": "qwen-legacy", "effort": "none", "default_effort": "none", "supported_efforts": ["none"], "stability": "stable", "weight": 20}
     }
   ],
   "patterns": [],
@@ -436,6 +492,10 @@
     },
     {
       "id": "qwen-plus"
+    },
+    {
+      "id": "qwen-legacy",
+      "direct_only": true
     }
   ]
 }

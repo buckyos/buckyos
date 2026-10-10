@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.openrouter.openrouter.rerank.v1.rerank.response.wrong_content_type",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "openrouter",
+  "provider_instance": "t15-20261008050816-1602985-openrouter",
+  "exact_model": "cohere/rerank-v3.5@t15-20261008050816-1602985-openrouter",
+  "api_type": "rerank",
+  "method": "rerank",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:18:43.845Z",
+      "elapsed_ms": 369,
+      "status": "passed",
+      "diagnostic": "contract=openrouter.rerank.v1; scenario=wrong_content_type; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

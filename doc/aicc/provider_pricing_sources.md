@@ -49,7 +49,8 @@ Provider Rules；缺失时宁可 unknown，也不使用未经确认的价格。
 | Kimi | [Chat pricing](https://platform.kimi.com/docs/pricing/chat) |
 | GLM | [Official pricing](https://docs.bigmodel.cn/cn/guide/start/pricing) |
 | DeepSeek | [Models and pricing](https://api-docs.deepseek.com/quick_start/pricing/) |
-| Doubao | [Model pricing](https://ark.volcengine.com/docs/82379/1099320) |
+| Doubao standard | [Model pricing](https://docs.volcengine.com/docs/ark/model-pricing?lang=zh)、[豆包语音计费](https://www.volcengine.com/docs/6561/1359370?lang=zh)；聚合的 DeepSeek/GLM 等必须使用方舟渠道价，不继承原厂价 |
+| Doubao Agent Plan | 套餐使用抵扣系数/额度而非可直接结算的 CNY 单价；当前 pricing schema 不能准确表达，`model_pricing` 保持空，不能复制标准账号按量价 |
 | Qwen | [Model Studio pricing](https://help.aliyun.com/zh/model-studio/model-pricing) |
 | SN | Provider inventory/usage response |
 

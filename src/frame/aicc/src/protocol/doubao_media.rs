@@ -89,6 +89,10 @@ struct DoubaoMultimodalEmbeddingCodec {
 
 #[async_trait]
 impl OperationCodec for DoubaoMultimodalEmbeddingCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -242,6 +246,10 @@ struct DoubaoImageCodec {
 
 #[async_trait]
 impl OperationCodec for DoubaoImageCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -335,6 +343,12 @@ struct DoubaoVideoCodec {
 
 #[async_trait]
 impl NativeTaskCodec for DoubaoVideoCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        // `resource_string` hands a URL straight through; only caller-supplied
+        // bytes are inlined.
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -385,6 +399,7 @@ impl NativeTaskCodec for DoubaoVideoCodec {
         match operation {
             NativeTaskOperation::Submit => {
                 let mut handle = NativeTaskHandle::new(required_string(&value, "id")?)?;
+                handle.cancel_supported = true;
                 handle.poll_after = retry_after.or(Some(Duration::from_secs(3)));
                 Ok(NativeTaskOutput::Submitted(handle))
             }
@@ -432,7 +447,7 @@ fn encode_video_submit(
     let codec_input = input.codec_input.ok_or_else(|| {
         ProtocolError::invalid_request("Doubao video submit requires canonical input")
     })?;
-    require_only_model(input.resolved_parameters)?;
+    require_video_parameters(input.resolved_parameters)?;
     let model = provider_model_id(input.resolved_parameters)?;
     let mut content = Vec::new();
     let mut parameters = Map::new();
@@ -462,11 +477,11 @@ fn encode_video_submit(
         }
         (AiccCall::VideoToVideo(request), ApiType::VideoToVideo) => {
             content.push(json!({"type":"text","text":request.prompt}));
-            content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?}}));
+            content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?},"role":"reference_video"}));
         }
         (AiccCall::VideoExtend(request), ApiType::VideoExtend) => {
             content.push(json!({"type":"text","text":request.prompt}));
-            content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?}}));
+            content.push(json!({"type":"video_url","video_url":{"url":resource_string(&request.video, input.context)?},"role":"reference_video"}));
             video_options(
                 &mut parameters,
                 request.duration_seconds,
@@ -475,19 +490,6 @@ fn encode_video_submit(
                 None,
                 None,
             )?;
-            if model.starts_with("doubao-seedance-2.5") {
-                parameters.insert("omni_reference_task_type".into(), json!("extend"));
-                parameters.insert("ratio".into(), json!("adaptive"));
-            }
-            if request.continuation_handle.is_some() {
-                return Err(ProtocolError::new(
-                    ProtocolErrorKind::UnsupportedOperation,
-                    "Ark video extension uses a reference video, not a continuation handle",
-                ));
-            }
-            if let Some(Value::Object(video)) = content.last_mut() {
-                video.insert("role".into(), json!("reference_video"));
-            }
         }
         _ => {
             return Err(ProtocolError::invalid_request(
@@ -500,6 +502,13 @@ fn encode_video_submit(
         ("content".to_owned(), Value::Array(content)),
     ]);
     body.extend(parameters);
+    if let Some(task_type) = input
+        .resolved_parameters
+        .get("omni_reference_task_type")
+        .and_then(Value::as_str)
+    {
+        body.insert("omni_reference_task_type".to_owned(), json!(task_type));
+    }
     json_request(
         input.context,
         Method::POST,
@@ -645,9 +654,6 @@ fn image_mime_from_bytes(value: &[u8]) -> Option<&'static str> {
 fn decode_video_result(value: &Value) -> ProtocolResultValue<NativeTaskOutput> {
     let url = value
         .pointer("/content/video_url")
-        .filter(|value| value.is_string())
-        .or_else(|| value.pointer("/content/video_url/url"))
-        .or_else(|| value.get("video_url"))
         .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
@@ -745,10 +751,33 @@ fn require_only_model(parameters: &BTreeMap<String, Value>) -> ProtocolResultVal
     Ok(())
 }
 
+fn require_video_parameters(parameters: &BTreeMap<String, Value>) -> ProtocolResultValue<()> {
+    for (name, value) in parameters {
+        if name == "provider_model_id" {
+            continue;
+        }
+        if name == "omni_reference_task_type"
+            && matches!(value.as_str(), Some("reference" | "edit" | "extend"))
+        {
+            continue;
+        }
+        return Err(ProtocolError::invalid_request(format!(
+            "resolved Doubao video parameter `{name}` is not supported"
+        )));
+    }
+    Ok(())
+}
+
 fn resource_string(
     resource: &ResourceRef,
     context: &super::CodecContext,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = context.materialized_url(resource) {
+        return Ok(url.to_string());
+    }
     match resource {
         ResourceRef::Url { url, .. } => Ok(url.clone()),
         ResourceRef::Base64 { mime, data_base64 } => {
@@ -829,7 +858,10 @@ mod tests {
     use crate::protocol::{
         CodecContext, CodecInput, CodecLimits, CodecRegistry, ResolvedCredential,
     };
-    use buckyos_api::{ProviderStateCoordinate, TextToImageInvokeRequest, VideoTextToVideoRequest};
+    use buckyos_api::{
+        ProviderStateCoordinate, ResourceRef, TextToImageInvokeRequest, VideoExtendRequest,
+        VideoTextToVideoRequest,
+    };
 
     fn context() -> CodecContext {
         CodecContext {
@@ -907,6 +939,92 @@ mod tests {
     }
 
     #[test]
+    fn standard_seedance_extend_uses_official_reference_task_fields() {
+        let (descriptor, registration) = doubao_media_adapter();
+        let mut registry = CodecRegistry::default();
+        registry.register_codecs(descriptor, registration).unwrap();
+        let mut context = context();
+        context.base_url = "https://ark.cn-beijing.volces.com/api/v3".to_owned();
+        let parameters = BTreeMap::from([
+            (
+                "provider_model_id".to_owned(),
+                json!("doubao-seedance-2-5-260628"),
+            ),
+            ("omni_reference_task_type".to_owned(), json!("extend")),
+        ]);
+        let video = CodecInput {
+            canonical_request: AiccCall::VideoExtend(VideoExtendRequest::new(
+                "ignored",
+                ResourceRef::url("https://resource.example/video.mp4".to_owned(), None),
+                "Continue the scene".to_owned(),
+            )),
+            resolved_parameters: parameters.clone(),
+        };
+        let input = NativeTaskInput {
+            operation: NativeTaskOperation::Submit,
+            remote_task_id: None,
+            codec_input: Some(&video),
+            resolved_parameters: &parameters,
+            context: &context,
+        };
+        let request = registry
+            .encode_native(
+                DOUBAO_MEDIA_ADAPTER_ID,
+                DOUBAO_VIDEO_OPERATION_ID,
+                ApiType::VideoExtend,
+                &input,
+            )
+            .unwrap();
+        assert_eq!(
+            request.url,
+            "https://ark.cn-beijing.volces.com/api/v3/contents/generations/tasks"
+        );
+        let HttpBody::Json(body) = request.body else {
+            panic!("expected JSON body")
+        };
+        assert_eq!(body["omni_reference_task_type"], "extend");
+        assert_eq!(body["content"][1]["role"], "reference_video");
+        assert!(body.get("operation").is_none());
+        assert!(body.get("continuation_handle").is_none());
+    }
+
+    #[test]
+    fn video_duration_is_encoded_as_an_integer() {
+        let mut body = Map::new();
+        video_options(&mut body, Some(4.0), None, None, None, None).unwrap();
+        assert_eq!(body["duration"], json!(4));
+        assert_eq!(serde_json::to_string(&body["duration"]).unwrap(), "4");
+        assert!(video_options(&mut Map::new(), Some(4.5), None, None, None, None).is_err());
+    }
+
+    #[tokio::test]
+    async fn submitted_video_task_preserves_cancel_support() {
+        let codec = DoubaoVideoCodec {
+            descriptor: doubao_media_registration()
+                .0
+                .into_iter()
+                .find(|operation| operation.operation_id == DOUBAO_VIDEO_OPERATION_ID)
+                .unwrap(),
+            api_type: ApiType::VideoTextToVideo,
+        };
+        let response = HttpResponse {
+            status: reqwest::StatusCode::OK,
+            headers: reqwest::header::HeaderMap::new(),
+            body: bytes::Bytes::from_static(br#"{"id":"video-1","status":"queued"}"#),
+            request_id: "request-1".to_owned(),
+            retry_after: None,
+        };
+        let NativeTaskOutput::Submitted(handle) = codec
+            .decode_native(NativeTaskOperation::Submit, response)
+            .await
+            .unwrap()
+        else {
+            panic!("expected submitted task")
+        };
+        assert!(handle.cancel_supported);
+    }
+
+    #[test]
     fn error_response_keeps_doubao_business_code() {
         let response = HttpResponse {
             status: reqwest::StatusCode::BAD_REQUEST,
@@ -929,5 +1047,34 @@ mod tests {
         .unwrap();
         assert_eq!(output.value["images"][0]["mime_hint"], "image/jpeg");
         assert_eq!(output.artifacts[0].mime.as_deref(), Some("image/jpeg"));
+    }
+
+    #[test]
+    fn video_result_decodes_official_content_url_and_usage() {
+        let NativeTaskOutput::Result(output) = decode_video_result(&json!({
+            "id": "video-1",
+            "status": "succeeded",
+            "content": {"video_url": "https://example.test/generated/video.mp4"},
+            "usage": {"completion_tokens": 120, "total_tokens": 120}
+        }))
+        .unwrap() else {
+            panic!("expected video result")
+        };
+        assert_eq!(
+            output.value["video"]["url"],
+            "https://example.test/generated/video.mp4"
+        );
+        let usage = output.usage.unwrap();
+        assert_eq!(usage.output_tokens, Some(120));
+        assert_eq!(usage.total_tokens, Some(120));
+    }
+
+    #[test]
+    fn video_result_rejects_non_official_nested_url_shape() {
+        assert!(decode_video_result(&json!({
+            "status": "succeeded",
+            "content": {"video_url": {"url": "https://example.test/video.mp4"}}
+        }))
+        .is_err());
     }
 }

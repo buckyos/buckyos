@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008050816-1602985",
+  "case_id": "t1.5.google-gemini.gemini.interactions.tts.v1beta.audio.tts.error.quota",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "t15-20261008050816-1602985-google-gemini-isolation-4",
+  "exact_model": "gemini-3.1-flash-tts-preview@t15-20261008050816-1602985-google-gemini-isolation-4",
+  "api_type": "audio.tts",
+  "method": "audio.tts",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:12:33.369Z",
+      "elapsed_ms": 186,
+      "status": "passed",
+      "diagnostic": "contract=gemini.interactions.tts.v1beta; scenario=quota; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

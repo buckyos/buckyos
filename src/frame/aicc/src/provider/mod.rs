@@ -557,6 +557,7 @@ impl ExecutableProviderInstance {
             request_timeout: limits.request_timeout,
             max_request_bytes: limits.max_request_bytes,
             max_response_bytes: limits.max_response_bytes,
+            follow_redirects: false,
             ..HttpTransportConfig::default()
         })?;
         codecs

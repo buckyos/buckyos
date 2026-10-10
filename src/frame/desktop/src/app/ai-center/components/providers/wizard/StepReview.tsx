@@ -44,6 +44,14 @@ export function StepReview({ draft, validation, onToggleAutoSync }: StepReviewPr
       label: t('aiCenter.providers.models', 'Models'),
       value: `${validation?.models_discovered.length ?? 0}`,
     },
+    ...(draft.selected_inventory_models
+      ? [{
+        label: t('aiCenter.wizard.publishedModels', 'Published models'),
+        value: draft.selected_inventory_models.length > 0
+          ? draft.selected_inventory_models.join(', ')
+          : t('aiCenter.wizard.noPublishedModels', 'None'),
+      }]
+      : []),
   ]
 
   return (

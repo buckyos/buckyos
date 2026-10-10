@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:29:21.818Z",
+      "elapsed_ms": 197877,
+      "status": "failed",
+      "failure_class": "assertion_failed",
+      "diagnostic": "Error: LLM output omitted the requested acceptance marker",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

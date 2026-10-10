@@ -13,6 +13,7 @@ import {
   callChatCompletions,
   callInference,
   loginGateway,
+  openAiccArtifact,
   type GatewaySession,
   type RpcClient,
 } from "./gateway.ts";
@@ -51,10 +52,13 @@ import {
 import { selectSingleProviderInstances } from "./inventory_selection.ts";
 import {
   applyProviderTokens,
+  configuredProviderInstanceOverrides,
   configuredProviderTokens,
   providerTokenDrivers,
+  scopeOfficialInventoriesToInstanceRules,
   selectProviderTokens,
   type ProviderTokens,
+  type ProviderInstanceOverrides,
 } from "./provider_credentials.ts";
 import { SettingsCleanupError, withAiccSettingsOverride } from "./settings_transaction.ts";
 import {
@@ -64,8 +68,12 @@ import {
   type ArtifactAudit,
   type ReadableNamedData,
 } from "./artifact_validation.ts";
-import { JudgeError, runJudge, selectJudgeModel } from "./judge.ts";
-import { bindOfficialCatalogInstances, fetchOfficialCatalogs } from "./official_catalog.ts";
+import { assertJudgeModelAvailable, JudgeError, judgeProviderDriver, runJudge, selectJudgeModel } from "./judge.ts";
+import {
+  bindOfficialCatalogInstances,
+  fetchOfficialCatalogs,
+  scopeInventoriesToRequestedCases,
+} from "./official_catalog.ts";
 import { refreshProviderInventoriesUntilSuccess } from "./inventory_refresh.ts";
 import { inventoriesFromModelsList } from "./inventory.ts";
 import { methodsForApiType } from "./canonical.ts";
@@ -103,7 +111,9 @@ type Options = {
   judgeRubricVersion: string;
   judgeMinScore: number;
   providerTokens: ProviderTokens;
+  providerInstanceOverrides: ProviderInstanceOverrides;
   officialCatalogTokens: Record<string, string | undefined>;
+  officialCatalogEndpoints: Record<string, string>;
   applyProviderCredentials: boolean;
   allowCredentialMutationCli: boolean;
   shardIndex: number;
@@ -113,6 +123,7 @@ type Options = {
   ndnNamedStoreConfigPath: string;
   ndnGatewayControlUrl: string;
   ndnSystemRoot: string;
+  ndnPublicGatewayUrl?: string;
 };
 
 type AiMethodResponse = {
@@ -415,6 +426,7 @@ async function parseOptions(args: string[]): Promise<Options> {
   const providerInstances: Record<string, string> = {};
   const providerTokens = configuredProviderTokens(config, env);
   const officialCatalogTokens: Record<string, string | undefined> = { ...providerTokens };
+  const officialCatalogEndpoints: Record<string, string> = {};
   for (const driver of [
     "openai",
     "claude",
@@ -428,6 +440,15 @@ async function parseOptions(args: string[]): Promise<Options> {
     const configured = tomlString(config, `official_catalog_credentials.${driver}.api_token`);
     const environment = env(`AICC_${driver.replaceAll("-", "_").toUpperCase()}_CATALOG_TOKEN`);
     if (configured || environment) officialCatalogTokens[driver] = configured ?? environment;
+  }
+  for (const [key, value] of Object.entries(config)) {
+    const match = /^official_catalog_credentials\.([^.]+)\.endpoint$/.exec(key);
+    if (!match || typeof value !== "string" || !value.trim()) continue;
+    const endpoint = new URL(value.trim());
+    if (endpoint.protocol !== "https:") {
+      throw new Error(`${key} must use HTTPS`);
+    }
+    officialCatalogEndpoints[match[1]] = endpoint.toString();
   }
   for (const [key, value] of Object.entries(config)) {
     const match = /^limits\.([^.]+)\.(max_concurrency|min_interval_ms)$/.exec(key);
@@ -476,7 +497,9 @@ async function parseOptions(args: string[]): Promise<Options> {
     judgeRubricVersion: tomlString(config, "judge.rubric_version") ?? "2026-08-27.1",
     judgeMinScore: tomlNumber(config, "judge.min_score") ?? 0.7,
     providerTokens,
+    providerInstanceOverrides: configuredProviderInstanceOverrides(config),
     officialCatalogTokens,
+    officialCatalogEndpoints,
     applyProviderCredentials: tomlBoolean(config, "provider_credentials.apply_to_aicc_settings") ?? false,
     allowCredentialMutationCli: false,
     shardIndex: tomlNumber(config, "runner.shard_index") ?? 0,
@@ -490,6 +513,8 @@ async function parseOptions(args: string[]): Promise<Options> {
       env("AICC_NDN_GATEWAY_CONTROL_URL") ?? "http://127.0.0.1:13451",
     ndnSystemRoot: tomlString(config, "fixtures.ndn_system_root") ??
       env("AICC_NDN_SYSTEM_ROOT") ?? "/opt/buckyos",
+    ndnPublicGatewayUrl: tomlString(config, "fixtures.ndn_public_gateway_url") ??
+      env("AICC_NDN_PUBLIC_GATEWAY_URL"),
     fixtures: {
       image: resource("image", tomlString(config, "fixtures.image"), "image/png"),
       mask: resource("mask", tomlString(config, "fixtures.mask"), "image/png"),
@@ -809,7 +834,7 @@ function semanticRubric(cell: { api_type: string; method: string }): string[] {
   if (apiType === "vision.caption") return ["The caption accurately describes the supplied marker image."];
   if (apiType === "vision.detect") return ["The structured detection result identifies visible objects in the supplied image."];
   if (apiType === "vision.segment") return ["The segmentation result corresponds to visible regions in the supplied image."];
-  if (apiType === "audio.tts") return ["The speech clearly says BuckyOS test number four eight two seven."];
+  if (apiType === "audio.tts") return ["The speech clearly says BuckyOS four eight two seven."];
   if (apiType === "audio.asr") return ["The transcript faithfully represents the supplied speech audio."];
   if (apiType === "audio.music") return ["The output is a short, calm ambient instrumental passage with no vocals, speech, or dance beat."];
   if (apiType === "audio.enhance") return ["The output preserves the source audio while reducing noise or improving clarity."];
@@ -872,12 +897,12 @@ async function validateTerminalArtifacts(input: {
     } else if (typeof source.url === "string") {
       if (seen.has(`url:${source.url}`)) continue;
       seen.add(`url:${source.url}`);
-      const target = new URL(source.url);
-      const gateway = new URL(input.gatewayUrl);
-      const response = await fetch(target, target.origin === gateway.origin
-        ? { headers: { authorization: `Bearer ${input.sessionToken}` } }
-        : undefined);
-      if (!response.ok) throw new Error(`artifact URL download failed with HTTP ${response.status}`);
+      const response = await openAiccArtifact({
+        gatewayUrl: input.gatewayUrl,
+        sessionToken: input.sessionToken,
+        url: source.url,
+        artifactId: typeof source.artifact_id === "string" ? source.artifact_id : undefined,
+      });
       const declared = Number(response.headers.get("content-length"));
       if (Number.isFinite(declared) && declared > 256 * 1024 * 1024) throw new Error("artifact URL exceeds 256 MiB safety limit");
       const bytes = new Uint8Array(await response.arrayBuffer());
@@ -944,6 +969,7 @@ async function main(): Promise<void> {
       options.providerInstances[driver] ?? `${driver}-catalog`,
     ])),
     tokens: options.officialCatalogTokens,
+    endpointOverrides: options.officialCatalogEndpoints,
     timeoutMs: Math.min(options.timeoutMs, 60_000),
   });
   const initialRuntimeInstances = new Set(
@@ -973,7 +999,13 @@ async function main(): Promise<void> {
         systemConfig: session.systemConfig,
         aicc: session.aicc,
         description: "AICC Provider credential override",
-        patch: (settings) => applyProviderTokens(settings, options.providerTokens, options.providerInstances),
+        patch: (settings) =>
+          applyProviderTokens(
+            settings,
+            options.providerTokens,
+            options.providerInstances,
+            options.providerInstanceOverrides,
+          ),
         execute,
         refreshClients: async () => {
           const refreshed = await loginGateway({
@@ -1130,6 +1162,7 @@ async function executeAcceptance(input: {
       options.providerLimitOverrides[driver]?.minIntervalMs ?? options.providerLimits.minIntervalMs,
     ])),
   });
+  const providerRuntimeAfterRefresh = await session.aicc.call("provider.list", {});
   const selectedInventories = selectSingleProviderInstances({
     inventories: refreshed.inventories,
     drivers: selectedDrivers,
@@ -1139,11 +1172,23 @@ async function executeAcceptance(input: {
     ])),
   });
   const judgeModel = selectJudgeModel(options.judgeModel, selectedInventories);
-  const officialInventories = bindOfficialCatalogInstances(officialCatalogs, selectedInventories);
+  const judgeSchedulerProvider = judgeProviderDriver(judgeModel, selectedInventories);
+  const officialInventories = scopeOfficialInventoriesToInstanceRules(
+    bindOfficialCatalogInstances(officialCatalogs, selectedInventories),
+    options.providerInstanceOverrides,
+  );
+  const matrixOfficialInventories = scopeInventoriesToRequestedCases(
+    officialInventories,
+    options.caseIds,
+  );
+  const matrixAiccInventories = scopeInventoriesToRequestedCases(
+    selectedInventories,
+    options.caseIds,
+  );
   const matrix = analyzeProviderMatrix({
     baseline,
-    officialInventories,
-    aiccInventories: selectedInventories,
+    officialInventories: matrixOfficialInventories,
+    aiccInventories: matrixAiccInventories,
     selectedDrivers,
   });
   const sortedCells = [...matrix.cells].sort((left, right) =>
@@ -1290,6 +1335,7 @@ async function executeAcceptance(input: {
   const judgedCells = options.judgeEnabled
     ? executableCells.filter((cell) => semanticRubric(cell).length > 0)
     : [];
+  if (judgedCells.length > 0) assertJudgeModelAvailable(judgeModel, selectedInventories);
   const continuationPrerequisiteCells = [...new Map(
     executableCells
       .filter((cell) => cell.api_type === "video.extend")
@@ -1329,11 +1375,11 @@ async function executeAcceptance(input: {
   if (executeRealModelCalls && plannedCalls > 0) {
     executeRealModelCalls = await confirmRealModelCalls(options.assumeYes);
     const uploadFixtures = selectedCells.some((cell) =>
-      cell.resource_representation === "named_object"
+      cell.resource_representation === "named_object" || cell.resource_representation === "url"
     );
     if (executeRealModelCalls && uploadFixtures) {
       ndnFixtureService = await startNdnFixtureService({
-        gatewayUrl: options.gatewayUrl,
+        gatewayUrl: options.ndnPublicGatewayUrl ?? options.gatewayUrl,
         runId,
         gatewayBinary: options.ndnGatewayBinary,
         namedStoreConfigPath: options.ndnNamedStoreConfigPath,
@@ -1358,6 +1404,7 @@ async function executeAcceptance(input: {
   const financialEntries: FinancialEntry[] = [];
   const costBudget = new CostBudget(options.maxCostUsd);
   const prerequisiteArtifactIds: string[] = [];
+  const taskManagerTaskIds = new Set<string>();
   if (executeRealModelCalls) {
     const scheduler = new ProviderScheduler(
       options.globalConcurrency,
@@ -1405,8 +1452,8 @@ async function executeAcceptance(input: {
           const payload = prerequisiteRequest.payload as Record<string, unknown>;
           if (sourceApiType === "video.txt2video") {
             payload.input_json = {
+              ...(payload.input_json as Record<string, unknown>),
               prompt: "A paper plane moving across a desk, continuous steady motion",
-              duration_seconds: 4,
             };
             payload.resources = [];
           }
@@ -1416,6 +1463,7 @@ async function executeAcceptance(input: {
             sourceMethod,
             prerequisiteRequest,
           ) as AiMethodResponse;
+          taskManagerTaskIds.add(initial.task_id);
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           const artifacts = await validateTerminalArtifacts({
             terminal,
@@ -1513,6 +1561,7 @@ async function executeAcceptance(input: {
             }
             return await callInference(session.aicc, cell.method, request) as AiMethodResponse;
           });
+          taskManagerTaskIds.add(initial.task_id);
           const terminal = await waitForTask(session.taskManager, initial, options.timeoutMs);
           assertResponseShape(cell, terminal);
           const artifacts = await validateTerminalArtifacts({
@@ -1584,7 +1633,7 @@ async function executeAcceptance(input: {
                   metadata: audit.metadata,
                 })),
                 timeoutMs: Math.min(options.timeoutMs, 180_000),
-                invoke: async (request) => await scheduler.execute("judge", async () => {
+                invoke: async (request) => await scheduler.execute(judgeSchedulerProvider, async () => {
                   if (actualCalls >= options.maxRealCalls) throw new Error(`max_real_calls ${options.maxRealCalls} exhausted before Judge`);
                   judgeReservation = costBudget.reserve(judgeEstimate);
                   actualCalls += 1;
@@ -1924,9 +1973,31 @@ async function executeAcceptance(input: {
   }
   const cleanupDetails: string[] = [];
   const cleanupResidual: string[] = [];
+  const terminalArtifactIds: string[] = [];
+  const artifactDiscoveryFailures: string[] = [];
+  for (const taskId of taskManagerTaskIds) {
+    try {
+      const task = taskValue(await session.taskManager.call("get_task", { task_id: taskId }));
+      const taskResult = task.result && typeof task.result === "object" && !Array.isArray(task.result)
+        ? task.result as Record<string, unknown>
+        : undefined;
+      const result = taskResult?.result && typeof taskResult.result === "object" && !Array.isArray(taskResult.result)
+        ? taskResult.result as Record<string, unknown>
+        : undefined;
+      const output = result?.output && typeof result.output === "object" && !Array.isArray(result.output)
+        ? result.output as Record<string, unknown>
+        : undefined;
+      for (const source of artifactSources(output?.artifacts)) {
+        if (typeof source.obj_id === "string") terminalArtifactIds.push(source.obj_id);
+      }
+    } catch (error) {
+      artifactDiscoveryFailures.push(`${taskId}: ${String(error)}`);
+    }
+  }
   const generatedArtifactIds = [...new Set([
     ...prerequisiteArtifactIds,
     ...cases.flatMap((item) => item.artifact_ids),
+    ...terminalArtifactIds,
   ])]
     .filter((objId) => !uploadedFixtureIds.includes(objId));
   const removeNamed = async (objId: string): Promise<void> => {
@@ -1949,6 +2020,27 @@ async function executeAcceptance(input: {
   }
   cleanupDetails.push(`removed ${new Set(uploadedFixtureIds).size - cleanupResidual.filter((id) => uploadedFixtureIds.includes(id)).length} uploaded fixture object(s)`);
   cleanupDetails.push(`removed ${generatedArtifactIds.length - cleanupResidual.filter((id) => generatedArtifactIds.includes(id)).length} generated output object(s)`);
+  if (artifactDiscoveryFailures.length > 0) {
+    cases.push({
+      run_id: runId,
+      case_id: "t2.cleanup.artifact_discovery",
+      layer: "T2",
+      status: "failed",
+      method: "task.get",
+      outbound_message_ids: [],
+      artifact_ids: [],
+      attempts: [{
+        attempt: 1,
+        started_at: new Date().toISOString(),
+        elapsed_ms: 0,
+        status: "failed",
+        failure_class: "cleanup_failed",
+        diagnostic: `could not inspect ${artifactDiscoveryFailures.length} task result(s) before cleanup: ${artifactDiscoveryFailures.join("; ")}`,
+        estimated_cost_usd: 0,
+        cost_status: "not_called",
+      }],
+    });
+  }
   if (cleanupResidual.length > 0) {
     cases.push({
       run_id: runId,
@@ -2030,7 +2122,7 @@ async function executeAcceptance(input: {
     ],
     targeted_retest_command: targetedRetestCommand(cases, options.configPath, options.timeoutMs),
     cleanup: {
-      status: cleanupResidual.length === 0 ? "passed" : "failed",
+      status: cleanupResidual.length === 0 && artifactDiscoveryFailures.length === 0 ? "passed" : "failed",
       details: cleanupDetails,
     },
   };
@@ -2046,6 +2138,7 @@ async function executeAcceptance(input: {
       max_delay_ms: 30_000,
     },
     provider_inventory_refreshes: refreshed.evidence,
+    provider_runtime_after_refresh: providerRuntimeAfterRefresh,
     official_provider_catalogs: officialInventories.map((inventory) => ({
       provider_driver: inventory.provider_driver,
       provider_instance_name: inventory.provider_instance_name,

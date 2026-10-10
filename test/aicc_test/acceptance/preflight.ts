@@ -23,6 +23,12 @@ import {
   MOCK_PROVIDER_CONTRACT_VERSION,
   validateMockProviderContract,
 } from "./mock_provider_contract.ts";
+import {
+  assertRouteExposureCompleteness,
+  loadLogicalEntrypointBaseline,
+  loadRouteExposureContract,
+  type RouteExposureSummary,
+} from "./route_exposure.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
@@ -34,6 +40,7 @@ export type PreflightResult = {
   t15_cases: number;
   mock_provider_contract_version: number;
   provider_drivers: string[];
+  route_exposure: RouteExposureSummary;
 };
 
 function canonicalCheckoutBytes(bytes: Buffer): Buffer {
@@ -51,6 +58,12 @@ export async function runPreflight(): Promise<PreflightResult> {
     await readFile(join(here, "provider_capability_baseline.json"), "utf8"),
   );
   const baseline = validateProviderBaseline(baselineRaw);
+  const logicalEntrypoints = await loadLogicalEntrypointBaseline();
+  const routeExposure = assertRouteExposureCompleteness(
+    baseline,
+    await loadRouteExposureContract(),
+    logicalEntrypoints,
+  );
   const requirementsSource = await readFile(
     join(repoRoot, "doc/aicc/aicc_e2e_test_requirements.md"),
     "utf8",
@@ -193,6 +206,7 @@ export async function runPreflight(): Promise<PreflightResult> {
     t15_cases: t15Cases.length,
     mock_provider_contract_version: MOCK_PROVIDER_CONTRACT_VERSION,
     provider_drivers: [...baselineDrivers].sort(),
+    route_exposure: routeExposure,
   };
 }
 

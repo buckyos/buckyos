@@ -27,6 +27,7 @@ enum BuiltinDiscoveryFactory {
     Kimi,
     Glm,
     DeepSeek,
+    VolcengineArk,
     Sn,
     Standard,
 }
@@ -43,6 +44,10 @@ fn discovery_behaviors() -> BTreeMap<&'static str, BuiltinDiscoveryFactory> {
         ("kimi-models", BuiltinDiscoveryFactory::Kimi),
         ("glm-models", BuiltinDiscoveryFactory::Glm),
         ("deepseek-models", BuiltinDiscoveryFactory::DeepSeek),
+        (
+            "volcengine-ark-models",
+            BuiltinDiscoveryFactory::VolcengineArk,
+        ),
         ("sn-models", BuiltinDiscoveryFactory::Sn),
         (
             "openai-compatible-models",
@@ -361,6 +366,13 @@ impl BuiltinProviderRegistry {
                 crate::protocol::DEEPSEEK_RESPONSES_ADAPTER_ID,
                 transport()?,
             )),
+            BuiltinDiscoveryFactory::VolcengineArk => Arc::new(
+                openai_responses_compatible::VolcengineArkModelsDiscovery::new(
+                    provider_profile_id,
+                    protocol_adapter_id,
+                    transport()?,
+                ),
+            ),
             BuiltinDiscoveryFactory::Sn => Arc::new(SnDiscovery::new(transport()?)),
             BuiltinDiscoveryFactory::Standard => match self
                 .codecs
@@ -744,6 +756,8 @@ mod tests {
                 "custom",
                 "deepseek",
                 "doubao",
+                "doubao-agent-plan",
+                "doubao-speech",
                 "fal",
                 "gemini",
                 "glm",
@@ -1021,7 +1035,7 @@ mod tests {
     fn metadata_source_manager_supplies_all_builtin_catalogs_to_registry() {
         let registry = registry();
         let files = load_builtin_metadata().unwrap();
-        assert_eq!(files.len(), 38);
+        assert_eq!(files.len(), 40);
         assert_eq!(
             files
                 .iter()
@@ -1034,7 +1048,7 @@ mod tests {
                 .iter()
                 .filter(|file| file.kind == CatalogKind::ProviderRules)
                 .count(),
-            13
+            15
         );
         assert_eq!(
             files
@@ -1157,6 +1171,146 @@ mod tests {
         assert_eq!(
             binding.connection.default_base_url,
             "https://local.example/v1"
+        );
+    }
+
+    #[test]
+    fn resource_input_form_follows_the_codec_resource_encoding_path() {
+        let codecs = builtin_provider_codecs().unwrap();
+        let form = |adapter: &str, operation: &str, api_type: ApiType| {
+            codecs
+                .codec(adapter, operation, api_type)
+                .expect("operation binding is registered")
+                .resource_input_form()
+        };
+        // `llm` codecs write the URL string into the request body verbatim, so
+        // the payload must never be downloaded. The derived adapters
+        // (`doubao-responses`, `glm-chat`, `kimi-chat`) must forward the base
+        // declaration.
+        for (adapter, operation) in [
+            ("openai-responses", "responses.create"),
+            ("doubao-responses", "responses.create"),
+            ("claude-messages", "messages.create"),
+            ("glm-chat", "chat.completions.create"),
+            ("kimi-chat", "chat.completions.create"),
+            ("gemini-interactions", "interactions.create"),
+        ] {
+            assert_eq!(
+                form(adapter, operation, ApiType::Llm),
+                crate::resource::ResourceInputForm::UrlOrBytes,
+                "{adapter} accepts a URL and an inlined payload"
+            );
+        }
+        // Audio transcription goes through `OpenAiAudioCodec`, a multipart
+        // upload that needs the audio bytes even when the caller supplied a URL.
+        // It does not declare a URL-accepting input form, so it keeps the
+        // `BytesOnly` default.
+        assert_eq!(
+            form(
+                "openai-responses",
+                "audio.transcriptions",
+                ApiType::AudioSpeechRecognition
+            ),
+            crate::resource::ResourceInputForm::BytesOnly
+        );
+        // Image generation goes through `OpenAiImageCodec`, which likewise does
+        // not declare URL support and therefore keeps the `BytesOnly` default.
+        assert_eq!(
+            form(
+                "openai-responses",
+                "images.generate",
+                ApiType::ImageTextToImage
+            ),
+            crate::resource::ResourceInputForm::BytesOnly
+        );
+        // Native task codecs declare their form on `NativeTaskCodec`, and each of
+        // these writes the URL into its submit payload verbatim instead of
+        // uploading a file. Without the declaration they would fall back to the
+        // `BytesOnly` default and download a payload the Provider never needed.
+        let native_form = |adapter: &str, operation: &str, api_type: ApiType| {
+            codecs
+                .native_task_codec(adapter, operation, api_type)
+                .expect("native task binding is registered")
+                .resource_input_form()
+        };
+        for (adapter, operation, api_type) in [
+            ("fal-queue", "queue.submit", ApiType::VideoImageToVideo),
+            ("glm-media", "videos.generate", ApiType::VideoImageToVideo),
+            (
+                "qwen-media",
+                "dashscope.video_synthesis",
+                ApiType::VideoImageToVideo,
+            ),
+            (
+                "doubao-media",
+                "ark.contents.generate",
+                ApiType::VideoImageToVideo,
+            ),
+            (
+                "gemini-interactions",
+                "models.predictLongRunning",
+                ApiType::VideoImageToVideo,
+            ),
+            (
+                "minimax-media",
+                "video_generation.create",
+                ApiType::VideoImageToVideo,
+            ),
+        ] {
+            assert_eq!(
+                native_form(adapter, operation, api_type),
+                crate::resource::ResourceInputForm::UrlOrBytes,
+                "{adapter} accepts a URL and an inlined payload"
+            );
+        }
+        // OpenAI video keeps the default on purpose: video-to-video posts the
+        // source as a multipart file, so the bytes are required even when the
+        // caller supplied a URL.
+        assert_eq!(
+            native_form("openai-responses", "videos.create", ApiType::VideoToVideo),
+            crate::resource::ResourceInputForm::BytesOnly
+        );
+        // The immediate MiniMax codec serves several wire grammars from one
+        // struct, so its form has to follow the api type: per-codec granularity
+        // could only express the strictest member, and an image edit would keep
+        // downloading a payload the protocol could have taken as a URL.
+        assert_eq!(
+            form(
+                "minimax-media",
+                "speech_to_text.create",
+                ApiType::AudioSpeechRecognition
+            ),
+            crate::resource::ResourceInputForm::BytesOnly
+        );
+        assert_eq!(
+            form(
+                "minimax-media",
+                "image_generation.create",
+                ApiType::ImageImageToImage
+            ),
+            crate::resource::ResourceInputForm::UrlOrBytes
+        );
+        // Doubao speech binds one api type to two operations with different
+        // wire shapes. The flash endpoint accepts `audio.url` or `audio.data`,
+        // so a URL passes through untouched; the standard `submit`/`query` task
+        // only accepts `audio.url`, so `UrlOnly` makes the pipeline publish
+        // caller-supplied bytes to the local object store and hand the Provider
+        // the resulting object URL instead of downloading or rejecting them.
+        assert_eq!(
+            form(
+                "doubao-responses",
+                "asr.recognize.flash",
+                ApiType::AudioSpeechRecognition
+            ),
+            crate::resource::ResourceInputForm::UrlOrBytes
+        );
+        assert_eq!(
+            native_form(
+                "doubao-responses",
+                "asr.recognize.submit",
+                ApiType::AudioSpeechRecognition
+            ),
+            crate::resource::ResourceInputForm::UrlOnly
         );
     }
 
@@ -1305,6 +1459,15 @@ mod tests {
             registry
                 .providers
                 .get(DOUBAO_PROFILE_ID)
+                .unwrap()
+                .profile
+                .discovery_mode,
+            crate::provider::DiscoveryMode::MachineApi
+        );
+        assert_eq!(
+            registry
+                .providers
+                .get(DOUBAO_AGENT_PLAN_PROFILE_ID)
                 .unwrap()
                 .profile
                 .discovery_mode,

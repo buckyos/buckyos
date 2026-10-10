@@ -33,6 +33,7 @@ export function inventoriesFromModelsList(value: unknown): ProviderInventory[] {
       inventory = {
         provider_instance_name: model.provider_instance_name,
         provider_driver: DRIVER_BY_PROFILE[model.provider_profile_id] ?? model.provider_profile_id,
+        provider_profile_id: model.provider_profile_id,
         inventory_revision: typeof model.inventory_revision === "string" ? model.inventory_revision : undefined,
         models: [],
       };

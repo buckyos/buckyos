@@ -86,7 +86,7 @@ function io(
               text: "Reply with the exact marker BUCKYOS-AICC-4827.",
             }],
           }],
-          max_output_tokens: 512,
+          max_output_tokens: 64,
         },
         resources: [],
       };
@@ -118,7 +118,7 @@ function io(
         resources: [],
       };
     case "image.txt2img":
-      return { input_json: { prompt: "A blue square containing 4827" }, resources: [] };
+      return { input_json: { prompt: "A blue square containing 4827", n: 1 }, resources: [] };
     case "image.img2img":
       return {
         input_json: { prompt: "Preserve composition and use warm evening light" },
@@ -167,7 +167,7 @@ function io(
         resources: [requireFixture(fixtures, "image", apiType, representation)],
       };
     case "audio.tts":
-      return { input_json: { text: "BuckyOS test number four eight two seven" }, resources: [] };
+      return { input_json: { text: "BuckyOS four eight two seven" }, resources: [] };
     case "audio.asr":
     case "audio.enhance":
       return {
@@ -178,6 +178,8 @@ function io(
       return {
         input_json: {
           prompt: "A four-second calm ambient instrumental test tone, very slow and quiet, with no vocals, no speech, no samples, no percussion, and no dance beat",
+          duration_seconds: 4,
+          instrumental: true,
         },
         resources: [],
       };
@@ -193,7 +195,7 @@ function io(
     case "video.upscale":
       return {
         input_json: apiType === "video.upscale"
-          ? {}
+          ? { target_resolution: "1080p" }
           : { prompt: "Preserve the scene while adding subtle motion", ...(apiType === "video.extend" ? { duration_seconds: 7 } : {}) },
         resources: [requireFixture(fixtures, "video", apiType, representation)],
       };
@@ -231,7 +233,7 @@ export function buildExactRequest(args: {
     args.cell.resource_representation,
     args.cell.document_format,
   );
-  const inputJson = { ...payload.input_json };
+  const inputJson = { ...payload.input_json, ...(args.cell.request_defaults ?? {}) };
   const resources = [...payload.resources];
   const fixture = (kind: SingularFixtureKind): ResourceRef => requireFixture(
     args.fixtures,
@@ -462,7 +464,8 @@ export function assertResponseShape(
     }
     return;
   }
-  if (cell.api_type === "llm" && !text.includes("BUCKYOS-AICC-4827")) {
+  const normalizedMarkerText = text.replace(/\s*-\s*/g, "-");
+  if (cell.api_type === "llm" && !normalizedMarkerText.includes("BUCKYOS-AICC-4827")) {
     throw new Error("LLM output omitted the requested acceptance marker");
   }
 

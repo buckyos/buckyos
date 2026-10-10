@@ -1,8 +1,8 @@
-# Driver metadata 核对记录（2026-09-26）
+# Driver metadata 核对记录（更新至 2026-10-08）
 
-本次盘点 `src/frame/aicc/driver_metadata` 的 38 份文件：12 份 model-driver、13 份 provider rules、13 份 known-provider。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
+本次盘点最初覆盖 `src/frame/aicc/driver_metadata` 的 38 份文件；豆包普通账号与 Agent Plan 拆分后为 39 份：12 份 model-driver、14 份 provider rules、13 份 known-provider。两个豆包 profile 合并在同一份 known-provider catalog 中，账号专属规则仍分别保存。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
 
-核对重点是当前目录中 93 个未排除的 LLM 条目的上下文和输出限制，以及核对过程中发现的明确能力错误。修复前 45 个条目至少缺少一个长度字段，修复后剩余 5 个，原因见下文。共修改 7 份 model-driver 文件、62 个模型条目，其中 58 个涉及长度；包括一个 ASR 条目。
+2026-09-26 首轮核对重点是当时目录中 93 个未排除的 LLM 条目。2026-10-08 按各厂商当前官方文档重新复核现有目录中的 117 个未排除 LLM 条目，补齐 Kimi K3、MiniMax M3 和 8 个 Doubao 条目的长度限制，并修正 Doubao Seed 2.1 Turbo 的上下文。当前仍有 12 个条目至少缺少一个长度字段，统一列在下文；这些字段没有逐型号官方依据，继续保持 unknown。
 
 ## 取值原则
 
@@ -97,32 +97,43 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 ## DeepSeek、Doubao、MiniMax
 
 - DeepSeek V4 Flash / Pro：上下文由 1,000,000 修正为 1,048,576，输出保持 393,216。来源：[Flash 官方配置](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash/blob/main/config.json)、[Pro 官方配置](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/config.json)、[官方 Models API](https://api-docs.deepseek.com/api/list-models/)。新 `deepseek-flash` 别名已涉及 V4.1，不借此把现有 V4 家族改成新型号。Vision experimental 条目的现有长度未取得额外证据，保持原值，不外推其他版本的配置。
-- Doubao `doubao-seed-2-0-lite-260215`：[官方模型表](https://docs.volcengine.com/docs/ark/model-list?lang=zh)列出 256K 上下文、128K 最大回答；补入 256,000 / 128,000 作为十进制保守预算。默认回答 4K 和最大思维链 128K 均不替代或累加到输出上限。精确整数边界及独立的 224K 输入限制仍需后续能力字段支持。
+- Doubao [官方模型表](https://docs.volcengine.com/docs/82379/1747867?lang=zh)现已明确 Seed 2.1、Character、Translation 和 Seed 2.0 Code Preview 的长度：Seed 2.1 Lite/Pro/Evolving 使用 1,048,576 / 262,144；Seed 2.1 Turbo 及 `-260628` 使用 262,144 / 262,144；Character 使用 128,000 / 32,000；Translation 使用 4,000 / 3,000；Seed 2.0 Code Preview 使用 256,000 / 128,000。`doubao-seed-2-1-pro-260628` 只有 256K 上下文，通过 Provider Rules 将通用 Pro 的 1M 能力收窄到 262,144。默认回答 4K 和最大思维链不替代或累加到输出上限。
 - MiniMax M2 / M2.1 / M2.5 / M2.7 及现有 highspeed 型号：保留 204,800 / 204,800。[Anthropic 兼容接口](https://platform.minimax.io/docs/api-reference/text-anthropic-api)给出各型号上下文；[OpenAI 兼容接口](https://platform.minimax.io/docs/api-reference/text-chat-openai)说明这些型号最大输出 204,800。65,536 是推荐请求值，不能改成模型硬上限。
+- MiniMax M3：补入 1,000,000 上下文和 524,288 最大输出。官方接口文档把 131,072 标为推荐值、524,288 标为 M3 硬上限，不能把推荐值写成 `max_output_tokens`。
+
+## Kimi（2026-10-08 复核）
+
+- Kimi K3：[官方定价页](https://platform.kimi.com/docs/pricing/chat)明确上下文为 1,048,576；[K3 模型页](https://platform.kimi.com/docs/guide/kimi-k3-quickstart)明确 `max_completion_tokens` 默认 131,072、最大 1,048,576。因此模型能力配置为 1,048,576 / 1,048,576，不能把默认值写成硬上限。
+- Kimi K2.8 Preview：[Kimi Code 官方模型表](https://www.kimi.com/code/docs/en/kimi-code/models)明确 `kimi-for-coding` 使用 K2.8 Preview、支持 1M 上下文和图片/视频输入，因此配置 1,048,576 上下文；该页面没有发布最大 completion 整数，输出上限继续缺省。
+- Kimi K2.6、K2.7 Code 和 K2.7 Code Highspeed 的官方页仍只明确 256K 上下文，没有发布逐型号最大 completion 整数，输出上限继续缺省。
+- Kimi model-driver 描述 AICC 已知的型号与能力，但 Provider 有效库存只采用当前 API Key 的 `/models` 返回值。公开文档和 model-driver 都不能把 `kimi-k3`、`kimi-k2.7-code-highspeed` 静态注入没有访问权限的账号。
 
 ## 仍未确认的字段
 
 | 模型 | 缺失字段 | 原因 |
 | --- | --- | --- |
-| doubao-seed-2.1-lite、doubao-seed-2.1-turbo、doubao-seed-2.1-pro、doubao-seed-evolving | max_output_tokens | Agent Plan 当前模型清单确认这些型号可用，但未给出可安全用于路由硬过滤的逐型号最大输出整数 |
-| kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k3 | max_output_tokens | 当前官方模型页未给出这些型号的明确 API 输出硬上限 |
-| kimi-k2.8-preview | max_context_tokens、max_output_tokens | Agent Plan 清单已列出该预览型号，但当前 Kimi 公共模型文档尚无可核实的硬限制 |
-| minimax-m3 | max_context_tokens、max_output_tokens | Agent Plan 清单已列出 M3，但 MiniMax 公共模型文档尚无可核实的 M3 硬限制 |
+| qwen2-5-72b-20240919、qwen3-0-6b-20250429、qwen3-8b-20250429、qwen3-14b-20250429、qwen3-32b-20250429 | max_context_tokens、max_output_tokens | 火山方舟普通账号 `/api/v3/models` 确认这些聚合渠道型号当前可见，但目录不返回 token 上限；不把其他渠道或相近 Qwen 型号的限制外推到这些精确 ID |
+| kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed | max_output_tokens | 当前官方模型页只明确 256K 上下文，未给出这些型号的明确 API 输出硬上限 |
+| kimi-k2.8-preview | max_output_tokens | Kimi Code 官方模型表明确 1M 上下文，但未发布最大 completion 整数 |
 | charglm-4、emohaa | max_context_tokens、max_output_tokens | 当前官方型号表和 API 参数表未给出可确认的型号级限制 |
 | glm-4-32b-0414-128k | max_output_tokens | 官方开源卡和部署说明给出上下文，未给出这个托管 ID 的独立输出上限 |
 
-Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
+Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)、[Kimi Code 模型表](https://www.kimi.com/code/docs/en/kimi-code/models)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
 
 这些未知值继续缺省。有明确输出预算的请求仍会按现有路由规则过滤缺少上限的模型；本次不把未知值解释为无限容量。
 
+本轮还复核了 OpenAI、Claude、Gemini、Qwen、GLM 和 DeepSeek 的现有长度字段。OpenAI 官方模型页仍为当前 GPT 条目所用的 1,050,000/400,000 上下文与 128,000 输出；Claude、Gemini、GLM、DeepSeek 的现值与各自官方模型表和参数表一致。Qwen Cloud 与阿里云百炼个别型号的限制不同，当前 `qwen` Provider 是阿里云百炼渠道，因此继续使用百炼逐型号页面的整数，不用 Qwen Cloud 的跨渠道表覆盖。
+
 ## 版本与验证
 
-修改的 model-driver `revision_seq` 升为 3，内置目录版本同步升为 3。生产加载与使用内置目录的测试共用 `BUILTIN_CATALOG_REVISION_SEQ`，避免再把内置目录的目标版本写死为 2。用户本地、system-config 或云端的整文件覆盖仍遵循既有优先级，不会被这次修改重写。
+2026-10-08 修改的 Kimi、MiniMax、Doubao model-driver 分别升为 revision 5、7、10，Doubao Provider Rules 升为 13，内置目录版本升为 14。用户本地、system-config 或云端的整文件覆盖仍遵循既有优先级，不会被这次修改重写。
 
 回归测试覆盖：
 
 - GPT-5.4/5.5、Pro、mini/nano、5.3 Codex 在原厂及 OpenRouter 库存中，请求输出 8,192 和 128,000 时保留 GPT 的高优先级，超过 128,000 时拒绝。
 - 输入加输出恰好达到各型号上下文上限时允许，超出一个 token 时拒绝。
-- 所有有效 LLM 的长度必须是正整数，输出不能超过上下文；缺失字段集合必须与上面五个型号的记录一致。
+- 所有有效 LLM 的长度必须是正整数，输出不能超过上下文；缺失字段集合必须与上表记录一致。
 
-验证结果：`cargo test -p aicc` 的 515 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。这些验证使用本地 fixtures，不产生真实模型调用；未部署或重启运行中的 AICC。
+首轮验证结果：`cargo test -p aicc` 当时的 515 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。这些验证使用本地 fixtures，不产生真实模型调用；首轮未部署或重启运行中的 AICC。后续豆包 T2 补齐另行执行了构建、部署、真实调用与高保真 MockProvider 回归，以对应测试报告为准。
+
+2026-10-08 本轮复核新增了逐型号硬限制断言；`cargo test -p aicc --lib -- --test-threads=1` 的 605 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。本轮同样未部署、未重启服务，也未发起真实模型调用。

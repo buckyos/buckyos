@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008102337-22781",
+  "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.response.malformed_response",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "t15-20261008102337-22781-kimi-isolation-1",
+  "exact_model": "kimi-k3@t15-20261008102337-22781-kimi-isolation-1",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:23:46.501Z",
+      "elapsed_ms": 323,
+      "status": "passed",
+      "diagnostic": "contract=kimi.chat-completions.v1; scenario=malformed_response; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

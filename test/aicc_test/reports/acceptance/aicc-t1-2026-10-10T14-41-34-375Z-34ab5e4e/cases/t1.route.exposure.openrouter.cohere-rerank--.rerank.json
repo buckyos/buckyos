@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.exposure.openrouter.cohere-rerank--.rerank",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "rerank",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:30.959Z",
+      "elapsed_ms": 132,
+      "status": "passed",
+      "diagnostic": "rerank closed through cohere/rerank-v3.5@dv-openrouter-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "openrouter",
+  "provider_profile_id": "openrouter",
+  "provider_instance": "dv-openrouter-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "model_rule": "cohere/rerank-*",
+  "exposure_mode": "logical_routable"
+}

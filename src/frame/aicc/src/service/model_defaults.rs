@@ -361,7 +361,8 @@
 // │   │   ├── flux -> image.txt2img.flux (1.9) [1162; flux-2-max]
 // │   │   ├── imagen -> image.txt2img.imagen (1.8) [1148; imagen-ultra-4.0-generate-001]
 // │   │   ├── glm -> image.txt2img.glm (1.1) [1010; glm-image]
-// │   │   └── sd -> image.txt2img.sd (1.0) [938; stable-diffusion-v35-large]
+// │   │   ├── sd -> image.txt2img.sd (1.0) [938; stable-diffusion-v35-large]
+// │   │   └── minimax -> image.txt2img.minimax (1.0)
 // │   ├── img2img
 // │   │   ├── gpt_image -> image.img2img.gpt_image (3.0) [1461; gpt-image-2 (medium)]
 // │   │   ├── grok_image -> image.img2img.grok_image (2.8) [1430; grok-imagine-image-2.0 (low)]
@@ -373,7 +374,8 @@
 // │   │   ├── qwen_image -> image.img2img.qwen_image (2.2) [1304; qwen-image-2.0-pro-2026-06-22]
 // │   │   ├── hunyuan_image -> image.img2img.hunyuan_image (2.2) [1302; hunyuan-image-3.0-instruct]
 // │   │   ├── wan_image -> image.img2img.wan_image (2.2) [1302; wan2.7-image-pro]
-// │   │   └── flux -> image.img2img.flux (2.0) [1262; flux-2-max]
+// │   │   ├── flux -> image.img2img.flux (2.0) [1262; flux-2-max]
+// │   │   └── minimax -> image.img2img.minimax (1.0)
 // │   ├── inpaint
 // │   ├── upscale
 // │   └── bg_remove
@@ -511,6 +513,7 @@ const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
     ("imagen", "image.txt2img.imagen", 1.8),
     ("glm", "image.txt2img.glm", 1.1),
     ("sd", "image.txt2img.sd", 1.0),
+    ("minimax", "image.txt2img.minimax", 1.0),
     ("gpt_image", "image.img2img.gpt_image", 3.0),
     ("grok_image", "image.img2img.grok_image", 2.8),
     ("mai_image", "image.img2img.mai_image", 2.8),
@@ -522,6 +525,7 @@ const MEDIA_FAMILIES: &[(&str, &str, f64)] = &[
     ("hunyuan_image", "image.img2img.hunyuan_image", 2.2),
     ("wan_image", "image.img2img.wan_image", 2.2),
     ("flux", "image.img2img.flux", 2.0),
+    ("minimax", "image.img2img.minimax", 1.0),
     ("gemini_omni", "video.txt2video.gemini_omni", 3.0),
     ("seedance", "video.txt2video.seedance", 2.8),
     ("wan", "video.txt2video.wan", 2.8),
@@ -1081,6 +1085,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 2.2),
                                 ("kimi_flagship", "llm.kimi-flagship", 2.2),
                                 ("gemini_pro", "llm.gemini-pro", 2.1),
+                                ("minimax_standard", "llm.minimax-standard", 2.0),
                                 ("claude_opus", "llm.claude-opus", 1.9),
                                 ("claude_sonnet", "llm.claude-sonnet", 1.8),
                                 ("qwen_max", "llm.qwen-max", 1.6),
@@ -1142,6 +1147,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("claude_haiku", "llm.claude-haiku", 1.0),
                                 ("claude_opus", "llm.claude-opus", 1.0),
                                 ("claude_sonnet", "llm.claude-sonnet", 1.0),
+                                ("deepseek_flash", "llm.deepseek-flash", 1.0),
                                 ("deepseek_vision", "llm.deepseek-vision", 1.0),
                                 ("doubao_lite", "llm.doubao-lite", 1.0),
                                 ("gemini_flash", "llm.gemini-flash", 1.0),
@@ -1159,6 +1165,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
                                 ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
+                                ("minimax_standard", "llm.minimax-standard", 1.0),
                             ]),
                         ),
                         (
@@ -1176,6 +1183,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("claude_haiku", "llm.claude-haiku", 1.0),
                                 ("claude_opus", "llm.claude-opus", 1.0),
                                 ("claude_sonnet", "llm.claude-sonnet", 1.0),
+                                ("deepseek_flash", "llm.deepseek-flash", 1.0),
                                 ("deepseek_vision", "llm.deepseek-vision", 1.0),
                                 ("doubao_lite", "llm.doubao-lite", 1.0),
                                 ("gemini_flash", "llm.gemini-flash", 1.0),
@@ -1193,6 +1201,7 @@ pub(super) fn builtin_logical_tree_overlay() -> AiccRouteOverlay {
                                 ("gpt_standard", "llm.gpt-standard", 1.0),
                                 ("kimi_flagship", "llm.kimi-flagship", 1.0),
                                 ("kimi_general", "llm.kimi-general", 1.0),
+                                ("minimax_standard", "llm.minimax-standard", 1.0),
                             ]),
                         ),
                         (

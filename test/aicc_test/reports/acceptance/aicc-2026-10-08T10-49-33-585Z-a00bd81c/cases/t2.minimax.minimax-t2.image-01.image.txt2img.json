@@ -1,0 +1,42 @@
+{
+  "run_id": "aicc-2026-10-08T10-49-33-585Z-a00bd81c",
+  "case_id": "t2.minimax.minimax-t2.image-01.image.txt2img",
+  "layer": "T2",
+  "status": "review",
+  "provider_driver": "minimax",
+  "provider_instance": "minimax-t2",
+  "exact_model": "image-01@minimax-t2",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:49:36.096Z",
+      "elapsed_ms": 33332,
+      "status": "review",
+      "diagnostic": "validated 1 output artifact(s); semantic rubric requires Judge or manual review",
+      "usage": {
+        "request_units": 1
+      },
+      "estimated_cost_usd": 0.01,
+      "actual_cost_usd": 0.0035,
+      "cost_status": "actual"
+    }
+  ],
+  "artifact_audits": [
+    {
+      "obj_id": "[downloaded-url]",
+      "label": "image/jpeg",
+      "size": 176145,
+      "sha256": "c86d700cf4ec9ef7a7596dc13a739afd8b765a568cd90f853deea7ab62cff1cd"
+    }
+  ],
+  "task_id": "t-169c5ba58bcb49279e921f3ba8fb308c",
+  "usage": {
+    "request_units": 1
+  },
+  "cost_usd": 0.0035,
+  "trace_id": "aicc-idem-d9729f3ea9fc2ce0787268488db3a4d5"
+}

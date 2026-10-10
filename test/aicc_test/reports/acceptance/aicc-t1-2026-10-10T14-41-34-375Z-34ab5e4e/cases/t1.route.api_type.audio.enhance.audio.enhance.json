@@ -1,0 +1,30 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.audio.enhance.audio.enhance",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "dv-fal-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "fal-ai/deepfilternet3@dv-fal-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "audio.enhance",
+  "method": "audio.enhance",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.audio.enhance.audio.enhance",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:50.356Z",
+      "elapsed_ms": 4353,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-0acac9f4018c4bbda453aaba6c44f73e",
+  "trace_id": "aicc-idem-b74019afb6c37a5030718910100802fe",
+  "usage": {
+    "request_units": 1
+  }
+}

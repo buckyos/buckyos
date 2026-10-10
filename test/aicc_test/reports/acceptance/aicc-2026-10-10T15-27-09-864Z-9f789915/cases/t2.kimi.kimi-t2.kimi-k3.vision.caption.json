@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+  "layer": "T2",
+  "status": "skipped",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:27:12.145Z",
+      "elapsed_ms": 0,
+      "status": "skipped",
+      "diagnostic": "real model calls require --allow-real-model-calls"
+    }
+  ]
+}

@@ -11,6 +11,13 @@ pub(crate) struct RuntimeInferencePort {
     model_health: Arc<ModelHealthRegistry>,
 }
 
+fn named_object_url_provider(settings: &AiccSettings) -> Arc<dyn NamedObjectUrlProvider> {
+    match settings.public_named_object_base_url.as_deref() {
+        Some(base_url) => Arc::new(ZoneNamedObjectUrlProvider::new(base_url)),
+        None => Arc::new(DisabledNamedObjectUrlProvider),
+    }
+}
+
 impl RuntimeInferencePort {
     pub(crate) fn new(
         runtime: Arc<RuntimeState>,
@@ -245,6 +252,7 @@ impl RuntimeInferencePort {
 
     async fn materialize_resources(
         &self,
+        settings: &AiccSettings,
         caller: &AuthorizedCaller,
         request_id: &str,
         call: &mut ResolvedProviderCall,
@@ -259,6 +267,18 @@ impl RuntimeInferencePort {
         if call.resource_requirements.is_empty() {
             return Ok(());
         }
+        // The codec decides what the Provider protocol accepts as a resource
+        // input form: an `llm` codec writes the URL itself into the request
+        // body, while a multipart upload codec needs the bytes. The form is read
+        // through the resolved execution mode so a native task call is answered
+        // by its `NativeTaskCodec` rather than by a buffered codec that happens
+        // to be registered on the same binding.
+        let input_form = self.codecs.resource_input_form(
+            &call.protocol_adapter_id,
+            &call.operation,
+            call.api_type,
+            call.execution_mode,
+        );
         let manager = ResourceManager::new(
             Arc::new(AuthenticatedResourceAuthorizer {
                 tenant_id: caller.tenant_id.clone(),
@@ -269,12 +289,28 @@ impl RuntimeInferencePort {
             self.url_fetcher.clone(),
             ResourceLimits::default(),
         )
-        .map_err(resource_rpc_error)?;
+        .map_err(resource_rpc_error)?
+        .with_input_form(input_form)
+        .with_object_url_provider(named_object_url_provider(settings));
         let resources = call
             .resource_requirements
             .iter()
             .map(|requirement| requirement.resource.clone())
             .collect::<Vec<_>>();
+        // A `ResourceRef::NamedObject` input carries the object id with it, and
+        // the resource key is derived from that same id — so this map recovers
+        // the id the key was built from. That matters because the object id is
+        // the only cache key reachable here without reading the payload.
+        let object_ids = resources
+            .iter()
+            .filter_map(|resource| match resource {
+                ResourceRef::NamedObject { obj_id } => Some((
+                    crate::resource::ResourceKey::from_ref(resource).into_string(),
+                    obj_id.to_string(),
+                )),
+                _ => None,
+            })
+            .collect::<HashMap<_, _>>();
         let inspected = manager
             .inspect(&context, &resources)
             .await
@@ -285,6 +321,73 @@ impl RuntimeInferencePort {
             .map_err(resource_rpc_error)?;
         for resource in materialized {
             let parts = resource.into_codec_parts().map_err(resource_rpc_error)?;
+            if let Some(url) = parts.url.clone() {
+                // The codec is handed this resource as a URL, so there are no
+                // bytes and therefore no content digest. An object-form input
+                // can still be resolved to a Provider handle: this exact object
+                // may already have been handed to this Provider, and when it was
+                // the handle saves the Provider the download entirely.
+                //
+                // There is deliberately *no* fallback to the content-digest
+                // cache on a miss. Computing that digest means reading the whole
+                // object, which is precisely the cost this path exists to avoid,
+                // so a miss hands over the URL and stops there.
+                let provider_artifact_id = match object_ids.get(parts.key.as_str()) {
+                    Some(obj_id) => self
+                        .storage
+                        .provider_artifact(
+                            &ProviderArtifactKey::ObjectId(obj_id.clone()),
+                            &call.provider_instance_name,
+                            &call.context.state_coordinate.origin_provider,
+                            &context.tenant_id,
+                            now_ms() as i64,
+                        )
+                        .await
+                        .map_err(|_| {
+                            inference_error(
+                                AiccErrorCode::InternalError,
+                                "Provider artifact ID lookup failed",
+                            )
+                        })?,
+                    None => None,
+                };
+                if let Some(artifact_id) = provider_artifact_id.as_deref() {
+                    log::info!(
+                        "provider_artifact_object_hit: artifact_id={} provider_instance_name={} origin_provider={} exact_model={} resource_key={}",
+                        artifact_id,
+                        call.provider_instance_name,
+                        call.context.state_coordinate.origin_provider,
+                        call.exact_model,
+                        parts.key.as_str()
+                    );
+                }
+                log::debug!(
+                    "resource_url_form: resource_key={} provider_instance_name={} exact_model={} provider_artifact_object={}",
+                    parts.key.as_str(),
+                    call.provider_instance_name,
+                    call.exact_model,
+                    provider_artifact_id.is_some()
+                );
+                call.context.resources.insert(
+                    parts.key.into_string(),
+                    CodecMaterializedResource::from_url(
+                        url,
+                        parts
+                            .mime
+                            .unwrap_or_else(|| DEFAULT_RESOURCE_MIME.to_string()),
+                        parts.file_name,
+                    )
+                    .map_err(|error| {
+                        inference_error(AiccErrorCode::ResourceInvalid, error.to_string())
+                    })?
+                    .with_provider_artifact_id(provider_artifact_id),
+                );
+                continue;
+            }
+            let parts_mime = parts
+                .mime
+                .clone()
+                .unwrap_or_else(|| DEFAULT_RESOURCE_MIME.to_string());
             let content_digest = format!(
                 "sha256:{}",
                 Sha256::digest(&parts.bytes)
@@ -294,10 +397,11 @@ impl RuntimeInferencePort {
             );
             let provider_artifact_id = self
                 .storage
-                .provider_artifact_id(
-                    &content_digest,
+                .provider_artifact(
+                    &ProviderArtifactKey::ContentDigest(content_digest.clone()),
                     &call.provider_instance_name,
                     &call.context.state_coordinate.origin_provider,
+                    &context.tenant_id,
                     now_ms() as i64,
                 )
                 .await
@@ -320,7 +424,7 @@ impl RuntimeInferencePort {
             }
             call.context.resources.insert(
                 parts.key.into_string(),
-                CodecMaterializedResource::new(parts.bytes, parts.mime, parts.file_name)
+                CodecMaterializedResource::new(parts.bytes, parts_mime, parts.file_name)
                     .map_err(|error| {
                         inference_error(AiccErrorCode::ResourceInvalid, error.to_string())
                     })?
@@ -576,8 +680,13 @@ impl InferencePort for RuntimeInferencePort {
         let mut primary = self
             .lower_call(routed.snapshot.as_ref(), &routed.decision, &exact_call)
             .await?;
-        self.materialize_resources(caller, &routed.request_id, &mut primary)
-            .await?;
+        self.materialize_resources(
+            routed.snapshot.settings.as_ref(),
+            caller,
+            &routed.request_id,
+            &mut primary,
+        )
+        .await?;
         let mut failover = Vec::new();
         for candidate in &routed.decision.fallback_candidates {
             let mut fallback_decision = routed.decision.clone();
@@ -912,6 +1021,24 @@ mod search_tests {
     use super::*;
 
     #[test]
+    fn named_object_urls_require_explicit_public_base_url() {
+        let obj_id = ndn_lib::ObjId::new_by_raw("chunk".to_owned(), vec![1; 32]);
+        let settings = AiccSettings::default();
+        assert!(named_object_url_provider(&settings)
+            .object_url(&obj_id)
+            .is_none());
+
+        let settings = AiccSettings {
+            public_named_object_base_url: Some("https://zone.example/ndn".to_owned()),
+            ..Default::default()
+        };
+        assert_eq!(
+            named_object_url_provider(&settings).object_url(&obj_id),
+            Some(format!("https://zone.example/ndn/{}", obj_id.to_string()))
+        );
+    }
+
+    #[test]
     fn exact_chat_search_requires_explicit_boolean_opt_in() {
         for enabled in [None, Some(false), Some(true)] {
             let mut params = serde_json::json!({
@@ -926,11 +1053,13 @@ mod search_tests {
             assert_eq!(route.requirements.web_search, enabled == Some(true));
             assert!(!route.disable.web_search);
         }
-        assert!(buckyos_api::LlmChatInvokeRequest::from_json(serde_json::json!({
-            "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
-            "messages": [], "web_search": "true"
-        }))
-        .is_err());
+        assert!(
+            buckyos_api::LlmChatInvokeRequest::from_json(serde_json::json!({
+                "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
+                "messages": [], "web_search": "true"
+            }))
+            .is_err()
+        );
     }
 }
 

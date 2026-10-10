@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.api_type.decision.decision.evaluate",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "typesafe",
+  "provider_instance": "dv-typesafe-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "exact_model": "jev-1.13.0@dv-typesafe-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "api_type": "decision",
+  "method": "decision.evaluate",
+  "session_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135:t1.route.api_type.decision.decision.evaluate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:25.581Z",
+      "elapsed_ms": 1083,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-1a37d8b7e47643559f1e1b42faab263d",
+  "trace_id": "aicc-idem-6c980c44bbee7ff0ab04039e09f1887e",
+  "usage": {
+    "cost": {
+      "amount": 0.000013355999999999999,
+      "currency": "USD"
+    },
+    "input_tokens": 318,
+    "output_tokens": 72,
+    "total_tokens": 390
+  }
+}

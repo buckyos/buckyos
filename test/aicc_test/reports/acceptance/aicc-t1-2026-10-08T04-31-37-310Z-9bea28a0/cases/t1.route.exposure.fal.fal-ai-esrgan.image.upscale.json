@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "case_id": "t1.route.exposure.fal.fal-ai-esrgan.image.upscale",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "image.upscale",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T04:32:20.142Z",
+      "elapsed_ms": 96,
+      "status": "passed",
+      "diagnostic": "image.upscale closed through fal-ai/esrgan@dv-fal-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "fal",
+  "provider_profile_id": "fal",
+  "provider_instance": "dv-fal-aicc-t1-2026-10-08T04-31-37-310Z-9bea28a0",
+  "model_rule": "fal-ai/esrgan",
+  "exposure_mode": "logical_routable"
+}

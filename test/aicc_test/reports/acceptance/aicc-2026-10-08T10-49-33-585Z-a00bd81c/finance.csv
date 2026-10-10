@@ -1,0 +1,17 @@
+case_id,attempt,provider_driver,provider_instance,exact_model,api_type,method,started_at,status,input_tokens,output_tokens,total_tokens,request_units,estimated_cost_usd,raw_cost_usd,credit_applied_usd,actual_cost_usd,cost_status
+t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm,1,kimi,kimi-t2,kimi-k2.7-code-highspeed@kimi-t2,llm,chat.completions.create,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption,1,kimi,kimi-t2,kimi-k2.7-code-highspeed@kimi-t2,vision.caption,vision.caption,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr,1,kimi,kimi-t2,kimi-k2.7-code-highspeed@kimi-t2,vision.ocr,vision.ocr,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k3.llm,1,kimi,kimi-t2,kimi-k3@kimi-t2,llm,chat.completions.create,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k3.vision.caption,1,kimi,kimi-t2,kimi-k3@kimi-t2,vision.caption,vision.caption,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.kimi.kimi-t2.kimi-k3.vision.ocr,1,kimi,kimi-t2,kimi-k3@kimi-t2,vision.ocr,vision.ocr,2026-10-08T10:49:36.095Z,failed,,,,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.asr-1.0.audio.asr,1,minimax,minimax-t2,asr-1.0@minimax-t2,audio.asr,audio.asr,2026-10-08T10:49:36.095Z,passed,,,,1,0.01000000,,,,unknown
+t2.minimax.minimax-t2.image-01.image.img2img,1,minimax,minimax-t2,image-01@minimax-t2,image.img2img,image.img2img,2026-10-08T10:49:36.095Z,passed,,,,1,0.01000000,,,0.00350000,actual
+t2.minimax.minimax-t2.image-01.image.txt2img,1,minimax,minimax-t2,image-01@minimax-t2,image.txt2img,images.generate,2026-10-08T10:49:36.096Z,passed,,,,1,0.01000000,,,0.00350000,actual
+t2.minimax.minimax-t2.minimax-h3-max.video.img2video,1,minimax,minimax-t2,MiniMax-H3-Max@minimax-t2,video.img2video,video.img2video,2026-10-08T10:49:36.096Z,failed,,,,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-h3-max.video.txt2video,1,minimax,minimax-t2,MiniMax-H3-Max@minimax-t2,video.txt2video,video.txt2video,2026-10-08T10:49:36.096Z,passed,,,,1,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-h3.video.img2video,1,minimax,minimax-t2,MiniMax-H3@minimax-t2,video.img2video,video.img2video,2026-10-08T10:49:36.096Z,failed,,,,,0.01000000,,,,unknown
+t2.minimax.minimax-t2.minimax-h3.video.txt2video,1,minimax,minimax-t2,MiniMax-H3@minimax-t2,video.txt2video,video.txt2video,2026-10-08T10:49:36.096Z,passed,,,,1,0.01000000,,,,unknown
+t2.minimax.minimax-t2.speech-2.8-hd.audio.tts,1,minimax,minimax-t2,speech-2.8-hd@minimax-t2,audio.tts,audio.tts,2026-10-08T10:49:36.096Z,passed,,,,1,0.01000000,,,0.00400000,actual
+t2.minimax.minimax-t2.speech-2.8-turbo.audio.tts,1,minimax,minimax-t2,speech-2.8-turbo@minimax-t2,audio.tts,audio.tts,2026-10-08T10:49:36.096Z,passed,,,,1,0.01000000,,,0.00240000,actual
+t2.prerequisite.generated_artifact.image.txt2img.image-01@minimax-t2,1,minimax,minimax-t2,image-01@minimax-t2,image.txt2img,images.generate,2026-10-08T10:49:37.398Z,passed,,,,1,0.01000000,,,0.00350000,actual

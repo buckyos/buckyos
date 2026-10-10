@@ -14,6 +14,7 @@ function provider(input: {
   timeoutMs: number;
   discovery?: JsonObject;
   providerRulesId?: string | null;
+  enabledInventoryModels?: string[];
 }): JsonObject {
   return {
     provider_instance_name: input.name,
@@ -24,11 +25,14 @@ function provider(input: {
       ? {}
       : { provider_rules_id: input.providerRulesId ?? input.profile }),
     base_url: input.baseUrl,
-    credentials: { api_token: { locked: input.token } },
+    credentials: { api_token: { inline_secret: input.token } },
     enabled: true,
     timeout_ms: input.timeoutMs,
     auto_sync_models: true,
     ...(input.discovery ? { discovery: input.discovery } : {}),
+    ...(input.enabledInventoryModels
+      ? { instance_rules: { enabled_inventory_models: input.enabledInventoryModels } }
+      : {}),
   };
 }
 
@@ -106,6 +110,26 @@ function installRoutingFixtures(settings: JsonObject, suffix: string): void {
   session.logical_tree = logicalTree;
   session.revision = `dv-routing-${suffix}`;
   settings.session_config = session;
+}
+
+function speechDiscovery(): JsonObject {
+  return {
+    revision: "t1-doubao-speech-v1",
+    discovered_at_ms: Date.now(),
+    health: "healthy",
+    models: [
+      ["doubao-seed-tts-2.0", ["audio.tts"], ["tts.unidirectional"]],
+      ["doubao-seed-icl-2.0", ["audio.tts"], ["tts.unidirectional"]],
+      ["doubao-seed-asr-2.0", ["audio.asr"], ["asr.recognize.submit"]],
+      ["doubao-seed-asr-2.0-fast", ["audio.asr"], ["asr.recognize.flash"]],
+    ].map(([provider_model_id, api_types, remote_methods]) => ({
+      provider_model_id,
+      api_types,
+      remote_methods,
+      availability: "available",
+      deprecated: false,
+    })),
+  };
 }
 
 function falDiscovery(): JsonObject {
@@ -191,6 +215,14 @@ export function buildMockSettings(
       baseUrl: `${baseUrl}/v1`,
       token: `mock-${suffix}`,
       timeoutMs,
+      enabledInventoryModels: [
+        "asr-1.0",
+        "speech-2.8-hd",
+        "speech-2.8-turbo",
+        "image-01",
+        "MiniMax-H3",
+        "MiniMax-H3-Max",
+      ],
     }),
     provider({
       name: `dv-openrouter-${suffix}`,
@@ -207,6 +239,15 @@ export function buildMockSettings(
       baseUrl: `${baseUrl}/instance-typesafe/v1`,
       token: `mock-typesafe-${suffix}`,
       timeoutMs,
+    }),
+    provider({
+      name: `dv-doubao-speech-${suffix}`,
+      profile: "doubao-speech",
+      adapter: "doubao-responses",
+      baseUrl: `${baseUrl}/instance-doubao-speech/api/v3`,
+      token: `mock-speech-${suffix}`,
+      timeoutMs,
+      discovery: speechDiscovery(),
     }),
     provider({
       name: `dv-fal-${suffix}`,

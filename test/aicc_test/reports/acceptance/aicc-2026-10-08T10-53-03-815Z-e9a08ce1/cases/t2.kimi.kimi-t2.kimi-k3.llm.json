@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-2026-10-08T10-53-03-815Z-e9a08ce1",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+  "layer": "T2",
+  "status": "provider_restricted",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:53:06.201Z",
+      "elapsed_ms": 63582,
+      "status": "provider_restricted",
+      "failure_class": "platform_limitation",
+      "diagnostic": "Provider restriction: TaskFailureError: provider task t-196b706b1df54b1f9e1c526841ef2a94 ended Failed: {\"code\":\"provider_error\",\"message\":\"OpenAI resource_not_found_error: Not found the model kimi-k3 or Permission denied\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ]
+}

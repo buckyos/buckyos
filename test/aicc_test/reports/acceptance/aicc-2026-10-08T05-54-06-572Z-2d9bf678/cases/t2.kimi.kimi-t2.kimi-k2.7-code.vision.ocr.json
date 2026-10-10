@@ -1,0 +1,33 @@
+{
+  "run_id": "aicc-2026-10-08T05-54-06-572Z-2d9bf678",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code@kimi-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T05:54:11.463Z",
+      "elapsed_ms": 119279,
+      "status": "failed",
+      "failure_class": "judge_failed",
+      "diagnostic": "JudgeError: Judge verdict has invalid schema: {\"pass\":false,\"score\":0.5,\"reason\":\"Observed text contains '4827' but the rubric requires the exact sequence '4827' as visible marker. Output is 'BUCKYOS-DV-4827' which includes 4827. However, no output attachment is provided to audit, so no PNG evidence available. Score below 0.7.\"}",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-c63791ce060141cdae1c3c9dd529094a",
+  "usage": {
+    "input_tokens": 219,
+    "output_tokens": 82,
+    "total_tokens": 301
+  },
+  "trace_id": "aicc-idem-3a35347f8f64e9a9a2a810b7826f0372"
+}

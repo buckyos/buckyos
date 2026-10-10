@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261008104624-67760",
+  "case_id": "t1.5.minimax.minimax.anthropic.messages.v1.llm.response.malformed_response",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "t15-20261008104624-67760-minimax",
+  "exact_model": "MiniMax-M3@t15-20261008104624-67760-minimax",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-08T10:46:33.719Z",
+      "elapsed_ms": 397,
+      "status": "passed",
+      "diagnostic": "contract=minimax.anthropic.messages.v1; scenario=malformed_response; captured_requests=2",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

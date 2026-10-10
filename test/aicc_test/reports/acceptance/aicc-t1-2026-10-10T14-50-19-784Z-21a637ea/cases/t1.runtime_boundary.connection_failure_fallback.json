@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.runtime_boundary.connection_failure_fallback",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:52:26.563Z",
+      "elapsed_ms": 538,
+      "status": "passed",
+      "diagnostic": "connection_failed rejected after reaching Provider boundary: Error: AICC returned failed: {\"status\":\"failed\",\"task_id\":\"t-c4aa97ae5c4d41baa5fd5a57acca705d\",\"event_ref\":\"/task_mgr/t-c4aa97ae5c4d41baa5fd5a57acca705d\"}: {\"code\":\"provider_error\",\"message\":\"HTTP request failed\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

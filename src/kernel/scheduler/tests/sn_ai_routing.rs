@@ -32,7 +32,9 @@ fn managed_provider(enabled: bool, base_url: &str) -> Value {
         "provider_rules_id": "sn",
         "base_url": base_url,
         "credentials": {
-            "device_token_ref": "runtime://device-jwt"
+            "device_token_ref": {
+                "runtime_ref": "runtime://device-jwt"
+            }
         },
         "auth": {
             "mode": "dynamic_login",

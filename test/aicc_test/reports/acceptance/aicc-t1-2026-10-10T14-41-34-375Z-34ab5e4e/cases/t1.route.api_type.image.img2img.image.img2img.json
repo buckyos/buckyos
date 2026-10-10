@@ -1,0 +1,34 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.image.img2img.image.img2img",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "gpt-image-2@dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "image.img2img",
+  "method": "image.img2img",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.image.img2img.image.img2img",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:43.249Z",
+      "elapsed_ms": 942,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-cd49ba42291a416083e44a74289de2fe",
+  "trace_id": "aicc-idem-42323ebce0a6cf5bda80a92ef3b77f3b",
+  "usage": {
+    "image_units": 1,
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "request_units": 1,
+    "total_tokens": 15
+  }
+}

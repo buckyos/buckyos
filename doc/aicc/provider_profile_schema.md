@@ -196,6 +196,8 @@ Known Provider catalog schema v1 是 Provider Profile 默认静态配置的唯�
 
 可选 credential 由 typed `credential_variants[]` 声明，实例在 `auth.mode=api_key` 时用 `credential_kind` 显式选择；省略则使用 `credential` 默认值。区域入口由 typed `connection.region_base_urls` 声明，只有实例未显式提供 `base_url` 时才按解析后的 region 选择；管理 UI 选择某个接入点时应直接把该映射 URL 写入实例 `base_url`，从而使 Review、验证和实际调用看到同一个地址。`region` 表示 API 接入点及其渠道计价维度，`instance_rules.policy_region` 表示居住地/账号地区及模型访问政策，两者不得混用。GLM 的 `glm_jwt` 和 GLM/MiniMax 的区域入口均通过这两个 typed 字段进入 production registry。SN 的 `device_jwt` 是 SN 登录实现支持的稳定行为 ID，由显式 `auth.login_profile` 选择和校验，不从可选的 `ui_hints` 推断。
 
+`ui_hints.setup_group` 可以把同一服务商的多个 Provider Profile 合并成一个向导入口。每个成员声明相同的 `id`/`display_name`，以及自身的 `account_type`、`account_type_label` 和唯一默认项 `default=true`。该字段仅影响展示；运行时 identity、discovery、库存、连接配置和 Provider Rules 始终来自用户最终选择的 profile。
+
 ### 3.1 Model Driver metadata 管理
 
 Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_efforts。版本由官方 ID 的数值元组独立排序；无价格、参数模板或可用性。有限 pattern 在编译时展开为精确 ID，通配模型成员关系被拒绝。
@@ -206,6 +208,7 @@ Model Driver v2 声明精确模型 ID、API/能力、LLM 规格和 supported_eff
 | --- | --- |
 | `custom_provider_adapters` | 允许 Custom Provider 选用的同协议族 Adapter 白名单 |
 | `static_inventory_models` | 明确的渠道库存，不从技术/价格规则推导 |
+| `model_driver_overrides` | 聚合渠道稳定物理 ID 到精确 `<model_driver_id>/<model_id>` 的映射；不改写实际调用 ID |
 | `supplemental_inventory_api_types` | 动态查询未覆盖、允许静态补充的 API 集合 |
 | `models` / `patterns` | operation、参数、排除、能力收窄 |
 | `variants` | 渠道可准确执行的参数映射，与 Model Driver supported_efforts 求交 |
@@ -218,6 +221,14 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 
 当前 `fal-ai/esrgan`、`fal-ai/imageutils/rembg`、`fal-ai/deepfilternet3` 和 `fal-ai/video-upscaler` 尚无对应原厂 Provider 接入，暂时统一归属 `fal` Model Driver。其它配置随 fal 官方事实调整。
 
+### 3.4 无模型发现接口的渠道与库存白名单
+
+部分渠道只提供推理端点，没有 `/models` 之类的发现接口（例如火山引擎豆包语音的 `openspeech.bytedance.com`）。这类 Profile 必须用 `discovery_behavior_id: catalog-only` 声明，并把渠道确实支持的模型显式写进 `static_inventory_models`，同时用 `supplemental_inventory_api_types` 声明允许静态补充的 API 集合（如 `audio.tts`、`audio.asr`）。库存因此完全来自元数据，不从 Model Driver 全量定义推导。
+
+该模式下无法探测账号实际开通了哪些模型，所以 Known Provider 用 `ui_hints.selectable_inventory_models` 把候选清单交给 UI —— 有序的 `[{"id","label"}]` 数组。管理 UI 据此让用户勾选，默认全选；用户的选择按实例持久化为 `instance_rules.enabled_inventory_models`。二者关系是：**Provider Rules 声明"渠道能提供什么"，实例规则声明"这个账号开通了什么"**。
+
+同一实例凭据是单数的，所以不同的鉴权体系（如 ARK API key 与豆包语音控制台签发的 key）必须拆成不同 Profile 而不是同一 Profile 的不同模型。豆包因此有 `doubao`（标准 ARK）、`doubao-speech`（语音，`audio.tts`/`audio.asr`）、`doubao-agent-plan` 三个 Profile，共用 `doubao-responses` Adapter 与同一个 setup group。
+
 ## 4. Custom Provider 的最小规则
 
 省略厂商规则时仍可使用通用身份匹配。人工修正使用实例：
@@ -227,6 +238,13 @@ native 使用 base；其他预设为 `reasoning-{effort}`，包括 minimal 和 t
 ```
 
 目标必须是存在的精确 `driver/model_id`。无效 override 是终止失败，不继续通用匹配。实例和 Provider 主动排除不算 unmatched。
+
+`enabled_inventory_models` 是同一实例规则里的静态库存白名单：省略表示发布 Provider 声明的全部 `static_inventory_models`（默认，向后兼容），显式给出集合时只发布该子集，空集合表示暂不发布任何静态模型。它只作用于 `static_inventory_models`；discovery 实际返回的模型永不被它过滤，也不会被它复活。典型用法见 §3.4：
+
+```json
+{"instance_rules":{"policy_region":"cn","exclude_models":[],"enabled_inventory_models":["doubao-seed-tts-2.0"]}}
+```
+
 Custom Provider 只能选择 Provider Rules 的 `custom_provider_adapters` 显式开放的 Adapter；每个 Adapter 必须与声明它的内置 Provider 属于同一 protocol family，且不能被多个 Provider Rules 重复开放。
 
 ## 5. 模型规则
@@ -510,7 +528,7 @@ Model Driver 静态能力
 
 ## 6. 匹配流程
 
-实例 model_driver_overrides → Provider matcher → 完全匹配 → 忽略大小写的最长受限包含 → unmatched。匹配段前须为字符串开头或非字母数字，末尾只允许空或日期形状后缀；同长候选为歧义。Provider Failed 和无效 Matched 均不得继续通用匹配。已知浮动别名未确认版本或缺 metadata 时使用 unresolved_alias。
+实例 `model_driver_overrides` → Provider Rules `model_driver_overrides` → Provider matcher → 完全匹配 → 忽略大小写的最长受限包含 → unmatched。实例映射用于用户自己的 endpoint ID 等本地事实；Provider Rules 映射用于官方聚合渠道稳定发布、但不与原厂 ID 恒等的物理模型名。两者的目标都必须是已存在的精确 `<model_driver_id>/<model_id>`，且只确定 AICC 身份，实际调用仍保留 discovery 返回的 `provider_model_id`。匹配段前须为字符串开头或非字母数字，末尾只允许空或日期形状后缀；同长候选为歧义。Provider Failed 和无效 Matched 均不得继续通用匹配。已知浮动别名未确认版本或缺 metadata 时使用 unresolved_alias。
 
 匹配成功后求交模型事实、Adapter 支持和真实渠道限制，再应用参数/价格映射并生成合法预设。warning 对未变化的 `(instance, model, reason)` 去重。`list_providers.inventory` 暴露 `unmatched_models`、`unavailable_presets`、`unpriced_models`，刷新响应增加 `unmatched_count`。
 

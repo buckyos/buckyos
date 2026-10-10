@@ -760,6 +760,15 @@ impl InventoryBuilder {
             .unwrap_or(&profile.provider_profile_id);
         let rules = catalog.provider_rules(rules_id);
         let instance_rules = instance.instance_rules.clone().unwrap_or_default();
+        let enabled_static_models = instance_rules.enabled_inventory_models.as_ref();
+        if let (Some(enabled), Some(rules)) = (enabled_static_models, rules) {
+            discovery.models.retain(|model| {
+                !rules
+                    .static_inventory_models
+                    .contains(&model.provider_model_id)
+                    || enabled.contains(&model.provider_model_id)
+            });
+        }
         let resolve_identity = |id: &str| {
             if let Some(target) = instance_rules.model_driver_overrides.get(id) {
                 target
@@ -777,6 +786,8 @@ impl InventoryBuilder {
                     .ok_or_else(|| ModelMatchFailure::InvalidOverride {
                         target: target.clone(),
                     })
+            } else if let Some(identity) = catalog.provider_model_identity_override(rules_id, id) {
+                identity.map(|identity| (identity, ModelIdentitySource::Provider))
             } else {
                 match matcher
                     .map(|matcher| matcher.match_model_driver(id, catalog))
@@ -805,6 +816,9 @@ impl InventoryBuilder {
         let mut static_models = BTreeSet::new();
         if let Some(rules) = rules {
             for id in &rules.static_inventory_models {
+                if enabled_static_models.is_some_and(|enabled| !enabled.contains(id)) {
+                    continue;
+                }
                 if discovery
                     .models
                     .iter()
