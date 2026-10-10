@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.api_type.embedding.multimodal.embedding.multimodal",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "exact_model": "gemini-embedding-2-preview@dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "api_type": "embedding.multimodal",
+  "method": "embedding.multimodal",
+  "session_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956:t1.route.api_type.embedding.multimodal.embedding.multimodal",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:45.316Z",
+      "elapsed_ms": 912,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-f59da563d63444e0a9754e1d46dbc9e4",
+  "trace_id": "aicc-idem-4572a4324a9e54495462b42f06ea609c",
+  "usage": {
+    "cost": {
+      "amount": 2e-7,
+      "currency": "USD"
+    },
+    "input_tokens": 1,
+    "output_tokens": 0,
+    "total_tokens": 1
+  }
+}

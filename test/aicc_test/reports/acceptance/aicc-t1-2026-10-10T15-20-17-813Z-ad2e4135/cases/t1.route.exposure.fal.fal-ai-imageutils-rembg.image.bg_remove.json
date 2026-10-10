@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.exposure.fal.fal-ai-imageutils-rembg.image.bg_remove",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "image.bg_remove",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:17.134Z",
+      "elapsed_ms": 131,
+      "status": "passed",
+      "diagnostic": "image.bg_remove closed through fal-ai/imageutils/rembg@dv-fal-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "fal",
+  "provider_profile_id": "fal",
+  "provider_instance": "dv-fal-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "model_rule": "fal-ai/imageutils/rembg",
+  "exposure_mode": "logical_routable"
+}

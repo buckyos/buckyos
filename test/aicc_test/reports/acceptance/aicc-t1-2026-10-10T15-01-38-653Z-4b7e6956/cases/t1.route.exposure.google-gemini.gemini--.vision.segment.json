@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.exposure.google-gemini.gemini--.vision.segment",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "vision.segment",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:38.976Z",
+      "elapsed_ms": 140,
+      "status": "passed",
+      "diagnostic": "vision.segment closed through gemini-2.5-flash:reasoning-high@dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "google-gemini",
+  "provider_profile_id": "gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "model_rule": "gemini-*",
+  "exposure_mode": "logical_routable"
+}

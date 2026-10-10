@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.video.video2video.video.video2video",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "gemini-omni-1.1-flash@dv-gemini-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "video.video2video",
+  "method": "video.video2video",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.video.video2video.video.video2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:44.569Z",
+      "elapsed_ms": 640,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-d6cdf96a4be643b69dacb599d6f506c0",
+  "trace_id": "aicc-idem-4437a109b0c17a1a8d74a80627be7fa9",
+  "usage": {
+    "cost": {
+      "amount": 0.00006,
+      "currency": "USD"
+    },
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15
+  }
+}

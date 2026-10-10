@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.security.rbac_admin_method",
+  "layer": "T1",
+  "status": "passed",
+  "method": "service.reload_settings",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:04:33.404Z",
+      "elapsed_ms": 272,
+      "status": "passed",
+      "diagnostic": "non-admin secondary tenant rejected for reload_settings: RPCError: RPC call error: No permission:enforce failed,userid:aicct1-4b7e6956,appid:system:control-panel,resource:obj://config/services/aicc/settings,action:write",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

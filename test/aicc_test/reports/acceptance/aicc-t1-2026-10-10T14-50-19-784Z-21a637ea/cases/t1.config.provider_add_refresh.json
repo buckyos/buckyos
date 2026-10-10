@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.config.provider_add_refresh",
+  "layer": "T1",
+  "status": "passed",
+  "method": "service.reload_settings",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:53:24.740Z",
+      "elapsed_ms": 2241,
+      "status": "passed",
+      "diagnostic": "Provider add refreshed inventory and transaction restore removed dv-openai-added-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.runtime_boundary.malformed_response_rejected",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "exact_model": "gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:22:31.700Z",
+      "elapsed_ms": 536,
+      "status": "passed",
+      "diagnostic": "malformed_response rejected after reaching Provider boundary: Error: AICC returned failed: {\"status\":\"failed\",\"task_id\":\"t-2c8a40e9a39c493baf8e9245cea1c429\",\"event_ref\":\"/task_mgr/t-2c8a40e9a39c493baf8e9245cea1c429\"}: {\"code\":\"provider_error\",\"message\":\"JSON response is invalid\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

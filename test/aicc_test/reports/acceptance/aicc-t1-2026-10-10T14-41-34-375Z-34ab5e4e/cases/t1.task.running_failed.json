@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.task.running_failed",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:53.566Z",
+      "elapsed_ms": 5738,
+      "status": "passed",
+      "diagnostic": "running task t-f5760ee6d6304a99826e0793f689e707 reached failed: Error: task ended Failed: {\"code\":\"provider_error\",\"message\":\"native Provider task reported failure\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

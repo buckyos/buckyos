@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.security.cross_tenant_object",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "embedding.text",
+  "method": "ndm.open_reader",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:23:15.111Z",
+      "elapsed_ms": 444,
+      "status": "passed",
+      "diagnostic": "secondary tenant AICC artifact read rejected: RPCError: RPC call error: Failed due to reason: {\"code\":\"resource_invalid\",\"message\":\"AICC artifact belongs to another tenant\",\"details\":{\"failure\":\"unauthorized\"}}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.system_config_then_request_overlay",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:56.331Z",
+      "elapsed_ms": 362,
+      "status": "passed",
+      "diagnostic": "request session_overlay took precedence over system routing config",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.security.cross_tenant_message",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "msg.list_session",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:53:21.427Z",
+      "elapsed_ms": 455,
+      "status": "passed",
+      "diagnostic": "secondary tenant message query rejected: RPCError: RPC call error: No permission:user aicct1-21a637ea may not read mailbox of did:bns:zz-dev-7",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.api_type.embedding.text.embedding.text",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "exact_model": "text-embedding-3-small@dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "api_type": "embedding.text",
+  "method": "embedding.text",
+  "session_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135:t1.route.api_type.embedding.text.embedding.text",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:25.581Z",
+      "elapsed_ms": 1479,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-241a8d0483d84c6295fe32c1de8a80f8",
+  "trace_id": "aicc-idem-70596cae1704a2a8335f38b975bad2f6",
+  "usage": {
+    "input_tokens": 2,
+    "total_tokens": 2
+  }
+}

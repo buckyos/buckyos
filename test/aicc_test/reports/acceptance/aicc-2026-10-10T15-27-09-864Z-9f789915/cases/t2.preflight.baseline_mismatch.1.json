@@ -1,0 +1,19 @@
+{
+  "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+  "case_id": "t2.preflight.baseline_mismatch.1",
+  "layer": "T2",
+  "status": "failed",
+  "method": "models.list",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:27:12.143Z",
+      "elapsed_ms": 0,
+      "status": "failed",
+      "failure_class": "baseline_mismatch",
+      "diagnostic": "aicc_advertised_but_official_missing kimi/kimi-k2.6"
+    }
+  ]
+}

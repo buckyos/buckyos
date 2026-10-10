@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.task.running_succeeded",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:52:41.085Z",
+      "elapsed_ms": 5714,
+      "status": "passed",
+      "diagnostic": "running task t-4fc8854503c64ca09edb1750f0437144 reached succeeded",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

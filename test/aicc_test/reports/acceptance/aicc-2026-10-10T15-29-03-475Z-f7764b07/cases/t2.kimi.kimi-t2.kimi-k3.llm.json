@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-2026-10-10T15-29-03-475Z-f7764b07",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+  "layer": "T2",
+  "status": "skipped",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:29:05.736Z",
+      "elapsed_ms": 0,
+      "status": "skipped",
+      "diagnostic": "real model calls require --allow-real-model-calls"
+    }
+  ]
+}

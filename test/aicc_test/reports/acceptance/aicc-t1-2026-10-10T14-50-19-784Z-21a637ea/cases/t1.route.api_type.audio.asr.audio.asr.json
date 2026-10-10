@@ -1,0 +1,35 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.api_type.audio.asr.audio.asr",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "gpt-transcribe@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "audio.asr",
+  "method": "audio.asr",
+  "session_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea:t1.route.api_type.audio.asr.audio.asr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:37.709Z",
+      "elapsed_ms": 1406,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-d40492f660b4484185f8a9e121519f19",
+  "trace_id": "aicc-idem-00e9f6cce523874b5050edd0797a3bdc",
+  "usage": {
+    "audio_seconds": 1,
+    "cost": {
+      "amount": 0.000075,
+      "currency": "USD"
+    },
+    "request_units": 1
+  }
+}

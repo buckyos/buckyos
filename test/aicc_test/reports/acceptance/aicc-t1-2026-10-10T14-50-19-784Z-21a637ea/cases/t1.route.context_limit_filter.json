@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.context_limit_filter",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:54.729Z",
+      "elapsed_ms": 300,
+      "status": "passed",
+      "diagnostic": "route rejected: RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"no candidate for llm.gpt-pro: filtered candidates gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea[context_length_insufficient]; g",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

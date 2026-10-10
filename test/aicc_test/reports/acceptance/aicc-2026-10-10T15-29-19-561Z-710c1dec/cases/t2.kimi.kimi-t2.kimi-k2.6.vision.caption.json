@@ -1,0 +1,33 @@
+{
+  "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+  "layer": "T2",
+  "status": "failed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.6@kimi-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:29:21.818Z",
+      "elapsed_ms": 265276,
+      "status": "failed",
+      "failure_class": "judge_failed",
+      "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 279 (line 2 column 1)",
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-d960fa6e8a2e4a4aa28cb4bddc158be0",
+  "usage": {
+    "input_tokens": 430,
+    "output_tokens": 1157,
+    "total_tokens": 1587
+  },
+  "trace_id": "aicc-idem-d16e33470a769d3e5978bb1722e257a8"
+}

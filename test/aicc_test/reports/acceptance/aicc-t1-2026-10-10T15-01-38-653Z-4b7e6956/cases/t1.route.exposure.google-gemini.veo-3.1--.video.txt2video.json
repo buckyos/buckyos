@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.exposure.google-gemini.veo-3.1--.video.txt2video",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "video.txt2video",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:40.681Z",
+      "elapsed_ms": 209,
+      "status": "passed",
+      "diagnostic": "video.txt2video closed through veo-3.1-generate-preview@dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "google-gemini",
+  "provider_profile_id": "gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "model_rule": "veo-3.1-*",
+  "exposure_mode": "logical_routable"
+}

@@ -1,0 +1,31 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.api_type.video.txt2video.video.txt2video",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "MiniMax-H3-Max@dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "session_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea:t1.route.api_type.video.txt2video.video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:33.914Z",
+      "elapsed_ms": 6380,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-c00f2327dff744b5971192af64a972c1",
+  "trace_id": "aicc-idem-131432b455a6241a803ca4af28dacf1a",
+  "usage": {
+    "request_units": 1,
+    "video_seconds": 5
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.config.provider_update_rollback",
+  "layer": "T1",
+  "status": "passed",
+  "method": "service.reload_settings",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:53:31.364Z",
+      "elapsed_ms": 1627,
+      "status": "passed",
+      "diagnostic": "invalid update rejected; original Provider remained callable after rollback",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

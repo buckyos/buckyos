@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.config.provider_validate_rejects_duplicate",
+  "layer": "T1",
+  "status": "passed",
+  "method": "service.reload_settings",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:44:33.650Z",
+      "elapsed_ms": 1426,
+      "status": "passed",
+      "diagnostic": "duplicate Provider instance was rejected and active inventory was preserved",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

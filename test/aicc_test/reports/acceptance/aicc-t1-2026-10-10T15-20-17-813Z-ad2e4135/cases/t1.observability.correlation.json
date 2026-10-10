@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.observability.correlation",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:23:56.225Z",
+      "elapsed_ms": 507,
+      "status": "passed",
+      "diagnostic": "task t-15500bde8c0e45a79c95ff911799e293 correlates one usage event and one route trace",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

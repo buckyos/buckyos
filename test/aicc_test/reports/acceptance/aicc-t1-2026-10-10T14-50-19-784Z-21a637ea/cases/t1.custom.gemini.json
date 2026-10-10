@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.custom.gemini",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "custom-gemini",
+  "provider_instance": "dv-custom-gemini-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "gemini-3.5-flash@dv-custom-gemini-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "session_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea:t1.custom.gemini",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:52.302Z",
+      "elapsed_ms": 605,
+      "status": "passed",
+      "diagnostic": "seed=aicc-t1-2026-10-10T14-50-19-784Z-21a637ea; selected_official_model=gemini-3.5-flash",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-62876a5f6bf34a8e9f63624820bf0600"
+}

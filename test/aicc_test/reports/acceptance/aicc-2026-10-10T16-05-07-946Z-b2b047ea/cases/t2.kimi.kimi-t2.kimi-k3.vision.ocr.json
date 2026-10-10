@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+  "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k3@kimi-t2",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T16:05:10.275Z",
+      "elapsed_ms": 422950,
+      "status": "passed",
+      "diagnostic": "Judge score 1: Observed output text 'BUCKY05-0V-4827' matches the source image and contains the required acceptance marker 4827.",
+      "usage": {
+        "input_tokens": 302,
+        "output_tokens": 1253,
+        "total_tokens": 1555
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-6a58fcec458340a48e1895506a2050b2",
+  "usage": {
+    "input_tokens": 302,
+    "output_tokens": 1253,
+    "total_tokens": 1555
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "kimi-k3@kimi-t2",
+    "task_id": "t-273507d6d9e247d8b7af468ec54d301a",
+    "input_summary": "case=t2.kimi.kimi-t2.kimi-k3.vision.ocr; tested_model=kimi-k3@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+    "score": 1,
+    "passed": true,
+    "reason": "Observed output text 'BUCKY05-0V-4827' matches the source image and contains the required acceptance marker 4827.",
+    "exact_model": "kimi-k3@kimi-t2",
+    "provider_instance": "kimi-t2",
+    "provider_driver": "kimi",
+    "distinct_provider_or_family": false
+  },
+  "trace_id": "aicc-idem-ac9b064a3e42c2b2092642cbeb5ea962"
+}

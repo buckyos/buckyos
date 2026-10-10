@@ -1,0 +1,102 @@
+{
+  "schema_version": 1,
+  "run_id": "t15-20261010043220-2666006",
+  "started_at": "2026-10-10T04:32:20.699Z",
+  "finished_at": "2026-10-10T04:32:36.963Z",
+  "commit": "b6ed2453535ad05256d4809fe33d72f33d2585b7",
+  "baseline_revision": "official-provider-protocols-2026-10-05.1",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "t15-20261010043220-2666006",
+      "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "failed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "t15-20261010043220-2666006-doubao-agent-plan",
+      "exact_model": "doubao-seedance-2.0@t15-20261010043220-2666006-doubao-agent-plan",
+      "api_type": "video.txt2video",
+      "method": "video.txt2video",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T04:32:26.604Z",
+          "elapsed_ms": 3867,
+          "status": "failed",
+          "failure_class": "provider_protocol_failed",
+          "diagnostic": "contract=doubao-agent-plan.video-tasks.plan-v3; scenario=success; captured_requests=3; Error: AICC artifact download failed with HTTP 503",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    }
+  ],
+  "product_defects": [
+    {
+      "defect_id": "defect.aicc.t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.ta[REDACTED]",
+      "component": "AICC",
+      "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.ta[REDACTED]",
+      "expected": "AICC maps the official Provider protocol fixture through its real Adapter",
+      "observed": "contract=doubao-agent-plan.video-tasks.plan-v3; scenario=success; captured_requests=3; Error: AICC artifact download failed with HTTP 503",
+      "evidence_paths": [
+        "cases/t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.ta[REDACTED].json"
+      ],
+      "failure_class": "provider_protocol_failed"
+    }
+  ],
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "temporary Provider instances were removed and the Mock selection was reset"
+    ]
+  },
+  "manifest_coverage": {
+    "total": 1,
+    "executed": 1,
+    "passed": 0,
+    "failed": 1,
+    "coverage_rate": 1,
+    "unexecuted_case_ids": []
+  },
+  "protocol_evidence_revision": "official-provider-protocols-2026-10-05.1",
+  "official_evidence_checked_at": "2026-10-05",
+  "limits": {
+    "global_concurrency": 1,
+    "provider_concurrency": 1,
+    "provider_min_interval_ms": 50
+  },
+  "providers": [
+    "doubao-agent-plan"
+  ],
+  "targeted_retest_command": "AICC_T15_ALLOW_CONFIG_MUTATION=true pnpm run acceptance:t1.5 -- --gateway-url \"http://127.0.0.1:3180\" --mock-base-url \"http://127.0.0.1:18081\" --mock-control-url \"http://127.0.0.1:18081\" --allow-config-mutation --case t1.5.doubao-agent-plan.doubao-agent-plan.video-tasks.plan-v3.video.txt2video.ta[REDACTED]"
+}

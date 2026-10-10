@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.task.cancelled",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "image.upscale",
+  "method": "image.upscale",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:52:52.460Z",
+      "elapsed_ms": 636,
+      "status": "passed",
+      "diagnostic": "task t-fc74bc587df34dc2b311ecff5ed2c2e0 reached Canceled",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.exposure.minimax.minimax-m3-.vision.caption",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "vision.caption",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:27.630Z",
+      "elapsed_ms": 475,
+      "status": "passed",
+      "diagnostic": "vision.caption closed through MiniMax-M3@dv-minimax-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "minimax",
+  "provider_profile_id": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "model_rule": "MiniMax-M3*",
+  "exposure_mode": "logical_routable"
+}

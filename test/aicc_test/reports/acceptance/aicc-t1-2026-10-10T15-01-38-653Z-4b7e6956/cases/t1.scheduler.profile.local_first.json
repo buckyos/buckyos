@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.scheduler.profile.local_first",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:03:23.193Z",
+      "elapsed_ms": 175,
+      "status": "passed",
+      "diagnostic": "local_first selected gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.task.restart_recovery",
+  "layer": "T1",
+  "status": "passed",
+  "method": "node-daemon.restart",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:53:07.560Z",
+      "elapsed_ms": 10768,
+      "status": "passed",
+      "diagnostic": "running task t-65bb4eaf232c47819a64ef0b1346ab43 recovered across AICC restart 3484196->3486792",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

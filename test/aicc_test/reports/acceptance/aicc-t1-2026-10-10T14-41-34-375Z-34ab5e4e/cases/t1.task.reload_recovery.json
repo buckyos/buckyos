@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.task.reload_recovery",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "video.txt2video",
+  "method": "video.txt2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:44:08.899Z",
+      "elapsed_ms": 5873,
+      "status": "passed",
+      "diagnostic": "running task t-7aaa5d2cbfd046fe93d7fa536e25af24 completed across settings reload",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

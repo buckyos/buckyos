@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.api_type.vision.detect.vision.detect",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "google-gemini",
+  "provider_instance": "dv-gemini-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "gemini-2.5-flash:reasoning-high@dv-gemini-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "vision.detect",
+  "method": "vision.detect",
+  "session_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea:t1.route.api_type.vision.detect.vision.detect",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:32.272Z",
+      "elapsed_ms": 1071,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-307d374299bb4aa784065d4924f039ec",
+  "trace_id": "aicc-idem-a5c2523a0cfd082e1467f655b5580abc",
+  "usage": {
+    "cost": {
+      "amount": 0.0000155,
+      "currency": "USD"
+    },
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.config.provider_delete_isolation",
+  "layer": "T1",
+  "status": "passed",
+  "method": "service.reload_settings",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:53:28.363Z",
+      "elapsed_ms": 3001,
+      "status": "passed",
+      "diagnostic": "deleting dv-openai-added-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea preserved both original OpenAI instances",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

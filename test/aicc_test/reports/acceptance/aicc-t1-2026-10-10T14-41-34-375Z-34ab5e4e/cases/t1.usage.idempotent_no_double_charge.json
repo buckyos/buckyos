@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.usage.idempotent_no_double_charge",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:44:25.272Z",
+      "elapsed_ms": 540,
+      "status": "passed",
+      "diagnostic": "one task, Provider call, and usage event for idempotent retry",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

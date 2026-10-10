@@ -1,0 +1,30 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.api_type.image.upscale.image.upscale",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "fal",
+  "provider_instance": "dv-fal-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "exact_model": "fal-ai/esrgan@dv-fal-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "api_type": "image.upscale",
+  "method": "image.upscale",
+  "session_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956:t1.route.api_type.image.upscale.image.upscale",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:45.316Z",
+      "elapsed_ms": 4992,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-c68d2e34a9ff459eb0fdf424fe2ec4ea",
+  "trace_id": "aicc-idem-47bf58ed1554f972cd55f43ef2fe0a9c",
+  "usage": {
+    "request_units": 1
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.task.immediate_succeeded",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:52:40.797Z",
+      "elapsed_ms": 287,
+      "status": "passed",
+      "diagnostic": "immediate task t-8a9bc61b1a6c40718d423cdcfe16d996 succeeded",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

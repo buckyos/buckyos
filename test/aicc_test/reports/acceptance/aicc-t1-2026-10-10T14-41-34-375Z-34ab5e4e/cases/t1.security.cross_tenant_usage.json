@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.security.cross_tenant_usage",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "usage.query",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:44:27.559Z",
+      "elapsed_ms": 418,
+      "status": "passed",
+      "diagnostic": "secondary tenant usage query returned no events for t-458bec3046b54649ade69dd7e62b301a",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

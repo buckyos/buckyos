@@ -1,0 +1,26 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.api_type.video.img2video.video.img2video",
+  "layer": "T1",
+  "status": "failed",
+  "provider_driver": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "MiniMax-H3-Max@dv-minimax-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "video.img2video",
+  "method": "video.img2video",
+  "session_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e:t1.route.api_type.video.img2video.video.img2video",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:44.125Z",
+      "elapsed_ms": 608,
+      "status": "failed",
+      "failure_class": "routing_failed",
+      "diagnostic": "Error: AICC returned failed: {\"status\":\"failed\",\"task_id\":\"t-ad5c1c8f4419404cba7779022b33b82f\",\"event_ref\":\"/task_mgr/t-ad5c1c8f4419404cba7779022b33b82f\"}: {\"code\":\"provider_error\",\"message\":\"MiniMax request failed with status 404 Not Found: /v2/video_generation\"}",
+      "estimated_cost_usd": 0,
+      "cost_status": "unknown"
+    }
+  ]
+}

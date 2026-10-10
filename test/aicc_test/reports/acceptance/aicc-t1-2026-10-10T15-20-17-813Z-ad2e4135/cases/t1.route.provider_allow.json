@@ -1,0 +1,23 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.provider_allow",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:45.398Z",
+      "elapsed_ms": 750,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "exact_model": "gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135"
+}

@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.exposure.minimax.image--.image.txt2img",
+  "layer": "T1",
+  "status": "failed",
+  "api_type": "image.txt2img",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:34.336Z",
+      "elapsed_ms": 170,
+      "status": "failed",
+      "failure_class": "baseline_mismatch",
+      "diagnostic": "RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"no candidate for image.txt2img: filtered candidates gpt-image-2@dv-openai-a-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956@dv-openai-a-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956[provider_not_allowed]; gpt-image-2@dv-openai-b-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956@dv-openai-b-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956[provider_not_allowed]\"}",
+      "estimated_cost_usd": 0,
+      "cost_status": "unknown"
+    }
+  ],
+  "provider_driver": "minimax",
+  "provider_profile_id": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "model_rule": "image-*",
+  "exposure_mode": "logical_routable"
+}

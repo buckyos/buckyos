@@ -1053,11 +1053,13 @@ mod search_tests {
             assert_eq!(route.requirements.web_search, enabled == Some(true));
             assert!(!route.disable.web_search);
         }
-        assert!(buckyos_api::LlmChatInvokeRequest::from_json(serde_json::json!({
-            "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
-            "messages": [], "web_search": "true"
-        }))
-        .is_err());
+        assert!(
+            buckyos_api::LlmChatInvokeRequest::from_json(serde_json::json!({
+                "exact_model": "claude-sonnet-5:reasoning-high@claude-default",
+                "messages": [], "web_search": "true"
+            }))
+            .is_err()
+        );
     }
 }
 

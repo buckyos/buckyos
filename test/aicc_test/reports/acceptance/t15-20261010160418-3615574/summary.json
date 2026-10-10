@@ -1,0 +1,938 @@
+{
+  "schema_version": 1,
+  "run_id": "t15-20261010160418-3615574",
+  "started_at": "2026-10-10T16:04:18.656Z",
+  "finished_at": "2026-10-10T16:05:01.859Z",
+  "commit": "a8f620c679b59a93a96d98ebb22f8a202ef0d504",
+  "baseline_revision": "official-provider-protocols-2026-10-10.2",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:24.657Z",
+          "elapsed_ms": 707,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.stream",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:25.415Z",
+          "elapsed_ms": 1027,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=stream_success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.stream-interrupted",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:26.492Z",
+          "elapsed_ms": 984,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=stream_interrupted; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.invalid_request",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:28.508Z",
+          "elapsed_ms": 433,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=invalid_request; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.authentication",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:29.654Z",
+          "elapsed_ms": 561,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=authentication; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.permission",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:30.900Z",
+          "elapsed_ms": 466,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=permission; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.not_found",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:31.979Z",
+          "elapsed_ms": 525,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=not_found; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.rate_limit",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:34.372Z",
+          "elapsed_ms": 651,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=rate_limit; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.error.server_error",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:35.750Z",
+          "elapsed_ms": 682,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=server_error; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.response.malformed_response",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:37.100Z",
+          "elapsed_ms": 732,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=malformed_response; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.response.wrong_content_type",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:38.544Z",
+          "elapsed_ms": 822,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=wrong_content_type; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.response.missing_required_response_field",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:40.141Z",
+          "elapsed_ms": 871,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=missing_required_response_field; captured_requests=2",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:41.750Z",
+          "elapsed_ms": 658,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.success",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:42.459Z",
+          "elapsed_ms": 602,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k2.6-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:43.111Z",
+          "elapsed_ms": 706,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k2.6-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:43.868Z",
+          "elapsed_ms": 514,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k2.6-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:44.432Z",
+          "elapsed_ms": 634,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k2.6-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-none@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:45.116Z",
+          "elapsed_ms": 571,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k2.6-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-none@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:45.738Z",
+          "elapsed_ms": 592,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k2.6-reasoning-none",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.6:reasoning-none@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:46.380Z",
+          "elapsed_ms": 668,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k2.7-code-highspeed-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code-highspeed:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:47.097Z",
+          "elapsed_ms": 672,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k2.7-code-highspeed-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code-highspeed:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:47.819Z",
+          "elapsed_ms": 633,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k2.7-code-highspeed-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code-highspeed:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:48.502Z",
+          "elapsed_ms": 673,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k2.7-code-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:49.225Z",
+          "elapsed_ms": 623,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k2.7-code-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:49.898Z",
+          "elapsed_ms": 591,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k2.7-code-reasoning-medium",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k2.7-code:reasoning-medium@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:50.539Z",
+          "elapsed_ms": 647,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k3-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-high@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:51.236Z",
+          "elapsed_ms": 547,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k3-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-high@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:51.834Z",
+          "elapsed_ms": 537,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k3-reasoning-high",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-high@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:52.421Z",
+          "elapsed_ms": 752,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k3-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-low@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:53.223Z",
+          "elapsed_ms": 658,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k3-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-low@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:53.932Z",
+          "elapsed_ms": 697,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k3-reasoning-low",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-low@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:54.679Z",
+          "elapsed_ms": 494,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.variant.kimi-k3-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-max@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:55.223Z",
+          "elapsed_ms": 350,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.caption.variant.kimi-k3-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-max@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:55.623Z",
+          "elapsed_ms": 395,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    },
+    {
+      "run_id": "t15-20261010160418-3615574",
+      "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k3-reasoning-max",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+      "exact_model": "kimi-k3:reasoning-max@t15-20261010160418-3615574-kimi-isolation-1",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:04:56.068Z",
+          "elapsed_ms": 496,
+          "status": "passed",
+          "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    }
+  ],
+  "product_defects": [],
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "temporary Provider instances were removed and the Mock selection was reset"
+    ]
+  },
+  "manifest_coverage": {
+    "total": 35,
+    "executed": 35,
+    "passed": 35,
+    "failed": 0,
+    "coverage_rate": 1,
+    "unexecuted_case_ids": []
+  },
+  "protocol_evidence_revision": "official-provider-protocols-2026-10-10.2",
+  "official_evidence_checked_at": "2026-10-10",
+  "limits": {
+    "global_concurrency": 1,
+    "provider_concurrency": 1,
+    "provider_min_interval_ms": 50
+  },
+  "providers": [
+    "kimi"
+  ]
+}

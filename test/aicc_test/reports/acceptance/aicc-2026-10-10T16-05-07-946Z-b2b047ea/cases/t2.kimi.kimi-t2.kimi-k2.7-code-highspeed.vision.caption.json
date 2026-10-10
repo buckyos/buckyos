@@ -1,0 +1,50 @@
+{
+  "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T16:05:10.275Z",
+      "elapsed_ms": 322102,
+      "status": "passed",
+      "diagnostic": "Judge score 0.95: Caption accurately describes the image: pink scalloped-petal flower with yellow center and two dark dots, green stem with two leaves, split mint-green/brown background, and surrounding flat brown/tan oval shapes. All key elements match.",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 615,
+        "total_tokens": 1045
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-98de10993550479fae24eb7f70eec638",
+  "usage": {
+    "input_tokens": 430,
+    "output_tokens": 615,
+    "total_tokens": 1045
+  },
+  "judge": {
+    "rubric_version": "2026-08-27.1",
+    "configured_model": "kimi-k3@kimi-t2",
+    "task_id": "t-637a8714fbe142b19c28177590483602",
+    "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption; tested_model=kimi-k2.7-code-highspeed@kimi-t2; rubric_items=1; output_text_chars=860; input_resources=1; output_resources=0",
+    "score": 0.95,
+    "passed": true,
+    "reason": "Caption accurately describes the image: pink scalloped-petal flower with yellow center and two dark dots, green stem with two leaves, split mint-green/brown background, and surrounding flat brown/tan oval shapes. All key elements match.",
+    "exact_model": "kimi-k3@kimi-t2",
+    "provider_instance": "kimi-t2",
+    "provider_driver": "kimi",
+    "distinct_provider_or_family": true
+  },
+  "trace_id": "aicc-idem-92b3d849494b052a3f28714b2ca5673e"
+}

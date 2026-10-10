@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261010152531-3539394",
+  "case_id": "t1.5.kimi.kimi.chat-completions.v1.llm.stream-interrupted",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "t15-20261010152531-3539394-kimi",
+  "exact_model": "kimi-k3@t15-20261010152531-3539394-kimi",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:25:37.844Z",
+      "elapsed_ms": 443,
+      "status": "passed",
+      "diagnostic": "contract=kimi.chat-completions.v1; scenario=stream_interrupted; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}
