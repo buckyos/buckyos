@@ -586,7 +586,19 @@ impl AiccStorage {
              (url_hash,url,provider_instance_name,protocol_adapter_id,origin_provider,artifact_id,
               content_digest,expires_at_ms,tenant_id,user_id,caller_app_id,request_id,created_at_ms)
              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-             ON CONFLICT(url_hash) DO NOTHING",
+             ON CONFLICT(url_hash) DO UPDATE SET
+              provider_instance_name=excluded.provider_instance_name,
+              protocol_adapter_id=excluded.protocol_adapter_id,
+              origin_provider=excluded.origin_provider,
+              artifact_id=excluded.artifact_id,
+              content_digest=excluded.content_digest,
+              expires_at_ms=excluded.expires_at_ms,
+              user_id=excluded.user_id,
+              caller_app_id=excluded.caller_app_id,
+              request_id=excluded.request_id,
+              created_at_ms=excluded.created_at_ms
+             WHERE aicc_artifact_url_source.url=excluded.url
+               AND aicc_artifact_url_source.tenant_id=excluded.tenant_id",
         );
         sqlx::query(&sql)
             .bind(url_hash)
@@ -2386,6 +2398,56 @@ mod tests {
         assert_eq!(
             db.artifact_url_source(&expiring.url, 20).await.unwrap(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_url_source_refreshes_within_tenant_without_cross_tenant_takeover() {
+        let db = db().await;
+        let original = ArtifactUrlSourceRecord {
+            url: "https://provider.example/files/reused".into(),
+            provider_instance_name: "provider-old".into(),
+            protocol_adapter_id: "adapter-old".into(),
+            origin_provider: "openai".into(),
+            artifact_id: Some("artifact-old".into()),
+            content_digest: None,
+            expires_at_ms: Some(100),
+            tenant_id: "tenant-a".into(),
+            user_id: "user-a".into(),
+            caller_app_id: Some("app-a".into()),
+            request_id: "request-old".into(),
+            created_at_ms: 10,
+        };
+        db.remember_artifact_url_source(&original).await.unwrap();
+
+        let refreshed = ArtifactUrlSourceRecord {
+            provider_instance_name: "provider-current".into(),
+            protocol_adapter_id: "adapter-current".into(),
+            artifact_id: Some("artifact-current".into()),
+            request_id: "request-current".into(),
+            created_at_ms: 20,
+            ..original.clone()
+        };
+        db.remember_artifact_url_source(&refreshed).await.unwrap();
+        assert_eq!(
+            db.artifact_url_source(&original.url, 20).await.unwrap(),
+            Some(refreshed.clone())
+        );
+
+        let other_tenant = ArtifactUrlSourceRecord {
+            tenant_id: "tenant-b".into(),
+            user_id: "user-b".into(),
+            provider_instance_name: "provider-attacker".into(),
+            request_id: "request-attacker".into(),
+            created_at_ms: 30,
+            ..original.clone()
+        };
+        db.remember_artifact_url_source(&other_tenant)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.artifact_url_source(&original.url, 30).await.unwrap(),
+            Some(refreshed)
         );
     }
 

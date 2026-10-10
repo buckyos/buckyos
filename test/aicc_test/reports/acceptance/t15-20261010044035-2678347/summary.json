@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "run_id": "t15-20261010044035-2678347",
+  "started_at": "2026-10-10T04:40:35.622Z",
+  "finished_at": "2026-10-10T04:40:47.374Z",
+  "commit": "b6ed2453535ad05256d4809fe33d72f33d2585b7",
+  "baseline_revision": "official-provider-protocols-2026-10-05.1",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "t15-20261010044035-2678347",
+      "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.images.plan-v3.image.txt2img.ta[REDACTED]",
+      "layer": "T1.5",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "t15-20261010044035-2678347-doubao-agent-plan",
+      "exact_model": "doubao-seedream-5.0-lite@t15-20261010044035-2678347-doubao-agent-plan",
+      "api_type": "image.txt2img",
+      "method": "images.generate",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T04:40:41.458Z",
+          "elapsed_ms": 525,
+          "status": "passed",
+          "diagnostic": "contract=doubao-agent-plan.images.plan-v3; scenario=success; captured_requests=1",
+          "estimated_cost_usd": 0,
+          "actual_cost_usd": 0,
+          "cost_status": "actual"
+        }
+      ]
+    }
+  ],
+  "product_defects": [],
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "temporary Provider instances were removed and the Mock selection was reset"
+    ]
+  },
+  "manifest_coverage": {
+    "total": 1,
+    "executed": 1,
+    "passed": 1,
+    "failed": 0,
+    "coverage_rate": 1,
+    "unexecuted_case_ids": []
+  },
+  "protocol_evidence_revision": "official-provider-protocols-2026-10-05.1",
+  "official_evidence_checked_at": "2026-10-05",
+  "limits": {
+    "global_concurrency": 1,
+    "provider_concurrency": 1,
+    "provider_min_interval_ms": 50
+  },
+  "providers": [
+    "doubao-agent-plan"
+  ]
+}

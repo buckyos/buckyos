@@ -7,7 +7,7 @@ import { buildFinancialReport } from "./finance.ts";
 import {
   type GatewaySession,
   loginGateway,
-  loginSudoSystemConfig,
+  loginRefreshingSudoSystemConfig,
   openAiccArtifact,
   type RpcClient,
 } from "./gateway.ts";
@@ -2133,7 +2133,7 @@ async function main(): Promise<void> {
       password: input.password,
       appId: input.appId,
     });
-    let sudoSystemConfig = await loginSudoSystemConfig({
+    let sudoSystemConfig = await loginRefreshingSudoSystemConfig({
       gatewayUrl: input.gatewayUrl,
       username: input.username,
       password: input.password,
@@ -2195,7 +2195,7 @@ async function main(): Promise<void> {
           password: input.password,
           appId: input.appId,
         });
-        sudoSystemConfig = await loginSudoSystemConfig({
+        sudoSystemConfig = await loginRefreshingSudoSystemConfig({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,
@@ -2510,7 +2510,7 @@ async function main(): Promise<void> {
           password: input.password,
           appId: input.appId,
         });
-        sudoSystemConfig = await loginSudoSystemConfig({
+        sudoSystemConfig = await loginRefreshingSudoSystemConfig({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,
@@ -2614,7 +2614,7 @@ async function main(): Promise<void> {
           appId: input.appId,
         });
         cloudAdmin = session.aicc;
-        cloudSystemConfig = await loginSudoSystemConfig({
+        cloudSystemConfig = await loginRefreshingSudoSystemConfig({
           gatewayUrl: input.gatewayUrl,
           username: input.username,
           password: input.password,

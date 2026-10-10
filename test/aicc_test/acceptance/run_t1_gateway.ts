@@ -13,7 +13,7 @@ import {
   callImagesGenerate,
   callLlmChatHelper,
   loginGateway,
-  loginSudoSystemConfig,
+  loginRefreshingSudoSystemConfig,
   loginSudoToken,
   type GatewaySession,
   type RpcClient,
@@ -385,8 +385,18 @@ async function provisionSecondTenant(
   });
   input.otherTenantSessionToken = secondary.sessionToken;
   return async () => {
+    const cleanupToken = await loginSudoToken({
+      gatewayUrl: input.gatewayUrl,
+      username: input.username,
+      password: input.password,
+      appId: input.appId,
+    });
+    const cleanupControlPanel = new buckyos.kRPCClient(
+      `${input.gatewayUrl}/kapi/control-panel`,
+      cleanupToken,
+    ) as RpcClient;
     try {
-      await controlPanel.call("user.delete", { user_id: userId });
+      await cleanupControlPanel.call("user.delete", { user_id: userId });
     } catch (error) {
       if (!String(error).includes("scheduler")) throw error;
     }
@@ -3347,7 +3357,7 @@ async function main(): Promise<void> {
       password: input.password,
       appId: input.appId,
     });
-    const sudoSystemConfig = await loginSudoSystemConfig({
+    const sudoSystemConfig = await loginRefreshingSudoSystemConfig({
       gatewayUrl: input.gatewayUrl,
       username: input.username,
       password: input.password,
@@ -3426,10 +3436,74 @@ async function main(): Promise<void> {
         }],
       }];
     } finally {
-      await cleanupSecondTenant();
+      try {
+        await cleanupSecondTenant();
+      } catch (error) {
+        cleanup = {
+          status: "failed",
+          details: [...cleanup.details, `second tenant cleanup failed: ${String(error)}`],
+        };
+        cases.push({
+          run_id: runId,
+          case_id: "t1.cleanup.second_tenant",
+          layer: "T1",
+          status: "failed",
+          method: "user.delete",
+          outbound_message_ids: [],
+          artifact_ids: [],
+          attempts: [{
+            attempt: 1,
+            started_at: new Date().toISOString(),
+            elapsed_ms: 0,
+            status: "failed",
+            failure_class: "cleanup_failed",
+            diagnostic: String(error),
+            estimated_cost_usd: 0,
+            cost_status: "not_called",
+          }],
+        });
+      }
     }
-    const residualInventories = inventories(await session.aicc.call("models.list", {}))
-      .filter((inventory) => inventory.provider_instance_name.includes(runId));
+    let residualInventories: ProviderInventory[] = [];
+    try {
+      const validationSession = input.username && input.password
+        ? await loginGateway({
+          gatewayUrl: input.gatewayUrl,
+          username: input.username,
+          password: input.password,
+          appId: input.appId,
+        })
+        : session;
+      residualInventories = inventories(await validationSession.aicc.call("models.list", {}))
+        .filter((inventory) => inventory.provider_instance_name.includes(runId));
+    } catch (error) {
+      cleanup = {
+        status: "failed",
+        details: [
+          ...cleanup.details,
+          `AICC runtime inventory cleanup verification failed: ${String(error)}`,
+        ],
+      };
+      cases.push({
+        run_id: runId,
+        case_id: "t1.cleanup.runtime_inventory_restore",
+        layer: "T1",
+        status: "failed",
+        method: "models.list/service.reload_settings",
+        outbound_message_ids: [],
+        artifact_ids: [],
+        attempts: [{
+          attempt: 1,
+          started_at: new Date().toISOString(),
+          elapsed_ms: 0,
+          status: "failed",
+          failure_class: "cleanup_failed",
+          diagnostic: String(error),
+          estimated_cost_usd: 0,
+          cost_status: "not_called",
+        }],
+      });
+    }
     if (residualInventories.length > 0) {
       cleanup = {
         status: "failed",
