@@ -43,7 +43,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { Buffer } from "node:buffer";
-import { createHash, createPrivateKey, sign } from "node:crypto";
+import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto";
 import { parseArgs } from "node:util";
 import {
   assertProvisionRuntime,
@@ -312,6 +312,7 @@ export async function buildUserEnv(
   keyPairs: BuildUserEnvKeyPairs = {},
 ): Promise<string> {
   const userDir = ensureDir(path.join(envRoot, params.zone_id));
+  removeIfExists(path.join(userDir, params.node_name, "sn_seed_identity.json"));
   const oodNameForZone = params.netid !== "lan"
     ? `${params.node_name}@${params.netid}`
     : params.node_name;
@@ -326,6 +327,11 @@ export async function buildUserEnv(
     ownerKeyPair: keyPairs.ownerKeyPair,
     deviceKeyPair: keyPairs.deviceKeyPair,
   });
+  const ownerPath = path.join(userDir, "user_config.json");
+  const zonePath = path.join(userDir, "zone_config.json");
+  const zoneDocument = readJsonObject(zonePath);
+  zoneDocument.iat = requireNumber(readJsonObject(ownerPath), "iat", ownerPath);
+  writeJson(zonePath, zoneDocument);
   await createNodeConfigs({
     deviceName: params.node_name,
     netId: params.netid,
@@ -466,7 +472,7 @@ function makeSnApiUrl(params: OODGroupParams): string | undefined {
 function writeLocalDeviceIdentityFiles(
   userDir: string,
   nodeDir: string,
-  targetDir: string,
+  targetDir: string | undefined,
   params: OODGroupParams,
 ): LocalDeviceIdentityFiles {
   const nodeIdentityPath = path.join(nodeDir, "node_identity.json");
@@ -503,6 +509,10 @@ function writeLocalDeviceIdentityFiles(
     sourcePaths.authenticationPrivateKey,
     "utf8",
   );
+  const devicePublicKey = createPublicKey(createPrivateKey(devicePrivateKeyPem)).export({ format: "jwk" });
+  if (devicePublicKey.x !== defaultPublicJwk(deviceConfig, sourcePaths.didJson).x) {
+    throw new Error(`${sourcePaths.authenticationPrivateKey} differs from device document key`);
+  }
   const ownerPublicKeyFromDocument = defaultPublicJwk(
     ownerDocument,
     path.join(userDir, "user_config.json"),
@@ -585,6 +595,34 @@ function writeLocalDeviceIdentityFiles(
     );
   }
 
+  const localIdentity = {
+    ownerDocument,
+    bootDocument,
+    bootDocumentJwt,
+    deviceDocJwt,
+    deviceMiniDocJwt,
+    deviceDid,
+    zoneDid,
+    zoneDocument,
+    zoneDocumentJwt,
+  };
+  if (params.sn_base_host.trim()) {
+    const bundlePath = path.join(nodeDir, "sn_seed_identity.json");
+    const bundle = seedIdentityBundle(userDir, nodeDir, params, localIdentity);
+    if (fs.existsSync(bundlePath)) {
+      const existing = readJsonObject(bundlePath);
+      if (Object.keys(existing).length !== Object.keys(bundle).length ||
+          Object.entries(bundle).some(([field, value]) => existing[field] !== value)) {
+        throw new Error(`${bundlePath} differs from finalized identity; use a new --env_root and regenerate OOD and SN together`);
+      }
+    } else {
+      writeJson(bundlePath, bundle);
+    }
+  }
+  if (targetDir === undefined) {
+    return localIdentity;
+  }
+
   const roots = new IdentityRoots(
     path.join(targetDir, "local", "identity"),
     path.join(targetDir, "security"),
@@ -635,17 +673,92 @@ function writeLocalDeviceIdentityFiles(
     privateKeyPath,
   ]);
 
+  return localIdentity;
+}
+
+function seedIdentitySourceHash(
+  userDir: string,
+  nodeDir: string,
+  params: OODGroupParams,
+): string {
+  const nodeIdentity = loadLocalNodeIdentityConfig(path.join(nodeDir, "node_identity.json"));
+  const sourcePaths = deviceIdentityPathsForRoots(
+    new IdentityRoots(path.join(nodeDir, "local", "identity"), path.join(nodeDir, "security")),
+    nodeIdentity.device_did,
+  );
+  const sourceFiles = [
+    path.join(userDir, "user_config.json"),
+    path.join(userDir, "zone_config.json"),
+    path.join(userDir, `${params.zone_id}.zone.json`),
+    path.join(nodeDir, "node_identity.json"),
+    sourcePaths.didJson,
+  ];
+  return createHash("sha256")
+    .update(JSON.stringify(sourceFiles.map((file) => fs.readFileSync(file, "utf8"))))
+    .digest("hex");
+}
+
+function seedIdentityBundle(
+  userDir: string,
+  nodeDir: string,
+  params: OODGroupParams,
+  identity: LocalDeviceIdentityFiles,
+): Record<string, unknown> {
+  const now = Math.floor(Date.now() / 1000);
+  for (const document of [identity.ownerDocument, identity.zoneDocument]) {
+    const iat = requireNumber(document, "iat", userDir);
+    const exp = requireNumber(document, "exp", userDir);
+    if (iat > now || exp <= now || iat > exp) {
+      throw new Error(`${userDir} has invalid document validity times; use a new --env_root`);
+    }
+  }
   return {
-    ownerDocument,
-    bootDocument,
-    bootDocumentJwt,
-    deviceDocJwt,
-    deviceMiniDocJwt,
-    deviceDid,
-    zoneDid,
-    zoneDocument,
-    zoneDocumentJwt,
+    schema: "buckyos.sn_seed_identity.v1",
+    source_sha256: seedIdentitySourceHash(userDir, nodeDir, params),
+    owner_document_jwt: signJwtEdDSA(
+      identity.ownerDocument,
+      fs.readFileSync(path.join(userDir, "user_private_key.pem"), "utf8"),
+    ),
+    zone_document_jwt: identity.zoneDocumentJwt,
+    boot_config_jwt: identity.bootDocumentJwt,
+    device_doc_jwt: identity.deviceDocJwt,
+    device_mini_doc_jwt: identity.deviceMiniDocJwt,
   };
+}
+
+export async function prepareSeedIdentity(
+  groupName: string,
+  envRoot: string = ENV_ROOT_DIR,
+): Promise<void> {
+  await prepareSeedIdentityForParams(getParamsFromGroupName(groupName), envRoot);
+}
+
+async function prepareSeedIdentityForParams(
+  params: OODGroupParams,
+  envRoot: string,
+): Promise<void> {
+  if (!params.sn_base_host.trim() || params.preseed_identity === false) {
+    throw new Error(`${params.zone_id} does not publish a devtest seed identity`);
+  }
+  const userDir = ensureDir(path.join(envRoot, params.zone_id));
+  const nodeDir = path.join(userDir, params.node_name);
+  const bundlePath = path.join(nodeDir, "sn_seed_identity.json");
+  const lockPath = path.join(userDir, ".sn_seed_identity.lock");
+  const lock = fs.openSync(lockPath, "wx");
+  try {
+    if (fs.existsSync(bundlePath)) {
+      const bundle = readJsonObject(bundlePath);
+      if (bundle.source_sha256 !== seedIdentitySourceHash(userDir, nodeDir, params)) {
+        throw new Error(`${bundlePath} is stale; use a new --env_root and regenerate OOD and SN together`);
+      }
+    } else {
+      await buildUserEnv(params, envRoot);
+    }
+    writeLocalDeviceIdentityFiles(userDir, nodeDir, undefined, params);
+  } finally {
+    fs.closeSync(lock);
+    fs.unlinkSync(lockPath);
+  }
 }
 
 export function copyIdentityOutputs(
@@ -816,8 +929,11 @@ async function makeIdentityFiles(
   targetDir: string,
   params: OODGroupParams,
   caDir: string,
+  envRoot: string,
 ): Promise<void> {
-  const userDir = await buildUserEnv(params, ENV_ROOT_DIR);
+  const userDir = params.sn_base_host.trim()
+    ? path.join(envRoot, params.zone_id)
+    : await buildUserEnv(params, envRoot);
   const nodeDir = path.join(userDir, params.node_name);
   copyIdentityOutputs(userDir, nodeDir, targetDir, params);
 
@@ -981,7 +1097,7 @@ function applyDevBootTemplate(
 // ============================================================================
 
 function printUsage(log: (message?: unknown) => void = console.error): void {
-  log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>]");
+  log("usage: make_config.ts <group> [--rootfs <dir>] [--ca <dir>] [--env_root <dir>]");
   log(
     `groups: ${[...Object.keys(OOD_GROUPS), "nightly", "release"].join(" | ")}`,
   );
@@ -997,6 +1113,7 @@ export async function makeConfigByGroupName(
   groupName: string,
   targetRoot: string | undefined,
   caDir: string | undefined,
+  envRoot: string = ENV_ROOT_DIR,
 ): Promise<void> {
   if (groupName === "sn" || groupName === "sn_server") {
     throw new Error(
@@ -1031,7 +1148,7 @@ export async function makeConfigByGroupName(
 
   const params = getParamsFromGroupName(groupName);
   const targetDir = targetRoot ?? getBuckyosRoot();
-  const resolvedCaDir = caDir ?? ensureDir(path.join(ENV_ROOT_DIR, "ca"));
+  const resolvedCaDir = caDir ?? ensureDir(path.join(envRoot, "ca"));
 
   console.log(
     `############ make config for group name: ${groupName} #########################`,
@@ -1042,6 +1159,10 @@ export async function makeConfigByGroupName(
   console.log(`zone       : ${params.zone_id}`);
   console.log(`node       : ${params.node_name}`);
   console.log(`web3_bridge: ${params.web3_bridge}`);
+
+  if (params.sn_base_host.trim() && params.preseed_identity !== false) {
+    await prepareSeedIdentityForParams(params, envRoot);
+  }
 
   makeGlobalEnvConfig(
     targetDir,
@@ -1054,7 +1175,7 @@ export async function makeConfigByGroupName(
   if (params.preseed_identity === false) {
     makeUnactivatedIdentityConfig(targetDir);
   } else {
-    await makeIdentityFiles(targetDir, params, resolvedCaDir);
+    await makeIdentityFiles(targetDir, params, resolvedCaDir, envRoot);
   }
   applyDevBootTemplate(targetDir, groupName);
 
@@ -1062,7 +1183,7 @@ export async function makeConfigByGroupName(
 }
 
 async function main(): Promise<void> {
-  let values: { rootfs?: string; ca?: string; sn_ip?: string; help?: boolean };
+  let values: { rootfs?: string; ca?: string; env_root?: string; sn_ip?: string; help?: boolean };
   let positionals: string[];
   try {
     const parsed = parseArgs({
@@ -1070,12 +1191,13 @@ async function main(): Promise<void> {
       options: {
         rootfs: { type: "string" },
         ca: { type: "string" },
+        env_root: { type: "string" },
         sn_ip: { type: "string" },
         help: { type: "boolean", short: "h" },
       },
       allowPositionals: true,
     }) as {
-      values: { rootfs?: string; ca?: string; sn_ip?: string; help?: boolean };
+      values: { rootfs?: string; ca?: string; env_root?: string; sn_ip?: string; help?: boolean };
       positionals: string[];
     };
     values = parsed.values;
@@ -1121,7 +1243,7 @@ async function main(): Promise<void> {
   }
 
   try {
-    await makeConfigByGroupName(groupName, values.rootfs, values.ca);
+    await makeConfigByGroupName(groupName, values.rootfs, values.ca, values.env_root);
   } catch (e) {
     console.error(
       `config generation failed: ${e instanceof Error ? e.message : e}`,
