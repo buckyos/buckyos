@@ -569,9 +569,9 @@ SMB/共享盘需要由适配层处理挂载归属、断线重连和只读降级�
 
 ## 16. 当前实现基础与落地路径
 
-### 16.1 当前仓库核对结果
+### 16.1 改造前的仓库核对结果
 
-下表描述本次核对的代码，而非旧需求文档中的承诺。尤其需要区分新的 `libopendan` Session 链路、旧通用工具抽象和开发 CLI。
+下表保留架构讨论时的实现快照。其后的首轮改造已收敛到 `libopendan` 的 Workspace Manager；当前协议及能力边界见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。旧通用工具和开发 CLI 双写索引已移除。
 
 | 入口 | 已有能力 | 与本设计的差距 |
 | --- | --- | --- |
@@ -579,17 +579,25 @@ SMB/共享盘需要由适配层处理挂载归属、断线重连和只读降级�
 | [执行目录解析](../../src/frame/lib_opendan/src/runtime/mod.rs)：`resolve_workdir`、`settle_for_session` | 未绑定默认 SessionDir；Agent 目录为 `<agent_root>/workspace/<id>`；External 要求绝对路径 | 显式 Runtime `workdir` 可覆盖默认目录，尚未核验与 Workspace 的语义一致性；没有目录自描述识别 |
 | [绑定结构](../../src/frame/lib_opendan/src/protocol/misc.rs)：`Binding`；[绑定核验](../../src/frame/lib_opendan/src/runtime/mod.rs)：`bind_or_verify` | 在 Session lease 内保存实际 Runtime ID、kind、target 和 `workdir`，恢复时比较 | 尚未联动 Workspace ID、位置修订、可用 Runtime 登记与迁移；`remote_ssh` Session 因 helper 未部署而被明确拒绝 |
 | [Agent State 门面](../../src/frame/lib_opendan/src/state/mod.rs)：`AgentStateClient` | 已有 Session 登记、activity、perception、cognition、artifact、锁与 behavior 门面 | 尚无统一 Workspace Manager；目录存在不能替代已知集合 |
-| [通用 Workspace 工具库](../../src/frame/agent_tool/src/workspace.rs)：`ManagedWorkspaceRecord`、`ManagedWorkspaceToolBackend` | 保留来源、策略引用、状态、锁等字段；抽象 create/bind，可写 `SUMMARY.md` | `WorkspaceRuntimeBackend` 的现有实现为测试 Fake；未接入当前 Session 链路，锁字段不代表已有锁逻辑，`SUMMARY.md` 不是身份元信息 |
-| [外部目录工具抽象](../../src/frame/agent_tool/src/workspace.rs)：`ManagedExternalWorkspaceBackend` | 通过 backend 取得 AgentRoot，在 `workspaces/<name>` 建本地软链，以 `workspaces/bindings.json` 记录 `{name, source, mount}` | backend 仅见测试接入；不是远程挂载、同步或稳定 ID 导入，没有自动迁移发现 |
+| 旧通用 Workspace 工具库（已移除）：`ManagedWorkspaceRecord`、`ManagedWorkspaceToolBackend` | 保留来源、策略引用、状态、锁等字段；抽象 create/bind，可写 `SUMMARY.md` | `WorkspaceRuntimeBackend` 的现有实现为测试 Fake；未接入当前 Session 链路，锁字段不代表已有锁逻辑，`SUMMARY.md` 不是身份元信息 |
+| 旧外部目录工具抽象（已移除）：`ManagedExternalWorkspaceBackend` | 通过 backend 取得 AgentRoot，在 `workspaces/<name>` 建本地软链，以 `workspaces/bindings.json` 记录 `{name, source, mount}` | backend 仅见测试接入；不是远程挂载、同步或稳定 ID 导入，没有自动迁移发现 |
 | [开发 CLI](../../src/frame/agent_tool_cli_dev/src/lib.rs)：`CliWorkspaceBackend` | 实际注册 create/bind，写 `<state_root>/index.json`、`workspaces/session_workspace_bindings.json` 和旧 Session 状态 | 使用旧 `session.json` 模型，不等于更新新 `SessionConfig.workspace`；直接文件覆写不提供跨记录事务、CAS 或 Workspace 锁 |
 | [布局与锁](../../src/frame/lib_opendan/src/state/fs_client.rs)：`AgentLayout::lock_path`；[活动视图](../../src/frame/lib_opendan/src/state/activity.rs) | Agent 级锁处理 self_improve/artifact；另有 Session/run 锁；activity 提示同 Workspace、同产物和路径重叠 | 当前无 Workspace 写锁；本地 flock 和活动提示均不提供跨 Runtime 单写者保证 |
 | [Runtime](../../src/frame/agent_tool/src/runtime/mod.rs)、[文件访问](../../src/frame/agent_tool/src/runtime/files.rs)、[xllm](../../src/frame/agent_tool/src/xllm.rs) | native/tmux/remote_ssh 基础及文件路径策略；SSH 可供独立 xllm 使用 | 不等于 Session 已支持所有远程环境；内建文件权限检查不隔离任意 shell 命令；Host/Container 等设计不能因名称出现就视为已实现 |
 | [文件工具审计](../../src/frame/agent_tool/src/file_tools.rs)：`FileWriteAuditRecord` / `FileWriteAuditBackend`；[Worklog](../../src/frame/lib_opendan/src/protocol/worklog.rs) | 文件工具可产生 diff，Worklog 有工具调用和结果归因基础 | 当前 xllm 文件工具使用 `NoopFileWriteAudit`；写后审计失败仅告警，尚无所有写入的持久审计与补偿闭环 |
 | [产物登记](../../src/frame/lib_opendan/src/state/artifacts.rs)；[丢弃处理](../../src/frame/lib_opendan/src/runner/inputs.rs) | 管理版本状态和 head，保留 Workspace 关联扩展点 | discard 明确返回 Workspace 回滚不支持；不能据产物状态声称目录或远端副作用已撤销 |
 
-当前 OpenDAN 私有目录使用单数 `workspace/`，旧工具和开发 CLI 使用复数 `workspaces/`，两者不能混写为统一存储协议。旧稿中的 `workshop/index.json` 是建议格式，也不是当前实现事实。
+改造前 OpenDAN 私有目录使用单数 `workspace/`，旧工具和开发 CLI 使用复数 `workspaces/`，两者不能混写为统一存储协议。旧稿中的 `workshop/index.json` 是建议格式，也不是当前实现事实。
 
-已有测试覆盖工具 Fake backend 的创建/重复绑定、本地软链登记、CLI 名称目录与旧 Session 状态，以及 Session 绑定和活动视图；不能用这些测试代替外部 Runtime、身份迁移、共享写锁和完整审计的验收。
+改造前测试覆盖工具 Fake backend 的创建/重复绑定、本地软链登记、CLI 名称目录与旧 Session 状态，以及 Session 绑定和活动视图；不能用这些测试代替外部 Runtime、身份迁移、共享写锁和完整审计的验收。
+
+### 16.1.1 首轮落地结果
+
+- [Workspace Manager](../../src/frame/lib_opendan/src/state/workspaces.rs) 保存版本化登记，目录 `.opendan-workspace.json` 保存身份；支持幂等创建/导入、查询、条件更新、检查、冲突识别与恢复、重新定位、归档/恢复、取消登记和 Runtime 影响查询。
+- Session 使用稳定 ID 与固定位置快照（配置 `/7`、binding `/4`）；恢复和每次工具调用前核验，失效终态失败。无长期目录任务继续使用 SessionDir；实际 Workspace 中的产物按绑定位置登记。
+- 本地受控 Session 复用 OS 单写者锁；未核实后台任务阻止接管。独立 xllm 不能绕过 Workspace 执行 gate。只读执行因尚无 shell 隔离而明确拒绝。
+- `xagent workspace`、子 Session、Jarvis 提示词和 Homepage 共用 Agent State。旧 create_workspace / bind_workspace 与软链接管理工具已移除；旧目录通过显式 import 纳管，不删除已有文件。
+- 当前仅 `local` Runtime，登记及 binding 固定宿主身份。远程 helper、跨节点 fencing、完整 shell 文件审计及交付适配仍未实现，不能据本地测试宣称支持分布式共享写入。
 
 ### 16.2 建议实施顺序
 

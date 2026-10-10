@@ -1131,7 +1131,8 @@ fn register_outputs(
         base,
         state: VersionState::Produced,
         outputs,
-        workspace_ref: Value::Null,
+        workspace_ref: serde_json::to_value(&s.config.workspace_binding)
+            .map_err(|e| crate::error::OpenDanError::Other(e.to_string()))?,
         side_effects,
         updated_at_ms: crate::now_ms(),
     })

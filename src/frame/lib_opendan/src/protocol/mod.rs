@@ -16,6 +16,7 @@ pub mod runtime;
 pub mod state;
 pub mod summary;
 pub mod worklog;
+pub mod workspace;
 
 pub use agent_state::*;
 pub use behavior::*;
@@ -27,6 +28,7 @@ pub use runtime::*;
 pub use state::*;
 pub use summary::*;
 pub use worklog::*;
+pub use workspace::*;
 
 /// Directory holding the session state inside a session directory.
 pub const STATE_DIR: &str = ".opendan_agent_session";
@@ -74,6 +76,8 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("control_command", s::<input::ControlCommand>()),
         ("input_receipt", s::<input::InputReceipt>()),
         ("host_meta", s::<input::HostMeta>()),
+        ("workspace_metadata", s::<workspace::WorkspaceMetadata>()),
+        ("workspace_record", s::<workspace::WorkspaceRecord>()),
         ("runtime_descriptor", s::<runtime::RuntimeDescriptor>()),
     ]
 }

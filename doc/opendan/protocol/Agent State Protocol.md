@@ -19,7 +19,7 @@
     artifacts/<aid>/artifact.json           产物 head
     artifacts/<aid>/versions/v-<sid>.json   各 work session 的贡献
   memory/  notebook/  attention_signals/    认知（agent_tool 实现与其内部锁）
-  workspace/<wid>/                          Agent 内部 workspace
+  state/workspaces/                         Known Workspace 登记（项目目录可在 AgentRoot 外）
   .locks/self_improve.lease  .locks/artifact/<aid>.lease
 ```
 
@@ -93,7 +93,7 @@ Memory Graph（`memory/`，schema 3.0）由 `agent_tool::agent_memory` 实现：
 
 ```jsonc
 // artifact.json
-{ "aid": "snake-game", "workspace": { "kind": "external", "path": "…" }, "head": "v-work-A", "rev": 3, "updated_at_ms": 0 }
+{ "aid": "snake-game", "workspace": { "workspace_id": "ws-…", "access": "read_write" }, "head": "v-work-A", "rev": 3, "updated_at_ms": 0 }
 // versions/v-<sid>.json
 { "ver": "v-work-B", "session": "work-B", "base": "v-work-A", "state": "produced|accepted|discarded",
   "outputs": ["report.md", "snake.js"], "workspace_ref": null,
@@ -164,3 +164,7 @@ Session 模板的覆盖在 `agent.toml`：`[session.<class>]` 的 `turns = "one"
 - 驱动者在 lease 下的写入（`report_state`、`perception.append`、`commit_cursor`、`register_version`、`update_location`、`commit_consolidation`）与 Agent 级锁依赖 flock，不经 kRPC：驱动者必须能看到 AgentRoot。
 - 错误以 `{"kind","message"}` 的 JSON 文本传回，`kind` 与文件实现的错误种类相同（`input_full` 另带 `session_id`、`pending`，`queue_missing` 另带 `session_id`），调用方按种类处理（如 `input_full`、`queue_missing` 可重试）。
 
+
+## Workspace Manager
+
+已知长期目录由 `AgentStateClient.workspaces()` 管理；身份元信息随目录，Agent State 保存登记与位置修订，Session 保存不可变快照。格式、kRPC 管理方法、幂等重试与生命周期见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。登记不是权限，activity 不是写锁，归档/取消登记不删除项目文件。

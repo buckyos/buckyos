@@ -136,6 +136,16 @@ impl Session {
     /// Replace `session_config.json` (dynamic subscriptions only).
     pub fn write_config(&mut self, lease: &Lease) -> Result<()> {
         lease.check()?;
+        let original = self.dir.config()?;
+        if original.workspace != self.config.workspace
+            || original.workspace_binding != self.config.workspace_binding
+            || original.runtime != self.config.runtime
+            || original.prompt.llm_context.get("runtime") != self.config.prompt.llm_context.get("runtime")
+        {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "session workspace is immutable".into(),
+            ));
+        }
         self.config.config_rev += 1;
         fsutil::atomic_replace_json(&self.dir.file(SESSION_CONFIG_FILE), &self.config)
     }

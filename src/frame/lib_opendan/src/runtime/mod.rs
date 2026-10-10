@@ -30,33 +30,209 @@ pub struct SessionEnv {
     pub env: Vec<(String, String)>,
 }
 
+fn verify_workspace_access(directory: &Path, access: WorkspaceAccess) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let path = std::ffi::CString::new(directory.as_os_str().as_bytes())
+            .map_err(|_| OpenDanError::WorkspaceBindingInvalid("invalid workspace path".into()))?;
+        let mut mode = libc::R_OK | libc::X_OK;
+        if access == WorkspaceAccess::ReadWrite {
+            mode |= libc::W_OK;
+        }
+        if unsafe { libc::faccessat(libc::AT_FDCWD, path.as_ptr(), mode, libc::AT_EACCESS) } != 0 {
+            return Err(OpenDanError::WorkspaceBindingInvalid(format!(
+                "workspace directory permission denied: {}",
+                std::io::Error::last_os_error()
+            )));
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = std::fs::metadata(directory)
+            .map_err(|e| OpenDanError::WorkspaceBindingInvalid(e.to_string()))?;
+        if access == WorkspaceAccess::ReadWrite && metadata.permissions().readonly() {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "workspace directory is read-only".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub async fn resolve_workspace(
+    agent: &dyn crate::state::AgentStateClient,
+    workspace: Option<&WorkspaceRef>,
+) -> Result<Option<WorkspaceBinding>> {
+    let Some(workspace) = workspace else {
+        return Ok(None);
+    };
+    let record = agent.workspaces().check(&workspace.workspace_id).await?;
+    if record.lifecycle != WorkspaceLifecycle::Active
+        || record.availability != WorkspaceAvailability::Available
+        || record.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+        || record.runtime_host != native_host_id()
+    {
+        return Err(OpenDanError::WorkspaceBindingInvalid(format!(
+            "workspace {} is not available for a local session: {:?} {:?}",
+            record.workspace_id, record.lifecycle, record.availability
+        )));
+    }
+    verify_workspace_access(&record.location.directory, workspace.access)?;
+    Ok(Some(WorkspaceBinding {
+        workspace_id: record.workspace_id,
+        revision: record.revision,
+        location_revision: record.location_revision,
+        runtime_host: record.runtime_host,
+        location: record.location,
+        access: workspace.access,
+    }))
+}
+
+pub async fn verify_workspace(
+    agent: &dyn crate::state::AgentStateClient,
+    cfg: &SessionConfig,
+) -> Result<()> {
+    let invalid = |message: String| OpenDanError::WorkspaceBindingInvalid(message);
+    match (&cfg.workspace, &cfg.workspace_binding) {
+        (None, None) => Ok(()),
+        (Some(reference), Some(binding)) => {
+            if reference.workspace_id != binding.workspace_id || reference.access != binding.access
+            {
+                return Err(invalid(
+                    "the workspace reference differs from its frozen binding".into(),
+                ));
+            }
+            let record = agent
+                .workspaces()
+                .check(&binding.workspace_id)
+                .await
+                .map_err(|e| match e {
+                    OpenDanError::Busy { .. } | OpenDanError::LeaseLost(_) => e,
+                    _ => invalid(e.to_string()),
+                })?;
+            if record.location != binding.location
+                || record.runtime_host != binding.runtime_host
+                || binding.runtime_host != native_host_id()
+                || record.location_revision != binding.location_revision
+                || record.lifecycle != WorkspaceLifecycle::Active
+                || record.availability != WorkspaceAvailability::Available
+                || record.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+            {
+                return Err(invalid(format!(
+                    "workspace {} no longer matches location revision {} ({:?}, {:?})",
+                    binding.workspace_id,
+                    binding.location_revision,
+                    record.lifecycle,
+                    record.availability
+                )));
+            }
+            verify_workspace_access(&binding.location.directory, binding.access)?;
+            let actual = std::fs::canonicalize(&binding.location.directory)
+                .map_err(|e| invalid(e.to_string()))?;
+            if actual != binding.location.directory {
+                return Err(invalid(
+                    "the workspace directory changed its canonical location".into(),
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(invalid(
+            "the session is missing its frozen workspace binding".into(),
+        )),
+    }
+}
+
+pub(crate) async fn workspace_waiting_children(
+    agent: &dyn crate::state::AgentStateClient,
+    cfg: &SessionConfig,
+    state: &SessionState,
+) -> Result<Vec<RegistryEntry>> {
+    let Some(workspace) = &cfg.workspace else {
+        return Ok(Vec::new());
+    };
+    let Some(waiting) = &state.waiting_for else {
+        return Ok(Vec::new());
+    };
+    if state.run_state != RunState::Waiting
+        || !matches!(waiting.kind, WaitingKind::Tool | WaitingKind::Children)
+        || !state.watched_tasks.is_empty()
+        || waiting.refs.is_empty()
+    {
+        return Ok(Vec::new());
+    }
+    let mut children = Vec::new();
+    for reference in &waiting.refs {
+        let sid = reference.strip_prefix("session:").unwrap_or(reference);
+        let Some(child) = agent.sessions().lookup(sid).await? else {
+            return Ok(Vec::new());
+        };
+        if child
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.parent_session.as_deref())
+            != Some(cfg.session.session_id.as_str())
+            || child
+                .workspace
+                .as_ref()
+                .is_none_or(|child| child.workspace_id != workspace.workspace_id)
+        {
+            return Ok(Vec::new());
+        }
+        children.push(child);
+    }
+    Ok(children)
+}
+
 pub fn resolve_workdir(
     sd: &SessionDir,
     cfg: &SessionConfig,
-    agent_root: Option<&Path>,
+    _agent_root: Option<&Path>,
 ) -> Result<PathBuf> {
-    let p = match &cfg.workspace {
-        None => sd.path().to_path_buf(),
-        Some(WorkspaceRef::External { path }) => {
-            let p = PathBuf::from(path);
-            if !p.is_absolute() {
-                return Err(OpenDanError::Bind(
-                    "external workspace must be absolute".into(),
+    let p = match (&cfg.workspace, &cfg.workspace_binding) {
+        (None, None) => sd.path().to_path_buf(),
+        (Some(reference), Some(binding))
+            if reference.workspace_id == binding.workspace_id
+                && reference.access == binding.access =>
+        {
+            if binding.location.runtime_id != LOCAL_WORKSPACE_RUNTIME
+                || binding.runtime_host != native_host_id()
+            {
+                return Err(OpenDanError::WorkspaceBindingInvalid(
+                    "remote workspace runtimes are not supported".into(),
                 ));
             }
-            p
+            binding.location.directory.clone()
         }
-        Some(WorkspaceRef::Agent { id }) => {
-            crate::ids::validate_session_id(id)?;
-            let p = agent_root
-                .ok_or_else(|| OpenDanError::Bind("agent workspace needs AgentRoot".into()))?
-                .join("workspace")
-                .join(id);
-            std::fs::create_dir_all(&p).map_err(|e| OpenDanError::io(&p, e))?;
-            p
+        _ => {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "the workspace binding is inconsistent".into(),
+            ))
         }
     };
-    Ok(p.canonicalize().unwrap_or(p))
+    p.canonicalize()
+        .map_err(|e| OpenDanError::WorkspaceBindingInvalid(format!("{}: {e}", p.display())))
+}
+
+pub fn validate_workspace_workdir(cfg: &SessionConfig) -> Result<()> {
+    if let (Some(binding), Some(workdir)) = (
+        &cfg.workspace_binding,
+        cfg.prompt
+            .llm_context
+            .get("runtime")
+            .and_then(|r| r.get("workdir"))
+            .and_then(|v| v.as_str()),
+    ) {
+        let path = Path::new(workdir);
+        if !path.is_absolute()
+            || path.canonicalize().ok().as_ref() != Some(&binding.location.directory)
+        {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "explicit runtime workdir conflicts with the selected workspace".into(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The runtime configuration a session declares
@@ -87,9 +263,16 @@ fn settle_for_session(
     agent_root: Option<&Path>,
     config: &mut agent_tool::runtime::RuntimeConfig,
 ) -> Result<()> {
-    if config.workdir.is_none() {
-        config.workdir = Some(resolve_workdir(sd, cfg, agent_root)?.display().to_string());
+    let expected = resolve_workdir(sd, cfg, agent_root)?;
+    if let Some(workdir) = &config.workdir {
+        let path = Path::new(workdir);
+        if !path.is_absolute() || path.canonicalize().ok().as_ref() != Some(&expected) {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "explicit runtime workdir conflicts with the session directory binding".into(),
+            ));
+        }
     }
+    config.workdir = Some(expected.display().to_string());
     if config.kind() != "tmux" {
         return Ok(());
     }
@@ -259,14 +442,20 @@ pub async fn bind_or_verify(
     }
     let existing = sd.binding_opt()?;
     let binding = Binding {
-        schema: "opendan.binding/3".into(),
+        schema: "opendan.binding/4".into(),
         runtime_id: desc.runtime_id.clone(),
         kind: desc.kind.clone(),
         target: desc.target.clone(),
         workdir: desc.workdir.clone(),
+        workspace: cfg.workspace_binding.clone(),
         bound_at_ms: crate::now_ms(),
         bound_by: runner_id.into(),
     };
+    if Path::new(&binding.workdir).canonicalize().ok().as_ref() != Some(&fallback) {
+        return Err(OpenDanError::WorkspaceBindingInvalid(
+            "actual runtime workdir differs from the frozen binding".into(),
+        ));
+    }
     if let Some(b) = &existing {
         if !b.same_binding(&binding) {
             return Err(OpenDanError::RuntimeMismatch {

@@ -542,8 +542,7 @@ impl SessionAssembler for BehaviorAssembler {
                     "parent": cfg.session.origin.as_ref().and_then(|o| o.parent_session.clone()),
                 },
                 "workspace": { "id": match &cfg.workspace {
-                    Some(WorkspaceRef::Agent { id }) => Value::String(id.clone()),
-                    Some(WorkspaceRef::External { path }) => Value::String(path.clone()),
+                    Some(workspace) => Value::String(workspace.workspace_id.clone()),
                     None => Value::Null,
                 }},
             });

@@ -14,7 +14,7 @@
 | `ui.rs` | UI Session + Message Tunnel：inbox 发现、绑定、入站桥（只放行 Owner，群聊规则与群上下文）、出站 sink |
 | `tasks.rs` | TaskMgr 接入：`TurnTasks`（每个 Turn 一个 `opendan.agent_turn/v1` task，Agent 自建自跑，root task grant 给 owner）、`CancelBridge`（TaskMgr 的 cancel → Session `stop`） |
 | `service.rs` | Agent State kRPC 服务、Session 观测、三个操作、Loader 状态 |
-| `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话 |
+| `home.rs` | 首页用的数据：Agent 资料卡、按模型的 token 用量、UI Session 对应的会话、Agent State 登记的 Workspace 展示 |
 | `web/` | WebUI：首页（资料卡、工作概况、Session 列表，按手机屏幕设计）+ 观测页（Sessions / Agent State / Loader，`#/sessions` 起），数据全部来自 kRPC |
 
 ## Agent 与它的 Owner
@@ -183,10 +183,12 @@ cd src && uv run start.py --skip-update
 | `agent.profile_set` | `{display_name?, avatar?, bio?}` | 同 `agent.profile` |
 | `usage.models` | – | `{now_ms, since_ms, models: [{model, hour, day, all}]}`，`hour` / `day` / `all` 为 `{input, output, total}` |
 | `ui.bindings` | – | `[{session_id, to, to_session, kind}]` |
+| `home.workspaces` | – | Agent State 中全部已知 Workspace 的展示字段，包含归档和不可访问记录，不输出私有备注与策略引用 |
 
 - 资料：读写系统配置里的 Agent `profile`（与 control_panel 的 `agent.profile.*` 是同一份）；没有昵称时 `display_name` 是 Agent 用户名（AgentId 的第一段）。`agent.profile_set` 只改传入的字段，传空字符串清除该字段。`display_name` ≤ 64 字符，`bio` ≤ 500 字符，`avatar` 是图片 data URL，≤ 128 KiB。`owner_did` 是 AgentSpec 里的 Owner DID（`--dev` 取 `--owner-did`），`desktop_url`（zone 桌面的地址，MessageHub 在其 `/messagehub`）在 `--dev` 形态下为 `null`。
 - 用量：汇总登记表里各 Session 的 `usage.jsonl`（[Session Directory Protocol](../../../doc/opendan/protocol/Session%20Directory%20Protocol.md) §4），按 `all.total` 降序；`hour` / `day` 是最近 1 小时 / 24 小时。`model` 是 AICC 路由最终选中的模型，取不到时是请求里的模型别名。没有 `usage.jsonl` 的旧 Session 不计入，`since_ms` 是最早一条记录的时间。
 - `ui.bindings`：UI Session 的回复去向（`session_config.json` 的 `channels.outbound`）。WebUI 据此把 Session 链接到 MessageHub：对方是 owner 时打开 owner 自己与 Agent 的会话（`/messagehub?entityId=<agent>&sessionId=<to_session | dm:<agent>>`），否则以观察模式打开 Agent 的会话（`ownerDid=<agent>&mode=observe&entityId=<对方>&sessionId=<收件箱会话>`）。没有绑定会话的 Session（work、self_check 等）在 WebUI 里进入自己的详情页。
+- `home.workspaces` 从 Workspace Manager 查询已知目录，不按 Session 是否使用过或本机目录是否存在过滤。首页展示稳定 ID、Runtime、目录、使用属性、生命周期、最近可用性检查、错误与冲突，按稳定 ID 关联 Session 和产物。检查访问调用 `workspaces.check`；重新定位调用 `workspaces.discover` 并同时提交目标 ID 和预期登记修订，失败保留原登记。重新定位只供新的 Session 使用，既有 Session 的绑定保持不变。
 
 ### Loader 状态
 

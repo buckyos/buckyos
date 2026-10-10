@@ -67,6 +67,29 @@ impl SessionRuns {
         Ok(self.store.read_record(run_id)?)
     }
 
+    pub fn settle_background_task(&self, lease: &crate::lock::Lease, task_id: &str) -> Result<()> {
+        lease.check()?;
+        for id in self.list()? {
+            let record = self.record(&id)?;
+            if !record.status.is_terminal() { continue; }
+            let tracked = record.host.as_ref().and_then(|h| h.extra.get("tasks"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|tasks| tasks.iter().any(|t| t.as_str() == Some(task_id)));
+            if !tracked { continue; }
+            let Some(_lock) = self.try_lock(&id)? else {
+                return Err(OpenDanError::RunBusy { run_id: id });
+            };
+            let mut record = self.record(&id)?;
+            if let Some(tasks) = record.host.as_mut().and_then(|h| h.extra.get_mut("tasks"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                tasks.retain(|t| t.as_str() != Some(task_id));
+            }
+            lease.fenced(|| Ok(self.store.write_record(&record)?))?;
+        }
+        Ok(())
+    }
+
     /// Take the run execution lock (shared with xllm).
     pub fn try_lock(&self, run_id: &str) -> Result<Option<RunLockFile>> {
         Ok(self.store.lock_run(run_id)?)

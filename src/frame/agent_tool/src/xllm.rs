@@ -5552,6 +5552,18 @@ pub fn is_handover_target(next_behavior: &str) -> bool {
     !next_behavior.trim().is_empty() && next_behavior != "WAIT_USER_MSG"
 }
 
+fn ensure_workspace_host_runner(record: &RunRecord) -> Result<(), XllmError> {
+    if record.host.as_ref().is_some_and(|host| {
+        host.extra.get("workspace_binding").is_some_and(|binding| !binding.is_null())
+    }) {
+        return Err(XllmError::NotResumable {
+            run_id: record.run_id.clone(),
+            reason: "managed workspace execution requires its Session host to verify the immutable binding and hold the workspace writer lock; use xagent run".into(),
+        });
+    }
+    Ok(())
+}
+
 fn ensure_host_report_not_pending(record: &RunRecord) -> Result<(), XllmError> {
     if record
         .host
@@ -7875,6 +7887,7 @@ impl XllmRun {
                 ),
             });
         }
+        ensure_workspace_host_runner(&record)?;
         ensure_host_report_not_pending(&record)?;
         ensure_host_final_step_not_pending(&record, store)?;
         if let Some(seq) = record.host_commit_pending {
@@ -7925,6 +7938,7 @@ impl XllmRun {
         // Holding the run lock: re-read, then make sure no execution of the
         // previous executor is still alive and settle in-flight actions.
         let mut record = store.read_record(&run_id_s)?;
+        ensure_workspace_host_runner(&record)?;
         ensure_host_report_not_pending(&record)?;
         ensure_host_final_step_not_pending(&record, store)?;
         if record.host_commit_pending.is_some() {

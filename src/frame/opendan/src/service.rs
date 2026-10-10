@@ -156,6 +156,7 @@ impl StateService {
                     "session": cfg.session,
                     "runtime": cfg.runtime,
                     "workspace": cfg.workspace,
+                    "workspace_binding": cfg.workspace_binding,
                     "subscriptions": cfg.subscriptions,
                     "channels": cfg.channels,
                     "behavior": cfg.prompt.behavior,
@@ -305,6 +306,7 @@ impl StateService {
             }
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,
+            "home.workspaces" => self.home.workspaces(self.agent.as_ref()).await,
             "loader.status" => Ok(json!({
                 "agent_did": self.info.agent_did,
                 "agent_id": self.info.agent_id,

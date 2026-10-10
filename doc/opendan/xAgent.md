@@ -65,7 +65,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
 
 | 已有能力 | 直接复用的入口 |
 |---|---|
-| `session_input/3`、`session_config/6`、`session_state/6`；binding `/3`、RunRecord v6、快照 v5 | `protocol/{input,config,state}.rs`、[协议索引](protocol/README.md)；类型与版本常量优先于旧 README 的摘要 |
+| `session_input/3`、`session_config/7`、`session_state/6`；binding `/4`、RunRecord v6、快照 v5 | `protocol/{input,config,state}.rs`、[协议索引](protocol/README.md)；类型与版本常量优先于旧 README 的摘要 |
 | 顺序路由、拒绝、去重、active 接受状态、Observe 合并、session 拉取订阅 | `runner/inputs.rs::route_inputs`；不再拆成整批 controls 与整批 events 两遍处理 |
 | InputView、命名格式、三类模板、媒体块、receipt 与回复来路 | `runner/{input_view,assembler,live,receipts,flush}.rs`；黄金结果在 `protocol/fixtures/14_input_bus/` |
 | 普通 task 串行等待、Unknown 回填、后台 task 跟踪、长工具 stop | `runner/shared.rs::{Opened,WaitingRun}`、`live.rs::try_fill`、`drive.rs::{poll_watched_tasks,StopMonitor}` |
@@ -115,10 +115,10 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
 | ToolManager | `XllmToolManager`（本进程、本地 fs） | **Runtime 的 Sandbox**（按同一份有效 tools 配置解析与派发，内置文件/exec 使用执行体），外包 `SessionToolManager`：lease 检查、宿主门槛、inflight 记录、touching 推断。native 沙箱内部仍复用 xllm 的 `build_toolset` |
 | waist deps | `LLMContextDeps` + xllm `SnapshotHook`（InferenceHook） | `hosted_waist_deps`（behavior 时装 `XllmActionParser` + 无时间戳 `XmlStepRenderer`）+ `SessionCheckpointHook`（异步 CheckpointHook：已改为发布工具结果、顺序路由和刷新心跳；检查点只保存半订阅更新，注入在受控输入之前，见 §9.5）。**不用 InferenceHook** |
 | run 目录 | `RunStore` 在 `.llm_context` 的 runs_dir | 同一 `RunStore`，目录是 `<sid>/.opendan_agent_session/runs/`；RunRecord 多了 `host{assembled_by, session_id, runtime_kind, env_check}`、`host_commit_pending`、`inflight`、`executions`；`host.extra.finish` 存结束决定 |
-| 工作目录锁 | `<lock_dir>/<hash(workdir)>.lock` | `skip_workdir_lock = true`，多 session 共享 workspace 靠活动视图避让 |
+| 工作目录锁 | `<lock_dir>/<hash(workdir)>.lock` | `skip_workdir_lock = true`；绑定 Workspace 的 Session 由宿主持有 Workspace 写锁，活动视图只提供提示 |
 | run 结束 | 终态写 run.json，结果导出 | `handle_context_outcome` → `finish_run`：flush 历史进 worklog、关闭 Turn、提交 state.json、登记表回报、感知 digest |
 | 停止点之后 | xllm 结束；`next_behavior` 只留在快照与 run.json 里 | **Context 调度**（§3.2）：进入目标自己的 run、建子 run、回到调用方，或关闭 Turn |
-| 接手 | — | 保存的 runtime/target/cwd、helper 环境核验通过，且无 `host_commit_pending`、无进程内专有工具时，`xllm --resume --run <id> --runs-dir <sid>/.opendan_agent_session/runs --dir <workdir>` 可接手 |
+| 接手 | — | 未绑定 Workspace，且保存的 runtime/target/cwd、helper 环境核验通过，无 `host_commit_pending`、无进程内专有工具时，`xllm --resume --run <id> --runs-dir <sid>/.opendan_agent_session/runs --dir <workdir>` 可接手 |
 
 xagent 不改变这张表的分工，只在“配置来源”和“system 段”两格引入 behavior 冻结（§6），在“ToolManager”一格把执行权交给 Runtime 沙箱（§5）。这张表只讲一个 run 怎么构造；run 停下之后下一个 context 怎么来，是 §3.2–§3.7 的 Context 调度。
 
@@ -510,7 +510,7 @@ agent-session create-worksession --objective <text>
     [--msg <text>]... [--attach <obj_id>[=<name>]]...   首批输入：MsgObject；附件只给已存在的 ObjId
     [--context recent:<n>|none]                     把父 run 最近 n 条对话摘录附进首批输入（默认 none；不继承 steps）
     [--class work|…] [--behavior <name>]            模板与入口 behavior（默认 work 模板）
-    [--workspace inherit|new|<id>]                  默认 inherit：与父共用，靠活动视图避让
+    [--workspace inherit|none|<id>]                 默认 inherit；none 使用子 SessionDir；id 为已登记 Workspace
     [--runtime inherit|<id>]                        默认 inherit：继承父的 runtime 配置；tmux 按子 session_id 创建并绑定（§5.2.1）
     [--report final|progress|none]                  父怎么收到汇报（§4.14），默认 final
     [--interactive]                                 子 session 建输入队列，父之后可以继续 post（默认不建，§4.7）
@@ -547,7 +547,7 @@ impl ChildDriver {
 - 父每次提交之后、以及登记表变化时 `tick`。子 session 各持自己的 lease，与父并行；宿主进程退出也会停止其中的子驱动协程，但不删除已提交状态；重启后 ChildDriver 从登记表与快照重新接管。
 - 子的状态变化后，ChildDriver 唤醒父的调度器；父没有 drive 在执行时再 drive(parent)，已有驱动者则让其轮询发现，不能并发驱动同一父。工具 create-worksession 在父执行中也可能登记子，因此 ChildDriver 需独立轮询登记表，不只等父提交。
 - `xagent run <parent>`：父 Turn 关闭后，默认继续推进本进程拉起的子 session，直到它们空闲或结束再退出；`--detach-children` 立即返回，留给 `xagent serve`。`xagent serve` 同样接管所服务 session 的子 session。
-- 子 session 首次推进时自己绑定 runtime（`binding.json`）。`--runtime inherit` 继承执行类型、连接与环境配置；tmux 的 `id`、`tmux.session` 和绑定要求按子 session_id 重新派生，cwd 由子的 workspace 解析，不复制父的绑定或 runtime 实例。同一 Session 内的子 context 则复用本 Session 的 runtime（§5.2.1）。共用 workspace 时按活动视图避让，与多个顶层 session 共用 workspace 相同。
+- 子 session 首次推进时自己绑定 runtime（`binding.json`）。`--runtime inherit` 继承执行类型、连接与环境配置；tmux 的 `id`、`tmux.session` 和绑定要求按子 session_id 重新派生，cwd 由子的 workspace 解析，不复制父的绑定或 runtime 实例。同一 Session 内的子 context 则复用本 Session 的 runtime（§5.2.1）。共用 Workspace 时按本地写锁串行执行；父只等待已登记的同 Workspace 子任务时提交等待状态并释放锁，宿主优先推进最内层任务，子完成后重新核验父绑定并接续。未核实的在途调用或后台任务阻止交接。绑定和恢复规则见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。
 
 ### 4.13 父子之间的沟通渠道
 
@@ -791,13 +791,13 @@ pub struct BehaviorConfig {
 
 `input.mode` 默认 Batch；Single 在按 source / index 排序的可处理 message / Input event 中总共选一条，Batch 最多取 `options.input_batch_max` 条，未选输入保留，后台 task 合成候选排在总线候选之后。首次进入目标 behavior 时先完成必要的冻结与校验，再读取策略和模板。模板缺省使用内建渲染；已有选中的外部输入却渲染为空必须报错并保留现场。没有外部输入时的 bootstrap / continuation 处理见 §9.3。
 
-`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/6`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
+`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/7`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
 
 进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6），不需要另外声明工具。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
 
 ### 6.3 冻结：时机、位置、范围
 
-**位置**：`frozen` 位于当前 `opendan.session_config/6` 的 `prompt` 中，不新增文件。下例是冻结后的形状；冻结配置自 C4 / C5 / C7 / C15 的 `/5` 版本起实施，当前 fixtures 与 schema 已同步到 `/6`：
+**位置**：`frozen` 位于当前 `opendan.session_config/7` 的 `prompt` 中，不新增文件。下例是冻结后的形状；冻结配置自 C4 / C5 / C7 / C15 的 `/5` 版本起实施，当前 fixtures 与 schema 已同步到 `/7`：
 
 ```jsonc
 "prompt": {
@@ -930,7 +930,7 @@ impl dyn AgentStateClient {
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
   xagent new    --agent <did> --objective <text> [--class work|ui|self_improve|self_check] [--parent <dir>]
-                [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <path>]
+                [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <workspace_id>]
                 [--subscribe <spec>]... [--msg <text>] [--until turn|finished|idle|outcomes:<n>] [--no-run]
                  按模板创建 session（冻结 behavior 与模板），默认立刻推进一个 Turn
   xagent run    <session_dir|sid> [--msg <text> | --msg-file <path> | --event <json>]
@@ -1029,7 +1029,7 @@ serve
 
 每个驱动命令按所驱动的 Session 构造 `RunnerDeps`，设置 assembler、任务 resolver 与 `session_cli = current_exe()`，runtime 通过 §5.2.1 的 Session 工厂装配；`serve` / ChildDriver 不能直接复用另一个 Session 的 tmux 依赖。由现有 bin overlay 包装成 `agent-session`。不要另建 Runtime 或工具派发协议；目标 behavior 的工具与模型按每个 run 的有效配置装配，context 的 runtime 则复用 Session 绑定。
 
-无队列 bootstrap 的持久输入（新增 C4）：创建前用同一消息 helper 构造 `PostedInput::msg`，写入目标字段 `prompt.initial_inputs: Vec<PostedInput>`，只接受合法 msg，最多 64 条；随 SessionConfig 一起发布，发布后不修改。自 `session_config/5` 起实施，当前为 `/6`。Runner 将它适配为内部只读 source `_bootstrap`，index 从 1 开始，复用 SourceProgress / route_inputs / receipt；无需 kmsg，`channels.inputs` 仍为空，confirm 为空操作。Single 首批未选中的记录在后续 on_input 消费，不能因 bootstrap_done 就丢弃。初始消息与普通消息同样渲染为 user 输入，不挪进 system 的 prompt.context。
+无队列 bootstrap 的持久输入（新增 C4）：创建前用同一消息 helper 构造 `PostedInput::msg`，写入目标字段 `prompt.initial_inputs: Vec<PostedInput>`，只接受合法 msg，最多 64 条；随 SessionConfig 一起发布，发布后不修改。自 `session_config/5` 起实施，当前为 `/7`。Runner 将它适配为内部只读 source `_bootstrap`，index 从 1 开始，复用 SourceProgress / route_inputs / receipt；无需 kmsg，`channels.inputs` 仍为空，confirm 为空操作。Single 首批未选中的记录在后续 on_input 消费，不能因 bootstrap_done 就丢弃。初始消息与普通消息同样渲染为 user 输入，不挪进 system 的 prompt.context。
 
 `new --no-run --msg` 必须在退出前落盘；已有无队列 Session 的 `run --msg / --event / --msg-file` 与 post 拒绝投递，提示在创建时提供材料或使用 Queue 模板。E9 的三种外部投递等价在有队列 Session 验证；E13 另验内部初始 source 的逐条消费与恢复。
 
@@ -1337,7 +1337,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 14. **后移：显式完成策略的模板范围**（Context TODO H4）。本轮沿用 end_condition 与 §4.7 的 WAIT_USER_MSG 解释，不让普通 Done 自动获得另一种完成语义。
 15. **默认：子 context 嵌套范围**。沿用现行规则：可再调用子 context；跳到 switch_context 目标交回调用方，WAIT_USER_MSG 交回 needs_user_input；扩展内部切换或直接等用户后移。
 16. **默认：进入配置落点**。冻结保存 BehaviorConfig，生成现有 `extensions.opendan.behaviors.<name>` 的 `{mode,prompt{system,…},input{mode,media},llm_context,inherit}`；冻结 Session 拒绝冲突的应用覆盖。未采用冻结的库调用仍使用现有 extensions 入口，不增加旧字段兼容。
-17. **默认：子 workspace**。inherit，可明确选择 new / id；共用时依靠活动视图协调。
+17. **默认：子 workspace**。inherit，可明确选择 none / 已登记 ID；父已绑定时不能扩大权限或切换项目，无绑定的 UI Session 可显式选择项目派发工作。共用时由宿主持有本地写锁；绑定、失败与恢复语义见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。
 18. **默认：父结束规则**。有 report != none 的未结束子时，父 Turn 保持打开等汇报。
 19. **默认：父对子隐式关注**。C15 取代创建时向父投 subscribe；父可无队列，但 Input 接受 / 消费必须可恢复。
 20. **默认：run 推进子 session**。按 §4.12 推进到空闲或结束；detach 只保证子已持久登记，后续由 serve / Supervisor 接管，不保证同进程任务在 CLI 退出后继续。

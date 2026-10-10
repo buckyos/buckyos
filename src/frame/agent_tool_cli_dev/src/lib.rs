@@ -52,14 +52,14 @@ use agent_tool::skills_mgr::{
 };
 use agent_tool::{
     cli_error_result, cli_exit_code_for_error, cli_result_from_tool_result, cli_success_result,
-    normalize_abs_path, now_ms, render_cli_output, session_record_path, AgentAttentionSignalStore,
+    normalize_abs_path, render_cli_output, session_record_path, AgentAttentionSignalStore,
     AgentToolError, AgentToolManager, AgentToolPendingReason, AgentToolResult, AgentToolStatus,
-    AttentionSignalStoreConfig, AttentionSignalToolRuntime, BindWorkspaceTool, CliRunOutput,
-    CreateWorkspaceTool, DcrontabTool, DiscoverEventTool, DiscoverObjectObservationTool,
+    AttentionSignalStoreConfig, AttentionSignalToolRuntime, CliRunOutput,
+    DcrontabTool, DiscoverEventTool, DiscoverObjectObservationTool,
     DiscoverRelationshipTool, DiscoverSkillCoverageGapTool, EditFileTool, FileToolConfig,
     GetSessionTool, GlobTool, GrepTool, NoopFileWriteAudit, ReadFileTool, RuntimeContext,
     SessionRuntimeContext, SessionViewBackend, TodoTool, TodoToolConfig, ToolCtx, TypedTool,
-    WorkspaceToolBackend, WriteFileTool, DEFAULT_READ_TOKEN_LIMIT,
+    WriteFileTool, DEFAULT_READ_TOKEN_LIMIT,
 };
 use agent_tool::{llm_explore, llm_understand_media, run_local_llm};
 
@@ -80,7 +80,7 @@ const TOOL_BEGIN_ATTENTION_SIGNAL_EXTRACTION: &str = "BeginAttentionSignalExtrac
 const TOOL_COMPLETE_ATTENTION_SIGNAL_EXTRACTION: &str = "CompleteAttentionSignalExtraction";
 const TOOL_LIST_PENDING_ATTENTION_SIGNALS: &str = "ListPendingAttentionSignals";
 const TOOL_MARK_ATTENTION_SIGNAL_CONSUMED: &str = "MarkAttentionSignalConsumed";
-const TOOL_NAMES: [&str; 29] = [
+const TOOL_NAMES: [&str; 27] = [
     "Glob",
     "Grep",
     "dcrontab",
@@ -91,8 +91,6 @@ const TOOL_NAMES: [&str; 29] = [
     "edit_file",
     "todo",
     "get_session",
-    "create_workspace",
-    "bind_workspace",
     TOOL_AGENT_MEMORY,
     TOOL_AGENT_MEMORY_SNAKE,
     TOOL_AGENT_NOTEBOOK,
@@ -123,8 +121,6 @@ const DEFAULT_AGENT_NAME: &str = "did:opendan:cli";
 const DEFAULT_WAKEUP_ID: &str = "cli-wakeup";
 const DEFAULT_BEHAVIOR: &str = "cli";
 const SESSION_RECORD_FILE: &str = "session.json";
-const SESSION_WORKSPACE_BINDINGS_REL_PATH: &str = "workspaces/session_workspace_bindings.json";
-const WORKSPACE_INDEX_FILE: &str = "index.json";
 const ATTENTION_EXTRACTION_RUNTIME_REL_PATH: &str =
     ".runtime/attention_signal_extraction/current.json";
 const OBJECT_ROUTE_CONFIG_ENV: &str = "AGENT_DID_OBJECT_ROUTE_CONFIG";
@@ -5228,45 +5224,6 @@ fn cli_state_root(env: &CliRuntimeEnv) -> PathBuf {
     }
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CliLocalWorkspaceSessionBinding {
-    session_id: String,
-    bound_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CliWorkspaceRecord {
-    workspace_id: String,
-    name: String,
-    relative_path: Option<String>,
-    created_by_session: Option<String>,
-    created_at_ms: u64,
-    updated_at_ms: u64,
-    bound_sessions: Vec<CliLocalWorkspaceSessionBinding>,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CliWorkspaceIndex {
-    agent_did: String,
-    workspaces: Vec<CliWorkspaceRecord>,
-    updated_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CliSessionWorkspaceBinding {
-    session_id: String,
-    local_workspace_id: String,
-    workspace_path: String,
-    workspace_rel_path: String,
-    agent_env_root: String,
-    bound_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct CliSessionBindingsFile {
-    bindings: Vec<CliSessionWorkspaceBinding>,
-}
-
 #[derive(Clone)]
 struct CliSessionBackend {
     state_root: PathBuf,
@@ -5278,12 +5235,6 @@ impl SessionViewBackend for CliSessionBackend {
         let session = load_session_json(&self.state_root, session_id).await?;
         Ok(build_session_summary_view(&session))
     }
-}
-
-#[derive(Clone)]
-struct CliWorkspaceBackend {
-    state_root: PathBuf,
-    agent_id: String,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -5778,228 +5729,6 @@ async fn remove_attention_runtime(
     }
 }
 
-#[async_trait]
-impl WorkspaceToolBackend for CliWorkspaceBackend {
-    async fn create_workspace(
-        &self,
-        ctx: &SessionRuntimeContext,
-        name: String,
-        summary: String,
-    ) -> Result<Json, AgentToolError> {
-        let session_id = ctx.session_id.trim();
-        if session_id.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "session_id is required".to_string(),
-            ));
-        }
-        let session = load_session_json(&self.state_root, session_id).await?;
-        if build_session_summary_view(&session)
-            .get("local_workspace_id")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "session `{session_id}` already bound local workspace"
-            )));
-        }
-
-        let now = now_ms();
-        let workspace_id = format!("ws-{now:x}-{:x}", std::process::id());
-        let mut index = load_workspace_index(&self.state_root).await?;
-        let workspace_dir_name =
-            allocate_cli_workspace_dir_name(&self.state_root, &index, &name).await?;
-        let workspace_rel_path = format!("workspaces/{workspace_dir_name}");
-        let workspace_path = self.state_root.join(&workspace_rel_path);
-        fs::create_dir_all(&workspace_path).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "create workspace dir `{}` failed: {err}",
-                workspace_path.display()
-            ))
-        })?;
-        let summary_path = workspace_path.join("SUMMARY.md");
-        fs::write(&summary_path, format!("{}\n", summary.trim()))
-            .await
-            .map_err(|err| {
-                AgentToolError::ExecFailed(format!(
-                    "write workspace summary failed: path={} err={err}",
-                    summary_path.display()
-                ))
-            })?;
-
-        let workspace = CliWorkspaceRecord {
-            workspace_id: workspace_id.clone(),
-            name: name.trim().to_string(),
-            relative_path: Some(workspace_rel_path.clone()),
-            created_by_session: Some(session_id.to_string()),
-            created_at_ms: now,
-            updated_at_ms: now,
-            bound_sessions: vec![CliLocalWorkspaceSessionBinding {
-                session_id: session_id.to_string(),
-                bound_at_ms: now,
-            }],
-        };
-        index.workspaces.push(workspace.clone());
-        index.agent_did = self.agent_id.clone();
-        index.updated_at_ms = now;
-        save_workspace_index(&self.state_root, &index).await?;
-
-        let binding = CliSessionWorkspaceBinding {
-            session_id: session_id.to_string(),
-            local_workspace_id: workspace_id.clone(),
-            workspace_path: workspace_path.to_string_lossy().to_string(),
-            workspace_rel_path,
-            agent_env_root: self.state_root.to_string_lossy().to_string(),
-            bound_at_ms: now,
-        };
-        save_session_binding(&self.state_root, &binding).await?;
-        let session_updated = persist_session_workspace_binding(
-            &self.state_root,
-            session_id,
-            &workspace_id,
-            Some(workspace.name.as_str()),
-            &binding,
-        )
-        .await?;
-
-        Ok(json!({
-            "ok": true,
-            "workspace": workspace,
-            "binding": binding,
-            "summary_path": summary_path.to_string_lossy().to_string(),
-            "session_id": session_id,
-            "session_updated": session_updated
-        }))
-    }
-
-    async fn resolve_workspace_id(
-        &self,
-        workspace_ref: &str,
-        shell_cwd: Option<&Path>,
-    ) -> Result<String, AgentToolError> {
-        let workspace_ref = workspace_ref.trim();
-        if workspace_ref.is_empty() {
-            return Err(AgentToolError::InvalidArgs(
-                "workspace argument cannot be empty".to_string(),
-            ));
-        }
-
-        let index = load_workspace_index(&self.state_root).await?;
-        if let Some(found) = index
-            .workspaces
-            .iter()
-            .find(|item| item.workspace_id == workspace_ref)
-        {
-            return Ok(found.workspace_id.clone());
-        }
-
-        let parsed = Path::new(workspace_ref);
-        let candidate = if parsed.is_absolute() {
-            parsed.to_path_buf()
-        } else if let Some(cwd) = shell_cwd {
-            cwd.join(parsed)
-        } else {
-            std::env::current_dir()
-                .map_err(|err| {
-                    AgentToolError::ExecFailed(format!("read current_dir failed: {err}"))
-                })?
-                .join(parsed)
-        };
-        let normalized_candidate = canonicalize_or_normalize(candidate, None);
-        for item in index.workspaces {
-            let workspace_path = workspace_root_for_record(&self.state_root, &item);
-            if canonicalize_or_normalize(workspace_path, None) == normalized_candidate {
-                return Ok(item.workspace_id);
-            }
-        }
-
-        Err(AgentToolError::InvalidArgs(format!(
-            "workspace not found: `{workspace_ref}`; expected workspace_id or workspace_path"
-        )))
-    }
-
-    async fn bind_workspace(
-        &self,
-        _ctx: &SessionRuntimeContext,
-        session_id: &str,
-        workspace_id: &str,
-    ) -> Result<Json, AgentToolError> {
-        let session = load_session_json(&self.state_root, session_id).await?;
-        if build_session_summary_view(&session)
-            .get("local_workspace_id")
-            .and_then(Json::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_some()
-        {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "session `{session_id}` already bound local workspace"
-            )));
-        }
-        if load_session_binding(&self.state_root, session_id)
-            .await?
-            .is_some()
-        {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "session `{session_id}` already bound local workspace"
-            )));
-        }
-
-        let mut index = load_workspace_index(&self.state_root).await?;
-        let Some(workspace) = index
-            .workspaces
-            .iter_mut()
-            .find(|item| item.workspace_id == workspace_id)
-        else {
-            return Err(AgentToolError::InvalidArgs(format!(
-                "workspace not found: `{workspace_id}`"
-            )));
-        };
-
-        let now = now_ms();
-        workspace.updated_at_ms = now;
-        workspace
-            .bound_sessions
-            .push(CliLocalWorkspaceSessionBinding {
-                session_id: session_id.to_string(),
-                bound_at_ms: now,
-            });
-        let workspace_snapshot = workspace.clone();
-        index.updated_at_ms = now;
-        save_workspace_index(&self.state_root, &index).await?;
-
-        let workspace_path = workspace_root_for_record(&self.state_root, &workspace_snapshot);
-        let binding = CliSessionWorkspaceBinding {
-            session_id: session_id.to_string(),
-            local_workspace_id: workspace_id.to_string(),
-            workspace_path: workspace_path.to_string_lossy().to_string(),
-            workspace_rel_path: workspace_snapshot
-                .relative_path
-                .clone()
-                .unwrap_or_else(|| format!("workspaces/{workspace_id}")),
-            agent_env_root: self.state_root.to_string_lossy().to_string(),
-            bound_at_ms: now,
-        };
-        save_session_binding(&self.state_root, &binding).await?;
-        let session_updated = persist_session_workspace_binding(
-            &self.state_root,
-            session_id,
-            workspace_id,
-            Some(workspace_snapshot.name.as_str()),
-            &binding,
-        )
-        .await?;
-
-        Ok(json!({
-            "ok": true,
-            "binding": binding,
-            "session_id": session_id,
-            "session_updated": session_updated
-        }))
-    }
-}
-
 /// Single registry-of-tools used by the CLI dispatcher. Replaces the
 /// per-tool `build_xxx_tool` factories — adding a new tool here is a one
 /// line `register_typed_tool` call instead of a new branch in
@@ -6013,13 +5742,6 @@ async fn build_cli_tool_manager(env: &CliRuntimeEnv) -> Result<AgentToolManager,
     mgr.register_typed_tool(GetSessionTool::new(Arc::new(CliSessionBackend {
         state_root: state_root.clone(),
     })))?;
-
-    let workspace_backend = Arc::new(CliWorkspaceBackend {
-        state_root: state_root.clone(),
-        agent_id: env.call_ctx.agent_name.clone(),
-    });
-    mgr.register_typed_tool(CreateWorkspaceTool::new(workspace_backend.clone()))?;
-    mgr.register_typed_tool(BindWorkspaceTool::new(workspace_backend))?;
 
     // NOTE: agent-memory is no longer a TypedTool — it has its own
     // top-level CLI dispatch (see `dispatch_agent_memory`) so the agent
@@ -6328,30 +6050,6 @@ async fn load_session_json(state_root: &Path, session_id: &str) -> Result<Json, 
     })
 }
 
-async fn save_session_json(
-    state_root: &Path,
-    session_id: &str,
-    session: &Json,
-) -> Result<(), AgentToolError> {
-    let path = session_file_path(state_root, session_id)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "create session dir `{}` failed: {err}",
-                parent.display()
-            ))
-        })?;
-    }
-    let bytes = serde_json::to_vec_pretty(session)
-        .map_err(|err| AgentToolError::ExecFailed(format!("serialize session failed: {err}")))?;
-    fs::write(&path, bytes).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "write session file `{}` failed: {err}",
-            path.display()
-        ))
-    })
-}
-
 fn build_session_summary_view(session: &Json) -> Json {
     let runtime_state = session
         .pointer("/meta/runtime_state")
@@ -6388,238 +6086,6 @@ fn build_session_summary_view(session: &Json) -> Json {
         "local_workspace_id": runtime_state.get("local_workspace_id").cloned().unwrap_or(Json::Null),
         "meta": session.get("meta").cloned().unwrap_or_else(|| json!({})),
     })
-}
-
-async fn load_workspace_index(state_root: &Path) -> Result<CliWorkspaceIndex, AgentToolError> {
-    let path = state_root.join(WORKSPACE_INDEX_FILE);
-    match fs::read_to_string(&path).await {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "parse workspace index `{}` failed: {err}",
-                path.display()
-            ))
-        }),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(CliWorkspaceIndex::default()),
-        Err(err) => Err(AgentToolError::ExecFailed(format!(
-            "read workspace index `{}` failed: {err}",
-            path.display()
-        ))),
-    }
-}
-
-async fn save_workspace_index(
-    state_root: &Path,
-    index: &CliWorkspaceIndex,
-) -> Result<(), AgentToolError> {
-    let path = state_root.join(WORKSPACE_INDEX_FILE);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "create workspace index dir `{}` failed: {err}",
-                parent.display()
-            ))
-        })?;
-    }
-    let bytes = serde_json::to_vec_pretty(index).map_err(|err| {
-        AgentToolError::ExecFailed(format!("serialize workspace index failed: {err}"))
-    })?;
-    fs::write(&path, bytes).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "write workspace index `{}` failed: {err}",
-            path.display()
-        ))
-    })
-}
-
-async fn load_session_bindings_file(
-    state_root: &Path,
-) -> Result<CliSessionBindingsFile, AgentToolError> {
-    let path = state_root.join(SESSION_WORKSPACE_BINDINGS_REL_PATH);
-    match fs::read_to_string(&path).await {
-        Ok(raw) => serde_json::from_str(&raw).map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "parse session bindings `{}` failed: {err}",
-                path.display()
-            ))
-        }),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            Ok(CliSessionBindingsFile::default())
-        }
-        Err(err) => Err(AgentToolError::ExecFailed(format!(
-            "read session bindings `{}` failed: {err}",
-            path.display()
-        ))),
-    }
-}
-
-async fn save_session_bindings_file(
-    state_root: &Path,
-    file: &CliSessionBindingsFile,
-) -> Result<(), AgentToolError> {
-    let path = state_root.join(SESSION_WORKSPACE_BINDINGS_REL_PATH);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "create session bindings dir `{}` failed: {err}",
-                parent.display()
-            ))
-        })?;
-    }
-    let bytes = serde_json::to_vec_pretty(file).map_err(|err| {
-        AgentToolError::ExecFailed(format!("serialize session bindings failed: {err}"))
-    })?;
-    fs::write(&path, bytes).await.map_err(|err| {
-        AgentToolError::ExecFailed(format!(
-            "write session bindings `{}` failed: {err}",
-            path.display()
-        ))
-    })
-}
-
-async fn load_session_binding(
-    state_root: &Path,
-    session_id: &str,
-) -> Result<Option<CliSessionWorkspaceBinding>, AgentToolError> {
-    let file = load_session_bindings_file(state_root).await?;
-    Ok(file
-        .bindings
-        .into_iter()
-        .find(|item| item.session_id.trim() == session_id))
-}
-
-async fn save_session_binding(
-    state_root: &Path,
-    binding: &CliSessionWorkspaceBinding,
-) -> Result<(), AgentToolError> {
-    let mut file = load_session_bindings_file(state_root).await?;
-    file.bindings
-        .retain(|item| item.session_id.trim() != binding.session_id.trim());
-    file.bindings.push(binding.clone());
-    save_session_bindings_file(state_root, &file).await
-}
-
-async fn persist_session_workspace_binding(
-    state_root: &Path,
-    session_id: &str,
-    workspace_id: &str,
-    workspace_name: Option<&str>,
-    binding: &CliSessionWorkspaceBinding,
-) -> Result<bool, AgentToolError> {
-    let mut session = load_session_json(state_root, session_id).await?;
-    let Some(root_map) = session.as_object_mut() else {
-        return Err(AgentToolError::ExecFailed(
-            "session record must be a json object".to_string(),
-        ));
-    };
-    let meta = root_map
-        .entry("meta".to_string())
-        .or_insert_with(|| json!({}));
-    if !meta.is_object() {
-        *meta = json!({});
-    }
-    let meta_map = meta.as_object_mut().expect("meta object");
-    if !meta_map.contains_key("runtime_state") {
-        meta_map.insert("runtime_state".to_string(), json!({}));
-    }
-    let runtime_state = meta_map
-        .get_mut("runtime_state")
-        .expect("runtime_state present");
-    if !runtime_state.is_object() {
-        *runtime_state = json!({});
-    }
-    let workspace_info = json!({
-        "workspace_id": workspace_id,
-        "local_workspace_id": workspace_id,
-        "workspace_name": workspace_name.unwrap_or(""),
-        "workspace_type": "local",
-        "binding": binding
-    });
-    let runtime_map = runtime_state.as_object_mut().expect("runtime_state object");
-    runtime_map.insert(
-        "local_workspace_id".to_string(),
-        Json::String(workspace_id.to_string()),
-    );
-    runtime_map.insert("workspace_info".to_string(), workspace_info);
-    let now = now_ms();
-    root_map.insert("updated_at_ms".to_string(), json!(now));
-    root_map.insert("last_activity_ms".to_string(), json!(now));
-    save_session_json(state_root, session_id, &session).await?;
-    Ok(true)
-}
-
-fn workspace_root_for_record(state_root: &Path, record: &CliWorkspaceRecord) -> PathBuf {
-    record
-        .relative_path
-        .as_deref()
-        .map(|rel| state_root.join(rel))
-        .unwrap_or_else(|| state_root.join("workspaces").join(&record.workspace_id))
-}
-
-async fn allocate_cli_workspace_dir_name(
-    state_root: &Path,
-    index: &CliWorkspaceIndex,
-    workspace_name: &str,
-) -> Result<String, AgentToolError> {
-    let base_name = sanitize_cli_workspace_dir_name(workspace_name);
-
-    for suffix in 1u32.. {
-        let candidate = if suffix == 1 {
-            base_name.clone()
-        } else {
-            format!("{base_name}-{suffix}")
-        };
-
-        let already_indexed = index.workspaces.iter().any(|item| {
-            item.relative_path
-                .as_deref()
-                .and_then(|rel| Path::new(rel).file_name())
-                .and_then(|value| value.to_str())
-                == Some(candidate.as_str())
-        });
-        if already_indexed {
-            continue;
-        }
-
-        let candidate_path = state_root.join("workspaces").join(&candidate);
-        if !fs::try_exists(&candidate_path).await.map_err(|err| {
-            AgentToolError::ExecFailed(format!(
-                "check workspace dir `{}` failed: {err}",
-                candidate_path.display()
-            ))
-        })? {
-            return Ok(candidate);
-        }
-    }
-
-    unreachable!("workspace dir allocation should always find a candidate")
-}
-
-fn sanitize_cli_workspace_dir_name(workspace_name: &str) -> String {
-    let mut out = String::new();
-    let mut pending_dash = false;
-
-    for ch in workspace_name.trim().chars() {
-        let is_forbidden =
-            ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
-        if is_forbidden {
-            if !out.is_empty() {
-                pending_dash = true;
-            }
-            continue;
-        }
-
-        if pending_dash && !out.ends_with('-') {
-            out.push('-');
-        }
-        pending_dash = false;
-        out.push(ch);
-    }
-
-    let sanitized = out.trim_matches([' ', '.']).trim();
-    match sanitized {
-        "" | "." | ".." => "workspace".to_string(),
-        _ => sanitized.to_string(),
-    }
 }
 
 async fn build_task_manager_client(
@@ -7044,34 +6510,6 @@ mod tests {
         }
     }
 
-    async fn seed_session(agent_env_root: &Path, session_id: &str, pwd: &Path) {
-        let now = now_ms();
-        let session = json!({
-            "session_id": session_id,
-            "owner_agent": "did:example:agent",
-            "title": "CLI Session",
-            "summary": "",
-            "status": "wait",
-            "created_at_ms": now,
-            "updated_at_ms": now,
-            "last_activity_ms": now,
-            "meta": {
-                "runtime_state": {
-                    "state": "wait",
-                    "current_behavior": "plan",
-                    "step_index": 0,
-                    "local_workspace_id": Json::Null,
-                    "workspace_info": {
-                        "workspace_path": pwd.to_string_lossy().to_string()
-                    }
-                }
-            }
-        });
-        save_session_json(agent_env_root, session_id, &session)
-            .await
-            .expect("save session");
-    }
-
     fn seed_agent_identity(agent_root: &Path, owner_user_id: &str, agent_id: &str) {
         std::fs::create_dir_all(agent_root).expect("create agent root");
         std::fs::write(
@@ -7203,7 +6641,7 @@ mod tests {
             }
         }
 
-        let session_id = format!("unchanged-session-{}", now_ms());
+        let session_id = format!("unchanged-session-{}", agent_tool::now_ms());
         let _g1 = EnvGuard::set(agent_tool::OPENDAN_AGENT_ROOT_ENV, &root);
         let _g2 = EnvGuard::set(agent_tool::OPENDAN_SESSION_ID_ENV, &session_id);
         let _g3 = EnvGuard::set(agent_tool::OPENDAN_TRACE_ID_ENV, "trace-unchanged");
@@ -8214,89 +7652,6 @@ methods = ["x_call"]
         assert_eq!(output.exit_code, agent_tool::CLI_EXIT_COMMAND_NOT_FOUND);
         assert!(output.stderr.is_empty());
         assert!(output.stdout.is_empty());
-    }
-
-    #[tokio::test]
-    async fn create_workspace_and_get_session_aliases_share_local_state() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd)
-            .await
-            .expect("create workspace dir");
-        seed_session(&root, "session-test", &cwd).await;
-
-        let create_output = execute(
-            vec![
-                OsString::from("/tmp/create_workspace"),
-                OsString::from("demo"),
-                OsString::from("workspace summary"),
-            ],
-            test_env(root.clone(), cwd.clone()),
-            None,
-        )
-        .await
-        .expect("run create_workspace");
-        let create_payload: Json =
-            serde_json::from_str(&create_output.stdout).expect("parse create json");
-        assert_eq!(create_payload["status"], "success");
-        let workspace_id = create_payload["detail"]["workspace"]["workspace_id"]
-            .as_str()
-            .expect("workspace id");
-
-        let session_output = execute(
-            vec![OsString::from("/tmp/get_session")],
-            test_env(root.clone(), cwd),
-            None,
-        )
-        .await
-        .expect("run get_session");
-        let session_payload: Json =
-            serde_json::from_str(&session_output.stdout).expect("parse session json");
-        assert_eq!(session_payload["status"], "success");
-        assert_eq!(
-            session_payload["detail"]["session"]["local_workspace_id"],
-            workspace_id
-        );
-    }
-
-    #[tokio::test]
-    async fn create_workspace_alias_uses_title_for_workspace_dir() {
-        let temp = tempdir().expect("create tempdir");
-        let root = temp.path().join("agent");
-        let cwd = root.join("workspace");
-        fs::create_dir_all(&cwd)
-            .await
-            .expect("create workspace dir");
-        seed_session(&root, "session-test", &cwd).await;
-
-        let output = execute(
-            vec![
-                OsString::from("/tmp/create_workspace"),
-                OsString::from("My Workspace"),
-                OsString::from("workspace summary"),
-            ],
-            test_env(root.clone(), cwd),
-            None,
-        )
-        .await
-        .expect("run create_workspace");
-
-        let payload: Json = serde_json::from_str(&output.stdout).expect("parse create json");
-        assert_eq!(payload["status"], "success");
-        assert_eq!(
-            payload["detail"]["binding"]["workspace_rel_path"],
-            "workspaces/My Workspace"
-        );
-        let workspace_path = payload["detail"]["binding"]["workspace_path"]
-            .as_str()
-            .expect("workspace path");
-        assert!(workspace_path.ends_with("workspaces/My Workspace"));
-        assert!(!workspace_path
-            .rsplit('/')
-            .next()
-            .unwrap_or_default()
-            .starts_with("ws-"));
     }
 
     // ----------------------------- agent-notebook CLI tests

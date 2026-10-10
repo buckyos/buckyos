@@ -648,3 +648,82 @@ fn serve_handles_posted_input_until_the_session_is_stopped() {
 }
 
 fn _unused(_: &Path) {}
+
+#[test]
+fn workspace_commands_preserve_identity_and_create_fixed_session_bindings() {
+    let cli = Cli::new();
+    let directory = cli.root.join("project");
+    let path = directory.to_str().unwrap();
+    let args = [
+        "workspace",
+        "create",
+        "--directory",
+        path,
+        "--name",
+        "Project",
+        "--key",
+        "project-1",
+    ];
+    let (code, created, err) = cli.run(&args);
+    assert_eq!(code, 0, "{err}");
+    let id = created["workspace_id"].as_str().unwrap();
+    let (code, retry, err) = cli.run(&args);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(retry["workspace_id"], id);
+    let sd = cli.create(&["--objective", "work in project", "--workspace", id]);
+    let cfg = sd.config().unwrap();
+    assert_eq!(cfg.workspace.as_ref().unwrap().workspace_id, id);
+    assert_eq!(
+        cfg.workspace_binding.as_ref().unwrap().location.directory,
+        directory
+    );
+    std::fs::write(directory.join("result.txt"), "retained").unwrap();
+    let (code, _, err) = cli.run(&["workspace", "set-runtime", "local", "unavailable"]);
+    assert_eq!(code, 0, "{err}");
+    let (code, listed, err) = cli.run(&["workspace", "list"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["availability"], "runtime_unavailable");
+    assert_eq!(
+        sd.config().unwrap().workspace_binding,
+        cfg.workspace_binding
+    );
+    assert_eq!(
+        std::fs::read_to_string(directory.join("result.txt")).unwrap(),
+        "retained"
+    );
+}
+
+#[test]
+fn workspace_import_and_unregister_never_delete_project_files() {
+    let cli = Cli::new();
+    let directory = cli.root.join("existing");
+    std::fs::create_dir(&directory).unwrap();
+    std::fs::write(directory.join("README.md"), "user content").unwrap();
+    let path = directory.to_str().unwrap();
+    let (code, record, err) = cli.run(&[
+        "workspace",
+        "import",
+        "--directory",
+        path,
+        "--name",
+        "Existing",
+        "--key",
+        "import-1",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let id = record["workspace_id"].as_str().unwrap();
+    let rev = record["revision"].to_string();
+    let (code, _, _) = cli.run(&["workspace", "unregister", id, "--expected-revision", "0"]);
+    assert_ne!(code, 0);
+    let (code, _, err) = cli.run(&["workspace", "unregister", id, "--expected-revision", &rev]);
+    assert_eq!(code, 0, "{err}");
+    let (code, list, err) = cli.run(&["workspace", "list"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(list.as_array().unwrap().is_empty());
+    assert!(directory.join(WORKSPACE_METADATA_FILE).is_file());
+    assert_eq!(
+        std::fs::read_to_string(directory.join("README.md")).unwrap(),
+        "user content"
+    );
+}

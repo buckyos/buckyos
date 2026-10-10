@@ -56,8 +56,6 @@ for tool_name in \
   set_memory \
   remove_memory \
   todo \
-  create_workspace \
-  bind_workspace \
   check_task \
   cancel_task \
   finish_task

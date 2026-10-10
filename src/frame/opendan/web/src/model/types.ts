@@ -180,6 +180,7 @@ export interface Binding {
   workdir: string
   bound_at_ms: number
   bound_by: string
+  workspace?: WorkspaceBinding | null
 }
 
 // Tagged by `kind`: idle, finished, outcomes_handled, turn_closed, turn_open,
@@ -205,6 +206,7 @@ export interface SessionConfigSummary {
   session: unknown
   runtime: unknown
   workspace: unknown
+  workspace_binding?: WorkspaceBinding | null
   subscriptions: unknown
   channels: unknown
   behavior: string
@@ -262,7 +264,41 @@ export interface PerceptionRecord {
   refs?: unknown
 }
 
-export type WorkspaceRef = { kind: 'agent'; id: string } | { kind: 'external'; path: string }
+export interface WorkspaceRef {
+  workspace_id: string
+  access?: 'read_write' | 'read_only'
+}
+
+export interface WorkspaceLocation {
+  runtime_id: string
+  directory: string
+}
+
+export interface WorkspaceBinding extends WorkspaceRef {
+  runtime_host: string
+  revision: number
+  location_revision: number
+  location: WorkspaceLocation
+}
+
+export interface KnownWorkspace {
+  version: number
+  runtime_host: string
+  workspace_id: string
+  name: string
+  description: string
+  location: WorkspaceLocation
+  usage: 'private' | 'collaborative'
+  lifecycle: 'active' | 'archived'
+  availability: 'available' | 'missing' | 'runtime_unavailable' | 'permission_denied' | 'invalid_metadata' | 'conflict'
+  revision: number
+  location_revision: number
+  updated_at_ms: number
+  checked_at_ms: number | null
+  source_session: string | null
+  conflict: { code: string; message: string; candidate: WorkspaceLocation; at_ms: number } | null
+  last_error: string | null
+}
 
 export interface ArtifactHead {
   aid: string

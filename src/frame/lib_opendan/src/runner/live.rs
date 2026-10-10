@@ -86,7 +86,9 @@ async fn xllm_deps_for(
     let (behaviors, max_depth) = {
         let s = sh.session.lock().await;
         (
-            s.config.behaviors().map_err(OpenDanError::InvalidArgument)?,
+            s.config
+                .behaviors()
+                .map_err(OpenDanError::InvalidArgument)?,
             s.config.session.policy.max_process_depth as usize,
         )
     };
@@ -466,7 +468,10 @@ async fn own_run_context(
             runtime_kind: Some(binding.kind.clone()),
             runtime_id: Some(binding.runtime_id.clone()),
             env_check: session_env_check(sh, env)?,
-            extra: Value::Null,
+            extra: cfg.workspace_binding.as_ref().map_or(
+                Value::Null,
+                |workspace| json!({"workspace_binding": workspace}),
+            ),
         },
     );
     let system_prompt = hosted.prompt.system_prompt.clone();
@@ -576,8 +581,7 @@ async fn own_run_context(
 /// unknown), or `until_ms` passed — the call is then answered with the
 /// task's state at this moment.
 fn wait_over(state: &TaskState, until_ms: Option<u64>) -> bool {
-    !matches!(state, TaskState::Running { .. })
-        || until_ms.is_some_and(|t| crate::now_ms() >= t)
+    !matches!(state, TaskState::Running { .. }) || until_ms.is_some_and(|t| crate::now_ms() >= t)
 }
 
 /// Results for every suspended call of `snapshot`, or `None` while a task
@@ -1230,7 +1234,11 @@ fn sub_result_observation(call_id: &str, r: &Value) -> Observation {
     match r.get("status").and_then(Value::as_str).unwrap_or("ok") {
         "failed" => Observation::Error {
             call_id: call_id.to_string(),
-            message: format!("sub context `{}` failed: {}", text("behavior"), text("result")),
+            message: format!(
+                "sub context `{}` failed: {}",
+                text("behavior"),
+                text("result")
+            ),
             tool_result: None,
         },
         status => {

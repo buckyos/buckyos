@@ -153,7 +153,7 @@ dcrontab "0 14 * * *" --timezone America/Los_Angeles task --title "Daily email t
 
 对于这类任务，`--title` 要短而可识别，`--objective` 要具体写清楚输入范围、动作、完成标准、反馈方式和来源 Notebook Item。
 `--workspace` 必须使用确定的 workspace id；如果无法确定，不要创建该 task。不要创建只有“处理一下”“帮用户看看”这类模糊目标的计划任务。
-可以根据任务目标，使用`create_workspace $name $summary` 先创建workspace,再调用dcrontab。
+可以在已明确授权的长期目录上使用 `agent-session workspace create --runtime local --directory <绝对路径> --name <名称> --description <用途> --key <操作ID>` 登记 Workspace，再使用返回的 workspace_id 调用 dcrontab；不得改变当前 Session 的绑定。
 
 <</SKILLS>>
 

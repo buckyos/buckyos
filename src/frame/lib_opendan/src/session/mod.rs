@@ -97,7 +97,7 @@ impl SessionDir {
         let value: Option<serde_json::Value> = fsutil::read_json_opt(&self.file(BINDING_FILE))?;
         if value
             .as_ref()
-            .is_some_and(|v| v["schema"] != "opendan.binding/3")
+            .is_some_and(|v| v["schema"] != "opendan.binding/4")
         {
             return Err(OpenDanError::blocked("unsupported binding format", None));
         }

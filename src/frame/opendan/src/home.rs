@@ -192,6 +192,28 @@ impl Home {
         }
         Ok(json!(out))
     }
+
+    pub async fn workspaces(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
+        let records = agent.workspaces().query(&WorkspaceQuery::default()).await?;
+        Ok(json!(records.into_iter().map(|record| json!({
+            "version": record.version,
+            "runtime_host": record.runtime_host,
+            "workspace_id": record.workspace_id,
+            "name": record.name,
+            "description": record.description,
+            "location": record.location,
+            "usage": record.usage,
+            "lifecycle": record.lifecycle,
+            "availability": record.availability,
+            "revision": record.revision,
+            "location_revision": record.location_revision,
+            "updated_at_ms": record.updated_at_ms,
+            "checked_at_ms": record.checked_at_ms,
+            "source_session": record.source_session,
+            "conflict": record.conflict,
+            "last_error": record.last_error,
+        })).collect::<Vec<_>>()))
+    }
 }
 
 fn apply_profile(profile: &mut AgentProfile, params: &Value) -> Result<(), OpenDanError> {

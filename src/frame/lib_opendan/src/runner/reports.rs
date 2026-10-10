@@ -103,7 +103,9 @@ pub(super) async fn validate(sh: &Shared, run: &RunHandle, args: &ReportArgs) ->
         if !seen.insert(path) {
             return Err(invalid("duplicate artifact path"));
         }
-        artifact_bytes(Path::new(&run.record().workdir), path)?;
+        let cfg = sh.session.lock().await.config.clone();
+        let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
+        artifact_bytes(&workdir, path)?;
     }
     if !args.is_end {
         return Ok(());
@@ -161,7 +163,8 @@ pub(super) async fn submit(
         return Err(invalid("this context already has a final report"));
     }
     validate(sh, run, &args).await?;
-    let workdir = run.record().workdir;
+    let cfg = sh.session.lock().await.config.clone();
+    let workdir = crate::runtime::resolve_workdir(&sh.dir, &cfg, sh.agent_root.as_deref())?;
     let mut artifacts = Vec::new();
     for (index, path) in args.artifacts.iter().enumerate() {
         let bytes = artifact_bytes(Path::new(&workdir), path)?;

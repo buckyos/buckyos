@@ -20,11 +20,10 @@ use serde::Serialize;
 use serde_json::Value as Json;
 
 use crate::file_tools::FileWriteAuditBackend;
-use crate::workspace::WorkspaceRuntimeBackend;
 use crate::{
     build_builtin_tool_result, AgentTool, AgentToolError, AgentToolResult,
-    ExternalWorkspaceBackend, SessionRuntimeContext, SessionViewBackend, ToolSpec,
-    WorklogActionBackend, WorkspaceToolBackend,
+    SessionRuntimeContext, SessionViewBackend, ToolSpec,
+    WorklogActionBackend,
 };
 
 /// Bitflag summary of how a tool may be invoked.
@@ -99,15 +98,6 @@ pub trait ToolHost: Send + Sync {
     fn session_view(&self) -> Option<&dyn SessionViewBackend> {
         None
     }
-    fn workspace_runtime(&self) -> Option<&dyn WorkspaceRuntimeBackend> {
-        None
-    }
-    fn workspace_tool(&self) -> Option<&dyn WorkspaceToolBackend> {
-        None
-    }
-    fn external_workspace(&self) -> Option<&dyn ExternalWorkspaceBackend> {
-        None
-    }
     fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
         None
     }
@@ -129,9 +119,6 @@ fn null_host() -> Arc<dyn ToolHost> {
 #[derive(Default, Clone)]
 pub struct BasicToolHost {
     pub session_view: Option<Arc<dyn SessionViewBackend>>,
-    pub workspace_runtime: Option<Arc<dyn WorkspaceRuntimeBackend>>,
-    pub workspace_tool: Option<Arc<dyn WorkspaceToolBackend>>,
-    pub external_workspace: Option<Arc<dyn ExternalWorkspaceBackend>>,
     pub worklog_action: Option<Arc<dyn WorklogActionBackend>>,
     pub file_write_audit: Option<Arc<dyn FileWriteAuditBackend>>,
 }
@@ -143,18 +130,6 @@ impl BasicToolHost {
 
     pub fn with_session_view(mut self, backend: Arc<dyn SessionViewBackend>) -> Self {
         self.session_view = Some(backend);
-        self
-    }
-    pub fn with_workspace_runtime(mut self, backend: Arc<dyn WorkspaceRuntimeBackend>) -> Self {
-        self.workspace_runtime = Some(backend);
-        self
-    }
-    pub fn with_workspace_tool(mut self, backend: Arc<dyn WorkspaceToolBackend>) -> Self {
-        self.workspace_tool = Some(backend);
-        self
-    }
-    pub fn with_external_workspace(mut self, backend: Arc<dyn ExternalWorkspaceBackend>) -> Self {
-        self.external_workspace = Some(backend);
         self
     }
     pub fn with_worklog_action(mut self, backend: Arc<dyn WorklogActionBackend>) -> Self {
@@ -170,15 +145,6 @@ impl BasicToolHost {
 impl ToolHost for BasicToolHost {
     fn session_view(&self) -> Option<&dyn SessionViewBackend> {
         self.session_view.as_deref()
-    }
-    fn workspace_runtime(&self) -> Option<&dyn WorkspaceRuntimeBackend> {
-        self.workspace_runtime.as_deref()
-    }
-    fn workspace_tool(&self) -> Option<&dyn WorkspaceToolBackend> {
-        self.workspace_tool.as_deref()
-    }
-    fn external_workspace(&self) -> Option<&dyn ExternalWorkspaceBackend> {
-        self.external_workspace.as_deref()
     }
     fn worklog_action(&self) -> Option<&dyn WorklogActionBackend> {
         self.worklog_action.as_deref()

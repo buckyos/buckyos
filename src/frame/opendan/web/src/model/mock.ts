@@ -3,6 +3,7 @@ import type {
   AgentProfile,
   ArtifactVersion,
   HostedStatus,
+  KnownWorkspace,
   PerceptionRecord,
   RegistryEntry,
   SessionDetail,
@@ -129,7 +130,7 @@ const buildFixtures = () => {
     origin: { parent_session: UI, reason_messages: ['msg:1a2b'], created_by_call: 'call_91' },
     input_queue: `opendan/${WORK_RUNNING}/input`,
     artifact_id: 'art-weekly-report',
-    workspace: { kind: 'external', path: '/home/devtest/Downloads' },
+    workspace: { workspace_id: 'ws-downloads', access: 'read_write' },
   })
   const pending = entry(WORK_PENDING, 'work', 'work.default', 'Rename photos by capture date', {
     rev: 48,
@@ -144,7 +145,7 @@ const buildFixtures = () => {
     origin: { parent_session: UI },
     input_queue: `opendan/${WORK_PENDING}/input`,
     artifact_id: 'art-photo-rename',
-    workspace: { kind: 'agent', id: 'photos' },
+    workspace: { workspace_id: 'ws-photos', access: 'read_write' },
   })
   const failed = entry(WORK_FAILED, 'work', 'work.default', 'Fetch the release notes of cyfs-gateway', {
     rev: 9,
@@ -229,7 +230,7 @@ const buildFixtures = () => {
       }),
       report: '',
       config: config(UI, 'ui_chat', ['ui_chat']),
-      binding: { schema: 'opendan.binding/1', target: { kind: 'native' }, runtime_id: 'rt-native-01', kind: 'native', workdir: `${ROOT}/sessions/${UI}/work`, bound_at_ms: ago(86000), bound_by: WHO },
+      binding: { schema: 'opendan.binding/4', target: { kind: 'native' }, runtime_id: 'rt-native-01', kind: 'native', workdir: `${ROOT}/sessions/${UI}/work`, bound_at_ms: ago(86000), bound_by: WHO },
       statistics: { input_tokens: 48210, output_tokens: 3922, total_tokens: 52132, rounds: 11, rounds_failed: 0, rounds_interrupted: 0, turns: 3 },
       runs: ['run-0001', 'run-0002', 'run-0003'],
       lease_holder: null,
@@ -259,7 +260,7 @@ const buildFixtures = () => {
       }),
       report: '# Weekly downloads\n\n- 14 files, 3 archives\n- (in progress)\n',
       config: config(WORK_RUNNING, 'work_plan', ['work_plan', 'work_do', 'work_report']),
-      binding: { schema: 'opendan.binding/1', target: { kind: 'tmux', session: 'od-b41d' }, runtime_id: 'rt-tmux-07', kind: 'tmux', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
+      binding: { schema: 'opendan.binding/4', target: { kind: 'tmux', session: 'od-b41d' }, runtime_id: 'rt-tmux-07', kind: 'tmux', workdir: '/home/devtest/Downloads', bound_at_ms: ago(370), bound_by: WHO },
       statistics: { input_tokens: 9120, output_tokens: 801, total_tokens: 9921, rounds: 4, rounds_failed: 0, rounds_interrupted: 1, turns: 1 },
       runs: ['run-0001', 'run-0002'],
       lease_holder: { resource: `session:${WORK_RUNNING}`, epoch: 5, holder: { runner_id: 'rn-51c2', principal: WHO, host: 'ood1', pid: 4411 }, acquired_at_ms: ago(120), released_at_ms: null },
@@ -308,6 +309,45 @@ const delay = () => new Promise((resolve) => window.setTimeout(resolve, 60))
 
 export const createMockDataModel = (): OpenDanDataModel => {
   const fx = buildFixtures()
+  const workspaces: KnownWorkspace[] = [
+    {
+      version: 1, runtime_host: 'mock-host',
+      workspace_id: 'ws-downloads', name: 'Downloads', description: 'Weekly reports from shared downloads.',
+      location: { runtime_id: 'local', directory: '/home/devtest/Downloads' },
+      usage: 'collaborative', lifecycle: 'active', availability: 'available',
+      revision: 2, location_revision: 1, updated_at_ms: ago(4), checked_at_ms: ago(30),
+      source_session: WORK_RUNNING, conflict: null, last_error: null,
+    },
+    {
+      version: 1, runtime_host: 'mock-host',
+      workspace_id: 'ws-photos', name: 'Photos', description: 'Organize photographs and keep rename reports.',
+      location: { runtime_id: 'local', directory: `${ROOT}/workspace/photos` },
+      usage: 'private', lifecycle: 'active', availability: 'available',
+      revision: 1, location_revision: 1, updated_at_ms: ago(900), checked_at_ms: ago(900),
+      source_session: WORK_PENDING, conflict: null, last_error: null,
+    },
+    {
+      version: 1, runtime_host: 'studio-host',
+      workspace_id: 'ws-design-archive', name: 'Design archive', description: 'Long-term project on a disconnected workstation.',
+      location: { runtime_id: 'studio-workstation', directory: '/projects/design/archive' },
+      usage: 'collaborative', lifecycle: 'archived', availability: 'runtime_unavailable',
+      revision: 4, location_revision: 2, updated_at_ms: ago(7200), checked_at_ms: ago(120),
+      source_session: null, conflict: null, last_error: 'Runtime studio-workstation is unavailable; the workspace registration is retained.',
+    },
+    {
+      version: 1, runtime_host: 'mock-host',
+      workspace_id: 'ws-project-notes', name: 'Project notes', description: 'Archived notes whose directory was moved.',
+      location: { runtime_id: 'local', directory: '/home/devtest/Projects/notes-old' },
+      usage: 'collaborative', lifecycle: 'archived', availability: 'missing',
+      revision: 2, location_revision: 1, updated_at_ms: ago(8000), checked_at_ms: ago(120),
+      source_session: null, conflict: null, last_error: 'Directory does not exist; locate the moved workspace to restore access.',
+    },
+  ]
+  const findWorkspace = (workspaceId: string) => {
+    const workspace = workspaces.find((record) => record.workspace_id === workspaceId)
+    if (!workspace) throw new OpenDanError('not_found', `workspace ${workspaceId} is not registered`)
+    return workspace
+  }
   let inputIndex = 8
   const profile: AgentProfile = {
     agent_did: AGENT,
@@ -414,6 +454,39 @@ export const createMockDataModel = (): OpenDanDataModel => {
       return [{ session_id: UI, to: OWNER, to_session: null, kind: 'chat' }]
     },
 
+    workspaces: async () => {
+      await delay()
+      return structuredClone(workspaces)
+    },
+
+    checkWorkspace: async (workspaceId) => {
+      await delay()
+      const workspace = findWorkspace(workspaceId)
+      workspace.checked_at_ms = Date.now()
+      workspace.revision += 1
+      return structuredClone(workspace)
+    },
+
+    relocateWorkspace: async (expected, location) => {
+      await delay()
+      const workspace = findWorkspace(expected.workspace_id)
+      if (workspace.revision !== expected.revision) throw new OpenDanError('conflict', 'Workspace registration changed; reload before retrying.')
+      if (!location.directory.startsWith('/')) throw new OpenDanError('invalid_argument', 'Workspace directory must be absolute.')
+      if (location.runtime_id !== 'local') throw new OpenDanError('invalid_argument', 'Runtime is unavailable.')
+      if (workspace.location.runtime_id !== 'local') throw new OpenDanError('conflict', 'Cannot verify relocation while the original runtime is unavailable.')
+      if (workspaces.some((record) => record.workspace_id !== workspace.workspace_id && record.location.directory === location.directory)) {
+        throw new OpenDanError('conflict', 'Directory identity does not match the selected workspace.')
+      }
+      workspace.location = { ...location }
+      workspace.location_revision += 1
+      workspace.revision += 1
+      workspace.availability = 'available'
+      workspace.last_error = null
+      workspace.checked_at_ms = Date.now()
+      workspace.updated_at_ms = Date.now()
+      return structuredClone(workspace)
+    },
+
     sessions: async () => {
       await delay()
       return structuredClone(fx.entries)
@@ -502,8 +575,8 @@ export const createMockDataModel = (): OpenDanDataModel => {
     artifacts: async () => {
       await delay()
       return [
-        { aid: 'art-photo-rename', head: 'v1', rev: 3, updated_at_ms: ago(900) },
-        { aid: 'art-weekly-report', head: null, rev: 1, updated_at_ms: ago(100) },
+        { aid: 'art-photo-rename', workspace: { workspace_id: 'ws-photos' }, head: 'v1', rev: 3, updated_at_ms: ago(900) },
+        { aid: 'art-weekly-report', workspace: { workspace_id: 'ws-downloads' }, head: null, rev: 1, updated_at_ms: ago(100) },
       ]
     },
 

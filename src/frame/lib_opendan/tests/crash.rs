@@ -673,15 +673,14 @@ async fn new_input_into_a_resumed_run_survives_a_crash_once() {
 }
 
 #[tokio::test]
-async fn active_sessions_on_the_same_workspace_see_each_other() {
+async fn a_crashed_workspace_writer_blocks_another_session() {
     let env = Env::new();
     let ws = env.root.join("snake");
     std::fs::create_dir_all(ws.join("src")).unwrap();
+    let workspace = env.workspace(&ws).await;
     let mk = |obj: &str, path: &str| {
         let mut s = work_spec(obj);
-        s.workspace = Some(WorkspaceRef::External {
-            path: ws.display().to_string(),
-        });
+        s.workspace = Some(workspace.clone());
         s.scope = Some(Scope {
             paths: vec![path.into()],
             objects: vec![],
@@ -697,18 +696,13 @@ async fn active_sessions_on_the_same_workspace_see_each_other() {
     let b = env
         .create_work(mk("B: collision tweak", "ws:snake/src/collision.js"))
         .await;
-    let a_sid = a.sid().to_string();
-    let llm = ScriptedLlm::new(move |req, _| {
-        let u = last_user_text(req);
-        assert!(u.contains("<active_sessions>"), "{u}");
-        assert!(u.contains(&a_sid), "{u}");
-        assert!(u.contains("relation=\"same_target\""), "{u}");
-        assert!(u.contains("<overlap>"), "{u}");
-        text("I will wait for the other session")
-    });
+    let llm = ScriptedLlm::new(|_, _| panic!("must settle the crashed writer before another session executes"));
     let r = drive(&b, &env.deps(llm.clone()), StopWhen::Finished).await;
-    assert!(r.is_finished(), "{r:?}");
-    assert_eq!(llm.count(), 1);
+    assert!(
+        matches!(r, libopendan::runner::DriveResult::Busy { .. }),
+        "{r:?}"
+    );
+    assert_eq!(llm.count(), 0);
 }
 
 fn behavior_spec(obj: &str, modes: serde_json::Value) -> libopendan::api::SessionSpec {
@@ -995,4 +989,28 @@ async fn xllm_yields_at_a_hand_over_and_the_session_commits_it_once() {
     assert_eq!((st.turn_seq, st.turns_completed), (1, 1));
     assert_eq!(count_kind(&sd, "turn_ended"), 1, "the hand-over did not close the Turn");
     assert_worklog_contiguous(&sd);
+}
+
+#[tokio::test]
+async fn xllm_cannot_take_over_a_managed_workspace_run_without_its_writer_gate() {
+    use agent_tool::xllm::{ResumeLimits, RunStore, XllmDeps, XllmRun, XllmError};
+    let env = Env::new();
+    let directory = env.root.join("project");
+    std::fs::create_dir(&directory).unwrap();
+    let mut spec = work_spec("managed workspace");
+    spec.workspace = Some(env.workspace(&directory).await);
+    let sd = env.create_work(spec).await;
+    let mut child = spawn_child(&env, &sd, "answer", Some("input_batch:after_gate_clear"));
+    wait_exit(&mut child, Duration::from_secs(60));
+    let runs = sd.runs().list().unwrap();
+    assert_eq!(runs.len(), 1);
+    let record = sd.runs().record(&runs[0]).unwrap();
+    assert!(record.host.unwrap().extra["workspace_binding"].is_object());
+    let llm = script("answer");
+    let error = XllmRun::resume(&RunStore::disk(sd.runs_dir()), Some(&runs[0]), None,
+        ResumeLimits::default(), XllmDeps::default().with_llm(llm.clone()))
+        .await.err().expect("host writer gate is required");
+    assert!(matches!(error, XllmError::NotResumable { .. }), "{error}");
+    assert!(error.to_string().contains("workspace"), "{error}");
+    assert_eq!(llm.count(), 0);
 }

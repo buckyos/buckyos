@@ -350,47 +350,32 @@
       ],
       "type": "string"
     },
+    "WorkspaceAccess": {
+      "enum": [
+        "read_only",
+        "read_write"
+      ],
+      "type": "string"
+    },
     "WorkspaceRef": {
-      "oneOf": [
-        {
-          "description": "Agent internal workspace `<agent_root>/workspace/<id>`.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "enum": [
-                "agent"
-              ],
-              "type": "string"
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkspaceAccess"
             }
-          },
-          "required": [
-            "id",
-            "kind"
           ],
-          "type": "object"
+          "default": "read_write"
         },
-        {
-          "description": "Directory owned by a user / application.",
-          "properties": {
-            "kind": {
-              "enum": [
-                "external"
-              ],
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "path"
-          ],
-          "type": "object"
+        "workspace_id": {
+          "type": "string"
         }
-      ]
+      },
+      "required": [
+        "workspace_id"
+      ],
+      "type": "object"
     }
   },
   "description": "`state/sessions/<sid>.json`.",

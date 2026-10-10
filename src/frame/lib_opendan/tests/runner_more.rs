@@ -378,12 +378,12 @@ async fn behavior_loop_session_runs_actions() {
 async fn decide_accept_and_discard_move_the_artifact_head() {
     let env = Env::new();
     let agent = env.agent();
+    std::fs::create_dir_all(env.root.join("snake")).unwrap();
+    let workspace = env.workspace(&env.root.join("snake")).await;
     let mk = |obj: &str| {
         let mut s = work_spec(obj);
         s.artifact_id = Some("snake-game".into());
-        s.workspace = Some(WorkspaceRef::External {
-            path: env.root.join("snake").display().to_string(),
-        });
+        s.workspace = Some(workspace.clone());
         s
     };
     std::fs::create_dir_all(env.root.join("snake")).unwrap();

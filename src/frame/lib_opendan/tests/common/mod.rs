@@ -90,6 +90,35 @@ impl Env {
         RunnerDeps::new(APP, self.agent(), self.channels(), self.runtime(), xllm).with_options(opts)
     }
 
+    pub async fn workspace(&self, path: &Path) -> libopendan::protocol::WorkspaceRef {
+        use libopendan::state::AgentStateClient;
+        let record = self
+            .agent()
+            .workspaces()
+            .import(
+                &libopendan::protocol::WorkspaceImport {
+                    operation_id: path.display().to_string(),
+                    location: libopendan::protocol::WorkspaceLocation {
+                        runtime_id: "local".into(),
+                        directory: path.to_path_buf(),
+                    },
+                    name: Some("test workspace".into()),
+                    description: String::new(),
+                    usage: Default::default(),
+                    expected_revision: None,
+                    source_session: None,
+                    policy_ref: None,
+                },
+                APP,
+            )
+            .await
+            .unwrap();
+        libopendan::protocol::WorkspaceRef {
+            workspace_id: record.workspace_id,
+            access: Default::default(),
+        }
+    }
+
     pub async fn create_work(&self, spec: SessionSpec) -> SessionDir {
         let agent = self.agent();
         let ch = self.channels();

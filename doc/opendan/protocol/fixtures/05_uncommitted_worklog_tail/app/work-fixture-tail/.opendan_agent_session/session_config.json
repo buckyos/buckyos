@@ -1,5 +1,5 @@
 {
-  "schema": "opendan.session_config/6",
+  "schema": "opendan.session_config/7",
   "config_rev": 1,
   "session": {
     "session_id": "work-fixture-tail",

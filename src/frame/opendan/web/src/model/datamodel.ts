@@ -8,6 +8,7 @@ import type {
   Decision,
   Hint,
   IdentityText,
+  KnownWorkspace,
   LoaderStatus,
   PerceptionCursor,
   PerceptionRecord,
@@ -16,6 +17,7 @@ import type {
   SessionDetail,
   UiBinding,
   UsageByModel,
+  WorkspaceLocation,
 } from './types'
 
 export interface PerceptionView {
@@ -38,6 +40,9 @@ export interface OpenDanDataModel {
   /** `null`: the service does not record usage by model. */
   usageModels(): Promise<UsageByModel | null>
   uiBindings(): Promise<UiBinding[]>
+  workspaces(): Promise<KnownWorkspace[]>
+  checkWorkspace(workspaceId: string): Promise<KnownWorkspace>
+  relocateWorkspace(workspace: KnownWorkspace, location: WorkspaceLocation): Promise<KnownWorkspace>
 
   sessions(): Promise<RegistryEntry[]>
   activeSessions(): Promise<ActiveSession[]>

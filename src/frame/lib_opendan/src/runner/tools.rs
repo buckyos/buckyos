@@ -124,6 +124,9 @@ impl ToolManager for SessionToolManager {
         if let Err(e) = self.lease.check() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
+        if let Err(e) = super::drive::verify_workspace_admission(&self.shared).await {
+            return Err(ToolDispatchError::not_started(e.to_string()));
+        }
         if let Err(e) = self.run.require_execution_admitted() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }

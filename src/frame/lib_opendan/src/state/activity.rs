@@ -80,7 +80,10 @@ pub fn refs_overlap(a: &str, b: &str) -> bool {
 }
 
 fn same_target(me: &RegistryEntry, other: &RegistryEntry) -> bool {
-    (me.workspace.is_some() && me.workspace == other.workspace)
+    (me.workspace
+        .as_ref()
+        .zip(other.workspace.as_ref())
+        .is_some_and(|(a, b)| a.workspace_id == b.workspace_id))
         || (me.artifact_id.is_some() && me.artifact_id == other.artifact_id)
 }
 

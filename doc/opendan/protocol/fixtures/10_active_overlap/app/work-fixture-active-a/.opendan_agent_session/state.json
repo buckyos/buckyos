@@ -1,14 +1,14 @@
 {
   "acceptance": "n/a",
   "activity": {
-    "heartbeat_ms": 1791643524201,
+    "heartbeat_ms": 1791645241570,
     "summary": "edit",
     "touching": [
       {
         "kind": "path",
         "mode": "write",
         "ref": "ws:snake/src/",
-        "since_ms": 1791643524201
+        "since_ms": 1791645241570
       }
     ]
   },
@@ -18,10 +18,10 @@
   "live_run": {
     "applied_input_seq": 1,
     "flushed_input_seq": 0,
-    "run_id": "20261010-074524-1137d6",
+    "run_id": "20261010-081401-b8ae4a",
     "turns": [
       {
-        "at_ms": 1791643524196,
+        "at_ms": 1791645241566,
         "hook": "on_init",
         "input_seq": 1,
         "turn": 1
@@ -30,11 +30,11 @@
   },
   "one_line_status": "",
   "open_turn": {
-    "at_ms": 1791643524196,
+    "at_ms": 1791645241566,
     "hook": "on_init",
     "index": 1,
     "input_seq": 1,
-    "run_id": "20261010-074524-1137d6"
+    "run_id": "20261010-081401-b8ae4a"
   },
   "perception_seq": 0,
   "recent_keys": [],
@@ -48,7 +48,7 @@
   },
   "turn_seq": 1,
   "turns_completed": 0,
-  "updated_at_ms": 1791643524201,
+  "updated_at_ms": 1791645241570,
   "worklog": {
     "committed_bytes": 138,
     "committed_seq": 1
@@ -56,8 +56,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 1572,
+    "pid": 1388,
     "principal": "app:app2@alice",
-    "runner_id": "rn-b5645768315a4e40"
+    "runner_id": "rn-fd09957d18bc4d1a"
   }
 }

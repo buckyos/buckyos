@@ -33,7 +33,7 @@ let result = SessionRunner::new(deps).drive(&sd, StopWhen::Finished).await;
 
 LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 JSON 形式）决定，工具预算键为 `max_tool_iterations`。`StopWhen::MaxOutcomes { n }` 让 drive 处理 n 个 `LLMContext` outcome（每个启动或恢复的 run 段一个，任何种类）后返回 `DriveResult::OutcomesHandled`；它不是 Round（推理）数、`run()` 调用数，也不是 Turn 数。Session 的结束条件另由 `end_condition`（如 `max_turns`）按已完成的 Turn 计。Round / Step / Turn 的定义见 [LLM Context readme](../../../doc/llm_context/readme.md)。
 
-持久格式为协议版本 6（session_input /3、session_config /6、session_state /6、binding /3，xllm RunRecord.version = 6；summary /2、机械渲染 /3、快照版本 5）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
+持久格式为协议版本 7（session_input /3、session_config /7、session_state /6、binding /4，xllm RunRecord.version = 6；summary /2、机械渲染 /3、快照版本 5）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
 
 RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runtime 是构造配置，session_config.runtime.requirement 是绑定要求。binding 保存实际 target 和执行 cwd，推理与旧执行恢复前先核验。SessionToolManager 保留协议纪律，内部调用 Sandbox。Session 的 .runtime/bin 与 Agent tools 作为宿主环境注入；独立 xllm 接管校验保存的 PATH、manifest、helper 与凭据环境引用。远端 Session helper 未部署时明确报 Capability；remote_ssh 可独立用于 xllm。
 
@@ -89,3 +89,5 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/dv_kmsg.rs` | （`--ignored`）真实 kmsg 服务：幂等建队列 / 订阅、消费与累积 ack、finished 后拒绝并 ack；在 DV Test OOD 上以 root 运行 `cargo test -p libopendan --test dv_kmsg -- --ignored` |
 
 重新生成 fixtures / JSON Schema：`cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures`（在 `src/` 下执行）。
+
+Workspace 管理由 `AgentStateClient.workspaces()` 统一提供，CLI 为 `xagent workspace` / `agent-session workspace`。创建或导入先显式指定 Runtime、绝对目录和操作 key，创建 Session 时用 `--workspace <稳定ID>` 绑定；无长期目录需求使用自身 SessionDir。旧 create_workspace / bind_workspace 工具已移除。格式、迁移和能力边界见 [Agent Workspace Protocol](<../../../doc/opendan/protocol/Agent Workspace Protocol.md>)。

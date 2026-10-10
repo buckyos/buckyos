@@ -1,5 +1,5 @@
 {
-  "schema": "opendan.binding/3",
+  "schema": "opendan.binding/4",
   "target": {
     "host": "${FIXTURE_HOST}",
     "uid": "0"

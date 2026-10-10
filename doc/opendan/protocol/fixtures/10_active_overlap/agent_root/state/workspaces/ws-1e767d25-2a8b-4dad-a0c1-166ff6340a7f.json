@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "runtime_host": "${FIXTURE_HOST}",
+  "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+  "name": "Overlap fixture",
+  "description": "",
+  "location": {
+    "runtime_id": "local",
+    "directory": "${FIXTURE_ROOT}/ws"
+  },
+  "usage": "collaborative",
+  "lifecycle": "active",
+  "availability": "available",
+  "revision": 6,
+  "location_revision": 1,
+  "created_at_ms": 1791645241477,
+  "registered_at_ms": 1791645241478,
+  "updated_at_ms": 1791645241582,
+  "checked_at_ms": 1791645241582,
+  "registered_by": "app:app2@alice",
+  "source": "imported",
+  "private_notes": "",
+  "source_session": null,
+  "policy_ref": null,
+  "conflict": null,
+  "last_error": null
+}

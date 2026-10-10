@@ -336,16 +336,16 @@ async fn f09_semi_subscription() {
 async fn f10_active_overlap() {
     let (_t, env, _) = load("10_active_overlap");
     let b = session(&env, "work-fixture-active-b");
-    let llm = ScriptedLlm::new(|req, _| {
-        let u = last_user_text(req);
-        assert!(
-            u.contains("work-fixture-active-a") && u.contains("same_target"),
-            "{u}"
-        );
-        text("avoid")
-    });
-    let result = drive(&b, &fdeps(&env, llm), StopWhen::Finished).await;
-    assert!(result.is_finished(), "{result:?}");
+    let agent = env.agent();
+    let me = agent.sessions().lookup(b.sid()).await.unwrap().unwrap();
+    let active = agent.activity().active(Some(&me), 10).await.unwrap();
+    let other = active.iter().find(|s| s.session_id == "work-fixture-active-a").unwrap();
+    assert_eq!(serde_json::to_value(other.relation).unwrap(), json!("same_target"));
+    assert!(other.overlap.contains(&"ws:snake/src/".to_string()));
+    let llm = ScriptedLlm::new(|_, _| panic!("unsettled writer must block inference"));
+    let result = drive(&b, &fdeps(&env, llm.clone()), StopWhen::Finished).await;
+    assert!(matches!(result, DriveResult::Busy { .. }), "{result:?}");
+    assert_eq!(llm.count(), 0);
 }
 
 #[tokio::test]

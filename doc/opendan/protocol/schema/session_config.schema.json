@@ -1679,47 +1679,82 @@
         }
       ]
     },
-    "WorkspaceRef": {
-      "oneOf": [
-        {
-          "description": "Agent internal workspace `<agent_root>/workspace/<id>`.",
-          "properties": {
-            "id": {
-              "type": "string"
-            },
-            "kind": {
-              "enum": [
-                "agent"
-              ],
-              "type": "string"
-            }
-          },
-          "required": [
-            "id",
-            "kind"
-          ],
-          "type": "object"
+    "WorkspaceAccess": {
+      "enum": [
+        "read_only",
+        "read_write"
+      ],
+      "type": "string"
+    },
+    "WorkspaceBinding": {
+      "properties": {
+        "access": {
+          "$ref": "#/definitions/WorkspaceAccess"
         },
-        {
-          "description": "Directory owned by a user / application.",
-          "properties": {
-            "kind": {
-              "enum": [
-                "external"
-              ],
-              "type": "string"
-            },
-            "path": {
-              "type": "string"
-            }
-          },
-          "required": [
-            "kind",
-            "path"
-          ],
-          "type": "object"
+        "location": {
+          "$ref": "#/definitions/WorkspaceLocation"
+        },
+        "location_revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "runtime_host": {
+          "type": "string"
+        },
+        "workspace_id": {
+          "type": "string"
         }
-      ]
+      },
+      "required": [
+        "access",
+        "location",
+        "location_revision",
+        "revision",
+        "runtime_host",
+        "workspace_id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceLocation": {
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory",
+        "runtime_id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "access": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/WorkspaceAccess"
+            }
+          ],
+          "default": "read_write"
+        },
+        "workspace_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace_id"
+      ],
+      "type": "object"
     }
   },
   "properties": {
@@ -1798,6 +1833,16 @@
       "anyOf": [
         {
           "$ref": "#/definitions/WorkspaceRef"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "workspace_binding": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceBinding"
         },
         {
           "type": "null"

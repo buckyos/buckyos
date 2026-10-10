@@ -152,9 +152,11 @@ impl ChildDriver {
             ) => false,
             // Waiting for input it has no channel for: only its parent's
             // answer (a new session input) can change that.
-            _ => !(e.status.run_state == RunState::Waiting
-                && e.status.waiting_for == Some(WaitingKind::Input)
-                && e.input_queue.is_none()),
+            _ => {
+                !(e.status.run_state == RunState::Waiting
+                    && e.status.waiting_for == Some(WaitingKind::Input)
+                    && e.input_queue.is_none())
+            }
         }
     }
 
@@ -164,67 +166,70 @@ impl ChildDriver {
     pub async fn tick(&self, roots: &[String]) -> Result<bool> {
         self.reap();
         let mut parents: Vec<String> = roots.to_vec();
+        let mut descendants = Vec::new();
         let mut seen = 0;
         while seen < parents.len() {
             let level: Vec<String> = parents[seen..].to_vec();
             seen = parents.len();
-            for e in self.host.agent.sessions().children_of(&level).await? {
-                if !parents.contains(&e.session_id) {
-                    parents.push(e.session_id.clone());
+            for entry in self.host.agent.sessions().children_of(&level).await? {
+                if !parents.contains(&entry.session_id) {
+                    parents.push(entry.session_id.clone());
+                    descendants.push(entry);
                 }
-                if e.driver.principal != self.host.who {
-                    continue;
-                }
-                let parent_stopped = match e.origin.as_ref().and_then(|o| o.parent_session.clone())
-                {
-                    Some(p) => self
-                        .host
-                        .agent
-                        .sessions()
-                        .lookup(&p)
-                        .await?
-                        .is_some_and(|p| p.status.outcome == Some(Outcome::Stopped)),
-                    None => false,
-                };
-                {
-                    let running = self.running.lock().expect("children");
-                    if let Some(c) = running.get(&e.session_id) {
-                        // A stopped parent stops the sub sessions this host
-                        // drives (a sub session without a queue has no other
-                        // way to hear it).
-                        if parent_stopped {
-                            c.stop.request();
-                        }
-                        continue;
-                    }
-                    if running.len() >= self.host.max_child_concurrency.max(1) {
-                        continue;
-                    }
-                }
-                if !self.advanceable(&e, parent_stopped) {
-                    continue;
-                }
-                let Ok(sd) = SessionDir::open(&e.location) else {
-                    continue;
-                };
-                let stop = StopSignal::default();
-                if parent_stopped && e.status.run_state != RunState::Finished {
-                    stop.request();
-                }
-                let host = self.host.clone();
-                let results = self.results.clone();
-                let child_stop = stop.clone();
-                let sid = e.session_id.clone();
-                let task = tokio::spawn(async move {
-                    let r = host.drive(&sd, StopWhen::Idle, child_stop).await;
-                    results.lock().expect("results").insert(sid, r.clone());
-                    r
-                });
-                self.running
-                    .lock()
-                    .expect("children")
-                    .insert(e.session_id.clone(), Child { task, stop });
             }
+        }
+        for e in descendants.into_iter().rev() {
+            if e.driver.principal != self.host.who {
+                continue;
+            }
+            let parent_stopped = match e.origin.as_ref().and_then(|o| o.parent_session.clone()) {
+                Some(p) => self
+                    .host
+                    .agent
+                    .sessions()
+                    .lookup(&p)
+                    .await?
+                    .is_some_and(|p| p.status.outcome == Some(Outcome::Stopped)),
+                None => false,
+            };
+            {
+                let running = self.running.lock().expect("children");
+                if let Some(c) = running.get(&e.session_id) {
+                    // A stopped parent stops the sub sessions this host
+                    // drives (a sub session without a queue has no other
+                    // way to hear it).
+                    if parent_stopped {
+                        c.stop.request();
+                    }
+                    continue;
+                }
+                if running.len() >= self.host.max_child_concurrency.max(1) {
+                    continue;
+                }
+            }
+            if !self.advanceable(&e, parent_stopped) {
+                continue;
+            }
+            let Ok(sd) = SessionDir::open(&e.location) else {
+                continue;
+            };
+            let stop = StopSignal::default();
+            if parent_stopped && e.status.run_state != RunState::Finished {
+                stop.request();
+            }
+            let host = self.host.clone();
+            let results = self.results.clone();
+            let child_stop = stop.clone();
+            let sid = e.session_id.clone();
+            let task = tokio::spawn(async move {
+                let r = host.drive(&sd, StopWhen::Idle, child_stop).await;
+                results.lock().expect("results").insert(sid, r.clone());
+                r
+            });
+            self.running
+                .lock()
+                .expect("children")
+                .insert(e.session_id.clone(), Child { task, stop });
         }
         Ok(self.busy() > 0)
     }
@@ -315,11 +320,102 @@ pub async fn run_session(
             }
         })
     };
-    let result = host.drive(sd, until, stop).await;
+    let started = Instant::now();
+    let mut stalled_busy = 0;
+    let result = loop {
+        let result = host.drive(sd, until, stop.clone()).await;
+        if detach_children
+            || !matches!(
+                result,
+                DriveResult::Idle { .. }
+                    | DriveResult::TurnOpen { .. }
+                    | DriveResult::Busy { .. }
+                    | DriveResult::RunBusy { .. }
+            )
+        {
+            break result;
+        }
+        let waiting = match (sd.config(), sd.state()) {
+            (Ok(cfg), Ok(state)) => {
+                crate::runtime::workspace_waiting_children(host.agent.as_ref(), &cfg, &state)
+                    .await
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        };
+        if waiting.is_empty() || started.elapsed() >= host.options.max_wait {
+            break result;
+        }
+        if matches!(
+            result,
+            DriveResult::Busy { .. } | DriveResult::RunBusy { .. }
+        ) {
+            if children.busy() == 0
+                && waiting
+                    .iter()
+                    .all(|child| child.status.run_state == RunState::Finished)
+            {
+                stalled_busy += 1;
+                if stalled_busy > 1 {
+                    break result;
+                }
+            }
+            tokio::time::sleep(host.options.poll_interval.min(Duration::from_millis(50))).await;
+        } else {
+            stalled_busy = 0;
+        }
+        loop {
+            if started.elapsed() >= host.options.max_wait {
+                break;
+            }
+            if stop.requested() {
+                for child in children.running.lock().expect("children").values() {
+                    child.stop.request();
+                }
+                tokio::time::sleep(host.options.poll_interval.min(Duration::from_millis(20))).await;
+                break;
+            }
+            if children.busy() == 0 {
+                let mut changed = false;
+                for child in &waiting {
+                    if host
+                        .agent
+                        .sessions()
+                        .lookup(&child.session_id)
+                        .await
+                        .ok()
+                        .flatten()
+                        .is_some_and(|current| {
+                            current.status.rev > child.status.rev
+                                || current.status.run_state == RunState::Finished
+                        })
+                    {
+                        changed = true;
+                    }
+                }
+                if changed {
+                    break;
+                }
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(host.options.poll_interval.min(Duration::from_millis(50))) => {}
+                _ = stop.wait() => {}
+            }
+        }
+        if started.elapsed() >= host.options.max_wait {
+            break result;
+        }
+    };
     ticker.abort();
     let _ = ticker.await;
     if !detach_children {
-        if let Err(e) = children.settle(&roots, host.options.max_wait).await {
+        if let Err(e) = children
+            .settle(
+                &roots,
+                host.options.max_wait.saturating_sub(started.elapsed()),
+            )
+            .await
+        {
             log::warn!("sub session driver: {e}");
         }
     }

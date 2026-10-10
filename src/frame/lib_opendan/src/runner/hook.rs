@@ -74,6 +74,7 @@ impl SessionCheckpointHook {
     async fn boundary(&self, snapshot: &LLMContextSnapshot) -> Result<()> {
         let sh = &self.shared;
         sh.lease.check()?;
+        super::drive::verify_workspace_admission(sh).await?;
         // Tool results first: publish and clear covered in-flight actions.
         self.run.checkpoint_with_results(snapshot, None)?;
         super::rounds::flush_counts(sh, &self.run, &self.rounds).await?;
@@ -126,6 +127,9 @@ impl CheckpointHook for SessionCheckpointHook {
         snapshot: &LLMContextSnapshot,
     ) -> std::result::Result<(), String> {
         self.shared.lease.check().map_err(|e| e.to_string())?;
+        super::drive::verify_workspace_admission(&self.shared)
+            .await
+            .map_err(|e| e.to_string())?;
         self.run
             .checkpoint_with_results(snapshot, None)
             .map_err(|e| e.to_string())?;

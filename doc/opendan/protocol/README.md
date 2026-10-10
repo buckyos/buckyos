@@ -1,6 +1,6 @@
 # Agent Session 协议（反写 Spec）
 
-- 版本：6（session_input /3、session_config /6、session_state /6、binding /3、run.json version 6、snapshot_version 5；summary /2、mechanical/3）。2026-10-10 增加显式 report 提交、`session.policy.completion`、`state.latest_report / final_report`、`report_delivery` 和持久报告 journal；XML 结束只用 report.end，取消 END / 隐式 done。旧目录不迁移。版本 5 的 Session 模板、冻结配置、输入总线、Turn/task 与出站协议继续保留。Round / Step / Turn 见 [LLM Context readme](../../llm_context/readme.md)。
+- 版本：7（session_input /3、session_config /7、session_state /6、binding /4、run.json version 6、snapshot_version 5；summary /2、mechanical/3）。2026-10-10 增加显式 report 提交、`session.policy.completion`、`state.latest_report / final_report`、`report_delivery` 和持久报告 journal；XML 结束只用 report.end，取消 END / 隐式 done。旧目录不迁移。版本 5 的 Session 模板、冻结配置、输入总线、Turn/task 与出站协议继续保留。Round / Step / Turn 见 [LLM Context readme](../../llm_context/readme.md)。
 - 日期：2026-10-10
 - 来源：由 Rust 参考实现 `src/frame/lib_opendan`（crate `libopendan`）反写（[实现计划](<../Agent Session SDK 实现计划.md>) L6 / V6）。字段以 `src/protocol/` 的类型为准，本目录的 JSON Schema 由这些类型导出。
 - 读者：实现其它语言 runner（buckyos-websdk 的 ts-runner 等）的开发者，以及审查协议的人。
@@ -16,6 +16,8 @@
 | AgentRoot 上 Agent State 的文件布局与单写者规则 | `AgentStateClient` 的接口形态（文件版 / kRPC 版） |
 | xllm 的 run 目录（`runs/<run_id>/`）及其中宿主相关字段 | 执行跟踪的平台实现（本实现用 Linux `/proc`） |
 
+Workspace 改造新增稳定 ID、Agent State 登记和不可变执行快照；旧 Session 配置不迁移，详见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。
+
 ## 2. 文档
 
 | 文档 | 内容 |
@@ -25,6 +27,7 @@
 | [Session Input Protocol](<Session Input Protocol.md>) | Agent 输入：总线记录（`opendan.session_input/3`）、MsgObject 消息与 AgentEvent、校验与拒绝、路由、消费进度、半订阅状态、Input 链路与内建渲染、receipt 与提交、bridge、长任务等待、Sub Session 的创建 / 汇报 / 等待 |
 | [Session Control Protocol](<Session Control Protocol.md>) | Session 控制：stop / decide / subscribe / unsubscribe / activity / perceive；驱动者自己的停止请求 |
 | [Agent State Protocol](<Agent State Protocol.md>) | AgentRoot 布局、登记表、活动视图、感知、认知边界、产物列表与 decide、behavior 目录与 Session 模板 |
+| [Agent Workspace Protocol](<Agent Workspace Protocol.md>) | 稳定身份、Known Workspaces、位置修订、固定绑定、本地写锁及交接、CLI、旧目录导入与能力边界 |
 
 ## 3. 机器可读材料
 
@@ -43,7 +46,7 @@
 | 07_receipt_ahead_of_state | 续用 run 的快照领先 state 一批：按 receipt 补交，不重复注入 |
 | 08_finished_with_decide | 应用 decide(accept) 移动产物 head，拒绝迟到的 msg 并记 worklog |
 | 09_semi_subscription | 半订阅按登记表 rev 拉取变化并入 `pending_events`，在下一次受控输入之前作为半订阅快照消息注入，不额外推理 |
-| 10_active_overlap | 两个活动 session 同一 workspace：渲染对方 activity 并标出交集 |
+| 10_active_overlap | 同一 Workspace：activity 能看到重叠，旧执行未核实时新写入者返回 Busy |
 | 11_worklog_with_summary | 反向读 worklog 在 summary 起点停止 |
 | 12_fork_child_live | fork 子 context 的 run 在跑、调用方的 run 作为 `caller` 帧挂起在 process_stack；两个 run 同属仍打开的 Turn 1 |
 | 13_unsupported_snapshot_version | 快照版本不支持：RecoveryBlocked，保留现场 |
