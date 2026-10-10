@@ -1,13 +1,15 @@
 #![allow(dead_code)]
 
 use crate::msg_center::MessageCenter;
-use crate::msg_tunnel::{DeliveryExecutor, EditCapability, EditFailure};
+use crate::msg_tunnel::{
+    DeliveryExecutor, EditCapability, EditFailure, TunnelIngressHandler, INGRESS_PRINCIPAL_KEY,
+};
 use anyhow::{bail, Context, Result as AnyResult};
 use async_trait::async_trait;
 use buckyos_api::{
     build_telegram_ui_session_id, get_buckyos_api_runtime, DeliveryRecord,
     DeliveryRecordWithObject, DeliveryReportResult, DeliveryState, IngressContext,
-    MsgCenterHandler, MSG_CENTER_SERVICE_NAME,
+    MSG_CENTER_SERVICE_NAME,
 };
 use buckyos_kit::get_buckyos_service_data_dir;
 use grammers_client::session::defs::{PeerAuth, PeerId, PeerRef};
@@ -864,6 +866,48 @@ impl TgMessageConverter {
     }
 }
 
+/// Who a private chat with the bot of Agent `agent` speaks for: the Agent's
+/// Owner when the sender's Telegram account is bound to the Owner in the
+/// Agent's contacts. Anything else, lookup failures included, stays
+/// unidentified and is never taken for the Owner.
+async fn private_chat_principal(
+    dispatcher: &Arc<dyn TunnelIngressHandler>,
+    agent: &DID,
+    sender_account_id: &str,
+) -> Option<DID> {
+    match dispatcher
+        .resolve_owner_principal(agent, TELEGRAM_PLATFORM, sender_account_id)
+        .await
+    {
+        Ok(principal) => principal,
+        Err(error) => {
+            warn!(
+                "telegram ingress principal lookup failed: agent={}, sender={}, error={}",
+                agent.to_string(),
+                sender_account_id,
+                error
+            );
+            None
+        }
+    }
+}
+
+fn set_ingress_principal(ingress: &mut IngressContext, principal: Option<DID>) {
+    let Some(principal) = principal else {
+        return;
+    };
+    if let Some(extra) = ingress
+        .extra
+        .get_or_insert_with(|| json!({}))
+        .as_object_mut()
+    {
+        extra.insert(
+            INGRESS_PRINCIPAL_KEY.to_string(),
+            Value::String(principal.to_string()),
+        );
+    }
+}
+
 #[async_trait]
 pub trait TgGateway: Send + Sync {
     async fn start(&self, bindings: &[TgBotBinding]) -> AnyResult<()>;
@@ -877,7 +921,10 @@ pub trait TgGateway: Send + Sync {
         message_id: String,
     ) -> AnyResult<TgEditOutcome>;
 
-    async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
+    async fn set_dispatcher(
+        &self,
+        dispatcher: Option<Arc<dyn TunnelIngressHandler>>,
+    ) -> AnyResult<()> {
         let _ = dispatcher;
         Ok(())
     }
@@ -1089,7 +1136,7 @@ struct GrammersTgRuntime {
 pub struct GrammersTgGateway {
     cfg: GrammersTgGatewayConfig,
     runtimes: Mutex<HashMap<String, GrammersTgRuntime>>,
-    dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
+    dispatcher: Arc<Mutex<Option<Arc<dyn TunnelIngressHandler>>>>,
     ingress_tasks: Mutex<HashMap<String, ManagedTask>>,
 }
 
@@ -1229,7 +1276,7 @@ impl GrammersTgGateway {
     }
 
     async fn resolve_chat_did(
-        dispatcher: &Arc<dyn MsgCenterHandler>,
+        dispatcher: &Arc<dyn TunnelIngressHandler>,
         owner_scope: Option<DID>,
         chat: &TgPeer,
         bot_account_id: &str,
@@ -1254,7 +1301,7 @@ impl GrammersTgGateway {
 
     async fn dispatch_incoming_message(
         client: Client,
-        dispatcher: Arc<dyn MsgCenterHandler>,
+        dispatcher: Arc<dyn TunnelIngressHandler>,
         owner_did: DID,
         bot_account_id: String,
         transport_did: Option<DID>,
@@ -1322,7 +1369,15 @@ impl GrammersTgGateway {
         } else {
             None
         };
-        let converted = TgMessageConverter::tg_message_to_msg_object(
+        let principal = if matches!(chat, TgPeer::User(_))
+            && matches!(sender_chat, TgPeer::User(_))
+            && sender_chat.id().bot_api_dialog_id() == chat.id().bot_api_dialog_id()
+        {
+            private_chat_principal(&dispatcher, &owner_did, &sender_account_id).await
+        } else {
+            None
+        };
+        let mut converted = TgMessageConverter::tg_message_to_msg_object(
             &client,
             owner_did.clone(),
             sender_did,
@@ -1348,6 +1403,7 @@ impl GrammersTgGateway {
             );
             error
         })?;
+        set_ingress_principal(&mut converted.ingress_ctx, principal);
         info!(
             "telegram ingress message received (gateway=grammers): owner={}, bot={}, chat_id={}, message_id={}",
             owner_did.to_string(),
@@ -1878,7 +1934,10 @@ impl TgGateway for GrammersTgGateway {
         }
     }
 
-    async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
+    async fn set_dispatcher(
+        &self,
+        dispatcher: Option<Arc<dyn TunnelIngressHandler>>,
+    ) -> AnyResult<()> {
         {
             let mut guard = self.dispatcher.lock().await;
             *guard = dispatcher;
@@ -2074,7 +2133,7 @@ struct TgBotApiSentMessage {
 pub struct BotApiTgGateway {
     http: HttpClient,
     runtimes: Mutex<HashMap<String, BotApiTgRuntime>>,
-    dispatcher: Arc<Mutex<Option<Arc<dyn MsgCenterHandler>>>>,
+    dispatcher: Arc<Mutex<Option<Arc<dyn TunnelIngressHandler>>>>,
     ingress_tasks: Mutex<HashMap<String, ManagedTask>>,
     transport_did: Option<DID>,
     tunnel_instance_id: Option<String>,
@@ -2453,7 +2512,7 @@ impl BotApiTgGateway {
     async fn dispatch_incoming_message(
         http: &HttpClient,
         bot_token: &str,
-        dispatcher: Arc<dyn MsgCenterHandler>,
+        dispatcher: Arc<dyn TunnelIngressHandler>,
         owner_did: DID,
         bot_account_id: String,
         transport_did: Option<DID>,
@@ -2479,6 +2538,14 @@ impl BotApiTgGateway {
             sender_username = message.chat.username.clone();
         }
         let sender_account_id = Self::chat_account_id(sender_kind, sender_chat_id);
+        let principal = if message.chat.kind == "private"
+            && message.from.is_some()
+            && sender_chat_id == chat_id
+        {
+            private_chat_principal(&dispatcher, &owner_did, &sender_account_id).await
+        } else {
+            None
+        };
         let sender_did = dispatcher
             .handle_resolve_did(
                 TELEGRAM_PLATFORM.to_string(),
@@ -2666,7 +2733,7 @@ impl BotApiTgGateway {
         }
         msg.to_session = Some(build_telegram_ui_session_id(&bot_account_id, chat_id));
 
-        let ingress_ctx = IngressContext {
+        let mut ingress_ctx = IngressContext {
             transport_did,
             platform: Some(TELEGRAM_PLATFORM.to_string()),
             chat_id: Some(chat_id.to_string()),
@@ -2679,6 +2746,7 @@ impl BotApiTgGateway {
                 "tunnel_account_id": bot_account_id,
             })),
         };
+        set_ingress_principal(&mut ingress_ctx, principal);
         info!(
             "telegram ingress message received (gateway=bot_api): owner={}, bot={}, chat_id={}, message_id={}",
             owner_did.to_string(),
@@ -2786,7 +2854,7 @@ impl BotApiTgGateway {
     }
 
     async fn load_bot_api_offset(
-        dispatcher: &Arc<dyn MsgCenterHandler>,
+        dispatcher: &Arc<dyn TunnelIngressHandler>,
         owner_did: &DID,
         bot_account_id: &str,
         tunnel_instance_id: &str,
@@ -2825,7 +2893,7 @@ impl BotApiTgGateway {
     }
 
     async fn persist_bot_api_offset(
-        dispatcher: &Arc<dyn MsgCenterHandler>,
+        dispatcher: &Arc<dyn TunnelIngressHandler>,
         owner_did: &DID,
         bot_account_id: &str,
         tunnel_instance_id: &str,
@@ -3061,10 +3129,11 @@ impl TgGateway for BotApiTgGateway {
                     }) {
                     Ok(me) => me,
                     Err(error) => {
-                        for (_, task) in started_tasks.drain() {
-                            task.stop("bot-api-start-rollback").await;
-                        }
-                        return Err(error);
+                        warn!(
+                            "telegram bot api binding skipped, other bindings keep running: {:#}",
+                            error
+                        );
+                        continue;
                     }
                 };
             info!(
@@ -3284,7 +3353,10 @@ impl TgGateway for BotApiTgGateway {
         }
     }
 
-    async fn set_dispatcher(&self, dispatcher: Option<Arc<dyn MsgCenterHandler>>) -> AnyResult<()> {
+    async fn set_dispatcher(
+        &self,
+        dispatcher: Option<Arc<dyn TunnelIngressHandler>>,
+    ) -> AnyResult<()> {
         let mut guard = self.dispatcher.lock().await;
         *guard = dispatcher;
         Ok(())
@@ -3295,7 +3367,7 @@ pub struct TgTunnel {
     cfg: TgTunnelConfig,
     running: AtomicBool,
     bindings: Arc<RwLock<HashMap<String, TgBotBinding>>>,
-    dispatcher: Arc<RwLock<Option<Arc<dyn MsgCenterHandler>>>>,
+    dispatcher: Arc<RwLock<Option<Arc<dyn TunnelIngressHandler>>>>,
     gateway: Arc<dyn TgGateway>,
 }
 
@@ -3344,7 +3416,7 @@ impl TgTunnel {
         }
     }
 
-    pub fn bind_msg_center_handler(&self, handler: Arc<dyn MsgCenterHandler>) -> AnyResult<()> {
+    pub fn bind_msg_center_handler(&self, handler: Arc<dyn TunnelIngressHandler>) -> AnyResult<()> {
         let mut guard = self
             .dispatcher
             .write()
@@ -3362,7 +3434,7 @@ impl TgTunnel {
         Ok(())
     }
 
-    fn get_msg_center_handler(&self) -> AnyResult<Option<Arc<dyn MsgCenterHandler>>> {
+    fn get_msg_center_handler(&self) -> AnyResult<Option<Arc<dyn TunnelIngressHandler>>> {
         let guard = self
             .dispatcher
             .read()
@@ -3507,7 +3579,7 @@ impl TgTunnel {
 
     async fn load_edit_fallback(
         &self,
-        handler: &Arc<dyn MsgCenterHandler>,
+        handler: &Arc<dyn TunnelIngressHandler>,
         delivery_id: &str,
     ) -> AnyResult<Option<TgEditFallback>> {
         let value = handler
@@ -3526,7 +3598,7 @@ impl TgTunnel {
 
     async fn persist_edit_fallback(
         &self,
-        handler: &Arc<dyn MsgCenterHandler>,
+        handler: &Arc<dyn TunnelIngressHandler>,
         delivery_id: &str,
         state: &TgEditFallback,
     ) -> AnyResult<()> {
@@ -3948,7 +4020,7 @@ mod tests {
             .await
             .unwrap();
 
-        let handler: Arc<dyn MsgCenterHandler> = Arc::new(center.clone());
+        let handler: Arc<dyn TunnelIngressHandler> = Arc::new(center.clone());
         let offset = BotApiTgGateway::load_bot_api_offset(
             &handler,
             &owner,
@@ -4117,7 +4189,7 @@ mod tests {
             -10012345,
             Some("Ops"),
             Some("ops_channel"),
-            "@jarvis_bot",
+            "@xiaobai_bot",
             Some("tg-main"),
         );
 
@@ -4445,6 +4517,142 @@ mod tests {
         let report = fx.tunnel.execute_delivery(record.clone()).await.unwrap();
         assert!(report.ok);
         assert_eq!(fx.gateway.operations().await, vec!["send:final answer:0"]);
+    }
+
+    struct AgentOwnerVerifier {
+        agent: DID,
+        owner: DID,
+    }
+
+    #[async_trait]
+    impl crate::owner_session::SessionTokenVerifier for AgentOwnerVerifier {
+        async fn verify(&self, _token: &str) -> Result<kRPC::RPCSessionToken, kRPC::RPCErrors> {
+            Err(kRPC::RPCErrors::NoPermission(
+                "no tokens in this test".into(),
+            ))
+        }
+
+        async fn resolve_user_did(&self, user_id: &str) -> Result<DID, kRPC::RPCErrors> {
+            Err(kRPC::RPCErrors::KeyNotExist(user_id.to_string()))
+        }
+
+        async fn zone_agent(
+            &self,
+            did: &DID,
+        ) -> Result<Option<crate::owner_session::ZoneAgentInfo>, kRPC::RPCErrors> {
+            Ok(
+                (did == &self.agent).then(|| crate::owner_session::ZoneAgentInfo {
+                    owner: self.owner.clone(),
+                    allow_group: false,
+                }),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn private_chat_from_the_owners_telegram_account_speaks_for_the_owner() {
+        let (center, _tmp) = new_msg_center().await;
+        let agent = DID::new("web", "xiaobai.test.buckyos.io");
+        let owner = DID::new("web", "alice.test.buckyos.io");
+        center.set_token_verifier(Arc::new(AgentOwnerVerifier {
+            agent: agent.clone(),
+            owner: owner.clone(),
+        }));
+        center
+            .upsert_zone_user_contacts(
+                vec![crate::contact_mgr::ZoneUserContactSeed {
+                    did: owner.clone(),
+                    name: "Alice".into(),
+                    note: None,
+                    bindings: vec![buckyos_api::AccountBinding {
+                        platform: TELEGRAM_PLATFORM.into(),
+                        account_id: "10001".into(),
+                        display_id: "10001".into(),
+                        tunnel_instance_id: "telegram-default-tunnel".into(),
+                        account_type: String::new(),
+                        endpoint_did: None,
+                        last_active_at: 0,
+                        meta: HashMap::new(),
+                    }],
+                    groups: vec![],
+                    tags: vec![],
+                }],
+                Some(agent.clone()),
+            )
+            .await
+            .unwrap();
+        let handler: Arc<dyn TunnelIngressHandler> = Arc::new(center.clone());
+        assert_eq!(
+            private_chat_principal(&handler, &agent, "10001").await,
+            Some(owner.clone())
+        );
+        assert_eq!(
+            private_chat_principal(&handler, &agent, "20002").await,
+            None
+        );
+        assert_eq!(
+            private_chat_principal(&handler, &DID::new("web", "other.test.buckyos.io"), "10001")
+                .await,
+            None
+        );
+
+        let http = HttpClient::new();
+        for (message_id, sender) in [(1, 10001), (2, 20002)] {
+            let message: TgBotApiMessage = serde_json::from_value(json!({
+                "message_id": message_id,
+                "date": 1,
+                "chat": {"id": sender, "type": "private", "first_name": "U"},
+                "from": {"id": sender, "first_name": "U"},
+                "text": "hello"
+            }))
+            .unwrap();
+            BotApiTgGateway::dispatch_incoming_message(
+                &http,
+                "token",
+                handler.clone(),
+                agent.clone(),
+                "@xiaobai_bot".into(),
+                Some(DID::new("bns", "tg-test")),
+                Some("tg-main".into()),
+                message,
+            )
+            .await
+            .unwrap();
+        }
+
+        let records = |chat_id: i64, kind: buckyos_api::MailboxKind| {
+            let center = center.clone();
+            let mailbox = buckyos_api::MailboxAddress::new(
+                agent.clone(),
+                Some(build_telegram_ui_session_id("@xiaobai_bot", chat_id)),
+            )
+            .unwrap();
+            async move {
+                center
+                    .handle_peek_box(mailbox, kind, None, None, None, RPCContext::default())
+                    .await
+                    .unwrap()
+            }
+        };
+        let principal = |record: &buckyos_api::MailboxRecordWithObject| {
+            record
+                .record
+                .ingress
+                .as_ref()
+                .and_then(|ingress| ingress.extra.as_ref())
+                .and_then(|extra| extra.get(INGRESS_PRINCIPAL_KEY))
+                .cloned()
+        };
+        let from_owner = records(10001, buckyos_api::MailboxKind::Inbox).await;
+        assert_eq!(from_owner.len(), 1);
+        assert_eq!(from_owner[0].record.from.method, "msgtunnel");
+        assert_eq!(principal(&from_owner[0]), Some(json!(owner.to_string())));
+        assert!(records(20002, buckyos_api::MailboxKind::Inbox)
+            .await
+            .is_empty());
+        let from_stranger = records(20002, buckyos_api::MailboxKind::RequestBox).await;
+        assert_eq!(from_stranger.len(), 1);
+        assert_eq!(principal(&from_stranger[0]), None);
     }
 
     #[tokio::test]

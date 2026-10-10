@@ -6,9 +6,16 @@
 //! The binding is not stored anywhere of its own: the registry entry of a
 //! UI session carries the inbox address as its `route_key`, and the current
 //! session of an inbox is the latest unfinished one with that key.
+//!
+//! Only the owner's messages reach a session; in a group only those that
+//! mention the agent, and only while the owner allows group chat. Anything
+//! else is marked read and nothing more. A group request takes the group's
+//! latest read messages along as context (`delivery.context`): their
+//! speakers are kept, they carry no request of their own.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,7 +25,10 @@ use buckyos_api::{
     PostSendResult, RecipientState,
 };
 use libopendan::api::create_session;
-use libopendan::bridge::{route_msg_record, MsgBridgeCtx, MsgBridgeOutput, OutboundRecord, SlashCommand};
+use libopendan::bridge::{
+    context_msg_record, route_msg_record, MsgBridgeCtx, MsgBridgeOutput, OutboundRecord,
+    SlashCommand,
+};
 use libopendan::channel::{InputChannelFactory, Waker};
 use libopendan::host::Supervisor;
 use libopendan::protocol::*;
@@ -31,6 +41,10 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::config::{AgentConfig, ON_MSG_CHAT, ON_MSG_GROUP};
+use crate::records::{self, AgentRecords};
+
+/// How many of a group's latest read messages a request takes along.
+pub const GROUP_CONTEXT: usize = 20;
 
 /// What the tunnel needs from msg-center.
 #[async_trait]
@@ -41,6 +55,12 @@ pub trait MailService: Send + Sync {
     async fn next_unread(&self, mailbox: &MailboxAddress)
         -> Result<Option<MailboxRecordWithObject>, String>;
     async fn mark_read(&self, record_id: &str) -> Result<(), String>;
+    /// The latest `limit` read records of `mailbox`, oldest first.
+    async fn recent_read(
+        &self,
+        mailbox: &MailboxAddress,
+        limit: usize,
+    ) -> Result<Vec<MailboxRecordWithObject>, String>;
     async fn post_send(&self, msg: MsgObject, key: &str) -> Result<PostSendResult, String>;
     /// Whether a message on the envelope `msg` could later be replaced in
     /// place at every target it would be delivered to.
@@ -95,6 +115,30 @@ impl MailService for ZoneMailService {
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    async fn recent_read(
+        &self,
+        mailbox: &MailboxAddress,
+        limit: usize,
+    ) -> Result<Vec<MailboxRecordWithObject>, String> {
+        let page = Self::client()
+            .await?
+            .list_box_by_time(
+                mailbox.clone(),
+                MailboxKind::Inbox,
+                Some(vec![RecipientState::Read]),
+                Some(limit),
+                None,
+                None,
+                Some(true),
+                Some(true),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut items = page.items;
+        items.reverse();
+        Ok(items)
     }
 
     async fn post_send(&self, msg: MsgObject, key: &str) -> Result<PostSendResult, String> {
@@ -295,6 +339,12 @@ pub struct UiModule {
     pub config: AgentConfig,
     pub agent: Arc<dyn AgentStateClient>,
     pub who: String,
+    /// The agent's owner: the only sender whose messages reach a session.
+    pub owner: DID,
+    /// Last known `settings.allow_group`, read again when a group message
+    /// comes in.
+    allow_group: AtomicBool,
+    records: Arc<dyn AgentRecords>,
     pub mail: Arc<dyn MailService>,
     pub channels: Arc<dyn InputChannelFactory>,
     pub supervisor: Arc<Supervisor>,
@@ -315,10 +365,14 @@ pub fn ui_session_id(agent_did: &str, route_key: &str, generation: usize) -> Str
 }
 
 impl UiModule {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: AgentConfig,
         agent: Arc<dyn AgentStateClient>,
         who: &str,
+        owner: DID,
+        allow_group: bool,
+        records: Arc<dyn AgentRecords>,
         mail: Arc<dyn MailService>,
         channels: Arc<dyn InputChannelFactory>,
         supervisor: Arc<Supervisor>,
@@ -328,6 +382,9 @@ impl UiModule {
             config,
             agent,
             who: who.to_string(),
+            owner,
+            allow_group: AtomicBool::new(allow_group),
+            records,
             mail,
             channels,
             supervisor,
@@ -438,14 +495,83 @@ impl UiModule {
     }
 
     fn bridge_ctx(&self) -> MsgBridgeCtx {
-        let owner = did_of_principal(&self.who).ok();
         MsgBridgeCtx {
             agent_did: parse_did(self.agent.agent_did()).ok(),
-            command_senders: owner.into_iter().collect(),
+            owner: self.owner.clone(),
+            allow_group: self.allow_group.load(Ordering::SeqCst),
             commands: [("stop".to_string(), SlashCommand::Stop)].into_iter().collect(),
             contact_name: None,
             conversation_name: None,
         }
+    }
+
+    /// The owner may switch group chat on or off while the agent runs.
+    async fn refresh_allow_group(&self) -> bool {
+        match records::settings(self.records.as_ref()).await {
+            Ok(s) => {
+                self.allow_group.store(s.allow_group, Ordering::SeqCst);
+                s.allow_group
+            }
+            Err(e) => {
+                log::warn!("ui: agent settings not readable ({e}); allow_group stays as it was");
+                self.allow_group.load(Ordering::SeqCst)
+            }
+        }
+    }
+
+    /// Post one record to a session. `false`: the session cannot take it
+    /// now (back-pressure, or its queue is being recreated by its driver);
+    /// the inbox is held, nothing is acknowledged upstream.
+    async fn post(&self, route_key: &str, sid: &str, input: &PostedInput) -> Result<bool, String> {
+        match self.agent.sessions().post_input(sid, input).await {
+            Ok(_) => Ok(true),
+            Err(e @ OpenDanError::InputFull { .. }) => {
+                self.note(route_key, |s| s.held = Some(e.to_string()));
+                let _ = self.supervisor.ensure_task(sid, "input queue full").await;
+                Ok(false)
+            }
+            Err(e @ OpenDanError::QueueMissing { .. }) => {
+                self.note(route_key, |s| s.held = Some(e.to_string()));
+                let _ = self.supervisor.ensure_task(sid, "input queue missing").await;
+                Ok(false)
+            }
+            Err(e) => Err(format!("post to {sid}: {e}")),
+        }
+    }
+
+    /// The group's latest read messages, oldest first, as context of the
+    /// request `request_key` (re-posts are deduplicated by the session).
+    async fn post_group_context(
+        &self,
+        mailbox: &MailboxAddress,
+        route_key: &str,
+        sid: &str,
+        request_key: &str,
+        ctx: &MsgBridgeCtx,
+    ) -> Result<bool, String> {
+        let mut seen: BTreeSet<String> = [request_key.to_string()].into_iter().collect();
+        for MailboxRecordWithObject { record, msg } in self.mail.recent_read(mailbox, GROUP_CONTEXT).await? {
+            let Some(msg) = msg else {
+                continue;
+            };
+            if !seen.insert(msg_key(&msg)) {
+                continue;
+            }
+            let Some(delivery) = context_msg_record(&record, &msg, ctx) else {
+                continue;
+            };
+            let input = match PostedInput::msg(&self.who, msg, delivery) {
+                Ok(i) => i,
+                Err(e) => {
+                    log::debug!("ui: record {} of {route_key} is no context: {e}", record.record_id);
+                    continue;
+                }
+            };
+            if !self.post(route_key, sid, &input).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Move the unread records of one inbox into its session, oldest first.
@@ -453,7 +579,8 @@ impl UiModule {
     /// good); a full session queue holds the inbox at that record.
     async fn drain(&self, mailbox: &MailboxAddress) -> Result<(), String> {
         let route_key = mailbox.to_string();
-        let ctx = self.bridge_ctx();
+        let mut ctx = self.bridge_ctx();
+        let mut settings_read = false;
         let mut last: Option<String> = None;
         loop {
             let Some(MailboxRecordWithObject { record, msg }) = self.mail.next_unread(mailbox).await?
@@ -470,6 +597,10 @@ impl UiModule {
                 last = Some(record.record_id);
                 continue;
             };
+            if msg.kind == MsgObjKind::GroupMsg && !settings_read {
+                ctx.allow_group = self.refresh_allow_group().await;
+                settings_read = true;
+            }
             let key = msg_key(&msg);
             let output = route_msg_record(&record, &msg, &ctx);
             let posted = match &output {
@@ -487,28 +618,21 @@ impl UiModule {
                     else {
                         return Ok(());
                     };
+                    if msg.kind == MsgObjKind::GroupMsg
+                        && matches!(output, MsgBridgeOutput::Deliver { .. })
+                        && !self.post_group_context(mailbox, &route_key, &sid, &key, &ctx).await?
+                    {
+                        return Ok(());
+                    }
                     let input = output
                         .clone()
                         .into_input(&self.who, &msg)
                         .map_err(|e| e.to_string())?
                         .expect("deliver / control produce a record");
-                    match self.agent.sessions().post_input(&sid, &input).await {
-                        Ok(_) => Some(sid),
-                        Err(e @ OpenDanError::InputFull { .. }) => {
-                            // Back-pressure: not acknowledged upstream.
-                            self.note(&route_key, |s| s.held = Some(e.to_string()));
-                            let _ = self.supervisor.ensure_task(&sid, "input queue full").await;
-                            return Ok(());
-                        }
-                        Err(e @ OpenDanError::QueueMissing { .. }) => {
-                            // The driver recreates the queue when it drives
-                            // the session; not acknowledged upstream.
-                            self.note(&route_key, |s| s.held = Some(e.to_string()));
-                            let _ = self.supervisor.ensure_task(&sid, "input queue missing").await;
-                            return Ok(());
-                        }
-                        Err(e) => return Err(format!("post to {sid}: {e}")),
+                    if !self.post(&route_key, &sid, &input).await? {
+                        return Ok(());
                     }
+                    Some(sid)
                 }
             };
             self.mail.mark_read(&record.record_id).await?;

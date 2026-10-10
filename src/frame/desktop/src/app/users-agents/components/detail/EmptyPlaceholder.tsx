@@ -1,8 +1,10 @@
 /* ── Empty state placeholder ── */
 
 import { Users } from 'lucide-react'
+import { useI18n } from '../../../../i18n/provider'
 
 export function EmptyPlaceholder() {
+  const { t } = useI18n()
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3 px-8">
       <div
@@ -20,7 +22,7 @@ export function EmptyPlaceholder() {
         className="font-display text-sm font-medium text-center"
         style={{ color: 'var(--cp-muted)' }}
       >
-        Select an internal entity to view details
+        {t('usersAgents.selectEntity')}
       </p>
     </div>
   )

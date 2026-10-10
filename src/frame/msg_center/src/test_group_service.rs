@@ -1,7 +1,7 @@
 use crate::group_types::*;
 use crate::msg_box_db::MsgBoxDbMgr;
 use crate::msg_center::MessageCenter;
-use crate::owner_session::SessionTokenVerifier;
+use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
 use buckyos_api::{
     bind_token_principal_kind, bind_token_target, AccessGroupLevel, AuthTarget, ContactPatch,
     MailboxAddress, MailboxKind, MsgCenterHandler, SystemServiceId, TokenPrincipalKind, TokenUse,
@@ -125,9 +125,13 @@ fn member() -> DID {
 fn guest() -> DID {
     DID::new("dev", "IpMPQFSbItHA0O4_RkVTraZa11q5SaVY_x6s9wZ3kUM")
 }
-/// A zone-hosted agent owned by `owner()`.
+/// A zone-hosted agent owned by `owner()` that may join groups.
 fn agent() -> DID {
     DID::new("dev", "agent-under-test")
+}
+/// A zone-hosted agent owned by `owner()` whose `allow_group` is off.
+fn private_agent() -> DID {
+    DID::new("dev", "private-agent-under-test")
 }
 fn group() -> DID {
     DID::new("web", "support.test.example")
@@ -153,7 +157,7 @@ fn actor(d: DID) -> GroupActor {
     }
 }
 struct Verifier {
-    agents: HashMap<DID, DID>,
+    agents: HashMap<DID, ZoneAgentInfo>,
 }
 #[async_trait::async_trait]
 impl SessionTokenVerifier for Verifier {
@@ -168,12 +172,22 @@ impl SessionTokenVerifier for Verifier {
     async fn resolve_user_did(&self, id: &str) -> Result<DID> {
         DID::from_str(id).map_err(invalid)
     }
-    async fn is_zone_agent(&self, d: &DID) -> Result<bool> {
-        Ok(self.agents.contains_key(d))
-    }
-    async fn agent_owner(&self, d: &DID) -> Result<Option<DID>> {
+    async fn zone_agent(&self, d: &DID) -> Result<Option<ZoneAgentInfo>> {
         Ok(self.agents.get(d).cloned())
     }
+}
+/// `agent()` may join groups; `private_agent()` only when `private_allow_group`.
+fn verifier(private_allow_group: bool) -> Arc<Verifier> {
+    let info = |allow_group| ZoneAgentInfo {
+        owner: owner(),
+        allow_group,
+    };
+    Arc::new(Verifier {
+        agents: HashMap::from([
+            (agent(), info(true)),
+            (private_agent(), info(private_allow_group)),
+        ]),
+    })
 }
 fn context(d: &DID) -> RPCContext {
     let mut token = RPCSessionToken {
@@ -204,11 +218,9 @@ fn context(d: &DID) -> RPCContext {
 async fn opened(connection: &str) -> MessageCenter {
     let db = MsgBoxDbMgr::open_default_sqlite(connection).await.unwrap();
     let c = MessageCenter::open_with_db(db).await.unwrap();
-    c.set_token_verifier(Arc::new(Verifier {
-        agents: HashMap::from([(agent(), owner())]),
-    }));
+    c.set_token_verifier(verifier(false));
     c.cyfs_dispatch.write().unwrap().target_zone = Some("test.example".into());
-    c.register_local_recipients([owner(), member(), guest(), agent()]);
+    c.register_local_recipients([owner(), member(), guest(), agent(), private_agent()]);
     c.set_message_hub_did(DID::new("web", "hub.test.example"));
     c
 }
@@ -2011,6 +2023,73 @@ async fn agents_accept_only_their_owners_invitations_and_others_need_the_owner()
 }
 
 #[tokio::test]
+async fn agents_with_group_chat_disabled_refuse_every_invitation() {
+    let (c, _tmp, _) = center().await;
+    let created = create(&c, json!({})).await;
+    let disabled = |result: Result<Value>| match result {
+        Err(kRPC::RPCErrors::NoPermission(reason)) => reason == "agent_group_disabled",
+        _ => false,
+    };
+    assert!(disabled(
+        call(
+            &c,
+            &owner(),
+            "group.invite_member",
+            json!({"member_did":private_agent()}),
+        )
+        .await
+    ));
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert!(!state.members.contains_key(&private_agent().to_string()));
+
+    call(&c,&owner(),"group.apply_config",json!({"expected_revision":created["revision"],"idempotency_key":"members-invite","patch":{"roles":{"member":["session.post","session.read","group.invite_member"]}}})).await.unwrap();
+    join(&c, &member()).await;
+    assert!(disabled(
+        call(
+            &c,
+            &member(),
+            "group.invite_member",
+            json!({"member_did":private_agent()}),
+        )
+        .await
+    ));
+
+    c.set_token_verifier(verifier(true));
+    let pending = call(
+        &c,
+        &member(),
+        "group.invite_member",
+        json!({"member_did":private_agent()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(pending["state"], "invited");
+    c.set_token_verifier(verifier(false));
+    let accept = json!({"invitation_id":pending["invite_id"],"member_did":private_agent()});
+    assert!(disabled(
+        call(&c, &owner(), "group.accept_invitation", accept.clone()).await
+    ));
+    assert!(disabled(
+        call(
+            &c,
+            &private_agent(),
+            "group.accept_invitation",
+            json!({"invitation_id":pending["invite_id"]}),
+        )
+        .await
+    ));
+    let result = call(&c, &member(), "group.accept_invitation", accept).await;
+    assert!(
+        matches!(result, Err(kRPC::RPCErrors::NoPermission(reason)) if reason == "agent-owner-required")
+    );
+    let state = c.groups.load(&group()).await.unwrap().unwrap();
+    assert_eq!(
+        state.members[&private_agent().to_string()].state,
+        MemberStatus::Invited
+    );
+}
+
+#[tokio::test]
 async fn owner_transfer_takes_effect_only_when_the_target_accepts() {
     let (c, _tmp, _) = center().await;
     create(&c, json!({})).await;
@@ -2330,4 +2409,62 @@ async fn edit_capability_of_a_group_follows_its_edit_window() {
     assert!(!limited.editable);
     assert_eq!(limited.reason.as_deref(), Some("group edit window"));
     assert_eq!(limited.edit_window_ms, Some(60000));
+}
+
+fn app_context(sub: &DID, appid: &str) -> RPCContext {
+    let mut token = RPCSessionToken {
+        token_type: RPCSessionTokenType::JWT,
+        token: None,
+        aud: None,
+        exp: Some(buckyos_kit::buckyos_get_unix_timestamp() + 3600),
+        iss: Some(buckyos_api::VERIFY_HUB_UNIQUE_ID.into()),
+        jti: None,
+        sub: Some(sub.to_string()),
+        appid: Some(appid.into()),
+        sudo: false,
+        extra: HashMap::new(),
+    };
+    bind_token_principal_kind(&mut token, TokenPrincipalKind::App);
+    bind_token_target(
+        &mut token,
+        &AuthTarget::App {
+            app_instance_id: format!("{appid}@alice").parse().unwrap(),
+        },
+        TokenUse::Session,
+    )
+    .unwrap();
+    RPCContext {
+        token: Some(token.generate_jwt(None, &key(&owner())).unwrap()),
+        from_ip: Some("127.0.0.1".parse().unwrap()),
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn an_agent_runtime_app_posts_group_messages_as_its_agent() {
+    let (c, _tmp, _) = center().await;
+    let helper = DID::new("web", "helper.test.example");
+    c.set_token_verifier(Arc::new(Verifier {
+        agents: HashMap::from([(
+            helper.clone(),
+            ZoneAgentInfo {
+                owner: owner(),
+                allow_group: true,
+            },
+        )]),
+    }));
+    let msg = message(&helper, None, "hi", 1);
+    let actor = c
+        .group_message_actor(&app_context(&owner(), "helper.test.example"), &msg)
+        .await
+        .unwrap();
+    assert_eq!(actor.did, helper);
+    for ctx in [
+        app_context(&owner(), "other.test.example"),
+        app_context(&member(), "helper.test.example"),
+        context(&owner()),
+    ] {
+        let err = c.group_message_actor(&ctx, &msg).await.unwrap_err();
+        assert!(err.to_string().contains("sender-mismatch"), "{err}");
+    }
 }

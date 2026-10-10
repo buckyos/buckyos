@@ -1,16 +1,18 @@
+use crate::app_installer::InternalInstall;
 use crate::pikg::PikgReader;
 use crate::ControlPanelServer;
 use buckyos_api::{
-    get_buckyos_api_runtime, validate_preinstall_pikg_path, AppId, AppInstanceId,
-    InstallPlanExecutionKey, PreInstallAppConfig, SystemConfigClient, SystemInstallSettings,
+    get_buckyos_api_runtime, AppId, AppInstanceId, AppType, InstallPlanExecutionKey,
+    PreInstallAppConfig, SystemConfigClient, SystemInstallSettings,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, get_buckyos_root_dir};
 use serde_json::{json, Value};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-const INSTALL_SETTINGS_KEY: &str = "system/install_settings";
+pub(crate) const INSTALL_SETTINGS_KEY: &str = "system/install_settings";
+pub(crate) const PREINSTALL_PIKG_DIR: &str = "data/cache";
 const SWEEP_INTERVAL: Duration = Duration::from_secs(10 * 60);
 const DEPENDENCY_RETRY_INTERVAL: Duration = Duration::from_secs(5);
 const SCHEDULER_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -24,14 +26,14 @@ fn next_sweep_interval(stable_interval: Duration, needs_follow_up: bool) -> Dura
 }
 
 #[derive(Debug)]
-struct PreInstallError {
-    code: &'static str,
-    retryable: bool,
-    message: String,
+pub(crate) struct PreInstallError {
+    pub(crate) code: &'static str,
+    pub(crate) retryable: bool,
+    pub(crate) message: String,
 }
 
 impl PreInstallError {
-    fn new(code: &'static str, retryable: bool, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, retryable: bool, message: impl Into<String>) -> Self {
         Self {
             code,
             retryable,
@@ -177,6 +179,13 @@ impl PreInstallReconciler {
                 }
             }
         }
+        if let Err(error) = self
+            .server
+            .reconcile_agent_template_updates(&settings.agent_templates)
+            .await
+        {
+            log::warn!("agent template update sweep failed: {error}");
+        }
         if retry_needed {
             Err("one or more pre-install apps need a dependency retry".to_string())
         } else {
@@ -198,22 +207,37 @@ impl PreInstallReconciler {
         match system_config.get(&spec_key).await {
             Ok(value) => {
                 let spec: buckyos_api::AppServiceSpec = serde_json::from_str(&value.value)
-                    .map_err(|error| PreInstallError::new("INVALID_SPEC", false, error.to_string()))?;
+                    .map_err(|error| {
+                        PreInstallError::new("INVALID_SPEC", false, error.to_string())
+                    })?;
                 if spec.state == buckyos_api::ServiceState::Deleted {
-                    Self::write_state(system_config, app_id, json!({
-                        "schema_version": 1, "app_id": app_id,
-                        "app_instance_id": spec.app_instance_id,
-                        "pikg_path": config.pikg_path, "action": "user_removed",
-                        "updated_at": buckyos_get_unix_timestamp(), "error": null,
-                    })).await.map_err(|error| PreInstallError::new("STATE_WRITE_FAILED", true, error))?;
+                    Self::write_state(
+                        system_config,
+                        app_id,
+                        json!({
+                            "schema_version": 1, "app_id": app_id,
+                            "app_instance_id": spec.app_instance_id,
+                            "pikg_path": config.pikg_path, "action": "user_removed",
+                            "updated_at": buckyos_get_unix_timestamp(), "error": null,
+                        }),
+                    )
+                    .await
+                    .map_err(|error| PreInstallError::new("STATE_WRITE_FAILED", true, error))?;
                     return Ok(false);
                 }
             }
             Err(buckyos_api::SystemConfigError::KeyNotFound(_)) => {}
-            Err(error) => return Err(PreInstallError::new("SPEC_READ_FAILED", true, error.to_string())),
+            Err(error) => {
+                return Err(PreInstallError::new(
+                    "SPEC_READ_FAILED",
+                    true,
+                    error.to_string(),
+                ))
+            }
         }
         let root = get_buckyos_root_dir();
-        let source_path = canonical_preinstall_path(&root, config.pikg_path.as_str()).await?;
+        let source_path =
+            canonical_pikg_path(&root, config.pikg_path.as_str(), PREINSTALL_PIKG_DIR).await?;
         let runtime = get_buckyos_api_runtime().map_err(|error| {
             PreInstallError::new("RUNTIME_UNAVAILABLE", true, error.to_string())
         })?;
@@ -256,10 +280,18 @@ impl PreInstallReconciler {
                 format!("map key {app_id} != PIKG AppDID-derived AppId {canonical_app_id}"),
             ));
         }
+        if inspection.app_doc.get_app_type() == AppType::Agent {
+            return Err(PreInstallError::new(
+                "AGENT_TEMPLATE_IN_PRE_INSTALL",
+                false,
+                "Agent PIKGs are templates; list them in agent_templates instead of pre_install_apps",
+            ));
+        }
 
         let outcome = self
             .server
-            .submit_preinstall(
+            .submit_internal_install(
+                InternalInstall::Preinstall,
                 owner_user_id,
                 app_id,
                 metadata.pikg_digest.as_str(),
@@ -333,19 +365,43 @@ fn scheduler_transport_unavailable(message: &str) -> bool {
     .any(|marker| message.contains(marker))
 }
 
-async fn canonical_preinstall_path(
+/// Resolves a `$BUCKYOS_ROOT`-relative PIKG path that must stay inside
+/// `allowed_dir` (rootfs seeds below `data/cache`, user Agent templates below
+/// the control-panel template store).
+pub(crate) async fn canonical_pikg_path(
     buckyos_root: &Path,
     raw: &str,
+    allowed_dir: &str,
 ) -> Result<PathBuf, PreInstallError> {
-    validate_preinstall_pikg_path(raw)
-        .map_err(|error| PreInstallError::new("UNSAFE_PIKG_PATH", false, error))?;
-    let cache_root = tokio::fs::canonicalize(buckyos_root.join("data").join("cache"))
+    let relative = Path::new(raw);
+    if raw.contains('\\')
+        || raw.contains('\0')
+        || relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+                    | Component::CurDir
+            )
+        })
+        || !raw.starts_with(&format!("{allowed_dir}/"))
+        || !raw.ends_with(".pikg")
+    {
+        return Err(PreInstallError::new(
+            "UNSAFE_PIKG_PATH",
+            false,
+            format!("PIKG path `{raw}` must name a .pikg below {allowed_dir}"),
+        ));
+    }
+    let cache_root = tokio::fs::canonicalize(buckyos_root.join(allowed_dir))
         .await
         .map_err(|error| {
             PreInstallError::new(
                 "CACHE_ROOT_UNAVAILABLE",
                 true,
-                format!("canonicalize rootfs cache failed: {error}"),
+                format!("canonicalize {allowed_dir} failed: {error}"),
             )
         })?;
     let candidate = buckyos_root.join(raw);
@@ -360,7 +416,7 @@ async fn canonical_preinstall_path(
         return Err(PreInstallError::new(
             "PIKG_PATH_ESCAPE",
             false,
-            "pre-install PIKG escapes $BUCKYOS_ROOT/data/cache",
+            format!("PIKG escapes $BUCKYOS_ROOT/{allowed_dir}"),
         ));
     }
     let metadata = tokio::fs::metadata(&canonical).await.map_err(|error| {
@@ -374,7 +430,7 @@ async fn canonical_preinstall_path(
         return Err(PreInstallError::new(
             "PIKG_NOT_REGULAR_FILE",
             false,
-            "pre-install PIKG is not a regular file",
+            "PIKG is not a regular file",
         ));
     }
     Ok(canonical)
@@ -417,14 +473,40 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            canonical_preinstall_path(&root, "data/cache/demo.pikg")
+            canonical_pikg_path(&root, "data/cache/demo.pikg", PREINSTALL_PIKG_DIR)
                 .await
                 .unwrap(),
             cache.join("demo.pikg").canonicalize().unwrap()
         );
-        assert!(canonical_preinstall_path(&root, "data/cache/../demo.pikg")
+        assert!(
+            canonical_pikg_path(&root, "data/cache/../demo.pikg", PREINSTALL_PIKG_DIR)
+                .await
+                .is_err()
+        );
+        assert!(
+            canonical_pikg_path(&root, "data/cache/demo.pikg", "data/srv/templates")
+                .await
+                .is_err()
+        );
+        let templates = root
+            .join("data")
+            .join("srv")
+            .join("templates")
+            .join("alice");
+        tokio::fs::create_dir_all(&templates).await.unwrap();
+        tokio::fs::write(templates.join("t.pikg"), b"t")
             .await
-            .is_err());
+            .unwrap();
+        assert_eq!(
+            canonical_pikg_path(
+                &root,
+                "data/srv/templates/alice/t.pikg",
+                "data/srv/templates"
+            )
+            .await
+            .unwrap(),
+            templates.join("t.pikg").canonicalize().unwrap()
+        );
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 
@@ -442,7 +524,7 @@ mod tests {
         let outside = root.join("outside.pikg");
         tokio::fs::write(&outside, b"outside").await.unwrap();
         symlink(&outside, cache.join("escape.pikg")).unwrap();
-        let error = canonical_preinstall_path(&root, "data/cache/escape.pikg")
+        let error = canonical_pikg_path(&root, "data/cache/escape.pikg", PREINSTALL_PIKG_DIR)
             .await
             .unwrap_err();
         assert_eq!(error.code, "PIKG_PATH_ESCAPE");

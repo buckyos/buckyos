@@ -9,11 +9,9 @@ use std::sync::Arc;
 
 use crate::scheduler_server::SchedulerServer;
 use crate::system_config_agent::{refresh_rbac, schedule_loop};
-use crate::system_config_builder::BootstrapAgentProvision;
 
 const EXECUTION_ROOT: &str = "system/scheduler/install_plan_executions";
 const GATEWAY_SETTINGS_KEY: &str = "services/gateway/settings";
-const BOOTSTRAP_AGENT_ROOT: &str = "system/scheduler/bootstrap_agents";
 const MAX_CAS_RETRIES: usize = 8;
 
 fn install_error(
@@ -377,7 +375,6 @@ impl SchedulerServer {
         if self.load_current_deployment(&record).await?.is_none() {
             return self.fail_superseded_execution(record, revision).await;
         }
-        self.recover_bootstrap_agent_provisions().await?;
         match schedule_loop(false, true).await {
             Ok(_) => self.complete_install_execution(key).await,
             Err(error) => {
@@ -767,90 +764,6 @@ impl SchedulerServer {
             {
                 let _ = Box::pin(self.publish_committed_install(&record.key)).await;
             }
-        }
-        self.recover_bootstrap_agent_provisions().await?;
-        Ok(())
-    }
-
-    async fn recover_bootstrap_agent_provisions(&self) -> Result<()> {
-        let entries = match self.system_config_client.list(BOOTSTRAP_AGENT_ROOT).await {
-            Ok(entries) => entries,
-            Err(SystemConfigError::KeyNotFound(_)) => return Ok(()),
-            Err(error) => return Err(rpc_error(error)),
-        };
-        for entry in entries {
-            let staging_path = format!("{BOOTSTRAP_AGENT_ROOT}/{entry}");
-            let staging_value = self
-                .system_config_client
-                .get(&staging_path)
-                .await
-                .map_err(rpc_error)?;
-            let provision: BootstrapAgentProvision =
-                serde_json::from_str(&staging_value.value).map_err(rpc_error)?;
-            if provision.schema_version != AGENT_SPEC_SCHEMA_VERSION {
-                return Err(rpc_error("unsupported bootstrap Agent provision schema"));
-            }
-            provision.agent_spec.validate().map_err(rpc_error)?;
-            let target = &provision.agent_spec.binding.target_app_instance_id;
-            let target_spec_path = user_app_spec_key(target.owner_user_id(), target.app_id());
-            let target_value = match self.system_config_client.get(&target_spec_path).await {
-                Ok(value) => value,
-                Err(SystemConfigError::KeyNotFound(_)) => {
-                    log::info!(
-                        "bootstrap Agent {} is waiting for runtime {}",
-                        provision.agent_spec.agent_id,
-                        target
-                    );
-                    continue;
-                }
-                Err(error) => return Err(rpc_error(error)),
-            };
-            let target_spec: AppServiceSpec =
-                serde_json::from_str(&target_value.value).map_err(rpc_error)?;
-            if target_spec.app_instance_id != *target
-                || !target_spec
-                    .spec_config
-                    .service_config
-                    .contains_key(&provision.agent_spec.binding.service_name)
-            {
-                return Err(rpc_error(
-                    "bootstrap Agent binding target AppInstance/service is not installed",
-                ));
-            }
-            let agent_id = &provision.agent_spec.agent_id;
-            let spec_path = agent_spec_key(&provision.owner_user_id, agent_id);
-            let key_path = format!("users/{}/agents/{}/key", provision.owner_user_id, agent_id);
-            let settings_path = format!(
-                "users/{}/agents/{}/settings",
-                provision.owner_user_id, agent_id
-            );
-            let record_path = agent_install_record_key(&provision.owner_user_id, agent_id);
-            let install_record = AgentInstallRecord {
-                schema_version: AGENT_SPEC_SCHEMA_VERSION,
-                agent_id: agent_id.clone(),
-                agent_doc_object_id: provision.agent_spec.agent_doc_object_id.clone(),
-                target_app_instance_id: target.clone(),
-                service_name: provision.agent_spec.binding.service_name.clone(),
-                generation: provision.agent_spec.generation,
-                state: AgentInstallState::Bound,
-                updated_at: buckyos_get_unix_timestamp(),
-            };
-            let mut actions = HashMap::new();
-            actions.insert(
-                spec_path,
-                KVAction::Create(serialize(&provision.agent_spec)?),
-            );
-            actions.insert(key_path, KVAction::Create(provision.private_key_pem));
-            actions.insert(
-                settings_path,
-                KVAction::Create(serialize(&provision.settings)?),
-            );
-            actions.insert(record_path, KVAction::Create(serialize(&install_record)?));
-            actions.insert(staging_path.clone(), KVAction::Remove);
-            self.system_config_client
-                .exec_tx(actions, Some((staging_path, staging_value.version)))
-                .await
-                .map_err(rpc_error)?;
         }
         Ok(())
     }

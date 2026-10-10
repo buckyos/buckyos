@@ -142,6 +142,10 @@ export interface AppDefinition {
   /** Gateway Web hosts from the authoritative AppSpec, in launch preference order. */
   webHosts?: string[]
   iconKey: string
+  /** Image shown instead of the built-in icon (e.g. an Agent avatar); the icon is the fallback. */
+  iconUrl?: string
+  /** Small status mark on the launcher tile. */
+  iconBadge?: 'busy' | 'error'
   labelKey: string
   summaryKey: string
   accent: string
@@ -179,6 +183,7 @@ export interface DataState<T> {
 export interface SystemSidebarAppItem {
   appId: string
   iconKey: string
+  iconUrl?: string
   labelKey: string
 }
 

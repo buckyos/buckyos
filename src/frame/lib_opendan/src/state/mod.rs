@@ -30,7 +30,7 @@ pub use activity::{
 pub use artifacts::{nearest_valid_base, DecideResult};
 pub use behaviors::{
     freeze_behavior, freeze_config, parse_behavior, BehaviorCatalog, FsBehaviorCatalog,
-    MemBehaviorCatalog,
+    MemBehaviorCatalog, ROLE_SUPPLEMENT_FILE,
 };
 pub use cognition::{ConsolidationBatch, Hint, NotebookNote, RecallQuery};
 pub use connect::{

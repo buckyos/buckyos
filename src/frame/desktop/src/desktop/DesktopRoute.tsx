@@ -8,6 +8,9 @@ import {
 import { isTransferableRef } from 'buckyos/content'
 import { openContent } from '../app/content/open'
 import { openPreview } from '../app/preview/launch'
+import { agentGuide } from '../app/agent-setup/guide'
+import { agentSetupLaunchSchema, openAgentSetup } from '../app/agent-setup/launch'
+import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
 import clsx from 'clsx'
 import {
   memo,
@@ -241,6 +244,27 @@ export function DesktopRoute() {
     else void openContent({ source })
   }, [snap.status, searchParams])
 
+  // The Agent setup wizard comes back here after a sign-in (`?agent_setup=<source>[&agent_id=]`).
+  const agentSetupHandled = useRef(false)
+  useEffect(() => {
+    if (snap.status !== 'success' || agentSetupHandled.current || !searchParams.has('agent_setup')) return
+    agentSetupHandled.current = true
+    const launch = agentSetupLaunchSchema.safeParse({
+      source: searchParams.get('agent_setup'),
+      ...(searchParams.get('agent_id') ? { agent_id: searchParams.get('agent_id') } : {}),
+    })
+    const params = new URLSearchParams(searchParams)
+    params.delete('agent_setup')
+    params.delete('agent_id')
+    setSearchParams(params, { replace: true })
+    if (launch.success) openAgentSetup(launch.data)
+  }, [snap.status, searchParams, setSearchParams])
+
+  // The Jarvis guide follows the signed-in user's own Agent created from it.
+  useEffect(() => {
+    if (snap.status === 'success') agentGuide.start()
+  }, [snap.status])
+
 
   // Refs for drag suppression (view-only concern)
   const suppressOpenItemId = useRef<string | null>(null)
@@ -384,6 +408,12 @@ export function DesktopRoute() {
     (appId: string) => {
       const app = findDesktopAppById(store.getSnapshot().apps, appId)
       if (!app) return
+
+      if (appId === AGENT_GUIDE_APP_ID) {
+        void agentGuide.open()
+        logActivity(t('activity.opened', 'Opened {{name}}', { name: t(app.labelKey) }))
+        return
+      }
 
       if (isMobile && app.manifest.mobileRedirectPath) {
         navigate(app.manifest.mobileRedirectPath)
@@ -1345,8 +1375,20 @@ function DesktopTile({
               ...appIconSurfaceStyle(app.accent),
             }}
           >
-            <AppIcon iconKey={app.iconKey} className="text-white" />
+            <AppIcon iconKey={app.iconKey} iconUrl={app.iconUrl} fill className="text-white" />
           </span>
+          {app.iconBadge ? (
+            <span
+              aria-hidden="true"
+              data-testid={`desktop-app-badge-${app.id}`}
+              className="pointer-events-none absolute z-20 size-3 rounded-full border-2 border-[color:var(--cp-surface)]"
+              style={{
+                top: 'calc(var(--icon-padding-top) - 3px)',
+                left: 'calc(50% + var(--icon-size) / 2 - 9px)',
+                background: app.iconBadge === 'error' ? 'var(--cp-danger)' : 'var(--cp-warning)',
+              }}
+            />
+          ) : null}
           <span
             className="max-w-full break-words overflow-hidden px-0.5 font-display font-semibold text-[color:var(--cp-text)]"
             style={{

@@ -408,6 +408,8 @@ export const messageHubEn: Record<string, string> = {
   "messagehub.action.session.guest_invited": "{{actor}} invited a guest",
   "messagehub.action.session.rules_changed": "{{actor}} changed the session settings",
   "messagehub.groupError.capability-denied": "You don't have permission to do this in the group.",
+  "messagehub.groupError.agent-group-disabled": "This Agent is not allowed to join group chats yet. Turn on “Allow this Agent to join group chats” in Users and Agents first.",
+  "messagehub.group.openAgentSettings": "Open {{name}} in Users and Agents",
   "messagehub.groupError.member-already-participating": "Already a member or already invited.",
   "messagehub.groupError.member-must-be-single-entity": "Only people and agents can join a group.",
   "messagehub.groupError.member-limit": "The group is full.",
@@ -461,6 +463,8 @@ export const messageHubEn: Record<string, string> = {
 }
 
 export const messageHubZh: Record<string, string> = {
+  "messagehub.groupError.agent-group-disabled": "该 Agent 尚未允许加入群聊，请先在 Users and Agents 中打开“允许此 Agent 加入群聊”。",
+  "messagehub.group.openAgentSettings": "在 Users and Agents 中打开{{name}}",
   "messagehub.worklog.tab.worklog": "工作日志",
   "messagehub.worklog.tab.message": "消息详情",
   "messagehub.worklog.back": "返回工作日志",

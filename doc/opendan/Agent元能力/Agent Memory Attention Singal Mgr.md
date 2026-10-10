@@ -1,5 +1,7 @@
 # Agent Memory Attention Signal 组件技术需求文档
 
+**状态（2026-10-10）：已被取代，仅作参考。** 现行设计与 Agent Memory 模块重构的依据是[《Agent Memory 认知管理需求》](<../Agent Memory 认知管理需求.md>)，与之冲突时以新文档为准。新设计中 Session 直接写感知，不再有独立的 Stage-1 信号层；attention signal 管线待并入感知流或退役（新文档附录 B TD-20）。本文的事后回扫、防自我回声、到期必须真正执行等经验已写入新文档 M-11、E-15、§5.9。
+
 版本：v0.1
 目标阶段：支持 **Self Improve Stage-1：Clue Discovery / Attention Signal Extraction**
 设计目标：为 **Memory Stage-2：Signal Consumption / Attention State Merge** 和 **Skill Signal Consumer** 做好数据准备

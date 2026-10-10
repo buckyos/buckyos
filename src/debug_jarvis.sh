@@ -4,14 +4,21 @@ set -euo pipefail
 usage() {
   cat <<'EOF_USAGE'
 Usage:
-  debug_jarvis.sh [owner_user_id] [options] [-- <opendan args>]
+  debug_jarvis.sh [owner_user_id] [--agent <agent_id>] [options] [-- <opendan args>]
 
-Runs the Jarvis Agent Loader (opendan) on the host, in the foreground, as the
-app service of the running zone: no container, binaries built from this source
-tree, the agent package and the WebUI read from the source directories.
-Press Ctrl+C to stop it; node-daemon then starts the app container again.
+Runs the Agent Loader (opendan) of one agent built from the Jarvis template on
+the host, in the foreground, as the app service of the running zone: no
+container, binaries built from this source tree, the agent package and the
+WebUI read from the source directories. Every agent runs as its own app (app
+id = AgentId, instance <agent_id>@<owner>). Press Ctrl+C to stop it;
+node-daemon then starts the app container again.
+
+The agent must exist: create it from the desktop (Add Agent) or with
+  cd test/test_opendan && deno run --config ../deno.json -A --unsafely-ignore-certificate-errors agent_target.ts --create <name>
 
 Options:
+  --agent <id>      AgentId of the agent (default: $AGENT_ID, else the owner's
+                    first ready agent, else the first one bound to its app)
   --no-build        Do not run cargo; use the binaries built last time
   --installed       Use $BUCKYOS_ROOT/bin/opendan/opendan instead of a cargo build
   --port <port>     Service port (default: the port the zone assigned to the app)
@@ -19,11 +26,12 @@ Options:
 
 Examples:
   ./debug_jarvis.sh
-  ./debug_jarvis.sh devtest --no-build
+  ./debug_jarvis.sh devtest --agent xiaobai.test.buckyos.io --no-build
   ./debug_jarvis.sh -- --poll-ms 500
 
 Environment:
   BUCKYOS_ROOT=/opt/buckyos
+  AGENT_ID=<agent_id>
   JARVIS_PACKAGE_ROOT=src/apps/jarvis_runtime/agent
   OPENDAN_WEB_ROOT=src/frame/opendan/web/dist (falls back to $BUCKYOS_ROOT/bin/opendan/web)
 EOF_USAGE
@@ -31,7 +39,7 @@ EOF_USAGE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUCKYOS_ROOT="${BUCKYOS_ROOT:-/opt/buckyos}"
-APP_ID="jarvis.buckyos.bns.did"
+AGENT_ID="${AGENT_ID:-}"
 OWNER_USER_ID="devtest"
 BUILD=1
 INSTALLED=0
@@ -57,6 +65,10 @@ while [[ $# -gt 0 ]]; do
       INSTALLED=1
       shift
       ;;
+    --agent)
+      AGENT_ID="${2:?--agent requires a value}"
+      shift 2
+      ;;
     --port)
       SERVICE_DEBUG_ARGS+=("--port" "${2:?--port requires a value}")
       shift 2
@@ -76,7 +88,6 @@ done
 
 JARVIS_PACKAGE_ROOT="${JARVIS_PACKAGE_ROOT:-${SCRIPT_DIR}/apps/jarvis_runtime/agent}"
 SERVICE_DEBUG_SCRIPT="${SCRIPT_DIR}/rootfs/bin/service_debug.tsx"
-INSTANCE_ID="${APP_ID}@${OWNER_USER_ID}"
 
 if [[ ! -d "${JARVIS_PACKAGE_ROOT}" ]]; then
   echo "jarvis package directory not found: ${JARVIS_PACKAGE_ROOT}" >&2
@@ -87,6 +98,24 @@ if ! command -v deno >/dev/null 2>&1; then
   echo "deno is required but was not found in PATH" >&2
   exit 2
 fi
+
+if [[ -z "${AGENT_ID}" ]]; then
+  AGENTS="$(deno run --quiet -A "${SERVICE_DEBUG_SCRIPT}" agents "${OWNER_USER_ID}")"
+  AGENT_ID="$(printf '%s\n' "${AGENTS}" | awk -F '\t' '$2 == "ready" { print $1; exit }')"
+  if [[ -z "${AGENT_ID}" ]]; then
+    AGENT_ID="$(printf '%s\n' "${AGENTS}" | awk -F '\t' '$2 == "bound" { print $1; exit }')"
+  fi
+  if [[ -z "${AGENT_ID}" ]]; then
+    echo "${OWNER_USER_ID} has no agent to run; create one first (see --help)" >&2
+    if [[ -n "${AGENTS}" ]]; then
+      printf '%s\n' "${AGENTS}" | sed 's/^/  /' >&2
+    fi
+    exit 2
+  fi
+fi
+# The agent's constructed app: app id = AgentId.
+APP_ID="${AGENT_ID}"
+INSTANCE_ID="${APP_ID}@${OWNER_USER_ID}"
 
 if [[ "${INSTALLED}" -eq 1 ]]; then
   OPENDAN_BIN="${BUCKYOS_ROOT}/bin/opendan/opendan"

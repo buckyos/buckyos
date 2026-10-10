@@ -1,4 +1,5 @@
 import clsx from 'clsx'
+import { useState } from 'react'
 import {
   BookOpen,
   Bot,
@@ -15,6 +16,8 @@ import {
   ScanEye,
   Settings,
   SlidersHorizontal,
+  Sparkles,
+  UserRoundPlus,
   StickyNote,
   NotebookTabs,
   Store,
@@ -44,6 +47,8 @@ const iconMap = {
   aiworkspace: NotebookTabs,
   preview: ScanEye,
   'users-agents': Users,
+  'agent-setup': UserRoundPlus,
+  'agent-guide': Sparkles,
   'my-network': Network,
   clock: Clock3,
   notepad: StickyNote,
@@ -67,13 +72,33 @@ export function TierBadge({ tier }: { tier: AppDefinition['tier'] }) {
 
 export function AppIcon({
   iconKey,
+  iconUrl,
+  fill = false,
   className,
   style,
 }: {
   iconKey: string
+  /** Image shown instead of the built-in icon; the icon stays as the fallback when it fails to load. */
+  iconUrl?: string
+  /** The image covers the whole icon tile instead of the glyph area. */
+  fill?: boolean
   className?: string
   style?: React.CSSProperties
 }) {
+  const [failedUrl, setFailedUrl] = useState<string | null>(null)
+  if (iconUrl && failedUrl !== iconUrl) {
+    const size = fill ? 'var(--icon-size)' : 'calc(var(--icon-size) * 0.5)'
+    return (
+      <img
+        src={iconUrl}
+        alt=""
+        draggable={false}
+        className={clsx('relative z-10 shrink-0 object-cover', fill ? '' : 'rounded-full', className)}
+        style={{ width: size, height: size, ...style }}
+        onError={() => setFailedUrl(iconUrl)}
+      />
+    )
+  }
   const Icon = iconMap[iconKey as keyof typeof iconMap] ?? LayoutGrid
   return (
     <Icon

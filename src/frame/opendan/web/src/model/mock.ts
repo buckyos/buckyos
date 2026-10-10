@@ -317,7 +317,6 @@ export const createMockDataModel = (): OpenDanDataModel => {
     bio: 'Your personal agent. I keep an eye on your files and get things done while you are away.',
     owner_did: OWNER,
     desktop_url: 'https://test.buckyos.io',
-    updated_at_ms: 0,
     editable: true,
   }
   const tokens = (input: number, output: number) => ({ input, output, total: input + output })
@@ -393,7 +392,6 @@ export const createMockDataModel = (): OpenDanDataModel => {
       if (patch.display_name !== undefined) profile.display_name = patch.display_name.trim() || 'jarvis'
       if (patch.bio !== undefined) profile.bio = patch.bio.trim()
       if (patch.avatar !== undefined) profile.avatar = patch.avatar || null
-      profile.updated_at_ms = Date.now()
       return { ...profile }
     },
 

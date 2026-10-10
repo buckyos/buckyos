@@ -1,5 +1,7 @@
 # Agent Notebook 技术需求
 
+**状态（2026-10-10）：已被取代，仅作参考。** 现行设计与 Agent Memory 模块重构的依据是[《Agent Memory 认知管理需求》](<../Agent Memory 认知管理需求.md>)，与之冲突时以新文档为准。Agent Notebook 已按新设计取消，统一为 Agent Memory（新文档 M-01），模块与工具将整体删除（附录 B TD-09）。读取进度与“未变化”短回复、读过即关注修订、有效期等可迁移的机制已写入新文档 M-20、M-21、M-24、§6.4。
+
 > 面向：code agent / 工程实现
 > 版本：v0.2 技术需求草案（与 Agent Memory v2.10 对齐）
 

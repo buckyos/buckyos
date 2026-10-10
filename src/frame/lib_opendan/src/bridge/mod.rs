@@ -8,8 +8,8 @@ pub mod msg;
 pub mod task;
 
 pub use msg::{
-    outbound_base, outbound_key, route_msg_record, MsgBridgeCtx, MsgBridgeOutput, MsgRecord,
-    OutboundRecord, SlashCommand,
+    context_msg_record, outbound_base, outbound_key, record_sender, route_msg_record,
+    MsgBridgeCtx, MsgBridgeOutput, MsgRecord, OutboundRecord, SlashCommand,
 };
 pub use task::{dispatch_idempotency_key, task_event, task_event_key};
 

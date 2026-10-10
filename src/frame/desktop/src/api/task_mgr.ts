@@ -21,6 +21,7 @@ import type {
   TaskWaitReason,
 } from 'buckyos'
 import { isMockRuntime } from '../runtime'
+import { fetchAgentList } from './user_mgr'
 import { getSharedAppServiceStore } from '../app/app-service/hooks/use-app-service-store'
 import type { InstallTask } from '../app/app-service/types'
 import { TaskCenterMockStore } from './task_mgr_mock.ts'
@@ -306,9 +307,10 @@ function toTaskType(schemaId: string): TaskType {
   return 'one-time'
 }
 
-function toTaskSource(summary: TaskSummary): TaskSource {
+/** Each Agent runs as its own constructed App whose AppId is the AgentId. */
+function toTaskSource(summary: TaskSummary, agentAppIds: ReadonlySet<string>): TaskSource {
   const appId = (summary.creator.app_id ?? '').toLowerCase()
-  if (appId.includes('opendan') || appId.includes('agent') || appId.includes('jarvis')) return 'agent'
+  if (agentAppIds.has(appId)) return 'agent'
   if (summary.schema_id.startsWith('agent.')) return 'agent'
   if (KERNEL_APP_IDS.has(appId)) return 'system'
   if (appId) return 'app'
@@ -419,7 +421,7 @@ function normalizeSchedulePayload(
   }
 }
 
-export function toTaskCenterTask({ summary, detail }: TaskSnapshot): Task {
+export function toTaskCenterTask({ summary, detail }: TaskSnapshot, agentAppIds: ReadonlySet<string> = new Set()): Task {
   const status = toTaskStatus(summary.phase, summary.outcome)
   const type = toTaskType(summary.schema_id)
   const createdAt = toIsoTime(summary.created_at)
@@ -433,7 +435,7 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot): Task {
     rootTaskId: summary.root_id || summary.task_id,
     taskId: summary.task_id,
     parentTaskId: normalizeTaskId(summary.parent_id),
-    source: toTaskSource(summary),
+    source: toTaskSource(summary, agentAppIds),
     type,
     status,
     title: summary.name || `Task ${summary.task_id}`,
@@ -469,8 +471,8 @@ export function toTaskCenterTask({ summary, detail }: TaskSnapshot): Task {
   }
 }
 
-function buildTaskTree(snapshots: TaskSnapshot[]): Task[] {
-  const tasks = snapshots.map(toTaskCenterTask)
+function buildTaskTree(snapshots: TaskSnapshot[], agentAppIds: ReadonlySet<string>): Task[] {
+  const tasks = snapshots.map((snapshot) => toTaskCenterTask(snapshot, agentAppIds))
   const byId = new Map(tasks.map((task) => [task.taskId, task]))
   const roots: Task[] = []
 
@@ -764,6 +766,7 @@ export class TaskCenterMockModel
 
 export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterModel {
   private snapshots: TaskSnapshot[] = []
+  private agentAppIds: ReadonlySet<string> = new Set()
   private tasks: Task[] = []
   private notifications: SystemNotification[] = []
   private events: SystemEvent[] = []
@@ -787,12 +790,16 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 
   private async fetchTasks(): Promise<void> {
+    const agents = fetchAgentList().then(({ data }) => data?.agents ?? null)
     try {
       this.snapshots = await this.provider.listTasks()
     } catch (error) {
       console.error('task_mgr.list_tasks failed', error)
       return
     }
+    const list = await agents
+    // AppId == AgentId for each Agent's constructed App; keep the last known set when the list fails.
+    if (list) this.agentAppIds = new Set(list.map((agent) => agent.agent_id.toLowerCase()))
     this.rebuild()
   }
 
@@ -818,7 +825,7 @@ export class TaskCenterRpcModel extends SubscribableModel implements TaskCenterM
   }
 
   private rebuild(): void {
-    this.tasks = buildTaskTree(this.snapshots)
+    this.tasks = buildTaskTree(this.snapshots, this.agentAppIds)
     this.notifications = deriveNotifications(this.tasks).map((notification) => {
       const handled = this.handledNotifications.get(notification.id)
       return handled

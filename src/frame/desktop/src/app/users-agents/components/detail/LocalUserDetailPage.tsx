@@ -8,6 +8,7 @@ import { SocialAccountsSection } from '../sections/SocialAccountsSection'
 import { InfoFieldsSection } from '../sections/InfoFieldsSection'
 import { MetricCard } from '../../../../components/AppPanelPrimitives'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
+import { useI18n } from '../../../../i18n/provider'
 
 interface LocalUserDetailPageProps {
   user: LocalUserEntity
@@ -28,9 +29,10 @@ const statusColor = {
 
 export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProps) {
   const store = useUsersAgentsStore()
+  const { t } = useI18n()
 
   const handleRemove = () => {
-    if (window.confirm(`Remove user "${user.displayName}"? This cannot be undone.`)) {
+    if (window.confirm(t('usersAgents.localUser.removeConfirm', undefined, { name: user.displayName }))) {
       store.removeLocalUser(user.id)
       onRemoved?.()
     }
@@ -43,18 +45,18 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
         kind="local-user"
         avatarUrl={user.avatarUrl}
         did={user.did}
-        subtitle={`${user.source === 'primary-did' ? 'Primary DID user' : 'Local account'} · ${user.defaultGroup}`}
+        subtitle={`${user.source === 'primary-did' ? t('usersAgents.localUser.primaryDid') : t('usersAgents.localUser.localAccount')} · ${user.defaultGroup}`}
         isOnline={user.isOnline}
         badges={
           <>
             <Chip
-              label={user.role}
+              label={t(`usersAgents.role.${user.role}`)}
               size="small"
               color={roleColor[user.role]}
               variant="outlined"
             />
             <Chip
-              label={user.status.replace('-', ' ')}
+              label={t(`usersAgents.userStatus.${user.status}`)}
               size="small"
               color={statusColor[user.status]}
               variant="outlined"
@@ -65,13 +67,13 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
 
       <div className="grid gap-2 grid-cols-2 sm:grid-cols-3">
         <MetricCard
-          label="Source"
+          label={t('usersAgents.localUser.source')}
           tone={user.source === 'primary-did' ? 'accent' : 'neutral'}
-          value={user.source === 'primary-did' ? 'BNS / DID' : 'Local'}
+          value={user.source === 'primary-did' ? 'BNS / DID' : t('usersAgents.source.local')}
         />
-        <MetricCard label="Storage used" tone="accent" value={user.storageUsed} />
-        <MetricCard label="Quota" tone="neutral" value={user.storageQuota} />
-        <MetricCard label="Apps" tone="success" value={String(user.availableApps.length)} />
+        <MetricCard label={t('usersAgents.localUser.storageUsed')} tone="accent" value={user.storageUsed} />
+        <MetricCard label={t('usersAgents.localUser.quota')} tone="neutral" value={user.storageQuota} />
+        <MetricCard label={t('usersAgents.localUser.apps')} tone="success" value={String(user.availableApps.length)} />
       </div>
 
       {user.invitation && (
@@ -88,18 +90,18 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
               className="font-display text-sm font-semibold"
               style={{ color: 'var(--cp-text)' }}
             >
-              Pending DID Confirmation
+              {t('usersAgents.localUser.pendingDid')}
             </h3>
           </div>
           <Alert severity="warning">
-            The target user must confirm this Zone with their own identity key before the account becomes active.
+            {t('usersAgents.localUser.pendingDidBody')}
           </Alert>
           <div className="mt-3 space-y-1.5">
             {[
-              ['Invite URL', user.invitation.inviteUrl],
-              ['Target Zone', user.invitation.targetZone],
-              ['Requested DID', user.invitation.requestedDid],
-              ['Expires', new Date(user.invitation.expiresAt).toLocaleString()],
+              [t('usersAgents.localUser.inviteUrl'), user.invitation.inviteUrl],
+              [t('usersAgents.localUser.targetZone'), user.invitation.targetZone],
+              [t('usersAgents.localUser.requestedDid'), user.invitation.requestedDid],
+              [t('usersAgents.localUser.expires'), new Date(user.invitation.expiresAt).toLocaleString()],
             ].map(([label, value]) => (
               <div key={label} className="flex items-baseline gap-3">
                 <span className="w-28 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
@@ -118,17 +120,17 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
               startIcon={<Link size={14} />}
               onClick={() => navigator.clipboard.writeText(user.invitation?.inviteUrl ?? '')}
             >
-              Copy invitation link
+              {t('usersAgents.localUser.copyInvite')}
             </Button>
           </div>
         </div>
       )}
 
-      <InfoFieldsSection title="Profile" fields={user.profile} editable={false} />
+      <InfoFieldsSection title={t('usersAgents.section.profile')} fields={user.profile} editable={false} />
 
       <SocialAccountsSection entityId={user.id} accounts={user.socialAccounts} editable={false} />
 
-      <InfoFieldsSection title="Settings" fields={user.settings} editable={false} />
+      <InfoFieldsSection title={t('usersAgents.section.settings')} fields={user.settings} editable={false} />
 
       {/* Available apps */}
       <div
@@ -142,7 +144,7 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
           className="font-display text-sm font-semibold mb-3"
           style={{ color: 'var(--cp-text)' }}
         >
-          Available Apps
+          {t('usersAgents.localUser.availableApps')}
         </h3>
         <div className="flex flex-wrap gap-1.5">
           {user.availableApps.map((app) => (
@@ -163,22 +165,22 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
           className="font-display text-sm font-semibold mb-2"
           style={{ color: 'var(--cp-text)' }}
         >
-          Account
+          {t('usersAgents.localUser.account')}
         </h3>
         <div className="space-y-1.5">
           <div className="flex items-baseline gap-3">
             <span className="text-[12px] font-medium w-24 shrink-0" style={{ color: 'var(--cp-muted)' }}>
-              Last active
+              {t('usersAgents.localUser.lastActive')}
             </span>
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
               {user.status === 'pending-invitation'
-                ? 'Not activated'
+                ? t('usersAgents.localUser.notActivated')
                 : new Date(user.lastActive).toLocaleString()}
             </span>
           </div>
           <div className="flex items-baseline gap-3">
             <span className="text-[12px] font-medium w-24 shrink-0" style={{ color: 'var(--cp-muted)' }}>
-            Created
+            {t('usersAgents.created')}
             </span>
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
               {new Date(user.createdAt).toLocaleDateString()}
@@ -186,18 +188,18 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
           </div>
           <div className="flex items-baseline gap-3">
             <span className="text-[12px] font-medium w-24 shrink-0" style={{ color: 'var(--cp-muted)' }}>
-              Credential
+              {t('usersAgents.localUser.credential')}
             </span>
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
-              {user.credentialStatus.replace('-', ' ')}
+              {t(`usersAgents.credential.${user.credentialStatus}`)}
             </span>
           </div>
           <div className="flex items-baseline gap-3">
             <span className="text-[12px] font-medium w-24 shrink-0" style={{ color: 'var(--cp-muted)' }}>
-              Password
+              {t('usersAgents.security.password')}
             </span>
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
-              {user.canChangePassword ? 'Change allowed' : 'Change restricted'}
+              {user.canChangePassword ? t('usersAgents.localUser.passwordAllowed') : t('usersAgents.localUser.passwordRestricted')}
             </span>
           </div>
         </div>
@@ -210,7 +212,7 @@ export function LocalUserDetailPage({ user, onRemoved }: LocalUserDetailPageProp
             startIcon={<Trash2 size={14} />}
             onClick={handleRemove}
           >
-            Remove User
+            {t('usersAgents.localUser.remove')}
           </Button>
         </div>
       </div>

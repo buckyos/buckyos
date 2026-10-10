@@ -1236,11 +1236,14 @@ impl PikgBuilder {
         }
         let file = std::fs::File::create(dest).map_err(|err| io_err("create pikg file", err))?;
         let mut writer = zip::ZipWriter::new(file);
-        let meta_options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        // 固定 entry 时间戳，使同一输入总是得到同一 pikg digest。
+        let meta_options = SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default());
         // payload 已是压缩产物，用 stored 避免二次压缩（D1 推荐）。
         let payload_options = SimpleFileOptions::default()
             .compression_method(zip::CompressionMethod::Stored)
+            .last_modified_time(zip::DateTime::default())
             .large_file(true);
 
         if let Some(jwt) = self.app_doc_jwt.as_ref() {

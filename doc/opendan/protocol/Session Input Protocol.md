@@ -67,6 +67,7 @@ CLI：`post <sid> --json <file | ->` 接受逻辑记录（`schema`、`from`、`a
 | `to` / `to_session` | Session 不校验、不路由；只用于渲染所在会话和推出回复目标 |
 | 附件 | `content.refs` 的 `DataObj`（有 ObjId）；本机文件先登记进 NamedStore |
 | `delivery` | 各字段 ≤ 256 字节；未知字段忽略 |
+| `delivery.context` | 为 `true` 时这条消息只是会话里较早的消息，作为其后输入的资料（如群聊请求附带的群上下文）：它不单独组成批次、不构成请求，说话人照常保留；缺省 `false`，不输出 |
 
 构造 helper（只做构造，不引入新的线格式）：`text_msg(from, agent, text)`（`kind = chat`，带 `created_at_ms` 与 `nonce`）、`attach(msg, obj_id, name)`、`reply_to(msg, target)`、`PostedInput::msg(poster, msg, delivery)`（校验并以 ObjId 为 key）。
 
@@ -179,7 +180,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `on_input` | 选中的 msg / Input event | control、Observe 事件、队列通知本身不构成此入口 |
 | `on_context_switch` | 交接：切换 behavior、进入子 context、经交接批次返回的子结果 | 延续当前 Turn；工具触发的子调用返回仍是 ToolResult |
 
-一次装配只选一个入口（`on_init` → `on_context_switch` → `on_input`），允许消费的外部输入并入该批。`input.mode`：`batch`（默认，批次预算内取多条）或 `single`（总共取一条），未选的留在队列。模板与策略取自接收批次的 context（`prompt.*` / `input.*`，behavior 条目按字段覆盖 Session 的）。模板报错、或已有选中的输入却渲染出空文本：报错并保留现场，不消费、不确认。
+一次装配只选一个入口（`on_init` → `on_context_switch` → `on_input`），允许消费的外部输入并入该批。`input.mode`：`batch`（默认，批次预算内取多条）或 `single`（总共取一条），未选的留在队列。`delivery.context` 的消息不计入预算，随其后第一条被选中的输入一起进入批次；其后还没有输入时整组留在队列，不单独触发。模板与策略取自接收批次的 context（`prompt.*` / `input.*`，behavior 条目按字段覆盖 Session 的）。模板报错、或已有选中的输入却渲染出空文本：报错并保留现场，不消费、不确认。
 
 ### 6.2 内建渲染（跨语言逐字节一致）
 
@@ -204,6 +205,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 | `group` | `delivery.conversation_name`，缺省取 `to[0]` | 仅群消息 |
 | `session` | `to_session` | 非空时 |
 | `mentioned` | `mentions.dids` 含 Agent DID | 仅为 true 时（`all` 不算） |
+| `context` | `delivery.context` | 仅为 true 时 |
 | `reply_to` / `edit_of` / `redacts` / `thread` | `thread.reply_to`、`relates_to` | 值为目标消息的 ObjId |
 | `format` | `content.format` | 仅 `text/*` 且非 `text/plain` 时 |
 | `title` | `content.title` | 非空时 |
@@ -220,7 +222,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 ### 6.3 自定义模板
 
-模板引擎是 `llm_context::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）。
+模板引擎是 `llm_context::prompt_engine`（upon，`__EXEC__` 关闭）。只含块标签（`{% for %}`、`{% if %}`、`{% endfor %}` …）的行不产生输出行；输出去掉首尾空白。可用变量：`input.{hook, time, messages[], events[], items[], text, count}`（视图字段见 `runner/input_view.rs`；条件用布尔字段 `msg.is_group`、`msg.mentions.me`、`msg.context`、`ev.terminal`、`item.is_msg`）、`session.*`、`runtime.*`、`handover`、各内建块（`task_text`、`handover_text`、`perceptions_text`、`hints_text`、`active_sessions_text`、`runtime_text`、`builtin`）。
 
 命名格式 `{{ value | render_format: "名称" }}`（未知格式或对象形状不符是模板错误；声明支持空值的格式对空值输出空串）：
 
@@ -271,7 +273,7 @@ AiMessage{role: user}              恢复、接手、压缩都从快照与 workl
 
 bridge 只转换来源并可靠投递（先 `post`，成功后再确认上游；重投由 `key` 去重）；不渲染、不决定投递策略、不写 Session state。
 
-**msg bridge**（`bridge/msg.rs::route_msg_record`，纯函数）：MsgObject 原样上总线，只做过滤、分流和补 `delivery`。按顺序：记录发送者与 `msg.from` 不一致 → 丢弃；群邀请通知、Agent 自己的群消息回显 → 丢弃；正文 / refs / machine 全空 → 丢弃；`relates_to.rel = reaction` → 丢弃；纯文本且匹配已登记斜杠命令、发送者是 session 驱动者或 Agent owner → 映射到 Session 控制的命令投递 `control`（`/stop` → `stop`，key `ctl:<ObjId>`），其它已登记命令由应用自行处理；其余（含 `edit` / `redact`）原样投递。Session 不解析正文：未被识别的斜杠文本就是普通消息。
+**msg bridge**（`bridge/msg.rs::route_msg_record`，纯函数）：MsgObject 原样上总线，只做过滤、分流和补 `delivery`。按顺序：记录发送者与 `msg.from` 不一致 → 丢弃；群邀请通知、Agent 自己的群消息回显 → 丢弃；正文 / refs / machine 全空 → 丢弃；`relates_to.rel = reaction` → 丢弃；发送者身份（`record.ingress.extra.principal_did`，没有时 `record.from`）不是 Agent 的 Owner → 丢弃（推理之前过滤，正文里的名字或声明不算）；群消息在宿主不允许群聊时、或 `mentions.dids` 不含 Agent DID 时 → 丢弃；纯文本且匹配已登记斜杠命令 → 映射到 Session 控制的命令投递 `control`（`/stop` → `stop`，key `ctl:<ObjId>`），其它已登记命令由应用自行处理；其余（含 `edit` / `redact`）原样投递。Session 不解析正文：未被识别的斜杠文本就是普通消息。`context_msg_record` 把同一会话里较早的记录（任何人的，Agent 自己的除外）转成 `delivery.context = true` 的上下文消息，供宿主随请求一起投递。
 
 **task bridge**（`bridge/task.rs::task_event`）：把 task 状态映射成 `AgentEvent{source: task:<task_id>}`（`updated` / `finished` / `unknown`，终态 `terminal = true`）。通知只加速检查，task 状态 API 才是权威来源。
 

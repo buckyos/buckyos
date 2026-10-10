@@ -13,6 +13,7 @@ import { noGroupCapabilities, type CreationPolicy, type Entity, type EntityDetai
 import { createOutgoingMockMessage, getMockEntityDid, MOCK_SELF_DID, mockEntities, mockEntityDetails, mockMessageReaders, mockMessageSeeds, mockSessions } from './data'
 import { isHiddenAccount } from '../api/projection'
 import { mockObjectAccess } from './objects'
+import { mockAgentGroupAllowed } from '../../../api/control_panel_mock'
 import type { ConnectionChoice, EntityAdmission, MessageHubStore, OutgoingPayload, OwnerStatus } from '../store/types'
 
 interface MockGroupSession {
@@ -704,6 +705,7 @@ export class MessageHubMockStore implements MessageHubStore {
       for (const did of members) {
         const entity = this.lookup(did)
         if (!entity || (entity.type !== 'person' && entity.type !== 'agent')) throw Error('member-must-be-single-entity')
+        if (entity.type === 'agent' && mockAgentGroupAllowed(did) === false) throw Error('agent-group-disabled')
       }
       const now = this.now(), did = `did:buckyos:group:${crypto.randomUUID().slice(0, 8)}`
       const group: MockGroup = { did, name: values.name, description: '', ownerDid: context.ownerDid, lifecycle: 'active', createdAt: now, revision: crypto.randomUUID(), members: { [context.ownerDid]: { role: 'owner', state: 'active' } }, sessions: {}, inviteLinks: {} }
@@ -734,6 +736,7 @@ export class MessageHubMockStore implements MessageHubStore {
       for (const did of [...new Set(memberDids)]) {
         const entity = this.lookup(did)
         if (!entity || (entity.type !== 'person' && entity.type !== 'agent')) { failed.push({ did, reason: 'member-must-be-single-entity' }); continue }
+        if (entity.type === 'agent' && mockAgentGroupAllowed(did) === false) { failed.push({ did, reason: 'agent-group-disabled' }); continue }
         const current = group.members[did]
         if (current && participating({ did, ...current })) { failed.push({ did, reason: 'member-already-participating' }); continue }
         group.members[did] = { role: 'member', state: 'invited', inviteId: crypto.randomUUID(), expiresAt: this.now() + INVITE_TTL_MS, invitedBy: context.ownerDid }
@@ -882,6 +885,7 @@ export class MessageHubMockStore implements MessageHubStore {
       const group = this.requireGroup(next, context, invitation.groupDid)
       const memberDid = invitation.memberDid ?? context.ownerDid
       if (memberDid !== context.ownerDid && this.lookup(memberDid)?.type !== 'agent') throw Error('agent-owner-required')
+      if (memberDid !== context.ownerDid && mockAgentGroupAllowed(memberDid) === false) throw Error('agent-group-disabled')
       const member = group.members[memberDid]
       if (member?.state === 'active') throw Error('member-already-participating')
       if (member?.state !== 'invited' || member.inviteId !== invitation.inviteId) throw Error('invitation-mismatch')

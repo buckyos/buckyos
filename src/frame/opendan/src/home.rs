@@ -3,56 +3,29 @@
 //! lives in the message system.
 //!
 //! - `agent.profile` / `agent.profile_set {display_name?, avatar?, bio?}`:
-//!   nickname, avatar and a short introduction. Defaults come from
-//!   `agent.toml [identity]`; what the owner edits is kept in
-//!   `<agent_root>/.meta/profile.json`.
+//!   nickname, avatar and a short introduction, the agent's `profile`
+//!   record in the zone (the same one the control panel edits). Without a
+//!   nickname the agent is called by its user name.
 //! - `usage.models`: tokens by model over the last hour, the last 24 hours
 //!   and in total, summed from the sessions' `usage.jsonl`.
 //! - `ui.bindings`: the conversation each UI session is bound to.
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
+use buckyos_api::{AgentId, AgentProfile};
 use libopendan::protocol::*;
 use libopendan::state::AgentStateClient;
 use libopendan::{fsutil, OpenDanError, SessionDir};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 
-const PROFILE_FILE: &str = ".meta/profile.json";
+use crate::records::{self, AgentRecords};
+
 const MAX_NAME_CHARS: usize = 64;
 const MAX_BIO_CHARS: usize = 500;
 const MAX_AVATAR_BYTES: usize = 128 * 1024;
 const HOUR_MS: u64 = 3_600_000;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct StoredProfile {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    display_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    avatar: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    bio: Option<String>,
-    #[serde(default)]
-    updated_at_ms: u64,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct IdentitySection {
-    #[serde(default)]
-    display_name: Option<String>,
-    #[serde(default)]
-    avatar: Option<String>,
-    #[serde(default, alias = "description")]
-    bio: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-struct IdentityToml {
-    #[serde(default)]
-    identity: IdentitySection,
-}
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 struct Tokens {
@@ -82,7 +55,11 @@ struct UsageCache {
 }
 
 pub struct Home {
-    agent_root: PathBuf,
+    records: Arc<dyn AgentRecords>,
+    /// `None` outside a zone, like `desktop_url` (the zone desktop, where
+    /// MessageHub is): there is no message system to link to.
+    owner_did: Option<String>,
+    desktop_url: Option<String>,
     /// Parsed `usage.jsonl` by session, re-read when the file has grown.
     usage: Mutex<HashMap<String, UsageCache>>,
 }
@@ -95,82 +72,47 @@ fn text_param(params: &Value, name: &str) -> Result<Option<String>, OpenDanError
     }
 }
 
+fn store_err(e: String) -> OpenDanError {
+    OpenDanError::Other(format!("agent profile: {e}"))
+}
+
 impl Home {
-    pub fn new(agent_root: &Path) -> Self {
+    pub fn new(records: Arc<dyn AgentRecords>, owner_did: Option<String>, desktop_url: Option<String>) -> Self {
         Self {
-            agent_root: agent_root.to_path_buf(),
+            records,
+            owner_did,
+            desktop_url,
             usage: Mutex::new(HashMap::new()),
         }
     }
 
-    fn stored(&self) -> StoredProfile {
-        fsutil::read_json_opt(&self.agent_root.join(PROFILE_FILE))
+    /// The profile card.
+    pub async fn profile(&self, agent: &dyn AgentStateClient) -> Result<Value, OpenDanError> {
+        let profile = records::profile(self.records.as_ref()).await.map_err(store_err)?;
+        let display_name = parse_did(agent.agent_did())
             .ok()
-            .flatten()
-            .unwrap_or_default()
-    }
-
-    fn package_identity(&self) -> IdentitySection {
-        std::fs::read_to_string(self.agent_root.join("agent.toml"))
-            .ok()
-            .and_then(|t| toml::from_str::<IdentityToml>(&t).ok())
-            .unwrap_or_default()
-            .identity
-    }
-
-    /// The profile card. `owner_did` / `desktop_url` are `null` outside a
-    /// zone: there is no message system to link to.
-    pub fn profile(
-        &self,
-        agent: &dyn AgentStateClient,
-        owner_did: Option<String>,
-        desktop_url: Option<String>,
-    ) -> Value {
-        let stored = self.stored();
-        let package = self.package_identity();
-        let pick = |own: Option<String>, base: Option<String>| own.or(base).filter(|s| !s.is_empty());
-        json!({
+            .and_then(|did| AgentId::from_agent_did(&did).ok())
+            .map(|id| profile.resolved_display_name(&id))
+            .unwrap_or_else(|| agent.agent_id().to_string());
+        Ok(json!({
             "agent_did": agent.agent_did(),
             "agent_id": agent.agent_id(),
-            "display_name": pick(stored.display_name, package.display_name)
-                .unwrap_or_else(|| agent.agent_id().to_string()),
-            "avatar": pick(stored.avatar, package.avatar),
-            "bio": pick(stored.bio, package.bio).unwrap_or_default(),
-            "owner_did": owner_did,
-            "desktop_url": desktop_url,
-            "updated_at_ms": stored.updated_at_ms,
-        })
+            "display_name": display_name,
+            "avatar": profile.avatar,
+            "bio": profile.bio.unwrap_or_default(),
+            "owner_did": self.owner_did,
+            "desktop_url": self.desktop_url,
+        }))
     }
 
-    /// Change the fields that are present; an empty string goes back to the
-    /// package's default.
-    pub fn set_profile(&self, params: &Value) -> Result<(), OpenDanError> {
-        let invalid = |m: String| Err(OpenDanError::InvalidArgument(m));
-        let mut stored = self.stored();
-        if let Some(name) = text_param(params, "display_name")? {
-            if name.chars().count() > MAX_NAME_CHARS {
-                return invalid(format!("display_name is longer than {MAX_NAME_CHARS} characters"));
-            }
-            stored.display_name = Some(name).filter(|s| !s.is_empty());
-        }
-        if let Some(bio) = text_param(params, "bio")? {
-            if bio.chars().count() > MAX_BIO_CHARS {
-                return invalid(format!("bio is longer than {MAX_BIO_CHARS} characters"));
-            }
-            stored.bio = Some(bio).filter(|s| !s.is_empty());
-        }
-        if let Some(avatar) = text_param(params, "avatar")? {
-            if avatar.len() > MAX_AVATAR_BYTES {
-                return invalid(format!("avatar is larger than {} KiB", MAX_AVATAR_BYTES / 1024));
-            }
-            let known = ["data:image/", "https://", "http://"];
-            if !avatar.is_empty() && !known.iter().any(|p| avatar.starts_with(p)) {
-                return invalid("avatar is an image data URL or an http(s) URL".to_string());
-            }
-            stored.avatar = Some(avatar).filter(|s| !s.is_empty());
-        }
-        stored.updated_at_ms = libopendan::now_ms();
-        fsutil::atomic_replace_json(&self.agent_root.join(PROFILE_FILE), &stored)
+    /// Change the fields that are present; an empty string clears one (the
+    /// name falls back to the agent's user name).
+    pub async fn set_profile(&self, params: &Value) -> Result<(), OpenDanError> {
+        let mut profile = records::profile(self.records.as_ref()).await.map_err(store_err)?;
+        apply_profile(&mut profile, params)?;
+        records::set_profile(self.records.as_ref(), &profile)
+            .await
+            .map_err(store_err)
     }
 
     fn session_usage(&self, entry: &RegistryEntry) -> Vec<UsageRecord> {
@@ -252,36 +194,67 @@ impl Home {
     }
 }
 
+fn apply_profile(profile: &mut AgentProfile, params: &Value) -> Result<(), OpenDanError> {
+    let invalid = |m: String| Err(OpenDanError::InvalidArgument(m));
+    let name = text_param(params, "display_name")?;
+    let bio = text_param(params, "bio")?;
+    let avatar = text_param(params, "avatar")?;
+    if name.as_ref().is_some_and(|n| n.chars().count() > MAX_NAME_CHARS) {
+        return invalid(format!("display_name is longer than {MAX_NAME_CHARS} characters"));
+    }
+    if bio.as_ref().is_some_and(|b| b.chars().count() > MAX_BIO_CHARS) {
+        return invalid(format!("bio is longer than {MAX_BIO_CHARS} characters"));
+    }
+    if let Some(avatar) = &avatar {
+        if avatar.len() > MAX_AVATAR_BYTES {
+            return invalid(format!("avatar is larger than {} KiB", MAX_AVATAR_BYTES / 1024));
+        }
+        if !avatar.is_empty() && !avatar.starts_with("data:image/") {
+            return invalid("avatar is an image data URL".to_string());
+        }
+    }
+    for (field, value) in [
+        (&mut profile.display_name, name),
+        (&mut profile.bio, bio),
+        (&mut profile.avatar, avatar),
+    ] {
+        if let Some(v) = value {
+            *field = Some(v).filter(|s| !s.is_empty());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::records::LocalRecords;
 
-    #[test]
-    fn profile_edits_are_checked_and_kept() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(dir.path().join(".meta")).unwrap();
-        std::fs::write(dir.path().join("agent.toml"), "[identity]\ndisplay_name = \"Jarvis\"\n").unwrap();
-        let home = Home::new(dir.path());
-        assert_eq!(home.package_identity().display_name.as_deref(), Some("Jarvis"));
-
+    #[tokio::test]
+    async fn profile_edits_are_checked_and_kept() {
+        let records = Arc::new(LocalRecords::memory());
+        let home = Home::new(records.clone(), Some("did:bns:bob".into()), None);
         home.set_profile(&json!({ "display_name": " J ", "bio": "hello", "avatar": "data:image/png;base64,AA==" }))
+            .await
             .unwrap();
-        let stored = home.stored();
+        let stored = records::profile(records.as_ref()).await.unwrap();
         assert_eq!(stored.display_name.as_deref(), Some("J"));
         assert_eq!(stored.bio.as_deref(), Some("hello"));
 
-        // Absent fields stay; an empty string goes back to the default.
-        home.set_profile(&json!({ "display_name": "" })).unwrap();
-        let stored = home.stored();
+        // Absent fields stay; an empty string clears one.
+        home.set_profile(&json!({ "display_name": "" })).await.unwrap();
+        let stored = records::profile(records.as_ref()).await.unwrap();
         assert!(stored.display_name.is_none() && stored.avatar.is_some());
 
         for bad in [
             json!({ "avatar": "javascript:alert(1)" }),
+            json!({ "avatar": "https://example.com/a.png" }),
             json!({ "display_name": "x".repeat(65) }),
             json!({ "bio": 1 }),
             json!({ "avatar": format!("data:image/png;base64,{}", "A".repeat(MAX_AVATAR_BYTES)) }),
         ] {
-            assert!(matches!(home.set_profile(&bad), Err(OpenDanError::InvalidArgument(_))), "{bad}");
+            assert!(matches!(home.set_profile(&bad).await, Err(OpenDanError::InvalidArgument(_))), "{bad}");
         }
+        assert_eq!(records::profile(records.as_ref()).await.unwrap(), stored, "a refused edit changes nothing");
     }
 }

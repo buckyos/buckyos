@@ -331,8 +331,9 @@ export interface LoaderStatus {
   errors: { at_ms: number; source: string; message: string }[]
 }
 
-// `owner_did` / `desktop_url` are null outside a zone. `editable` is false
-// when the service is too old to keep a profile.
+// The agent's profile record in the zone; without a nickname `display_name`
+// is the agent's user name. `owner_did` / `desktop_url` are null outside a
+// zone. `editable` is false when the service is too old to keep a profile.
 export interface AgentProfile {
   agent_did: string
   agent_id: string
@@ -341,7 +342,6 @@ export interface AgentProfile {
   bio: string
   owner_did: string | null
   desktop_url: string | null
-  updated_at_ms: number
   editable: boolean
 }
 

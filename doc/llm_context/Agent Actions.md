@@ -201,7 +201,7 @@ pub fn bar() -> u32 { 42 }
 - bash 表达不了"注册一个长期句柄并让后续消息走回调"
 - 注册结果（subscription_id）必须挂在 session 上，无状态命令做不到
 
-具体参数对齐 [`Agent Session的事件订阅.md`](../opendan/Agent%20Session的事件订阅.md)，本文不重复。
+订阅语义与配置职责见 [Agent Session 架构设计 §12.8](<../opendan/OpenDAN Agent Session架构设计.md#128-订阅唤醒与输入装配>)；具体参数由 Runtime / SDK 收敛。
 
 ### 1.7 与 v1 的差异
 

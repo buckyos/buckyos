@@ -1,5 +1,7 @@
 # Self-Check Behavior 系统提示词编写指南
 
+**状态（2026-10-10）：已被取代，仅作参考。** 现行设计与 Agent Memory 模块重构的依据是[《Agent Memory 认知管理需求》](<../Agent Memory 认知管理需求.md>)，与之冲突时以新文档为准。Self-Check 不再是专用 Session，也不再以 Notebook 为真相源；有明确目标的部分改为 Goal，见《OpenDAN Agent Session 架构设计》的迁移表。与认知管理有关的经验（延迟整理时的情境锚点、暂缓观察窗口、澄清线索、弱否定分级）已写入新文档 §4.2、§4.3、§5.9、E-16。
+
 > 文件名建议：`Self-Check behaivor 系统提示词编写指南.md`  
 > 本文档用于指导 Self-Check Behavior 的系统提示词编写。它描述 Self-Check 在后台如何读取 Notebook、如何理解用户意图、如何创建 / 取消 / 维护计划任务，以及如何控制执行成本和上下文窗口。
 

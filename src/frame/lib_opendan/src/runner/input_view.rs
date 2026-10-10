@@ -99,6 +99,9 @@ pub struct MessageView {
     pub relations: Vec<RelationView>,
     #[serde(default)]
     pub mentions: MentionsView,
+    /// Material for the request that follows it (`delivery.context`).
+    #[serde(default)]
+    pub context: bool,
     #[serde(default)]
     pub machine: Option<Value>,
     #[serde(default)]
@@ -305,6 +308,7 @@ pub fn message_view(key: &str, at_ms: u64, m: &SessionMsg, agent_did: &str) -> M
         attachments,
         relations,
         mentions,
+        context: m.delivery.context,
         machine: msg
             .content
             .machine
@@ -429,6 +433,9 @@ pub fn render_msg_xml(m: &MessageView) -> String {
     }
     if m.mentions.me {
         attr(&mut s, "mentioned", "true");
+    }
+    if m.context {
+        attr(&mut s, "context", "true");
     }
     for r in &m.relations {
         let name = match r.rel.as_str() {

@@ -1,4 +1,15 @@
 import { callRpc, type RpcCallOptions } from './rpc.ts'
+import { isMockRuntime } from '../runtime.ts'
+
+/** Agent and own-profile calls; the mock runtime answers them from an in-browser control panel. */
+async function callControlPanel<T>(
+  method: string,
+  params: Record<string, unknown>,
+): Promise<{ data: T | null; error: unknown }> {
+  if (!isMockRuntime()) return callRpc<T>(method, params)
+  const { callMockControlPanel } = await import('./control_panel_mock.ts')
+  return callMockControlPanel<T>(method, params)
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -158,39 +169,154 @@ export interface UserInviteResponse {
   state?: UserStateString
 }
 
-/** Agent listing entry as returned by `agent.list`. */
-export interface AgentInfo {
+// ---------------------------------------------------------------------------
+// Agent types (control_panel `agent.*`, see the Agent init contract §3)
+// ---------------------------------------------------------------------------
+
+export type AgentInstallState = 'provisioning' | 'bound' | 'ready' | 'failed' | 'removed'
+export type AgentCreateStep = 'runtime' | 'bind' | 'tunnel' | 'start' | 'done'
+export type AgentTunnelState = 'none' | 'pending' | 'bound' | 'failed' | 'skipped'
+export type AgentTemplateSource = 'bundled' | 'installed'
+export type AgentNameUnavailableReason = 'invalid' | 'reserved' | 'user_exists' | 'agent_exists' | 'host_taken'
+export type AgentDesktopEntry = 'jarvis_guide'
+
+export interface AgentCreateError {
+  step: AgentCreateStep
+  code: string
+  message: string
+  retryable: boolean
+}
+
+export interface AgentRuntimeProgress {
+  phase?: string | null
+  percent?: number | null
+  message?: string | null
+}
+
+/** Creation status; also the `install` field of an `AgentEntry`. */
+export interface AgentStatus {
   agent_id: string
-  [key: string]: unknown
+  agent_did: string
+  owner_user_id: string
+  state: AgentInstallState
+  step: AgentCreateStep
+  last_error?: AgentCreateError | null
+  tunnel_state: AgentTunnelState
+  runtime_task_id?: string | null
+  runtime_progress?: AgentRuntimeProgress | null
+  created_at: number
+  updated_at: number
+}
+
+export interface AgentProfile {
+  display_name?: string | null
+  /** Data URL, at most 192px. */
+  avatar?: string | null
+  bio?: string | null
+}
+
+/** A message tunnel of an Agent as listed; never carries the bot token. */
+export interface AgentMsgTunnelSummary {
+  platform: string
+  bot_account_id?: string | null
+}
+
+export interface AgentSettings {
+  enabled: boolean
+  auto_start: boolean
+  allow_other_users: boolean
+  allow_group: boolean
+  role_supplement: string
+  template_auto_update: boolean
+  desktop_entry?: string | null
+  msg_tunnels: AgentMsgTunnelSummary[]
+}
+
+export interface AgentTemplateBinding {
+  template_id: string
+  source: AgentTemplateSource
+  app_did: string
+  version: string
+  loaded_version?: string | null
+}
+
+/** The Agent's constructed App; null until that App is installed. */
+export interface AgentRuntimeBinding {
+  app_instance_id: string
+  app_host_name: string
+  has_web: boolean
+  state?: string | null
+}
+
+export interface AgentEntry {
+  agent_id: string
+  agent_did: string
+  owner_user_id: string
+  owner_did: string
+  name: string
+  display_name: string
+  profile: AgentProfile
+  settings: AgentSettings
+  install: AgentStatus
+  template?: AgentTemplateBinding | null
+  runtime?: AgentRuntimeBinding | null
 }
 
 export interface AgentsListResponse {
-  total: number
-  agents: AgentInfo[]
+  agents: AgentEntry[]
 }
 
-/** Full agent detail as returned by `agent.get`. */
-export interface AgentDetail {
-  agent_id: string
-  /** Optional settings block merged in from `agents/{agent_id}/settings`. */
-  settings?: Record<string, unknown>
-  runtime?: Record<string, unknown>
-  [key: string]: unknown
+export interface AgentTemplate {
+  /** `bundled:<app_id>` or `installed:<app_id>`. */
+  template_id: string
+  source: AgentTemplateSource
+  app_id: string
+  app_did: string
+  name: string
+  show_name: string
+  description: string
+  version: string
+  icon?: string | null
+  loader: string
+  is_default: boolean
 }
 
-export interface AgentTunnelBindingResponse {
-  ok: boolean
-  agent_id: string
-  platform: string
-  total_bindings?: number
-  remaining_bindings?: number
+export interface AgentTemplatesResponse {
+  templates: AgentTemplate[]
 }
 
-export interface AgentProfileResponse {
+export interface AgentNameCheck {
+  name: string
+  available: boolean
   agent_id: string
-  profile: Record<string, unknown>
-  local_profile?: Record<string, unknown> | null
-  did_profile?: Record<string, unknown> | null
+  agent_did: string
+  reason?: AgentNameUnavailableReason | string | null
+  message?: string | null
+  suggestion?: string | null
+}
+
+export interface AgentMsgTunnelInput {
+  platform: 'telegram'
+  bot_token: string
+}
+
+export interface AgentCreateRequest {
+  idempotency_key: string
+  name: string
+  profile: AgentProfile
+  role_supplement: string
+  allow_group: boolean
+  allow_other_users: boolean
+  template_id: string
+  template_auto_update: boolean
+  desktop_entry?: AgentDesktopEntry
+  msg_tunnel?: AgentMsgTunnelInput
+}
+
+export interface AgentCreateResponse {
+  agent_id: string
+  agent_did: string
+  status: AgentStatus
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +335,7 @@ export const fetchUserDetail = async (
 ): Promise<{ data: UserDetail | null; error: unknown }> => {
   const params: Record<string, unknown> = {}
   if (options.userId) params.user_id = options.userId
-  return callRpc<UserDetail>('user.get', params)
+  return callControlPanel<UserDetail>('user.get', params)
 }
 
 /** Create a new user. Admin-only. */
@@ -354,7 +480,7 @@ export const setUserMsgTunnel = async (input: {
   if (input.status !== undefined) params.status = input.status
   if (input.lastSyncAt !== undefined) params.last_sync_at = input.lastSyncAt
   if (input.meta !== undefined) params.meta = input.meta
-  return callRpc<
+  return callControlPanel<
     SimpleOkResponse & {
       platform?: string
       total_bindings?: number
@@ -376,7 +502,7 @@ export const removeUserMsgTunnel = async (input: {
 }> => {
   const params: Record<string, unknown> = { platform: input.platform }
   if (input.userId) params.user_id = input.userId
-  return callRpc<
+  return callControlPanel<
     SimpleOkResponse & {
       platform?: string
       remaining_bindings?: number
@@ -467,115 +593,81 @@ export const changeUserType = async (input: {
 // Agent management RPC
 // ---------------------------------------------------------------------------
 
-/** List all agents in the zone. */
+export const checkAgentName = async (
+  name: string,
+): Promise<{ data: AgentNameCheck | null; error: unknown }> =>
+  callControlPanel<AgentNameCheck>('agent.check_name', { name })
+
+/** Templates the caller can build an Agent from; an error never falls back to a fixed list. */
+export const fetchAgentTemplates = async (): Promise<{
+  data: AgentTemplatesResponse | null
+  error: unknown
+}> => callControlPanel<AgentTemplatesResponse>('agent.list_templates', {})
+
+export const createAgent = async (
+  request: AgentCreateRequest,
+): Promise<{ data: AgentCreateResponse | null; error: unknown }> =>
+  callControlPanel<AgentCreateResponse>('agent.create', { ...request })
+
+export const fetchAgentCreateStatus = async (
+  agentId: string,
+): Promise<{ data: AgentStatus | null; error: unknown }> =>
+  callControlPanel<AgentStatus>('agent.create.status', { agent_id: agentId })
+
+export const retryAgentCreate = async (input: {
+  agentId: string
+  skipTunnel?: boolean
+}): Promise<{ data: AgentStatus | null; error: unknown }> =>
+  callControlPanel<AgentStatus>('agent.create.retry', {
+    agent_id: input.agentId,
+    ...(input.skipTunnel ? { skip_tunnel: true } : {}),
+  })
+
+/** Only valid before the Agent's spec is written (runtime / bind failures). */
+export const cancelAgentCreate = async (
+  agentId: string,
+): Promise<{ data: SimpleOkResponse | null; error: unknown }> =>
+  callControlPanel<SimpleOkResponse>('agent.create.cancel', { agent_id: agentId })
+
+/** The caller's own Agents (Admin / Root: every Agent), including unfinished creations. */
 export const fetchAgentList = async (): Promise<{
   data: AgentsListResponse | null
   error: unknown
-}> => callRpc<AgentsListResponse>('agent.list', {})
+}> => callControlPanel<AgentsListResponse>('agent.list', {})
 
-export const fetchAgentListWithRuntime = async (): Promise<{
-  data: AgentsListResponse | null
-  error: unknown
-}> => callRpc<AgentsListResponse>('agent.list', { include_runtime: true })
-
-/** Get the full detail for a single agent (doc + optional settings). */
 export const fetchAgentDetail = async (
   agentId: string,
-): Promise<{ data: AgentDetail | null; error: unknown }> =>
-  callRpc<AgentDetail>('agent.get', { agent_id: agentId })
-
-export const createAgent = async (input: {
-  agentId: string
-  displayName?: string
-  ownerUserId?: string
-  agentDid?: string
-  description?: string
-  profile?: Record<string, unknown>
-  settings?: Record<string, unknown>
-}): Promise<{ data: (SimpleOkResponse & AgentDetail) | null; error: unknown }> => {
-  const params: Record<string, unknown> = { agent_id: input.agentId }
-  if (input.displayName !== undefined) params.display_name = input.displayName
-  if (input.ownerUserId !== undefined) params.owner_user_id = input.ownerUserId
-  if (input.agentDid !== undefined) params.agent_did = input.agentDid
-  if (input.description !== undefined) params.description = input.description
-  if (input.profile !== undefined) params.profile = input.profile
-  if (input.settings !== undefined) params.settings = input.settings
-  return callRpc<SimpleOkResponse & AgentDetail>('agent.create', params)
-}
+): Promise<{ data: AgentEntry | null; error: unknown }> =>
+  callControlPanel<AgentEntry>('agent.get', { agent_id: agentId })
 
 export const updateAgent = async (input: {
   agentId: string
+  allowGroup: boolean
+}): Promise<{ data: AgentEntry | null; error: unknown }> =>
+  callControlPanel<AgentEntry>('agent.update', {
+    agent_id: input.agentId,
+    allow_group: input.allowGroup,
+  })
+
+export const fetchAgentProfile = async (
+  agentId: string,
+): Promise<{ data: { profile: AgentProfile } | null; error: unknown }> =>
+  callControlPanel<{ profile: AgentProfile }>('agent.profile.get', { agent_id: agentId })
+
+export const setAgentProfile = async (input: {
+  agentId: string
   displayName?: string
-  description?: string
-  state?: string
-  profile?: Record<string, unknown>
-  settings?: Record<string, unknown>
-}): Promise<{ data: (SimpleOkResponse & { settings?: Record<string, unknown> }) | null; error: unknown }> => {
+  avatar?: string
+  bio?: string
+}): Promise<{ data: { profile: AgentProfile } | null; error: unknown }> => {
   const params: Record<string, unknown> = { agent_id: input.agentId }
   if (input.displayName !== undefined) params.display_name = input.displayName
-  if (input.description !== undefined) params.description = input.description
-  if (input.state !== undefined) params.state = input.state
-  if (input.profile !== undefined) params.profile = input.profile
-  if (input.settings !== undefined) params.settings = input.settings
-  return callRpc<SimpleOkResponse & { settings?: Record<string, unknown> }>(
-    'agent.update',
-    params,
-  )
+  if (input.avatar !== undefined) params.avatar = input.avatar
+  if (input.bio !== undefined) params.bio = input.bio
+  return callControlPanel<{ profile: AgentProfile }>('agent.profile.set', params)
 }
 
 export const deleteAgent = async (
   agentId: string,
 ): Promise<{ data: SimpleOkResponse | null; error: unknown }> =>
-  callRpc<SimpleOkResponse>('agent.delete', { agent_id: agentId })
-
-export const fetchAgentProfile = async (
-  agentId: string,
-): Promise<{ data: AgentProfileResponse | null; error: unknown }> =>
-  callRpc<AgentProfileResponse>('agent.profile.get', { agent_id: agentId })
-
-export const setAgentProfile = async (input: {
-  agentId: string
-  profile: Record<string, unknown>
-}): Promise<{ data: (SimpleOkResponse & { profile?: Record<string, unknown> }) | null; error: unknown }> =>
-  callRpc<SimpleOkResponse & { profile?: Record<string, unknown> }>('agent.profile.set', {
-    agent_id: input.agentId,
-    profile: input.profile,
-  })
-
-/**
- * Set (add or replace) a message-tunnel binding for an agent. Admin-only.
- * Bindings are keyed by `platform` — passing the same platform replaces the
- * existing binding.
- */
-export const setAgentMsgTunnel = async (input: {
-  agentId: string
-  platform: string
-  accountId: string
-  displayId?: string
-  tunnelId?: string
-  status?: string
-  lastSyncAt?: number
-  meta?: Record<string, string>
-}): Promise<{ data: AgentTunnelBindingResponse | null; error: unknown }> => {
-  const params: Record<string, unknown> = {
-    agent_id: input.agentId,
-    platform: input.platform,
-    account_id: input.accountId,
-  }
-  if (input.displayId !== undefined) params.display_id = input.displayId
-  if (input.tunnelId !== undefined) params.tunnel_instance_id = input.tunnelId
-  if (input.status !== undefined) params.status = input.status
-  if (input.lastSyncAt !== undefined) params.last_sync_at = input.lastSyncAt
-  if (input.meta !== undefined) params.meta = input.meta
-  return callRpc<AgentTunnelBindingResponse>('agent.set_msg_tunnel', params)
-}
-
-/** Remove a specific platform binding from an agent. Admin-only. */
-export const removeAgentMsgTunnel = async (input: {
-  agentId: string
-  platform: string
-}): Promise<{ data: AgentTunnelBindingResponse | null; error: unknown }> =>
-  callRpc<AgentTunnelBindingResponse>('agent.remove_msg_tunnel', {
-    agent_id: input.agentId,
-    platform: input.platform,
-  })
+  callControlPanel<SimpleOkResponse>('agent.delete', { agent_id: agentId })

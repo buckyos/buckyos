@@ -1,5 +1,6 @@
 import type { AppSummary } from '../api/app_mgr'
 import type { AppDefinition } from '../models/ui'
+import { isLauncherApp } from '../models/ui'
 
 export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'ai-center',
@@ -15,6 +16,8 @@ export const DESKTOP_BUILTIN_APP_IDS = new Set([
   'preview',
   'aiworkspace',
   'homestation',
+  'agent-setup',
+  'agent-guide',
 ])
 
 const logicalAppAliases: Readonly<Record<string, string>> = {
@@ -65,8 +68,11 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[]) {
       },
     }
     const definition = catalogEntry ?? fallback
+    // An Agent's constructed App opens from that Agent's entries, never as a launcher icon.
+    const hiddenFromLauncher = summary.runtime_type === 'agent'
     return {
       ...definition,
+      ...(hiddenFromLauncher ? { manifest: { ...definition.manifest, showInLauncher: false } } : {}),
       id: summary.app_instance_id,
       logicalAppId: summary.app_id,
       appInstanceId: summary.app_instance_id,
@@ -77,6 +83,7 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[]) {
           tier: 'sdk' as const,
           manifest: {
             ...definition.manifest,
+            ...(hiddenFromLauncher ? { showInLauncher: false } : {}),
             placement: 'inplace' as const,
             contentPadding: 'none' as const,
           },
@@ -86,6 +93,11 @@ export function createBackendAppDefinitionMapper(catalog: AppDefinition[]) {
   }
 }
 
+/** Built-in desktop items that depend on the account: the Jarvis guide is only for users who can create Agents. */
+export function withAccountBuiltins(apps: AppDefinition[], options: { agentGuide: boolean }): AppDefinition[] {
+  return options.agentGuide ? apps : apps.filter((app) => app.id !== 'agent-guide')
+}
+
 export function buildAuthorizedAppDefinitions(
   catalog: AppDefinition[],
   authorizedApps: AppSummary[],
@@ -93,4 +105,9 @@ export function buildAuthorizedAppDefinitions(
   const toDefinition = createBackendAppDefinitionMapper(catalog)
   const desktopBuiltInApps = catalog.filter((app) => DESKTOP_BUILTIN_APP_IDS.has(app.id))
   return [...desktopBuiltInApps, ...authorizedApps.map(toDefinition)]
+}
+
+/** Launcher items only: Apps hidden from the launcher keep their definition but get no desktop icon. */
+export function launcherDefinitions(definitions: AppDefinition[]): AppDefinition[] {
+  return definitions.filter(isLauncherApp)
 }

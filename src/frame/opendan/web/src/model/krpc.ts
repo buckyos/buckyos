@@ -84,7 +84,6 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
           bio: '',
           owner_did: null,
           desktop_url: null,
-          updated_at_ms: 0,
           editable: false,
         }
       }).then((p) => ({ ...p, editable: p.editable ?? true })),

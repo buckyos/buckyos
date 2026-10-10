@@ -6,13 +6,15 @@
  *   deno run --config ../deno.json --allow-net --allow-env \
  *     --unsafely-ignore-certificate-errors test_agent_chat_task.ts [text]
  *
- * Env: as test_agent_loader.ts, plus OPENDAN_FOLLOW_S (0: keep printing
+ * Env: as test_agent_loader.ts (the agent as agent_target.ts selects it),
+ * plus OPENDAN_FOLLOW_S (0: keep printing
  * the agent's messages and the task tree until its sessions are idle) and
  * AGENT_CHAT_CANCEL=1 (cancel the task in TaskMgr once the placeholder
  * arrived: the session stops, the task ends as Canceled, the placeholder is
  * closed; use a text that keeps the agent busy).
  */
 import { buckyos } from "buckyos";
+import { resolveAgent } from "./agent_target.ts";
 
 type JsonRecord = Record<string, unknown>;
 type RpcClient = { call(method: string, params: JsonRecord): Promise<unknown> };
@@ -31,15 +33,12 @@ const hashPassword = buckyos.hashPassword as unknown as (
 const zoneHost = Deno.env.get("BUCKYOS_TEST_ZONE_HOST")?.trim() || "test.buckyos.io";
 const adminUser = Deno.env.get("BUCKYOS_TEST_ADMIN_USER")?.trim() || "devtest";
 const adminPassword = Deno.env.get("BUCKYOS_TEST_ADMIN_PASSWORD")?.trim() || "bucky2025";
-const agentDid = Deno.env.get("BUCKYOS_TEST_AGENT_DID")?.trim() || `did:web:jarvis.${zoneHost}`;
-const opendanUrl = Deno.env.get("OPENDAN_URL")?.trim() || "http://127.0.0.1:10016/kapi/opendan";
 const replyTimeoutMs = Number(Deno.env.get("OPENDAN_REPLY_TIMEOUT_S") || "180") * 1000;
 const followSeconds = Number(Deno.env.get("OPENDAN_FOLLOW_S") || "0");
 // Cancel the Turn's task in TaskMgr once its placeholder arrived.
 const cancelTask = Deno.env.get("AGENT_CHAT_CANCEL") === "1";
 const text = Deno.args[0] ||
   "请用 shell 执行 `sleep 6; date`，然后告诉我输出的时间。";
-const selfDid = `did:bns:${adminUser}`;
 let lastNonce = Date.now();
 
 function nextNonce(): number {
@@ -82,6 +81,12 @@ async function login(): Promise<string> {
 }
 
 const token = await login();
+const { agentDid, ownerDid: selfDid, opendanUrl } = await resolveAgent(
+  (method, params) => zone("control-panel", method, params, token),
+  adminUser,
+  zoneHost,
+);
+console.log(`agent ${agentDid} at ${opendanUrl}`);
 const msg = (method: string, params: JsonRecord) => zone("msg-center", method, params, token);
 const tasks = (method: string, params: JsonRecord) => zone("task-manager", method, params, token);
 const dan = (method: string, params: JsonRecord = {}) =>

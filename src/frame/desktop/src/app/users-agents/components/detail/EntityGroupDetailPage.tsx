@@ -6,16 +6,19 @@ import type { EntityGroupEntity } from '../../datamodel/types'
 import { HeaderSection } from '../sections/HeaderSection'
 import { SocialAccountsSection } from '../sections/SocialAccountsSection'
 import { MetricCard } from '../../../../components/AppPanelPrimitives'
+import { useI18n } from '../../../../i18n/provider'
 
 interface EntityGroupDetailPageProps {
   group: EntityGroupEntity
 }
 
 export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
+  const { t } = useI18n()
+  const typeLabel = group.isHostedBySelf ? t('usersAgents.group.selfHosted') : t('usersAgents.group.joined')
   const summaryItems = [
-    ['Members', String(group.memberCount)],
-    ['Type', group.isHostedBySelf ? 'Self-hosted' : 'Joined'],
-    ...(group.ownerName ? [['Owner', group.ownerName]] : []),
+    [t('usersAgents.group.membersLabel'), String(group.memberCount)],
+    [t('usersAgents.group.type'), typeLabel],
+    ...(group.ownerName ? [[t('usersAgents.role.owner'), group.ownerName]] : []),
   ]
 
   return (
@@ -29,12 +32,12 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
         badges={
           <>
             {group.isHostedBySelf && (
-              <Chip label="Hosted by you" size="small" color="primary" variant="outlined" />
+              <Chip label={t('usersAgents.group.hostedByYou')} size="small" color="primary" variant="outlined" />
             )}
             {group.canMessage && (
               <Chip
                 icon={<MessageSquare size={12} />}
-                label="Messageable"
+                label={t('usersAgents.group.messageable')}
                 size="small"
                 variant="outlined"
               />
@@ -65,14 +68,14 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
       </div>
 
       <div className="hidden gap-2 md:grid md:grid-cols-3">
-        <MetricCard label="Members" tone="accent" value={String(group.memberCount)} />
+        <MetricCard label={t('usersAgents.group.membersLabel')} tone="accent" value={String(group.memberCount)} />
         <MetricCard
-          label="Type"
+          label={t('usersAgents.group.type')}
           tone="neutral"
-          value={group.isHostedBySelf ? 'Self-hosted' : 'Joined'}
+          value={typeLabel}
         />
         {group.ownerName && (
-          <MetricCard label="Owner" tone="neutral" value={group.ownerName} />
+          <MetricCard label={t('usersAgents.role.owner')} tone="neutral" value={group.ownerName} />
         )}
       </div>
 
@@ -92,7 +95,7 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
             className="font-display text-sm font-semibold"
             style={{ color: 'var(--cp-text)' }}
           >
-            Members ({group.memberCount})
+            {t('usersAgents.group.membersCount', undefined, { count: group.memberCount })}
           </h3>
         </div>
         <div className="flex min-w-0 flex-wrap gap-1.5">
@@ -109,7 +112,7 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
             </span>
           ))}
           {group.memberIds.length > 8 && (
-            <Chip label={`+${group.memberIds.length - 8} more`} size="small" variant="outlined" />
+            <Chip label={t('usersAgents.group.more', undefined, { count: group.memberIds.length - 8 })} size="small" variant="outlined" />
           )}
         </div>
       </div>
@@ -126,12 +129,12 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
           className="font-display text-sm font-semibold mb-2"
           style={{ color: 'var(--cp-text)' }}
         >
-          Group Info
+          {t('usersAgents.group.info')}
         </h3>
         <div className="space-y-3 md:space-y-1.5">
           <div className="flex flex-col gap-1 md:flex-row md:items-baseline md:gap-3">
             <span className="text-[12px] font-medium md:w-24 md:shrink-0" style={{ color: 'var(--cp-muted)' }}>
-              Created
+              {t('usersAgents.created')}
             </span>
             <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
               {new Date(group.createdAt).toLocaleDateString()}
@@ -153,7 +156,7 @@ export function EntityGroupDetailPage({ group }: EntityGroupDetailPageProps) {
       {group.canMessage && (
         <div className="flex">
           <Button className="w-full md:w-auto" variant="contained" startIcon={<MessageSquare size={14} />}>
-            Open in MessageHub
+            {t('usersAgents.group.openMessageHub')}
           </Button>
         </div>
       )}

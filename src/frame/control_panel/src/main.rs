@@ -1,3 +1,4 @@
+mod agent_mgr;
 mod app_install_deployer;
 mod app_install_driver;
 mod app_install_engine;
@@ -220,6 +221,7 @@ struct ControlPanelServer {
     staging_store: Arc<app_staging::PikgStagingStore>,
     ndm_gateway: Option<Arc<NamedDataMgrZoneGateway>>,
     ndm_node_gateway: Option<Arc<NamedDataMgrNodeGateway>>,
+    agent_drives: Arc<std::sync::Mutex<HashMap<String, bool>>>,
 }
 
 impl ControlPanelServer {
@@ -255,6 +257,7 @@ impl ControlPanelServer {
             staging_store,
             ndm_gateway: None,
             ndm_node_gateway: None,
+            agent_drives: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -877,9 +880,26 @@ impl RPCHandler for ControlPanelServer {
             "user.change_state" => self.handle_user_change_state(req, principal.as_ref()).await,
             "user.change_type" => self.handle_user_change_type(req, principal.as_ref()).await,
 
+            "agent.check_name" => self.handle_agent_check_name(req, principal.as_ref()).await,
+            "agent.list_templates" => {
+                self.handle_agent_list_templates(req, principal.as_ref())
+                    .await
+            }
+            "agent.create" => self.handle_agent_create(req, principal.as_ref()).await,
+            "agent.create.status" => {
+                self.handle_agent_create_status(req, principal.as_ref())
+                    .await
+            }
+            "agent.create.retry" => {
+                self.handle_agent_create_retry(req, principal.as_ref())
+                    .await
+            }
+            "agent.create.cancel" => {
+                self.handle_agent_create_cancel(req, principal.as_ref())
+                    .await
+            }
             "agent.list" => self.handle_agent_list(req, principal.as_ref()).await,
             "agent.get" => self.handle_agent_get(req, principal.as_ref()).await,
-            "agent.create" => self.handle_agent_create(req, principal.as_ref()).await,
             "agent.update" => self.handle_agent_update(req, principal.as_ref()).await,
             "agent.delete" => self.handle_agent_delete(req, principal.as_ref()).await,
             "agent.profile.get" => self.handle_agent_profile_get(req, principal.as_ref()).await,
@@ -1100,6 +1120,8 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
         .map_err(|err| anyhow::anyhow!("register control-panel runtime failed: {}", err))?;
 
     let mut control_panel_server = ControlPanelServer::new();
+    // Agent 运行时 App 的本地 AppDoc 授权只在内存中，恢复安装任务前先重新注册。
+    agent_mgr::register_agent_runtime_authorities().await;
     // 启动安装任务恢复循环；正常路径由业务 RPC 直接执行，TaskManager
     // 启动扫描/低频 sweep 恢复重启前或异常遗漏的非终态安装事务。
     control_panel_server.install_runner.start();
@@ -1183,6 +1205,7 @@ pub async fn start_control_panel_service() -> anyhow::Result<()> {
 
     let _ = runner.start();
     pre_install_reconciler::PreInstallReconciler::new(control_panel_server.clone()).start();
+    control_panel_server.start_agent_driver();
     info!(
         "control-panel service started at port {}",
         CONTROL_PANEL_SERVICE_PORT

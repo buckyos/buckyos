@@ -5,10 +5,10 @@
 **需求基线：** [《Agent Session SDK 化核心需求》](<Agent Session SDK化核心需求.md>)（下文简称“需求”，条目编号 S-xx / A-xx 沿用）
 
 **现状依据：**
-- [Agent Session](<Agent Session.md>)、[Agent RootFS](<Agent RootFS.md>)、[LLM Context 设计](<LLM Context 设计.md>)、[xllm Rust SDK](../agent_tool/xllm_rust_sdk.md)、[kmsg](../arch/kmsg.md)、[NewOpenDANRuntime](../../notepads/NewOpenDANRuntime.md)
+- [Agent Session 架构设计 §15.6（实现与迁移对照）](<OpenDAN Agent Session架构设计.md#156-原-session-设计的整合与迁移>)、[Agent RootFS](<Agent RootFS.md>)、[LLM Context 设计](<LLM Context 设计.md>)、[xllm Rust SDK](../agent_tool/xllm_rust_sdk.md)、[kmsg](../arch/kmsg.md)、[NewOpenDANRuntime](../../notepads/NewOpenDANRuntime.md)
 - [agent-did-object-lib 需求](../../notepads/Agent元能力/agent-did-object-lib%20需求.md)、[Agent DID-Object Protocol Spec](../../notepads/Agent元能力/Agent%20DID-Object%20Protocol%20Spec.md)、[Agent Memory v2](../../notepads/Agent元能力/Agent%20Memory%20v2.md)
 - 当前代码（2026-09-29）：`src/frame/opendan`、`llm_context`、`agent_tool`、`kernel/buckyos-api`、`kernel/kmsg`、`frame/msg_center`；对照代码的核对结果见 §1.5
-- [Agent Memory 认知管理需求](<Agent Memroy 认知管理需求.md>)（已补回；设计尚未冻结，对本计划没有影响）
+- [Agent Memory 认知管理需求](<Agent Memory 认知管理需求.md>)（已补回；设计尚未冻结，对本计划没有影响）
 
 > **实现落地**（2026-09-29，Rust 参考实现）
 >
@@ -162,7 +162,7 @@ OpenDAN 的后续职责（本期不实施，见附录 A）：
 
 ### 1.4 假设
 
-- **A2**：需求引用的《Agent Memory 认知管理需求》（`Agent Memroy 认知管理需求.md`）已补回，设计尚未冻结。感知 / 认知的内部 schema 以该文档为准，本计划只定义接口面；该文档的变化不影响本计划的目录与锁协议。
+- **A2**：需求引用的《Agent Memory 认知管理需求》（`Agent Memory 认知管理需求.md`）已补回，设计尚未冻结。感知 / 认知的内部 schema 以该文档为准，本计划只定义接口面；该文档的变化不影响本计划的目录与锁协议。
 - **A3**：新协议不读取旧格式；opendan 切换时清理旧数据。
 - **A5**：代码从 opendan **复制后改造**到 libopendan，过渡期两份并存（§12）。
 - **A7**：`runns` 按 `runs` 处理；统计文件名确认为 `static.json`。

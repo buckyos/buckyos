@@ -273,10 +273,7 @@ export class MessageHubApiStore implements MessageHubStore {
         for (const contact of systemContacts) merged.set(contact.did, contact)
         for (const contact of ownerContacts) merged.set(contact.did, contact)
         data.contacts = [...merged.values()]
-        data.agentDids = agents.map(agent => {
-          const raw = agent as Record<string, unknown>
-          return [raw.did, raw.agent_did, raw.id].find(value => typeof value === 'string' && value.startsWith('did:')) as string | undefined
-        }).filter((value): value is string => Boolean(value))
+        data.agentDids = agents.map(agent => agent.agent_did).filter(did => typeof did === 'string' && did.startsWith('did:'))
         data.summaries = page.items ?? []
         data.nextCursor = page.next_cursor_updated_at_ms !== undefined && page.next_cursor_session_id !== undefined ? { value: page.next_cursor_updated_at_ms, sessionId: page.next_cursor_session_id } : undefined
         data.status = { phase: 'ready' }

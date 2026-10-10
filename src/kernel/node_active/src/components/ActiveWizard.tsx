@@ -7,7 +7,7 @@ import GatewayStep from "./steps/GatewayStep";
 import DomainStep from "./steps/DomainStep";
 import SecurityStep from "./steps/SecurityStep";
 import AIProviderStep from "./steps/AIProviderStep";
-import JarvisMsgTunnelStep from "./steps/JarvisMsgTunnelStep";
+import OwnerTelegramStep from "./steps/OwnerTelegramStep";
 import ReviewStep from "./steps/ReviewStep";
 import SuccessStep from "./steps/SuccessStep";
 
@@ -27,8 +27,8 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
   const stepOrder = useMemo<StepKey[]>(
     () =>
       isWalletRuntime
-        ? ["gateway", "domain", "ai_provider", "jarvis_msg_tunnel", "review", "success"]
-        : ["security", "gateway", "domain", "ai_provider", "jarvis_msg_tunnel", "review", "success"],
+        ? ["gateway", "domain", "ai_provider", "owner_telegram", "review", "success"]
+        : ["security", "gateway", "domain", "ai_provider", "owner_telegram", "review", "success"],
     [isWalletRuntime]
   );
   const visibleSteps = useMemo(
@@ -84,7 +84,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       gateway: t("title_step_2"),
       domain: t("title_step_3"),
       ai_provider: t("title_step_4"),
-      jarvis_msg_tunnel: t("title_step_5"),
+      owner_telegram: t("title_step_5"),
       review: t("title_step_6"),
       success: t("activation_success"),
     }),
@@ -189,9 +189,9 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
             onBack={goBack}
           />
         );
-      case "jarvis_msg_tunnel":
+      case "owner_telegram":
         return (
-          <JarvisMsgTunnelStep
+          <OwnerTelegramStep
             wizardData={wizardData}
             onUpdate={handleUpdate}
             onNext={goNext}

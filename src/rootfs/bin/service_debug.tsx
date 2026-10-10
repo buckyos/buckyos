@@ -6,9 +6,10 @@
 //
 // 支持：
 //   - pkg_list.script => HostScript
-//   - pkg_list.agent  => Agent / OpenDan
+//   - pkg_list.agent  => Agent / OpenDan（Agent 的构造 App：AppId = AgentId）
 //
 //   service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--opendan-bin <path>] [--detach] [-- <opendan args>]
+//   service_debug agents <owner_user_id>    列出 owner 名下的 Agent：<agent_id>\t<创建状态>\t<agent_did>
 
 type JsonValue =
   | string
@@ -95,13 +96,17 @@ function printUsage(): never {
     [
       'Usage:',
       '  service_debug <app_service_name> <owner_user_id> [--port <port>] [--node-id <node_id>] [--agent-package-root <path>] [--opendan-bin <path>] [--detach] [-- <opendan args>]',
+      '  service_debug agents <owner_user_id>',
+      '',
+      'An agent runs as its own app: the app id is the AgentId.',
       '',
       'Example:',
-      '  service_debug jarvis.buckyos.bns.did alice',
+      '  service_debug agents alice',
+      '  service_debug xiaobai.test.buckyos.io alice',
       '  service_debug buckyos_systest devtest',
-      '  service_debug jarvis.buckyos.bns.did alice --port 14060',
-      '  service_debug jarvis.buckyos.bns.did alice --agent-package-root ./apps/jarvis_runtime/agent',
-      '  service_debug jarvis.buckyos.bns.did alice --opendan-bin ./target/debug/opendan -- --web ./frame/opendan/web/dist',
+      '  service_debug xiaobai.test.buckyos.io alice --port 14060',
+      '  service_debug xiaobai.test.buckyos.io alice --agent-package-root ./apps/jarvis_runtime/agent',
+      '  service_debug xiaobai.test.buckyos.io alice --opendan-bin ./target/debug/opendan -- --web ./frame/opendan/web/dist',
     ].join('\n'),
   )
   Deno.exit(1)
@@ -604,12 +609,11 @@ type HostScriptLaunchContext = {
 
 type LaunchContext = AgentLaunchContext | HostScriptLaunchContext
 
-async function buildLaunchContext(options: StartupOptions) {
+// This device's identity and a system-config client with its read-only
+// bootstrap assertion (as node-daemon reads its configuration).
+async function connectAsDevice(systemConfigUrl: string) {
   const buckyosRoot = getBuckyosRoot()
-  const etcDir = joinPath(buckyosRoot, 'etc')
-  const nodeIdentityPath = joinPath(etcDir, 'node_identity.json')
-
-  const nodeIdentity = await readJsonFile(nodeIdentityPath)
+  const nodeIdentity = await readJsonFile(joinPath(buckyosRoot, 'etc', 'node_identity.json'))
   const deviceDid = getNestedString(nodeIdentity, ['device_did']) || ''
   if (!deviceDid) {
     throw new Error('device_did not found in node_identity.json')
@@ -623,6 +627,47 @@ async function buildLaunchContext(options: StartupOptions) {
   if (!deviceName) {
     throw new Error('device name not found in node_identity.json/did.json')
   }
+  const nodeDaemonToken = await generateDeviceAssertion(
+    'node-daemon',
+    deviceName,
+    deviceName,
+    nodePrivateKeyPem,
+    SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
+  )
+  return {
+    buckyosRoot,
+    deviceConfig,
+    deviceName,
+    nodePrivateKeyPem,
+    systemConfigClient: new KRPCClient(systemConfigUrl, nodeDaemonToken),
+  }
+}
+
+// The owner's agents, one line each: `<agent_id>\t<state>\t<agent_did>`.
+// `state` is the creation state of the install record (`ready` once a Loader
+// reported it loaded), `bound` for a spec without one.
+async function listAgents(ownerUserId: string, systemConfigUrl: string): Promise<void> {
+  const { systemConfigClient } = await connectAsDevice(systemConfigUrl)
+  const root = `users/${ownerUserId}/agents`
+  const ids = await systemConfigClient.call('sys_config_list', { key: root }).catch(() => [])
+  for (const id of Array.isArray(ids) ? ids : []) {
+    const read = (key: string) => sysConfigGet(systemConfigClient, `${root}/${id}/${key}`).catch(() => null)
+    const record = await read('install_record')
+    const spec = await read('spec')
+    const state = (record && getNestedString(record, ['state'])) || (spec ? 'bound' : 'unknown')
+    const did = (spec && getNestedString(spec, ['agent_did'])) || ''
+    console.log(`${id}\t${state}\t${did}`)
+  }
+}
+
+async function buildLaunchContext(options: StartupOptions) {
+  const {
+    buckyosRoot,
+    deviceConfig,
+    deviceName,
+    nodePrivateKeyPem,
+    systemConfigClient,
+  } = await connectAsDevice(options.systemConfigUrl)
 
   const nodeId = options.nodeId || deviceName
   const appInstanceId = `${options.appId}@${options.ownerUserId}`
@@ -632,14 +677,6 @@ async function buildLaunchContext(options: StartupOptions) {
     deviceName,
     nodePrivateKeyPem,
   )
-  const nodeDaemonToken = await generateDeviceAssertion(
-    'node-daemon',
-    deviceName,
-    deviceName,
-    nodePrivateKeyPem,
-    SYSTEM_CONFIG_BOOTSTRAP_AUDIENCE,
-  )
-  const systemConfigClient = new KRPCClient(options.systemConfigUrl, nodeDaemonToken)
   const zoneConfig = await sysConfigGet(systemConfigClient, 'boot/config')
   if (!zoneConfig) {
     throw new Error('failed to load boot/config from system_config')
@@ -995,6 +1032,14 @@ async function runDetached(
 
 async function main() {
   try {
+    if (Deno.args[0] === 'agents') {
+      const owner = Deno.args[1]?.trim()
+      if (!owner) {
+        printUsage()
+      }
+      await listAgents(owner, 'http://127.0.0.1:3200/kapi/system_config')
+      return
+    }
     const options = parseArgs(Deno.args)
     const launch: LaunchContext = await buildLaunchContext(options)
 

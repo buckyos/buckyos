@@ -107,7 +107,6 @@ p, system, obj://*, all,allow
 
 p, frame, obj://config/boot/*, read,allow
 p, frame, obj://config/system/*,read,allow
-p, frame, obj://config/agents/{agent}/{key},read,allow
 p, frame, obj://config/services/{frame}/*,all,allow
 p, frame, obj://config/services/{service}/info,read,allow
 p, frame, obj://config/users*,read,allow
@@ -132,17 +131,15 @@ p, agent_runtime, obj://config/users/{user}/agents,read|list|query,allow
 p, agent_runtime, obj://config/users/{user}/agents/{agent}/spec,read,allow
 
 p, agent, obj://config/boot/*, read,allow
-p, agent, obj://config/agents/{agent}/*,read,allow
 p, agent, obj://config/users/{user}/agents/{agent}/settings,read|write,allow
 p, agent, obj://config/users/{user}/agents/{agent}/spec,read,allow
 p, agent, obj://config/users/{user}/agents/{agent}/info,read|write,allow
+p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 p, agent, obj://config/services/{service}/info,read,allow
 p, agent, obj://config/services/{agent}/instances/{node},write,allow
 
 p, admin,obj://config/boot/*, read,allow
 p, admin,obj://config/system/*,read,allow
-p, admin,obj://config/agents/{agent}/doc,read,allow
-p, admin,obj://config/agents/{agent}/settings,read|write,allow
 p, admin,obj://config/users/{admin}/*,read,allow
 p, admin,obj://config/users/{admin}/profile,read|write,allow
 p, admin,obj://config/users/{admin}/apps/{app}/{key},read|write,allow
@@ -156,7 +153,6 @@ p, admin,obj://config/services/*,read,allow
 p, admin,obj://task/{admin},read,allow
 
 p, users,obj://config/boot/*, read,allow
-p, users,obj://config/agents/{agent}/doc,read,allow
 # p, su_user,obj://config/users/{user}/*,all,allow
 p, users,obj://config/users/{users}/*,read,allow
 p, users,obj://config/users/{users}/profile,read|write,allow
@@ -525,9 +521,7 @@ p, root, obj://config/*, read|write,allow
     //   的子路径, 超出了原本"单段 agent_id / app_id"的意图.
     //
     // 单段通配应该改用 `{xxx}` 占位符 (会被替换成 `[^/]+`), 例如:
-    //   obj://config/agents/{agent_id}/doc
-    //   obj://config/agents/{agent_id}/settings
-    //   obj://config/agents/{agent_id}/{key}
+    //   obj://config/users/{user}/apps/{app}/{key}
     //
     // 下面 `assert!(!...)` 断言的都是"修复后的正确语义", 因此 BUG 还在
     // 的时候每条断言都会 FAIL, 并把对应的 BUG 信息打印出来; 等 BUG
@@ -547,37 +541,7 @@ g, su_alice, su_admin
             .await
             .unwrap();
 
-        // ---- sanity: 单段 agent_id 下的访问应当通过 ----
-        assert!(
-            rbac::enforce(
-                "alice",
-                "system:buckycli",
-                "obj://config/agents/jarvis/doc",
-                "read",
-                None,
-            )
-            .await
-        );
-        assert!(
-            rbac::enforce(
-                "bob",
-                "system:buckycli",
-                "obj://config/agents/jarvis/doc",
-                "read",
-                None,
-            )
-            .await
-        );
-        assert!(
-            rbac::enforce(
-                "alice",
-                "system:buckycli",
-                "obj://config/agents/jarvis/settings",
-                "write",
-                None,
-            )
-            .await
-        );
+        // ---- sanity ----
         assert!(
             rbac::enforce(
                 "su_alice",
@@ -596,37 +560,6 @@ g, su_alice, su_admin
         // 每条 case: (userid, appid, res_path, action, bug 描述).
         // 期望: enforce 返回 false; 若返回 true 就说明该规则过度匹配.
         let over_match_cases: &[(&str, &str, &str, &str, &str)] = &[
-            (
-                "alice",
-                "system:buckycli",
-                "obj://config/agents/foo/bar/doc",
-                "read",
-                "BUG: admin 的 agents/*/doc 不应匹配多层路径 (foo/bar/doc)",
-            ),
-            (
-                "bob",
-                "system:buckycli",
-                "obj://config/agents/foo/bar/doc",
-                "read",
-                "BUG: users 的 agents/*/doc 不应匹配多层路径 (foo/bar/doc)",
-            ),
-            (
-                "alice",
-                "system:buckycli",
-                "obj://config/agents/foo/bar/settings",
-                "write",
-                "BUG: admin 的 agents/*/settings 不应匹配多层路径 (foo/bar/settings)",
-            ),
-            // frame 的 `obj://config/agents/*/*` 等效于 agents/.*/.*.
-            // user side 用 root (有全权), app side 用 repo-service
-            // (g, repo-service, frame), 把 BUG 隔离到 frame 这条规则.
-            (
-                "root",
-                "system:repo-service",
-                "obj://config/agents/a/b/c/d",
-                "read",
-                "BUG: frame 的 agents/*/* 不应匹配 4 层路径 (a/b/c/d)",
-            ),
             // admin 的 `obj://config/users/{admin}/apps/*/*` 同样会跨段:
             // 期望 apps 下面正好是 "{app_id}/{key}" 两段.
             (
@@ -918,6 +851,70 @@ g, did:bns:jarvis, agent
                 "alice",
                 "app:gallery.buckyos.bns.did",
                 "obj://config/users/alice/agents/jarvis.example.com/spec",
+                "read",
+                None,
+            )
+            .await
+        );
+    }
+
+    #[tokio::test]
+    async fn constructed_agent_app_only_reaches_its_own_agent_records() {
+        let _guard = TEST_LOCK.lock().await;
+
+        let config = build_current_rbac_config(Some(
+            "g, bob, users\ng, app:xiaobai.example.com, app\ng, app:xiaobai.example.com, agent_runtime\ng, app:xiaobai.example.com, agent\ng, app:xiaohei.example.com, app\ng, app:xiaohei.example.com, agent_runtime\ng, app:xiaohei.example.com, agent",
+        ));
+        rbac::create_enforcer(&config.model, &config.policy)
+            .await
+            .unwrap();
+
+        let runtime = "app:xiaobai.example.com";
+        for (key, act) in [
+            ("settings", "read"),
+            ("settings", "write"),
+            ("profile", "read"),
+            ("profile", "write"),
+            ("info", "read"),
+            ("info", "write"),
+            ("spec", "read"),
+        ] {
+            assert!(
+                rbac::enforce(
+                    "bob",
+                    runtime,
+                    &format!("obj://config/users/bob/agents/xiaobai.example.com/{key}"),
+                    act,
+                    None,
+                )
+                .await,
+                "{key} {act}"
+            );
+        }
+        for (key, act) in [
+            ("settings", "read"),
+            ("settings", "write"),
+            ("profile", "read"),
+            ("profile", "write"),
+            ("info", "write"),
+        ] {
+            assert!(
+                !rbac::enforce(
+                    "bob",
+                    runtime,
+                    &format!("obj://config/users/bob/agents/xiaohei.example.com/{key}"),
+                    act,
+                    None,
+                )
+                .await,
+                "other agent {key} {act}"
+            );
+        }
+        assert!(
+            !rbac::enforce(
+                "bob",
+                runtime,
+                "obj://config/users/bob/agents/xiaobai.example.com/key",
                 "read",
                 None,
             )

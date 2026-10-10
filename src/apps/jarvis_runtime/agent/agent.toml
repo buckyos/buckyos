@@ -1,9 +1,6 @@
 # Jarvis agent package. Loaded by the OpenDAN Agent Loader (src/frame/opendan);
 # session templates are read by libopendan (SessionTemplate).
 
-[identity]
-display_name = "Jarvis"
-
 [runtime]
 language = "zh"
 
@@ -30,6 +27,14 @@ session_class = "ui"
 sid_strategy = "per_peer"
 idle_unload_secs = 900
 
+# Reached only by the owner's @ while the owner allows group chat; the
+# request comes with the group's latest messages as context.
+[[loader.ui]]
+on = "msg.group"
+session_class = "group"
+sid_strategy = "per_group"
+idle_unload_secs = 900
+
 [loader.self_check]
 enabled = false
 
@@ -38,6 +43,11 @@ enabled = false
 
 [session.ui]
 default_behavior = "chat_route"
+max_process_depth = 4
+
+[session.group]
+base = "ui"
+default_behavior = "groupchat_route"
 max_process_depth = 4
 
 [session.work]

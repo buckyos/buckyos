@@ -2,7 +2,8 @@ import { useRef, useState, type FormEvent } from 'react'
 import { Bot, Search, User, X } from 'lucide-react'
 import { useI18n } from '../../i18n/provider'
 import { shortDid } from './api/projection'
-import { defaultGroupName, GROUP_MEMBER_LIMIT, groupErrorText, memberCandidates, parseInviteLink, participating } from './groupModel'
+import { defaultGroupName, GROUP_MEMBER_LIMIT, groupErrorText, isAgentGroupDisabled, memberCandidates, parseInviteLink, participating } from './groupModel'
+import { AgentGroupSettingsLink } from './AgentGroupSettingsLink'
 import { DialogFocus, hubButtonClass, hubInputClass, hubPrimaryButtonClass } from './SessionDialogs'
 import { useMessageHubStore } from './store'
 import type { Entity, GroupInfo, MessageHubContext } from './types'
@@ -77,6 +78,7 @@ export function CreateGroupForm({ context, initialMembers = [], onCreated, onCan
   const [name, setName] = useState('')
   const [members, setMembers] = useState(() => initialMembers.filter(id => candidates.some(entity => entity.id === id)))
   const [pending, setPending] = useState(false), [error, setError] = useState('')
+  const [groupDisabledAgents, setGroupDisabledAgents] = useState<string[]>([])
   const busy = useRef(false)
   const names = new Map(candidates.map(entity => [entity.id, entity.name]))
   const suggested = defaultGroupName(members.map(id => names.get(id) ?? shortDid(id))).slice(0, 64)
@@ -85,8 +87,11 @@ export function CreateGroupForm({ context, initialMembers = [], onCreated, onCan
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy.current || !finalName) return
-    busy.current = true; setPending(true); setError('')
-    try { onCreated(await store.createGroup(context, { name: finalName, members })) } catch (failure) { setError(groupErrorText(t, failure)) } finally { busy.current = false; setPending(false) }
+    busy.current = true; setPending(true); setError(''); setGroupDisabledAgents([])
+    try { onCreated(await store.createGroup(context, { name: finalName, members })) } catch (failure) {
+      setError(groupErrorText(t, failure))
+      if (isAgentGroupDisabled(failure)) setGroupDisabledAgents(members.filter(id => candidates.find(entity => entity.id === id)?.type === 'agent'))
+    } finally { busy.current = false; setPending(false) }
   }
   return <DialogFocus onCancel={() => { if (!busy.current) onCancel() }}><form onSubmit={event => void submit(event)} className="space-y-4" data-testid="create-group-form">
     <label className="block text-sm">{t('messagehub.group.name')}<input data-autofocus className={hubInputClass} value={name} maxLength={64} placeholder={suggested || t('messagehub.group.namePlaceholder')} onChange={event => setName(event.target.value)} /></label>
@@ -96,6 +101,7 @@ export function CreateGroupForm({ context, initialMembers = [], onCreated, onCan
     </fieldset>
     <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.group.inviteHint')}</p>
     {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
+    {groupDisabledAgents.length > 0 && <div className="flex flex-wrap gap-2">{groupDisabledAgents.map(did => <AgentGroupSettingsLink key={did} agentDid={did} name={names.get(did) ?? shortDid(did)} />)}</div>}
     <div className="flex justify-end gap-2">
       <button type="button" className={hubButtonClass} disabled={pending} onClick={onCancel}>{t('messagehub.cancel')}</button>
       <button type="submit" className={hubPrimaryButtonClass} disabled={pending || !finalName}>{t(pending ? 'messagehub.creating' : 'messagehub.group.createAction')}</button>
@@ -157,7 +163,7 @@ export function InviteMembersForm({ context, group, onDone, onCancel }: { contex
       <MemberPicker candidates={candidates} selected={members} unavailable={unavailable} onToggle={toggle} />
     </fieldset>
     <p className="text-xs text-[color:var(--cp-muted)]">{t('messagehub.group.inviteHint')}</p>
-    {failed.length > 0 && <ul role="alert" className="space-y-1 text-sm text-[color:var(--cp-danger)]">{failed.map(item => <li key={item.did}>{nameOf(item.did)}: {groupErrorText(t, new Error(item.reason))}</li>)}</ul>}
+    {failed.length > 0 && <ul role="alert" className="space-y-1 text-sm text-[color:var(--cp-danger)]">{failed.map(item => <li key={item.did}>{nameOf(item.did)}: {groupErrorText(t, new Error(item.reason))}{isAgentGroupDisabled(item.reason) ? <div><AgentGroupSettingsLink agentDid={item.did} name={nameOf(item.did)} /></div> : null}</li>)}</ul>}
     {error && <p role="alert" className="text-sm text-[color:var(--cp-danger)]">{error}</p>}
     <div className="flex justify-end gap-2">
       <button type="button" className={hubButtonClass} disabled={pending} onClick={failed.length ? onDone : onCancel}>{t(failed.length ? 'messagehub.close' : 'messagehub.cancel')}</button>

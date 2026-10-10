@@ -23,7 +23,9 @@
  *   - 正式环境                                              → initByReal
  */
 import { createContext, useContext, useSyncExternalStore } from 'react'
+import { fetchCurrentAccount, isLimitedUserType } from '../api/account'
 import { fetchAppList } from '../api/app_mgr'
+import { AGENT_GUIDE_APP_ID } from '../app/agent-setup/model'
 import {
   resolveDesktopApps,
   findDesktopAppById,
@@ -32,6 +34,8 @@ import {
   buildAuthorizedAppDefinitions,
   DESKTOP_BUILTIN_APP_IDS,
   desktopCatalogIdForLogicalApp,
+  launcherDefinitions,
+  withAccountBuiltins,
 } from '../app/backend-apps'
 import type { DesktopAppItem } from '../app/types'
 import {
@@ -122,6 +126,20 @@ export interface DesktopRuntimeState {
   gridRows: number
   /** 当前网格行高（由容器高度计算） */
   gridRowHeight: number
+}
+
+/** What the Jarvis guide item shows: its linked Agent's name and avatar, or a creation status mark. */
+export interface AgentGuidePresentation {
+  label?: string
+  iconUrl?: string
+  badge?: AppDefinition['iconBadge']
+}
+
+const AGENT_GUIDE_LABEL_KEY = 'apps.agentGuide'
+
+async function agentGuideAllowedForAccount(): Promise<boolean> {
+  const account = await fetchCurrentAccount().catch(() => null)
+  return Boolean(account && !isLimitedUserType(account.user_type))
 }
 
 export interface ContextMenuState {
@@ -244,7 +262,9 @@ function buildAuthorizedDefaultLayout(
     ...page,
     items: page.items.flatMap<LayoutItem>((item): LayoutItem[] => {
       if (item.type !== 'app') return [item]
-      if (DESKTOP_BUILTIN_APP_IDS.has(item.appId)) return [item]
+      if (DESKTOP_BUILTIN_APP_IDS.has(item.appId)) {
+        return definitions.some((definition) => definition.id === item.appId) ? [item] : []
+      }
       const instances = instancesByLogicalId.get(item.appId) ?? []
       return instances
         .filter((definition) => !placed.has(definition.id))
@@ -262,7 +282,7 @@ function buildAuthorizedDefaultLayout(
     }),
   }))
 
-  const unplaced = definitions.filter(
+  const unplaced = launcherDefinitions(definitions).filter(
     (definition) => definition.logicalAppId && !placed.has(definition.id),
   )
   if (unplaced.length > 0) {
@@ -326,6 +346,8 @@ export class DesktopUIStore {
   private nextMinimizedOrder = 1
   private windowGeometryByApp: WindowGeometryMap = {}
   private defaultPayload: DesktopPayload | null = null
+  private agentGuideAllowed = false
+  private agentGuidePresentation: AgentGuidePresentation = {}
 
   /**
    * Resize reflow debounce timer.
@@ -587,10 +609,26 @@ export class DesktopUIStore {
     })
 
     try {
-      const payload = await fetchDesktopPayload({ formFactor, scenario })
+      const [rawPayload, agentGuideAllowed] = await Promise.all([
+        fetchDesktopPayload({ formFactor, scenario }),
+        agentGuideAllowedForAccount(),
+      ])
       if (this.isStaleInit(seq)) return
+      this.agentGuideAllowed = agentGuideAllowed
+      const payloadApps = withAccountBuiltins(rawPayload.apps, { agentGuide: agentGuideAllowed })
+      const payload = {
+        ...rawPayload,
+        apps: payloadApps,
+        layout: {
+          ...rawPayload.layout,
+          pages: rawPayload.layout.pages.map((page) => ({
+            ...page,
+            items: page.items.filter((item) => item.type !== 'app' || payloadApps.some((app) => app.id === item.appId)),
+          })),
+        },
+      }
       this.defaultPayload = payload
-      const apps = resolveDesktopApps(payload.apps, formFactor)
+      const apps = this.resolveApps(payload.apps, formFactor)
       let layoutState: LayoutState
 
       if (scenario === 'normal') {
@@ -652,16 +690,21 @@ export class DesktopUIStore {
     })
 
     try {
-      const [payload, appsResult] = await Promise.all([
+      const [payload, appsResult, agentGuideAllowed] = await Promise.all([
         fetchDesktopPayload({ formFactor, scenario: 'normal' }),
         fetchAppList(),
+        agentGuideAllowedForAccount(),
       ])
       if (this.isStaleInit(seq)) return
       if (!appsResult.data) {
         throw appsResult.error ?? new Error('apps.list unavailable')
       }
 
-      const authorizedDefinitions = buildAuthorizedAppDefinitions(payload.apps, appsResult.data.apps)
+      this.agentGuideAllowed = agentGuideAllowed
+      const authorizedDefinitions = withAccountBuiltins(
+        buildAuthorizedAppDefinitions(payload.apps, appsResult.data.apps),
+        { agentGuide: agentGuideAllowed },
+      )
       const defaultLayout = buildAuthorizedDefaultLayout(
         payload.layout,
         authorizedDefinitions,
@@ -672,7 +715,7 @@ export class DesktopUIStore {
         layout: defaultLayout,
       }
       this.defaultPayload = authorizedPayload
-      const apps = resolveDesktopApps(authorizedDefinitions, formFactor)
+      const apps = this.resolveApps(authorizedDefinitions, formFactor)
       const stored = readJson<LayoutState>(layoutStorageKey(formFactor))
       let layoutState = stored ?? defaultLayout
       layoutState = reconcileLayoutWithDefaultApps(
@@ -916,8 +959,34 @@ export class DesktopUIStore {
   async refreshApps() {
     const result = await fetchAppList()
     if (!result.data) throw result.error ?? new Error('apps.list unavailable')
-    const definitions = buildAuthorizedAppDefinitions(this.defaultPayload?.apps ?? [], result.data.apps)
-    this.update({ apps: resolveDesktopApps(definitions, this.snapshot.formFactor) })
+    const definitions = withAccountBuiltins(
+      buildAuthorizedAppDefinitions(this.defaultPayload?.apps ?? [], result.data.apps),
+      { agentGuide: this.agentGuideAllowed },
+    )
+    this.update({ apps: this.resolveApps(definitions, this.snapshot.formFactor) })
+  }
+
+  /** Updates the Jarvis guide item's label, image and status mark (see app/agent-setup/guide.ts). */
+  setAgentGuidePresentation(presentation: AgentGuidePresentation) {
+    const current = this.agentGuidePresentation
+    if (
+      current.label === presentation.label &&
+      current.iconUrl === presentation.iconUrl &&
+      current.badge === presentation.badge
+    ) return
+    this.agentGuidePresentation = presentation
+    if (!this.snapshot.apps.some((app) => app.id === AGENT_GUIDE_APP_ID)) return
+    this.update({ apps: this.snapshot.apps.map((app) => this.decorateApp(app)) })
+  }
+
+  private decorateApp<T extends AppDefinition>(app: T): T {
+    if (app.id !== AGENT_GUIDE_APP_ID) return app
+    const { label, iconUrl, badge } = this.agentGuidePresentation
+    return { ...app, labelKey: label ?? AGENT_GUIDE_LABEL_KEY, iconUrl, iconBadge: badge }
+  }
+
+  private resolveApps(definitions: AppDefinition[], formFactor: FormFactor): DesktopAppItem[] {
+    return resolveDesktopApps(definitions, formFactor).map((app) => this.decorateApp(app))
   }
 
   private closeGuards = new Map<string, (reason?: 'user' | 'logout' | 'shell') => Promise<boolean>>()
@@ -1380,7 +1449,7 @@ export class DesktopUIStore {
       app: DesktopAppItem | undefined,
     ): SystemSidebarAppItem | null =>
       app
-        ? { appId: app.id, iconKey: app.iconKey, labelKey: app.labelKey }
+        ? { appId: app.id, iconKey: app.iconKey, iconUrl: app.iconUrl, labelKey: app.labelKey }
         : null
 
     const seenSwitchApps = new Set<string>()
@@ -1392,7 +1461,7 @@ export class DesktopUIStore {
           !systemSidebarSystemAppIds.has(w.appId),
       )
       .sort((a, b) => (a.minimizedOrder ?? 0) - (b.minimizedOrder ?? 0))
-      .map((w) => {
+      .map((w): SystemSidebarDataModel['switchApps'][number] | null => {
         const app = appMap.get(w.appId)
         if (!app || w.minimizedOrder === null || seenSwitchApps.has(app.id))
           return null
@@ -1400,6 +1469,7 @@ export class DesktopUIStore {
         return {
           appId: app.id,
           iconKey: app.iconKey,
+          iconUrl: app.iconUrl,
           labelKey: app.labelKey,
           minimizedOrder: w.minimizedOrder,
         }

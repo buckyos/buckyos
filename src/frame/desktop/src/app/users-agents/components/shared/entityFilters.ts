@@ -2,6 +2,14 @@ import type { AgentEntity, AnyEntity, EntityGroupEntity, LocalUserEntity, SelfEn
 
 export type InternalEntityFilter = 'all' | 'users' | 'agents' | 'groups' | 'online'
 
+export const entityFilterOptions: Array<{ value: InternalEntityFilter; labelKey: string }> = [
+  { value: 'all', labelKey: 'usersAgents.filter.all' },
+  { value: 'users', labelKey: 'usersAgents.filter.users' },
+  { value: 'agents', labelKey: 'usersAgents.filter.agents' },
+  { value: 'groups', labelKey: 'usersAgents.filter.groups' },
+  { value: 'online', labelKey: 'usersAgents.filter.online' },
+]
+
 export function getInternalEntities(
   self: SelfEntity,
   agents: AgentEntity[],
@@ -62,13 +70,12 @@ function getEntitySearchText(entity: AnyEntity) {
 
   if (entity.kind === 'agent') {
     values.push(
-      entity.agentType,
+      entity.name,
+      entity.nickname,
+      entity.bio,
       entity.status,
-      entity.version,
-      ...entity.capabilities,
-      ...Object.values(entity.info),
-      ...Object.values(entity.settings),
-      entity.runtime.healthStatus,
+      entity.ownerUserId,
+      entity.template?.template_id,
     )
   }
 

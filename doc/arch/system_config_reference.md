@@ -117,7 +117,7 @@ verify-hub 的私钥不在 `services/verify-hub/settings`，而在 `security/ver
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `services/msg-center/settings` | msg-center 设置。当前初始化包含 `telegram_tunnel`，其中有 `enabled`、`tunnel_did`、`tunnel_id`、ingress/egress 支持、gateway mode、bindings。 | scheduler 初始化 | msg-center 启动和 reload 时读取。 |
+| `services/msg-center/settings` | msg-center 设置。当前初始化包含 `telegram_tunnel`：`enabled=true`、`transport_did`、`tunnel_instance_id`、ingress/egress 支持、`gateway.mode=bot_api`、空 `bindings`。激活不写入任何 Bot Token。 | scheduler 初始化 | msg-center 启动和 reload 时读取。 |
 
 ### repo-service
 
@@ -162,7 +162,7 @@ AI provider 的运行时主配置仍是 `services/aicc/settings`；`services/con
 
 | Key | 内容 | 主要写入方 | 主要读取方/意义 |
 | --- | --- | --- | --- |
-| `system/install_settings` | 安装期 seed 配置。`pre_install_apps` 每项只包含严格版本化的 `pikg_path` 和 `PreInstallPlanSeed`；raw path 是 `$BUCKYOS_ROOT` 相对路径。 | rootfs boot template / scheduler 初始化原样导入 | Control Panel 登录且 InstallRunner 启动后消费；canonicalize 到 `data/cache`、复制到 immutable staging 并生成标准安装任务。Scheduler 不打开 PIKG，也不为普通预装 App 生成 execution record。 |
+| `system/install_settings` | 安装期 seed 配置。`pre_install_apps` 每项只包含严格版本化的 `pikg_path` 和 `PreInstallPlanSeed`；`agent_templates` 每项为 `{schema_version, pikg_path}`，登记系统内置 Agent 模板（Jarvis），只作为构造 Agent App 的来源，不安装为运行实例；raw path 是 `$BUCKYOS_ROOT` 相对路径。 | rootfs boot template / scheduler 初始化原样导入 | Control Panel 登录且 InstallRunner 启动后消费；canonicalize 到 `data/cache`、复制到 immutable staging 并生成标准安装任务。Scheduler 不打开 PIKG，也不为普通预装 App 生成 execution record。 |
 | `system/control_panel/pre_install_apps/<app_id>` | 预装 seed 尚未成功创建标准 Task 时的最小观测状态，记录 path、digest、task/fingerprint 或 structured error。Task 创建后 TaskManager 是唯一 Stage 真相源。 | Control Panel PreInstallReconciler | Control Panel 诊断和后台低频重试；Scheduler 不读取。 |
 | `system/app_registry` | 严格 versioned `AppRegistry`，保存稳定 AppName、AppHostName 和按 AppInstance 分配的 AppIndex。 | scheduler InstallPlan/shortcut executor（唯一 writer，完整 JSON CAS） | scheduler 校验所有 AppSpec 投影并分配默认 hostname/端口索引。 |
 | `system/scheduler/install_plan_executions/<execution_key>` | `InstallPlanExecutionRecord`，保存 claim、commit point、registry/spec revision、错误和幂等结果。 | scheduler | submit/status/cancel/retry、重启恢复和 CAS 冲突处理。 |

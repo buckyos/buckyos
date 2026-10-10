@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import type {
+  AgentRuntimeBinding,
+  AgentSettings,
+  AgentStatus,
+  AgentTemplateBinding,
+} from '../../../api/user_mgr.ts'
 
 /* ── Users & Agents – UI datamodel type definitions ── */
 
@@ -21,15 +27,15 @@ export interface SocialAccount {
 }
 
 export const socialAccountPlatformOptions = [
-  { id: 'github', label: 'GitHub', hint: 'Add a developer profile to the DID public page.' },
-  { id: 'x', label: 'X', hint: 'Show a public social identity.' },
-  { id: 'telegram', label: 'Telegram', hint: 'Add a messaging identity without making it public by default.' },
-  { id: 'discord', label: 'Discord', hint: 'Add a community identity.' },
-  { id: 'linkedin', label: 'LinkedIn', hint: 'Add a professional profile.' },
-  { id: 'mastodon', label: 'Mastodon', hint: 'Add a federated social profile.' },
-  { id: 'wechat', label: 'WeChat', hint: 'Add a private regional identity.' },
-  { id: 'email', label: 'Email', hint: 'Add a reachable email identity.' },
-  { id: 'phone', label: 'Phone', hint: 'Add a private recovery or identity signal.' },
+  { id: 'github', label: 'GitHub' },
+  { id: 'x', label: 'X' },
+  { id: 'telegram', label: 'Telegram' },
+  { id: 'discord', label: 'Discord' },
+  { id: 'linkedin', label: 'LinkedIn' },
+  { id: 'mastodon', label: 'Mastodon' },
+  { id: 'wechat', label: 'WeChat' },
+  { id: 'email', label: 'Email' },
+  { id: 'phone', label: 'Phone' },
 ] as const
 
 export interface EntityBase {
@@ -58,27 +64,24 @@ export interface SelfEntity extends EntityBase {
 
 // ── Agent ──
 
+/** What the Agent is doing now: an unfinished creation, or the state of its constructed App. */
+export type AgentLifecycle = 'creating' | 'failed' | 'running' | 'stopped' | 'unknown'
+
 export interface AgentEntity extends EntityBase {
   kind: 'agent'
-  agentType: string
-  version: string
-  status: 'running' | 'stopped' | 'error'
-  capabilities: string[]
-  info: Record<string, string>
-  settings: Record<string, string>
-  didDocument?: Record<string, unknown>
-  runtime: {
-    uptime: string
-    memoryUsage: string
-    cpuUsage: string
-    lastActive: string
-    runningTasks: number
-    queuedTasks: number
-    healthStatus: 'healthy' | 'busy' | 'degraded' | 'offline'
-    uiSessions: number
-    workSessions: number
-    workspaces: number
-  }
+  /** The Agent's user name (first label of its AgentId). */
+  name: string
+  ownerUserId: string
+  ownerDid?: string
+  bio?: string
+  nickname?: string
+  status: AgentLifecycle
+  install: AgentStatus
+  settings: AgentSettings
+  template?: AgentTemplateBinding | null
+  runtime?: AgentRuntimeBinding | null
+  /** Created from the desktop Jarvis guide (it is that entry's Agent). */
+  createdFromGuide: boolean
 }
 
 // ── Local space user ──
@@ -137,16 +140,18 @@ export type AnyEntity =
 // ── View state ──
 
 export type SidebarSelection =
-  { kind: 'entity'; entityId: string }
+  | { kind: 'entity'; entityId: string }
+  | { kind: 'self' }
 
 // ── Store snapshot ──
 
 export interface UsersAgentsSnapshot {
   self: SelfEntity
-  agent: AgentEntity
   agents: AgentEntity[]
   localUsers: LocalUserEntity[]
   entityGroups: EntityGroupEntity[]
+  /** Limited users (and guests) cannot create Agents. */
+  canCreateAgents: boolean
 }
 
 // ── New user wizard ──
@@ -156,14 +161,14 @@ export const newZoneUserInputSchema = z
     username: z
       .string()
       .trim()
-      .min(1, 'Enter a local username.')
-      .max(64, 'Use at most 64 characters.')
+      .min(1, 'usersAgents.newUser.error.usernameRequired')
+      .max(64, 'usersAgents.newUser.error.usernameLength')
       .regex(
         /^[a-z0-9_.-]+$/i,
-        'Use only letters, numbers, underscores, hyphens, or dots.',
+        'usersAgents.newUser.error.usernameChars',
       ),
-    displayName: z.string().trim().min(1, 'Enter a display name.').max(64),
-    password: z.string().min(8, 'Password must be at least 8 characters.').max(128),
+    displayName: z.string().trim().min(1, 'usersAgents.newUser.error.displayNameRequired').max(64),
+    password: z.string().min(8, 'usersAgents.newUser.error.passwordLength').max(128),
     confirmPassword: z.string().max(128),
   })
   .superRefine((value, ctx) => {
@@ -171,14 +176,14 @@ export const newZoneUserInputSchema = z
       ctx.addIssue({
         code: 'custom',
         path: ['username'],
-        message: 'This username is reserved.',
+        message: 'usersAgents.newUser.error.usernameReserved',
       })
     }
     if (value.password !== value.confirmPassword) {
       ctx.addIssue({
         code: 'custom',
         path: ['confirmPassword'],
-        message: 'Passwords do not match.',
+        message: 'usersAgents.newUser.error.passwordMismatch',
       })
     }
   })
