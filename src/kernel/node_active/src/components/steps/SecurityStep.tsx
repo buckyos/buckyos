@@ -404,7 +404,7 @@ const SecurityStep = ({ wizardData, onUpdate, onNext }: Props) => {
               "This recoverable EVM address is the asset_owner of your BNS name.",
             )}
           </Typography>
-          <TextField label="EVM asset_owner" value={material?.evm_address || ""} InputProps={{ readOnly: true }} />
+          <TextField label={t("evm_asset_owner_label")} value={material?.evm_address || ""} InputProps={{ readOnly: true }} />
         </Stack>
       </Paper>
 
