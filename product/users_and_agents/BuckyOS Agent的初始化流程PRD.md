@@ -1147,6 +1147,7 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 | AC-47 | 删除后约 35 秒释放名字；同名重建时旧 AgentRoot 归档到 `agents/.archived/`，新 Agent 没有旧 Session |
 
 - 未在 DV 中验证：真实 Telegram Bot 的消息收发与 Owner 映射（只有单测）；登录过期后回到向导；手机端；App Service 中的模板安装界面（本期不做）。
+- **发布依赖**：创建的最后一步等 OpenDAN 写入 `info`，只有本期的新版 OpenDAN 会写。新版 `paios/aios` 镜像发布前，使用发布镜像的 Zone 创建 Agent 时，Agent 已经能在 Message Center 对话，但状态面板会停在“启动 Agent”，5 分钟后以 `start_timeout` 失败。DV 中用 `./build_aios --local-test` 并在 `start.py --all` 之后重写 `etc/devenv.json` 规避。
 - 已知风险见 B.11，另有：AgentDocument 的 ObjectId 一变就归档 AgentRoot（重签文档或轮换密钥时会被当作另一个 Agent）；角色补充、名字和 `template_auto_update` 只在 Loader 启动时读取；Owner 删除 Telegram 身份后，msg-center 联系人中的旧绑定不会被移除。
 
 ### C.4 DV 中发现并修复的问题

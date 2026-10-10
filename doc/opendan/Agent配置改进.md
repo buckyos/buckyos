@@ -178,7 +178,7 @@ session_class = "work"
 #     session_id_strategy / process_stack_limit / enabled)。
 #   - `[session.<class>.driver]`:运行期行为(switch_mode /
 #     inject_background_environment / report_delivery + 4 个 hook point 子表)。
-# 详细对应关系见 [Agent Session §3 + §8](./Agent%20Session.md)。
+# 新的职责分层见 [Agent Session 架构设计 §3.4](<OpenDAN Agent Session架构设计.md#34-执行基础设施的分层>)；本段为旧配置设计。
 #
 # 关于 active/restore:UI vs Work 的差异(UI 永远 active、Work 看 status)在 v0
 # 由 `kind` 隐式区分,无独立 `keep_alive` 字段。真要按 class 显式覆盖时再加。
@@ -252,7 +252,7 @@ pull_event = "none"
 # ─── 特化 Session 类:SelfCheck / SelfImprove ───────────────
 # 这两类 session 在调度上是 Work Session 的特化形式,通过 `kind` 字段标记;
 # 启用 / 禁用由 `enabled` 控制(默认 enabled = true,Jarvis 模板里两者都先关掉)。
-# 详细语义见 [Agent Session §3.3 / §3.4](./Agent%20Session.md)。
+# 向 Goal 迁移的语义见 [Agent Session 架构设计 §15.6](<OpenDAN Agent Session架构设计.md#156-原-session-设计的整合与迁移>)。
 
 [session.self_check]
 enabled             = false
@@ -302,7 +302,7 @@ pull_msg   = "none"
 pull_event = "none"
 ```
 
-**Hook point × pull policy 详解**见 [Agent Session §8](./Agent%20Session.md);
+**Hook point × pull policy 的旧设计与新目标对照**见 [Agent Session 架构设计 §15.6](<OpenDAN Agent Session架构设计.md#156-原-session-设计的整合与迁移>)；以下保留本稿当时的配置说明：
 `pull_event = "timer.*"` 这类 filter 命名空间当前固定在
 [`TimerEventKind`](../../src/frame/opendan/src/session_model.rs) 列举的几个事件类型,
 未识别的 filter 会在 startup 期被 `validate_driver_filters` 拒绝。
@@ -353,7 +353,7 @@ normal、planner → summarizer 用 fork),本版的回答是:**这种诉求不�
 | — | `[session.<class>.driver].switch_mode` | **新增**(从 behavior 上提),整个 class 统一 |
 | — | `[session.<class>.driver].inject_background_environment` | **新增**,控制是否在每轮 user message 前动态注入 `<background_environment>` |
 | — | `[session.<class>.driver].report_delivery` | **新增**,控制 WorkSession report 上行到 UI session 的默认范围 |
-| — | `[session.<class>.driver.{on_init, on_behavior_switch, on_behavior_step_ob, on_wakeup}]` | **新增**,Driver hook point × filter × pull policy(详见 [Agent Session §8](./Agent%20Session.md)) |
+| — | `[session.<class>.driver.{on_init, on_behavior_switch, on_behavior_step_ob, on_wakeup}]` | **新增**,Driver hook point × filter × pull policy；新目标与迁移见 [Agent Session 架构设计 §15.6](<OpenDAN Agent Session架构设计.md#156-原-session-设计的整合与迁移>) |
 
 > 旧 schema 直接在 `[session.<class>]` 顶层挂 `subscribe_events` / `switch_mode` /
 > `inject_background_environment` / `report_delivery` 等字段,这些位置在
@@ -714,7 +714,7 @@ Workflow DSL 时就尾大不掉。要么不要,要么一次性全要。
 
 4. **Channel 类型的对外接口**:v0 把 Gateway inbound channel 硬编码在 runtime(`msg_center` +
    `kevent`),`[[channel]]` schema 段不识别。后续要插件化 channel(`http` 等)时,需要
-   定一个准入表,跟 [Agent Session 的事件订阅](./Agent%20Session的事件订阅.md) §2 三种模式
+   定一个准入表,跟 [Agent Session 架构设计 §12.7](<OpenDAN Agent Session架构设计.md#127-事件订阅与三种等待模式>) 的三种模式
    对齐,再决定是恢复 `[[channel]]` 段还是另起更窄的 schema。
 
 5. **prompt 模板默认值**:当前 `[prompt].on_init` 使用简单 `{var}` 替换;`on_input_event` 作为

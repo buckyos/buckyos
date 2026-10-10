@@ -590,7 +590,7 @@ process-chain DSL 时就尾大不掉。要么不要，要么一次性全要。
    `.toml`，需要扩到 enum 或返回候选列表，并把"两种形态同名存在"的错误检查放在加载入口。
 
 7. **Channel 类型的对外接口**：`type = "msg_center" | "kevent" | "http" | ...` 的清单需要定一个准入
-   表，跟 [Agent Session 的事件订阅](./Agent%20Session的事件订阅.md) §2 三种模式对齐。
+   表，跟 [Agent Session 架构设计 §12.7](<OpenDAN Agent Session架构设计.md#127-事件订阅与三种等待模式>) 的三种模式对齐。
 
 8. **prompt 三段模板的默认值**：`[prompt].on_input_msg` / `on_input_event` 缺省走 runtime 内建的
    最小模板——这两个内建模板的具体形态需要跟 [Render_Prompt_Template_Variables](./Render_Prompt_Template_Variables.md)

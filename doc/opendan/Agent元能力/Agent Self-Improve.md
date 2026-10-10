@@ -1,5 +1,7 @@
 # Self Improve 设计的深度思考
 
+**状态（2026-10-10）：已被取代，仅作参考。** 现行设计与 Agent Memory 模块重构的依据是[《Agent Memory 认知管理需求》](<../Agent Memory 认知管理需求.md>)，与之冲突时以新文档为准。Self Improve 已拆为维护型 Memory 整理 Goal、经验结晶 Goal 与 Self Correct Goal（见《OpenDAN Agent Session 架构设计》§9）。本文中与认知管理相关的思考（防自我强化、召回强度与淡出、事件背景、明确表达与行为冲突、第三方主张）已写入新文档 E-15、E-17、M-04、M-20、§5.7；Skill 相关部分归经验结晶 Goal。
+
 > 本文是基于一段连续语音思考整理出来的设计文档。它不是最终规格书，也不是实现手册，而是对 Self Improve 这个 Agent 元能力的结构化推导。文中会保留一些尚未完全收敛的概念、设计假设和开放问题。
 
 ---

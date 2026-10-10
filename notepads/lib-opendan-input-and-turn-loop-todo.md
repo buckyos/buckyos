@@ -1096,7 +1096,7 @@ msg-center
 
 - [xAgent 设计](../doc/opendan/xAgent.md)：§4 输入、§9 Turn Loop、§11 C1–C3 / C8 / C12。
 - [Agent Session SDK 实现计划](<../doc/opendan/Agent Session SDK 实现计划.md>)、[协议索引](../doc/opendan/protocol/README.md)、[Session Input Protocol](<../doc/opendan/protocol/Session Input Protocol.md>)。
-- [长任务与可靠等待](<../doc/opendan/OpenDAN Long Task & Sub-Agent.md>)、[事件订阅语义](<../doc/opendan/Agent Session的事件订阅.md>)。
+- [长任务与可靠等待](<../doc/opendan/OpenDAN Long Task & Sub-Agent.md>)、[事件订阅语义](<../doc/opendan/OpenDAN Agent Session架构设计.md#127-事件订阅与三种等待模式>)。
 - 当前实现入口：`lib_opendan/src/protocol/{input,state}.rs`、`runner/{drive,hook,live,receipts,outcome,assembler}.rs`、`channel/` 与 `tests/`。
 - Input 链路两端的现有类型：MsgObject v2（`cyfs-ndn/src/ndn-lib/src/msgobj.rs`，`CYFS 标准对象` §16）；`AiMessage / AiContent / ResourceRef`（`src/kernel/buckyos-api/src/aicc_client.rs`）；MsgObject 与 AiMessage 的现有转换及出口（`src/frame/llm_context/src/msg_parser.rs`）；AICC 资源解析（`src/frame/aicc/src/resource/`）。
 - 旧 OpenDAN 的消息入口（只作对照）：`opendan/src/msg_center_pump.rs`（过滤规则、`from_name`、斜杠命令）、`session_model.rs::PendingInput`、`prompt_env.rs` 的 `od.msg/1` 渲染。

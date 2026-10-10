@@ -1,5 +1,7 @@
 # Agent Memory Module — Memory Graph 核心组件规格 v2.10
 
+**状态（2026-10-10）：已被取代，仅作参考。** 现行设计与 Agent Memory 模块重构的依据是[《Agent Memory 认知管理需求》](<../Agent Memory 认知管理需求.md>)，与之冲突时以新文档为准。本文仍成立的接口已并入新文档附录 A，并按新设计调整；实现现状与调整清单见附录 B。本文描述的能力只实现了一部分；文中的 Agent Notebook 已取消，统一为 Agent Memory。
+
 > 本文档定义 Agent Memory 的 v2.10 契约：Agent-scoped singleton `memory_root`、Memory Graph 数据模型、写入语义、机械召回、遗忘、存储恢复与和 Agent Notebook 的职责边界。
 > v2.10 相对 v2.9 的核心变化：
 > 1. 时间模型改为**双时间**：`occurred_at`（实际/推断发生时间）是 Occasion 专属字段；`noticed_at`（被注意到的时间）是所有 item 的通用属性，遗忘沿 `noticed_at` 演化。
