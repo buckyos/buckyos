@@ -1,5 +1,7 @@
+// No top margin: nothing sits above the window workspace, so a window can be
+// dragged flush against the top edge.
 export const desktopWindowViewportPadding = {
-  top: 8,
+  top: 0,
   right: 12,
   bottom: 8,
   left: 12,
@@ -11,13 +13,16 @@ export const desktopWindowMinVisibleTitleBarWidth = 120
 export function getDesktopWindowWorkspaceBounds({
   safeArea,
   topInset,
+  leftInset = 0,
   viewportSize,
 }: {
   safeArea: { top: number; bottom: number; left: number; right: number }
   topInset: number
+  /** Width of a pinned taskbar. */
+  leftInset?: number
   viewportSize: { width: number; height: number }
 }) {
-  const minX = safeArea.left + desktopWindowViewportPadding.left
+  const minX = safeArea.left + leftInset + desktopWindowViewportPadding.left
   const minY = topInset + desktopWindowViewportPadding.top
   const maxRight =
     viewportSize.width -

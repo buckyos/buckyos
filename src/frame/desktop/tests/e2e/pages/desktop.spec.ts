@@ -574,29 +574,84 @@ test('demos app renders common controls', async ({ page }) => {
   await expect(page.getByText('Control coverage')).toBeVisible()
 })
 
-test('status tray tips opens from bell and closes on outside click', async ({ page }) => {
+test('desktop taskbar slides out from the avatar, pins, and leaves windows the full screen', async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/?scenario=normal')
 
-  const tipsButton = page.getByTestId('status-tray-tips-button')
-  await expect(tipsButton).toBeVisible()
-  await tipsButton.click()
+  const avatar = page.getByRole('button', { name: 'BuckyOS' })
+  const taskbar = page.getByTestId('desktop-taskbar')
+  await expect(avatar).toBeVisible()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
+  // The desktop has no status bar: no tray, no connection label.
+  await expect(page.getByTestId('status-tray-tips-button')).toHaveCount(0)
+  await expect(page.getByLabel('Status bar')).toHaveCount(0)
 
-  const tipsPanel = page.getByTestId('status-tips-panel')
-  await expect(tipsPanel).toBeVisible()
-  await expect(page.getByTestId('status-tip-card-recent-shell-action')).toBeVisible()
-  await expect(page.getByTestId('status-tip-card-mobile-touch-audit')).toBeVisible()
+  // Auto-hidden taskbar: a maximized window covers the whole viewport and
+  // centres its title, clear of the floating avatar.
+  await page.getByTestId('desktop-app-settings').click()
+  const settingsWindow = page.getByTestId('window-settings')
+  // A windowed window can also be dragged flush against the top edge.
+  const titleBar = await page.getByTestId('window-drag-settings').boundingBox()
+  await page.mouse.move((titleBar?.x ?? 0) + 300, (titleBar?.y ?? 0) + 16)
+  await page.mouse.down()
+  await page.mouse.move((titleBar?.x ?? 0) + 300, 0, { steps: 8 })
+  await page.mouse.up()
+  expect((await settingsWindow.boundingBox())?.y).toBe(0)
+  await page.getByTestId('window-drag-settings').dblclick()
+  await expect.poll(async () => settingsWindow.boundingBox()).toEqual({
+    x: 0,
+    y: 0,
+    width: 1280,
+    height: 800,
+  })
+  const title = await page.getByTestId('window-drag-settings').getByText('Settings', { exact: true }).boundingBox()
+  expect(Math.abs((title?.x ?? 0) + (title?.width ?? 0) / 2 - 640)).toBeLessThan(16)
 
-  const panelBox = await tipsPanel.boundingBox()
-  const viewport = page.viewportSize()
-  expect(panelBox).not.toBeNull()
-  expect(viewport).not.toBeNull()
-  expect((panelBox?.x ?? 0) + (panelBox?.width ?? 0)).toBeLessThanOrEqual(
-    (viewport?.width ?? 0) - 8,
-  )
-  expect(panelBox?.x ?? 0).toBeGreaterThanOrEqual(0)
+  // The taskbar floats over the window without a backdrop and hides on the
+  // next outside click.
+  await avatar.click()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
+  await expect.poll(async () => (await taskbar.boundingBox())?.x).toBe(0)
+  expect((await taskbar.boundingBox())?.width).toBe(60)
+  // The avatar lands centred in the taskbar's top slot.
+  const avatarBox = await avatar.boundingBox()
+  expect((avatarBox?.x ?? 0) + (avatarBox?.width ?? 0) / 2).toBeCloseTo(30, 0)
+  await page.mouse.click(900, 400)
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
 
-  await page.mouse.click(24, (viewport?.height ?? 0) - 24)
-  await expect(tipsPanel).toHaveCount(0)
+  // Launching from the taskbar also hides it.
+  await avatar.click()
+  await taskbar.getByRole('button', { name: 'Diagnostics', exact: true }).click()
+  await expect(page.getByTestId('window-diagnostics')).toBeVisible()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
+  await page.getByTestId('window-diagnostics').getByRole('button', { name: 'Close' }).click()
+
+  // Pinned: stays after outside clicks, survives a reload, and narrows the
+  // maximized window to the space right of it.
+  await avatar.click()
+  const pin = page.getByTestId('taskbar-pin')
+  await pin.click()
+  await expect(pin).toHaveAttribute('aria-pressed', 'true')
+  await page.mouse.click(900, 400)
+  await avatar.click()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
+  await expect.poll(async () => settingsWindow.boundingBox()).toEqual({
+    x: 60,
+    y: 0,
+    width: 1220,
+    height: 800,
+  })
+  await page.reload()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
+  await expect(page.getByTestId('taskbar-pin')).toHaveAttribute('aria-pressed', 'true')
+
+  // Unpinning leaves it open until the next outside click.
+  await page.getByTestId('taskbar-pin').click()
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'false')
+  await page.mouse.click(900, 400)
+  await expect(taskbar).toHaveAttribute('aria-hidden', 'true')
 })
 
 test('window modal only blocks its owner window', async ({ page }) => {
@@ -619,6 +674,10 @@ test('window modal only blocks its owner window', async ({ page }) => {
   await expect(page.getByTestId('window-demos')).toBeVisible()
   await page.getByRole('button', { name: 'Window modal' }).first().click()
   await expect(page.getByRole('dialog', { name: 'Scoped window modal' })).toBeVisible()
+
+  // Demos opened on top; bring Settings forward through the part of its
+  // title bar that is still uncovered (where the drag released it).
+  await page.mouse.click(1180, (settingsBeforeDrag?.y ?? 0) + 90)
 
   // The Language select lives on the Appearance page of the (unblocked)
   // Settings window.

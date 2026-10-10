@@ -182,6 +182,7 @@ export interface DataState<T> {
 
 export interface SystemSidebarAppItem {
   appId: string
+  accent: string
   iconKey: string
   iconUrl?: string
   labelKey: string

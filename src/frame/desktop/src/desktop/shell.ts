@@ -1,13 +1,30 @@
 import { useEffect, useState } from 'react'
 import { useI18n } from '../i18n/provider'
-import type { AppDefinition, FormFactor } from '../models/ui'
+import type { AppDefinition } from '../models/ui'
+import { desktopWindowTitleBarHeight } from './windows/geometry'
 
 const statusBarHeights = {
-  desktop: 42,
   mobileHome: 40,
   mobileCompact: 46,
   mobileStandard: 58,
 } as const
+
+// Desktop has no status bar: a floating avatar in the top-left corner opens
+// a narrow taskbar (dock) on the left, which can be pinned open. The avatar
+// fits inside the title-bar row of a maximized window and lands centred in
+// the taskbar's top slot.
+export const desktopTaskbarWidth = 60
+export const desktopAvatarSize = 28
+export const desktopAvatarRowHeight = desktopWindowTitleBarHeight
+export const desktopAvatarOffset = {
+  left: (desktopTaskbarWidth - desktopAvatarSize) / 2,
+  top: (desktopAvatarRowHeight - desktopAvatarSize) / 2,
+} as const
+
+/** Space the desktop shell takes from the window workspace. */
+export function desktopWorkspaceInsets(taskbarPinned: boolean) {
+  return { top: 0, left: taskbarPinned ? desktopTaskbarWidth : 0 }
+}
 
 export type ConnectionState = 'online' | 'degraded' | 'offline'
 
@@ -34,14 +51,7 @@ export function mobileStatusBarMode(app?: AppDefinition) {
   return app?.manifest.mobileStatusBarMode ?? 'compact'
 }
 
-export function shellStatusBarHeight(
-  formFactor: FormFactor,
-  activeApp?: AppDefinition,
-) {
-  if (formFactor === 'desktop') {
-    return statusBarHeights.desktop
-  }
-
+export function mobileStatusBarHeight(activeApp?: AppDefinition) {
   if (!activeApp) {
     return statusBarHeights.mobileHome
   }

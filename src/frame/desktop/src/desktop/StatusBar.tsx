@@ -13,13 +13,12 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useI18n } from '../i18n/provider'
-import type { AppDefinition, FormFactor, LayoutState, ThemeMode } from '../models/ui'
+import type { AppDefinition, LayoutState, ThemeMode } from '../models/ui'
 import { useMobileNavState } from './windows/MobileNavContext'
 import {
-  connectionLabel,
   connectionTone,
+  mobileStatusBarHeight,
   mobileStatusBarMode,
-  shellStatusBarHeight,
   type ConnectionState,
   type StatusTip,
   type StatusTipTone,
@@ -67,13 +66,11 @@ function MobileBackButton({ onClick }: { onClick: () => void }) {
 }
 
 function StatusTray({
-  compact = false,
   locale,
   now,
   panelOffsetTop,
   trayState,
 }: {
-  compact?: boolean
   locale: string
   now: Date
   panelOffsetTop: number
@@ -89,7 +86,6 @@ function StatusTray({
   const tipsRef = useRef<HTMLDivElement | null>(null)
   const tipsPanelRef = useRef<HTMLDivElement | null>(null)
   const tipsButtonRef = useRef<HTMLButtonElement | null>(null)
-  const isMobile = compact
 
   useEffect(() => {
     if (!isTipsOpen) {
@@ -162,12 +158,7 @@ function StatusTray({
   }, [isTipsOpen])
 
   return (
-    <div
-      className={clsx(
-        'shell-pill ml-auto shrink-0 px-3 py-1.5 text-xs',
-        compact ? 'gap-2 px-2.5 py-1.5' : '',
-      )}
-    >
+    <div className="shell-pill ml-auto shrink-0 gap-2 px-2.5 py-1.5 text-xs">
       {trayState.backupActive ? (
         <span className="inline-flex items-center gap-1.5 rounded-full bg-[color:color-mix(in_srgb,var(--cp-warning)_14%,var(--cp-surface))] px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[color:var(--cp-warning)]">
           <HardDriveDownload className="size-3.5" />
@@ -220,14 +211,9 @@ function StatusTray({
             className="pointer-events-auto absolute z-[90] outline-none"
             style={{
               top: 'calc(100% + 8px)',
-              right: isMobile
-                ? 'calc(env(safe-area-inset-right, 0px) + 16px)'
-                : 'calc(env(safe-area-inset-right, 0px) + 20px)',
-              left: undefined,
-              width: isMobile
-                ? 'min(18.75rem, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 32px))'
-                : '18.5rem',
-              maxWidth: isMobile ? undefined : '18.5rem',
+              right: 'calc(env(safe-area-inset-right, 0px) + 16px)',
+              width:
+                'min(18.75rem, calc(100vw - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px) - 32px))',
               maxHeight: `min(50dvh, calc(100dvh - ${panelOffsetTop + 24}px))`,
             }}
           >
@@ -324,11 +310,11 @@ function statusTipToneStyles(tone: StatusTipTone) {
   }
 }
 
+/** The mobile shell's status bar; the desktop shell uses `DesktopTaskbar`. */
 export function StatusBar({
   activeApp,
   connectionState,
   deadZone,
-  formFactor,
   onCycleLocale,
   onMinimizeWindow,
   onOpenDiagnostics,
@@ -342,7 +328,6 @@ export function StatusBar({
   activeApp?: AppDefinition
   connectionState: ConnectionState
   deadZone: LayoutState['deadZone']
-  formFactor: FormFactor
   onCycleLocale: () => void
   onMinimizeWindow?: () => void
   onOpenDiagnostics: () => void
@@ -357,39 +342,23 @@ export function StatusBar({
   const now = useMinuteClock()
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null)
   const mobileNav = useMobileNavState()
-  const activeMode =
-    formFactor === 'mobile' && activeApp ? mobileStatusBarMode(activeApp) : null
-  const barHeight = shellStatusBarHeight(formFactor, activeApp)
+  const activeMode = activeApp ? mobileStatusBarMode(activeApp) : null
+  const barHeight = mobileStatusBarHeight(activeApp)
   const totalHeight = safeAreaTop + deadZone.top + barHeight
-  const isDesktop = formFactor === 'desktop'
-  const isMobile = !isDesktop
-  const showSurface = isDesktop || activeMode === 'standard'
-  const connectionText = connectionLabel(connectionState, t)
-  const surfaceStyle =
-    activeMode === 'standard' && activeApp
-      ? {
-          backgroundColor: `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2))`,
-        }
-      : {
-          background:
-            'linear-gradient(180deg,color-mix(in_srgb,var(--cp-surface)_94%,transparent),color-mix(in_srgb,var(--cp-surface)_72%,transparent))',
-        }
+  const showSurface = activeMode === 'standard'
 
   return (
     <div
       aria-label={t('common.statusBar')}
-      className={clsx(
-        'pointer-events-none inset-x-0 top-0 z-50',
-        isMobile ? 'fixed' : 'absolute',
-      )}
+      className="pointer-events-none fixed inset-x-0 top-0 z-50"
       style={{ height: totalHeight }}
     >
-      {showSurface ? (
+      {showSurface && activeApp ? (
         <div
           className="absolute inset-x-0 top-0 backdrop-blur-xl"
           style={{
             height: totalHeight,
-            ...surfaceStyle,
+            backgroundColor: `color-mix(in srgb, ${activeApp.accent} 14%, var(--cp-surface-2))`,
           }}
         />
       ) : null}
@@ -467,7 +436,7 @@ export function StatusBar({
               ) : (
                 <StatusLogoButton
                   connectionState={connectionState}
-                  highlightBorder={!isDesktop}
+                  highlightBorder
                   onClick={onOpenSidebar}
                 />
               )}
@@ -476,17 +445,6 @@ export function StatusBar({
                   <p className="truncate font-display text-sm font-semibold text-[color:var(--cp-text)]">
                     {t(activeApp.labelKey)}
                   </p>
-                </div>
-              ) : null}
-              {isDesktop ? (
-                <div className="inline-flex min-w-0 items-center gap-2">
-                  <span
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: connectionTone(connectionState) }}
-                  />
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[color:var(--cp-muted)]">
-                    {connectionText}
-                  </span>
                 </div>
               ) : null}
             </div>
@@ -513,7 +471,6 @@ export function StatusBar({
               </div>
             ) : (
               <StatusTray
-                compact={!isDesktop}
                 locale={locale}
                 now={now}
                 panelOffsetTop={totalHeight}

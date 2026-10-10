@@ -45,6 +45,7 @@ import {
   resetDesktopViewportProgress,
   setDesktopViewportProgress,
 } from './viewportProgress'
+import { DesktopTaskbar } from './DesktopTaskbar'
 import { StatusBar } from './StatusBar'
 import { SystemSidebar } from './SystemSidebar'
 import { DesktopWidgetRenderer } from './widgets/WidgetRenderer'
@@ -55,8 +56,10 @@ import {
 import { MobileNavProvider } from './windows/MobileNavContext'
 import { MobileWindowSheet } from './windows/MobileWindowSheet'
 import {
+  desktopAvatarRowHeight,
+  desktopWorkspaceInsets,
+  mobileStatusBarHeight,
   mobileStatusBarMode,
-  shellStatusBarHeight,
   type ConnectionState,
   type StatusTip,
 } from './shell'
@@ -206,6 +209,9 @@ function nextSupportedLocale(locale: SupportedLocale) {
 
 // Dead-zone insets only apply on mobile; desktop windows and grid use the full viewport.
 const zeroDeadZone = { top: 0, bottom: 0, left: 0, right: 0 }
+
+// Launcher offset below the mobile home status bar.
+const mobileLauncherTopInset = 42
 
 // Overlap-tolerant compactor: react-grid-layout must NOT displace other
 // items while dragging (its null-compactType collision pass shoves items
@@ -359,6 +365,7 @@ export function DesktopRoute() {
     activityLog,
     snackbar,
     isSystemSidebarOpen,
+    isTaskbarPinned,
     selectedItemId,
     contextMenu,
   } = snap.runtime
@@ -369,23 +376,27 @@ export function DesktopRoute() {
 
   const resolvedDeadZone = isMobile ? store.getResolvedDeadZone() : zeroDeadZone
   const safeArea = useSafeAreaInsets()
-  const desktopWorkspaceTopInset =
-    safeArea.top + shellStatusBarHeight('desktop')
+  // Desktop: windows get the whole viewport unless the taskbar is pinned.
+  const desktopInsets = desktopWorkspaceInsets(!isMobile && isTaskbarPinned)
+  const desktopWorkspaceTopInset = safeArea.top + desktopInsets.top
+  const desktopWorkspaceLeftInset = desktopInsets.left
   const desktopViewportBounds = useMemo(
     () =>
       getDesktopWindowWorkspaceBounds({
         safeArea,
         topInset: desktopWorkspaceTopInset,
+        leftInset: desktopWorkspaceLeftInset,
         viewportSize,
       }),
-    [safeArea, desktopWorkspaceTopInset, viewportSize],
+    [safeArea, desktopWorkspaceTopInset, desktopWorkspaceLeftInset, viewportSize],
   )
   const workspaceInnerWidth = Math.max(
     workspaceSize.width -
       resolvedDeadZone.left -
       resolvedDeadZone.right -
       safeArea.left -
-      safeArea.right,
+      safeArea.right -
+      desktopWorkspaceLeftInset,
     320,
   )
 
@@ -513,6 +524,10 @@ export function DesktopRoute() {
 
   const toggleSidebar = useCallback(() => store.toggleSystemSidebar(), [store])
   const closeSidebar = useCallback(() => store.closeSystemSidebar(), [store])
+  const toggleTaskbarPinned = useCallback(
+    () => store.setTaskbarPinned(!store.getSnapshot().runtime.isTaskbarPinned, viewportSize),
+    [store, viewportSize],
+  )
   const handleSelectSidebarApp = useCallback(
     (appId: string) => {
       handleOpenApp(appId)
@@ -672,15 +687,15 @@ export function DesktopRoute() {
   const topMobileWindow = windowLayerModel.topWindow
   const activeMobileApp =
     formFactor === 'mobile' && topMobileWindow ? topMobileWindow.app : undefined
-  const shellBarHeight = shellStatusBarHeight(formFactor, activeMobileApp)
   const mobileSheetTopInset =
     activeMobileApp && mobileStatusBarMode(activeMobileApp) === 'standard'
-      ? safeArea.top + resolvedDeadZone.top + shellBarHeight
+      ? safeArea.top + resolvedDeadZone.top + mobileStatusBarHeight(activeMobileApp)
       : 0
+  // On desktop the launcher grid starts below the floating avatar.
   const workspaceTopPadding =
-    formFactor === 'mobile' && topMobileWindow
-      ? safeArea.top + resolvedDeadZone.top
-      : desktopWorkspaceTopInset
+    formFactor === 'mobile'
+      ? safeArea.top + (topMobileWindow ? resolvedDeadZone.top : mobileLauncherTopInset)
+      : safeArea.top + desktopAvatarRowHeight
   const workspaceInnerHeight = Math.max(
     workspaceSize.height -
       workspaceTopPadding -
@@ -689,7 +704,7 @@ export function DesktopRoute() {
     360,
   )
   const shouldLockDesktopViewport = formFactor === 'desktop'
-  const systemSidebarModel = store.getSystemSidebarDataModel(activeMobileApp?.id)
+  const systemSidebarModel = store.getSystemSidebarDataModel(windowLayerModel.topWindow?.app.id)
   const topMobileWindowId = topMobileWindow?.id
   const handleMinimizeTopMobileWindow = useMemo(
     () =>
@@ -833,35 +848,54 @@ export function DesktopRoute() {
         <div ref={workspaceRef} className="relative h-dvh min-h-dvh">
           {!isLoading && !hasError && resolvedLayout ? (
             <MobileNavProvider>
-              <SystemSidebar
-                connectionState={connectionState}
-                deadZone={resolvedDeadZone}
-                isLoggingOut={isLoggingOut}
-                onClose={closeSidebar}
-                onLogout={handleLogout}
-                onOpenApp={handleSelectSidebarApp}
-                onReturnDesktop={handleReturnDesktop}
-                open={isSystemSidebarOpen}
-                runtimeContainer={runtimeContainer}
-                safeAreaTop={safeArea.top}
-                safeAreaBottom={safeArea.bottom}
-                uiModel={systemSidebarModel}
-              />
-              <StatusBar
-                activeApp={activeMobileApp}
-                connectionState={connectionState}
-                deadZone={resolvedDeadZone}
-                formFactor={formFactor}
-                safeAreaTop={safeArea.top}
-                onCycleLocale={handleCycleLocale}
-                onMinimizeWindow={handleMinimizeTopMobileWindow}
-                onOpenDiagnostics={handleOpenDiagnostics}
-                onOpenSettings={handleOpenSettings}
-                onOpenSidebar={toggleSidebar}
-                onToggleTheme={handleToggleTheme}
-                themeMode={themeMode}
-                trayState={trayState}
-              />
+              {isMobile ? (
+                <>
+                  <SystemSidebar
+                    connectionState={connectionState}
+                    deadZone={resolvedDeadZone}
+                    isLoggingOut={isLoggingOut}
+                    onClose={closeSidebar}
+                    onLogout={handleLogout}
+                    onOpenApp={handleSelectSidebarApp}
+                    onReturnDesktop={handleReturnDesktop}
+                    open={isSystemSidebarOpen}
+                    runtimeContainer={runtimeContainer}
+                    safeAreaTop={safeArea.top}
+                    safeAreaBottom={safeArea.bottom}
+                    uiModel={systemSidebarModel}
+                  />
+                  <StatusBar
+                    activeApp={activeMobileApp}
+                    connectionState={connectionState}
+                    deadZone={resolvedDeadZone}
+                    safeAreaTop={safeArea.top}
+                    onCycleLocale={handleCycleLocale}
+                    onMinimizeWindow={handleMinimizeTopMobileWindow}
+                    onOpenDiagnostics={handleOpenDiagnostics}
+                    onOpenSettings={handleOpenSettings}
+                    onOpenSidebar={toggleSidebar}
+                    onToggleTheme={handleToggleTheme}
+                    themeMode={themeMode}
+                    trayState={trayState}
+                  />
+                </>
+              ) : (
+                <DesktopTaskbar
+                  connectionState={connectionState}
+                  isLoggingOut={isLoggingOut}
+                  onClose={closeSidebar}
+                  onLogout={handleLogout}
+                  onOpenApp={handleSelectSidebarApp}
+                  onReturnDesktop={handleReturnDesktop}
+                  onToggleOpen={toggleSidebar}
+                  onTogglePinned={toggleTaskbarPinned}
+                  open={isSystemSidebarOpen}
+                  pinned={isTaskbarPinned}
+                  runtimeContainer={runtimeContainer}
+                  safeArea={safeArea}
+                  uiModel={systemSidebarModel}
+                />
+              )}
               <div
                 ref={setGridContainer}
                 className="relative overflow-hidden"
@@ -869,7 +903,7 @@ export function DesktopRoute() {
                 style={{
                   paddingTop: workspaceTopPadding,
                   paddingBottom: resolvedDeadZone.bottom + safeArea.bottom,
-                  paddingLeft: resolvedDeadZone.left + safeArea.left,
+                  paddingLeft: resolvedDeadZone.left + safeArea.left + desktopWorkspaceLeftInset,
                   paddingRight: resolvedDeadZone.right + safeArea.right,
                 }}
               >
@@ -905,6 +939,7 @@ export function DesktopRoute() {
                   onMinimize={minimizeWindow}
                   onSaveSettings={applySettings}
                   runtimeContainer={runtimeContainer}
+                  leftInset={desktopWorkspaceLeftInset}
                   safeArea={safeArea}
                   themeMode={themeMode}
                   topInset={desktopWorkspaceTopInset}

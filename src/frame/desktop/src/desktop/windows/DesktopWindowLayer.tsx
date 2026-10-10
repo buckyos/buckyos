@@ -44,6 +44,7 @@ const zeroSafeArea: SafeArea = { top: 0, bottom: 0, left: 0, right: 0 }
 interface BoundsInput {
   safeArea: SafeArea
   topInset: number
+  leftInset: number
   workspaceSize: Size
 }
 
@@ -87,6 +88,7 @@ function resolveDragGeometry(session: DragSession, bounds: BoundsInput): WindowG
   const workspaceBounds = getDesktopWindowWorkspaceBounds({
     safeArea: bounds.safeArea,
     topInset: bounds.topInset,
+    leftInset: bounds.leftInset,
     viewportSize: bounds.workspaceSize,
   })
   const positionBounds = getDesktopWindowPositionBounds(workspaceBounds, {
@@ -108,6 +110,7 @@ function resolveResizeGeometry(session: ResizeSession, bounds: BoundsInput): Win
   const workspaceBounds = getDesktopWindowWorkspaceBounds({
     safeArea: bounds.safeArea,
     topInset: bounds.topInset,
+    leftInset: bounds.leftInset,
     viewportSize: bounds.workspaceSize,
   })
   const minLeft = workspaceBounds.minX
@@ -179,6 +182,7 @@ interface WindowSlotProps {
   activityLog: string[]
   isFront: boolean
   layoutState: LayoutState
+  leftInset: number
   locale: string
   onClose: (windowId: string) => void
   onDragPointerDown: (
@@ -214,6 +218,7 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
   activityLog,
   isFront,
   layoutState,
+  leftInset,
   locale,
   onClose,
   onDragPointerDown,
@@ -256,11 +261,11 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
         display: isMinimized ? 'none' : undefined,
         zIndex: windowItem.zIndex,
         transform: desktopWindowTransform(
-          isMaximized ? safeArea.left : windowItem.x,
+          isMaximized ? safeArea.left + leftInset : windowItem.x,
           isMaximized ? topInset : windowItem.y,
         ),
         width: isMaximized
-          ? workspaceSize.width - safeArea.left - safeArea.right
+          ? workspaceSize.width - safeArea.left - leftInset - safeArea.right
           : windowItem.width,
         height: isMaximized
           ? workspaceSize.height - topInset - safeArea.bottom
@@ -293,6 +298,7 @@ const DesktopWindowSlot = memo(function DesktopWindowSlot({
 export function DesktopWindowLayer({
   activityLog,
   layoutState,
+  leftInset = 0,
   locale,
   onClose,
   onGeometryChange,
@@ -310,6 +316,8 @@ export function DesktopWindowLayer({
 }: {
   activityLog: string[]
   layoutState: LayoutState
+  /** Width of a pinned taskbar; maximized windows start right of it. */
+  leftInset?: number
   locale: string
   onClose: (windowId: string) => void
   onGeometryChange: (
@@ -337,11 +345,11 @@ export function DesktopWindowLayer({
 
   // The move/up listeners are attached once; they read the latest bounds and
   // commit callback through refs instead of re-subscribing on every change.
-  const boundsRef = useRef<BoundsInput>({ safeArea, topInset, workspaceSize })
+  const boundsRef = useRef<BoundsInput>({ safeArea, topInset, leftInset, workspaceSize })
   const onGeometryChangeRef = useRef(onGeometryChange)
   useEffect(() => {
-    boundsRef.current = { safeArea, topInset, workspaceSize }
-  }, [safeArea, topInset, workspaceSize])
+    boundsRef.current = { safeArea, topInset, leftInset, workspaceSize }
+  }, [safeArea, topInset, leftInset, workspaceSize])
   useEffect(() => {
     onGeometryChangeRef.current = onGeometryChange
   }, [onGeometryChange])
@@ -490,6 +498,7 @@ export function DesktopWindowLayer({
           activityLog={activityLog}
           isFront={windowItem.state !== 'minimized' && windowItem.zIndex === topZIndex}
           layoutState={layoutState}
+          leftInset={leftInset}
           locale={locale}
           onClose={onClose}
           onDragPointerDown={handlePointerDown}

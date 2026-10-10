@@ -47,7 +47,7 @@ import {
   createWindowRecord,
   resolveDesktopWindowSizing,
 } from '../desktop/windows/model'
-import { shellStatusBarHeight } from '../desktop/shell'
+import { desktopAvatarRowHeight, desktopWorkspaceInsets } from '../desktop/shell'
 import { defaultDeadZone } from '../mock/data'
 import { fetchDesktopPayload } from '../mock/provider'
 import { isMockRuntime } from '../runtime'
@@ -92,6 +92,7 @@ import {
   sameWindowGeometry,
   sanitizeWindowGeometryMap,
   windowAppearanceStorageKey,
+  desktopTaskbarPinnedStorageKey,
   windowGeometryStorageKey,
   writeJson,
   type ScanOrder,
@@ -112,8 +113,10 @@ export interface DesktopRuntimeState {
   activityLog: string[]
   /** Snackbar 提示信息 */
   snackbar: string | null
-  /** 系统侧边栏是否展开 */
+  /** 系统侧边栏是否展开（桌面端即左侧 taskbar 是否划出） */
   isSystemSidebarOpen: boolean
+  /** 桌面端 taskbar 是否锁定常驻（持久化到 localStorage） */
+  isTaskbarPinned: boolean
   /** 当前选中的桌面项目 */
   selectedItemId: string | null
   /** 桌面翻页进度 (0~1) */
@@ -421,6 +424,7 @@ export class DesktopUIStore {
         activityLog: [],
         snackbar: null,
         isSystemSidebarOpen: false,
+        isTaskbarPinned: readJson<boolean>(desktopTaskbarPinnedStorageKey) === true,
         selectedItemId: null,
         viewportProgress: 0,
         contextMenu: null,
@@ -858,16 +862,20 @@ export class DesktopUIStore {
         windows.length,
         opts.viewportBounds,
       )
-      const record = createWindowRecord(app, windows.length, geometry)
+      // A new window always lands on top of the currently focused one.
+      const topZIndex = windows.reduce((top, w) => Math.max(top, w.zIndex), 10 + windows.length)
+      const record = { ...createWindowRecord(app, windows.length, geometry), zIndex: topZIndex + 1 }
       this.update({ runtime: { windows: [...windows, record] } })
     }
     opts.logActivity?.(`Opened ${appId}`)
   }
 
   private fallbackViewportBounds() {
+    const insets = desktopWorkspaceInsets(this.snapshot.runtime.isTaskbarPinned)
     return getDesktopWindowWorkspaceBounds({
       safeArea: { top: 0, bottom: 0, left: 0, right: 0 },
-      topInset: shellStatusBarHeight('desktop'),
+      topInset: insets.top,
+      leftInset: insets.left,
       viewportSize: { width: window.innerWidth, height: window.innerHeight },
     })
   }
@@ -1129,9 +1137,11 @@ export class DesktopUIStore {
     safeArea?: { top: number; bottom: number; left: number; right: number },
   ) {
     const resolvedSafeArea = safeArea ?? { top: 0, bottom: 0, left: 0, right: 0 }
+    const insets = desktopWorkspaceInsets(this.snapshot.runtime.isTaskbarPinned)
     const bounds = getDesktopWindowWorkspaceBounds({
       safeArea: resolvedSafeArea,
-      topInset: resolvedSafeArea.top + shellStatusBarHeight('desktop'),
+      topInset: resolvedSafeArea.top + insets.top,
+      leftInset: insets.left,
       viewportSize,
     })
     this.lastViewportBounds = bounds
@@ -1407,6 +1417,18 @@ export class DesktopUIStore {
     this.update({ runtime: { isSystemSidebarOpen: false } })
   }
 
+  /**
+   * Pin (or unpin) the desktop taskbar. A pinned taskbar takes its width from
+   * the window workspace, so open windows are pushed out from under it.
+   * Unpinning leaves it open until the next outside click.
+   */
+  setTaskbarPinned(pinned: boolean, viewportSize: { width: number; height: number }) {
+    if (pinned === this.snapshot.runtime.isTaskbarPinned) return
+    writeJson(desktopTaskbarPinnedStorageKey, pinned)
+    this.update({ runtime: { isTaskbarPinned: pinned, isSystemSidebarOpen: true } })
+    this.normalizeOpenWindowsForViewport(viewportSize)
+  }
+
   logActivity(message: string, locale: string) {
     const stamp = new Intl.DateTimeFormat(locale, {
       hour: '2-digit',
@@ -1449,7 +1471,7 @@ export class DesktopUIStore {
       app: DesktopAppItem | undefined,
     ): SystemSidebarAppItem | null =>
       app
-        ? { appId: app.id, iconKey: app.iconKey, iconUrl: app.iconUrl, labelKey: app.labelKey }
+        ? { appId: app.id, accent: app.accent, iconKey: app.iconKey, iconUrl: app.iconUrl, labelKey: app.labelKey }
         : null
 
     const seenSwitchApps = new Set<string>()
@@ -1468,6 +1490,7 @@ export class DesktopUIStore {
         seenSwitchApps.add(app.id)
         return {
           appId: app.id,
+          accent: app.accent,
           iconKey: app.iconKey,
           iconUrl: app.iconUrl,
           labelKey: app.labelKey,
@@ -1552,7 +1575,8 @@ export class DesktopUIStore {
       viewportBounds.maxHeight,
     )
     const defaultX = viewportBounds.minX + 24 + (index % 4) * 36
-    const defaultY = viewportBounds.minY + 18 + (index % 3) * 32
+    // New windows open below the desktop's floating avatar.
+    const defaultY = viewportBounds.minY + desktopAvatarRowHeight + (index % 3) * 32
     const positionBounds = getDesktopWindowPositionBounds(viewportBounds, {
       width,
       height,
