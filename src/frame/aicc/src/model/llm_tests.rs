@@ -108,7 +108,6 @@ fn builtin_llm_token_limits_are_positive_and_missing_limits_are_documented() {
         ("kimi", "kimi-k2.6", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code", "max_output_tokens"),
         ("kimi", "kimi-k2.7-code-highspeed", "max_output_tokens"),
-        ("kimi", "kimi-k2.8-preview", "max_context_tokens"),
         ("kimi", "kimi-k2.8-preview", "max_output_tokens"),
         ("kimi", "kimi-k3", "max_output_tokens"),
         ("minimax", "MiniMax-M3", "max_context_tokens"),

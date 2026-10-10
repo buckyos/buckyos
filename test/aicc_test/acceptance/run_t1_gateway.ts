@@ -3364,7 +3364,7 @@ async function main(): Promise<void> {
       appId: input.appId,
     });
     const cleanupSecondTenant = await provisionSecondTenant(input, runId);
-    let cases: CaseReport[];
+    let cases: CaseReport[] = [];
     let cleanup: AcceptanceReport["cleanup"] = {
       status: "passed",
       details: ["services/aicc/settings restored byte-for-byte", "mock Provider uses zero real model calls"],
