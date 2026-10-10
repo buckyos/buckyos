@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "properties": {
+    "created_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "description": {
+      "default": "",
+      "type": "string"
+    },
+    "name": {
+      "type": "string"
+    },
+    "operation_id": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workspace_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "created_at_ms",
+    "name",
+    "version",
+    "workspace_id"
+  ],
+  "title": "WorkspaceMetadata",
+  "type": "object"
+}

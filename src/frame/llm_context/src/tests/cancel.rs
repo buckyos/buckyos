@@ -367,6 +367,96 @@ async fn finish_during_inference_pairs_the_tool_calls_as_cancelled_and_settles()
 }
 
 #[tokio::test]
+async fn recovered_finish_pairs_native_receipts_before_an_expired_wallclock_budget() {
+    struct AcceptedReport {
+        handle: Mutex<Option<crate::LLMContextInterruptHandle>>,
+        calls: Mutex<Vec<String>>,
+    }
+    #[async_trait]
+    impl ToolManager for AcceptedReport {
+        async fn call_tool(
+            &self,
+            call: AiToolCall,
+            _: ToolCallCtx,
+        ) -> Result<Observation, ToolDispatchError> {
+            assert_eq!(call.call_id, "accepted");
+            self.calls.lock().unwrap().push(call.call_id.clone());
+            self.handle
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .finish("accepted report");
+            Ok(Observation::Success {
+                call_id: call.call_id,
+                content: json!({ "accepted": true }),
+                bytes: 0,
+                truncated: false,
+                tool_result: None,
+            })
+        }
+    }
+    for behavior in [false, true] {
+        for pending in [false, true] {
+            let llm = Arc::new(ScriptedRecordingLlm::new(vec![]));
+            let tools = Arc::new(AcceptedReport {
+                handle: Mutex::new(None),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut deps = LLMContextDeps::new(llm.clone(), tools.clone());
+            if behavior {
+                deps = deps
+                    .with_result_parser(Arc::new(XmlBehaviorParser::new()))
+                    .with_step_renderer(Arc::new(XmlStepRenderer::new()));
+            }
+            let mut req = base_request();
+            req.budget.max_wallclock_ms = Some(1);
+            let mut snapshot = LLMContext::new(req, deps.clone()).snapshot();
+            snapshot.state.started_at_ms = 1;
+            let calls = vec![call("report", "accepted"), call("shell", "skipped")];
+            snapshot
+                .state
+                .accumulated
+                .push(tool_response(None, calls.clone()).message);
+            if pending {
+                snapshot.state.tool_batch = Some(crate::state::ToolBatch {
+                    remaining: calls,
+                    ..Default::default()
+                });
+            } else {
+                snapshot.state.accumulated.push(buckyos_api::AiMessage::new(
+                    AiRole::Tool,
+                    vec![
+                        AiContent::tool_result_text("accepted", r#"{"accepted":true}"#, false),
+                        AiContent::tool_result_text("skipped", "[cancelled] not executed", false),
+                    ],
+                ));
+            }
+            let mut ctx =
+                LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps.clone()).unwrap();
+            *tools.handle.lock().unwrap() = Some(ctx.interrupt_handle());
+            if !pending {
+                ctx.interrupt_handle().finish("accepted report");
+            }
+            let outcome = ctx.run().await;
+            let LLMContextOutcome::Settled { snapshot, .. } = outcome else {
+                panic!("behavior={behavior}, pending={pending}: {outcome:?}");
+            };
+            assert_eq!(llm.seen().len(), 0);
+            assert_eq!(tools.calls.lock().unwrap().len(), usize::from(pending));
+            assert!(snapshot.state.tool_batch.is_none());
+            let results = tool_results_of(&snapshot.state.accumulated);
+            assert_eq!(results.len(), 2, "{results:?}");
+            assert_eq!(results[0].0, "accepted");
+            assert!(!results[0].2);
+            assert_eq!(results[1].0, "skipped");
+            assert!(results[1].1.starts_with("[cancelled]"));
+            LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, deps).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn finish_waits_for_a_non_cancellable_tool_within_the_grace_period() {
     let llm = Arc::new(ScriptedRecordingLlm::new(vec![tool_response(
         None,
@@ -438,7 +528,7 @@ async fn behavior_interrupt_during_an_action_sediments_the_step_and_does_not_rer
             r#"<response><thinking>t</thinking><actions><shell>sleep 100</shell><shell>echo b</shell></actions></response>"#,
         ),
         text_response(
-            "<response><thinking>saw</thinking><next_behavior>END</next_behavior></response>",
+            "<response><thinking>saw</thinking><report end=\"true\">finished</report></response>",
         ),
     ]));
     struct Route(Arc<CancelTools>);
@@ -511,7 +601,7 @@ async fn behavior_finish_during_a_step_pairs_the_rest_and_settles() {
             r#"<response><thinking>t</thinking><actions><shell>a</shell><shell>b</shell><shell>c</shell></actions></response>"#,
         ),
         text_response(
-            "<response><thinking>saw</thinking><next_behavior>END</next_behavior></response>",
+            "<response><thinking>saw</thinking><report end=\"true\">finished</report></response>",
         ),
     ]));
     struct Route(Arc<CancelTools>);

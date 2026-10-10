@@ -1,5 +1,7 @@
 # Agent Session SDK 实现计划
 
+> 2026-10-10 H4 已替代本文历史 END / 隐式 report-only 完成描述：Behavior 用 `<report end="true">`，工具用 `report(..., is_end=true)`；同次结束决策不带动作或非空调度。当前完成策略、持久提交与恢复以 [Session Directory Protocol](<protocol/Session Directory Protocol.md>) 和 [Agent Actions](<../llm_context/Agent Actions.md>) 为准。
+
 **项目：OpenDAN / libOpenDAN**
 **版本：0.10（草案）｜日期：2026-09-29**
 **需求基线：** [《Agent Session SDK 化核心需求》](<Agent Session SDK化核心需求.md>)（下文简称“需求”，条目编号 S-xx / A-xx 沿用）
@@ -333,7 +335,7 @@ src/frame/libopendan/
 
 ```jsonc
 {
-  "schema": "opendan.session_config/2",
+  "schema": "opendan.session_config/6",
   "config_rev": 1,                                     // 运行中允许修改的少数字段（动态订阅等）变更时 +1；整文件原子替换
   "session": {
     "session_id": "work-20260929T101500-550e8400e29b41d4a716446655440000",
@@ -403,7 +405,7 @@ session_id 只使用字母、数字和 `_ - .`，这样才能直接作为 kevent
 
 ```jsonc
 {
-  "schema": "opendan.session_state/2",
+  "schema": "opendan.session_state/6",
   "rev": 17,                                         // 每次提交 +1；回报与版本比对都用它
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "did:dev:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
@@ -508,7 +510,7 @@ acceptance (work):  n/a ─(finished)─► pending ─► accepted
     "max_result_chars": 4096,           //   单个动作结果上限
     "drop_kinds": ["created", "decide", "compaction", "input_rejected", "change_dropped", "turn_ended"]   //   不进入上下文的条目类型
   },
-  "renderer": "libopendan.mechanical/2",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
+  "renderer": "libopendan.mechanical/3",   // 渲染器标识与版本：确定性只在同一渲染器版本内承诺
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0
 }
 ```
@@ -1496,7 +1498,9 @@ def resume_live_run(s, lease, deps, env) -> LLMContext | None:
 
 `runs/` 直接采用 xllm 的 run 目录后，run 目录与快照就是 session 协议的一部分。下列改进都在 `llm_context` 与 `agent_tool`（xllm）中完成；它们都是可选能力，现有调用方的行为不变；TS 版以后对齐。
 
-| # | 改进 | 现状（§1.5） | 用途 |
+当前持久版本为 `session_config/6`、`session_state/6`、RunRecord v6、快照 v5 与 `xllm/2`，摘要 renderer 为 `libopendan.mechanical/3`。下表的实施前基线保留当时版本供对照，现行协议见 [Session Directory Protocol](<protocol/Session Directory Protocol.md>)。
+
+| # | 改进 | 实施前基线（2026-09-29，§1.5） | 用途 |
 |---|---|---|---|
 | X1 | **RunStore 公开 API**：在指定 runs_dir 中 create_run、lock、is_live、list、remove_if_safe、按需裁剪旧快照；快照先 fsync，再原子发布 run.json；读取以已发布的 snapshot 指针为准 | `create_run` 私有；没有删除；写入不 fsync | 建 run、按引用保留与安全回收；提供输入和工具结果的提交原语 |
 | X2 | **宿主装配的 run**：PromptPlan 标注宿主装配，EffectiveConfig 来自 `prompt.llm_context`；保存环境校验信息；快照保留可选 `input_receipts`，RunRecord 增加 `host_commit_pending`；xllm 有未完成宿主提交时拒绝接手，否则保留 request 与 receipt 续跑 | 只支持 xllm 自己装配（`protocol_version = xllm/1`） | 接手不重装配、不丢元数据、不越过宿主输入提交门槛（§4.4、§8.3） |

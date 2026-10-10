@@ -1,5 +1,9 @@
 # Improve Behavior Report
 
+2026-10-10 H4 已实施：XML 使用 `<report end="true">` 显式结束，工具使用 `report({report, artifacts?, result?, is_end?})`（is_end 缺省 false）。最终报告和动作 / 非空 next_behavior 互斥，END / done 拒绝。统一提交、完成策略及恢复见 [Agent Actions](<Agent Actions.md>) 与 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md)。
+
+**以下内容保留为实施前调研与方案记录。** 其中“当前实现”、END / report-only 完成、拟议上行接口和投递状态不代表 H4 后的实现；当前 report 身份是 run / call_id 或 run / step_index，journal 位于 host.extra.reports，状态为 latest_report / final_report，最终消息通过 ReportDelivery 机械生成并去重。
+
 ## 背景
 
 本记录基于一次语音讨论和当前实现整理。其中 `opendan` Session 层的现状、处理流程和 MVP 描述的是旧 opendan Runtime（`src/frame/opendan`），待下一阶段 opendan 按 libopendan 的抽象重构接入；libopendan 已有的对应行为见“libopendan 当前实现”一节。Round / Step / Turn 的定义见 [readme.md](readme.md)。
@@ -66,9 +70,9 @@
 - 什么时候需要 report；
 - report 是阶段性发现、阻塞原因、还是最终结论；
 - report 的格式和信息密度；
-- 结束时是否必须同时输出 `<report>` 和 `<next_behavior>END</next_behavior>`。
+- 阶段性报告的时机，以及什么条件满足后输出不带 actions 的 `<report end="true">`。
 
-`llm_context` 不解释这些内容，只保存最后一条 report。
+`llm_context` 不解释报告正文的业务含义；结束意图由 report 的 end 属性独立表达。宿主按当前 context 的调用关系与 Session 策略裁决完成，不能仅因为更新了 last_report 就认为任务结束。
 
 ### 2. Session 层定义"向上级 report"的实际行为
 

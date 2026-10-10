@@ -67,6 +67,29 @@ impl SessionRuns {
         Ok(self.store.read_record(run_id)?)
     }
 
+    pub fn settle_background_task(&self, lease: &crate::lock::Lease, task_id: &str) -> Result<()> {
+        lease.check()?;
+        for id in self.list()? {
+            let record = self.record(&id)?;
+            if !record.status.is_terminal() { continue; }
+            let tracked = record.host.as_ref().and_then(|h| h.extra.get("tasks"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|tasks| tasks.iter().any(|t| t.as_str() == Some(task_id)));
+            if !tracked { continue; }
+            let Some(_lock) = self.try_lock(&id)? else {
+                return Err(OpenDanError::RunBusy { run_id: id });
+            };
+            let mut record = self.record(&id)?;
+            if let Some(tasks) = record.host.as_mut().and_then(|h| h.extra.get_mut("tasks"))
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                tasks.retain(|t| t.as_str() != Some(task_id));
+            }
+            lease.fenced(|| Ok(self.store.write_record(&record)?))?;
+        }
+        Ok(())
+    }
+
     /// Take the run execution lock (shared with xllm).
     pub fn try_lock(&self, run_id: &str) -> Result<Option<RunLockFile>> {
         Ok(self.store.lock_run(run_id)?)
@@ -81,7 +104,9 @@ impl SessionRuns {
                 return Ok((run_id, lock));
             }
         }
-        Err(OpenDanError::Other("cannot lock a freshly created run".into()))
+        Err(OpenDanError::Other(
+            "cannot lock a freshly created run".into(),
+        ))
     }
 
     /// Load a run for recovery: record + the published snapshot. Unsupported,
@@ -113,7 +138,7 @@ impl SessionRuns {
             None => None,
         };
         if let Some(s) = &snapshot {
-            if s.state.snapshot_version > llm_context::SNAPSHOT_FORMAT_VERSION {
+            if s.state.snapshot_version != llm_context::SNAPSHOT_FORMAT_VERSION {
                 return Err(blocked(format!(
                     "snapshot format version {} is not supported",
                     s.state.snapshot_version
@@ -326,6 +351,39 @@ impl RunHandle {
             .and_then(|h| h.extra.get("tasks"))
             .and_then(|t| serde_json::from_value(t.clone()).ok())
             .unwrap_or_default()
+    }
+
+    pub fn reports(&self) -> Result<Vec<crate::protocol::ReportSubmission>> {
+        let record = self.record();
+        let Some(value) = record.host.as_ref().and_then(|h| h.extra.get("reports")) else {
+            return Ok(Vec::new());
+        };
+        serde_json::from_value(value.clone()).map_err(|e| {
+            OpenDanError::blocked(format!("invalid report journal: {e}"), Some(&self.run_id))
+        })
+    }
+
+    pub fn save_report(&self, submission: &crate::protocol::ReportSubmission) -> Result<()> {
+        let mut reports = self.reports()?;
+        if let Some(old) = reports.iter().find(|r| r.id == submission.id) {
+            if old == submission {
+                return Ok(());
+            }
+            return Err(OpenDanError::InvalidArgument(
+                "report identity already submitted".into(),
+            ));
+        }
+        reports.push(submission.clone());
+        let value =
+            serde_json::to_value(reports).map_err(|e| OpenDanError::Other(e.to_string()))?;
+        self.update(|r| {
+            if let Some(h) = r.host.as_mut() {
+                if !h.extra.is_object() {
+                    h.extra = serde_json::json!({});
+                }
+                h.extra["reports"] = value;
+            }
+        })
     }
 
     pub fn set_status(

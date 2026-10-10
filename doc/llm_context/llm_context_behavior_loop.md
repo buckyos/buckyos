@@ -37,8 +37,8 @@ Behavior Loop 解开这三处耦合,但**没有引入新执行核**——它在�
 | D1 | 外层 state 双结构 | `state.steps: Vec<StepRecord>`(历史,run 内只追加,重写只经 `RewrittenSteps`)+ `state.last_step: Option<StepRecord>`(最近沉淀的热 step,verbatim 渲染);外层 `state.accumulated` = `request.input` + 进行中 Step 的 inner transcript(Step 之间为空尾) |
 | D2 | ToolMgr / ActionMgr **同签名**,不引新 trait | Agent Tool 已为 Action 化做好准备;Action 层就是 ToolMgr 实例的另一种装配,Behavior Loop 几乎不配 ToolMgr,而是配一个 action 视图的 ToolMgr |
 | D3 | StepRecord 渲染成 `assistant(意图) + user(结果)` 一对 | 喂给 LLM 的结构是 `system(include user_init target) + [History Steps 经压缩渲染] + LastStep assistant + LastStep user`;严格 user/assistant 交替,贴合 LLM 训练分布,无 provider alternation workaround |
-| D4 | next_behavior 是 terminal 信号 | parser 产出 `next_behavior: Option<String>`,不带 action / sendmsg 的 Step 上 `is_some()` 即 terminal(带 action 时跳转目标被丢弃,结果须先被观察);无单独 `terminal` bool;字符串语义("END" 等)归上层 worksession,loop 不解释——**唯一例外**是字面量 `END`(2026-09-18 修正:`END` 与 `<actions>` 同现时不得静默丢弃,否则模型永远不收敛;见 [Agent Actions](Agent%20Actions.md) §2.2) |
-| D5 | Snapshot schema 版本化 | 当前 `SNAPSHOT_FORMAT_VERSION = 3`,`resume` 只接受这个版本(更旧或更新都 `SnapshotCorrupted`);beta 期 breaking change 直接升版本,不做迁移 |
+| D4 | 完成与调度分离 | `report_end=true` 请求完成；`next_behavior` 仅用于切换 / 等待。END / done 拒绝；结束与动作或非空 next_behavior 冲突在派发前纠错。缺省 / false 的 report-only 继续，空决策纠错。 |
+| D5 | Snapshot schema 版本化 | 当前 `SNAPSHOT_FORMAT_VERSION = 5`,`resume` 只接受这个版本(更旧或更新都 `SnapshotCorrupted`);beta 期 breaking change 直接升版本,不做迁移 |
 | D6 | **Behavior step = 一次内层传统 LLMContext run** | 外层每个 Step 启一个内层 LLMContext(`into_traditional()`:无 parser/renderer/step_result_hook/checkpoint_hook),内层跑到 Done,Done.response 给外层 parser 解析,产出 StepRecord。Function 层细节(一个或多个 Round 的原生 tool 调用)被内层吃掉;无 tool_mgr 的纯 Action 场景退化为内层单次 inference(一个 Round) |
 | D7 | 内层挂起翻译为外层挂起 | 内层 `PendingTool` / `ContextLimitReached` / `Interrupted` 翻译为外层同名 Outcome,携带外层快照;进行中 Step 的 inner transcript 和被截断的 `tool_batch` 留在外层 state,恢复后继续同一个 Step(§6.3、§7)。原方案"研发期内层不允许 yield、一律转 Fatal"已废弃 |
 
@@ -61,8 +61,11 @@ pub struct StepRecord {
     pub observation: Option<String>,    // "结论"槽:LLM 对上一步动作结果的解读
     pub thought: Option<String>,        // "思考"槽
     pub actions: Vec<AiToolCall>,       // "动作"槽:一个 Step 可以有多个 action(<actions> 容器)
-    pub next_behavior: Option<String>,  // 显式跳转目标 / END(规则见 §6.2)
+    pub next_behavior: Option<String>,  // 显式跳转 / 等待目标(规则见 §6.2)
     pub self_report: Option<String>,    // <report>
+    pub report_end: bool,               // 缺省 false
+    pub report_artifacts: Vec<String>,  // 可选 <artifacts>
+    pub report_result: Option<Value>,   // 可选 <result>
     pub messages_sent: Vec<SendMessageRecord>, // <sendmsg>
 
     // —— 来自动作派发(executor 填,执行后完成)——
@@ -228,8 +231,8 @@ async fn run_behavior(&mut self) -> LLMContextOutcome {
             return LLMContextOutcome::BudgetExhausted { which: BudgetKind::ToolIterations, .. };
         }
 
-        // 5. report / sendmsg 副作用;action policy gate(拒绝 ⇒ 合成纠错 Step,continue);
-        //    带 action / sendmsg 时跳转目标被丢弃(结果必须先被观察),只保留 END
+        // 5. parser.validate 与宿主 validate_report，拒绝时先生成纠错，不更新报告或执行动作；
+        //    通过后更新 report / sendmsg；带 action / sendmsg 时跳转目标被丢弃，结果必须先被观察
 
         // 6. 派发前扣一次工具迭代;Step 进入 action_step,在循环顶部按序派发
         if !new_step.actions.is_empty() {
@@ -242,7 +245,7 @@ async fn run_behavior(&mut self) -> LLMContextOutcome {
 // run_step_actions:按序派发,第一个非成功结果之后的 action 记为 Unresolved;
 //   Pending + allow_deferred ⇒ PendingTool(Step 留在 action_step,不沉淀)。
 // 全部派发 / 跳过后 complete_step:
-//   next_behavior 生效 / 这一步什么都没做 / StepResultHook 要求结束 ⇒ finish_done_behavior
+//   report_end / next_behavior 生效 / StepResultHook 要求结束 ⇒ finish_done_behavior
 //   否则 sediment(last_step 入 steps,新 step 成为热 step),有动作错误则 bump,进入下一个 Step
 
 fn sediment(&mut self, new_step: StepRecord) {
@@ -381,7 +384,7 @@ behavior 模式的快照总是**外层**快照。挂起点有两类:Step 之间�
 - `action_step`:已解析、action 尚未派发完的 Step 与它的 response(未沉淀,`step.action_results` 是已得结果);
 - `next_step_index` / `next_action_id`:下一个待分配的编号。step_index 在解析出 Step 时就分配(合成纠错 Step 也占一个),是分配位置,不是已完成 Step 数;`action_step` 里的 Step 已有编号但未完成。
 
-`ResumeFill`(与 function call 模式共用,快照版本 4):
+`ResumeFill`(与 function call 模式共用,快照版本 5):
 
 | 挂起 | fill | behavior 模式下的语义 |
 |---|---|---|
@@ -404,7 +407,7 @@ SessionRunner 推进 live run(behavior 模式的 LLMContext,deps 含 action 视�
 └─ loop:
    match ctx.run().await {                     # 走 run_behavior 分支;一次 run() 调用 → 一个 Outcome
        Done { behavior_result: Some(r), .. } => match r.next_behavior.as_deref() {
-           None | Some("END")    => 结束 run,Turn completed;按 end_condition 结束 Session 或等待输入
+           None if r.report_end  => 提交最终报告，结束当前 context；顶层按完成策略关闭 Turn / Session
            Some("WAIT_USER_MSG") => 结束 run,等待输入;已交付答复才完成 Turn,否则下一条输入并入同一 Turn
            Some(name) => match behavior_entry(name).mode {   # 目标 behavior 的进入配置,没有默认模式
                没有条目           => Turn failed(behavior_config);在子 context 内则以 failed 返回调用方
@@ -415,7 +418,7 @@ SessionRunner 推进 live run(behavior 模式的 LLMContext,deps 含 action 视�
                                     子 run 无论以什么结束都返回调用方(<process_result behavior status>),Turn 不结束
            }
        }
-       # 当前 run 是子 context 时,END / WAIT_USER_MSG / 交接到 switch_context 目标 / 不可重试错误 / 预算耗尽都改为返回调用方(ok / needs_user_input / failed)
+       # 当前 run 是子 context 时,结束报告 / WAIT_USER_MSG / 交接到 switch_context 目标 / 不可重试错误 / 预算耗尽都改为返回调用方(ok / needs_user_input / failed)
        PendingTool(call_behavior 的 task "subctx:<call_id>") => 调用方保留未完成的批次 / Step 入栈(Caller),
                                     子 run 结束后用 ToolResults 按 call_id 回填,同一 Turn 继续
        PendingTool / ContextLimitReached / Interrupted => run 保留(外层快照),处理后 resume,同一 Turn 继续
@@ -436,7 +439,7 @@ LLMContext 一次 `run()` 只执行一个 behavior,状态机在 worksession,不�
 - **不**在 `LLMContextOutcome` 加新变体。`Done` 加字段即可。
 - **不**在传统模式路径上加任何额外开销——所有 Behavior 字段是 `Option`,`None` 走老路。
 - **不**做 Snapshot 嵌套:内层挂起只把 inner transcript / `tool_batch` 存进外层 state,没有独立的内层快照(D7)。
-- **不**做旧快照迁移:schema 变化直接升 `SNAPSHOT_FORMAT_VERSION`(当前 3),`resume` 只接受当前版本。
+- **不**做旧快照迁移:schema 变化直接升 `SNAPSHOT_FORMAT_VERSION`(当前 5),`resume` 只接受当前版本。
 - **不**并发派发一个 Step 的多个 action:v2 协议允许一个 Step 带多个 action(`actions` / `action_results: Vec<_>`),按文档顺序串行派发,第一个非成功结果之后的 action 不执行。
 
 ---
@@ -460,3 +463,11 @@ LLMContext 一次 `run()` 只执行一个 behavior,状态机在 worksession,不�
    - 内层挂起 → 外层同名挂起 Outcome + inner transcript 恢复(原计划为转 fatal)
 
 Snapshot/Resume 细节留到 7 之后再敲定。
+
+## H4 持久完成与工具派发边界
+
+`StepRecord.native_messages` 保存当前 Step 内层原生调用与结果消息，排除最终 assistant（已由 Step 本身承载）。内层 Done 后转存，纠错 Step 也保留；Settled / PendingTool 等未完成路径继续将尾部保存在 accumulated。宿主把它投影为原始 assistant_message / action_result 审计记录，不增加 Round，StepRenderer 不重复渲染该审计字段。
+
+`LLMBehaviorResult::validate` 同时约束 `XmlBehaviorParser` 与 `XllmActionParser`。`run_inner_for_step` 在本次原生 tool_calls 派发前验证 XML 结束意图，避免外层 parser 发现冲突时副作用已经发生。宿主 `CheckpointHook::validate_report` 验证并持久化 XML 报告，拒绝时作为可修正错误反馈。
+
+工具调用前有 `CheckpointStage::BeforeToolCall` 持久点，原始 assistant 调用批次已经保留。宿主工具 `report` 接受结束后登记独立完成意图，再用 finish 让出；同批剩余调用明确跳过并配齐回执。普通报告不截断批次，拒绝报告可继续纠正。宿主区分有完成提交的 Settled 与普通停止。快照 v5 的 `report_end` 可直接从最终 Step 恢复 Done，不再请求模型。

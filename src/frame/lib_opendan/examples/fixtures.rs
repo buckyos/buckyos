@@ -29,6 +29,7 @@ use libopendan::channel::{kmsg::post_to_queue, KmsgChannels, PollWaker};
 use libopendan::protocol::*;
 use libopendan::runner::{drive, RunnerDeps, RunnerOptions, StopWhen};
 use libopendan::runtime::NativeRuntime;
+use libopendan::state::AgentStateClient;
 use libopendan::{FsAgentStateClient, SessionDir};
 use llm_context::deps::{LlmClient, LlmInferenceRequest};
 use llm_context::error::{LLMComputeError, ProviderFailure};
@@ -88,6 +89,16 @@ impl LlmClient for Script {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let all = render(&req.messages);
         let mut r = match self.name.as_str() {
+            "final_report" => tool(
+                "report-final",
+                "report",
+                json!({
+                    "report": "Delivered the verified answer.",
+                    "artifacts": ["answer.txt"],
+                    "result": { "answer": 42 },
+                    "is_end": true
+                }),
+            ),
             "tool_then_answer" => {
                 if all.contains("<tool_result c1>") {
                     text("done: notes.txt written")
@@ -120,9 +131,9 @@ impl LlmClient for Script {
                 let n = all.matches("<response>").count();
                 let _ = n;
                 if all.contains("research result") {
-                    text("<response><report><![CDATA[final]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
                 } else if all.contains("context_switch to=\"research\"") {
-                    text("<response><report><![CDATA[research result]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[research result]]></report></response>")
                 } else if all.contains("p1-output") {
                     text("<response><next_behavior>research</next_behavior></response>")
                 } else {
@@ -455,7 +466,11 @@ async fn gen(out: &Path) -> R<()> {
         // The command belongs to nobody now (standard process semantics);
         // leave no process behind in the generator environment.
         let _ = std::process::Command::new("pkill")
-            .args(["-KILL", "-f", &sd.path().join("marker").display().to_string()])
+            .args([
+                "-KILL",
+                "-f",
+                &sd.path().join("marker").display().to_string(),
+            ])
             .status();
         write_expected(&d, "killed_during_exec",
             "The runner was killed while `shell` ran: run.json holds the in-flight call c1; the latest snapshot has no result for c1. No process identity is recorded.",
@@ -490,7 +505,10 @@ async fn gen(out: &Path) -> R<()> {
         drive(&sd, &env.deps("tool_then_answer"), StopWhen::Finished).await;
         env.post(
             &sd,
-            PostedInput::control(APP, "d-1", ControlCommand::Decide {
+            PostedInput::control(
+                APP,
+                "d-1",
+                ControlCommand::Decide {
                     decision: "accept".into(),
                     by: "did:user:alice".into(),
                     note: None,
@@ -534,10 +552,31 @@ async fn gen(out: &Path) -> R<()> {
         let env = Env::new(&d);
         let ws = d.join("ws");
         std::fs::create_dir_all(&ws)?;
+        let workspace = env
+            .agent()
+            .workspaces()
+            .import(
+                &WorkspaceImport {
+                    operation_id: "fixture-overlap".into(),
+                    location: WorkspaceLocation {
+                        runtime_id: LOCAL_WORKSPACE_RUNTIME.into(),
+                        directory: ws,
+                    },
+                    name: Some("Overlap fixture".into()),
+                    description: String::new(),
+                    usage: WorkspaceUsage::Collaborative,
+                    expected_revision: None,
+                    source_session: None,
+                    policy_ref: None,
+                },
+                APP,
+            )
+            .await?;
         let mk = |p: &str| {
             let mut s = work("edit");
-            s.workspace = Some(WorkspaceRef::External {
-                path: ws.display().to_string(),
+            s.workspace = Some(WorkspaceRef {
+                workspace_id: workspace.workspace_id.clone(),
+                access: WorkspaceAccess::ReadWrite,
             });
             s.scope = Some(Scope {
                 paths: vec![p.into()],
@@ -555,7 +594,7 @@ async fn gen(out: &Path) -> R<()> {
         write_expected(&d, "active_overlap",
             "A is running (registry status running, touching ws:snake/src/); B is created on the same workspace.",
             vec![observe(&a), observe(&b)],
-            json!({ "action": "render_active_sessions", "session": b.sid(), "sees": [a.sid()], "relation": "same_target", "overlap": ["ws:snake/src/"] }));
+            json!({ "action": "workspace_busy", "session": b.sid(), "sees": [a.sid()], "relation": "same_target", "overlap": ["ws:snake/src/"] }));
         relativize(&d);
     }
     // 11. large worklog with a summary start point
@@ -684,7 +723,10 @@ async fn gen(out: &Path) -> R<()> {
             let out = render_template(tpl, vars.clone()).await?;
             write(&format!("rendering/templates/{name}.out"), out.as_bytes());
         }
-        for (name, media) in [("reference", InputMedia::Reference), ("inline", InputMedia::Inline)] {
+        for (name, media) in [
+            ("reference", InputMedia::Reference),
+            ("inline", InputMedia::Inline),
+        ] {
             let m = input_fixture::user_message(&builtin, &view, media);
             write(
                 &format!("rendering/ai_message_{name}.json"),
@@ -701,7 +743,10 @@ async fn gen(out: &Path) -> R<()> {
             "<semi_subscription_snapshot>\n{}\n</semi_subscription_snapshot>",
             render_snapshot_events(&views)
         );
-        write("rendering/semi_subscription_snapshot.txt", snapshot.as_bytes());
+        write(
+            "rendering/semi_subscription_snapshot.txt",
+            snapshot.as_bytes(),
+        );
         let v = json!({
             "scenario": "input_bus",
             "description": "Hand-written Session Input Bus records (opendan.session_input/3): what a consumer does with each, why the rejected ones are rejected, and the byte-exact text of the built-in formats and the example templates for one batch.",
@@ -736,6 +781,50 @@ async fn gen(out: &Path) -> R<()> {
             }
         });
         write("expected.json", &pretty(&v));
+    }
+    {
+        let d = scen("15_report_pending_commit");
+        let env = Env::new(&d);
+        let mut spec = work("submit the verified answer");
+        spec.policy.completion = CompletionPolicy::ExplicitReport;
+        spec.prompt.llm_context = json!({
+            "tools": { "enabled": true, "tools": [{ "name": "report" }] }
+        });
+        let sd = env.create("work-fixture-report", spec).await;
+        std::fs::write(sd.path().join("answer.txt"), "verified answer: 42\n")?;
+        env.child_wait(&sd, "final_report", "report:after_paired_checkpoint");
+        assert!(!sd.state()?.is_finished());
+        let live = sd.state()?.live_run.unwrap();
+        let (record, snapshot) = sd.runs().load_checked(&live.run_id)?;
+        assert!(!record.status.is_terminal());
+        assert!(
+            agent_tool::exec_tracking::persisted_outcome_ids(&snapshot.unwrap())
+                .iter()
+                .any(|call_id| call_id == "report-final")
+        );
+        assert_eq!(
+            record.host.as_ref().unwrap().extra["reports"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        write_expected(&d, "report_pending_commit",
+            "The final report and stable artifact are persisted, and its tool result is paired in the published snapshot. The run and Session are not yet terminal.",
+            vec![observe(&sd)],
+            json!({
+                "action": "complete_accepted_report_without_inference",
+                "llm_calls": 0,
+                "rounds_after": 1,
+                "report_deliveries": 1,
+                "tool_results": { "report-final": 1 },
+                "final_report": "Delivered the verified answer.",
+                "result": { "answer": 42 },
+                "artifact": { "path": "answer.txt", "content": "verified answer: 42\n" },
+                "outcome": "succeeded",
+                "acceptance": "pending"
+            }));
+        relativize(&d);
     }
     // JSON Schemas next to the fixtures.
     let schema_dir = out.join("..").join("schema");

@@ -1,12 +1,12 @@
 //! Budgets: tool iterations, Rounds, tokens, inner-context inheritance.
 
 use std::collections::HashMap;
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use buckyos_api::{AiMessage, AiResponse, AiRole, AiToolCall, AiUsage};
 
 use crate::deps::{LLMContextDeps, ToolManager};
-use crate::observation::{Observation};
+use crate::observation::Observation;
 use crate::outcome::{BudgetKind, ContextOutput, LLMContextOutcome};
 use crate::{LLMContext, XmlBehaviorParser, XmlStepRenderer};
 
@@ -16,9 +16,8 @@ use super::mocks::*;
 async fn behavior_actions_consume_tool_iterations_even_on_business_failure() {
     for max_tool_iterations in [0, 2] {
         for fail in [false, true] {
-            let response = text_response(
-                "<response><actions><shell>echo action</shell></actions></response>",
-            );
+            let response =
+                text_response("<response><actions><shell>echo action</shell></actions></response>");
             let llm = Arc::new(ScriptedRecordingLlm::new(vec![
                 response;
                 max_tool_iterations as usize
@@ -64,9 +63,9 @@ async fn behavior_actions_consume_tool_iterations_even_on_business_failure() {
 
 #[tokio::test]
 async fn behavior_action_batch_uses_one_tool_iteration_and_allows_final_response() {
-    for terminal_with_actions in [false, true] {
-        let terminal = if terminal_with_actions {
-            "<next_behavior>END</next_behavior>"
+    for report_with_actions in [false, true] {
+        let terminal = if report_with_actions {
+            "<report>working</report>"
         } else {
             ""
         };
@@ -74,7 +73,7 @@ async fn behavior_action_batch_uses_one_tool_iteration_and_allows_final_response
             text_response(&format!(
                 "<response><actions><shell>echo a</shell><shell>echo b</shell></actions>{terminal}</response>"
             )),
-            text_response("<response><next_behavior>END</next_behavior></response>"),
+            text_response("<response><report end=\"true\">finished</report></response>"),
         ]));
         let mut req = base_request();
         req.tool_policy.max_tool_iterations = 1;
@@ -88,7 +87,7 @@ async fn behavior_action_batch_uses_one_tool_iteration_and_allows_final_response
         };
         assert_eq!(trace.tool_trace.len(), 2);
         assert_eq!(ctx.snapshot().state.tool_iterations_left, 0);
-        assert_eq!(llm.seen().len(), if terminal_with_actions { 1 } else { 2 });
+        assert_eq!(llm.seen().len(), 2);
     }
 }
 
@@ -110,7 +109,7 @@ async fn behavior_native_tools_and_actions_share_tool_iterations_across_steps() 
             action.clone(),
             native.clone(),
             action.clone(),
-            text_response("<response><next_behavior>END</next_behavior></response>"),
+            text_response("<response><report end=\"true\">finished</report></response>"),
         ]));
         let mut req = base_request();
         req.tool_policy.max_tool_iterations = max_tool_iterations;
@@ -193,7 +192,7 @@ async fn behavior_step_spans_rounds_and_holds_several_actions() {
             "<response><actions><shell>echo a</shell><shell>echo b</shell></actions></response>",
         ),
         // Step 1, Round 3: terminal decision.
-        text_response("<response><next_behavior>END</next_behavior></response>"),
+        text_response("<response><report end=\"true\">finished</report></response>"),
     ]));
     let mut req = base_request();
     req.tool_policy.max_tool_iterations = 5;
@@ -239,7 +238,7 @@ async fn behavior_inner_context_inherits_outer_budget() {
         AiResponse {
             message: AiMessage::text(
                 AiRole::Assistant,
-                "<response><thinking>done</thinking><next_behavior>END</next_behavior></response>",
+                "<response><thinking>done</thinking><report end=\"true\">finished</report></response>",
             ),
             usage: usage(8),
             ..Default::default()

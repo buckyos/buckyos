@@ -71,8 +71,8 @@ beta2.2 是 breaking-change 版本，下列旧上下文变量**已整体移除**
 | [`todo`](#8-todo) | bash / action / llm_tool_call | session 级 PDCA todo 管理 | `src/todo_tools.rs` |
 | [`delegateTask`](#9-delegatetask) | bash / action / llm_tool_call | 委托系统级 Task | `src/todo_tools.rs` |
 | [`get_session`](#10-get_session) | bash | 读 session 快照 | `src/lib.rs` |
-| [`create_workspace`](#11-create_workspace) | bash | 创建 workspace 并绑定 | `src/lib.rs` |
-| [`bind_workspace`](#12-bind_workspace) | bash | 绑定 workspace 到 session | `src/lib.rs` |
+| `agent-session workspace` | bash | 登记、查询和维护长期 Workspace | `lib_opendan/src/bin/xagent.rs` |
+| `agent-session create-worksession --workspace <id>` | bash | 创建时固定 Workspace 绑定 | `lib_opendan/src/bin/xagent.rs` |
 | [`bind_external_workspace`](#13-bind_external_workspace) | bash | 注册外部 workspace | `src/lib.rs` |
 | [`list_external_workspaces`](#14-list_external_workspaces) | bash | 列出外部 workspace | `src/lib.rs` |
 | [`worklog_manage`](#15-worklog_manage) | bash | append-only 审计日志（不入 prompt） | `src/lib.rs` |
@@ -816,103 +816,22 @@ get_session --session-id sid-abc-123   # CLI 长选项
 
 ---
 
-## 11. `create_workspace`
+## 11. Workspace 管理
 
-创建本地 workspace、写 `SUMMARY.md`、把当前 session 绑过去。
-
-### Prompt
-
-- `description`: `创建session的wrokspace并设置为session的default workspace`
-- `args_schema`:
-  ```json
-  {
-    "type": "object",
-    "properties": { "name": {"type":"string"}, "summary": {"type":"string"} },
-    "required": ["name", "summary"]
-  }
-  ```
-- `usage`: `create_workspace <name> <summary>`
-
-### Bash 支持
-
-`CallingConventions::BASH`。
-
-### CLI 命令解释 + 常用例子
+Workspace 管理统一使用 `xagent workspace`（Session shell 中使用 `agent-session workspace`），详见 [Agent Workspace Protocol](<protocol/Agent Workspace Protocol.md>)。
 
 ```bash
-create_workspace beta22_release "Track beta2.2 release prep"
+agent-session workspace list
+agent-session workspace create --runtime local --directory /projects/course --name course --description "课程材料" --key course-create-1
+agent-session workspace import --runtime local --directory /projects/existing --name existing --key existing-import-1
+agent-session create-worksession --objective "更新课程材料" --workspace <workspace_id>
 ```
 
-### 输出示例
+`create` / `import` 只登记长期目录。Session 创建时选定 Workspace，运行期间不能绑定、解绑或切换；不需要长期目录时使用 `--workspace none`。
 
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "create_workspace",
-  "cmd_args": "create_workspace beta22_release Track beta2.2 release prep",
-  "title": "create_workspace beta22_release => created",
-  "summary": "ok",
-  "detail": {
-    "ok": true,
-    "workspace": { "id": "ws-7f...", "name": "beta22_release" },
-    "binding": { "session_id": "sid-abc", "workspace_id": "ws-7f..." },
-    "summary_path": "/workspaces/ws-7f.../SUMMARY.md",
-    "session_updated": true
-  }
-}
-```
+## 12. 旧 Workspace 工具
 
----
-
-## 12. `bind_workspace`
-
-切换 session 当前 workspace。
-
-### Prompt
-
-- `description`: `设置agent_session的当前workspace`
-- `args_schema`:
-  ```json
-  {
-    "type": "object",
-    "properties": { "workspace": {"type":"string"} },
-    "required": ["workspace"]
-  }
-  ```
-- `usage`: `bind_workspace <workspace_id|workspace_path>`
-
-### Bash 支持
-
-`CallingConventions::BASH`。
-
-### CLI 命令解释 + 常用例子
-
-```bash
-bind_workspace ws-7f1a2b3c
-bind_workspace /workspaces/beta22_release    # 走 path
-bind_workspace workspace_id=ws-7f1a2b3c
-```
-
-### 输出示例
-
-```json
-{
-  "agent_tool_protocol": "1",
-  "status": "success",
-  "cmd_name": "bind_workspace",
-  "cmd_args": "bind_workspace ws-7f1a2b3c",
-  "title": "bind_workspace ws-7f1a2b3c => bound",
-  "summary": "bound session to workspace ws-7f1a2b3c",
-  "detail": {
-    "ok": true,
-    "binding": { "session_id": "sid-abc", "local_workspace_id": "ws-7f1a2b3c" },
-    "session_updated": true
-  }
-}
-```
-
----
+`create_workspace`、`bind_workspace`、软链接式外部 Workspace backend 和开发 CLI 的旧双写索引已移除。既有目录通过 `workspace import` 显式登记，不读取或猜测旧索引，不删除原文件。
 
 ## 13. `bind_external_workspace`
 

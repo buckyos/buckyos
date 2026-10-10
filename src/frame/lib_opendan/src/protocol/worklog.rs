@@ -50,7 +50,7 @@ pub const INTERNAL_TASK_SRC: &str = "_task";
 /// the session's sub sessions (needs attention / finished).
 pub const INTERNAL_CHILD_SRC: &str = "_child";
 
-/// Worklog entry bodies (format of `opendan.session_state/5` sessions).
+/// Worklog entry bodies (format of `opendan.session_state/6` sessions).
 ///
 /// Identities: an input batch is `(run_id, input_seq)`, a Turn is `turn`
 /// (session-wide), a behavior Step is `(run_id, step_index)`, a tool call /
@@ -59,6 +59,12 @@ pub const INTERNAL_CHILD_SRC: &str = "_child";
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "t", rename_all = "snake_case")]
 pub enum WorklogBody {
+    ReportDelivery {
+        run_id: String,
+        turn: u64,
+        submission: super::ReportSubmission,
+        assistant: String,
+    },
     /// First entry of every session.
     Created {
         session_id: String,
@@ -185,10 +191,7 @@ pub enum WorklogBody {
     /// An event consumed without entering the context or `pending_events`:
     /// no valid subscription matched (`unsubscribed`), or it only woke the
     /// wait of a suspended call (`pending_call`).
-    EventDropped {
-        input: InputRef,
-        reason: String,
-    },
+    EventDropped { input: InputRef, reason: String },
     /// Control inputs applied outside a run (stop / subscribe / activity).
     ControlApplied {
         input: InputRef,
@@ -205,6 +208,7 @@ impl WorklogBody {
             | Self::InputBatch { turn, .. }
             | Self::UserMessage { turn, .. }
             | Self::AssistantMessage { turn, .. }
+            | Self::ReportDelivery { turn, .. }
             | Self::Step { turn, .. }
             | Self::ActionResult { turn, .. }
             | Self::Outcome { turn, .. }
@@ -215,6 +219,7 @@ impl WorklogBody {
 
     pub fn kind(&self) -> &'static str {
         match self {
+            WorklogBody::ReportDelivery { .. } => "report_delivery",
             WorklogBody::Created { .. } => "created",
             WorklogBody::TurnStarted { .. } => "turn_started",
             WorklogBody::InputBatch { .. } => "input_batch",

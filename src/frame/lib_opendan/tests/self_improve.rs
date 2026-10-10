@@ -125,6 +125,7 @@ async fn perception_append_is_idempotent_and_monotonic() {
         summary: format!("r{seq}"),
         payload: serde_json::Value::Null,
         refs: serde_json::Value::Null,
+        ..Default::default()
     };
     let p = agent.perception();
     assert_eq!(p.append(&lease, sd.sid(), vec![rec(1), rec(2)]).await.unwrap(), 2);

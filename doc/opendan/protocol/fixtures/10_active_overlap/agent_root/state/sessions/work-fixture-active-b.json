@@ -14,8 +14,8 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-b/input",
   "agent_access": "full",
   "workspace": {
-    "kind": "external",
-    "path": "${FIXTURE_ROOT}/ws"
+    "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+    "access": "read_write"
   },
   "objective": "edit",
   "scope": {
@@ -33,7 +33,7 @@
       "summary": "",
       "heartbeat_ms": 0
     },
-    "updated_at_ms": 1791134683281
+    "updated_at_ms": 1791645241589
   },
   "location_rev": 0
 }

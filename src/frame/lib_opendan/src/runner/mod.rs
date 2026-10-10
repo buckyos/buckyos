@@ -15,6 +15,7 @@ mod live;
 mod outbound;
 mod outcome;
 mod receipts;
+mod reports;
 mod reconcile;
 mod rounds;
 mod shared;

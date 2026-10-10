@@ -1,0 +1,57 @@
+{
+  "description": "The final report and stable artifact are persisted, and its tool result is paired in the published snapshot. The run and Session are not yet terminal.",
+  "generated_by": "libopendan examples/fixtures.rs",
+  "next": {
+    "acceptance": "pending",
+    "action": "complete_accepted_report_without_inference",
+    "artifact": {
+      "content": "verified answer: 42\n",
+      "path": "answer.txt"
+    },
+    "final_report": "Delivered the verified answer.",
+    "llm_calls": 0,
+    "outcome": "succeeded",
+    "report_deliveries": 1,
+    "result": {
+      "answer": 42
+    },
+    "rounds_after": 1,
+    "tool_results": {
+      "report-final": 1
+    }
+  },
+  "scenario": "report_pending_commit",
+  "sessions": [
+    {
+      "live_run": {
+        "applied_input_seq": 1,
+        "host_commit_pending": null,
+        "inflight": [],
+        "run_id": "20261010-074524-5ad683",
+        "run_status": "running"
+      },
+      "runs_on_disk": [
+        "20261010-074524-5ad683"
+      ],
+      "session_id": "work-fixture-report",
+      "state": {
+        "acceptance": "n/a",
+        "inputs": {},
+        "last_run": null,
+        "open_turn": 1,
+        "outcome": null,
+        "process_stack": [],
+        "rev": 3,
+        "run_state": "running",
+        "turn_seq": 1,
+        "turns_completed": 0
+      },
+      "worklog": {
+        "committed_bytes": 158,
+        "committed_seq": 1,
+        "file_bytes": 158,
+        "uncommitted_tail": false
+      }
+    }
+  ]
+}

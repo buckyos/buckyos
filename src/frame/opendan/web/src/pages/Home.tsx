@@ -4,7 +4,6 @@ import {
   Check,
   ChevronRight,
   Copy,
-  Folder,
   ImagePlus,
   MessageCircle,
   Minus,
@@ -26,6 +25,7 @@ import {
   type UiBinding,
 } from '../model'
 import { ErrorBox } from '../ui'
+import { WorkspaceList } from './Workspaces'
 
 const AVATAR_SIZE = 192
 const NAME_MAX = 64
@@ -279,14 +279,11 @@ function ModelRow({ usage, max }: { usage: ModelUsage; max: number }) {
 
 interface RecentItem {
   key: string
-  artifact: boolean
   title: string
   sub: string
   at: number
   href: string
 }
-
-const basename = (path: string) => path.replace(/\/+$/, '').split('/').pop() || path
 
 const recentItems = (artifacts: ArtifactHead[], entries: RegistryEntry[]): RecentItem[] => {
   const latest = (pick: (e: RegistryEntry) => boolean) =>
@@ -295,30 +292,12 @@ const recentItems = (artifacts: ArtifactHead[], entries: RegistryEntry[]): Recen
     const session = latest((e) => e.artifact_id === a.aid)
     return {
       key: `artifact:${a.aid}`,
-      artifact: true,
       title: a.aid,
       sub: a.head ? t('acceptedVersion', { ver: a.head }) : t('notAccepted'),
       at: a.updated_at_ms,
       href: session ? sessionHref(session.session_id) : '#/agent',
     }
   })
-  const seen = new Set<string>()
-  for (const e of entries) {
-    const w = e.workspace
-    if (!w) continue
-    const key = w.kind === 'agent' ? `workspace:agent:${w.id}` : `workspace:${w.path}`
-    if (seen.has(key)) continue
-    seen.add(key)
-    const session = latest((x) => JSON.stringify(x.workspace) === JSON.stringify(w)) ?? e
-    items.push({
-      key,
-      artifact: false,
-      title: w.kind === 'agent' ? w.id : basename(w.path),
-      sub: w.kind === 'agent' ? t('agentWorkspace') : w.path,
-      at: session.status.updated_at_ms,
-      href: sessionHref(session.session_id),
-    })
-  }
   return items.sort((a, b) => b.at - a.at).slice(0, RECENT_ITEMS)
 }
 
@@ -373,13 +352,13 @@ function Overview({ entries }: { entries?: RegistryEntry[] }) {
           {recent.map((item) => (
             <li key={item.key}>
               <a href={item.href} className="flex min-h-12 items-center gap-3 rounded-xl px-2 py-1.5 active:bg-soft">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-soft text-accent" title={t(item.artifact ? 'artifact' : 'workspace')}>
-                  {item.artifact ? <Package size={18} /> : <Folder size={18} />}
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-soft text-accent" title={t('artifact')}>
+                  <Package size={18} />
                 </span>
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{item.title}</span>
                   <span className="block truncate text-xs text-mute">
-                    {t(item.artifact ? 'artifact' : 'workspace')} · {item.sub}
+                    {t('artifact')} · {item.sub}
                   </span>
                 </span>
                 <span className="shrink-0 text-xs text-mute">{ago(item.at)}</span>
@@ -552,6 +531,7 @@ export default function HomePage() {
           <div className="grid grid-cols-[minmax(0,1fr)] gap-3">
             <AgentCard profile={profile.data} />
             <Overview entries={sessions.data} />
+            <WorkspaceList entries={sessions.data} />
           </div>
           <SessionList entries={sessions.data} profile={profile.data} loading={sessions.isLoading} />
         </div>

@@ -55,7 +55,7 @@ use buckyos_api::{
 };
 use serde_json::Value;
 
-use crate::behavior_loop::{is_terminal_next_behavior, LLMBehaviorResult, StepMeta, StepRecord};
+use crate::behavior_loop::{LLMBehaviorResult, LLMResultParser, StepMeta, StepRecord};
 use crate::context_window::{estimate_request, ContextLimits};
 use crate::deps::{
     resolve_tool_specs, CancelCause, Injection, InjectionPosition, LLMContextDeps,
@@ -91,6 +91,9 @@ pub struct LLMContext {
     /// Background env rendered for the next inference (not part of the
     /// history).
     background_env: Option<String>,
+    native_result_parser: Option<Arc<dyn LLMResultParser>>,
+    tool_checkpoint_hook: Option<Arc<dyn crate::deps::CheckpointHook>>,
+    inner_parent: Option<(LLMContextSnapshot, usize)>,
 }
 
 impl LLMContext {
@@ -113,6 +116,9 @@ impl LLMContext {
             last_response: AiResponse::default(),
             abort: InferenceAbortState::new(),
             background_env: None,
+            native_result_parser: None,
+            tool_checkpoint_hook: None,
+            inner_parent: None,
         }
     }
 
@@ -177,6 +183,9 @@ impl LLMContext {
             // it wants to preempt the next inference.
             abort: InferenceAbortState::new(),
             background_env: None,
+            native_result_parser: None,
+            tool_checkpoint_hook: None,
+            inner_parent: None,
         })
     }
 
@@ -381,14 +390,14 @@ impl LLMContext {
                 continue;
             }
 
-            if let Some(budget_outcome) = self.check_wallclock_budget() {
-                return budget_outcome;
-            }
-
             // A graceful finish requested at an inference boundary: nothing
             // is in flight, the snapshot is already paired.
             if self.abort.is_finishing() && !self.abort.is_aborted() {
                 return self.finish_settled();
+            }
+
+            if let Some(budget_outcome) = self.check_wallclock_budget() {
+                return budget_outcome;
             }
 
             // 0. Host checkpoint / observation boundary (async, outer
@@ -541,6 +550,35 @@ impl LLMContext {
             let tool_calls = response.message.tool_calls();
             let assistant_text = response.message.text_content();
 
+            if !tool_calls.is_empty() {
+                if let Some(parser) = self.native_result_parser.as_ref() {
+                    let parsed = parser.parse(&response).and_then(|result| {
+                        result.validate()?;
+                        Ok(result)
+                    });
+                    let validation = match parsed {
+                        Ok(result) => self.accept_native_report(result).await,
+                        Err(message) => Err(message),
+                    };
+                    if let Err(message) = validation {
+                        self.reject_tool_batch(&response.message, &tool_calls, &message);
+                        self.deps
+                            .worklog
+                            .emit(WorkEvent::OutputParseFailed {
+                                trace_id: self.request.trace.clone(),
+                                error: message.clone(),
+                            })
+                            .await;
+                        if let Some(outcome) =
+                            self.bump_consecutive_errors(LLMComputeError::OutputParse(message))
+                        {
+                            return outcome;
+                        }
+                        continue;
+                    }
+                }
+            }
+
             // 2. No tool calls ⇒ finish (or self-correct a strict JSON output)
             if tool_calls.is_empty() || self.request.tool_policy.mode == ToolMode::None {
                 match self.finish_done(response).await {
@@ -612,6 +650,88 @@ impl LLMContext {
         }
     }
 
+    async fn accept_native_report(&mut self, mut result: LLMBehaviorResult) -> Result<(), String> {
+        if result.self_report.is_none() || self.inner_parent.is_none() {
+            return Ok(());
+        }
+        let snapshot = self.tool_checkpoint_snapshot();
+        if let Some(hook) = &self.tool_checkpoint_hook {
+            hook.validate_report(&snapshot, &result, snapshot.state.next_step_index)
+                .await?;
+        }
+        result.do_actions.clear();
+        result.messages_to_send.clear();
+        result.next_behavior = None;
+        let mut step = StepRecord::from_result(result);
+        step.meta = StepMeta {
+            behavior_name: snapshot.request.behavior_name.clone(),
+            step_index: snapshot.state.next_step_index,
+            started_at_ms: now_ms(),
+            ended_at_ms: Some(now_ms()),
+            ..Default::default()
+        };
+        let parent = &mut self.inner_parent.as_mut().unwrap().0;
+        parent.state.next_step_index = parent.state.next_step_index.saturating_add(1);
+        parent.state.last_report = step.self_report.clone();
+        parent.state.report_end = false;
+        if let Some(previous) = parent.state.last_step.take() {
+            parent.state.steps.push(previous);
+        }
+        let chars = step
+            .self_report
+            .as_deref()
+            .unwrap_or_default()
+            .chars()
+            .count();
+        parent.state.steps.push(step);
+        self.deps
+            .worklog
+            .emit(WorkEvent::SelfReportSet {
+                trace_id: self.request.trace.clone(),
+                chars,
+            })
+            .await;
+        Ok(())
+    }
+
+    fn tool_checkpoint_snapshot(&self) -> LLMContextSnapshot {
+        match &self.inner_parent {
+            Some((parent, prefix_len)) => {
+                let mut outer = parent.clone();
+                outer.state.accumulated.truncate(outer.request.input.len());
+                outer
+                    .state
+                    .accumulated
+                    .extend(self.state.accumulated.iter().skip(*prefix_len).cloned());
+                outer.state.tool_batch = self.state.tool_batch.clone();
+                outer.state.usage = self.state.usage.clone();
+                outer.state.consecutive_errors = self.state.consecutive_errors;
+                outer.state.tool_iterations_left = self.state.tool_iterations_left;
+                outer
+                    .state
+                    .llm_task_ids
+                    .extend(self.state.llm_task_ids.clone());
+                outer
+            }
+            None => self.snapshot(),
+        }
+    }
+
+    async fn checkpoint_before_tool_call(&mut self) -> Option<LLMContextOutcome> {
+        let hook = self
+            .tool_checkpoint_hook
+            .as_ref()
+            .or(self.deps.checkpoint_hook.as_ref())?;
+        let snapshot = self.tool_checkpoint_snapshot();
+        match hook.before_tool_call(&snapshot).await {
+            Ok(()) => None,
+            Err(message) => Some(self.finish_error(LLMComputeError::Checkpoint {
+                stage: CheckpointStage::BeforeToolCall,
+                message,
+            })),
+        }
+    }
+
     /// Dispatch `state.tool_batch` (serial). Business errors do not stop the
     /// batch — the LLM sees every result and corrects the batch as a whole.
     /// Infrastructure failures stop dispatch immediately; the calls that
@@ -629,6 +749,16 @@ impl LLMContext {
                 let rest = self.take_batch_rest();
                 self.cancel_tool_batch(&rest, FINISHING_SKIP_REASON);
                 return Some(self.finish_settled());
+            }
+            if self
+                .state
+                .tool_batch
+                .as_ref()
+                .is_some_and(|batch| !batch.remaining.is_empty())
+            {
+                if let Some(outcome) = self.checkpoint_before_tool_call().await {
+                    return Some(outcome);
+                }
             }
             let call = match self.state.tool_batch.as_mut() {
                 Some(batch) if !batch.remaining.is_empty() => batch.remaining.remove(0),
@@ -1311,6 +1441,87 @@ impl LLMContext {
     // ===================================================================
 
     async fn run_behavior(&mut self) -> LLMContextOutcome {
+        if self.state.report_end {
+            let step = self
+                .state
+                .action_step
+                .as_ref()
+                .map(|active| &active.step)
+                .or_else(|| self.state.steps.last().filter(|step| step.report_end))
+                .or_else(|| self.state.last_step.as_ref().filter(|step| step.report_end))
+                .cloned();
+            let Some(step) = step else {
+                return self.finish_error(LLMComputeError::SnapshotCorrupted(
+                    "report_end requires its final report Step".into(),
+                ));
+            };
+            let result = LLMBehaviorResult::from_step(&step);
+            let validation = match result.validate() {
+                Ok(()) => match &self.deps.checkpoint_hook {
+                    Some(hook) => {
+                        hook.validate_report(&self.snapshot(), &result, step.meta.step_index)
+                            .await
+                    }
+                    None => Ok(()),
+                },
+                Err(message) => Err(message),
+            };
+            if let Err(message) = validation {
+                self.state.report_end = false;
+                self.state.action_step = None;
+                self.state
+                    .steps
+                    .retain(|existing| existing.meta.step_index != step.meta.step_index);
+                if self
+                    .state
+                    .last_step
+                    .as_ref()
+                    .is_some_and(|existing| existing.meta.step_index == step.meta.step_index)
+                {
+                    self.state.last_step = None;
+                }
+                self.state.last_report = self
+                    .state
+                    .steps
+                    .iter()
+                    .chain(self.state.last_step.iter())
+                    .filter_map(|existing| existing.self_report.clone())
+                    .last();
+                let mut correction =
+                    self.prepare_step(StepRecord::from_parse_error(&message), now_ms());
+                correction.assistant_text = step.assistant_text;
+                correction.assistant_message = step.assistant_message;
+                correction.native_messages = step.native_messages;
+                self.finish_step(&mut correction);
+                self.sediment(correction);
+                if let Some(outcome) =
+                    self.bump_consecutive_errors(LLMComputeError::OutputParse(message))
+                {
+                    return outcome;
+                }
+            } else if self.state.action_step.is_none() {
+                let response = AiResponse {
+                    message: step.assistant_message.clone().unwrap_or_else(|| {
+                        AiResponse::message_from_parts(
+                            Some(step.assistant_text.clone()),
+                            vec![],
+                            vec![],
+                        )
+                    }),
+                    ..Default::default()
+                };
+                return LLMContextOutcome::Done {
+                    reason: None,
+                    output: ContextOutput::Text {
+                        content: step.assistant_text,
+                    },
+                    usage: self.state.usage.clone(),
+                    response,
+                    trace: self.take_trace(),
+                    behavior_result: Some(result),
+                };
+            }
+        }
         loop {
             // A step whose actions were just parsed (or were cut by a
             // deferred action and filled on resume) is dispatched first.
@@ -1321,13 +1532,17 @@ impl LLMContext {
                 continue;
             }
 
-            if let Some(outcome) = self.check_wallclock_budget() {
-                return outcome;
-            }
-
-            if self.abort.is_finishing() && !self.abort.is_aborted() && self.state.tool_batch.is_none()
+            if self.abort.is_finishing()
+                && !self.abort.is_aborted()
+                && self.state.tool_batch.is_none()
             {
                 return self.finish_settled();
+            }
+
+            if self.state.tool_batch.is_none() {
+                if let Some(outcome) = self.check_wallclock_budget() {
+                    return outcome;
+                }
             }
 
             // Step boundary: the previous step (if any) has been sedimented
@@ -1345,8 +1560,8 @@ impl LLMContext {
 
             // 1. Inner run — get one AiResponse, or bubble up an error
             //    / budget / yield translation as the outer outcome.
-            let response = match self.run_inner_for_step().await {
-                Ok(resp) => resp,
+            let (response, native_messages) = match self.run_inner_for_step().await {
+                Ok(result) => result,
                 Err(outer) => return outer,
             };
 
@@ -1358,7 +1573,21 @@ impl LLMContext {
                 .result_parser
                 .as_ref()
                 .expect("behavior mode requires result_parser");
-            let result = match parser.parse(&response) {
+            let parsed = parser.parse(&response).and_then(|result| {
+                result.validate()?;
+                Ok(result)
+            });
+            let parsed = match parsed {
+                Ok(result) if result.self_report.is_some() => match &self.deps.checkpoint_hook {
+                    Some(hook) => hook
+                        .validate_report(&self.snapshot(), &result, self.state.next_step_index)
+                        .await
+                        .map(|()| result),
+                    None => Ok(result),
+                },
+                other => other,
+            };
+            let result = match parsed {
                 Ok(r) => r,
                 Err(err_msg) => {
                     self.deps
@@ -1372,6 +1601,7 @@ impl LLMContext {
                         .prepare_step(StepRecord::from_parse_error(&err_msg), step_started_at_ms);
                     err_step.assistant_text = response.message.text_content();
                     err_step.assistant_message = Some(response.message.clone());
+                    err_step.native_messages = native_messages;
                     self.finish_step(&mut err_step);
                     self.sediment(err_step);
                     if let Some(outcome) =
@@ -1388,8 +1618,10 @@ impl LLMContext {
             let mut new_step =
                 self.prepare_step(StepRecord::from_result(result), step_started_at_ms);
             new_step.assistant_message = Some(response.message.clone());
+            new_step.native_messages = native_messages;
 
             if !new_step.actions.is_empty() && self.state.tool_iterations_left == 0 {
+                self.set_inner_transcript(new_step.native_messages);
                 return LLMContextOutcome::BudgetExhausted {
                     which: BudgetKind::ToolIterations,
                     partial: Some(ContextOutput::Text {
@@ -1424,6 +1656,7 @@ impl LLMContext {
             if let Some(report) = new_step.self_report.clone() {
                 let chars = report.chars().count();
                 self.state.last_report = Some(report);
+                self.state.report_end = new_step.report_end;
                 self.deps
                     .worklog
                     .emit(WorkEvent::SelfReportSet {
@@ -1464,6 +1697,7 @@ impl LLMContext {
                         .prepare_step(StepRecord::from_policy_rejection(&msg), step_started_at_ms);
                     err_step.assistant_text = response.message.text_content();
                     err_step.assistant_message = Some(response.message.clone());
+                    err_step.native_messages = new_step.native_messages;
                     self.finish_step(&mut err_step);
                     self.sediment(err_step);
                     if let Some(outcome) =
@@ -1475,26 +1709,7 @@ impl LLMContext {
                 }
             };
 
-            // 5b. `<next_behavior>` on a step that also carries action side
-            //     effects. A *jump target* is still scrubbed here: the target
-            //     behavior must observe this step's results before the
-            //     behavior changes.
-            //
-            //     A *terminal* directive (`END`) is deliberately kept. It
-            //     declares that the current intent is finished, so no later
-            //     inference in this behavior would act on those results
-            //     anyway. Dropping it was this loop's most expensive bug: a
-            //     model that closes every step with
-            //     `<actions>…</actions><next_behavior>END</next_behavior>`
-            //     never converged and re-declared the same intent until the
-            //     Provider rejected the request. The actions are still
-            //     dispatched below — the model did ask for them — and `END`
-            //     then decides the step's outcome.
-            let terminal_declared = new_step
-                .next_behavior
-                .as_deref()
-                .is_some_and(is_terminal_next_behavior);
-            if had_action_side_effects_before_gate && !terminal_declared {
+            if had_action_side_effects_before_gate {
                 if let Some(violating) = new_step.next_behavior.take() {
                     log::warn!(
                         "behavior_loop: ignoring `<next_behavior>{violating}</next_behavior>` because actions are present; action results must be observed before changing behavior"
@@ -1542,6 +1757,9 @@ impl LLMContext {
                 // Graceful finish between two actions: the rest of the step
                 // is paired as cancelled and the step sedimented.
                 return Some(self.settle_step(None, CancelCause::Finishing));
+            }
+            if let Some(outcome) = self.checkpoint_before_tool_call().await {
+                return Some(outcome);
             }
             let started = now_ms();
             self.deps
@@ -1642,11 +1860,7 @@ impl LLMContext {
                         Err(message) => {
                             // The call did start, so its effect is unknown.
                             let message = format!("behavior loop: {message}");
-                            return Some(self.abort_started_action(
-                                &action,
-                                &message,
-                                duration_ms,
-                            ));
+                            return Some(self.abort_started_action(&action, &message, duration_ms));
                         }
                     }
                 }
@@ -1745,7 +1959,11 @@ impl LLMContext {
     /// actions not started are paired (`Cancelled` on a graceful finish,
     /// `Unresolved` otherwise), the truthful partial step is sedimented and
     /// the run ends according to `cause`.
-    fn settle_step(&mut self, cancelled: Option<Observation>, cause: CancelCause) -> LLMContextOutcome {
+    fn settle_step(
+        &mut self,
+        cancelled: Option<Observation>,
+        cause: CancelCause,
+    ) -> LLMContextOutcome {
         if let Some(ActionStep { mut step, .. }) = self.state.action_step.take() {
             if let Some(obs) = cancelled {
                 step.action_results.push(obs);
@@ -1800,43 +2018,7 @@ impl LLMContext {
         if error_to_bump.is_none() {
             self.state.consecutive_errors = 0;
         }
-        let terminal_declared = new_step
-            .next_behavior
-            .as_deref()
-            .is_some_and(is_terminal_next_behavior);
-
-        // 6b. A terminal END that shared its step with actions is honoured
-        //     only if every dispatched action succeeded. A failed action
-        //     still has to be fed back (the error path below sediments it
-        //     and bumps the consecutive-error counter), so the directive is
-        //     released for the model to re-declare once it has seen the
-        //     failure — released with a log line, never dropped silently.
-        if terminal_declared && error_to_bump.is_some() {
-            if let Some(deferred) = new_step.next_behavior.take() {
-                log::warn!(
-                    "behavior_loop: deferring `<next_behavior>{deferred}</next_behavior>` — a dispatched action failed, its result must be observed before this behavior can end"
-                );
-            }
-        }
-
-        // 7. Terminal cases:
-        //    a) `<next_behavior>` is in force for this step. An action-free
-        //       step always ends here. A step that carried actions only
-        //       reaches this point with the terminal END (5b suppressed
-        //       every jump target, 6b released a failed END), which is
-        //       precisely the case the model must not be second-guessed
-        //       about: it already ran its actions, nothing later in this
-        //       behavior would look at their results, and re-declaring END
-        //       would be the only way out of an otherwise endless loop.
-        //    b) No actions, no report, no message, no next_behavior — a
-        //       pure-thought response = natural convergence.
-        if new_step.next_behavior.is_some() {
-            return Some(self.finish_done_behavior(new_step, response).await);
-        }
-        let nothing_happened = new_step.actions.is_empty()
-            && new_step.self_report.is_none()
-            && new_step.messages_sent.is_empty();
-        if nothing_happened {
+        if new_step.report_end || new_step.next_behavior.is_some() {
             return Some(self.finish_done_behavior(new_step, response).await);
         }
 
@@ -1886,7 +2068,9 @@ impl LLMContext {
     /// hands them back afterwards, so recreating the inner context per step
     /// cannot bypass the budget or the self-correction cap, and a resumed
     /// step never re-runs the native tools it already ran.
-    async fn run_inner_for_step(&mut self) -> Result<AiResponse, LLMContextOutcome> {
+    async fn run_inner_for_step(
+        &mut self,
+    ) -> Result<(AiResponse, Vec<AiMessage>), LLMContextOutcome> {
         let inner_request = self.build_inner_request();
         let prefix_len = inner_request.input.len() - self.inner_transcript().len();
         let inner_deps = self.deps.clone().into_traditional();
@@ -1897,17 +2081,29 @@ impl LLMContext {
         // inference. Without this, the inner runs would be unreachable by
         // the scheduler's preemption control plane.
         inner.abort = self.abort.clone();
+        inner.native_result_parser = self.deps.result_parser.clone();
+        inner.tool_checkpoint_hook = self.deps.checkpoint_hook.clone();
+        inner.inner_parent = Some((self.snapshot(), prefix_len));
         inner.state.usage = self.state.usage.clone();
         inner.state.started_at_ms = self.state.started_at_ms;
         inner.state.consecutive_errors = self.state.consecutive_errors;
         inner.state.tool_iterations_left = self.state.tool_iterations_left;
         inner.state.tool_batch = self.state.tool_batch.take();
         let outcome = inner.run_inner().await;
+        if let Some((parent, _)) = inner.inner_parent.take() {
+            self.state.steps = parent.state.steps;
+            self.state.last_step = parent.state.last_step;
+            self.state.last_report = parent.state.last_report;
+            self.state.report_end = parent.state.report_end;
+            self.state.next_step_index = parent.state.next_step_index;
+        }
 
         // Always take back whatever the inner spent and recorded, even on
         // error — we paid for those tokens and ran those tools.
         self.tool_trace.append(&mut inner.tool_trace);
-        self.state.llm_task_ids.append(&mut inner.state.llm_task_ids);
+        self.state
+            .llm_task_ids
+            .append(&mut inner.state.llm_task_ids);
         self.state.consecutive_errors = inner.state.consecutive_errors;
         self.state.tool_iterations_left = inner.state.tool_iterations_left;
         self.state.usage = inner.state.usage.clone();
@@ -1930,8 +2126,15 @@ impl LLMContext {
                 response, trace, ..
             } => {
                 self.absorb_trace(trace);
+                let mut native_messages = inner
+                    .state
+                    .accumulated
+                    .get(prefix_len..)
+                    .map(<[AiMessage]>::to_vec)
+                    .unwrap_or_default();
+                native_messages.pop();
                 self.clear_inner_transcript();
-                Ok(response)
+                Ok((response, native_messages))
             }
             LLMContextOutcome::PendingTool { pending, trace, .. } => {
                 self.absorb_trace(trace);

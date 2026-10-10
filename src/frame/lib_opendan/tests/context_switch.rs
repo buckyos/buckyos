@@ -210,11 +210,11 @@ async fn action_triggered_fork_returns_into_the_step() {
                 assert!(all.contains("s0-out"), "completed steps are inherited:\n{all}");
                 assert!(!all.contains("after-call"), "the step in progress is not:\n{all}");
                 assert!(all.contains("find Y"), "{all}");
-                text("<response><report><![CDATA[Y is 7]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[Y is 7]]></report></response>")
             }
             3 => {
                 assert!(all.contains("Y is 7") && all.contains("after-call"), "{all}");
-                text("<response><report><![CDATA[final]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
@@ -307,11 +307,11 @@ async fn input_arriving_during_a_sub_context_goes_to_the_caller() {
             }
             2 => {
                 assert!(!all.contains("extra-info"), "the child must not see it:\n{all}");
-                text("<response><report><![CDATA[did it]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[did it]]></report></response>")
             }
             3 => {
                 assert!(all.contains("did it") && all.contains("extra-info"), "{all}");
-                text("<response><report><![CDATA[final]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }

@@ -1,12 +1,12 @@
 {
-  "schema": "opendan.session_config/5",
+  "schema": "opendan.session_config/7",
   "config_rev": 1,
   "session": {
     "session_id": "work-fixture-active-b",
     "agent_did": "did:bns:jarvis.alice",
     "kind": "work",
     "class": "work",
-    "created_at_ms": 1791134683275,
+    "created_at_ms": 1791645241582,
     "created_by": {
       "principal": "app:app2@alice",
       "via": "app"
@@ -52,8 +52,19 @@
     "requirement": {}
   },
   "workspace": {
-    "kind": "external",
-    "path": "${FIXTURE_ROOT}/ws"
+    "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+    "access": "read_write"
+  },
+  "workspace_binding": {
+    "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+    "revision": 6,
+    "location_revision": 1,
+    "runtime_host": "${FIXTURE_HOST}",
+    "location": {
+      "runtime_id": "local",
+      "directory": "${FIXTURE_ROOT}/ws"
+    },
+    "access": "read_write"
   },
   "channels": {
     "inputs": [

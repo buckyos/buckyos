@@ -114,7 +114,7 @@ async fn behavior_step_keeps_thinking_across_sediment() {
         text_response(
             "<response><thinking>next</thinking><actions><shell>echo again</shell></actions></response>",
         ),
-        text_response("<response><thinking>done</thinking><next_behavior>END</next_behavior></response>"),
+        text_response("<response><thinking>done</thinking><report end=\"true\">finished</report></response>"),
     ]));
     let mut req = base_request();
     req.behavior_name = "plan".into();

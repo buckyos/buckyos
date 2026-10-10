@@ -29,7 +29,7 @@ Hard rules:
 - Do not pass `--root` to `agent-skills`; `shell` prepares the correct environment and `agent-skills` resolves its own root dir.
 - Use one `shell` action per CLI command.
 - Quote JSON args with single quotes.
-- If no pending skill_coverage_gap signals exist, set next_behavior to END.
+- If no pending skill_coverage_gap signals exist, submit a nonempty `<report end="true">` without actions or next_behavior.
 
 Required flow:
 1. Optionally verify required commands once with `command -v ListPendingAttentionSignals MarkAttentionSignalConsumed agent-skills`.

@@ -134,6 +134,7 @@ fn same_session_identity(c: &SessionConfig, agent_did: &str, spec: &SessionSpec,
         && c.session.created_by.principal == who
         && c.session.driver.principal == driver
         && c.session.idempotency_key == spec.idempotency_key
+        && c.workspace == spec.workspace
 }
 
 /// Create a session directory under `parent_dir` (any location, §4.1),
@@ -256,6 +257,8 @@ pub async fn create_session(
         prompt: spec.prompt.clone(),
         runtime: spec.runtime.clone(),
         workspace: spec.workspace.clone(),
+        workspace_binding: crate::runtime::resolve_workspace(agent, spec.workspace.as_ref())
+            .await?,
         artifact_id: spec.artifact_id.clone(),
         subscriptions: spec.subscriptions.clone(),
         channels: Channels {
@@ -265,6 +268,7 @@ pub async fn create_session(
         },
         extensions: spec.extensions.clone(),
     };
+    crate::runtime::validate_workspace_workdir(&config)?;
     if spec.freeze {
         match crate::state::freeze_config(&mut config, agent.behaviors(), who).await {
             Ok(()) => {}
@@ -431,13 +435,9 @@ pub async fn create_self_improve_session(
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubWorkspace {
-    /// The parent's working directory (shared; the activity view keeps the
-    /// sessions apart).
     #[default]
     Inherit,
-    /// An agent workspace of its own.
-    New,
-    /// The agent workspace `<agent_root>/workspace/<id>`.
+    None,
     Id(String),
 }
 
@@ -494,9 +494,8 @@ pub fn dialogue_excerpt(sd: &SessionDir, n: usize) -> Result<String> {
         };
         let (role, text) = match e.body {
             WorklogBody::UserMessage { content, .. } => ("user", content),
-            WorklogBody::AssistantMessage { assistant, .. } | WorklogBody::Step { assistant, .. } => {
-                ("assistant", assistant)
-            }
+            WorklogBody::AssistantMessage { assistant, .. }
+            | WorklogBody::Step { assistant, .. } => ("assistant", assistant),
             _ => continue,
         };
         if text.trim().is_empty() {
@@ -594,7 +593,12 @@ pub async fn create_sub_session(
             .state()
             .ok()
             .and_then(|s| s.open_turn_task().map(|t| t.task_id.clone()))
-            .or_else(|| pcfg.session.origin.as_ref().and_then(|o| o.parent_task.clone())),
+            .or_else(|| {
+                pcfg.session
+                    .origin
+                    .as_ref()
+                    .and_then(|o| o.parent_task.clone())
+            }),
     });
     spec.timezone = pcfg.session.timezone.clone();
     spec.prompt.llm_context = pcfg.prompt.llm_context.clone();
@@ -608,17 +612,38 @@ pub async fn create_sub_session(
     }
     spec.freeze = spec.prompt.behavior.is_some() || pcfg.prompt.frozen.is_some();
     spec.workspace = match &sub.workspace {
-        SubWorkspace::Inherit => Some(pcfg.workspace.clone().unwrap_or(WorkspaceRef::External {
-            path: parent_dir
-                .path()
-                .canonicalize()
-                .unwrap_or_else(|_| parent_dir.path().to_path_buf())
-                .display()
-                .to_string(),
-        })),
-        SubWorkspace::New => Some(WorkspaceRef::Agent { id: sid.clone() }),
-        SubWorkspace::Id(id) => Some(WorkspaceRef::Agent { id: id.clone() }),
+        SubWorkspace::Inherit => pcfg.workspace.clone(),
+        SubWorkspace::None => None,
+        SubWorkspace::Id(id) => {
+            if pcfg
+                .workspace
+                .as_ref()
+                .is_some_and(|w| w.workspace_id != *id)
+                || (pcfg.workspace.is_none() && pcfg.session.kind != SessionKind::Ui)
+            {
+                return Err(OpenDanError::InvalidArgument(
+                    "a child session cannot acquire a different workspace through inheritance"
+                        .into(),
+                ));
+            }
+            Some(WorkspaceRef {
+                workspace_id: id.clone(),
+                access: pcfg
+                    .workspace
+                    .as_ref()
+                    .map(|w| w.access)
+                    .unwrap_or_default(),
+            })
+        }
     };
+    if let Some(runtime) = spec
+        .prompt
+        .llm_context
+        .get_mut("runtime")
+        .and_then(Value::as_object_mut)
+    {
+        runtime.remove("workdir");
+    }
     if sub.interactive {
         spec.input_channel = Some(InputChannel::Queue);
         spec.policy.wait_user_msg = WaitPolicy::Allowed;

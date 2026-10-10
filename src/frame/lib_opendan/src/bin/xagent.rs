@@ -32,7 +32,7 @@ const USAGE: &str = "\
 xagent — drive an Agent Session for one Turn (or keep driving it)
 
   xagent new    --agent <did> --objective <text> [--class work|ui|self_improve|self_check] [--parent <dir>]
-                [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <path>]
+                [--behavior <name>] [--llm-context <json|@file>] [--runtime <id>] [--workspace <id>]
                 [--subscribe <spec>]... [--msg <text>] [--key <idem>]
                 [--until turn|finished|idle|outcomes:<n>] [--no-run]
   xagent run    <session_dir|sid> [--msg <text> | --msg-file <path> | --event <json|@file>]
@@ -46,6 +46,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   xagent list   --agent <did> [--active]
   xagent behaviors --agent <did> [--frozen <sid>]
   xagent xllm   <sid> [--run <id>]
+  xagent workspace list|get|create|import|discover|check|archive|restore|unregister|runtime-impact|set-runtime ...
   xagent schema <dir>
 
   <spec> = active|semi:object:<id>[#<event>] | semi:session:<sid>[:watch=f1,f2] | active|semi:timer:<name>
@@ -54,7 +55,7 @@ xagent — drive an Agent Session for one Turn (or keep driving it)
   ctl activity ... | ctl perceive <text> | recall <tag>... | note <text> | sessions [--active] [--children]
   read-session <sid> [--report] [--worklog <n>] | artifact head <aid> | artifact list
   create-worksession --objective <t> [--msg <t>]... [--attach <obj_id>[=<name>]]... [--context recent:<n>|none]
-        [--class <c>] [--behavior <b>] [--workspace inherit|new|<id>] [--runtime inherit|<id>]
+        [--class <c>] [--behavior <b>] [--workspace inherit|none|<id>] [--runtime inherit|<id>]
         [--report final|progress|none] [--interactive] [--wait [--wait-ms <ms>]]
   wait <sid> [--wait-ms <ms>] | post <sid> --msg <t>
 
@@ -578,7 +579,7 @@ async fn cmd_new(mut a: Args) -> R<i32> {
     }
     spec.runtime.requirement.runtime_id = a.get("runtime");
     if let Some(ws) = a.get("workspace") {
-        spec.workspace = Some(WorkspaceRef::External { path: ws });
+        spec.workspace = Some(WorkspaceRef { workspace_id: ws, access: WorkspaceAccess::ReadWrite });
     }
     for s in a.all("subscribe") {
         spec.subscriptions.push(parse_subscription(&s)?);
@@ -901,6 +902,9 @@ fn shell_quote(s: &str) -> String {
 async fn cmd_xllm(mut a: Args) -> R<i32> {
     let target = a.next("<sid>")?;
     let (_, sd) = locate(&a, &target, false).await?;
+    if sd.config()?.workspace_binding.is_some() {
+        return Err(bad("managed workspace runs require `xagent run` for binding verification and writer coordination"));
+    }
     let state = sd.state()?;
     let run_id = a
         .get("run")
@@ -1090,7 +1094,7 @@ async fn cmd_create_worksession(a: Args) -> R<i32> {
         behavior: a.get("behavior"),
         workspace: match a.get("workspace").as_deref() {
             None | Some("inherit") => SubWorkspace::Inherit,
-            Some("new") => SubWorkspace::New,
+            Some("none") => SubWorkspace::None,
             Some(id) => SubWorkspace::Id(id.to_string()),
         },
         runtime_id: a.get("runtime").filter(|r| r != "inherit"),
@@ -1115,6 +1119,144 @@ async fn cmd_wait(mut a: Args) -> R<i32> {
         return Err(bad(format!("session {sid} is not registered")));
     }
     print(&pending_on_session("wait", &sid, a.num("wait-ms")?));
+    Ok(0)
+}
+
+async fn cmd_workspace(mut a: Args) -> R<i32> {
+    let command = a.next("workspace command")?;
+    let c = ctx(&a, None, false).await?;
+    let manager = c.agent.workspaces();
+    let required = |name: &str| a.get(name).ok_or_else(|| bad(format!("missing --{name}")));
+    let location = || -> R<WorkspaceLocation> {
+        let directory = PathBuf::from(required("directory")?);
+        if !directory.is_absolute() {
+            return Err(bad("--directory must be absolute in the selected Runtime"));
+        }
+        Ok(WorkspaceLocation {
+            runtime_id: a
+                .get("runtime")
+                .unwrap_or_else(|| LOCAL_WORKSPACE_RUNTIME.into()),
+            directory,
+        })
+    };
+    let usage = || -> R<WorkspaceUsage> {
+        match a.get("usage").as_deref() {
+            None | Some("collaborative") => Ok(WorkspaceUsage::Collaborative),
+            Some("private") => Ok(WorkspaceUsage::Private),
+            _ => Err(bad("--usage takes collaborative | private")),
+        }
+    };
+    match command.as_str() {
+        "list" => print(
+            &manager
+                .query(&WorkspaceQuery {
+                    runtime_id: a.get("runtime"),
+                    lifecycle: a.has("active").then_some(WorkspaceLifecycle::Active),
+                    text: a.get("text"),
+                    ..Default::default()
+                })
+                .await?,
+        ),
+        "create" => print(
+            &manager
+                .create(
+                    &WorkspaceCreate {
+                        operation_id: required("key")?,
+                        name: required("name")?,
+                        description: a.get("description").unwrap_or_default(),
+                        location: location()?,
+                        usage: usage()?,
+                        source_session: env_sid(),
+                        policy_ref: a.get("policy"),
+                    },
+                    &c.who,
+                )
+                .await?,
+        ),
+        "import" => print(
+            &manager
+                .import(
+                    &WorkspaceImport {
+                        operation_id: required("key")?,
+                        location: location()?,
+                        name: a.get("name"),
+                        description: a.get("description").unwrap_or_default(),
+                        usage: usage()?,
+                        expected_revision: a.num("expected-revision")?,
+                        source_session: env_sid(),
+                        policy_ref: a.get("policy"),
+                    },
+                    &c.who,
+                )
+                .await?,
+        ),
+        "discover" => print(
+            &manager
+                .discover(
+                    &WorkspaceDiscover {
+                        expected_workspace_id: a.get("id"),
+                        location: location()?,
+                        expected_revision: a.num("expected-revision")?,
+                    },
+                    &c.who,
+                )
+                .await?,
+        ),
+        "get" | "check" | "archive" | "restore" | "unregister" => {
+            let id = a.next("workspace id")?;
+            match command.as_str() {
+                "get" => print(
+                    &manager
+                        .lookup(&id)
+                        .await?
+                        .ok_or_else(|| bad(format!("workspace {id} is not registered")))?,
+                ),
+                "check" => print(&manager.check(&id).await?),
+                _ => {
+                    let revision = a.num("expected-revision")?.ok_or_else(|| {
+                        bad("missing --expected-revision (read workspace get first)")
+                    })?;
+                    if command == "unregister" {
+                        manager.unregister(&id, revision, &c.who).await?;
+                        print(&json!({"workspace_id": id, "unregistered": true}));
+                    } else {
+                        print(
+                            &manager
+                                .update(
+                                    &id,
+                                    &WorkspaceUpdate {
+                                        expected_revision: revision,
+                                        lifecycle: Some(if command == "archive" {
+                                            WorkspaceLifecycle::Archived
+                                        } else {
+                                            WorkspaceLifecycle::Active
+                                        }),
+                                        private_notes: None,
+                                    },
+                                    &c.who,
+                                )
+                                .await?,
+                        );
+                    }
+                }
+            }
+        }
+        "runtime-impact" => print(&manager.runtime_impact(&a.next("runtime id")?).await?),
+        "set-runtime" => {
+            let runtime = a.next("runtime id")?;
+            let available = match a.next("available | unavailable")?.as_str() {
+                "available" => true,
+                "unavailable" => false,
+                _ => return Err(bad("set-runtime takes available | unavailable")),
+            };
+            print(
+                &manager
+                    .set_runtime_available(&runtime, available, &c.who)
+                    .await?,
+            );
+        }
+        _ => return Err(bad(format!("unknown workspace command `{command}`"))),
+    }
     Ok(0)
 }
 
@@ -1143,6 +1285,7 @@ async fn real_main() -> R<i32> {
         "behaviors" => cmd_behaviors(a).await,
         "xllm" => cmd_xllm(a).await,
         "schema" => cmd_schema(a),
+        "workspace" => cmd_workspace(a).await,
         "recall" => cmd_recall(a).await,
         "note" => cmd_note(a).await,
         "sessions" => cmd_sessions(a).await,

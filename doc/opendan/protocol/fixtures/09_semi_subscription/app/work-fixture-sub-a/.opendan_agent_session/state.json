@@ -6,7 +6,7 @@
   },
   "bootstrap_done": true,
   "inputs": {},
-  "last_run": "20261004-102443-cf746a",
+  "last_run": "20261010-074524-0f67a6",
   "live_run": null,
   "one_line_status": "finished: answer",
   "outcome": "succeeded",
@@ -19,14 +19,14 @@
   },
   "rev": 3,
   "run_state": "finished",
-  "schema": "opendan.session_state/5",
+  "schema": "opendan.session_state/6",
   "stop_requested": false,
   "topic": {
     "title": ""
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1791134683161,
+  "updated_at_ms": 1791643524085,
   "worklog": {
     "committed_bytes": 1215,
     "committed_seq": 6
@@ -34,8 +34,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3937474,
+    "pid": 6,
     "principal": "app:app2@alice",
-    "runner_id": "rn-c73b2a4138804741"
+    "runner_id": "rn-dfbdebef434347c6"
   }
 }

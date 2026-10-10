@@ -26,6 +26,7 @@ use super::cognition::FsCognition;
 use super::locks::FsLocks;
 use super::perception::FsPerception;
 use super::registry::FsRegistry;
+use super::workspaces::FsWorkspaces;
 use super::*;
 
 /// Paths of the AgentRoot layout.
@@ -78,12 +79,27 @@ impl AgentLayout {
             .join(format!("{ver}.json"))
     }
 
+    pub fn workspaces_dir(&self) -> PathBuf {
+        self.root.join("state").join("workspaces")
+    }
+
+    pub fn workspace_entry(&self, wid: &str) -> PathBuf {
+        self.workspaces_dir().join(format!("{wid}.json"))
+    }
+
     pub fn locks_dir(&self) -> PathBuf {
         self.root.join(".locks")
     }
 
     /// Lock file of an agent-level resource.
     pub fn lock_path(&self, resource: &str) -> Result<PathBuf> {
+        if resource == "workspaces" {
+            return Ok(self.locks_dir().join("workspaces.lock"));
+        }
+        if let Some(wid) = resource.strip_prefix("workspace:") {
+            super::workspaces::validate_workspace_id(wid)?;
+            return Ok(self.locks_dir().join("workspace").join(format!("{wid}.lease")));
+        }
         if resource == "self_improve" {
             return Ok(self.locks_dir().join("self_improve.lease"));
         }
@@ -109,9 +125,6 @@ impl AgentLayout {
         self.root.join("notebook")
     }
 
-    pub fn workspace_dir(&self, wid: &str) -> PathBuf {
-        self.root.join("workspace").join(wid)
-    }
 }
 
 /// File-based `AgentStateClient` (V3). Requires the runner to see the
@@ -125,6 +138,7 @@ pub struct FsAgentStateClient {
     perception: FsPerception,
     cognition: FsCognition,
     artifacts: FsArtifacts,
+    workspaces: FsWorkspaces,
     locks: FsLocks,
     behaviors: FsBehaviorCatalog,
 }
@@ -145,6 +159,7 @@ impl FsAgentStateClient {
             layout.sessions_dir(),
             layout.perception_dir(),
             layout.artifacts_dir(),
+            layout.workspaces_dir(),
             layout.locks_dir(),
         ] {
             std::fs::create_dir_all(&d).map_err(|e| OpenDanError::io(&d, e))?;
@@ -156,6 +171,7 @@ impl FsAgentStateClient {
             perception: FsPerception::new(layout.clone()),
             cognition: FsCognition::new(layout.clone()),
             artifacts: FsArtifacts::new(layout.clone()),
+            workspaces: FsWorkspaces::new(layout.clone(), agent_did),
             locks: FsLocks::new(layout.clone()),
             behaviors: FsBehaviorCatalog::new(layout.root.clone()),
             layout,
@@ -206,6 +222,10 @@ impl AgentStateClient for FsAgentStateClient {
 
     fn artifacts(&self) -> &dyn Artifacts {
         &self.artifacts
+    }
+
+    fn workspaces(&self) -> &dyn WorkspaceManager {
+        &self.workspaces
     }
 
     fn locks(&self) -> &dyn LockManager {

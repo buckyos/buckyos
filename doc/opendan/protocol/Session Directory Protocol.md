@@ -1,13 +1,13 @@
 # Session Directory Protocol
 
-版本 5 · 2026-10-03 · 由 `libopendan` 反写（`src/protocol/{config,behavior,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
+版本 6 · 2026-10-10 · 由 `libopendan` 反写（`src/protocol/{config,behavior,report,state,summary,worklog,misc,input}.rs`）。Round / Step / Turn 的定义见 [LLM Context readme](../../llm_context/readme.md)；本文的 Turn 规则均为当前实现。
 
 ## 1. 目录结构
 
 ```text
 <any_parent>/<sid>/                  session 目录，目录名 = session_id；存放一次性产物
   readme.md                          人读：标题 / 目标 / 起源
-  report.md                          人读：结束报告（finished 时写入）
+  report.md                          人读：已接受的最终报告；普通完成时写结束结果
   <产物…>                            一次性产物（相对路径引用）
   .opendan_agent_session/            session 状态：只由 session 锁的持有者写
     session_config.json              启动配置（整文件原子替换）
@@ -49,7 +49,7 @@ Schema：`schema/session_config.schema.json`。要点：
 
 ```jsonc
 {
-  "schema": "opendan.session_config/5",
+  "schema": "opendan.session_config/7",
   "config_rev": 1,                    // 运行中可改的字段（订阅）变化时 +1
   "session": {
     "session_id": "...", "agent_did": "did:bns:jarvis.alice",
@@ -87,7 +87,8 @@ Schema：`schema/session_config.schema.json`。要点：
   },
   "runtime": { "requirement": { "runtime_id": null, "tools": ["node"], "app_tools": [] },
                "tool_plan": null, "env": {} },
-  "workspace": null | { "kind": "agent", "id": "ws-1" } | { "kind": "external", "path": "/abs" },
+  "workspace": null | { "workspace_id": "ws-…", "access": "read_write" },
+  "workspace_binding": null | { "workspace_id": "ws-…", "revision": 1, "location_revision": 1, "runtime_host": "host:…", "location": { "runtime_id": "local", "directory": "/abs" }, "access": "read_write" },
   "artifact_id": null,
   "subscriptions": [ { "id": "s1", "mode": "semi | active",
                        "source": { "type": "session", "ref": "<sid>" } | { "type": "object_event", "object": "...", "event": "" }
@@ -116,7 +117,8 @@ Schema：`schema/session_config.schema.json`。要点：
   - 表在每次推进开始时校验，非法（未知 mode、fork 带 system 等）则不做任何推理。旧的 `extensions.opendan.process_modes` 不再接受。
 - 工具 `call_behavior({behavior, task})`：在 `prompt.llm_context.tools.tools` 中以 `{"name": "call_behavior"}` 显式装配后，context 可以用工具调用（或 behavior action）发起子 context（目标必须是 `create_sub_context` / `fork`）。只由会话自己的 runner 提供；xllm 不具备该工具，拒绝接手装配了它的 run。
 - `extensions.opendan.perception_window`：self_improve session 要整理的感知窗口（见 Agent State Protocol §4）。
-- `session.policy`（版本 5）：Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 可覆盖）在创建时解析的结果，随配置冻结。
+- `session.policy`（版本 6）：Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 可覆盖）在创建时解析的结果，随配置冻结。
+  - `completion`：`natural`（缺省）沿用普通 function-call `Done` 和已获准结束报告的 end_condition；`explicit_report` 仅获准的结束报告可正常关闭 Session。普通 Done 完成 Turn：有输入队列则等待，无队列则 `finished + failed`、`missing_end_report`。`agent.toml [session.<class>] completion` 可覆盖模板值。
   - `wait_user_msg`：`WAIT_USER_MSG` 在该 Session 的含义。`allowed`：Turn 保持打开等输入（已交付回复则完成该 Turn）；`finish_failed`：Turn 以 `failed` 关闭、Session `finished + failed`，`last_error.kind = needs_user_input`，问题写入 report（不影响工具 / task 等待）；`finish_completed`：按交付结果处理。
   - `observe`：`off` 不注入半订阅快照；`events` 注入快照；`events_and_active` 另在受控输入里给出活动 Session 列表。`load_hints`：是否装配 hints。
   - `max_process_depth`：`process_stack` 上 `caller` 帧的上限（子 context 嵌套）。`max_sub_sessions` / `max_session_depth`：同时未结束的子 Session 数与子 Session 的嵌套深度；创建时校验，超限拒绝。
@@ -131,13 +133,15 @@ Schema：`schema/session_state.schema.json`。
 
 ```jsonc
 {
-  "schema": "opendan.session_state/5",
+  "schema": "opendan.session_state/6",
   "rev": 17,                                   // 每次提交 +1
   "writer": { "runner_id": "rn-…", "principal": "app:app2@alice", "host": "host:…", "pid": 1234, "lock_epoch": 42 },
   "run_state": "created | ready | running | waiting | finished",
   "waiting_for": null | { "kind": "input | tool", "refs": ["<task_id>"], "deadline_ms": null },   // tool：由快照的挂起调用生成
   "outcome": null | "succeeded | failed | stopped",
   "acceptance": "n/a | pending | accepted | discarded",
+  "latest_report": null,  // 最近顶层 context 的 ReportSubmission；子报告仅保留在子 run
+  "final_report": null,   // 已交付的顶层结束报告；与阶段报告分开
   "result": null | { "answer": "...", "answer_ref": "report.md", "artifact_ref": {...}, "discard_report": {...} },
   "turn_seq": 5,                               // 最近打开的 Turn 编号（第一个输入批次之前为 0）
   "open_turn": null | { "index": 5, "run_id": "…", "input_seq": 3, "hook": "on_input",
@@ -244,13 +248,13 @@ Schema：`schema/session_state.schema.json`。
 
 ```jsonc
 { "schema": "opendan.session_summary/2", "history_summary": "…", "start_seq": 301, "start_offset": 912384,
-  "mechanical": { ...同 prompt.mechanical_compress... }, "renderer": "libopendan.mechanical/2",
+  "mechanical": { ...同 prompt.mechanical_compress... }, "renderer": "libopendan.mechanical/3",
   "made_at_seq": 318, "made_by": "context_limit | ratio | manual", "updated_at_ms": 0 }
 ```
 
 - 缺失时等价于 `start_seq = start_offset = 0`、无摘要、`mechanical = session_config.prompt.mechanical_compress`。
 - 下一次 llm_context（没有 live_run 时）= system（身份 + 不可覆盖约束 + 应用 prompt + context + objective + xllm 能力/协议段）+ 一条历史消息（`<session_history>`：摘要 + 起点之后按机械压缩渲染的记录）；本次的输入由 run 的第一个输入批次（`<session_input hook=… time=…>` 消息 + receipt）注入。
-- 机械渲染（`libopendan.mechanical/2`）：`turn_started` → `── turn N (hook) inputs: … ──`，`input_batch` → `── <hook> inputs: … ──`（如 `── on_context_switch ──`），`user_message` → `[input] …`，`assistant_message` → `[assistant] …`，`step` → `[step 3 plan] …` / `[step 3 plan correction] …`，`action_result` → `[result #<call_id> <status>] …`，`outcome` → `[outcome <kind> → <next_behavior>] …`，`turn_ended` → `── turn N completed ──`（默认在 `drop_kinds` 中，不渲染）。
+- 机械渲染（`libopendan.mechanical/3`）：`turn_started` → `── turn N (hook) inputs: … ──`，`input_batch` → `── <hook> inputs: … ──`（如 `── on_context_switch ──`），`user_message` → `[input] …`，`assistant_message` → `[assistant] …`，`step` → `[step 3 plan] …` / `[step 3 plan correction] …`，`action_result` → `[result #<call_id> <status>] …`，`outcome` → `[outcome <kind> → <next_behavior>] …`，`turn_ended` → `── turn N completed ──`（默认在 `drop_kinds` 中，不渲染）。
 - 反向读取时预算先于起点耗尽：必须先压缩（新起点 = 已保留的最旧一条，摘要覆盖 `[旧起点, 新起点)`），摘要与原始记录之间不能留空洞。
 - 压缩只写 summary.json，并追加一条 `compaction` 条目后提交，从不改写 worklog。
 - 确定性只在同一 `renderer` 版本内承诺；时间等新鲜量只出现在每个输入批次的消息里。
@@ -258,8 +262,8 @@ Schema：`schema/session_state.schema.json`。
 ## 7. runs/（xllm run 目录）
 
 ```text
-runs/<run_id>/run.json            xllm RunRecord（version 5）
-runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 4；先 fsync 再发布）
+runs/<run_id>/run.json            xllm RunRecord（version 6）
+runs/<run_id>/snapshots/NNNN.json LLMContextSnapshot（snapshot_version 5；先 fsync 再发布）
 runs/<run_id>/.lock               run 执行锁（长期持有的 flock）
 runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout、stderr、exit（命令结束时写）
 ```
@@ -272,7 +276,7 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 | `host_commit_pending` | 宿主输入提交门槛（批次号）。非空时任何执行者都不得推理或调用工具，xllm 拒绝接手 |
 | `inflight[]` | 已派发、结果尚未随快照持久化的动作：`{call_id, tool, args, effect, started_at_ms}`。没有进程身份：恢复时不核验、不停止进程，按 runtime 从执行目录读到什么就说什么（长命令 TODO §3.2） |
 | `host.extra.finish` | 宿主的结束决定：与终态 `status` 在**同一次** run.json 写入中记录（`{kind: done|wait|process_done|budget|error|stopped, finished, outcome, waiting, answer, error, usage, turn_end}`；`turn_end` 为本次结束关闭 Turn 的状态，空表示 Turn 继续）。结束流程中途崩溃时，恢复按它重做，而不是重新推断 |
-| `handover` | run 停在 behavior 交接点：`{next_behavior, at_ms}`，与让出时的快照、`status = paused` 在**同一次** run.json 写入中记录（run.json 版本 5）。非空时任何执行者都不得在该 run 上继续推理：xllm 遇到宿主 run 的 `Done{next_behavior=B}` 只记录它（不记 `completed`），`xllm --resume` 拒绝接手；由会话读取 B 的进入模式并提交转移。会话重新打开该 run 执行（status 回到 `running`）时清除 |
+| `handover` | run 停在 behavior 交接点：`{next_behavior, at_ms}`，与让出时的快照、`status = paused` 在**同一次** run.json 写入中记录（run.json 版本 6）。非空时任何执行者都不得在该 run 上继续推理：xllm 遇到宿主 run 的 `Done{next_behavior=B}` 只记录它（不记 `completed`），`xllm --resume` 拒绝接手；由会话读取 B 的进入模式并提交转移。会话重新打开该 run 执行（status 回到 `running`）时清除 |
 | `usage.llm_requests` | 本 run 的推理尝试数：libopendan 在每个 outcome 后加上本段经 run 的 `LlmClient::infer` 发起的 Round 数（含失败 / 中断），xllm 接手后在其上继续累加；任何执行者都不重置或覆盖 |
 
 快照 `state.host["libopendan"]`（HostMeta）：`{session_id, base_input_len, process_entry, inherited_below, input_receipts[], history_epoch?, epoch_turn?, epoch_input_seq?}`，各执行者必须原样保留。后三项在第一次中途重写后出现（为 0 时省略）：`history_epoch` 是本 run 已发生的中途重写次数，`epoch_turn` 是当前 epoch 开始时所在的 Turn（新 epoch 中先于任何 receipt 的条目归属于它），`input_seq ≤ epoch_input_seq` 的 receipt 属于更早的 epoch（身份仍有效，位置不再适用）。
@@ -312,13 +316,31 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 **保留**：`live_run`、`last_run`、`process_stack[].run_id` 引用的 run 保留；其它 run 在确认没有未核对执行后删除；旧快照按需裁剪（保留最新几份与已发布指针）。
 - `host.extra.tasks`（宿主字段）：run 的工具结果里引用过、LLM 还没有看到其结束的后台 task id。结果首次引用一个 task（且不是一条已结束命令的结果）或说明它“still running”时加入；之后关于它的其它结果（它的结束）移除。run 结束而 Session 未 finished 时，这些 id 与当时 resolver 报告仍在运行的 task 一起记入 `state.watched_tasks`；run 的结束在崩溃后被重做时同样从这里取，不依赖见过这个 run 的进程。
 
+## 7.1 显式报告与完成提交（版本 6）
+
+Session 的 function_call 默认启用工具列表含宿主 `report`；自定义工具列表可显式选择 `{name:"report"}`。`explicit_report` 策略会把它加入该 run 的冻结工具配置；显式 `tools.enabled=false` 与 function_call 的显式完成策略冲突，准备时拒绝。参数为 `{report: string, artifacts?: string[], result?: JSON, is_end?: boolean}`：`report` 必须非空，`is_end` 缺省 false；未知参数拒绝。普通报告更新当前 run 的报告和顶层 `state.latest_report`，不关闭 Turn、不发送消息、不截断工具批次。独立 xllm 不默认提供此工具；接手已有宿主 run 时只能保留冻结的描述，调用返回需要 Session 执行器的工具错误，不自行接受报告。
+
+XML 的 `<report end="true">` 与工具 `is_end=true` 使用相同的宿主校验、报告归属及最终交付。`end` 缺省或 false 为阶段报告；true 与任何本次动作（XML actions、sendmsg、provider-native tool_calls）或非空 next_behavior 互斥。空 actions 允许；非法布尔值、重复 report、空结束报告，以及 END/done 终止指令均拒绝，副作用前反馈可修正错误。没有 report/动作/调度的空决策也反馈纠错。同层可带 `<artifacts>["out.txt"]</artifacts>` 和 `<result>{"ok":true}</result>`，须同次有 report；正文保持自由文本。
+
+产物是显式选择的工作目录相对文件路径，不从正文或目录扫描推断。拒绝绝对路径、上级路径、目录及逃逸工作目录的符号链接。宿主保存 `.opendan_agent_session/reports/<submission_id>/<index>-<sha256>` 稳定副本，记录 `{path, reference, digest}`；源文件随后变化不改变交付。JSON result 不固定业务 schema，显式 null 也保留。
+
+`ReportSubmission` 的 schema 为 `report_submission.schema.json`：`{id, run_id, source, report, artifacts, result?, is_end, accepted_at_ms}`。source 是 `{kind:"tool", call_id}` 或 `{kind:"behavior", step_index}`；id 由 run 和 source 确定。`run.json.host.extra.reports` 保存已接受提交，结束意图独立于普通阶段报告。重复同源同参数返回已保存回执；同源变参拒绝。工具结果仅给出 accepted、report_id 和 is_end，不重复报告正文。
+
+接受结束前检查停止状态、当前 run 的后台任务，以及顶层 Session 跟踪的 task / 尚未收齐结果的子 Session；未满足则拒绝并允许模型修正。子 context 完成只返回调用方，`process_result.submission` 携带原报告、产物和可选 result，不写父 Session 的 final_report。执行成功后 Work 的 acceptance 仍为 pending，人工验收由 decide 独立决定。
+
+提交顺序：工具派发前发布完整待执行批次快照 → 校验并持久化报告与稳定产物 → 返回工具回执 → 平滑让出并为余下每个调用记录未执行/Cancelled → 发布配对快照 → 保存终态 finish 决策 → worklog、report.md 与 state 提交。接受前已执行工具不回滚；拒绝报告不截断批次。XML 结束本身不能带动作，先发布结束 Step 快照再提交报告。已经接受的结束先于后到的 Stop 完成；先被宿主观察到的 Stop 拒绝新的结束提交。
+
+顶层最终交付是 `worklog.report_delivery{run_id,turn,submission,assistant}`：assistant 由报告正文与稳定产物链接机械生成，不是模型 Round；报告文件、Session result 和出站使用同一文本。原 assistant/工具回执仍用于审计；mechanical/3 构造模型历史时只渲染一份最终交付，隐藏来源 XML Step 的重复正文、将原工具参数替换为交付引用，不重新执行 report。阶段报告不生成该消息。finished Session 拒绝新输入，终态 Work 的修改创建新 Work。
+
+恢复读取同一报告 journal：报告已持久但尚无回执时，恢复原待执行批次，仅回填该提交的已保存回执；配对快照已持久但尚无终态时，直接平滑完成；终态与 worklog 提交之间崩溃时，截断未提交尾部并重做同一 finish。全过程不新增推理、不重复登记产物/交付/关闭 Turn。xllm 拒绝继续已接受结束意图的宿主 run，交回 Session；hosted XML 最终快照由 xllm 以 paused 交回 Session：宿主校验成功则从同一结束 Step 提交和交付，校验失败则回到同一 context 反馈纠错；独立 xllm 的有效结束仍为 completed。
+
 ## 8. behavior process 与 run
 
 同一时刻只推进一个 run。模型用 `next_behavior = B`（behavior Step）或 `call_behavior({behavior: B, task})`（工具 / action）指定目标，会话读取 **B 的进入模式**（§4.2 `extensions.opendan.behaviors`）决定如何调度：
 
 | 进入模式 | 当前 run | 目标 run |
 |---|---|---|
-| `switch_context` | 挂起为 `parked` 帧 | B 有 `parked` 的 run 就恢复它（它自己的 system、工具、历史、编号与剩余预算）；否则按 B 的配置新建：B 自己的 system / 工具 / 模型，历史只按 `inherit` 装配，不带入其它 context 的快照。B 的 `END` 按会话结束条件处理，不会自动回到上一个 behavior |
+| `switch_context` | 挂起为 `parked` 帧 | B 有 `parked` 的 run 就恢复它（它自己的 system、工具、历史、编号与剩余预算）；否则按 B 的配置新建：B 自己的 system / 工具 / 模型，历史只按 `inherit` 装配，不带入其它 context 的快照。B 的 `<report end="true">` 请求完成当前 context，不会自动回到上一个 behavior |
 | `create_sub_context` | 挂起为 `caller` 帧 | 每次新建子 run：B 自己的 system 与配置 + 任务输入，父历史按 `inherit` 显式选择（`llm_context::derive_child`）；结束后结果交回调用方 |
 | `fork` | 挂起为 `caller` 帧 | 每次新建子 run：调用方的配置、system 与分叉点的完整有效历史（`llm_context::fork_snapshot`），再追加任务输入；结束后结果交回调用方 |
 
@@ -340,16 +362,16 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 
 挂起时先写入该 run 已产生而未写入的历史（`flushed_message_count` 或 `flushed_step_index`，以及 `flushed_input_seq` 前移），worklog 因此保持时间顺序。
 
-**flush 标记**（`live_run` / `process_stack[]` 中，两种 run 各用一个游标）：function call run 以位置计数（`flushed_message_count` = prefix 之后已写入的消息数，只在 `flushed_epoch == HostMeta.history_epoch` 时有效；快照的 epoch 更新时从 0 计，且只用 `input_seq > epoch_input_seq` 的 receipt 定位消息）；behavior run 以身份计：`step_index < flushed_step_index` 的 step（身份高水位，不是数量：子 run 继承的 step 不由它写入）与 `input_seq ≤ flushed_input_seq` 的注入消息已写入，不受中途重写影响。只有已完成的 Step（`steps` / `last_step`）会写入，仍在派发 action 的 `action_step` 完成后才写。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
+**flush 标记**（`live_run` / `process_stack[]` 中）：function call run 以位置计数（`flushed_message_count` = prefix 之后已写入的消息数，只在 `flushed_epoch == HostMeta.history_epoch` 时有效；快照的 epoch 更新时从 0 计，且只用 `input_seq > epoch_input_seq` 的 receipt 定位消息）；behavior run 以身份计：`step_index < flushed_step_index` 的 step（身份高水位，不是数量：子 run 继承的 step 不由它写入）与 `input_seq ≤ flushed_input_seq` 的注入消息已写入，不受中途重写影响。只有已完成的 Step（`steps` / `last_step`）会写入 step 条目，仍在派发 action 的 `action_step` 完成后才写该条目。Behavior 的 `StepRecord.native_messages` 保存本 Step 内层原生调用和回执，排除最终 assistant；它们先于所属 step 条目投影为 assistant_message / action_result，不额外推理或增加 Round。未完成 action_step 的 native_messages、以及 accumulated 中 request.input 之后的内层尾部也可先写入。Behavior 模式的 `flushed_message_count` 表示该未完成 Step 已写入的原生消息前缀；之后转存为完整 Step 时消费这个前缀并重置，避免重复写调用和回执。已继承的 Step 连同 native_messages 一起跳过，子 run 不重复登记父过程。注入消息按 receipt 的位置排序：`request_input` 位于 `after_step` 之前，`step` 位于所附 step 之后。
 
 ## 9. binding.json 与 .runtime/bin
 
 ```jsonc
-{ "schema": "opendan.binding/3", "runtime_id": "rt-…", "kind": "native | tmux", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "bound_at_ms": 0, "bound_by": "rn-…" }
+{ "schema": "opendan.binding/4", "runtime_id": "rt-…", "kind": "native | tmux", "target": {"host":"host:…", "uid":"1000"}, "workdir": "/abs", "workspace": null, "bound_at_ms": 0, "bound_by": "rn-…" }
 ```
 
 - 首次推进时用不覆盖发布写入（`link` / `renameat2(NOREPLACE)`），之后不变；runtime_id 不同必须拒绝（RuntimeMismatch），发生在任何推理之前。
-- workdir：显式 runtime.workdir 优先；否则有 workspace 用 workspace（agent 内部 workspace 为 `<agent_root>/workspace/<id>`），无 workspace 为 session 目录。
+- workdir：有 Workspace 时只采用创建时固化的 `workspace_binding.location.directory`；显式 Runtime workdir 必须与它一致。无 Workspace 时采用 SessionDir。`binding.workspace` 保存同一快照；运行及恢复时核验稳定身份和位置修订，失效终态失败、不重绑。见 [Agent Workspace Protocol](<Agent Workspace Protocol.md>)。
 - binding.json 核验打开后的 runtime_id、kind、target、workdir，不只比较声明的 kind；每次推进都要幂等修复并核验环境：`.runtime/bin` 按期望集合（tool_plan 墓碑 + `agent-session` 包装脚本）重写，`.manifest.json`（条目 → sha256）最后写入；核验失败（缺文件、内容不符、不可执行）不得推理，下次推进修复。
 - 墓碑：`#!/bin/sh` 输出 `{"blocked_by":"tool_plan",...}` 与人读说明到 stderr，`exit 127`。
 - **tmux runtime 属于 Session**：`runtime_id`（配置、run 的 runtime descriptor、binding 三处）等于 session_id；tmux session 名由 session_id 导出（`od_` + 非 `[A-Za-z0-9_]` 字符替换为 `_`）。配置、`runtime.requirement.runtime_id` 或显式参数给出别的 id / 名称是配置错误，在创建目标和推理之前拒绝。首次绑定时目标不存在则创建、已存在则复用；已有 binding 时只 attach 绑定记录的目标，目标丢失或身份改变按绑定错误停止，不以同名新目标继续旧执行。目标上的 tmux 选项 `@opendan_session` 记录所属 session_id：两个 session_id 的名称规整后相同，后者被拒绝。同一 Session 的全部 Turn、behavior、子 context、fork 与恢复使用这一个目标；子 Session 继承的是配置，按自己的 session_id 得到自己的目标。创建 Session 不创建目标；run / Turn 结束与宿主退出不销毁它。
@@ -358,11 +380,11 @@ runs/<run_id>/exec/<call_id>/     shell 命令的执行目录：command、stdout
 
 ## 10. 恢复顺序（drive 开头）
 
-1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` 必须是 `/4`、`session_config.json` 必须是 `/3`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
+1. 取 session 锁（身份必须等于 `session.driver.principal`）；校验 schema 主版本（`state.json` 必须是 `/6`、`session_config.json` 必须是 `/7`，否则 RecoveryBlocked；不迁移，也不按旧字段读取）。
 2. 登记表 `location` 必须等于本目录，否则不推进。
 3. 截掉 worklog 未提交尾部（文件短于 `committed_bytes` → RecoveryBlocked）。
 4. 打开 runtime 并核验完整 binding 与 bin/helper 环境；删除未被引用的 run（持锁；记录不可读则保留）。命令留下的进程不归 run 管，不核对也不停止。
-5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 5` 或快照 `snapshot_version ≠ 4` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。run 停在未提交的交接点（run.json `handover.at_ms ≠ live_run.handover_at_ms`，或快照挂起在 `call_behavior` 而 state 还没有它的结果）→ 按 §8 提交这次转移（挂起入栈 / 子 context 返回），不在该 run 上推理。
+5. live_run：持 run 锁（拿不到 → RunBusy）；读 run.json 与已发布快照（缺失 / 损坏 / 版本不支持：run.json `version ≠ 6` 或快照 `snapshot_version ≠ 5` → RecoveryBlocked，保留现场）；把没有结果的 `inflight[]` 物化为“被打断、结果未知”（文本由 runtime 按执行目录生成）；校验快照 receipt（批次 1..n 连续，state 已应用的批次必须在快照中）并补交 `input_seq > applied` 的 receipt 到 state（只补元数据，按 `opens_turn` 打开或加入 Turn，不重新追加消息）；门槛非空且 state 已覆盖 → 清门槛；run 已到终态 → 按 `host.extra.finish` 重做结束（没有记录时——例如 xllm 跑完——从最终快照推断：behavior 取最后一个 step 的 next_behavior 与 report，function call 取最后一条 assistant 文本）。run 停在未提交的交接点（run.json `handover.at_ms ≠ live_run.handover_at_ms`，或快照挂起在 `call_behavior` 而 state 还没有它的结果）→ 按 §8 提交这次转移（挂起入栈 / 子 context 返回），不在该 run 上推理。
 6. 重试确认已提交的输入位置；补发登记表回报与感知。
 7. 读取新输入、应用 control；finished 则拒绝剩余普通输入。
 8. 恢复 live run（在途动作物化为“结果未知”并先持久化），继续推进。快照挂起在子 context 调用上且 `process_result` 带着它的 `call_id` → 回填工具结果、发布快照、清除 `process_result` 后继续（回填后崩溃：快照已不再挂起，只清除 `process_result`）；挂起在其它 deferred 工具结果（本 runner 无法提供）→ RecoveryBlocked；挂起在上下文上限 → 先按 §7 重写再继续。

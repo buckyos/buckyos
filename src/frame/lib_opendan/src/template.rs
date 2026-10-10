@@ -29,6 +29,7 @@ pub struct SessionTemplate {
     pub kind: SessionKind,
     pub turns: Turns,
     pub wait_user_msg: WaitPolicy,
+    pub completion: CompletionPolicy,
     pub input: InputChannel,
     pub observe: ObserveScope,
     pub load_hints: bool,
@@ -50,6 +51,7 @@ impl SessionTemplate {
             kind,
             turns,
             wait_user_msg: wait,
+            completion: CompletionPolicy::Natural,
             input,
             observe,
             load_hints: hints,
@@ -167,6 +169,9 @@ impl SessionTemplate {
                 _ => return Err(bad("turns")),
             };
         }
+        if let Some(v) = parse("completion")? {
+            t.completion = serde_json::from_value(v).map_err(|_| bad("completion"))?;
+        }
         if let Some(v) = parse("wait_user_msg")? {
             t.wait_user_msg = serde_json::from_value(v).map_err(|_| bad("wait_user_msg"))?;
         }
@@ -180,7 +185,11 @@ impl SessionTemplate {
             t.load_hints = v.as_bool().ok_or_else(|| bad("load_hints"))?;
         }
         if let Some(v) = over.get("default_behavior") {
-            t.default_behavior = Some(v.as_str().ok_or_else(|| bad("default_behavior"))?.to_string());
+            t.default_behavior = Some(
+                v.as_str()
+                    .ok_or_else(|| bad("default_behavior"))?
+                    .to_string(),
+            );
         }
         for (key, slot) in [
             ("max_process_depth", &mut t.max_process_depth),
@@ -200,6 +209,7 @@ impl SessionTemplate {
     pub fn policy(&self) -> SessionPolicy {
         SessionPolicy {
             wait_user_msg: self.wait_user_msg,
+            completion: self.completion,
             observe: self.observe,
             load_hints: self.load_hints,
             max_process_depth: self.max_process_depth,
@@ -240,10 +250,12 @@ impl SessionTemplate {
             .subscriptions
             .iter()
             .any(|s| !matches!(s.source, SubscriptionSource::Session { .. }));
-        spec.input_channel = Some(if external || spec.input_channel == Some(InputChannel::Queue) {
-            InputChannel::Queue
-        } else {
-            self.input
-        });
+        spec.input_channel = Some(
+            if external || spec.input_channel == Some(InputChannel::Queue) {
+                InputChannel::Queue
+            } else {
+                self.input
+            },
+        );
     }
 }

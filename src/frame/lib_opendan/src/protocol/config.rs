@@ -16,7 +16,7 @@ use serde_json::Value;
 /// without an input queue). 4: input templates, `input.mode / media`,
 /// `session.timezone`, event sources of subscriptions. Earlier versions are
 /// read-only until migrated.
-pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/5";
+pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/7";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +144,8 @@ fn default_session_depth() -> u8 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionPolicy {
     #[serde(default)]
+    pub completion: super::CompletionPolicy,
+    #[serde(default)]
     pub wait_user_msg: WaitPolicy,
     #[serde(default)]
     pub observe: ObserveScope,
@@ -163,6 +165,7 @@ pub struct SessionPolicy {
 impl Default for SessionPolicy {
     fn default() -> Self {
         Self {
+            completion: super::CompletionPolicy::default(),
             wait_user_msg: WaitPolicy::default(),
             observe: ObserveScope::default(),
             load_hints: true,
@@ -625,13 +628,30 @@ pub struct RuntimeSection {
     pub env: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceAccess {
+    ReadOnly,
+    #[default]
+    ReadWrite,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum WorkspaceRef {
-    /// Agent internal workspace `<agent_root>/workspace/<id>`.
-    Agent { id: String },
-    /// Directory owned by a user / application.
-    External { path: String },
+#[serde(deny_unknown_fields)]
+pub struct WorkspaceRef {
+    pub workspace_id: String,
+    #[serde(default)]
+    pub access: WorkspaceAccess,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspaceBinding {
+    pub workspace_id: String,
+    pub revision: u64,
+    pub location_revision: u64,
+    pub runtime_host: String,
+    pub location: super::WorkspaceLocation,
+    pub access: WorkspaceAccess,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -775,6 +795,8 @@ pub struct SessionConfig {
     pub runtime: RuntimeSection,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_binding: Option<WorkspaceBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

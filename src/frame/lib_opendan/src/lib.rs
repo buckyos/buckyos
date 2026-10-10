@@ -24,6 +24,7 @@ pub mod fsutil;
 pub mod host;
 pub mod ids;
 pub mod lock;
+pub mod memory;
 pub mod protocol;
 pub mod runner;
 pub mod runtime;

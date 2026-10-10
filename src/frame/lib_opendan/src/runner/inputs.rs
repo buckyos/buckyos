@@ -466,6 +466,7 @@ async fn apply_control(
                 summary: summary.clone(),
                 payload: serde_json::to_value(cmd).unwrap_or(Value::Null),
                 refs: json!({ "input": m.input_ref().id() }),
+                ..Default::default()
             };
             // Appended (idempotent by seq) before the input is consumed.
             sh.agent().perception().append(&sh.lease, &sid, vec![rec]).await?;
@@ -599,6 +600,7 @@ pub(super) async fn apply_decide(
             summary: format!("work session {sid} was discarded"),
             payload: json!({ "session": sid, "artifact_version": version.as_ref().map(|v| v.ver.clone()) }),
             refs: Value::Null,
+            ..Default::default()
         };
         if let Err(e) = sh.agent().perception().append(&sh.lease, &sid, vec![rec]).await {
             log::warn!("task_discarded perception of {sid}: {e}");

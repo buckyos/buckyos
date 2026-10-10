@@ -16,22 +16,21 @@ use agent_tool::{
     AgentTool, AgentToolError, AgentToolResult, AgentToolStatus, CallingConventions,
     SessionRuntimeContext, ToolSpec, TOOL_SHELL,
 };
-use llm_context::state::LLMContextSnapshot;
-use serde_json::{json, Value};
-use std::collections::BTreeMap;
 use async_trait::async_trait;
 use buckyos_api::AiToolCall;
 use llm_context::deps::{ToolCallCtx, ToolDispatchError, ToolManager, ToolSpecLite};
 use llm_context::observation::Observation;
+use llm_context::state::LLMContextSnapshot;
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
 
 use crate::lock::Lease;
 use crate::protocol::{
-    BehaviorEntry, ChildCall, CallTrigger, Touching, TOOL_CALL_BEHAVIOR,
+    BehaviorEntry, CallTrigger, ChildCall, Touching, TOOL_CALL_BEHAVIOR, TOOL_REPORT,
 };
 use crate::session::runs::RunHandle;
 
 use super::flush::canonical_args;
-
 
 /// `read_only | idempotent | side_effect | unknown` of a tool name.
 pub fn classify_effect(tool: &str) -> &'static str {
@@ -40,6 +39,7 @@ pub fn classify_effect(tool: &str) -> &'static str {
         // The call itself changes nothing: what the sub context does is
         // tracked by its own run.
         TOOL_CALL_BEHAVIOR => "read_only",
+        TOOL_REPORT => "idempotent",
         "write_file" | "edit_file" => "side_effect",
         t if t == TOOL_SHELL => "unknown",
         _ => "unknown",
@@ -48,6 +48,7 @@ pub fn classify_effect(tool: &str) -> &'static str {
 
 /// Session-aware tool manager wrapping xllm's tool set.
 pub struct SessionToolManager {
+    shared: Arc<super::shared::Shared>,
     inner: Arc<dyn Sandbox>,
     run: RunHandle,
     lease: Arc<Lease>,
@@ -63,6 +64,7 @@ pub struct SessionToolManager {
 
 impl SessionToolManager {
     pub fn new(
+        shared: Arc<super::shared::Shared>,
         inner: Arc<dyn Sandbox>,
         run: RunHandle,
         lease: Arc<Lease>,
@@ -72,6 +74,7 @@ impl SessionToolManager {
     ) -> Self {
         let seen_tasks = Mutex::new(run.noted_tasks().into_iter().collect());
         Self {
+            shared,
             inner,
             run,
             lease,
@@ -121,10 +124,18 @@ impl ToolManager for SessionToolManager {
         if let Err(e) = self.lease.check() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
+        if let Err(e) = super::drive::verify_workspace_admission(&self.shared).await {
+            return Err(ToolDispatchError::not_started(e.to_string()));
+        }
         if let Err(e) = self.run.require_execution_admitted() {
             return Err(ToolDispatchError::not_started(e.to_string()));
         }
         *self.current_tool.lock().expect("current tool") = Some(call.name.clone());
+        if call.name == TOOL_REPORT && self.inner.has_tool(TOOL_REPORT) {
+            return super::reports::call(&self.shared, &self.run, &call)
+                .await
+                .map_err(|e| ToolDispatchError::not_started(e.to_string()));
+        }
         let effect = classify_effect(&call.name);
         if effect != "read_only" {
             let action = InflightAction {
@@ -136,10 +147,7 @@ impl ToolManager for SessionToolManager {
                 // tool that creates a task in an external service uses it as
                 // the idempotency key, so a crash between creating and
                 // recording the task finds the same task again.
-                idempotency_key: Some(crate::ids::h(&[
-                    self.run.run_id(),
-                    call.call_id.as_str(),
-                ])),
+                idempotency_key: Some(crate::ids::h(&[self.run.run_id(), call.call_id.as_str()])),
                 step_index: None,
                 started_at_ms: crate::now_ms(),
             };
@@ -155,8 +163,9 @@ impl ToolManager for SessionToolManager {
         // session waits for the task outside the context (the run's
         // resolver answers for it) and fills the result on resume.
         let result = self.inner.call_tool(call, ctx).await;
-        if let Ok(Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. }) =
-            &result
+        if let Ok(
+            Observation::Success { tool_result, .. } | Observation::Error { tool_result, .. },
+        ) = &result
         {
             if let Some((task_id, t)) = tool_result
                 .as_ref()

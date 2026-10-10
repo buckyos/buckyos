@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "ReportArtifact": {
+      "properties": {
+        "digest": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "reference": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "digest",
+        "path",
+        "reference"
+      ],
+      "type": "object"
+    },
+    "ReportSource": {
+      "oneOf": [
+        {
+          "properties": {
+            "call_id": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "tool"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "call_id",
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "enum": [
+                "behavior"
+              ],
+              "type": "string"
+            },
+            "step_index": {
+              "format": "uint32",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "step_index"
+          ],
+          "type": "object"
+        }
+      ]
+    }
+  },
+  "properties": {
+    "accepted_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "artifacts": {
+      "default": [],
+      "items": {
+        "$ref": "#/definitions/ReportArtifact"
+      },
+      "type": "array"
+    },
+    "id": {
+      "type": "string"
+    },
+    "is_end": {
+      "type": "boolean"
+    },
+    "report": {
+      "type": "string"
+    },
+    "result": true,
+    "run_id": {
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/definitions/ReportSource"
+    }
+  },
+  "required": [
+    "accepted_at_ms",
+    "id",
+    "is_end",
+    "report",
+    "run_id",
+    "source"
+  ],
+  "title": "ReportSubmission",
+  "type": "object"
+}

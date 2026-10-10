@@ -307,6 +307,9 @@ impl AgentStateClient for ForwardingStateClient {
     fn artifacts(&self) -> &dyn Artifacts {
         self
     }
+    fn workspaces(&self) -> &dyn WorkspaceManager {
+        self.inner.workspaces()
+    }
     fn locks(&self) -> &dyn LockManager {
         self
     }
@@ -352,6 +355,9 @@ impl AgentStateClient for WithBehaviors {
     }
     fn artifacts(&self) -> &dyn Artifacts {
         self.inner.artifacts()
+    }
+    fn workspaces(&self) -> &dyn WorkspaceManager {
+        self.inner.workspaces()
     }
     fn locks(&self) -> &dyn LockManager {
         self.inner.locks()

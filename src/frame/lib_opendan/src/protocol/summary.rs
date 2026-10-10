@@ -12,7 +12,7 @@ use super::config::MechanicalCompress;
 pub const SESSION_SUMMARY_SCHEMA: &str = "opendan.session_summary/2";
 /// Renderer id + version; determinism is only promised within one version.
 /// 2: Turn / input batch / assistant message / step entries.
-pub const MECHANICAL_RENDERER: &str = "libopendan.mechanical/2";
+pub const MECHANICAL_RENDERER: &str = "libopendan.mechanical/3";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionSummary {

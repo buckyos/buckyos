@@ -37,6 +37,7 @@ pub enum CheckpointStage {
     /// `InferenceHook::before_inference` refused to commit the pre-inference
     /// snapshot; no inference was started.
     BeforeInference,
+    BeforeToolCall,
     /// A runtime above the waist failed to commit the outcome boundary.
     OutcomeBoundary,
 }

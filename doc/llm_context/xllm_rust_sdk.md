@@ -1,6 +1,6 @@
 # xllm Rust SDK 参考
 
-- 日期：2026-09-18；2026-10-02 同步 AgentRuntime 与快照 v4（`PendingToolCall {task_id, until_ms}`）；2026-10-03 同步 `RunRecord.version = 5`（`handover`，宿主 Run 的 behavior 交接点）
+- 日期：2026-09-18；2026-10-02 同步 AgentRuntime 与快照 v4（`PendingToolCall {task_id, until_ms}`）；2026-10-03 同步 `RunRecord.version = 5`（`handover`，宿主 Run 的 behavior 交接点）；2026-10-10 同步 H4 报告协议，当前 RunRecord v6、快照 v5、`xllm/2`
 - 实现：`src/frame/agent_tool/src/xllm.rs`（SDK）、`src/frame/agent_tool/src/run_local_llm.rs`（CLI，`agent_tool xllm ...`）
 - 依据：[xllm PRD](../../product/xllm/PRD.md)。本文只记录 Rust 实现落实 PRD 时固定下来的协议决定，供 websdk 的 TS 版本对照；产品行为以 PRD 为准。
 
@@ -53,7 +53,7 @@ behavior 协议（`XllmActionParser`）：`<response><thinking/><actions>…</ac
 
 ```
 <runs_dir>/<run_id>/run.json        RunRecord
-<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（每次推理前 + outcome 边界；快照 v4）
+<runs_dir>/<run_id>/snapshots/NNNN.json   waist LLMContextSnapshot（每次推理前 + outcome 边界；快照 v5）
 <runs_dir>/<run_id>/.lock           该 Run 的执行互斥
 <lock_dir>/<hash(workdir)>.lock     启用工具的任务按工作目录互斥（默认 ~/.xllm/locks）
 ```
@@ -109,10 +109,10 @@ CLI 自身的帮助、状态标签（含结构化结果中的 `status_label`）�
 
 libOpenDAN 把 session 的 `runs/` 直接作为 xllm 的 run 目录。为此增加以下可选能力，xllm 自己的 Run 行为不变：
 
-- **宿主装配（X2）**：`XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps) -> HostedTask`。宿主给出 `.llm_context` 的 JSON 形式（同 schema、严格键）和自己的 system 文本；xllm 计算有效配置、展开工具，并在宿主文本后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`protocol_version = xllm/1`）。宿主 system 支持稳定 runtime.* 与具名 env.* 模板，current_time/timezone 在输入批次提供，system 引用新鲜量会报 Template；`HostedTask::new_record` / `build_request`、`hosted_request`、`hosted_waist_deps`（behavior 用 `XllmActionParser` + `XmlStepRenderer`）让宿主驱动 waist，而 run 目录保持 xllm 可接手。`rebuild_toolset` / `create_run_llm` 按保存的记录重建工具与 Provider。`XllmDeps.host_protocol: HostProtocolFlavor`（缺省 `OneShot`）决定宿主装配 run 的 `runtime_protocol` 开场白：`Session { intro }` 由宿主给出（Agent Session 不是一次性任务，是否等用户由宿主规则决定），其余协议正文不变。宿主装配的 run（`record.host` 非空）无论由谁执行都用不带时间戳的 `XmlStepRenderer`，xllm 接手后渲染出的历史与宿主逐字节一致。`shell` 工具把本次调用的 id 以环境变量 `XLLM_CALL_ID` 传给命令（命令可用它作为自己创建对象的幂等键）。`CompositeTaskResolver::can_resolve` 对非本地 task id 委托给注入的 `buckyos_tasks`。
+- **宿主装配（X2）**：`XllmTask::prepare_hosted(workdir, llm_context_json, origin, host_system, deps) -> HostedTask`。宿主给出 `.llm_context` 的 JSON 形式（同 schema、严格键）和自己的 system 文本；xllm 计算有效配置、展开工具，并在宿主文本后追加 `capabilities` / `cmd_manual` / `runtime_protocol` 段（`protocol_version = xllm/2`）。宿主 system 支持稳定 runtime.* 与具名 env.* 模板，current_time/timezone 在输入批次提供，system 引用新鲜量会报 Template；`HostedTask::new_record` / `build_request`、`hosted_request`、`hosted_waist_deps`（behavior 用 `XllmActionParser` + `XmlStepRenderer`）让宿主驱动 waist，而 run 目录保持 xllm 可接手。`rebuild_toolset` / `create_run_llm` 按保存的记录重建工具与 Provider。`XllmDeps.host_protocol: HostProtocolFlavor`（缺省 `OneShot`）决定宿主装配 run 的 `runtime_protocol` 开场白：`Session { intro }` 由宿主给出（Agent Session 不是一次性任务，是否等用户由宿主规则决定），其余协议正文不变。宿主装配的 run（`record.host` 非空）无论由谁执行都用不带时间戳的 `XmlStepRenderer`，xllm 接手后渲染出的历史与宿主逐字节一致。`shell` 工具把本次调用的 id 以环境变量 `XLLM_CALL_ID` 传给命令（命令可用它作为自己创建对象的幂等键）。`CompositeTaskResolver::can_resolve` 对非本地 task id 委托给注入的 `buckyos_tasks`。
 - **RunStore（X1）**：`create_run`、`lock_run`、`remove_run`、`prune_snapshots` 公开；`run.json` 与快照写入先 fsync 再原子发布（目录也 fsync）。
 - **RunRecord 新字段**（均可缺省）：`host`（`assembled_by`、`session_id`、`runtime_kind`、`runtime_id`、`env_check`）、`host_commit_pending`、`inflight[]`、`handover`。
-- **behavior 交接点（`handover`，版本 5）**：宿主装配的 Run（`record.host` 非空）以 `Done` 返回且 `next_behavior` 指向另一个 behavior（`is_handover_target`：不是 `END` / `done` / `WAIT_USER_MSG`）时，这个 Run 没有完成：xllm 把状态记为 `paused` 并写入 `handover = RunHandover { next_behavior, at_ms }`，不写 `result`。xllm 只记录事实，目标 behavior 的进入模式（`switch_context` / `create_sub_context` / `fork`）由宿主读自己的配置决定，转移也只由宿主 Session 提交（libOpenDAN 的 reconcile 按 `at_ms` 恰好提交一次）；宿主重新打开该 Run 执行时清除该字段。没有宿主的 xllm Run 不受影响：`next_behavior` 指向其它 behavior 的 `Done` 仍按 `completed` 结束。
+- **behavior 交接点（`handover`，run 版本 6）**：宿主装配的 Run（`record.host` 非空）以 `Done` 返回且 `next_behavior` 指向另一个 behavior（`is_handover_target`：非空且不是 `WAIT_USER_MSG`；END / done 在 parser 阶段即拒绝）时，这个 Run 没有完成：xllm 把状态记为 `paused` 并写入 `handover = RunHandover { next_behavior, at_ms }`，不写 `result`。xllm 只记录事实，目标 behavior 的进入模式（`switch_context` / `create_sub_context` / `fork`）由宿主读自己的配置决定，转移也只由宿主 Session 提交（libOpenDAN 的 reconcile 按 `at_ms` 恰好提交一次）；宿主重新打开该 Run 执行时清除该字段。没有宿主的 xllm Run 不受影响：`next_behavior` 指向其它 behavior 的 `Done` 仍按 `completed` 结束。
 - **resume 检查（X3 / X6）**：`version` 不等于当前版本（`RUN_RECORD_VERSION = 5`）→ 拒绝；`host_commit_pending` 非空 → 拒绝（须由宿主补交输入）；`handover` 非空 → 拒绝（`NotResumable`：“handed over to behavior … its host session commits the transfer”，须用宿主 Runner 推进 Session）；按保存的 runtime 构造执行体并核对完整 descriptor（kind、id、实际 target、cwd）；Session 接管校验保存的环境、PATH、bin manifest 与 helper 内容，凭据重新读取环境引用；取得 run 锁后把没有持久结果的 `inflight[]` 物化为“被打断、结果未知”（`materialize_unresolved`，文本由 `AgentRuntime::describe_interrupted` 按 runtime 生成：native 给命令与开始时间并说明命令可能部分执行、通常随执行器结束但不保证、后台进程不受影响；tmux / remote_ssh 读执行目录，已有 `exit` 时给退出码与输出尾部，没有时说明“可能仍在运行”与查看位置）并落盘，**不核验、不停止任何进程，不重放工具**。挂起在 task 上（`PendingTool`）的 run 被接手时不等待：用 resolver 查 task 当时的状态立即回填后续跑；task 属于接手方访问不了的 task-mgr（非 `local:` 前缀且未注入 `XllmDeps.buckyos_tasks`）时拒绝接手；libOpenDAN 中装配了 `call_behavior` 的 Run（包括挂起在子 context 上、task id 为 `subctx:<call_id>` 的 Run）xllm 不能接手：重建工具集时该宿主工具未注册即报错，且 `subctx:` task 也不属于 xllm 可达的 task-mgr，须由 Session 自己的 Runner 推进。
 - **执行目录与 task（长命令 TODO §3.2 / §4 / §5）**：`agent_tool::exec_tracking` 只保留 `InflightAction` / `HostRunInfo` / `materialize_unresolved`；进程跟踪（`ExecutionRecord`、`OPENDAN_EXECUTION_ID`、启动握手、`probe_execution` / `stop_execution`、`reconcile_execution`、`run.executions[]`）已删除。`shell` 命令统一写执行目录 `(run, call_id)`（native / tmux：`runs/<run_id>/exec/<call_id>`；remote_ssh：`/tmp/llm-runtime-<uid>/<run_id>/<call_id>`）。auto 模式到期的命令交给进程内 task-mgr（`agent_tool::tasks::InProcessTaskManager`，id 为 `local:shell:<call_id>`），`CompositeTaskResolver` 作为 waist 的 `RunningTaskResolver`（进程内 task + 执行目录回读 + 可选 buckyos task-mgr）。xllm 没有 Session，`allow_deferred` 关闭，任何工具内等待最长 30 分钟后带 task 状态返回 LLM（libOpenDAN 只为 `call_behavior` 打开 deferred，其它工具同样在调用内等待）。`XllmDeps.runtime` 注入共享 `AgentRuntime`，`buckyos_tasks`、`runtime_env` 与 `runtime_path_prefix` 由宿主装配；`XllmDeps.skip_workdir_lock` 让宿主自行协调共享 workspace。
 - **用量累加**：宿主驱动时由宿主在每个 outcome 后把本段推理尝试数加到 `usage.llm_requests`（libOpenDAN 如此），xllm 接手后在其上继续累加；任何执行段都不覆盖已有值。
@@ -158,3 +158,9 @@ shell、read/write/edit、模板执行共用执行体。MCP 仍在所配置服�
 run.json 的 workdir、配置文件、日志和快照属于控制侧；config.runtime.workdir 是执行侧路径。恢复沿用保存配置，不重读 .llm_context；SSH alias 重定向或 tmux session 被替换都会拒绝。native/tmux 保留实际 cwd 的 flock；SSH 不取远端路径的本地锁，跨 Runner 并发由宿主协调。Session 未部署远端 helper 时明确报 Capability；SSH 可独立用于 xllm。
 
 新任务可用 `--runtime <kind>` 覆盖 kind；连接字段仍需来自配置。resume 与查询不接受该参数；status 显示实际 runtime、target、cwd 和 env_check。核心测试：`cargo test -p agent_tool --lib`、`cargo test -p llm_context`；真实传输测试：仓库根目录 `bash test/runtime_ssh/run.sh`（需 ssh、sftp、sshd），覆盖文件、取消、认证失败、断线、强杀与目标变更。
+
+### 显式报告与恢复（H4）
+
+Behavior 的阶段 `<report>` 不结束 run；最终结果必须使用 `<report end="true">`。两套 parser 共享 `LLMBehaviorResult::validate`，在同次原生工具派发前检查结束冲突。`StepRecord` 保存 `report_end`、`report_artifacts`、`report_result`，快照 v5 保存 `state.report_end`；独立 run 落盘的最终 Step 在恢复时直接返回同一份 Done，不增加推理。宿主 run 由 xllm 执行到 XML 最终 Step 时保存快照后保持 paused，以 snapshot.state.report_end 交回 Session 验证，不提前标 Completed；xllm 再次 resume 会拒绝该交接点。宿主恢复通过校验时直接提交，产物 / 活动任务校验失败时回到可修正 Step，不永久卡在终态。run v6 与 runtime protocol `xllm/2` 只接受当前版本。
+
+宿主 `report` 工具按冻结工具表重建，独立 xllm 不默认安装它。接手已冻结 report 的 libopendan run 时，缺少宿主实现会装回原 schema 的占位工具，其调用返回 requires Session host executor 的可修正错误，不接受报告；其它工具仍可继续。`host.extra.reports` 中已有 `is_end=true` 的提交时，xllm 拒绝接手并要求宿主完成结果配对和 Session 提交。普通阶段报告不触发此门槛。

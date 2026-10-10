@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use agent_tool::xllm::RunStatus;
 use llm_context::tasks::{RunningTaskResolver, TaskState};
+use llm_context::{LLMContext, ResumeFill};
 use serde_json::Value;
 
 use crate::error::{OpenDanError, Result};
@@ -30,6 +31,7 @@ use crate::session::{Session, SessionDir};
 use crate::state::run_digest;
 
 use super::assembler::InputMaterial;
+use super::children::poll_children;
 use super::input_view::{
     event_view, media_blocks, message_view, pending_event_view, unlocated_attachments, EventView,
     InputItem, InputView,
@@ -46,10 +48,7 @@ use super::outcome::{
 };
 use super::receipts::internal_task_key;
 use super::reconcile::{reconcile_runs, Reconciled};
-use super::children::poll_children;
-use super::shared::{
-    commit_and_report, report, ClosedTurn, LiveCtx, Opened, Shared, WaitingRun,
-};
+use super::shared::{commit_and_report, report, ClosedTurn, LiveCtx, Opened, Shared, WaitingRun};
 use super::{DriveResult, RunnerDeps, StopWhen};
 
 /// Advance a session until `until` (§8.2).
@@ -117,9 +116,45 @@ async fn drive_locked(
         }
         _ => return DriveResult::Unregistered,
     }
+    if session.state.is_finished()
+        && session
+            .state
+            .last_error
+            .as_ref()
+            .is_some_and(|e| e["kind"] == "workspace_binding_invalid")
+    {
+        return finished_result(&session);
+    }
     let mut deps = deps.clone();
-    match crate::runtime::session_runtime(sd, &session.config, &deps.runtime, deps.agent.agent_root()) {
+    if !session.state.is_finished() {
+        match crate::runtime::verify_workspace(deps.agent.as_ref(), &session.config).await {
+            Ok(()) => {}
+            Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
+                return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
+            }
+            Err(OpenDanError::Busy { holder, .. }) => return DriveResult::Busy { holder },
+            Err(error) => {
+                return DriveResult::Error {
+                    rev: session.state.rev,
+                    error: error.to_json(),
+                }
+            }
+        }
+    }
+    match crate::runtime::session_runtime(
+        sd,
+        &session.config,
+        &deps.runtime,
+        deps.agent.agent_root(),
+    ) {
         Ok(r) => deps.runtime = r,
+        Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
+            return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
+        }
+        Err(error) if session.config.workspace_binding.is_some() => {
+            let error = OpenDanError::WorkspaceBindingInvalid(error.to_string());
+            return fail_workspace(&mut session, &lease, deps.agent.as_ref(), &error).await;
+        }
         Err(e) => return DriveResult::BindFailed { error: e.to_json() },
     }
     // A finished session that takes no more input gave its queue back.
@@ -154,6 +189,8 @@ async fn drive_locked(
         agent_root: deps.agent.agent_root().map(|p| p.to_path_buf()),
         dir: sd.clone(),
         kind_lease: Mutex::new(None),
+        workspace_lease: Mutex::new(None),
+        workspace_failure: Mutex::new(None),
         tasks: Mutex::new(None),
         turn_closed: Mutex::new(None),
         current_tool: Arc::new(Mutex::new(None)),
@@ -161,6 +198,19 @@ async fn drive_locked(
         flush: tokio::sync::Mutex::new(()),
     });
     let r = Box::pin(drive_inner(&sh, until)).await;
+    let failure = sh
+        .workspace_failure
+        .lock()
+        .expect("workspace failure")
+        .clone();
+    if let Some(message) = failure {
+        let mut session = sh.session.lock().await;
+        let error = OpenDanError::WorkspaceBindingInvalid(message);
+        let result = fail_workspace(&mut session, &sh.lease, sh.agent(), &error).await;
+        drop(session);
+        release_sources(&sh).await;
+        return result;
+    }
     if matches!(r, Ok(DriveResult::Finished { .. })) && !sh.sources.is_empty() {
         release_sources(&sh).await;
     }
@@ -171,6 +221,11 @@ async fn drive_locked(
             record_error(&sh, &OpenDanError::RecoveryBlocked(b.clone())).await;
             DriveResult::RecoveryBlocked(b)
         }
+        Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) => {
+            let mut session = sh.session.lock().await;
+            fail_workspace(&mut session, &sh.lease, sh.agent(), &error).await
+        }
+        Err(OpenDanError::Busy { holder, .. }) => DriveResult::Busy { holder },
         Err(OpenDanError::RunBusy { run_id }) => DriveResult::RunBusy { run_id },
         Err(OpenDanError::LeaseLost(_)) => DriveResult::LeaseLost,
         Err(e) => {
@@ -181,6 +236,296 @@ async fn drive_locked(
             }
         }
     }
+}
+
+async fn fail_workspace(
+    session: &mut Session,
+    lease: &Lease,
+    agent: &dyn crate::state::AgentStateClient,
+    error: &OpenDanError,
+) -> DriveResult {
+    let persist: Result<()> = async {
+        session.reset_to_committed(lease)?;
+        let mut unresolved_tasks: std::collections::BTreeSet<String> =
+            session.state.watched_tasks.iter().cloned().collect();
+        let mut unresolved_calls = Vec::new();
+        let mut unverified_runs = Vec::new();
+        for id in session.dir.runs().list()? {
+            match session.dir.runs().record(&id) {
+                Ok(record) => {
+                    if let Some(tasks) = record.host.as_ref().and_then(|h| h.extra.get("tasks"))
+                        .and_then(Value::as_array)
+                    {
+                        unresolved_tasks.extend(tasks.iter().filter_map(Value::as_str).map(str::to_string));
+                    }
+                    unresolved_calls.extend(record.inflight.iter().map(|call| serde_json::json!({
+                        "run_id": id, "call_id": call.call_id,
+                    })));
+                }
+                Err(_) => unverified_runs.push(id),
+            }
+        }
+        let mut detail = error.to_json();
+        detail["workspace_binding"] = serde_json::to_value(&session.config.workspace_binding)
+            .map_err(|e| OpenDanError::Other(e.to_string()))?;
+        detail["unresolved_tasks"] = serde_json::json!(unresolved_tasks);
+        detail["unresolved_calls"] = serde_json::json!(unresolved_calls);
+        detail["unverified_runs"] = serde_json::json!(unverified_runs);
+        detail["live_run"] = serde_json::json!(session.state.live_run.as_ref().map(|r| &r.run_id));
+        detail["file_change_audit"] = serde_json::json!("incomplete");
+        detail["rollback"] = serde_json::json!("unsupported");
+        let binding = session.config.workspace_binding.as_ref().map(|binding| format!(
+            "{} at {}:{} (location revision {})", binding.workspace_id,
+            binding.runtime_host, binding.location.directory.display(), binding.location_revision,
+        )).unwrap_or_else(|| "SessionDir".into());
+        let failure_report = format!(
+            "{error}\nOriginal workspace binding: {binding}.\nUnverified tasks: {}. Unverified calls: {}.\nFile change audit is incomplete; tool records do not capture every filesystem change. Side effects have not been rolled back; automatic rollback is unsupported.",
+            detail["unresolved_tasks"], detail["unresolved_calls"],
+        );
+        session.write_report(lease, &failure_report)?;
+        session.state.run_state = RunState::Finished;
+        session.state.outcome = Some(Outcome::Failed);
+        session.state.last_error = Some(detail.clone());
+        session.state.one_line_status =
+            "workspace binding invalid; create a new session after resolving the workspace".into();
+        session.state.waiting_for = None;
+        session.state.activity = Activity::default();
+        let mut bodies = vec![WorklogBody::Outcome {
+            run_id: session
+                .state
+                .live_run
+                .as_ref()
+                .map(|r| r.run_id.clone())
+                .unwrap_or_default(),
+            turn: session.state.current_turn(),
+            kind: "workspace_binding_invalid".into(),
+            next_behavior: None,
+            report: Some(failure_report),
+        }];
+        if let Some(turn) = session.state.open_turn.take() {
+            super::turn_task::close_turn_task(
+                session,
+                turn.index,
+                TurnStatus::Failed,
+                None,
+                Some(&detail),
+            );
+            bodies.push(WorklogBody::TurnEnded {
+                run_id: session
+                    .state
+                    .live_run
+                    .as_ref()
+                    .map(|r| r.run_id.clone())
+                    .unwrap_or_default(),
+                turn: turn.index,
+                status: TurnStatus::Failed,
+                at_ms: crate::now_ms(),
+            });
+        }
+        session.append_worklog(lease, bodies)?;
+        session.commit_state(lease)?;
+        agent
+            .sessions()
+            .report_state(lease, session.sid(), session.status(lease.epoch()))
+            .await?;
+        Ok(())
+    }
+    .await;
+    match persist {
+        Ok(()) => finished_result(session),
+        Err(e) => DriveResult::Error {
+            rev: session.state.rev,
+            error: e.to_json(),
+        },
+    }
+}
+
+pub(super) async fn verify_workspace_admission(sh: &Arc<Shared>) -> Result<()> {
+    let cfg = sh.session.lock().await.config.clone();
+    let checked = async {
+        let disk = sh.dir.config()?;
+        if disk.workspace != cfg.workspace
+            || disk.workspace_binding != cfg.workspace_binding
+            || disk.runtime != cfg.runtime
+            || disk.prompt.llm_context.get("runtime") != cfg.prompt.llm_context.get("runtime")
+        {
+            return Err(OpenDanError::WorkspaceBindingInvalid(
+                "session workspace configuration changed".into(),
+            ));
+        }
+        crate::runtime::verify_workspace(sh.agent(), &cfg).await?;
+        if let Some(binding) = sh.dir.binding_opt()? {
+            if binding.workspace != cfg.workspace_binding
+                || Some(binding.workdir.as_str()) != sh.deps.runtime.config().workdir.as_deref()
+            {
+                return Err(OpenDanError::WorkspaceBindingInvalid(
+                    "runtime execution no longer matches the session binding".into(),
+                ));
+            }
+        }
+        if let Some(lease) = sh.workspace_lease.lock().expect("workspace lease").as_ref() {
+            lease
+                .check()
+                .map_err(|e| OpenDanError::WorkspaceBindingInvalid(e.to_string()))?;
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(error @ OpenDanError::WorkspaceBindingInvalid(_)) = &checked {
+        *sh.workspace_failure.lock().expect("workspace failure") = Some(error.to_string());
+        if let Some(handle) = sh.interrupt.lock().expect("interrupt").as_ref() {
+            handle.interrupt("workspace binding invalid");
+        }
+    }
+    checked
+}
+
+async fn acquire_workspace_writer(sh: &Arc<Shared>) -> Result<()> {
+    let cfg = sh.session.lock().await.config.clone();
+    let Some(binding) = cfg.workspace_binding else {
+        return Ok(());
+    };
+    if binding.access == WorkspaceAccess::ReadOnly {
+        return Err(OpenDanError::WorkspaceBindingInvalid(
+            "read-only workspace execution needs runtime isolation; the local shell cannot enforce it".into(),
+        ));
+    }
+    let resource = format!("workspace:{}", binding.workspace_id);
+    let lease = sh
+        .agent()
+        .locks()
+        .acquire(&resource, sh.deps.holder())?
+        .into_result(&resource)?;
+    let entries = sh
+        .agent()
+        .sessions()
+        .query(&RegistryQuery::default())
+        .await?;
+    let mut delegation_path = std::collections::BTreeMap::new();
+    let mut child = sh.dir.sid().to_string();
+    let mut parent = cfg
+        .session
+        .origin
+        .as_ref()
+        .and_then(|origin| origin.parent_session.clone());
+    while let Some(sid) = parent {
+        if delegation_path.contains_key(&sid) || delegation_path.len() >= 32 {
+            break;
+        }
+        delegation_path.insert(sid.clone(), child);
+        let Some(entry) = entries.iter().find(|entry| entry.session_id == sid) else {
+            break;
+        };
+        child = sid;
+        parent = entry
+            .origin
+            .as_ref()
+            .and_then(|origin| origin.parent_session.clone());
+    }
+    for entry in &entries {
+        if entry.session_id == sh.dir.sid()
+            || !entry
+                .workspace
+                .as_ref()
+                .is_some_and(|w| w.workspace_id == binding.workspace_id)
+        {
+            continue;
+        }
+        let uncertain = (|| -> Result<bool> {
+            let dir = SessionDir::open(&entry.location)?;
+            let delegated_child = delegation_path.get(&entry.session_id);
+            let is_parent = delegated_child.is_some();
+            let _parent_lock = if is_parent {
+                match crate::lock::FileLock::try_acquire(&dir.lease_path())? {
+                    Some(lock) => Some(lock),
+                    None => return Ok(true),
+                }
+            } else {
+                None
+            };
+            let state = dir.state()?;
+            if !state.watched_tasks.is_empty() {
+                return Ok(true);
+            }
+            for id in dir.runs().list()? {
+                let record = dir.runs().record(&id)?;
+                let background = record
+                    .host
+                    .as_ref()
+                    .and_then(|h| h.extra.get("tasks"))
+                    .and_then(Value::as_array)
+                    .is_some_and(|tasks| !tasks.is_empty());
+                if background || record.status == RunStatus::Running {
+                    return Ok(true);
+                }
+                if !record.inflight.is_empty() {
+                    if !is_parent
+                        || state.run_state != RunState::Waiting
+                        || state.live_run.as_ref().is_none_or(|run| run.run_id != id)
+                        || record.status != RunStatus::Paused
+                        || record.host_commit_pending.is_some()
+                    {
+                        return Ok(true);
+                    }
+                    let Some(_run_lock) = dir.runs().try_lock(&id)? else {
+                        return Ok(true);
+                    };
+                    let (_, snapshot) = dir.runs().load_checked(&id)?;
+                    let Some(snapshot) = snapshot else {
+                        return Ok(true);
+                    };
+                    let pending = snapshot.state.pending_calls();
+                    let delegates_here = delegated_child.is_some_and(|child| {
+                        pending
+                            .iter()
+                            .any(|call| call.task_id == format!("session:{child}"))
+                    });
+                    let only_registered_children = !pending.is_empty()
+                        && pending.iter().all(|call| {
+                            call.task_id
+                                .strip_prefix(super::children::SESSION_TASK_PREFIX)
+                                .is_some_and(|sid| {
+                                    entries.iter().any(|child| {
+                                        child.session_id == sid
+                                            && child
+                                                .origin
+                                                .as_ref()
+                                                .and_then(|origin| origin.parent_session.as_deref())
+                                                == Some(entry.session_id.as_str())
+                                            && child.workspace.as_ref().is_some_and(|workspace| {
+                                                workspace.workspace_id == binding.workspace_id
+                                            })
+                                    })
+                                })
+                        });
+                    let only_deferred_calls = record.inflight.iter().all(|action| {
+                        pending.iter().any(|call| {
+                            call.call.call_id == action.call_id
+                                && call.call.name == action.tool
+                                && super::flush::canonical_args(&call.call.args) == action.args
+                        })
+                    });
+                    if !delegates_here || !only_registered_children || !only_deferred_calls {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })()
+        .unwrap_or(true);
+        if uncertain {
+            return Err(OpenDanError::Busy {
+                resource,
+                holder: Some(serde_json::json!({
+                    "session_id": entry.session_id,
+                    "reason": "another session has unresolved execution or background tasks; recover and settle it before handing over the workspace",
+                    "scope": "this AgentState on a filesystem providing flock",
+                })),
+            });
+        }
+    }
+    *sh.workspace_lease.lock().expect("workspace lease") = Some(Arc::new(lease));
+    Ok(())
 }
 
 /// Record `last_error` (keeps live_run, runs and consumption untouched).
@@ -318,7 +663,6 @@ async fn stop_session(
     };
     let mut live = live;
     let mut waiting = waiting;
-    stop_children(sh).await;
     // A run state still references (e.g. a caller just resumed after its sub
     // context) ends through the normal finish path.
     if live.is_none() && waiting.is_none() && sh.session.lock().await.state.live_run.is_some() {
@@ -337,14 +681,74 @@ async fn stop_session(
             }
         };
     }
+    while let Some(mut lc) = live.take() {
+        let Some(report) = super::reports::final_report(&lc.run)? else {
+            live = Some(lc);
+            break;
+        };
+        lc.ctx = LLMContext::resume(
+            lc.ctx.snapshot(),
+            ResumeFill::ResumeFromMidRun,
+            lc.deps.clone(),
+        )
+        .map_err(|e| {
+            OpenDanError::blocked(
+                format!("accepted final report cannot resume: {e}"),
+                Some(lc.run.run_id()),
+            )
+        })?;
+        let handle = lc.ctx.interrupt_handle();
+        if let ReportSource::Tool { call_id } = &report.source {
+            if agent_tool::exec_tracking::persisted_outcome_ids(&lc.ctx.snapshot()).contains(call_id) {
+                handle.finish("complete accepted report before stop");
+            }
+        }
+        *sh.interrupt.lock().expect("interrupt") = Some(handle);
+        let outcome = lc.ctx.run().await;
+        let next = Box::pin(handle_context_outcome(sh, &mut lc, outcome)).await?;
+        if let Some(error) = next.error {
+            return Err(OpenDanError::Other(format!("accepted final report could not settle before stop: {error}")));
+        }
+        if sh.session.lock().await.state.is_finished() {
+            return Ok(());
+        }
+        drop(lc);
+        if sh.session.lock().await.state.live_run.is_some() {
+            live = match Box::pin(open_state_live_run(sh, env)).await? {
+                Opened::Ctx(lc) => Some(lc),
+                Opened::Waiting(w) => match try_fill(sh, w, true).await? {
+                    Ok(lc) => Some(lc),
+                    Err(_) => {
+                        return Err(OpenDanError::Other(
+                            "the caller could not be answered after its final report".into(),
+                        ))
+                    }
+                },
+            };
+        }
+    }
+    stop_children(sh).await;
     match live {
-        Some(lc) => {
+        Some(mut lc) => {
             // Background tasks of the Turn being stopped.
             for t in lc.resolver.active().await {
                 if t.status == "running" && t.cancellable {
                     let _ = lc.resolver.cancel(&t.task_id).await;
                 }
             }
+            lc.ctx = LLMContext::resume(
+                lc.ctx.snapshot(),
+                ResumeFill::ResumeFromMidRun,
+                lc.deps.clone(),
+            )
+            .map_err(|e| {
+                OpenDanError::blocked(
+                    format!("stopping context cannot resume: {e}"),
+                    Some(lc.run.run_id()),
+                )
+            })?;
+            lc.ctx.interrupt_handle().finish("session stop requested");
+            let _ = lc.ctx.run().await;
             let snap = lc.ctx.snapshot();
             lc.run
                 .checkpoint_with_results(&snap, Some(RunStatus::Interrupted))?;
@@ -468,9 +872,10 @@ fn task_summary(task_id: &str, state: &TaskState) -> (String, String) {
                 cut(reason)
             ),
         ),
-        TaskState::Running { brief, .. } => {
-            ("updated".into(), format!("task {task_id} is running: {}", cut(brief)))
-        }
+        TaskState::Running { brief, .. } => (
+            "updated".into(),
+            format!("task {task_id} is running: {}", cut(brief)),
+        ),
     }
 }
 
@@ -507,6 +912,9 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
         if matches!(state, TaskState::Running { .. }) {
             continue;
         }
+        if matches!(state, TaskState::Finished(_)) {
+            sh.dir.runs().settle_background_task(&sh.lease, &task_id)?;
+        }
         let (event, summary) = task_summary(&task_id, &state);
         let ev = AgentEvent {
             subscription_id: None,
@@ -519,7 +927,9 @@ async fn poll_watched_tasks(sh: &Arc<Shared>) -> Result<Vec<FetchedInput>> {
         };
         let key = internal_task_key(&task_id);
         match cfg.subscription_for(None, "task", &task_id, &ev.event) {
-            Some(sub) if sub.mode == SubscriptionMode::Semi => observed.push((task_id, sub.id, ev, key)),
+            Some(sub) if sub.mode == SubscriptionMode::Semi => {
+                observed.push((task_id, sub.id, ev, key))
+            }
             _ => inputs.push(FetchedInput {
                 src: INTERNAL_TASK_SRC.to_string(),
                 index: 0,
@@ -683,6 +1093,20 @@ async fn external_stop(sh: &Arc<Shared>) -> Result<()> {
 }
 
 async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
+    {
+        let session = sh.session.lock().await;
+        if session.state.is_finished()
+            && session
+                .state
+                .last_error
+                .as_ref()
+                .is_some_and(|e| e["kind"] == "workspace_binding_invalid")
+        {
+            return Ok(finished_result(&session));
+        }
+    }
+    verify_workspace_admission(sh).await?;
+    acquire_workspace_writer(sh).await?;
     // Behavior entry modes are checked before anything runs: an invalid
     // table never degrades into some default way of switching.
     sh.session
@@ -733,6 +1157,9 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         let binding = match bound {
             Ok(b) => b,
             Err(e @ (OpenDanError::Bind(_) | OpenDanError::RuntimeMismatch { .. })) => {
+                if cfg.workspace_binding.is_some() {
+                    return Err(OpenDanError::WorkspaceBindingInvalid(e.to_string()));
+                }
                 let mut s = sh.session.lock().await;
                 s.state.last_error = Some(e.to_json());
                 commit_and_report(sh, &mut s).await?;
@@ -817,6 +1244,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
     let mut outcomes_handled = 0u64;
     loop {
         sh.lease.check()?;
+        verify_workspace_admission(sh).await?;
         super::turn_task::sync_turn_task(sh).await;
         external_stop(sh).await?;
         if sh.session.lock().await.state.stop_requested {
@@ -865,7 +1293,15 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                     if matches!(until, StopWhen::MaxOutcomes { .. }) {
                         return Ok(DriveResult::OutcomesHandled { rev, run_state: rs });
                     }
-                    if started.elapsed() >= sh.deps.options.max_wait {
+                    let (cfg, state) = {
+                        let session = sh.session.lock().await;
+                        (session.config.clone(), session.state.clone())
+                    };
+                    let handoff =
+                        !crate::runtime::workspace_waiting_children(sh.agent(), &cfg, &state)
+                            .await?
+                            .is_empty();
+                    if handoff || started.elapsed() >= sh.deps.options.max_wait {
                         if until == StopWhen::TurnClosed {
                             return Ok(turn_open_result(sh).await);
                         }
@@ -1056,6 +1492,18 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         }
         let resumable = live.as_ref().map(|l| l.ready).unwrap_or(false);
         if msg.is_none() && !resumable {
+            if !crate::runtime::workspace_waiting_children(sh.agent(), &cfg, &state)
+                .await?
+                .is_empty()
+            {
+                if until == StopWhen::TurnClosed {
+                    return Ok(turn_open_result(sh).await);
+                }
+                return Ok(DriveResult::Idle {
+                    rev: state.rev,
+                    run_state: state.run_state,
+                });
+            }
             // Nothing to infer on. Saved semi-subscription state stays where
             // it is until a controlled input uses it.
             {
@@ -1137,12 +1585,14 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
         }
         let mut lc = match live.take() {
             Some(l) => l,
-            None if state.live_run.is_some() => match Box::pin(open_state_live_run(sh, &env)).await? {
-                Opened::Ctx(l) => l,
-                Opened::Waiting(w) => {
-                    waiting = Some(w);
-                    routed = route_inputs(sh, false, &[]).await?;
-                    continue;
+            None if state.live_run.is_some() => {
+                match Box::pin(open_state_live_run(sh, &env)).await? {
+                    Opened::Ctx(l) => l,
+                    Opened::Waiting(w) => {
+                        waiting = Some(w);
+                        routed = route_inputs(sh, false, &[]).await?;
+                        continue;
+                    }
                 }
             },
             None => Box::pin(new_run_context(sh, &binding, &env)).await?,

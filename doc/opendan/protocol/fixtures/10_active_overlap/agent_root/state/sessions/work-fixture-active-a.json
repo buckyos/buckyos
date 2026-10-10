@@ -14,8 +14,8 @@
   "wake_event": "/opendan/jarvis.alice/session/work-fixture-active-a/input",
   "agent_access": "full",
   "workspace": {
-    "kind": "external",
-    "path": "${FIXTURE_ROOT}/ws"
+    "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+    "access": "read_write"
   },
   "objective": "edit",
   "scope": {
@@ -37,19 +37,19 @@
           "kind": "path",
           "ref": "ws:snake/src/",
           "mode": "write",
-          "since_ms": 1791134683263
+          "since_ms": 1791645241570
         }
       ],
-      "heartbeat_ms": 1791134683263
+      "heartbeat_ms": 1791645241570
     },
     "last_runner": {
-      "runner_id": "rn-b786aff385054157",
+      "runner_id": "rn-fd09957d18bc4d1a",
       "host": "${FIXTURE_HOST}",
-      "pid": 3939929,
+      "pid": 1388,
       "lock_epoch": 1,
-      "at_ms": 1791134683265
+      "at_ms": 1791645241571
     },
-    "updated_at_ms": 1791134683263
+    "updated_at_ms": 1791645241570
   },
   "location_rev": 0
 }

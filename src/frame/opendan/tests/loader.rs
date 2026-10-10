@@ -765,6 +765,35 @@ async fn agent_state_over_krpc_matches_the_files() {
     assert_eq!(models[0]["hour"], models[0]["all"]);
     assert!(rpc(port, "ui.bindings", json!({})).await.unwrap().is_array());
 
+    std::fs::create_dir_all(w.root.join("workspace/unregistered")).unwrap();
+    assert_eq!(rpc(port, "home.workspaces", json!({})).await.unwrap(), json!([]));
+    let external = tempfile::tempdir().unwrap();
+    let directory = external.path().join("project");
+    let registered = rpc(port, "workspaces.create", json!({ "request": {
+        "operation_id": "homepage-workspace", "name": "Shared project", "description": "A long-term project",
+        "location": { "runtime_id": "local", "directory": directory }, "usage": "collaborative"
+    }})).await.unwrap();
+    let workspace_id = registered["workspace_id"].as_str().unwrap();
+    let annotated = rpc(port, "workspaces.update", json!({
+        "workspace_id": workspace_id, "request": { "expected_revision": registered["revision"], "private_notes": "private cognition" }
+    })).await.unwrap();
+    let archived = rpc(port, "workspaces.archive", json!({
+        "workspace_id": workspace_id, "expected_revision": annotated["revision"]
+    })).await.unwrap();
+    assert_eq!(archived["lifecycle"], "archived");
+    std::fs::rename(&directory, external.path().join("moved-project")).unwrap();
+    let checked = rpc(port, "workspaces.check", json!({ "workspace_id": workspace_id })).await.unwrap();
+    assert_eq!(checked["availability"], "missing");
+    let known = rpc(port, "home.workspaces", json!({})).await.unwrap();
+    assert_eq!(known.as_array().unwrap().len(), 1);
+    assert_eq!(known[0]["workspace_id"], workspace_id);
+    assert_eq!(known[0]["location"]["directory"], json!(directory));
+    assert_eq!(known[0]["lifecycle"], "archived");
+    assert_eq!(known[0]["availability"], "missing");
+    assert!(known[0]["last_error"].is_string());
+    assert!(known[0].get("private_notes").is_none());
+    assert!(external.path().join("moved-project").exists());
+
     // The three operations are records on the session's bus.
     let posted = rpc(port, "session.post", json!({ "sid": ui.sid(), "text": "second" })).await.unwrap();
     assert!(posted["key"].as_str().unwrap().starts_with("cymsg:"));

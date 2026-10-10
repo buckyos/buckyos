@@ -170,9 +170,9 @@ fn script(name: &'static str) -> Arc<ScriptedLlm> {
             }
             "fork" => {
                 if all.contains("research result") {
-                    text("<response><report><![CDATA[final]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
                 } else {
-                    text("<response><report><![CDATA[research result]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[research result]]></report></response>")
                 }
             }
             _ => text("answer"),
@@ -336,16 +336,16 @@ async fn f09_semi_subscription() {
 async fn f10_active_overlap() {
     let (_t, env, _) = load("10_active_overlap");
     let b = session(&env, "work-fixture-active-b");
-    let llm = ScriptedLlm::new(|req, _| {
-        let u = last_user_text(req);
-        assert!(
-            u.contains("work-fixture-active-a") && u.contains("same_target"),
-            "{u}"
-        );
-        text("avoid")
-    });
-    let result = drive(&b, &fdeps(&env, llm), StopWhen::Finished).await;
-    assert!(result.is_finished(), "{result:?}");
+    let agent = env.agent();
+    let me = agent.sessions().lookup(b.sid()).await.unwrap().unwrap();
+    let active = agent.activity().active(Some(&me), 10).await.unwrap();
+    let other = active.iter().find(|s| s.session_id == "work-fixture-active-a").unwrap();
+    assert_eq!(serde_json::to_value(other.relation).unwrap(), json!("same_target"));
+    assert!(other.overlap.contains(&"ws:snake/src/".to_string()));
+    let llm = ScriptedLlm::new(|_, _| panic!("unsettled writer must block inference"));
+    let result = drive(&b, &fdeps(&env, llm.clone()), StopWhen::Finished).await;
+    assert!(matches!(result, DriveResult::Busy { .. }), "{result:?}");
+    assert_eq!(llm.count(), 0);
 }
 
 #[tokio::test]
@@ -391,6 +391,52 @@ async fn f13_unsupported_snapshot_version() {
         DriveResult::RecoveryBlocked(_)
     ));
     assert_eq!(llm.count(), 0);
+}
+
+#[tokio::test]
+async fn f15_report_pending_commit() {
+    let (_t, env, expected) = load("15_report_pending_commit");
+    let sd = session(&env, "work-fixture-report");
+    let before = sd.state().unwrap();
+    assert!(!before.is_finished());
+    let run_id = before.live_run.as_ref().unwrap().run_id.clone();
+    let record = sd.runs().record(&run_id).unwrap();
+    assert!(!record.status.is_terminal());
+    let submitted: ReportSubmission = serde_json::from_value(
+        record.host.as_ref().unwrap().extra["reports"][0].clone(),
+    ).unwrap();
+    assert!(submitted.is_end);
+    assert_eq!(submitted.report, expected["next"]["final_report"]);
+    let llm = ScriptedLlm::new(|_, _| panic!("accepted final report recovery must not infer"));
+    let deps = fdeps(&env, llm.clone());
+    let result = drive(&sd, &deps, StopWhen::Finished).await;
+    assert!(result.is_finished(), "{result:?}");
+    assert_eq!(llm.count(), expected["next"]["llm_calls"].as_u64().unwrap() as usize);
+    let state = sd.state().unwrap();
+    assert_eq!(state.outcome, Some(Outcome::Succeeded));
+    assert_eq!(state.acceptance, Acceptance::Pending);
+    assert_eq!(state.last_run.as_deref(), Some(run_id.as_str()));
+    assert_eq!(state.final_report.as_ref(), Some(&submitted));
+    assert_eq!(submitted.result.as_ref(), Some(&expected["next"]["result"]));
+    assert_eq!(submitted.artifacts.len(), 1);
+    let artifact = &submitted.artifacts[0];
+    assert_eq!(artifact.path, expected["next"]["artifact"]["path"]);
+    assert_eq!(std::fs::read_to_string(sd.path().join(&artifact.reference)).unwrap(),
+        expected["next"]["artifact"]["content"]);
+    let entries = read_worklog(&sd);
+    let deliveries: Vec<_> = entries.iter().filter_map(|e| match &e.body {
+        WorklogBody::ReportDelivery { submission, assistant, .. } => Some((submission, assistant)),
+        _ => None,
+    }).collect();
+    assert_eq!(deliveries.len(), expected["next"]["report_deliveries"].as_u64().unwrap() as usize);
+    assert_eq!(deliveries[0].0, &submitted);
+    assert_eq!(deliveries[0].1, &submitted.delivery_text());
+    assert_eq!(entries.iter().filter(|e| matches!(&e.body,
+        WorklogBody::ActionResult { call_id, status, .. } if call_id == "report-final" && status == "ok"
+    )).count(), 1);
+    assert_eq!(sd.statistics().unwrap().rounds, expected["next"]["rounds_after"].as_u64().unwrap());
+    assert!(drive(&sd, &deps, StopWhen::Idle).await.is_finished());
+    assert_eq!(read_worklog(&sd), entries);
 }
 
 /// The input bus fixture: every stored record is handled as `expected.json`

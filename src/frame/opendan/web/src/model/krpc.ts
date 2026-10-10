@@ -90,6 +90,11 @@ export const createKrpcDataModel = (): OpenDanDataModel => {
     setProfile: (patch) => call<AgentProfile>('agent.profile_set', { ...patch }).then((p) => ({ ...p, editable: true })),
     usageModels: () => optional('usage.models', () => null),
     uiBindings: () => optional('ui.bindings', () => []),
+    workspaces: () => call('home.workspaces'),
+    checkWorkspace: (workspaceId) => call('workspaces.check', { workspace_id: workspaceId }),
+    relocateWorkspace: (workspace, location) => call('workspaces.discover', {
+      request: { location, expected_revision: workspace.revision, expected_workspace_id: workspace.workspace_id },
+    }),
     sessions: () => call('sessions.query'),
     activeSessions: () => call('activity.active', { limit: 50 }),
     session: (sid, worklog = 40) => call('session.read', { sid, worklog }),

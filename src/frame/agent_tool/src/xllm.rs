@@ -79,12 +79,12 @@ use llm_context::deps::{
 use llm_context::error::{ErrorSource, LLMComputeError, ProviderFailure};
 use llm_context::observation::Observation;
 use llm_context::outcome::{BudgetKind, ContextOutput, LLMContextOutcome, ResumeFill};
-use llm_context::tasks::{task_state_observation, RunningTaskResolver};
 use llm_context::request::{
     BudgetSpec, ContextOwnerRef, ContextThreshold, ErrorPolicy, LLMContextRequest, ModelPolicy,
     OutputSpec, ToolMode, ToolPolicy,
 };
 use llm_context::state::{LLMContextSnapshot, Suspension};
+use llm_context::tasks::{task_state_observation, RunningTaskResolver};
 use llm_context::{LLMContext, LLMContextInterruptHandle, XmlStepRenderer};
 
 use crate::exec_tracking::{HostRunInfo, InflightAction};
@@ -127,9 +127,8 @@ pub const DEFAULT_LOCK_DIR: &str = "~/.xllm/locks";
 pub const TOOL_EXEC: &str = TOOL_SHELL;
 pub const BUILTIN_TOOL_GROUP_BASH: &str = "bash";
 /// 运行时协议版本；resume 时校验当前执行器是否能处理保存的协议。
-pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/1";
-/// `run.json` 记录格式版本（3：有效 runtime 配置与执行目标，快照格式 3；5：`handover`，宿主 Run 的 behavior 交接点）；resume 只接受当前版本。
-pub const RUN_RECORD_VERSION: u32 = 5;
+pub const RUNTIME_PROTOCOL_VERSION: &str = "xllm/2";
+pub const RUN_RECORD_VERSION: u32 = 6;
 /// 默认 context 压缩阈值（token window 的 75%）。
 pub const DEFAULT_CONTEXT_YIELD_RATIO: f32 = 0.75;
 
@@ -663,7 +662,9 @@ impl ToolsConfig {
             self.bash_tools = over.bash_tools.clone();
         }
         if let Some(sh) = &over.shell {
-            self.shell.get_or_insert_with(Default::default).merge_over(sh);
+            self.shell
+                .get_or_insert_with(Default::default)
+                .merge_over(sh);
         }
     }
 }
@@ -1197,7 +1198,11 @@ fn parse_tools_config(ctx: &YamlCtx<'_>, field: &str, v: &Yaml) -> Result<ToolsC
         Some(v) => {
             let f = join_field(field, "shell");
             let obj = ctx.expect_map(&f, v)?;
-            ctx.check_keys(&f, obj, &["mode", "wait_ms", "timeout_ms", "max_timeout_ms"])?;
+            ctx.check_keys(
+                &f,
+                obj,
+                &["mode", "wait_ms", "timeout_ms", "max_timeout_ms"],
+            )?;
             let mode = match ctx.get_str(&f, obj, "mode")? {
                 None => None,
                 Some(s) => Some(match s.trim().to_ascii_lowercase().as_str() {
@@ -2226,7 +2231,14 @@ pub fn compute_tools_config(
         .cloned()
         .unwrap_or_else(|| "default".into());
     cfg.merge_over(&merged.tools);
-    for key in ["enabled", "tools2actions", "tools", "actions", "bash_tools", "shell"] {
+    for key in [
+        "enabled",
+        "tools2actions",
+        "tools",
+        "actions",
+        "bash_tools",
+        "shell",
+    ] {
         sources.insert(key.to_string(), top_src.clone());
     }
     sources.insert(
@@ -2613,7 +2625,7 @@ pub fn build_runtime_protocol_for(
         s.push_str(intro.trim_end());
         s.push('\n');
     } else {
-    s.push_str(&format!(
+        s.push_str(&format!(
         "You are running inside xllm ({RUNTIME_PROTOCOL_VERSION}), a one-shot task runner: complete the task given in the user message and deliver one final result. There is no follow-up conversation, so do not ask the user questions; if something essential is missing, state it in the final result. Use only the material provided and the results you obtain during this run; distinguish verified facts from assumptions.\n"
     ));
     }
@@ -2623,7 +2635,13 @@ pub fn build_runtime_protocol_for(
                 s.push_str("\nExecution loop (native function calling):\n");
                 s.push_str("- When you need to act, call one or more of the provided tools; their results are returned to you and you decide the next step. Only the tools declared for this run exist.\n");
                 s.push_str("- A failed tool call is not the end of the task: read the error, adjust, and continue within the tool iteration limit.\n");
-                s.push_str("- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n");
+                if tools.native.iter().any(|tool| tool.name == "report") {
+                    s.push_str("- Submit a report with report({report: \"free text or Markdown\", artifacts: [\"relative/file\"], result: <optional JSON>, is_end: false}). Omitted is_end means false: it records progress without ending the context or sending a user message.\n");
+                    s.push_str("- To request completion, call report with is_end: true and a nonempty final report. The host validates and persists it, returns the tool receipt, and completes the current context without another model reply. It skips later calls in that batch; a rejected report returns an error and can be corrected.\n");
+                    s.push_str("- Final report delivery and Session completion follow the host policy. Child contexts return to their caller. Plain assistant text with no tool calls yields the current Turn; it completes a Session only when the host permits ordinary Done completion.\n");
+                } else {
+                    s.push_str("- When the task is complete, reply with the final result as plain assistant text and no tool calls. That text is delivered verbatim to the caller.\n");
+                }
             } else {
                 s.push_str("\nExecution loop: no tools or actions are available in this run. Answer directly in a single reply; do not request or describe tool calls. Your reply is delivered verbatim to the caller.\n");
             }
@@ -2639,11 +2657,16 @@ pub fn build_runtime_protocol_for(
             if has_actions {
                 s.push_str("  <actions>\n    ...zero or more actions, executed in order...\n  </actions>\n");
             }
-            s.push_str("  <report><![CDATA[the final result, only when the task is complete]]></report>\n</response>\n");
+            s.push_str("  <report end=\"true\"><![CDATA[the complete final result]]></report>\n</response>\n");
             s.push_str("Rules:\n");
+            s.push_str("- <report> or <report end=\"false\"> submits a progress report and continues the context. Use <report end=\"true\"> only to submit the complete, nonempty final result and request completion. The final report content is delivered verbatim to the caller.\n");
+            s.push_str("- A final report cannot share a reply with actions, sendmsg, native tool calls, or a nonempty next_behavior. Observe action results before submitting it. Use only true or false for end and at most one report per reply.\n");
+            s.push_str("- next_behavior is reserved for host scheduling, including WAIT_USER_MSG; END and done are invalid. A report without end=\"true\" never implies completion.\n");
+            if matches!(flavor, HostProtocolFlavor::Session { .. }) {
+                s.push_str("- A report may include sibling <artifacts> containing a JSON array of relative file paths and <result> containing any JSON value. These require a report in the same response. The host validates and persists the submission; completion applies to the current context, with child reports returned to their caller.\n");
+            }
             if has_actions {
-                s.push_str("- To keep working, put one or more actions inside <actions> and do NOT include <report>; the results come back in the next message.\n");
-                s.push_str("- To finish, reply with no <actions> and put the complete final result inside <report>. The <report> content is delivered verbatim to the caller.\n");
+                s.push_str("- To act, put one or more actions inside <actions>; the results come back in the next message. You may include a progress report with end=\"false\".\n");
                 s.push_str("- Actions run in order; the first failed action stops the rest of that step. Read the error, adjust, and continue within the tool iteration limit.\n");
                 s.push_str("- Only the actions listed below exist; do not invent others. Put multi-line or special-character values inside <![CDATA[ ... ]]>.\n");
                 s.push_str("Available actions:\n");
@@ -2652,13 +2675,13 @@ pub fn build_runtime_protocol_for(
                     s.push('\n');
                 }
             } else {
-                s.push_str("- No actions are available in this run: reply with a single <response> whose <report> contains the complete final result. Do not include <actions>.\n");
+                s.push_str("- No actions are available in this run: reply with a single <response> whose <report end=\"true\"> contains the complete final result. Do not include <actions>.\n");
             }
             if has_native {
                 s.push_str("- Native function-call tools are also declared for this run; a reply that uses them is treated as a step with actions.\n");
             }
             if json {
-                s.push_str("- Output constraint: the content of <report> MUST be exactly one valid JSON value.\n");
+                s.push_str("- Output constraint: the content of the final <report end=\"true\"> MUST be exactly one valid JSON value.\n");
             }
         }
     }
@@ -3394,48 +3417,115 @@ impl LLMResultParser for XllmActionParser {
         };
         let thought = first_text("thinking");
         let observation = first_text("observation");
-        let mut next_behavior = first_text("next_behavior");
-        let self_report = region_children
+        if region_children
+            .iter()
+            .filter(|el| el.name == "next_behavior")
+            .count()
+            > 1
+        {
+            return Err("a decision must contain at most one next_behavior".into());
+        }
+        let next_behavior = first_text("next_behavior");
+        let reports: Vec<_> = region_children
             .iter()
             .filter(|e| e.name == "report")
-            .last()
-            .map(|e| e.text());
+            .collect();
+        if reports.len() > 1 {
+            return Err("a decision must contain at most one report".into());
+        }
+        let self_report = reports.first().map(|e| e.text());
+        let report_end = match reports.first() {
+            Some(report) => {
+                let attrs: Vec<_> = report
+                    .attrs
+                    .iter()
+                    .filter(|(key, _)| key == "end")
+                    .collect();
+                if attrs.len() > 1 {
+                    return Err("report has duplicate end attributes".into());
+                }
+                match attrs.first().map(|(_, value)| value.as_str()) {
+                    None | Some("false") => false,
+                    Some("true") => true,
+                    Some(_) => return Err("report end must be true or false".into()),
+                }
+            }
+            None => false,
+        };
+        let report_payload = |name: &str| -> Result<Option<Value>, String> {
+            let elements: Vec<_> = region_children
+                .iter()
+                .filter(|el| el.name == name)
+                .collect();
+            if elements.len() > 1 {
+                return Err(format!("a decision must contain at most one {name}"));
+            }
+            let Some(element) = elements.first() else {
+                return Ok(None);
+            };
+            if self_report.is_none() {
+                return Err(format!("{name} requires a report in the same decision"));
+            }
+            serde_json::from_str(&element.text())
+                .map(Some)
+                .map_err(|error| format!("invalid report {name} JSON: {error}"))
+        };
+        let report_artifacts = report_payload("artifacts")?
+            .map(serde_json::from_value::<Vec<String>>)
+            .transpose()
+            .map_err(|error| format!("report artifacts must be an array of strings: {error}"))?
+            .unwrap_or_default();
+        let report_result = report_payload("result")?;
 
         let mut do_actions = Vec::new();
         let mut messages_to_send = Vec::new();
         let mut auto_id = 0u32;
-        if let Some(actions_el) = region_children.iter().find(|e| e.name == "actions") {
-            for el in actions_el.children() {
-                if el.name == "sendmsg" && !self.actions.contains_key("sendmsg") {
-                    messages_to_send.push(SendMessageRecord {
-                        target: el.attr("target").unwrap_or("user").to_string(),
-                        body: el.text(),
-                    });
-                    continue;
-                }
-                do_actions.push(self.element_to_call(&el, &mut auto_id));
+        let action_elements: Vec<_> = region_children
+            .iter()
+            .filter(|el| el.name == "actions")
+            .flat_map(XmlElement::children)
+            .chain(
+                region_children
+                    .iter()
+                    .filter(|el| el.name == "sendmsg")
+                    .cloned(),
+            )
+            .collect();
+        if report_end
+            && (!action_elements.is_empty()
+                || region_children
+                    .iter()
+                    .any(|el| el.name == "actions" && !el.body.trim().is_empty()))
+        {
+            return Err("a final report cannot be combined with actions or sendmsg".into());
+        }
+        for el in action_elements {
+            if el.name == "sendmsg" && !self.actions.contains_key("sendmsg") {
+                messages_to_send.push(SendMessageRecord {
+                    target: el.attr("target").unwrap_or("user").to_string(),
+                    body: el.text(),
+                });
+                continue;
             }
+            do_actions.push(self.element_to_call(&el, &mut auto_id));
         }
         if !provider_calls.is_empty() {
             do_actions = provider_calls;
         }
-        // oneshot 终止规则：没有动作、带 report 的一步就是最终答案。
-        if do_actions.is_empty()
-            && messages_to_send.is_empty()
-            && self_report.is_some()
-            && next_behavior.is_none()
-        {
-            next_behavior = Some("done".to_string());
-        }
-        Ok(LLMBehaviorResult {
+        let result = LLMBehaviorResult {
             do_actions,
             next_behavior,
             assistant_text: raw_text,
             observation,
             thought,
             self_report,
+            report_end,
+            report_artifacts,
+            report_result,
             messages_to_send,
-        })
+        };
+        result.validate()?;
+        Ok(result)
     }
 }
 
@@ -5459,10 +5549,56 @@ pub struct RunHandover {
 
 /// `next_behavior` 是否指向另一个 behavior（而不是结束 / 等待输入）。
 pub fn is_handover_target(next_behavior: &str) -> bool {
-    !next_behavior.trim().is_empty()
-        && !next_behavior.eq_ignore_ascii_case(llm_context::NEXT_BEHAVIOR_END)
-        && !next_behavior.eq_ignore_ascii_case("done")
-        && next_behavior != "WAIT_USER_MSG"
+    !next_behavior.trim().is_empty() && next_behavior != "WAIT_USER_MSG"
+}
+
+fn ensure_workspace_host_runner(record: &RunRecord) -> Result<(), XllmError> {
+    if record.host.as_ref().is_some_and(|host| {
+        host.extra.get("workspace_binding").is_some_and(|binding| !binding.is_null())
+    }) {
+        return Err(XllmError::NotResumable {
+            run_id: record.run_id.clone(),
+            reason: "managed workspace execution requires its Session host to verify the immutable binding and hold the workspace writer lock; use xagent run".into(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_host_report_not_pending(record: &RunRecord) -> Result<(), XllmError> {
+    if record
+        .host
+        .as_ref()
+        .and_then(|host| host.extra.get("reports"))
+        .and_then(Value::as_array)
+        .is_some_and(|reports| {
+            reports
+                .iter()
+                .any(|report| report.get("is_end").and_then(Value::as_bool) == Some(true))
+        })
+    {
+        return Err(XllmError::NotResumable {
+            run_id: record.run_id.clone(),
+            reason: "an accepted final report requires its host to finish the submission; drive the session with its host runner".into(),
+        });
+    }
+    Ok(())
+}
+
+fn ensure_host_final_step_not_pending(
+    record: &RunRecord,
+    store: &RunStore,
+) -> Result<(), XllmError> {
+    if record.host.is_some() && record.config.loop_model == LoopModel::Behavior {
+        if let Some(idx) = record.latest_snapshot_idx {
+            if store.get_snapshot(&record.run_id, idx)?.state.report_end {
+                return Err(XllmError::NotResumable {
+                    run_id: record.run_id.clone(),
+                    reason: "the final XML report requires Session host validation; drive the session with its host runner".into(),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 impl RunRecord {
@@ -7014,6 +7150,64 @@ impl HostedTask {
     }
 }
 
+struct HostedReportUnavailable {
+    spec: ToolSpec,
+}
+
+#[async_trait]
+impl AgentTool for HostedReportUnavailable {
+    fn spec(&self) -> ToolSpec {
+        self.spec.clone()
+    }
+
+    fn calling(&self) -> crate::CallingConventions {
+        crate::CallingConventions::ALL
+    }
+
+    async fn call(
+        &self,
+        _: &SessionRuntimeContext,
+        _: Value,
+    ) -> Result<AgentToolResult, AgentToolError> {
+        Err(AgentToolError::ExecFailed(
+            "report requires the Session host executor; resume this Session with its host to submit a report".into(),
+        ))
+    }
+}
+
+fn restore_host_report_tool(record: &RunRecord, deps: &XllmDeps) -> XllmDeps {
+    let mut restored = deps.clone();
+    if !deps.host_tools.contains_key("report")
+        && record
+            .host
+            .as_ref()
+            .is_some_and(|host| host.assembled_by == "libopendan")
+    {
+        if let Some(tool) = record
+            .config
+            .tools
+            .native
+            .iter()
+            .chain(record.config.tools.actions.iter())
+            .find(|tool| tool.name == "report" && tool.source == "name:report")
+        {
+            restored.host_tools.insert(
+                "report".into(),
+                Arc::new(HostedReportUnavailable {
+                    spec: ToolSpec {
+                        name: tool.name.clone(),
+                        description: tool.description.clone(),
+                        args_schema: tool.args_schema.clone(),
+                        output_schema: json!({"type":"object"}),
+                        usage: None,
+                    },
+                }),
+            );
+        }
+    }
+    restored
+}
+
 /// Rebuild the tool set of a saved run from its recorded sources and policy
 /// (what `XllmRun::resume` does), bound to the run id.
 pub async fn rebuild_toolset(
@@ -7040,8 +7234,10 @@ pub async fn rebuild_toolset(
     open.env = deps.runtime_env.clone();
     open.path_prefix = deps.runtime_path_prefix.clone();
     restore_host_environment(record, &mut open)?;
+    let restored_deps = restore_host_report_tool(record, deps);
     let (runtime, _eff, mut manager) =
-        crate::runtime::open_runtime(&record.config.runtime, &open, &tools_cfg, deps).await?;
+        crate::runtime::open_runtime(&record.config.runtime, &open, &tools_cfg, &restored_deps)
+            .await?;
     if runtime.descriptor() != &record.config.runtime_descriptor {
         return Err(XllmError::RuntimeMismatch(
             "saved runtime target or workdir changed".into(),
@@ -7691,6 +7887,9 @@ impl XllmRun {
                 ),
             });
         }
+        ensure_workspace_host_runner(&record)?;
+        ensure_host_report_not_pending(&record)?;
+        ensure_host_final_step_not_pending(&record, store)?;
         if let Some(seq) = record.host_commit_pending {
             return Err(XllmError::NotResumable {
                 run_id: record.run_id.clone(),
@@ -7739,6 +7938,9 @@ impl XllmRun {
         // Holding the run lock: re-read, then make sure no execution of the
         // previous executor is still alive and settle in-flight actions.
         let mut record = store.read_record(&run_id_s)?;
+        ensure_workspace_host_runner(&record)?;
+        ensure_host_report_not_pending(&record)?;
+        ensure_host_final_step_not_pending(&record, store)?;
         if record.host_commit_pending.is_some() {
             return Err(XllmError::NotResumable {
                 run_id: run_id_s.clone(),
@@ -7973,15 +8175,19 @@ impl XllmRun {
         let probe = LLMContextDeps::new(Arc::new(NoopLlm), Arc::new(NoopTools));
         let probe = if record.config.loop_model == LoopModel::Behavior {
             probe
-                .with_result_parser(Arc::new(XllmActionParser::new(&record.config.tools.actions)))
+                .with_result_parser(Arc::new(XllmActionParser::new(
+                    &record.config.tools.actions,
+                )))
                 .with_step_renderer(Arc::new(step_renderer(record.host.is_some())))
         } else {
             probe
         };
-        let filled = LLMContext::resume(snap, ResumeFill::ToolResults { results }, probe)
-            .map_err(|e| XllmError::NotResumable {
-                run_id: record.run_id.clone(),
-                reason: format!("cannot fill the suspended tool results: {e}"),
+        let filled =
+            LLMContext::resume(snap, ResumeFill::ToolResults { results }, probe).map_err(|e| {
+                XllmError::NotResumable {
+                    run_id: record.run_id.clone(),
+                    reason: format!("cannot fill the suspended tool results: {e}"),
+                }
             })?;
         let new_idx = store.put_snapshot(&record.run_id, &filled.snapshot())?;
         record.latest_snapshot_idx = Some(new_idx);
@@ -8400,6 +8606,20 @@ impl XllmRun {
                     behavior_result,
                     ..
                 } => {
+                    if self.record().host.is_some()
+                        && behavior_result
+                            .as_ref()
+                            .is_some_and(|result| result.report_end)
+                    {
+                        let calls = self.llm.calls();
+                        self.update(|record| {
+                            record.status = RunStatus::Paused;
+                            record.last_error = None;
+                            record.usage.main = Some(usage);
+                            record.usage.llm_requests += calls;
+                        })?;
+                        return Ok(RunOutcome::Paused(self.record()));
+                    }
                     // A hosted run that hands over to another behavior is not
                     // finished: it yields at the hand-over point and its host
                     // session commits the transfer.
@@ -9713,12 +9933,13 @@ there]]></write_file>
 
         let done = parser
             .parse(&AiResponse::text(
-                "<response><report><![CDATA[final <answer>]]></report></response>",
+                r#"<response><report end="true"><![CDATA[final <answer>]]></report></response>"#,
             ))
             .unwrap();
         assert!(done.do_actions.is_empty());
         assert_eq!(done.self_report.as_deref(), Some("final <answer>"));
-        assert_eq!(done.next_behavior.as_deref(), Some("done"));
+        assert!(done.next_behavior.is_none());
+        assert!(done.report_end);
 
         // 未知标签仍生成调用（由 ToolManager 报 not available）。
         let unk = parser
@@ -9728,6 +9949,133 @@ there]]></write_file>
             .unwrap();
         assert_eq!(unk.do_actions[0].name, "nope");
         assert!(parser.parse(&AiResponse::text("   ")).is_err());
+    }
+
+    #[test]
+    fn host_final_report_requires_host_recovery() {
+        let mut record = RunRecord::synthetic("report-run", Path::new("/tmp"), RunStatus::Paused);
+        assert!(ensure_host_report_not_pending(&record).is_ok());
+        record.host = Some(HostRunInfo {
+            assembled_by: "libopendan".into(),
+            session_id: Some("session".into()),
+            runtime_kind: None,
+            runtime_id: None,
+            env_check: Value::Null,
+            extra: json!({"reports": [{"id": "first", "is_end": false}]}),
+        });
+        assert!(ensure_host_report_not_pending(&record).is_ok());
+        record.host.as_mut().unwrap().extra["reports"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id": "final", "is_end": true}));
+        assert!(matches!(
+            ensure_host_report_not_pending(&record),
+            Err(XllmError::NotResumable { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn hosted_report_placeholder_preserves_schema_and_rejects_submission() {
+        let env = Env::new();
+        let deps = env.deps(ScriptedLlm::new(vec![]));
+        let mut record = RunRecord::synthetic("host-report", &env.workdir, RunStatus::Paused);
+        let schema = json!({"type":"object", "properties":{"report":{"type":"string"}}});
+        record.config.tools.native.push(ResolvedTool {
+            name: "report".into(),
+            description: "Submit to the Session host".into(),
+            args_schema: schema.clone(),
+            source: "name:report".into(),
+        });
+        assert!(!restore_host_report_tool(&record, &deps)
+            .host_tools
+            .contains_key("report"));
+        record.host = Some(HostRunInfo {
+            assembled_by: "libopendan".into(),
+            session_id: Some("session".into()),
+            runtime_kind: None,
+            runtime_id: None,
+            env_check: Value::Null,
+            extra: Value::Null,
+        });
+        let restored = restore_host_report_tool(&record, &deps);
+        let tool = restored.host_tools.get("report").unwrap();
+        assert_eq!(tool.spec().args_schema, schema);
+        let ctx = SessionRuntimeContext {
+            trace_id: "test".into(),
+            agent_name: "test".into(),
+            behavior: "test".into(),
+            tool_call_index: 0,
+            wakeup_id: "test".into(),
+            session_id: "session".into(),
+            read_token_limit: 0,
+        };
+        let error = tool
+            .call(&ctx, json!({"report":"final", "is_end":true}))
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires the Session host executor"));
+        assert!(record.host.as_ref().unwrap().extra.is_null());
+        assert!(deps.host_tools.is_empty());
+    }
+
+    #[test]
+    fn behavior_report_end_protocol_rejects_ambiguous_decisions() {
+        let parser = XllmActionParser::default();
+        for xml in [
+            r#"<response><report>progress</report></response>"#,
+            r#"<response><report end="false">progress</report></response>"#,
+            r#"<response><report end="false">progress</report><next_behavior>CHECK</next_behavior></response>"#,
+            r#"<response><report>progress</report><next_behavior>WAIT_USER_MSG</next_behavior></response>"#,
+        ] {
+            let parsed = parser.parse(&AiResponse::text(xml)).unwrap();
+            assert!(!parsed.report_end, "{xml}");
+            assert_eq!(parsed.self_report.as_deref(), Some("progress"));
+        }
+        let parsed = parser.parse(&AiResponse::text(
+            r#"<response><actions/><report end="true">final</report><artifacts>["out.txt"]</artifacts><result>{"ok":true}</result></response>"#,
+        )).unwrap();
+        assert!(parsed.report_end);
+        assert!(parsed.next_behavior.is_none());
+        assert_eq!(parsed.report_artifacts, vec!["out.txt"]);
+        assert_eq!(parsed.report_result, Some(json!({"ok": true})));
+        for xml in [
+            r#"<response><report end="true">final</report><actions><shell>echo side-effect</shell></actions></response>"#,
+            r#"<response><report end="true">final</report><actions><sendmsg>hello</sendmsg></actions></response>"#,
+            r#"<response><report end="true">final</report><sendmsg>hello</sendmsg></response>"#,
+            r#"<response><report end="true">final</report><next_behavior>CHECK</next_behavior></response>"#,
+            r#"<response><report end="true">final</report><next_behavior>WAIT_USER_MSG</next_behavior></response>"#,
+            r#"<response><report end="true"> </report></response>"#,
+            r#"<response><report end="TRUE">final</report></response>"#,
+            r#"<response><report end=" true ">final</report></response>"#,
+            r#"<response><report end="yes">final</report></response>"#,
+            r#"<response><report end="false" end="true">final</report></response>"#,
+            r#"<response><report>first</report><report>second</report></response>"#,
+            r#"<response><report>progress</report><next_behavior>END</next_behavior></response>"#,
+            r#"<response><report>progress</report><next_behavior>done</next_behavior></response>"#,
+            r#"<response><thinking>finished</thinking></response>"#,
+            r#"<response><artifacts>[]</artifacts></response>"#,
+            r#"<response><result>null</result></response>"#,
+            r#"<response><report>progress</report><artifacts>{}</artifacts></response>"#,
+            r#"<response><report>progress</report><result>invalid</result></response>"#,
+            r#"<response><report>progress</report><result>1</result><result>2</result></response>"#,
+        ] {
+            assert!(parser.parse(&AiResponse::text(xml)).is_err(), "{xml}");
+        }
+        let native = AiToolCall {
+            name: "shell".into(),
+            args: HashMap::from([("command".into(), json!("echo side-effect"))]),
+            call_id: "native-1".into(),
+        };
+        let conflict = AiResponse::from_parts(
+            Some(r#"<response><report end="true">final</report></response>"#.into()),
+            vec![native.clone()],
+            vec![],
+        );
+        assert!(parser.parse(&conflict).is_err());
+        let native_only = AiResponse::from_parts(None, vec![native], vec![]);
+        assert_eq!(parser.parse(&native_only).unwrap().do_actions.len(), 1);
     }
 
     #[test]
@@ -10212,6 +10560,202 @@ there]]></write_file>
     }
 
     #[tokio::test]
+    async fn hosted_xml_final_report_waits_for_session_validation() {
+        let env = Env::new();
+        env.write(
+            "project/.llm_context",
+            "loop_model: behavior\nresult_format: result.report\n",
+        );
+        let llm = ScriptedLlm::new(vec![text(
+            r#"<response><report end="true">proposed final</report><artifacts>["missing.txt"]</artifacts></response>"#,
+        )]);
+        let deps = env.deps(llm.clone());
+        let prepared = XllmTask::prepare(
+            &env.workdir,
+            TaskInput::question("finish"),
+            env.overrides(),
+            &deps,
+        )
+        .await
+        .unwrap();
+        let mut run = XllmRun::start(prepared, deps).await.unwrap();
+        run.update(|record| {
+            record.host = Some(HostRunInfo {
+                assembled_by: "libopendan".into(),
+                session_id: Some("session".into()),
+                runtime_kind: None,
+                runtime_id: None,
+                env_check: Value::Null,
+                extra: Value::Null,
+            })
+        })
+        .unwrap();
+        let outcome = run.execute().await.unwrap();
+        assert!(matches!(outcome, RunOutcome::Paused(_)));
+        let record = outcome.record();
+        assert!(record.result.is_none());
+        assert!(record.handover.is_none());
+        let snapshot = env
+            .store()
+            .get_snapshot(&record.run_id, record.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert!(snapshot.state.report_end);
+        assert_eq!(
+            snapshot.state.steps.last().unwrap().report_artifacts,
+            vec!["missing.txt"]
+        );
+        assert_eq!(llm.calls(), 1);
+        drop(run);
+        let takeover = ScriptedLlm::new(vec![]);
+        for _ in 0..2 {
+            let result = XllmRun::resume(
+                &env.store(),
+                Some(&record.run_id),
+                None,
+                ResumeLimits::default(),
+                env.deps(takeover.clone()),
+            )
+            .await;
+            match result {
+                Err(XllmError::NotResumable { reason, .. }) => {
+                    assert!(reason.contains("Session host validation"))
+                }
+                _ => panic!("hosted final report must return to the Session host"),
+            }
+        }
+        assert_eq!(takeover.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn behavior_progress_report_continues_until_explicit_final_report() {
+        let env = Env::new();
+        env.write(
+            "project/.llm_context",
+            "loop_model: behavior\nresult_format: result.report\n",
+        );
+        let llm = ScriptedLlm::new(vec![
+            text("<response><report>intermediate finding</report></response>"),
+            text(r#"<response><report end="true">verified final finding</report></response>"#),
+        ]);
+        let outcome = env
+            .run(
+                TaskInput::question("verify it"),
+                env.overrides(),
+                llm.clone(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(outcome, RunOutcome::Completed(_)));
+        assert_eq!(llm.calls(), 2);
+        let record = outcome.record();
+        assert_eq!(
+            record.result.as_ref().unwrap().extracted,
+            Some(ExtractedValue::Text {
+                text: "verified final finding".into()
+            })
+        );
+        assert!(record
+            .config
+            .tools
+            .native
+            .iter()
+            .all(|tool| tool.name != "report"));
+        assert!(record
+            .config
+            .tools
+            .actions
+            .iter()
+            .all(|tool| tool.name != "report"));
+        let snapshot = env
+            .store()
+            .get_snapshot(&record.run_id, record.latest_snapshot_idx.unwrap())
+            .unwrap();
+        assert!(snapshot.state.report_end);
+        assert_eq!(
+            snapshot.state.last_report.as_deref(),
+            Some("verified final finding")
+        );
+        assert_eq!(
+            snapshot.state.steps.last().unwrap().self_report.as_deref(),
+            Some("verified final finding")
+        );
+        let mut interrupted_record = record.clone();
+        interrupted_record.status = RunStatus::Paused;
+        interrupted_record.result = None;
+        env.store().write_record(&interrupted_record).unwrap();
+        let takeover_llm = ScriptedLlm::new(vec![]);
+        let mut resumed = match XllmRun::resume(
+            &env.store(),
+            Some(&record.run_id),
+            None,
+            ResumeLimits::default(),
+            env.deps(takeover_llm.clone()),
+        )
+        .await
+        .unwrap()
+        {
+            ResumeStart::Run(run) => run,
+            _ => panic!("expected resumable run"),
+        };
+        let recovered = resumed.execute().await.unwrap();
+        assert!(matches!(recovered, RunOutcome::Completed(_)));
+        assert_eq!(takeover_llm.calls(), 0);
+        assert_eq!(recovered.record().result, record.result);
+    }
+
+    #[tokio::test]
+    async fn behavior_final_report_conflicts_do_not_dispatch_native_or_xml_actions() {
+        for native in [false, true] {
+            let env = Env::new();
+            env.write(
+                "project/.llm_context",
+                &format!("loop_model: behavior\nresult_format: result.report\ntools:\n  enabled: true\n  tools2actions: {}\n", !native),
+            );
+            let conflict = if native {
+                Ok(AiResponse::from_parts(
+                    Some(
+                        r#"<response><report end="true">invalid final</report></response>"#.into(),
+                    ),
+                    vec![AiToolCall {
+                        name: "write_file".into(),
+                        args: HashMap::from([
+                            ("path".into(), json!("must-not-exist.txt")),
+                            ("content".into(), json!("side effect")),
+                        ]),
+                        call_id: "conflict-native".into(),
+                    }],
+                    vec![],
+                ))
+            } else {
+                text(
+                    r#"<response><report end="true">invalid final</report><actions><write_file path="must-not-exist.txt">side effect</write_file></actions></response>"#,
+                )
+            };
+            let llm = ScriptedLlm::new(vec![
+                conflict,
+                text(r#"<response><report end="true">corrected final</report></response>"#),
+            ]);
+            let outcome = env
+                .run(
+                    TaskInput::question("verify protocol"),
+                    env.overrides(),
+                    llm.clone(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(outcome, RunOutcome::Completed(_)), "{outcome:?}");
+            assert_eq!(llm.calls(), 2);
+            assert!(!env.workdir.join("must-not-exist.txt").exists());
+            assert_eq!(
+                outcome.record().result.as_ref().unwrap().extracted,
+                Some(ExtractedValue::Text {
+                    text: "corrected final".into()
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn behavior_loop_end_to_end_with_tools2actions() {
         let env = Env::new();
         env.write(
@@ -10220,7 +10764,7 @@ there]]></write_file>
         );
         let llm = ScriptedLlm::new(vec![
             text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-77]]></shell></actions></response>"),
-            text("<response><observation>saw it</observation><report><![CDATA[{\"report\":\"结论 77\"}]]></report></response>"),
+            text("<response><observation>saw it</observation><report end=\"true\"><![CDATA[{\"report\":\"结论 77\"}]]></report></response>"),
         ]);
         let o = env
             .run(TaskInput::question("do it"), env.overrides(), llm.clone())
@@ -10277,7 +10821,7 @@ there]]></write_file>
         let llm = ScriptedLlm::new(vec![
             text(r#"<response><actions><read_file path="fixture.txt"><![CDATA[]]></read_file></actions></response>"#),
             text("<response><actions><read_file><![CDATA[missing.txt]]></read_file></actions></response>"),
-            text(r#"<response><actions><write_file path="excess.txt"><![CDATA[excess]]></write_file></actions><next_behavior>END</next_behavior></response>"#),
+            text(r#"<response><actions><write_file path="excess.txt"><![CDATA[excess]]></write_file></actions></response>"#),
         ]);
         let outcome = env
             .run(
@@ -10861,7 +11405,9 @@ there]]></write_file>
         );
         assert_eq!(cfg.filesystem_policy, Some(FilesystemPolicy::Unrestricted));
         assert_eq!(cfg.enabled, Some(false));
-        assert!(sources["filesystem_policy"].replace('\\', "/").ends_with("src/.llm_context"));
+        assert!(sources["filesystem_policy"]
+            .replace('\\', "/")
+            .ends_with("src/.llm_context"));
         for raw in [
             "tools:\n  filesystem_policy: invalid\n",
             "prompt:\n  tools:\n    filesystem_policy: false\n",
@@ -11101,7 +11647,10 @@ there]]></write_file>
             "after-resume"
         );
         let cwd = std::fs::read_to_string(env.project().join("resumed-cwd.txt")).unwrap();
-        assert_eq!(Path::new(cwd.trim()).canonicalize().unwrap(), env.project().canonicalize().unwrap());
+        assert_eq!(
+            Path::new(cwd.trim()).canonicalize().unwrap(),
+            env.project().canonicalize().unwrap()
+        );
     }
 
     fn exec_manager(workdir: &Path) -> XllmToolManager {
@@ -11208,8 +11757,11 @@ there]]></write_file>
     #[tokio::test]
     async fn auto_mode_turns_a_long_command_into_a_task() {
         let dir = tempfile::tempdir().unwrap();
-        let mut manager =
-            XllmToolManager::new(dir.path().to_path_buf(), "run-test", LoopModel::FunctionCall);
+        let mut manager = XllmToolManager::new(
+            dir.path().to_path_buf(),
+            "run-test",
+            LoopModel::FunctionCall,
+        );
         let shell = ShellSettings {
             mode: ShellMode::Auto,
             wait_ms: 200,
@@ -11230,7 +11782,10 @@ there]]></write_file>
             manager.register(t, "groupname:bash").expect("register");
         }
         let obs = manager
-            .call_tool(exec_call("echo early; sleep 1; echo late"), ToolCallCtx::noop())
+            .call_tool(
+                exec_call("echo early; sleep 1; echo late"),
+                ToolCallCtx::noop(),
+            )
             .await
             .unwrap();
         let Observation::Success {
@@ -11264,7 +11819,10 @@ there]]></write_file>
             panic!("{obs:?}")
         };
         assert!(content.as_str().unwrap().contains("late"), "{content}");
-        assert!(content.as_str().unwrap().contains("exited with code 0"), "{content}");
+        assert!(
+            content.as_str().unwrap().contains("exited with code 0"),
+            "{content}"
+        );
         let dir_obs = manager
             .call_tool(
                 AiToolCall {
@@ -11410,7 +11968,7 @@ there]]></write_file>
         let llm = ScriptedLlm::new(vec![
             text("<response><thinking>run</thinking><actions><shell><![CDATA[echo behavior-88]]></shell></actions></response>"),
             context_refusal(),
-            text("<response><report><![CDATA[{\"report\":\"ok 88\"}]]></report></response>"),
+            text("<response><report end=\"true\"><![CDATA[{\"report\":\"ok 88\"}]]></report></response>"),
         ]);
         let o = env
             .run(TaskInput::question("do it"), env.overrides(), llm.clone())
@@ -11548,9 +12106,9 @@ there]]></write_file>
             .iter()
             .flat_map(|m| m.content.iter())
             .find_map(|c| match c {
-                AiContent::ToolResult { call_id, content, .. } if call_id == "c1" => {
-                    Some(format!("{content:?}"))
-                }
+                AiContent::ToolResult {
+                    call_id, content, ..
+                } if call_id == "c1" => Some(format!("{content:?}")),
                 _ => None,
             })
             .expect("filled result");

@@ -32,6 +32,8 @@ pub struct Shared {
     pub dir: SessionDir,
     /// `self_improve` lease of a self-improve session.
     pub kind_lease: Mutex<Option<Arc<Lease>>>,
+    pub workspace_lease: Mutex<Option<Arc<Lease>>>,
+    pub workspace_failure: Mutex<Option<String>>,
     /// Task resolver of the run opened last in this drive: answers for the
     /// background tasks the session still follows after that run ended.
     pub tasks: Mutex<Option<Arc<dyn RunningTaskResolver>>>,

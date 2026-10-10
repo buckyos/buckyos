@@ -1,5 +1,5 @@
 {
-  "schema": "opendan.binding/3",
+  "schema": "opendan.binding/4",
   "target": {
     "host": "${FIXTURE_HOST}",
     "uid": "${FIXTURE_UID}"
@@ -7,6 +7,17 @@
   "runtime_id": "rt-fixture-native",
   "kind": "native",
   "workdir": "${FIXTURE_ROOT}/ws",
-  "bound_at_ms": 1791134683222,
-  "bound_by": "rn-b786aff385054157"
+  "workspace": {
+    "workspace_id": "ws-1e767d25-2a8b-4dad-a0c1-166ff6340a7f",
+    "revision": 2,
+    "location_revision": 1,
+    "runtime_host": "${FIXTURE_HOST}",
+    "location": {
+      "runtime_id": "local",
+      "directory": "${FIXTURE_ROOT}/ws"
+    },
+    "access": "read_write"
+  },
+  "bound_at_ms": 1791645241525,
+  "bound_by": "rn-fd09957d18bc4d1a"
 }

@@ -328,7 +328,7 @@ async fn behavior_loop_session_runs_actions() {
         _ => {
             let u = last_user_text(req);
             assert!(u.contains("behavior-77"), "{u}");
-            text("<response><report><![CDATA[out.txt written]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[out.txt written]]></report></response>")
         }
     }
     });
@@ -352,6 +352,7 @@ async fn behavior_loop_session_runs_actions() {
             "step",
             "action_result",
             "step",
+            "report_delivery",
             "outcome",
             "turn_ended"
         ]
@@ -377,12 +378,12 @@ async fn behavior_loop_session_runs_actions() {
 async fn decide_accept_and_discard_move_the_artifact_head() {
     let env = Env::new();
     let agent = env.agent();
+    std::fs::create_dir_all(env.root.join("snake")).unwrap();
+    let workspace = env.workspace(&env.root.join("snake")).await;
     let mk = |obj: &str| {
         let mut s = work_spec(obj);
         s.artifact_id = Some("snake-game".into());
-        s.workspace = Some(WorkspaceRef::External {
-            path: env.root.join("snake").display().to_string(),
-        });
+        s.workspace = Some(workspace.clone());
         s
     };
     std::fs::create_dir_all(env.root.join("snake")).unwrap();
@@ -688,11 +689,11 @@ async fn fork_child_inherits_steps_and_returns_to_the_parent_run() {
                 assert!(all.contains("context_switch to=\"research\""), "{all}");
                 text("<response><actions><shell><![CDATA[echo r1-output]]></shell></actions></response>")
             }
-            3 => text("<response><report><![CDATA[research result X]]></report></response>"),
+            3 => text("<response><report end=\"true\"><![CDATA[research result X]]></report></response>"),
             4 => {
                 assert!(all.contains("research result X"), "parent sees the child result:\n{all}");
                 assert!(!all.contains("r1-output"), "child steps stay in the child:\n{all}");
-                text("<response><report><![CDATA[final answer]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[final answer]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
@@ -795,7 +796,7 @@ async fn switch_context_processes_keep_their_own_runs() {
             4 => {
                 // Back in plan's own run: its earlier steps are there.
                 assert!(all.contains("plan-1") && !all.contains("writer-1"), "{all}");
-                text("<response><report><![CDATA[done alternating]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[done alternating]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
@@ -924,7 +925,7 @@ async fn switch_context_targets_keep_their_own_system_and_history() {
                 // CHECK resumed from its own snapshot.
                 assert!(sys.contains("SYSTEM-CHECK"), "{sys}");
                 assert!(all.contains("check-1") && !all.contains("do-1"), "{all}");
-                text("<response><report><![CDATA[checked]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[checked]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
@@ -985,12 +986,12 @@ async fn create_sub_context_uses_its_own_system_and_selected_history() {
                     assert_eq!(all.contains("plan-1"), sees_steps || sees_history, "{inherit}:\n{all}");
                     text("<response><actions><shell><![CDATA[echo do-1]]></shell></actions></response>")
                 }
-                3 => text("<response><report><![CDATA[did it]]></report></response>"),
+                3 => text("<response><report end=\"true\"><![CDATA[did it]]></report></response>"),
                 4 => {
                     assert!(!sys.contains("SYSTEM-DO"), "{sys}");
                     assert!(all.contains("did it") && !all.contains("do-1"), "{inherit}:\n{all}");
                     assert!(all.contains("plan-1"), "{all}");
-                    text("<response><report><![CDATA[final]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
                 }
                 _ => panic!("unexpected call {n}"),
             }
@@ -1033,7 +1034,7 @@ async fn sub_context_wait_and_failure_return_to_the_caller() {
             3 => text("<response><next_behavior>nowhere</next_behavior></response>"),
             4 => {
                 assert!(all.contains("status=\"failed\"") && all.contains("`nowhere`"), "{all}");
-                text("<response><report><![CDATA[done]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[done]]></report></response>")
             }
             _ => panic!("unexpected call {n}"),
         }
@@ -1117,7 +1118,7 @@ async fn semi_change_alone_does_not_make_an_input_batch() {
         _ => {
             let u = user_texts(req).join("\n");
             assert!(u.contains("door opened") && u.contains("hello"), "{u}");
-            text("<response><report><![CDATA[ok]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[ok]]></report></response>")
         }
     });
     let deps = env.deps(llm.clone());
@@ -1175,7 +1176,7 @@ async fn switch_across_drives_runs_the_next_behavior() {
         0 => text("<response><next_behavior>do</next_behavior></response>"),
         _ => {
             assert!(render(&req.messages).contains("context_switch to=\"do\""));
-            text("<response><report><![CDATA[both phases done]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[both phases done]]></report></response>")
         }
     });
     let deps = env.deps(llm.clone());
@@ -1224,9 +1225,9 @@ async fn max_turns_counts_completed_turns_not_hand_overs() {
     let llm = ScriptedLlm::new(|req, _| {
         let all = render(&req.messages);
         if all.contains("second request") {
-            text("<response><report><![CDATA[answer two]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[answer two]]></report></response>")
         } else if all.contains("context_switch to=\"do\"") {
-            text("<response><report><![CDATA[answer one]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[answer one]]></report></response>")
         } else {
             text("<response><next_behavior>do</next_behavior></response>")
         }
@@ -1281,14 +1282,14 @@ async fn stop_right_after_a_fork_return_closes_the_parent_run() {
     let llm = ScriptedLlm::new(move |req, _| {
         let all = render(&req.messages);
         if all.contains("research result X") {
-            text("<response><report><![CDATA[final answer]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[final answer]]></report></response>")
         } else if all.contains("context_switch to=\"research\"") {
             post_blocking(
                 &qd,
                 &q,
                 PostedInput::control(APP, "stop-1", ControlCommand::Stop { reason: None }),
             );
-            text("<response><report><![CDATA[research result X]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[research result X]]></report></response>")
         } else {
             text("<response><next_behavior>research</next_behavior></response>")
         }
@@ -1313,11 +1314,11 @@ async fn call_ids_stay_unique_after_a_fork_return() {
         0 => text("<response><actions><shell><![CDATA[echo p1]]></shell></actions></response>"),
         1 => text("<response><next_behavior>research</next_behavior></response>"),
         2 => text("<response><actions><shell><![CDATA[echo r1]]></shell></actions></response>"),
-        3 => text("<response><report><![CDATA[research result X]]></report></response>"),
+        3 => text("<response><report end=\"true\"><![CDATA[research result X]]></report></response>"),
         4 => text(
             "<response><actions><shell><![CDATA[echo after-return]]></shell></actions></response>",
         ),
-        _ => text("<response><report><![CDATA[final]]></report></response>"),
+        _ => text("<response><report end=\"true\"><![CDATA[final]]></report></response>"),
     });
     assert!(drive(&sd, &env.deps(llm), StopWhen::Finished)
         .await

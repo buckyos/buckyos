@@ -2,7 +2,7 @@
 
 说明 LLMContext + AgentSession 如何构造、切换和恢复典型的 Message List。Round / Step / Turn 的定义与 [readme](readme.md) 一致；Context 调度采用本次 review 和[提示词方式图解](<../opendan/几种典型的提示词方式图解.drawio>)确定的新语义。
 
-本文区分**已实现的行为**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8；Stop 后补充输入与 `report` 显式结果提交仍是待定建议，见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。旧 opendan Runtime 中的同名字段不是这些语义的实现。
+本文区分**已实现的行为**、**已定稿但尚未实现的设计**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8。2026-10-10 已实现 XML 用 `<report end="true">` 显式结束且不得有 actions，两套 parser 与宿主使用同一提交语义，见下文 report 一节。Stop 后补充输入（H3）已暂缓，不适用于 Work 生命周期，强制 reopen 不在本轮范围；report 宿主策略与验收见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。END / 隐式 report-only 完成已移除；旧 opendan Runtime 的历史描述不作为当前协议。
 
 ## Round、Step、Turn 与 run
 
@@ -120,19 +120,42 @@ Session 负责取输入、处理交接和判定 Turn；behavior 决定如何解�
 | Turn 完成 | 一次逻辑交互已交付结果 | Session 若仍接受输入，下一批输入开启新 Turn |
 | Session finished | Session 达到结束条件或被终止 | 按 Session 协议拒绝继续推进，另建 Session 承载后续任务 |
 
-WorkSession 围绕明确 objective 工作，objective 达成后关闭，是产品和路由层的选择；不能把每次 behavior 的 `END` 都解释成所有 Session 必须硬关闭。当前 libopendan 按 `end_condition` 决定结束 Session 或继续等待，代码中旧 `Fork` 子 run 的 `END` 则用于返回父 run。
+按 [OpenDAN Agent Session 架构设计](<../opendan/OpenDAN Agent Session架构设计.md>) §6，WorkSession 执行一个明确、有界的 Task，成功或失败后输出 Final Report 并结束；终态不 reopen。Work 无普通 Message input，执行中同目标修改走 Task 修订，在下一次已有推理前观察；结束后修改创建新 Task / 新 Work。不能把每次 behavior 的结束都解释成整个 Work 已完成：当前 libopendan 按 `end_condition` 决定 Session 收尾，子 context 的结束先返回调用方。
 
 WorkSession 与 Workspace 分离：Session 承载一次任务，Workspace 承载持续可修改的状态。新 Session 可以按需要读取产物和已有记录，但不必原样继承上一个 Session 的完整消息序列。
 
-### 传统 Loop 的 report：显式结果提交（方向确定，参数与默认策略待定）
+### 两种 Loop 的 report：显式结果提交
 
-**传统 function_call Loop 通过显式调用 Session 层的 `report` 工具提交报告和产物，assistant 正文保持自由。** 报告可以是阶段性结果，也可以是最终交付；可选的 `is_end` 表达结束意图。这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，`report(is_end=true)` 才声明整个 Session 的目标已完成。宿主不从 assistant 正文里提取控制指令，也不要求正文符合统一 schema；XML Behavior Loop 保持自己的 `<report>` / `<next_behavior>` 协议。报告的归属、展示与产物投递的分层见 [Agent Actions](<Agent Actions.md>) 与 [Agent Message](<Agent Message.md>)。
+**传统 function_call Loop 通过显式调用 Session 层的 `report` 工具提交报告和产物，assistant 正文保持自由。** 报告可以是阶段性结果，也可以是最终交付；可选的 `is_end` 表达结束意图。这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，结束报告才提交完成意图，由宿主按调用关系和 Session 策略裁决。宿主不从普通 assistant 正文里提取控制指令，也不要求正文符合统一 schema。报告的归属、展示与产物投递的分层见 [Agent Actions](<Agent Actions.md>) 与 [Agent Message](<Agent Message.md>)。
 
-参数草案（定稿前可能调整）：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物引用，宿主校验并保存稳定引用）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，建议缺省 false）。
+XML Behavior Loop 按 2026-10-10 定稿规则表达同一语义：
 
-当前 `EndConditionType` 只有 `LlmDeclaresDone`、`OutputSchema`、`MaxTurns`；function_call 的 `Done` 会按该配置收尾，默认 `LlmDeclaresDone` 会结束 Session。`report` 工具与“必须显式声明才结束”的完成策略**尚未实现**。单次输出型 WorkSession 可以继续使用现有结束条件，不要求所有 Session 增加这次调用。
+| XML 决策 | 含义 |
+|---|---|
+| `<report>阶段性发现</report>` 或 `end="false"` | 提交 / 更新报告，继续执行，不请求结束 |
+| `<report end="true">完成说明</report>` | 提交最终报告并请求结束；同一决策不得有 actions |
+| 普通 report + `<next_behavior>CHECK</next_behavior>` | 更新报告并按原语义调度 CHECK |
+| 普通 report + `<next_behavior>WAIT_USER_MSG</next_behavior>` | 更新报告并按原语义请求等待输入 |
 
-采用显式完成策略后的示例：
+`next_behavior` 保留切换 / 等待职责，不再输出 END，也不再由 xllm 为 report-only 合成 done。动作先在前面的决策执行并观察结果，最后另行提交结束报告：
+
+```text
+[assistant:决策 actions=[write_file]]                  @Step0 / Round1
+[user:动作执行结果]
+[assistant:<response><report end="true"><![CDATA[完成说明]]></report></response>]
+                                                       @Step1 / Round2
+  → 接受报告与结束意图；无需再推理生成确认
+  → 子 context：结果返回调用方，原 Turn 继续
+  → 顶层 context：宿主按 Session 策略完成 Turn / Session
+```
+
+结束报告与 actions 同现是协议冲突，应反馈纠错，不能先执行动作或先更新报告。`end=true` 与非空 next_behavior、原生 tool_calls / sendmsg 同现也拒绝；空 actions 允许。重复 report / end / next_behavior、非法布尔值、空最终报告和无行为的空决策进入纠错。
+
+工具参数：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物引用，宿主校验并保存稳定引用）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，缺省 false）。
+
+当前 `EndConditionType` 只有 `LlmDeclaresDone`、`OutputSchema`、`MaxTurns`；function_call 的 `Done` 会按该配置收尾，默认 `LlmDeclaresDone` 会结束 Session。`session.policy.completion` 缺省 `natural` 保留原结束条件；`explicit_report` 要求获准结束报告才正常关闭 Session。单次输出型 WorkSession 可以继续使用现有结束条件，不要求所有 Session 增加这次调用。
+
+可交互 Session 采用显式完成策略后的示例（不用于 Work 的需求确认或终态 reopen）：
 
 ```text
 Turn1：[user:先给我方案] … [assistant:方案，请确认] → Done → Turn1 completed，Session 等待
@@ -149,7 +172,9 @@ Turn2：[user:按方案执行] … [assistant:tool_calls(执行)] [tool:执行�
 - 最终交付由 Session 根据已提交的 report 与产物引用**机械生成**一条 assistant message（关联来源 `call_id`，不新增 Round），与 report 文件、UI 展示使用同一份结果；原始工具调用 / 回执保留，普通阶段性 report 不生成交付消息。
 - 提交可重做：重复的 `call_id` / 提交请求不重复登记产物、生成最终消息或关闭 Turn；历史重建不重执行 `report`，也不把同一份最终交付渲染两遍。
 
-该能力属于 Session 控制面：LLMContext 不解释 report / result 的业务内容，独立 xllm 不暴露此工具。子 context 的报告默认交给父 context，不得因为继承了工具表而关闭整个 Session。参数最终形态、`is_end` 缺省值、哪些 Session 采用显式完成策略、与未完成子调用 / task / 人工验收的关系列入实施清单 H4，尚未作为已确定的产品规则。
+宿主工具属于 Session 控制面：LLMContext 不解释 report / result 的业务内容，独立 xllm 不暴露此工具；独立 xllm 的 XML Behavior 仍需遵守新的显式 end 规则。子 context 的报告默认交给父 context，不得因为继承了工具表而关闭整个 Session。XML 的 end 和工具 is_end 均缺省 false。显式策略下，有输入队列的 Session 遇普通 Done 会完成 Turn 并等待；无输入队列的 WorkSession 漏报会失败。完成提交要求活动 task 与子 Work 已收敛；它不表示人工验收通过。XML 用与 report 并列的 `<artifacts>["relative/file"]</artifacts>`、`<result>{...}</result>` 表达同一提交。
+
+提交 journal 写在 `run.json.host.extra.reports`，身份关联 run 与 tool call_id / behavior step_index。`state.latest_report` 与 `state.final_report` 分开保存；文件副本位于 `.opendan_agent_session/reports/{id}/{index}-{sha256}`。`ReportDelivery` worklog 记录来源、提交和机械生成的 assistant 消息；恢复复用该身份，结果不重执行、不重复展示。
 
 ## 打断、平滑结束与恢复
 
@@ -196,9 +221,11 @@ Turn2：[user:按方案执行] … [assistant:tool_calls(执行)] [tool:执行�
 
 Discard 后消息列表里缺少被裁掉的内容，不代表工具副作用被回滚，也不代表审计记录中没有中断痕迹。末尾是工具结果更不等于 Turn 已正常交付。
 
-### 用户点 Stop 后再补充信息：两种 history 策略（待定）
+### UI 暂停后补充信息：两种 history 策略（H3 暂缓）
 
-先区分按钮意图与现有协议。当前 libopendan 的 `ControlCommand::Stop` 会将 Turn 记为 `stopped`、Session 记为 `Finished`；不能直接在这个 Session 里追加信息继续。若 UI 的 Stop 意图是“先停一下，我要补充条件”，需要单独的暂停 / 停止本次交互语义，不能直接复用终止 Session 的命令。
+**2026-10-10 决定暂不实施 H3；以下 A / B 仅保留为 UI 交互候选，不纳入当前实现与验收，也不是强制 reopen 方案。** Work 不使用这两种方式续聊：运行中的同目标修改走 Task 修订，终态后的修改创建新 Task / 新 Work。未终态执行的检查点恢复及受控暂停 / 取消仍属于 Runtime 能力，不因 H3 暂缓而删除。
+
+先区分按钮意图与现有协议。当前 libopendan 的 `ControlCommand::Stop` 会将 Turn 记为 `stopped`、Session 记为 `Finished`；不能直接在这个 Session 里追加信息继续。A / B 都要求 UI Session 始终尚未 Finished。以后若有“先停一下，我要补充条件”的明确需求，再设计独立的暂停 / 停止本次交互语义，不能直接复用终止 Session 的命令。
 
 **方案 A：保留配对历史，继续同一 Turn。** 用 `finish` 平滑停止，必要时 `interrupt`；保存已有 response、工具结果和未执行标记，保持当前 run / Turn 打开，等待补充输入：
 
@@ -227,7 +254,7 @@ Discard 后消息列表里缺少被裁掉的内容，不代表工具副作用被
 | 前缀缓存 | 尽量复用已保留的前缀 | 重建处之后需要重新计算 |
 | 适用 | 补充条件、纠正方向 | 明确放弃本次交互，重新开始 |
 
-建议普通 Stop 采用 A，将 B 作为明确的“放弃本次交互 / 重新开始”操作；关闭整个 Session 保留独立操作。这只是默认行为建议，产品选择和命令字段仍待定。两种方案都必须在停止处理与补充输入之间建立持久化边界；停止期间到达的消息先排队，不能丢失或抢先触发推理，详见实施清单 H3。
+原“普通 Stop 默认 A、重新开始用 B”的建议不再作为本轮实施方向；现有终止 Session 的 Stop 语义保留。以后重新评估 H3 时，再冻结 UI 默认行为、输入持久化边界及恢复规则，确保停止期间到达的消息不丢失、不抢先触发推理。Agent Homepage / BuckyOS CLI 的后续工作入口也应创建新 Work，本轮不提供强制 reopen，详见实施清单 H3。
 
 ## 压缩 History Message
 
@@ -314,7 +341,7 @@ run_CHECK / system_CHECK：恢复原快照 → on_behavior_switch → 更多 CHE
 
 新建目标 context 的历史装配范围由目标的 `inherit` 决定：缺省 `none`，只有 system 与交接输入；`recent_dialogue` 才带入宿主渲染的 `<session_history>`（摘要 + 近期 worklog 记录，是筛选视图）。其它 context 的快照与原始历史从不自动并进目标 context；恢复已有目标时只用它自己的快照。
 
-切换不完成 Turn。`END` 由 Session 根据执行位置与结束条件解释：普通目标 context 完成可结束当前 Turn；处于子调用内则返回调用方。SWITCH_CONTEXT 本身不隐含“每次切入都是调用、END 自动返回上一 behavior”。
+切换不完成 Turn。`<report end="true">` 由 Session 根据执行位置与完成策略裁决：顶层 context 完成当前 Turn，并按策略关闭 Session；子 context 完成后返回调用方。SWITCH_CONTEXT 不隐含调用关系，结束时不会自动返回上一 behavior。
 
 ## create-sub-context：更换 system，构造较短的子任务上下文
 
@@ -324,7 +351,7 @@ run_CHECK / system_CHECK：恢复原快照 → on_behavior_switch → 更多 CHE
 PLAN / system_PLAN
   ├─ create-sub-context(DO, 任务1) → DO / system_DO → report → 返回 PLAN
   ├─ create-sub-context(DO, 任务2) → 新 DO / system_DO → report → 返回 PLAN
-  └─ END → Session 判定 Turn 完成
+  └─ report end=true → Session 判定 Turn / Session 完成
 ```
 
 子 context 的输入形状：

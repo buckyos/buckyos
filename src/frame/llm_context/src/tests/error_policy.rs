@@ -339,7 +339,7 @@ async fn behavior_actions_stop_after_first_business_error_and_record_skipped() {
 <actions><shell>echo a</shell><shell>echo b</shell><shell>echo c</shell></actions>
 </response>"#,
         ),
-        text_response("<response><thinking>saw it</thinking><next_behavior>END</next_behavior></response>"),
+        text_response("<response><thinking>saw it</thinking><report end=\"true\">finished</report></response>"),
     ]));
     struct FailSecond {
         tools: Arc<ScriptedTools>,

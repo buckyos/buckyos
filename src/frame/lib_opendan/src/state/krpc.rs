@@ -42,6 +42,10 @@ pub fn error_to_wire(e: &OpenDanError) -> String {
             v["pending"] = json!(pending);
         }
         OpenDanError::QueueMissing { session_id } => v["session_id"] = json!(session_id),
+        OpenDanError::Busy { resource, holder } => {
+            v["resource"] = json!(resource);
+            v["holder"] = json!(holder);
+        }
         _ => {}
     }
     v.to_string()
@@ -66,6 +70,10 @@ pub fn error_from_wire(text: &str) -> OpenDanError {
     match v["kind"].as_str().unwrap_or_default() {
         "invalid_argument" => OpenDanError::InvalidArgument(detail("invalid argument: ")),
         "not_found" => OpenDanError::NotFound(detail("not found: ")),
+        "busy" => OpenDanError::Busy {
+            resource: v["resource"].as_str().unwrap_or_default().to_string(),
+            holder: v.get("holder").cloned().filter(|h| !h.is_null()),
+        },
         "input_full" => OpenDanError::InputFull {
             session_id: v["session_id"].as_str().unwrap_or_default().to_string(),
             pending: v["pending"].as_u64().unwrap_or(MAX_PENDING_INPUTS as u64) as usize,
@@ -101,6 +109,14 @@ pub fn is_write(method: &str) -> bool {
             | "sessions.verify"
             | "cognition.notebook_append"
             | "artifacts.decide"
+            | "workspaces.create"
+            | "workspaces.import"
+            | "workspaces.discover"
+            | "workspaces.check"
+            | "workspaces.update"
+            | "workspaces.archive"
+            | "workspaces.unregister"
+            | "workspaces.set_runtime_available"
     )
 }
 
@@ -212,6 +228,50 @@ pub async fn serve_call(
                 (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => Err(e),
             }
         }
+        "workspaces.create" => match arg::<WorkspaceCreate>(params, "request") {
+            Ok(request) => agent.workspaces().create(&request, who).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.import" => match arg::<WorkspaceImport>(params, "request") {
+            Ok(request) => agent.workspaces().import(&request, who).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.discover" => match arg::<WorkspaceDiscover>(params, "request") {
+            Ok(request) => agent.workspaces().discover(&request, who).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.lookup" => match arg::<String>(params, "workspace_id") {
+            Ok(id) => agent.workspaces().lookup(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.query" | "workspaces.list" => match arg::<Option<WorkspaceQuery>>(params, "query") {
+            Ok(query) => agent.workspaces().query(&query.unwrap_or_default()).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.check" => match arg::<String>(params, "workspace_id") {
+            Ok(id) => agent.workspaces().check(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.update" => match (arg::<String>(params, "workspace_id"), arg::<WorkspaceUpdate>(params, "request")) {
+            (Ok(id), Ok(request)) => agent.workspaces().update(&id, &request, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "workspaces.archive" => match (arg::<String>(params, "workspace_id"), arg::<u64>(params, "expected_revision")) {
+            (Ok(id), Ok(revision)) => agent.workspaces().archive(&id, revision, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "workspaces.unregister" => match (arg::<String>(params, "workspace_id"), arg::<u64>(params, "expected_revision")) {
+            (Ok(id), Ok(revision)) => agent.workspaces().unregister(&id, revision, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
+        "workspaces.runtime_impact" => match arg::<String>(params, "runtime_id") {
+            Ok(id) => agent.workspaces().runtime_impact(&id).await.and_then(out),
+            Err(e) => Err(e),
+        },
+        "workspaces.set_runtime_available" => match (arg::<String>(params, "runtime_id"), arg::<bool>(params, "available")) {
+            (Ok(id), Ok(available)) => agent.workspaces().set_runtime_available(&id, available, who).await.and_then(out),
+            (Err(e), _) | (_, Err(e)) => Err(e),
+        },
         "behaviors.identity" => agent.behaviors().identity().await.and_then(out),
         "behaviors.get" => match arg::<String>(params, "name") {
             Ok(n) => agent.behaviors().get(&n).await.and_then(out),
@@ -504,10 +564,47 @@ impl AgentStateClient for KrpcAgentStateClient {
     fn artifacts(&self) -> &dyn Artifacts {
         self
     }
+    fn workspaces(&self) -> &dyn WorkspaceManager {
+        self
+    }
     fn locks(&self) -> &dyn LockManager {
         self
     }
     fn behaviors(&self) -> &dyn BehaviorCatalog {
         self
+    }
+}
+
+#[async_trait]
+impl WorkspaceManager for KrpcAgentStateClient {
+    async fn create(&self, request: &WorkspaceCreate, _who: &str) -> Result<WorkspaceRecord> {
+        self.call("workspaces.create", json!({"request": request})).await
+    }
+    async fn import(&self, request: &WorkspaceImport, _who: &str) -> Result<WorkspaceRecord> {
+        self.call("workspaces.import", json!({"request": request})).await
+    }
+    async fn discover(&self, request: &WorkspaceDiscover, _who: &str) -> Result<WorkspaceRecord> {
+        self.call("workspaces.discover", json!({"request": request})).await
+    }
+    async fn lookup(&self, workspace_id: &str) -> Result<Option<WorkspaceRecord>> {
+        self.call("workspaces.lookup", json!({"workspace_id": workspace_id})).await
+    }
+    async fn query(&self, query: &WorkspaceQuery) -> Result<Vec<WorkspaceRecord>> {
+        self.call("workspaces.query", json!({"query": query})).await
+    }
+    async fn check(&self, workspace_id: &str) -> Result<WorkspaceRecord> {
+        self.call("workspaces.check", json!({"workspace_id": workspace_id})).await
+    }
+    async fn update(&self, workspace_id: &str, request: &WorkspaceUpdate, _who: &str) -> Result<WorkspaceRecord> {
+        self.call("workspaces.update", json!({"workspace_id": workspace_id, "request": request})).await
+    }
+    async fn unregister(&self, workspace_id: &str, expected_revision: u64, _who: &str) -> Result<()> {
+        self.call("workspaces.unregister", json!({"workspace_id": workspace_id, "expected_revision": expected_revision})).await
+    }
+    async fn runtime_impact(&self, runtime_id: &str) -> Result<Vec<WorkspaceRecord>> {
+        self.call("workspaces.runtime_impact", json!({"runtime_id": runtime_id})).await
+    }
+    async fn set_runtime_available(&self, runtime_id: &str, available: bool, _who: &str) -> Result<Vec<WorkspaceRecord>> {
+        self.call("workspaces.set_runtime_available", json!({"runtime_id": runtime_id, "available": available})).await
     }
 }

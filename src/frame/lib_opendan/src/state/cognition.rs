@@ -1,12 +1,12 @@
-//! Cognition facade (§6.4) over `agent_tool::{agent_memory, agent_notebook}`.
-//!
-//! Non-Rust implementations cross this boundary through the `agent_tool`
-//! CLIs (Memory v2 §0); the Memory Graph itself is not re-implemented.
+//! Cognition facade (§6.4) used by the runner. The Memory component lives in
+//! [`crate::memory`]; this trait keeps the runner's existing calls until the
+//! Session integration stage (S) moves them to it. The Notebook path is the
+//! legacy caller list of TD-09 and is removed in that stage.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use agent_tool::agent_memory::{AgentMemory, AgentMemoryConfig, MemoryRecallOptions};
+use agent_tool::agent_memory::{AgentMemory, AgentMemoryConfig, RecallOutcome, RecallQuery as GraphRecallQuery};
 use agent_tool::agent_notebook::{AgentNotebook, AgentNotebookConfig, AppendNoteInput, WriteReason};
 
 use crate::error::{OpenDanError, Result};
@@ -69,38 +69,39 @@ impl FsCognition {
 
 #[async_trait]
 impl Cognition for FsCognition {
+    /// Tags only, no Session grants yet (S stage): no tag means "not
+    /// triggered" (an empty list, never the whole Graph, TD-10); a store
+    /// that cannot be read is an error, never an empty list (TD-01).
     async fn recall_hints(&self, q: &RecallQuery) -> Result<Vec<Hint>> {
         let dir = self.layout.memory_dir();
-        if !dir.join("meta.json").exists() && !dir.exists() {
-            return Ok(Vec::new());
-        }
         let tags = q.tags.clone();
         let max = if q.max_hints == 0 { 5 } else { q.max_hints };
-        let hints = tokio::task::spawn_blocking(move || -> Result<Vec<Hint>> {
-            let mem = match AgentMemory::open(AgentMemoryConfig::new(dir)) {
-                Ok(m) => m,
-                Err(_) => return Ok(Vec::new()),
-            };
-            let opts = MemoryRecallOptions {
-                max_hints: max,
-                ..Default::default()
-            };
-            let raw = mem
-                .recall_hints(&tags, opts)
-                .map_err(|e| OpenDanError::Other(format!("memory recall: {e}")))?;
-            Ok(raw
-                .into_iter()
-                .map(|h| Hint {
-                    id: h.target_id,
-                    time: h.noticed_at,
-                    sentence: h.hint,
-                    kind: h.kind,
+        tokio::task::spawn_blocking(move || -> Result<Vec<Hint>> {
+            let mem = AgentMemory::open_read(AgentMemoryConfig::new(dir))
+                .map_err(|e| OpenDanError::Other(format!("memory unavailable: {e}")))?;
+            let outcome = mem
+                .recall(&GraphRecallQuery {
+                    tags,
+                    max_records: max,
+                    ..GraphRecallQuery::default()
                 })
-                .collect())
+                .map_err(|e| OpenDanError::Other(format!("memory recall: {e}")))?;
+            Ok(match outcome {
+                RecallOutcome::NotTriggered => Vec::new(),
+                RecallOutcome::Recalled(r) => r
+                    .items
+                    .into_iter()
+                    .map(|i| Hint {
+                        id: format!("{}@{}", i.item_id, i.revision),
+                        time: i.noticed_at,
+                        sentence: i.content,
+                        kind: i.semantic_kind.unwrap_or_else(|| i.kind.to_string()),
+                    })
+                    .collect(),
+            })
         })
         .await
-        .map_err(|e| OpenDanError::Other(e.to_string()))??;
-        Ok(hints)
+        .map_err(|e| OpenDanError::Other(e.to_string()))?
     }
 
     async fn notebook_append(&self, note: &NotebookNote, _who: &str) -> Result<()> {

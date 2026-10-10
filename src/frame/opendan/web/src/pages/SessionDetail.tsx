@@ -456,7 +456,7 @@ export default function SessionDetailPage({ sid }: { sid: string }) {
           {config && (
             <details className="mt-2">
               <summary className="cursor-pointer text-xs text-mute">session config</summary>
-              <Pre value={{ session: config.session, runtime: config.runtime, workspace: config.workspace, subscriptions: config.subscriptions, channels: config.channels }} />
+              <Pre value={{ session: config.session, runtime: config.runtime, workspace: config.workspace, workspace_binding: config.workspace_binding, subscriptions: config.subscriptions, channels: config.channels }} />
             </details>
           )}
         </Panel>

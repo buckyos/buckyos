@@ -271,10 +271,7 @@ pub enum WorkEvent {
         model: String,
     },
     /// `LLMContext::run()` returned an outcome.
-    LLMFinished {
-        trace_id: Option<String>,
-        ok: bool,
-    },
+    LLMFinished { trace_id: Option<String>, ok: bool },
     LLMInferenceFailed {
         trace_id: Option<String>,
         error: String,
@@ -412,6 +409,19 @@ pub enum InjectionPosition {
 ///   for an inference; the in-memory snapshot stays resumable.
 #[async_trait]
 pub trait CheckpointHook: Send + Sync {
+    async fn before_tool_call(&self, _snapshot: &LLMContextSnapshot) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn validate_report(
+        &self,
+        _snapshot: &LLMContextSnapshot,
+        _result: &crate::behavior_loop::LLMBehaviorResult,
+        _step_index: u32,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     async fn before_inference(
         &self,
         snapshot: &LLMContextSnapshot,

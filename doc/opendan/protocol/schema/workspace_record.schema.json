@@ -1,0 +1,196 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "WorkspaceAvailability": {
+      "enum": [
+        "available",
+        "missing",
+        "runtime_unavailable",
+        "permission_denied",
+        "invalid_metadata",
+        "conflict"
+      ],
+      "type": "string"
+    },
+    "WorkspaceConflict": {
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "candidate": {
+          "$ref": "#/definitions/WorkspaceLocation"
+        },
+        "code": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "candidate",
+        "code",
+        "message"
+      ],
+      "type": "object"
+    },
+    "WorkspaceLifecycle": {
+      "enum": [
+        "active",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "WorkspaceLocation": {
+      "properties": {
+        "directory": {
+          "type": "string"
+        },
+        "runtime_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory",
+        "runtime_id"
+      ],
+      "type": "object"
+    },
+    "WorkspaceUsage": {
+      "enum": [
+        "private",
+        "collaborative"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "availability": {
+      "$ref": "#/definitions/WorkspaceAvailability"
+    },
+    "checked_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "conflict": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WorkspaceConflict"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "created_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "description": {
+      "type": "string"
+    },
+    "last_error": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lifecycle": {
+      "$ref": "#/definitions/WorkspaceLifecycle"
+    },
+    "location": {
+      "$ref": "#/definitions/WorkspaceLocation"
+    },
+    "location_revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "name": {
+      "type": "string"
+    },
+    "policy_ref": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "private_notes": {
+      "default": "",
+      "type": "string"
+    },
+    "registered_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "registered_by": {
+      "type": "string"
+    },
+    "revision": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "runtime_host": {
+      "type": "string"
+    },
+    "source": {
+      "type": "string"
+    },
+    "source_session": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "updated_at_ms": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "usage": {
+      "$ref": "#/definitions/WorkspaceUsage"
+    },
+    "version": {
+      "format": "uint32",
+      "minimum": 0.0,
+      "type": "integer"
+    },
+    "workspace_id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "availability",
+    "created_at_ms",
+    "description",
+    "lifecycle",
+    "location",
+    "location_revision",
+    "name",
+    "registered_at_ms",
+    "registered_by",
+    "revision",
+    "runtime_host",
+    "source",
+    "updated_at_ms",
+    "usage",
+    "version",
+    "workspace_id"
+  ],
+  "title": "WorkspaceRecord",
+  "type": "object"
+}

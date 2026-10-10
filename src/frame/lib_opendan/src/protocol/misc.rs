@@ -39,6 +39,8 @@ pub struct Binding {
     /// Absolute workdir for exec (the only place absolute paths are allowed
     /// besides `runs/`).
     pub workdir: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<super::WorkspaceBinding>,
     pub bound_at_ms: u64,
     pub bound_by: String,
 }
@@ -51,6 +53,7 @@ impl Binding {
             && self.kind == other.kind
             && self.target == other.target
             && self.workdir == other.workdir
+            && self.workspace == other.workspace
     }
 }
 

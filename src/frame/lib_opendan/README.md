@@ -12,6 +12,7 @@
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
 | `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流：只放行 Owner，群消息要求开关与 @；较早记录转成 `delivery.context` 上下文消息）、task bridge（task 状态 → `AgentEvent`）、回复信封与出站记录；宿主内的 `EventBridge`：timer、kevent |
 | `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`krpc`（`KrpcAgentStateClient` 与传输无关的服务端分发 `serve_call`：读与带署名的写；驱动者的写入不上 kRPC）、`ForwardingStateClient`、`WithBehaviors` |
+| `memory` | Agent Memory 组件门面（[需求](<../../../doc/opendan/Agent Memory 认知管理需求.md>) 附录 A）：感知写入（宿主绑定身份、授权主体与来源，幂等键、文件短锁）、两层召回 `query_topic` / `query` 与按引用读取（可见性、范围、纠正兜底、分池预算）、`changes_since`（版本向量快照，快速路径不打开 Graph）、Session 侧 `ObservationState`（topic、阀门、pending、read_set）、持整理 lease 的 `Consolidator`（批次、单 envelope 提交、清理、到期清扫）；Graph 在 `agent_tool::agent_memory`（schema 3.0） |
 | `template` | Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 覆盖；包自定义的 class 用 `base = "<内建模板>"` 指定起点，缺省 `work`）→ `SessionSpec` 与 `session.policy`。ui 模板的 kind 是 `ui`，由 `route_key` 绑定到一个会话 |
 | `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve`；常驻宿主用的 `Supervisor`（按登记表托管 `driver = me` 的未结束 Session 与子 Session、`ensure_task`、按 class 的 idle unload、只读托管状态、退出时等待各循环结束而不 stop Session） |
 | `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
@@ -32,11 +33,13 @@ let result = SessionRunner::new(deps).drive(&sd, StopWhen::Finished).await;
 
 LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 JSON 形式）决定，工具预算键为 `max_tool_iterations`。`StopWhen::MaxOutcomes { n }` 让 drive 处理 n 个 `LLMContext` outcome（每个启动或恢复的 run 段一个，任何种类）后返回 `DriveResult::OutcomesHandled`；它不是 Round（推理）数、`run()` 调用数，也不是 Turn 数。Session 的结束条件另由 `end_condition`（如 `max_turns`）按已完成的 Turn 计。Round / Step / Turn 的定义见 [LLM Context readme](../../../doc/llm_context/readme.md)。
 
-持久格式为协议版本 5（session_input /3、session_config /5、session_state /5、binding /3，xllm RunRecord.version = 5；summary 与机械渲染保持 /2，快照版本 4）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
+持久格式为协议版本 7（session_input /3、session_config /7、session_state /6、binding /4，xllm RunRecord.version = 6；summary /2、机械渲染 /3、快照版本 5）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
 
 RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runtime 是构造配置，session_config.runtime.requirement 是绑定要求。binding 保存实际 target 和执行 cwd，推理与旧执行恢复前先核验。SessionToolManager 保留协议纪律，内部调用 Sandbox。Session 的 .runtime/bin 与 Agent tools 作为宿主环境注入；独立 xllm 接管校验保存的 PATH、manifest、helper 与凭据环境引用。远端 Session helper 未部署时明确报 Capability；remote_ssh 可独立用于 xllm。
 
 宿主已注册 BuckyOS runtime 时，Session 环境与每次 native / tmux 命令执行前都会续期并读取当前 session token，注入 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，覆盖父进程、Session 配置或单次调用中的旧值。续期失败或 token 为空时阻止执行；工具沿用宿主身份，不需要 owner 私钥。run 的环境核验记录只保存凭据变量名，不保存 token 值。未注册 runtime 的独立开发形态仍可显式传入该环境变量。
+
+Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求完成；Behavior XML 用 `<report end="true">`，结束与动作/切换互斥。`session.policy.completion = explicit_report` 可要求显式完成（默认 natural）；无输入队列时漏报会失败，有输入队列的普通 Done 关闭 Turn 并等待。报告、显式稳定产物和可选 JSON result 统一持久化，恢复不重执行报告、不新增推理；子 context 的结束只交回调用方。持久身份、提交窗口与历史投影见 [Session Directory Protocol §7.1](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
 
 ## xagent
 
@@ -71,11 +74,14 @@ cargo test -p libopendan -- --test-threads=1
 
 | 文件 | 覆盖 |
 |---|---|
+| `tests/report.rs` | 阶段/最终报告、拒绝可修正、批次配对、显式完成策略、子 context 归属、稳定产物/JSON result、崩溃重做与历史去重 |
 | `tests/l1.rs` | 锁（epoch、inode 不变、CLOEXEC、kill -9 后接管）、反向读有界、压缩无空洞、kmsg 规则（文件队列与 kmsg 的 sled 实现）、订阅丢失重建、迁移、巡检、幂等创建、绑定失败、墓碑修复、活动视图 |
 | `tests/runner_basic.rs`、`tests/runner_more.rs` | work session 端到端、finished 后拒绝输入、非驱动者 / Busy、stop、事件路由（active / semi / 未订阅丢弃 / 订阅变更按投递顺序生效）、半订阅快照、behavior loop、普通 / fork / independent 切换（同一 Turn 内交接）、`max_turns` 只计已完成 Turn、decide 与 head、activity / perception 输入、tmux runtime |
 | `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |
 | `tests/input_tasks.rs` | 输入协议 3 与长任务：挂起调用在上下文之外等待 task 并回填同一 run、无 resolver 拒绝接手与 Unknown 回填、等待期间 stop、后台 task 完成合成 Input 事件、run 终态落盘后崩溃仍找回后台 task、工具执行中的 stop、64 条 pending 上限、Single / Batch、`input.media = inline`、重投去重与回复路径、旧 Session 只读、模板失败不消费、用户时区半订阅 |
 | `tests/self_improve.rs` | 感知幂等、self_improve 锁、整理游标、防自我回声 |
+| `tests/memory_sessions.rs` | Memory 多 Session 模拟的十个场景（与 `cargo run -p libopendan --example memory_sessions` 共用 `examples/support/memory_*.rs`），每个场景记录的检查都必须通过 |
+| `tests/memory_component.rs` | Memory 组件：并发写与观察无空隙、幂等键、批次与终局处置冲突、提交故障注入与恢复、pending 溢出重建、失败不当空结果、未变化与分页、整理 lease、预算分池与淡出、校验、派生物删除与修复、清理与追加并发、写锁期间观察、运行摘要、两进程 |
 | `tests/outbound.rs` | 回复随 Turn 提交并沿来路发出、sink 不可达时保留并原样重发（同键同 ObjId）、被拒与路由不一致只记录不重试、没有 sink 时不产生 outbox |
 | `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/xagent_lib.rs` | 无队列 work Session 与 `prompt.initial_inputs`、`WAIT_USER_MSG` 的模板语义、`TurnClosed` / `TurnOpen`、behavior 冻结 / 补冻结 / 缺失冻结、三种 Agent State 实现结果一致、Sub Session（父等待汇报、`session:<sid>` 回填、数量与深度、交互式子提问、stop 级联、进度半订阅）、驱动者停止请求、on_context_switch 前的半订阅快照、timer bridge |
@@ -83,3 +89,5 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/dv_kmsg.rs` | （`--ignored`）真实 kmsg 服务：幂等建队列 / 订阅、消费与累积 ack、finished 后拒绝并 ack；在 DV Test OOD 上以 root 运行 `cargo test -p libopendan --test dv_kmsg -- --ignored` |
 
 重新生成 fixtures / JSON Schema：`cargo run -p libopendan --example fixtures -- ../doc/opendan/protocol/fixtures`（在 `src/` 下执行）。
+
+Workspace 管理由 `AgentStateClient.workspaces()` 统一提供，CLI 为 `xagent workspace` / `agent-session workspace`。创建或导入先显式指定 Runtime、绝对目录和操作 key，创建 Session 时用 `--workspace <稳定ID>` 绑定；无长期目录需求使用自身 SessionDir。旧 create_workspace / bind_workspace 工具已移除。格式、迁移和能力边界见 [Agent Workspace Protocol](<../../../doc/opendan/protocol/Agent Workspace Protocol.md>)。

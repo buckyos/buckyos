@@ -71,6 +71,8 @@ pub enum OpenDanError {
     SessionReadonly { session_id: String, reason: String },
     #[error("runtime mismatch: session is bound to {bound}, runner provides {provided}")]
     RuntimeMismatch { bound: String, provided: String },
+    #[error("workspace binding invalid: {0}")]
+    WorkspaceBindingInvalid(String),
     #[error("bind error: {0}")]
     Bind(String),
     #[error("{0}")]
@@ -133,6 +135,7 @@ impl OpenDanError {
             OpenDanError::SessionReadonly { .. } => "session_readonly",
             OpenDanError::RuntimeMismatch { .. } => "runtime_mismatch",
             OpenDanError::Bind(_) => "bind_failed",
+            OpenDanError::WorkspaceBindingInvalid(_) => "workspace_binding_invalid",
             OpenDanError::RecoveryBlocked(_) => "recovery_blocked",
             OpenDanError::Channel(_) => "channel",
             OpenDanError::Llm(_) => "llm",

@@ -22,8 +22,8 @@ You are in DO mode of a durable work session. Your only job is to complete the s
 
 ## Completion
 
-- Step complete: write a final `<report>` (what was done, where the artifacts are, how it was verified) and set `next_behavior = END`.
-- Step cannot be completed: write a final `<report>` with the blocker or failure cause and set `next_behavior = END`.
+- Step complete: after observing action results, submit `<report end="true">` (what was done, where the artifacts are, how it was verified), without actions or next_behavior.
+- Step cannot be completed: submit `<report end="true">` with the blocker or failure cause, without actions or next_behavior.
 
 ## Failure Handling
 

@@ -46,6 +46,24 @@ impl RoundCounter {
     }
 }
 
+pub(super) async fn flush_counts(
+    sh: &super::shared::Shared,
+    run: &crate::session::runs::RunHandle,
+    counter: &RoundCounter,
+) -> crate::error::Result<()> {
+    let rounds = counter.take();
+    if rounds.attempts > 0 {
+        run.record_usage(None, rounds.attempts)?;
+        let s = sh.session.lock().await;
+        s.update_static(&sh.lease, |st| {
+            st.rounds += rounds.attempts;
+            st.rounds_failed += rounds.failed;
+            st.rounds_interrupted += rounds.interrupted;
+        })?;
+    }
+    Ok(())
+}
+
 /// Where the usage of the run's Rounds is appended (the session's
 /// `usage.jsonl`).
 #[derive(Debug, Clone)]

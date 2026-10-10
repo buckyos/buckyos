@@ -1,5 +1,7 @@
 # new opendan agent runtime
 
+> 2026-10-10 H4 已替代本文历史 END / 隐式 report-only 完成描述：Behavior 用 `<report end="true">`，工具用 `report(..., is_end=true)`；同次结束决策不带动作或非空调度。当前完成策略、持久提交与恢复以 [Session Directory Protocol](<protocol/Session Directory Protocol.md>) 和 [Agent Actions](<../llm_context/Agent Actions.md>) 为准。
+
 > 重构目标：把 opendan 从「自己写 Agent Loop / Behavior 解析 / step 记录」改造成
 > 「**只负责构造正确的 LLMContextRequest + 正确的 LLMContextDeps，调度 LLMContext.run() / resume()，并消化 Outcome**」。
 >
