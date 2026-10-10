@@ -1,4 +1,10 @@
 {
+    "wallet_identity_loading": "지갑 신원을 읽는 중…",
+    "wallet_identity_load_failed": "지갑 신원을 읽을 수 없습니다. 네트워크 연결을 확인한 후 다시 시도하세요.",
+    "wallet_identity_incomplete": "지갑 신원 정보가 불완전하거나 선택한 계정과 일치하지 않습니다.",
+    "wallet_identity_help": "BuckyOSApp에서 BNS 신원을 생성, 가져오기 또는 선택한 후 여기에서 다시 시도하세요.",
+    "loading": "불러오는 중…",
+    "retry_button": "다시 시도",
     "active_title": "PI 활성화",
     "active_subtitle": "마법사로 Personal Intelligence를 빠르게 활성화합니다.",
     "step_indicator": "단계 {{current}} / {{total}} · {{title}}",

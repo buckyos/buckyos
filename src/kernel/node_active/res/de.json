@@ -1,4 +1,10 @@
 {
+    "wallet_identity_loading": "Wallet-Identität wird gelesen…",
+    "wallet_identity_load_failed": "Die Wallet-Identität konnte nicht gelesen werden. Prüfen Sie Ihre Netzwerkverbindung und versuchen Sie es erneut.",
+    "wallet_identity_incomplete": "Die Wallet-Identität ist unvollständig oder stimmt nicht mit dem ausgewählten Konto überein.",
+    "wallet_identity_help": "Erstellen, importieren oder wählen Sie in BuckyOSApp eine BNS-Identität und versuchen Sie es hier erneut.",
+    "loading": "Wird geladen…",
+    "retry_button": "Erneut versuchen",
     "active_title": "Aktiviere dein PI",
     "active_subtitle": "Aktiviere Personal Intelligence schnell mit dem Assistenten.",
     "step_indicator": "Schritt {{current}} / {{total}} · {{title}}",

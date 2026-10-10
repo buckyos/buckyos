@@ -1,4 +1,9 @@
 {
+    "wallet_identity_loading": "Reading wallet identity…",
+    "wallet_identity_load_failed": "Unable to read the wallet identity. Check your network connection and try again.",
+    "wallet_identity_incomplete": "The wallet identity is incomplete or does not match the selected account.",
+    "wallet_identity_help": "In BuckyOSApp, create, import or select a BNS identity, then retry here.",
+    "loading": "Loading…",
     "device_publication_intro": "Before activation, host the signed device identity document at the HTTPS address below. This address must remain available while this node is offline; it cannot depend on this node's relay tunnel.",
     "device_publication_content": "Publish this HTTPS document path through an independent host or proxy, and serve the file unchanged as application/jwt. Preserve RTCP routing for the device hostname and port. Activation will verify the exact signed document.",
     "prepare_device_publication": "Prepare signed document",

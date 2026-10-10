@@ -1,4 +1,10 @@
 {
+    "wallet_identity_loading": "Чтение идентификатора кошелька…",
+    "wallet_identity_load_failed": "Не удалось прочитать идентификатор кошелька. Проверьте подключение к сети и повторите попытку.",
+    "wallet_identity_incomplete": "Данные идентификатора кошелька неполны или не соответствуют выбранной учётной записи.",
+    "wallet_identity_help": "Создайте, импортируйте или выберите идентификатор BNS в BuckyOSApp, затем повторите попытку здесь.",
+    "loading": "Загрузка…",
+    "retry_button": "Повторить",
     "active_title": "Активируйте свой PI",
     "active_subtitle": "Быстро активируйте Personal Intelligence с помощью мастера.",
     "step_indicator": "Шаг {{current}} / {{total}} · {{title}}",

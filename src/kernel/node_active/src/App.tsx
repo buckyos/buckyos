@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
+  Button,
   Container,
   CssBaseline,
   PaletteMode,
@@ -47,6 +48,7 @@ const App = () => {
   const [walletUser, setWalletUser] = useState<WalletUser | null>(null);
   const [isInitialized, setIsInitialized] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
+  const [initAttempt, setInitAttempt] = useState(0);
 
   useEffect(() => {
     setMode(prefersDark ? "dark" : "light");
@@ -62,22 +64,29 @@ const App = () => {
 
   useEffect(() => {
     let cancelled = false;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
     const init = async () => {
+      let errorKey = "wallet_identity_load_failed";
       try {
         setIsInitialized(false);
         setInitError(null);
         setWalletUser(null);
-        setIsWalletRuntime(false);
-
         const runtime = buckyos.getRuntimeType?.();
         const isAppRuntime = runtime === RuntimeType.AppRuntime;
+        setIsWalletRuntime(isAppRuntime);
         if (!isAppRuntime) {
           return;
         }
 
-        // Wallet runtime: wait wallet user result BEFORE rendering wizard.
-        const user = await buckyos.getCurrentWalletUser?.();
-        if (!user) return;
+        const user = await Promise.race([
+          buckyos.getCurrentWalletUser(),
+          new Promise<never>((_, reject) => {
+            timeout = setTimeout(() => reject(new Error("Wallet identity request timed out")), 15000);
+          }),
+        ]);
+        if (!user) throw new Error("Wallet identity unavailable");
+
+        errorKey = "wallet_identity_incomplete";
 
         const normalizedUser = user as Record<string, unknown>;
         const snUsername =
@@ -101,13 +110,13 @@ const App = () => {
           public_key: bridgePublicKey,
           sn_username: snUsername,
         });
-        setIsWalletRuntime(true);
       } catch (err: any) {
         console.warn("App initialization failed", err);
         if (!cancelled) {
-          setInitError(err?.message || String(err));
+          setInitError(errorKey);
         }
       } finally {
+        clearTimeout(timeout);
         if (!cancelled) {
           setIsInitialized(true);
         }
@@ -117,8 +126,9 @@ const App = () => {
     init();
     return () => {
       cancelled = true;
+      clearTimeout(timeout);
     };
-  }, []);
+  }, [initAttempt]);
 
   const walletPubKeyDisplay = (() => {
     const pk = walletUser?.public_key;
@@ -234,7 +244,7 @@ const App = () => {
             {!isInitialized ? (
               <Box sx={{ py: 2 }}>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  {t("loading") || "Loading..."}
+                  {t(isWalletRuntime ? "wallet_identity_loading" : "loading")}
                 </Typography>
                 <Box
                   sx={{
@@ -253,14 +263,25 @@ const App = () => {
                     }}
                   />
                 </Box>
-                {initError ? (
-                  <Typography variant="body2" color="warning.main" sx={{ mt: 1 }}>
-                    {initError}
-                  </Typography>
-                ) : null}
               </Box>
             ) : initError ? (
-              <Alert severity="error">{initError}</Alert>
+              <Stack spacing={2}>
+                <Alert severity="error">{t(initError)}</Alert>
+                <Typography variant="body2" color="text.secondary">
+                  {t("wallet_identity_help")}
+                </Typography>
+                <Button
+                  variant="contained"
+                  sx={{ alignSelf: "flex-start" }}
+                  onClick={() => {
+                    setIsInitialized(false);
+                    setInitError(null);
+                    setInitAttempt((attempt) => attempt + 1);
+                  }}
+                >
+                  {t("retry_button")}
+                </Button>
+              </Stack>
             ) : (
               <ActiveWizard isWalletRuntime={isWalletRuntime} walletUser={walletUser || undefined} />
             )}

@@ -1,4 +1,10 @@
 {
+    "wallet_identity_loading": "ウォレットのID情報を読み込み中…",
+    "wallet_identity_load_failed": "ウォレットのID情報を読み込めません。ネットワーク接続を確認して、もう一度お試しください。",
+    "wallet_identity_incomplete": "ウォレットのID情報が不完全か、選択したアカウントと一致しません。",
+    "wallet_identity_help": "BuckyOSAppでBNS IDを作成、インポート、または選択してから、ここで再試行してください。",
+    "loading": "読み込み中…",
+    "retry_button": "再試行",
     "active_title": "PI を有効化",
     "active_subtitle": "ウィザードで Personal Intelligence をすばやく有効化します。",
     "step_indicator": "ステップ {{current}} / {{total}} · {{title}}",

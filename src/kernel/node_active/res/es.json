@@ -1,4 +1,10 @@
 {
+    "wallet_identity_loading": "Leyendo la identidad de la billetera…",
+    "wallet_identity_load_failed": "No se pudo leer la identidad de la billetera. Comprueba la conexión de red e inténtalo de nuevo.",
+    "wallet_identity_incomplete": "La identidad de la billetera está incompleta o no coincide con la cuenta seleccionada.",
+    "wallet_identity_help": "En BuckyOSApp, crea, importa o selecciona una identidad BNS y vuelve a intentarlo aquí.",
+    "loading": "Cargando…",
+    "retry_button": "Reintentar",
     "active_title": "Activa tu PI",
     "active_subtitle": "Activa Personal Intelligence rapidamente con el asistente.",
     "step_indicator": "Paso {{current}} / {{total}} · {{title}}",

@@ -1,4 +1,9 @@
 {
+    "wallet_identity_loading": "正在讀取錢包身分…",
+    "wallet_identity_load_failed": "無法讀取錢包身分，請檢查網路連線後重試。",
+    "wallet_identity_incomplete": "錢包身分資訊不完整，或與目前選擇的帳戶不符。",
+    "wallet_identity_help": "請在 BuckyOSApp 中建立、匯入或選擇 BNS 身分，然後在此重試。",
+    "loading": "正在載入…",
     "device_publication_intro": "啟用前，請將簽署後的裝置身分文件發布至下方 HTTPS 位址。節點離線時，此位址也必須能存取，不能依賴本節點的中繼通道。",
     "device_publication_content": "請透過獨立網站或代理提供此 HTTPS 文件路徑，將下載的檔案原樣發布，內容類型為 application/jwt。同時保留裝置網域與連接埠的 RTCP 路由。啟用時會檢查文件與簽署原文完全一致。",
     "prepare_device_publication": "產生簽署文件",
