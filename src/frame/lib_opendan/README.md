@@ -12,6 +12,7 @@
 | `channel` | kmsg 输入（`KmsgInput`）、开发用文件队列 `DirMsgQueue`（kmsg 语义）、kevent 唤醒 |
 | `bridge` | msg bridge（msg-center 记录 → 总线记录，只过滤与分流：只放行 Owner，群消息要求开关与 @；较早记录转成 `delivery.context` 上下文消息）、task bridge（task 状态 → `AgentEvent`）、回复信封与出站记录；宿主内的 `EventBridge`：timer、kevent |
 | `state` | `AgentStateClient` 与文件实现：登记表（含 `children_of`）、活动视图、感知、认知门面、产物列表、Agent 级锁、behavior 目录（`BehaviorCatalog`、冻结）；`connect`（进程内 → AgentRoot → kRPC）、`krpc`（`KrpcAgentStateClient` 与传输无关的服务端分发 `serve_call`：读与带署名的写；驱动者的写入不上 kRPC）、`ForwardingStateClient`、`WithBehaviors` |
+| `memory` | Agent Memory 组件门面（[需求](<../../../doc/opendan/Agent Memory 认知管理需求.md>) 附录 A）：感知写入（宿主绑定身份、授权主体与来源，幂等键、文件短锁）、两层召回 `query_topic` / `query` 与按引用读取（可见性、范围、纠正兜底、分池预算）、`changes_since`（版本向量快照，快速路径不打开 Graph）、Session 侧 `ObservationState`（topic、阀门、pending、read_set）、持整理 lease 的 `Consolidator`（批次、单 envelope 提交、清理、到期清扫）；Graph 在 `agent_tool::agent_memory`（schema 3.0） |
 | `template` | Session 模板（`work / ui / self_improve / self_check`，`agent.toml [session.<class>]` 覆盖；包自定义的 class 用 `base = "<内建模板>"` 指定起点，缺省 `work`）→ `SessionSpec` 与 `session.policy`。ui 模板的 kind 是 `ui`，由 `route_key` 绑定到一个会话 |
 | `host` | 一个进程托管多个 Session：`HostDeps`（每个 Session 自己的 runtime）、`ChildDriver`（推进子 Session）、`run_session`、`serve`；常驻宿主用的 `Supervisor`（按登记表托管 `driver = me` 的未结束 Session 与子 Session、`ensure_task`、按 class 的 idle unload、只读托管状态、退出时等待各循环结束而不 stop Session） |
 | `runtime` | 复用 agent_tool::runtime；仅保留 Session bin/helper、绑定与环境核验 |
@@ -76,6 +77,8 @@ cargo test -p libopendan -- --test-threads=1
 | `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |
 | `tests/input_tasks.rs` | 输入协议 3 与长任务：挂起调用在上下文之外等待 task 并回填同一 run、无 resolver 拒绝接手与 Unknown 回填、等待期间 stop、后台 task 完成合成 Input 事件、run 终态落盘后崩溃仍找回后台 task、工具执行中的 stop、64 条 pending 上限、Single / Batch、`input.media = inline`、重投去重与回复路径、旧 Session 只读、模板失败不消费、用户时区半订阅 |
 | `tests/self_improve.rs` | 感知幂等、self_improve 锁、整理游标、防自我回声 |
+| `tests/memory_sessions.rs` | Memory 多 Session 模拟的十个场景（与 `cargo run -p libopendan --example memory_sessions` 共用 `examples/support/memory_*.rs`），每个场景记录的检查都必须通过 |
+| `tests/memory_component.rs` | Memory 组件：并发写与观察无空隙、幂等键、批次与终局处置冲突、提交故障注入与恢复、pending 溢出重建、失败不当空结果、未变化与分页、整理 lease、预算分池与淡出、校验、派生物删除与修复、清理与追加并发、写锁期间观察、运行摘要、两进程 |
 | `tests/outbound.rs` | 回复随 Turn 提交并沿来路发出、sink 不可达时保留并原样重发（同键同 ObjId）、被拒与路由不一致只记录不重试、没有 sink 时不产生 outbox |
 | `tests/fixtures.rs` | 参考实现在 `doc/opendan/protocol/fixtures` 每个场景上满足 `expected.json`；`14_input_bus` 的记录处理、拒绝原因与逐字节渲染 |
 | `tests/xagent_lib.rs` | 无队列 work Session 与 `prompt.initial_inputs`、`WAIT_USER_MSG` 的模板语义、`TurnClosed` / `TurnOpen`、behavior 冻结 / 补冻结 / 缺失冻结、三种 Agent State 实现结果一致、Sub Session（父等待汇报、`session:<sid>` 回填、数量与深度、交互式子提问、stop 级联、进度半订阅）、驱动者停止请求、on_context_switch 前的半订阅快照、timer bridge |

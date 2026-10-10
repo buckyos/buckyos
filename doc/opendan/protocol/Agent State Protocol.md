@@ -13,6 +13,7 @@
     sessions/<sid>.json                     登记表（全部 session，无论目录在哪）
     sessions/.unreachable/<sid>             巡检标记（目录不可达）
     perception/<sid>.jsonl                  感知
+    perception/<sid>.jsonl.lock             感知文件短锁（追加与清理互斥）
     perception/.cursor.json                 整理游标
     perception/.consolidations.jsonl        整理审计
     artifacts/<aid>/artifact.json           产物 head
@@ -60,19 +61,33 @@
 ## 4. 感知
 
 ```jsonc
-// state/perception/<sid>.jsonl，单写者 = 该 session 的驱动者，seq 严格递增
+// state/perception/<sid>.jsonl，单写者 = 该 session 的驱动者（或组件阶段的模拟 Session），seq 严格递增
 {"seq":31,"at_ms":0,"session_id":"…","kind":"run_digest|observation|task_outcome|task_discarded",
- "source":"session","tags":[],"objects":[],"summary":"…","payload":{…},"refs":{"worklog_seq":316}}
+ "source":"session","tags":[],"objects":[],"summary":"…","payload":{…},"refs":{"worklog_seq":316},
+ // Memory 需求 A.5 的扩展字段（缺省省略）
+ "idempotency_key":"A/e31/observation-1","content_digest":"…",
+ "scope":{"subjects":["user:u1"],"objects":["project:snake-alpha/game_page"],"exceptions":[]},
+ "suggested_kind":"preference|correction|…","memory_intent":"explicit","cites":["item_c1@1"],
+ "anchors":{"timezone":"Asia/Shanghai","locale":"zh-CN","intent_timezone":"Asia/Tokyo"},
+ "occurred_at":"…","source_ref":{"type":"session_event","session_id":"ui-a","event_ref":"A/e31","actor_kind":"user"},
+ "mentions":[{"text":"Bob","candidates":[{"object_id":"obj_…","canonical_name":"…","basis":"alias:Bob"}]}],
+ "backfilled":false,
+ "cleared":{"outcome":"absorbed","occasion_id":"occ_…","cognition_refs":["item_c1@1"],"at_ms":0}}
 ```
 
-- 追加幂等：跳过 `seq ≤` 文件最后一条的记录（反向读最后一行得到）。
-- 自动记录：每次 run 结束写 `run_digest`，payload `{run_id, turn, turn_status}`：`turn` 是该 run 结束时所属的 Turn，`turn_status`（`completed | failed | budget_exhausted | stopped`）只在这次 run 结束同时关闭了 Turn 时有值，否则为 null（例如 `WAIT_USER_MSG` 未交付答复、fork 子 process 返回；drive 补发缺失记录时也为 null）。它按 run 结束生成，不代表 Turn 完成；普通切换与 fork / independent 挂起不写。finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。
-- **积压（backlog）**：按文件大小与 `.cursor.json.offsets[sid]` 求区间，跳过以 `.` 开头的文件和 kind 为 `self_improve` 的 session（防自我回声）。
-- **self_improve**：session 的 `extensions.opendan.perception_window` 记录要整理的窗口（幂等键 `si:<窗口摘要>`）；drive 全程持 `self_improve` 锁（拿不到返回 Busy）；session 以 succeeded 结束后先写 `.consolidations.jsonl` 审计，再把游标推进到窗口末尾（不回退，at-least-once）；失败或 stopped 不推进。
+- 追加幂等：跳过 `seq ≤` 文件最后一条的记录（反向读最后一行得到）；带 `idempotency_key` 的记录按键去重：同键同内容（`content_digest`）是重放，同键不同内容报冲突。正文清理后键与摘要仍在，重放不会让材料复活。
+- 文件级短锁 `state/perception/<sid>.jsonl.lock`：追加（driver 仍须持 Session lease）与整理清理都在短锁内进行。清理以“写新文件 → fsync → rename”替换原文件，只把已终局处置记录的正文换成 `cleared` 标记，保留 `seq`、键、摘要、`scope`、`source_ref` 与 `<sid>:<seq>` 身份；`seq` 不变。读取不取锁，忽略未以换行结束的尾部。
+- 可见性：`scope.subjects` 由宿主按写入 Session 的绑定补齐（模型只能在授权主体集合内收窄）；读者的每个授权主体集合必须包含记录的全部主体才可见。
+- 自动记录：每次 run 结束写 `run_digest`，payload `{run_id, turn, turn_status}`：`turn` 是该 run 结束时所属的 Turn，`turn_status`（`completed | failed | budget_exhausted | stopped`）只在这次 run 结束同时关闭了 Turn 时有值，否则为 null（例如 `WAIT_USER_MSG` 未交付答复、fork 子 process 返回；drive 补发缺失记录时也为 null）。它按 run 结束生成，不代表 Turn 完成；普通切换与 fork / independent 挂起不写。finished 追加 `task_outcome`；discard 追加 `task_discarded`（保留来源）；`perception` 类型输入并入 `observation`。`state.perception_seq` 在提交中预留，追加在提交之后，缺失的由下次 drive 补发。这三种 Runtime 记录只进入整理批次，不出现在其它 Session 的变化里。
+- **待处理集合**：由 Memory 提交日志中的逐条处置计算（未处置 = 新增；`deferred` 且到期 = 待处置；已终局但正文未清 = 待重试清理），不按字节游标跳过暂缓材料。见 Memory 组件 `pending_work` / `begin`。
+- **积压（backlog，旧路径）**：runner 的 self_improve 路径仍按文件大小与 `.cursor.json.offsets[sid]` 求区间，跳过以 `.` 开头的文件、`*.jsonl.lock` 和 kind 为 `self_improve` 的 session（防自我回声）；该游标只是扫描加速，S 阶段改为上面的处置状态。
+- **self_improve（旧路径）**：session 的 `extensions.opendan.perception_window` 记录要整理的窗口（幂等键 `si:<窗口摘要>`）；drive 全程持 `self_improve` 锁（拿不到返回 Busy）；session 以 succeeded 结束后先写 `.consolidations.jsonl` 审计，再把游标推进到窗口末尾（不回退，at-least-once）；失败或 stopped 不推进。
 
 ## 5. 认知（边界）
 
-Memory Graph（`memory/`）、Notebook（`notebook/`）、整理中间态（`attention_signals/`）由 `agent_tool` 实现；非 Rust 实现通过 `agent_tool agent-memory|agent-notebook …` CLI 访问，不重写。`recall_hints` 只读，任何 session 可调用；`notebook_append` 用于“记一下”；整理结果的提交只能在 `self_improve` 锁下进行。
+Memory Graph（`memory/`，schema 3.0）由 `agent_tool::agent_memory` 实现：`.meta/occasions.jsonl` 是追加写的提交真相源，一次整理提交是一条 occasion（图操作 + 逐条处置 + 幂等键 + `produced_by` + 真实 `actor_session_id` + 整理 lease 的 epoch）；读路径不取写锁。两层的统一门面是 `libopendan::memory::Memory`（感知写入、`query_topic` / `query` / 按引用读取、`changes_since`、整理与清理）；topic 与观察进度（`ObservationState`）归 Session 保存，Memory 不登记订阅。认知只在 `self_improve`（整理）lease 下经 `Consolidator::commit` 改变；普通 Session 只能写感知和读取。
+
+`recall_hints`（runner 的旧门面）没有 tag 时返回空列表（未触发），存储不可读时返回错误；`notebook_append` 与 `notebook/`、`attention_signals/` 是待退役的旧调用方，S 阶段移除。非 Rust 实现通过 `agent_tool agent-memory …` CLI 访问 Graph。
 
 ## 6. 产物列表（只登记与指向）
 

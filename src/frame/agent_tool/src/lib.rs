@@ -63,8 +63,7 @@ pub use agent_attention_signal::{
 };
 pub use agent_memory::{
     AgentMemory, AgentMemoryConfig, AgentMemoryError, Envelope as AgentMemoryEnvelope, LoadItem,
-    LoadOptions, MemoryHint, MemoryHintBudget, MemoryHintType, MemoryRecallOptions, Preamble,
-    VerifyReport,
+    LoadOptions, VerifyReport,
 };
 pub use aicc_model_tools::{
     MakeExactModelArgs, MakeExactModelOutput, MakeExactModelTool, ParseExactModelArgs,

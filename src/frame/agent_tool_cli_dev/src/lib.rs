@@ -496,6 +496,8 @@ enum AgentMemoryVerb {
         repair: bool,
     },
     Compact,
+    /// Explicit schema migration (2.10 → 3.0).
+    Migrate,
 }
 
 pub async fn run_process() -> CliRunOutput {
@@ -1455,7 +1457,7 @@ fn parse_task_id_value(raw: &str, tool_name: &str) -> Result<String, AgentToolEr
 // =================================================================
 
 const AGENT_MEMORY_USAGE: &str = "agent-memory [--root <path>] [--quiet] \
-<init|occasion|object|observe|relate|set-status|set|remove|get|list|load|verify|compact> [...]";
+<init|occasion|object|observe|relate|set-status|set|remove|get|list|load|verify|compact|migrate> [...]";
 
 fn agent_memory_invalid(message: impl Into<String>) -> AgentToolError {
     AgentToolError::InvalidArgs(format!("{}\nUsage: {}", message.into(), AGENT_MEMORY_USAGE))
@@ -1516,6 +1518,7 @@ fn parse_agent_memory_cli_command(
         "load" => parse_agent_memory_load(rest)?,
         "verify" => parse_agent_memory_verify(rest)?,
         "compact" => parse_agent_memory_compact(rest)?,
+        "migrate" if rest.is_empty() => AgentMemoryVerb::Migrate,
         other => {
             return Err(agent_memory_invalid(format!("unknown verb `{other}`")));
         }
@@ -1699,7 +1702,7 @@ fn parse_agent_memory_object_upsert(rest: &[String]) -> Result<AgentMemoryVerb, 
     if let Some(alias) = pending_alias {
         aliases.push(ObjectAliasInput {
             alias,
-            alias_type: pending_alias_type.unwrap_or_else(|| "name".to_string()),
+            alias_type: parse_memory_enum(pending_alias_type.as_deref().unwrap_or("name"))?,
             confidence: confidence.unwrap_or(0.5),
         });
     }
@@ -1708,7 +1711,9 @@ fn parse_agent_memory_object_upsert(rest: &[String]) -> Result<AgentMemoryVerb, 
             .ok_or_else(|| agent_memory_invalid("`object upsert` requires `--occasion`"))?,
         op: UpsertObjectOp {
             object_id,
-            kind: kind.ok_or_else(|| agent_memory_invalid("`object upsert` requires `--kind`"))?,
+            kind: parse_memory_enum(
+                &kind.ok_or_else(|| agent_memory_invalid("`object upsert` requires `--kind`"))?,
+            )?,
             canonical_name: name
                 .ok_or_else(|| agent_memory_invalid("`object upsert` requires `--name`"))?,
             aliases,
@@ -1838,11 +1843,15 @@ fn parse_agent_memory_observe(rest: &[String]) -> Result<AgentMemoryVerb, AgentT
             .ok_or_else(|| agent_memory_invalid("`observe add` requires `--occasion`"))?,
         op: AddObservationOp {
             observation_id: None,
-            kind: kind.ok_or_else(|| agent_memory_invalid("`observe add` requires `--kind`"))?,
+            kind: parse_memory_enum(
+                &kind.ok_or_else(|| agent_memory_invalid("`observe add` requires `--kind`"))?,
+            )?,
             entities,
             content: content_parts.join(" "),
             source_excerpt: None,
             source_ref: None,
+            occurred_at: None,
+            scope: None,
             confidence: confidence
                 .ok_or_else(|| agent_memory_invalid("`observe add` requires `--confidence`"))?,
         },
@@ -2179,6 +2188,7 @@ fn parse_agent_memory_relate(rest: &[String]) -> Result<AgentMemoryVerb, AgentTo
         occasion_id: occasion_id
             .ok_or_else(|| agent_memory_invalid("`relate` requires `--occasion`"))?,
         op: UpsertRelationOp {
+            item_id: None,
             subject: subject
                 .ok_or_else(|| agent_memory_invalid("`relate` requires `--subject`"))?,
             predicate: predicate
@@ -2191,6 +2201,8 @@ fn parse_agent_memory_relate(rest: &[String]) -> Result<AgentMemoryVerb, AgentTo
             write_reason: reason
                 .ok_or_else(|| agent_memory_invalid("`relate` requires `--reason`"))?,
             replaces: Vec::new(),
+            expected_revision: None,
+            meta: Default::default(),
         },
     })
 }
@@ -2253,8 +2265,10 @@ fn parse_agent_memory_set_status(rest: &[String]) -> Result<AgentMemoryVerb, Age
         occasion_id: occasion_id
             .ok_or_else(|| agent_memory_invalid("`set-status` requires `--occasion`"))?,
         op: SetStatusOp {
-            target_kind: target_kind
-                .ok_or_else(|| agent_memory_invalid("`set-status` requires `--target-kind`"))?,
+            target_kind: parse_memory_enum(
+                &target_kind
+                    .ok_or_else(|| agent_memory_invalid("`set-status` requires `--target-kind`"))?,
+            )?,
             target_id: target_id
                 .ok_or_else(|| agent_memory_invalid("`set-status` requires `--target`"))?,
             status: status
@@ -2262,8 +2276,17 @@ fn parse_agent_memory_set_status(rest: &[String]) -> Result<AgentMemoryVerb, Age
             reason: reason
                 .ok_or_else(|| agent_memory_invalid("`set-status` requires `--reason`"))?,
             replaced_by,
+            expected_revision: None,
+            evidence: Vec::new(),
         },
     })
+}
+
+fn parse_memory_enum<T: std::str::FromStr<Err = AgentMemoryError>>(
+    raw: &str,
+) -> Result<T, AgentToolError> {
+    raw.parse::<T>()
+        .map_err(|e| agent_memory_invalid(e.to_string()))
 }
 
 fn parse_load_count(raw: &str, name: &str) -> Result<usize, AgentToolError> {
@@ -3348,6 +3371,17 @@ fn run_agent_memory_blocking(
     verb: AgentMemoryVerb,
 ) -> Result<String, AgentMemoryError> {
     let cfg = AgentMemoryConfig::new(root);
+    if let AgentMemoryVerb::Migrate = verb {
+        let r = AgentMemory::migrate(cfg)?;
+        let mut out = format!("FROM {}\nTO {}\nOCCASIONS {}\n", r.from, r.to, r.occasions);
+        for n in &r.notes {
+            out.push_str(&format!("NOTE {n}\n"));
+        }
+        if !r.legacy_dir.is_empty() {
+            out.push_str(&format!("LEGACY {}\n", r.legacy_dir));
+        }
+        return Ok(out);
+    }
     let mem = AgentMemory::open(cfg)?;
     match verb {
         AgentMemoryVerb::Init => Ok(String::new()),
@@ -3364,9 +3398,14 @@ fn run_agent_memory_blocking(
                 content,
                 reason,
                 entities,
-                tags,
                 weight: None,
                 confidence: None,
+                evidence: Vec::new(),
+                expected_revision: None,
+                meta: agent_tool::agent_memory::ItemMeta {
+                    tags,
+                    ..Default::default()
+                },
             })?;
             Ok(String::new())
         }
@@ -3419,24 +3458,24 @@ fn run_agent_memory_blocking(
             ))
         }
         AgentMemoryVerb::ObserveAdd { occasion_id, op } => {
-            let wrapper = mem.observe(&occasion_id, op)?;
-            Ok(format!("OCCASION {}\nSTATUS added\n", wrapper))
+            let r = mem.observe(&occasion_id, op)?;
+            Ok(format_commit_result(&r, "added"))
         }
         AgentMemoryVerb::ObjectUpsert { occasion_id, op } => {
-            let wrapper = mem.upsert_object(&occasion_id, op)?;
-            Ok(format!("OCCASION {}\nSTATUS updated\n", wrapper))
+            let r = mem.upsert_object(&occasion_id, op)?;
+            Ok(format_commit_result(&r, "updated"))
         }
         AgentMemoryVerb::ObjectReinforce { occasion_id, op } => {
-            let wrapper = mem.reinforce_object(&occasion_id, op)?;
-            Ok(format!("OCCASION {}\nSTATUS reinforced\n", wrapper))
+            let r = mem.reinforce_object(&occasion_id, op)?;
+            Ok(format_commit_result(&r, "reinforced"))
         }
         AgentMemoryVerb::Relate { occasion_id, op } => {
-            let wrapper = mem.relate(&occasion_id, op)?;
-            Ok(format!("OCCASION {}\nSTATUS related\n", wrapper))
+            let r = mem.relate(&occasion_id, op)?;
+            Ok(format_commit_result(&r, "related"))
         }
         AgentMemoryVerb::SetStatus { occasion_id, op } => {
-            let wrapper = mem.set_status(&occasion_id, op)?;
-            Ok(format!("OCCASION {}\nSTATUS updated\n", wrapper))
+            let r = mem.set_status(&occasion_id, op)?;
+            Ok(format_commit_result(&r, "updated"))
         }
         AgentMemoryVerb::Load {
             tags,
@@ -3459,45 +3498,67 @@ fn run_agent_memory_blocking(
         }
         AgentMemoryVerb::Verify { repair } => {
             let report = mem.verify(repair)?;
+            if report.has_unrecoverable() {
+                return Err(AgentMemoryError::Corrupted(format_verify_report(&report)));
+            }
             Ok(format_verify_report(&report))
         }
         AgentMemoryVerb::Compact => {
             mem.compact()?;
             Ok(String::new())
         }
+        AgentMemoryVerb::Migrate => unreachable!("handled before open"),
     }
+}
+
+/// `OCCASION` plus the real ids the operation produced (TD-17).
+fn format_commit_result(r: &agent_tool::agent_memory::CommitResult, status: &str) -> String {
+    use agent_tool::agent_memory::ObjectOutcome;
+    let mut out = format!("OCCASION {}\n", r.occasion_id);
+    for o in &r.report.observations {
+        out.push_str(&format!("OBSERVATION {o}\n"));
+    }
+    for o in &r.report.objects {
+        let outcome = match o.outcome {
+            ObjectOutcome::Created => "created",
+            ObjectOutcome::Updated => "updated",
+            ObjectOutcome::Merged => "merged",
+        };
+        out.push_str(&format!("OBJECT {} {outcome}\n", o.object_id));
+        for shared in &o.shared_aliases {
+            out.push_str(&format!(
+                "ALIAS_SHARED {} {}\n",
+                shared.alias,
+                shared.other_objects.join(",")
+            ));
+        }
+    }
+    for i in &r.report.items {
+        out.push_str(&format!("ITEM {}@{} {}\n", i.item_id, i.revision, i.status));
+    }
+    out.push_str(&format!("STATUS {status}\n"));
+    out
 }
 
 fn format_verify_report(report: &agent_tool::VerifyReport) -> String {
     let mut out = String::new();
-    out.push_str(&format!("OK_KEYS {}\n", report.ok_keys));
-    out.push_str(&format!("ORPHAN_FILES {}\n", report.orphan_files.len()));
-    for p in &report.orphan_files {
-        out.push_str(&format!("  orphan {}\n", p.display()));
-    }
     out.push_str(&format!(
-        "TOMBSTONE_RESIDUE {}\n",
-        report.tombstone_residue.len()
+        "OCCASIONS {}\nOBJECTS {}\nOBSERVATIONS {}\nITEMS {}\n",
+        report.occasions, report.objects, report.observations, report.items
     ));
-    for p in &report.tombstone_residue {
-        out.push_str(&format!("  tombstone {}\n", p.display()));
+    for (name, list) in [
+        ("LOG_ERRORS", &report.log_errors),
+        ("REFERENCE_ERRORS", &report.reference_errors),
+        ("ALIAS_CONFLICTS", &report.alias_conflicts),
+        ("DERIVED_ISSUES", &report.derived_issues),
+    ] {
+        out.push_str(&format!("{name} {}\n", list.len()));
+        for e in list {
+            out.push_str(&format!("  {e}\n"));
+        }
     }
-    out.push_str(&format!(
-        "MISSING_CONTENT {}\n",
-        report.missing_content.len()
-    ));
-    for k in &report.missing_content {
-        out.push_str(&format!("  missing {}\n", k));
-    }
-    out.push_str(&format!(
-        "DIGEST_MISMATCH {}\n",
-        report.digest_mismatch.len()
-    ));
-    for k in &report.digest_mismatch {
-        out.push_str(&format!("  mismatch {}\n", k));
-    }
-    if report.repaired_index {
-        out.push_str("REPAIRED_INDEX 1\n");
+    if report.repaired {
+        out.push_str("REPAIRED_DERIVED 1\n");
     }
     out
 }
@@ -7725,6 +7786,30 @@ methods = ["x_call"]
         assert!(load_output.stdout.contains("---\n"));
         assert!(load_output.stdout.contains("\nEND\n"));
         assert!(load_output.stdout.contains("MATCHED tag:dental"));
+    }
+
+    #[tokio::test]
+    async fn agent_memory_migrate_reports_on_a_current_root() {
+        let temp = tempdir().expect("create tempdir");
+        let root = temp.path().join("agent");
+        let cwd = root.join("workspace");
+        fs::create_dir_all(&cwd).await.expect("create workspace dir");
+        execute(
+            vec![OsString::from("/tmp/agent-memory"), OsString::from("init")],
+            test_env(root.clone(), cwd.clone()),
+            None,
+        )
+        .await
+        .expect("init");
+        let out = execute(
+            vec![OsString::from("/tmp/agent-memory"), OsString::from("migrate")],
+            test_env(root.clone(), cwd),
+            None,
+        )
+        .await
+        .expect("run agent-memory migrate");
+        assert_eq!(out.exit_code, EXIT_SUCCESS, "{}", out.stderr);
+        assert!(out.stdout.contains("FROM 3.0\nTO 3.0\n"), "{}", out.stdout);
     }
 
     #[tokio::test]

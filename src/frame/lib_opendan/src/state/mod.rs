@@ -12,7 +12,7 @@ mod connect;
 mod fs_client;
 pub mod krpc;
 mod locks;
-mod perception;
+pub mod perception;
 mod registry;
 
 use std::path::Path;
@@ -39,7 +39,7 @@ pub use connect::{
 };
 pub use fs_client::{AgentLayout, FsAgentStateClient};
 pub use krpc::{KrpcAgentStateClient, KrpcTransport, StateTransport};
-pub use perception::{run_digest, Backlog, BacklogItem};
+pub use perception::{run_digest, Backlog, BacklogItem, PERCEPTION_LOCK_TIMEOUT};
 
 /// Session registry (session mgr, §6.2). The only entry point to discover
 /// every session of an agent, wherever its directory lives.

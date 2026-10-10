@@ -2,7 +2,7 @@
 
 日期：2026-10-10
 
-状态：待实施，已对齐 Memory 需求 v1.6（2026-10-10，含本 TODO review 后补入附录 A 的 A.3.7、A.9 等契约）。本文的模拟记录、输出及逻辑调用不表示现有能力；组件模型与提交契约以需求附录 A 为准。
+状态：组件阶段（C）已实施（2026-10-10），对齐 Memory 需求 v1.7；运行方式、验收映射、成本基线和留给 S/Q/P2 的事项见 §8。§3 的 history 是拟议行为样例，实际输出以例子运行结果为准；组件模型与提交契约以需求附录 A 为准。
 
 目标：在 Agent Memory 作为 tool 接入 Agent Session 之前，用多个模拟 Session 直接调用 Memory 组件，验证“添加感知 → set_topic 召回并半订阅 → 接收相关变化 → Memory 整理 Goal 将感知整理为认知”的完整流程。例子应展示每一步的调用、返回、持久状态与通知，让设计可以逐项检查。
 
@@ -34,7 +34,7 @@ M-30—M-34 从本阶段约束设计；C 阶段的拒写与关闭召回测试只
 
 | 入口 | 已有基础 | 本阶段需要补齐 |
 |---|---|---|
-| [agent_memory.rs](../src/frame/agent_tool/src/agent_memory.rs) | Graph 对象、别名、证据观察、认知条目、批量 commit、提交日志、写锁、派生索引；`load` 已有对象/对象对加分 | 按附录 A 扩展字段、revision、状态校验、整理 envelope 和查询；补关系展开、中文检索与完整得分传递 |
+| [agent_memory/](../src/frame/agent_tool/src/agent_memory/)（原 `agent_memory.rs`） | Graph 对象、别名、证据观察、认知条目、批量 commit、提交日志、写锁、派生索引；`load` 已有对象/对象对加分 | 按附录 A 扩展字段、revision、状态校验、整理 envelope 和查询；补关系展开、中文检索与完整得分传递 |
 | [agent_notebook.rs](../src/frame/agent_tool/src/agent_notebook.rs) | Note、版本、冲突检测、跨 Session 更新提示、读取进度 | 作为待退役实现评估可迁入 Memory 的机制；新例子不依赖独立 Notebook，旧入口随调用方切换移除 |
 | [state/perception.rs](../src/frame/lib_opendan/src/state/perception.rs) | 按 Session 的感知流、seq 幂等、整理游标、backlog；每个文件只有持 Session lease 的 driver 一个写者 | 保留为唯一感知管线；扩展来源、cites、锚点、`idempotency_key` 等字段，提供库级适配、逐条处置；按 A.5 加文件级短锁，使正文清理与追加互斥 |
 | [state/cognition.rs](../src/frame/lib_opendan/src/state/cognition.rs) | Graph Hint 查询、Notebook 写入、整理审计与游标推进 | 后续将 Notebook 写入改为统一 Memory 路径，移除 Notebook 专属类型和统计；整理提交需核验实际认知更新 |
@@ -538,56 +538,56 @@ J/e9 是新的推理记录，但不是新的独立事实来源。直接把 Runti
 
 ### T01 组件边界和最小数据模型
 
-- [ ] 按 A.1/A.8 落定现有 Perception 与 Graph 的库级适配：单一感知流、单 Agent memory_root、Graph 提交日志和单写锁；保持依赖方向，不引入新服务或第二套 Memory。统一的 Memory 组件门面放在 `lib_opendan`（它已依赖 `agent_tool`，能同时访问两层）。列出 S 阶段 Notebook/attention signal 调用方与数据清点范围（TD-09/20）。
-- [ ] 在组件边界区分普通写感知、持整理 lease 提交、显式管理操作；模拟 lease 由宿主绑定，提交校验身份/权限和 lease 有效性，普通客户端不能直改认知（TD-02）。正式 PATH 与真实 Session lease 接线留给 S。
-- [ ] 按 A.3.1/A.5 扩展感知与 SourceRef：`idempotency_key`、事件引用、Task/Goal、主体与对象范围、cites、记忆意图、情境锚点、双时间、提及候选及补写标记；删除 Notebook 来源字段。写入回执可附现有认知引用，范围索引失败仅省略此可选提示（TD-05/16）。
-- [ ] 按 A.5 加感知文件级短锁：driver 追加与整理清理互斥，清理以写新文件、fsync、rename 完成，保留 `seq`、幂等键与处置标记（TD-04）。
-- [ ] 按 A.3.7 实现 `Scope`、对象路径的分段重叠、例外和可见性过滤；模拟宿主为每个 SimSession 绑定授权主体集合（TD-13 的范围部分）。
-- [ ] 按 A.3.4 扩展 MemoryItem，区分 Graph kind 与 semantic_kind，保存稳定 item_id/revision、scope、basis、explicit、有效期、复核条件、整理版本；支持对象背景、关系和私有用语等语义，不另造人物档案副本（TD-12）。
-- [ ] 明确长期证据观察与待清理感知的区别，所有认知（含 free）能经 evidence 追到原始事件；计划和回执返回真实生成 ID，不猜测 obs 编号，支持多个有证据的别名（TD-05/17）。
-- [ ] 校验 kind/status/alias_type/source type、路径段和非法状态跃迁；对象合并级联别名并保留跳转。歧义返回候选与依据，不写入时自动合并、不把冲突当普通未命中（TD-06/08/11）。
-- [ ] 固定 A.4.1 的 ConsolidationCommit envelope、逐条 disposition、提交校验（重复终局处置、`expected_revision`）和提交结果类型；区分未提交、待恢复确认、幂等已提交、已提交但派生物/清理待修复，为 T03 故障恢复提供明确边界（TD-03/04）。
-- [ ] 按 A.9 实现 `MemorySnapshot` 版本向量、`query_topic` 先取快照再读的边界，以及 Session 侧 `ObservationState` 类型和持久化（TD-18）。
-- [ ] 按 §3.10 和 A.9 列出普通客户端、宿主、SI 的最少逻辑接口和与现有方法的映射；保留库级测试入口，正式 tool/CLI 不在本阶段注册。按 A.8/TD-12/24 列明 schema 升级、历史字段缺省和读写策略，不扩展成旧 Notebook 产品兼容。
+- [x] 按 A.1/A.8 落定现有 Perception 与 Graph 的库级适配：单一感知流、单 Agent memory_root、Graph 提交日志和单写锁；保持依赖方向，不引入新服务或第二套 Memory。统一的 Memory 组件门面放在 `lib_opendan`（它已依赖 `agent_tool`，能同时访问两层）。列出 S 阶段 Notebook/attention signal 调用方与数据清点范围（TD-09/20）。
+- [x] 在组件边界区分普通写感知、持整理 lease 提交、显式管理操作；模拟 lease 由宿主绑定，提交校验身份/权限和 lease 有效性，普通客户端不能直改认知（TD-02）。正式 PATH 与真实 Session lease 接线留给 S。
+- [x] 按 A.3.1/A.5 扩展感知与 SourceRef：`idempotency_key`、事件引用、Task/Goal、主体与对象范围、cites、记忆意图、情境锚点、双时间、提及候选及补写标记；删除 Notebook 来源字段。写入回执可附现有认知引用，范围索引失败仅省略此可选提示（TD-05/16）。
+- [x] 按 A.5 加感知文件级短锁：driver 追加与整理清理互斥，清理以写新文件、fsync、rename 完成，保留 `seq`、幂等键与处置标记（TD-04）。
+- [x] 按 A.3.7 实现 `Scope`、对象路径的分段重叠、例外和可见性过滤；模拟宿主为每个 SimSession 绑定授权主体集合（TD-13 的范围部分）。
+- [x] 按 A.3.4 扩展 MemoryItem，区分 Graph kind 与 semantic_kind，保存稳定 item_id/revision、scope、basis、explicit、有效期、复核条件、整理版本；支持对象背景、关系和私有用语等语义，不另造人物档案副本（TD-12）。
+- [x] 明确长期证据观察与待清理感知的区别，所有认知（含 free）能经 evidence 追到原始事件；计划和回执返回真实生成 ID，不猜测 obs 编号，支持多个有证据的别名（TD-05/17）。
+- [x] 校验 kind/status/alias_type/source type、路径段和非法状态跃迁；对象合并级联别名并保留跳转。歧义返回候选与依据，不写入时自动合并、不把冲突当普通未命中（TD-06/08/11）。
+- [x] 固定 A.4.1 的 ConsolidationCommit envelope、逐条 disposition、提交校验（重复终局处置、`expected_revision`）和提交结果类型；区分未提交、待恢复确认、幂等已提交、已提交但派生物/清理待修复，为 T03 故障恢复提供明确边界（TD-03/04）。
+- [x] 按 A.9 实现 `MemorySnapshot` 版本向量、`query_topic` 先取快照再读的边界，以及 Session 侧 `ObservationState` 类型和持久化（TD-18）。
+- [x] 按 §3.10 和 A.9 列出普通客户端、宿主、SI 的最少逻辑接口和与现有方法的映射；保留库级测试入口，正式 tool/CLI 不在本阶段注册。按 A.8/TD-12/24 列明 schema 升级、历史字段缺省和读写策略，不扩展成旧 Notebook 产品兼容。
 
 ### T02 真实存储上的多 Session 例子
 
-- [ ] 建立隔离目录、来源事件、绑定身份/权限、整理 lease、可控时钟及模拟客户端；初始化认知也走实际 SI commit。来源 fixture 可标为不可读，不能用生成摘要冒充原文。
-- [ ] 先落实 TD-01/10：空入口为未触发，正常空查询为已召回但未命中，全非法 tag 是错误；锁超时、损坏、不可用与部分结果可见。失败不确认、不污染“已显示/未变化”缓存。
-- [ ] 同时落实 TD-21：读路径不取写锁；`changes_since` 快照未变时只比较 `occasions.jsonl` 和各感知文件的末行 seq，不打开 Graph、不 replay。用 SI 写入期间多个 Session 连续观察的用例验证没有锁超时。
-- [ ] 按 A.6.1 实现授权/范围/有效期/状态硬过滤、对象与对象对命中、一到两跳有向关系、tag 和实际中文全文候选；保留完整得分，排除 salience 审计项，限制查询输入与展开量（TD-13）。
-- [ ] 合并同范围未整理感知；所有认知读取均带纠正兜底，有 cites 时派生待复核，无 cites 时也不能返回无提示旧结论；验证关闭普通近期感知、缓存和低预算场景（TD-14）。
-- [ ] 实现类别分池和有效性变化优先；explicit 不随时间淡出但不豁免有效期与权限；输出 revision/scope/basis/weight/confidence、命中原因及展开建议（TD-07/13）。
-- [ ] 在 `ObservationState` 上实现基础范围与动态 tag 分层、增强/衰减/淘汰、topic revision、轻/深检索变化阀门；用测试时钟验证阈值，不接真实模型语义筛选（TD-15）。
-- [ ] 实现 `changes_since`：范围内变化加 `read_set` 的整理修订提示、自写感知不回推、运行摘要不做变化提示、已清理感知只给处置标记、`resync_required`；Session 侧成功装配后才推进快照、pending 与 `read_set`。覆盖 topic 漂移、整理前纠正不经 `read_set`、权限变化和重启（TD-18）。
-- [ ] 提供主动 query、当前逻辑 ID/固定 revision、主体和来源视图；已知 ID 读取不依赖检索索引。缓存键覆盖两层版本、范围、权限和上下文代次，命中后仍复核到期与纠正，支持未变化提示与一致分页（B-23/24）。
-- [ ] 将 §3.5～§3.9、§3.11—§3.14 的带时间 history 做成 fixture；trace 同时列原始事件、预设决策、真实返回、模型可见片段和模拟下一步，不硬编码 Hint/通知代替查询，不把模拟回复当模型质量证据。
-- [ ] 运行显式“你记一下”、无值得写入内容、明确纠正/本次例外、引用回声、窄范围推断等对照。§3.11 的 Task 修订只用 fixture，分别验证关闭观察、禁止记忆和零预算；不能宣称真实修订送达已经实现。
+- [x] 建立隔离目录、来源事件、绑定身份/权限、整理 lease、可控时钟及模拟客户端；初始化认知也走实际 SI commit。来源 fixture 可标为不可读，不能用生成摘要冒充原文。
+- [x] 先落实 TD-01/10：空入口为未触发，正常空查询为已召回但未命中，全非法 tag 是错误；锁超时、损坏、不可用与部分结果可见。失败不确认、不污染“已显示/未变化”缓存。
+- [x] 同时落实 TD-21：读路径不取写锁；`changes_since` 快照未变时只比较 `occasions.jsonl` 和各感知文件的末行 seq，不打开 Graph、不 replay。用 SI 写入期间多个 Session 连续观察的用例验证没有锁超时。
+- [x] 按 A.6.1 实现授权/范围/有效期/状态硬过滤、对象与对象对命中、一到两跳有向关系、tag 和实际中文全文候选；保留完整得分，排除 salience 审计项，限制查询输入与展开量（TD-13）。
+- [x] 合并同范围未整理感知；所有认知读取均带纠正兜底，有 cites 时派生待复核，无 cites 时也不能返回无提示旧结论；验证关闭普通近期感知、缓存和低预算场景（TD-14）。
+- [x] 实现类别分池和有效性变化优先；explicit 不随时间淡出但不豁免有效期与权限；输出 revision/scope/basis/weight/confidence、命中原因及展开建议（TD-07/13）。
+- [x] 在 `ObservationState` 上实现基础范围与动态 tag 分层、增强/衰减/淘汰、topic revision、轻/深检索变化阀门；用测试时钟验证阈值，不接真实模型语义筛选（TD-15）。
+- [x] 实现 `changes_since`：范围内变化加 `read_set` 的整理修订提示、自写感知不回推、运行摘要不做变化提示、已清理感知只给处置标记、`resync_required`；Session 侧成功装配后才推进快照、pending 与 `read_set`。覆盖 topic 漂移、整理前纠正不经 `read_set`、权限变化和重启（TD-18）。
+- [x] 提供主动 query、当前逻辑 ID/固定 revision、主体和来源视图；已知 ID 读取不依赖检索索引。缓存键覆盖两层版本、范围、权限和上下文代次，命中后仍复核到期与纠正，支持未变化提示与一致分页（B-23/24）。
+- [x] 将 §3.5～§3.9、§3.11—§3.14 的带时间 history 做成 fixture；trace 同时列原始事件、预设决策、真实返回、模型可见片段和模拟下一步，不硬编码 Hint/通知代替查询，不把模拟回复当模型质量证据。
+- [x] 运行显式“你记一下”、无值得写入内容、明确纠正/本次例外、引用回声、窄范围推断等对照。§3.11 的 Task 修订只用 fixture，分别验证关闭观察、禁止记忆和零预算；不能宣称真实修订送达已经实现。
 
 ### T03 模拟整理及可靠生命周期
 
-- [ ] 先打通持 lease 的最小可靠提交，再扩展批次：一条 occasion 包含全部图操作和逐条处置，日志追加/fsync 是提交点，幂等键重试返回原结果。空 operations 的纯处置批次同样有效（TD-02/03）。
-- [ ] 以 dispositions 计算待处理集合，deferred 不被整批字节游标跳过；新增材料不混入在处理批次，一轮完整表达整体读取，截断只允许处置已读部分。按 A.4.1 拒绝重复终局处置；模拟 lease 被接管后重叠批次的提交被拒（TD-03/16）。
-- [ ] 让预设计划真实产生 `c1@1` 再修订为 `c1@2`，检查 `expected_revision` 冲突、同范围/语义的关系三元组逻辑 ID 稳定、跨范围不覆盖、历史 revision 固定、合法状态变化与旧事件不复活（TD-08/12）。
-- [ ] 增加需求 §5.8 的输出目录混合批次：同源转述、独立复现、版本反例、一次明确约定、进度噪声和缺证异常分别处置；输出证据链、范围、入口、整理版本和暂缓原因。补充第三方主张与用户明确表达/行为推断分歧，保留 basis，不擅自采纳或扩大范围。
-- [ ] 实现正文清理与独立重试：absorbed/duplicate/discarded 可清理，deferred 留存；不等待其他 Session 读完。清理持文件级短锁，与同一文件的追加并发时不丢记录、`seq` 不倒退、重放不复活。模拟日志已提交而索引物化/清理失败，读取或重开恢复已提交状态，重试不双写（TD-04）。
-- [ ] 实现 §3.13 的廉价待处理查询、观察窗口和到期实际处置、查询时到期检查及兜底清扫；新材料/到期/重试才进入预设整理，排除 SI 自身提交。带 cites 的新判断仍逐条处置，纯复述可廉价判重，不加强同源证据/强度或反复深度分析（TD-19，B-44/45）。
-- [ ] 提供低优先级澄清线索及重复控制；不主动打扰用户，不让需要保证正确性的澄清事项只存 Memory。候选结晶引用认知 revision，撤回/缩小范围时可反查或通知，由后续对应 Goal 处理资产。
-- [ ] 保存真实 actor_session_id、来源事件和包装 occasion 的 parent_occasion；按对象/来源/整理版本能追踪受影响认知。来源不可读明确说明，证据摘录不能冒充仍可读取的原文（TD-05）。
+- [x] 先打通持 lease 的最小可靠提交，再扩展批次：一条 occasion 包含全部图操作和逐条处置，日志追加/fsync 是提交点，幂等键重试返回原结果。空 operations 的纯处置批次同样有效（TD-02/03）。
+- [x] 以 dispositions 计算待处理集合，deferred 不被整批字节游标跳过；新增材料不混入在处理批次，一轮完整表达整体读取，截断只允许处置已读部分。按 A.4.1 拒绝重复终局处置；模拟 lease 被接管后重叠批次的提交被拒（TD-03/16）。
+- [x] 让预设计划真实产生 `c1@1` 再修订为 `c1@2`，检查 `expected_revision` 冲突、同范围/语义的关系三元组逻辑 ID 稳定、跨范围不覆盖、历史 revision 固定、合法状态变化与旧事件不复活（TD-08/12）。
+- [x] 增加需求 §5.8 的输出目录混合批次：同源转述、独立复现、版本反例、一次明确约定、进度噪声和缺证异常分别处置；输出证据链、范围、入口、整理版本和暂缓原因。补充第三方主张与用户明确表达/行为推断分歧，保留 basis，不擅自采纳或扩大范围。
+- [x] 实现正文清理与独立重试：absorbed/duplicate/discarded 可清理，deferred 留存；不等待其他 Session 读完。清理持文件级短锁，与同一文件的追加并发时不丢记录、`seq` 不倒退、重放不复活。模拟日志已提交而索引物化/清理失败，读取或重开恢复已提交状态，重试不双写（TD-04）。
+- [x] 实现 §3.13 的廉价待处理查询、观察窗口和到期实际处置、查询时到期检查及兜底清扫；新材料/到期/重试才进入预设整理，排除 SI 自身提交。带 cites 的新判断仍逐条处置，纯复述可廉价判重，不加强同源证据/强度或反复深度分析（TD-19，B-44/45）。
+- [x] 提供低优先级澄清线索及重复控制；不主动打扰用户，不让需要保证正确性的澄清事项只存 Memory。候选结晶引用认知 revision，撤回/缩小范围时可反查或通知，由后续对应 Goal 处理资产。
+- [x] 保存真实 actor_session_id、来源事件和包装 occasion 的 parent_occasion；按对象/来源/整理版本能追踪受影响认知。来源不可读明确说明，证据摘录不能冒充仍可读取的原文（TD-05）。
 
 ### T04 组件验收和成本记录
 
-- [ ] 将 §6 的 S01—S45 做成组件测试；补两个独立进程写入/观察同一 Agent 的用例，校验一写者、独立读进度与权限隔离，不以进程内单例替代共享状态（TD-26）。
-- [ ] 故障点覆盖追加前、写入/fsync 期间结果未知、日志已提交但物化失败、清理失败、幂等重试、版本冲突、锁超时、坏行/digest 和观察装配失败；重开后区分完整提交与损坏日志，不静默修复真相或重复追加；验证状态、正文及提示，不只测试返回码。
-- [ ] 删除/损坏派生索引与 SQLite 后，按已知 ID/来源仍可读，重建结果与提交日志一致；verify 只报告，repair 只重建派生物、不改写真相或静默合并歧义（TD-25）。
-- [ ] 明确 compact 快照与 replay/归档清单的一致方案；固定 revision、撤回状态和未清理处置在恢复后不丢。若最小例子暂不依赖 compact，TD-23 仍列未完成，不以生成快照文件代替恢复验证。
-- [ ] 按 TD-12/24 列明并验证版本升级：支持的旧 schema 显式迁移，不支持主版本拒写、次版本按 A.8 只读；迁移不能静默丢字段或覆盖旧认知。`meta.json` 现硬校验 `primary_language == "en"`、分词器为 `unicode61`，中文全文检索要连同这两项一起迁移。不触碰未经清点的 Notebook 历史数据。
-- [ ] 记录感知写入、查询候选量/耗时、Hint 大小、分类预算、topic 阀门命中、`changes_since` 快速路径命中率、批次与提交日志增长及全量 replay 成本。全量物化重建追踪 TD-22（TD-21 已在 T02 完成）；建立基线后独立安排 P2 优化，不把未做的优化记为通过。
-- [ ] 为示例提供实际可运行入口、完整输出、失败与恢复说明；列清 TD 组件部分、尚未接线部分和 P2 未完成项。实现完成时同步需求附录 A 的“现状”与附录 B 状态，本次计划更新不提前勾选。
+- [x] 将 §6 的 S01—S45 做成组件测试；补两个独立进程写入/观察同一 Agent 的用例，校验一写者、独立读进度与权限隔离，不以进程内单例替代共享状态（TD-26）。
+- [x] 故障点覆盖追加前、写入/fsync 期间结果未知、日志已提交但物化失败、清理失败、幂等重试、版本冲突、锁超时、坏行/digest 和观察装配失败；重开后区分完整提交与损坏日志，不静默修复真相或重复追加；验证状态、正文及提示，不只测试返回码。
+- [x] 删除/损坏派生索引与 SQLite 后，按已知 ID/来源仍可读，重建结果与提交日志一致；verify 只报告，repair 只重建派生物、不改写真相或静默合并歧义（TD-25）。
+- [x] 明确 compact 快照与 replay/归档清单的一致方案；固定 revision、撤回状态和未清理处置在恢复后不丢。若最小例子暂不依赖 compact，TD-23 仍列未完成，不以生成快照文件代替恢复验证。
+- [x] 按 TD-12/24 列明并验证版本升级：支持的旧 schema 显式迁移，不支持主版本拒写、次版本按 A.8 只读；迁移不能静默丢字段或覆盖旧认知。`meta.json` 现硬校验 `primary_language == "en"`、分词器为 `unicode61`，中文全文检索要连同这两项一起迁移。不触碰未经清点的 Notebook 历史数据。
+- [x] 记录感知写入、查询候选量/耗时、Hint 大小、分类预算、topic 阀门命中、`changes_since` 快速路径命中率、批次与提交日志增长及全量 replay 成本。全量物化重建追踪 TD-22（TD-21 已在 T02 完成）；建立基线后独立安排 P2 优化，不把未做的优化记为通过。
+- [x] 为示例提供实际可运行入口、完整输出、失败与恢复说明；列清 TD 组件部分、尚未接线部分和 P2 未完成项。实现完成时同步需求附录 A 的“现状”与附录 B 状态，本次计划更新不提前勾选。
 
 实施先做 T01 的角色/数据边界和 T02 的错误分型，再打通 T03 的最小提交与恢复；随后完成 T02 的召回/观察和 T03 的整理生命周期，最后汇总 T04 验收。T 编号是工作包，不代表先实现全部查询再补正确性。
 
-组件示例入口放在 `src/frame/lib_opendan/examples/memory_sessions.rs`：主流程第一步就要写感知，感知流只在 `lib_opendan`，`agent_tool` 访问不到。示例经 `FsAgentStateClient` / `AgentStateClient::perception()` 或 T01 的库级适配访问，不要求公开底层 `FsPerception`，也不让 `agent_tool` 反向依赖。拟议运行命令为在 `src/` 下运行 `cargo run -p libopendan --example memory_sessions`；现在不宣称可用。测试复用 Cargo、tempfile 和可控 fixture 时钟。
+组件示例入口放在 `src/frame/lib_opendan/examples/memory_sessions.rs`：主流程第一步就要写感知，感知流只在 `lib_opendan`，`agent_tool` 访问不到。示例经 `FsAgentStateClient` / `AgentStateClient::perception()` 或 T01 的库级适配访问，不要求公开底层 `FsPerception`，也不让 `agent_tool` 反向依赖。运行命令为在 `src/` 下运行 `cargo run -p libopendan --example memory_sessions`（见 §8.1）。测试复用 Cargo、tempfile 和可控 fixture 时钟。
 
 ## 6. 验收清单
 
@@ -673,3 +673,82 @@ S24—S28 验证组件边界；Task 修订的真实送达、确定性订阅和 F
 - 定义显式遗忘覆盖的受控副本范围并实现清除；本阶段清理已整理感知，不宣称已经删除 Session 历史、外部源或所有派生副本。
 
 完成组件阶段的标准是：开发者可运行无 LLM 例子，看到感知、证据观察与认知的来源链、两层召回、topic/已读关注、可靠提交、暂缓到期及清理；§6 的 C 验收有真实组件证据，Task 修订等 fixture 清楚标注。正式 tool/Session 接入、模型质量和未完成 P2 优化分别跟踪，不能靠模拟输出宣称已完成整个 Memory 重构。
+
+## 8. 实施结果（2026-10-10）
+
+### 8.1 代码落点与运行
+
+| 位置 | 内容 |
+|---|---|
+| [agent_tool/src/agent_memory/](../src/frame/agent_tool/src/agent_memory/) | Graph，schema 3.0：`model`（枚举、`Scope`、条目与操作、envelope）、`state`（replay 与带校验的提交应用、revision 历史、处置状态）、`recall`（A.6.1 管线）、`log`（读日志与未完成尾行、末行 seq、归档清单）、`derived`（canonical、快照、path 索引、SQLite FTS，旁建后换入）、`migrate`（2.10 → 3.0）、`text`（tag 规则、CJK 二元组全文） |
+| [lib_opendan/src/memory/](../src/frame/lib_opendan/src/memory/) | 组件门面 `Memory`：`record_perception`、`query_topic`、`query`、`read_cognition` / `read_provenance` / `read_perception`、`affected_by`、`changes_since`、`snapshot`、`pending_work`、`consolidator`（`begin` / `commit` / `cleanup` / `sweep_expired`）、`admin`；Session 侧 `ObservationState`、`set_topic`、`observe`；`preview` 生成 history 预览 |
+| [lib_opendan/src/state/perception.rs](../src/frame/lib_opendan/src/state/perception.rs) | 唯一感知管线：A.5 字段、幂等键、`<sid>.jsonl.lock` 短锁、清理重写 |
+| [examples/memory_sessions.rs](../src/frame/lib_opendan/examples/memory_sessions.rs) + `examples/support/memory_sim.rs`、`memory_scenarios.rs` | `SimSession` / `SimSi` 宿主与十个场景；场景里的检查与 trace 来自同一次执行 |
+| [tests/memory_sessions.rs](../src/frame/lib_opendan/tests/memory_sessions.rs)、[tests/memory_component.rs](../src/frame/lib_opendan/tests/memory_component.rs) | 场景测试（99 项检查）与组件测试（并发、故障、预算、topic 生命周期、两进程、review 回归共 25 个）；Graph 单元测试 27 个 |
+
+在 `src/` 下运行：
+
+```bash
+cargo run -p libopendan --example memory_sessions                  # 全部场景，逐步打印调用、返回、history 预览与检查
+cargo run -p libopendan --example memory_sessions -- main_flow     # 单个场景（--list 列出）
+cargo run -p libopendan --example memory_sessions -- --quiet       # 只看检查汇总，有失败时退出码 1
+cargo run -p libopendan --example memory_sessions -- --keep <dir>  # 保留各场景的 Agent 根目录以便检查文件
+cargo run --release -p libopendan --example memory_sessions -- --bench   # 成本基线
+cargo test -p agent_tool --lib agent_memory                        # Graph 单元测试
+cargo test -p libopendan --test memory_sessions --test memory_component
+```
+
+失败与恢复：Graph 故障点经 `MemoryConfig::graph_faults` 注入（追加前、半行追加、写入后 fsync 失败、物化失败），清理故障经 `cleanup_fault` 注入；`CommitUnknown` 后用同一幂等键重试，写者先截掉未完成的尾行再按键查询；`PendingRepair` 由下一次写入或 `admin().repair_derived()` / `verify(true)` 修复；日志中间行损坏时召回、观察返回 `Corrupted`，Session 状态不前移。
+
+### 8.2 验收映射
+
+| 编号 | 证据 |
+|---|---|
+| S01、S02、S06、S07、S09—S12、S16、S17、S38、S44 | `main_flow`（38 项检查） |
+| S19、S20 | `explicit_request`、`tool_experience` |
+| S10、S35、S37 | `correction_fallback`（无引用纠正兜底、“这次先不用”不是纠正、有纠正时不答“未变化”）；S37 另见 `s37_snapshots_unchanged_answers_and_pages` |
+| S18、S23 | `tool_experience`、`world_selection` |
+| S15、S27、S45 | `world_selection`；S27 另见 `s27_only_the_consolidation_lease_writes_cognitions`，S45 另见 `s45_runtime_records_feed_consolidation_only` |
+| S24—S28 | `task_revision_boundary`（Task 修订只在 fixture 中） |
+| S04、S29、S31 | `read_set_topic_switch`；S04 另见 `s04_s34_topic_lifecycle_and_valve` |
+| S22、S30 | `deferral_expiry` |
+| S33、S35 | `ambiguity_and_time` |
+| S14、S21、S42 | `mixed_batch` |
+| S03、S05、S08、S13、S32、S34、S36、S39—S41、S43 | `memory_component.rs` 同名测试 |
+| T04 两进程 | `two_processes_share_one_agent`（子进程写、父进程写并观察，进度各自落盘） |
+
+### 8.3 成本基线
+
+`--bench`，release 构建，本机：20 个 Session 共写 1000 条感知，按 50 条一批整理成 20 次提交。
+
+| 项目 | 结果 |
+|---|---|
+| 感知写入 | 0.86 ms/条（含幂等键检查时的整文件读取） |
+| 整理提交 | 45 ms/次（全量 replay 与派生物重建占大头，TD-22） |
+| 清理 | 36 ms / 1000 条 |
+| `query_topic` | 3.7 ms，预算 8 条，Hint 块约 2 KB |
+| `changes_since` | 快速路径 0.13 ms，命中率 89/100（每 10 次观察有 1 次新写入）；慢路径 3.8 ms |
+| 提交日志 | 20 条 occasion，约 105 KB；冷启动全量 replay 1.7 ms |
+
+这些是 P2 优化的起点，不是性能承诺；TD-22 的增量物化与索引查询仍未做。
+
+### 8.4 实施中确定的细节（已回写附录 A）
+
+独立 review 后修正并加了回归测试（`review_*`、`deadlines_compare_as_times_not_strings`、`replay_tolerates_the_compaction_window`、`migration_resumes_after_a_crash`）：`changes_since` 要求重建后不再卡住；一个感知文件只有一个 seq 分配者，冲突报错不丢弃；中断的追加在短锁内修复；清理后的已显露感知仍收到处置标记；截止时间统一存为 UTC；compact 不留读者可见的空窗；Hint 来源、关系展开与已吸收列表按授权过滤；migrate 可在崩溃后重跑。
+
+- 范围对象是并集（A.3.7）：组合条件取最窄对象路径，其余写进正文与 `review_when`。
+- topic 阶段：标题漂移达到阈值才算切换（丢弃未再提及的 tag、清空已显露记录）；只追加 tag 是细化，不重复显露。
+- `accept_recall` 只在首次或重建时采用召回快照，之后保留旧快照，避免跳过两次之间的已读修订。
+- 需要重建（`resync_required`）时 `set_topic` 直接走深检索。
+- 每次内容或状态变化都让 revision 加一；自由条目删除后同 key 再写是新的逻辑条目。
+- 整理提交的认知必须带证据观察、`scope`、`basis`，证据观察必须有可追溯来源；`deferred` 不能延长第一次的窗口；只能处置本批读到的材料。
+- TD-23 取“去掉快照”：`compact` 归档并写清单。
+
+### 8.5 留给后续阶段
+
+- S（Session 接入）：`ctl perceive` 新参数与 Runtime 锚点、来源、`backfilled`；runner 每次推理前 `observe`、`ObservationState` 存入真实 Session、创建方建立基础范围；runner `<hints>` 改用组件输出并去掉 `.unwrap_or_default()`；`agent-memory commit --plan`、CLI 按调用者分派与只读 PATH、`--json` 与多别名；整理 Goal 与 Loader 接线（`pending_work` 作为调度闸门）、runner 字节游标退役；`self_improve` lease 改名。
+- S 的退役与清点（TD-09、TD-20）：调用方为 `lib_opendan/src/state/cognition.rs` 的 `notebook_append` 与 `Cognition` 方法、`NotebookNote`、`ConsolidationBatch.notebook_ops`，`state/krpc.rs` 的 `cognition.notebook_append`，`bin/xagent.rs` 的 `note`，`agent_tool/src/agent_notebook.rs` 与 `agent_tool_cli_dev` 的 agent-notebook CLI，`agent_tool/src/agent_attention_signal.rs` 及其 CLI，jarvis 的 `chat_route.toml`、`self_check.toml`、`self_improve_signals.toml`、`self_improve_set_memory.toml`；数据为 `<agent_root>/notebook/` 与 `<agent_root>/attention_signals/`，退役时单独清点，不自动删除。
+- Q（模型质量）：把预设计划换成真实模型，按需求 §10.3/§10.6 评估。
+- P2：TD-22 增量物化与索引查询。
+- 已知风险：整理 lease 的 epoch 取自锁文件内容；锁文件被删除重建（违反锁协议）后 epoch 从 1 重新计数，提交会因 lease epoch 低于日志中已提交的最大值被拒（`StaleLease`），需要人工处理锁文件。
+

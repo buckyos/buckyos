@@ -1,15 +1,296 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "description": "One line of `state/perception/<sid>.jsonl`.",
+  "definitions": {
+    "ActorKind": {
+      "description": "Who produced the source event; `runtime` marks material the Runtime attached (e.g. a Memory observation block), never a new fact source.",
+      "enum": [
+        "user",
+        "agent",
+        "tool",
+        "runtime",
+        "system",
+        "third_party"
+      ],
+      "type": "string"
+    },
+    "ClearedMarker": {
+      "description": "What remains of a disposed record after cleanup.",
+      "properties": {
+        "at_ms": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "cognition_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "occasion_id": {
+          "type": "string"
+        },
+        "outcome": {
+          "description": "`absorbed | duplicate | discarded`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "at_ms",
+        "occasion_id",
+        "outcome"
+      ],
+      "type": "object"
+    },
+    "Mention": {
+      "properties": {
+        "candidates": {
+          "items": {
+            "$ref": "#/definitions/MentionCandidate"
+          },
+          "type": "array"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "type": "object"
+    },
+    "MentionCandidate": {
+      "properties": {
+        "basis": {
+          "description": "Why it is a candidate (`alias:<text>`).",
+          "type": "string"
+        },
+        "canonical_name": {
+          "type": "string"
+        },
+        "object_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "basis",
+        "canonical_name",
+        "object_id"
+      ],
+      "type": "object"
+    },
+    "PerceptionAnchors": {
+      "description": "Interpretation anchors of an observation (§4.2); the intent's own anchor wins over the environment's.",
+      "properties": {
+        "intent_timezone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "locale": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "location": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timezone": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "Scope": {
+      "description": "Applicability and visibility range (A.3.7).",
+      "properties": {
+        "exceptions": {
+          "description": "Object paths the scope explicitly does not cover.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "objects": {
+          "description": "Object paths split by `/`; empty = not limited to objects.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "subjects": {
+          "description": "Subject references (user, group, the Agent itself); at least one.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "subjects"
+      ],
+      "type": "object"
+    },
+    "SourceRef": {
+      "description": "Source reference (A.3.1). Integrated sources point back to the original Session event so the evidence stays traceable after the perception body is cleaned.",
+      "properties": {
+        "actor_kind": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ActorKind"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "event_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "goal_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "session_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "task_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool_call_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "type": {
+          "$ref": "#/definitions/SourceType"
+        },
+        "uri": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "type": "object"
+    },
+    "SourceType": {
+      "description": "`SourceRef.type` (A.3.1).",
+      "enum": [
+        "session_event",
+        "tool_result",
+        "file",
+        "url",
+        "manual",
+        "system"
+      ],
+      "type": "string"
+    }
+  },
+  "description": "One line of `state/perception/<sid>.jsonl` (Memory requirements A.5).\n\nRuntime records (`run_digest`, `task_outcome`, `task_discarded`) only feed consolidation; `observation` records are what Sessions write. After a consolidation disposes a record, cleanup keeps the line with its identity, key, source and `cleared` marker and drops the body.",
   "properties": {
+    "anchors": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/PerceptionAnchors"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
     "at_ms": {
       "format": "uint64",
       "minimum": 0.0,
       "type": "integer"
     },
+    "backfilled": {
+      "description": "Synthesized later (a missing run digest), not an original observation.",
+      "type": "boolean"
+    },
+    "cites": {
+      "description": "Cognitions (`item_…@rev`) this observation was derived from or corrects (echo and correction references, E-15, §4.3).",
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "cleared": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ClearedMarker"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "content_digest": {
+      "description": "Digest of the observed content, kept after cleanup so a replay with different content is still a conflict.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "idempotency_key": {
+      "description": "Writer-given replay key, unique within the session file (A.5).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "kind": {
       "description": "`run_digest | observation | task_outcome | task_discarded`.",
       "type": "string"
+    },
+    "memory_intent": {
+      "description": "`explicit` when the user asked to remember.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "mentions": {
+      "description": "Raw mentions and the candidates the component found for them.",
+      "items": {
+        "$ref": "#/definitions/Mention"
+      },
+      "type": "array"
     },
     "objects": {
       "items": {
@@ -17,8 +298,26 @@
       },
       "type": "array"
     },
+    "occurred_at": {
+      "description": "When the described thing happened (may be an estimate); `at_ms` is when it was observed.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "payload": true,
     "refs": true,
+    "scope": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/Scope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Subjects (bound by the host) and object range of the observation."
+    },
     "seq": {
       "format": "uint64",
       "minimum": 0.0,
@@ -31,6 +330,24 @@
       "default": "session",
       "description": "`session | self`.",
       "type": "string"
+    },
+    "source_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/SourceRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Original event (session event, tool call, task / goal)."
+    },
+    "suggested_kind": {
+      "description": "Classification hint (`preference`, `correction`, …); not a cognition.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "summary": {
       "type": "string"

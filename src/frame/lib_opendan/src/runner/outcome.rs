@@ -901,6 +901,7 @@ async fn after_run_end(
             summary: s.state.one_line_status.clone(),
             payload: json!({ "outcome": next.outcome, "acceptance": s.state.acceptance }),
             refs: Value::Null,
+            ..Default::default()
         });
     }
     if let Err(e) = sh.agent().perception().append(&sh.lease, &sid, recs).await {
