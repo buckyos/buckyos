@@ -2,7 +2,7 @@
 
 说明 LLMContext + AgentSession 如何构造、切换和恢复典型的 Message List。Round / Step / Turn 的定义与 [readme](readme.md) 一致；Context 调度采用本次 review 和[提示词方式图解](<../opendan/几种典型的提示词方式图解.drawio>)确定的新语义。
 
-本文区分**已实现的行为**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8；Stop 后补充输入与 `report` 显式结果提交仍是待定建议，见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。旧 opendan Runtime 中的同名字段不是这些语义的实现。
+本文区分**已实现的行为**、**已定稿但尚未实现的设计**和**待定建议**。切换模式由目标 behavior 决定；普通切换已删除；`SWITCH_CONTEXT` 是目标自己保有 context 的切换；更换 system prompt 的子调用称为 `create-sub-context`，保留 system 与完整历史的子分支才称为 `fork`。Context 调度一节（三种进入模式、两种触发方式、hosted run 交接）已在 llm_context / xllm / libopendan 落地，配置拼写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §4.2 / §8。2026-10-10 已确定 XML 用 `<report end="true">` 显式结束且不得有 actions，见下文 report 一节；parser 与宿主尚未调整。Stop 后补充输入与 report 宿主策略的待定项见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4。其余章节的 END / 隐式 report 完成描述仍是实施前基线；旧 opendan Runtime 中的同名字段也不是新语义的实现。
 
 ## Round、Step、Turn 与 run
 
@@ -124,9 +124,32 @@ WorkSession 围绕明确 objective 工作，objective 达成后关闭，是产�
 
 WorkSession 与 Workspace 分离：Session 承载一次任务，Workspace 承载持续可修改的状态。新 Session 可以按需要读取产物和已有记录，但不必原样继承上一个 Session 的完整消息序列。
 
-### 传统 Loop 的 report：显式结果提交（方向确定，参数与默认策略待定）
+### 两种 Loop 的 report：显式结果提交（XML 核心规则已定，尚未实现）
 
-**传统 function_call Loop 通过显式调用 Session 层的 `report` 工具提交报告和产物，assistant 正文保持自由。** 报告可以是阶段性结果，也可以是最终交付；可选的 `is_end` 表达结束意图。这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，`report(is_end=true)` 才声明整个 Session 的目标已完成。宿主不从 assistant 正文里提取控制指令，也不要求正文符合统一 schema；XML Behavior Loop 保持自己的 `<report>` / `<next_behavior>` 协议。报告的归属、展示与产物投递的分层见 [Agent Actions](<Agent Actions.md>) 与 [Agent Message](<Agent Message.md>)。
+**传统 function_call Loop 通过显式调用 Session 层的 `report` 工具提交报告和产物，assistant 正文保持自由。** 报告可以是阶段性结果，也可以是最终交付；可选的 `is_end` 表达结束意图。这与 `finish()` 不同：后者只让当前 LLMContext 平滑停止，结束报告才提交完成意图，由宿主按调用关系和 Session 策略裁决。宿主不从普通 assistant 正文里提取控制指令，也不要求正文符合统一 schema。报告的归属、展示与产物投递的分层见 [Agent Actions](<Agent Actions.md>) 与 [Agent Message](<Agent Message.md>)。
+
+XML Behavior Loop 按 2026-10-10 定稿规则表达同一语义：
+
+| XML 决策 | 含义 |
+|---|---|
+| `<report>阶段性发现</report>` 或 `end="false"` | 提交 / 更新报告，继续执行，不请求结束 |
+| `<report end="true">完成说明</report>` | 提交最终报告并请求结束；同一决策不得有 actions |
+| 普通 report + `<next_behavior>CHECK</next_behavior>` | 更新报告并按原语义调度 CHECK |
+| 普通 report + `<next_behavior>WAIT_USER_MSG</next_behavior>` | 更新报告并按原语义请求等待输入 |
+
+`next_behavior` 保留切换 / 等待职责，不再输出 END，也不再由 xllm 为 report-only 合成 done。动作先在前面的决策执行并观察结果，最后另行提交结束报告：
+
+```text
+[assistant:决策 actions=[write_file]]                  @Step0 / Round1
+[user:动作执行结果]
+[assistant:<response><report end="true"><![CDATA[完成说明]]></report></response>]
+                                                       @Step1 / Round2
+  → 接受报告与结束意图；无需再推理生成确认
+  → 子 context：结果返回调用方，原 Turn 继续
+  → 顶层 context：宿主按 Session 策略完成 Turn / Session
+```
+
+结束报告与 actions 同现是协议冲突，应反馈纠错，不能先执行动作或先更新报告。`end=true` 与 `next_behavior` 同现、空 actions、原生 tool_calls / sendmsg、重复 report 及非法属性值的精确校验边界仍见 TODO H4.1，不能把建议当作已实现规则。
 
 参数草案（定稿前可能调整）：`report`（自由文本 / Markdown）、`artifacts`（可选，显式选择的产物引用，宿主校验并保存稳定引用）、`result`（可选 JSON，业务自定的机器可读结果）、`is_end`（可选 bool，建议缺省 false）。
 
@@ -149,7 +172,7 @@ Turn2：[user:按方案执行] … [assistant:tool_calls(执行)] [tool:执行�
 - 最终交付由 Session 根据已提交的 report 与产物引用**机械生成**一条 assistant message（关联来源 `call_id`，不新增 Round），与 report 文件、UI 展示使用同一份结果；原始工具调用 / 回执保留，普通阶段性 report 不生成交付消息。
 - 提交可重做：重复的 `call_id` / 提交请求不重复登记产物、生成最终消息或关闭 Turn；历史重建不重执行 `report`，也不把同一份最终交付渲染两遍。
 
-该能力属于 Session 控制面：LLMContext 不解释 report / result 的业务内容，独立 xllm 不暴露此工具。子 context 的报告默认交给父 context，不得因为继承了工具表而关闭整个 Session。参数最终形态、`is_end` 缺省值、哪些 Session 采用显式完成策略、与未完成子调用 / task / 人工验收的关系列入实施清单 H4，尚未作为已确定的产品规则。
+宿主工具属于 Session 控制面：LLMContext 不解释 report / result 的业务内容，独立 xllm 不暴露此工具；独立 xllm 的 XML Behavior 仍需遵守新的显式 end 规则。子 context 的报告默认交给父 context，不得因为继承了工具表而关闭整个 Session。XML 的 end 缺省 false 与 actions 互斥已定；工具参数最终形态、`is_end` 缺省值、哪些 Session 采用显式完成策略、与未完成子调用 / task / 人工验收的关系仍列在实施清单 H4。默认无输入队列的 WorkSession 如何处理未提交结束报告的普通 Done，也须单独定稿。
 
 ## 打断、平滑结束与恢复
 

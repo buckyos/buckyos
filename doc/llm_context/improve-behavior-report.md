@@ -1,5 +1,7 @@
 # Improve Behavior Report
 
+2026-10-10 设计更新：XML 显式结束统一为 `<report end="true">`，该决策不得有 actions；缺省 / false 只更新报告，`next_behavior` 保留切换 / 等待语义，不再用 END 结束。此规则已定稿但尚未实现，详见 [Context 调度支持 TODO H4.1](../../notepads/llm-context-switch-support-todo.md) 与 [Agent Actions](<Agent Actions.md>)。下文“当前实现事实”保留实施前行为，不是新协议规范。
+
 ## 背景
 
 本记录基于一次语音讨论和当前实现整理。其中 `opendan` Session 层的现状、处理流程和 MVP 描述的是旧 opendan Runtime（`src/frame/opendan`），待下一阶段 opendan 按 libopendan 的抽象重构接入；libopendan 已有的对应行为见“libopendan 当前实现”一节。Round / Step / Turn 的定义见 [readme.md](readme.md)。
@@ -66,9 +68,9 @@
 - 什么时候需要 report；
 - report 是阶段性发现、阻塞原因、还是最终结论；
 - report 的格式和信息密度；
-- 结束时是否必须同时输出 `<report>` 和 `<next_behavior>END</next_behavior>`。
+- 阶段性报告的时机，以及什么条件满足后输出不带 actions 的 `<report end="true">`。
 
-`llm_context` 不解释这些内容，只保存最后一条 report。
+`llm_context` 不解释报告正文的业务含义；结束意图由 report 的 end 属性独立表达。宿主按当前 context 的调用关系与 Session 策略裁决完成，不能仅因为更新了 last_report 就认为任务结束。
 
 ### 2. Session 层定义"向上级 report"的实际行为
 

@@ -72,7 +72,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 
 交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
 
-未实现：UI Stop 后补充输入（H3）、`report` 工具与显式完成策略（H4）。
+未实现：UI Stop 后补充输入（H3）、`report` 工具与显式完成策略（H4）。2026-10-10 已确定 H4 的 XML 核心规则：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO H4.1](../../notepads/llm-context-switch-support-todo.md)。本页其余 END / report-only 描述及执行伪代码仍是实施前基线，尚未代表新规则已落地。
 
 
 ## AgentSession Tree
