@@ -306,6 +306,10 @@ impl OpenAiResponsesCodec {
 
 #[async_trait]
 impl OperationCodec for OpenAiResponsesCodec {
+    fn resource_input_form(&self) -> crate::resource::ResourceInputForm {
+        crate::resource::ResourceInputForm::UrlOrBytes
+    }
+
     fn descriptor(&self) -> &OperationDescriptor {
         &self.descriptor
     }
@@ -925,6 +929,10 @@ fn apply_responses_parameters(
         if matches!(name.as_str(), "provider_model_id" | "stream") {
             continue;
         }
+        if name == "translation_options" {
+            apply_translation_options(body, value)?;
+            continue;
+        }
         if name == buckyos_api::features::WEB_SEARCH {
             let enabled = value.as_bool().ok_or_else(|| {
                 ProtocolError::invalid_request("resolved web_search must be a boolean")
@@ -944,6 +952,7 @@ fn apply_responses_parameters(
                 .as_array()
                 .is_some_and(|items| items.iter().all(Value::is_string)),
             "metadata" | "reasoning" | "thinking" => value.is_object(),
+            "max_output_tokens" => value.as_u64().is_some_and(|tokens| tokens > 0),
             "service_tier" | "truncation" => value.is_string(),
             "tool_choice" => value.is_string() || value.is_object(),
             _ => false,
@@ -955,6 +964,87 @@ fn apply_responses_parameters(
         }
         body.insert(name.clone(), value.clone());
     }
+    Ok(())
+}
+
+fn apply_translation_options(
+    body: &mut Map<String, Value>,
+    value: &Value,
+) -> ProtocolResultValue<()> {
+    let options = value.as_object().ok_or_else(|| {
+        ProtocolError::invalid_request(
+            "resolved OpenAI Responses translation_options must be an object",
+        )
+    })?;
+    if options
+        .keys()
+        .any(|name| !matches!(name.as_str(), "source_language" | "target_language"))
+    {
+        return Err(ProtocolError::invalid_request(
+            "resolved OpenAI Responses translation_options contains an unsupported field",
+        ));
+    }
+    let target_language = options
+        .get("target_language")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            ProtocolError::invalid_request(
+                "resolved OpenAI Responses translation_options requires target_language",
+            )
+        })?;
+    if options
+        .get("source_language")
+        .is_some_and(|value| value.as_str().is_none_or(|value| value.trim().is_empty()))
+    {
+        return Err(ProtocolError::invalid_request(
+            "resolved OpenAI Responses translation_options source_language must be a non-empty string",
+        ));
+    }
+    let input = body
+        .get_mut("input")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| {
+            ProtocolError::invalid_request(
+                "OpenAI Responses translation_options requires array input",
+            )
+        })?;
+    let mut input_text = None;
+    for item in input {
+        let Some(item) = item.as_object_mut() else {
+            continue;
+        };
+        if item.get("role").and_then(Value::as_str) != Some("user") {
+            continue;
+        }
+        let Some(content) = item.get_mut("content").and_then(Value::as_array_mut) else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) == Some("input_text") {
+                if input_text.is_some() {
+                    return Err(ProtocolError::invalid_request(
+                        "OpenAI Responses translation_options requires exactly one user input_text block",
+                    ));
+                }
+                input_text = block.as_object_mut();
+            }
+        }
+    }
+    let input_text = input_text.ok_or_else(|| {
+        ProtocolError::invalid_request(
+            "OpenAI Responses translation_options requires exactly one user input_text block",
+        )
+    })?;
+    let mut normalized = Map::new();
+    if let Some(source_language) = options.get("source_language") {
+        normalized.insert("source_language".to_owned(), source_language.clone());
+    }
+    normalized.insert(
+        "target_language".to_owned(),
+        Value::String(target_language.to_owned()),
+    );
+    input_text.insert("translation_options".to_owned(), Value::Object(normalized));
     Ok(())
 }
 
@@ -1729,6 +1819,16 @@ fn encode_input_file(
     title: Option<&str>,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<Value> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = call.context.materialized_url(source) {
+        return Ok(json!({
+            "type": "input_file",
+            "file_url": url,
+            "filename": title
+        }));
+    }
     match source {
         PublicResourceRef::Url { url, .. } => Ok(json!({
             "type": "input_file",
@@ -1747,6 +1847,12 @@ fn resource_data_or_url(
     source: &PublicResourceRef,
     call: &CodecCall<'_>,
 ) -> ProtocolResultValue<String> {
+    // Materialization may have handed this resource over as a URL because the
+    // protocol takes one (`ResourceInputForm`), in which case there are no
+    // bytes to inline and the URL is the only usable form.
+    if let Some(url) = call.context.materialized_url(source) {
+        return Ok(url.to_string());
+    }
     match source {
         PublicResourceRef::Url { url, .. } => Ok(url.clone()),
         PublicResourceRef::Base64 { mime, data_base64 } => {
@@ -2994,14 +3100,56 @@ mod tests {
     }
 
     #[test]
-    fn responses_accepts_typed_provider_thinking_extension() {
+    fn responses_accepts_typed_provider_defaults() {
         let mut body = Map::new();
         apply_responses_parameters(
             &mut body,
-            &BTreeMap::from([("thinking".to_string(), json!({"type": "disabled"}))]),
+            &BTreeMap::from([
+                ("thinking".to_string(), json!({"type": "disabled"})),
+                ("max_output_tokens".to_string(), json!(2048)),
+            ]),
         )
         .unwrap();
         assert_eq!(body["thinking"]["type"], "disabled");
+        assert_eq!(body["max_output_tokens"], 2048);
+
+        assert!(apply_responses_parameters(
+            &mut Map::new(),
+            &BTreeMap::from([("max_output_tokens".to_string(), json!(0))]),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn responses_nests_typed_translation_options_in_the_user_input_text() {
+        let mut body = Map::from_iter([(
+            "input".to_owned(),
+            json!([{"role":"user","content":[{"type":"input_text","text":"hello"}]}]),
+        )]);
+        apply_responses_parameters(
+            &mut body,
+            &BTreeMap::from([(
+                "translation_options".to_owned(),
+                json!({"source_language":"en","target_language":"zh"}),
+            )]),
+        )
+        .unwrap();
+        assert_eq!(
+            body["input"][0]["content"][0]["translation_options"],
+            json!({"source_language":"en","target_language":"zh"})
+        );
+
+        assert!(apply_responses_parameters(
+            &mut Map::from_iter([(
+                "input".to_owned(),
+                json!([{"role":"user","content":[{"type":"input_text","text":"hello"}]}]),
+            )]),
+            &BTreeMap::from([(
+                "translation_options".to_owned(),
+                json!({"source_language":"en"}),
+            )]),
+        )
+        .is_err());
     }
 
     #[tokio::test]

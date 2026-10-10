@@ -43,6 +43,7 @@ const DEFAULT_OOD_ID: &str = "ood1";
 const PROFILE_SYSTEM_CONTACT_KEY: &str = "system_contact";
 const DEFAULT_PROVIDER_TIMEOUT_MS: u64 = 600_000;
 const MANAGED_SN_PROVIDER_INSTANCE_NAME: &str = "sn-ai-provider-default";
+const MANAGED_SN_DEVICE_TOKEN_REF: &str = "runtime://device-jwt";
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub(crate) struct SnAiProviderEndpoints {
@@ -141,6 +142,15 @@ pub(crate) fn reconcile_managed_sn_ai_provider(
             provider.insert("account".to_string(), Value::String(user_name.to_string()));
             changed = true;
         }
+        let credentials = json!({
+            "device_token_ref": {
+                "runtime_ref": MANAGED_SN_DEVICE_TOKEN_REF
+            }
+        });
+        if provider.get("credentials") != Some(&credentials) {
+            provider.insert("credentials".to_string(), credentials);
+            changed = true;
+        }
         let Some(auth) = provider.get_mut("auth").and_then(Value::as_object_mut) else {
             return Ok(None);
         };
@@ -171,7 +181,9 @@ fn managed_sn_ai_provider_instance(endpoints: &SnAiProviderEndpoints, user_name:
         "provider_rules_id": "sn",
         "base_url": endpoints.responses_url,
         "credentials": {
-            "device_token_ref": "runtime://device-jwt"
+            "device_token_ref": {
+                "runtime_ref": MANAGED_SN_DEVICE_TOKEN_REF
+            }
         },
         "auth": {
             "mode": "dynamic_login",
@@ -808,7 +820,7 @@ fn build_aicc_settings_with_endpoints(
             "base_url": base_url,
             "credentials": {
                 "api_token": {
-                    "locked": token
+                    "inline_secret": token
                 }
             },
             "enabled": true,
@@ -1057,24 +1069,21 @@ mod beta22_tests {
     fn assert_canonical_aicc_settings(value: &Value) {
         assert_no_legacy_aicc_fields(value);
         let root = value.as_object().unwrap();
-        assert!(
-            root.keys()
-                .all(|field| matches!(field.as_str(), "providers" | "session_config"))
-        );
+        assert!(root
+            .keys()
+            .all(|field| matches!(field.as_str(), "providers" | "session_config")));
         for provider in root["providers"].as_array().unwrap() {
             assert!(provider["provider_instance_name"].is_string());
             assert!(provider["provider_profile_id"].is_string());
             assert!(provider["protocol_adapter_id"].is_string());
             assert!(provider["base_url"].is_string());
-            let credentials = provider["credentials"].as_object().unwrap();
+            let credentials: buckyos_api::ProviderCredentials =
+                serde_json::from_value(provider["credentials"].clone())
+                    .expect("AICC provider credentials must match the shared API schema");
             assert!(!credentials.is_empty());
-            assert!(credentials.iter().any(|(field, value)| {
-                (field.ends_with("_ref") && value.as_str().is_some_and(|value| !value.is_empty()))
-                    || value
-                        .get("locked")
-                        .and_then(Value::as_str)
-                        .is_some_and(|value| !value.is_empty())
-            }));
+            assert!(credentials
+                .values()
+                .any(|credential| !credential.value().is_empty()));
         }
     }
 
@@ -1253,7 +1262,7 @@ mod beta22_tests {
     }
 
     #[test]
-    fn aicc_settings_lock_configured_provider_credentials() {
+    fn aicc_settings_wrap_configured_provider_credentials_as_inline_secrets() {
         let mut config = start_config();
         config.ai_provider_config = AIProviderConfigSummary {
             openai_api_token: "openai-secret".to_string(),
@@ -1273,7 +1282,7 @@ mod beta22_tests {
         assert_eq!(providers[3]["provider_profile_id"], "openrouter");
         assert_eq!(providers[4]["protocol_adapter_id"], "glm-chat");
         assert_eq!(
-            providers[0]["credentials"]["api_token"]["locked"],
+            providers[0]["credentials"]["api_token"]["inline_secret"],
             "openai-secret"
         );
         assert_canonical_aicc_settings(&settings);
@@ -1294,8 +1303,8 @@ mod beta22_tests {
         assert_eq!(provider["auth"]["login_profile"], "device_jwt");
         assert_eq!(provider["account"], "alice");
         assert_eq!(
-            provider["credentials"]["device_token_ref"],
-            "runtime://device-jwt"
+            provider["credentials"]["device_token_ref"]["runtime_ref"],
+            MANAGED_SN_DEVICE_TOKEN_REF
         );
         assert_canonical_aicc_settings(&settings);
     }
@@ -1318,7 +1327,7 @@ mod beta22_tests {
     fn reconcile_updates_only_the_canonical_managed_sn_provider() {
         let old_endpoints = derive_sn_ai_provider_endpoints(Some("old-sn.buckyos.ai")).unwrap();
         let endpoints = derive_sn_ai_provider_endpoints(Some("sn.buckyos.ai")).unwrap();
-        let current = json!({
+        let mut current = json!({
             "providers": [
                 managed_sn_ai_provider_instance(&old_endpoints, "old-user"),
                 {
@@ -1328,10 +1337,13 @@ mod beta22_tests {
                     "protocol_adapter_id": "sn-openai",
                     "provider_rules_id": "sn",
                     "base_url": "https://custom.example/v1",
-                    "credentials": {"api_token": {"locked": "secret"}},
+                    "credentials": {"api_token": {"inline_secret": "secret"}},
                     "enabled": true
                 }
             ]
+        });
+        current["providers"][0]["credentials"] = json!({
+            "device_token_ref": MANAGED_SN_DEVICE_TOKEN_REF
         });
 
         let reconciled =
@@ -1348,6 +1360,11 @@ mod beta22_tests {
             endpoints.login_url
         );
         assert_eq!(reconciled["providers"][0]["account"], "did:bns:alice");
+        assert_eq!(
+            reconciled["providers"][0]["credentials"]["device_token_ref"]["runtime_ref"],
+            MANAGED_SN_DEVICE_TOKEN_REF
+        );
+        assert_canonical_aicc_settings(&reconciled);
         assert_eq!(
             reconciled["providers"][1]["base_url"],
             "https://custom.example/v1"

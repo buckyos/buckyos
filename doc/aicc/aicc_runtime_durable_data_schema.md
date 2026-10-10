@@ -19,7 +19,7 @@ Service：`aicc`
 | `aicc_session_route_history` | AICC 平台 RDB instance | 保留 tenant/user/app/session 隔离的上一次 exact model 软偏好 |
 | `aicc_artifact_scope` | AICC 平台 RDB instance | 记录 AICC 生成 Named Object 的租户归属，防止跨租户引用 |
 | `aicc_artifact_url_source` | AICC 平台 RDB instance | 记录 Provider 返回 URL 的来源实例和租户归属，使 AICC 可鉴权后委派下载 |
-| `aicc_provider_artifact_id` | AICC 平台 RDB instance | 按内容摘要、ProviderInstance 和模型原厂保存图片、视频、音频等 artifact 的原生 ID |
+| `aicc_provider_artifact` | AICC 平台 RDB instance | 按内容摘要**或**对象 ID、ProviderInstance、模型原厂和 tenant 保存图片、视频、音频等 artifact 的原生 ID；纯缓存 |
 | `aicc_audit_event` | AICC 平台 RDB instance | 持久安全与管理事件 |
 | Provider inventory LKGS | AICC 平台 RDB instance | 见 Provider 持久 schema |
 | usage event | AICC 平台 RDB instance | 见 usage log schema |
@@ -33,12 +33,12 @@ Service：`aicc`
 | RuntimeSnapshot、Adapter registry、路由索引 | 从 settings、metadata 和 inventory 重建 |
 | `session_overlay` | 调用方每次请求重新传入；AICC 不持久化 |
 | Provider health/quota 短期视图 | 重新 probe/query |
-| resolved credential 和 Provider 短期 token | 从 locked reference 重新解析或登录 |
+| resolved credential 和 Provider 短期 token | 从 typed credential source 重新解析或登录 |
 | task progress/delta 的运行时缓冲 | 由 task-manager event/data 重新观察，不是 AICC 最终结果真相源 |
 
 ## 3. Storage Strategy
 
-全部结构化记录使用 `get_rdb_instance("aicc", ..., AICC_USAGE_LOG_RDB_INSTANCE_ID)` 获得的平台 RDB instance，只依赖通用 SQL/RDB 接口，不绑定 SQLite 或 PostgreSQL。AICC 生成的大结果使用 Named Object；`aicc_artifact_scope` 只是授权索引，`obj_id` 指向平台对象存储。Provider artifact URL 的内容不在登记时下载；`aicc_artifact_url_source` 保存来源、授权范围、精确 URL、模型原厂和 nullable 内容摘要，读取时交回原 ProviderInstance 的 Adapter 下载协议，并在完整读到 EOF 后补全摘要。`aicc_provider_artifact_id` 不保存内容，只以原始内容字节的 SHA-256、ProviderInstance 和模型原厂关联 Provider 原生 ID。
+全部结构化记录使用 `get_rdb_instance("aicc", ..., AICC_USAGE_LOG_RDB_INSTANCE_ID)` 获得的平台 RDB instance，只依赖通用 SQL/RDB 接口，不绑定 SQLite 或 PostgreSQL。AICC 生成的大结果使用 Named Object；`aicc_artifact_scope` 只是授权索引，`obj_id` 指向平台对象存储。Provider artifact URL 的内容不在登记时下载；`aicc_artifact_url_source` 保存来源、授权范围、精确 URL、模型原厂和 nullable 内容摘要，读取时交回原 ProviderInstance 的 Adapter 下载协议，并在完整读到 EOF 后补全摘要。`aicc_provider_artifact` 不保存内容，只把 Provider 原生 ID 关联到内容摘要**或**对象 ID，作用域为 ProviderInstance + 模型原厂 + tenant。
 
 ## 4. Schema Definitions
 
@@ -148,24 +148,37 @@ Indexes：`idx_aicc_artifact_url_source_tenant(tenant_id, created_at_ms)`、`idx
 
 Constraints：首次登记确定 owner、ProviderInstance 和 `origin_provider`，冲突写入不得改变现有记录。打开 reader 时必须同时满足 URL 已登记、精确 URL 相同、当前 tenant 相同、ProviderInstance 仍存在且 Adapter 未改变；调用方传入 `artifact_id` 时还必须与登记值一致。`expires_at_ms` 非空且小于等于当前时间时记录视为失效并删除，不再尝试下载。内容流完整读到 EOF 后以实际下载字节计算摘要并补全；失败或提前停止保持为空。URL 可能包含 Provider 签名参数，禁止写入日志、错误消息或审计 data。
 
-### 4.6 Table: `aicc_provider_artifact_id`
+### 4.6 Table: `aicc_provider_artifact`
 
-Description：将原始内容字节映射到特定 ProviderInstance 和模型原厂内的 opaque artifact ID。映射不按 tenant 隔离，所有用户共享。
+Description：把已交给 Provider 的内容映射到该 ProviderInstance 与模型原厂内的 opaque artifact ID，使后续请求可以直接传 ID、免去再次传输内容。**这是纯缓存**：整表清空后功能仍然正确，只是每次调用都要重新传输内容。
+
+两种键共用一张表，互斥且恰好一列非空：
+
+- `content_digest` 键标识**内容本身**。同一份字节换文件名、换 MIME 仍是同一行；代价是先读完内容才能计算摘要。
+- `obj_id` 键标识**对象身份**。它随 `ResourceRef::NamedObject` 免费到手，命中过程不需要读取任何字节；代价是对象 ID 把 `name` 与 attributes 一起算进哈希，同一份字节换个名字就是另一个对象 ID。
+
+> 本表替换了 `aicc_provider_artifact_id`（content_digest 键）与 `aicc_provider_artifact_object`（obj_id 键）：两张表逐列同构，仅首列不同，读写、过期与删除路径全部重复，且都缺 tenant 维度。现在只声明新表名，不再访问旧表名；旧表不迁移、不 `DROP`，就地废弃（内容是可重建的缓存）。表集不参与版本化——`SCHEMA` 由幂等的 `CREATE ... IF NOT EXISTS` 组成并在每次打开时重新应用，因此全新 RDB 与既有 RDB 都会得到本表。
 
 | Column | Type | Nullable | Description |
 |---|---|---:|---|
-| `content_digest` | TEXT | NO | `sha256:<hex>` 内容摘要 |
+| `content_digest` | TEXT | NO | `sha256:<hex>` 内容摘要；obj_id 键的行此处为空串 |
+| `obj_id` | TEXT | NO | `ResourceRef::NamedObject` 的对象 ID；content_digest 键的行此处为空串 |
 | `provider_instance_name` | TEXT | NO | 具体账号/入口 namespace；Provider ID 不得跨实例复用 |
 | `origin_provider` | TEXT | NO | 模型原厂 namespace；聚合 Provider 内不得跨原厂复用 |
+| `tenant_id` | TEXT | NO | 缓存归属 tenant；不得跨 tenant 复用 |
 | `artifact_id` | TEXT | NO | Provider 返回且由 Adapter 明确绑定的 opaque ID |
 | `expires_at_ms` | BIGINT | YES | Provider 明示的 artifact 绝对过期时间（Unix ms）；未声明时为空 |
 | `created_at_ms` | BIGINT | NO | Unix ms |
 
-Primary key：`(content_digest, provider_instance_name, origin_provider)`。
+Primary key：`(content_digest, obj_id, provider_instance_name, origin_provider, tenant_id)`。
 
-Index：`idx_aicc_provider_artifact_id_provider(provider_instance_name, origin_provider, created_at_ms)`。
+Constraint：`CHECK ((content_digest='') <> (obj_id=''))` —— 恰好一种键非空；两种键都空或都非空的行会被拒绝，不会写出无法命中的记录。
 
-Constraints：查找必须提供完整主键；ProviderInstance 或 `origin_provider` 任一不同都不得复用 ID。`expires_at_ms` 非空且小于等于查询时间时必须在返回前删除并按未命中处理；为空表示 Provider 未声明期限，不代表永久有效。Provider 使用该 ID 返回明确的 HTTP 404 时，按完整主键和 artifact ID 条件删除，避免并发产生的新 ID 被旧失败误删。摘要是对内容本身的原始字节直接计算的 SHA-256，不得加入盐、MIME、文件名或身份字段；Base64 必须先解码。URL artifact 登记时摘要为空，只有内容流完整读到 EOF 后才补全 URL 来源记录并写入最终映射，且必须沿用原 ID 的创建时间和过期时间。相同 namespace 对同一内容返回新 ID 时以最新成功结果覆盖。只有 Adapter 明确声明的 ID 才能登记，禁止从 URL、artifact name 或模型名猜测；native task adapter 可以显式声明 task ID 同时也是 artifact ID。
+Index：`idx_aicc_provider_artifact_provider(provider_instance_name, origin_provider, created_at_ms)`。
+
+Constraints：查找必须提供完整主键（键 + ProviderInstance + `origin_provider` + tenant）；ProviderInstance、`origin_provider` 或 tenant 任一不同都不得复用 ID。`expires_at_ms` 非空且小于等于查询时间时必须在返回前删除并按未命中处理；为空表示 Provider 未声明期限，不代表永久有效。Provider 使用该 ID 返回明确的 HTTP 404 时，按完整主键和 artifact ID 条件删除，避免并发产生的新 ID 被旧失败误删。摘要是对内容本身的原始字节直接计算的 SHA-256，不得加入盐、MIME、文件名或身份字段；Base64 必须先解码。URL artifact 登记时摘要为空，只有内容流完整读到 EOF 后才补全 URL 来源记录、**并以 content_digest 键写入本表**（沿用原 ID 的创建时间和过期时间）。相同 namespace 对同一内容返回新 ID 时以最新成功结果覆盖。只有 Adapter 明确声明的 ID 才能登记，禁止从 URL、artifact name 或模型名猜测；native task adapter 可以显式声明 task ID 同时也是 artifact ID。
+
+两种键的取用顺序：对象形态（`ResourceRef::NamedObject`）的入参优先查 `obj_id` 键；未命中时**不回退** `content_digest` 键——回退等于读完整份内容，正是这条路径要避免的成本——直接改用对象 URL。字节形态的入参本来就有内容，直接查 `content_digest` 键。
 
 ### 4.7 Table: `aicc_audit_event`
 
@@ -186,7 +199,9 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 
 ## 5. Schema Version
 
-本文表集是 beta 2.2 breaking change 后的初始契约，版本为 `1`，不提供旧本机 RDB 升级路径。升级到本版本时直接清理旧 AICC RDB，由当前 `SCHEMA` 创建完整表结构。`finance_snapshot_json` 仍是权威数据，普通列是写入时生成且可直接信任的查询投影，读取时不反向解析 JSON，也不做双份校验。
+本文表集始于 beta 2.2 breaking change 后的初始契约。`aicc_schema_meta.schema_version` 当前为 `2`：`1` 为初始表集，`2` 增加 route trace 过滤列。
+
+**表集本身不参与版本化。** `SCHEMA` 完全由幂等的 `CREATE ... IF NOT EXISTS` 组成，并在每次打开时重新应用，因此新增或改名的表对全新 RDB 与既有 RDB 同时生效，不需要为此新增 migration；`MIGRATIONS` 只保留无法表达为幂等表定义的既有行改写（当前只有 `2` 的 route trace 过滤列）。表名变更不会让既有 RDB 失败：被替换掉的旧表就地废弃、不再访问，也不 `DROP`。`1` 之前的旧 AICC RDB 不提供升级路径，直接清理后由 `SCHEMA` 重建完整表结构。`finance_snapshot_json` 仍是权威数据，普通列是写入时生成且可直接信任的查询投影，读取时不反向解析 JSON，也不做双份校验。
 
 `usage.query` 的时间、身份、模型、Provider、method 等过滤条件、事件游标和页大小均进入 SQL；summary、group 和 time bucket 由数据库基于 typed projection 聚合，只将聚合行和请求页返回进程，不再先加载全部命中事件。
 
@@ -203,7 +218,7 @@ Indexes：`created_at_ms`、`(tenant_id, created_at_ms)`、`(trace_id, created_a
 | `aicc_session_route_history` | No-compat；可丢弃时仅影响软偏好，不影响硬约束正确性 |
 | `aicc_artifact_scope` | No-compat；不得从对象内容推测 tenant 重建 |
 | `aicc_artifact_url_source` | No-compat；不得根据 URL host 猜测 Provider 或 owner 重建 |
-| `aicc_provider_artifact_id` | No-compat；只有再次获得 Provider 明确返回的 ID 后才能重建 |
+| `aicc_provider_artifact` | No-compat；纯缓存，清空只损失加速；只有再次获得 Provider 明确返回的 ID 后才能重建。本表直接以新表名进入 `SCHEMA` 替换旧的两张同构表，旧表不迁移、不 `DROP`，就地废弃且不再访问，无需回填 |
 | `aicc_audit_event` | No-compat；不可伪造重建 |
 
 数据库 migration 失败时必须 error-and-stop，不得带着部分新 schema 继续接受请求。

@@ -33,6 +33,7 @@ fn provider_rules() -> Value {
         "schema_revision": 0,
         "revision_seq": 9,
         "provider_profile_id": "openai",
+        "model_driver_overrides": {"ark-gpt-special": "openai/gpt-special"},
         "models": [{
             "id": "gpt-special",
             "exclude": true
@@ -155,6 +156,16 @@ fn current_file_set_builds_immutable_indexes_and_deterministic_snapshot() {
     assert_eq!(
         first.match_model("unknown"),
         Err(ModelMatchFailure::NoMatch)
+    );
+    assert_eq!(
+        first
+            .provider_model_identity_override("openai", "ark-gpt-special")
+            .unwrap()
+            .unwrap(),
+        ModelIdentity {
+            model_driver_id: "openai".into(),
+            model_id: "gpt-special".into(),
+        }
     );
 }
 
@@ -451,6 +462,28 @@ fn schema_revision_required_features_and_references_are_validated() {
         vec!["gpt-special".to_owned()]
     );
 
+    let mut invalid_provider_override = provider_rules();
+    invalid_provider_override["model_driver_overrides"] =
+        json!({"ark-gpt-special": "missing-target"});
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, invalid_provider_override);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::InvalidValue { field, .. })
+            if field == "model_driver_overrides.target"
+    ));
+
+    let mut unknown_provider_override = provider_rules();
+    unknown_provider_override["model_driver_overrides"] =
+        json!({"ark-gpt-special": "openai/gpt-missing"});
+    let mut files = complete_files();
+    files[1] = file(CatalogKind::ProviderRules, unknown_provider_override);
+    assert!(matches!(
+        build(files),
+        Err(CatalogBuildError::UnknownReference { field, .. })
+            if field == "model_driver_overrides.target"
+    ));
+
     let mut uncovered_static_inventory = provider_rules();
     uncovered_static_inventory["schema_revision"] = json!(1);
     uncovered_static_inventory["static_inventory_models"] = json!(["claude-special"]);
@@ -487,7 +520,9 @@ fn schema_revision_required_features_and_references_are_validated() {
             if field == "custom_provider_adapters"
     ));
 
-    let missing_driver = vec![file(CatalogKind::ProviderRules, provider_rules())];
+    let mut missing_driver_rules = provider_rules();
+    missing_driver_rules["model_driver_overrides"] = json!({});
+    let missing_driver = vec![file(CatalogKind::ProviderRules, missing_driver_rules)];
     assert!(matches!(
         build(missing_driver),
         Err(CatalogBuildError::UnknownReference {

@@ -237,7 +237,7 @@ fn settings_credentials(
             let parsed = match parsed {
                 Some(value) => {
                     if let ProviderAuthConfig::ApiKey { credential_ref, .. } = &value {
-                        let (_, secret) = first_locked_credential(
+                        let (_, secret) = first_resolvable_credential(
                             &provider.provider_instance_name,
                             &provider.credentials,
                         )?;
@@ -246,7 +246,7 @@ fn settings_credentials(
                     value
                 }
                 None => {
-                    let (reference, secret) = first_locked_credential(
+                    let (reference, secret) = first_resolvable_credential(
                         &provider.provider_instance_name,
                         &provider.credentials,
                     )?;
@@ -295,17 +295,30 @@ fn provider_discovery_snapshot(
     serde_json::from_value(serde_json::to_value(settings)?)
 }
 
-fn first_locked_credential(
+fn first_resolvable_credential(
     instance: &str,
     credentials: &ProviderCredentials,
 ) -> Result<(String, String), RPCErrors> {
     for (name, value) in credentials {
-        if !value.locked.is_empty() {
-            return Ok((format!("locked://{instance}/{name}"), value.locked.clone()));
+        match value {
+            ProviderCredential::InlineSecret(secret) if !secret.is_empty() => {
+                return Ok((format!("inline-secret://{instance}/{name}"), secret.clone()));
+            }
+            ProviderCredential::SecretRef(reference) if !reference.is_empty() => {
+                return Err(RPCErrors::ReasonError(format!(
+                    "secret_ref credential `{reference}` is not supported until a secret resolver is configured"
+                )));
+            }
+            ProviderCredential::RuntimeRef(reference) if !reference.is_empty() => {
+                return Err(RPCErrors::ReasonError(format!(
+                    "runtime_ref credential `{reference}` cannot be used for static API key authentication"
+                )));
+            }
+            _ => {}
         }
     }
     Err(RPCErrors::ReasonError(
-        "no locked credential was provided".to_string(),
+        "no resolvable credential was provided".to_string(),
     ))
 }
 
@@ -355,12 +368,13 @@ impl ProviderValidator for RuntimeProviderValidator {
                     ProviderAuthConfig::ApiKey { credential_ref, .. } => credential_ref.clone(),
                     ProviderAuthConfig::DynamicLogin { .. } => unreachable!(),
                 };
-                let (_, secret) = first_locked_credential(&provider_name, &request.credentials)?;
+                let (_, secret) =
+                    first_resolvable_credential(&provider_name, &request.credentials)?;
                 (auth, BTreeMap::from([(credential_ref, secret)]))
             }
             None => {
                 let (reference, secret) =
-                    first_locked_credential(&provider_name, &request.credentials)?;
+                    first_resolvable_credential(&provider_name, &request.credentials)?;
                 (
                     ProviderAuthConfig::ApiKey {
                         credential_ref: reference.clone(),
@@ -548,6 +562,39 @@ impl ProviderValidator for RuntimeProviderValidator {
 mod startup_tests {
     use super::*;
 
+    #[test]
+    fn credential_sources_are_resolved_explicitly() {
+        let inline: ProviderCredentials = serde_json::from_value(json!({
+            "api_token": {"inline_secret": "secret"}
+        }))
+        .unwrap();
+        assert_eq!(
+            first_resolvable_credential("provider", &inline).unwrap(),
+            (
+                "inline-secret://provider/api_token".to_string(),
+                "secret".to_string()
+            )
+        );
+
+        let secret_ref: ProviderCredentials = serde_json::from_value(json!({
+            "api_token": {"secret_ref": "vault://aicc/provider"}
+        }))
+        .unwrap();
+        assert!(first_resolvable_credential("provider", &secret_ref)
+            .unwrap_err()
+            .to_string()
+            .contains("secret resolver"));
+
+        let runtime_ref: ProviderCredentials = serde_json::from_value(json!({
+            "api_token": {"runtime_ref": "runtime://device-jwt"}
+        }))
+        .unwrap();
+        assert!(first_resolvable_credential("provider", &runtime_ref)
+            .unwrap_err()
+            .to_string()
+            .contains("static API key"));
+    }
+
     #[tokio::test]
     async fn persisted_reserved_custom_adapters_do_not_block_startup_or_reload() {
         let catalog = crate::settings::MetadataSources {
@@ -576,7 +623,7 @@ mod startup_tests {
             settings.providers.push(serde_json::from_value(json!({
                 "provider_instance_name": adapter, "provider_type": "cloud_api",
                 "provider_profile_id": "custom", "protocol_adapter_id": adapter,
-                "base_url": "https://example.invalid/v1", "credentials": {"api_token":{"locked":"test-secret"}},
+                "base_url": "https://example.invalid/v1", "credentials": {"api_token":{"inline_secret":"test-secret"}},
                 "auto_sync_models": false
             })).unwrap());
         }
@@ -585,7 +632,7 @@ mod startup_tests {
                 "provider_instance_name": "healthy", "provider_type": "cloud_api",
                 "provider_profile_id": "doubao", "protocol_adapter_id": "doubao-responses",
                 "base_url": "https://ark.cn-beijing.volces.com/api/v3",
-                "credentials": {"api_token":{"locked":"test-secret"}}, "auto_sync_models": false
+                "credentials": {"api_token":{"inline_secret":"test-secret"}}, "auto_sync_models": false
             }))
             .unwrap(),
         );

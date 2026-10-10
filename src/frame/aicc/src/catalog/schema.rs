@@ -564,6 +564,8 @@ pub(crate) struct ProviderRulesCatalog {
     #[serde(default)]
     pub static_inventory_models: Vec<String>,
     #[serde(default)]
+    pub model_driver_overrides: BTreeMap<String, String>,
+    #[serde(default)]
     pub supplemental_inventory_api_types: BTreeSet<String>,
     #[serde(default)]
     pub models: Vec<ProviderExactRule>,

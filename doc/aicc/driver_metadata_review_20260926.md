@@ -1,8 +1,8 @@
 # Driver metadata 核对记录（2026-09-26）
 
-本次盘点 `src/frame/aicc/driver_metadata` 的 38 份文件：12 份 model-driver、13 份 provider rules、13 份 known-provider。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
+本次盘点最初覆盖 `src/frame/aicc/driver_metadata` 的 38 份文件；豆包普通账号与 Agent Plan 拆分后为 39 份：12 份 model-driver、14 份 provider rules、13 份 known-provider。两个豆包 profile 合并在同一份 known-provider catalog 中，账号专属规则仍分别保存。长度能力由 model-driver 声明，并进入各渠道的有效库存；不在每个 Provider 重复填写。
 
-核对重点是当前目录中 93 个未排除的 LLM 条目的上下文和输出限制，以及核对过程中发现的明确能力错误。修复前 45 个条目至少缺少一个长度字段，修复后剩余 5 个，原因见下文。共修改 7 份 model-driver 文件、62 个模型条目，其中 58 个涉及长度；包括一个 ASR 条目。
+2026-09-26 首轮核对重点是当时目录中 93 个未排除的 LLM 条目的上下文和输出限制，以及核对过程中发现的明确能力错误。当时修复前 45 个条目至少缺少一个长度字段，修复后剩余 5 个。后续豆包动态库存核对又纳入了新的 Doubao、Qwen、Kimi、MiniMax 等精确型号；当前全部未确认字段统一列在下文，不能继续用首轮的 5 个作为现状统计。首轮共修改 7 份 model-driver 文件、62 个模型条目，其中 58 个涉及长度；包括一个 ASR 条目。
 
 ## 取值原则
 
@@ -105,6 +105,9 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 | 模型 | 缺失字段 | 原因 |
 | --- | --- | --- |
 | doubao-seed-2.1-lite、doubao-seed-2.1-turbo、doubao-seed-2.1-pro、doubao-seed-evolving | max_output_tokens | Agent Plan 当前模型清单确认这些型号可用，但未给出可安全用于路由硬过滤的逐型号最大输出整数 |
+| doubao-seed-2-1-turbo-260628 | max_output_tokens | 普通账号 `/api/v3/models` 确认可用，官方资料给出上下文窗口但未给出可安全用于路由硬过滤的最大输出整数 |
+| doubao-seed-2.0-code-preview、doubao-seed-character、doubao-seed-translation | max_context_tokens、max_output_tokens | 普通账号 `/api/v3/models` 确认当前型号和任务类型，但目录不返回 token 上限，现有官方模型表也没有可安全用于路由硬过滤的逐型号整数 |
+| qwen2-5-72b-20240919、qwen3-0-6b-20250429、qwen3-8b-20250429、qwen3-14b-20250429、qwen3-32b-20250429 | max_context_tokens、max_output_tokens | 火山方舟普通账号 `/api/v3/models` 确认这些聚合渠道型号当前可见，但目录不返回 token 上限；不把其他渠道或相近 Qwen 型号的限制外推到这些精确 ID |
 | kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k3 | max_output_tokens | 当前官方模型页未给出这些型号的明确 API 输出硬上限 |
 | kimi-k2.8-preview | max_context_tokens、max_output_tokens | Agent Plan 清单已列出该预览型号，但当前 Kimi 公共模型文档尚无可核实的硬限制 |
 | minimax-m3 | max_context_tokens、max_output_tokens | Agent Plan 清单已列出 M3，但 MiniMax 公共模型文档尚无可核实的 M3 硬限制 |
@@ -125,4 +128,4 @@ Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6
 - 输入加输出恰好达到各型号上下文上限时允许，超出一个 token 时拒绝。
 - 所有有效 LLM 的长度必须是正整数，输出不能超过上下文；缺失字段集合必须与上面五个型号的记录一致。
 
-验证结果：`cargo test -p aicc` 的 515 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。这些验证使用本地 fixtures，不产生真实模型调用；未部署或重启运行中的 AICC。
+首轮验证结果：`cargo test -p aicc` 当时的 515 个测试全部通过，`cargo check -p aicc --all-targets`、`cargo fmt -p aicc -- --check` 和 `git diff --check` 均通过。这些验证使用本地 fixtures，不产生真实模型调用；首轮未部署或重启运行中的 AICC。后续豆包 T2 补齐另行执行了构建、部署、真实调用与高保真 MockProvider 回归，以对应测试报告为准。

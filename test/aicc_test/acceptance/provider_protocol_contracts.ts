@@ -34,7 +34,9 @@ const OFFICIAL_PROTOCOL_SOURCE_HOSTS: Record<string, Set<string>> = {
   glm: new Set(["docs.z.ai", "docs.bigmodel.cn"]),
   deepseek: new Set(["api-docs.deepseek.com"]),
   doubao: new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-agent-plan": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   "doubao-tts": new Set(["www.volcengine.com", "docs.volcengine.com"]),
+  "doubao-speech": new Set(["www.volcengine.com", "docs.volcengine.com"]),
   qwen: new Set(["www.alibabacloud.com", "help.aliyun.com"]),
   "sn-ai-provider": new Set(["github.com", "developers.openai.com"]),
 };
@@ -53,6 +55,7 @@ export type ProviderProtocolContract = {
   base_contract_id?: string;
   api_version: string;
   api_types: string[];
+  test_model_ids?: Record<string, string>;
   variant_api_types?: string[];
   operation: string;
   http_method: string;
@@ -65,8 +68,11 @@ export type ProviderProtocolContract = {
   allowed_body_fields: string[];
   body_field_types: Record<
     string,
-    Array<"string" | "number" | "boolean" | "array" | "object">
+    Array<"string" | "number" | "integer" | "boolean" | "array" | "object">
   >;
+  required_body_values?: Record<string, unknown>;
+  required_body_paths?: string[];
+  forbidden_body_paths?: string[];
   generation_config?: {
     allowed_fields: string[];
     thinking_level_values?: string[];
@@ -92,7 +98,8 @@ export type ProviderProtocolContract = {
     | "openai_video"
     | "glm_video"
     | "doubao_video"
-    | "qwen_media";
+    | "qwen_media"
+    | "doubao_asr";
   async_steps?: Array<{
     name: "poll" | "result" | "cancel";
     http_method: string;
@@ -127,6 +134,7 @@ export type ProviderProtocolCatalog = {
     credential_type: "api_key" | "bearer";
     instance_fields?: { region?: string; workspace?: string; account?: string };
     official_first_party_model_ids?: Record<string, string[]>;
+    wire_distinct_model_ids?: Record<string, string[]>;
     official_variant_sources?: string[];
     official_variant_rules?: Array<{
       model_ids: string[];
@@ -262,6 +270,36 @@ export function validateProviderProtocolCatalog(
         }
       }
     }
+    if (provider.wire_distinct_model_ids !== undefined) {
+      const distinctModels = object(
+        provider.wire_distinct_model_ids,
+        `${driver}.wire_distinct_model_ids`,
+      );
+      for (const [apiType, rawModelIds] of Object.entries(distinctModels)) {
+        const modelIds = stringArray(
+          rawModelIds,
+          `${driver}.wire_distinct_model_ids.${apiType}`,
+        );
+        const officialPool = (provider.official_first_party_model_ids as
+          | Record<string, string[]>
+          | undefined)?.[apiType];
+        for (const modelId of modelIds) {
+          if (officialPool && !officialPool.includes(modelId)) {
+            throw new Error(
+              `${driver}.wire_distinct_model_ids.${apiType} contains ${modelId} outside its official model pool`,
+            );
+          }
+          if (!(provider.contracts as ProviderProtocolContract[]).some((contract) =>
+            contract.api_types.includes(apiType) &&
+            contract.test_model_ids?.[apiType] === modelId
+          )) {
+            throw new Error(
+              `${driver} has no distinct wire contract for ${apiType}/${modelId}`,
+            );
+          }
+        }
+      }
+    }
     if (provider.official_variant_rules !== undefined) {
       const sources = stringArray(
         provider.official_variant_sources,
@@ -340,8 +378,23 @@ export function validateProviderProtocolCatalog(
         nonEmptyString(contract[field], `${id}.${field}`);
       }
       stringArray(contract.api_types, `${id}.api_types`);
+      const contractTestModelIds = contract.test_model_ids === undefined
+        ? {}
+        : object(contract.test_model_ids, `${id}.test_model_ids`);
+      for (const [apiType, modelId] of Object.entries(contractTestModelIds)) {
+        if (!(contract.api_types as string[]).includes(apiType)) {
+          throw new Error(`${id}.test_model_ids.${apiType} is not declared by the contract`);
+        }
+        nonEmptyString(modelId, `${id}.test_model_ids.${apiType}`);
+        const officialPool = (provider.official_first_party_model_ids as
+          | Record<string, string[]>
+          | undefined)?.[apiType];
+        if (officialPool && !officialPool.includes(String(modelId))) {
+          throw new Error(`${id}.test_model_ids.${apiType} is absent from its official model pool`);
+        }
+      }
       for (const apiType of contract.api_types as string[]) {
-        if (!testModelIds[apiType]) {
+        if (!contractTestModelIds[apiType] && !testModelIds[apiType]) {
           throw new Error(`${id} has no ${driver}.test_model_ids.${apiType}`);
         }
       }
@@ -360,6 +413,24 @@ export function validateProviderProtocolCatalog(
         contract.body_field_types,
         `${id}.body_field_types`,
       );
+      if (contract.required_body_values !== undefined) {
+        const requiredBodyValues = object(
+          contract.required_body_values,
+          `${id}.required_body_values`,
+        );
+        for (const pointer of Object.keys(requiredBodyValues)) {
+          if (!pointer.startsWith("/")) {
+            throw new Error(`${id}.required_body_values keys must be JSON pointers`);
+          }
+        }
+      }
+      for (const field of ["required_body_paths", "forbidden_body_paths"] as const) {
+        if (contract[field] === undefined) continue;
+        const pointers = stringArray(contract[field], `${id}.${field}`);
+        if (pointers.some((pointer) => !pointer.startsWith("/"))) {
+          throw new Error(`${id}.${field} entries must be JSON pointers`);
+        }
+      }
       for (const required of contract.required_body_fields as string[]) {
         if (!allowed.has(required)) {
           throw new Error(`${id} required field ${required} is not allowed`);
@@ -406,7 +477,7 @@ export function validateProviderProtocolCatalog(
         const types = stringArray(rawTypes, `${id}.body_field_types.${field}`);
         if (
           types.some((type) =>
-            !["string", "number", "boolean", "array", "object"].includes(type)
+            !["string", "number", "integer", "boolean", "array", "object"].includes(type)
           )
         ) {
           throw new Error(
@@ -707,6 +778,18 @@ export function protocolContract(
   return contract;
 }
 
+export function contractTestModelId(
+  provider: ProviderProtocolCatalog["providers"][number],
+  contract: ProviderProtocolContract,
+  apiType: string,
+): string {
+  const model = contract.test_model_ids?.[apiType] ?? provider.test_model_ids[apiType];
+  if (!model) {
+    throw new Error(`${contract.id} has no test model for ${apiType}`);
+  }
+  return model;
+}
+
 function pathPattern(template: string): RegExp {
   const escaped = template.replace(/[.+?^${}()|[\]\\]/g, "\\$&")
     .replace(/\\\{[^}]+\\\}/g, "[^/]+");
@@ -778,7 +861,13 @@ export function validateProviderRequest(
   for (
     const [name, expected] of Object.entries(contract.required_headers ?? {})
   ) {
-    if (request.headers.get(name) !== expected) {
+    const actual = request.headers.get(name);
+    if (
+      expected === "<uuid>"
+        ? !actual ||
+          !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(actual)
+        : actual !== expected
+    ) {
       errors.push(`header ${name} must equal ${expected}`);
     }
   }
@@ -801,6 +890,30 @@ export function validateProviderRequest(
     return errors;
   }
   const body = request.body as Record<string, unknown>;
+  const pointerValue = (pointer: string): unknown =>
+    pointer.split("/").slice(1).reduce<unknown>((value, token) => {
+      const key = token.replace(/~1/g, "/").replace(/~0/g, "~");
+      return value !== null && typeof value === "object" && !Array.isArray(value)
+        ? (value as Record<string, unknown>)[key]
+        : undefined;
+    }, body);
+  for (const [pointer, expected] of Object.entries(contract.required_body_values ?? {})) {
+    const actual = pointerValue(pointer);
+    if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+      errors.push(`body ${pointer} must equal ${JSON.stringify(expected)}`);
+    }
+  }
+  for (const pointer of contract.required_body_paths ?? []) {
+    const actual = pointerValue(pointer);
+    if (actual === undefined || actual === null || actual === "") {
+      errors.push(`body ${pointer} is required`);
+    }
+  }
+  for (const pointer of contract.forbidden_body_paths ?? []) {
+    if (pointerValue(pointer) !== undefined) {
+      errors.push(`body ${pointer} is forbidden`);
+    }
+  }
   const requiredFields = [
     ...contract.required_body_fields,
     ...(contract.required_body_fields_by_api_type?.[apiType] ?? []),
@@ -814,16 +927,39 @@ export function validateProviderRequest(
   for (const field of Object.keys(body)) {
     if (!allowed.has(field)) errors.push(`unknown body field ${field}`);
     const expectedTypes = contract.body_field_types[field];
-    if (
-      expectedTypes && !expectedTypes.includes(
-        Array.isArray(body[field])
-          ? "array"
-          : body[field] !== null && typeof body[field] === "object"
-          ? "object"
-          : typeof body[field] as never,
-      )
-    ) {
+    const actualType = Array.isArray(body[field])
+      ? "array"
+      : body[field] !== null && typeof body[field] === "object"
+      ? "object"
+      : typeof body[field];
+    if (expectedTypes && !(
+      expectedTypes.includes(actualType as never) ||
+      actualType === "number" && expectedTypes.includes("integer") &&
+        Number.isInteger(body[field])
+    )) {
       errors.push(`body field ${field} has invalid type`);
+    }
+  }
+  if (contract.id === "doubao.translation.responses.v3") {
+    const input = body.input;
+    const userTextBlocks = Array.isArray(input)
+      ? input.flatMap((item) => {
+        const record = recordValue(item);
+        if (record?.role !== "user" || !Array.isArray(record.content)) return [];
+        return record.content.filter((block) => recordValue(block)?.type === "input_text");
+      })
+      : [];
+    const options = userTextBlocks.length === 1
+      ? recordValue(recordValue(userTextBlocks[0])?.translation_options)
+      : undefined;
+    if (!options || typeof options.target_language !== "string" || !options.target_language.trim()) {
+      errors.push("Doubao translation requests require one user input_text translation_options.target_language");
+    } else if (
+      Object.keys(options).some((name) => !["source_language", "target_language"].includes(name)) ||
+      options.source_language !== undefined &&
+        (typeof options.source_language !== "string" || !options.source_language.trim())
+    ) {
+      errors.push("Doubao translation_options contains invalid fields");
     }
   }
   if (contract.api_types.includes("decision")) {
@@ -1607,6 +1743,9 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
   const baseResponse = body.base_resp && typeof body.base_resp === "object"
     ? body.base_resp as Record<string, unknown>
     : undefined;
+  const header = body.header && typeof body.header === "object"
+    ? body.header as Record<string, unknown>
+    : undefined;
   for (
     const value of [
       error?.code,
@@ -1615,6 +1754,7 @@ function providerErrorCode(fixture: ProtocolErrorFixture): string {
       body.code,
       body.error_type,
       baseResponse?.status_code,
+      header?.code,
     ]
   ) {
     if (value !== undefined && value !== null && String(value)) {
@@ -1674,6 +1814,7 @@ export function buildT15Manifest(
   for (const provider of catalog.providers) {
     for (const contract of provider.contracts) {
       for (const apiType of contract.api_types) {
+        const contractModel = contract.test_model_ids?.[apiType];
         const common: Partial<AcceptanceCase> = {
           layer: "T1.5",
           priority: "P0",
@@ -1688,7 +1829,9 @@ export function buildT15Manifest(
           session: "isolated-per-case",
           provider_driver: provider.provider_driver,
           provider_instance: `t15-${provider.provider_driver}`,
-          model_selector: null,
+          model_selector: contractModel
+            ? { kind: "exact", value: contractModel }
+            : null,
           api_type: apiType,
           method: methodsForApiType(apiType)[0] ?? apiType,
           execution_mode: "immediate",
@@ -1857,7 +2000,8 @@ export function buildT15Manifest(
               contract.async_protocol === "minimax_video" ||
               contract.async_protocol === "minimax_video_v2" ||
               contract.async_protocol === "glm_video" ||
-              contract.async_protocol === "doubao_video"
+              contract.async_protocol === "doubao_video" ||
+              contract.async_protocol === "doubao_asr"
               ? ["async_poll_timeout"] as const
               : ["async_poll_timeout", "async_artifact_unavailable"] as const;
           for (const scenario of terminalFailureScenarios) {
@@ -1873,13 +2017,7 @@ export function buildT15Manifest(
               expected_wire_fixture: `${contract.id}.request.async`,
               response_fixture: `${contract.id}.${scenario}`,
               timeout_ms: scenario === "async_poll_timeout"
-              ? contract.async_protocol === "google_lro" ||
-                    contract.async_protocol === "minimax_video" ||
-                    contract.async_protocol === "minimax_video_v2" ||
-                    contract.async_protocol === "glm_video" ||
-                    contract.async_protocol === "doubao_video"
-                  ? 3_500
-                  : 1_500
+                ? 5_000
                 : common.timeout_ms,
             } as AcceptanceCase);
           }

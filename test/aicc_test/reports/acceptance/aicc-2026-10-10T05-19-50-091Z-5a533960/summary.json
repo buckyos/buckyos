@@ -1,0 +1,731 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+  "started_at": "2026-10-10T05:19:50.052Z",
+  "finished_at": "2026-10-10T05:20:09.185Z",
+  "commit": "b6ed2453535ad05256d4809fe33d72f33d2585b7",
+  "baseline_revision": "2026-10-05.2",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 6,
+  "actual_real_calls": 6,
+  "estimated_cost_usd": 0.060000000000000005,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.06,
+    "planned_max_calls": 6,
+    "planned_max_cost_usd": 0.060000000000000005,
+    "actual_calls": 6,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0.060000000000000005,
+    "total_exposure_usd": 0.060000000000000005,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 6,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-flash.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 98,
+          "output_tokens": 18,
+          "total_tokens": 116
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-pro.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 98,
+          "output_tokens": 38,
+          "total_tokens": 136
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 50,
+          "output_tokens": 66,
+          "total_tokens": 116
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.glm-5.3.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "glm-5.3@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 28,
+          "output_tokens": 309,
+          "total_tokens": 337
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.kimi-k2.8-preview.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 113,
+          "total_tokens": 213
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.minimax-m3.llm",
+        "attempt": 1,
+        "provider_driver": "doubao-agent-plan",
+        "provider_instance": "doubao-agent-plan-t2",
+        "exact_model": "minimax-m3@doubao-agent-plan-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T05:19:51.810Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 191,
+          "output_tokens": 46,
+          "total_tokens": 237
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "doubao-agent-plan",
+        "calls": 6,
+        "input_tokens": 565,
+        "output_tokens": 590,
+        "total_tokens": 1155,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "doubao-agent-plan/doubao-agent-plan-t2",
+        "calls": 6,
+        "input_tokens": 565,
+        "output_tokens": 590,
+        "total_tokens": 1155,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      }
+    ],
+    "by_model": [
+      {
+        "key": "deepseek-v4-flash@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 18,
+        "total_tokens": 116,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "deepseek-v4-pro@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 38,
+        "total_tokens": 136,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 50,
+        "output_tokens": 66,
+        "total_tokens": 116,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "glm-5.3@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 28,
+        "output_tokens": 309,
+        "total_tokens": 337,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "kimi-k2.8-preview@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 100,
+        "output_tokens": 113,
+        "total_tokens": 213,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "minimax-m3@doubao-agent-plan-t2",
+        "calls": 1,
+        "input_tokens": 191,
+        "output_tokens": 46,
+        "total_tokens": 237,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "llm",
+        "calls": 6,
+        "input_tokens": 565,
+        "output_tokens": 590,
+        "total_tokens": 1155,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.060000000000000005,
+        "unknown_cost_calls": 6
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-flash.llm",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 18,
+        "total_tokens": 116,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-pro.llm",
+        "calls": 1,
+        "input_tokens": 98,
+        "output_tokens": 38,
+        "total_tokens": 136,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.llm",
+        "calls": 1,
+        "input_tokens": 50,
+        "output_tokens": 66,
+        "total_tokens": 116,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.glm-5.3.llm",
+        "calls": 1,
+        "input_tokens": 28,
+        "output_tokens": 309,
+        "total_tokens": 337,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.kimi-k2.8-preview.llm",
+        "calls": 1,
+        "input_tokens": 100,
+        "output_tokens": 113,
+        "total_tokens": 213,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.doubao-agent-plan.doubao-agent-plan-t2.minimax-m3.llm",
+        "calls": 1,
+        "input_tokens": 191,
+        "output_tokens": 46,
+        "total_tokens": 237,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-flash.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 2406,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 98,
+            "output_tokens": 18,
+            "total_tokens": 116
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-78d477eadd2641ceaa8230964729f2a3",
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 18,
+        "total_tokens": 116
+      },
+      "trace_id": "aicc-idem-c2c2651461937bb6336cf228567b2ba0"
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.deepseek-v4-pro.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 4240,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 98,
+            "output_tokens": 38,
+            "total_tokens": 136
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-f6055d7cb55b4ac99e2f87856c026d0b",
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 38,
+        "total_tokens": 136
+      },
+      "trace_id": "aicc-idem-089b230d3d1b5c497dd1e67b707c784a"
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.doubao-seed-2.0-mini.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 5607,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 50,
+            "output_tokens": 66,
+            "total_tokens": 116
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-25c4b6c032154f6cb0feb79a16db586d",
+      "usage": {
+        "input_tokens": 50,
+        "output_tokens": 66,
+        "total_tokens": 116
+      },
+      "trace_id": "aicc-idem-43d56ba8f55169a5b04e3990f6fec1b1"
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.glm-5.3.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 11922,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 28,
+            "output_tokens": 309,
+            "total_tokens": 337
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-6a102d8d8f2d47d89fb3a802042b9afa",
+      "usage": {
+        "input_tokens": 28,
+        "output_tokens": 309,
+        "total_tokens": 337
+      },
+      "trace_id": "aicc-idem-57ab33ce6406648f7b6bca9868749366"
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.kimi-k2.8-preview.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 14865,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 113,
+            "total_tokens": 213
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-462ef4ffa58d4637833e8c3c90c45a25",
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 113,
+        "total_tokens": 213
+      },
+      "trace_id": "aicc-idem-a27ed036b88542ef38a27f344c7215df"
+    },
+    {
+      "run_id": "aicc-2026-10-10T05-19-50-091Z-5a533960",
+      "case_id": "t2.doubao-agent-plan.doubao-agent-plan-t2.minimax-m3.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T05:19:51.810Z",
+          "elapsed_ms": 16427,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 191,
+            "output_tokens": 46,
+            "total_tokens": 237
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-45cf8934d26643ea8f0b7a228167b0a8",
+      "usage": {
+        "input_tokens": 191,
+        "output_tokens": 46,
+        "total_tokens": 237
+      },
+      "trace_id": "aicc-idem-4113ee68123e37b127abb3fbe386a7ee"
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-flash",
+      "physical_model_id": "deepseek-v4-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "provider_model_id": "doubao-seed-2.0-mini",
+      "physical_model_id": "doubao-seed-2.0-mini",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "provider_model_id": "kimi-k2.8-preview",
+      "physical_model_id": "kimi-k2.8-preview",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "provider_model_id": "minimax-m3",
+      "physical_model_id": "minimax-m3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-flash@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-flash",
+      "physical_model_id": "deepseek-v4-flash",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "deepseek-v4-pro@doubao-agent-plan-t2",
+      "provider_model_id": "deepseek-v4-pro",
+      "physical_model_id": "deepseek-v4-pro",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "doubao-seed-2.0-mini@doubao-agent-plan-t2",
+      "provider_model_id": "doubao-seed-2.0-mini",
+      "physical_model_id": "doubao-seed-2.0-mini",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "glm-5.3@doubao-agent-plan-t2",
+      "provider_model_id": "glm-5.3",
+      "physical_model_id": "glm-5.3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "kimi-k2.8-preview@doubao-agent-plan-t2",
+      "provider_model_id": "kimi-k2.8-preview",
+      "physical_model_id": "kimi-k2.8-preview",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "doubao-agent-plan",
+      "provider_instance": "doubao-agent-plan-t2",
+      "exact_model": "minimax-m3@doubao-agent-plan-t2",
+      "provider_model_id": "minimax-m3",
+      "physical_model_id": "minimax-m3",
+      "status": "included",
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1958524?lang=zh"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (doubao-agent-plan)"
+    ]
+  }
+}

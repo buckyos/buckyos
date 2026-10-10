@@ -43,7 +43,7 @@ use buckyos_api::{
     ImageUpscaleRequest, ImageUpscaleResponse, ListModelsRequest, LlmChatHelperRequest,
     LlmChatInvokeRequest, LlmChatInvokeResponse, ProtocolAdapterListRequest,
     ProtocolAdapterListResponse, ProviderAddRequest, ProviderAddResponse, ProviderAuthSettings,
-    ProviderCatalogRequest, ProviderCatalogResponse,
+    ProviderCatalogRequest, ProviderCatalogResponse, ProviderCredential,
     ProviderCredentialKind as ApiProviderCredentialKind, ProviderCredentials,
     ProviderDeleteRequest, ProviderDeleteResponse, ProviderDiscoverySettings,
     ProviderHealthRequest, ProviderHealthResponse, ProviderInstanceAuthMode,
@@ -54,7 +54,7 @@ use buckyos_api::{
     ProviderUpdateResponse, ProviderValidateRequest, ProviderValidateResponse,
     QueryRouteTraceRequest, QueryRouteTraceResponse, QueryUsageRequest, QueryUsageResponse,
     QuotaQueryRequest, QuotaQueryResponse, QuotaState, RequestControlResult,
-    RequestDelegatedControlReq, RerankRequest, RerankResponse, RouteFallbackAttempt,
+    RequestDelegatedControlReq, RerankRequest, RerankResponse, ResourceRef, RouteFallbackAttempt,
     RouteResolveRequest, RouteResolveResponse, RouteTrace, RoutingGetRequest, RoutingGetResponse,
     RoutingPreviewEntry, RoutingPreviewRequest, RoutingPreviewResponse, RoutingUpdateRequest,
     RoutingUpdateResponse, RunnerWriteEnvelope, ServiceReloadSettingsRequest,
@@ -117,9 +117,11 @@ use crate::provider::{
     ProviderRuntimeManager, SnCredentialBroker, SnProviderInstanceInput, StaticCredentialResolver,
 };
 use crate::resource::{
-    ArtifactSpec, EmbeddingArtifactMetadata, NamedDataMgrResourceStore, ReqwestUrlResourceFetcher,
+    ArtifactSpec, DisabledNamedObjectUrlProvider, EmbeddingArtifactMetadata,
+    NamedDataMgrResourceStore, NamedObjectUrlProvider, ReqwestUrlResourceFetcher,
     ResourceAccessContext, ResourceAccessOperation, ResourceAuthorizer, ResourceFailure,
     ResourceLimits, ResourceManager, ResourceStore, ResourceTarget, UrlResourceFetcher,
+    ZoneNamedObjectUrlProvider, DEFAULT_RESOURCE_MIME,
 };
 use crate::routing::policy::{
     CredentialScope, ProviderPrivacy, ProviderTrustLevel, ProviderTrustView, ProviderType,
@@ -140,7 +142,8 @@ use crate::settings::{
     ProviderLifecyclePolicy, ProviderSettings, SettingsDocument,
 };
 use crate::storage::{
-    AiccStorage, ArtifactUrlSourceRecord, ProviderArtifactIdRecord, RouteTraceRecord,
+    AiccStorage, ArtifactUrlSourceRecord, ProviderArtifactKey, ProviderArtifactRecord,
+    RouteTraceRecord,
 };
 use cloud_update::{
     CloudUpdateClientProfile, CloudUpdateConfig, CloudUpdateManager, NdnCloudObjectFetcher,

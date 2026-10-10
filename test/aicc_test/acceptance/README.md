@@ -10,7 +10,7 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 
 这组测试对应 `doc/aicc/aicc_e2e_test_requirements.md`：
 
-- `preflight.ts`：从规范文档校验 23 个 canonical API，并检查静态 T1 case、T1.5 官方协议契约、Provider 能力基线和 fixture 完整性；不读取 AICC 实现代码或实现 metadata。
+- `preflight.ts`：从规范文档校验 24 个 canonical API，并检查静态 T1 case、T1.5 官方协议契约、Provider 能力基线和 fixture 完整性；不读取 AICC 实现代码或实现 metadata。
 - `mock_provider.ts`：T1 使用的通用确定性 Mock。
 - `mock_provider_contract.ts`：T1 Mock 的版本化 scenario 与管理接口契约；Mock 实现直接消费该契约，preflight 检查其完整性。
 - `provider_protocol_contracts.json`：T1.5 独立协议契约、官方证据 revision、测试用 Provider Profile/模型映射、请求字段类型、正常响应、异步 lifecycle、Provider 专属错误 fixture，以及同一 session `<source provider, source model> x <target provider, target model>` 切换矩阵。Runner 不按模型名或厂商名选择协议分支。
@@ -19,6 +19,10 @@ T2 的模型库存基准来自 Runner 直接调用 `provider_capability_baseline
 - `cloud_update_fixture_service.ts`：启动独立 `cyfs-gateway` `cyfs-dir` NDN 服务，以 process chain 将协议路径绑定到 Named Object，并为 T1/T1.5 发布 index、manifest、catalog 与 tombstone。
 - `run_gateway.ts`：经 Zone Gateway 登录真实 AICC；默认只生成 T2 计划，只有显式允许时才调用真实 Provider。
 - `provider_capability_baseline.json`：按 Provider 参数化的版本化能力证据基线。
+- `logical_entrypoint_baseline.json`：依据冻结逻辑目录契约独立维护的公开逻辑入口基线，显式记录 canonical API type 的默认入口和每个入口声明的 API type；不从 AICC metadata、运行时 inventory 或路径前缀推导。
+- `route_exposure_contracts.json`：独立于 AICC metadata 的路由暴露契约。它逐一登记能力基线中的 Provider Profile 和 Model Rule，并把每个 API type 分类为 `logical_routable`、`exact_only`、`excluded` 或 `not_applicable`；缺少分类、未知规则、无理由例外和跨 API logical entrypoint 都会使 preflight 失败。
+
+Preflight 的路由覆盖粒度是 `Provider Profile × Model Rule × API type × Exposure Mode`，而不是“某个 API 在任意 Provider 出现过一次”。契约用 `capability_cells_sha256` 冻结完整 cell 集合，并用 `logical_entrypoint_baseline_revision` 绑定独立逻辑入口基线。`logical_routable` 的 profile 默认值通过 `logical_entrypoint_ref=api_type_default` 引用配置基线，真实例外仍显式写入具体路径；不再允许 `{api_type}` 字符串模板。Preflight 按基线中的 `path -> api_type` 关系做语义校验，T1 再与 `models.list.logical_definitions` 独立对比并验证入口闭环。`exact_only` 必须在契约中显式覆盖并给出原因，运行时按 logical definition 声明的 API type 确认模型没有同 API 的 logical mount；不能因为 metadata 缺少 mount 而自动推断为 exact-only。
 
 WP-01 至 WP-17 的模块单测入口与验收职责保持如下映射；T1/T1.5 只覆盖跨模块集成，不替代这些入口：
 
@@ -72,12 +76,13 @@ AICC_T15_ALLOW_CONFIG_MUTATION=true pnpm run acceptance:t1.5 -- \
   --gateway-url https://test.buckyos.io \
   --mock-base-url http://aicc-reachable-host:18081 \
   --mock-control-url http://127.0.0.1:18081 \
+  --public-named-object-base-url https://test.buckyos.io/ndn \
   --provider openai \
   --allow-config-mutation
 pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml
 ```
 
-T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
+T1.5 可以用 `--start-local-mock` 启动本机 Mock；只有 AICC 服务也能访问 runner loopback 时才可将其作为 Provider endpoint。`UrlOnly` 输入用例需要通过 `--public-named-object-base-url` 显式传入 Provider 可访问的 Zone HTTPS Named Object 入口；runner 会临时写入该配置并在结束时原样恢复。所有返回 URL artifact 的 success fixture 都使用独立 artifact origin，runner 必须通过 `/kapi/aicc/artifact/open` 下载并验证非空内容，同时 Mock 会拒绝泄漏到跨域下载请求中的 Provider Authorization。独立 artifact origin 默认监听 Provider Mock 端口的下一个端口，单独启动 Mock 时可用 `--artifact-port` 覆盖。配置变更需要环境变量 `AICC_T15_ALLOW_CONFIG_MUTATION=true` 与命令行 `--allow-config-mutation` 同时授权。Runner 创建带 `run_id` 的临时 Provider instance，并在正常结束或异常退出时调用 `provider.delete`，等待运行时 inventory 中该实例消失，再重置 Mock。它顺序执行单元，固定全局和 Provider 并发为 1，并用 `--provider-min-interval-ms` 控制同 Provider 请求间隔。按 Provider 回归使用 `--provider <driver>`；目标重测可以重复传 `--case <case_id>`，未知或超出 Provider 范围的 case 会使执行失败。
 
 T1 的 `t1.config.cloud_update_dynamic_catalog` 通过 NDN 连续发布两个完整 cloud revision：修改已有 Model Driver 的逻辑挂载、删除并恢复已有模型项，并动态增加 Provider Rules 和 Known Provider 文件；断言 cache 原子提交、全局 metadata sequence 收敛、动态 Provider 路由和真实 Mock 访问。T1.5 的 `t1.5.openai.openai.responses.v1.llm.cloud-update` 覆盖云端 Provider Rules 更新，并从真实 Adapter 的捕获请求确认 `service_tier` 已生效。两者都在结束时发布更高 revision 的 tombstone、禁用更新并恢复原始 system-config。
 

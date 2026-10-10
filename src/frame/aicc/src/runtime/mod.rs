@@ -789,7 +789,7 @@ mod tests {
                         base_url: "https://api.example/v1".into(),
                         operation_base_urls: BTreeMap::new(),
                         credentials: serde_json::from_value(
-                            json!({"credential_ref": {"locked": format!("secret://{name}")}}),
+                            json!({"credential_ref": {"inline_secret": format!("secret://{name}")}}),
                         )
                         .unwrap(),
                         enabled: true,
@@ -806,6 +806,7 @@ mod tests {
                     })
                     .collect(),
                 session_config: None,
+                public_named_object_base_url: None,
             },
         )
         .unwrap()

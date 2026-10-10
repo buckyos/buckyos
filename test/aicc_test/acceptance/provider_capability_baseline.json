@@ -1,7 +1,7 @@
 {
   "schema_version": 3,
-  "baseline_revision": "2026-09-25.1",
-  "checked_at": "2026-09-25",
+  "baseline_revision": "2026-10-10.2",
+  "checked_at": "2026-10-10",
   "canonical_api_types": [
     "decision",
     "llm",
@@ -915,12 +915,12 @@
         {
           "model_pattern": "gemini-omni-*",
           "status": "preview",
-          "api_types": ["video.txt2video", "video.img2video", "video.video2video"],
-          "methods": ["video.txt2video", "video.img2video", "video.video2video"],
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
           "input_kinds": ["text", "image", "video"],
           "output_kinds": ["video"],
           "source_urls": ["https://ai.google.dev/gemini-api/docs/models"],
-          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation and editing."
+          "evidence_summary": "Gemini Omni Flash is documented for conversational video generation, editing, and extension."
         },
         {
           "model_pattern": "gemini-*image*",
@@ -1449,8 +1449,8 @@
       "rules": [{ "model_pattern": "*", "status": "active", "source_status": "deepseek_models_api_runtime_membership", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://api-docs.deepseek.com/api/create-response/"], "evidence_summary": "DeepSeek Responses capability follows the official per-model compatibility table." }]
     },
     {
-      "provider_driver": "doubao",
-      "provider_profile_id": "doubao",
+      "provider_driver": "doubao-agent-plan",
+      "provider_profile_id": "doubao-agent-plan",
       "protocol_adapter_ids": ["doubao-responses"],
       "model_driver_ids": ["doubao", "deepseek", "kimi", "minimax", "glm"],
       "discovery": "official_catalog",
@@ -1485,11 +1485,323 @@
         { "model_pattern": "doubao-embedding-vision", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["embedding.multimodal"], "methods": ["embedding.multimodal"], "input_kinds": ["text", "image"], "output_kinds": ["embedding"], "source_urls": ["https://www.volcengine.com/docs/82379/1526459"], "evidence_summary": "Ark multimodal embedding accepts typed text and image input." },
         { "model_pattern": "doubao-seed-tts-2.0", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["audio.tts"], "methods": ["audio.tts"], "input_kinds": ["text"], "output_kinds": ["audio"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh"], "evidence_summary": "Agent Plan TTS uses seed-tts-2.0 and the dedicated HTTP openspeech plan endpoint." },
         { "model_pattern": "deepseek-v4-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents these DeepSeek V4 models as text-input Responses models." },
-        { "model_pattern": "deepseek-v4.1-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents DeepSeek V4.1 Flash as a text-input Responses model." },
+        { "model_pattern": "deepseek-v4.1-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://api-docs.deepseek.com/zh-cn/updates/", "https://api-docs.deepseek.com/zh-cn/guides/responses_api/"], "evidence_summary": "Agent Plan exposes DeepSeek V4.1 Flash through Responses; DeepSeek documents native image input and visual understanding for this physical release." },
         { "model_pattern": "glm-5.3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents GLM 5.3 as a text-input Responses model." },
-        { "model_pattern": "kimi-k2.8-preview", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents Kimi K2.8 Preview as a text-input Responses model." },
-        { "model_pattern": "minimax-m3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm"], "methods": ["chat.completions.create"], "input_kinds": ["text"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents MiniMax M3 as a text-input Responses model." },
-        { "model_pattern": "*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://docs.volcengine.com/docs/ark/agent-plan-enterprise-voice-model?lang=zh", "https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "Agent Plan publishes a static model inventory and a dedicated OpenAI-compatible Responses base URL." }
+        { "model_pattern": "glm-5.3-flash", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://docs.bigmodel.cn/cn/guide/models/vlm/glm-5.3-flash"], "evidence_summary": "Agent Plan exposes GLM 5.3 Flash; its publisher documents native multimodal image understanding." },
+        { "model_pattern": "kimi-k2.7-code", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"], "evidence_summary": "Agent Plan exposes Kimi K2.7 Code; its publisher documents text, image and video input with visual understanding." },
+        { "model_pattern": "kimi-k3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh", "https://platform.kimi.ai/docs/guide/kimi-k3-quickstart"], "evidence_summary": "Agent Plan exposes Kimi K3; its publisher documents native visual understanding and image input." },
+        { "model_pattern": "kimi-k2.8-preview", "status": "active", "source_status": "publisher_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image", "video"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.kimi.com/code/docs/en/kimi-code/models"], "evidence_summary": "Kimi Code's official model table identifies kimi-for-coding as K2.8 Preview with image and video input, a 1M context window, and low/high/max reasoning effort with max as the default." },
+        { "model_pattern": "minimax-m3", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/2373742?lang=zh", "https://platform.minimaxi.com/docs/api-reference/text-openai-api"], "evidence_summary": "Agent Plan and MiniMax documentation explicitly declare image input for MiniMax M3." },
+        { "model_pattern": "doubao-seed-*", "status": "active", "source_status": "doubao_agent_plan_documentation", "api_types": ["llm", "vision.ocr", "vision.caption"], "methods": ["chat.completions.create", "vision.ocr", "vision.caption"], "input_kinds": ["text", "image"], "output_kinds": ["text", "json", "tool_call"], "source_urls": ["https://www.volcengine.com/docs/82379/1958524?lang=zh"], "evidence_summary": "The Agent Plan compatibility table documents the listed Doubao Seed language models with text and image input through Responses." }
+      ]
+    },
+    {
+      "provider_driver": "doubao-speech",
+      "provider_profile_id": "doubao-speech",
+      "protocol_adapter_ids": [
+        "doubao-responses"
+      ],
+      "model_driver_ids": [
+        "doubao"
+      ],
+      "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://www.volcengine.com/docs/6561/1257584?lang=zh",
+        "format": "frozen",
+        "authentication": "none",
+        "model_ids": [
+          "doubao-seed-tts-2.0",
+          "doubao-seed-icl-2.0",
+          "doubao-seed-asr-2.0",
+          "doubao-seed-asr-2.0-fast"
+        ],
+        "checked_at": "2026-10-04",
+        "risk": "Doubao Voice exposes no public /models catalog endpoint; the four official speech model ids are frozen from product documentation rather than a live discovery response. Voice Clone 2.0 is explicitly excluded until AICC has a complete cloned-voice resource design."
+      },
+      "source_urls": [
+        "https://www.volcengine.com/docs/6561/1257584?lang=zh",
+        "https://www.volcengine.com/docs/6561/1354868?lang=zh"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "Official Doubao Voice (openspeech.bytedance.com) documentation checked 2026-10-04; v3 TTS and v3 AUC bigmodel speech endpoints.",
+        "streaming_semantics": "Unidirectional TTS answers with newline-delimited JSON frames carrying base64 audio chunks and a terminal 20000000 completion frame.",
+        "async_operation_semantics": "asr.recognize.submit uses the AUC submit/query native task lifecycle; asr.recognize.flash is a single synchronous request.",
+        "usage_semantics": "TTS reports billed text_words in the usage frames; ASR reports audio duration from audio_info.duration.",
+        "input_output_formats": "TTS accepts text and returns mp3/wav/pcm/ogg_opus audio; ASR accepts wav, mp3, ogg or raw audio and returns transcript text with optional utterance segments.",
+        "item_request_batch_limits": "One utterance or one audio asset per request; AUC task submission carries exactly one audio reference.",
+        "image_audio_video_limits": "TTS text is bounded by the request byte limit; ASR flash accepts up to 160 MiB of audio bytes and the standard task path requires a fetchable absolute audio URL.",
+        "context_output_limits": "Speech operations have no conversational context; the transcript is returned as a single text result.",
+        "region_restrictions": "Doubao Voice is served from the China North region endpoint.",
+        "account_tier_restrictions": "Speech models require the Doubao Voice product to be activated for the account and identity that owns the API key.",
+        "preview_allowlist": "No preview speech model is enabled for this channel in the current release."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "doubao-seed-icl-2.0",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1305191?lang=zh",
+            "https://www.volcengine.com/docs/6561/1257584?lang=zh"
+          ],
+          "evidence_summary": "Voice Clone 2.0 requires a provisioned cloned speaker resource. AICC does not yet expose or manage that resource as a complete feature, so this physical model is excluded from the current product inventory."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "doubao-seed-tts-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.tts"
+          ],
+          "methods": [
+            "audio.tts"
+          ],
+          "input_kinds": [
+            "text"
+          ],
+          "output_kinds": [
+            "audio"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1598757?lang=zh",
+            "https://www.volcengine.com/docs/6257/2607681?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Synthesis 2.0 is a unidirectional TTS model on the Doubao Voice v3 endpoint with resource id seed-tts-2.0."
+        },
+        {
+          "model_pattern": "doubao-seed-asr-2.0",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.asr"
+          ],
+          "methods": [
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "audio"
+          ],
+          "output_kinds": [
+            "text"
+          ],
+          "resource_representation": "url",
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+            "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Recognition 2.0 standard uses the AUC bigmodel submit/query task lifecycle with resource id volc.seedasr.auc."
+        },
+        {
+          "model_pattern": "doubao-seed-asr-2.0-fast",
+          "status": "active",
+          "source_status": "doubao_voice_documentation",
+          "api_types": [
+            "audio.asr"
+          ],
+          "methods": [
+            "audio.asr"
+          ],
+          "input_kinds": [
+            "audio"
+          ],
+          "output_kinds": [
+            "text"
+          ],
+          "source_urls": [
+            "https://www.volcengine.com/docs/6561/1354868?lang=zh",
+            "https://www.volcengine.com/docs/6561/1354869?lang=zh"
+          ],
+          "evidence_summary": "Doubao Speech Recognition 2.0 flash uses a single synchronous AUC request with resource id volc.bigasr.auc_turbo."
+        }
+      ]
+    },
+    {
+      "provider_driver": "doubao",
+      "provider_profile_id": "doubao",
+      "protocol_adapter_ids": ["doubao-responses"],
+      "model_driver_ids": ["doubao", "deepseek", "glm", "kimi", "qwen"],
+      "discovery": "official_catalog",
+      "official_catalog": {
+        "endpoint": "https://ark.cn-beijing.volces.com/api/v3/models",
+        "format": "openai",
+        "authentication": "bearer",
+        "task_type_api_types": {
+          "TextGeneration": ["llm"],
+          "VisualQuestionAnswering": ["vision.ocr", "vision.caption"],
+          "TextEmbedding": ["embedding.text"],
+          "ImageEmbedding": ["embedding.multimodal"],
+          "TextToImage": ["image.txt2img"],
+          "ImageToImage": ["image.img2img"],
+          "TextToVideo": ["video.txt2video"],
+          "ImageToVideo": ["video.img2video"],
+          "MultimodalToVideo": ["video.txt2video", "video.img2video"],
+          "VideoEditing": ["video.video2video"],
+          "VideoExtension": ["video.extend"]
+        }
+      },
+      "source_urls": [
+        "https://www.volcengine.com/docs/82379/1554682",
+        "https://docs.volcengine.com/docs/82379/1362931?lang=zh",
+        "https://docs.volcengine.com/docs/82379/1520757?lang=zh&redirect=1",
+        "https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh",
+        "https://docs.volcengine.com/docs/82379/2607688?lang=zh",
+        "https://www.volcengine.com/docs/82379/1526459",
+        "https://docs.volcengine.com/docs/82379/1541523?lang=zh",
+        "https://www.volcengine.com/docs/82379/1820188"
+      ],
+      "protocol_evidence": {
+        "documentation_version": "official documentation and authenticated /api/v3/models checked 2026-09-28",
+        "streaming_semantics": "Responses supports documented semantic SSE events for compatible language models.",
+        "async_operation_semantics": "Seedance uses /api/v3/contents/generations/tasks with create, poll/result and cancellation lifecycle.",
+        "usage_semantics": "Responses and content-generation task results expose model-specific token usage when returned by Ark.",
+        "input_output_formats": "Responses accepts text and input_image content; Seedance accepts text, image_url and video_url content items according to task type.",
+        "item_request_batch_limits": "Request and reference-item limits are model and task specific.",
+        "image_audio_video_limits": "Seed 2.0 Lite supports image understanding; Seedance 2.0 and 2.5 use documented 4-second minimum outputs and model-specific resolution/reference limits.",
+        "context_output_limits": "Seed 2.0 Lite has a 256k context window; other limits remain model specific.",
+        "region_restrictions": "The built-in standard profile uses the cn-beijing /api/v3 endpoint.",
+        "account_tier_restrictions": "Model activation, account balance and media-service activation apply.",
+        "preview_allowlist": "Only physical model IDs returned by the authenticated /api/v3/models catalog are eligible."
+      },
+      "coverage_rules": [
+        {
+          "model_pattern": "doubao-smart-router-*",
+          "action": "exclude",
+          "reason": "not_physical_model",
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "The Ark catalog classifies this entry as a Router rather than a physical inference model."
+        },
+        {
+          "model_pattern": "*3d-*",
+          "action": "exclude",
+          "reason": "unsupported_canonical_protocol",
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark classifies this entry as 3D generation, for which AICC has no canonical API type."
+        }
+      ],
+      "rules": [
+        {
+          "model_pattern": "doubao-embedding-vision-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["embedding.multimodal"],
+          "methods": ["embedding.multimodal"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["embedding"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1526459"],
+          "evidence_summary": "Ark multimodal embedding IDs returned by /api/v3/models use the standard /api/v3/embeddings/multimodal operation."
+        },
+        {
+          "model_pattern": "doubao-seedream-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["image.txt2img", "image.img2img"],
+          "methods": ["images.generate", "image.img2img"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["image"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/1541523?lang=zh"],
+          "evidence_summary": "Seedream physical IDs returned by /api/v3/models use the standard /api/v3/images/generations operation."
+        },
+        {
+          "model_pattern": "deepseek-v4-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark publishes current DeepSeek V4 physical IDs in the standard model catalog."
+        },
+        {
+          "model_pattern": "glm-*-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark publishes GLM physical IDs in the standard model catalog; only IDs with verified Model Driver identity are routable."
+        },
+        {
+          "model_pattern": "qwen*-*",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm"],
+          "methods": ["chat.completions.create"],
+          "input_kinds": ["text"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/model-list?lang=zh"],
+          "evidence_summary": "Ark publishes these Qwen physical IDs as standard text-generation models."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-260128",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/ark/seedance-2-0?lang=zh"],
+          "evidence_summary": "Seedance 2.0 Standard documents text/image generation, multimodal reference video editing and video extension on the standard content-generation task API."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-fast-260128",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
+          "evidence_summary": "The Seedance 2.0 capability table marks Fast active for generation, video editing and extension."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-0-mini-260615",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2291680?lang=zh"],
+          "evidence_summary": "The Seedance 2.0 capability table marks Mini active for generation, video editing and extension."
+        },
+        {
+          "model_pattern": "doubao-seedance-2-5-260628",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "methods": ["video.txt2video", "video.img2video", "video.video2video", "video.extend"],
+          "input_kinds": ["text", "image", "video"],
+          "output_kinds": ["video"],
+          "source_urls": ["https://docs.volcengine.com/docs/82379/2607688?lang=zh"],
+          "evidence_summary": "Seedance 2.5 documents generation, video editing and explicit omni_reference_task_type=extend on the standard task API."
+        },
+        {
+          "model_pattern": "doubao-seed-2-0-lite-260428",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1554682", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
+          "evidence_summary": "The current model list marks Seed 2.0 Lite 260428 for text generation and multimodal understanding through Responses."
+        },
+        {
+          "model_pattern": "doubao-seed-2-1-turbo-260628",
+          "status": "active",
+          "source_status": "doubao_models_api_runtime_membership",
+          "api_types": ["llm", "vision.ocr", "vision.caption"],
+          "methods": ["chat.completions.create", "vision.ocr", "vision.caption"],
+          "input_kinds": ["text", "image"],
+          "output_kinds": ["text", "json", "tool_call"],
+          "source_urls": ["https://www.volcengine.com/docs/82379/1554682", "https://docs.volcengine.com/docs/82379/1362931?lang=zh"],
+          "evidence_summary": "The authenticated catalog exposes Seed 2.1 Turbo 260628 and the visual-understanding documentation covers current visual Seed models."
+        }
       ]
     },
     {
