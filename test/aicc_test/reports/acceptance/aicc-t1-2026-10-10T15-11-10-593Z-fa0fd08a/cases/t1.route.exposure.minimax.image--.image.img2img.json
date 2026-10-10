@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+  "case_id": "t1.route.exposure.minimax.image--.image.img2img",
+  "layer": "T1",
+  "status": "failed",
+  "api_type": "image.img2img",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:12:02.565Z",
+      "elapsed_ms": 1,
+      "status": "failed",
+      "failure_class": "baseline_mismatch",
+      "diagnostic": "Error: runtime logical entrypoint image.img2img.minimax declares <none>, expected image.img2img",
+      "estimated_cost_usd": 0,
+      "cost_status": "unknown"
+    }
+  ],
+  "provider_driver": "minimax",
+  "provider_profile_id": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+  "model_rule": "image-*",
+  "exposure_mode": "logical_routable"
+}

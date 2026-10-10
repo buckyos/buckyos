@@ -2536,10 +2536,14 @@ mod tests {
                     let explicit = router.route(&request);
                     assert_eq!(explicit.is_ok(), model.contains('@'), "{model}");
                     if let Ok(route) = explicit {
-                        assert!(route.selected.enabled_capabilities
+                        assert!(route
+                            .selected
+                            .enabled_capabilities
                             .iter()
                             .any(|feature| feature == "web_search"));
-                        assert!(!route.trace.disabled_capabilities
+                        assert!(!route
+                            .trace
+                            .disabled_capabilities
                             .iter()
                             .any(|feature| feature == "web_search"));
                     }

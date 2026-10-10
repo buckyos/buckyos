@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.locked_policy_cannot_override",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:02.570Z",
+      "elapsed_ms": 205,
+      "status": "passed",
+      "diagnostic": "route rejected: RPCError: RPC call error: No permission:{\"code\":\"policy_denied\",\"message\":\"policy field allowed_provider_instances was locked by session and cannot be changed by request\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.exact_model_hits_instance",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "exact_model": "gpt-5.6@dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:19.073Z",
+      "elapsed_ms": 509,
+      "status": "passed",
+      "diagnostic": "exact model gpt-5.6@dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e executed without logical fallback",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-7074feb12e3d48ff9718bf4bc71228a8",
+  "trace_id": "aicc-idem-64199a4b3aaa7bf80a13fd40cfe7df9d",
+  "usage": {
+    "cost": {
+      "amount": 0.00014,
+      "currency": "USD"
+    },
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15
+  }
+}

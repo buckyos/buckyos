@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.strict_no_fallback",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:03:21.669Z",
+      "elapsed_ms": 97,
+      "status": "passed",
+      "diagnostic": "route rejected: RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"no candidate for llm.plan\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.security.cross_tenant_task_cancel",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "request_control",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:04:31.713Z",
+      "elapsed_ms": 441,
+      "status": "passed",
+      "diagnostic": "secondary tenant rejected while cancelling t-1ead5eb7f3634de1802ac7d059d16bb8: RPCError: RPC call error: No permission:{\"code\":\"policy_denied\",\"message\":\"cross-tenant task cancellation is denied\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

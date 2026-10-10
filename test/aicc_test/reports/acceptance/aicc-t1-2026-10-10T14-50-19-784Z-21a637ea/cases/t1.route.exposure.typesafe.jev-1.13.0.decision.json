@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.exposure.typesafe.jev-1.13.0.decision",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "decision",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:28.814Z",
+      "elapsed_ms": 153,
+      "status": "passed",
+      "diagnostic": "decision closed through jev-1.13.0@dv-typesafe-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "typesafe",
+  "provider_profile_id": "typesafe",
+  "provider_instance": "dv-typesafe-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "model_rule": "jev-1.13.0",
+  "exposure_mode": "logical_routable"
+}

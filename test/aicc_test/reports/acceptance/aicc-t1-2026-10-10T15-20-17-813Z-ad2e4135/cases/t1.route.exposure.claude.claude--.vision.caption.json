@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.exposure.claude.claude--.vision.caption",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "vision.caption",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:14.906Z",
+      "elapsed_ms": 457,
+      "status": "passed",
+      "diagnostic": "vision.caption closed through claude-fable-5:reasoning-high@dv-claude-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "claude",
+  "provider_profile_id": "claude",
+  "provider_instance": "dv-claude-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "model_rule": "claude-*",
+  "exposure_mode": "logical_routable"
+}

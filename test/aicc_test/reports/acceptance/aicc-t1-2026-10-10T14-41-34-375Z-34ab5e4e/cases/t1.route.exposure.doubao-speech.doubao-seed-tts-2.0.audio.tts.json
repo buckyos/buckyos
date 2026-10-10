@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.exposure.doubao-speech.doubao-seed-tts-2.0.audio.tts",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "audio.tts",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:42:31.838Z",
+      "elapsed_ms": 321,
+      "status": "passed",
+      "diagnostic": "audio.tts closed through doubao-seed-tts-2.0@dv-doubao-speech-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "doubao-speech",
+  "provider_profile_id": "doubao-speech",
+  "provider_instance": "dv-doubao-speech-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "model_rule": "doubao-seed-tts-2.0",
+  "exposure_mode": "logical_routable"
+}

@@ -2,7 +2,7 @@
   "schema_version": 2,
   "contract_revision": "2026-10-10.2",
   "capability_baseline_revision": "2026-10-10.2",
-  "capability_cells_sha256": "002c0db9503b22ac62db9b8eb8ffc77842e9429a49259c289b40d65b4bc095c4",
+  "capability_cells_sha256": "2a9b2d9955d03caf384a5e5b52e8358f30d81fe98431d4536da9f70d9e662fb6",
   "logical_entrypoint_baseline_revision": "2026-10-05.1",
   "profiles": [
     { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },

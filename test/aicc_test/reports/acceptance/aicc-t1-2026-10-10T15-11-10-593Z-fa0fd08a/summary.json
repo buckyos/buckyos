@@ -1,0 +1,1341 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+  "started_at": "2026-10-10T15:11:10.552Z",
+  "finished_at": "2026-10-10T15:12:53.729Z",
+  "commit": "c3e1327677f9697ecdc26e51714621308d8ec86f",
+  "baseline_revision": "T1-mock",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 0,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0,
+    "planned_max_calls": 0,
+    "planned_max_cost_usd": 0,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+      "case_id": "t1.route.exposure.minimax.image--.image.img2img",
+      "layer": "T1",
+      "status": "failed",
+      "api_type": "image.img2img",
+      "method": "route.resolve",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:12:02.565Z",
+          "elapsed_ms": 1,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "Error: runtime logical entrypoint image.img2img.minimax declares <none>, expected image.img2img",
+          "estimated_cost_usd": 0,
+          "cost_status": "unknown"
+        }
+      ],
+      "provider_driver": "minimax",
+      "provider_profile_id": "minimax",
+      "provider_instance": "dv-minimax-aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+      "model_rule": "image-*",
+      "exposure_mode": "logical_routable"
+    },
+    {
+      "run_id": "aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+      "case_id": "t1.route.exposure.minimax.image--.image.txt2img",
+      "layer": "T1",
+      "status": "failed",
+      "api_type": "image.txt2img",
+      "method": "route.resolve",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:12:02.566Z",
+          "elapsed_ms": 0,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "Error: runtime logical entrypoint image.txt2img.minimax declares <none>, expected image.txt2img",
+          "estimated_cost_usd": 0,
+          "cost_status": "unknown"
+        }
+      ],
+      "provider_driver": "minimax",
+      "provider_profile_id": "minimax",
+      "provider_instance": "dv-minimax-aicc-t1-2026-10-10T15-11-10-593Z-fa0fd08a",
+      "model_rule": "image-*",
+      "exposure_mode": "logical_routable"
+    }
+  ],
+  "product_defects": [],
+  "manifest_coverage": {
+    "total": 130,
+    "executed": 0,
+    "passed": 0,
+    "failed": 0,
+    "coverage_rate": 0,
+    "unexecuted_case_ids": [
+      "t1.route.exact_model_hits_instance",
+      "t1.route.logical_model_selects_candidate",
+      "t1.route.metadata_variant_expands_exact_model",
+      "t1.route.version_exact_rule",
+      "t1.route.version_pattern_rule",
+      "t1.route.version_default_rule",
+      "t1.route.legal_missing_model",
+      "t1.route.invalid_exact_model",
+      "t1.route.invalid_logical_path",
+      "t1.route.missing_provider_instance",
+      "t1.route.disabled_model",
+      "t1.route.offline_model",
+      "t1.route.unmounted_model",
+      "t1.route.corrupt_metadata",
+      "t1.route.strict_no_fallback",
+      "t1.route.parent_fallback",
+      "t1.route.target_logical_fallback",
+      "t1.route.target_exact_fallback",
+      "t1.route.exact_default_no_fallback",
+      "t1.route.fallback_api_type_boundary",
+      "t1.route.fallback_loop",
+      "t1.route.fallback_max_depth",
+      "t1.route.provider_allow",
+      "t1.route.provider_deny",
+      "t1.route.local_only",
+      "t1.route.privacy_boundary",
+      "t1.route.health_filter",
+      "t1.route.quota_filter",
+      "t1.route.budget_filter",
+      "t1.route.context_limit_filter",
+      "t1.route.output_limit_filter",
+      "t1.route.locked_policy_cannot_override",
+      "t1.route.missing_metadata_is_conservative",
+      "t1.route.min_line_admission",
+      "t1.route.disable_line_applied",
+      "t1.route.auto_mount_admission",
+      "t1.route.manual_mount_requires_mapping",
+      "t1.route.global_exact_model_weight",
+      "t1.route.logical_exact_model_weight",
+      "t1.route.provider_instance_weight",
+      "t1.route.system_config_then_request_overlay",
+      "t1.custom.openai",
+      "t1.custom.claude",
+      "t1.custom.gemini",
+      "t1.scheduler.profile.cost_first",
+      "t1.scheduler.profile.latency_first",
+      "t1.scheduler.profile.quality_first",
+      "t1.scheduler.profile.balanced",
+      "t1.scheduler.profile.local_first",
+      "t1.scheduler.profile.strict_local",
+      "t1.route.api_type.llm.chat.completions.create",
+      "t1.route.api_type.embedding.text.embedding.text",
+      "t1.route.api_type.embedding.multimodal.embedding.multimodal",
+      "t1.route.api_type.decision.decision.evaluate",
+      "t1.route.api_type.rerank.rerank",
+      "t1.route.api_type.image.txt2img.images.generate",
+      "t1.route.api_type.image.img2img.image.img2img",
+      "t1.route.api_type.image.inpaint.image.inpaint",
+      "t1.route.api_type.image.upscale.image.upscale",
+      "t1.route.api_type.image.bg_remove.image.bg_remove",
+      "t1.route.api_type.vision.ocr.vision.ocr",
+      "t1.route.api_type.vision.caption.vision.caption",
+      "t1.route.api_type.vision.detect.vision.detect",
+      "t1.route.api_type.vision.segment.vision.segment",
+      "t1.route.api_type.audio.tts.audio.tts",
+      "t1.route.api_type.audio.asr.audio.asr",
+      "t1.route.api_type.audio.music.audio.music",
+      "t1.route.api_type.audio.enhance.audio.enhance",
+      "t1.route.api_type.video.txt2video.video.txt2video",
+      "t1.route.api_type.video.img2video.video.img2video",
+      "t1.route.api_type.video.video2video.video.video2video",
+      "t1.route.api_type.video.extend.video.extend",
+      "t1.route.api_type.video.upscale.video.upscale",
+      "t1.route.api_type.agent.computer_use.agent.computer_use",
+      "t1.runtime_boundary.rate_limit_fallback",
+      "t1.runtime_boundary.server_error_fallback",
+      "t1.runtime_boundary.connection_failure_fallback",
+      "t1.runtime_boundary.timeout_fallback",
+      "t1.runtime_boundary.malformed_response_rejected",
+      "t1.runtime_boundary.wrong_mime_rejected",
+      "t1.runtime_boundary.missing_usage_rejected",
+      "t1.history.same_session_reuses_exact_model",
+      "t1.history.hard_constraint_overrides.api_type_changed",
+      "t1.history.hard_constraint_overrides.required_capability_changed",
+      "t1.history.hard_constraint_overrides.disabled_capability_changed",
+      "t1.history.hard_constraint_overrides.provider_denied",
+      "t1.history.hard_constraint_overrides.instance_unhealthy",
+      "t1.history.hard_constraint_overrides.quota_exhausted",
+      "t1.history.hard_constraint_overrides.budget_exhausted",
+      "t1.history.hard_constraint_overrides.local_only_changed",
+      "t1.history.hard_constraint_overrides.context_limit_exceeded",
+      "t1.history.hard_constraint_overrides.output_limit_exceeded",
+      "t1.history.hard_constraint_overrides.locked_policy_changed",
+      "t1.history.sessions_do_not_leak",
+      "t1.task.immediate_succeeded",
+      "t1.task.running_succeeded",
+      "t1.task.running_failed",
+      "t1.task.cancelled",
+      "t1.task.unknown",
+      "t1.task.idempotency_conflict_different_body",
+      "t1.task.concurrent_idempotency",
+      "t1.task.concurrent_completion",
+      "t1.task.terminal_idempotent",
+      "t1.task.reload_recovery",
+      "t1.task.restart_recovery",
+      "t1.usage.success_once",
+      "t1.usage.idempotent_no_double_charge",
+      "t1.usage.fallback_attempts_attributed",
+      "t1.security.no_token",
+      "t1.security.invalid_token",
+      "t1.security.expired_token",
+      "t1.security.cross_tenant",
+      "t1.security.cross_tenant_task_cancel",
+      "t1.security.cross_tenant_usage",
+      "t1.security.cross_tenant_message",
+      "t1.security.cross_tenant_object",
+      "t1.security.rbac_admin_method",
+      "t1.config.reload_valid",
+      "t1.config.reload_invalid_keeps_old",
+      "t1.config.provider_instance_isolation",
+      "t1.config.provider_add_refresh",
+      "t1.config.provider_validate_rejects_duplicate",
+      "t1.config.provider_delete_isolation",
+      "t1.config.provider_update_rollback",
+      "t1.config.cloud_update_dynamic_catalog",
+      "t1.config.restart_consistency",
+      "t1.observability.correlation",
+      "t1.observability.redaction",
+      "t1.embedding.large_batch_artifact",
+      "t1.embedding.space_mismatch_rejected"
+    ]
+  },
+  "t1_requirement_coverage": {
+    "total_branches": 127,
+    "executed_branches": 0,
+    "passed_branches": 0,
+    "failed_branches": 0,
+    "skipped_branches": 0,
+    "coverage_rate": 0,
+    "branches": [
+      {
+        "branch_id": "route.exact_model_hits_instance",
+        "planned_case_ids": [
+          "t1.route.exact_model_hits_instance"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.logical_model_selects_candidate",
+        "planned_case_ids": [
+          "t1.route.logical_model_selects_candidate"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.metadata_variant_expands_exact_model",
+        "planned_case_ids": [
+          "t1.route.metadata_variant_expands_exact_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.version_exact_rule",
+        "planned_case_ids": [
+          "t1.route.version_exact_rule"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.version_pattern_rule",
+        "planned_case_ids": [
+          "t1.route.version_pattern_rule"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.version_default_rule",
+        "planned_case_ids": [
+          "t1.route.version_default_rule"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.legal_missing_model",
+        "planned_case_ids": [
+          "t1.route.legal_missing_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.invalid_exact_model",
+        "planned_case_ids": [
+          "t1.route.invalid_exact_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.invalid_logical_path",
+        "planned_case_ids": [
+          "t1.route.invalid_logical_path"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.missing_provider_instance",
+        "planned_case_ids": [
+          "t1.route.missing_provider_instance"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.disabled_model",
+        "planned_case_ids": [
+          "t1.route.disabled_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.offline_model",
+        "planned_case_ids": [
+          "t1.route.offline_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.unmounted_model",
+        "planned_case_ids": [
+          "t1.route.unmounted_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.corrupt_metadata",
+        "planned_case_ids": [
+          "t1.route.corrupt_metadata"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.strict_no_fallback",
+        "planned_case_ids": [
+          "t1.route.strict_no_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.parent_fallback",
+        "planned_case_ids": [
+          "t1.route.parent_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.target_logical_fallback",
+        "planned_case_ids": [
+          "t1.route.target_logical_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.target_exact_fallback",
+        "planned_case_ids": [
+          "t1.route.target_exact_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.exact_default_no_fallback",
+        "planned_case_ids": [
+          "t1.route.exact_default_no_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.fallback_api_type_boundary",
+        "planned_case_ids": [
+          "t1.route.fallback_api_type_boundary"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.fallback_loop",
+        "planned_case_ids": [
+          "t1.route.fallback_loop"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.fallback_max_depth",
+        "planned_case_ids": [
+          "t1.route.fallback_max_depth"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.provider_allow",
+        "planned_case_ids": [
+          "t1.route.provider_allow"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.provider_deny",
+        "planned_case_ids": [
+          "t1.route.provider_deny"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.local_only",
+        "planned_case_ids": [
+          "t1.route.local_only"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.privacy_boundary",
+        "planned_case_ids": [
+          "t1.route.privacy_boundary"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.health_filter",
+        "planned_case_ids": [
+          "t1.route.health_filter"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.quota_filter",
+        "planned_case_ids": [
+          "t1.route.quota_filter"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.budget_filter",
+        "planned_case_ids": [
+          "t1.route.budget_filter"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.context_limit_filter",
+        "planned_case_ids": [
+          "t1.route.context_limit_filter"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.output_limit_filter",
+        "planned_case_ids": [
+          "t1.route.output_limit_filter"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.locked_policy_cannot_override",
+        "planned_case_ids": [
+          "t1.route.locked_policy_cannot_override"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.missing_metadata_is_conservative",
+        "planned_case_ids": [
+          "t1.route.missing_metadata_is_conservative"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.min_line_admission",
+        "planned_case_ids": [
+          "t1.route.min_line_admission"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.disable_line_applied",
+        "planned_case_ids": [
+          "t1.route.disable_line_applied"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.auto_mount_admission",
+        "planned_case_ids": [
+          "t1.route.auto_mount_admission"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.manual_mount_requires_mapping",
+        "planned_case_ids": [
+          "t1.route.manual_mount_requires_mapping"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.global_exact_model_weight",
+        "planned_case_ids": [
+          "t1.route.global_exact_model_weight"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.logical_exact_model_weight",
+        "planned_case_ids": [
+          "t1.route.logical_exact_model_weight"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.provider_instance_weight",
+        "planned_case_ids": [
+          "t1.route.provider_instance_weight"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.system_config_then_request_overlay",
+        "planned_case_ids": [
+          "t1.route.system_config_then_request_overlay"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.llm.chat.completions.create",
+        "planned_case_ids": [
+          "t1.route.api_type.llm.chat.completions.create"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.embedding.text.embedding.text",
+        "planned_case_ids": [
+          "t1.route.api_type.embedding.text.embedding.text"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.embedding.multimodal.embedding.multimodal",
+        "planned_case_ids": [
+          "t1.route.api_type.embedding.multimodal.embedding.multimodal"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.decision.decision.evaluate",
+        "planned_case_ids": [
+          "t1.route.api_type.decision.decision.evaluate"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.rerank.rerank",
+        "planned_case_ids": [
+          "t1.route.api_type.rerank.rerank"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.image.txt2img.images.generate",
+        "planned_case_ids": [
+          "t1.route.api_type.image.txt2img.images.generate"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.image.img2img.image.img2img",
+        "planned_case_ids": [
+          "t1.route.api_type.image.img2img.image.img2img"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.image.inpaint.image.inpaint",
+        "planned_case_ids": [
+          "t1.route.api_type.image.inpaint.image.inpaint"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.image.upscale.image.upscale",
+        "planned_case_ids": [
+          "t1.route.api_type.image.upscale.image.upscale"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.image.bg_remove.image.bg_remove",
+        "planned_case_ids": [
+          "t1.route.api_type.image.bg_remove.image.bg_remove"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.vision.ocr.vision.ocr",
+        "planned_case_ids": [
+          "t1.route.api_type.vision.ocr.vision.ocr"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.vision.caption.vision.caption",
+        "planned_case_ids": [
+          "t1.route.api_type.vision.caption.vision.caption"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.vision.detect.vision.detect",
+        "planned_case_ids": [
+          "t1.route.api_type.vision.detect.vision.detect"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.vision.segment.vision.segment",
+        "planned_case_ids": [
+          "t1.route.api_type.vision.segment.vision.segment"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.audio.tts.audio.tts",
+        "planned_case_ids": [
+          "t1.route.api_type.audio.tts.audio.tts"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.audio.asr.audio.asr",
+        "planned_case_ids": [
+          "t1.route.api_type.audio.asr.audio.asr"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.audio.music.audio.music",
+        "planned_case_ids": [
+          "t1.route.api_type.audio.music.audio.music"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.audio.enhance.audio.enhance",
+        "planned_case_ids": [
+          "t1.route.api_type.audio.enhance.audio.enhance"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.video.txt2video.video.txt2video",
+        "planned_case_ids": [
+          "t1.route.api_type.video.txt2video.video.txt2video"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.video.img2video.video.img2video",
+        "planned_case_ids": [
+          "t1.route.api_type.video.img2video.video.img2video"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.video.video2video.video.video2video",
+        "planned_case_ids": [
+          "t1.route.api_type.video.video2video.video.video2video"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.video.extend.video.extend",
+        "planned_case_ids": [
+          "t1.route.api_type.video.extend.video.extend"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.video.upscale.video.upscale",
+        "planned_case_ids": [
+          "t1.route.api_type.video.upscale.video.upscale"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "route.api_type.agent.computer_use.agent.computer_use",
+        "planned_case_ids": [
+          "t1.route.api_type.agent.computer_use.agent.computer_use"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.cost_first",
+        "planned_case_ids": [
+          "t1.scheduler.profile.cost_first"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.latency_first",
+        "planned_case_ids": [
+          "t1.scheduler.profile.latency_first"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.quality_first",
+        "planned_case_ids": [
+          "t1.scheduler.profile.quality_first"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.balanced",
+        "planned_case_ids": [
+          "t1.scheduler.profile.balanced"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.local_first",
+        "planned_case_ids": [
+          "t1.scheduler.profile.local_first"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "scheduler.profile.strict_local",
+        "planned_case_ids": [
+          "t1.scheduler.profile.strict_local"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.same_session_reuses_exact_model",
+        "planned_case_ids": [
+          "t1.history.same_session_reuses_exact_model"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.api_type_changed",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.api_type_changed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.required_capability_changed",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.required_capability_changed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.disabled_capability_changed",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.disabled_capability_changed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.provider_denied",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.provider_denied"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.instance_unhealthy",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.instance_unhealthy"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.quota_exhausted",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.quota_exhausted"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.budget_exhausted",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.budget_exhausted"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.local_only_changed",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.local_only_changed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.context_limit_exceeded",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.context_limit_exceeded"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.output_limit_exceeded",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.output_limit_exceeded"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.hard_constraint_overrides.locked_policy_changed",
+        "planned_case_ids": [
+          "t1.history.hard_constraint_overrides.locked_policy_changed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "history.sessions_do_not_leak",
+        "planned_case_ids": [
+          "t1.history.sessions_do_not_leak"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.rate_limit_fallback",
+        "planned_case_ids": [
+          "t1.runtime_boundary.rate_limit_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.server_error_fallback",
+        "planned_case_ids": [
+          "t1.runtime_boundary.server_error_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.connection_failure_fallback",
+        "planned_case_ids": [
+          "t1.runtime_boundary.connection_failure_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.timeout_fallback",
+        "planned_case_ids": [
+          "t1.runtime_boundary.timeout_fallback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.malformed_response_rejected",
+        "planned_case_ids": [
+          "t1.runtime_boundary.malformed_response_rejected"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.wrong_mime_rejected",
+        "planned_case_ids": [
+          "t1.runtime_boundary.wrong_mime_rejected"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "runtime_boundary.missing_usage_rejected",
+        "planned_case_ids": [
+          "t1.runtime_boundary.missing_usage_rejected"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.immediate_succeeded",
+        "planned_case_ids": [
+          "t1.task.immediate_succeeded"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.running_succeeded",
+        "planned_case_ids": [
+          "t1.task.running_succeeded"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.running_failed",
+        "planned_case_ids": [
+          "t1.task.running_failed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.cancelled",
+        "planned_case_ids": [
+          "t1.task.cancelled"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.unknown",
+        "planned_case_ids": [
+          "t1.task.unknown"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.idempotency_conflict_different_body",
+        "planned_case_ids": [
+          "t1.task.idempotency_conflict_different_body"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.concurrent_idempotency",
+        "planned_case_ids": [
+          "t1.task.concurrent_idempotency"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.concurrent_completion",
+        "planned_case_ids": [
+          "t1.task.concurrent_completion"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.terminal_idempotent",
+        "planned_case_ids": [
+          "t1.task.terminal_idempotent"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.reload_recovery",
+        "planned_case_ids": [
+          "t1.task.reload_recovery"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "task.restart_recovery",
+        "planned_case_ids": [
+          "t1.task.restart_recovery"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "usage.success_once",
+        "planned_case_ids": [
+          "t1.usage.success_once"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "usage.idempotent_no_double_charge",
+        "planned_case_ids": [
+          "t1.usage.idempotent_no_double_charge"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "usage.fallback_attempts_attributed",
+        "planned_case_ids": [
+          "t1.usage.fallback_attempts_attributed"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.no_token",
+        "planned_case_ids": [
+          "t1.security.no_token"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.invalid_token",
+        "planned_case_ids": [
+          "t1.security.invalid_token"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.expired_token",
+        "planned_case_ids": [
+          "t1.security.expired_token"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.cross_tenant",
+        "planned_case_ids": [
+          "t1.security.cross_tenant"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.cross_tenant_task_cancel",
+        "planned_case_ids": [
+          "t1.security.cross_tenant_task_cancel"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.cross_tenant_usage",
+        "planned_case_ids": [
+          "t1.security.cross_tenant_usage"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.cross_tenant_message",
+        "planned_case_ids": [
+          "t1.security.cross_tenant_message"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.cross_tenant_object",
+        "planned_case_ids": [
+          "t1.security.cross_tenant_object"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "security.rbac_admin_method",
+        "planned_case_ids": [
+          "t1.security.rbac_admin_method"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.reload_valid",
+        "planned_case_ids": [
+          "t1.config.reload_valid"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.reload_invalid_keeps_old",
+        "planned_case_ids": [
+          "t1.config.reload_invalid_keeps_old"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.provider_instance_isolation",
+        "planned_case_ids": [
+          "t1.config.provider_instance_isolation"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.provider_add_refresh",
+        "planned_case_ids": [
+          "t1.config.provider_add_refresh"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.provider_validate_rejects_duplicate",
+        "planned_case_ids": [
+          "t1.config.provider_validate_rejects_duplicate"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.provider_delete_isolation",
+        "planned_case_ids": [
+          "t1.config.provider_delete_isolation"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.provider_update_rollback",
+        "planned_case_ids": [
+          "t1.config.provider_update_rollback"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.cloud_update_dynamic_catalog",
+        "planned_case_ids": [
+          "t1.config.cloud_update_dynamic_catalog"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "config.restart_consistency",
+        "planned_case_ids": [
+          "t1.config.restart_consistency"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "observability.correlation",
+        "planned_case_ids": [
+          "t1.observability.correlation"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "observability.redaction",
+        "planned_case_ids": [
+          "t1.observability.redaction"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "embedding.large_batch_artifact",
+        "planned_case_ids": [
+          "t1.embedding.large_batch_artifact"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      },
+      {
+        "branch_id": "embedding.space_mismatch_rejected",
+        "planned_case_ids": [
+          "t1.embedding.space_mismatch_rejected"
+        ],
+        "executed_case_ids": [],
+        "status": "unexecuted"
+      }
+    ],
+    "combination_groups": [
+      {
+        "group_id": "route_constraints",
+        "planned_cells": 65,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "scheduler_profiles",
+        "planned_cells": 6,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "history_constraints",
+        "planned_cells": 13,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "canonical_api_routes",
+        "planned_cells": 24,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "runtime_boundaries",
+        "planned_cells": 7,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "cross_cutting",
+        "planned_cells": 34,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      },
+      {
+        "group_id": "embedding_boundaries",
+        "planned_cells": 2,
+        "executed_cells": 0,
+        "passed_cells": 0,
+        "coverage_rate": 0
+      }
+    ]
+  },
+  "route_exposure_coverage": {
+    "planned": 2,
+    "passed": 0,
+    "failed": 2,
+    "skipped": 0,
+    "cells": [
+      {
+        "case_id": "t1.route.exposure.minimax.image--.image.img2img",
+        "provider_profile_id": "minimax",
+        "model_rule": "image-*",
+        "api_type": "image.img2img",
+        "exposure_mode": "logical_routable",
+        "status": "failed"
+      },
+      {
+        "case_id": "t1.route.exposure.minimax.image--.image.txt2img",
+        "provider_profile_id": "minimax",
+        "model_rule": "image-*",
+        "api_type": "image.txt2img",
+        "exposure_mode": "logical_routable",
+        "status": "failed"
+      }
+    ]
+  },
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "services/aicc/settings restored byte-for-byte",
+      "mock Provider uses zero real model calls"
+    ]
+  },
+  "targeted_retest_command": "pnpm run acceptance:t1 -- --config \"aicc_acceptance.local.toml\" --allow-config-mutation --case t1.route.exposure.minimax.image--.image.img2img --case t1.route.exposure.minimax.image--.image.txt2img"
+}

@@ -1432,7 +1432,7 @@
         "allowed_body_fields": ["model", "messages", "max_tokens", "max_completion_tokens", "response_format", "stop", "stream", "stream_options", "tools", "tool_choice", "thinking", "reasoning_effort", "prompt_cache_key", "temperature", "top_p", "n", "presence_penalty", "frequency_penalty"],
         "body_field_types": { "model": ["string"], "messages": ["array"], "stream": ["boolean"], "temperature": ["number"], "top_p": ["number"], "n": ["number"], "presence_penalty": ["number"], "frequency_penalty": ["number"] },
         "stream_protocol": "openai_chat",
-        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827" }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7, "cached_tokens": 0 } },
+        "success_fixture": { "id": "cmpl_mock_1", "object": "chat.completion", "created": 1770000000, "model": "kimi-k3", "choices": [{ "index": 0, "message": { "role": "assistant", "content": "BUCKYOS-AICC-4827", "reasoning_content": "The marker should be returned exactly." }, "finish_reason": "stop" }], "usage": { "prompt_tokens": 4, "completion_tokens": 10, "total_tokens": 14, "cached_tokens": 0 } },
         "official_sources": ["https://platform.kimi.com/docs/api/chat", "https://platform.kimi.com/docs/api/errors"],
         "evidence_summary": "Kimi Chat Completions uses POST /v1/chat/completions with Bearer authentication, JSON model/messages, OpenAI-style choices and data-only SSE terminated by [DONE]."
       }]

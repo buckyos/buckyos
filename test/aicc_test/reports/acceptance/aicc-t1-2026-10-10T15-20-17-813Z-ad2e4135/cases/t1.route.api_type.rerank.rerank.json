@@ -1,0 +1,31 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.api_type.rerank.rerank",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openrouter",
+  "provider_instance": "dv-openrouter-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "exact_model": "cohere/rerank-v3.5@dv-openrouter-aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "api_type": "rerank",
+  "method": "rerank",
+  "session_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135:t1.route.api_type.rerank.rerank",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:25.581Z",
+      "elapsed_ms": 1951,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-dbabbd0c6cc94483925c74a3360db5cf",
+  "trace_id": "aicc-idem-69e6d9f920ea5ab4a12ecd353749c94e",
+  "usage": {
+    "request_units": 1,
+    "total_tokens": 12
+  }
+}

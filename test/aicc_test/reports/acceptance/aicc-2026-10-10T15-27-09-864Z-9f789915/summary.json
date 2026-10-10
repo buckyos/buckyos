@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+  "started_at": "2026-10-10T15:27:09.822Z",
+  "finished_at": "2026-10-10T15:27:12.145Z",
+  "commit": "c3e1327677f9697ecdc26e51714621308d8ec86f",
+  "baseline_revision": "2026-10-10.2",
+  "allow_real_model_calls": false,
+  "planned_real_calls": 10,
+  "actual_real_calls": 0,
+  "estimated_cost_usd": 0.1,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.2,
+    "planned_max_calls": 10,
+    "planned_max_cost_usd": 0.1,
+    "actual_calls": 0,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0,
+    "total_exposure_usd": 0,
+    "remaining_budget_usd": 0.2,
+    "unknown_cost_calls": 0,
+    "budget_exceeded": false,
+    "entries": [],
+    "by_provider": [],
+    "by_instance": [],
+    "by_model": [],
+    "by_api_type": [],
+    "by_case": []
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.preflight.baseline_mismatch.1",
+      "layer": "T2",
+      "status": "failed",
+      "method": "models.list",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.143Z",
+          "elapsed_ms": 0,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "aicc_advertised_but_official_missing kimi/kimi-k2.6"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.preflight.baseline_mismatch.2",
+      "layer": "T2",
+      "status": "failed",
+      "method": "models.list",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.143Z",
+          "elapsed_ms": 0,
+          "status": "failed",
+          "failure_class": "baseline_mismatch",
+          "diagnostic": "aicc_advertised_but_official_missing kimi/kimi-k2.7-code"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-27-09-864Z-9f789915",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "layer": "T2",
+      "status": "skipped",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:27:12.145Z",
+          "elapsed_ms": 0,
+          "status": "skipped",
+          "diagnostic": "real model calls require --allow-real-model-calls"
+        }
+      ]
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [
+    {
+      "defect_id": "defect.aicc.t2.preflight.baseline_mismatch.1",
+      "component": "AICC",
+      "case_id": "t2.preflight.baseline_mismatch.1",
+      "expected": "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
+      "observed": "aicc_advertised_but_official_missing kimi/kimi-k2.6",
+      "evidence_paths": [
+        "cases/t2.preflight.baseline_mismatch.1.json",
+        "effective_baseline.json"
+      ],
+      "failure_class": "baseline_mismatch"
+    },
+    {
+      "defect_id": "defect.aicc.t2.preflight.baseline_mismatch.2",
+      "component": "AICC",
+      "case_id": "t2.preflight.baseline_mismatch.2",
+      "expected": "official Provider capability, AICC inventory declaration, and adapter support are bidirectionally consistent",
+      "observed": "aicc_advertised_but_official_missing kimi/kimi-k2.7-code",
+      "evidence_paths": [
+        "cases/t2.preflight.baseline_mismatch.2.json",
+        "effective_baseline.json"
+      ],
+      "failure_class": "baseline_mismatch"
+    }
+  ],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (kimi)"
+    ]
+  }
+}

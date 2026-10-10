@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.route.auto_mount_admission",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:02.775Z",
+      "elapsed_ms": 207,
+      "status": "passed",
+      "diagnostic": "auto admission selected gpt-5.6:reasoning-high@dv-openai-a-aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

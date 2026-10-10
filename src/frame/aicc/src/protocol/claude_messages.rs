@@ -1974,9 +1974,15 @@ mod tests {
                 "stop_reason": "end_turn", "usage": {"input_tokens": 5, "output_tokens": 8}
             }))
             .unwrap();
-            assert_eq!(output.value["message"]["content"][0]["type"], "provider_state");
+            assert_eq!(
+                output.value["message"]["content"][0]["type"],
+                "provider_state"
+            );
             assert_eq!(output.value["message"]["content"][0]["value"], search);
-            assert_eq!(output.value["message"]["content"][1]["value"], search_result);
+            assert_eq!(
+                output.value["message"]["content"][1]["value"],
+                search_result
+            );
             assert_eq!(output.value["message"]["content"][2]["text"], "搜索结果");
             assert!(output.value["tool_calls"].as_array().unwrap().is_empty());
             let mut state = ClaudeStreamState::default();
@@ -2266,7 +2272,11 @@ mod tests {
                 AiMessage::text(AiRole::User, "one"),
                 turn(native, "primary", json!({"signature": "sig-primary"})),
                 AiMessage::text(AiRole::User, "two"),
-                turn(backup, "backup", json!({"id": "rs_1", "encrypted_content": "x"})),
+                turn(
+                    backup,
+                    "backup",
+                    json!({"id": "rs_1", "encrypted_content": "x"}),
+                ),
                 AiMessage::text(AiRole::User, "three"),
                 // Kimi / GLM style: plaintext only, never bound to a source.
                 AiMessage::new(

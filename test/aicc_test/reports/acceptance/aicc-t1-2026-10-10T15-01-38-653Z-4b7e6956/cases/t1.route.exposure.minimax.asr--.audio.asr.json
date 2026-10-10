@@ -1,0 +1,27 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "case_id": "t1.route.exposure.minimax.asr--.audio.asr",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "audio.asr",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:02:33.785Z",
+      "elapsed_ms": 378,
+      "status": "passed",
+      "diagnostic": "audio.asr closed through asr-1.0@dv-minimax-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "provider_driver": "minimax",
+  "provider_profile_id": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T15-01-38-653Z-4b7e6956",
+  "model_rule": "asr-*",
+  "exposure_mode": "logical_routable"
+}

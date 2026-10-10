@@ -1,0 +1,1289 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+  "started_at": "2026-10-10T15:29:19.519Z",
+  "finished_at": "2026-10-10T15:36:14.379Z",
+  "commit": "c3e1327677f9697ecdc26e51714621308d8ec86f",
+  "baseline_revision": "2026-10-10.2",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 20,
+  "actual_real_calls": 20,
+  "estimated_cost_usd": 0.19999999999999998,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.2,
+    "planned_max_calls": 20,
+    "planned_max_cost_usd": 0.19999999999999998,
+    "actual_calls": 20,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0.20000000000000004,
+    "total_exposure_usd": 0.20000000000000004,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 20,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 60,
+          "total_tokens": 82
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 1157,
+          "total_tokens": 1587
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:30:09.093Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 134,
+          "total_tokens": 353
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:30:17.325Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 45,
+          "total_tokens": 67
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 604,
+          "total_tokens": 1034
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:30:54.727Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 129,
+          "total_tokens": 348
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:31:14.444Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 43,
+          "total_tokens": 65
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 327,
+          "total_tokens": 757
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:31:58.623Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 125,
+          "total_tokens": 344
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:32:17.627Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 512,
+          "output_tokens": 337,
+          "total_tokens": 849
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:33:10.789Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T15:29:21.818Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 302,
+          "output_tokens": 417,
+          "total_tokens": 719
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "judge",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T15:33:32.514Z",
+        "status": "failed",
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "judge",
+        "calls": 8,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.08,
+        "unknown_cost_calls": 8
+      },
+      {
+        "key": "kimi",
+        "calls": 12,
+        "input_tokens": 2827,
+        "output_tokens": 3378,
+        "total_tokens": 6205,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.11999999999999998,
+        "unknown_cost_calls": 12
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "judge/kimi-t2",
+        "calls": 8,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.08,
+        "unknown_cost_calls": 8
+      },
+      {
+        "key": "kimi/kimi-t2",
+        "calls": 12,
+        "input_tokens": 2827,
+        "output_tokens": 3378,
+        "total_tokens": 6205,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.11999999999999998,
+        "unknown_cost_calls": 12
+      }
+    ],
+    "by_model": [
+      {
+        "key": "kimi-k2.6@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 1351,
+        "total_tokens": 2022,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k2.7-code-highspeed@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 778,
+        "total_tokens": 1449,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k2.7-code@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 495,
+        "total_tokens": 1166,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k3@kimi-t2",
+        "calls": 11,
+        "input_tokens": 814,
+        "output_tokens": 754,
+        "total_tokens": 1568,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.10999999999999999,
+        "unknown_cost_calls": 11
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "llm",
+        "calls": 12,
+        "input_tokens": 66,
+        "output_tokens": 148,
+        "total_tokens": 214,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.11999999999999998,
+        "unknown_cost_calls": 12
+      },
+      {
+        "key": "vision.caption",
+        "calls": 4,
+        "input_tokens": 1802,
+        "output_tokens": 2425,
+        "total_tokens": 4227,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.04,
+        "unknown_cost_calls": 4
+      },
+      {
+        "key": "vision.ocr",
+        "calls": 4,
+        "input_tokens": 959,
+        "output_tokens": 805,
+        "total_tokens": 1764,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.04,
+        "unknown_cost_calls": 4
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 60,
+        "total_tokens": 82,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 1157,
+        "total_tokens": 1587,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 134,
+        "total_tokens": 353,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 45,
+        "total_tokens": 67,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 604,
+        "total_tokens": 1034,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 129,
+        "total_tokens": 348,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 43,
+        "total_tokens": 65,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 327,
+        "total_tokens": 757,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 125,
+        "total_tokens": 344,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "calls": 1,
+        "input_tokens": 512,
+        "output_tokens": 337,
+        "total_tokens": 849,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "calls": 1,
+        "input_tokens": 302,
+        "output_tokens": 417,
+        "total_tokens": 719,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 2470,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 60,
+            "total_tokens": 82
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-dabf67ac94124cfaa31bda3ea270a19b",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 60,
+        "total_tokens": 82
+      },
+      "trace_id": "aicc-idem-16a3fec505eeb5ca831c50e8b47a0f8a"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 265276,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 279 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-d960fa6e8a2e4a4aa28cb4bddc158be0",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 1157,
+        "total_tokens": 1587
+      },
+      "trace_id": "aicc-idem-d16e33470a769d3e5978bb1722e257a8"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 284195,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 151 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-47ca190886c54712b6996bf2f8964be9",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 134,
+        "total_tokens": 353
+      },
+      "trace_id": "aicc-idem-e5ec8492ea908829bca00a0882432ddc"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 69701,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 45,
+            "total_tokens": 67
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-44354a8d0bfa47d5b7f31060f2df5f8b",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 45,
+        "total_tokens": 67
+      },
+      "trace_id": "aicc-idem-c5e03f4e1aaffbf3aafc05c04b77d204"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 309792,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 279 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-bf7398b938de479e838bc2e5b2ef3e1b",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 604,
+        "total_tokens": 1034
+      },
+      "trace_id": "aicc-idem-8d7a51ebe878b33d052110fec6df2576"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 326931,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 135 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-0039b1edb304464a9101820a04a5f5e5",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 129,
+        "total_tokens": 348
+      },
+      "trace_id": "aicc-idem-92a1980866a2b0389e2795c929a18230"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 132727,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 43,
+            "total_tokens": 65
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-da800e887dc34f2d90a090f63abbbe6a",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 43,
+        "total_tokens": 65
+      },
+      "trace_id": "aicc-idem-b78b380acbfaaeeef0ef87cf2bbc0922"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 348042,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 278 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-7579d4a1e9e54a8b82564367a7c8ebdc",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 327,
+        "total_tokens": 757
+      },
+      "trace_id": "aicc-idem-1f2535098bed73f882df181d38693bd3"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 368907,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 220 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-9b93eed5052a4cb4b3a61f3945581030",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 125,
+        "total_tokens": 344
+      },
+      "trace_id": "aicc-idem-10608e975b5ce43f1308ea915af3bf86"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 197877,
+          "status": "failed",
+          "failure_class": "assertion_failed",
+          "diagnostic": "Error: LLM output omitted the requested acceptance marker",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ]
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 392875,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 280 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-437708cc25f74f08acf86fc42ce02adc",
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 337,
+        "total_tokens": 849
+      },
+      "trace_id": "aicc-idem-cf459adc437564a4b90201d81cf1e8ff"
+    },
+    {
+      "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "layer": "T2",
+      "status": "failed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T15:29:21.818Z",
+          "elapsed_ms": 410767,
+          "status": "failed",
+          "failure_class": "judge_failed",
+          "diagnostic": "JudgeError: Judge returned invalid JSON: SyntaxError: Unexpected non-whitespace character after JSON at position 148 (line 2 column 1)",
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-06f22d868fe740a5a98862c245ed7daa",
+      "usage": {
+        "input_tokens": 302,
+        "output_tokens": 417,
+        "total_tokens": 719
+      },
+      "trace_id": "aicc-idem-c7deb10e8128959b254536d8c90cd447"
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [
+    {
+      "defect_id": "defect.aicc.t2.kimi.kimi-t2.kimi-k3.llm",
+      "component": "AICC",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "expected": "the selected exact model satisfies the case routing, capability, resource, and security assertions",
+      "observed": "Error: LLM output omitted the requested acceptance marker",
+      "evidence_paths": [
+        "cases/t2.kimi.kimi-t2.kimi-k3.llm.json"
+      ],
+      "failure_class": "assertion_failed"
+    }
+  ],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --provider kimi --case t2.kimi.kimi-t2.kimi-k2.6.vision.caption --case t2.kimi.kimi-t2.kimi-k2.6.vision.ocr --case t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption --case t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr --case t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption --case t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr --case t2.kimi.kimi-t2.kimi-k3.llm --case t2.kimi.kimi-t2.kimi-k3.vision.caption --case t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (kimi)"
+    ]
+  }
+}

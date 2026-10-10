@@ -1,0 +1,32 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.route.api_type.vision.caption.vision.caption",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "minimax",
+  "provider_instance": "dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "MiniMax-M3@dv-minimax-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "vision.caption",
+  "method": "vision.caption",
+  "session_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea:t1.route.api_type.vision.caption.vision.caption",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:51:32.464Z",
+      "elapsed_ms": 1450,
+      "status": "passed",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ],
+  "task_id": "t-ff5c3c37fdff4333ba4e468d392fb66b",
+  "trace_id": "aicc-idem-b7ad2efa1552a678e52a36ae8398dfc3",
+  "usage": {
+    "input_tokens": 10,
+    "output_tokens": 5,
+    "total_tokens": 15
+  }
+}

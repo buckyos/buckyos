@@ -1,0 +1,25 @@
+{
+  "run_id": "t15-20261010160418-3615574",
+  "case_id": "t1.5.kimi.kimi.chat-completions.v1.vision.ocr.variant.kimi-k3-reasoning-max",
+  "layer": "T1.5",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "t15-20261010160418-3615574-kimi-isolation-1",
+  "exact_model": "kimi-k3:reasoning-max@t15-20261010160418-3615574-kimi-isolation-1",
+  "api_type": "vision.ocr",
+  "method": "vision.ocr",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T16:04:56.068Z",
+      "elapsed_ms": 496,
+      "status": "passed",
+      "diagnostic": "contract=kimi.chat-completions.v1; scenario=success; captured_requests=1",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

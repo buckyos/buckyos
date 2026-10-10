@@ -1,0 +1,26 @@
+{
+  "run_id": "t15-20261010043154-2665390",
+  "case_id": "t1.5.doubao-agent-plan.doubao-agent-plan.images.plan-v3.image.txt2img.ta[REDACTED]",
+  "layer": "T1.5",
+  "status": "failed",
+  "provider_driver": "doubao-agent-plan",
+  "provider_instance": "t15-20261010043154-2665390-doubao-agent-plan",
+  "exact_model": "doubao-seedream-5.0-lite@t15-20261010043154-2665390-doubao-agent-plan",
+  "api_type": "image.txt2img",
+  "method": "images.generate",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T04:32:00.759Z",
+      "elapsed_ms": 444,
+      "status": "failed",
+      "failure_class": "provider_protocol_failed",
+      "diagnostic": "contract=doubao-agent-plan.images.plan-v3; scenario=success; captured_requests=1; Error: AICC artifact download failed with HTTP 503",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

@@ -104,6 +104,7 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 ## Kimi（2026-10-08 复核）
 
 - Kimi K3：[官方定价页](https://platform.kimi.com/docs/pricing/chat)明确上下文为 1,048,576；[K3 模型页](https://platform.kimi.com/docs/guide/kimi-k3-quickstart)明确 `max_completion_tokens` 默认 131,072、最大 1,048,576。因此模型能力配置为 1,048,576 / 1,048,576，不能把默认值写成硬上限。
+- Kimi K2.8 Preview：[Kimi Code 官方模型表](https://www.kimi.com/code/docs/en/kimi-code/models)明确 `kimi-for-coding` 使用 K2.8 Preview、支持 1M 上下文和图片/视频输入，因此配置 1,048,576 上下文；该页面没有发布最大 completion 整数，输出上限继续缺省。
 - Kimi K2.6、K2.7 Code 和 K2.7 Code Highspeed 的官方页仍只明确 256K 上下文，没有发布逐型号最大 completion 整数，输出上限继续缺省。
 - Kimi model-driver 描述 AICC 已知的型号与能力，但 Provider 有效库存只采用当前 API Key 的 `/models` 返回值。公开文档和 model-driver 都不能把 `kimi-k3`、`kimi-k2.7-code-highspeed` 静态注入没有访问权限的账号。
 
@@ -113,11 +114,11 @@ Qwen3 Max 的非思考输出上限是 65,536，思考模式是 32,768；当前�
 | --- | --- | --- |
 | qwen2-5-72b-20240919、qwen3-0-6b-20250429、qwen3-8b-20250429、qwen3-14b-20250429、qwen3-32b-20250429 | max_context_tokens、max_output_tokens | 火山方舟普通账号 `/api/v3/models` 确认这些聚合渠道型号当前可见，但目录不返回 token 上限；不把其他渠道或相近 Qwen 型号的限制外推到这些精确 ID |
 | kimi-k2.6、kimi-k2.7-code、kimi-k2.7-code-highspeed | max_output_tokens | 当前官方模型页只明确 256K 上下文，未给出这些型号的明确 API 输出硬上限 |
-| kimi-k2.8-preview | max_context_tokens、max_output_tokens | Agent Plan 清单已列出该预览型号，但当前 Kimi 公共模型文档尚无可核实的硬限制 |
+| kimi-k2.8-preview | max_output_tokens | Kimi Code 官方模型表明确 1M 上下文，但未发布最大 completion 整数 |
 | charglm-4、emohaa | max_context_tokens、max_output_tokens | 当前官方型号表和 API 参数表未给出可确认的型号级限制 |
 | glm-4-32b-0414-128k | max_output_tokens | 官方开源卡和部署说明给出上下文，未给出这个托管 ID 的独立输出上限 |
 
-Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
+Kimi 来源：[K2.6 快速开始](https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart)、[当前模型文档](https://platform.kimi.com/docs/models)、[当前 API 文档](https://platform.kimi.com/docs/api/chat)、[Kimi Code 模型表](https://www.kimi.com/code/docs/en/kimi-code/models)。新 K3 的默认值和上限不能回填给 K2.x；Agent Plan 新增型号也不能据名称外推硬限制。
 
 这些未知值继续缺省。有明确输出预算的请求仍会按现有路由规则过滤缺少上限的模型；本次不把未知值解释为无限容量。
 

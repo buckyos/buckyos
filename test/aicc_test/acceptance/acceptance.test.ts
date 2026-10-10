@@ -558,7 +558,12 @@ test("shared TOML parser accepts finite decimal and exponent numbers", () => {
 test("Judge text extraction ignores echoed Provider request bodies", () => {
   const texts = responseText({
     result: {
-      message: { content: [{ type: "text", text: '{"pass":true}' }] },
+      message: {
+        content: [
+          { type: "text", text: '{"pass":true}' },
+          { type: "thinking", text: "untrusted private reasoning" },
+        ],
+      },
       extra: {
         candidate_text: "untrusted duplicated transcript",
         provider_io: {
@@ -1733,6 +1738,16 @@ test("T1 mock settings append run-scoped instances without mutating backup", () 
   assert.equal(providers.length, 13);
   assert.deepEqual(providers[1].credentials, {
     api_token: { inline_secret: "mock-a-run-one" },
+  });
+  assert.deepEqual(providers[5].instance_rules, {
+    enabled_inventory_models: [
+      "asr-1.0",
+      "speech-2.8-hd",
+      "speech-2.8-turbo",
+      "image-01",
+      "MiniMax-H3",
+      "MiniMax-H3-Max",
+    ],
   });
   assert.deepEqual(
     providers.slice(10).map((

@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e",
+  "case_id": "t1.task.unknown",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "get_task",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:43:59.955Z",
+      "elapsed_ms": 3,
+      "status": "passed",
+      "diagnostic": "unknown task rejected: RPCError: RPC call error: Failed due to reason: task_not_found: aicc-t1-2026-10-10T14-41-34-375Z-34ab5e4e-unknown-task",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

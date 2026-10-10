@@ -1,0 +1,22 @@
+{
+  "run_id": "aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135",
+  "case_id": "t1.route.invalid_logical_path",
+  "layer": "T1",
+  "status": "passed",
+  "api_type": "llm",
+  "method": "route.resolve",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:21:45.398Z",
+      "elapsed_ms": 297,
+      "status": "passed",
+      "diagnostic": "expected routing rejection observed: RPCError: RPC call error: Failed due to reason: {\"code\":\"no_candidate_model\",\"message\":\"logical path `missing.logical.aicc-t1-2026-10-10T15-20-17-813Z-ad2e4135` does not match `llm`\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

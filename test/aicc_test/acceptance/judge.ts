@@ -25,6 +25,7 @@ export function responseText(value: unknown, depth = 0): string[] {
   if (Array.isArray(value)) return value.flatMap((item) => responseText(item, depth + 1));
   const record = object(value);
   if (!record) return [];
+  if (record.type === "thinking" || record.type === "reasoning") return [];
   const values: string[] = [];
   for (const key of ["text", "output_text"] as const) {
     if (typeof record[key] === "string") values.push(record[key]);

@@ -2106,7 +2106,7 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
             .unwrap()
             .starts_with(&format!("{task}."))));
     }
-    assert_eq!(media_count, 55);
+    assert_eq!(media_count, 57);
     let mut contract_count = 0;
     for line in include_str!("model_defaults.rs").lines() {
         let Some((left, right)) = line.split_once(" -> ") else {
@@ -2137,11 +2137,19 @@ fn media_family_preferences_remain_static_and_cannot_be_bypassed_by_auto_mounts(
         );
         contract_count += 1;
     }
-    assert_eq!(contract_count, 55);
+    assert_eq!(contract_count, 57);
 
     assert_eq!(
         dir_item(&directory, "image.txt2img", "gpt_image")["weight"],
         json!(3.0)
+    );
+    assert_eq!(
+        dir_item(&directory, "image.txt2img", "minimax")["weight"],
+        json!(1.0)
+    );
+    assert_eq!(
+        dir_item(&directory, "image.img2img", "minimax")["weight"],
+        json!(1.0)
     );
     let mut model =
         crate::model::llm_tests::inventory("openai", "gpt-image-2", "image", "provider", &[]);

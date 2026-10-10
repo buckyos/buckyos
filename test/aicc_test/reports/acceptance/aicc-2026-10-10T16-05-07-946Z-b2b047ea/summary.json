@@ -1,0 +1,1443 @@
+{
+  "schema_version": 1,
+  "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+  "started_at": "2026-10-10T16:05:07.869Z",
+  "finished_at": "2026-10-10T16:12:15.248Z",
+  "commit": "a8f620c679b59a93a96d98ebb22f8a202ef0d504",
+  "baseline_revision": "2026-10-10.2",
+  "allow_real_model_calls": true,
+  "planned_real_calls": 20,
+  "actual_real_calls": 20,
+  "estimated_cost_usd": 0.19999999999999998,
+  "actual_cost_usd": 0,
+  "raw_cost_usd": 0,
+  "credit_applied_usd": 0,
+  "finance": {
+    "currency": "USD",
+    "budget_usd": 0.2,
+    "planned_max_calls": 20,
+    "planned_max_cost_usd": 0.19999999999999998,
+    "actual_calls": 20,
+    "actual_cost_usd": 0,
+    "raw_cost_usd": 0,
+    "credit_applied_usd": 0,
+    "estimated_exposure_usd": 0.20000000000000004,
+    "total_exposure_usd": 0.20000000000000004,
+    "remaining_budget_usd": 0,
+    "unknown_cost_calls": 20,
+    "budget_exceeded": false,
+    "entries": [
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 60,
+          "total_tokens": 82
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 611,
+          "total_tokens": 1041
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:47.980Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 979,
+          "output_tokens": 194,
+          "total_tokens": 1173
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.6@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 238,
+          "total_tokens": 457
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:58.348Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 599,
+          "output_tokens": 120,
+          "total_tokens": 719
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 41,
+          "total_tokens": 63
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 615,
+          "total_tokens": 1045
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:06:37.975Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 983,
+          "output_tokens": 185,
+          "total_tokens": 1168
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 141,
+          "total_tokens": 360
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:06:56.987Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 599,
+          "output_tokens": 103,
+          "total_tokens": 702
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 22,
+          "output_tokens": 30,
+          "total_tokens": 52
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 430,
+          "output_tokens": 351,
+          "total_tokens": 781
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:07:41.809Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 948,
+          "output_tokens": 202,
+          "total_tokens": 1150
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k2.7-code@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 219,
+          "output_tokens": 121,
+          "total_tokens": 340
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:08:00.472Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 599,
+          "output_tokens": 149,
+          "total_tokens": 748
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 84,
+          "total_tokens": 184
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.caption",
+        "method": "vision.caption",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 512,
+          "output_tokens": 337,
+          "total_tokens": 849
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:08:52.847Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 931,
+          "output_tokens": 245,
+          "total_tokens": 1176
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "vision.ocr",
+        "method": "vision.ocr",
+        "started_at": "2026-10-10T16:05:10.275Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 302,
+          "output_tokens": 1253,
+          "total_tokens": 1555
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      },
+      {
+        "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr.judge",
+        "attempt": 1,
+        "provider_driver": "kimi",
+        "provider_instance": "kimi-t2",
+        "exact_model": "kimi-k3@kimi-t2",
+        "api_type": "llm",
+        "method": "chat.completions.create",
+        "started_at": "2026-10-10T16:09:39.685Z",
+        "status": "passed",
+        "usage": {
+          "input_tokens": 600,
+          "output_tokens": 141,
+          "total_tokens": 741
+        },
+        "estimated_cost_usd": 0.01,
+        "cost_status": "unknown"
+      }
+    ],
+    "by_provider": [
+      {
+        "key": "kimi",
+        "calls": 20,
+        "input_tokens": 9165,
+        "output_tokens": 5221,
+        "total_tokens": 14386,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.20000000000000004,
+        "unknown_cost_calls": 20
+      }
+    ],
+    "by_instance": [
+      {
+        "key": "kimi/kimi-t2",
+        "calls": 20,
+        "input_tokens": 9165,
+        "output_tokens": 5221,
+        "total_tokens": 14386,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.20000000000000004,
+        "unknown_cost_calls": 20
+      }
+    ],
+    "by_model": [
+      {
+        "key": "kimi-k2.6@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 909,
+        "total_tokens": 1580,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k2.7-code-highspeed@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 797,
+        "total_tokens": 1468,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k2.7-code@kimi-t2",
+        "calls": 3,
+        "input_tokens": 671,
+        "output_tokens": 502,
+        "total_tokens": 1173,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.03,
+        "unknown_cost_calls": 3
+      },
+      {
+        "key": "kimi-k3@kimi-t2",
+        "calls": 11,
+        "input_tokens": 7152,
+        "output_tokens": 3013,
+        "total_tokens": 10165,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.10999999999999999,
+        "unknown_cost_calls": 11
+      }
+    ],
+    "by_api_type": [
+      {
+        "key": "llm",
+        "calls": 12,
+        "input_tokens": 6404,
+        "output_tokens": 1554,
+        "total_tokens": 7958,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.11999999999999998,
+        "unknown_cost_calls": 12
+      },
+      {
+        "key": "vision.caption",
+        "calls": 4,
+        "input_tokens": 1802,
+        "output_tokens": 1914,
+        "total_tokens": 3716,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.04,
+        "unknown_cost_calls": 4
+      },
+      {
+        "key": "vision.ocr",
+        "calls": 4,
+        "input_tokens": 959,
+        "output_tokens": 1753,
+        "total_tokens": 2712,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.04,
+        "unknown_cost_calls": 4
+      }
+    ],
+    "by_case": [
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 60,
+        "total_tokens": 82,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 611,
+        "total_tokens": 1041,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 979,
+        "output_tokens": 194,
+        "total_tokens": 1173,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 238,
+        "total_tokens": 457,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 599,
+        "output_tokens": 120,
+        "total_tokens": 719,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 41,
+        "total_tokens": 63,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 615,
+        "total_tokens": 1045,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 983,
+        "output_tokens": 185,
+        "total_tokens": 1168,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 141,
+        "total_tokens": 360,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 599,
+        "output_tokens": 103,
+        "total_tokens": 702,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+        "calls": 1,
+        "input_tokens": 22,
+        "output_tokens": 30,
+        "total_tokens": 52,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+        "calls": 1,
+        "input_tokens": 430,
+        "output_tokens": 351,
+        "total_tokens": 781,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 948,
+        "output_tokens": 202,
+        "total_tokens": 1150,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+        "calls": 1,
+        "input_tokens": 219,
+        "output_tokens": 121,
+        "total_tokens": 340,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 599,
+        "output_tokens": 149,
+        "total_tokens": 748,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.llm",
+        "calls": 1,
+        "input_tokens": 100,
+        "output_tokens": 84,
+        "total_tokens": 184,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+        "calls": 1,
+        "input_tokens": 512,
+        "output_tokens": 337,
+        "total_tokens": 849,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.caption.judge",
+        "calls": 1,
+        "input_tokens": 931,
+        "output_tokens": 245,
+        "total_tokens": 1176,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+        "calls": 1,
+        "input_tokens": 302,
+        "output_tokens": 1253,
+        "total_tokens": 1555,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      },
+      {
+        "key": "t2.kimi.kimi-t2.kimi-k3.vision.ocr.judge",
+        "calls": 1,
+        "input_tokens": 600,
+        "output_tokens": 141,
+        "total_tokens": 741,
+        "request_units": 0,
+        "actual_cost_usd": 0,
+        "raw_cost_usd": 0,
+        "credit_applied_usd": 0,
+        "estimated_exposure_usd": 0.01,
+        "unknown_cost_calls": 1
+      }
+    ]
+  },
+  "cases": [
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 10533,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 60,
+            "total_tokens": 82
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-b51863bd2bce44f4926dde949461f8ce",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 60,
+        "total_tokens": 82
+      },
+      "trace_id": "aicc-idem-531ef8119216d5d83ab9c1fd84d578d7"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.caption",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 277964,
+          "status": "passed",
+          "diagnostic": "Judge score 0.95: Caption accurately describes the marker image: pink scalloped flower with yellow center and two dots, green stem with two leaves, mint-green/brown split background with large overlapping earth-tone circles. Only trivial wording quibbles; no",
+          "usage": {
+            "input_tokens": 430,
+            "output_tokens": 611,
+            "total_tokens": 1041
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-964e8e0dfdde4a06a01eeb9ce745b0f3",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 611,
+        "total_tokens": 1041
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-f9dbc78a5ea74e9da7c030f26663be4c",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.6.vision.caption; tested_model=kimi-k2.6@kimi-t2; rubric_items=1; output_text_chars=927; input_resources=1; output_resources=0",
+        "score": 0.95,
+        "passed": true,
+        "reason": "Caption accurately describes the marker image: pink scalloped flower with yellow center and two dots, green stem with two leaves, mint-green/brown split background with large overlapping earth-tone circles. Only trivial wording quibbles; no",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-ed510618f2d58110b304990894f1676c"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.6.vision.ocr",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 295818,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Observed OCR text 'BUCKY05-DV-4827' matches the source image and contains the required acceptance marker 4827.",
+          "usage": {
+            "input_tokens": 219,
+            "output_tokens": 238,
+            "total_tokens": 457
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-39f088cd7d7f4889936e5b8dc2681bdf",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 238,
+        "total_tokens": 457
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-b44872529d1044a89ad5077ff8f6a06d",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.6.vision.ocr; tested_model=kimi-k2.6@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Observed OCR text 'BUCKY05-DV-4827' matches the source image and contains the required acceptance marker 4827.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-261002769ff9ce8027479989b273513c"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 64305,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 41,
+            "total_tokens": 63
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-3858ac0a3836463497bccff4fbbc5419",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 41,
+        "total_tokens": 63
+      },
+      "trace_id": "aicc-idem-54174b2ae0034b1c3bb810c6746d6798"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 322102,
+          "status": "passed",
+          "diagnostic": "Judge score 0.95: Caption accurately describes the image: pink scalloped-petal flower with yellow center and two dark dots, green stem with two leaves, split mint-green/brown background, and surrounding flat brown/tan oval shapes. All key elements match.",
+          "usage": {
+            "input_tokens": 430,
+            "output_tokens": 615,
+            "total_tokens": 1045
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-98de10993550479fae24eb7f70eec638",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 615,
+        "total_tokens": 1045
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-637a8714fbe142b19c28177590483602",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.caption; tested_model=kimi-k2.7-code-highspeed@kimi-t2; rubric_items=1; output_text_chars=860; input_resources=1; output_resources=0",
+        "score": 0.95,
+        "passed": true,
+        "reason": "Caption accurately describes the image: pink scalloped-petal flower with yellow center and two dark dots, green stem with two leaves, split mint-green/brown background, and surrounding flat brown/tan oval shapes. All key elements match.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-92b3d849494b052a3f28714b2ca5673e"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 338280,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Observed output text 'BUCKY05-DV-4827' contains the visible acceptance marker 4827, matching the source image content.",
+          "usage": {
+            "input_tokens": 219,
+            "output_tokens": 141,
+            "total_tokens": 360
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-7360691304f94c4ea351ce329efe87ba",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 141,
+        "total_tokens": 360
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-a4a0f1081c6d4728afee02a740698e3b",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.vision.ocr; tested_model=kimi-k2.7-code-highspeed@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Observed output text 'BUCKY05-DV-4827' contains the visible acceptance marker 4827, matching the source image content.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-8a2f878c4e8a8511ccc14784c06264ec"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 127377,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 22,
+            "output_tokens": 30,
+            "total_tokens": 52
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-4172478627934fb88b659dec158e0146",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 30,
+        "total_tokens": 52
+      },
+      "trace_id": "aicc-idem-5afc7fe8e9d8d7f2d4ddf1a95a45addf"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 362197,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Caption accurately describes the marker: pink scalloped bloom, yellow center with two dark dots, green stem with two opposing leaves, mint-green sky, brown ground, and overlapping brown/tan oval boulders in flat, outline-free cartoon style.",
+          "usage": {
+            "input_tokens": 430,
+            "output_tokens": 351,
+            "total_tokens": 781
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-97b0a00fa77944e0b636885357546577",
+      "usage": {
+        "input_tokens": 430,
+        "output_tokens": 351,
+        "total_tokens": 781
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-324bcd36f68f4aed92e185995124f550",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code.vision.caption; tested_model=kimi-k2.7-code@kimi-t2; rubric_items=1; output_text_chars=758; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Caption accurately describes the marker: pink scalloped bloom, yellow center with two dark dots, green stem with two opposing leaves, mint-green sky, brown ground, and overlapping brown/tan oval boulders in flat, outline-free cartoon style.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-f228eea50e153b9e23253a282ab1bba5"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 380649,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Observed text 'BUCKYOS-DV-4827' matches the source image and contains the visible acceptance marker 4827.",
+          "usage": {
+            "input_tokens": 219,
+            "output_tokens": 121,
+            "total_tokens": 340
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-5b6a65990acd4b47b57462c7bb8e3de9",
+      "usage": {
+        "input_tokens": 219,
+        "output_tokens": 121,
+        "total_tokens": 340
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-d503b3c5587748f89d47ae60cf69c478",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k2.7-code.vision.ocr; tested_model=kimi-k2.7-code@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Observed text 'BUCKYOS-DV-4827' matches the source image and contains the visible acceptance marker 4827.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": true
+      },
+      "trace_id": "aicc-idem-4fd6c15de3e79e18e994522209fc3655"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.llm",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "llm",
+      "method": "chat.completions.create",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 193038,
+          "status": "passed",
+          "usage": {
+            "input_tokens": 100,
+            "output_tokens": 84,
+            "total_tokens": 184
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-0544d52e92524832b1620f5b607b244a",
+      "usage": {
+        "input_tokens": 100,
+        "output_tokens": 84,
+        "total_tokens": 184
+      },
+      "trace_id": "aicc-idem-30f3e73e95b2f33dcc8d70e565d788c5"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.caption",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.caption",
+      "method": "vision.caption",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 405293,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Caption matches image: pink scalloped flower, yellow center with two brown dots, green stem with two oval leaves, mint background, three overlapping brown/tan ovals above, brown ground band with two tan ovals, flat no-outline style. No mism",
+          "usage": {
+            "input_tokens": 512,
+            "output_tokens": 337,
+            "total_tokens": 849
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-8a19f2b09e2c407eaa8eb3cbe8d78b2f",
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 337,
+        "total_tokens": 849
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-2899c0a25cb14ddf941ceed6c635e33c",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k3.vision.caption; tested_model=kimi-k3@kimi-t2; rubric_items=1; output_text_chars=628; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Caption matches image: pink scalloped flower, yellow center with two brown dots, green stem with two oval leaves, mint background, three overlapping brown/tan ovals above, brown ground band with two tan ovals, flat no-outline style. No mism",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": false
+      },
+      "trace_id": "aicc-idem-4848af285294475e86d0b7f36084f287"
+    },
+    {
+      "run_id": "aicc-2026-10-10T16-05-07-946Z-b2b047ea",
+      "case_id": "t2.kimi.kimi-t2.kimi-k3.vision.ocr",
+      "layer": "T2",
+      "status": "passed",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "api_type": "vision.ocr",
+      "method": "vision.ocr",
+      "outbound_message_ids": [],
+      "artifact_ids": [],
+      "attempts": [
+        {
+          "attempt": 1,
+          "started_at": "2026-10-10T16:05:10.275Z",
+          "elapsed_ms": 422950,
+          "status": "passed",
+          "diagnostic": "Judge score 1: Observed output text 'BUCKY05-0V-4827' matches the source image and contains the required acceptance marker 4827.",
+          "usage": {
+            "input_tokens": 302,
+            "output_tokens": 1253,
+            "total_tokens": 1555
+          },
+          "estimated_cost_usd": 0.01,
+          "cost_status": "unknown"
+        }
+      ],
+      "artifact_audits": [],
+      "task_id": "t-6a58fcec458340a48e1895506a2050b2",
+      "usage": {
+        "input_tokens": 302,
+        "output_tokens": 1253,
+        "total_tokens": 1555
+      },
+      "judge": {
+        "rubric_version": "2026-08-27.1",
+        "configured_model": "kimi-k3@kimi-t2",
+        "task_id": "t-273507d6d9e247d8b7af468ec54d301a",
+        "input_summary": "case=t2.kimi.kimi-t2.kimi-k3.vision.ocr; tested_model=kimi-k3@kimi-t2; rubric_items=1; output_text_chars=15; input_resources=1; output_resources=0",
+        "score": 1,
+        "passed": true,
+        "reason": "Observed output text 'BUCKY05-0V-4827' matches the source image and contains the required acceptance marker 4827.",
+        "exact_model": "kimi-k3@kimi-t2",
+        "provider_instance": "kimi-t2",
+        "provider_driver": "kimi",
+        "distinct_provider_or_family": false
+      },
+      "trace_id": "aicc-idem-ac9b064a3e42c2b2092642cbeb5ea962"
+    }
+  ],
+  "model_coverage": [
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "official_catalog",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.6@kimi-t2",
+      "provider_model_id": "kimi-k2.6",
+      "physical_model_id": "kimi-k2.6",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-6-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code-highspeed",
+      "physical_model_id": "kimi-k2.7-code-highspeed",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k2.7-code@kimi-t2",
+      "provider_model_id": "kimi-k2.7-code",
+      "physical_model_id": "kimi-k2.7-code",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k2-7-code-quickstart"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    },
+    {
+      "source": "aicc_inventory",
+      "provider_driver": "kimi",
+      "provider_instance": "kimi-t2",
+      "exact_model": "kimi-k3@kimi-t2",
+      "provider_model_id": "kimi-k3",
+      "physical_model_id": "kimi-k3",
+      "status": "included",
+      "source_urls": [
+        "https://platform.kimi.com/docs/guide/kimi-k3-quickstart",
+        "https://platform.kimi.com/docs/guide/use-kimi-vision-model"
+      ],
+      "evidence_summary": "AICC inventory exposes this physical model."
+    }
+  ],
+  "product_defects": [],
+  "targeted_retest_command": "pnpm run acceptance:gateway -- --config aicc_acceptance.local.toml --allow-credential-mutation --timeout-ms 900000 --no-real-model-calls",
+  "cleanup": {
+    "status": "passed",
+    "details": [
+      "removed 0 uploaded fixture object(s)",
+      "removed 0 generated output object(s)",
+      "temporary Provider credentials restored after testing (kimi)"
+    ]
+  }
+}

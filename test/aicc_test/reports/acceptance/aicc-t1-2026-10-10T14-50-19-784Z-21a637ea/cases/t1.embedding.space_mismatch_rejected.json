@@ -1,0 +1,25 @@
+{
+  "run_id": "aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "case_id": "t1.embedding.space_mismatch_rejected",
+  "layer": "T1",
+  "status": "passed",
+  "provider_driver": "openai",
+  "provider_instance": "dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "exact_model": "text-embedding-3-small@dv-openai-a-aicc-t1-2026-10-10T14-50-19-784Z-21a637ea",
+  "api_type": "embedding.text",
+  "method": "embedding.text",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T14:52:13.480Z",
+      "elapsed_ms": 383,
+      "status": "passed",
+      "diagnostic": "embedding space mismatch rejected: Error: AICC returned failed: {\"status\":\"failed\",\"task_id\":\"t-298d535d45204d5fb584a1b774a9fc15\",\"event_ref\":\"/task_mgr/t-298d535d45204d5fb584a1b774a9fc15\"}: {\"code\":\"unsupported_operation\",\"message\":\"OpenAI embeddings received an unsupported canonical transform\"}",
+      "estimated_cost_usd": 0,
+      "actual_cost_usd": 0,
+      "cost_status": "actual"
+    }
+  ]
+}

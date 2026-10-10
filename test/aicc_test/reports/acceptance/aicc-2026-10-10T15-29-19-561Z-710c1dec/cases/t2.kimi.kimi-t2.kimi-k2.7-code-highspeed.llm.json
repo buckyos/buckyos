@@ -1,0 +1,36 @@
+{
+  "run_id": "aicc-2026-10-10T15-29-19-561Z-710c1dec",
+  "case_id": "t2.kimi.kimi-t2.kimi-k2.7-code-highspeed.llm",
+  "layer": "T2",
+  "status": "passed",
+  "provider_driver": "kimi",
+  "provider_instance": "kimi-t2",
+  "exact_model": "kimi-k2.7-code-highspeed@kimi-t2",
+  "api_type": "llm",
+  "method": "chat.completions.create",
+  "outbound_message_ids": [],
+  "artifact_ids": [],
+  "attempts": [
+    {
+      "attempt": 1,
+      "started_at": "2026-10-10T15:29:21.818Z",
+      "elapsed_ms": 69701,
+      "status": "passed",
+      "usage": {
+        "input_tokens": 22,
+        "output_tokens": 45,
+        "total_tokens": 67
+      },
+      "estimated_cost_usd": 0.01,
+      "cost_status": "unknown"
+    }
+  ],
+  "artifact_audits": [],
+  "task_id": "t-44354a8d0bfa47d5b7f31060f2df5f8b",
+  "usage": {
+    "input_tokens": 22,
+    "output_tokens": 45,
+    "total_tokens": 67
+  },
+  "trace_id": "aicc-idem-c5e03f4e1aaffbf3aafc05c04b77d204"
+}
