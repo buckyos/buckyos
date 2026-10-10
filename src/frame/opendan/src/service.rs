@@ -143,17 +143,6 @@ impl StateService {
         }
     }
 
-    fn profile(&self) -> Value {
-        let (owner_did, desktop_url) = match &self.access {
-            Access::Zone { owner, zone_host, .. } => (
-                Some(format!("did:bns:{owner}")),
-                zone_host.as_ref().map(|h| format!("https://{h}")),
-            ),
-            Access::Open { .. } => (None, None),
-        };
-        self.home.profile(self.agent.as_ref(), owner_did, desktop_url)
-    }
-
     async fn read_session(&self, params: &Value) -> Result<Value, OpenDanError> {
         let sid: String = param(params, "sid")?;
         let report = param::<Option<bool>>(params, "report")?.unwrap_or(true);
@@ -309,10 +298,10 @@ impl StateService {
                 self.host(&sid, "input").await;
                 Ok(json!({ "index": index, "key": input.key }))
             }
-            "agent.profile" => Ok(self.profile()),
+            "agent.profile" => self.home.profile(self.agent.as_ref()).await,
             "agent.profile_set" => {
-                self.home.set_profile(params)?;
-                Ok(self.profile())
+                self.home.set_profile(params).await?;
+                self.home.profile(self.agent.as_ref()).await
             }
             "usage.models" => self.home.usage_models(self.agent.as_ref()).await,
             "ui.bindings" => self.home.ui_bindings(self.agent.as_ref()).await,

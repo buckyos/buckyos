@@ -234,7 +234,7 @@ pub struct LocalSystemSettings {
     #[serde(default)]
     pub ai_provider_config: Value,
     #[serde(default)]
-    pub jarvis_msg_tunnel_config: Value,
+    pub owner_telegram_account_id: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1563,7 +1563,7 @@ fn build_start_config(req: &CommitActiveReq, owner_document: &OwnerDocument) -> 
         "friend_passcode": req.system_settings.friend_passcode,
         "enabled_features": req.system_settings.enabled_features,
         "ai_provider_config": req.system_settings.ai_provider_config,
-        "jarvis_msg_tunnel_config": req.system_settings.jarvis_msg_tunnel_config
+        "owner_telegram_account_id": req.system_settings.owner_telegram_account_id.trim()
     })
 }
 
@@ -2079,7 +2079,7 @@ mod tests {
                 friend_passcode: String::new(),
                 enabled_features: json!({}),
                 ai_provider_config: json!({}),
-                jarvis_msg_tunnel_config: json!({}),
+                owner_telegram_account_id: " 10001 ".to_string(),
             },
             sn: SnCommitConfig {
                 sn_url: "https://sn.example.com/kapi/sn/".to_string(),
@@ -2114,6 +2114,7 @@ mod tests {
         ] {
             assert!(!config_text.contains(forbidden));
         }
+        assert_eq!(config["owner_telegram_account_id"], "10001");
 
         let mut zone_info = SnZoneInfoResp {
             code: 0,

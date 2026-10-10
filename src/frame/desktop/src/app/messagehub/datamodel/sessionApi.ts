@@ -458,5 +458,7 @@ export const updateGroupMemberState = (groupDid: DID, sessionId: string | undefi
 /** The host's reason code (`capability-denied`, `invitation-mismatch`, …) carried in an RPC error. */
 export function groupErrorReason(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
+  // msg-center refuses to add an Agent whose `allow_group` is off (NoPermission … agent_group_disabled).
+  if (message.includes('agent_group_disabled')) return 'agent-group-disabled'
   return message.match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? 'unknown'
 }

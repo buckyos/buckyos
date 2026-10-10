@@ -33,12 +33,12 @@ export function SessionDetails({ session, entity, context, access, showActions, 
     [t('messagehub.lastActivity'), session.lastActiveAt ? new Date(session.lastActiveAt).toLocaleString() : '—'],
     ...Object.entries({ sessionId: session.id, ownerDid: session.ownerDid, origin: session.origin, attribution: session.attributionEvidence ?? 'seed', ...session.binding }).map(([key, value]) => [key, String(value)]),
   ]
-  const notices = [
+  const notices = [...new Set([
     access.readOnlyReason ? t(`messagehub.reason.${access.readOnlyReason}`) : '',
     !access.canManage ? t('messagehub.reason.agent_observer') : '',
     (session.requestCount ?? 0) > 0 ? t('messagehub.requestBanner', undefined, { count: session.requestCount ?? 0 }) : '',
     entity.type === 'group' && session.binding.kind === 'native' ? t('messagehub.group.ownerCanRead') : '',
-  ].filter(Boolean)
+  ])].filter(Boolean)
   const members = Object.entries(session.members)
   const group = entity.type === 'group' && session.binding.kind === 'native' ? store.group(context, entity.id) : null
   const groupSession = group ? store.groupSession(context, entity.id, session.id) : null

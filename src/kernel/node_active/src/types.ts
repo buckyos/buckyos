@@ -18,7 +18,7 @@ export type StepKey =
   | "domain"
   | "security"
   | "ai_provider"
-  | "jarvis_msg_tunnel"
+  | "owner_telegram"
   | "review"
   | "success";
 
@@ -34,7 +34,6 @@ export type ActiveConfig = {
   sn_base_host: string;
   http_schema: "http" | "https";
   ai_provider_tutorial_url?: string;
-  telegram_bot_api_token_tutorial_url?: string;
   telegram_account_id_tutorial_url?: string;
 };
 
@@ -44,11 +43,6 @@ export type AIProviderConfig = {
   google_api_token: string;
   openrouter_api_token: string;
   glm_api_token: string;
-};
-
-export type JarvisMsgTunnelConfig = {
-  telegram_bot_api_token: string;
-  telegram_account_id: string;
 };
 
 export type EnabledFeatures = {
@@ -169,7 +163,7 @@ export type ActiveWizzardData = {
   signed_documents: SignedActiveDocuments | null;
   is_wallet_runtime: boolean;
   ai_provider_config: AIProviderConfig;
-  jarvis_msg_tunnel_config: JarvisMsgTunnelConfig;
+  owner_telegram_account_id: string;
 };
 
 export type WizardData = ActiveWizzardData;

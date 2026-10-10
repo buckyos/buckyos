@@ -2,6 +2,7 @@
 
 import { Edit3 } from 'lucide-react'
 import { IconButton } from '@mui/material'
+import { useI18n } from '../../../../i18n/provider'
 
 interface InfoFieldsSectionProps {
   title: string
@@ -11,11 +12,13 @@ interface InfoFieldsSectionProps {
 }
 
 export function InfoFieldsSection({ title, fields, editable = true, onFieldChange }: InfoFieldsSectionProps) {
+  const { t } = useI18n()
+  const label = (key: string) => t(`usersAgents.field.${key}`, key)
   const entries = Object.entries(fields)
   const canEdit = editable && Boolean(onFieldChange)
 
   const editField = (key: string, value: string) => {
-    const nextValue = window.prompt(key, value)
+    const nextValue = window.prompt(label(key), value)
     if (nextValue !== null) {
       onFieldChange?.(key, nextValue.trim())
     }
@@ -40,7 +43,7 @@ export function InfoFieldsSection({ title, fields, editable = true, onFieldChang
 
       {entries.length === 0 ? (
         <div className="text-sm" style={{ color: 'var(--cp-muted)' }}>
-          No information configured.
+          {t('usersAgents.info.empty')}
         </div>
       ) : (
         <div className="space-y-2">
@@ -50,7 +53,7 @@ export function InfoFieldsSection({ title, fields, editable = true, onFieldChang
                 className="text-[12px] font-medium capitalize shrink-0 w-24 pt-0.5"
                 style={{ color: 'var(--cp-muted)' }}
               >
-                {key}
+                {label(key)}
               </span>
               <span className="text-sm flex-1 min-w-0 break-words" style={{ color: 'var(--cp-text)' }}>
                 {value}
@@ -58,7 +61,7 @@ export function InfoFieldsSection({ title, fields, editable = true, onFieldChang
               {canEdit && (
                 <IconButton
                   size="small"
-                  aria-label={`Edit ${key}`}
+                  aria-label={t('usersAgents.info.edit', undefined, { field: label(key) })}
                   onClick={() => editField(key, value)}
                 >
                   <Edit3 size={13} />

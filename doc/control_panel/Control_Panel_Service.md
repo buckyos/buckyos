@@ -146,20 +146,25 @@ Agent identity 与承载它的 runtime App 是两个独立对象：
 
 ### 4.3 智能体管理 (Agent — 身份维度)
 
-由 `user_mgr` 管理，**均要求 Admin**（Agent 是 Zone 级资源）：
+由 `agent_mgr` 管理。Zone Owner、Admin 与普通 User 都只能为自己创建 Agent，Limited 被拒绝（`limited_user`）。创建 Agent = 基于 Agent 模板构造一个独立 App（AppDID = AgentDID，AppId = AgentId，实例 `<agent_id>@<owner>`）并以创建者身份安装，再写入绑定到它的 AgentSpec。记录在 `users/{owner}/agents/{agent_id}/{spec,key,install_record,settings,profile,info}`；`install_record` 是创建状态的唯一真相，后台驱动按 `runtime → bind → tunnel → start` 推进并可恢复。产品行为见 `product/users_and_agents/BuckyOS Agent的初始化流程PRD.md`。错误以 `ReasonError("<code>: …")` 返回。
 
 | 方法 | 说明 |
 |---|---|
-| `agent.list` | 合并顶层 Agent 身份与 `users/{owner}/agents/{agent_id}/spec`，按 AgentId 去重；只有用户 AgentSpec 的 Agent（如预置 Jarvis）也会返回 DID、文档快照、用户级 settings 与 binding 摘要 |
-| `agent.get` | 查询顶层 Agent 身份文档与 settings |
-| `agent.create` | 事务创建 doc+settings+key |
-| `agent.update` / `agent.delete` | 更新/删除 |
-| `agent.profile.get` / `agent.profile.set` | Agent profile |
-| `agent.set_msg_tunnel` / `agent.remove_msg_tunnel` | 消息平台绑定 |
+| `agent.check_name` | 名称检查（与 `user.create` 共用）：DNS 标签、保留名、用户名、任何用户名下的 AgentId（含进行中）、已分配的 App/实例主机名；不可用时给出建议名 |
+| `agent.list_templates` | 系统内置模板（`system/install_settings.agent_templates`）与调用者用 CLI 安装的模板（`users/{owner}/agent_templates/*`）；`template_id` 为 `bundled:<app_id>` / `installed:<app_id>` |
+| `agent.create` | 以 `idempotency_key` 幂等；写入保留记录后立即返回状态，后台构造并安装 App、绑定 AgentSpec、校验并绑定 Telegram Bot（可选）、等待 OpenDAN 写入 `info` |
+| `agent.create.status` / `agent.create.retry` / `agent.create.cancel` | 查询创建状态；从失败步骤继续（`skip_tunnel` 放弃通道完成创建）；写入 spec 前取消 |
+| `agent.list` / `agent.get` | 本人名下（Admin 为全部）的 Agent，包括进行中与失败的创建；settings 中不含 Bot Token |
+| `agent.update` | 本期只允许修改 `allow_group` |
+| `agent.profile.get` / `agent.profile.set` | `{display_name, avatar, bio}`，显示名称回退为 Agent 用户名 |
+| `agent.delete` | 先删身份记录，再刷新 RBAC、通知 msg-center、卸载构造 App，最后释放名字 |
+| `agent.set_msg_tunnel` / `agent.remove_msg_tunnel` | 读写 `settings.msg_tunnels`（本期最多一个 Telegram Bot） |
+
+`apps.submit` 收到 Agent 类型的 PIKG 时不安装运行时实例，而是注册为调用者的 Agent 模板（返回 `template_registered` / `template_updated` / `satisfied`，`task_id` 为空）；模板更新会按各 Agent 的 `template_auto_update` 重建其构造 App。
 
 ### 4.4 应用管理 (App — 服务维度)
 
-由 `app_servcie_mgr` + `app_installer` 管理。`apps.list` 从系统内置服务、用户 AppSpec 与 availability policy 计算目标用户的最终授权集合；Agent 读取走 `agent.list` / `agent.get`，不会出现在 `apps.list`。产品身份是 canonical AppDID，可逆 key 是 AppId；Owner 范围内的安装和运行目标是 `AppInstanceId = {app_id}@{owner_user_id}`。普通 App 只有这一种 Owner 范围安装模型。
+由 `app_servcie_mgr` + `app_installer` 管理。`apps.list` 从系统内置服务、用户 AppSpec 与 availability policy 计算目标用户的最终授权集合；Agent 读取走 `agent.list` / `agent.get`；各 Agent 的构造 App 作为 `runtime_type` 为 agent 的实例出现在 `apps.list`。产品身份是 canonical AppDID，可逆 key 是 AppId；Owner 范围内的安装和运行目标是 `AppInstanceId = {app_id}@{owner_user_id}`。普通 App 只有这一种 Owner 范围安装模型。
 
 | 方法 | 返回 | 说明 |
 |---|---|---|

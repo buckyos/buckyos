@@ -5,8 +5,8 @@
 //! `agent_tool` and `libopendan`. This process only: starts as the runtime
 //! app of one agent, keeps the agent's sessions hosted
 //! ([`libopendan::host::Supervisor`]), bridges system sources into session
-//! inputs and replies back out ([`ui`]), and serves the Agent State
-//! ([`service`]).
+//! inputs and replies back out ([`ui`]), serves the Agent State
+//! ([`service`]) and reports the agent loaded ([`records`]).
 //!
 //! Nothing here knows a prompt, a behavior name or the shape of an LLM
 //! answer, and nothing here writes a session's state: only a session's
@@ -15,6 +15,7 @@
 pub mod config;
 pub mod home;
 pub mod loader;
+pub mod records;
 pub mod rootfs;
 pub mod service;
 pub mod tasks;

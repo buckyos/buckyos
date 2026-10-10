@@ -34,8 +34,8 @@ uv run start.py --all
 uv run start.py --reinstall release
 # 检查激活状态、进程、端口和日志
 uv run check.py
-# 在已有 Zone 中以前台宿主机进程调试 Jarvis（默认 owner 为 devtest）
-./debug_jarvis.sh
+# 在已有 Zone 中以前台宿主机进程调试某个已创建的 Agent（默认 owner 为 devtest，默认取其名下第一个 ready 的 Agent）
+./debug_jarvis.sh devtest --agent <agent_id>
 # 停止 BuckyOS 进程和相关应用容器
 uv run stop.py
 ```
@@ -52,7 +52,7 @@ uv run stop.py
 )
 ```
 
-`debug_jarvis.sh` 会构建 `opendan`、`libopendan`、`agent_tool_cli_dev`，停止对应 Jarvis 容器并占用其服务端口；退出后由 node-daemon 恢复容器。Agent 包读取 `src/apps/jarvis_runtime/agent/`。更多参数和独立 `--dev` 模式见 `src/frame/opendan/README.md`。
+`debug_jarvis.sh` 会构建 `opendan`、`libopendan`、`agent_tool_cli_dev`，停止该 Agent 的构造 App 容器并占用其服务端口；退出后由 node-daemon 恢复容器。Agent 包读取 `src/apps/jarvis_runtime/agent/`。更多参数和独立 `--dev` 模式见 `src/frame/opendan/README.md`。
 
 ### 测试与验证
 
@@ -95,7 +95,7 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 | `src/frame/lib_opendan/` | Cargo package 为 `libopendan`，承载 Agent State、Session 驱动和 `xagent`；与 `llm_context`、`agent_tool` 协作。 |
 | `src/frame/desktop/` | Desktop 和控制面板 WebUI，构建后安装到 `bin/control-panel/web/`。 |
 | `src/frame/opendan/web/`、`src/kernel/node_active/` | OpenDAN WebUI、节点激活 WebUI。 |
-| `src/apps/` | 内置应用包：`sys_test` 与 `jarvis_runtime`；Jarvis 配置、提示词和行为模板在 `jarvis_runtime/agent/`。 |
+| `src/apps/` | 内置应用包：`sys_test` 与 `jarvis_runtime`；`jarvis_runtime` 是系统内置的 Agent 模板（登记在 `system/install_settings.agent_templates`），配置、提示词和行为模板在 `jarvis_runtime/agent/`。 |
 | `src/rootfs/` | 部署模板与构建产物汇总目录；修改前区分手写配置、脚本与生成的二进制/Web/SDK 产物。 |
 | `src/bucky_project.yaml` | devkit 的构建模块、安装映射、数据保留/清理规则和发布配置。 |
 | `src/tools/` | SDK/CLI 分发包构建脚本、脚本测试、Agent 辅助工具等；系统 `buckyos` CLI 分发到 `rootfs/libexec/buckyos-tool/`。 |
@@ -115,7 +115,7 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 - **`logs/`**：服务日志；**`etc/`**：配置、`node_identity.json` 等；**`security/`**：私钥、keyref 等身份材料。
 - **`data/home/`**：用户数据；**`data/srv/`**：服务持久数据及 Zone 共享数据；**`storage/`**：内核持久存储。
 - **`data/var/`**、**`data/cache/`**、**`local/`**：服务运行数据、缓存、本机服务数据，生命周期与持久用户数据不同。
-- **`data/home/<owner_user_id>/.local/share/<app_id>/agents/<agent_id>/`**：宿主机上的 OpenDAN AgentRootFS。Jarvis runtime 的 AppId 是 `jarvis.buckyos.bns.did`；AgentId 从实际 `AgentSpec` 读取，不能用短名 `jarvis` 代替。
+- **`data/home/<owner_user_id>/.local/share/<app_id>/agents/<agent_id>/`**：宿主机上的 OpenDAN AgentRootFS。每个 Agent 基于模板构造一个独立 App，其 AppId 等于 AgentId（如 `xiaobai.test.buckyos.io`），AppInstanceId 为 `<agent_id>@<owner>`；AgentId 从实际 `AgentSpec` 读取，不能用短名代替。
 
 路径与容器映射详见 `doc/path_usage.md`，Agent 路径装配见 `src/frame/opendan/src/main.rs`。诊断先运行 `check.py`：未激活时重点检查 `3182`，已激活时检查网关 `80/3180`、system-config `3200`、verify-hub `3300`、control-panel `4020`。脚本退出码为 0 也可能只是 `Activation Ready`，执行 DV 前还需确认输出中的激活状态和服务状态。
 
@@ -157,7 +157,7 @@ WebUI 在各自目录运行 `pnpm install`、`pnpm build`。Desktop 和 OpenDAN 
 - **NodeGateway**：每台节点本地的统一网关能力，通常就是本机 `cyfs-gateway`，常见一致入口为 `127.0.0.1:3180`。（docker内不同)
 - **SN (Super Node)**：公网协助节点，为 Zone 提供 DDNS、证书挑战和转发/中继能力。
 - **OpenDAN**：Agent runtime 基础设施；当前 `opendan` 是 Agent Loader，一个进程托管一个 Agent，核心 Session/State 能力在 `libopendan` 等库中。Zone 内以 AppService 身份运行，支持容器和宿主机调试；独立 `--dev` 模式使用本地文件队列。
-- **Jarvis**：用户可启用的默认 Agent，其 runtime 应用包在 `src/apps/jarvis_runtime/`，通过 OpenDAN 加载。
+- **Jarvis**：系统内置的 Agent 模板（RootFS 模板），包在 `src/apps/jarvis_runtime/`。系统不预建 Agent 身份；用户通过 Add Agent 向导（桌面 Jarvis 引导入口或 Users and Agents）为自己创建 Agent，control_panel 基于模板为它构造独立 App，由 OpenDAN 加载。
 - **App / AppInstance / Agent**：AppId 标识应用，AppInstanceId 标识某用户的应用实例；Agent 拥有独立 DID/AgentId，通过 `AgentSpec.binding` 绑定 runtime 的 AppInstanceId 与 service name，不能把 Agent 身份等同于 App 身份。共享定义见 `src/kernel/buckyos-api/src/app_schema.rs`。
 - **DID**：BuckyOS 的身份基础设施。仓库里最常见的是 `User(Owner) DID`、`Device DID`、`Zone DID`,`Agent DID` 四类。
   - **Config 在身份语境中的特殊含义**：受 CYFS 历史命名影响，代码里的 `UserConfig`、`DeviceConfig` 往往本质上就是 DID Document，而不是普通运行配置。

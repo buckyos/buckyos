@@ -92,9 +92,11 @@ function ProfileDialog({ profile, onClose }: { profile: AgentProfile; onClose: (
     setBusy(true)
     setError(null)
     try {
+      // Unchanged fields are not sent: a name that is only the fallback
+      // (the agent's user name) stays a fallback.
       const saved = await dataModel.setProfile({
-        display_name: name.trim(),
-        bio: bio.trim(),
+        ...(name.trim() !== profile.display_name ? { display_name: name.trim() } : {}),
+        ...(bio.trim() !== profile.bio ? { bio: bio.trim() } : {}),
         ...(avatar !== profile.avatar ? { avatar: avatar ?? '' } : {}),
       })
       await mutate(['agent.profile'], saved, { revalidate: false })

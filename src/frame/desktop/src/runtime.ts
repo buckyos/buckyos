@@ -1,7 +1,7 @@
 const MOCK_FLAG_VALUES = new Set(['1', 'true', 'yes', 'mock'])
 
 const readMockFlag = () => {
-  const raw = String(import.meta.env.VITE_CP_USE_MOCK ?? '').trim().toLowerCase()
+  const raw = String(import.meta.env?.VITE_CP_USE_MOCK ?? '').trim().toLowerCase()
   return MOCK_FLAG_VALUES.has(raw)
 }
 

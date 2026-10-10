@@ -35,6 +35,28 @@ pub const PIKG_STAGING_HANDLE_PREFIX: &str = "pikg-stage-";
 #[serde(deny_unknown_fields)]
 pub struct SystemInstallSettings {
     pub pre_install_apps: HashMap<String, PreInstallAppConfig>,
+    #[serde(default)]
+    pub agent_templates: HashMap<String, AgentTemplateConfig>,
+}
+
+/// `system/install_settings.agent_templates` 中的系统内置 Agent 模板。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTemplateConfig {
+    pub schema_version: u32,
+    pub pikg_path: String,
+}
+
+impl AgentTemplateConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != PRE_INSTALL_APP_SCHEMA_VERSION {
+            return Err(format!(
+                "unsupported agent template schema version {}",
+                self.schema_version
+            ));
+        }
+        validate_preinstall_pikg_path(&self.pikg_path)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1167,7 +1189,12 @@ impl InstallTransactionState {
         let mut value = serde_json::to_value(self).unwrap_or_else(|_| json!({}));
         if let Some(map) = value.as_object_mut() {
             for key in Self::STATE_KEYS {
-                map.entry(key.to_string()).or_insert(Value::Null);
+                let cleared = if key == "completed_stages" {
+                    json!([])
+                } else {
+                    Value::Null
+                };
+                map.entry(key.to_string()).or_insert(cleared);
             }
         }
         value
@@ -1904,6 +1931,19 @@ mod tests {
         assert!(state.is_stage_completed(InstallStage::Resolve));
         assert!(!state.is_stage_completed(InstallStage::Inspect));
         assert_eq!(state.stage, Some(InstallStage::Inspect));
+    }
+
+    #[test]
+    fn full_patch_of_a_state_invalidated_to_resolve_round_trips() {
+        let mut state = InstallTransactionState::default();
+        state.mark_stage_completed(InstallStage::Resolve);
+        state.invalidate_from(InstallStage::Resolve);
+        assert!(state.completed_stages.is_empty());
+        let patch = state.to_full_patch();
+        assert_eq!(patch["completed_stages"], json!([]));
+        assert_eq!(patch["resolution"], Value::Null);
+        let back: InstallTransactionState = serde_json::from_value(patch).unwrap();
+        assert_eq!(back, state);
     }
 
     #[test]

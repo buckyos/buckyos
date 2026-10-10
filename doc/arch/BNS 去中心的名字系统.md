@@ -695,14 +695,13 @@ service   = users/alice/agents/buckyos_jarvis/spec
 app_did   = did:bns:jarvis-app.buckyos 或 AppDoc 里的 package identity
 ```
 
-当前默认 Jarvis 的实现路径是：
+系统不在 boot 时代建任何 Agent，Jarvis 只作为内置模板（`system/install_settings.agent_templates`）。当前 Agent 的创建路径是：
 
 ```text
-system_config_builder.add_default_agents()
-  -> AgentDocument(id = did:<zone_method>:jarvis.<zone_id>, owner = did:bns:<user>)
-  -> agents/buckyos_jarvis/doc
-  -> agents/buckyos_jarvis/key
-  -> users/<user>/agents/buckyos_jarvis/spec
+control_panel agent.create（用户为自己创建）
+  -> AgentDocument(id = did:<zone_method>:<agent_name>.<zone_id>, owner = Owner DID)
+  -> 基于模板构造 App（AppDID = AgentDID），安装在 users/<owner>/apps/<agent_id>/
+  -> users/<owner>/agents/<agent_id>/{spec,key,settings,profile,install_record}
 ```
 
 其中 `AgentDocument` 表达“这个 Agent 是谁”，`AppServiceSpec` 表达“这个 Agent 背后的服务怎么运行”。AgentDocument 不应被退化成 AppServiceSpec 的别名，因为它还承载社交实体身份、owner、签名 key、消息入口和能力声明。

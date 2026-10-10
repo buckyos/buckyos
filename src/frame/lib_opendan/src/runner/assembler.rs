@@ -3,7 +3,8 @@
 //!
 //! Fixed order of the system section (the app prompt cannot replace the first
 //! two parts, S-08):
-//! 1. agent identity (`role.md` / `self.md` of the AgentRoot)
+//! 1. agent identity (`role.md` + the owner's supplement / `self.md` of the
+//!    AgentRoot)
 //! 2. non-overridable constraints (incl. the avoidance rule of §6.7)
 //! 3. application system prompt (`prompt.system_prompt`)
 //! 4. initial context material (`prompt.context`)
@@ -24,7 +25,7 @@ use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
 use crate::protocol::*;
-use crate::state::{render_active_sessions, ActiveSession, Hint};
+use crate::state::{render_active_sessions, ActiveSession, Hint, ROLE_SUPPLEMENT_FILE};
 
 use super::input_view::{input_formats, render_event_xml, EventView, InputView};
 
@@ -217,7 +218,7 @@ impl SessionAssembler for DefaultAssembler {
                 }
             }
         } else if let Some(root) = agent_root {
-            for f in ["role.md", "self.md"] {
+            for f in ["role.md", ROLE_SUPPLEMENT_FILE, "self.md"] {
                 if let Ok(t) = std::fs::read_to_string(root.join(f)) {
                     if !t.trim().is_empty() {
                         identity.push_str(t.trim());

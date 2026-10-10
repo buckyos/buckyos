@@ -5,8 +5,10 @@
  *   user.*  —— user.list / user.get / user.create / user.update /
  *              user.update_contact / user.change_password /
  *              user.change_state / user.change_type / user.delete
- *   agent.* —— agent.list / agent.get / agent.set_msg_tunnel /
- *              agent.remove_msg_tunnel
+ *   agent.* —— agent.check_name / agent.list_templates / agent.create /
+ *              agent.create.status / agent.create.retry / agent.create.cancel /
+ *              agent.list / agent.get / agent.update / agent.profile.* /
+ *              agent.delete（Agent 初始化 PRD 附录 B.5）
  *
  * 通过 deno 直接运行：
  *   deno run --allow-net --allow-read --allow-env \
@@ -31,18 +33,15 @@ import {
   changeUserState,
   changeUserType,
   deleteUser,
-  fetchAgentList,
-  fetchAgentDetail,
-  createAgent,
-  updateAgent,
-  deleteAgent,
-  fetchAgentProfile,
-  setAgentProfile,
-  setAgentMsgTunnel,
-  removeAgentMsgTunnel,
   type UserDetail,
   type UsersListResponse,
+  type AgentCreateResponse,
+  type AgentEntry,
+  type AgentNameCheck,
+  type AgentProfile,
+  type AgentStatus,
   type AgentsListResponse,
+  type AgentTemplatesResponse,
   type UserContactSettings,
   type UserType,
   type SimpleOkResponse,
@@ -111,8 +110,15 @@ function visibleSystemContactFromDetail(
   return localSystemContactFromDetail(detail);
 }
 
-// Derived from the DV zone config (src/kernel/scheduler/src/system_config_builder.rs)
-const DV_DEFAULT_AGENT_ID = getEnv("BUCKYOS_TEST_AGENT_ID", "jarvis.test.buckyos.io");
+const DV_DEFAULT_TEMPLATE_ID = getEnv(
+  "BUCKYOS_TEST_AGENT_TEMPLATE_ID",
+  "bundled:jarvis.buckyos.bns.did",
+);
+// The first constructed runtime App may pull the aios image; the PRD allows 5
+// minutes for the Loader to report the Agent loaded after installation.
+const AGENT_READY_TIMEOUT_MS = Number(
+  getEnv("BUCKYOS_TEST_AGENT_READY_TIMEOUT_MS", "600000"),
+);
 // Fake sha256 hash for change_password — format doesn't matter to the backend,
 // it only stores the string verbatim (no login happens after this point).
 const FAKE_PW_HASH_B =
@@ -466,27 +472,48 @@ function createUserInviteWithToken(
   return callControlPanelWithToken(token, "user.invite.create", params);
 }
 
-function createAgentWithToken(
-  token: string,
-  input: Parameters<typeof createAgent>[0],
-): ReturnType<typeof createAgent> {
-  const params: Record<string, unknown> = { agent_id: input.agentId };
-  if (input.displayName !== undefined) params.display_name = input.displayName;
-  if (input.ownerUserId !== undefined) params.owner_user_id = input.ownerUserId;
-  if (input.agentDid !== undefined) params.agent_did = input.agentDid;
-  if (input.description !== undefined) params.description = input.description;
-  if (input.profile !== undefined) params.profile = input.profile;
-  if (input.settings !== undefined) params.settings = input.settings;
-  return callControlPanelWithToken(token, "agent.create", params);
+async function callControlPanel<T>(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<{ data: T | null; error: unknown }> {
+  try {
+    const rpc = buckyos.getServiceRpcClient(
+      "control-panel",
+    ) as unknown as ManagedRpcClient;
+    const result = (await rpc.call(method, params)) as T;
+    if (!result || typeof result !== "object") {
+      throw new Error(`Invalid ${method} response`);
+    }
+    return { data: result, error: null };
+  } catch (error) {
+    return { data: null, error };
+  }
 }
 
-function deleteAgentWithToken(
-  token: string,
+function errorIncludes(error: unknown, code: string): boolean {
+  return String(error instanceof Error ? error.message : error).includes(code);
+}
+
+async function waitForAgentState(
   agentId: string,
-): ReturnType<typeof deleteAgent> {
-  return callControlPanelWithToken(token, "agent.delete", {
-    agent_id: agentId,
-  });
+  states: string[],
+  timeoutMs: number,
+): Promise<AgentStatus> {
+  const deadline = Date.now() + timeoutMs;
+  let last: AgentStatus | null = null;
+  while (Date.now() < deadline) {
+    const { data, error } = await callControlPanel<AgentStatus>(
+      "agent.create.status",
+      { agent_id: agentId },
+    );
+    assert(!error, `agent.create.status should not error: ${error}`);
+    last = data!;
+    if (states.includes(last.state)) return last;
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+  }
+  throw new Error(
+    `agent ${agentId} did not reach ${states.join("|")}: ${JSON.stringify(last)}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -1485,296 +1512,253 @@ async function main() {
   );
 
   // -----------------------------------------------------------------------
-  // Read-only: agent.list / agent.get
+  // Agent creation（Agent 初始化 PRD 附录 B.5）: the caller creates an Agent
+  // for itself from the bundled template, then removes it again.
   // -----------------------------------------------------------------------
-  console.log("\n[agent.list / agent.get]");
-
-  let agentList: AgentsListResponse | null = null;
+  console.log("\n[agent.list_templates / agent.check_name]");
 
   results.push(
-    await runCase("agent.list returns valid response", async () => {
-      const { data, error } = await fetchAgentList();
-      assert(!error, `fetchAgentList should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      agentList = data!;
-      assert(typeof data!.total === "number", "total should be number");
-      assert(Array.isArray(data!.agents), "agents should be array");
+    await runCase("agent.list_templates includes the default bundled template", async () => {
+      const { data, error } = await callControlPanel<AgentTemplatesResponse>(
+        "agent.list_templates",
+      );
+      assert(!error, `agent.list_templates should not error: ${error}`);
+      const template = data!.templates.find(
+        (item) => item.template_id === DV_DEFAULT_TEMPLATE_ID,
+      );
+      assert(!!template, `${DV_DEFAULT_TEMPLATE_ID} should be listed`);
+      assert(template!.source === "bundled", "source should be bundled");
+      assert(template!.loader === "opendan", "loader should be opendan");
       assert(
-        data!.total === data!.agents.length,
-        `total (${data!.total}) should match agents.length (${data!.agents.length})`,
+        data!.templates.filter((item) => item.is_default).length === 1,
+        "exactly one template should be the default",
       );
     }),
   );
 
+  const testAgentName = `dvagent${Date.now()}`;
+  let testAgentId = "";
+
   results.push(
-    await runCase(
-      `agent.list includes DV default agent (${DV_DEFAULT_AGENT_ID})`,
-      async () => {
-        assert(agentList !== null, "agentList should be populated");
-        const found = agentList!.agents.find(
-          (a) => a.agent_id === DV_DEFAULT_AGENT_ID,
+    await runCase("agent.check_name rejects invalid, reserved and user names", async () => {
+      const check = async (name: string) => {
+        const { data, error } = await callControlPanel<AgentNameCheck>(
+          "agent.check_name",
+          { name },
         );
-        assert(
-          !!found,
-          `DV default agent '${DV_DEFAULT_AGENT_ID}' should be in agent.list`,
-        );
-      },
-    ),
-  );
-
-  results.push(
-    await runCase(
-      `agent.get handles ${DV_DEFAULT_AGENT_ID} global doc availability`,
-      async () => {
-        const { data, error } = await fetchAgentDetail(DV_DEFAULT_AGENT_ID);
-        if (error) {
-          assert(
-            String(error).includes("not found"),
-            `fetchAgentDetail should either return the global doc or a not found error: ${error}`,
-          );
-          return;
-        }
-        assert(data !== null, "data should not be null");
-        assert(
-          data!.agent_id === DV_DEFAULT_AGENT_ID,
-          `agent_id should be '${DV_DEFAULT_AGENT_ID}'`,
-        );
-        // jarvis has an `id` (DID) field in its doc
-        assert(
-          typeof (data as Record<string, unknown>).id === "string",
-          "agent doc should carry an 'id' (DID) field",
-        );
-        // settings is optional but, when present, must be an object
-        if (data!.settings !== undefined) {
-          assert(
-            typeof data!.settings === "object" && data!.settings !== null,
-            "settings should be object when present",
-          );
-        }
-      },
-    ),
-  );
-
-  results.push(
-    await runCase("agent.get for non-existent agent returns error", async () => {
-      const { data, error } = await fetchAgentDetail("nonexistent_agent_xyz");
+        assert(!error, `agent.check_name(${name}) should not error: ${error}`);
+        return data!;
+      };
+      const invalid = await check("Bad_Name");
+      assert(!invalid.available && invalid.reason === "invalid", "Bad_Name is invalid");
+      const reserved = await check("admin");
+      assert(!reserved.available && reserved.reason === "reserved", "admin is reserved");
+      const user = await check(callerUserId);
+      assert(!user.available && user.reason === "user_exists", "user names are taken");
       assert(
-        error !== null || data === null,
-        "request should fail for non-existent agent",
+        typeof user.suggestion === "string" && user.suggestion.length > 0,
+        "a taken name should come with a suggestion",
       );
-    }),
-  );
-
-  // -----------------------------------------------------------------------
-  // Agent write cycle: create → get → update → profile → delete
-  // Agent identity management is Admin-only (Agents are a Zone-level resource).
-  // -----------------------------------------------------------------------
-  const testAgentId = `dvagent${Date.now()}`;
-  console.log(`\n[agent write cycle: ${testAgentId}]`);
-
-  results.push(
-    await runCase("agent.create creates a new agent identity", async () => {
-      const { data, error } = await createAgentWithToken(
-        requireSudoToken(),
-        {
-          agentId: testAgentId,
-          displayName: `DV Agent ${testAgentId}`,
-          ownerUserId: callerUserId,
-          description: "created by test_user_mgr",
-        },
-      );
-      assert(!error, `createAgent should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(data!.ok === true, "ok should be true");
+      const fresh = await check(testAgentName);
+      assert(fresh.available, `${testAgentName} should be available`);
       assert(
-        data!.agent_id === testAgentId,
-        `agent_id should be '${testAgentId}', got '${data!.agent_id}'`,
+        fresh.agent_id.startsWith(`${testAgentName}.`),
+        `agent_id should be ${testAgentName}.<zone>, got ${fresh.agent_id}`,
       );
+      testAgentId = fresh.agent_id;
     }),
   );
 
-  results.push(
-    await runCase("agent.create rejects duplicate agent_id", async () => {
-      const { data, error } = await createAgentWithToken(
-        requireSudoToken(),
-        { agentId: testAgentId },
-      );
-      assert(
-        error !== null || data === null,
-        "duplicate agent create should fail",
-      );
-    }),
-  );
+  console.log(`\n[agent.create: ${testAgentName}]`);
+
+  const createRequest = {
+    idempotency_key: crypto.randomUUID(),
+    name: testAgentName,
+    profile: { display_name: `DV ${testAgentName}`, bio: "created by test_user_mgr" },
+    role_supplement: "",
+    allow_group: false,
+    allow_other_users: false,
+    template_id: DV_DEFAULT_TEMPLATE_ID,
+    template_auto_update: true,
+  };
 
   results.push(
-    await runCase("agent.list now contains the new agent", async () => {
-      const { data, error } = await fetchAgentList();
-      assert(!error, `fetchAgentList should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      const found = data!.agents.find((a) => a.agent_id === testAgentId);
-      assert(!!found, `new agent '${testAgentId}' should appear in agent.list`);
-    }),
-  );
-
-  results.push(
-    await runCase("agent.get returns the new agent's detail", async () => {
-      const { data, error } = await fetchAgentDetail(testAgentId);
-      assert(!error, `fetchAgentDetail should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(
-        data!.agent_id === testAgentId,
-        `agent_id should be '${testAgentId}'`,
-      );
-    }),
-  );
-
-  results.push(
-    await runCase("agent.update changes display_name", async () => {
-      const { data, error } = await updateAgent({
-        agentId: testAgentId,
-        displayName: `Renamed ${testAgentId}`,
+    await runCase("agent.create rejects unsupported or malformed requests", async () => {
+      const sharing = await callControlPanel("agent.create", {
+        ...createRequest,
+        idempotency_key: crypto.randomUUID(),
+        allow_other_users: true,
       });
-      assert(!error, `updateAgent should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(data!.ok === true, "ok should be true");
+      assert(errorIncludes(sharing.error, "sharing_unsupported"), `got ${sharing.error}`);
+      const badToken = await callControlPanel("agent.create", {
+        ...createRequest,
+        idempotency_key: crypto.randomUUID(),
+        msg_tunnel: { platform: "telegram", bot_token: "not a token" },
+      });
+      assert(errorIncludes(badToken.error, "invalid_bot_token"), `got ${badToken.error}`);
+    }),
+  );
+
+  results.push(
+    await runCase("agent.create reserves the identity and starts provisioning", async () => {
+      const { data, error } = await callControlPanel<AgentCreateResponse>(
+        "agent.create",
+        createRequest,
+      );
+      assert(!error, `agent.create should not error: ${error}`);
+      assert(data!.agent_id === testAgentId, `agent_id should be ${testAgentId}`);
+      assert(
+        data!.agent_did.startsWith("did:") && data!.agent_did.includes(testAgentName),
+        `agent_did should name ${testAgentName}, got ${data!.agent_did}`,
+      );
+      assert(data!.status.owner_user_id === callerUserId, "owner should be the caller");
+      assert(
+        ["provisioning", "bound", "ready"].includes(data!.status.state),
+        `unexpected state ${data!.status.state}`,
+      );
+    }),
+  );
+
+  results.push(
+    await runCase("agent.create is idempotent and guards the name", async () => {
+      const replay = await callControlPanel<AgentCreateResponse>(
+        "agent.create",
+        createRequest,
+      );
+      assert(!replay.error, `replay should not error: ${replay.error}`);
+      assert(replay.data!.agent_id === testAgentId, "replay returns the same Agent");
+      const conflict = await callControlPanel("agent.create", {
+        ...createRequest,
+        allow_group: true,
+      });
+      assert(
+        errorIncludes(conflict.error, "idempotency_conflict"),
+        `same key with another request should conflict: ${conflict.error}`,
+      );
+      const taken = await callControlPanel("agent.create", {
+        ...createRequest,
+        idempotency_key: crypto.randomUUID(),
+      });
+      assert(errorIncludes(taken.error, "name_conflict"), `got ${taken.error}`);
+      const { data } = await callControlPanel<AgentNameCheck>("agent.check_name", {
+        name: testAgentName,
+      });
+      assert(data!.reason === "agent_exists", "the name is reserved while creating");
+    }),
+  );
+
+  results.push(
+    await runCase("agent.create reaches ready with a runtime App and spec", async () => {
+      const status = await waitForAgentState(
+        testAgentId,
+        ["ready", "failed"],
+        AGENT_READY_TIMEOUT_MS,
+      );
+      assert(
+        status.state === "ready",
+        `creation failed: ${JSON.stringify(status.last_error)}`,
+      );
+      assert(status.step === "done", "a ready Agent finished every step");
+    }),
+  );
+
+  console.log("\n[agent.list / agent.get / agent.update / agent.profile]");
+
+  results.push(
+    await runCase("agent.list and agent.get describe the new Agent", async () => {
+      const list = await callControlPanel<AgentsListResponse>("agent.list");
+      assert(!list.error, `agent.list should not error: ${list.error}`);
+      const listed = list.data!.agents.find((agent) => agent.agent_id === testAgentId);
+      assert(!!listed, "agent.list should include the new Agent");
+      const { data, error } = await callControlPanel<AgentEntry>("agent.get", {
+        agent_id: testAgentId,
+      });
+      assert(!error, `agent.get should not error: ${error}`);
+      assert(data!.name === testAgentName, "name is the first label");
+      assert(data!.owner_user_id === callerUserId, "owner_user_id");
+      assert(data!.display_name === `DV ${testAgentName}`, "display_name");
+      assert(data!.settings.allow_group === false, "allow_group defaults to false");
+      assert(data!.settings.template_auto_update === true, "auto update");
+      assert(data!.template?.template_id === DV_DEFAULT_TEMPLATE_ID, "template");
+      assert(
+        data!.runtime?.app_instance_id === `${testAgentId}@${callerUserId}`,
+        `runtime App instance: ${JSON.stringify(data!.runtime)}`,
+      );
+      assert(
+        data!.settings.msg_tunnels.every((tunnel) => !("bot_token" in tunnel)),
+        "bot tokens are never listed",
+      );
+    }),
+  );
+
+  results.push(
+    await runCase("agent.update toggles allow_group", async () => {
+      const { data, error } = await callControlPanel<AgentEntry>("agent.update", {
+        agent_id: testAgentId,
+        allow_group: true,
+      });
+      assert(!error, `agent.update should not error: ${error}`);
+      assert(data!.settings.allow_group === true, "allow_group should be true");
     }),
   );
 
   results.push(
     await runCase("agent.profile.set then agent.profile.get round-trips", async () => {
-      const { data: setData, error: setErr } = await setAgentProfile({
-        agentId: testAgentId,
-        profile: { title: "DV Test Agent", bio: "round-trip check" },
+      const set = await callControlPanel<{ profile: AgentProfile }>(
+        "agent.profile.set",
+        { agent_id: testAgentId, bio: "round-trip check" },
+      );
+      assert(!set.error, `agent.profile.set should not error: ${set.error}`);
+      const { data, error } = await callControlPanel<{ profile: AgentProfile }>(
+        "agent.profile.get",
+        { agent_id: testAgentId },
+      );
+      assert(!error, `agent.profile.get should not error: ${error}`);
+      assert(data!.profile.bio === "round-trip check", "bio should round-trip");
+      assert(data!.profile.display_name === `DV ${testAgentName}`, "display_name kept");
+    }),
+  );
+
+  results.push(
+    await runCase("finished creations cannot be retried or canceled", async () => {
+      const retry = await callControlPanel("agent.create.retry", { agent_id: testAgentId });
+      assert(errorIncludes(retry.error, "not_failed"), `got ${retry.error}`);
+      const cancel = await callControlPanel("agent.create.cancel", { agent_id: testAgentId });
+      assert(errorIncludes(cancel.error, "cancel_unavailable"), `got ${cancel.error}`);
+    }),
+  );
+
+  console.log("\n[agent.delete]");
+
+  results.push(
+    await runCase("agent.delete removes the Agent and releases its name", async () => {
+      const { data, error } = await callControlPanel<SimpleOkResponse>("agent.delete", {
+        agent_id: testAgentId,
       });
-      assert(!setErr, `setAgentProfile should not error: ${setErr}`);
-      assert(setData !== null, "set data should not be null");
-      assert(setData!.ok === true, "ok should be true");
-
-      const { data, error } = await fetchAgentProfile(testAgentId);
-      assert(!error, `fetchAgentProfile should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(
-        data!.agent_id === testAgentId,
-        "profile agent_id should round-trip",
-      );
-      const profile = (data!.profile ?? {}) as Record<string, unknown>;
-      assert(
-        profile.title === "DV Test Agent",
-        `profile.title should round-trip, got '${String(profile.title)}'`,
-      );
-    }),
-  );
-
-  results.push(
-    await runCase("agent.delete soft-deletes the test agent", async () => {
-      const { data, error } = await deleteAgentWithToken(
-        requireSudoToken(),
-        testAgentId,
-      );
-      assert(!error, `deleteAgent should not error: ${error}`);
-      assert(data !== null, "data should not be null");
+      assert(!error, `agent.delete should not error: ${error}`);
       assert(data!.ok === true, "ok should be true");
-      assert(
-        (data as Record<string, unknown>).state === "deleted",
-        "delete response should report state 'deleted'",
-      );
-
-      // Soft-delete keeps the doc; agent.get still resolves but settings.state
-      // is now 'deleted'.
-      const { data: after, error: afterErr } = await fetchAgentDetail(
-        testAgentId,
-      );
-      assert(!afterErr, `fetchAgentDetail should not error: ${afterErr}`);
-      assert(after !== null, "soft-deleted agent should still be retrievable");
-      const settings = (after!.settings ?? {}) as Record<string, unknown>;
-      assert(
-        settings.state === "deleted",
-        `settings.state should be 'deleted', got '${String(settings.state)}'`,
-      );
-    }),
-  );
-
-  // -----------------------------------------------------------------------
-  // agent.set_msg_tunnel / agent.remove_msg_tunnel
-  // Use a throwaway platform name unique to this run so we don't clobber
-  // any real-world binding.
-  // -----------------------------------------------------------------------
-  console.log("\n[agent.set_msg_tunnel / agent.remove_msg_tunnel]");
-
-  const testPlatform = `dvtest_${Date.now()}`;
-
-  results.push(
-    await runCase("agent.set_msg_tunnel adds a new binding", async () => {
-      const { data, error } = await setAgentMsgTunnel({
-        agentId: DV_DEFAULT_AGENT_ID,
-        platform: testPlatform,
-        accountId: "dv-test-account",
-        displayId: "DV Test Display",
-        tunnelId: "dv-test-tunnel",
-        meta: { source: "test_user_mgr" },
-      });
-      assert(!error, `setAgentMsgTunnel should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(data!.ok === true, "ok should be true");
-      assert(
-        data!.agent_id === DV_DEFAULT_AGENT_ID,
-        "agent_id should round-trip",
-      );
-      assert(
-        data!.platform === testPlatform,
-        "platform should round-trip",
-      );
-      assert(
-        typeof data!.total_bindings === "number" && data!.total_bindings! >= 1,
-        "total_bindings should be >= 1",
-      );
-    }),
-  );
-
-  results.push(
-    await runCase("agent.set_msg_tunnel is idempotent per platform", async () => {
-      // Re-setting the same platform should replace, not duplicate.
-      const { data, error } = await setAgentMsgTunnel({
-        agentId: DV_DEFAULT_AGENT_ID,
-        platform: testPlatform,
-        accountId: "dv-test-account-v2",
-      });
-      assert(!error, `setAgentMsgTunnel (update) should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(data!.ok === true, "ok should be true");
-    }),
-  );
-
-  results.push(
-    await runCase("agent.remove_msg_tunnel removes the binding", async () => {
-      const { data, error } = await removeAgentMsgTunnel({
-        agentId: DV_DEFAULT_AGENT_ID,
-        platform: testPlatform,
-      });
-      assert(!error, `removeAgentMsgTunnel should not error: ${error}`);
-      assert(data !== null, "data should not be null");
-      assert(data!.ok === true, "ok should be true");
-      assert(
-        data!.platform === testPlatform,
-        "platform should round-trip",
-      );
-    }),
-  );
-
-  results.push(
-    await runCase(
-      "agent.remove_msg_tunnel fails for already-removed platform",
-      async () => {
-        const { data, error } = await removeAgentMsgTunnel({
-          agentId: DV_DEFAULT_AGENT_ID,
-          platform: testPlatform,
-        });
-        assert(
-          error !== null || data === null,
-          "removing an already-removed platform should fail",
+      const after = await callControlPanel("agent.get", { agent_id: testAgentId });
+      assert(errorIncludes(after.error, "agent_not_found"), `got ${after.error}`);
+      const deadline = Date.now() + AGENT_READY_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        const { data: check } = await callControlPanel<AgentNameCheck>(
+          "agent.check_name",
+          { name: testAgentName },
         );
-      },
-    ),
+        if (check?.available) return;
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+      throw new Error("the Agent name was not released after deletion");
+    }),
+  );
+
+  results.push(
+    await runCase("agent.get for a non-existent agent returns agent_not_found", async () => {
+      const { error } = await callControlPanel("agent.get", {
+        agent_id: `missing${Date.now()}.example.com`,
+      });
+      assert(errorIncludes(error, "agent_not_found"), `got ${error}`);
+    }),
   );
 
   // -----------------------------------------------------------------------

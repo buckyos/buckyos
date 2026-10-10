@@ -1,18 +1,130 @@
-//! AgentRoot layout and its sync from the agent package. Files the agent
-//! (or its owner) changed locally are never overwritten by a newer package:
-//! the manifest remembers what was installed, a file is replaced only while
-//! it still equals what was installed.
+//! AgentRoot layout, the identity it belongs to, and its sync from the
+//! agent package. Files the agent (or its owner) changed locally are never
+//! overwritten by a newer package: the manifest remembers what was
+//! installed, a file is replaced only while it still equals what was
+//! installed.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
+use libopendan::state::ROLE_SUPPLEMENT_FILE;
+use ndn_lib::ObjId;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const SYNC_MANIFEST: &str = ".meta/rootfs_sync.json";
+pub const IDENTITY_FILE: &str = ".meta/identity.json";
+/// Next to the AgentRoots: AgentRoots of earlier agents of the same name.
+pub const ARCHIVE_DIR: &str = ".archived";
 const SYNC_VERSION: u32 = 1;
+
+/// The agent an AgentRoot belongs to. `agent_doc_object_id` is the
+/// AgentDocument of its AgentSpec (`None` outside a zone): an agent deleted
+/// and created again under the same name has a new one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootIdentity {
+    pub agent_did: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_doc_object_id: Option<ObjId>,
+}
+
+impl RootIdentity {
+    fn same_agent(&self, other: &RootIdentity) -> bool {
+        self.agent_did == other.agent_did
+            && match (&self.agent_doc_object_id, &other.agent_doc_object_id) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
+            }
+    }
+}
+
+fn is_empty_dir(dir: &Path) -> Result<bool> {
+    match fs::read_dir(dir) {
+        Ok(mut rd) => Ok(rd.next().is_none()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(e).with_context(|| format!("read_dir {}", dir.display())),
+    }
+}
+
+/// Make `agent_root` the AgentRoot of `identity`. An AgentRoot recorded as
+/// another agent's, or an earlier agent's of the same name, is moved to
+/// `<parent>/.archived/<name>-<ms>` (returned) and a new one is started:
+/// nothing is inherited from it. A directory nobody claimed yet (prepared
+/// by hand) is taken as it is.
+pub fn claim(agent_root: &Path, identity: &RootIdentity) -> Result<Option<PathBuf>> {
+    let path = agent_root.join(IDENTITY_FILE);
+    let mut archived = None;
+    if !is_empty_dir(agent_root)? {
+        let stored = match fs::read_to_string(&path) {
+            Ok(raw) => Some(serde_json::from_str::<RootIdentity>(&raw).ok()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+        };
+        match stored {
+            None => {}
+            Some(Some(stored)) if stored.same_agent(identity) => {
+                if stored.agent_doc_object_id.is_some() || identity.agent_doc_object_id.is_none() {
+                    return Ok(None);
+                }
+            }
+            Some(stored) => {
+                let name = agent_root
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "agent".to_string());
+                let parent = agent_root.parent().unwrap_or(Path::new("."));
+                let target = parent
+                    .join(ARCHIVE_DIR)
+                    .join(format!("{name}-{}", libopendan::now_ms()));
+                fs::create_dir_all(target.parent().unwrap_or(parent))
+                    .with_context(|| format!("create {}", parent.join(ARCHIVE_DIR).display()))?;
+                fs::rename(agent_root, &target).with_context(|| {
+                    format!("archive {} to {}", agent_root.display(), target.display())
+                })?;
+                log::warn!(
+                    "rootfs: {} belonged to {}; archived to {}",
+                    agent_root.display(),
+                    stored
+                        .map(|s| format!("{} ({:?})", s.agent_did, s.agent_doc_object_id.map(|o| o.to_string())))
+                        .unwrap_or_else(|| "an unknown agent".to_string()),
+                    target.display()
+                );
+                archived = Some(target);
+            }
+        }
+    }
+    ensure_layout(agent_root)?;
+    libopendan::fsutil::atomic_replace_json(&path, identity)
+        .with_context(|| format!("write {}", path.display()))?;
+    Ok(archived)
+}
+
+/// The AgentRoot has been synced from a package at least once.
+pub fn initialized(agent_root: &Path) -> bool {
+    agent_root.join(SYNC_MANIFEST).is_file()
+}
+
+/// The owner's supplement to the role, read by the behavior catalog after
+/// `role.md`. Empty: no file.
+pub fn write_role_supplement(agent_root: &Path, text: &str) -> Result<()> {
+    let path = agent_root.join(ROLE_SUPPLEMENT_FILE);
+    let text = text.trim();
+    if text.is_empty() {
+        return match fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(e).with_context(|| format!("remove {}", path.display()))
+            }
+            _ => Ok(()),
+        };
+    }
+    if fs::read_to_string(&path).is_ok_and(|cur| cur == format!("{text}\n")) {
+        return Ok(());
+    }
+    libopendan::fsutil::atomic_replace(&path, format!("{text}\n").as_bytes())
+        .with_context(|| format!("write {}", path.display()))
+}
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Manifest {
@@ -191,6 +303,68 @@ mod tests {
         let r = sync_from_package(&pkg, &root).unwrap();
         assert_eq!((r.unchanged, r.preserved), (1, 1));
         assert!(root.join("skills/mine.md").is_file());
+    }
+
+    fn identity(did: &str, doc: Option<&str>) -> RootIdentity {
+        RootIdentity {
+            agent_did: did.to_string(),
+            agent_doc_object_id: doc.map(|d| ObjId::new(&format!("agentdoc:{}", d.repeat(32))).unwrap()),
+        }
+    }
+
+    #[test]
+    fn an_agentroot_of_another_agent_is_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("agents").join("xiaobai.example.com");
+        let first = identity("did:web:xiaobai.example.com", Some("aa"));
+        assert_eq!(claim(&root, &first).unwrap(), None);
+        fs::write(root.join("memory/notes.md"), "kept").unwrap();
+        // The same agent keeps its AgentRoot.
+        assert_eq!(claim(&root, &first).unwrap(), None);
+        assert!(root.join("memory/notes.md").is_file());
+        // Deleted and created again under the same name: a new AgentDocument.
+        let second = identity("did:web:xiaobai.example.com", Some("bb"));
+        let archived = claim(&root, &second).unwrap().expect("archived");
+        assert!(archived.starts_with(dir.path().join("agents").join(ARCHIVE_DIR)));
+        assert!(archived.file_name().unwrap().to_string_lossy().starts_with("xiaobai.example.com-"));
+        assert_eq!(fs::read_to_string(archived.join("memory/notes.md")).unwrap(), "kept");
+        assert!(!root.join("memory/notes.md").exists());
+        let stored: RootIdentity = serde_json::from_str(&fs::read_to_string(root.join(IDENTITY_FILE)).unwrap()).unwrap();
+        assert_eq!(stored, second);
+        // A damaged record names nobody: archived as well.
+        fs::write(root.join(IDENTITY_FILE), "{").unwrap();
+        assert!(claim(&root, &second).unwrap().is_some());
+        // A directory nobody claimed yet is taken as it is.
+        let prepared = dir.path().join("agents").join("prepared");
+        fs::create_dir_all(&prepared).unwrap();
+        fs::write(prepared.join("role.md"), "by hand").unwrap();
+        assert_eq!(claim(&prepared, &identity("did:web:prepared.example.com", None)).unwrap(), None);
+        assert!(prepared.join("role.md").is_file() && prepared.join(IDENTITY_FILE).is_file());
+    }
+
+    #[test]
+    fn an_identity_without_a_document_learns_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("root");
+        assert_eq!(claim(&root, &identity("did:bns:jarvis", None)).unwrap(), None);
+        assert_eq!(claim(&root, &identity("did:bns:jarvis", Some("aa"))).unwrap(), None);
+        let stored: RootIdentity = serde_json::from_str(&fs::read_to_string(root.join(IDENTITY_FILE)).unwrap()).unwrap();
+        assert!(stored.agent_doc_object_id.is_some());
+        // A development run without a document is the same agent.
+        assert_eq!(claim(&root, &identity("did:bns:jarvis", None)).unwrap(), None);
+        assert!(claim(&root, &identity("did:bns:other", None)).unwrap().is_some());
+    }
+
+    #[test]
+    fn the_role_supplement_file_follows_the_setting() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_layout(dir.path()).unwrap();
+        let path = dir.path().join(ROLE_SUPPLEMENT_FILE);
+        write_role_supplement(dir.path(), "  默认使用日语回答。\n").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "默认使用日语回答。\n");
+        write_role_supplement(dir.path(), " ").unwrap();
+        assert!(!path.exists());
+        write_role_supplement(dir.path(), "").unwrap();
     }
 
     #[test]

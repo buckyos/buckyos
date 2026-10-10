@@ -44,6 +44,7 @@ fn expected(v: &Value, current: &str) -> Result<()> {
 fn within(window: Option<u64>, start: u64, now: u64) -> bool {
     window.is_none_or(|w| w > 0 && now.saturating_sub(start) <= w)
 }
+const AGENT_GROUP_DISABLED: &str = "agent_group_disabled";
 const JOIN_METHODS: &[&str] = &[
     "group.accept_invitation",
     "group.request_join",
@@ -101,12 +102,48 @@ impl MessageCenter {
         let actor = self.group_actor(&ctx).await?;
         self.group_rpc_authenticated(method, p, ctx, actor).await
     }
+    /// The App an Agent is built into (AppId == AgentId) speaks for that
+    /// Agent when it runs as the Agent's owner.
+    async fn is_agent_runtime_of(
+        &self,
+        ctx: &RPCContext,
+        runtime: &GroupActor,
+        agent: &DID,
+    ) -> Result<bool> {
+        let Some(client) = runtime.client.as_deref() else {
+            return Ok(false);
+        };
+        let Ok(agent_id) = buckyos_api::AgentId::from_agent_did(agent) else {
+            return Ok(false);
+        };
+        let app_id = client.strip_prefix("app:").unwrap_or(client);
+        let app_id = app_id.split('@').next().unwrap_or(app_id);
+        if app_id != agent_id.as_str() {
+            return Ok(false);
+        }
+        let Some(caller) = self.caller_identity(ctx).await? else {
+            return Ok(false);
+        };
+        if caller.principal_kind != TokenPrincipalKind::App {
+            return Ok(false);
+        }
+        let verifier = self.token_verifier.get();
+        let owner = verifier.resolve_user_did(&caller.user_id).await?;
+        Ok(verifier
+            .agent_owner(agent)
+            .await?
+            .is_some_and(|agent_owner| agent_owner == owner))
+    }
+
     pub(crate) async fn group_message_actor(
         &self,
         ctx: &RPCContext,
         msg: &MsgObject,
     ) -> Result<GroupActor> {
         let mut actor = self.group_actor(ctx).await?;
+        if actor.did != msg.from && self.is_agent_runtime_of(ctx, &actor, &msg.from).await? {
+            actor.did = msg.from.clone();
+        }
         if let Some((_, _, instance)) =
             crate::contact_mgr::ContactMgr::parse_msgtunnel_did(&msg.from)
         {
@@ -314,6 +351,9 @@ impl MessageCenter {
                 }
             }
         }
+        if JOIN_METHODS.contains(&method) {
+            self.require_group_enabled_agent(&actor.did).await?;
+        }
         let mut tx = self.groups.begin(&group).await?;
         if tx.state.lifecycle == "deleted" {
             return Err(missing());
@@ -492,20 +532,36 @@ impl MessageCenter {
         Ok(kind.to_string())
     }
 
+    /// A zone Agent takes part in groups only while its `allow_group` setting
+    /// is on; other members are not restricted here.
+    async fn require_group_enabled_agent(&self, d: &DID) -> Result<()> {
+        if d.method == "msgtunnel" || !self.is_local_recipient(d) {
+            return Ok(());
+        }
+        match self.token_verifier.get().zone_agent(d).await? {
+            Some(agent) if !agent.allow_group => Err(denied(AGENT_GROUP_DISABLED)),
+            _ => Ok(()),
+        }
+    }
+
     /// The invited member's side of the consent: same-Zone users answer by
-    /// their Contact Mgr policy towards the inviter, agents only accept their
-    /// owner's invitations (anyone else's go to the owner for confirmation),
-    /// and remote members still confirm explicitly (cross-Zone auto-accept is
-    /// a TODO). Returns the decision and who receives the invitation notice.
+    /// their Contact Mgr policy towards the inviter; agents refuse every
+    /// invitation while `allow_group` is off, otherwise accept their owner's
+    /// invitations and send anyone else's to the owner for confirmation;
+    /// remote members still confirm explicitly (cross-Zone auto-accept is a
+    /// TODO). Returns the decision and who receives the invitation notice.
     async fn member_consent(&self, inviter: &DID, d: &DID) -> Result<(MemberConsent, DID)> {
         if d.method == "msgtunnel" || !self.is_local_recipient(d) {
             return Ok((MemberConsent::Ask, d.clone()));
         }
-        if let Some(owner) = self.token_verifier.get().agent_owner(d).await? {
-            return Ok(if owner == *inviter {
+        if let Some(agent) = self.token_verifier.get().zone_agent(d).await? {
+            if !agent.allow_group {
+                return Err(denied(AGENT_GROUP_DISABLED));
+            }
+            return Ok(if agent.owner == *inviter {
                 (MemberConsent::Accept, d.clone())
             } else {
-                (MemberConsent::Ask, owner)
+                (MemberConsent::Ask, agent.owner)
             });
         }
         let access = self

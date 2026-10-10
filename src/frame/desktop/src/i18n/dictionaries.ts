@@ -6,6 +6,8 @@ import { fileBrowserReviewEn, fileBrowserReviewZh } from './filebrowser-review'
 import { messageHubEn, messageHubZh } from './messagehub'
 import { homeStationEn, homeStationZh } from './homestation'
 import { appServiceEn, appServiceZh } from './app-service'
+import { agentSetupEn, agentSetupZh } from './agent-setup'
+import { usersAgentsEn, usersAgentsZh } from './users-agents'
 import type { SupportedLocale } from '../models/ui'
 
 type Dictionary = Record<string, string>
@@ -1996,8 +1998,8 @@ const ar: Dictionary = {
 }
 
 export const dictionaries: Record<SupportedLocale, Dictionary> = {
-  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn },
-  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh },
+  en: { ...en, ...appServiceEn, ...fileBrowserReviewEn, ...agentSetupEn, ...usersAgentsEn },
+  'zh-CN': { ...zhCN, ...appServiceZh, ...fileBrowserReviewZh, ...agentSetupZh, ...usersAgentsZh },
   ja,
   ko,
   fr,

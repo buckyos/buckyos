@@ -60,6 +60,7 @@ pub fn records() -> Vec<(&'static str, Value)> {
             conversation_name: Some("Dev Team".into()),
             record_id: Some("r-102".into()),
             tunnel: None,
+            context: false,
         },
     )
     .unwrap();

@@ -75,7 +75,6 @@ test.describe('Users & Agents app panel', () => {
     await expect(win.getByLabel('Add Agent')).toBeVisible()
     await expect(win.getByText('BuckyOS Assistant')).toBeVisible()
     await expect(win.getByText('Carol')).toBeVisible()
-    await expect(win.getByText('Family Space')).toBeVisible()
     await expect(win.getByText('Collections', { exact: true })).toHaveCount(0)
 
     await win.getByLabel('Search or filter').click()
@@ -90,13 +89,20 @@ test.describe('Users & Agents app panel', () => {
 
     await win.getByPlaceholder('Search name, DID, role, tag, status...').fill('assistant')
     await win.getByText('BuckyOS Assistant').click()
-    await expect(win.getByText('Runtime & Work')).toBeVisible()
-    await expect(win.getByText('Running Tasks')).toBeVisible()
-    await expect(win.getByText('Queued Tasks')).toBeVisible()
-    await expect(win.getByText('Social Accounts')).toBeVisible()
+    const detail = win.getByTestId('agent-detail')
+    await expect(detail.getByTestId('agent-install-status')).toContainText('Running')
+    await expect(detail.getByTestId('agent-profile')).toContainText('assistant')
+    await expect(detail.getByTestId('agent-channels')).toContainText('@bucky_bot')
+    await expect(detail.getByRole('switch', { name: 'Allow this Agent to join group chats' })).not.toBeChecked()
+    await expect(detail.getByRole('switch', { name: 'Allow other users to use this Agent' })).toBeDisabled()
 
+    currentAction = 'open Add Agent'
     await win.getByLabel('Add Agent').click()
-    await expect(page.getByText('Agent creation is coming soon.')).toBeVisible()
+    const wizard = page.getByTestId('window-agent-setup')
+    await expect(wizard.getByText('Create Agent', { exact: true }).last()).toBeVisible()
+    await expect(wizard.getByTestId('agent-setup-name')).toHaveValue('')
+    await wizard.getByRole('button', { name: 'Close' }).first().click()
+    await win.click({ position: { x: 400, y: 20 } })
 
     currentAction = 'open Add User'
     await win.getByLabel('Add User').click()
@@ -225,7 +231,6 @@ test.describe('Users & Agents mobile panel', () => {
     })
 
     await expect(page.getByText('Internal Entities', { exact: true })).toBeVisible()
-    await expect(page.getByText('Self-hosted Groups', { exact: true })).toBeVisible()
     await expect(page.getByText('Collections', { exact: true })).toHaveCount(0)
     await page.getByLabel('Search or filter').click()
     await page.getByPlaceholder('Search name, DID, role, tag, status...').fill('Carol')

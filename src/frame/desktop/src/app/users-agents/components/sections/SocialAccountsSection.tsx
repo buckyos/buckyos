@@ -2,15 +2,19 @@
 
 import { useState } from 'react'
 import { AlertCircle, Check, Clock, Eye, EyeOff, Plus, Trash2 } from 'lucide-react'
-import { Button, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Switch } from '@mui/material'
+import { Alert, Button, CircularProgress, Dialog, DialogActions, DialogContent, DialogTitle, IconButton, Switch, TextField } from '@mui/material'
 import type { SocialAccount } from '../../datamodel/types'
 import { socialAccountPlatformOptions } from '../../datamodel/types'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
+import { useI18n } from '../../../../i18n/provider'
+import { errorMessage, isTelegramAccountId } from '../../../agent-setup/model'
 
 interface SocialAccountsSectionProps {
   entityId?: string
   accounts: SocialAccount[]
   editable?: boolean
+  /** The signed-in user's own page: Telegram is stored by the control panel as the Owner identity. */
+  ownProfile?: boolean
 }
 
 const statusIcon = {
@@ -32,13 +36,32 @@ function createSocialAccountId(platform: string) {
   return `social-${platform}-${suffix}`
 }
 
-export function SocialAccountsSection({ entityId, accounts, editable = true }: SocialAccountsSectionProps) {
+export function SocialAccountsSection({ entityId, accounts, editable = true, ownProfile = false }: SocialAccountsSectionProps) {
+  const { t } = useI18n()
   const [open, setOpen] = useState(false)
+  const [telegramForm, setTelegramForm] = useState(false)
+  const [telegramId, setTelegramId] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [dialogError, setDialogError] = useState<string | null>(null)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const [removeError, setRemoveError] = useState<string | null>(null)
   const store = useUsersAgentsStore()
+
+  const closeDialog = () => {
+    if (saving) return
+    setOpen(false)
+    setTelegramForm(false)
+    setTelegramId('')
+    setDialogError(null)
+  }
 
   const handleAdd = (platform: string) => {
     if (!entityId) return
-    const accountId = platform === 'telegram' ? '@new_channel' : platform === 'phone' ? '+1-555-0123' : 'new@example.com'
+    if (ownProfile && platform === 'telegram') {
+      setTelegramForm(true)
+      return
+    }
+    const accountId = platform === 'phone' ? '+1-555-0123' : 'new@example.com'
     store.addSocialAccount(entityId, {
       id: createSocialAccountId(platform),
       platform,
@@ -48,12 +71,43 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
       isPublic: false,
       canIdentify: true,
     })
-    setOpen(false)
+    closeDialog()
   }
+
+  const saveTelegram = async () => {
+    if (!isTelegramAccountId(telegramId) || saving) return
+    setSaving(true)
+    setDialogError(null)
+    const error = await store.addOwnTelegram(telegramId)
+    setSaving(false)
+    if (error) {
+      setDialogError(t('usersAgents.social.saveFailed', undefined, { detail: errorMessage(error) }))
+      return
+    }
+    setOpen(false)
+    setTelegramForm(false)
+    setTelegramId('')
+  }
+
+  const handleRemove = async (account: SocialAccount) => {
+    if (!entityId) return
+    if (!(ownProfile && account.platform === 'telegram')) {
+      store.removeSocialAccount(entityId, account.id)
+      return
+    }
+    setRemoving(account.id)
+    setRemoveError(null)
+    const error = await store.removeOwnTelegram()
+    setRemoving(null)
+    if (error) setRemoveError(t('usersAgents.social.removeFailed', undefined, { detail: errorMessage(error) }))
+  }
+
+  const telegramIdInvalid = telegramId.trim().length > 0 && !isTelegramAccountId(telegramId)
 
   return (
     <div
       className="rounded-[22px] px-5 py-4"
+      data-testid="social-accounts"
       style={{
         background: 'color-mix(in srgb, var(--cp-surface-2) 40%, var(--cp-surface))',
         border: '1px solid color-mix(in srgb, var(--cp-border) 50%, transparent)',
@@ -66,7 +120,7 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
             className="font-display text-sm font-semibold"
             style={{ color: 'var(--cp-text)' }}
           >
-            Social Accounts
+            {t('usersAgents.social.title')}
           </h3>
         </div>
         {editable && (
@@ -76,14 +130,16 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
             variant="text"
             onClick={() => setOpen(true)}
           >
-            Add
+            {t('usersAgents.social.add')}
           </Button>
         )}
       </div>
 
+      {removeError ? <Alert severity="error" className="mb-3">{removeError}</Alert> : null}
+
       {accounts.length === 0 ? (
         <div className="text-sm py-3" style={{ color: 'var(--cp-muted)' }}>
-          No social accounts configured. Add an account to complete this DID profile.
+          {t('usersAgents.social.empty')}
         </div>
       ) : (
         <div className="space-y-2">
@@ -93,6 +149,7 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
             return (
               <div
                 key={account.id}
+                data-platform={account.platform}
                 className="flex flex-col gap-2 px-3 py-2.5 rounded-[14px] sm:flex-row sm:items-center"
                 style={{
                   background: 'color-mix(in srgb, var(--cp-surface) 80%, transparent)',
@@ -131,7 +188,7 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
                     }}
                   >
                     {account.isPublic ? <Eye size={11} /> : <EyeOff size={11} />}
-                    {account.isPublic ? 'Public' : 'Private'}
+                    {account.isPublic ? t('usersAgents.social.public') : t('usersAgents.social.private')}
                   </span>
 
                   {account.lastSyncAt && (
@@ -145,15 +202,16 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
                       <Switch
                         checked={account.isPublic}
                         size="small"
-                        inputProps={{ 'aria-label': `Toggle ${account.platform} public visibility` }}
+                        slotProps={{ input: { 'aria-label': t('usersAgents.social.toggleVisibility', undefined, { platform: account.platform }) } }}
                         onChange={() => store.toggleSocialAccountVisibility(entityId, account.id)}
                       />
                       <IconButton
                         size="small"
-                        aria-label={`Remove ${account.platform}`}
-                        onClick={() => store.removeSocialAccount(entityId, account.id)}
+                        aria-label={t('usersAgents.social.remove', undefined, { platform: account.platform })}
+                        disabled={removing === account.id}
+                        onClick={() => void handleRemove(account)}
                       >
-                        <Trash2 size={12} />
+                        {removing === account.id ? <CircularProgress size={12} color="inherit" /> : <Trash2 size={12} />}
                       </IconButton>
                     </>
                   )}
@@ -164,36 +222,67 @@ export function SocialAccountsSection({ entityId, accounts, editable = true }: S
         </div>
       )}
 
-      <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Add social account</DialogTitle>
+      <Dialog open={open} onClose={closeDialog} fullWidth maxWidth="xs">
+        <DialogTitle>{telegramForm ? t('usersAgents.social.telegramTitle') : t('usersAgents.social.addTitle')}</DialogTitle>
         <DialogContent>
-          <div className="pb-3 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
-            Add accounts you use on other platforms to this DID profile. You can choose which accounts are public and which are only used for identity recognition.
-          </div>
-          <div className="space-y-2 pt-1">
-            {socialAccountPlatformOptions.map((option) => (
-              <button
-                key={option.id}
-                type="button"
-                className="w-full rounded-[14px] px-3 py-2 text-left"
-                style={{
-                  background: 'color-mix(in srgb, var(--cp-surface) 80%, transparent)',
-                  border: '1px solid color-mix(in srgb, var(--cp-border) 40%, transparent)',
+          {telegramForm ? (
+            <div className="space-y-3 pt-1">
+              <p className="text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>{t('usersAgents.social.telegramBody')}</p>
+              <TextField
+                label={t('usersAgents.social.telegramId')}
+                value={telegramId}
+                autoFocus
+                autoComplete="off"
+                inputProps={{ inputMode: 'numeric', 'data-testid': 'social-telegram-id' }}
+                error={telegramIdInvalid}
+                helperText={telegramIdInvalid ? t('usersAgents.social.telegramIdInvalid') : t('usersAgents.social.telegramIdHint')}
+                onChange={(event) => setTelegramId(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') void saveTelegram()
                 }}
-                onClick={() => handleAdd(option.id)}
-              >
-                <div className="text-sm font-medium capitalize" style={{ color: 'var(--cp-text)' }}>
-                  {option.label}
-                </div>
-                <div className="mt-0.5 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>
-                  {option.hint}
-                </div>
-              </button>
-            ))}
-          </div>
+              />
+              {dialogError ? <Alert severity="error">{dialogError}</Alert> : null}
+            </div>
+          ) : (
+            <>
+              <div className="pb-3 text-sm leading-6" style={{ color: 'var(--cp-muted)' }}>
+                {t('usersAgents.social.addBody')}
+              </div>
+              <div className="space-y-2 pt-1">
+                {socialAccountPlatformOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className="w-full rounded-[14px] px-3 py-2 text-left"
+                    style={{
+                      background: 'color-mix(in srgb, var(--cp-surface) 80%, transparent)',
+                      border: '1px solid color-mix(in srgb, var(--cp-border) 40%, transparent)',
+                    }}
+                    onClick={() => handleAdd(option.id)}
+                  >
+                    <div className="text-sm font-medium capitalize" style={{ color: 'var(--cp-text)' }}>
+                      {option.label}
+                    </div>
+                    <div className="mt-0.5 text-[12px] leading-5" style={{ color: 'var(--cp-muted)' }}>
+                      {t(`usersAgents.social.hint.${option.id}`)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setOpen(false)}>Cancel</Button>
+          <Button variant="text" disabled={saving} onClick={closeDialog}>{t('common.cancel')}</Button>
+          {telegramForm ? (
+            <Button
+              disabled={saving || !isTelegramAccountId(telegramId)}
+              startIcon={saving ? <CircularProgress size={13} color="inherit" /> : undefined}
+              onClick={() => void saveTelegram()}
+            >
+              {t('common.save')}
+            </Button>
+          ) : null}
         </DialogActions>
       </Dialog>
     </div>

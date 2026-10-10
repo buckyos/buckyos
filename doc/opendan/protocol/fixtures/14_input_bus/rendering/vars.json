@@ -39,6 +39,7 @@
             "role": "input"
           }
         ],
+        "context": false,
         "conversation": {
           "id": "did:bns:dev-team",
           "kind": "group",
@@ -114,6 +115,7 @@
             "role": "input"
           }
         ],
+        "context": false,
         "conversation": {
           "id": "did:bns:dev-team",
           "kind": "group",

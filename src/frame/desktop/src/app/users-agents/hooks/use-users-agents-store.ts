@@ -22,10 +22,6 @@ export function useSelf() {
   return useUsersAgentsSnapshot().self
 }
 
-export function useAgent() {
-  return useUsersAgentsSnapshot().agent
-}
-
 export function useAgents() {
   return useUsersAgentsSnapshot().agents
 }
@@ -36,6 +32,10 @@ export function useLocalUsers() {
 
 export function useEntityGroups() {
   return useUsersAgentsSnapshot().entityGroups
+}
+
+export function useCanCreateAgents() {
+  return useUsersAgentsSnapshot().canCreateAgents
 }
 
 export function useEntity(id: string): AnyEntity | undefined {

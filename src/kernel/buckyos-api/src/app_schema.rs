@@ -387,11 +387,71 @@ pub fn agent_spec_key(owner_user_id: &str, agent_id: &AgentId) -> String {
     format!("users/{owner_user_id}/agents/{agent_id}/spec")
 }
 
+pub fn agent_key_path(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/key")
+}
+
+pub fn agent_settings_key(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/settings")
+}
+
+pub fn agent_profile_key(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/profile")
+}
+
+pub fn agent_info_key(owner_user_id: &str, agent_id: &AgentId) -> String {
+    format!("users/{owner_user_id}/agents/{agent_id}/info")
+}
+
+pub fn agent_template_record_key(owner_user_id: &str, app_id: &AppId) -> String {
+    format!("users/{owner_user_id}/agent_templates/{app_id}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentInstallState {
+    Provisioning,
     Bound,
+    Ready,
+    Failed,
     Removed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCreateStep {
+    Runtime,
+    Bind,
+    Tunnel,
+    Start,
+    Done,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTunnelState {
+    #[default]
+    None,
+    Pending,
+    Bound,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTemplateSource {
+    Bundled,
+    Installed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentCreateError {
+    pub step: AgentCreateStep,
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -404,7 +464,122 @@ pub struct AgentInstallRecord {
     pub service_name: String,
     pub generation: u64,
     pub state: AgentInstallState,
+    pub step: AgentCreateStep,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<AgentCreateError>,
+    pub idempotency_key: String,
+    pub request_fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_spec: Option<AgentSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_task_id: Option<String>,
+    #[serde(default)]
+    pub tunnel_state: AgentTunnelState,
+    pub template_id: String,
+    pub template_source: AgentTemplateSource,
+    pub template_app_did: DID,
+    pub template_app_doc_object_id: ObjId,
+    pub template_version: String,
+    pub created_at: u64,
     pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMsgTunnelSettings {
+    pub platform: String,
+    pub bot_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bot_account_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSettings {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub auto_start: bool,
+    #[serde(default)]
+    pub allow_other_users: bool,
+    #[serde(default)]
+    pub allow_group: bool,
+    #[serde(default)]
+    pub role_supplement: String,
+    #[serde(default = "default_true")]
+    pub template_auto_update: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub desktop_entry: Option<String>,
+    #[serde(default)]
+    pub msg_tunnels: Vec<AgentMsgTunnelSettings>,
+}
+
+impl Default for AgentSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            auto_start: true,
+            allow_other_users: false,
+            allow_group: false,
+            role_supplement: String::new(),
+            template_auto_update: true,
+            desktop_entry: None,
+            msg_tunnels: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AgentProfile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bio: Option<String>,
+}
+
+impl AgentProfile {
+    pub fn resolved_display_name(&self, agent_id: &AgentId) -> String {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| agent_short_name(agent_id))
+    }
+}
+
+pub fn agent_short_name(agent_id: &AgentId) -> String {
+    agent_id
+        .as_str()
+        .split('.')
+        .next()
+        .unwrap_or(agent_id.as_str())
+        .to_string()
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AgentRuntimeInfo {
+    pub agent_doc_object_id: ObjId,
+    pub generation: u64,
+    pub loaded_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template_version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentTemplateRecord {
+    pub app_did: DID,
+    pub app_doc_object_id: ObjId,
+    pub version: String,
+    pub digest: String,
+    pub pikg_path: String,
+    pub installed_at: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

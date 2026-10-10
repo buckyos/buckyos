@@ -106,10 +106,17 @@ export function parseGroupInvitation(message: MessageObject): GroupInvitation | 
   return parseGroupNotice(message)?.invitation ?? null
 }
 
-const knownGroupErrors = new Set(['capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'controller-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'invitation-mismatch', 'transfer-mismatch', 'owner-transfer-pending', 'agent-owner-required', 'invite-required', 'join-not-allowed', 'member-not-pending', 'use-transfer-owner', 'cannot-moderate-owner', 'revision-conflict', 'invalid-invite-link', 'guests-not-allowed', 'guest-limit', 'not-a-session-guest', 'session-archived', 'post-not-allowed', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit'])
+const knownGroupErrors = new Set(['agent-group-disabled', 'capability-denied', 'member-already-participating', 'member-must-be-single-entity', 'member-limit', 'owner-must-transfer-first', 'owner-required', 'controller-required', 'role-not-allowed', 'invite-expired', 'invite-already-expired', 'invitation-mismatch', 'transfer-mismatch', 'owner-transfer-pending', 'agent-owner-required', 'invite-required', 'join-not-allowed', 'member-not-pending', 'use-transfer-owner', 'cannot-moderate-owner', 'revision-conflict', 'invalid-invite-link', 'guests-not-allowed', 'guest-limit', 'not-a-session-guest', 'session-archived', 'post-not-allowed', 'not-found', 'blocked', 'rate-limited', 'invalid-group-name', 'session-limit'])
+
+/** The Agent has not been allowed to join group chats (its Users and Agents setting). */
+export function isAgentGroupDisabled(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.includes('agent-group-disabled') || message.includes('agent_group_disabled')
+}
 
 /** User-facing text for a group operation failure; unknown host reasons are shown verbatim. */
 export function groupErrorText(t: (key: string, fallback?: string, variables?: Record<string, string | number>) => string, error: unknown): string {
+  if (isAgentGroupDisabled(error)) return t('messagehub.groupError.agent-group-disabled')
   const message = error instanceof Error ? error.message : String(error)
   const reason = message.replace(/^rejected:\s*/, '').match(/[a-z0-9]+(?:-[a-z0-9]+)+/)?.[0] ?? (message === 'agent_observer' ? 'agent_observer' : 'unknown')
   if (reason === 'agent_observer') return t('messagehub.reason.agent_observer')

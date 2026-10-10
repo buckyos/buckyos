@@ -4,6 +4,10 @@
     "MsgDelivery": {
       "description": "Delivery layer information; everything optional.",
       "properties": {
+        "context": {
+          "description": "An earlier message of the conversation, delivered as material for the input that follows it: it never forms an input batch alone, and it carries no request of its own.",
+          "type": "boolean"
+        },
         "conversation_name": {
           "description": "Display name of the conversation (group name).",
           "type": [

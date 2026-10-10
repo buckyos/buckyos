@@ -2,7 +2,6 @@
 
 import type {
   SelfEntity,
-  AgentEntity,
   LocalUserEntity,
   ContactEntity,
   EntityGroupEntity,
@@ -12,7 +11,7 @@ import type {
 // ── Self ──
 
 export const mockSelf: SelfEntity = {
-  id: 'self-001',
+  id: 'alice',
   kind: 'self',
   displayName: 'Alice',
   avatarUrl: undefined,
@@ -46,50 +45,6 @@ export const mockSelf: SelfEntity = {
   twoFactorEnabled: false,
   lastLogin: '2026-04-04T09:30:00Z',
   createdAt: '2025-06-01T00:00:00Z',
-}
-
-// ── Agent ──
-
-export const mockAgent: AgentEntity = {
-  id: 'agent-001',
-  kind: 'agent',
-  displayName: 'BuckyOS Assistant',
-  avatarUrl: undefined,
-  did: 'did:bns:assistant.alice',
-  agentType: 'General Assistant',
-  version: '1.2.0',
-  status: 'running',
-  capabilities: ['chat', 'file-search', 'code-review', 'scheduling'],
-  socialAccounts: [
-    { id: 'b-3', platform: 'telegram', accountId: '@bucky_bot', displayId: '@bucky_bot', status: 'active', isPublic: false, canIdentify: true, lastSyncAt: '2026-04-04T08:00:00Z', lastVerifiedAt: '2026-04-04T08:00:00Z' },
-  ],
-  info: {
-    description: 'Your personal AI assistant on BuckyOS.',
-    model: 'Claude Opus 4.6',
-  },
-  settings: {
-    owner: 'Alice',
-    permissions: 'Files read/write, MessageHub delegate',
-    password: 'Not applicable',
-    workspaceRoot: '/opt/buckyos/data/home/devtest/.local/share/jarvis',
-  },
-  didDocument: {
-    '@context': 'https://www.w3.org/ns/did/v1',
-    id: 'did:bns:assistant.alice',
-  },
-  runtime: {
-    uptime: '12d 4h 32m',
-    memoryUsage: '256 MB',
-    cpuUsage: '3.2%',
-    lastActive: '2026-04-04T09:28:00Z',
-    runningTasks: 2,
-    queuedTasks: 4,
-    healthStatus: 'healthy',
-    uiSessions: 2,
-    workSessions: 5,
-    workspaces: 3,
-  },
-  createdAt: '2025-08-15T00:00:00Z',
 }
 
 // ── Local users ──

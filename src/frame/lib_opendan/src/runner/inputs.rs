@@ -140,6 +140,29 @@ pub struct Routed {
     pub task_notified: bool,
 }
 
+/// The inputs one batch takes from `candidates` (in order): up to `take`
+/// inputs, each with the context messages queued right before it. Context
+/// messages are material for what follows them and never form a batch of
+/// their own; those without a later input stay queued.
+pub fn select_batch(candidates: Vec<FetchedInput>, take: usize) -> Vec<FetchedInput> {
+    let mut picked = Vec::new();
+    let mut context = Vec::new();
+    let mut own = 0;
+    for m in candidates {
+        if m.msg().is_some_and(|s| s.delivery.context) {
+            context.push(m);
+            continue;
+        }
+        if own == take {
+            break;
+        }
+        own += 1;
+        picked.append(&mut context);
+        picked.push(m);
+    }
+    picked
+}
+
 /// A valid, not yet consumed `stop` is queued (monitor task: looks only,
 /// never consumes, confirms or writes state).
 pub async fn stop_queued(sh: &Shared) -> bool {
@@ -611,3 +634,55 @@ pub(super) fn side_effects_from_worklog(s: &Session) -> Result<Vec<SideEffectRef
     Ok(out)
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fetched(index: u64, context: bool) -> FetchedInput {
+        let msg = text_msg(
+            &parse_did("did:bns:bob").unwrap(),
+            &parse_did("did:bns:jarvis").unwrap(),
+            format!("message {index}"),
+        );
+        let posted = PostedInput::msg(
+            "app:jarvis@bob",
+            msg,
+            MsgDelivery {
+                context,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        FetchedInput {
+            src: "q".into(),
+            index,
+            kind: INPUT_TYPE_MSG.into(),
+            key: posted.key,
+            from: posted.from,
+            at_ms: posted.at_ms,
+            input: Ok(posted.input),
+        }
+    }
+
+    fn indices(picked: &[FetchedInput]) -> Vec<u64> {
+        picked.iter().map(|m| m.index).collect()
+    }
+
+    #[test]
+    fn context_messages_ride_with_the_input_after_them() {
+        // Twenty context messages and the request: one batch, whatever the
+        // batch budget.
+        let mut all: Vec<FetchedInput> = (1..=20).map(|i| fetched(i, true)).collect();
+        all.push(fetched(21, false));
+        assert_eq!(indices(&select_batch(all.clone(), 16)), (1..=21).collect::<Vec<_>>());
+        assert_eq!(indices(&select_batch(all, 1)).len(), 21);
+        // Only part of them queued yet: nothing is taken.
+        let partial: Vec<FetchedInput> = (1..=7).map(|i| fetched(i, true)).collect();
+        assert!(select_batch(partial, 16).is_empty());
+        // Context after the last input taken waits for its own request.
+        let mixed = vec![fetched(1, false), fetched(2, true), fetched(3, false), fetched(4, true)];
+        assert_eq!(indices(&select_batch(mixed.clone(), 16)), vec![1, 2, 3]);
+        assert_eq!(indices(&select_batch(mixed, 1)), vec![1]);
+    }
+}

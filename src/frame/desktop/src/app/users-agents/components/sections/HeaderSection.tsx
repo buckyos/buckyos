@@ -4,6 +4,7 @@ import { Copy, ExternalLink, ImagePlus, Pencil } from 'lucide-react'
 import { Button, IconButton } from '@mui/material'
 import { EntityAvatar } from '../shared/EntityAvatar'
 import type { EntityAvatarKind } from '../shared/EntityAvatar'
+import { useI18n } from '../../../../i18n/provider'
 
 interface HeaderSectionProps {
   name: string
@@ -30,6 +31,7 @@ export function HeaderSection({
   onAvatarEdit,
   onSubtitleEdit,
 }: HeaderSectionProps) {
+  const { t } = useI18n()
   const copyDid = () => {
     if (did) navigator.clipboard.writeText(did)
   }
@@ -52,7 +54,7 @@ export function HeaderSection({
         <EntityAvatar name={name} kind={kind} avatarUrl={avatarUrl} size="lg" isOnline={isOnline} />
         {onAvatarEdit && (
           <Button size="small" variant="text" startIcon={<ImagePlus size={13} />} onClick={onAvatarEdit}>
-            Avatar
+            {t('usersAgents.header.avatar')}
           </Button>
         )}
       </div>
@@ -76,14 +78,14 @@ export function HeaderSection({
 
           {previewUrl && (
             <Button size="small" variant="outlined" startIcon={<ExternalLink size={13} />} onClick={openPreview}>
-              Preview
+              {t('usersAgents.header.preview')}
             </Button>
           )}
         </div>
 
         {onSubtitleEdit && (
           <Button size="small" variant="text" startIcon={<Pencil size={13} />} onClick={onSubtitleEdit}>
-            Bio
+            {t('usersAgents.header.bio')}
           </Button>
         )}
 
@@ -98,7 +100,7 @@ export function HeaderSection({
             >
               {did}
             </code>
-            <IconButton size="small" onClick={copyDid} aria-label="Copy DID">
+            <IconButton size="small" onClick={copyDid} aria-label={t('usersAgents.header.copyDid')}>
               <Copy size={12} />
             </IconButton>
           </div>

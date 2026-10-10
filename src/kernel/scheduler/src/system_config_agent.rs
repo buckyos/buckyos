@@ -1530,16 +1530,18 @@ async fn update_rbac(
         agent_spec
             .validate()
             .map_err(|error| anyhow::anyhow!("invalid AgentSpec at {path}: {error}"))?;
+        let runtime_app_id = agent_spec.binding.target_app_instance_id.app_id();
         push_policy_line(
             &mut rbac_policy,
             format!("g, {}, agent", agent_spec.agent_did.to_string()),
         );
         push_policy_line(
             &mut rbac_policy,
-            format!(
-                "g, app:{}, agent_runtime",
-                agent_spec.binding.target_app_instance_id.app_id()
-            ),
+            format!("g, app:{}, agent_runtime", runtime_app_id),
+        );
+        push_policy_line(
+            &mut rbac_policy,
+            format!("g, app:{}, agent", runtime_app_id),
         );
     }
 
@@ -1558,6 +1560,75 @@ async fn update_rbac(
     );
 
     Ok(result)
+}
+
+#[cfg(test)]
+mod agent_rbac_tests {
+    use super::*;
+    use buckyos_api::{agent_spec_key, AgentId, AgentServiceBinding, AGENT_SPEC_SCHEMA_VERSION};
+    use name_lib::{generate_ed25519_key_pair, AgentDocument, DID};
+
+    fn agent_spec(owner: &str, name: &str) -> AgentSpec {
+        let agent_did = DID::new("web", &format!("{name}.example.com"));
+        let (_, public_key) = generate_ed25519_key_pair();
+        let agent_doc = AgentDocument::new(
+            agent_did.clone(),
+            DID::new("web", &format!("{owner}.example.com")),
+            serde_json::from_value(public_key).unwrap(),
+        );
+        let (agent_doc_object_id, _) = ndn_lib::build_named_object_by_json(
+            "agentdoc",
+            &serde_json::to_value(&agent_doc).unwrap(),
+        );
+        let agent_id = AgentId::from_agent_did(&agent_did).unwrap();
+        AgentSpec {
+            schema_version: AGENT_SPEC_SCHEMA_VERSION,
+            agent_id: agent_id.clone(),
+            agent_did: agent_did.clone(),
+            agent_doc_object_id: agent_doc_object_id.clone(),
+            agent_doc,
+            binding: AgentServiceBinding {
+                schema_version: AGENT_SPEC_SCHEMA_VERSION,
+                agent_did,
+                agent_doc_object_id,
+                target_app_instance_id: format!("{agent_id}@{owner}").parse().unwrap(),
+                service_name: "www".to_string(),
+                generation: 1,
+            },
+            generation: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn each_agent_spec_grants_agent_role_to_its_constructed_app() {
+        let input = ["xiaobai", "xiaohei"]
+            .into_iter()
+            .map(|name| {
+                let spec = agent_spec("bob", name);
+                (
+                    agent_spec_key("bob", &spec.agent_id),
+                    serde_json::to_string(&spec).unwrap(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let actions = update_rbac(&input, &NodeScheduler::new_empty(1))
+            .await
+            .unwrap();
+        let Some(KVAction::Update(policy)) = actions.get("system/rbac/policy") else {
+            panic!("RBAC policy should be generated");
+        };
+        let lines = policy.lines().collect::<HashSet<_>>();
+        for name in ["xiaobai", "xiaohei"] {
+            for expected in [
+                format!("g, did:web:{name}.example.com, agent"),
+                format!("g, app:{name}.example.com, agent_runtime"),
+                format!("g, app:{name}.example.com, agent"),
+            ] {
+                assert!(lines.contains(expected.as_str()), "missing `{expected}`");
+            }
+        }
+        assert_eq!(lines.len(), 6);
+    }
 }
 
 pub(crate) struct SchedulePlan {

@@ -144,8 +144,6 @@ async fn create_init_list_by_template(
         //.add_smb_service().await?
         .add_default_apps(&start_config)
         .await?
-        .add_default_agents(&start_config)
-        .await?
         .add_gateway_settings(&start_config)?;
     for ood_name in ood_names.iter() {
         builder.add_node(ood_name.as_str())?;
@@ -482,16 +480,24 @@ mod test {
                 .expect("install settings should be preserved"),
         )
         .expect("install settings should use the pre-install seed schema");
-        assert_eq!(install_settings.pre_install_apps.len(), 3);
-        assert!(install_settings
-            .pre_install_apps
-            .contains_key("jarvis.buckyos.bns.did"));
+        assert_eq!(install_settings.pre_install_apps.len(), 2);
         assert!(install_settings
             .pre_install_apps
             .contains_key("buckyos-systest.buckyos.bns.did"));
         assert!(install_settings
             .pre_install_apps
             .contains_key("text-editor.buckyos.bns.did"));
+        assert_eq!(install_settings.agent_templates.len(), 1);
+        let jarvis_template = install_settings
+            .agent_templates
+            .get("jarvis.buckyos.bns.did")
+            .expect("Jarvis should be a bundled agent template");
+        jarvis_template
+            .validate()
+            .expect("bundled Jarvis template should be valid");
+        assert!(!init_map
+            .keys()
+            .any(|key| key.starts_with("users/") && key.contains("/agents/")));
         let registry: AppRegistry = serde_json::from_str(
             init_map
                 .get(APP_REGISTRY_KEY)

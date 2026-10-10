@@ -238,6 +238,7 @@ export function DesktopWindowContainer({
             >
               <AppIcon
                 iconKey={app.iconKey}
+                iconUrl={app.iconUrl}
                 className={clsx(
                   'size-[12px] text-inherit',
                   themeMode === 'light' ? 'stroke-[1.9]' : 'stroke-[1.6]',

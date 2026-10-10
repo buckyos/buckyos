@@ -307,6 +307,15 @@ impl NameClientAppResolver {
         resolve_policy
     }
 
+    /// AppDIDs under the current Zone (the App each Agent is built into shares
+    /// the AgentDID) are only known through the local authority override; the
+    /// Zone Resolver would answer them Missing before the override is read.
+    fn is_current_zone_subname(app_did: &DID) -> bool {
+        buckyos_api::get_buckyos_api_runtime()
+            .ok()
+            .is_some_and(|runtime| app_did.upper_did().as_ref() == Some(&runtime.zone_id))
+    }
+
     fn map_document_status(status: Option<&name_client::DocumentStatus>) -> DocumentStatus {
         match status {
             Some(name_client::DocumentStatus::Active) => DocumentStatus::Active,
@@ -369,7 +378,10 @@ impl AppDidResolver for NameClientAppResolver {
         app_did: &DID,
         policy: InstallPolicy,
     ) -> Result<ResolvedApp, InstallError> {
-        let resolve_policy = Self::resolve_policy_for(policy);
+        let mut resolve_policy = Self::resolve_policy_for(policy);
+        if Self::is_current_zone_subname(app_did) {
+            resolve_policy.use_zone_resolver = false;
+        }
         let doc_type = name_client::DidDocType::Custom(APP_DID_DOC_TYPE.to_string());
 
         let result = name_client::resolve_did_ex(app_did, Some(doc_type), resolve_policy).await;

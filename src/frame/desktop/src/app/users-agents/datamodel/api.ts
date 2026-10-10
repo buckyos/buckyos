@@ -1,13 +1,13 @@
+import { fetchCurrentAccount, isLimitedUserType } from '../../../api/account.ts'
 import { fetchAppList } from '../../../api/app_mgr.ts'
 import {
-  fetchAgentListWithRuntime,
+  fetchAgentList,
   fetchUserDetail,
   fetchUserList,
 } from '../../../api/user_mgr.ts'
-import type { UserDetail } from '../../../api/user_mgr.ts'
+import type { UserContactSettings, UserDetail } from '../../../api/user_mgr.ts'
 import { buckyos } from 'buckyos'
 import {
-  mockAgent,
   mockLocalUsers,
   mockSelf,
 } from '../mock/seed'
@@ -18,6 +18,7 @@ import {
   appListTargetUserIds,
   toAgentEntity,
   toSelfEntity,
+  toSocialAccounts,
   toVisibleLocalUserEntities,
 } from './transforms'
 
@@ -26,11 +27,6 @@ interface AccountInfo {
   user_id: string
   user_type?: string
 }
-
-type UsersAgentsCoreSnapshot = Pick<
-  UsersAgentsSnapshot,
-  'self' | 'agent' | 'agents' | 'localUsers'
->
 
 function accountDetail(account: AccountInfo): UserDetail {
   return {
@@ -64,7 +60,7 @@ async function forEachWithConcurrency<T>(
   await Promise.all(runners)
 }
 
-async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> {
+export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
   const accountInfo = await buckyos.getAccountInfo() as AccountInfo | null
   const selfUserId = accountInfo?.user_id
   const [
@@ -74,7 +70,7 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
   ] = await Promise.all([
     fetchUserList(),
     fetchUserDetail(selfUserId ? { userId: selfUserId } : {}),
-    fetchAgentListWithRuntime(),
+    fetchAgentList(),
   ])
 
   const targetUserIds = appListTargetUserIds(
@@ -106,25 +102,35 @@ async function fetchUsersAgentsCoreSnapshot(): Promise<UsersAgentsCoreSnapshot> 
   const localUsers = usersResult.data
     ? toVisibleLocalUserEntities(usersResult.data.users, appsByUser, self.id, now)
     : []
-
-  const agents = agentsResult.data
-    ? agentsResult.data.agents.map((agentInfo) => toAgentEntity(agentInfo, empty.agent))
-    : []
-  const agent = agents[0] ?? empty.agent
+  const userType = accountInfo?.user_type || String(selfDetail?.user_type ?? '')
 
   return {
     self,
-    agent,
-    agents,
+    agents: (agentsResult.data?.agents ?? []).map(toAgentEntity),
     localUsers,
+    entityGroups: [],
+    canCreateAgents: Boolean(userType) && !isLimitedUserType(userType),
   }
 }
 
-export async function fetchUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
-  const core = await fetchUsersAgentsCoreSnapshot()
+/** The mock runtime keeps its seed people and reads Agents and its own identities from the mock control panel. */
+export async function fetchMockUsersAgentsSnapshot(): Promise<UsersAgentsSnapshot> {
+  const [account, selfResult, agentsResult] = await Promise.all([
+    fetchCurrentAccount(),
+    fetchUserDetail(),
+    fetchAgentList(),
+  ])
+  const base = createMockUsersAgentsSnapshot()
+  const contact = (selfResult.data?.local_profile?.private_extra?.system_contact ?? {}) as UserContactSettings
   return {
-    ...core,
-    entityGroups: [],
+    ...base,
+    self: {
+      ...base.self,
+      id: account?.user_id ?? base.self.id,
+      socialAccounts: toSocialAccounts(contact.bindings),
+    },
+    agents: (agentsResult.data?.agents ?? []).map(toAgentEntity),
+    canCreateAgents: !isLimitedUserType(account?.user_type),
   }
 }
 
@@ -141,46 +147,21 @@ export function createEmptyUsersAgentsSnapshot(): UsersAgentsSnapshot {
     twoFactorEnabled: false,
     lastLogin: 'Unknown',
   }
-  const agent: UsersAgentsSnapshot['agent'] = {
-    id: 'agent-unavailable',
-    kind: 'agent',
-    displayName: 'No agent configured',
-    agentType: 'agent',
-    version: 'unknown',
-    status: 'stopped',
-    capabilities: [],
-    socialAccounts: [],
-    info: {},
-    settings: {},
-    runtime: {
-      uptime: 'Offline',
-      memoryUsage: 'Unknown',
-      cpuUsage: 'Unknown',
-      lastActive: 'Unknown',
-      runningTasks: 0,
-      queuedTasks: 0,
-      healthStatus: 'offline',
-      uiSessions: 0,
-      workSessions: 0,
-      workspaces: 0,
-    },
-    createdAt,
-  }
   return {
     self,
-    agent,
     agents: [],
     localUsers: [],
     entityGroups: [],
+    canCreateAgents: false,
   }
 }
 
 export function createMockUsersAgentsSnapshot(): UsersAgentsSnapshot {
   return {
     self: structuredClone(mockSelf),
-    agent: structuredClone(mockAgent),
-    agents: [structuredClone(mockAgent)],
+    agents: [],
     localUsers: structuredClone(mockLocalUsers),
     entityGroups: [],
+    canCreateAgents: true,
   }
 }

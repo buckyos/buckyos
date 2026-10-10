@@ -1,6 +1,6 @@
 use crate::contact_mgr::{ContactMgr, ZoneUserContactSeed};
 use crate::msg_box_db::{IdempotencyCommitOutcome, IdempotencyStoredResult, MsgBoxDbMgr};
-use crate::msg_tunnel::EditCapability;
+use crate::msg_tunnel::{EditCapability, TunnelIngressHandler, INGRESS_PRINCIPAL_KEY};
 use crate::owner_session::TokenVerifierSlot;
 use async_trait::async_trait;
 use buckyos_api::{
@@ -197,7 +197,7 @@ impl MessageCenter {
     }
 
     /// Is this DID hosted by this zone? True for explicitly registered
-    /// recipients and for DIDs under the zone host (`jarvis.<zone>`,
+    /// recipients and for DIDs under the zone host (`<agent>.<zone>`,
     /// `telegram.<zone>` aliases, the zone DID itself).
     pub fn is_local_recipient(&self, did: &DID) -> bool {
         if self
@@ -988,15 +988,30 @@ impl MessageCenter {
             .unwrap_or(false))
     }
 
+    /// Who an ingress message speaks for, as identified by the transport
+    /// (`IngressContext.extra.principal_did`).
+    pub(crate) fn ingress_principal(ingress: Option<&IngressContext>) -> Option<DID> {
+        ingress?
+            .extra
+            .as_ref()?
+            .get(INGRESS_PRINCIPAL_KEY)?
+            .as_str()
+            .and_then(|did| DID::from_str(did).ok())
+    }
+
+    /// The target's admission policy towards the principal when the
+    /// transport identified one, otherwise towards the sender.
     async fn decide_inbox_kind(
         &self,
         sender: &DID,
+        principal: Option<&DID>,
         target: &DID,
         context_id: Option<String>,
     ) -> std::result::Result<Option<MailboxKind>, RPCErrors> {
+        let subject = principal.unwrap_or(sender);
         let decision: AccessDecision = self
             .contact_mgr
-            .check_access_permission(sender.clone(), context_id, Some(target.clone()))
+            .check_access_permission(subject.clone(), context_id, Some(target.clone()))
             .await?;
         if decision.allow_delivery {
             return Ok(Some(MailboxKind::Inbox));
@@ -1242,6 +1257,7 @@ impl MessageCenter {
                 ),
             };
         let retention_key = Self::dispatch_idempotency_retention_key(&stored_msg, ingress.as_ref());
+        let principal = Self::ingress_principal(ingress.as_ref());
 
         Self::store_message(&stored_msg_id, &stored_msg_json).await?;
 
@@ -1320,7 +1336,7 @@ impl MessageCenter {
                 }
 
                 let decision = match self
-                    .decide_inbox_kind(&sender, &recipient, context_id.clone())
+                    .decide_inbox_kind(&sender, principal.as_ref(), &recipient, context_id.clone())
                     .await
                 {
                     Ok(value) => value,
@@ -2518,6 +2534,25 @@ impl MessageCenter {
 }
 
 #[async_trait]
+impl TunnelIngressHandler for MessageCenter {
+    async fn resolve_owner_principal(
+        &self,
+        agent: &DID,
+        platform: &str,
+        account_id: &str,
+    ) -> std::result::Result<Option<DID>, RPCErrors> {
+        let Some(owner) = self.token_verifier.get().agent_owner(agent).await? else {
+            return Ok(None);
+        };
+        let contact = self
+            .contact_mgr
+            .find_binding_contact(platform, account_id, Some(agent))
+            .await?;
+        Ok((contact.as_ref() == Some(&owner)).then_some(owner))
+    }
+}
+
+#[async_trait]
 impl MsgCenterHandler for MessageCenter {
     async fn handle_dispatch(
         &self,
@@ -2528,6 +2563,16 @@ impl MsgCenterHandler for MessageCenter {
     ) -> std::result::Result<DispatchResult, RPCErrors> {
         self.authorize_resource(&ctx, "obj://msg-center/dispatch", "write")
             .await?;
+        let mut ingress_ctx = ingress_ctx;
+        if !crate::owner_session::is_in_process_call(&ctx) {
+            if let Some(extra) = ingress_ctx
+                .as_mut()
+                .and_then(|ingress| ingress.extra.as_mut())
+                .and_then(Value::as_object_mut)
+            {
+                extra.remove(INGRESS_PRINCIPAL_KEY);
+            }
+        }
         if Self::is_group_message(&msg) {
             Self::validate_ingress_message(&msg)?;
             return self

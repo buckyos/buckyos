@@ -75,6 +75,7 @@ export function SystemSidebar({
       >
         <AppIcon
           iconKey={app.iconKey}
+          iconUrl={app.iconUrl}
           className={clsx(
             'size-4 shrink-0 sm:size-4',
             isCurrent ? 'text-[color:var(--cp-text)]' : 'text-[color:var(--cp-muted)]',

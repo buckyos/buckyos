@@ -15,7 +15,8 @@
 
 use anyhow::{bail, Result as AnyResult};
 use async_trait::async_trait;
-use buckyos_api::{DeliveryRecordWithObject, DeliveryReportResult};
+use buckyos_api::{DeliveryRecordWithObject, DeliveryReportResult, MsgCenterHandler};
+use kRPC::RPCErrors;
 use name_lib::DID;
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
@@ -54,6 +55,24 @@ impl std::fmt::Display for EditFailure {
             Self::NotReplaceable(reason) => write!(f, "not replaceable in place: {}", reason),
         }
     }
+}
+
+/// Key of `IngressContext.extra` naming who the ingress message speaks for
+/// when the transport identified its sender, e.g. the Owner of the Agent
+/// whose bot received it. `MsgObject.from` stays the endpoint DID.
+pub const INGRESS_PRINCIPAL_KEY: &str = "principal_did";
+
+/// The MessageCenter as seen by a tunnel's ingress.
+#[async_trait]
+pub trait TunnelIngressHandler: MsgCenterHandler {
+    /// The Owner of the zone Agent `agent` when `platform:account_id` is
+    /// bound to that Owner in the Agent's contacts; `None` otherwise.
+    async fn resolve_owner_principal(
+        &self,
+        agent: &DID,
+        platform: &str,
+        account_id: &str,
+    ) -> std::result::Result<Option<DID>, RPCErrors>;
 }
 
 #[async_trait]

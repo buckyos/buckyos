@@ -15,6 +15,7 @@ import { useSudoByPassword } from '../../../../components/sudo'
 import type { NewZoneUserInput } from '../../datamodel/types'
 import { newZoneUserInputSchema } from '../../datamodel/types'
 import { useUsersAgentsStore } from '../../hooks/use-users-agents-store'
+import { useI18n } from '../../../../i18n/provider'
 
 interface NewUserWizardProps {
   onClose: () => void
@@ -30,33 +31,35 @@ const defaultValues: NewZoneUserInput = {
   confirmPassword: '',
 }
 
-const stepLabels = ['Account', 'Review']
+const stepLabelKeys = ['usersAgents.newUser.step.account', 'usersAgents.newUser.step.review']
+
+type Translate = ReturnType<typeof useI18n>['t']
 
 function errorText(error: unknown): string {
   if (error instanceof Error) return error.message
   return String(error ?? '')
 }
 
-function friendlyCreateError(error: unknown): string {
+function friendlyCreateError(error: unknown, t: Translate): string {
   const message = errorText(error)
   const lower = message.toLowerCase()
   if (lower.includes('already exists') || lower.includes('duplicate')) {
-    return 'That username already exists. Choose another username.'
+    return t('usersAgents.newUser.error.exists')
   }
   if (lower.includes('user_id') || lower.includes('username') || lower.includes('reserved')) {
-    return 'The username is invalid. Use 1–64 letters, numbers, underscores, hyphens, or dots.'
+    return t('usersAgents.newUser.error.invalidName')
   }
   if (lower.includes('password_hash') || lower.includes('password')) {
-    return 'The password could not be processed. Check it and try again.'
+    return t('usersAgents.newUser.error.password')
   }
   if (lower.includes('permission') || lower.includes('admin')) {
-    return 'Administrator permission is required to create a local user.'
+    return t('usersAgents.newUser.error.permission')
   }
   if (lower.includes('expired') || lower.includes('invalid token')) {
-    return 'The temporary administrator permission expired. Try again.'
+    return t('usersAgents.newUser.error.sudoExpired')
   }
   if (lower.includes('network') || lower.includes('fetch') || lower.includes('connection')) {
-    return 'The request could not be confirmed because the connection was interrupted.'
+    return t('usersAgents.newUser.error.network')
   }
   if (
     lower.includes('unavailable') ||
@@ -64,9 +67,9 @@ function friendlyCreateError(error: unknown): string {
     lower.includes('failed to create user') ||
     lower.includes('503')
   ) {
-    return 'The account service is temporarily unavailable. Wait a moment and try again.'
+    return t('usersAgents.newUser.error.unavailable')
   }
-  return message || 'The user could not be created. Try again.'
+  return message || t('usersAgents.newUser.error.generic')
 }
 
 function isUncertainCreateError(error: unknown): boolean {
@@ -75,6 +78,7 @@ function isUncertainCreateError(error: unknown): boolean {
 }
 
 export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
+  const { t } = useI18n()
   const [step, setStep] = useState(0)
   const [phase, setPhase] = useState<SubmitPhase>('idle')
   const [submitError, setSubmitError] = useState<string | null>(null)
@@ -108,9 +112,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
     setCommittedUserId(userId)
     setCreateResult(result)
     setPhase('reload-failed')
-    setSubmitError(
-      'The user may already have been created. Retry reload before submitting again.',
-    )
+    setSubmitError(t('usersAgents.newUser.mayExist'))
   }
 
   const handleCreate = form.handleSubmit(async (data) => {
@@ -120,7 +122,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
 
     const userId = data.username.trim().toLowerCase()
     if (store.findEntity(userId)) {
-      setSubmitError('That username already exists. Choose another username.')
+      setSubmitError(t('usersAgents.newUser.error.exists'))
       submissionRef.current = false
       return
     }
@@ -129,10 +131,10 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       setPhase('sudo')
       const grant = await requestSudo({
         aud: 'system-config',
-        title: 'Create local user',
-        description: 'Confirm your administrator password to create this Zone-local account.',
+        title: t('usersAgents.newUser.sudo.title'),
+        description: t('usersAgents.newUser.sudo.description'),
         reason: `Create local user ${userId}`,
-        confirmLabel: 'Create user',
+        confirmLabel: t('usersAgents.newUser.sudo.confirm'),
       })
       if (!grant) {
         setPhase('idle')
@@ -160,7 +162,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               ok: true,
               created: true,
               rbac_refreshed: false,
-              warning: 'The creation response was lost; the account was found after reload.',
+              warning: t('usersAgents.newUser.responseLost'),
               user_id: userId,
               user_type: 'user',
               state: 'active',
@@ -173,7 +175,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
           return
         }
         setPhase('idle')
-        setSubmitError(friendlyCreateError(error ?? 'Invalid user.create response'))
+        setSubmitError(friendlyCreateError(error ?? 'Invalid user.create response', t))
         return
       }
 
@@ -188,7 +190,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       markReloadUncertain(userId, result)
     } catch (error) {
       setPhase('idle')
-      setSubmitError(friendlyCreateError(error))
+      setSubmitError(friendlyCreateError(error, t))
     } finally {
       submissionRef.current = false
     }
@@ -203,7 +205,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       ok: true,
       created: true,
       rbac_refreshed: false,
-      warning: 'The creation response was lost; the account was found after reload.',
+      warning: t('usersAgents.newUser.responseLost'),
       user_id: committedUserId,
       user_type: 'user',
       state: 'active',
@@ -211,10 +213,10 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
     try {
       if (await finishAfterReload(committedUserId, result)) return
       setPhase('reload-failed')
-      setSubmitError('The account is not visible yet. Retry reload; do not submit it again.')
+      setSubmitError(t('usersAgents.newUser.notVisible'))
     } catch {
       setPhase('reload-failed')
-      setSubmitError('Reload failed. The user may already exist; retry reload when connected.')
+      setSubmitError(t('usersAgents.newUser.reloadFailed'))
     } finally {
       submissionRef.current = false
     }
@@ -240,14 +242,14 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
         <div className="flex items-center gap-2">
           <UserPlus size={16} style={{ color: 'var(--cp-accent)' }} />
           <h3 className="font-display text-sm font-semibold" style={{ color: 'var(--cp-text)' }}>
-            New Local User
+            {t('usersAgents.newUser.title')}
           </h3>
         </div>
         <IconButton
           type="button"
           size="small"
           onClick={onClose}
-          aria-label="Close new user wizard"
+          aria-label={t('usersAgents.newUser.close')}
           disabled={busy}
         >
           <X size={16} />
@@ -255,8 +257,8 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
       </div>
 
       <div className="mb-4 flex items-center gap-1">
-        {stepLabels.map((label, index) => (
-          <div key={label} className="flex items-center gap-1">
+        {stepLabelKeys.map((labelKey, index) => (
+          <div key={labelKey} className="flex items-center gap-1">
             {index > 0 && (
               <div
                 className="h-[1px] w-8"
@@ -267,7 +269,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               className="rounded-full px-2 py-0.5 text-[11px] font-medium"
               style={{ color: index <= step ? 'var(--cp-accent)' : 'var(--cp-muted)' }}
             >
-              {index + 1}. {label}
+              {index + 1}. {t(labelKey)}
             </div>
           </div>
         ))}
@@ -279,44 +281,44 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
         {step === 0 && (
           <div className="mt-3 space-y-3">
             <Alert severity="info">
-              This creates an ordinary user who can sign in to this Zone immediately.
+              {t('usersAgents.newUser.intro')}
             </Alert>
             <TextField
-              label="Local username"
+              label={t('usersAgents.newUser.username')}
               size="small"
               fullWidth
               autoFocus
               autoComplete="off"
               error={Boolean(form.formState.errors.username)}
-              helperText={form.formState.errors.username?.message ?? 'Saved in lowercase.'}
+              helperText={form.formState.errors.username?.message ? t(form.formState.errors.username.message) : t('usersAgents.newUser.usernameHint')}
               {...form.register('username')}
             />
             <TextField
-              label="Display name"
+              label={t('usersAgents.newUser.displayName')}
               size="small"
               fullWidth
               error={Boolean(form.formState.errors.displayName)}
-              helperText={form.formState.errors.displayName?.message}
+              helperText={form.formState.errors.displayName?.message ? t(form.formState.errors.displayName.message) : undefined}
               {...form.register('displayName')}
             />
             <TextField
-              label="Initial password"
+              label={t('usersAgents.newUser.password')}
               type="password"
               size="small"
               fullWidth
               autoComplete="new-password"
               error={Boolean(form.formState.errors.password)}
-              helperText={form.formState.errors.password?.message ?? 'At least 8 characters.'}
+              helperText={form.formState.errors.password?.message ? t(form.formState.errors.password.message) : t('usersAgents.newUser.passwordHint')}
               {...form.register('password')}
             />
             <TextField
-              label="Confirm password"
+              label={t('usersAgents.newUser.confirmPassword')}
               type="password"
               size="small"
               fullWidth
               autoComplete="new-password"
               error={Boolean(form.formState.errors.confirmPassword)}
-              helperText={form.formState.errors.confirmPassword?.message}
+              helperText={form.formState.errors.confirmPassword?.message ? t(form.formState.errors.confirmPassword.message) : undefined}
               {...form.register('confirmPassword')}
             />
           </div>
@@ -332,11 +334,11 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               }}
             >
               {[
-                ['Local username', values.username.trim().toLowerCase() || '-'],
-                ['Display name', values.displayName.trim() || '-'],
-                ['User type', 'User'],
-                ['State', 'Active'],
-                ['Password changes', 'Allowed'],
+                [t('usersAgents.newUser.username'), values.username.trim().toLowerCase() || '-'],
+                [t('usersAgents.newUser.displayName'), values.displayName.trim() || '-'],
+                [t('usersAgents.newUser.userType'), t('usersAgents.role.user')],
+                [t('usersAgents.newUser.state'), t('usersAgents.userStatus.active')],
+                [t('usersAgents.newUser.passwordChanges'), t('usersAgents.newUser.allowed')],
               ].map(([label, value]) => (
                 <div key={label} className="flex items-baseline gap-3 py-1">
                   <span className="w-36 shrink-0 text-[12px] font-medium" style={{ color: 'var(--cp-muted)' }}>
@@ -349,9 +351,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
               ))}
             </div>
             <Alert severity="warning">
-              This account exists only in the current Zone, depends on this Zone staying available,
-              can sign in immediately, and consumes local resources. No apps are installed or promised
-              for the new user by this action.
+              {t('usersAgents.newUser.reviewWarning')}
             </Alert>
           </div>
         )}
@@ -365,7 +365,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
           onClick={() => setStep(0)}
           startIcon={<ChevronLeft size={14} />}
         >
-          Back
+          {t('agentSetup.back')}
         </Button>
 
         {phase === 'reload-failed' ? (
@@ -376,7 +376,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
             onClick={() => void handleRetryReload()}
             startIcon={<RefreshCw size={14} />}
           >
-            Retry reload
+            {t('usersAgents.newUser.retryReload')}
           </Button>
         ) : step === 0 ? (
           <Button
@@ -390,7 +390,7 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
             }}
             endIcon={<ChevronRight size={14} />}
           >
-            Next
+            {t('agentSetup.next')}
           </Button>
         ) : (
           <Button
@@ -401,12 +401,12 @@ export function NewUserWizard({ onClose, onCreated }: NewUserWizardProps) {
             startIcon={busy ? <CircularProgress color="inherit" size={14} /> : <UserPlus size={14} />}
           >
             {phase === 'sudo'
-              ? 'Waiting for permission…'
+              ? t('usersAgents.newUser.waitingPermission')
               : phase === 'creating'
-                ? 'Creating…'
+                ? t('usersAgents.newUser.creating')
                 : phase === 'reloading'
-                  ? 'Reloading…'
-                  : 'Create User'}
+                  ? t('usersAgents.newUser.reloading')
+                  : t('usersAgents.newUser.create')}
           </Button>
         )}
       </div>

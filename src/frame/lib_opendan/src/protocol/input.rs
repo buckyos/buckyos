@@ -82,6 +82,11 @@ pub struct MsgDelivery {
     /// DID of the ingress tunnel.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel: Option<String>,
+    /// An earlier message of the conversation, delivered as material for
+    /// the input that follows it: it never forms an input batch alone, and
+    /// it carries no request of its own.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub context: bool,
 }
 
 impl MsgDelivery {
@@ -90,6 +95,7 @@ impl MsgDelivery {
             && self.conversation_name.is_none()
             && self.record_id.is_none()
             && self.tunnel.is_none()
+            && !self.context
     }
 }
 

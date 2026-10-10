@@ -9,6 +9,7 @@ interface StandaloneAppTitleBarProps {
   titleKey: string
   summaryKey: string
   iconKey: string
+  iconUrl?: string
   accent: string
   className?: string
   onBack?: () => void
@@ -18,6 +19,7 @@ export function StandaloneAppTitleBar({
   titleKey,
   summaryKey,
   iconKey,
+  iconUrl,
   accent,
   className,
   onBack,
@@ -56,7 +58,7 @@ export function StandaloneAppTitleBar({
                 } as CSSProperties
               }
             >
-              <AppIcon iconKey={iconKey} className="text-[color:var(--cp-text)]" />
+              <AppIcon iconKey={iconKey} iconUrl={iconUrl} className="text-[color:var(--cp-text)]" />
             </div>
           )}
         </div>

@@ -56,10 +56,11 @@ async fn group_rpc_requires_authentication_at_the_service_boundary() {
     use kRPC::{RPCErrors, RPCHandler, RPCRequest};
 
     let (center, _tmp) = new_center("removed_self_host_group_rpc").await;
-    let server = crate::MsgCenterHttpServer::new(
-        center,
+    let zone_sync = std::sync::Arc::new(crate::ZoneSync::new(
+        center.clone(),
         std::sync::Arc::new(crate::msg_tunnel::DeliveryExecutorMgr::new()),
-    );
+    ));
+    let server = crate::MsgCenterHttpServer::new(center, zone_sync);
     for method in ["group.create", "group.list_by_member", "group.check_access"] {
         let result = server
             .handle_rpc_call(
@@ -1644,7 +1645,7 @@ fn telegram_retention_bucket_uses_bot_and_chat_not_sender() {
 
 mod owner_session_tests {
     use super::*;
-    use crate::owner_session::SessionTokenVerifier;
+    use crate::owner_session::{SessionTokenVerifier, ZoneAgentInfo};
     use buckyos_api::{
         bind_token_principal_kind, bind_token_target, AuthTarget, MsgCenterCreateSessionReq,
         SessionLifecycle, SessionListLifecycleFilter, SessionListOrder, SystemServiceId,
@@ -2281,7 +2282,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     struct StaticKeyVerifier {
         key: DecodingKey,
         users: HashMap<String, DID>,
-        agents: Vec<DID>,
+        /// agent → owner
+        agents: HashMap<DID, DID>,
     }
 
     #[async_trait::async_trait]
@@ -2308,12 +2310,14 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 .ok_or_else(|| RPCErrors::KeyNotExist(format!("users/{}/profile", user_id)))
         }
 
-        async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
-            Ok(self.agents.contains(did))
-        }
-
-        async fn agent_owner(&self, _did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
-            Ok(None)
+        async fn zone_agent(
+            &self,
+            did: &DID,
+        ) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
+            Ok(self.agents.get(did).map(|owner| ZoneAgentInfo {
+                owner: owner.clone(),
+                allow_group: false,
+            }))
         }
     }
 
@@ -2331,11 +2335,11 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         async fn resolve_user_did(&self, user: &str) -> std::result::Result<DID, RPCErrors> {
             self.inner.resolve_user_did(user).await
         }
-        async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
-            self.inner.is_zone_agent(did).await
-        }
-        async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
-            self.inner.agent_owner(did).await
+        async fn zone_agent(
+            &self,
+            did: &DID,
+        ) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
+            self.inner.zone_agent(did).await
         }
         async fn authorize(
             &self,
@@ -2406,7 +2410,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             inner: StaticKeyVerifier {
                 key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
                 users: HashMap::from([("alice".into(), owner.clone())]),
-                agents: vec![],
+                agents: HashMap::new(),
             },
             resource: a.resource(MailboxKind::Inbox),
             write: true,
@@ -2604,7 +2608,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             inner: StaticKeyVerifier {
                 key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
                 users: HashMap::from([("alice".into(), owner)]),
-                agents: vec![],
+                agents: HashMap::new(),
             },
             resource: b.resource(MailboxKind::Inbox),
             write: false,
@@ -2653,7 +2657,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 inner: StaticKeyVerifier {
                     key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
                     users: HashMap::from([("alice".into(), user.clone())]),
-                    agents: vec![agent.clone()],
+                    agents: HashMap::from([(agent.clone(), user.clone())]),
                 },
                 resource: address.resource(MailboxKind::Inbox),
                 write,
@@ -2742,7 +2746,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 ("devtest".into(), devtest.clone()),
                 ("lucy".into(), lucy.clone()),
             ]),
-            agents: vec![],
+            agents: HashMap::new(),
         }));
         center.register_local_recipients([devtest.clone(), lucy.clone(), group.clone()]);
         center.set_message_hub_did(DID::new("web", "msg-hub.test.buckyos.io"));
@@ -2897,7 +2901,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                 tags: vec![],
             })
             .collect();
-        crate::sync_zone_user_contacts(&center, contacts.clone(), &json!({}))
+        crate::sync_zone_user_contacts(&center, contacts.clone())
             .await
             .unwrap();
         inbound(
@@ -2934,7 +2938,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .handle_block_contact(devtest.clone(), None, Some(lucy.clone()), ctx())
             .await
             .unwrap();
-        crate::sync_zone_user_contacts(&center, contacts, &json!({}))
+        crate::sync_zone_user_contacts(&center, contacts)
             .await
             .unwrap();
         let result = center
@@ -2962,20 +2966,21 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         assert_eq!(inbox.len(), 1);
     }
 
+    fn zone_agent_of(owner: &DID, profile: serde_json::Value) -> crate::zone_agent::ZoneAgent {
+        let did = DID::new("web", "xiaobai.test.buckyos.io");
+        crate::zone_agent::ZoneAgent {
+            agent_id: buckyos_api::AgentId::from_agent_did(&did).unwrap(),
+            doc: crate::zone_agent::test_support::agent_document(&did, owner),
+            settings: Default::default(),
+            profile: serde_json::from_value(profile).unwrap(),
+        }
+    }
+
     #[tokio::test]
     async fn zone_agent_sync_establishes_mutual_friendship_without_a_tunnel() {
         let (center, _tmp) = new_center("zone-agent-sync").await;
         let owner = DID::new("web", "alice.test.buckyos.io");
-        let agent = name_lib::AgentDocument::new(
-            DID::new("web", "jarvis.test.buckyos.io"),
-            owner.clone(),
-            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
-                .unwrap(),
-        );
-        let mut agent = agent;
-        agent
-            .extra_info
-            .insert("display_name".into(), json!("Jarvis"));
+        let agent = zone_agent_of(&owner, json!({"display_name": "Xiaobai"}));
         let users = vec![crate::contact_mgr::ZoneUserContactSeed {
             did: owner.clone(),
             name: "Alice".into(),
@@ -2987,10 +2992,11 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         crate::sync_zone_agent_contacts(&center, &users, &[agent.clone()])
             .await
             .unwrap();
+        let agent_did = agent.did().clone();
 
         for (sender, recipient, name, tag) in [
-            (&owner, &agent.id, "Alice", "zone_user"),
-            (&agent.id, &owner, "Jarvis", "zone_agent"),
+            (&owner, &agent_did, "Alice", "zone_user"),
+            (&agent_did, &owner, "Xiaobai", "zone_agent"),
         ] {
             let contact = center
                 .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
@@ -3021,13 +3027,13 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             }
         }
         assert!(center
-            .handle_get_contact(agent.id.clone(), Some(DID::new("bns", "bob")), ctx())
+            .handle_get_contact(agent_did.clone(), Some(DID::new("bns", "bob")), ctx())
             .await
             .unwrap()
             .is_none());
 
         center
-            .handle_block_contact(agent.id.clone(), None, Some(owner.clone()), ctx())
+            .handle_block_contact(agent_did.clone(), None, Some(owner.clone()), ctx())
             .await
             .unwrap();
         center
@@ -3037,7 +3043,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     access_level: Some(buckyos_api::AccessGroupLevel::Stranger),
                     ..Default::default()
                 },
-                Some(agent.id.clone()),
+                Some(agent_did.clone()),
                 ctx(),
             )
             .await
@@ -3046,8 +3052,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             .await
             .unwrap();
         for (sender, recipient, level) in [
-            (&owner, &agent.id, buckyos_api::AccessGroupLevel::Stranger),
-            (&agent.id, &owner, buckyos_api::AccessGroupLevel::Block),
+            (&owner, &agent_did, buckyos_api::AccessGroupLevel::Stranger),
+            (&agent_did, &owner, buckyos_api::AccessGroupLevel::Block),
         ] {
             let contact = center
                 .handle_get_contact(sender.clone(), Some(recipient.clone()), ctx())
@@ -3062,13 +3068,9 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     async fn zone_agent_sync_preserves_an_existing_block_on_first_sync() {
         let (center, _tmp) = new_center("zone-agent-block").await;
         let owner = DID::new("bns", "alice");
-        let agent = name_lib::AgentDocument::new(
-            DID::new("web", "jarvis.test.buckyos.io"),
-            owner.clone(),
-            serde_json::from_value(json!({"kty":"OKP", "crv":"Ed25519", "x":TEST_PUBLIC_X}))
-                .unwrap(),
-        );
-        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+        let agent = zone_agent_of(&owner, json!({}));
+        let agent_did = agent.did().clone();
+        for (sender, recipient) in [(&agent_did, &owner), (&owner, &agent_did)] {
             center
                 .handle_block_contact(sender.clone(), None, Some(recipient.clone()), ctx())
                 .await
@@ -3077,7 +3079,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         crate::sync_zone_agent_contacts(&center, &[], &[agent.clone()])
             .await
             .unwrap();
-        for (sender, recipient) in [(&agent.id, &owner), (&owner, &agent.id)] {
+        for (sender, recipient) in [(&agent_did, &owner), (&owner, &agent_did)] {
             let result = center
                 .handle_dispatch(
                     chat_at(sender, vec![recipient.clone()], "Blocked", 8_200_000),
@@ -3096,11 +3098,11 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         let (center, _tmp) = new_center("auth").await;
         let alice = DID::new("bns", "alice");
         let bob = DID::new("bns", "bob");
-        let agent = DID::new("web", "jarvis.zone.example");
+        let agent = DID::new("web", "xiaobai.zone.example");
         center.set_token_verifier(Arc::new(StaticKeyVerifier {
             key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
             users: HashMap::from([("alice".into(), alice.clone()), ("bob".into(), bob.clone())]),
-            agents: vec![agent.clone()],
+            agents: HashMap::from([(agent.clone(), alice.clone())]),
         }));
         center.register_local_recipients([alice.clone(), bob.clone(), agent.clone()]);
         let peer = DID::new("bns", "auth-peer");
@@ -3129,7 +3131,8 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
                     .await
             }
         };
-        // Self and zone-hosted agent are readable, another user is not.
+        // Self and one's own zone-hosted agent are readable; another user
+        // and another user's agent are not.
         assert_eq!(
             list_as(alice.clone(), user_ctx("alice"))
                 .await
@@ -3147,6 +3150,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
             1
         );
         assert!(is_denied(list_as(bob.clone(), user_ctx("alice")).await));
+        assert!(is_denied(list_as(agent.clone(), user_ctx("bob")).await));
         assert!(is_denied(
             center
                 .handle_list_session(
@@ -3237,6 +3241,105 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
     }
 
     #[tokio::test]
+    async fn ingress_principal_decides_the_inbox_only_for_in_process_tunnels() {
+        let (center, _tmp) = new_center("ingress-principal").await;
+        let alice = DID::new("bns", "alice");
+        let bob = DID::new("bns", "bob");
+        let agent = DID::new("web", "xiaobai.zone.example");
+        center.set_token_verifier(Arc::new(StaticKeyVerifier {
+            key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
+            users: HashMap::from([("alice".into(), alice.clone()), ("bob".into(), bob.clone())]),
+            agents: HashMap::from([(agent.clone(), alice.clone())]),
+        }));
+        center.register_local_recipients([alice.clone(), bob.clone(), agent.clone()]);
+        center
+            .upsert_zone_user_contacts(
+                vec![crate::contact_mgr::ZoneUserContactSeed {
+                    did: alice.clone(),
+                    name: "Alice".into(),
+                    note: None,
+                    bindings: vec![],
+                    groups: vec![],
+                    tags: vec![],
+                }],
+                Some(agent.clone()),
+            )
+            .await
+            .unwrap();
+        let for_alice = || IngressContext {
+            platform: Some("telegram".into()),
+            extra: Some(json!({"chat_type": "user", "principal_did": alice.to_string()})),
+            ..Default::default()
+        };
+        let owner_endpoint = DID::new("msgtunnel", "10001.user.tg-main");
+        let stranger_endpoint = DID::new("msgtunnel", "20002.user.tg-main");
+        for (sender, ingress, key, caller) in [
+            (&owner_endpoint, for_alice(), "owner", ctx()),
+            (
+                &stranger_endpoint,
+                IngressContext {
+                    platform: Some("telegram".into()),
+                    ..Default::default()
+                },
+                "stranger",
+                ctx(),
+            ),
+            (&bob, for_alice(), "forged", user_ctx("bob")),
+        ] {
+            center
+                .handle_dispatch(
+                    chat_at(sender, vec![agent.clone()], key, 9_000_000),
+                    Some(ingress),
+                    Some(key.into()),
+                    caller,
+                )
+                .await
+                .unwrap();
+        }
+
+        let peek = |sender: &DID, kind: MailboxKind| {
+            let center = center.clone();
+            let mailbox = buckyos_api::MailboxAddress::new(
+                agent.clone(),
+                Some(format!("dm:{}", sender.to_string())),
+            )
+            .unwrap();
+            async move {
+                center
+                    .handle_peek_box(mailbox, kind, None, None, None, ctx())
+                    .await
+                    .unwrap()
+            }
+        };
+        let owner_inbox = peek(&owner_endpoint, MailboxKind::Inbox).await;
+        assert_eq!(owner_inbox.len(), 1);
+        assert_eq!(owner_inbox[0].record.from, owner_endpoint);
+        assert_eq!(
+            owner_inbox[0]
+                .record
+                .ingress
+                .as_ref()
+                .unwrap()
+                .extra
+                .as_ref()
+                .unwrap()["principal_did"],
+            json!(alice.to_string())
+        );
+        for sender in [&stranger_endpoint, &bob] {
+            assert!(peek(sender, MailboxKind::Inbox).await.is_empty());
+            let requests = peek(sender, MailboxKind::RequestBox).await;
+            assert_eq!(requests.len(), 1);
+            let principal = requests[0]
+                .record
+                .ingress
+                .as_ref()
+                .and_then(|ingress| ingress.extra.as_ref())
+                .and_then(|extra| extra.get("principal_did"));
+            assert!(principal.is_none());
+        }
+    }
+
+    #[tokio::test]
     async fn contact_admission_is_owner_scoped_and_creates_missing_contacts() {
         let (center, _tmp) = new_center("contact-auth").await;
         let alice = DID::new("bns", "alice");
@@ -3244,7 +3347,7 @@ MC4CAQAwBQYDK2VwBCIEIJBRONAzbwpIOwm0ugIQNyZJrDXxZF7HoPWAZesMedOr
         center.set_token_verifier(Arc::new(StaticKeyVerifier {
             key: DecodingKey::from_ed_components(TEST_PUBLIC_X).unwrap(),
             users: HashMap::from([("alice".into(), alice.clone()), ("bob".into(), bob.clone())]),
-            agents: vec![],
+            agents: HashMap::new(),
         }));
         center.register_local_recipients([alice.clone(), bob.clone()]);
         let sender = DID::new("web", "carol.zone.example");

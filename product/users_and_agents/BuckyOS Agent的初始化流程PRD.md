@@ -725,6 +725,8 @@ Owner-only 的来源检查应在进入常规 Agent 推理与工具执行前完�
 
 核对日期为 2026-10-09，依据是仓库源码、manifest 和脚本，没有采用 `doc/`、`notepads/` 中的描述。路径相对于 `buckyos/src/`。
 
+> 本附录记录的是实施前的现状。附录 B 已于 2026-10-09 实施，实施结果与偏离见附录 C。
+
 本附录只记录现状，供排期和技术设计参考，不是对实现方式的要求。实现变化后应同步更新或删除。
 
 ### A.1 预装与身份创建
@@ -1090,3 +1092,71 @@ p, agent, obj://config/users/{user}/agents/{agent}/profile,read|write,allow
 - 创建后修改角色补充和模板更新设置（`allow_group` 除外）。
 - 管理员为其他用户创建 Agent。
 - 存量迁移与额外的桌面快捷方式。
+
+## 附录 C：实施记录（2026-10-09）
+
+附录 B 已全部实施，未提交 git。本附录记录落点、与附录 B 的偏离和尚未完成的验证。路径相对于 `buckyos/src/`。
+
+### C.1 落点
+
+| 范围 | 主要文件 |
+| --- | --- |
+| 共享类型与 RBAC | `kernel/buckyos-api/src/app_schema.rs`（扩展 `AgentInstallRecord`；新增 `AgentSettings`、`AgentProfile`、`AgentRuntimeInfo`、`AgentTemplateRecord` 与键函数）、`app_install.rs`（`SystemInstallSettings.agent_templates`）、`rbac_config.rs` |
+| control_panel | 新增 `frame/control_panel/src/agent_mgr.rs`（名称检查、模板、构造 PIKG、创建驱动、删除、模板更新、`agent.*` 方法）；`app_installer.rs`（`submit_internal_install`、模板分支）、`pre_install_reconciler.rs`、`pikg.rs`、`user_mgr.rs`、`main.rs` |
+| scheduler 与激活 | `kernel/scheduler/src/{system_config_builder,install_plan_executor,system_config_agent,main}.rs`、`rootfs/etc/scheduler/boot.template.toml`；`kernel/node_active/`（`OwnerTelegramStep.tsx` 取代 `JarvisMsgTunnelStep.tsx`）、`kernel/node_daemon/src/active_server.rs`、`make_config.ts`、`active.ts` |
+| OpenDAN | `frame/opendan/src/{main,loader,records,rootfs,home,ui}.rs`；`frame/lib_opendan/src/{bridge/msg.rs,protocol/input.rs,runner/inputs.rs,runner/drive.rs,runner/input_view.rs,state/behaviors.rs}`；`apps/jarvis_runtime/agent/{agent.toml,role.md,behaviors/groupchat_route.toml}` |
+| msg-center | 新增 `frame/msg_center/src/zone_agent.rs`；`owner_session.rs`、`group_service.rs`、`main.rs`、`msg_tunnel.rs`、`msg_center.rs`、`contact_mgr.rs`、`tg_tunnel.rs` |
+| 桌面 | 新增 `frame/desktop/src/app/agent-setup/`（向导、`guide.ts` 入口状态）、`api/account.ts`、`api/control_panel_mock.ts`、`i18n/agent-setup.ts`；改写 `api/user_mgr.ts`、`api/task_mgr.ts`、`app/users-agents/`、MessageHub 的 `agent_group_disabled` 提示 |
+| 脚本与测试 | `debug_jarvis.sh`（`--agent`）、`rootfs/bin/service_debug.tsx`（`agents <owner>`）、`test/test_opendan/agent_target.ts`、`test/test_control_panel/test_user_mgr.ts` |
+
+### C.2 与附录 B 的偏离
+
+| 项 | 实际做法 | 原因 |
+| --- | --- | --- |
+| 群上下文投递（B.7） | libopendan 协议新增 `MsgDelivery.context`：上下文消息不单独组成批次，跟随其后的第一条输入进入同一批次 | 20 条上下文加触发消息超过默认批次上限，逐条投递时可能出现只含他人消息的批次单独触发 Turn，违反 §5.5、§10.3 |
+| Agent 名字（§5.1） | Loader 在 `.meta/role_supplement.md` 开头写入“Your name is <显示名称> (account `<用户名>`)”，再接角色设定补充；Jarvis 模板的 `role.md` 不再写死 “You are Jarvis” | 模板不决定 Agent 的名字，否则改名后的 Agent 仍自称 Jarvis |
+| 名称保留（B.5） | 新增 `services/control_panel/agent_names/<agent_id>` = `{owner_user_id}`，与 `install_record` 同事务创建和删除 | 不同用户并发创建同名 Agent 时只允许一个成功，并能按 AgentId 找到 Owner |
+| 错误返回（B.5） | `ReasonError("<code>: …")`，界面按包含 `<code>:` 识别；错误码包括 `limited_user`、`name_conflict`、`sharing_unsupported`、`owner_identity_missing`、`invalid_bot_token`、`telegram_bot_invalid`、`telegram_unreachable` 等 | 与现有 kRPC 错误形式一致 |
+| 删除（B.5） | `agent.delete` 同步完成第 1 步后返回，其余步骤由后台驱动执行；删除中的 Agent 不再出现在 `agent.list` | 卸载构造 App 可能较慢 |
+| 通道校验（B.5、B.8） | 第 4 步由 control_panel 调 Telegram `getMe` 校验 Token，并把 bot id 写入 `bot_account_id`；msg-center 对单个坏 Bot 只跳过，不再整体回滚 | `reload_settings` 不再能反映单个 Token 的错误 |
+| Agent 邮箱观察（B.8） | 只有该 Agent 的 Owner 能观察其邮箱，Admin 也不能 | 多用户 Agent 下原规则会泄露他人与其 Agent 的私聊 |
+| 入群检查（B.8） | `agent_group_disabled` 覆盖全部加入类方法：`accept_invitation`、`request_join`、`accept_session_invitation`、`submit_guest_request` | 只拦 `accept_invitation` 可被其他加入方式绕过 |
+| 用户名规则（B.5） | `user.create` 改用共享名称检查后，含 `_` 或 `.` 的用户名被拒绝 | 用户与 Agent 共用名字空间且必须是 DNS 标签（§5.1） |
+| AgentRoot 认领（B.7） | 没有 `.meta/identity.json` 的已有目录直接认领，不归档；记录不一致或文件损坏时才归档 | 手工准备的 AgentRoot 与测试夹具需要直接使用 |
+| 模板分支（B.3） | 分支位于 inspect 之后，inspect 取不到默认节点时会先失败 | 复用 inspect 的信任与包完整性检查 |
+| 桌面图标（B.9） | 仓库没有 Jarvis 图标资源，引导入口使用通用图标；Bot Token 不写入本地草稿 | 资源缺失；秘密信息不落浏览器存储 |
+
+### C.3 验证与未完成项
+
+- 已通过：`cargo test -p buckyos-api`、`control_panel`、`scheduler`、`msg_center`、`libopendan`、`opendan`（均 `--test-threads=1`），`node_daemon` 的 `active_server` 用例；`kernel/node_active` 的 `tsc`、`pnpm build`、`pnpm test`；`frame/opendan/web` 与 `frame/desktop` 的 `pnpm check`、`pnpm lint`、mock e2e；desktop datamodel Deno 测试；`uv run buckyos-build.py` 全量构建；`./build_aios --local-test`。
+- M4 DV（2026-10-09，全新安装的 devtest / test.buckyos.io，Agent 容器使用 `./build_aios --local-test` 构建的本地镜像）已通过：
+
+| 验收项 | 结果 |
+| --- | --- |
+| AC-01 | 全新 Zone 没有任何 Agent，`agent.list_templates` 只有内置 Jarvis |
+| AC-02、AC-34、AC-35、AC-38、AC-48 | 普通用户 dave 在真实桌面点击 Jarvis 引导入口，`jarvis` 已被占用时向导自动换成 `dave-jarvis`，填昵称“小戴”、跳过通道后创建成功，关闭后入口显示“小戴”；全程约 25 秒（`frame/desktop/tests/e2e/real/agent-setup.real.spec.ts`） |
+| AC-04、AC-05 | 用户名与任何用户名下的 Agent 冲突时报 `user_exists` / `agent_exists` 并给出建议；大写、保留名分别报 `invalid` / `reserved` |
+| AC-06、AC-07、AC-08、AC-22 | Owner 经 Message Center 发消息约 5 秒收到回复；Agent 自称“小白”，按角色补充用中文回答 |
+| AC-12 | 非 Owner 直接发消息（即使自称主人）不回复、不建 Session |
+| AC-13、AC-14、AC-15、AC-41 | 群聊开关关闭的 Agent 被邀请时返回 `agent_group_disabled`；开启后，非 Owner 的 @ 与 Owner 未 @ 都不触发；Owner @ 时 Agent 总结了群内他人消息，并说明他人的指令只是背景信息、没有执行 |
+| AC-18 | `buckyos app fetch/install --policy local-developer` 安装第二个模板返回 `template_registered`、不建任务；只有安装者在模板列表中看到它 |
+| AC-20 | 模板发布 0.1.1 后，开启自动更新的 Agent 约 10 秒内重建并同步 AgentRoot，固定版本的 Agent 保持 0.1.0；更新不改变 AgentRoot 身份 |
+| AC-23、AC-25、AC-29、AC-32 | Owner 没有 Telegram 身份时拒绝提交通道（`owner_identity_missing`）；Token 格式错误被拒；无效 Token 在通道步骤失败（`telegram_bot_invalid`），`agent.get` 不含 Token；选择跳过后完成创建并移除通道 |
+| AC-39 | 同一 Owner 用同一模板创建第二个 Agent，各自容器、名字与角色补充互不影响 |
+| AC-44 | 在 OpenDAN 主页或控制面板修改资料，对方立即读到同一份 |
+| AC-47 | 删除后约 35 秒释放名字；同名重建时旧 AgentRoot 归档到 `agents/.archived/`，新 Agent 没有旧 Session |
+
+- 未在 DV 中验证：真实 Telegram Bot 的消息收发与 Owner 映射（只有单测）；登录过期后回到向导；手机端；App Service 中的模板安装界面（本期不做）。
+- 已知风险见 B.11，另有：AgentDocument 的 ObjectId 一变就归档 AgentRoot（重签文档或轮换密钥时会被当作另一个 Agent）；角色补充、名字和 `template_auto_update` 只在 Loader 启动时读取；Owner 删除 Telegram 身份后，msg-center 联系人中的旧绑定不会被移除。
+
+### C.4 DV 中发现并修复的问题
+
+| 问题 | 原因 | 修复 |
+| --- | --- | --- |
+| 构造 App 的安装一直停在“waiting for trust resolution” | name-client 先查 Zone Resolver，它对本 Zone 子名（构造 App 的 AppDID）直接回答 Missing，本地授权覆盖没有机会生效 | control_panel 解析本 Zone 子名形式的 AppDID 时关闭 Zone Resolver（`app_install_resolver.rs`） |
+| 安装任务等待信任解析时，状态面板一直显示创建中 | 驱动把 Waiting 阶段当作仍在运行 | 暂停或带错误等待的任务记为 `Stalled`：创建步骤报失败，用户重试时恢复原任务而不是重新提交（`agent_mgr.rs`） |
+| 恢复暂停的安装任务时报 `encode transaction progress` | `completed_stages` 为空时被序列化省略，全量 patch 补成 `null`，回读时类型错误；所有从 Resolve 重试的暂停任务都会触发 | 全量 patch 中 `completed_stages` 写空数组（buckyos-api `app_install.rs`） |
+| 失败后重新提交构造 App 安装报 `idempotency_conflict` | 内部安装的任务 id 由意图和 PIKG 摘要决定，同一 PIKG 重提会撞上失败的旧任务 | 构造 App 的安装意图带上被取代的失败任务（`InternalInstall::AgentRuntime.supersedes`） |
+| Agent 在群里回复报 `sender-mismatch` | msg-center 以 App token 的用户身份作为群消息发送者，Agent 的运行时 App 无法以 Agent 身份发群消息 | App token 的 AppId 等于发送方 AgentId、且 Agent 的 Owner 就是该 token 的用户时，按 Agent 身份发送（`group_service.rs`） |
+| `agent.get` 的 `template.loaded_version` 为空 | 部署的执行规格中包 id 固定为 `#pkg:<objid>`，OpenDAN 取不到版本 | OpenDAN 改从自己的 AppSpec 读取 AppDoc 版本 |
+

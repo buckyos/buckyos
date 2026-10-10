@@ -1,6 +1,7 @@
 import { useI18n } from '../../../../i18n/provider'
 import { isActionMessage } from '../../sessionModel'
-import { groupErrorText, parseGroupNotice } from '../../groupModel'
+import { groupErrorText, isAgentGroupDisabled, parseGroupNotice } from '../../groupModel'
+import { AgentGroupSettingsLink } from '../../AgentGroupSettingsLink'
 import { memo, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
@@ -746,6 +747,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const [state, setState] = useState<'idle' | 'pending' | 'done'>('idle')
   const [outcome, setOutcome] = useState('')
   const [error, setError] = useState('')
+  const [agentGroupDisabled, setAgentGroupDisabled] = useState(false)
   const notice = parseGroupNotice(message)
   const view = notice ? actions.groupNotice?.(message) : null
   if (!notice || !view) return renderFallbackMessage(message, context)
@@ -754,8 +756,8 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
   const invitation = notice.invitation
   const run = (operation: ((message: MessageObject) => Promise<void>) | undefined, doneKey: string) => {
     if (!operation || state === 'pending') return
-    setState('pending'); setError('')
-    void operation(message).then(() => { setState('done'); setOutcome(doneKey) }, failure => { setState('idle'); setError(groupErrorText(t, failure)) })
+    setState('pending'); setError(''); setAgentGroupDisabled(false)
+    void operation(message).then(() => { setState('done'); setOutcome(doneKey) }, failure => { setState('idle'); setError(groupErrorText(t, failure)); setAgentGroupDisabled(isAgentGroupDisabled(failure)) })
   }
   const forAgent = invitation?.memberDid && invitation.memberDid !== context.selfDid ? nameOf(invitation.memberDid) : undefined
   const line = invitation ? (forAgent ? t('messagehub.group.invitedAgent', undefined, { name: inviter, agent: forAgent }) : t('messagehub.group.invitedBy', undefined, { name: inviter }))
@@ -810,6 +812,7 @@ function GroupNoticeMessage({ message, context }: { message: MessageObject; cont
           </div>
         ) : null}
         {error ? <p role="alert" className="mt-2 text-xs" style={{ color: 'var(--cp-danger)' }}>{error}</p> : null}
+        {agentGroupDisabled && invitation?.memberDid ? <AgentGroupSettingsLink agentDid={invitation.memberDid} name={nameOf(invitation.memberDid)} /> : null}
         <MessageFooter message={message} isSelf={false} mode="card" />
       </div>
     </div>

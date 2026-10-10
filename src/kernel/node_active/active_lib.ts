@@ -28,7 +28,6 @@ export let SN_DEVICEINFO_API_URL = `${SN_API_URL}/deviceinfo`;
 export let SN_BNS_API_URL = `https://bns.${SN_BASE_HOST}/kapi/bns`;
 export let WEB3_BASE_HOST = `web3.${SN_BASE_HOST}`;
 export let AI_PROVIDER_TUTORIAL_URL = "https://buckyos.ai";
-export let TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL = "https://core.telegram.org/bots/tutorial";
 export let TELEGRAM_ACCOUNT_ID_TUTORIAL_URL = "https://core.telegram.org/api/bots/ids";
 
 export async function init_active_lib(config: ActiveConfig) {
@@ -40,8 +39,6 @@ export async function init_active_lib(config: ActiveConfig) {
   SN_BNS_API_URL = `${config.http_schema}://bns.${SN_BASE_HOST}/kapi/bns`;
   WEB3_BASE_HOST = `web3.${SN_BASE_HOST}`;
   AI_PROVIDER_TUTORIAL_URL = config.ai_provider_tutorial_url || AI_PROVIDER_TUTORIAL_URL;
-  TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL =
-    config.telegram_bot_api_token_tutorial_url || TELEGRAM_BOT_API_TOKEN_TUTORIAL_URL;
   TELEGRAM_ACCOUNT_ID_TUTORIAL_URL =
     config.telegram_account_id_tutorial_url || TELEGRAM_ACCOUNT_ID_TUTORIAL_URL;
 }
@@ -101,10 +98,7 @@ export async function createInitialWizardData(
       openrouter_api_token: "",
       glm_api_token: "",
     },
-    jarvis_msg_tunnel_config: {
-      telegram_bot_api_token: "",
-      telegram_account_id: "",
-    },
+    owner_telegram_account_id: "",
     ...initial,
   };
 }
@@ -580,7 +574,7 @@ export async function activateNode(data: ActiveWizzardData): Promise<{
       friend_passcode: data.friend_passcode,
       enabled_features: resolveEnabledFeatures(data.sn_active_code, data.enabled_features),
       ai_provider_config: data.ai_provider_config,
-      jarvis_msg_tunnel_config: data.jarvis_msg_tunnel_config,
+      owner_telegram_account_id: data.owner_telegram_account_id,
     },
     sn: {
       sn_url: SN_API_URL,

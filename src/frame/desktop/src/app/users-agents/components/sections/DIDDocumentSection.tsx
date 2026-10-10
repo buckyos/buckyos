@@ -2,12 +2,14 @@
 
 import { FileText, AlertTriangle } from 'lucide-react'
 import { Button } from '@mui/material'
+import { useI18n } from '../../../../i18n/provider'
 
 interface DIDDocumentSectionProps {
   document?: Record<string, unknown>
 }
 
 export function DIDDocumentSection({ document }: DIDDocumentSectionProps) {
+  const { t } = useI18n()
   return (
     <div
       className="rounded-[22px] px-5 py-4"
@@ -23,11 +25,11 @@ export function DIDDocumentSection({ document }: DIDDocumentSectionProps) {
             className="font-display text-sm font-semibold"
             style={{ color: 'var(--cp-text)' }}
           >
-            DID Document
+            {t('usersAgents.did.title')}
           </h3>
         </div>
         <Button size="small" variant="text">
-          Modify
+          {t('usersAgents.did.modify')}
         </Button>
       </div>
 
@@ -41,7 +43,7 @@ export function DIDDocumentSection({ document }: DIDDocumentSectionProps) {
       >
         <AlertTriangle size={14} className="shrink-0 mt-0.5" style={{ color: 'var(--cp-warning)' }} />
         <span className="text-[12px]" style={{ color: 'var(--cp-text)' }}>
-          DID Document contains trusted identity data. Modifications may require additional confirmation or cost.
+          {t('usersAgents.did.warning')}
         </span>
       </div>
 
@@ -58,7 +60,7 @@ export function DIDDocumentSection({ document }: DIDDocumentSectionProps) {
         </pre>
       ) : (
         <div className="text-sm" style={{ color: 'var(--cp-muted)' }}>
-          No DID Document configured.
+          {t('usersAgents.did.empty')}
         </div>
       )}
     </div>

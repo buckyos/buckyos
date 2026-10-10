@@ -2,6 +2,7 @@
 
 import { Shield, Key, ShieldCheck } from 'lucide-react'
 import { Button, Switch, FormControlLabel } from '@mui/material'
+import { useI18n } from '../../../../i18n/provider'
 
 interface SecuritySectionProps {
   twoFactorEnabled: boolean
@@ -9,6 +10,7 @@ interface SecuritySectionProps {
 }
 
 export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySectionProps) {
+  const { t } = useI18n()
   return (
     <div
       className="rounded-[22px] px-5 py-4"
@@ -23,7 +25,7 @@ export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySection
           className="font-display text-sm font-semibold"
           style={{ color: 'var(--cp-text)' }}
         >
-          Security & Account
+          {t('usersAgents.security.title')}
         </h3>
       </div>
 
@@ -31,17 +33,17 @@ export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySection
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Key size={14} style={{ color: 'var(--cp-muted)' }} />
-            <span className="text-sm" style={{ color: 'var(--cp-text)' }}>Password</span>
+            <span className="text-sm" style={{ color: 'var(--cp-text)' }}>{t('usersAgents.security.password')}</span>
           </div>
           <Button size="small" variant="outlined">
-            Change
+            {t('usersAgents.security.change')}
           </Button>
         </div>
 
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldCheck size={14} style={{ color: 'var(--cp-muted)' }} />
-            <span className="text-sm" style={{ color: 'var(--cp-text)' }}>Two-Factor Auth</span>
+            <span className="text-sm" style={{ color: 'var(--cp-text)' }}>{t('usersAgents.security.twoFactor')}</span>
           </div>
           <FormControlLabel
             control={<Switch checked={twoFactorEnabled} size="small" />}
@@ -51,7 +53,7 @@ export function SecuritySection({ twoFactorEnabled, lastLogin }: SecuritySection
 
         <div className="flex items-baseline gap-3 pt-1">
           <span className="text-[12px] font-medium w-24 shrink-0" style={{ color: 'var(--cp-muted)' }}>
-            Last login
+            {t('usersAgents.security.lastLogin')}
           </span>
           <span className="text-sm" style={{ color: 'var(--cp-text)' }}>
             {new Date(lastLogin).toLocaleString()}

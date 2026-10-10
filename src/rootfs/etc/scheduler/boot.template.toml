@@ -1,5 +1,7 @@
-# beta 2.2 bootstrap input. Control Panel turns each rootfs PIKG seed into a
-# standard, immutable install/update task after system services are available.
+# beta 2.2 bootstrap input. Control Panel turns each pre_install_apps PIKG seed
+# into a standard, immutable install/update task after system services are
+# available. agent_templates are bundled Agent templates; they are never
+# installed as runtime instances.
 
 "system/install_settings" = """
 {
@@ -9,15 +11,16 @@
       "pikg_path": "data/cache/text-editor.buckyos.bns.did-0.1.0.pikg",
       "install_plan": {}
     },
-    "jarvis.buckyos.bns.did": {
-      "schema_version": 1,
-      "pikg_path": "data/cache/jarvis.buckyos.bns.did-0.7.0.pikg",
-      "install_plan": {}
-    },
     "buckyos-systest.buckyos.bns.did": {
       "schema_version": 1,
       "pikg_path": "data/cache/buckyos-systest.buckyos.bns.did-0.5.1.pikg",
       "install_plan": {}
+    }
+  },
+  "agent_templates": {
+    "jarvis.buckyos.bns.did": {
+      "schema_version": 1,
+      "pikg_path": "data/cache/jarvis.buckyos.bns.did-0.7.0.pikg"
     }
   }
 }

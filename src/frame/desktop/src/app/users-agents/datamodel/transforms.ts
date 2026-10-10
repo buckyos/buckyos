@@ -1,6 +1,7 @@
 import type { AppSummary } from '../../../api/app_mgr.ts'
 import type {
-  AgentInfo,
+  AgentEntry,
+  AgentInstallState,
   UserContactSettings,
   UserDetail,
   UserInfo,
@@ -8,8 +9,10 @@ import type {
   UserTunnelBinding,
   UserType,
 } from '../../../api/user_mgr.ts'
+import { agentDisplayName, JARVIS_GUIDE_ENTRY, usableImageUrl } from '../../agent-setup/model.ts'
 import type {
   AgentEntity,
+  AgentLifecycle,
   LocalUserEntity,
   SelfEntity,
   SocialAccount,
@@ -61,15 +64,6 @@ function systemContactFromDetail(detail: UserDetail): UserContactSettings | unde
   const privateExtra = asRecord(localProfile.private_extra)
   const systemContact = asRecord(privateExtra.system_contact)
   return Object.keys(systemContact).length > 0 ? systemContact as UserContactSettings : undefined
-}
-
-function stringArray(value: unknown): string[] {
-  if (Array.isArray(value)) {
-    return value.map(stringValue).filter(Boolean) as string[]
-  }
-  const text = stringValue(value)
-  if (!text) return []
-  return text.split(',').map((item) => item.trim()).filter(Boolean)
 }
 
 function numberValue(value: unknown): number | undefined {
@@ -134,28 +128,6 @@ export function toSocialAccounts(bindings: UserTunnelBinding[] | undefined): Soc
     lastSyncAt: isoFromUnix(binding.last_sync_at),
     lastVerifiedAt: isoFromUnix(binding.last_sync_at),
   }))
-}
-
-function socialAccountsFromUnknown(value: unknown): SocialAccount[] {
-  if (!Array.isArray(value)) return []
-  const bindings = value.flatMap((item): UserTunnelBinding[] => {
-    const record = asRecord(item)
-    const platform = stringValue(record.platform)
-    const accountId = stringValue(record.account_id ?? record.accountId)
-    if (!platform || !accountId) return []
-    return [{
-      platform,
-      account_id: accountId,
-      display_id: stringValue(record.display_id ?? record.displayId),
-      tunnel_instance_id: stringValue(record.tunnel_instance_id ?? record.tunnelId),
-      status: stringValue(record.status),
-      last_sync_at: typeof record.last_sync_at === 'number'
-        ? record.last_sync_at
-        : undefined,
-      meta: asRecord(record.meta) as Record<string, string>,
-    }]
-  })
-  return toSocialAccounts(bindings)
 }
 
 function userStateBase(state: UserStateString | undefined): string {
@@ -297,99 +269,70 @@ export function toVisibleLocalUserEntities(
   return visibleUsers
 }
 
-function agentStateToStatus(state: unknown): AgentEntity['status'] {
-  const normalized = String(state ?? '').toLowerCase()
-  if (normalized === 'running') return 'running'
-  if (normalized === 'stopped' || normalized === 'new' || normalized === 'deleted') return 'stopped'
-  return normalized ? 'error' : 'stopped'
-}
-
-function runtimeFromAgentInfo(
-  runtimeValue: unknown,
-  status: AgentEntity['status'],
-  fallback: AgentEntity['runtime'],
-): AgentEntity['runtime'] {
-  const runtime = asRecord(runtimeValue)
-  const available = runtime.available === true
-  const uiSessions = Number(runtime.ui_session_count ?? 0)
-  const workSessions = Number(runtime.work_session_count ?? runtime.total ?? 0)
-  const workspaces = Number(runtime.workspace_count ?? 0)
-
-  return {
-    uptime: available ? 'Online' : fallback.uptime,
-    memoryUsage: fallback.memoryUsage,
-    cpuUsage: fallback.cpuUsage,
-    lastActive: available ? new Date().toISOString() : fallback.lastActive,
-    runningTasks: available && status === 'running' ? workSessions : 0,
-    queuedTasks: 0,
-    healthStatus: available
-      ? status === 'running'
-        ? workSessions > 10
-          ? 'busy'
-          : 'healthy'
-        : 'degraded'
-      : 'offline',
-    uiSessions,
-    workSessions,
-    workspaces,
+/**
+ * An unfinished creation is `creating` / `failed`; a ready Agent takes the
+ * state of its constructed App. Anything not recognised is `unknown`, never
+ * an error.
+ */
+export function agentStateToStatus(
+  installState: AgentInstallState | string | null | undefined,
+  runtimeState: string | null | undefined,
+): AgentLifecycle {
+  switch (installState) {
+    case 'provisioning':
+    case 'bound':
+      return 'creating'
+    case 'failed':
+      return 'failed'
+    case 'ready':
+      break
+    default:
+      return 'unknown'
+  }
+  switch (String(runtimeState ?? '').toLowerCase()) {
+    case 'running':
+    case 'restarting':
+    case 'updating':
+      return 'running'
+    case 'new':
+    case 'stopped':
+    case 'stopping':
+    case 'deleted':
+      return 'stopped'
+    default:
+      return 'unknown'
   }
 }
 
-export function toAgentEntity(
-  agentInfo: AgentInfo | null,
-  fallback: AgentEntity,
-): AgentEntity {
-  const raw = asRecord(agentInfo)
-  const settings = asRecord(raw.settings)
-  const spec = asRecord(raw.spec)
-  const profile = asRecord(settings.profile ?? raw.profile)
-  const capabilities = [
-    ...stringArray(settings.capabilities),
-    ...stringArray(profile.capabilities),
-  ]
-  const dedupedCapabilities = Array.from(new Set(capabilities)).slice(0, 6)
-  const status = agentStateToStatus(settings.state ?? raw.state ?? spec.state)
-  const agentDid = firstString(raw.id, raw.did, raw.agent_did, settings.agent_did, fallback.did)
-  const agentId = firstString(
-    raw.agent_id,
-    raw.agentId,
-    agentDid,
-    fallback.id,
-  ) ?? fallback.id
-  const displayName = firstString(
-    profile.display_name,
-    profile.displayName,
-    settings.display_name,
-    raw.display_name,
-    raw.name,
-    agentId,
-    fallback.displayName,
-  ) ?? fallback.displayName
-
+export function toAgentEntity(entry: AgentEntry): AgentEntity {
+  const install = entry.install
+  const tunnels = entry.settings?.msg_tunnels ?? []
   return {
-    ...fallback,
-    id: agentId,
-    displayName,
-    avatarUrl: firstString(profile.avatar, profile.avatar_url, profile.avatarUrl, fallback.avatarUrl),
-    did: agentDid,
-    agentType: firstString(profile.agent_type, settings.agent_type, fallback.agentType) ?? fallback.agentType,
-    version: firstString(raw.version, settings.version, fallback.version) ?? fallback.version,
-    status,
-    capabilities: dedupedCapabilities.length > 0 ? dedupedCapabilities : fallback.capabilities,
-    socialAccounts: socialAccountsFromUnknown(settings.bindings),
-    info: {
-      description: firstString(profile.description, raw.description, settings.description, fallback.info.description) ?? '',
-      model: firstString(profile.model, settings.model, fallback.info.model) ?? '',
-      appId: agentId,
-      appType: 'agent',
-    },
-    settings: {
-      owner: firstString(settings.owner, settings.owner_user_id, raw.owner_user_id, fallback.settings.owner) ?? '',
-      permissions: firstString(settings.permissions, fallback.settings.permissions) ?? 'Not configured',
-      workspaceRoot: firstString(settings.workspace_root, settings.workspaceRoot, fallback.settings.workspaceRoot) ?? '',
-      serviceState: String(settings.state ?? raw.state ?? spec.state ?? 'unknown'),
-    },
-    didDocument: Object.keys(raw).length > 0 ? raw : fallback.didDocument,
-    runtime: runtimeFromAgentInfo(raw.runtime, status, fallback.runtime),
+    id: entry.agent_id,
+    kind: 'agent',
+    displayName: agentDisplayName(entry),
+    avatarUrl: usableImageUrl(entry.profile?.avatar),
+    did: entry.agent_did,
+    socialAccounts: tunnels.map((tunnel) => ({
+      id: `tunnel-${tunnel.platform}`,
+      platform: tunnel.platform,
+      accountId: tunnel.bot_account_id ?? '',
+      displayId: tunnel.bot_account_id ? `@${tunnel.bot_account_id}` : '',
+      status: install?.tunnel_state === 'failed' ? 'error' : install?.tunnel_state === 'bound' ? 'active' : 'pending',
+      isPublic: false,
+      canIdentify: false,
+    })),
+    createdAt: isoFromUnix(install?.created_at) ?? fallbackCreatedAt,
+    name: entry.name,
+    ownerUserId: entry.owner_user_id,
+    ownerDid: entry.owner_did || undefined,
+    bio: entry.profile?.bio?.trim() || undefined,
+    nickname: entry.profile?.display_name?.trim() || undefined,
+    status: agentStateToStatus(install?.state, entry.runtime?.state),
+    install,
+    settings: entry.settings,
+    template: entry.template ?? null,
+    runtime: entry.runtime ?? null,
+    createdFromGuide: entry.settings?.desktop_entry === JARVIS_GUIDE_ENTRY,
   }
 }

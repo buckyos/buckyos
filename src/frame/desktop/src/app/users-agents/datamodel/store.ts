@@ -10,9 +10,18 @@ import type {
 import {
   createEmptyUsersAgentsSnapshot,
   createMockUsersAgentsSnapshot,
+  fetchMockUsersAgentsSnapshot,
   fetchUsersAgentsSnapshot,
 } from './api'
+import { toAgentEntity, toSocialAccounts } from './transforms'
+import {
+  deleteAgent,
+  removeUserMsgTunnel,
+  setUserMsgTunnel,
+  updateAgent,
+} from '../../../api/user_mgr'
 import { isMockRuntime } from '../../../runtime'
+import { notifyAgentsChanged, notifyOwnProfileChanged } from '../../agent-setup/events'
 
 export interface UsersAgentsStoreOptions {
   useMock?: boolean
@@ -32,10 +41,10 @@ export class UsersAgentsStore {
   private readonly useMock: boolean
 
   private self: SelfEntity
-  private agent: AgentEntity
   private agents: AgentEntity[]
   private localUsers: LocalUserEntity[]
   private entityGroups: EntityGroupEntity[]
+  private canCreateAgents: boolean
 
   private snapshot: UsersAgentsSnapshot
   private listeners = new Set<() => void>()
@@ -47,17 +56,15 @@ export class UsersAgentsStore {
       ? createMockUsersAgentsSnapshot()
       : createEmptyUsersAgentsSnapshot()
     this.self = initial.self
-    this.agent = initial.agent
     this.agents = initial.agents
     this.localUsers = initial.localUsers
     this.entityGroups = initial.entityGroups
+    this.canCreateAgents = initial.canCreateAgents
     this.snapshot = this.buildSnapshot()
 
-    if (!this.useMock) {
-      void this.reload().catch((error) => {
-        console.warn('Failed to load users-agents datamodel from backend.', error)
-      })
-    }
+    void this.reload().catch((error) => {
+      console.warn('Failed to load users-agents datamodel.', error)
+    })
   }
 
   subscribe = (listener: () => void) => {
@@ -69,15 +76,7 @@ export class UsersAgentsStore {
 
   async reload(): Promise<UsersAgentsSnapshot> {
     const seq = ++this.reloadSeq
-
-    if (this.useMock) {
-      const snapshot = createMockUsersAgentsSnapshot()
-      this.applySnapshot(snapshot)
-      this.notify()
-      return snapshot
-    }
-
-    const snapshot = await fetchUsersAgentsSnapshot()
+    const snapshot = this.useMock ? await fetchMockUsersAgentsSnapshot() : await fetchUsersAgentsSnapshot()
     // A newer reload has started meanwhile; keep its result instead of this stale one.
     if (seq === this.reloadSeq) {
       this.applySnapshot(snapshot)
@@ -88,10 +87,10 @@ export class UsersAgentsStore {
 
   private applySnapshot(snapshot: UsersAgentsSnapshot) {
     this.self = snapshot.self
-    this.agent = snapshot.agent
     this.agents = snapshot.agents
     this.localUsers = snapshot.localUsers
     this.entityGroups = snapshot.entityGroups
+    this.canCreateAgents = snapshot.canCreateAgents
   }
 
   private notify() {
@@ -102,10 +101,10 @@ export class UsersAgentsStore {
   private buildSnapshot(): UsersAgentsSnapshot {
     return {
       self: this.self,
-      agent: this.agent,
       agents: this.agents,
       localUsers: this.localUsers,
       entityGroups: this.entityGroups,
+      canCreateAgents: this.canCreateAgents,
     }
   }
 
@@ -154,36 +153,49 @@ export class UsersAgentsStore {
     this.notify()
   }
 
-  addSocialAccount(entityId: string, account: SocialAccount) {
-    if (this.self.id === entityId) {
-      this.self = { ...this.self, socialAccounts: [...this.self.socialAccounts, account] }
-      this.notify()
-      return
-    }
+  // ── Agents ──
 
-    const targetAgent = this.agents.find((agent) => agent.id === entityId)
-    if (targetAgent) {
-      this.agents = this.agents.map((agent) =>
-        agent.id === entityId
-          ? { ...agent, socialAccounts: [...agent.socialAccounts, account] }
-          : agent,
-      )
-      this.agent = this.agents[0] ?? this.agent
-      this.notify()
-      return
-    }
-
-    this.localUsers = this.localUsers.map((user) =>
-      user.id === entityId
-        ? { ...user, socialAccounts: [...user.socialAccounts, account] }
-        : user,
-    )
-    this.entityGroups = this.entityGroups.map((group) =>
-      group.id === entityId
-        ? { ...group, socialAccounts: [...group.socialAccounts, account] }
-        : group,
-    )
+  /** `agent.update`; resolves with an error message, or null on success. */
+  async setAgentAllowGroup(agentId: string, allowGroup: boolean): Promise<unknown> {
+    const { data, error } = await updateAgent({ agentId, allowGroup })
+    if (!data) return error ?? new Error('agent.update failed')
+    this.agents = this.agents.map((agent) => (agent.id === agentId ? toAgentEntity(data) : agent))
     this.notify()
+    notifyAgentsChanged()
+    return null
+  }
+
+  async deleteAgent(agentId: string): Promise<unknown> {
+    const { data, error } = await deleteAgent(agentId)
+    if (!data) return error ?? new Error('agent.delete failed')
+    this.agents = this.agents.filter((agent) => agent.id !== agentId)
+    this.notify()
+    notifyAgentsChanged()
+    return null
+  }
+
+  // ── The signed-in user's own message identities (Telegram is stored by the control panel) ──
+
+  async addOwnTelegram(accountId: string): Promise<unknown> {
+    const { data, error } = await setUserMsgTunnel({ platform: 'telegram', accountId: accountId.trim() })
+    if (!data) return error ?? new Error('user.set_msg_tunnel failed')
+    this.self = { ...this.self, socialAccounts: toSocialAccounts(data.contact?.bindings) }
+    this.notify()
+    notifyOwnProfileChanged()
+    return null
+  }
+
+  async removeOwnTelegram(): Promise<unknown> {
+    const { data, error } = await removeUserMsgTunnel({ platform: 'telegram' })
+    if (!data) return error ?? new Error('user.remove_msg_tunnel failed')
+    this.self = { ...this.self, socialAccounts: toSocialAccounts(data.contact?.bindings) }
+    this.notify()
+    notifyOwnProfileChanged()
+    return null
+  }
+
+  addSocialAccount(entityId: string, account: SocialAccount) {
+    this.updateSocialAccounts(entityId, (accounts) => [...accounts, account])
   }
 
   removeSocialAccount(entityId: string, accountId: string) {
@@ -208,18 +220,6 @@ export class UsersAgentsStore {
   ) {
     if (this.self.id === entityId) {
       this.self = { ...this.self, socialAccounts: updater(this.self.socialAccounts) }
-      this.notify()
-      return
-    }
-
-    const targetAgent = this.agents.find((agent) => agent.id === entityId)
-    if (targetAgent) {
-      this.agents = this.agents.map((agent) =>
-        agent.id === entityId
-          ? { ...agent, socialAccounts: updater(agent.socialAccounts) }
-          : agent,
-      )
-      this.agent = this.agents[0] ?? this.agent
       this.notify()
       return
     }

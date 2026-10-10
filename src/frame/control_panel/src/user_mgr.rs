@@ -2,14 +2,14 @@ use crate::{ControlPanelServer, RpcAuthPrincipal};
 use ::kRPC::{kRPC, RPCErrors, RPCRequest, RPCResponse, RPCResult};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use buckyos_api::{
-    get_buckyos_api_runtime, AgentSpec, ProfileLink, SchedulerClient, SystemConfigClient,
-    SystemConfigError, UserContactSettings, UserPrivateProfile, UserProfile, UserSettings,
-    UserState, UserTunnelBinding, UserType, SCHEDULER_SERVICE_SERVICE_PORT,
+    get_buckyos_api_runtime, ProfileLink, SchedulerClient, SystemConfigClient, SystemConfigError,
+    UserContactSettings, UserPrivateProfile, UserProfile, UserSettings, UserState,
+    UserTunnelBinding, UserType, SCHEDULER_SERVICE_SERVICE_PORT,
 };
 use buckyos_kit::{buckyos_get_unix_timestamp, KVAction};
 use jsonwebtoken::jwk::Jwk;
 use log::*;
-use name_lib::{generate_ed25519_key_pair, AgentDocument, OwnerDocument, DID};
+use name_lib::{generate_ed25519_key_pair, OwnerDocument, DID};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -54,15 +54,8 @@ fn resolve_target_user_id(req: &RPCRequest, principal: &RpcAuthPrincipal) -> Str
 }
 
 /// Build a fresh `SystemConfigClient` authenticated with the *caller's* RPC
-/// session token (instead of the control_panel service's own token).
-///
-/// This is required for any read/write under `users/...` and `agents/...`:
-/// per `rootfs/etc/scheduler/boot.template.toml`, the `ood` device only has
-/// `read|write` for `users/*/apps/*` and `users/*/agents/*` — it cannot
-/// touch `users/{uid}/doc`, `users/{uid}/settings`, or `agents/{id}/doc`.
-/// Those keys are gated by `p, admin,/config/users/*,read|write,allow` and
-/// `p, admin,/config/agents/*/...,read|write,allow`, so the request must be
-/// signed by the admin caller, not by the service.
+/// session token, so user records are read and written under the caller's
+/// own RBAC permissions instead of the control_panel service identity.
 async fn system_config_client_for_caller(
     req: &RPCRequest,
 ) -> Result<SystemConfigClient, RPCErrors> {
@@ -156,23 +149,6 @@ fn parse_user_state(s: &str) -> Result<UserState, RPCErrors> {
         .map_err(|_| RPCErrors::ParseRequestError(format!("Invalid user state: {}", s)))
 }
 
-fn validate_agent_id(agent_id: &str) -> Result<(), RPCErrors> {
-    if agent_id.is_empty() || agent_id.len() > 96 {
-        return Err(RPCErrors::ParseRequestError(
-            "agent_id must be 1-96 characters".to_string(),
-        ));
-    }
-    if !agent_id
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.')
-    {
-        return Err(RPCErrors::ParseRequestError(
-            "agent_id contains invalid characters (allowed: a-z, 0-9, _, -, .)".to_string(),
-        ));
-    }
-    Ok(())
-}
-
 fn default_contact_settings(did: Option<String>) -> UserContactSettings {
     UserContactSettings {
         did,
@@ -243,7 +219,7 @@ fn profile_from_user_id(user_id: &str) -> UserPrivateProfile {
     ))
 }
 
-fn profile_system_contact(profile: &UserPrivateProfile) -> Option<UserContactSettings> {
+pub(crate) fn profile_system_contact(profile: &UserPrivateProfile) -> Option<UserContactSettings> {
     profile
         .private_extra
         .get(PROFILE_SYSTEM_CONTACT_KEY)
@@ -383,7 +359,7 @@ async fn load_user_settings(
         .map_err(|e| RPCErrors::ReasonError(format!("Corrupted user settings: {}", e)))
 }
 
-async fn load_user_profile(
+pub(crate) async fn load_user_profile(
     client: &SystemConfigClient,
     user_id: &str,
 ) -> Result<Option<UserPrivateProfile>, RPCErrors> {
@@ -417,7 +393,7 @@ async fn save_user_profile(
     Ok(())
 }
 
-async fn refresh_rbac_by_scheduler(reason: &str) -> Result<(), RPCErrors> {
+pub(crate) async fn refresh_rbac_by_scheduler(reason: &str) -> Result<(), RPCErrors> {
     let runtime = get_buckyos_api_runtime()?;
     let scheduler_url = format!(
         "http://127.0.0.1:{}/kapi/scheduler",
@@ -461,87 +437,6 @@ fn user_create_result(
         result["warning"] = Value::String(warning);
     }
     result
-}
-
-async fn load_agent_runtime_info(agent_id: &str) -> Value {
-    let runtime = match get_buckyos_api_runtime() {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            return json!({
-                "available": false,
-                "error": error.to_string(),
-            });
-        }
-    };
-    let client = match runtime.get_opendan_client().await {
-        Ok(client) => client,
-        Err(error) => {
-            return json!({
-                "available": false,
-                "error": error.to_string(),
-            });
-        }
-    };
-    match client.list_agent_sessions(agent_id, Some(100), None).await {
-        Ok(result) => json!({
-            "available": true,
-            "ui_session_count": result.items.len(),
-            "work_session_count": result.items.len(),
-            "workspace_count": null,
-            "recent_session_ids": result.items,
-            "next_cursor": result.next_cursor,
-            "total": result.total,
-        }),
-        Err(error) => json!({
-            "available": false,
-            "error": error.to_string(),
-        }),
-    }
-}
-
-async fn load_agent_specs(
-    client: &SystemConfigClient,
-    user_ids: &[String],
-) -> Result<HashMap<String, (String, AgentSpec)>, RPCErrors> {
-    let mut specs = HashMap::new();
-    for user_id in user_ids {
-        let prefix = format!("users/{}/agents", user_id);
-        let agent_ids = client.list(&prefix).await.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Failed to list agents for '{}': {}",
-                user_id, error
-            ))
-        })?;
-        for agent_id in agent_ids {
-            let spec_path = format!("{}/{}/spec", prefix, agent_id);
-            match client.get(&spec_path).await {
-                Ok(spec_val) => match serde_json::from_str::<AgentSpec>(&spec_val.value) {
-                    Ok(spec) if spec.validate().is_ok() && spec.agent_id.as_str() == agent_id => {
-                        specs.entry(agent_id).or_insert((user_id.clone(), spec));
-                    }
-                    Err(error) => warn!("Failed to parse agent spec `{}`: {}", spec_path, error),
-                    Ok(_) => warn!("Invalid agent spec at `{}`", spec_path),
-                },
-                Err(SystemConfigError::KeyNotFound(_)) => continue,
-                Err(error) => {
-                    return Err(RPCErrors::ReasonError(format!(
-                        "Failed to load agent spec '{}': {}",
-                        spec_path, error
-                    )))
-                }
-            }
-        }
-    }
-    Ok(specs)
-}
-
-fn merge_agent_spec(agent_info: &mut Value, owner_user_id: &str, spec: &AgentSpec) {
-    agent_info["spec"] = serde_json::to_value(spec).unwrap_or(Value::Null);
-    agent_info["agent_did"] = Value::String(spec.agent_did.to_string());
-    agent_info["agent_doc_object_id"] = Value::String(spec.agent_doc_object_id.to_string());
-    agent_info["binding"] = serde_json::to_value(&spec.binding).unwrap_or(Value::Null);
-    agent_info["owner_user_id"] = Value::String(owner_user_id.to_string());
-    agent_info["generation"] = Value::Number(spec.generation.into());
 }
 
 // ─── User management handlers ──────────────────────────────────────────────
@@ -697,18 +592,11 @@ impl ControlPanelServer {
 
         let client = system_config_client_for_caller(&req).await?;
         let runtime = get_buckyos_api_runtime()?;
+        crate::agent_mgr::ensure_name_available(&runtime.zone_id, &user_id).await?;
         let (owner_config, private_key) =
             generated_owner_config(&user_id, &show_name, &runtime.zone_id)?;
         let user_did = owner_config.id.to_string();
-
-        // Check if user already exists
         let settings_path = format!("users/{}/settings", user_id);
-        if client.get(&settings_path).await.is_ok() {
-            return Err(RPCErrors::ReasonError(format!(
-                "User '{}' already exists",
-                user_id
-            )));
-        }
 
         // Build UserSettings
         let new_settings = UserSettings {
@@ -1011,7 +899,15 @@ impl ControlPanelServer {
         require_self_or_admin(principal, &target)?;
 
         let platform = Self::require_param_str(&req, "platform")?;
-        let account_id = Self::require_param_str(&req, "account_id")?;
+        let mut account_id = Self::require_param_str(&req, "account_id")?;
+        if platform == "telegram" {
+            account_id = crate::agent_mgr::bare_telegram_account(&account_id).to_string();
+        }
+        if account_id.trim().is_empty() {
+            return Err(RPCErrors::ParseRequestError(
+                "account_id cannot be empty".to_string(),
+            ));
+        }
         let display_id = Self::param_str(&req, "display_id");
         let tunnel_instance_id = Self::param_str(&req, "tunnel_instance_id");
         let status = Self::param_str(&req, "status");
@@ -1051,6 +947,9 @@ impl ControlPanelServer {
         ensure_default_users_group(&mut contact);
         set_profile_system_contact(&mut profile, &contact)?;
         save_user_profile(&client, &target, &profile).await?;
+        if let Err(error) = crate::agent_mgr::reload_msg_center().await {
+            warn!("msg-center reload after binding {platform} for {target} failed: {error}");
+        }
 
         Ok(RPCResponse::new(
             RPCResult::Success(json!({
@@ -1650,601 +1549,6 @@ impl ControlPanelServer {
                 "ok": true,
                 "user_id": target,
                 "user_type": type_str,
-            })),
-            req.seq,
-        ))
-    }
-
-    // ─── Agent management handlers ──────────────────────────────────────
-
-    // ── agent.list ──────────────────────────────────────────────────────
-
-    pub(crate) async fn handle_agent_list(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let _principal = Self::require_rpc_principal(principal)?;
-        let include_deleted = Self::param_bool(&req, "include_deleted").unwrap_or(false);
-        let include_runtime = Self::param_bool(&req, "include_runtime").unwrap_or(false);
-        // See handle_user_list for why we use the service token for the
-        // directory enumeration here; individual `get` calls below can
-        // run with the caller's token but we already have a broad-read
-        // client, so we keep using it for the whole handler.
-        let runtime = get_buckyos_api_runtime()?;
-        let client = runtime.get_system_config_client().await?;
-
-        let mut agent_ids = client
-            .list("agents")
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("Failed to list agents: {}", e)))?;
-        let user_ids = client.list("users").await.map_err(|error| {
-            RPCErrors::ReasonError(format!(
-                "Failed to list users while loading agent specs: {}",
-                error
-            ))
-        })?;
-        let specs = load_agent_specs(&client, &user_ids).await?;
-        agent_ids.extend(specs.keys().cloned());
-        agent_ids.sort();
-        agent_ids.dedup();
-
-        let mut agents: Vec<Value> = Vec::new();
-        for agent_id in &agent_ids {
-            let spec = specs.get(agent_id);
-            let doc_path = format!("agents/{}/doc", agent_id);
-            let mut agent_info = match client.get(&doc_path).await {
-                Ok(val) => {
-                    if let Ok(doc) = serde_json::from_str::<Value>(&val.value) {
-                        doc
-                    } else {
-                        json!({ "agent_id": agent_id })
-                    }
-                }
-                Err(_) => match spec {
-                    Some((_, spec)) => serde_json::to_value(&spec.agent_doc).map_err(|error| {
-                        RPCErrors::ReasonError(format!("Serialize agent doc failed: {}", error))
-                    })?,
-                    None => json!({ "agent_id": agent_id }),
-                },
-            };
-            if agent_info.get("agent_id").is_none() {
-                agent_info["agent_id"] = json!(agent_id);
-            }
-            let settings_path = format!("agents/{}/settings", agent_id);
-            let settings_val = match client.get(&settings_path).await {
-                Ok(value) => Some(value),
-                Err(_) => match spec {
-                    Some((owner_user_id, _)) => client
-                        .get(&format!(
-                            "users/{}/agents/{}/settings",
-                            owner_user_id, agent_id
-                        ))
-                        .await
-                        .ok(),
-                    None => None,
-                },
-            };
-            if let Some(settings_val) = settings_val {
-                if let Ok(settings) = serde_json::from_str::<Value>(&settings_val.value) {
-                    if !include_deleted
-                        && settings
-                            .get("state")
-                            .and_then(|value| value.as_str())
-                            .map(|state| state == "deleted")
-                            .unwrap_or(false)
-                    {
-                        continue;
-                    }
-                    agent_info["settings"] = settings;
-                }
-            }
-            if let Some((owner_user_id, spec)) = spec {
-                merge_agent_spec(&mut agent_info, owner_user_id, spec);
-            }
-            if include_runtime {
-                agent_info["runtime"] = load_agent_runtime_info(agent_id).await;
-            }
-            agents.push(agent_info);
-        }
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "total": agents.len(),
-                "agents": agents,
-            })),
-            req.seq,
-        ))
-    }
-
-    // ── agent.get ───────────────────────────────────────────────────────
-
-    pub(crate) async fn handle_agent_get(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let _principal = Self::require_rpc_principal(principal)?;
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-
-        let client = system_config_client_for_caller(&req).await?;
-
-        let doc_path = format!("agents/{}/doc", agent_id);
-        let doc_val = client.get(&doc_path).await.map_err(|e| {
-            RPCErrors::ReasonError(format!("Agent '{}' not found: {}", agent_id, e))
-        })?;
-        let mut agent_doc: Value = serde_json::from_str(&doc_val.value)
-            .map_err(|e| RPCErrors::ReasonError(format!("Corrupted agent doc: {}", e)))?;
-
-        agent_doc["agent_id"] = json!(agent_id);
-
-        // Load agent settings if available (best-effort)
-        let settings_path = format!("agents/{}/settings", agent_id);
-        if let Ok(settings_val) = client.get(&settings_path).await {
-            if let Ok(settings) = serde_json::from_str::<Value>(&settings_val.value) {
-                agent_doc["settings"] = settings;
-            }
-        }
-        agent_doc["runtime"] = load_agent_runtime_info(&agent_id).await;
-
-        Ok(RPCResponse::new(RPCResult::Success(agent_doc), req.seq))
-    }
-
-    pub(crate) async fn handle_agent_create(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        let agent_id = agent_id.trim().to_lowercase();
-        validate_agent_id(&agent_id)?;
-        let display_name =
-            Self::param_str(&req, "display_name").unwrap_or_else(|| agent_id.clone());
-        let owner_user_id = Self::param_str(&req, "owner_user_id")
-            .unwrap_or_else(|| principal.username.clone())
-            .trim()
-            .to_lowercase();
-        validate_username(&owner_user_id)?;
-        let description = Self::param_str(&req, "description");
-        let profile: Option<Value> = req.params.get("profile").cloned();
-        let settings_payload: Value = req
-            .params
-            .get("settings")
-            .cloned()
-            .unwrap_or_else(|| json!({}));
-        if !settings_payload.is_object() {
-            return Err(RPCErrors::ParseRequestError(
-                "settings must be a JSON object".to_string(),
-            ));
-        }
-
-        let runtime = get_buckyos_api_runtime()?;
-        let (private_key, public_key) = generate_ed25519_key_pair();
-        let public_key: Jwk = serde_json::from_value(public_key)
-            .map_err(|e| RPCErrors::ReasonError(format!("Invalid generated public key: {}", e)))?;
-        let agent_did = Self::param_str(&req, "agent_did")
-            .map(|value| {
-                DID::from_str(value.as_str())
-                    .map_err(|e| RPCErrors::ParseRequestError(format!("Invalid agent_did: {}", e)))
-            })
-            .transpose()?
-            .unwrap_or_else(|| {
-                DID::new(
-                    runtime.zone_id.method.as_str(),
-                    format!("{}.{}", agent_id, runtime.zone_id.id).as_str(),
-                )
-            });
-        let owner_did = DID::new("bns", &owner_user_id);
-        let mut agent_doc = AgentDocument::new(agent_did, owner_did, public_key);
-        agent_doc.public_description = description.clone();
-        agent_doc
-            .extra_info
-            .insert("agent_id".to_string(), json!(agent_id.clone()));
-        agent_doc
-            .extra_info
-            .insert("display_name".to_string(), json!(display_name.clone()));
-        if let Some(profile) = profile.clone() {
-            agent_doc.extra_info.insert("profile".to_string(), profile);
-        }
-
-        let client = system_config_client_for_caller(&req).await?;
-        let doc_path = format!("agents/{}/doc", agent_id);
-        if client.get(&doc_path).await.is_ok() {
-            return Err(RPCErrors::ReasonError(format!(
-                "Agent '{}' already exists",
-                agent_id
-            )));
-        }
-        let key_path = format!("agents/{}/key", agent_id);
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj = settings_payload;
-        settings_obj["state"] = json!("active");
-        settings_obj["owner_user_id"] = json!(owner_user_id);
-        settings_obj["display_name"] = json!(display_name);
-        if let Some(description) = description {
-            settings_obj["description"] = json!(description);
-        }
-        if let Some(profile) = profile {
-            settings_obj["profile"] = profile;
-        }
-
-        let mut tx = HashMap::new();
-        tx.insert(
-            doc_path,
-            KVAction::Create(
-                serde_json::to_string(&agent_doc)
-                    .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?,
-            ),
-        );
-        tx.insert(key_path, KVAction::Create(private_key));
-        tx.insert(
-            settings_path,
-            KVAction::Create(
-                serde_json::to_string(&settings_obj)
-                    .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?,
-            ),
-        );
-        client
-            .exec_tx(tx, None)
-            .await
-            .map_err(|e| RPCErrors::ReasonError(format!("Failed to create agent: {}", e)))?;
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "doc": agent_doc,
-                "settings": settings_obj,
-            })),
-            req.seq,
-        ))
-    }
-
-    pub(crate) async fn handle_agent_update(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        validate_agent_id(&agent_id)?;
-        let client = system_config_client_for_caller(&req).await?;
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj: Value = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        };
-        if !settings_obj.is_object() {
-            settings_obj = json!({});
-        }
-        if let Some(display_name) = Self::param_str(&req, "display_name") {
-            settings_obj["display_name"] = json!(display_name);
-        }
-        if let Some(description) = Self::param_str(&req, "description") {
-            settings_obj["description"] = json!(description);
-        }
-        if let Some(state) = Self::param_str(&req, "state") {
-            settings_obj["state"] = json!(state);
-        }
-        if let Some(profile) = req.params.get("profile") {
-            settings_obj["profile"] = profile.clone();
-        }
-        if let Some(settings_patch) = req.params.get("settings") {
-            let patch = settings_patch.as_object().ok_or_else(|| {
-                RPCErrors::ParseRequestError("settings must be a JSON object".to_string())
-            })?;
-            if let Some(target) = settings_obj.as_object_mut() {
-                for (key, value) in patch {
-                    target.insert(key.clone(), value.clone());
-                }
-            }
-        }
-        let settings_json = serde_json::to_string(&settings_obj)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        if client.set(&settings_path, &settings_json).await.is_err() {
-            client
-                .create(&settings_path, &settings_json)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(format!("Failed to update agent: {}", e)))?;
-        }
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "settings": settings_obj,
-            })),
-            req.seq,
-        ))
-    }
-
-    pub(crate) async fn handle_agent_delete(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        validate_agent_id(&agent_id)?;
-
-        let client = system_config_client_for_caller(&req).await?;
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj: Value = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        };
-        if !settings_obj.is_object() {
-            settings_obj = json!({});
-        }
-        settings_obj["state"] = json!("deleted");
-        settings_obj["deleted_at"] = json!(buckyos_get_unix_timestamp());
-        settings_obj["deleted_by"] = json!(principal.username.clone());
-        let settings_json = serde_json::to_string(&settings_obj)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        if client.set(&settings_path, &settings_json).await.is_err() {
-            client
-                .create(&settings_path, &settings_json)
-                .await
-                .map_err(|e| RPCErrors::ReasonError(format!("Failed to delete agent: {}", e)))?;
-        }
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "state": "deleted",
-            })),
-            req.seq,
-        ))
-    }
-
-    pub(crate) async fn handle_agent_profile_get(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let _principal = Self::require_rpc_principal(principal)?;
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        validate_agent_id(&agent_id)?;
-        let client = system_config_client_for_caller(&req).await?;
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let local_profile = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str::<Value>(&val.value)
-                .ok()
-                .and_then(|settings| settings.get("profile").cloned()),
-            Err(_) => None,
-        };
-        let doc_profile = match client
-            .get(format!("agents/{}/doc", agent_id).as_str())
-            .await
-        {
-            Ok(val) => serde_json::from_str::<Value>(&val.value)
-                .ok()
-                .and_then(|doc| profile_value_from_doc(&doc)),
-            Err(_) => None,
-        };
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "agent_id": agent_id,
-                "profile": merge_profile_values(local_profile.clone(), doc_profile.clone()),
-                "local_profile": local_profile,
-                "did_profile": doc_profile,
-            })),
-            req.seq,
-        ))
-    }
-
-    pub(crate) async fn handle_agent_profile_set(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        validate_agent_id(&agent_id)?;
-        let profile = req
-            .params
-            .get("profile")
-            .cloned()
-            .ok_or_else(|| RPCErrors::ParseRequestError("Missing profile".to_string()))?;
-        if !profile.is_object() {
-            return Err(RPCErrors::ParseRequestError(
-                "profile must be a JSON object".to_string(),
-            ));
-        }
-
-        let client = system_config_client_for_caller(&req).await?;
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj: Value = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        };
-        if !settings_obj.is_object() {
-            settings_obj = json!({});
-        }
-        settings_obj["profile"] = profile.clone();
-        let settings_json = serde_json::to_string(&settings_obj)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        if client.set(&settings_path, &settings_json).await.is_err() {
-            client
-                .create(&settings_path, &settings_json)
-                .await
-                .map_err(|e| {
-                    RPCErrors::ReasonError(format!("Failed to save agent profile: {}", e))
-                })?;
-        }
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "profile": profile,
-            })),
-            req.seq,
-        ))
-    }
-
-    // ── agent.set_msg_tunnel ────────────────────────────────────────────
-    // Adds or updates a message tunnel binding for an agent.
-    // This delegates to the system config store (not MessageCenter),
-    // because agent tunnel bindings are part of the agent's system-level config.
-
-    pub(crate) async fn handle_agent_set_msg_tunnel(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        let platform = Self::require_param_str(&req, "platform")?;
-        let account_id = Self::require_param_str(&req, "account_id")?;
-
-        let display_id = Self::param_str(&req, "display_id");
-        let tunnel_instance_id = Self::param_str(&req, "tunnel_instance_id");
-        let status = Self::param_str(&req, "status");
-        let last_sync_at = Self::param_u64(&req, "last_sync_at");
-        let meta: HashMap<String, String> = req
-            .params
-            .get("meta")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        let binding = UserTunnelBinding {
-            platform: platform.clone(),
-            account_id,
-            display_id,
-            tunnel_instance_id,
-            status,
-            last_sync_at,
-            meta,
-        };
-
-        let client = system_config_client_for_caller(&req).await?;
-
-        // Store bindings inside agents/{agent_id}/settings under the "bindings"
-        // field. RBAC in boot.template.toml grants admin read|write on
-        // `agents/*/settings` but NOT on a separate `bindings` key, so we
-        // colocate the data here.
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj: Value = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
-            Err(_) => json!({}),
-        };
-        let mut bindings: Vec<UserTunnelBinding> = settings_obj
-            .get("bindings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        // Replace existing binding for the same platform or add new
-        if let Some(pos) = bindings.iter().position(|b| b.platform == platform) {
-            bindings[pos] = binding;
-        } else {
-            bindings.push(binding);
-        }
-
-        settings_obj["bindings"] = serde_json::to_value(&bindings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        let settings_json = serde_json::to_string(&settings_obj)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-
-        // Try set, fall back to create if the settings key doesn't exist yet
-        if client.set(&settings_path, &settings_json).await.is_err() {
-            client
-                .create(&settings_path, &settings_json)
-                .await
-                .map_err(|e| {
-                    RPCErrors::ReasonError(format!("Failed to save agent bindings: {}", e))
-                })?;
-        }
-
-        info!(
-            "Agent '{}' tunnel binding for '{}' set by '{}'",
-            agent_id, platform, principal.username
-        );
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "platform": platform,
-                "total_bindings": bindings.len(),
-            })),
-            req.seq,
-        ))
-    }
-
-    // ── agent.remove_msg_tunnel ─────────────────────────────────────────
-
-    pub(crate) async fn handle_agent_remove_msg_tunnel(
-        &self,
-        req: RPCRequest,
-        principal: Option<&RpcAuthPrincipal>,
-    ) -> Result<RPCResponse, RPCErrors> {
-        let principal = Self::require_rpc_principal(principal)?;
-        require_admin(principal)?;
-
-        let agent_id = Self::require_param_str(&req, "agent_id")?;
-        let platform = Self::require_param_str(&req, "platform")?;
-
-        let client = system_config_client_for_caller(&req).await?;
-
-        // Bindings live inside agents/{id}/settings under the "bindings" key
-        // (see handle_agent_set_msg_tunnel for RBAC rationale).
-        let settings_path = format!("agents/{}/settings", agent_id);
-        let mut settings_obj: Value = match client.get(&settings_path).await {
-            Ok(val) => serde_json::from_str(&val.value).unwrap_or_else(|_| json!({})),
-            Err(_) => {
-                return Err(RPCErrors::ReasonError(format!(
-                    "No bindings found for agent '{}'",
-                    agent_id
-                )));
-            }
-        };
-        let mut bindings: Vec<UserTunnelBinding> = settings_obj
-            .get("bindings")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
-
-        let original_len = bindings.len();
-        bindings.retain(|b| b.platform != platform);
-
-        if bindings.len() == original_len {
-            return Err(RPCErrors::ReasonError(format!(
-                "No binding for platform '{}' found on agent '{}'",
-                platform, agent_id
-            )));
-        }
-
-        settings_obj["bindings"] = serde_json::to_value(&bindings)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        let settings_json = serde_json::to_string(&settings_obj)
-            .map_err(|e| RPCErrors::ReasonError(format!("Serialize error: {}", e)))?;
-        client
-            .set(&settings_path, &settings_json)
-            .await
-            .map_err(|e| {
-                RPCErrors::ReasonError(format!("Failed to update agent bindings: {}", e))
-            })?;
-
-        info!(
-            "Agent '{}' tunnel binding for '{}' removed by '{}'",
-            agent_id, platform, principal.username
-        );
-
-        Ok(RPCResponse::new(
-            RPCResult::Success(json!({
-                "ok": true,
-                "agent_id": agent_id,
-                "platform": platform,
-                "remaining_bindings": bindings.len(),
             })),
             req.seq,
         ))

@@ -399,7 +399,6 @@ export async function activateOffline(
     startConfig.friend_passcode = "";
     startConfig.enabled_features = {};
     startConfig.ai_provider_config = {};
-    startConfig.jarvis_msg_tunnel_config = {};
     writeJson(startConfigPath, startConfig);
 
     writeJson(

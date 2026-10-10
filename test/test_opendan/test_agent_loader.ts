@@ -7,12 +7,15 @@
  *     --unsafely-ignore-certificate-errors test_agent_loader.ts [text]
  *
  * Env: BUCKYOS_TEST_ZONE_HOST (test.buckyos.io), BUCKYOS_TEST_ADMIN_USER
- * (devtest), BUCKYOS_TEST_ADMIN_PASSWORD (bucky2025), BUCKYOS_TEST_AGENT_DID
- * (did:web:jarvis.<zone>), OPENDAN_URL (http://127.0.0.1:10016/kapi/opendan),
+ * (devtest), BUCKYOS_TEST_ADMIN_PASSWORD (bucky2025), the agent as
+ * agent_target.ts selects it (BUCKYOS_TEST_AGENT_CREATE=<name> |
+ * BUCKYOS_TEST_AGENT_ID=<agent_id> | the user's first ready agent; OPENDAN_URL),
  * OPENDAN_REPLY_TIMEOUT_S (180), OPENDAN_FOLLOW_S (0: after the reply, keep
  * printing further messages of the agent until its sessions are idle).
+ * The message is sent as the agent's owner: anyone else is not answered.
  */
 import { buckyos } from "buckyos";
+import { resolveAgent } from "./agent_target.ts";
 
 type JsonRecord = Record<string, unknown>;
 type RpcClient = { call(method: string, params: JsonRecord): Promise<unknown> };
@@ -31,12 +34,9 @@ const hashPassword = buckyos.hashPassword as unknown as (
 const zoneHost = Deno.env.get("BUCKYOS_TEST_ZONE_HOST")?.trim() || "test.buckyos.io";
 const adminUser = Deno.env.get("BUCKYOS_TEST_ADMIN_USER")?.trim() || "devtest";
 const adminPassword = Deno.env.get("BUCKYOS_TEST_ADMIN_PASSWORD")?.trim() || "bucky2025";
-const agentDid = Deno.env.get("BUCKYOS_TEST_AGENT_DID")?.trim() || `did:web:jarvis.${zoneHost}`;
-const opendanUrl = Deno.env.get("OPENDAN_URL")?.trim() || "http://127.0.0.1:10016/kapi/opendan";
 const replyTimeoutMs = Number(Deno.env.get("OPENDAN_REPLY_TIMEOUT_S") || "180") * 1000;
 const followSeconds = Number(Deno.env.get("OPENDAN_FOLLOW_S") || "0");
 const text = Deno.args[0] || "你好，请用一句话介绍你自己。";
-const selfDid = `did:bns:${adminUser}`;
 let lastNonce = Date.now();
 
 function nextNonce(): number {
@@ -85,6 +85,12 @@ function recordText(item: JsonRecord): string {
 }
 
 const token = await login();
+const { agentDid, ownerDid: selfDid, opendanUrl } = await resolveAgent(
+  (method, params) => zone("control-panel", method, params, token),
+  adminUser,
+  zoneHost,
+);
+console.log(`agent ${agentDid} at ${opendanUrl}`);
 const msg = (method: string, params: JsonRecord) => zone("msg-center", method, params, token);
 const dan = (method: string, params: JsonRecord = {}, t: string | null = token) =>
   new KRpcClient(opendanUrl, t, nextNonce()).call(method, params);

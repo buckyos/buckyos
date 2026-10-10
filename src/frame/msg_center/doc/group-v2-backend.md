@@ -25,7 +25,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 | group.revoke_invite | member_did |
 | group.create_invite_link | expires_at_ms?、max_uses?、require_approval?；返回 token |
 | group.revoke_invite_link | token |
-| group.accept_invitation | invitation_id（必填，防止误接受过期后重新发出的另一份邀请）、member_did?（仅 Agent 的 owner 代为接受时传 Agent DID，否则 agent-owner-required）、attestation?；接受即接受邀请中的角色；邀请人在接受时仍有 group.approve_member 能力则直接 active，否则 pending_admin_approval；不匹配返回 invitation-mismatch |
+| group.accept_invitation | invitation_id（必填，防止误接受过期后重新发出的另一份邀请）、member_did?（仅 Agent 的 owner 代为接受时传 Agent DID，否则 agent-owner-required；Agent 的 `allow_group` 关闭时返回 agent_group_disabled）、attestation?；接受即接受邀请中的角色；邀请人在接受时仍有 group.approve_member 能力则直接 active，否则 pending_admin_approval；不匹配返回 invitation-mismatch |
 | group.request_join | invite?、attestation?；只授予 member；join_policy open 直接 active，request_and_approve 进入 pending_admin_approval，invite_only 拒绝 invite-required；邀请链接直接 active，除非 require_approval |
 | group.approve_member / reject_member | member_did；审批仅推进 PendingAdminApproval |
 | group.leave | 操作者本人退出，Owner 需先转让 |
@@ -59,7 +59,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 入群不要求成员签名的 proof（2026-10-01 取消）。是否入群只看群一方和成员一方是否同意：
 
 - 群一方：Owner / Admin（接受时邀请人仍具有 `group.approve_member` 能力）发出的邀请视为群已同意，接受后直接 `active`；普通成员发出的邀请在对方接受后进入 `pending_admin_approval`；主动申请按 `join_policy`（open → active，request_and_approve → pending_admin_approval，invite_only → invite-required）；邀请链接视为事先批准，直接 active，除非 `require_approval`。
-- 成员一方：同 Zone 用户由 msg-center 在投递邀请时查接收者作用域的 Contact Mgr：邀请人是好友（target_box = INBOX）自动接受；陌生人（REQUEST_BOX）进入 REQUEST_BOX 等本人接受；被屏蔽（DROP）不投递、不接受，邀请保持 `invited` 直到过期。Agent 只自动接受其 owner（AgentDocument.owner）发出的邀请，其他邀请投递给 owner 确认，owner 用 `group.accept_invitation` 带 `member_did` 代为接受。跨 Zone 成员的自动接受保留 TODO。
+- 成员一方：同 Zone 用户由 msg-center 在投递邀请时查接收者作用域的 Contact Mgr：邀请人是好友（target_box = INBOX）自动接受；陌生人（REQUEST_BOX）进入 REQUEST_BOX 等本人接受；被屏蔽（DROP）不投递、不接受，邀请保持 `invited` 直到过期。Agent 的 `settings.allow_group` 关闭时，任何人邀请它或它（包括 owner 代为）接受、申请加入都返回 agent_group_disabled；打开时只自动接受其 owner（`AgentSpec.agent_doc.owner`）发出的邀请，其他邀请投递给 owner 确认，owner 用 `group.accept_invitation` 带 `member_did` 代为接受。跨 Zone 成员的自动接受保留 TODO。
 - 角色由邀请决定，接受即接受邀请中的角色；申请和邀请链接只得到 member。群主可直接 `update_member_role` 升为 admin，不需要本人同意；转让群主为两步（transfer_owner → accept_owner_transfer）。
 - Session Guest 同样只看双方同意（`accept_session_invitation`、`submit_guest_request`）。
 
@@ -67,7 +67,7 @@ RPC 使用现有 kRPC 请求封装和 token。所有方法的参数是对象；�
 
 外部平台（tunnel）用户的同意由 tunnel 的 transport 身份以独立参数 `attestation` 提交：`{ "member_did": "did:msgtunnel:...", "source_event": { "event_id": "...", "user_consent": true } }`。校验调用者不是远端请求、且是该 tunnel 实例登记的 transport DID，否则返回 `invalid-tunnel-attestation`；通过后操作者替换为 `member_did`。
 
-已删除的错误码：owner-proof-required、member-proof-required、signed-member-proof-required、proof-signer-mismatch、proof-payload-mismatch、invalid-proof-type、invalid-proof-lifetime、proof-scope-mismatch、proof-replayed、proof-key-unavailable、owner-proof-role-required、proof-invitation-mismatch、proof-role-mismatch、role-consent-required、owner-consent-required。新增：invitation-mismatch、transfer-mismatch、owner-transfer-pending、agent-owner-required。
+已删除的错误码：owner-proof-required、member-proof-required、signed-member-proof-required、proof-signer-mismatch、proof-payload-mismatch、invalid-proof-type、invalid-proof-lifetime、proof-scope-mismatch、proof-replayed、proof-key-unavailable、owner-proof-role-required、proof-invitation-mismatch、proof-role-mismatch、role-consent-required、owner-consent-required。新增：invitation-mismatch、transfer-mismatch、owner-transfer-pending、agent-owner-required、agent_group_disabled。
 
 通知（kind = operation，machine.intent = buckyos.group_invitation）：`invite` 的 data 带 `state`（active 表示已自动加入，pending_admin_approval 表示已接受待审批，invited 表示等待本人接受）和代为接受时的 `member_did`；`pending_approval` 发给有 group.approve_member 能力的成员，带 `member_did`、`invited_by?`；新增 `owner_transfer`（`transfer_id`、`expires_at_ms`）发给转让目标。
 

@@ -3,7 +3,8 @@
 //!
 //! File layout: `<agent_root>/behaviors/<name>.toml` (`__INCLUDE(path)__`
 //! expanded relative to the including file), `role.md`, `self.md`,
-//! `i18n/<lang>.md`.
+//! `i18n/<lang>.md`, and the owner's supplement to the role
+//! (`.meta/role_supplement.md`, written by the host).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,9 @@ pub trait BehaviorCatalog: Send + Sync {
 }
 
 const MAX_INCLUDE_DEPTH: usize = 8;
+
+/// What the owner adds to the package's role, appended to it.
+pub const ROLE_SUPPLEMENT_FILE: &str = ".meta/role_supplement.md";
 
 fn expand_includes(text: &str, base: &Path, depth: usize) -> Result<String> {
     const OPEN: &str = "__INCLUDE(";
@@ -141,8 +145,16 @@ impl BehaviorCatalog for FsBehaviorCatalog {
                 }
             }
         }
+        let role = [
+            read_trimmed(&self.root.join("role.md")),
+            read_trimmed(&self.root.join(ROLE_SUPPLEMENT_FILE)),
+        ]
+        .into_iter()
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n\n");
         Ok(IdentityText {
-            role: read_trimmed(&self.root.join("role.md")),
+            role,
             self_text: read_trimmed(&self.root.join("self.md")),
             i18n,
         })
@@ -171,7 +183,11 @@ impl BehaviorCatalog for FsBehaviorCatalog {
 
     async fn revision(&self) -> Result<String> {
         let mut h = Sha256::new();
-        let mut files: Vec<PathBuf> = vec![self.root.join("role.md"), self.root.join("self.md")];
+        let mut files: Vec<PathBuf> = vec![
+            self.root.join("role.md"),
+            self.root.join(ROLE_SUPPLEMENT_FILE),
+            self.root.join("self.md"),
+        ];
         for d in [self.dir(), self.root.join("i18n")] {
             if let Ok(rd) = std::fs::read_dir(d) {
                 files.extend(rd.flatten().map(|e| e.path()));
@@ -320,4 +336,32 @@ pub async fn freeze_behavior(
     }
     *cfg = next;
     Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_role_supplement_follows_the_role() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".meta")).unwrap();
+        std::fs::write(dir.path().join("role.md"), "You are Jarvis.\n").unwrap();
+        std::fs::write(dir.path().join("self.md"), "I keep notes.").unwrap();
+        let catalog = FsBehaviorCatalog::new(dir.path());
+        let plain = catalog.identity().await.unwrap();
+        assert_eq!(plain.role, "You are Jarvis.");
+        let before = catalog.revision().await.unwrap();
+
+        std::fs::write(dir.path().join(ROLE_SUPPLEMENT_FILE), "Answer in Japanese.\n").unwrap();
+        let with = catalog.identity().await.unwrap();
+        assert_eq!(with.role, "You are Jarvis.\n\nAnswer in Japanese.");
+        assert_eq!(with.self_text, "I keep notes.");
+        let after = catalog.revision().await.unwrap();
+        assert_ne!(before, after, "the supplement is part of the catalog revision");
+
+        std::fs::remove_file(dir.path().join(ROLE_SUPPLEMENT_FILE)).unwrap();
+        assert_eq!(catalog.identity().await.unwrap(), plain);
+        assert_eq!(catalog.revision().await.unwrap(), before);
+    }
 }

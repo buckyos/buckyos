@@ -412,6 +412,26 @@ impl ContactMgr {
         Ok(None)
     }
 
+    /// Read-only lookup of the contact a platform account is bound to in
+    /// `owner`'s scope; unlike `resolve_did` it never creates a contact.
+    pub async fn find_binding_contact(
+        &self,
+        platform: &str,
+        account_id: &str,
+        owner: Option<&DID>,
+    ) -> std::result::Result<Option<DID>, RPCErrors> {
+        let owner_key = Self::owner_key(owner);
+        self.ensure_store_loaded(&owner_key).await?;
+        let stores = self.stores.read().await;
+        let store = stores.get(&owner_key).ok_or_else(|| {
+            RPCErrors::ReasonError("contact store missing after load".to_string())
+        })?;
+        Ok(store
+            .binding_index
+            .get(&Self::binding_key(platform, account_id))
+            .map(|did| Self::canonical_did_in_store(store, did)))
+    }
+
     /// Resolve a possibly merged-away (alias/tombstone) DID to its current
     /// canonical DID. Returns the input unchanged when it is not an alias.
     pub async fn resolve_canonical_did(
@@ -2488,12 +2508,12 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn resolve_did_uses_message_tunnel_endpoint_did_when_hint_is_present() {
         let (mgr, _tmp) = new_test_mgr().await;
-        let owner = DID::new("web", "jarvis.test.buckyos.io");
+        let owner = DID::new("web", "xiaobai.test.buckyos.io");
         let profile_hint = json!({
             "account_type": "user",
             "tunnel_instance_id": "did:web:tg-tunnel.test.buckyos.io",
             "display_id": "@alice",
-            "bot_account_id": "@jarvis_bot"
+            "bot_account_id": "@xiaobai_bot"
         });
 
         let first = mgr
@@ -2549,7 +2569,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn message_tunnel_endpoint_did_does_not_override_primary_contact_binding() {
         let (mgr, _tmp) = new_test_mgr().await;
-        let owner = DID::new("web", "jarvis.test.buckyos.io");
+        let owner = DID::new("web", "xiaobai.test.buckyos.io");
         let zone_user_did = DID::new("bns", "alice");
 
         mgr.upsert_zone_user_contacts(
@@ -2945,7 +2965,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn upsert_zone_users_creates_friend_contact() {
         let (mgr, _tmp) = new_test_mgr().await;
-        let owner = DID::new("web", "jarvis.test.buckyos.io");
+        let owner = DID::new("web", "xiaobai.test.buckyos.io");
         let zone_user_did = DID::new("bns", "alice");
 
         let updated = mgr
@@ -2954,7 +2974,7 @@ mod tests {
                     did: zone_user_did.clone(),
                     name: "Alice".to_string(),
                     note: Some("zone profile".to_string()),
-                    bindings: vec![binding("telegram", "user:10001")],
+                    bindings: vec![binding("telegram", "10001")],
                     groups: vec!["ops".to_string()],
                     tags: vec!["internal".to_string()],
                 }],
@@ -2980,7 +3000,7 @@ mod tests {
         let resolved = mgr
             .resolve_did(
                 "telegram".to_string(),
-                "user:10001".to_string(),
+                "10001".to_string(),
                 None,
                 Some(owner),
             )

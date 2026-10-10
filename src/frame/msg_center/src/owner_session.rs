@@ -9,6 +9,7 @@
 
 use crate::msg_center::MessageCenter;
 use crate::owner_session_db::{DeleteWatermark, VisibleSessionIndexEntry};
+use crate::zone_agent::find_zone_agent;
 use async_trait::async_trait;
 use buckyos_api::{
     get_buckyos_api_runtime, validate_verify_hub_token_claims, MailboxAddress, MailboxKind,
@@ -18,7 +19,7 @@ use buckyos_api::{
 };
 use kRPC::{RPCContext, RPCErrors, RPCSessionToken};
 use log::warn;
-use name_lib::{AgentDocument, DID};
+use name_lib::DID;
 use ndn_lib::MsgObjKind;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -51,10 +52,23 @@ pub trait SessionTokenVerifier: Send + Sync {
 
     async fn verify(&self, token: &str) -> std::result::Result<RPCSessionToken, RPCErrors>;
     async fn resolve_user_did(&self, user_id: &str) -> std::result::Result<DID, RPCErrors>;
-    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors>;
-    /// Owner of a zone-hosted agent (`AgentDocument.owner`); `None` when
-    /// `did` is not a live agent of this zone.
-    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors>;
+    /// `None` when `did` is not an Agent of this zone with an installed spec.
+    async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors>;
+
+    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
+        Ok(self.zone_agent(did).await?.is_some())
+    }
+
+    /// Owner of a zone-hosted agent (`AgentDocument.owner`).
+    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+        Ok(self.zone_agent(did).await?.map(|agent| agent.owner))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ZoneAgentInfo {
+    pub owner: DID,
+    pub allow_group: bool,
 }
 
 pub struct RuntimeSessionTokenVerifier;
@@ -80,40 +94,17 @@ impl SessionTokenVerifier for RuntimeSessionTokenVerifier {
         Ok(profile.did)
     }
 
-    async fn is_zone_agent(&self, did: &DID) -> std::result::Result<bool, RPCErrors> {
-        Ok(self.agent_owner(did).await?.is_some())
-    }
-
-    async fn agent_owner(&self, did: &DID) -> std::result::Result<Option<DID>, RPCErrors> {
+    async fn zone_agent(&self, did: &DID) -> std::result::Result<Option<ZoneAgentInfo>, RPCErrors> {
         let client = get_buckyos_api_runtime()?
             .get_system_config_client()
             .await?;
-        for agent_id in client
-            .list("agents")
+        let agent = find_zone_agent(client.as_ref(), did)
             .await
-            .map_err(|error| permission_denied(error.to_string()))?
-        {
-            let value = client
-                .get(&format!("agents/{}/doc", agent_id))
-                .await
-                .map_err(|error| permission_denied(error.to_string()))?;
-            let doc: AgentDocument = serde_json::from_str(&value.value)
-                .map_err(|error| permission_denied(format!("invalid agent document: {}", error)))?;
-            if &doc.id == did {
-                let settings = client
-                    .get(&format!("agents/{}/settings", agent_id))
-                    .await
-                    .map_err(|error| permission_denied(error.to_string()))?;
-                let settings: Value = serde_json::from_str(&settings.value).map_err(|error| {
-                    permission_denied(format!("invalid agent settings: {}", error))
-                })?;
-                return Ok(
-                    (settings.get("state").and_then(Value::as_str) != Some("deleted"))
-                        .then(|| doc.owner.clone()),
-                );
-            }
-        }
-        Ok(None)
+            .map_err(|error| permission_denied(error.to_string()))?;
+        Ok(agent.map(|agent| ZoneAgentInfo {
+            owner: agent.owner().clone(),
+            allow_group: agent.settings.allow_group,
+        }))
     }
 }
 
@@ -154,6 +145,17 @@ pub struct CallerIdentity {
     pub user_id: String,
     pub principal_kind: TokenPrincipalKind,
     pub user_did: Option<DID>,
+}
+
+/// A call made inside this process: no session token and no peer address.
+pub(crate) fn is_in_process_call(ctx: &RPCContext) -> bool {
+    ctx.from_ip.is_none()
+        && ctx
+            .token
+            .as_deref()
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .is_none()
 }
 
 fn permission_denied(reason: impl Into<String>) -> RPCErrors {
@@ -216,17 +218,16 @@ impl MessageCenter {
         &self,
         ctx: &RPCContext,
     ) -> std::result::Result<Option<CallerIdentity>, RPCErrors> {
+        if is_in_process_call(ctx) {
+            return Ok(None);
+        }
         let Some(token) = ctx
             .token
             .as_deref()
             .map(str::trim)
             .filter(|t| !t.is_empty())
         else {
-            return if ctx.from_ip.is_some() {
-                Err(permission_denied("session token required"))
-            } else {
-                Ok(None)
-            };
+            return Err(permission_denied("session token required"));
         };
         let verified = self
             .token_verifier
@@ -265,13 +266,20 @@ impl MessageCenter {
     }
 
     /// A zone user may observe a mailbox owner other than themselves only when
-    /// the owner is a zone-hosted non-user identity (an agent such as
-    /// `did:web:jarvis.<zone>`). Other users' mailboxes are never readable.
-    async fn user_may_observe(&self, owner: &DID) -> std::result::Result<bool, RPCErrors> {
+    /// the owner is a zone-hosted Agent of that user. Other users' mailboxes
+    /// and their Agents' mailboxes are never readable.
+    async fn user_may_observe(
+        &self,
+        viewer: Option<&DID>,
+        owner: &DID,
+    ) -> std::result::Result<bool, RPCErrors> {
+        let Some(viewer) = viewer else {
+            return Ok(false);
+        };
         if !self.is_local_recipient(owner) {
             return Ok(false);
         }
-        self.token_verifier.get().is_zone_agent(owner).await
+        Ok(self.token_verifier.get().agent_owner(owner).await?.as_ref() == Some(viewer))
     }
 
     /// Read access of the caller to `owner`'s mailbox / sessions.
@@ -285,7 +293,9 @@ impl MessageCenter {
             Some(caller) => match caller.principal_kind {
                 TokenPrincipalKind::User => {
                     if caller.user_did.as_ref() == Some(owner)
-                        || self.user_may_observe(owner).await?
+                        || self
+                            .user_may_observe(caller.user_did.as_ref(), owner)
+                            .await?
                     {
                         Ok(())
                     } else {

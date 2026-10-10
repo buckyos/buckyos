@@ -34,7 +34,9 @@ use super::input_view::{
     event_view, media_blocks, message_view, pending_event_view, unlocated_attachments, EventView,
     InputItem, InputView,
 };
-use super::inputs::{confirm_inputs, release_sources, restore_sources, route_inputs, stop_queued};
+use super::inputs::{
+    confirm_inputs, release_sources, restore_sources, route_inputs, select_batch, stop_queued,
+};
 use super::live::{
     commit_input_batch, new_run_context, open_state_live_run, resume_live_run, run_compacting,
     try_fill, InputBatch,
@@ -942,7 +944,7 @@ async fn drive_inner(sh: &Arc<Shared>, until: StopWhen) -> Result<DriveResult> {
                 InputMode::Single => 1,
                 InputMode::Batch => sh.deps.options.input_batch_max.max(1),
             };
-            picked = candidates.into_iter().take(take).collect();
+            picked = select_batch(candidates, take);
         }
         let state = sh.session.lock().await.state.clone();
         // One controlled input per batch: `on_init` → `on_context_switch` →
