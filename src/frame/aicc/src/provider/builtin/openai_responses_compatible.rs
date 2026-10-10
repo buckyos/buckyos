@@ -964,7 +964,7 @@ mod tests {
                 rules.revision_seq,
                 match provider.profile.provider_profile_id.as_str() {
                     DOUBAO_PROFILE_ID => 12,
-                    DOUBAO_AGENT_PLAN_PROFILE_ID => 7,
+                    DOUBAO_AGENT_PLAN_PROFILE_ID => 9,
                     QWEN_PROFILE_ID | DEEPSEEK_PROFILE_ID | "openai" => 4,
                     _ => 3,
                 }
@@ -979,7 +979,7 @@ mod tests {
             }
             let expected_patterns = match provider.profile.provider_profile_id.as_str() {
                 DOUBAO_PROFILE_ID => 7,
-                DOUBAO_AGENT_PLAN_PROFILE_ID => 4,
+                DOUBAO_AGENT_PLAN_PROFILE_ID => 12,
                 QWEN_PROFILE_ID => 8,
                 _ => 1,
             };

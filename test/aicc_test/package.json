@@ -19,5 +19,8 @@
   },
   "dependencies": {
     "buckyos": "git+https://github.com/buckyos/buckyos-websdk#main"
+  },
+  "devDependencies": {
+    "@types/node": "22.7.5"
   }
 }
