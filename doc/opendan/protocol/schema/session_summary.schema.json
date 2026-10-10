@@ -79,7 +79,7 @@
       }
     },
     "renderer": {
-      "default": "libopendan.mechanical/2",
+      "default": "libopendan.mechanical/3",
       "type": "string"
     },
     "schema": {

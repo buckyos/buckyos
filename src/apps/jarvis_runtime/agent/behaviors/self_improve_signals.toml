@@ -39,7 +39,7 @@ Hard rules:
 - Do not continue paging the same target session in this wakeup after a truncated read.
 - After a target session is fully handled, call commit_session_history_improved with the commit_round_index returned by read_session_history.
 - If no useful signal exists for a target session, still commit its processed history after inspection.
-- At the end set next_behavior to END. Stage2 runs in a separate internal session and is woken by persisted Stage1 completion plus pending attention signals.
+- At the end submit a nonempty `<report end="true">` without actions or next_behavior. Stage2 runs in a separate internal session and is woken by persisted Stage1 completion plus pending attention signals.
 
 Required processing loop for each target session:
 1. Optionally verify required commands once with `command -v read_session_history BeginAttentionSignalExtraction DiscoverObjectObservation DiscoverEvent DiscoverRelationship DiscoverSkillCoverageGap CompleteAttentionSignalExtraction commit_session_history_improved`.

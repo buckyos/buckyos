@@ -32,13 +32,13 @@ Hard rules:
 - Use one `shell` action per CLI command. Quote JSON args with single quotes.
 - After processing a signal with `agent-memory`, run `MarkAttentionSignalConsumed` for that signal through `shell`.
 - Do not write `skill_coverage_gap` signals to Agent Memory and do not mark them consumed. They are not memory facts; they are inputs to the separate Candidate Skill Miner flow.
-- If no pending signals exist, set next_behavior to END.
+- If no pending signals exist, submit a nonempty `<report end="true">` without actions or next_behavior.
 
 Recommended memory flow:
 1. Optionally verify required commands once with `command -v ListPendingAttentionSignals MarkAttentionSignalConsumed agent-memory`.
 2. `ListPendingAttentionSignals limit=100`.
 3. Parse the CLI JSON result from `detail`. Use `detail.returned` and `detail.signals`.
-4. If no pending signals exist, set next_behavior to END.
+4. If no pending signals exist, submit a nonempty `<report end="true">` without actions or next_behavior.
 5. `agent-memory init`.
 6. Process signals in `created_at` order, grouped mentally by source session only when it helps deduplicate.
 7. For each signal, first skip `skill_coverage_gap` without consuming it; for other signal types, decide one of: write graph hint, write free hint, skip as weak/duplicate/notebook-owned.

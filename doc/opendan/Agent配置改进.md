@@ -1,5 +1,7 @@
 # OpenDAN AgentRootFS 与配置文件改进计划
 
+> 2026-10-10 H4 已替代本文历史 END / 隐式 report-only 完成描述：Behavior 用 `<report end="true">`，工具用 `report(..., is_end=true)`；同次结束决策不带动作或非空调度。当前完成策略、持久提交与恢复以 [Session Directory Protocol](<protocol/Session Directory Protocol.md>) 和 [Agent Actions](<../llm_context/Agent Actions.md>) 为准。
+
 > **本文性质**:改进计划,不是最终 spec。
 >
 > **本版定位**:**breaking change**。不维护对旧 `agent.toml` / `BehaviorCfg` 的兼容映射,

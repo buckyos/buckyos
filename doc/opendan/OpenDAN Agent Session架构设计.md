@@ -404,6 +404,10 @@ Report 应是可理解、可追溯的结果压缩，而不是一段无证据的�
 
 进度报告与 Final Report 分开。创建方可以选择仅接收终局、接收顶层进度，或接收相关子工作的进度，但不能把 checkpoint 当作工作已完成。报告应先持久保存，再按创建关系交付给 UI / Goal；稳定报告身份、阶段、版本与接收方用于投递去重，具体链路见 §14.8。
 
+2026-10-10 H4 的协议入口已实现：function_call 通过宿主 `report({report, artifacts?, result?, is_end?})` 提交；Behavior 通过 `<report end="true">` 和可选兄弟节点 `<artifacts>` / `<result>` 提交。end / is_end 缺省 false，阶段报告不请求结束。显式最终报告在活动 task 与子 Work 未收敛时被拒绝，报告接受不等于人工验收通过。
+
+`session.policy.completion=explicit_report` 要求获准的结束提交才正常关闭 Session；普通 Done 在有队列的 UI Session 完成 Turn 并等待，在无队列的 WorkSession 按漏报失败。默认 natural 保留单次输出型 Session 的 end_condition。报告 journal、稳定产物副本及机械生成的最终消息按来源身份持久化并去重，恢复不追加推理或重执行报告；协议细节见 [Session Directory Protocol](<protocol/Session Directory Protocol.md>)。
+
 ### 6.7 失败不自动撤销真实世界
 
 Work 失败不代表已经产生的外部影响消失。Context Fork、Session 结束与清空提示词都不能撤回已提交的代码、已发送的消息或已修改的共享 Memory。

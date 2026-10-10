@@ -281,6 +281,7 @@ pub fn fork_snapshot(
     state.history_summaries = pstate.history_summaries.clone();
     state.history_inputs = pstate.history_inputs.clone();
     state.last_report = None;
+    state.report_end = false;
     state.next_step_index = pstate.next_step_index;
     state.next_action_id = pstate.next_action_id;
     let fork_point = ForkPoint {

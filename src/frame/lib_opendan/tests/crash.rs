@@ -85,7 +85,7 @@ fn script_for(name: &str, _ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
         }),
         "switch" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
             if render(&req.messages).contains("context_switch to=\"do\"") {
-                text("<response><report><![CDATA[both phases done]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[both phases done]]></report></response>")
             } else {
                 text("<response><next_behavior>do</next_behavior></response>")
             }
@@ -93,9 +93,9 @@ fn script_for(name: &str, _ctx: Option<(PathBuf, String)>) -> Arc<ScriptedLlm> {
         "fork" => ScriptedLlm::new(|req: &LlmInferenceRequest, _| {
             let all = render(&req.messages);
             if all.contains("research result X") {
-                text("<response><report><![CDATA[final answer]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[final answer]]></report></response>")
             } else if all.contains("context_switch to=\"research\"") {
-                text("<response><report><![CDATA[research result X]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[research result X]]></report></response>")
             } else {
                 text("<response><next_behavior>research</next_behavior></response>")
             }

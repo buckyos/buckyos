@@ -88,6 +88,12 @@ impl LlmClient for Script {
         self.calls.fetch_add(1, Ordering::SeqCst);
         let all = render(&req.messages);
         let mut r = match self.name.as_str() {
+            "final_report" => tool("report-final", "report", json!({
+                "report": "Delivered the verified answer.",
+                "artifacts": ["answer.txt"],
+                "result": { "answer": 42 },
+                "is_end": true
+            })),
             "tool_then_answer" => {
                 if all.contains("<tool_result c1>") {
                     text("done: notes.txt written")
@@ -120,9 +126,9 @@ impl LlmClient for Script {
                 let n = all.matches("<response>").count();
                 let _ = n;
                 if all.contains("research result") {
-                    text("<response><report><![CDATA[final]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[final]]></report></response>")
                 } else if all.contains("context_switch to=\"research\"") {
-                    text("<response><report><![CDATA[research result]]></report></response>")
+                    text("<response><report end=\"true\"><![CDATA[research result]]></report></response>")
                 } else if all.contains("p1-output") {
                     text("<response><next_behavior>research</next_behavior></response>")
                 } else {
@@ -736,6 +742,41 @@ async fn gen(out: &Path) -> R<()> {
             }
         });
         write("expected.json", &pretty(&v));
+    }
+    {
+        let d = scen("15_report_pending_commit");
+        let env = Env::new(&d);
+        let mut spec = work("submit the verified answer");
+        spec.policy.completion = CompletionPolicy::ExplicitReport;
+        spec.prompt.llm_context = json!({
+            "tools": { "enabled": true, "tools": [{ "name": "report" }] }
+        });
+        let sd = env.create("work-fixture-report", spec).await;
+        std::fs::write(sd.path().join("answer.txt"), "verified answer: 42\n")?;
+        env.child_wait(&sd, "final_report", "report:after_paired_checkpoint");
+        assert!(!sd.state()?.is_finished());
+        let live = sd.state()?.live_run.unwrap();
+        let (record, snapshot) = sd.runs().load_checked(&live.run_id)?;
+        assert!(!record.status.is_terminal());
+        assert!(agent_tool::exec_tracking::persisted_outcome_ids(&snapshot.unwrap())
+            .iter().any(|call_id| call_id == "report-final"));
+        assert_eq!(record.host.as_ref().unwrap().extra["reports"].as_array().unwrap().len(), 1);
+        write_expected(&d, "report_pending_commit",
+            "The final report and stable artifact are persisted, and its tool result is paired in the published snapshot. The run and Session are not yet terminal.",
+            vec![observe(&sd)],
+            json!({
+                "action": "complete_accepted_report_without_inference",
+                "llm_calls": 0,
+                "rounds_after": 1,
+                "report_deliveries": 1,
+                "tool_results": { "report-final": 1 },
+                "final_report": "Delivered the verified answer.",
+                "result": { "answer": 42 },
+                "artifact": { "path": "answer.txt", "content": "verified answer: 42\n" },
+                "outcome": "succeeded",
+                "acceptance": "pending"
+            }));
+        relativize(&d);
     }
     // JSON Schemas next to the fixtures.
     let schema_dir = out.join("..").join("schema");

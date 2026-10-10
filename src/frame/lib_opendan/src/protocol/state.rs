@@ -16,7 +16,7 @@ use super::input::{AgentEvent, EventReceipt, EventSource, ReplyRoute};
 /// 5: session input protocol 3 — `pending_events`, `reply`,
 /// `watched_tasks`, accepted Input events per source; `pending_task_calls`
 /// removed. Earlier versions are read-only until migrated.
-pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/5";
+pub const SESSION_STATE_SCHEMA: &str = "opendan.session_state/6";
 
 /// Upper bound on `inputs.recent_keys` (bounded dedup cache).
 pub const RECENT_KEYS_LIMIT: usize = 256;
@@ -631,6 +631,10 @@ pub struct Topic {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionState {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_report: Option<super::ReportSubmission>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_report: Option<super::ReportSubmission>,
     pub schema: String,
     pub rev: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -734,6 +738,8 @@ impl SessionState {
     pub fn initial(worklog: WorklogBoundary, now_ms: u64) -> Self {
         Self {
             schema: SESSION_STATE_SCHEMA.to_string(),
+            latest_report: None,
+            final_report: None,
             rev: 1,
             writer: None,
             run_state: RunState::Created,

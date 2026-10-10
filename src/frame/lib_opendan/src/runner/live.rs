@@ -15,11 +15,11 @@ use agent_tool::xllm::{
 use buckyos_api::{AiContent, AiMessage, AiRole};
 use llm_context::deps::{Injection, LLMContextDeps, LlmClient};
 use llm_context::error::{LLMComputeError, ProviderFailure};
-use llm_context::tasks::{task_state_observation, RunningTaskResolver, TaskState};
 use llm_context::observation::Observation;
 use llm_context::outcome::{LLMContextOutcome, ResumeFill};
 use llm_context::request::ContextOwnerRef;
 use llm_context::state::{LLMContextSnapshot, Suspension};
+use llm_context::tasks::{task_state_observation, RunningTaskResolver, TaskState};
 use llm_context::LLMContext;
 use serde_json::{json, Value};
 
@@ -100,6 +100,14 @@ async fn xllm_deps_for(
         x.host_tools
             .insert(TOOL_CALL_BEHAVIOR.to_string(), Arc::new(tool));
     }
+    x.host_tools
+        .insert(TOOL_REPORT.into(), Arc::new(super::reports::ReportTool));
+    if sh.session.lock().await.config.session.policy.completion == CompletionPolicy::ExplicitReport
+    {
+        if let agent_tool::xllm::HostProtocolFlavor::Session { intro } = &mut x.host_protocol {
+            intro.push_str(" This session requires an explicit final report: call report with is_end=true (function call loop), or use <report end=\"true\"> (behavior loop). Plain assistant completion does not successfully finish this session.");
+        }
+    }
     Ok(x)
 }
 
@@ -127,9 +135,10 @@ fn checkpoint_deps(
     cfg: &EffectiveConfig,
     llm: Arc<dyn LlmClient>,
     tools: SessionToolManager,
+    rounds: Arc<super::rounds::RoundCounter>,
     resolver: &Arc<dyn RunningTaskResolver>,
 ) -> llm_context::deps::LLMContextDeps {
-    let hook = Arc::new(SessionCheckpointHook::new(sh.clone(), run.clone()));
+    let hook = Arc::new(SessionCheckpointHook::new(sh.clone(), run.clone(), rounds));
     *sh.tasks.lock().expect("tasks") = Some(resolver.clone());
     hosted_waist_deps(cfg, llm, Arc::new(tools))
         .with_checkpoint_hook(hook)
@@ -232,7 +241,7 @@ async fn fork_run_context(
     )
     .map_err(|e| OpenDanError::InvalidArgument(e.to_string()))?;
     let now = crate::now_ms();
-    let record = RunRecord {
+    let mut record = RunRecord {
         run_id: run_id.clone(),
         status: RunStatus::Running,
         created_at_ms: now,
@@ -252,6 +261,13 @@ async fn fork_run_context(
         handover: None,
         ..parent_record
     };
+    if let Some(host) = record.host.as_mut() {
+        if let Some(extra) = host.extra.as_object_mut() {
+            extra.remove("reports");
+            extra.remove("finish");
+            extra.remove("tasks");
+        }
+    }
     let xdeps = xllm_deps_for(sh, env, depth).await?;
     let manager = rebuild_toolset(&record, &xdeps).await?;
     let resolver = manager.resolver();
@@ -261,6 +277,7 @@ async fn fork_run_context(
     let run = RunHandle::new(runs.store().clone(), record, lock);
     run.write()?;
     let tools = SessionToolManager::new(
+        sh.clone(),
         Arc::new(manager),
         run.clone(),
         sh.lease.clone(),
@@ -269,7 +286,7 @@ async fn fork_run_context(
         sh.current_tool.clone(),
     );
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
-    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
+    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, rounds.clone(), &resolver);
     let mut snap = derived.snapshot;
     let meta = HostMeta {
         session_id: sid,
@@ -365,6 +382,42 @@ async fn own_run_context(
     } else {
         cfg.prompt.llm_context.clone()
     };
+    let function_call = llm_ctx
+        .get("loop_model")
+        .and_then(Value::as_str)
+        .unwrap_or("function_call")
+        == "function_call";
+    let explicit_report = cfg.session.policy.completion == CompletionPolicy::ExplicitReport;
+    let enabled = llm_ctx.pointer("/tools/enabled").and_then(Value::as_bool);
+    if function_call && explicit_report && enabled == Some(false) {
+        return Err(OpenDanError::InvalidArgument(
+            "explicit_report function_call sessions require tools.enabled=true".into(),
+        ));
+    }
+    if function_call
+        && (explicit_report || (enabled == Some(true) && llm_ctx.pointer("/tools/tools").is_none()))
+    {
+        if !llm_ctx.get("tools").is_some_and(Value::is_object) {
+            llm_ctx["tools"] = json!({});
+        }
+        llm_ctx["tools"]["enabled"] = json!(true);
+        if llm_ctx.pointer("/tools/tools").is_none() {
+            llm_ctx["tools"]["tools"] = if enabled == Some(true) {
+                json!([{"groupname":"bash"}])
+            } else {
+                json!([])
+            };
+        }
+        let sources = llm_ctx["tools"]["tools"]
+            .as_array_mut()
+            .ok_or_else(|| OpenDanError::InvalidArgument("tools.tools must be an array".into()))?;
+        if !sources
+            .iter()
+            .any(|t| t.get("name").and_then(Value::as_str) == Some(TOOL_REPORT))
+        {
+            sources.push(json!({"name":TOOL_REPORT}));
+        }
+    }
     llm_ctx["runtime"] = serde_json::to_value(sh.deps.runtime.config()).unwrap();
     let hosted = XllmTask::prepare_hosted(
         sh.dir.path(),
@@ -424,6 +477,7 @@ async fn own_run_context(
     let run = RunHandle::new(runs.store().clone(), record, lock);
     run.write()?;
     let tools = SessionToolManager::new(
+        sh.clone(),
         Arc::new(manager),
         run.clone(),
         sh.lease.clone(),
@@ -470,7 +524,7 @@ async fn own_run_context(
         }
     }
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
-    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, &resolver);
+    let deps = checkpoint_deps(sh, &run, &config, ctx_llm, tools, rounds.clone(), &resolver);
     let mut inherited_below = 0;
     let mut ctx = match &new.child {
         // create-sub-context: the caller's selected history, its numbering.
@@ -729,6 +783,7 @@ pub(super) async fn resume_live_run(
     }
     let workdir = PathBuf::from(&record.workdir);
     let tools = SessionToolManager::new(
+        sh.clone(),
         Arc::new(manager),
         run.clone(),
         sh.lease.clone(),
@@ -737,7 +792,15 @@ pub(super) async fn resume_live_run(
         sh.current_tool.clone(),
     );
     let (ctx_llm, rounds) = counted(sh, run.run_id(), llm.clone());
-    let deps = checkpoint_deps(sh, &run, &record.config, ctx_llm, tools, &resolver);
+    let deps = checkpoint_deps(
+        sh,
+        &run,
+        &record.config,
+        ctx_llm,
+        tools,
+        rounds.clone(),
+        &resolver,
+    );
     if suspended_on_tools {
         let w = WaitingRun {
             run,
@@ -784,6 +847,14 @@ pub(super) async fn resume_live_run(
         s.commit_state(&sh.lease)?;
     }
     *sh.interrupt.lock().expect("interrupt") = Some(ctx.interrupt_handle());
+    if let Some(report) = super::reports::final_report(&run)? {
+        if let ReportSource::Tool { call_id } = &report.source {
+            if agent_tool::exec_tracking::persisted_outcome_ids(&ctx.snapshot()).contains(call_id) {
+                ctx.interrupt_handle()
+                    .finish("resume accepted final report");
+            }
+        }
+    }
     run.set_status(RunStatus::Running, None)?;
     Ok(Opened::Ctx(LiveCtx {
         behavior,
@@ -912,9 +983,7 @@ fn degrade_inline_media(sh: &Arc<Shared>, lc: &LiveCtx) -> Result<Option<LLMCont
     snapshot.state.host = Some(with_host_meta(snapshot.state.host.as_ref(), &meta));
     let run_id = lc.run.run_id().to_string();
     let ctx = LLMContext::resume(snapshot, ResumeFill::ResumeFromMidRun, lc.deps.clone())
-        .map_err(|e| {
-            OpenDanError::blocked(format!("media degrade: {e}"), Some(&run_id))
-        })?;
+        .map_err(|e| OpenDanError::blocked(format!("media degrade: {e}"), Some(&run_id)))?;
     lc.run
         .checkpoint_with_results(&ctx.snapshot(), Some(RunStatus::Running))?;
     log::warn!(
@@ -1152,7 +1221,12 @@ pub(super) async fn suspend_run(
 /// Tool result a caller gets for its `call_behavior` call from the sub
 /// context's hand-back (`state.process_result`).
 fn sub_result_observation(call_id: &str, r: &Value) -> Observation {
-    let text = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let text = |k: &str| {
+        r.get(k)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
     match r.get("status").and_then(Value::as_str).unwrap_or("ok") {
         "failed" => Observation::Error {
             call_id: call_id.to_string(),
@@ -1168,6 +1242,9 @@ fn sub_result_observation(call_id: &str, r: &Value) -> Observation {
                     "note": "the sub context cannot ask the user; ask the user yourself and call it again with the answer",
                 })
                 .to_string()
+            } else if let Some(submission) = r.get("submission") {
+                json!({"status": status, "behavior": text("behavior"), "submission": submission})
+                    .to_string()
             } else {
                 text("result")
             };

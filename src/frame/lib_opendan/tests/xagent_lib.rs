@@ -842,7 +842,7 @@ async fn semi_snapshot_precedes_a_context_switch_input() {
                 "{snapshot}"
             );
             assert!(input.contains("hook=\"on_context_switch\""), "{input}");
-            text("<response><report><![CDATA[reviewed]]></report></response>")
+            text("<response><report end=\"true\"><![CDATA[reviewed]]></report></response>")
         }
     });
     let r = drive(&sd, &env.deps(llm.clone()), StopWhen::TurnClosed).await;
@@ -873,7 +873,7 @@ async fn an_interactive_sub_session_asks_its_parent() {
         if is_child(req) {
             // Behavior loop of the child: ask, then deliver.
             return if all.contains("the color is blue") {
-                text("<response><report><![CDATA[painted blue]]></report></response>")
+                text("<response><report end=\"true\"><![CDATA[painted blue]]></report></response>")
             } else {
                 text("<response><report><![CDATA[which color?]]></report><next_behavior>WAIT_USER_MSG</next_behavior></response>")
             };

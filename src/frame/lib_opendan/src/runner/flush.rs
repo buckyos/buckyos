@@ -108,6 +108,56 @@ fn action_entries(calls: &[buckyos_api::AiToolCall]) -> Vec<ActionEntry> {
         .collect()
 }
 
+fn native_message_entries(run_id: &str, turn: u64, m: &buckyos_api::AiMessage) -> Vec<WorklogBody> {
+    let mut out = Vec::new();
+    match m.role {
+        AiRole::Assistant => {
+            out.push(WorklogBody::AssistantMessage {
+                run_id: run_id.to_string(),
+                turn,
+                assistant: m.text_content(),
+                tool_calls: action_entries(&m.tool_calls()),
+            });
+        }
+        AiRole::Tool => {
+            for c in &m.content {
+                if let AiContent::ToolResult {
+                    call_id,
+                    content,
+                    is_error,
+                } = c
+                {
+                    let text = content
+                        .iter()
+                        .filter_map(|x| x.text_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let status = if text.starts_with("[unresolved") {
+                        "unresolved"
+                    } else if text.starts_with("[not executed]") {
+                        "unresolved"
+                    } else if text.starts_with("[cancelled]") {
+                        "cancelled"
+                    } else if *is_error {
+                        "error"
+                    } else {
+                        "ok"
+                    };
+                    out.push(WorklogBody::ActionResult {
+                        run_id: run_id.to_string(),
+                        turn,
+                        call_id: call_id.clone(),
+                        status: status.to_string(),
+                        result: text,
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
 /// The batch marker of a receipt: `turn_started` when it opened the Turn,
 /// `input_batch` when it joined the open one.
 fn batch_marker(run_id: &str, r: &InputReceipt) -> WorklogBody {
@@ -265,49 +315,7 @@ pub fn run_history_entries(
                         content: m.text_content(),
                     }),
                 },
-                AiRole::Assistant => {
-                    out.push(WorklogBody::AssistantMessage {
-                        run_id: run_id.to_string(),
-                        turn,
-                        assistant: m.text_content(),
-                        tool_calls: action_entries(&m.tool_calls()),
-                    });
-                }
-                AiRole::Tool => {
-                    for c in &m.content {
-                        if let AiContent::ToolResult {
-                            call_id,
-                            content,
-                            is_error,
-                        } = c
-                        {
-                            let text = content
-                                .iter()
-                                .filter_map(|x| x.text_str().map(str::to_string))
-                                .collect::<Vec<_>>()
-                                .join("\n");
-                            let status = if text.starts_with("[unresolved") {
-                                "unresolved"
-                            } else if text.starts_with("[not executed]") {
-                                "unresolved"
-                            } else if text.starts_with("[cancelled]") {
-                                "cancelled"
-                            } else if *is_error {
-                                "error"
-                            } else {
-                                "ok"
-                            };
-                            out.push(WorklogBody::ActionResult {
-                                run_id: run_id.to_string(),
-                                turn,
-                                call_id: call_id.clone(),
-                                status: status.to_string(),
-                                result: text,
-                            });
-                        }
-                    }
-                }
-                _ => {}
+                _ => out.extend(native_message_entries(run_id, turn, m)),
             }
         }
         return (
@@ -335,6 +343,7 @@ pub fn run_history_entries(
         evs.push((key, Ev::Msg(r)));
     }
     let mut max_step = marks.step_index;
+    let mut native_flushed = marks.messages;
     for s in snapshot
         .state
         .steps
@@ -361,17 +370,116 @@ pub fn run_history_entries(
                 if (step.meta.step_index as u64) < marks.step_index {
                     continue;
                 }
+                for message in step.native_messages.iter().skip(native_flushed as usize) {
+                    out.extend(native_message_entries(run_id, turn, message));
+                }
+                native_flushed = native_flushed.saturating_sub(step.native_messages.len() as u64);
                 out.extend(step_entries(run_id, turn, step));
             }
         }
     }
+    let active_messages = snapshot
+        .state
+        .action_step
+        .as_ref()
+        .map(|active| active.step.native_messages.as_slice())
+        .unwrap_or_default();
+    let unfinished_native: Vec<_> = active_messages
+        .iter()
+        .chain(
+            snapshot
+                .state
+                .accumulated
+                .iter()
+                .skip(snapshot.request.input.len()),
+        )
+        .collect();
+    for message in unfinished_native.iter().skip(native_flushed as usize) {
+        out.extend(native_message_entries(run_id, turn, message));
+    }
     (
         out,
         FlushMarks {
-            messages: 0,
+            messages: (unfinished_native.len() as u64).max(native_flushed),
             step_index: max_step,
             input_seq: max_receipt.max(marks.input_seq),
             epoch: meta.history_epoch,
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use buckyos_api::AiMessage;
+    use llm_context::behavior_loop::{StepMeta, StepRecord};
+    use llm_context::request::LLMContextRequest;
+    use llm_context::state::LLMContextState;
+    use serde_json::json;
+
+    #[test]
+    fn behavior_native_transcript_is_flushed_once_across_step_completion() {
+        let request: LLMContextRequest = serde_json::from_value(json!({
+            "owner": {"kind":"agent", "session_id":"test"}, "input":[]
+        }))
+        .unwrap();
+        let mut snapshot = LLMContextSnapshot {
+            state: LLMContextState::from_request(&request, 0),
+            request,
+        };
+        let call = AiMessage::new(
+            AiRole::Assistant,
+            vec![AiContent::tool_use(
+                "report-call",
+                "report",
+                std::collections::HashMap::new(),
+            )],
+        );
+        let result = AiMessage::new(
+            AiRole::Tool,
+            vec![AiContent::tool_result_text(
+                "report-call",
+                "accepted",
+                false,
+            )],
+        );
+        snapshot.state.accumulated.push(call.clone());
+        let (first, marks) = run_history_entries("run", &snapshot, true, FlushMarks::default(), 1);
+        assert_eq!(first.len(), 1);
+        assert!(
+            matches!(&first[0], WorklogBody::AssistantMessage { tool_calls, .. } if tool_calls[0].call_id == "report-call")
+        );
+        snapshot.state.accumulated.clear();
+        snapshot.state.steps.push(StepRecord {
+            meta: StepMeta {
+                step_index: 0,
+                ..Default::default()
+            },
+            assistant_text: "final decision".into(),
+            native_messages: vec![call, result],
+            ..Default::default()
+        });
+        let (completed, marks) = run_history_entries("run", &snapshot, true, marks, 1);
+        assert_eq!(completed.len(), 2);
+        assert!(
+            matches!(&completed[0], WorklogBody::ActionResult { call_id, status, .. } if call_id == "report-call" && status == "ok")
+        );
+        assert!(matches!(&completed[1], WorklogBody::Step { .. }));
+        assert_eq!(marks.messages, 0);
+        assert!(run_history_entries("run", &snapshot, true, marks, 1)
+            .0
+            .is_empty());
+        snapshot.state.host = Some(super::super::receipts::with_host_meta(
+            None,
+            &HostMeta {
+                inherited_below: 1,
+                ..Default::default()
+            },
+        ));
+        assert!(
+            run_history_entries("child", &snapshot, true, FlushMarks::default(), 1)
+                .0
+                .is_empty()
+        );
+    }
 }

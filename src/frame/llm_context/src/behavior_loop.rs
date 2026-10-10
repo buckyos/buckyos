@@ -79,6 +79,8 @@ pub struct StepRecord {
     pub assistant_text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant_message: Option<AiMessage>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_messages: Vec<AiMessage>,
 
     /// "Observation" slot — LLM's reading of the previous action's result.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -90,14 +92,6 @@ pub struct StepRecord {
     /// pure-thought / terminal-only steps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<AiToolCall>,
-    /// "Next behavior" slot — when `Some` on a step with no action side
-    /// effects, this step is terminal and the loop returns.
-    ///
-    /// When the LLM emits it together with actions / sendmsg the directive is
-    /// still in force, but only where it can be honoured safely — see
-    /// [`is_terminal_next_behavior`]: a jump target is suppressed so the next
-    /// inference observes the results first, while the terminal `END` is
-    /// honoured at the end of this very step and is never dropped.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
     /// Self Report (`<report>`) — overwrites
@@ -105,6 +99,16 @@ pub struct StepRecord {
     /// so the rendered history preserves the report-emit event.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_report: Option<String>,
+    #[serde(default)]
+    pub report_end: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_artifacts: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_report_result"
+    )]
+    pub report_result: Option<serde_json::Value>,
     /// SendMessage actions (`<sendmsg target=...>`) emitted in this step.
     /// Stub in v2 first cut: parser captures them, executor only emits a
     /// worklog event. Real delivery moves to a standard `send_message`
@@ -132,23 +136,6 @@ pub struct SendMessageRecord {
     pub body: String,
 }
 
-/// The terminal value of the `<next_behavior>` slot.
-///
-/// Every other value is an opaque jump target that only the worksession above
-/// interprets. `END` is the single exception recognised by this crate, and
-/// only because termination safety depends on it: a terminal directive may be
-/// applied on a step that also carried actions (nothing later in this behavior
-/// could still observe their results), while a jump target must wait for
-/// exactly that.
-pub const NEXT_BEHAVIOR_END: &str = "END";
-
-/// Case-insensitive test for the terminal `<next_behavior>` value. Shared with
-/// the worksession so the two layers cannot drift apart on what "terminal"
-/// means.
-pub fn is_terminal_next_behavior(value: &str) -> bool {
-    value.trim().eq_ignore_ascii_case(NEXT_BEHAVIOR_END)
-}
-
 impl StepRecord {
     /// Build a step from a parser result. `action_results` is left empty —
     /// the dispatcher fills it after running the actions.
@@ -160,17 +147,24 @@ impl StepRecord {
             do_actions,
             next_behavior,
             self_report,
+            report_end,
+            report_artifacts,
+            report_result,
             messages_to_send,
         } = result;
         Self {
             meta: StepMeta::default(),
             assistant_text,
             assistant_message: None,
+            native_messages: Vec::new(),
             observation,
             thought,
             actions: do_actions,
             next_behavior,
             self_report,
+            report_end,
+            report_artifacts,
+            report_result,
             messages_sent: messages_to_send,
             action_results: Vec::new(),
             next_user_message: None,
@@ -209,11 +203,15 @@ impl StepRecord {
             meta: StepMeta::default(),
             assistant_text: String::new(),
             assistant_message: None,
+            native_messages: Vec::new(),
             observation: None,
             thought: None,
             actions: Vec::new(),
             next_behavior: None,
             self_report: None,
+            report_end: false,
+            report_artifacts: Vec::new(),
+            report_result: None,
             messages_sent: Vec::new(),
             action_results: vec![Observation::Error {
                 call_id: String::new(),
@@ -234,13 +232,6 @@ pub struct LLMBehaviorResult {
     /// excluding parser-side tags like `<sendmsg>` and `<report>`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub do_actions: Vec<AiToolCall>,
-    /// Terminal signal + jump target. `Some(_)` is terminal when
-    /// `do_actions` is empty. If actions were dispatched in the same step the
-    /// loop requires the next inference to observe their results first, with
-    /// one exception: the terminal [`NEXT_BEHAVIOR_END`] is honoured at the
-    /// end of that step, unless an action failed — then the failure is fed
-    /// back first and the directive is re-declared by the model. No other
-    /// value is interpreted here; the rest belongs to the worksession above.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_behavior: Option<String>,
 
@@ -251,17 +242,79 @@ pub struct LLMBehaviorResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thought: Option<String>,
 
-    /// Self Report (`<report>`) — at most one per step;
-    /// last occurrence wins. Overwrites `LLMContextState.last_report`.
+    /// Self Report (`<report>`) — at most one per step.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_report: Option<String>,
+    #[serde(default)]
+    pub report_end: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub report_artifacts: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_report_result"
+    )]
+    pub report_result: Option<serde_json::Value>,
     /// SendMessage actions (`<sendmsg target=...>`); recorded in order of
     /// appearance. Stub-delivered in v2 first cut.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub messages_to_send: Vec<SendMessageRecord>,
 }
 
+fn deserialize_report_result<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
 impl LLMBehaviorResult {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.next_behavior.as_deref().is_some_and(|next| {
+            next.trim().eq_ignore_ascii_case("END") || next.trim().eq_ignore_ascii_case("done")
+        }) {
+            return Err(
+                "next_behavior END/done is invalid; submit <report end=\"true\"> to finish".into(),
+            );
+        }
+        if self.self_report.is_none()
+            && (!self.report_artifacts.is_empty() || self.report_result.is_some())
+        {
+            return Err("artifacts/result require a report in the same response".into());
+        }
+        if self.report_end {
+            if self
+                .self_report
+                .as_deref()
+                .is_none_or(|report| report.trim().is_empty())
+            {
+                return Err("an ending report must contain non-empty text".into());
+            }
+            if !self.do_actions.is_empty() || !self.messages_to_send.is_empty() {
+                return Err(
+                    "an ending report cannot contain actions, sendmsg, or native tool_calls".into(),
+                );
+            }
+            if self
+                .next_behavior
+                .as_deref()
+                .is_some_and(|next| !next.trim().is_empty())
+            {
+                return Err("an ending report cannot contain next_behavior".into());
+            }
+        }
+        if self.self_report.is_none()
+            && self.do_actions.is_empty()
+            && self.messages_to_send.is_empty()
+            && self
+                .next_behavior
+                .as_deref()
+                .is_none_or(|next| next.trim().is_empty())
+        {
+            return Err("response requires actions, report, or next_behavior; submit <report end=\"true\"> to finish".into());
+        }
+        Ok(())
+    }
+
     /// Reconstruct a behavior result from a finished step. Used at terminal
     /// time so `Done.behavior_result` carries the same payload that the
     /// parser produced.
@@ -273,6 +326,9 @@ impl LLMBehaviorResult {
             observation: step.observation.clone(),
             thought: step.thought.clone(),
             self_report: step.self_report.clone(),
+            report_end: step.report_end,
+            report_artifacts: step.report_artifacts.clone(),
+            report_result: step.report_result.clone(),
             messages_to_send: step.messages_sent.clone(),
         }
     }

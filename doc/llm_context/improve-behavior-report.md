@@ -1,6 +1,8 @@
 # Improve Behavior Report
 
-2026-10-10 设计更新：XML 显式结束统一为 `<report end="true">`，该决策不得有 actions；缺省 / false 只更新报告，`next_behavior` 保留切换 / 等待语义，不再用 END 结束。此规则已定稿但尚未实现，详见 [Context 调度支持 TODO H4.1](../../notepads/llm-context-switch-support-todo.md) 与 [Agent Actions](<Agent Actions.md>)。下文“当前实现事实”保留实施前行为，不是新协议规范。
+2026-10-10 H4 已实施：XML 使用 `<report end="true">` 显式结束，工具使用 `report({report, artifacts?, result?, is_end?})`（is_end 缺省 false）。最终报告和动作 / 非空 next_behavior 互斥，END / done 拒绝。统一提交、完成策略及恢复见 [Agent Actions](<Agent Actions.md>) 与 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md)。
+
+**以下内容保留为实施前调研与方案记录。** 其中“当前实现”、END / report-only 完成、拟议上行接口和投递状态不代表 H4 后的实现；当前 report 身份是 run / call_id 或 run / step_index，journal 位于 host.extra.reports，状态为 latest_report / final_report，最终消息通过 ReportDelivery 机械生成并去重。
 
 ## 背景
 

@@ -1,0 +1,74 @@
+{
+  "schema": "opendan.session_config/6",
+  "config_rev": 1,
+  "session": {
+    "session_id": "work-fixture-report",
+    "agent_did": "did:bns:jarvis.alice",
+    "kind": "work",
+    "class": "work",
+    "created_at_ms": 1791643524686,
+    "created_by": {
+      "principal": "app:app2@alice",
+      "via": "app"
+    },
+    "driver": {
+      "principal": "app:app2@alice"
+    },
+    "objective": "submit the verified answer",
+    "end_condition": {
+      "type": "llm_declares_done"
+    },
+    "input_policy": "any",
+    "acl": {
+      "agent_access": "full"
+    },
+    "policy": {
+      "completion": "explicit_report",
+      "wait_user_msg": "allowed",
+      "observe": "events_and_active",
+      "load_hints": true,
+      "max_process_depth": 4,
+      "max_sub_sessions": 4,
+      "max_session_depth": 2
+    }
+  },
+  "prompt": {
+    "llm_context": {
+      "tools": {
+        "enabled": true,
+        "tools": [
+          {
+            "name": "report"
+          }
+        ]
+      }
+    },
+    "mechanical_compress": {
+      "recent_full_responses": 2,
+      "summary_chars": 280,
+      "max_result_chars": 4096,
+      "drop_kinds": [
+        "created",
+        "decide",
+        "compaction",
+        "input_rejected",
+        "event_dropped",
+        "turn_ended"
+      ]
+    }
+  },
+  "runtime": {
+    "requirement": {}
+  },
+  "channels": {
+    "inputs": [
+      {
+        "kind": "kmsg",
+        "id": "q",
+        "queue": "app2::alice::opendan.session.work-fixture-report",
+        "subscriber": "opendan.jarvis.alice.work-fixture-report"
+      }
+    ],
+    "wake_event": "/opendan/jarvis.alice/session/work-fixture-report/input"
+  }
+}

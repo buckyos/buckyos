@@ -146,7 +146,7 @@ async fn behavior_run_compacts_the_session_history_and_keeps_step_numbering() {
         let all = render(&req.messages);
         if seen_refusal.load(Ordering::SeqCst) {
             return Ok(text(
-                "<response><report><![CDATA[finished after compaction]]></report></response>",
+                "<response><report end=\"true\"><![CDATA[finished after compaction]]></report></response>",
             ));
         }
         if all.contains("behavior-1") && all.contains("last_step_action_results") {

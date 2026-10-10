@@ -1,0 +1,14 @@
+{
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "total_tokens": 0,
+  "rounds": 1,
+  "rounds_failed": 0,
+  "rounds_interrupted": 0,
+  "turns": 0,
+  "runs": 0,
+  "tool_calls": 0,
+  "busy_ms": 0,
+  "cost": 0.0,
+  "updated_at_ms": 1791643523601
+}

@@ -87,6 +87,8 @@ pub struct LLMContextState {
     /// `doc/opendan/Agent Actions.md` §3.3.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_report: Option<String>,
+    #[serde(default)]
+    pub report_end: bool,
 
     #[serde(default)]
     pub next_step_index: u32,
@@ -111,8 +113,9 @@ pub struct LLMContextState {
 /// budget renamed (`tool_iterations_left`, `ToolBatch.batch_error`). 4:
 /// `PendingToolCall {task_id, until_ms}` replaced `{eta_ms, tool_result}`,
 /// `Observation::Cancelled.effect_unknown`, `Observation::Pending.task_id`,
-/// the `shell` action tag. `resume` accepts only this version.
-pub const SNAPSHOT_FORMAT_VERSION: u32 = 4;
+/// the `shell` action tag. 5: explicit report completion and report payloads.
+/// `resume` accepts only this version.
+pub const SNAPSHOT_FORMAT_VERSION: u32 = 5;
 
 /// Why a context is suspended. Every variant records when it yielded:
 /// suspended time is not charged to `max_wallclock_ms`.
@@ -185,6 +188,7 @@ impl LLMContextState {
             history_inputs: Vec::new(),
             last_step: None,
             last_report: None,
+            report_end: false,
             next_step_index: 0,
             next_action_id: 0,
             snapshot_version: SNAPSHOT_FORMAT_VERSION,

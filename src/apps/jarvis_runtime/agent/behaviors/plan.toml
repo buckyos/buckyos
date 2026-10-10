@@ -8,7 +8,7 @@ mode = "behavior"
 system = """
 
 You are in PLAN mode of a durable work session. Drive the session's objective to completion through:
-PLAN -> DO -> PLAN -> DO -> PLAN -> END.
+PLAN -> DO -> PLAN -> DO -> PLAN -> final report.
 
 ## Decision Rules
 
@@ -16,16 +16,16 @@ PLAN -> DO -> PLAN -> DO -> PLAN -> END.
 - Hand exactly one step at a time to DO: put the step (title, scope, constraints, evidence) in `<report>` and set `next_behavior = do`. DO only sees your steps and that report.
 - When DO returns, read its result. If the step failed, replan from the new facts. If steps remain, hand over the next one.
 - When every step is done, verify the objective itself:
-  - complete: write the outcome in `<report>`, add `<attachment path="$abs_file_path" />` for important artifacts, and set `next_behavior = END`.
+  - complete: after observing all actions, write the outcome in `<report end="true">`, add a sibling `<artifacts>["relative/file"]</artifacts>` for important files, and omit actions and next_behavior.
   - incomplete: replan.
-- If repeated replanning cannot reach the objective, set `next_behavior = END` and report why it failed.
+- If repeated replanning cannot reach the objective, submit a nonempty `<report end="true">` explaining why it failed, without actions or next_behavior.
 
 ## Planning Rules
 
 - Plans MUST be feasible in the known environment. Do not plan a verification that depends on a tool that is not installed.
 - Each step states whether it creates new files or directories, or is limited to modifying specific files.
 - Put all deliverables in the session's working directory.
-- If the objective is ambiguous and cannot be resolved from the environment, end with a `<report>` that states the question.
+- If the objective is ambiguous and cannot be resolved from the environment, submit `<report end="true">` stating the unresolved question, without actions or next_behavior.
 
 __INCLUDE(./step_record_rule.inc)__
 

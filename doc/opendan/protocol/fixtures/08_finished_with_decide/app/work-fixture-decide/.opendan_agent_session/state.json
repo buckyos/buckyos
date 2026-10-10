@@ -6,7 +6,7 @@
   },
   "bootstrap_done": true,
   "inputs": {},
-  "last_run": "20261004-102443-d3c68b",
+  "last_run": "20261010-074523-f8e7b2",
   "live_run": null,
   "one_line_status": "finished: done: notes.txt written",
   "outcome": "succeeded",
@@ -23,14 +23,14 @@
   },
   "rev": 3,
   "run_state": "finished",
-  "schema": "opendan.session_state/5",
+  "schema": "opendan.session_state/6",
   "stop_requested": false,
   "topic": {
     "title": ""
   },
   "turn_seq": 1,
   "turns_completed": 1,
-  "updated_at_ms": 1791134683048,
+  "updated_at_ms": 1791643523947,
   "worklog": {
     "committed_bytes": 1579,
     "committed_seq": 8
@@ -38,8 +38,8 @@
   "writer": {
     "host": "${FIXTURE_HOST}",
     "lock_epoch": 1,
-    "pid": 3937474,
+    "pid": 6,
     "principal": "app:app2@alice",
-    "runner_id": "rn-7f41a660161b4496"
+    "runner_id": "rn-a9d8cd608cfe442e"
   }
 }

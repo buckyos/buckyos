@@ -18,9 +18,9 @@ use super::outcome::{
     call_site_of, classify_done, finish_run, freeze_target, hand_over, has_report,
     hold_for_children, CallSite, FinishKind, Next,
 };
-use super::tools::pending_sub_call;
 use super::receipts::{apply_receipt, receipts_after, snapshot_host_meta, validate_receipts};
 use super::shared::Shared;
+use super::tools::pending_sub_call;
 
 pub(super) enum Reconciled {
     None,
@@ -159,6 +159,7 @@ async fn redo_transfer(
             replied,
             &site,
             completed,
+            false,
         );
         next.usage = record.usage.main.clone();
         hold_for_children(sh, &mut next).await?;
@@ -196,10 +197,11 @@ async fn finish_terminal_record(
     let behavior = record.config.loop_model == LoopModel::Behavior;
     let recorded = crate::session::runs::finish_info(record)
         .and_then(|v| serde_json::from_value::<Next>(v).ok());
+    super::reports::sync_xml(sh, run, snapshot).await?;
     let next = match recorded {
         Some(n) => n,
         None => {
-            let mut next = derive_next(sh, record, snapshot, behavior).await;
+            let mut next = derive_next(sh, &run.record(), snapshot, behavior).await;
             hold_for_children(sh, &mut next).await?;
             next
         }
@@ -256,7 +258,28 @@ async fn derive_next(
                 depth,
                 entry: &entry,
             };
-            let mut next = classify_done(&cfg, behavior, nb, answer, replied, &site, completed);
+            let final_report = record
+                .host
+                .as_ref()
+                .and_then(|h| h.extra.get("reports"))
+                .and_then(|v| serde_json::from_value::<Vec<ReportSubmission>>(v.clone()).ok())
+                .and_then(|r| r.into_iter().find(|r| r.is_end));
+            let explicit_end = final_report.is_some();
+            let answer = final_report
+                .as_ref()
+                .map(ReportSubmission::delivery_text)
+                .or(answer);
+            let mut next = classify_done(
+                &cfg,
+                behavior,
+                nb,
+                answer,
+                replied,
+                &site,
+                completed,
+                explicit_end,
+            );
+            next.report = final_report;
             next.usage = record.usage.main.clone();
             next
         }

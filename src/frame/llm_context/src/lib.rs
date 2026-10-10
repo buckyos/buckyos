@@ -29,15 +29,15 @@ pub mod xml_behavior;
 mod xml_util;
 
 pub use behavior_loop::{
-    is_terminal_next_behavior, HistorySummaryRecord, LLMBehaviorResult, LLMResultParser,
-    StepCompressionLevel, StepMeta, StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
-    NEXT_BEHAVIOR_END,
+    HistorySummaryRecord, LLMBehaviorResult, LLMResultParser, StepCompressionLevel, StepMeta,
+    StepRecord, StepRenderer, StepResultHook, StepResultHookOutput,
 };
 pub use context_derive::{
     derive_child, fork_snapshot, DeriveError, DerivedContext, ForkOptions, ForkPoint,
     InheritBoundary, InheritHistory,
 };
 pub use context_loop::LLMContext;
+pub use context_window::ContextLimits;
 pub use deps::{
     AllowAllPolicy, ByteHeuristicTokenizer, CancelCause, CheckpointHook, InferenceHook, Injection,
     InjectionPosition, LLMContextDeps, LlmClient, LlmInferenceRequest, NoopWorklogSink,
@@ -47,10 +47,10 @@ pub use deps::{
 pub use error::{CheckpointStage, ErrorSource, LLMComputeError, ProviderFailure};
 pub use interrupt::{InferenceAbortToken, InferenceAbortTrace, LLMContextInterruptHandle};
 pub use msg_parser::{
-    ai_message_to_msg_object_with_base_validated_async, attachment_kind, attachment_mime, msg_object_to_ai_message_structured,
-    parse_msg_object_structured, AttachmentTag, AttachmentValidation, AttachmentValidator,
-    LocalFileResolver, MsgEgressOptions, MsgParseOutput, MsgParserError,
-    PermissiveAttachmentValidator, SystemControlCommand, PROVIDER_MSG_METADATA,
+    ai_message_to_msg_object_with_base_validated_async, attachment_kind, attachment_mime,
+    msg_object_to_ai_message_structured, parse_msg_object_structured, AttachmentTag,
+    AttachmentValidation, AttachmentValidator, LocalFileResolver, MsgEgressOptions, MsgParseOutput,
+    MsgParserError, PermissiveAttachmentValidator, SystemControlCommand, PROVIDER_MSG_METADATA,
 };
 pub use observation::{
     Observation, PendingToolCall, ToolExecRecord, ToolExecStatus, ToolResultStatusView,
@@ -78,14 +78,13 @@ pub use snapshot_overrides::{
 pub use state::{
     ActionStep, LLMContextSnapshot, LLMContextState, Suspension, ToolBatch, SNAPSHOT_FORMAT_VERSION,
 };
+pub use step_record::XmlStepRenderer;
 pub use suspension::{is_thinking, strip_snapshot_thinking, strip_thinking};
 pub use tasks::{
     next_step_hint, render_background_env, task_state_observation, CancelUnsupported,
     RunningTaskResolver, TaskBrief, TaskResult, TaskState, DEFAULT_TASK_WAIT_MS,
     MAX_IN_TOOL_WAIT_MS,
 };
-pub use context_window::ContextLimits;
-pub use step_record::XmlStepRenderer;
 pub use xml_behavior::{XmlBehaviorParser, XML_BEHAVIOR_RESULT_PROTOCOL_PROMPT};
 
 /// Current time in ms since the epoch.

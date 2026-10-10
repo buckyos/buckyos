@@ -276,8 +276,8 @@ LLM 输出属于不可信输入。OpenDAN 在出站时注入 `WorkspaceAttachmen
 | 消息 | 入站 `MsgObject` 转成的 user `AiMessage`；出站的 assistant 文本或 `<sendmsg>` | `msg_parser` 转换；投递由 Session / msg-center 负责 |
 | 决策（Step） | Behavior Loop 中一次 LLM 决策连同动作结果，记为一个 `StepRecord`；内部可以有多个 Round。function_call Loop 没有 Step | llm_context |
 | 动作批次 | 一个 Step 的 `<actions>`，按序派发，带 action 的 Step 扣一次工具迭代额度。`<sendmsg>` 写在 `<actions>` 里，但 llm_context 只把它记进 `messages_sent` 并发出 `WorkEvent::MessageSent`，不负责投递（xllm 把 `sendmsg` 显式配置为 action 时除外） | llm_context |
-| `<report>` | 覆盖 `LLMContextState.last_report`，不投递、不终止 | llm_context 写入；Session 决定如何上交 |
-| behavior Done | `next_behavior` 为 `END` / `done` / `WAIT_USER_MSG` / 跳转目标，或什么都没做的收敛 Step，使 `LLMContext::run()` 以 `Done` 返回；function_call 模式下是最后一个没有 tool call 的 Round | llm_context 返回，含义由 Session 解释 |
+| `<report>` | 更新 `LLMContextState.last_report`；缺省 / false 不投递、不结束，end=true 由宿主接受完成提交 | llm_context 写入；Session 决定如何上交 |
+| behavior Done | `report_end=true` 或生效的 `next_behavior`（WAIT_USER_MSG / 跳转目标）使 `LLMContext::run()` 以 `Done` 返回；空决策纠错；function_call 模式下是最后一个没有 tool call 的 Round | llm_context 返回，含义由 Session 解释 |
 | Turn 完成 | 一次逻辑输入得到结果 | 只由 Session 关闭（libopendan `finish_run`，worklog `turn_ended`） |
 
 要点：
@@ -529,3 +529,7 @@ pub enum SessionKind { Ui, Work, SelfCheck, SelfImprove }
 | 出站配置 | `agent.toml [runtime] preserve_attachment_tag_in_egress / filesystem_policy` |
 | TG 入站与命令菜单 | `tg_tunnel::{dispatch_incoming_message, register_tg_builtin_commands}` |
 | msg-center 分发与投递 | `msg_center::{dispatch_internal, derive_session_id, post_send_internal, build_delivery_envelope}`、`main::pump_delivery_queue_once` |
+
+### H4 最终交付投影
+
+Session 将接受的 report、稳定产物引用和可选 result 保存为 `ReportSubmission`，工具来源关联 run / call_id，XML 来源关联 run / step_index。只有最终提交生成 `ReportDelivery` worklog 和一条机械生成的 assistant 消息，不增加推理 Round；阶段报告不产生交付消息。原始调用 / 回执保留，重建模型历史时同一最终交付不重复展示。子 context 的最终报告只返回调用方，不关闭父 Session。

@@ -16,11 +16,11 @@
         "applied_input_seq": 1,
         "host_commit_pending": 2,
         "inflight": [],
-        "run_id": "20261004-102442-bd16fd",
+        "run_id": "20261010-074523-f22bd0",
         "run_status": "running"
       },
       "runs_on_disk": [
-        "20261004-102442-bd16fd"
+        "20261010-074523-f22bd0"
       ],
       "session_id": "work-fixture-receipt",
       "state": {

@@ -18,9 +18,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use llm_context::{
-    escape_xml_attr, EngineConfig, NullValueLoader, PromptRenderEngine, RenderVars,
-};
+use llm_context::{escape_xml_attr, EngineConfig, NullValueLoader, PromptRenderEngine, RenderVars};
 use serde_json::{json, Value};
 
 use crate::error::{OpenDanError, Result};
@@ -175,7 +173,11 @@ async fn default_snapshot(
     let text = render_snapshot_events(events);
     let rendered = match &templates.semi_subscription_snapshot {
         Some(tpl) => {
-            render_template(tpl, json!({ "snapshot": { "events": events, "text": text } })).await?
+            render_template(
+                tpl,
+                json!({ "snapshot": { "events": events, "text": text } }),
+            )
+            .await?
         }
         None => format!("<semi_subscription_snapshot>\n{text}\n</semi_subscription_snapshot>"),
     };
@@ -319,6 +321,7 @@ impl SessionAssembler for DefaultAssembler {
                     "behavior": r.get("behavior").and_then(Value::as_str).unwrap_or_default(),
                     "status": r.get("status").and_then(Value::as_str).unwrap_or("ok"),
                     "result": r.get("result").and_then(Value::as_str).unwrap_or_default(),
+                    "submission": r.get("submission"),
                 })),
                 "sub_task": state.child_call().filter(|c| &c.behavior == to).map(|c| json!({
                     "mode": c.mode.as_str(),
@@ -384,7 +387,12 @@ impl Blocks {
                     "<process_result behavior=\"{}\" status=\"{}\">{}</process_result>\n",
                     escape_xml_attr(r.get("behavior").and_then(Value::as_str).unwrap_or_default()),
                     escape_xml_attr(r.get("status").and_then(Value::as_str).unwrap_or("ok")),
-                    esc(r.get("result").and_then(Value::as_str).unwrap_or_default())
+                    r.get("submission")
+                        .map(|v| esc(&v.to_string()))
+                        .unwrap_or_else(|| esc(r
+                            .get("result")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()))
                 ));
             }
             // A sub context being entered: its task, and what it returns to.
@@ -572,7 +580,10 @@ impl SessionAssembler for BehaviorAssembler {
             crate::state::freeze_config(&mut next, agent.behaviors(), who)
                 .await
                 .map_err(|e| {
-                    OpenDanError::blocked(format!("cannot freeze the session's behaviors: {e}"), None)
+                    OpenDanError::blocked(
+                        format!("cannot freeze the session's behaviors: {e}"),
+                        None,
+                    )
                 })?;
         }
         if let Some(b) = behavior.filter(|b| !b.is_empty()) {

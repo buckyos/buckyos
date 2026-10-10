@@ -49,7 +49,7 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 ### ContextSwitch（`switch_context`）
 
 目标拥有自己的 context（system、工具、模型、历史、run）。current run 挂起进 `process_stack`（`FrameRole::Parked`）；栈里有 target 自己挂起的 run 就恢复它的快照，否则按 target 自己的配置新建 run，并通过 `on_behavior_switch` 输入继续推进。
-新建时的历史只按 `inherit` 装配，其它 context 的快照 / 历史不会被接到 target 上。这类 context 的 `END` 按 Session 结束条件处理，不会自动返回上一个 context；回去要显式 `next_behavior`。
+新建时的历史只按 `inherit` 装配，其它 context 的快照 / 历史不会被接到 target 上。这类 context 的显式结束报告 按 Session 结束条件处理，不会自动返回上一个 context；回去要显式 `next_behavior`。
 
 ### CreateSubContext（`create_sub_context`）
 
@@ -68,11 +68,11 @@ AgentSession 通过 prompt/input 和工具向 LLMContext 提供所需状态，LL
 | behavior 的 `next_behavior=B` | 完整 Step 的 Done | 调用方 `on_behavior_switch` 批次里的 `<process_result behavior status>` |
 | 工具 / action `call_behavior({behavior, task})` | `PendingTool`（工具返回 `Pending{task_id="subctx:<call_id>"}`），保留未完成的批次 / Step | `ResumeFill::ToolResults` 按 `call_id` 回填，批次余下的调用继续；不产生输入批次 |
 
-子 context 无论以什么结束都返回调用方：`END` / report → `status=ok`；`WAIT_USER_MSG` → `status=needs_user_input`（子 context 从不消费调用方的输入队列）；不可重试错误、预算耗尽、未知交接目标 → `status=failed`；在子 context 内交接到 `switch_context` 目标也只是返回。工具触发时 failed 回填为工具错误，needs_user_input 回填为结构化 JSON。子 context 可以继续调用子 context，最深 4 层（`MAX_CALL_DEPTH`）。只有 `call_behavior` 可以 deferred，其它工具的 `allow_deferred` 被屏蔽。
+子 context 无论以什么结束都返回调用方：`report end="true"` / 获准的工具结束报告 → `status=ok`；`WAIT_USER_MSG` → `status=needs_user_input`（子 context 从不消费调用方的输入队列）；不可重试错误、预算耗尽、未知交接目标 → `status=failed`；在子 context 内交接到 `switch_context` 目标也只是返回。工具触发时 failed 回填为工具错误，needs_user_input 回填为结构化 JSON。子 context 可以继续调用子 context，最深 4 层（`MAX_CALL_DEPTH`）。只有 `call_behavior` 可以 deferred，其它工具的 `allow_deferred` 被屏蔽。
 
 交接点随快照一起写进 run.json 的 `handover`，先于 state 提交；崩溃后 reconcile（`runner/reconcile.rs::redo_transfer`）恰好补交一次。已返回的子 context 在 worklog 中保留全部记录供审计，但重建 `<session_history>` 时只渲染它的 `process_done` 结果（`runner/history.rs`）；压缩输入做同样的过滤，但压缩只识别被压缩片段内的 `process_done`：切点把子 run 的记录与它的 `process_done` 分开时，切点之前的那部分仍会进入摘要。
 
-未实现：UI Stop 后补充输入（H3）、`report` 工具与显式完成策略（H4）。2026-10-10 已确定 H4 的 XML 核心规则：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO H4.1](../../notepads/llm-context-switch-support-todo.md)。本页其余 END / report-only 描述及执行伪代码仍是实施前基线，尚未代表新规则已落地。
+UI Stop 后补充输入（H3）已于 2026-10-10 暂缓，移出当前实现与验收范围；不适用于 Work，终态 Work 不 reopen，后续修改创建新 Task / 新 Work。`report` 工具与可选显式完成策略（H4）已实现。XML 完成规则为：`<report end="true">` 显式请求结束且同一决策不得有 actions，缺省 / false 只更新报告；`next_behavior` 保留切换 / 等待语义，不再使用 END 或隐式 done 完成。详见 [Context 调度支持 TODO](../../notepads/llm-context-switch-support-todo.md) H3 / H4.1。两套 XML parser 拒绝 END / done、重复 report、非法 end、空最终报告及结束与动作或非空 next_behavior 的冲突；空决策进入纠错。工具报告持久化与最终消息由 Session 处理，独立 xllm 不默认暴露 report 工具。
 
 
 ## AgentSession Tree
@@ -112,7 +112,7 @@ AgentSession.drive():
         outcome = AgentSession.run_compacting(ctx)            # LLMContext.run()，一个 Outcome
         next = AgentSession.handle_context_outcome(ctx, outcome)   # next.turn_end 决定 Turn 是否结束
         match next:
-            END / done     -> AgentSession.finish_run()       # run 历史 flush 进 worklog；Turn completed；按 end_condition 结束 Session 或等待
+            report_end     -> AgentSession.finish_run()       # run 历史 flush 进 worklog；Turn completed；按 end_condition 结束 Session 或等待
             WAIT_USER_MSG  -> AgentSession.finish_run()       # 已交付答复则 Turn completed，否则 Turn 保持打开；等下一条输入
             switch(B)      -> 见“behavior 切换”，Turn 继续
             挂起 / 可重试错误 -> run 保留，Turn 保持打开，恢复后继续同一 run   # PendingTool / ContextLimitReached / Interrupted
@@ -154,8 +154,8 @@ LLMContext.run_behavior():
         step = LLMResultParser.parse(resp)              # 解析失败 → 合成错误 Step 喂回，重来
         for action in step.actions:                     # 按序派发，遇到业务错误即停；带 action 的 Step 扣一次工具迭代额度
             step.action_results += ToolManager.call_tool(action)
-        if step.next_behavior 或 这一步什么都没做:
-            return Done(behavior_result)                # END / WAIT_USER_MSG / 跳转目标
+        if step.report_end 或 step.next_behavior:
+            return Done(behavior_result)                # report_end / WAIT_USER_MSG / 跳转目标
         LLMContext.sediment(step)                       # 成为热 step，下一次推理时看到它的结果
 ```
 
@@ -183,13 +183,13 @@ AgentSession.handle_context_outcome(Done{next_behavior: B}):     # classify_done
 AgentSession.suspend_run(run_A, Parked)        # run_A 入 process_stack（FrameRole::Parked），交接点已先写入 run.json
 run_B = 栈里 B 自己挂起的 run ?? AgentSession.new_run_context()   # 新建：B 的 system / 工具 / 模型，历史只按 inherit
 # 下一圈 commit_input_batch 注入 <session_input hook=on_behavior_switch><behavior_switch to=B/>（worklog: input_batch）
-# B 的 END 按 Session 结束条件处理，不自动回到 A
+# B 的显式结束报告按 Session 完成策略处理，不自动回到 A
 
 # create_sub_context / fork：B 是子 context（触发 a：next_behavior）
 AgentSession.suspend_run(run_A, Caller{ChildCall{mode, behavior: B, trigger: Behavior}})
 AgentSession.new_run_context()                 # run_B：derive_child（B 的 system + inherit）| fork_snapshot（A 的 system + 完整历史）
 # run_B 的交接批次：<behavior_switch to=B/><sub_task mode="…">…</sub_task>
-... run_B 推进到结束                             # END / WAIT_USER_MSG / 错误 / 其它交接都视为返回调用方
+... run_B 推进到结束                             # 显式结束报告 / WAIT_USER_MSG / 错误 / 其它交接都视为返回调用方
 AgentSession.finish_run(run_B)                 # outcome process_done；出栈，run_A 重新成为 live run；Turn 不结束
 # 下一圈 commit_input_batch 把 <process_result behavior=B status=ok|failed|needs_user_input> 注入 run_A
 

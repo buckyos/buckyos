@@ -384,6 +384,13 @@
       },
       "type": "object"
     },
+    "CompletionPolicy": {
+      "enum": [
+        "natural",
+        "explicit_report"
+      ],
+      "type": "string"
+    },
     "ContextMode": {
       "description": "How a behavior is entered when a hand-over (`next_behavior`) or a `call_behavior` tool call names it. Decided by the target behavior, never by the session as a whole; there is no default mode.",
       "oneOf": [
@@ -1307,6 +1314,14 @@
     "SessionPolicy": {
       "description": "`session.policy`: the session template resolved at creation (xAgent §4.7) and frozen with the session.",
       "properties": {
+        "completion": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CompletionPolicy"
+            }
+          ],
+          "default": "natural"
+        },
         "load_hints": {
           "default": true,
           "type": "boolean"

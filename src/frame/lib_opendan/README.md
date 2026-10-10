@@ -33,11 +33,13 @@ let result = SessionRunner::new(deps).drive(&sd, StopWhen::Finished).await;
 
 LLM Provider 由 `session_config.prompt.llm_context`（xllm `.llm_context` 的 JSON 形式）决定，工具预算键为 `max_tool_iterations`。`StopWhen::MaxOutcomes { n }` 让 drive 处理 n 个 `LLMContext` outcome（每个启动或恢复的 run 段一个，任何种类）后返回 `DriveResult::OutcomesHandled`；它不是 Round（推理）数、`run()` 调用数，也不是 Turn 数。Session 的结束条件另由 `end_condition`（如 `max_turns`）按已完成的 Turn 计。Round / Step / Turn 的定义见 [LLM Context readme](../../../doc/llm_context/readme.md)。
 
-持久格式为协议版本 5（session_input /3、session_config /5、session_state /5、binding /3，xllm RunRecord.version = 5；summary 与机械渲染保持 /2，快照版本 4）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
+持久格式为协议版本 6（session_input /3、session_config /6、session_state /6、binding /3，xllm RunRecord.version = 6；summary /2、机械渲染 /3、快照版本 5）。旧格式的 session / run 不迁移、不按旧字段读取，加载时返回 RecoveryBlocked，投递返回 `session_readonly`。
 
 RunnerDeps.runtime 使用 agent_tool::runtime::AgentRuntime；.llm_context.runtime 是构造配置，session_config.runtime.requirement 是绑定要求。binding 保存实际 target 和执行 cwd，推理与旧执行恢复前先核验。SessionToolManager 保留协议纪律，内部调用 Sandbox。Session 的 .runtime/bin 与 Agent tools 作为宿主环境注入；独立 xllm 接管校验保存的 PATH、manifest、helper 与凭据环境引用。远端 Session helper 未部署时明确报 Capability；remote_ssh 可独立用于 xllm。
 
 宿主已注册 BuckyOS runtime 时，Session 环境与每次 native / tmux 命令执行前都会续期并读取当前 session token，注入 `BUCKYOS_APPCLIENT_SESSION_TOKEN`，覆盖父进程、Session 配置或单次调用中的旧值。续期失败或 token 为空时阻止执行；工具沿用宿主身份，不需要 owner 私钥。run 的环境核验记录只保存凭据变量名，不保存 token 值。未注册 runtime 的独立开发形态仍可显式传入该环境变量。
+
+Session 的宿主 `report` 工具提交阶段报告或以 `is_end=true` 请求完成；Behavior XML 用 `<report end="true">`，结束与动作/切换互斥。`session.policy.completion = explicit_report` 可要求显式完成（默认 natural）；无输入队列时漏报会失败，有输入队列的普通 Done 关闭 Turn 并等待。报告、显式稳定产物和可选 JSON result 统一持久化，恢复不重执行报告、不新增推理；子 context 的结束只交回调用方。持久身份、提交窗口与历史投影见 [Session Directory Protocol §7.1](<../../../doc/opendan/protocol/Session Directory Protocol.md>)。
 
 ## xagent
 
@@ -72,6 +74,7 @@ cargo test -p libopendan -- --test-threads=1
 
 | 文件 | 覆盖 |
 |---|---|
+| `tests/report.rs` | 阶段/最终报告、拒绝可修正、批次配对、显式完成策略、子 context 归属、稳定产物/JSON result、崩溃重做与历史去重 |
 | `tests/l1.rs` | 锁（epoch、inode 不变、CLOEXEC、kill -9 后接管）、反向读有界、压缩无空洞、kmsg 规则（文件队列与 kmsg 的 sled 实现）、订阅丢失重建、迁移、巡检、幂等创建、绑定失败、墓碑修复、活动视图 |
 | `tests/runner_basic.rs`、`tests/runner_more.rs` | work session 端到端、finished 后拒绝输入、非驱动者 / Busy、stop、事件路由（active / semi / 未订阅丢弃 / 订阅变更按投递顺序生效）、半订阅快照、behavior loop、普通 / fork / independent 切换（同一 Turn 内交接）、`max_turns` 只计已完成 Turn、decide 与 head、activity / perception 输入、tmux runtime |
 | `tests/crash.rs` | 子进程在各提交窗口 abort（`LIBOPENDAN_FAULT`，如 `input_batch:after_state_commit`、`finish_run:after_flush`）或执行中被 kill -9 后恢复；版本不支持时阻塞；xllm 接手与拒绝 |

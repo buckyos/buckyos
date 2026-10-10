@@ -16,7 +16,7 @@ use serde_json::Value;
 /// without an input queue). 4: input templates, `input.mode / media`,
 /// `session.timezone`, event sources of subscriptions. Earlier versions are
 /// read-only until migrated.
-pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/5";
+pub const SESSION_CONFIG_SCHEMA: &str = "opendan.session_config/6";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -144,6 +144,8 @@ fn default_session_depth() -> u8 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SessionPolicy {
     #[serde(default)]
+    pub completion: super::CompletionPolicy,
+    #[serde(default)]
     pub wait_user_msg: WaitPolicy,
     #[serde(default)]
     pub observe: ObserveScope,
@@ -163,6 +165,7 @@ pub struct SessionPolicy {
 impl Default for SessionPolicy {
     fn default() -> Self {
         Self {
+            completion: super::CompletionPolicy::default(),
             wait_user_msg: WaitPolicy::default(),
             observe: ObserveScope::default(),
             load_hints: true,

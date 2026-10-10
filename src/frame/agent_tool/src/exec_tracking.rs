@@ -125,7 +125,10 @@ pub fn materialize_unresolved(
             .get(&a.call_id)
             .cloned()
             .unwrap_or_else(|| unresolved_reason(&a.tool));
-        if !behavior {
+        if !behavior || fc_has_call(snapshot, &a.call_id) {
+            if let Some(batch) = snapshot.state.tool_batch.as_mut() {
+                batch.remaining.retain(|call| call.call_id != a.call_id);
+            }
             if fc_has_result(snapshot, &a.call_id) {
                 continue;
             }
@@ -153,7 +156,12 @@ pub fn materialize_unresolved(
         // Behavior mode.
         let state = &mut snapshot.state;
         let mut handled = false;
-        for step in state.steps.iter_mut().chain(state.last_step.iter_mut()) {
+        for step in state
+            .steps
+            .iter_mut()
+            .chain(state.last_step.iter_mut())
+            .chain(state.action_step.iter_mut().map(|active| &mut active.step))
+        {
             if let Some(pos) = step.actions.iter().position(|x| x.call_id == a.call_id) {
                 if step.action_results.len() > pos {
                     handled = true; // already has an outcome
@@ -228,7 +236,12 @@ pub fn persisted_outcome_ids(snapshot: &LLMContextSnapshot) -> Vec<String> {
         }
     }
     let st = &snapshot.state;
-    for step in st.steps.iter().chain(st.last_step.iter()) {
+    for step in st
+        .steps
+        .iter()
+        .chain(st.last_step.iter())
+        .chain(st.action_step.iter().map(|active| &active.step))
+    {
         for (i, a) in step.actions.iter().enumerate() {
             if i < step.action_results.len() {
                 out.push(a.call_id.clone());
@@ -236,4 +249,123 @@ pub fn persisted_outcome_ids(snapshot: &LLMContextSnapshot) -> Vec<String> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use llm_context::state::{ActionStep, LLMContextState, ToolBatch};
+    use serde_json::json;
+
+    fn snapshot() -> LLMContextSnapshot {
+        let request = serde_json::from_value(json!({
+            "owner": {"kind":"one_shot", "id":"test"}, "input":[]
+        }))
+        .unwrap();
+        LLMContextSnapshot {
+            state: LLMContextState::from_request(&request, 1),
+            request,
+        }
+    }
+
+    fn call(id: &str) -> AiToolCall {
+        AiToolCall {
+            call_id: id.into(),
+            name: "shell".into(),
+            args: HashMap::new(),
+        }
+    }
+
+    fn inflight(id: &str) -> InflightAction {
+        InflightAction {
+            call_id: id.into(),
+            tool: "shell".into(),
+            args: json!({}),
+            effect: "side_effect".into(),
+            idempotency_key: None,
+            step_index: None,
+            started_at_ms: 1,
+        }
+    }
+
+    #[test]
+    fn recovered_native_calls_leave_only_unexecuted_siblings_in_the_batch() {
+        for behavior in [false, true] {
+            let mut snapshot = snapshot();
+            snapshot
+                .state
+                .accumulated
+                .push(buckyos_api::AiResponse::message_from_parts(
+                    None,
+                    vec![call("started"), call("not-started")],
+                    vec![],
+                ));
+            snapshot.state.tool_batch = Some(ToolBatch {
+                remaining: vec![call("started"), call("not-started")],
+                batch_error: None,
+            });
+            assert_eq!(
+                materialize_unresolved(
+                    &mut snapshot,
+                    &[inflight("started")],
+                    behavior,
+                    &HashMap::new()
+                ),
+                vec!["started"]
+            );
+            assert!(fc_has_result(&snapshot, "started"));
+            assert_eq!(
+                snapshot
+                    .state
+                    .tool_batch
+                    .as_ref()
+                    .unwrap()
+                    .remaining
+                    .iter()
+                    .map(|call| call.call_id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["not-started"]
+            );
+            assert!(snapshot.state.steps.is_empty());
+            assert!(materialize_unresolved(
+                &mut snapshot,
+                &[inflight("started")],
+                behavior,
+                &HashMap::new()
+            )
+            .is_empty());
+            assert_eq!(snapshot.state.accumulated.len(), 2);
+        }
+    }
+
+    #[test]
+    fn recovered_action_stays_in_its_original_step_and_is_not_dispatched_twice() {
+        let mut snapshot = snapshot();
+        snapshot.state.action_step = Some(ActionStep {
+            step: StepRecord {
+                actions: vec![call("started"), call("not-started")],
+                ..Default::default()
+            },
+            response: Default::default(),
+        });
+        assert_eq!(
+            materialize_unresolved(&mut snapshot, &[inflight("started")], true, &HashMap::new()),
+            vec!["started"]
+        );
+        let step = &snapshot.state.action_step.as_ref().unwrap().step;
+        assert_eq!(step.action_results.len(), 1);
+        assert!(
+            matches!(&step.action_results[0], Observation::Unresolved { call_id, effect_unknown: true, .. } if call_id == "started")
+        );
+        assert_eq!(persisted_outcome_ids(&snapshot), vec!["started"]);
+        assert!(snapshot.state.steps.is_empty());
+        assert!(snapshot.state.last_step.is_none());
+        assert!(materialize_unresolved(
+            &mut snapshot,
+            &[inflight("started")],
+            true,
+            &HashMap::new()
+        )
+        .is_empty());
+    }
 }

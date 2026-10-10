@@ -11,6 +11,7 @@ pub mod behavior;
 pub mod config;
 pub mod input;
 pub mod misc;
+pub mod report;
 pub mod runtime;
 pub mod state;
 pub mod summary;
@@ -21,6 +22,7 @@ pub use behavior::*;
 pub use config::*;
 pub use input::*;
 pub use misc::*;
+pub use report::*;
 pub use runtime::*;
 pub use state::*;
 pub use summary::*;
@@ -54,6 +56,7 @@ pub fn json_schemas() -> Vec<(&'static str, serde_json::Value)> {
         ("behavior_entry", s::<config::BehaviorEntry>()),
         ("behavior_config", s::<behavior::BehaviorConfig>()),
         ("session_state", s::<state::SessionState>()),
+        ("report_submission", s::<report::ReportSubmission>()),
         ("session_summary", s::<summary::SessionSummary>()),
         ("worklog_entry", s::<worklog::WorklogEntry>()),
         ("lock_info", s::<misc::LockInfo>()),

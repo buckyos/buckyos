@@ -35,7 +35,10 @@ impl Env {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().to_path_buf();
         let e = Self::at(&root);
-        Self { _tmp: Some(tmp), ..e }
+        Self {
+            _tmp: Some(tmp),
+            ..e
+        }
     }
 
     /// Re-open an environment at an existing root (child processes).
@@ -62,8 +65,13 @@ impl Env {
     pub fn agent(&self) -> Arc<FsAgentStateClient> {
         let ch = self.channels();
         Arc::new(
-            FsAgentStateClient::open(&self.agent_root, AGENT, Some(ch.client()), Some(Arc::new(PollWaker)))
-                .unwrap(),
+            FsAgentStateClient::open(
+                &self.agent_root,
+                AGENT,
+                Some(ch.client()),
+                Some(Arc::new(PollWaker)),
+            )
+            .unwrap(),
         )
     }
 
@@ -102,7 +110,9 @@ pub struct ScriptedLlm {
 }
 
 impl ScriptedLlm {
-    pub fn new(f: impl Fn(&LlmInferenceRequest, usize) -> AiResponse + Send + Sync + 'static) -> Arc<Self> {
+    pub fn new(
+        f: impl Fn(&LlmInferenceRequest, usize) -> AiResponse + Send + Sync + 'static,
+    ) -> Arc<Self> {
         Self::fallible(move |r, n| Ok(f(r, n)))
     }
 
@@ -136,10 +146,16 @@ pub fn render(messages: &[AiMessage]) -> String {
         for c in &m.content {
             match c {
                 AiContent::Text { text } => s.push_str(text),
-                AiContent::ToolUse { name, args, call_id } => {
-                    s.push_str(&format!("<tool_use {name} {call_id} {:?}>", args))
-                }
-                AiContent::ToolResult { call_id, content, is_error } => s.push_str(&format!(
+                AiContent::ToolUse {
+                    name,
+                    args,
+                    call_id,
+                } => s.push_str(&format!("<tool_use {name} {call_id} {:?}>", args)),
+                AiContent::ToolResult {
+                    call_id,
+                    content,
+                    is_error,
+                } => s.push_str(&format!(
                     "<tool_result {call_id} error={is_error} {}>",
                     content
                         .iter()
@@ -176,7 +192,12 @@ pub fn text(t: &str) -> AiResponse {
 }
 
 pub fn tool_call(call_id: &str, name: &str, args: Value) -> AiResponse {
-    let map = args.as_object().unwrap().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+    let map = args
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     AiResponse::new(AiMessage::new(
         AiRole::Assistant,
         vec![AiContent::tool_use(call_id, name, map)],
@@ -195,7 +216,12 @@ pub fn last_user_text(req: &LlmInferenceRequest) -> String {
 pub fn has_tool_result(req: &LlmInferenceRequest, call_id: &str) -> Option<String> {
     for m in &req.messages {
         for c in &m.content {
-            if let AiContent::ToolResult { call_id: id, content, .. } = c {
+            if let AiContent::ToolResult {
+                call_id: id,
+                content,
+                ..
+            } = c
+            {
                 if id == call_id {
                     return Some(
                         content
@@ -268,11 +294,18 @@ pub fn kinds(entries: &[libopendan::protocol::WorklogEntry]) -> Vec<&'static str
 
 /// Post an input from synchronous code (e.g. inside an LLM script) through a
 /// dedicated thread + runtime.
-pub fn post_blocking(queue_dir: &Path, queue: &str, input: libopendan::protocol::PostedInput) -> u64 {
+pub fn post_blocking(
+    queue_dir: &Path,
+    queue: &str,
+    input: libopendan::protocol::PostedInput,
+) -> u64 {
     let queue_dir = queue_dir.to_path_buf();
     let queue = queue.to_string();
     std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         rt.block_on(async move {
             let client = libopendan::channel::DirMsgQueue::client(&queue_dir).unwrap();
             libopendan::channel::kmsg::post_to_queue(&client, &queue, &input)

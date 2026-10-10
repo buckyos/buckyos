@@ -88,7 +88,7 @@ description, or a compact review note.
 
 当所有结论已经形成，并且没有更多动作要做后：
 - Report briefly：保持沉默，不要随意打扰。只有需要用户澄清、需要用户授权/处理，或已经规划执行但长期失败的计划任务，才报告给用户。
-- 宣告Self-Check 结束：set `next_behavior = END`
+- 宣告 Self-Check 结束：先观察动作结果，再单独提交非空 `<report end="true">`，同次决策不带 actions 或 next_behavior
 
 
 <</PROCESS_RULES>>

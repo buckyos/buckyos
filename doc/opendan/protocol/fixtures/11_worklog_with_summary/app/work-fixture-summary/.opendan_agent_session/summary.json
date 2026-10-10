@@ -15,7 +15,7 @@
     "recent_full_responses": 2,
     "summary_chars": 280
   },
-  "renderer": "libopendan.mechanical/2",
+  "renderer": "libopendan.mechanical/3",
   "schema": "opendan.session_summary/2",
   "start_offset": 16349,
   "start_seq": 192,

@@ -65,7 +65,7 @@ xagent : AgentSession ──InputBus──► 输入批次 ──commit──►
 
 | 已有能力 | 直接复用的入口 |
 |---|---|
-| `session_input/3`、`session_config/4`、`session_state/5`；binding `/3`、RunRecord v5、快照 v4 | `protocol/{input,config,state}.rs`、[协议索引](protocol/README.md)；类型与版本常量优先于旧 README 的摘要 |
+| `session_input/3`、`session_config/6`、`session_state/6`；binding `/3`、RunRecord v6、快照 v5 | `protocol/{input,config,state}.rs`、[协议索引](protocol/README.md)；类型与版本常量优先于旧 README 的摘要 |
 | 顺序路由、拒绝、去重、active 接受状态、Observe 合并、session 拉取订阅 | `runner/inputs.rs::route_inputs`；不再拆成整批 controls 与整批 events 两遍处理 |
 | InputView、命名格式、三类模板、媒体块、receipt 与回复来路 | `runner/{input_view,assembler,live,receipts,flush}.rs`；黄金结果在 `protocol/fixtures/14_input_bus/` |
 | 普通 task 串行等待、Unknown 回填、后台 task 跟踪、长工具 stop | `runner/shared.rs::{Opened,WaitingRun}`、`live.rs::try_fill`、`drive.rs::{poll_watched_tasks,StopMonitor}` |
@@ -129,7 +129,7 @@ xagent 不改变这张表的分工，只在“配置来源”和“system 段”
 | G1 | `prepare_hosted` 只用 `llm_context` JSON 的 provider / model / limits / tools / `loop_model`，`prompt.sections`、`prompt.system`、groups 的 section、`runs_dir` 被解析但忽略 | behavior 叠加只能落在这几个键上，正好够用；但 `prompt.llm_context` 里写了 sections 会静默无效 | xagent 在冻结时校验并报错；§6.4 的 overlay 只产生这几个键 |
 | G2 | `hosted_waist_deps` 用无时间戳 `XmlStepRenderer`，而 `xllm --resume` 接手后重建 deps 时用带时间戳的渲染器 | 接手后历史渲染字节变化，只影响前缀缓存，不影响正确性 | run.json `host` 里记 `renderer_opts`，xllm resume 时沿用（E1 实验会观察到） |
 | G3 | `build_runtime_protocol` 的开场白是“你在 xllm 一次性任务里运行，没有后续对话，不要向用户提问”，hosted 也原样追加 | 与 Session 的 `WAIT_USER_MSG` 语义冲突 | `prepare_hosted` 增加 `HostProtocolFlavor::Session`，由宿主给出 runtime_protocol 的开场白 |
-| G4 | xllm action 解析把“无动作 + `<report>`”映射为 `next_behavior = "done"`，不是 `END`；依赖 `forbid_next_behavior = false` | libopendan 已按“done 即交付”处理（`classify_done`），子 context 的 run 不设 forbid | 保持；文档化到协议 Spec |
+| G4 | Behavior 完成使用显式 `report_end`；report-only 不再合成 done | 两套 parser、快照恢复、宿主及子返回统一报告身份 | 已实施 H4；END / done 拒绝，最终报告和动作 / 非空调度互斥 |
 | G5 | Runtime 已提供 exec 请求超时、执行记录与取消停止核验 | Session 的整体 behavior deadline 仍属于后续 xagent 预算接线 | 保留 Session stop/lease 中断；整体预算经宿主接入，policy 不作为首版前置 |
 | G6 | 已修：run 保存实际目标与 Session env_check | xllm 接管核验 PATH、环境、manifest 与 helper 内容 | 凭据重新读取环境引用；依赖缺失/变化则阻塞恢复 |
 | G7 | 已修：prepare/prepare_hosted 调用共享 runtime.open | 内置文件工具使用目标侧后端，与 exec 共用 cwd | native/tmux/SSH 已验证；远端 Session helper 缺失时报 Capability |
@@ -137,7 +137,7 @@ xagent 不改变这张表的分工，只在“配置来源”和“system 段”
 
 ### 3.2 Context 调度：Agent Session 与 LLMContext 的根本区别
 
-LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behavior 模式下，LLM 用 `<next_behavior>` 声明下一步（`END`、`WAIT_USER_MSG`、xllm 的 `done`，或一个 behavior 名），`run()` 随即以 `Done` 返回。LLMContext 不知道目标 behavior 的配置，也不知道还有别的 context、Turn 和输入队列。function_call 模式没有 `next_behavior`，`Done` 就是最终回答。
+LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behavior 模式下，`<report end="true">` 请求完成当前 context，`<next_behavior>` 只声明 WAIT_USER_MSG 或目标 behavior，两者不能同现；普通 report 更新状态后继续。两套 parser 拒绝 END / done 与空决策。function_call 的普通 Done 是无工具的回答，是否结束 Session 由完成策略决定；宿主 report 工具获准的 `is_end=true` 提交则无需额外推理即可完成当前 context。LLMContext 不解释调用关系、Session 队列或报告的业务内容。
 
 所以**下一个 context 由谁跑、从哪份快照起、用哪套配置、结果怎么交回，全部由 Agent Session 决定**。本文把这部分称为 Context 调度（Context Switch），它是 Session 比 LLMContext 多出来的核心能力。约束：
 
@@ -158,14 +158,14 @@ LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behav
 | T0 | 续跑 | 受控输入批次（可带半订阅快照）、可恢复挂起之后 | 当前 context | 不换 | 保留 | 同一 run | — |
 | T1 | ~~普通切换~~（**废弃**） | — | 不再存在：不能在同一 run 里换成另一 behavior 的 system / 配置，也没有 normal 缺省回退；目标未声明进入模式是配置错误（§3.4） | — | — | — | — |
 | T2 | 子 context：**create-sub-context** 或 **fork**（behavior 触发） | `next_behavior = B`，B 的进入模式为 `create_sub_context` / `fork` | create-sub-context：新 run = B 的 system + 任务输入 + 显式选择的父历史（`inherit`：none / recent_dialogue / steps）；fork：新 run = 父的 system + 分叉点的完整有效历史 + 分支任务输入 | create-sub-context：B 自己的；fork：与父相同 | 子独立（budget、usage、错误计数从头）；Step / action 编号接续父 | 新 run；父 run 入栈 `caller`，`call.trigger = behavior` | 子 run 结束 → `process_result` 交接批次注入父 run |
-| T3 | **SWITCH_CONTEXT** | `next_behavior = B`，B 的进入模式为 `switch_context` | 栈里 B 自己 parked 的 run（恢复它自己的快照）；没有就新建：B 的 system + 交接输入，历史按 B 的 `inherit`（none / recent_dialogue） | B 自己的 | B 自己的 | 当前 run 入栈 `parked`；B 有 parked 的 run 就出栈成为 live | 不隐式返回：回 A 要显式切换；`END` 按 Session 结束条件收尾 |
+| T3 | **SWITCH_CONTEXT** | `next_behavior = B`，B 的进入模式为 `switch_context` | 栈里 B 自己 parked 的 run（恢复它自己的快照）；没有就新建：B 的 system + 交接输入，历史按 B 的 `inherit`（none / recent_dialogue） | B 自己的 | B 自己的 | 当前 run 入栈 `parked`；B 有 parked 的 run 就出栈成为 live | 不隐式返回：回 A 要显式切换；显式结束报告按 Session 完成策略收尾 |
 | T4 | **工具触发的子调用** | 调用 `call_behavior({behavior, task})` | 同 T2：由目标的进入模式决定是 create-sub-context 还是 fork；fork 的分叉点在触发批次之前 | 同 T2 | 同 T2 | 新 run；父 run 以 PendingTool 挂起（task id `subctx:<call_id>`），入栈 `caller`，`call.trigger = tool{call_id, task_id}` | 子 run 结束 → 父 run 以 `ToolResults{call_id}` 恢复 |
 | T5 | 改写 | `ContextLimitReached` | 同一 run，历史重写为 summary + `<session_history>` | 不换 | 保留 | 同一 run，epoch + 1 | — |
 | T6 | Turn 边界 | 上一个 run 已结束，又来了输入 | 新 run：当前 behavior 的 system + `<session_history>` | 当前 behavior 的 | 新 | 新 run | — |
 
 - T2 / T3 由 `next_behavior` 触发，只出现在 Behavior 模式；T4 两种模式都能用，也是 function_call 模式（如 opendan 现在的 ui session）唯一的调度手段。
 - **构造方式与触发方式独立**：子 context 是哪一种（create-sub-context / fork）只看目标 behavior 的进入模式；T2 与 T4 的区别只在触发和返回协议。旧 T2 的“用 B 的 system、继承父 steps”就是 `create_sub_context` + `inherit = steps`。
-- **子 context 的任何结束都返回调用方**，结果带 `status: ok | failed | needs_user_input`：`END` / `done` → ok；Error / BudgetExhausted → failed（对调用方是一次失败的结果，不是失败的 Turn）；`WAIT_USER_MSG` → needs_user_input（子 context 从不自己等用户，也不消费调用方的输入）；声明切换到一个 `switch_context` 目标也按 ok 返回（子 context 不离开自己的调用）。这由 Session 在 `classify_done` 里处理，不用 `forbid_next_behavior`（原因见 G4）。子 context 可以再调用子 context。
+- **子 context 的任何结束都返回调用方**，结果带 `status: ok | failed | needs_user_input`：获准的结束报告 → ok；Error / BudgetExhausted → failed（对调用方是一次失败的结果，不是失败的 Turn）；`WAIT_USER_MSG` → needs_user_input（子 context 从不自己等用户，也不消费调用方的输入）；声明切换到一个 `switch_context` 目标也按 ok 返回（子 context 不离开自己的调用）。这由 Session 在 `classify_done` 里处理，不用 `forbid_next_behavior`（原因见 G4）。子 context 可以再调用子 context。
 - **嵌套深度**：栈上的 `caller` frame 不超过 `session.policy.max_process_depth`（默认 4）；`parked` frame 不计入。超限时 T4 的工具直接返回 Error 观察；T2 超限只会发生在子 context 里，按 failed 交回它的调用方。
 - **没有回退**：进入模式缺失或非法在冻结时校验报错（§6.3）；运行中 LLM 跳到这样的目标时，顶层 run 的 Turn 以 `failed{behavior_config}` 结束，子 context 里则按 failed 交回调用方。不会落回“同一 run 换 system”。
 - 返回方向：子 run 结束 → `Return{status, result}`，`caller` frame 出栈，父 run 重新成为 live，不关闭 Turn；结果按 `call.trigger` 走 `process_result` 或 `ToolResults`。
@@ -191,12 +191,12 @@ LLMContext 的契约只到一个停止点：`run()` 返回一个 Outcome。Behav
 | system、工具、模型 | 目标自己的 | 目标（子任务）自己的 | 与父相同；目标不能声明自己的 `prompt.system` / `llm_context` 覆盖 |
 | 历史 | 目标自己的；首次进入按 `inherit`（none / recent_dialogue）装配，不带别的 context 的快照 | 任务输入 + 显式选择的父历史：none / recent_dialogue / steps | 分叉点的完整有效历史，再追加分支任务输入；不接受 `inherit` |
 | 再次进入 | 恢复目标自己的快照（同一个 run） | 每次新建子 run | 每次新建分支 |
-| 完成 | `END` 按 Session 结束条件收尾，不隐式返回上一个 behavior | 结果交回调用方 | 结果交回调用方 |
+| 完成 | 显式结束报告按 Session 完成策略收尾，不隐式返回上一个 behavior | 结果交回调用方 | 结果交回调用方 |
 | 栈 | 离开的 run 入栈 `parked` | 调用方入栈 `caller` | 调用方入栈 `caller` |
 
 三者都延续当前 Turn，都不自动隔离文件系统、Session 状态与 worklog。
 
-**SWITCH_CONTEXT（T3）**。目标有自己的 system、工具、历史和 run。首次进入时新建：目标的 system +（按 `inherit`）`<session_history>` + `on_context_switch` 交接批次（由 Session 从共享状态渲染：当前任务状态、交接原因）。再次进入时把它 parked 的 run 出栈并恢复原快照，只追加新的交接批次；它的 system、已有历史、编号、预算都不动，不把另一个 context 的原始历史并进来。各 run 各自编号。`END` 在这里就是 Session 的结束条件（`decide_end`）；要回到上一个 behavior 必须显式 `next_behavior`。入口 behavior 没有“被进入”的调用方，按 `switch_context` 处理。
+**SWITCH_CONTEXT（T3）**。目标有自己的 system、工具、历史和 run。首次进入时新建：目标的 system +（按 `inherit`）`<session_history>` + `on_context_switch` 交接批次（由 Session 从共享状态渲染：当前任务状态、交接原因）。再次进入时把它 parked 的 run 出栈并恢复原快照，只追加新的交接批次；它的 system、已有历史、编号、预算都不动，不把另一个 context 的原始历史并进来。各 run 各自编号。显式结束报告在这里交由 Session 完成策略裁决；要回到上一个 behavior 必须显式 `next_behavior`。入口 behavior 没有“被进入”的调用方，按 `switch_context` 处理。
 
 **create-sub-context（T2 / T4）**。子 run 用目标 behavior 冻结的 system、工具、模型，输入是任务（behavior 触发：交接批次；工具触发：`task` 参数）加上按 `inherit` 选的父历史，由 llm_context 的 `derive_child` 构造（§3.7）：
 
@@ -591,7 +591,7 @@ impl ChildDriver {
 - **与 T4 的区别**：T4 的子 run 在父 session 内串行，父挂起时没有别的东西在跑；`--wait` 的子 session 在自己的 lease 下推进，可以与其它子并行；持久恢复相互独立，进程存活范围见 §4.12。
 - **接手**：这个 resolver 只依赖 Agent State，不依赖 Runner 内存；但 v1 只有 xagent 提供它，父 run 挂起期间 xllm 拒绝接手（同 T4）。
 
-**父结束规则（汇总）**：父的 `decide_end` 发现还有未结束、且 `report != none` 的子 session 时，不结束 session：run 结束，Turn 保持打开，`waiting_for = Children{sids}`；子的结束事件作为受控输入并入同一个 Turn，父 LLM 汇总后再 `END`。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
+**父结束规则（汇总）**：父的 `decide_end` 发现还有未结束、且 `report != none` 的子 session 时，不结束 session：run 结束，Turn 保持打开，`waiting_for = Children{sids}`；子的结束事件作为受控输入并入同一个 Turn，父 LLM 汇总后再提交结束报告。这样 work 父也能“先并行派出几个子 session，再汇总”。不想等的子，要么创建时选 `--report none`，要么先 `ctl <child> stop`。
 
 ### 4.16 生命周期与限制
 
@@ -791,13 +791,13 @@ pub struct BehaviorConfig {
 
 `input.mode` 默认 Batch；Single 在按 source / index 排序的可处理 message / Input event 中总共选一条，Batch 最多取 `options.input_batch_max` 条，未选输入保留，后台 task 合成候选排在总线候选之后。首次进入目标 behavior 时先完成必要的冻结与校验，再读取策略和模板。模板缺省使用内建渲染；已有选中的外部输入却渲染为空必须报错并保留现场。没有外部输入时的 bootstrap / continuation 处理见 §9.3。
 
-`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主已按新名实施（`session_config/4`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
+`semi_subscription_snapshot`（半订阅快照）是三类入口共用的前置材料，装配函数为 `render_semi_subscription_snapshot`。不设置 `on_observation` 或第四类输入 hook；旧 `on_behavior_step_ob` 不作为半订阅入口沿用，工具结果渲染仍属于 LLM Context 的执行协议。旧输入入口 `on_wakeup / on_behavior_switch` 对应新名 `on_input / on_context_switch`；旧 behavior cfg 中用作 system 的 `prompt.on_init` 对应 `prompt.system`。libopendan 宿主自 `session_config/4` 起按新名实施（当前为 `/6`），不提供旧名兼容；C7 的 behavior 素材按新结构编写，现有 OpenDAN 配置改造仍按 §1.2 后移。附件块由 `input.media` 决定，模板不决定是否内联。
 
 进入模式放在目标 behavior 上，正好回答 readme 里的 TODO（“切换模式由 target behavior 的配置决定，而不是由当前 session 决定？”）：是。校验规则：`fork` 目标不能声明自己的 system 与模型（要换就用 `create_sub_context`），也不接受 `inherit`；`switch_context` 目标不接受 `inherit = steps`；入口 behavior 未声明时按 `switch_context`；其它 behavior 没有进入模式是配置错误，不回退成任何默认模式。进入模式为 `create_sub_context` / `fork` 的 behavior 就是 `call_behavior` 可调用的目标（§3.6），不需要另外声明工具。`SessionAssembler::behavior_entry(cfg, behavior)` 读冻结的 `behaviors[target].entry`；Session 级的 `extensions.opendan.process_modes` 已废弃并被拒绝。libopendan 的 Session 宿主以 `extensions.opendan.behaviors.<name> = {mode, prompt{system?, on_init?, on_input?, on_context_switch?, semi_subscription_snapshot?}, input{mode, media}?, llm_context?, inherit?}` 承载同一份进入配置，冻结（C7）时由 BehaviorConfig 生成它。
 
 ### 6.3 冻结：时机、位置、范围
 
-**位置**：在当前 `session_config/4` 的 `prompt` 中新增 `frozen`，不新增文件。下例是冻结后的形状，已随 C4 / C5 / C7 / C15 实施为 `opendan.session_config/5`（fixtures 与 schema 已重新生成）：
+**位置**：`frozen` 位于当前 `opendan.session_config/6` 的 `prompt` 中，不新增文件。下例是冻结后的形状；冻结配置自 C4 / C5 / C7 / C15 的 `/5` 版本起实施，当前 fixtures 与 schema 已同步到 `/6`：
 
 ```jsonc
 "prompt": {
@@ -1029,7 +1029,7 @@ serve
 
 每个驱动命令按所驱动的 Session 构造 `RunnerDeps`，设置 assembler、任务 resolver 与 `session_cli = current_exe()`，runtime 通过 §5.2.1 的 Session 工厂装配；`serve` / ChildDriver 不能直接复用另一个 Session 的 tmux 依赖。由现有 bin overlay 包装成 `agent-session`。不要另建 Runtime 或工具派发协议；目标 behavior 的工具与模型按每个 run 的有效配置装配，context 的 runtime 则复用 Session 绑定。
 
-无队列 bootstrap 的持久输入（新增 C4）：创建前用同一消息 helper 构造 `PostedInput::msg`，写入目标字段 `prompt.initial_inputs: Vec<PostedInput>`，只接受合法 msg，最多 64 条；随 SessionConfig 一起发布，发布后不修改。已随 `session_config/5` 实施。Runner 将它适配为内部只读 source `_bootstrap`，index 从 1 开始，复用 SourceProgress / route_inputs / receipt；无需 kmsg，`channels.inputs` 仍为空，confirm 为空操作。Single 首批未选中的记录在后续 on_input 消费，不能因 bootstrap_done 就丢弃。初始消息与普通消息同样渲染为 user 输入，不挪进 system 的 prompt.context。
+无队列 bootstrap 的持久输入（新增 C4）：创建前用同一消息 helper 构造 `PostedInput::msg`，写入目标字段 `prompt.initial_inputs: Vec<PostedInput>`，只接受合法 msg，最多 64 条；随 SessionConfig 一起发布，发布后不修改。自 `session_config/5` 起实施，当前为 `/6`。Runner 将它适配为内部只读 source `_bootstrap`，index 从 1 开始，复用 SourceProgress / route_inputs / receipt；无需 kmsg，`channels.inputs` 仍为空，confirm 为空操作。Single 首批未选中的记录在后续 on_input 消费，不能因 bootstrap_done 就丢弃。初始消息与普通消息同样渲染为 user 输入，不挪进 system 的 prompt.context。
 
 `new --no-run --msg` 必须在退出前落盘；已有无队列 Session 的 `run --msg / --event / --msg-file` 与 post 拒绝投递，提示在创建时提供材料或使用 Queue 模板。E9 的三种外部投递等价在有队列 Session 验证；E13 另验内部初始 source 的逐条消费与恢复。
 
@@ -1212,7 +1212,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | E7 | 回归：输入崩溃 | 输入快照 / state / 清门槛 / ack 各窗口故障，恢复不重复注入、不倒退位置、延续同一 Turn；门槛期间 xllm 拒绝接手 |
 | E8 | 回归：推进权 | 两个 run 或 serve 与 run 争抢同一 Session，后者 Busy（5）；不同 Session 可并行 |
 | E9 | 回归：投递等价 | Queue Session 的 run --msg、post 后 run、serve 中 post 使用同内容合法 MsgObject，视图 / receipt 结构与提交语义相同 |
-| E10 | 回归：调度不断 Turn | plan → create_sub_context do → 返回 → switch_context review → plan → review → END，全程一个 Turn，重复进入 review 恢复其自己的 run |
+| E10 | 回归：调度不断 Turn | plan → create_sub_context do → 返回 → switch_context review → plan → review → 显式结束报告，全程一个 Turn，重复进入 review 恢复其自己的 run |
 | E11 | 回归：新鲜量 | 同一 behavior 的两次 Turn 间隔运行，system 前缀相同；时间在输入，UTC 不受 Runner 机器时区影响 |
 | E12 | 回归：缺失冻结 | 无 frozen 且目录不可读 → RecoveryBlocked（6），不猜配置、不推理 |
 | E13 | 验收：无队列 work | 默认 work 无外部订阅，new --no-run --msg 后退出并重新 run：不建队列，初始输入不丢；WAIT_USER_MSG → needs_user_input（1）；无队列仍能等待 resolver，decide 可走 artifacts 门面 |
@@ -1223,7 +1223,7 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 | E18 | 后移：policy | guard 拒绝、审批 PendingTool / approve、grant 到期撤销；随 ActionGuard / RuntimeGrant 实施，本轮不提供这些 CLI 子命令 |
 | E19 | 验收：SWITCH_CONTEXT | do / check 使用不同模型与工具，往返后只有各自两个 run，配置、历史、编号、预算不串；xllm 到 handover 停为 paused，再次 resume 拒绝，xagent 提交转移一次；转移前后崩溃同样成立；未声明进入模式失败，无同 run 换 system 回退 |
 | E20 | 验收：工具子 context | function_call / behavior 父分别调用 create_sub_context（none/recent_dialogue/steps）与 fork；与 read 同批，进入 / 返回前后崩溃。父以 subctx:<call_id> 挂起，fork 前缀截止触发批次前；子结果恰好回填一次，父剩余调用继续、已执行不重放。继承记录不重复 flush，子 transcript 不进重建历史，子 WAIT_USER_MSG / Error 交回 needs_user_input / failed，不关闭父 Turn；嵌套超限及 fork 自带配置被拒，xllm 缺 Session resolver 时拒接 |
-| E21 | 验收：Sub Session | 无队列父派出 final / progress / --wait 三种子；各有 lease / Turn，progress 半订阅，wait 以 ToolResults 回填；父 END 时仍有需汇报子则 Turn 保持打开，结束事件 Input 后汇总。kill 宿主后登记与提交点可恢复、子不重复创建；同进程子协程也会停止，不宣称进程独立存活 |
+| E21 | 验收：Sub Session | 无队列父派出 final / progress / --wait 三种子；各有 lease / Turn，progress 半订阅，wait 以 ToolResults 回填；父普通 Done 时仍有需汇报子则 Turn 保持打开；显式结束报告在依赖未收齐时拒绝，结束事件 Input 后汇总。kill 宿主后登记与提交点可恢复、子不重复创建；同进程子协程也会停止，不宣称进程独立存活 |
 | E22 | 回归：父子对话 / stop | interactive 子提问，父收到 needs_input 后 post，子续同一 Turn；子主动 post 要求父有队列。父 stop 级联未结束子，各自驱动者提交 stopped |
 | E23 | 回归：模板 | 三入口分别渲染，Single / Batch 仅消费选中输入；启动 / 交接可合并外部输入；恢复、压缩、ToolResults 不重复触发入口；六个示例模板输出与 fixtures 一致 |
 | E24 | 验收：普通 PendingTool | 无通知 / 空 inbox 时查询终态并续同 run / Turn；无 resolver 阻塞、Unknown 回填；until_ms 到期回填当时状态。等待中 msg 暂存，回填后先续工具批次，再次 PendingTool 不丢关联；stop 配对且不重放 |
@@ -1343,3 +1343,13 @@ C4 默认无队列 work 用 `run`；如果由父的 ChildDriver 调度，无输�
 20. **默认：run 推进子 session**。按 §4.12 推进到空闲或结束；detach 只保证子已持久登记，后续由 serve / Supervisor 接管，不保证同进程任务在 CLI 退出后继续。
 21. **默认：子的用户是父**。子 headless；面向人的通道与例外随 UI 后移。
 22. **默认：数量与深度**。max_sub_sessions = 4、max_session_depth = 2；Context 调度深度是另一项限制。
+
+## H4：报告提交与显式完成
+
+工具启用的 Session 冻结宿主 `report` 工具；独立 xllm 不默认暴露。参数为非空 `report`、可选 `artifacts: string[]`、可选 `result: JSON`、`is_end`（缺省 false）。Behavior 使用 report/end 与并列 artifacts/result 节点。普通提交只更新最近报告；结束提交要求当前活动 task 与需等待的子 Work 已收敛，执行完成不代表人工验收通过。
+
+`session.policy.completion` 默认 `natural`，沿用 end_condition；可选 `explicit_report` 要求获准的结束报告才正常关闭 Session。普通 Done 在有输入队列的 Session 完成 Turn 并等待，在无输入队列的 WorkSession 按漏报失败。子 context 结束先交回调用方，父 Turn 保持打开；终态 Session 拒绝新增输入，后续修改创建新 Task / Work，H3 强制 reopen 不在本轮范围。
+
+工具结束报告按 run / call_id，XML 按 run / step_index 建立 `ReportSubmission`。先在 `run.json.host.extra.reports` 保存 accepted journal；产物为 `.opendan_agent_session/reports/{id}/{index}-{sha256}` 下的内容副本。state 分开保存 latest_report / final_report。工具接受结束后补齐同批未执行调用的回执并让出，宿主机械生成一次 `ReportDelivery` assistant message，与 report 文件共用正文和稳定引用，不增加推理 Round。恢复重复提交以同一身份重做，不重执行工具、不重复登记产物和交付。xllm 接手发现已接受的 final journal 会要求宿主继续完成。xllm 自行执行到宿主 XML 最终 Step 时只保存 paused + snapshot.state.report_end，不提前标记完成；宿主验证通过后交付，失败则将错误反馈给模型修正。
+
+当前持久版本：session_config / session_state 为 6，RunRecord 为 6，LLMContext snapshot 为 5，runtime protocol 为 xllm/2；不兼容旧 END / 隐式完成快照。

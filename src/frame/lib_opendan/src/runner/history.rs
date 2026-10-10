@@ -7,7 +7,7 @@
 //! the whole worklog.
 //!
 //! Rendering is deterministic for a renderer version
-//! (`libopendan.mechanical/2`): same summary.json + worklog → same bytes.
+//! (`libopendan.mechanical/3`): same summary.json + worklog → same bytes.
 
 use std::sync::Arc;
 
@@ -89,6 +89,9 @@ pub fn render_entry(e: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Opt
         }
     };
     Some(match &e.body {
+        WorklogBody::ReportDelivery { assistant, .. } => {
+            format!("[assistant] {}", limit(assistant, cfg.max_result_chars))
+        }
         WorklogBody::Created { objective, .. } => format!("[created] {objective}"),
         WorklogBody::TurnStarted {
             turn,
@@ -192,6 +195,7 @@ fn entry_run(body: &WorklogBody) -> Option<&str> {
         WorklogBody::InputBatch { run_id, .. }
         | WorklogBody::UserMessage { run_id, .. }
         | WorklogBody::AssistantMessage { run_id, .. }
+        | WorklogBody::ReportDelivery { run_id, .. }
         | WorklogBody::Step { run_id, .. }
         | WorklogBody::ActionResult { run_id, .. }
         | WorklogBody::Outcome { run_id, .. } => Some(run_id),
@@ -205,15 +209,40 @@ fn entry_run(body: &WorklogBody) -> Option<&str> {
 /// result. Without this a caller rebuilt from the session history would get
 /// the child's whole transcript mixed into its own.
 #[derive(Default)]
-struct ReturnedChildren(std::collections::HashSet<String>);
+struct ReturnedChildren {
+    children: std::collections::HashSet<String>,
+    deliveries: std::collections::HashMap<String, ReportSource>,
+}
 
 impl ReturnedChildren {
     fn note(&mut self, body: &WorklogBody) {
+        if let WorklogBody::ReportDelivery {
+            run_id, submission, ..
+        } = body
+        {
+            self.deliveries
+                .insert(run_id.clone(), submission.source.clone());
+        }
         if let WorklogBody::Outcome { run_id, kind, .. } = body {
             if kind == "process_done" {
-                self.0.insert(run_id.clone());
+                self.children.insert(run_id.clone());
             }
         }
+    }
+
+    fn render(&self, entry: &WorklogEntry, age: u32, cfg: &MechanicalCompress) -> Option<String> {
+        let mut entry = entry.clone();
+        if let WorklogBody::AssistantMessage {
+            run_id, tool_calls, ..
+        } = &mut entry.body
+        {
+            if let Some(ReportSource::Tool { call_id }) = self.deliveries.get(run_id) {
+                for call in tool_calls.iter_mut().filter(|c| &c.call_id == call_id) {
+                    call.args = serde_json::json!({"delivery": "report_delivery"});
+                }
+            }
+        }
+        render_entry(&entry, age, cfg)
     }
 
     /// The entry is part of a returned child's transcript (not its result).
@@ -221,7 +250,19 @@ impl ReturnedChildren {
         if matches!(body, WorklogBody::Outcome { kind, .. } if kind == "process_done") {
             return false;
         }
-        entry_run(body).is_some_and(|r| self.0.contains(r))
+        if let WorklogBody::Step {
+            run_id, step_index, ..
+        } = body
+        {
+            if self.deliveries.get(run_id)
+                == Some(&ReportSource::Behavior {
+                    step_index: *step_index,
+                })
+            {
+                return true;
+            }
+        }
+        entry_run(body).is_some_and(|r| self.children.contains(r))
     }
 }
 
@@ -270,7 +311,7 @@ pub fn read_window(
             age += 1;
             pending_age_bump = false;
         }
-        let Some(text) = render_entry(&e, age, &summary.mechanical) else {
+        let Some(text) = children.render(&e, age, &summary.mechanical) else {
             // Dropped kinds still count as read.
             continue;
         };
@@ -396,7 +437,7 @@ pub async fn compact(
     let segment: Vec<String> = segment_entries
         .iter()
         .filter(|(_, e)| !children.hides(&e.body))
-        .filter_map(|(_, e)| render_entry(e, 0, &full))
+        .filter_map(|(_, e)| children.render(e, 0, &full))
         .collect();
     let summary_text = summarizer
         .summarize(&sm.history_summary, &segment.join("\n"))

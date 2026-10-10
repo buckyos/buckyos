@@ -547,7 +547,7 @@ Behavior 模式是 Agent 一侧最常见的 L4 语义，但因为它能完整覆
    │     2. run_inner_for_step：内层传统 Loop，可含多个 Round 与   │
    │        原生工具批次（InferenceHook 在每个 Round 前）         │
    │     3. parser.parse(response) → StepRecord（分配 step_index）│
-   │     4. 无 action 且 next_behavior == Some(_) ⇒ Done           │
+   │     4. report_end 或无 action 的 next_behavior ⇒ Done           │
    │     5. 否则扣一次工具迭代，派发 actions（state.action_step）  │
    │        → 填 action_results → 沉淀为 last_step，继续          │
    │                                                              │
@@ -562,11 +562,15 @@ pub struct StepRecord {
     pub meta:              StepMeta,                // behavior_name / step_index / started_at_ms / ended_at_ms
     pub assistant_text:    String,
     pub assistant_message: Option<AiMessage>,       // 产生决策的 response（Step 内最后一个 Round）
+    pub native_messages:   Vec<AiMessage>,          // 本 Step 内层原生调用与回执的审计记录；不含最终 assistant
     pub observation:       Option<String>,
     pub thought:           Option<String>,
     pub actions:           Vec<AiToolCall>,         // 一个 Step 可以有多个 action（<actions> 容器）
     pub next_behavior:     Option<String>,          // 见 §6.4
     pub self_report:       Option<String>,          // <report>，同时覆盖 state.last_report
+    pub report_end:        bool,                    // 显式完成，缺省 false
+    pub report_artifacts:  Vec<String>,
+    pub report_result:     Option<Value>,
     pub messages_sent:     Vec<SendMessageRecord>,  // <sendmsg>
     pub action_results:    Vec<Observation>,        // 与 actions 按下标对齐，executor 填
     pub next_user_message: Option<AiMessage>,       // 覆盖默认的 action 结果渲染（StepResultHook / 注入）
@@ -585,6 +589,9 @@ pub struct LLMBehaviorResult {
     pub observation:   Option<String>,
     pub thought:       Option<String>,
     pub self_report:   Option<String>,
+    pub report_end:    bool,
+    pub report_artifacts: Vec<String>,
+    pub report_result: Option<Value>,
     pub messages_to_send: Vec<SendMessageRecord>,
 }
 
@@ -640,10 +647,10 @@ pub struct LLMContextDeps {
 
 ### 6.4 Behavior 模式下的 Outcome
 
-- **终态 `Done.behavior_result: Some(_)`**：不带 action / sendmsg 的 Step 给出 `next_behavior`，或这一步什么都没做（无 action / report / sendmsg），即结束本次 `run()`。带 action / sendmsg 的 Step 上，跳转目标被丢弃（结果必须先被观察），只有字面量 `END` 在 action 全部成功后生效。`next_behavior` 字符串（`WAIT_USER_MSG` 这类 sentinel、跳转目标）由 L4 / session 解释：libopendan 的普通切换在同一 context、同一 run 上改 `behavior_name` 后继续，只有 fork / independent 使用其它 run；`Done` 也不等于 Session Turn 完成。
+- **终态 `Done.behavior_result: Some(_)`**：显式 `report_end=true` 或生效的 `next_behavior` 使本次 `run()` 返回。END / done 已移除，普通 report-only 继续，空决策纠错。结束报告与 XML 动作、sendmsg、同次原生 tool_calls、非空调度互斥；在副作用前拒绝。切换 / 等待由 Session 解释，目标 behavior 按 `switch_context` / `create_sub_context` / `fork` 构造，不复用其它 behavior 的 run 配置。返回 Done 不自动代表 Turn / Session 完成。
 - **挂起态**：按 §4 走，Step 内层也可以让出。内层原生工具 deferred（`PendingTool`）、内层物化 prompt 装不下（`ContextLimitReached`）、内层推理被中断（`Interrupted`）都翻译为外层同名 Outcome，携带**外层**快照；deferred action 同样挂起为 `PendingTool`。
 - **Step 未完成时的恢复状态**（都在外层 `LLMContextState`，§9.1）：
-  - inner transcript：`accumulated` 中 `request.input` 之后的消息，即进行中 Step 的内层原生工具 Loop（tool_use 与已得结果），尚未折叠进 `StepRecord`。Step 完成后清空，之后的 prompt 只看到 `StepRecord`。
+  - inner transcript：`accumulated` 中 `request.input` 之后的消息，即进行中 Step 的内层原生工具 Loop（tool_use 与已得结果），尚未折叠进 `StepRecord`。内层返回 Done 后，把该尾部转存到 `StepRecord.native_messages`，排除由 Step 自身承载的最终 assistant；解析 / 策略拒绝形成的纠错 Step 同样保留。进行中的尾部仍留在 accumulated。该字段用于原始调用与回执审计，StepRenderer 不额外渲染它，转存和写 worklog 都不发起推理、不增加 Round。
   - `tool_batch`：内层被 deferred 调用截断的原生批次（未派发的调用与 `batch_error`）。
   - `action_step`：已解析、action 尚未派发完的 Step 与它的 response；还没沉淀，`step.action_results` 是已得结果。
   - `next_step_index` / `next_action_id`：下一个待分配的编号。step_index 在解析出 Step 时分配（合成纠错 Step 也占一个），所以是分配位置，不是已完成 Step 数；`action_step` 里的 Step 已有编号但未完成。
@@ -799,6 +806,7 @@ pub struct LLMContextState {
     /// Behavior Loop：最近沉淀的一步（hot），下一次推理 verbatim render
     pub last_step: Option<StepRecord>,
     pub last_report: Option<String>,
+    pub report_end: bool,                // 最后报告的显式结束意图
     /// 下一个待分配的 step_index / action call_id：分配位置，不是已完成数量
     pub next_step_index: u32,
     pub next_action_id:  u32,
@@ -889,7 +897,7 @@ pub struct Injection { pub messages: Vec<AiMessage>, pub host: Option<Value> }
 
 - `LLMContext::inject(injection) -> InjectionPosition`：function call 追加到 `accumulated`；behavior 模式并入热 step（或 `Done` 之后当前 behavior 的最后一个 step）的 `next_user_message`（接在默认的动作结果渲染之后），否则追加到 `request.input`。宿主用同一规则预测位置，把位置写进 receipt。
 - `LLMContextState.host: Option<Value>`：宿主元数据（如 libOpenDAN 的输入 receipt，键为宿主名），随每个快照、resume 和其它执行者的续跑原样保留，waist 不解释。
-- `LLMContextState.snapshot_version`：当前为 4（§9.5）；`resume` 只接受等于 `SNAPSHOT_FORMAT_VERSION` 的版本，更旧或更新的都返回 `SnapshotCorrupted`，调用方据此保留现场而不是新建上下文。
+- `LLMContextState.snapshot_version`：当前为 5（§9.5）；`resume` 只接受等于 `SNAPSHOT_FORMAT_VERSION` 的版本，更旧或更新的都返回 `SnapshotCorrupted`，调用方据此保留现场而不是新建上下文。
 - behavior 模式的 `Interrupted` 返回**外层**快照（含进行中 Step 的 inner transcript），可直接 `ResumeFromMidRun`。
 - 与 `InferenceHook`（§9.2）的分工：两者都在推理前、都可以以 `Error{Checkpoint{BeforeInference}}` 拦住推理；function call 模式两者都在每个 Round 前（先 CheckpointHook 再 InferenceHook），behavior 模式 CheckpointHook 只在外层 Step 边界看外层快照、可注入，InferenceHook 在 Step 内每个 Round 前看扁平化的内层快照、不能注入。
 - `XmlStepRenderer::without_timestamps()`：历史记录不渲染 `started_at_ms` / `ended_at_ms`，同样的 steps 渲染出相同字节（X8）；宿主装配的 xllm run 使用它，默认渲染不变。
@@ -897,7 +905,7 @@ pub struct Injection { pub messages: Vec<AiMessage>, pub host: Option<Value> }
 
 ### 9.5 挂起与恢复（X7，2026-09-30）
 
-- **快照版本 4**：版本 2 用 `suspended` / `tool_batch` / `action_step` 取代了 `pending_tool_calls`（§9.1）；版本 3（2026-10-01 Round / Step / Turn 术语统一）把工具预算改名为 `tool_iterations_left` 与 `ToolBatch.batch_error`；版本 4（2026-10-02 长命令）把挂起记录改为 `PendingToolCall {call, task_id, until_ms}`（取代 `eta_ms` / `tool_result`），并增加 `Observation::Pending.task_id`、`Observation::Cancelled.effect_unknown` 与 `shell` action 标签。`resume` 只接受版本 4，更旧或更新的版本都以 `SnapshotCorrupted` 拒绝，不做迁移。
+- **快照版本 5**：版本 2 用 `suspended` / `tool_batch` / `action_step` 取代了 `pending_tool_calls`（§9.1）；版本 3（2026-10-01 Round / Step / Turn 术语统一）把工具预算改名为 `tool_iterations_left` 与 `ToolBatch.batch_error`；版本 4（2026-10-02 长命令）把挂起记录改为 `PendingToolCall {call, task_id, until_ms}`（取代 `eta_ms` / `tool_result`），并增加 `Observation::Pending.task_id`、`Observation::Cancelled.effect_unknown` 与 `shell` action 标签。版本 5（2026-10-10 H4）增加 report_end、report_artifacts、report_result 并废弃 END / 隐式 done；`resume` 只接受版本 5，更旧或更新的版本都以 `SnapshotCorrupted` 拒绝，不做迁移。
 - **PendingTool**：工具串行派发，遇到 `Pending` 即停止并挂起；已执行（结果已在 transcript / step 中）、等待中（`suspended.pending`）、尚未执行（`tool_batch.remaining` 或 step 其后的 action）三类可区分，trace 状态分别为 succeeded/failed、`pending`、未记录。回填后本批次余下调用继续派发，整批完成时才扣一次工具迭代、最多计一次错误；带 action 的 Step 在派发前已扣过，回填后不再扣。usage、tool_iterations_left、错误计数、step / action / call 编号都不重置。behavior action 在第一个非成功结果（业务错误、回填的 Cancelled / Unresolved）后停止其余 action。Step 内层原生工具的挂起见 §6.4。
 - **ContextLimitReached**：只在推理边界检查（首次推理、工具结果追加后、checkpoint hook 注入后、behavior 内层物化 prompt 后），顺序在 hook 与 abort 检查之后，因此 checkpoint 失败与主动 interrupt 优先于挂起；token / wallclock 预算终态也优先。估算：每条消息 4 token 开销 + 各文本部分（文本、tool_use 参数、tool_result、thinking、provider state）经 `Tokenizer` 计数，图片 / 文档等非文本部分每个按 1024 计，另计工具描述（允许调用工具时）与输出 schema；多模态 prompt 可能被低估。估算值只用于检查，不与 Provider usage 混用。重写后仍装不下时再次让出、不推理，压缩次数与失败策略由宿主决定。
 - **宿主接入**（2026-09-30）：xllm 以 `.llm_context` 的 `context_window` 提供窗口（设置后阈值为 0.75），压缩后以 `RewrittenHistory` / `RewrittenSteps` 续跑、每个 run 最多 3 次，接手上下文上限挂起的快照时先压缩，等待 deferred 工具的快照不接手；OpenAI 兼容 adapter 把 `context_length_exceeded` 归一化为 `ProviderFailure::ContextLimit`。libOpenDAN（当前实现）的中途重写见 [Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md) §7：先把 run 尚未写入的历史 flush 进 Session worklog，再以 system + 重建的会话历史作为新 input 恢复（behavior 把 steps 全部折叠进 input，编号继续，进行中 Step 的 inner transcript 由 waist 保留），开始新的 history epoch；重写不改变当前 Turn，细节见 [append-only history](llm_context_append_only_history.md)。xllm 与 libOpenDAN 都使用 `allow_deferred=false`，PendingTool 路径尚无宿主接入。旧 opendan Runtime（`src/frame/opendan` 的 `AgentSession`）未配置阈值，按新抽象接入待下一阶段 opendan 重构。
@@ -980,8 +988,8 @@ run_behavior():
     ├─> parser.parse(response); failure ⇒ correction step (takes a step_index), sediment, bump, continue
     ├─> step = prepare_step(result)                        // allocates step_index / action call_ids
     ├─> step has actions && tool_iterations_left == 0 → BudgetExhausted(ToolIterations)
-    ├─> report / sendmsg side effects; action policy gate (reject ⇒ correction step, continue)
-    ├─> jump target alongside actions/sendmsg → dropped (END kept)
+    ├─> validate report and action policy before side effects (reject ⇒ correction step, continue)
+    ├─> final report + actions/sendmsg/native calls/scheduling → rejected; non-final action jump targets → dropped
     ├─> actions? → tool_iterations_left -= 1               // charged before dispatch
     ├─> action_step = { step, response }
     ├─> dispatch actions in order; first non-success stops the rest (Unresolved);
@@ -1148,3 +1156,9 @@ LLMContext 起点是把 OpenDAN 既有 agent 主循环里的"一次智能执行"
 Agent scheduler 承接旧 `BehaviorEngine`：根据 `Done.behavior_result.next_behavior` 推进状态机，根据 `do_actions` 调度外部动作，根据 `WAIT_USER_MSG` 等 sentinel 管理 session 等待态。
 
 当前实现中，这个 scheduler 是 libopendan 的 `SessionRunner`：它解释 Outcome、决定 Session Turn 的开始 / 继续 / 结束，并把 run 历史写入 Session worklog（见 [readme](readme.md)、[Session Directory Protocol](../opendan/protocol/Session%20Directory%20Protocol.md)）。`src/frame/opendan` 的旧 Runtime（`AgentSession`、round history 等）只做了共享 API 的编译适配，按新抽象重构待下一阶段 opendan 重构接入。
+
+### H4 报告校验与恢复边界（2026-10-10）
+
+两套 XML parser 输出相同的报告字段。`end` 精确为 true / false，重复 report / end / next_behavior、空最终报告、结束与动作或调度同现均反馈纠错。可选兄弟节点 artifacts 为 JSON 字符串数组、result 为任意 JSON；只传递内容，业务校验由宿主承担。
+
+`CheckpointHook::validate_report(snapshot, result, step_index)` 在报告状态更新前验证并提交；`CheckpointStage::BeforeToolCall` 在工具副作用前持久化 assistant 调用批次。Function-call 的 report 工具由 Session 注入，LLMContext 不解析报告业务含义。结束提交接受后宿主请求 finish，回执配齐后完成交付，Settled 本身不是成功或停止的统一判据。恢复快照的最终 report Step 直接产生 Done；宿主按 journal 身份生成一次最终消息，与正常执行使用同一正文和产物引用。

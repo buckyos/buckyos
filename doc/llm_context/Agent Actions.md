@@ -7,7 +7,7 @@
 > 3. `<report>` 跟 `<next_behavior>` 的关系、`last_report` 的生命周期
 > 4. 从旧版 `<action tool="...">` 协议迁移过来需要做什么
 
-**设计状态（2026-10-10）**：本文 §2 / §3 的完成协议已调整为 `<report end="true">`；`<next_behavior>` 保留切换和等待语义，不再用 `END` 表达完成。此次只更新设计，解析器、运行循环和宿主尚未修改，当前实现基线见 §2.2。实施依赖和其余待定项见 [Context Switch TODO](../../notepads/llm-context-switch-support-todo.md) 的 H4。
+**实施状态（2026-10-10）**：两套 parser、运行循环、xllm 接手和 Session 宿主已实现 `<report end="true">` 完成协议；`<next_behavior>` 保留切换和等待语义，END / done 被拒绝。协议与恢复规则见 §2.2，验收记录见 [Context Switch TODO](../../notepads/llm-context-switch-support-todo.md) 的 H4。
 
 ---
 
@@ -256,7 +256,7 @@ pub fn bar() -> u32 { 42 }
 
 ### 2.2 `<report>` 与 `<next_behavior>` 的共存规则
 
-**目标契约，尚未实现：** `<report>` 提交报告，`end` 缺省或为 `false` 时不请求结束；`end="true"` 在提交报告的同时请求结束当前 context。报告不等同于向用户发送消息，接收方和结束范围由宿主按调用关系裁决。`<next_behavior>` 继续表达切换或等待，不承担完成信号。
+**当前契约：** `<report>` 提交报告，`end` 缺省或为 `false` 时不请求结束；`end="true"` 在提交报告的同时请求结束当前 context。报告不等同于向用户发送消息，接收方和结束范围由宿主按调用关系裁决。`<next_behavior>` 继续表达切换或等待，不承担完成信号。
 
 | 出现 | 含义 |
 |---|---|
@@ -273,23 +273,24 @@ pub fn bar() -> u32 { 42 }
 </response>
 ```
 
-完成请求的范围是当前 context：子 context 的结果交给调用方，不能关闭父 context 或整个 Session；顶层 context 是否完成 Turn / Session 由宿主完成策略裁决。终结报告必须携带本次最终结果正文，不能隐式提升之前的阶段报告；正文的非空和格式校验仍待定。`end="true"` 不等于产物已验收。传统 function-call 的 `report(..., is_end=true)` 与此共享报告和完成意图的语义；工具参数拼写及其它 H4 参数仍以 TODO 的定稿为准。
+完成请求的范围是当前 context：子 context 的结果交给调用方，不能关闭父 context 或整个 Session；顶层 context 是否完成 Turn / Session 由宿主完成策略裁决。终结报告必须携带本次最终结果正文，不能隐式提升之前的阶段报告；最终报告正文必须非空，内容保持自由文本 / Markdown。`end="true"` 不等于产物已验收。传统 function-call 的 `report(..., is_end=true)` 与此共享报告和完成意图的语义；工具参数为 `report: string`、可选 `artifacts: string[]`、可选 `result: JSON`、可选 `is_end: bool`（缺省 false）。
 
-**实施前仍需定稿的边界，不视为已接受决策：**
+**已实施的校验与副作用边界：**
 
-- `end="true"` 同时带 `next_behavior`：建议作为冲突返回纠错，不静默选择其中一个控制意图。
-- “不能与 actions 同时出现”的精确边界：空 `<actions/>` 是否允许，以及同一响应中的 provider native `tool_calls`、parser-side `<sendmsg>` 是否一并禁止。建议禁止同一响应的所有动作副作用；同一 Step 之前 Round 已完成且已观察的原生工具不构成冲突。
-- 非法 `end` 值、重复 `<report>`、空最终报告如何处理：建议非法布尔值和重复 report 进入纠错，不沿用 last-one-wins 隐式决定完成意图；空正文与未来产物 / result 的校验关系另行确定。
-- 没有动作、报告、切换或等待指令的纯文本 / 纯 thinking 响应：现有“自然收敛”不能直接被当作显式最终提交；需决定进入纠错，还是以不完成 Session 的方式让出。
+- `end` 只接受精确的 `true` / `false`，缺省 false；重复 report、重复 end、重复 next_behavior、空最终报告进入纠错。
+- 结束报告不得同时带非空 next_behavior、XML 动作、sendmsg 或同一 response 的原生 tool_calls。空 `<actions/>` 允许。冲突在原生工具派发、报告更新和其它副作用之前拒绝；此前 Round 已执行并观察的工具不构成冲突。
+- 无动作、报告、切换或等待的空决策 / 纯 thinking 进入纠错，不隐式完成。普通 report 即使没有动作也继续。
+- 可选的兄弟节点 `<artifacts>` 是 JSON 字符串数组，`<result>` 是任意 JSON 值；两者必须与 report 同次出现，各最多一次。宿主验证 artifacts 是工作目录内的显式文件，并将内容复制为稳定引用。
+- `LLMBehaviorResult` / `StepRecord` 保存 `report_end`、`report_artifacts`、`report_result`；snapshot v5 保留完成意图。恢复交付本次 final Step / report journal 的正文，不提升旧阶段报告，也不交付 XML 控制文本。
+- Session 工具 `report` 的 `is_end=true` 被接受后，保存独立 journal，补齐同批未执行调用的结果配对，再由宿主收尾；不追加推理。XML 结束报告则从输入阶段禁止同批动作，两者使用相同的宿主报告与完成规则。
 
-**当前实现基线（此次未改）：**
-
-- `XmlBehaviorParser` 将 report 解析为字符串，忽略其属性；report-only 更新 `last_report` 后继续。xllm 和 libopendan 托管 behavior 使用 `XllmActionParser`，report-only 则合成 `next_behavior=done`。因此现有两条路径都还没有实现 `end` 属性，不能把新示例直接当作已支持接口。
-- `llm_context` 仍识别 `END`：与 actions 同现时先派发动作，成功后结束；动作失败则移除本 Step 的 `END`，让模型观察失败后重试。非 `END` 的 `next_behavior` 与动作同现时被忽略。无动作、report、消息的 Step 仍会自然 `Done`。
-- libopendan 仍将 `END` / `done` 视作终止，`WAIT_USER_MSG` 视作等待，其它目标按 `extensions.opendan.behaviors.<name>.mode` 进入 `switch_context` / `create_sub_context` / `fork`。
-- Behavior 的原生工具先由内层 function-call loop 执行，外层 XML parser 只处理内层最后的回答。若禁止终结报告与同一响应的原生工具共存，必须在工具派发前校验，仅改 XML parser 不足以保证无副作用。
-
-实施时需同步两套 parser、runtime prompt、`LLMBehaviorResult` / `StepRecord` / snapshot、完成与恢复路径、xllm 接手规则及测试；不能只把 `END` 改为新的 XML 拼写。
+```xml
+<response>
+  <report end="true"><![CDATA[已完成验证，交付文件如下。]]></report>
+  <artifacts>["output/result.txt"]</artifacts>
+  <result>{"verified": true}</result>
+</response>
+```
 
 ### 2.3 转义协议：CDATA
 
@@ -313,7 +314,7 @@ CDATA 自身的闭合 `]]>` 在自然语言文本里几乎不会出现；如果�
 2. `<response>` 仍可省略
 3. 各 action 标签找不到闭合时 fallback 到"读到下一个已知标签或 EOF"
 4. provider native `tool_calls` 仍优先于 `<actions>` 解析（用于 OpenAI/Anthropic function calling 场景）
-5. 当前空 `<actions>` / 没有 `<actions>` / 没有 `<next_behavior>` 本身不报错；没有其它行为内容时会自然收敛。新完成契约下的空决策规则待定，见 §2.2。
+5. 空 `<actions>` 本身不报错；若整个决策没有 report、动作或非空 next_behavior，则进入纠错，见 §2.2。
 
 以上是已有解析容忍度；完成意图的校验不能直接套用宽松解析，尤其不能把非法 `end` 值解释成成功完成。
 
@@ -323,9 +324,9 @@ CDATA 自身的闭合 `]]>` 在自然语言文本里几乎不会出现；如果�
 
 - **决策（Step）**：一次 `<response>` 解析后记为一个 `StepRecord`。得到它之前，Step 内部可以经过多个 Round（原生工具 loop）；解析失败 / 策略拒绝生成的合成纠错 Step 也占一个 `step_index`。
 - **动作批次**：这个 Step 的 `<actions>`，按序派发，遇到失败即停。带 action 的 Step 扣一次工具迭代额度（`ToolPolicy.max_tool_iterations`），与 action 个数无关；Step 内的原生工具批次也从同一额度扣。`<sendmsg>` 不经 ToolManager，只记为 `messages_sent`（xllm 把 `sendmsg` 显式配置为 action 时除外）。
-- **`<report>`（目标契约）**：提交报告并更新最近报告，不自动投递；只有 `end="true"` 额外请求结束当前 context。
-- **context 让出与完成**：`next_behavior` 的切换 / 等待与终结报告是不同原因；宿主必须区分，不能把所有 `Done` 都当作显式完成。当前实现仍使用 §2.2 所列的 `END` / `done` / 自然收敛规则。
-- **Turn / Session 完成**：只由 Session 判定。子 context 返回和 context 切换保持 Turn 打开；`WAIT_USER_MSG` 保留等待语义。当前 libopendan 用本 run 是否有 `last_report` 或末 Step 是否有 `<sendmsg>` 决定等待时是否完成 Turn，这不等于报告已经投递；显式完成策略与交付判断需随 H4 统一。消息侧的对照见 [Agent Message.md §3.7](<Agent Message.md>)。
+- **`<report>`**：提交报告并更新最近报告，不自动投递；只有 `end="true"` 额外请求结束当前 context。
+- **context 让出与完成**：`next_behavior` 的切换 / 等待与终结报告是不同原因；宿主必须区分，不能把所有 `Done` 都当作显式完成。当前实现按 `report_end` 区分显式结束，END / done 和空决策不再是完成入口。
+- **Turn / Session 完成**：只由 Session 判定。子 context 返回和 context 切换保持 Turn 打开；`WAIT_USER_MSG` 保留等待语义。当前 libopendan 用本 run 是否有 `last_report` 或末 Step 是否有 `<sendmsg>` 决定等待时是否完成 Turn，这不等于报告已经投递；`session.policy.completion=explicit_report` 要求获准的结束报告才正常关闭 Session；普通 Done 在有输入队列的 Session 关闭 Turn 并等待，在无输入队列的 WorkSession 以漏报失败。消息侧的对照见 [Agent Message.md §3.7](<Agent Message.md>)。
 
 ---
 
@@ -376,7 +377,7 @@ CDATA 自身的闭合 `]]>` 在自然语言文本里几乎不会出现；如果�
 
 当前实现（libopendan）：`create_sub_context` / `fork` 的 child 结束时，`finish_run` 把结果和 `ok | failed | needs_user_input` 放进 `state.process_result`；behavior 触发的调用经交接输入返回，工具触发的调用按 `call_id` 回填。child 返回不完成 Session Turn。`switch_context` 使用目标自己的快照，已无 normal 切换。
 
-结果来源还有待统一：正常完成路径取 child 终止 Step 的 report，缺失时取最后回答文本；xllm 接手后的恢复路径优先取 snapshot 的 `last_report`。H4 应按新契约让正常完成、恢复、父子返回和最终展示使用同一份已接受的终结报告，不能隐式回退到阶段报告。
+正常完成、恢复、父子返回和最终展示使用同一份已接受的终结报告：工具来源读取持久 report journal，XML 来源关联最终 Step，xllm 接手后在最终 Step 保存 paused + snapshot.state.report_end，宿主恢复会验证并提交该 Step；若宿主校验拒绝则继续纠错，不提前完成 run。没有终结提交时不能把 snapshot.last_report 中的阶段报告升级为最终结果。
 
 **`sendmsg` 不进 `last_report`**：因为 SendMessage 有自己的收件方，已经"出去"了，不应该污染本 context 的快照产物字段。
 
@@ -436,7 +437,7 @@ v2 落地的最小验收集合：
 | D-03 | body 用 CDATA | 转义最稳、训练分布最匹配 |
 | D-04 | `read` 用 uri 风格 | 协议名即 scheme，参数同构 |
 | D-05 | `read` v2 首版只实现 `file://` | 占名字、立框架，避免空头扩展 |
-| D-06 | 阶段 report 不结束；`report end="true"` 提交结果并请求结束；next_behavior 保留切换 / 等待 | 2026-10-10 调整，尚未实现；终结报告不得与 actions 同现 |
+| D-06 | 阶段 report 不结束；`report end="true"` 提交结果并请求结束；next_behavior 保留切换 / 等待 | 2026-10-10 已实现；终结报告不得与动作或非空调度同现 |
 | D-07 | `<sendmsg target=...>` 不写 `last_report` | 已"出去"的消息不污染本 context 产物 |
 | D-08 | `last_report` 生命周期跟 LLMContext 走 | 复用快照机制，fork-and-collect 零成本 |
 | D-09 | session/workspace/memory/todo 一律迁 shim | 准入原则的具体应用 |

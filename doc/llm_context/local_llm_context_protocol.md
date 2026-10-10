@@ -4,7 +4,7 @@
 
 - 核对日期：2026-10-01；仓库 HEAD `93eafea5` 之上的工作区（Round / Step / Turn 术语统一之后）。
 - CLI 入口：`agent_tool xllm ...`。源码模块仍名为 `run_local_llm.rs`，旧的 `agent_tool run_local_llm` 命令已移除。
-- 当前版本：`RunRecord.version = 2`、`prompt.protocol_version = "xllm/1"`、快照 `state.snapshot_version = 3`。三个版本分别管理 Run 记录、提示词运行协议和底层上下文快照；恢复只接受当前版本，见 §7.2。
+- 当前版本：`RunRecord.version = 6`、`prompt.protocol_version = "xllm/2"`、快照 `state.snapshot_version = 5`。三个版本分别管理 Run 记录、提示词运行协议和底层上下文快照；恢复只接受当前版本，见 §7.2。
 - 术语：Round = 一次推理（一次宿主 `LlmClient::infer`），Step = behavior 的一次决策记录（`StepRecord`），定义见 [LLM Context readme](readme.md)。本文的工具预算单位是“工具迭代”（§9.2），不是 Round。
 - 本文替换原 2026-09-17 的旧工具基线，不再把旧目录格式、请求哈希或 TS SDK 设计建议描述为现行协议。产品目标见 [xllm PRD](../../product/xllm/PRD.md)，SDK 概览见 [xllm Rust SDK 参考](xllm_rust_sdk.md)；实现细节以本文列出的源码为准。
 
@@ -253,7 +253,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 
 查询的 `resumable` 只根据状态与活跃锁推导，不代表版本、宿主提交、工具依赖和快照检查已经通过。
 
-## 7. 快照 v3 与底层恢复
+## 7. 快照 v5 与底层恢复
 
 ### 7.1 快照字段
 
@@ -261,7 +261,7 @@ Run 锁和工作目录锁均为非阻塞 OS 排他锁，句柄释放后解锁。
 
 | `state` 字段 | 含义 |
 | --- | --- |
-| `snapshot_version` | 当前为 3，缺省读取为 0；恢复只接受 3 |
+| `snapshot_version` | 当前为 5，缺省读取为 0；恢复只接受 5 |
 | `accumulated` | 当前消息历史；behavior 模式下 `request.input` 之后的部分是进行中 Step 的 inner transcript（内层原生工具循环消息，尚未折入 StepRecord） |
 | `usage` / `tool_iterations_left` | 累积模型用量 / 剩余工具迭代额度 |
 | `started_at_ms` / `cost_units` / `consecutive_errors` | 计时起点、成本计数、连续可纠正错误计数 |
@@ -286,7 +286,7 @@ v2 起用 `suspended` / `tool_batch` / `action_step` 取代旧 `pending_tool_cal
 
 挂起时间不计入底层 wallclock。恢复会校验 fill 与挂起态匹配、工具调用 / 回执配对和 continuation 状态；不合法的组合返回 `SnapshotCorrupted`。宿主自行回填后，应先持久化新的快照再继续，因为 continuation 可能先执行尚未派发的工具。
 
-当前 Rust 对非终态的恢复检查要求 `RunRecord.version` 精确等于 2、运行协议精确等于 `xllm/1`；`LLMContext::resume` 只接受 `state.snapshot_version = 3`，更旧（含缺省的 0）或更新的版本都以 `SnapshotCorrupted` 拒绝。不做旧版本迁移，也不提供旧字段别名：`version = 1` / 快照 v2 的 Run（`config.limits.max_rounds`、`rounds_left`）不能恢复，其 run.json 按当前结构也无法解析（列表跳过，按 ID 读取报错）。`LLMContext::snapshot()` 写出时使用当前快照版本。
+当前 Rust 对非终态的恢复检查要求 `RunRecord.version` 精确等于 6、运行协议精确等于 `xllm/2`；`LLMContext::resume` 只接受 `state.snapshot_version = 5`，更旧（含缺省的 0）或更新的版本都以 `SnapshotCorrupted` 拒绝。不做旧版本迁移，也不提供旧字段别名：`version = 1` / 快照 v2 的 Run（`config.limits.max_rounds`、`rounds_left`）不能恢复，其 run.json 按当前结构也无法解析（列表跳过，按 ID 读取报错）。`LLMContext::snapshot()` 写出时使用当前快照版本。
 
 ## 8. 生命周期、中断与恢复
 
@@ -408,7 +408,7 @@ CLI 帮助、状态标签、进度和诊断使用英文；用户输入、模型�
 
 JSON 字符串和 XML 文本叶节点导出为 Text；JSON 对象、数组、数值等导出为 Json；含子元素的 XML 节点导出其内部 XML。路径缺失、重复 XML 匹配或格式不符报提取错误，不自动回退 raw。`ExtractedValue` 的保存形状分别为 `{"kind":"text","text":...}`、`{"kind":"json","value":...}`、`{"kind":"xml","xml":...}`。
 
-function_call 的 `--json` 会向模型提出 JSON 输出要求；本地仍对提取结果做 JSON 语法校验。SDK `json_schema` 转发给 Provider，不进行本地 schema 校验。behavior 的原始响应是 XML，因此 `behavior + raw + --json` 在准备阶段拒绝，通常应配置 `result.report`。behavior 完成的判据是无 action 且有非空 report；默认 `raw` 仍交付完整最终 XML，不自动只交付 report。
+function_call 的 `--json` 会向模型提出 JSON 输出要求；本地仍对提取结果做 JSON 语法校验。SDK `json_schema` 转发给 Provider，不进行本地 schema 校验。behavior 的原始响应是 XML，因此 `behavior + raw + --json` 在准备阶段拒绝，通常应配置 `result.report`。behavior 完成要求无动作的非空 `<report end="true">`；普通 report-only 继续，END / done 拒绝；默认 `raw` 仍交付完整最终 XML，不自动只交付 report。
 
 `completed` 表示模型阶段完成且原文已保存。即使提取 / JSON 校验失败，记录仍为 completed，CLI 返回 6；之后用 `result` 重新导出，不需要再次调用模型，也不改写原结果记录。
 
@@ -461,7 +461,7 @@ libOpenDAN 的 Agent Session 直接使用 xllm Run 目录。目录关系及宿�
 
 接手时仅允许 `runtime_kind` 缺省或为 `native`。取得 Run 锁后，先通过 `stop_execution` 确认 executions 中的旧执行已停止，无法确认则拒绝；再把 inflight 中没有持久结果的动作经 `materialize_unresolved` 写入快照为“结果未知”，提交新索引后清除 inflight，不自动重放这些已登记动作。
 
-宿主装配的 Run 使用同一记录与快照版本（`version = 2`、快照 v3）；libOpenDAN 读到其它 `RunRecord.version` 或不支持的快照版本时进入 RecoveryBlocked，同样不迁移。宿主驱动时的快照边界由宿主决定（libOpenDAN 用 `CheckpointHook`：function_call 在每次推理前，behavior 只在外层 Step 边界），xllm 接手后用自己的 `InferenceHook` 在每次推理前提交。`usage.llm_requests` 由每个执行段累加：libOpenDAN 在每个 outcome 后加上本段经其 `LlmClient::infer` 发起的 Round 数，xllm 接手后加上自己的请求数，任何一方都不覆盖已有值；xllm 接手后的推理只出现在 run.json 中，不进入 session 的 `static.json`。
+宿主装配的 Run 使用同一记录与快照版本（`version = 6`、快照 v5）；libOpenDAN 读到其它 `RunRecord.version` 或不支持的快照版本时进入 RecoveryBlocked，同样不迁移。宿主驱动时的快照边界由宿主决定（libOpenDAN 用 `CheckpointHook`：function_call 在每次推理前，behavior 只在外层 Step 边界），xllm 接手后用自己的 `InferenceHook` 在每次推理前提交。`usage.llm_requests` 由每个执行段累加：libOpenDAN 在每个 outcome 后加上本段经其 `LlmClient::infer` 发起的 Round 数，xllm 接手后加上自己的请求数，任何一方都不覆盖已有值；xllm 接手后的推理只出现在 run.json 中，不进入 session 的 `static.json`。
 
 快照的 `state.host` 与 Run 的 `host` 是不同层的元数据，续跑必须保留。`host.env_check` 当前只是保存的数据，`XllmRun::resume` 没有通用 PATH / 环境检查器；不能把声明的环境要求描述为已经自动验证。工作目录并发协调、输入消费提交以及其它宿主恢复条件仍由宿主负责。
 
@@ -544,7 +544,7 @@ tools:
     - groupname: bash
 ```
 
-模型动作示例为 `<read_file path="notes.txt"/>` 或 `<read_file><![CDATA[notes.txt]]></read_file>`，正文直接承载参数值，不加 `path:` 前缀。最终回复使用 `<response><report><![CDATA[最终结果]]></report></response>`；上面的 result_format 只导出 report 文本。
+模型动作示例为 `<read_file path="notes.txt"/>` 或 `<read_file><![CDATA[notes.txt]]></read_file>`，正文直接承载参数值，不加 `path:` 前缀。最终回复使用 `<response><report end="true"><![CDATA[最终结果]]></report></response>`；上面的 result_format 只导出 report 文本。
 
 ### 12.3 Rust SDK
 

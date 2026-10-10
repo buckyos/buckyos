@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use agent_tool::xllm::RunStatus;
 use llm_context::tasks::{RunningTaskResolver, TaskState};
+use llm_context::{LLMContext, ResumeFill};
 use serde_json::Value;
 
 use crate::error::{OpenDanError, Result};
@@ -318,7 +319,6 @@ async fn stop_session(
     };
     let mut live = live;
     let mut waiting = waiting;
-    stop_children(sh).await;
     // A run state still references (e.g. a caller just resumed after its sub
     // context) ends through the normal finish path.
     if live.is_none() && waiting.is_none() && sh.session.lock().await.state.live_run.is_some() {
@@ -337,14 +337,52 @@ async fn stop_session(
             }
         };
     }
+    while let Some(mut lc) = live.take() {
+        let Some(report) = super::reports::final_report(&lc.run)? else {
+            live = Some(lc);
+            break;
+        };
+        lc.ctx = LLMContext::resume(lc.ctx.snapshot(), ResumeFill::ResumeFromMidRun, lc.deps.clone())
+            .map_err(|e| OpenDanError::blocked(format!("accepted final report cannot resume: {e}"), Some(lc.run.run_id())))?;
+        let handle = lc.ctx.interrupt_handle();
+        if let ReportSource::Tool { call_id } = &report.source {
+            if agent_tool::exec_tracking::persisted_outcome_ids(&lc.ctx.snapshot()).contains(call_id) {
+                handle.finish("complete accepted report before stop");
+            }
+        }
+        *sh.interrupt.lock().expect("interrupt") = Some(handle);
+        let outcome = lc.ctx.run().await;
+        let next = Box::pin(handle_context_outcome(sh, &mut lc, outcome)).await?;
+        if let Some(error) = next.error {
+            return Err(OpenDanError::Other(format!("accepted final report could not settle before stop: {error}")));
+        }
+        if sh.session.lock().await.state.is_finished() {
+            return Ok(());
+        }
+        drop(lc);
+        if sh.session.lock().await.state.live_run.is_some() {
+            live = match Box::pin(open_state_live_run(sh, env)).await? {
+                Opened::Ctx(lc) => Some(lc),
+                Opened::Waiting(w) => match try_fill(sh, w, true).await? {
+                    Ok(lc) => Some(lc),
+                    Err(_) => return Err(OpenDanError::Other("the caller could not be answered after its final report".into())),
+                },
+            };
+        }
+    }
+    stop_children(sh).await;
     match live {
-        Some(lc) => {
+        Some(mut lc) => {
             // Background tasks of the Turn being stopped.
             for t in lc.resolver.active().await {
                 if t.status == "running" && t.cancellable {
                     let _ = lc.resolver.cancel(&t.task_id).await;
                 }
             }
+            lc.ctx = LLMContext::resume(lc.ctx.snapshot(), ResumeFill::ResumeFromMidRun, lc.deps.clone())
+                .map_err(|e| OpenDanError::blocked(format!("stopping context cannot resume: {e}"), Some(lc.run.run_id())))?;
+            lc.ctx.interrupt_handle().finish("session stop requested");
+            let _ = lc.ctx.run().await;
             let snap = lc.ctx.snapshot();
             lc.run
                 .checkpoint_with_results(&snap, Some(RunStatus::Interrupted))?;
