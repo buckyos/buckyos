@@ -150,7 +150,7 @@ const ActiveWizard = ({ isWalletRuntime, walletUser }: Props) => {
       );
     }
     if (!wizardData) {
-      return <Box>Loading...</Box>;
+      return <Box>{t("loading")}</Box>;
     }
     
     switch (currentStepKey) {

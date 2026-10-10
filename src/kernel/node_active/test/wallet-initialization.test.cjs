@@ -197,13 +197,15 @@ test("language changes update the error and retry button without repeating the i
   assert.equal(app.wizard(), undefined);
 });
 
-test("all supported languages translate the loading, error, guidance and retry states", () => {
+test("all supported languages translate wallet states and browser registration", () => {
   const i18nSource = fs.readFileSync(path.join(__dirname, "../i18n.ts"), "utf8");
   const languages = [...i18nSource.matchAll(/code: '([^']+)'/g)].map((match) => match[1]);
   assert.equal(languages.length, 9);
+  const securitySource = fs.readFileSync(path.join(__dirname, "../src/components/steps/SecurityStep.tsx"), "utf8");
+  const registrationKeys = [...securitySource.matchAll(/t\(\s*"([^"]+)"/g)].map((match) => match[1]);
   for (const language of languages) {
     const translations = JSON.parse(fs.readFileSync(path.join(__dirname, `../res/${language}.json`), "utf8"));
-    for (const key of ["wallet_identity_loading", "wallet_identity_load_failed", "wallet_identity_incomplete", "wallet_identity_help", "loading", "retry_button"]) {
+    for (const key of ["wallet_identity_loading", "wallet_identity_load_failed", "wallet_identity_incomplete", "wallet_identity_help", "loading", "retry_button", ...registrationKeys]) {
       assert.equal(typeof translations[key], "string", `${language}: ${key}`);
       assert(translations[key].trim());
     }
