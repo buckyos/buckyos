@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "contract_revision": "2026-10-05.5",
-  "capability_baseline_revision": "2026-10-05.2",
-  "capability_cells_sha256": "71e3ba1d4e36e9155a529f545d4572945bac1a6566b084d2a2cbcdf16d70ae68",
+  "contract_revision": "2026-10-10.1",
+  "capability_baseline_revision": "2026-10-10.1",
+  "capability_cells_sha256": "002c0db9503b22ac62db9b8eb8ffc77842e9429a49259c289b40d65b4bc095c4",
   "logical_entrypoint_baseline_revision": "2026-10-05.1",
   "profiles": [
     { "provider_driver": "typesafe", "provider_profile_id": "typesafe", "covered_model_patterns": ["jev-1.13.0", "jev-latest", "jev-preview"], "default_exposure": { "mode": "logical_routable", "logical_entrypoint_ref": "api_type_default" }, "overrides": [] },

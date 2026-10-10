@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": "official-provider-protocols-2026-10-05.1",
-  "checked_at": "2026-10-05",
+  "revision": "official-provider-protocols-2026-10-10.1",
+  "checked_at": "2026-10-10",
   "providers": [
     {
       "provider_driver": "typesafe",
@@ -1639,8 +1639,8 @@
       "instance_fields": { "region": "cn-beijing" },
       "official_first_party_model_ids": {
         "llm": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "deepseek-v4-flash", "glm-5.3-flash", "minimax-m3", "glm-5.3", "kimi-k2.7-code", "kimi-k2.8-preview", "deepseek-v4-pro", "kimi-k3", "deepseek-v4.1-flash"],
-        "vision.ocr": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"],
-        "vision.caption": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving"],
+        "vision.ocr": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "deepseek-v4.1-flash", "glm-5.3-flash", "minimax-m3", "kimi-k2.7-code", "kimi-k2.8-preview", "kimi-k3"],
+        "vision.caption": ["doubao-seed-2.0-mini", "doubao-seed-2.0-lite", "doubao-seed-2.1-lite", "doubao-seed-2.1-turbo", "doubao-seed-2.1-pro", "doubao-seed-evolving", "deepseek-v4.1-flash", "glm-5.3-flash", "minimax-m3", "kimi-k2.7-code", "kimi-k2.8-preview", "kimi-k3"],
         "embedding.multimodal": ["doubao-embedding-vision"],
         "audio.tts": ["doubao-seed-tts-2.0"],
         "image.txt2img": ["doubao-seedream-5.0-lite", "doubao-seedream-5-0-pro"],

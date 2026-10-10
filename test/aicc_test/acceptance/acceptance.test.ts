@@ -789,7 +789,13 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
     {
       exact_model: `kimi-k2.8-preview@${instance}`,
       provider_model_id: "kimi-k2.8-preview",
-      api_types: ["llm"],
+      api_types: ["llm", "vision.ocr", "vision.caption"],
+      logical_mounts: [],
+    },
+    {
+      exact_model: `minimax-m3@${instance}`,
+      provider_model_id: "minimax-m3",
+      api_types: ["llm", "vision.ocr", "vision.caption"],
       logical_mounts: [],
     },
   ];
@@ -814,14 +820,20 @@ test("Doubao Agent Plan capability rules distinguish text-only and vision models
       .map((cell) => cell.api_type).sort(),
     ["llm", "vision.caption", "vision.ocr"],
   );
-  for (const model of ["glm-5.3-flash", "kimi-k2.7-code", "kimi-k3"]) {
+  for (const model of [
+    "glm-5.3-flash",
+    "kimi-k2.7-code",
+    "kimi-k2.8-preview",
+    "kimi-k3",
+    "minimax-m3",
+  ]) {
     assert.deepEqual(
       result.cells.filter((cell) => cell.provider_model_id === model)
         .map((cell) => cell.api_type).sort(),
       ["llm", "vision.caption", "vision.ocr"],
     );
   }
-  for (const model of ["glm-5.3", "kimi-k2.8-preview"]) {
+  for (const model of ["deepseek-v4-flash", "glm-5.3"]) {
     assert.deepEqual(
       result.cells.filter((cell) => cell.provider_model_id === model)
         .map((cell) => cell.api_type),

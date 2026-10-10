@@ -953,6 +953,7 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
             "glm-5.3",
             "glm-5.3-flash",
             "kimi-k2.7-code",
+            "kimi-k2.6",
             "kimi-k2.8-preview",
             "kimi-k3",
             "minimax-m3",
@@ -972,14 +973,16 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
             .copied()
             .collect::<HashSet<_>>()
     };
+    assert!(
+        inventory
+            .models
+            .iter()
+            .all(|model| model.provider_model_id != "kimi-k2.6"),
+        "unlisted Agent Plan models must fail closed"
+    );
     let text_only = HashSet::from([ApiType::Llm]);
     let vision = HashSet::from([ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]);
-    for model_id in [
-        "deepseek-v4-flash",
-        "glm-5.3",
-        "kimi-k2.8-preview",
-        "minimax-m3",
-    ] {
+    for model_id in ["deepseek-v4-flash", "glm-5.3"] {
         assert_eq!(api_types(model_id), text_only, "{model_id}");
     }
     for model_id in [
@@ -987,7 +990,9 @@ fn agent_plan_inventory_uses_model_specific_official_capabilities() {
         "deepseek-v4.1-flash",
         "glm-5.3-flash",
         "kimi-k2.7-code",
+        "kimi-k2.8-preview",
         "kimi-k3",
+        "minimax-m3",
     ] {
         assert_eq!(api_types(model_id), vision, "{model_id}");
     }
