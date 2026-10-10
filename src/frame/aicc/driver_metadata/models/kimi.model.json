@@ -3,7 +3,7 @@
   "schema_version": 2,
   "schema_revision": 0,
   "model_driver_id": "kimi",
-  "revision_seq": 4,
+  "revision_seq": 5,
   "required_features": [],
   "models": [
     {
@@ -68,8 +68,8 @@
     },
     {
       "id": "kimi-k2.8-preview",
-      "api_types": ["llm"],
-      "capabilities": {"streaming": true, "tool_call": true, "json_schema": true, "reasoning": true},
+      "api_types": ["llm", "vision.ocr", "vision.caption"],
+      "capabilities": {"streaming": true, "tool_call": true, "json_schema": true, "vision": true, "reasoning": true},
       "llm": {"spec": "kimi-general", "effort": "native", "default_effort": "native", "supported_efforts": ["native"], "stability": "experimental", "weight": 28}
     },
     {

@@ -16,7 +16,7 @@ T1、T1.5 和本轮 T2 均通过。T2 未启用 Judge；6 个用例均由确定�
 
 ## T2 最终结果
 
-模型范围以火山方舟官方 Agent Plan 文档为基线，并优先选择配置中可试用的模型。官方来源：[Agent Plan 模型列表](https://www.volcengine.com/docs/82379/1958524?lang=zh)、[Agent Plan 使用说明](https://www.volcengine.com/docs/82379/1824718?lang=zh)、[模型免费额度说明](https://www.volcengine.com/docs/82379/1159200?lang=en)。
+模型范围以火山方舟官方 Agent Plan 文档为基线，并优先选择配置中可试用的模型。官方来源：[Agent Plan OpenClaw 模型与输入模态](https://www.volcengine.com/docs/82379/2373742?lang=zh)、[Agent Plan 模型列表](https://www.volcengine.com/docs/82379/1958524?lang=zh)、[Agent Plan 使用说明](https://www.volcengine.com/docs/82379/1824718?lang=zh)、[模型免费额度说明](https://www.volcengine.com/docs/82379/1159200?lang=en)。
 
 | 模型 | API | 调用 | Token（输入 / 输出 / 合计） | 结果 |
 |---|---|---:|---:|---:|
@@ -46,7 +46,7 @@ Agent Plan 响应未返回可核算的美元结算金额，因此 `已知实际�
 |---|---:|
 | 长时间验收期间 sudo token 过期后自动重新认证，且并发请求共享一次刷新 | 通过 |
 | 同租户重复 artifact URL 更新到当前 ProviderInstance，跨租户不可接管 | 通过 |
-| Agent Plan 按官方模型能力收窄；`deepseek-v4-*`、`glm-5.3`、`kimi-k2.8-preview`、`minimax-m3` 不再误暴露视觉 API | 通过 |
+| Agent Plan 按官方输入模态对齐；`deepseek-v4-*`、`glm-5.3` 保持文本能力，`kimi-k2.8-preview`、`minimax-m3` 保留视觉能力 | 通过 |
 | Acceptance 自测试 | 107 / 107 通过 |
 | AICC 构建与 Ubuntu 部署后运行检查 | 通过（核心服务可达） |
 
@@ -59,12 +59,15 @@ Agent Plan 响应未返回可核算的美元结算金额，因此 `已知实际�
 | T1.5 | 初始全量轮次 | 1577 / 1605 通过；清理通过 | [`t15-20261010040037-2623351/summary.json`](../reports/acceptance/t15-20261010040037-2623351/summary.json) |
 | T1.5 | Artifact 定向复测 | 1 / 1 通过；清理通过 | [`t15-20261010044035-2678347/summary.json`](../reports/acceptance/t15-20261010044035-2678347/summary.json) |
 | T1.5 | 最终全量轮次 | 1605 / 1605 通过；清理通过 | [`t15-20261010044054-2678826/summary.json`](../reports/acceptance/t15-20261010044054-2678826/summary.json) |
+| T1.5 | 视觉能力纠正后首次启动 | 缺少登录参数，runner 初始化失败；清理通过 | [`t15-20261010072125-2895355/summary.json`](../reports/acceptance/t15-20261010072125-2895355/summary.json) |
+| T1.5 | 视觉能力纠正后全量复测 | 1605 / 1605 通过；清理通过 | [`t15-20261010072136-2895665/summary.json`](../reports/acceptance/t15-20261010072136-2895665/summary.json) |
 | T2 | 初始零调用全矩阵检查 | 2 个能力基线差异；0 次真实调用；清理通过 | [`aicc-2026-10-10T05-11-54-561Z-6db0b95a/summary.json`](../reports/acceptance/aicc-2026-10-10T05-11-54-561Z-6db0b95a/summary.json) |
 | T2 | 修复后零调用定向预演 | 6 个 case 均按设计跳过；0 次真实调用；无能力差异；清理通过 | [`aicc-2026-10-10T05-19-26-458Z-0cdb4f23/summary.json`](../reports/acceptance/aicc-2026-10-10T05-19-26-458Z-0cdb4f23/summary.json) |
 | T2 | 最终真实调用轮次 | 6 / 6 通过；清理通过 | [`aicc-2026-10-10T05-19-50-091Z-5a533960/summary.json`](../reports/acceptance/aicc-2026-10-10T05-19-50-091Z-5a533960/summary.json) |
+| T2 | 视觉能力纠正后零调用定向预演 | 全矩阵 12 个能力单元；6 个选定 LLM case 按设计跳过；无能力差异；清理通过 | [`aicc-2026-10-10T08-05-17-002Z-e8f703be/summary.json`](../reports/acceptance/aicc-2026-10-10T08-05-17-002Z-e8f703be/summary.json) |
 
 ## 剩余风险与未覆盖项
 
-- T2 仅对 6 个物理模型执行了 LLM 真实调用；`doubao-seed-2.0-mini` 的视觉 API 已由 T1/T1.5 覆盖，但本轮未产生真实 Provider 视觉调用。
+- T2 仅对 6 个物理模型执行了 LLM 真实调用；视觉 API 由 T1/T1.5 覆盖，但本轮未产生真实 Provider 视觉调用。
 - Agent Plan API 未返回可核算费用字段，最终结算金额需以供应商账单为准。
 - Agent Plan 控制面模型清单需要独立 AK/SK；本轮使用带版本的官方文档基线，并由运行时模型清单做双向核对。

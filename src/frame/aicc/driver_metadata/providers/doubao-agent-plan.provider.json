@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 8,
+  "revision_seq": 9,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",
@@ -65,8 +65,7 @@
     },
     {
       "match": "deepseek-v4-*",
-      "operations": { "llm": "responses.create" },
-      "remove_api_types": ["vision.ocr", "vision.caption"]
+      "operations": { "llm": "responses.create" }
     },
     {
       "match": "glm-5.3-flash",
@@ -74,8 +73,7 @@
     },
     {
       "match": "glm-5.3",
-      "operations": { "llm": "responses.create" },
-      "remove_api_types": ["vision.ocr", "vision.caption"]
+      "operations": { "llm": "responses.create" }
     },
     {
       "match": "kimi-k2.7-code",
@@ -87,13 +85,15 @@
     },
     {
       "match": "kimi-k2.8-preview",
-      "operations": { "llm": "responses.create" },
-      "remove_api_types": ["vision.ocr", "vision.caption"]
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
     },
     {
       "match": "minimax-m3",
-      "operations": { "llm": "responses.create" },
-      "remove_api_types": ["vision.ocr", "vision.caption"]
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    },
+    {
+      "match": "*",
+      "exclude": true
     }
   ],
   "variants": [
