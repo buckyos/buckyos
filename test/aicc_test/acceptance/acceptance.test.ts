@@ -75,7 +75,12 @@ import {
 import { backupCloudUpdateConfig } from "./cloud_update_transaction.ts";
 import type { ProviderInventory } from "./types.ts";
 import { buildT1Coverage } from "./coverage.ts";
-import { callInference, openAiccArtifact, type RpcClient } from "./gateway.ts";
+import {
+  callInference,
+  openAiccArtifact,
+  reauthenticatingRpcClient,
+  type RpcClient,
+} from "./gateway.ts";
 import {
   buildT15Manifest,
   contractTestModelId,
@@ -1705,6 +1710,42 @@ test("settings transaction reauthenticates when the original cleanup session exp
   assert.equal(result.result, "completed");
   assert.equal(result.cleanup, "restored");
   assert.equal(refreshedWrites, 1);
+});
+
+test("refreshing RPC client retries expired sudo tokens once and shares concurrent login", async () => {
+  let reconnects = 0;
+  const initial: RpcClient = {
+    call: async () => {
+      throw new Error("RPC call error: Invalid token: JWT decode error: ExpiredSignature");
+    },
+  };
+  const refreshed: RpcClient = {
+    call: async (method, params) => ({ method, params }),
+  };
+  const client = reauthenticatingRpcClient(initial, async () => {
+    reconnects += 1;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    return refreshed;
+  });
+  const [first, second] = await Promise.all([
+    client.call("sys_config_get", { key: "one" }),
+    client.call("sys_config_get", { key: "two" }),
+  ]);
+  assert.deepEqual(first, { method: "sys_config_get", params: { key: "one" } });
+  assert.deepEqual(second, { method: "sys_config_get", params: { key: "two" } });
+  assert.equal(reconnects, 1);
+
+  let unexpectedReconnects = 0;
+  const unrelated = reauthenticatingRpcClient({
+    call: async () => {
+      throw new Error("provider unavailable");
+    },
+  }, async () => {
+    unexpectedReconnects += 1;
+    return refreshed;
+  });
+  await assert.rejects(unrelated.call("sys_config_get", {}), /provider unavailable/);
+  assert.equal(unexpectedReconnects, 0);
 });
 
 test("Provider credentials patch only the selected runtime instance without mutating input", () => {

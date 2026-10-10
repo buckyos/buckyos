@@ -2,7 +2,7 @@
   "format": "buckyos.aicc.provider-rules-catalog",
   "schema_version": 1,
   "schema_revision": 1,
-  "revision_seq": 7,
+  "revision_seq": 8,
   "provider_profile_id": "doubao-agent-plan",
   "static_inventory_models": [
     "doubao-seed-2.0-mini",
@@ -60,8 +60,40 @@
       ]
     },
     {
-      "match": "*",
+      "match": "deepseek-v4.1-*",
       "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    },
+    {
+      "match": "deepseek-v4-*",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "match": "glm-5.3-flash",
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    },
+    {
+      "match": "glm-5.3",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "match": "kimi-k2.7-code",
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    },
+    {
+      "match": "kimi-k3",
+      "operations": { "llm": "responses.create", "vision.ocr": "responses.create", "vision.caption": "responses.create" }
+    },
+    {
+      "match": "kimi-k2.8-preview",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
+    },
+    {
+      "match": "minimax-m3",
+      "operations": { "llm": "responses.create" },
+      "remove_api_types": ["vision.ocr", "vision.caption"]
     }
   ],
   "variants": [

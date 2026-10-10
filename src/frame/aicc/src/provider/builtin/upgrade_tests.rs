@@ -9,7 +9,7 @@ use crate::settings::{load_builtin_metadata, MetadataSources};
 use async_trait::async_trait;
 use buckyos_api::{AiMessage, AiRole, ApiType, LlmChatInvokeRequest};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -932,6 +932,64 @@ fn builtin_media_models_mount_their_default_families() {
                 ModelIdentitySource::Catalog
             ));
         }
+    }
+}
+
+#[test]
+fn agent_plan_inventory_uses_model_specific_official_capabilities() {
+    let catalog = catalog();
+    let providers = builtin_provider_registry(&catalog).unwrap();
+    let profile = providers
+        .profiles()
+        .find(|profile| profile.provider_profile_id == "doubao-agent-plan")
+        .unwrap();
+    let inventory = InventoryBuilder::build(
+        profile,
+        &instance(profile, "doubao-agent-plan"),
+        discovery(&[
+            "doubao-seed-2.0-mini",
+            "deepseek-v4-flash",
+            "deepseek-v4.1-flash",
+            "glm-5.3",
+            "glm-5.3-flash",
+            "kimi-k2.7-code",
+            "kimi-k2.8-preview",
+            "kimi-k3",
+            "minimax-m3",
+        ]),
+        &catalog,
+        &providers.codecs(),
+    )
+    .unwrap();
+    let api_types = |model_id: &str| {
+        inventory
+            .models
+            .iter()
+            .find(|model| model.provider_model_id == model_id)
+            .unwrap()
+            .api_types
+            .iter()
+            .copied()
+            .collect::<HashSet<_>>()
+    };
+    let text_only = HashSet::from([ApiType::Llm]);
+    let vision = HashSet::from([ApiType::Llm, ApiType::VisionOcr, ApiType::VisionCaption]);
+    for model_id in [
+        "deepseek-v4-flash",
+        "glm-5.3",
+        "kimi-k2.8-preview",
+        "minimax-m3",
+    ] {
+        assert_eq!(api_types(model_id), text_only, "{model_id}");
+    }
+    for model_id in [
+        "doubao-seed-2.0-mini",
+        "deepseek-v4.1-flash",
+        "glm-5.3-flash",
+        "kimi-k2.7-code",
+        "kimi-k3",
+    ] {
+        assert_eq!(api_types(model_id), vision, "{model_id}");
     }
 }
 
